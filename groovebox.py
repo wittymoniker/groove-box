@@ -3225,13 +3225,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         self.slider_eqr = QSlider(Qt.Orientation.Horizontal)
         self.slider_eqr.setRange(0, 100)
-        self.slider_eqr.setValue(50)
+        self.slider_eqr.setValue(0)
         self.slider_fractalizer = QSlider(Qt.Orientation.Horizontal)
         self.slider_fractalizer.setRange(0, 100)
-        self.slider_fractalizer.setValue(85)
+        self.slider_fractalizer.setValue(33)
         self.slider_pkp_decay = QSlider(Qt.Orientation.Horizontal)
         self.slider_pkp_decay.setRange(1, 1000)
-        self.slider_pkp_decay.setValue(250)
+        self.slider_pkp_decay.setValue(50)
 
         self.chk_pkp_automod = QCheckBox("PKP Envelope Follower")
         self.chk_pkp_automod.setChecked(True)
