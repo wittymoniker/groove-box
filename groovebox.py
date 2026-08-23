@@ -1889,6 +1889,12 @@ class PaintbrushTable(QWidget):
         cols = self.table_widget.columnCount()
         if row < 0 or col < 0 or row >= rows or col >= cols:
             return
+        # Explicitly remember user-painted playlist cells so additive engines
+        # can fill every other cell without ever overwriting a human edit.
+        touched = getattr(self, "playlist_user_touched", None)
+        if touched is None:
+            touched = self.playlist_user_touched = set()
+        touched.add((int(row), int(col)))
 
         now = time.monotonic()
         if not hasattr(self, "_last_flash_paint_cell"):
@@ -2783,7 +2789,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         return added
 
     def _paint_operator_pattern_to_playlist(self, source="randomizer", rng=None):
-        """Multiple operator instances + any overlap combination per playlist row."""
+        """Fill the complete 10-column playlist schema without touching user cells.
+
+        Columns: time, operator, script, velocity, auto-target, auto-amount,
+        direction, multi-seq, coverage, blend-partner. Randomizer, Phase-Lock and
+        midpoint all use this same writer, so playlist arrangement is complete and
+        dual mode is a single coordinated pass.
+        """
         if rng is None:
             rng = np.random.default_rng(self.get_numeric_seed() or 1)
         rows = int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else 32
@@ -2797,67 +2809,88 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.playlist_automation.append({})
         names = list(getattr(self, 'instrument_names_48', []) or ["Operator"])
         table = getattr(self, 'active_paint_table', None)
+        touched = getattr(self, 'playlist_user_touched', set())
+        phase_mode = source in ("phase-lock", "phaselock", "midpoint")
+
+        def locked(r, c):
+            if (r, c) in touched:
+                return True
+            e = self.master_playlist_data[r]
+            # Existing non-generated project data is treated as user-owned.
+            return bool(e) and not e.get('generated_source')
+
+        def put(r, c, value):
+            if locked(r, c):
+                return False
+            e = self.master_playlist_data[r]
+            if c == 0: e['time_marker'] = value
+            elif c == 1: e['operator'] = value
+            elif c == 2: e['script_tag'] = value
+            elif c == 3: e['velocity'] = float(value)
+            elif c == 4: e['modulation'] = value
+            elif c == 5: e['auto_amount'] = value
+            elif c == 6: e['direction_vector'] = value
+            elif c == 7: e['multi_seq'] = value
+            elif c == 8: e['coverage'] = value
+            elif c == 9: e['blend_partner'] = value
+            if table is not None and hasattr(table, 'set_cell_item'):
+                display = f"{value*100:.1f}%" if c == 3 else str(value)
+                table.set_cell_item(r, c, QTableWidgetItem(display))
+            return True
+
         painted = 0
-
-        def ptag(r):
-            return f"u:{(r * MEUM):.3f}s"
-
-        def append_csv(r, c, member, tag):
-            if table is None:
-                return
-            item = table.table_widget.item(r, c) if hasattr(table, 'table_widget') else None
-            existing = (item.text() if item else "") or ""
-            token = f"{member}@{tag}"
-            parts = [x.strip() for x in existing.split(",") if x.strip()]
-            base = member.split("@")[0].strip()
-            out, hit = [], False
-            for part in parts:
-                if part.split("@")[0].strip() == base:
-                    out.append(token); hit = True
-                else:
-                    out.append(part)
-            if not hit:
-                out.append(token)
-            val = ", ".join(out)
-            if hasattr(table, 'set_cell_item'):
-                table.set_cell_item(r, c, val)
-            else:
-                table.table_widget.setItem(r, c, QTableWidgetItem(val))
-
         for r in range(rows):
-            if float(rng.random()) > (0.35 + 0.25 * MEUM_NORM):
-                continue
-            n_inst = int(rng.integers(1, 4))
-            picks = list(rng.choice(names, size=min(n_inst, len(names)), replace=False))
-            tag = ptag(r)
+            # Phase-Lock arranges every row deterministically; Randomizer uses a
+            # seeded occupancy field but also guarantees broad column coverage.
+            if phase_mode:
+                f = 0.5 + 0.5 * np.sin((r + 1) * MEUM_CONSTANT + self.get_numeric_seed() * 1.7e-6)
+                density = 0.55 + 0.40 * f
+                idx = int((r * 7 + self.get_numeric_seed()) % len(names))
+                op = names[idx]
+                partner = names[(idx + max(1, int(1 + f * 5))) % len(names)]
+                offset = (f - 0.5) * MEUM_CONSTANT * 2.0
+                vel = float(np.clip(0.35 + 0.9 * f, 0.05, 1.5))
+                auto_amt = int(round(20 + 75 * f))
+                direction = "←" if f < 0.33 else ("→" if f > 0.66 else "↔")
+                multi = f"Multi[{1 + int(f * 3)}]"
+                cov = int(round(25 + 75 * density))
+                values = [f"T{offset:+.3f}s", op, f"Phase:{r%8+1}", vel,
+                          ["eqr","fractalizer","pkp_decay","filter","drive"][r % 5],
+                          f"{auto_amt}%", direction, multi, f"{cov}%", partner]
+            else:
+                # Seeded randomizer: deterministic for this composition edge.
+                op_idx = int(rng.integers(0, len(names)))
+                op = names[op_idx]
+                partner = names[int(rng.integers(0, len(names)))]
+                if partner == op and len(names) > 1:
+                    partner = names[(op_idx + 1) % len(names)]
+                offset = float(rng.uniform(-MEUM_CONSTANT, MEUM_CONSTANT))
+                vel = float(np.clip(rng.uniform(0.25, 1.25), 0.05, 1.5))
+                values = [f"T{offset:+.3f}s", op, f"Rand:{int(rng.integers(1,9))}", vel,
+                          str(rng.choice(["eqr","fractalizer","pkp_decay","filter","drive"])),
+                          f"{int(rng.integers(20,96))}%",
+                          str(rng.choice(["←","→","↔"])),
+                          f"Multi[{int(rng.integers(1,4))}]",
+                          f"{int(rng.integers(25,101))}%", partner]
             e = self.master_playlist_data[r]
             if not isinstance(e, dict):
                 e = {}; self.master_playlist_data[r] = e
-            e.setdefault('operators', [])
-            for op in picks:
-                if op not in e['operators']:
-                    e['operators'].append(op)
-                append_csv(r, 1, op, tag)
-            e['operator'] = e['operators'][0]
-            e['position'] = tag
+            e['operators'] = list(dict.fromkeys([e.get('operator', op), op])) if e.get('operator') else [op]
+            e['position'] = values[0]
             e['generated_source'] = source
-            cov = {op: float(min(1.0, 0.25 * (i + 1))) for i, op in enumerate(e['operators'])}
-            e['coverage_map'] = cov
-            append_csv(r, 8, "|".join(f"{k}:{v:.0%}" for k, v in cov.items()), tag)
-            append_csv(r, 3, f"{(0.4+0.5*rng.random())*100:.1f}%", tag)
-            append_csv(r, 4, str(rng.choice(["eqr","fractalizer","pkp_decay","filter","drive"])), tag)
-            append_csv(r, 5, f"{int(rng.integers(25,85))}%", tag)
-            overlap = float(min(cov.values())) if len(cov) > 1 else 0.0
+            e['coverage_map'] = {op: float(str(values[8]).rstrip('%')) / 100.0}
+            for c, value in enumerate(values):
+                if put(r, c, value):
+                    painted += 1
             self.playlist_automation[r] = {
-                "operator": e['operators'][0], "operators": list(e['operators']),
-                "param": "eqr", "amount": float(0.35+0.5*rng.random()),
-                "direction": 1.0 if rng.random()>0.5 else -1.0,
-                "coverage": float(cov.get(e['operators'][0], 0.25)),
-                "overlap": overlap, "blend_percent": float(rng.uniform(0,100)),
-                "partner": e['operators'][1] if len(e['operators'])>1 else "",
-                "mode": f"engine:{source}", "position": tag,
+                "operator": op, "operators": list(e['operators']),
+                "param": values[4], "amount": float(str(values[5]).rstrip('%')) / 100.0,
+                "direction": -1.0 if values[6] == "←" else (1.0 if values[6] == "→" else 0.0),
+                "coverage": float(str(values[8]).rstrip('%')) / 100.0,
+                "overlap": 0.5 if values[6] == "↔" else 0.0,
+                "blend_percent": float(str(values[8]).rstrip('%')),
+                "partner": partner, "mode": f"engine:{source}", "position": values[0],
             }
-            painted += 1
         if table is not None and hasattr(table, 'table_widget'):
             table.table_widget.viewport().update()
         return painted
@@ -3188,6 +3221,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         self.chk_pkp_automod = QCheckBox("PKP Envelope Follower")
         self.chk_pkp_automod.setChecked(True)
+        self.chk_pkp_automod.setStyleSheet("QCheckBox { color: #ffffff; }")
 
         self.top_layout.addWidget(self.mode_combo)
         self.top_layout.addWidget(self.chk_global_playlist)
@@ -3444,7 +3478,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "#stepEditorPopup { background:#0b1116; border:2px solid #f5d97d; "
             "border-radius:8px; padding:6px; } QLabel { color:#ffffff; font-weight:bold; }"
         )
-        self.step_editor_popup.setFixedHeight(52)
+        self.step_editor_popup.setFixedSize(430, 42)
         step_edit = QHBoxLayout(self.step_editor_popup)
         step_edit.setContentsMargins(8, 6, 8, 6)
         self.lbl_selected_step = QLabel("Step: —")
@@ -3454,7 +3488,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.slider_step_amp = QSlider(Qt.Orientation.Horizontal)
         self.slider_step_amp.setRange(0, 100)
         self.slider_step_amp.setValue(100)
-        self.slider_step_amp.setFixedWidth(120)
+        self.slider_step_amp.setFixedWidth(78)
         self.slider_step_amp.valueChanged.connect(self._on_step_amp_slider)
         step_edit.addWidget(self.slider_step_amp)
         self.lbl_step_amp = QLabel("100%")
@@ -3463,7 +3497,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.slider_step_pitch = QSlider(Qt.Orientation.Horizontal)
         self.slider_step_pitch.setRange(25, 400)
         self.slider_step_pitch.setValue(100)
-        self.slider_step_pitch.setFixedWidth(120)
+        self.slider_step_pitch.setFixedWidth(78)
         self.slider_step_pitch.valueChanged.connect(self._on_step_pitch_slider)
         step_edit.addWidget(self.slider_step_pitch)
         self.lbl_step_pitch = QLabel("1.00×")
@@ -3523,7 +3557,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         self.btn_export = QToolButton()
         self.btn_export.setText("⬇ EXPORT")
-        self.btn_export.setStyleSheet("QToolButton { color: white; }")
+        self.btn_export.setStyleSheet("QToolButton { color: #ffffff; font-weight: bold; } QMenu { color: #ffffff; } QMenu::item { color: #ffffff; }")
         self.btn_export.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         export_menu = QMenu(self.btn_export)
         export_video_only_action = export_menu.addAction("Video only")
@@ -3772,8 +3806,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 continue
             amp = float(mem["amplitudes"][s_idx]) if s_idx < len(mem.get("amplitudes", [])) else 1.0
             pitch = float(mem["pitches"][s_idx]) if s_idx < len(mem.get("pitches", [])) else 1.0
-            label = f"STEP {s_idx+1}\nV:{amp:.2f} P:{pitch:.2f}×"
             is_on = bool(mem["steps"][s_idx])
+            label = "□" if is_on else "■"
             selected = (self.selected_step_idx == s_idx)
             # Only touch Qt when something actually changed (stops flicker)
             prev = getattr(btn, '_seq_cache', None)
@@ -3788,11 +3822,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _style_pad_button(self, btn, s_idx, is_active_step, selected=False):
         """Style a STEP: selected gold > programmed on (cyan) > off (dark). No stylesheet appends."""
         if selected:
-            sheet = "background-color: #1a1810; color: #f5d97d; border: 3px solid #f5d97d; font-weight: bold;"
+            sheet = "background-color: #1a1810; color: #f5d97d; border: 3px solid #f5d97d; font-weight: bold; font-size: 20pt;"
         elif is_active_step:
-            sheet = "background-color: #00ffff; color: #060606; border: 2px solid #ffffff; font-weight: bold;"
+            sheet = "background-color: #00ffff; color: #060606; border: 2px solid #ffffff; font-weight: bold; font-size: 20pt;"
         else:
-            sheet = "background-color: #121212; color: #00ffff; border: 2px solid #444444;"
+            sheet = "background-color: #121212; color: #00ffff; border: 2px solid #444444; font-size: 20pt;"
         if getattr(btn, '_seq_sheet', None) != sheet:
             btn._seq_sheet = sheet
             btn.setStyleSheet(sheet)
@@ -3945,7 +3979,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         for s in range(count):
             amp = mem["amplitudes"][s]
             pitch = mem["pitches"][s] if s < len(mem["pitches"]) else 1.0
-            step_btn = QPushButton(f"STEP {s+1}\nV:{amp:.2f} P:{pitch:.2f}×")
+            step_btn = QPushButton(f"{'□' if mem['steps'][s] else '■'}")
             step_btn.setCheckable(False)  # selection vs toggle handled in click
             step_btn.setMinimumSize(42, 52)
             step_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -4111,14 +4145,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         vw = viewport.width()
         vh = viewport.height()
         x = max(4, min(pos.x() + (btn.width() - pw) // 2, max(4, vw - pw - 4)))
-        # STEP_EDITOR_VERTICAL_OFFSET_V2: move the floating step inspector
-        # downward by ~42% of the selected step button height so it clears the
-        # step-row hit area more reliably while remaining visually attached.
-        vertical_offset = max(1, int(round(btn.height() * 0.42)))
-        above_y = pos.y() - ph - 6 + vertical_offset
-        below_y = pos.y() + btn.height() + 6 + vertical_offset
-        y = above_y if above_y >= 4 else below_y
-        y = max(4, min(y, max(4, vh - ph - 4)))
+        # Keep the inspector in the strip immediately below the step row and
+        # immediately above the QScrollArea horizontal scrollbar. It no longer
+        # teleports over the pads themselves.
+        y = max(2, vh - ph - 2)
         self.step_editor_popup.move(x, y)
         self.step_editor_popup.raise_()
         self.step_editor_popup.show()
@@ -4128,20 +4158,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         mem = self.instrument_sequencer_memory[curr_i]
         self._ensure_seq_mem_length(mem, max(s_idx + 1, len(mem.get("steps", []))))
 
-        # STEP SELECTION CONTRACT:
-        #   first click on a different cell = SELECT ONLY; never touch gates.
-        #   second click on that same selected cell = TOGGLE ONLY THAT CELL.
-        # Randomizer/Phase-Locker are the only engines permitted to change other cells.
-        same_step = (self.selected_step_idx == s_idx)
+        # A single click both selects and toggles exactly this cell.
+        # No two-click state machine: the grid is immediately editable again.
         self.selected_step_idx = s_idx
-        if same_step:
-            mem["steps"][s_idx] = not bool(mem["steps"][s_idx])
-            # USER_TOUCHED_TRACKING: this is an actual manual click — the only
-            # place besides the amp/pitch sliders where a human is editing the
-            # grid — so mark the step touched. Presets/patches/randomizer output
-            # loaded straight into memory never pass through here, so they are
-            # correctly left untouched until a person edits them by hand.
-            self._mark_step_touched(mem, s_idx)
+        mem["steps"][s_idx] = not bool(mem["steps"][s_idx])
+        self._mark_step_touched(mem, s_idx)
 
         if hasattr(self, 'lbl_selected_step'):
             self.lbl_selected_step.setText(f"Step: {s_idx + 1}")
@@ -4213,7 +4234,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Amp is velocity / step-trigger blend amount into painted together steps
         if mem["steps"][s] and s < len(self.seq_step_buttons):
             pitch = mem["pitches"][s] if s < len(mem.get("pitches", [])) else 1.0
-            self.seq_step_buttons[s].setText(f"Pad {s+1}\nA:{val/100:.2f} P:{pitch:.2f}×")
+            self.seq_step_buttons[s].setText("□" if mem["steps"][s] else "■")
 
     def _on_step_pitch_slider(self, val):
         ratio = val / 100.0
@@ -4228,7 +4249,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         mem["pitches"][s] = ratio
         if s < len(self.seq_step_buttons):
             amp = mem["amplitudes"][s] if s < len(mem["amplitudes"]) else 1.0
-            self.seq_step_buttons[s].setText(f"Pad {s+1}\nA:{amp:.2f} P:{ratio:.2f}×")
+            self.seq_step_buttons[s].setText("□" if mem["steps"][s] else "■")
 
     def _on_euclidean_live_toggled(self, checked):
         # Keep persistent :checked stylesheet — never clear to "" (would lose OFF look).
@@ -4545,7 +4566,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def clear_user_memory(self):
         rows=int(self.spin_playlist_length.value()) if hasattr(self,"spin_playlist_length") else 96
-        self.master_playlist_data=[{} for _ in range(rows)]; self.playlist_automation=[{} for _ in range(rows)]
+        self.master_playlist_data=[{} for _ in range(rows)]; self.playlist_automation=[{} for _ in range(rows)]; self.playlist_user_touched=set()
         for mem in getattr(self,"instrument_sequencer_memory",{}).values():
             n=int(self.spin_seq_length.value()) if hasattr(self,"spin_seq_length") else len(mem.get("steps",[]))
             mem["steps"]=[False]*n; mem["amplitudes"]=[1.0]*n; mem["pitches"]=[1.0]*n; mem["probabilities"]=[100]*n; mem["touched"]=set()
@@ -5348,7 +5369,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
         steps = [False] * count
         amps = [0.0] * count
         pitches = [1.0] * count
-        user_hits = [s for s in range(count) if s < len(mem.get('steps', [])) and mem['steps'][s]]
+        # ONLY the user's carrier is an input. Generated Randomizer/Phase-Lock
+        # output must never become the next generation's carrier, otherwise a
+        # source change causes composition-on-composition evolution.
+        try:
+            user_mask = self._user_pattern_mask(mem, count, instrument_name=name)
+        except Exception:
+            user_mask = [False] * count
+        user_hits = [s for s in range(count)
+                     if s < len(mem.get('steps', [])) and s < len(user_mask)
+                     and user_mask[s] and mem['steps'][s]]
         if not user_hits:
             # sparse seed-stable scatter
             for s in range(count):
