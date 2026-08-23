@@ -2208,6 +2208,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.domain_eq_engine = DomainPartitionEquationEngine(seed=0.0)
         self.domain_eq_dialog = None
 
+        # IMPORTED_PROJECT_AUTHORITY:
+        # A loaded project is a user-authored source of truth.  Engine output may
+        # decorate it only when explicitly armed; loading/rendering must never
+        # bootstrap, randomize, or phase-lock an imported empty/partial state.
+        self._project_imported_user_state = False
+        self._project_audio_data_loaded = False
+        self._engine_generated_playlist_rows = set()
+        self._engine_generated_automation_rows = set()
+
         # Initialize the UI Manager as an independent floating control panel
         # that stays attached to your main app window
         # Hidden compatibility stub (btn_seeded_randomizer only). No floating panel.
@@ -2851,7 +2860,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             e['position'] = f"e:{t_off:.3f}s"
             e['time_marker'] = e['position']
             e['generated_source'] = source
+            e['generated_by_engine'] = True
+            e['velocity_user_locked'] = False
             e['velocity'] = float(np.clip(rng.uniform(0.35, 1.15), 0.05, 1.5))
+            self._engine_generated_playlist_rows.add(r)
             cov = {op: float(min(1.0, 0.2 * (i + 1) + 0.15 * rng.random())) for i, op in enumerate(eng_ops)}
             e['coverage_map'] = cov
             e['coverage'] = "|".join(f"{k}:{v:.0%}" for k, v in cov.items())
@@ -2876,6 +2888,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if partner:
                 put_csv(r, 9, partner, tag)
             self.playlist_automation[r] = {
+                "generated_by_engine": True,
                 "operator": eng_ops[0] if eng_ops else "",
                 "operators": list(eng_ops),
                 "param": "eqr",
@@ -4210,26 +4223,43 @@ class MathematiciansGrooveboxApp(QMainWindow):
     # are preserved; only rows marked/recognized as available are fitted.
     # =====================================================================
     def _phase_lock_playlist_velocity(self, rng=None, strength=0.65, randomize=False):
+        """Generate stable playlist velocity without recursively fading user rows.
+
+        User/imported rows are authoritative.  Engine rows are recomputed from the
+        seeded field instead of blending against their previous value, so repeated
+        Randomizer + Phase-Lock passes cannot drift toward silence.
+        """
         rows = int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else len(getattr(self, 'master_playlist_data', []))
         if not getattr(self, 'master_playlist_data', None):
             return
         numeric_seed = self.get_numeric_seed()
         if rng is None:
             rng = np.random.default_rng(numeric_seed)
+
         for i, entry in enumerate(self.master_playlist_data[:rows]):
-            # Seed/phase field: smooth, deterministic, with optional random perturbation.
+            if not isinstance(entry, dict):
+                continue
+            generated = bool(entry.get("generated_by_engine") or entry.get("generated_source"))
+            user_locked = bool(entry.get("velocity_user_locked") or entry.get("user_defined"))
+            # Never touch an explicitly user-owned/imported row.
+            if user_locked and not generated:
+                continue
+
             phase = (i / max(rows, 1)) * 2.0 * np.pi + (numeric_seed % 100000) * 0.000013
             field = 0.5 + 0.5 * np.sin(phase * MEUM_CONSTANT + numeric_seed * 0.0000017)
-            field = 0.5 * field + 0.5 * self._contextual_numerology(step=i, row=i) if hasattr(self, "_contextual_numerology") else field
+            if hasattr(self, "_contextual_numerology"):
+                field = 0.5 * field + 0.5 * self._contextual_numerology(step=i, row=i)
             target = 0.25 + 0.75 * field
             if randomize:
                 target = 0.75 * target + 0.25 * float(rng.uniform(0.25, 1.0))
-            old = float(entry.get("velocity", 1.0) or 1.0)
-            # Treat explicit non-default velocities as user data and preserve them.
-            user_locked = bool(entry.get("velocity_user_locked", False))
-            if user_locked:
-                continue
-            entry["velocity"] = float(np.clip((1.0-strength) * old + strength * target, 0.05, 1.5))
+
+            # Generated rows are absolute/stable for this seed/pass, not feedback.
+            if generated:
+                entry["velocity"] = float(np.clip(target, 0.05, 1.5))
+                entry["velocity_user_locked"] = False
+            else:
+                entry["velocity"] = float(np.clip(target, 0.05, 1.5))
+                entry["velocity_user_locked"] = False
 
         if hasattr(self, 'active_paint_table') and self.active_paint_table:
             table = self.active_paint_table
@@ -4599,7 +4629,79 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """Compatibility heartbeat: deliberately does not mutate composition."""
         return
 
+    def _remove_engine_generated_playlist_writes(self):
+        """Remove only Randomizer/Phase-Lock-owned playlist state.
+
+        User-painted/imported rows, automation lanes, and @u: tokens survive.
+        This is intentionally idempotent so either engine can be switched off in
+        any order, including the combined Randomizer+Phase-Lock state.
+        """
+        rows = len(getattr(self, "master_playlist_data", []) or [])
+        generated_rows = set(getattr(self, "_engine_generated_playlist_rows", set()) or set())
+
+        def keep_user_tokens(value):
+            if not isinstance(value, str):
+                return value
+            return ", ".join(
+                tok.strip() for tok in value.split(",")
+                if tok.strip() and "@u:" in tok
+            )
+
+        for r in range(rows):
+            entry = self.master_playlist_data[r]
+            if not isinstance(entry, dict):
+                continue
+            if r in generated_rows or entry.get("generated_by_engine") or entry.get("generated_source"):
+                user_inst = list(entry.get("user_instances") or [])
+                if user_inst:
+                    entry.clear()
+                    entry.update({
+                        "user_instances": user_inst,
+                        "operators": list(user_inst),
+                        "operator": user_inst[0],
+                        "user_defined": True,
+                    })
+                else:
+                    self.master_playlist_data[r] = {}
+            else:
+                # Strip engine-only CSV residue while preserving explicit @u: data.
+                for key in ("operator", "operators_csv", "coverage", "blend_partner"):
+                    if key in entry and isinstance(entry[key], str) and "@e:" in entry[key]:
+                        entry[key] = keep_user_tokens(entry[key])
+
+            if r < len(getattr(self, "playlist_automation", []) or []):
+                lane = self.playlist_automation[r]
+                if isinstance(lane, dict) and (
+                    r in getattr(self, "_engine_generated_automation_rows", set())
+                    or lane.get("generated_by_engine")
+                    or str(lane.get("mode", "")).startswith("engine:")
+                ):
+                    self.playlist_automation[r] = {}
+
+        self._engine_generated_playlist_rows.clear()
+        self._engine_generated_automation_rows.clear()
+
+        table = getattr(self, "active_paint_table", None)
+        if table is not None:
+            try:
+                tw = getattr(table, "table_widget", table)
+                for r in range(tw.rowCount()):
+                    for c in (1, 3, 4, 5, 8, 9):
+                        item = tw.item(r, c)
+                        if item is not None and "@e:" in (item.text() or ""):
+                            kept = keep_user_tokens(item.text())
+                            if hasattr(table, "set_cell_item"):
+                                table.set_cell_item(r, c, kept)
+                            else:
+                                item.setText(kept)
+                tw.viewport().update()
+            except Exception as exc:
+                print(f"[Playlist cleanup] UI refresh skipped: {exc}")
+
     def clear_user_memory(self):
+        self._remove_engine_generated_playlist_writes()
+        self._project_imported_user_state = False
+        self._project_audio_data_loaded = False
         rows=int(self.spin_playlist_length.value()) if hasattr(self,"spin_playlist_length") else 96
         self.master_playlist_data=[{} for _ in range(rows)]; self.playlist_automation=[{} for _ in range(rows)]; self.playlist_user_touched=set()
         for mem in getattr(self,"instrument_sequencer_memory",{}).values():
@@ -4660,6 +4762,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "domain_eq": self.domain_eq_engine.to_json() if hasattr(self, 'domain_eq_engine') and self.domain_eq_engine else {},
             "instrument_param_generated": copy.deepcopy(getattr(self, 'instrument_param_generated', {}) or {}),
             "generation_counter": int(getattr(self, '_composition_generation_counter', 0)),
+            "project_user_authoritative": True,
+            "imported_wav_path": str(getattr(self, "imported_wav_path", "") or ""),
+            "imported_sample_rate": int(getattr(self, "imported_sample_rate", 44100)),
         }
         try:
             with open(path, "w", encoding="utf-8") as f:
@@ -4675,6 +4780,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            # Imported project files are user-authored source material.  Do not let
+            # live/seed engines reinterpret them during or immediately after load.
+            self._project_imported_user_state = True
+            self._project_audio_data_loaded = False
+            self._engine_generated_playlist_rows.clear()
+            self._engine_generated_automation_rows.clear()
+
+            # Restore an optional WAV carrier referenced by the project.
+            imported_wav = str(data.get("imported_wav_path", "") or "")
+            if imported_wav and os.path.isfile(imported_wav):
+                try:
+                    self._load_wav_path(imported_wav)
+                    self._project_audio_data_loaded = True
+                except Exception as _iw:
+                    print(f"[Project] imported WAV restore skipped: {_iw}")
+
             # Guard live engines from reacting mid-load
             self._live_engine_update_guard = True
             self._step_ui_guard = True
@@ -4766,15 +4887,33 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         }
                 self.instrument_sequencer_memory = new_mem
 
+                # Every active module in an imported project is user-owned unless
+                # explicitly absent.  This makes old projects behave like hand-built
+                # programs even if their older file format lacked touched/lock flags.
+                for _name, _mem in self.instrument_sequencer_memory.items():
+                    _steps = _mem.get("steps", [])
+                    _mem["touched"] = set(range(min(seq_len, len(_steps)))) if any(_steps) else set()
+                    _mem["user_defined"] = bool(any(_steps))
+
                 self.master_playlist_data = list(data.get("master_playlist_data", []) or [])
                 while len(self.master_playlist_data) < rows:
                     self.master_playlist_data.append({})
                 self.playlist_automation = list(data.get("playlist_automation", []) or [])
                 while len(self.playlist_automation) < rows:
                     self.playlist_automation.append({})
+                for _r, _entry in enumerate(self.master_playlist_data):
+                    if isinstance(_entry, dict) and _entry:
+                        _entry["user_defined"] = True
+                        _entry["velocity_user_locked"] = True
+                for _r, _lane in enumerate(self.playlist_automation):
+                    if isinstance(_lane, dict) and _lane:
+                        _lane["user_defined"] = True
                 if hasattr(self, 'instrument_scripts'):
                     self.instrument_scripts = dict(data.get("instrument_scripts", {}) or {})
                 self.instrument_param_state = dict(data.get("instrument_param_state", {}) or {})
+                for _name, _state in self.instrument_param_state.items():
+                    if isinstance(_state, dict) and _state:
+                        _state["user_locked"] = True
                 self.patch_connections = list(data.get("patch_connections", []) or [])
                 self.instrument_param_generated = dict(data.get("instrument_param_generated", {}) or {})
                 self._composition_generation_counter = int(data.get("generation_counter", 0))
@@ -5487,6 +5626,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             param = params[(r + (0 if source == "seeded" else 2)) % len(params)]
             amt = float(0.35 + 0.5 * rng.random())
             self.playlist_automation[r] = {
+                "generated_by_engine": True,
                 "operator": op,
                 "param": param,
                 "amount": amt,
@@ -5497,6 +5637,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "mode": f"engine:{source}",
                 "write_steps": False,
             }
+            self._engine_generated_automation_rows.add(r)
             written += 1
         # RECOMMENDED_POWER_LAYER: couple automation generation to calculated
         # velocity painting. This remains opt-in because this method is called by
@@ -6402,7 +6543,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 any((mem or {}).get('steps') or [])
                 for mem in (getattr(self, 'instrument_sequencer_memory', {}) or {}).values()
             )
-            if seed_present and not any_steps:
+            if seed_present and not any_steps and not getattr(self, "_project_imported_user_state", False):
                 print('[Mixdown] seed present, empty pads → commission Meum hierarchy')
                 if hasattr(self, '_apply_meum_ideal_hierarchy'):
                     self._apply_meum_ideal_hierarchy()
@@ -6530,7 +6671,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 while base_freq > 2200.0:
                     base_freq *= 0.5
                 base_freq = float(np.clip(base_freq, 55.0, 2200.0))
-                dynamic_eqr = base_eqr * (1.0 + 0.3 * np.sin(2.0 * np.pi * 0.2 * local_t + op_idx))
+                # No automatic AM/FM: modulation is an explicit module capability.
+                # A project with ordinary oscillators therefore renders its carrier
+                # directly.  FM/AM become active only when an explicitly selected /
+                # connected module declares that capability.
+                module_names = [str(op_name)]
+                for _c in (getattr(self, "patch_connections", []) or []):
+                    if isinstance(_c, dict):
+                        if _c.get("source") == op_name:
+                            module_names.append(str(_c.get("target", "")))
+                        if _c.get("target") == op_name:
+                            module_names.append(str(_c.get("source", "")))
+                _module_text = " ".join(module_names).lower()
+                fm_enabled = ("fm" in _module_text or "frequency mod" in _module_text)
+                am_enabled = ("am" in _module_text or "amplitude mod" in _module_text)
+                dynamic_eqr = base_eqr
 
                 step_env = np.zeros_like(local_t, dtype=np.float64)
                 pitch_track = np.ones_like(local_t, dtype=np.float64)
@@ -6556,16 +6711,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     continue
 
                 freq = np.clip(base_freq * pitch_track, 40.0, 4800.0)
-                # Classic Meum FM (zip_a / 1337-class) + light AM
-                mod_freq = freq * MEUM_CONSTANT
-                fm_mod = np.sin(2.0 * np.pi * mod_freq * local_t)
-                fm_index = np.clip(dynamic_eqr * MEUM_CONSTANT * max(float(fractalizer_val), 0.15), 0.05, 3.5)
-                osc = np.sin(2.0 * np.pi * freq * local_t + fm_mod * fm_index)
-                # Light AM (not dominant) — keeps motion without washing spectrum
-                am_depth = float(np.clip(0.15 + 0.25 * float(base_eqr) * MEUM_NORM, 0.08, 0.45))
-                am_rate = np.maximum(freq * MEUM_NORM * 0.5, 0.5)
-                am_env = 1.0 - am_depth + am_depth * (0.5 + 0.5 * np.sin(2.0 * np.pi * am_rate * local_t + op_idx * MEUM))
-                osc = osc * am_env
+                osc = np.sin(2.0 * np.pi * freq * local_t)
+                if fm_enabled:
+                    mod_freq = freq * MEUM_CONSTANT
+                    fm_mod = np.sin(2.0 * np.pi * mod_freq * local_t)
+                    fm_index = np.clip(dynamic_eqr * MEUM_CONSTANT * max(float(fractalizer_val), 0.15), 0.05, 3.5)
+                    osc = np.sin(2.0 * np.pi * freq * local_t + fm_mod * fm_index)
+                if am_enabled:
+                    am_depth = float(np.clip(0.15 + 0.25 * float(base_eqr) * MEUM_NORM, 0.08, 0.45))
+                    am_rate = np.maximum(freq * MEUM_NORM * 0.5, 0.5)
+                    am_env = 1.0 - am_depth + am_depth * (0.5 + 0.5 * np.sin(2.0 * np.pi * am_rate * local_t + op_idx * MEUM))
+                    osc = osc * am_env
                 gate = np.maximum(step_env, 0.0)  # no constant floor overtone
                 voice = (osc * gate * float(velocity_scale)).astype(np.float32)
                 row_mix += voice
@@ -6599,7 +6755,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         _prog(max(getattr(self, "_play_progress", 0), 86), "Mixdown")
 
-        # Neutral soft ceiling — full FM/AM spectrum preserved
+        # Neutral soft ceiling — no hidden AM/FM processing
         try:
             peak = float(np.max(np.abs(master))) + 1e-9
             if peak > 0.98:
