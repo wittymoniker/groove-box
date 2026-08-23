@@ -2355,33 +2355,44 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.playlist_automation = [{} for _ in range(rows)]
 
     def sync_playlist_grid_to_memory(self):
-        """Reads back current table items from the playlist window into master memory backend."""
-        if hasattr(self, 'active_paint_table') and self.active_paint_table:
-            table = self.active_paint_table
-            self.master_playlist_data = []
-            old_rows = list(getattr(self, "master_playlist_data", []) or [])
-            for r in range(table.rowCount()):
-                prior = old_rows[r] if r < len(old_rows) and isinstance(old_rows[r], dict) else {}
-                row_dict = {
-                    "time_marker": table.item(r, 0).text() if table.item(r, 0) else "",
-                    "operator": table.item(r, 1).text() if table.item(r, 1) else self.instrument_names_48[0],
-                    "script_tag": table.item(r, 2).text() if table.item(r, 2) else "",
-                    "velocity": 1.0,
-                    "modulation": table.item(r, 4).text() if table.item(r, 4) else "",
-                    "multi_seq": table.item(r, 5).text() if table.item(r, 5) else ""
-                }
-                # Keep the generated layer alongside the user-visible row.
-                for _k in ("generated_overlay", "generated_source", "generated_operator", "generated_step", "generated_velocity"):
-                    if _k in prior:
-                        row_dict[_k] = prior[_k]
-                if table.item(r, 3):
-                    try:
-                        vtxt = table.item(r, 3).text().replace("%", "").strip()
-                        v = float(vtxt)
-                        row_dict["velocity"] = (v / 100.0) if v > 1.0 else v
-                    except Exception:
-                        row_dict["velocity"] = 1.0
-                self.master_playlist_data.append(row_dict)
+        """Round-trip ALL ten playlist cell types without erasing engine metadata."""
+        if not (hasattr(self, 'active_paint_table') and self.active_paint_table):
+            return
+        table = self.active_paint_table
+        old_rows = list(getattr(self, "master_playlist_data", []) or [])
+        rebuilt = []
+        for r in range(table.rowCount()):
+            prior = old_rows[r] if r < len(old_rows) and isinstance(old_rows[r], dict) else {}
+            def cell(c):
+                item = table.item(r, c)
+                return item.text().strip() if item else ""
+            row_dict = dict(prior)  # preserve generated/user ownership and hidden fields
+            row_dict.update({
+                "time_marker": cell(0),
+                "operator": cell(1),
+                "script_tag": cell(2),
+                "auto_target": cell(4),
+                "effect_target": cell(4),
+                "auto_amount": cell(5),
+                "direction_vector": cell(6),
+                "multi_seq": cell(7),
+                "coverage": cell(8),
+                "blend_partner": cell(9),
+            })
+            # Column 3 is velocity; never silently reset a generated/user value.
+            if cell(3):
+                try:
+                    v = float(cell(3).replace("%", "").strip())
+                    row_dict["velocity"] = v / 100.0 if v > 1.0 else v
+                except Exception:
+                    row_dict["velocity"] = prior.get("velocity", 1.0)
+            else:
+                row_dict["velocity"] = prior.get("velocity", 1.0)
+            # Preserve the complete multi-instance identity string when present.
+            row_dict["operators_csv"] = cell(1)
+            row_dict["user_defined"] = bool(prior.get("user_defined", False))
+            rebuilt.append(row_dict)
+        self.master_playlist_data = rebuilt
 
 
     # =====================================================================
@@ -2735,199 +2746,162 @@ class MathematiciansGrooveboxApp(QMainWindow):
         return added
 
     def _paint_operator_pattern_to_playlist(self, source="randomizer", rng=None):
-        """Predictive multi-instance playlist paint (Randomizer + Phase-Lock).
+        """Deterministically paint the complete 10-column playlist schema.
 
-        Protection (Playlist only):
-          • Keep comma-separated user tokens that carry an explicit time offset
-            ``Name@u:<seconds>s`` (single user-painted instance + offset).
-          • Engine tokens (``@e:`` / prior generated_source) are stripped and
-            rewritten each pass — always rewritable.
-          • Engines may stack *additional* subjects on top of user tokens in the
-            same cell (multiple comma-separated lists / instances per cell).
-        Cells are NOT locked merely because the user once clicked the row.
+        User cells (``@u:`` instances) are immutable. Engine-owned material is
+        regenerated from the seed + source and is fully tagged, so Randomizer /
+        Phase-Lock can be removed without leaving stale cells or automation.
+        Every generated row receives a value for every playlist column; inactive
+        rows are explicit ``none``/zero values rather than undefined cells.
         """
+        seed = int(self.get_numeric_seed() or 1)
         if rng is None:
-            base = int(self.get_numeric_seed() or 1) % (2**31)
-            # Fixed channel offsets per source (deterministic, not time-based)
-            channel = 0 if "random" in source else (17 if "phase" in source else 31)
-            rng = np.random.default_rng(base ^ (channel * 0x9E3779B9 & 0x7fffffff))
+            channel = 0x51 if "random" in source else (0xA7 if "phase" in source else 0xD3)
+            rng = np.random.default_rng((seed ^ channel) & 0x7FFFFFFF)
         rows = int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else 32
-        # Resize bays to fit user + generated density
-        target_rows = max(rows, int(16 + 8 * MEUM))
-        if hasattr(self, 'spin_playlist_length') and int(self.spin_playlist_length.value()) < target_rows:
+        rows = max(1, min(1024, rows))
+        if hasattr(self, 'spin_playlist_length'):
             try:
                 self.spin_playlist_length.blockSignals(True)
-                self.spin_playlist_length.setValue(int(target_rows))
+                self.spin_playlist_length.setValue(rows)
+            finally:
                 self.spin_playlist_length.blockSignals(False)
-                rows = int(target_rows)
-            except Exception:
-                pass
         if not hasattr(self, 'master_playlist_data') or self.master_playlist_data is None:
             self.master_playlist_data = []
         while len(self.master_playlist_data) < rows:
             self.master_playlist_data.append({})
         if not hasattr(self, 'playlist_automation') or self.playlist_automation is None:
-            self.playlist_automation = [{} for _ in range(rows)]
+            self.playlist_automation = []
         while len(self.playlist_automation) < rows:
             self.playlist_automation.append({})
+        if not hasattr(self, '_engine_generated_playlist_rows'):
+            self._engine_generated_playlist_rows = set()
+
         names = list(getattr(self, 'instrument_names_48', []) or ["Operator"])
         table = getattr(self, 'active_paint_table', None)
         painted = 0
-        eng_tag = f"e:{source[:4]}:{int(rng.integers(0, 1_000_000))}"
-        density = 0.42 if "random" in source else 0.55
+        source_code = {"randomizer":"R", "phase-lock":"P", "midpoint":"M", "euclidean":"E", "seeded":"S"}.get(source, "G")
 
-        def _is_user_token(tok: str) -> bool:
-            return "@u:" in (tok or "")
+        def user_tokens(cell):
+            return [p.strip() for p in str(cell or '').split(',') if '@u:' in p]
 
-        def _strip_engine(cell: str) -> str:
-            parts = [x.strip() for x in (cell or "").split(",") if x.strip()]
-            return ", ".join(p for p in parts if _is_user_token(p))
-
-        def _append_engine(cell: str, member: str, tag: str) -> str:
-            base = _strip_engine(cell)
-            parts = [x.strip() for x in base.split(",") if x.strip()]
-            parts.append(f"{member}@{tag}")
-            if len(parts) > 24:
-                user_p = [p for p in parts if _is_user_token(p)]
-                eng_p = [p for p in parts if not _is_user_token(p)][-16:]
-                parts = user_p + eng_p
-            return ", ".join(parts)
-
-        def put_csv(r, c, member, tag):
-            nonlocal painted
+        def table_set(r, c, text):
             if table is None:
                 return
             tw = getattr(table, 'table_widget', table)
             try:
-                item = tw.item(r, c) if hasattr(tw, 'item') else None
+                if hasattr(table, 'set_cell_item'):
+                    table.set_cell_item(r, c, QTableWidgetItem(str(text)))
+                elif hasattr(tw, 'setItem'):
+                    tw.setItem(r, c, QTableWidgetItem(str(text)))
             except Exception:
-                item = None
-            existing = (item.text() if item is not None else "") or ""
-            key = (r, c)
-            if not hasattr(self, '_paint_pass_cells'):
-                self._paint_pass_cells = set()
-            if key not in self._paint_pass_cells:
-                existing = _strip_engine(existing)
-                self._paint_pass_cells.add(key)
-            val = _append_engine(existing, member, tag)
-            if hasattr(table, 'set_cell_item'):
-                table.set_cell_item(r, c, val)
-            else:
-                tw.setItem(r, c, QTableWidgetItem(val))
-            painted += 1
+                pass
 
-        self._paint_pass_cells = set()
         for r in range(rows):
             e = self.master_playlist_data[r]
             if not isinstance(e, dict):
                 e = {}
                 self.master_playlist_data[r] = e
-            # Always clear prior engine-owned dict fields so patterns can be removed
-            if e.get('generated_source') and not e.get('user_instances'):
-                # Engine rows are disposable. Remove their automation lane too;
-                # otherwise a skipped/turned-off row can retain an old generated lane.
-                if r < len(self.playlist_automation):
-                    lane = self.playlist_automation[r]
-                    if isinstance(lane, dict) and lane.get('generated_by_engine'):
-                        self.playlist_automation[r] = {}
-                user_inst = list(e.get('user_instances') or [])
-                e.clear()
-                if user_inst:
-                    e['user_instances'] = user_inst
-                    e['operators'] = list(user_inst)
-                    e['operator'] = user_inst[0]
-            if float(rng.random()) > density:
-                # skip paint this row; remove any prior engine-owned automation too.
-                if r < len(self.playlist_automation):
-                    lane = self.playlist_automation[r]
-                    if isinstance(lane, dict) and lane.get('generated_by_engine'):
-                        self.playlist_automation[r] = {}
-                if table is not None:
-                    # clear engine tokens from visible cells
-                    for c in range(10):
-                        try:
-                            tw = getattr(table, 'table_widget', table)
-                            item = tw.item(r, c) if hasattr(tw, 'item') else None
-                            if item is not None:
-                                kept = _strip_engine(item.text() or "")
-                                if hasattr(table, 'set_cell_item'):
-                                    table.set_cell_item(r, c, kept)
-                                else:
-                                    item.setText(kept)
-                        except Exception:
-                            pass
-                continue
-            n_inst = int(rng.integers(2, 5)) if "random" in source else int(rng.integers(1, 4))
-            idxs = list(rng.choice(len(names), size=min(n_inst, len(names)), replace=False))
-            picks = [names[i] for i in idxs]
-            t_off = float(r) * float(MEUM) + float(rng.uniform(-0.08, 0.08))
-            tag = f"{eng_tag}|{t_off:.3f}s"
-            user_inst = list(e.get('user_instances') or [])
-            eng_ops = list(picks)
-            e['operators'] = list(dict.fromkeys(user_inst + eng_ops))
-            e['operator'] = e['operators'][0] if e['operators'] else ""
-            e['position'] = f"e:{t_off:.3f}s"
-            e['time_marker'] = e['position']
-            e['generated_source'] = source
-            e['generated_by_engine'] = True
-            e['velocity_user_locked'] = False
-            e['velocity'] = float(np.clip(rng.uniform(0.35, 1.15), 0.05, 1.5))
-            self._engine_generated_playlist_rows.add(r)
-            cov = {op: float(min(1.0, 0.2 * (i + 1) + 0.15 * rng.random())) for i, op in enumerate(eng_ops)}
-            e['coverage_map'] = cov
-            e['coverage'] = "|".join(f"{k}:{v:.0%}" for k, v in cov.items())
-            # Stash every value we're about to paint into the row dict too, not
-            # just the widget cell. put_csv() is a no-op when the Playlist
-            # window hasn't been opened yet (active_paint_table is None), so
-            # master_playlist_data must remain the single source of truth the
-            # window can rebuild the full row from later — including the
-            # multi-instance CSV string itself, which previously existed only
-            # inside the (possibly nonexistent) table cell.
-            # Determine EVERY playlist cell parameter from the same generated row
-            # state. Previously only operator/velocity/automation/coverage/blend
-            # were painted, leaving time/script/direction/multi-seq cells undefined.
-            e['operators_csv'] = ", ".join(f"{op}@{tag}" for op in eng_ops)
-            e['effect_target'] = str(rng.choice(["eqr", "fractalizer", "pkp_decay", "filter", "drive"]))
-            e['auto_amount'] = f"{int(rng.integers(25, 90))}%"
-            e['script_tag'] = str((self.instrument_scripts.get(eng_ops[0], "") if eng_ops and hasattr(self, 'instrument_scripts') else "").splitlines()[0]).strip() if eng_ops else ""
-            if not e['script_tag']:
-                e['script_tag'] = f"engine:{source}"
-            e['direction_vector'] = f"{float(rng.uniform(-1,1)):+.2f}"
-            e['multi_seq'] = ", ".join(eng_ops) if len(eng_ops) > 1 else (eng_ops[0] if eng_ops else "")
-            e['coverage'] = e['coverage']
-            e['time_offset'] = float(t_off)
-            e['time_marker'] = e['position']
-            for op in eng_ops:
-                put_csv(r, 1, op, tag)
-            put_csv(r, 0, e['time_marker'], tag)
-            put_csv(r, 2, e['script_tag'], tag)
-            put_csv(r, 3, f"{e['velocity']*100:.1f}%", tag)
-            put_csv(r, 4, e['effect_target'], tag)
-            put_csv(r, 5, e['auto_amount'], tag)
-            put_csv(r, 6, e['direction_vector'], tag)
-            put_csv(r, 7, e['multi_seq'], tag)
-            put_csv(r, 8, e['coverage'], tag)
-            partner = eng_ops[1] if len(eng_ops) > 1 else ""
-            e['blend_partner'] = partner
-            if partner:
-                put_csv(r, 9, partner, tag)
-            else:
-                put_csv(r, 9, "", tag)
-            self.playlist_automation[r] = {
-                "generated_by_engine": True,
-                "operator": eng_ops[0] if eng_ops else "",
-                "operators": list(eng_ops),
-                "param": e['effect_target'],
-                "amount": float(int(e['auto_amount'].rstrip('%')) / 100.0),
-                "direction": 1.0 if float(e['direction_vector']) >= 0.0 else -1.0,
-                "coverage": float(next(iter(cov.values()), 0.25)),
-                "overlap": float(min(cov.values())) if len(cov) > 1 else 0.0,
-                "blend_percent": float(rng.uniform(0, 100)),
-                "partner": partner,
-                "mode": f"engine:{source}",
-                "position": e['position'],
+
+            # Preserve only explicitly user-owned instances from the previous row.
+            users = list(e.get('user_instances') or [])
+            old_ops = e.get('operators_csv', e.get('operator', ''))
+            if not users:
+                users = user_tokens(old_ops)
+
+            # Remove previous engine automation/identity before regeneration.
+            if e.get('generated_by_engine'):
+                for k in list(e.keys()):
+                    if k not in ('user_instances',):
+                        e.pop(k, None)
+            if isinstance(self.playlist_automation[r], dict) and self.playlist_automation[r].get('generated_by_engine'):
+                self.playlist_automation[r] = {}
+
+            # Seed-stable but musically varied density, operator count, and timing.
+            source_hash = sum((j + 1) * ord(ch) for j, ch in enumerate(str(source))) & 0x7FFFFFFF
+            row_key = (seed ^ ((r + 1) * 0x9E3779B1) ^ source_hash) & 0x7FFFFFFF
+            rr = np.random.default_rng(row_key)
+            active = bool(rr.random() < (0.62 if source == 'midpoint' else 0.70))
+            n_inst = int(rr.integers(2, min(6, len(names)) + 1)) if names else 1
+            idxs = list(rr.choice(len(names), size=min(n_inst, len(names)), replace=False)) if names else [0]
+            eng_ops = [names[i] for i in idxs]
+            tag = f"@e:{source[:4]}:{seed & 0xFFFFF:05x}:{r:03d}"
+            t_off = (r * (0.125 + 0.031 * MEUM_NORM) + float(rr.uniform(-0.045, 0.045)))
+            if not active:
+                t_off = r * (0.125 + 0.031 * MEUM_NORM)
+            velocity = float(np.clip(0.42 + 0.48 * (0.5 + 0.5 * np.sin((r + 1) * MEUM + (seed % 997) * 0.017)), 0.08, 0.98)) if active else 0.0
+            target = ("eqr", "fractalizer", "pkp_decay", "filter", "drive")[int(rr.integers(0, 5))] if active else "none"
+            amount = float(np.clip(0.22 + 0.62 * rr.random(), 0.0, 0.95)) if active else 0.0
+            direction = float(np.sin((r + 1) * MEUM_INV + (seed % 991) * 0.013)) if active else 0.0
+            coverage_map = {op: float(np.clip(0.30 + 0.55 * rr.random(), 0.0, 1.0)) for op in eng_ops}
+            coverage = "|".join(f"{k}:{v:.0%}" for k, v in coverage_map.items()) if active else "0%"
+            partner = eng_ops[1] if active and len(eng_ops) > 1 else ""
+            script = ""
+            if eng_ops and hasattr(self, 'instrument_scripts'):
+                script = str((self.instrument_scripts.get(eng_ops[0]) or '').splitlines()[0]).strip()
+            if not script:
+                script = f"Meum:{source}:seed={seed}:row={r}"
+
+            engine_csv = ", ".join(f"{op}{tag}" for op in eng_ops)
+            combined_csv = ", ".join(users + ([engine_csv] if engine_csv else []))
+            multi_seq = ", ".join(eng_ops)
+            position = f"e:{t_off:.4f}s"
+            fields = {
+                'time_marker': position,
+                'operator': (users[0] if users else (eng_ops[0] if eng_ops else '')),
+                'operators': list(dict.fromkeys(users + eng_ops)),
+                'operators_csv': combined_csv,
+                'script_tag': script,
+                'velocity': velocity,
+                'effect_target': target,
+                'auto_amount': f"{amount * 100:.1f}%",
+                'direction_vector': f"{direction:+.4f}",
+                'multi_seq': multi_seq,
+                'coverage_map': coverage_map,
+                'coverage': coverage,
+                'blend_partner': partner,
+                'time_offset': float(t_off),
+                'position': position,
+                'generated_source': source,
+                'generated_by_engine': True,
+                'velocity_user_locked': False,
+                'active': active,
             }
+            e.update(fields)
+            if users:
+                e['user_instances'] = users
+            self._engine_generated_playlist_rows.add(r)
+
+            self.playlist_automation[r] = {
+                'generated_by_engine': True,
+                'operator': eng_ops[0] if eng_ops else '',
+                'operators': list(eng_ops),
+                'param': target,
+                'amount': amount,
+                'direction': 1.0 if direction >= 0 else -1.0,
+                'coverage': float(np.mean(list(coverage_map.values()))) if coverage_map else 0.0,
+                'overlap': float(min(coverage_map.values())) if len(coverage_map) > 1 else 0.0,
+                'blend_percent': float(np.clip(50.0 + 35.0 * np.sin((r + 1) * MEUM_NORM + seed * 0.001), 0.0, 100.0)),
+                'partner': partner,
+                'mode': f"engine:{source}",
+                'position': position,
+                'seed': seed,
+                'row': r,
+            }
+
+            # Paint every playlist cell, even before the window has been opened.
+            table_set(r, 0, fields['time_marker'])
+            table_set(r, 1, fields['operators_csv'])
+            table_set(r, 2, fields['script_tag'])
+            table_set(r, 3, f"{velocity * 100:.1f}%")
+            table_set(r, 4, target)
+            table_set(r, 5, fields['auto_amount'])
+            table_set(r, 6, fields['direction_vector'])
+            table_set(r, 7, multi_seq)
+            table_set(r, 8, coverage)
+            table_set(r, 9, partner)
             painted += 1
+
         if table is not None:
             try:
                 getattr(table, 'table_widget', table).viewport().update()
@@ -2935,11 +2909,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 pass
         return painted
 
-
     def _run_composition_context_engine(self, source="randomizer", rng=None):
-        self._mark_generated_synth_context(source=source, rng=rng)
-        self._write_generated_domain_context(source=source)
-        self._write_generated_patch_context(source=source)
+        # Generated wave/effect topology exists only as an explicit engine output.
+        # Plain Play/Export never inserts hidden synth effects, domains, or patches.
+        explicit_engine = source in ("randomizer", "phase-lock", "midpoint", "euclidean", "seeded")
+        if explicit_engine:
+            self._mark_generated_synth_context(source=source, rng=rng)
+            self._write_generated_domain_context(source=source)
+            self._write_generated_patch_context(source=source)
         return self._paint_operator_pattern_to_playlist(source=source, rng=rng)
 
     def init_ui_components(self):
@@ -3256,11 +3233,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.slider_fractalizer.setRange(0, 100)
         self.slider_fractalizer.setValue(33)
         self.slider_pkp_decay = QSlider(Qt.Orientation.Horizontal)
-        self.slider_pkp_decay.setRange(1, 1000)
+        self.slider_pkp_decay.setRange(0, 1000)
         self.slider_pkp_decay.setValue(500)
 
         self.chk_pkp_automod = QCheckBox("PKP Envelope Follower")
-        self.chk_pkp_automod.setChecked(True)
+        self.chk_pkp_automod.setChecked(False)
         self.chk_pkp_automod.setStyleSheet("QCheckBox { color: #ffffff; }")
 
         self.top_layout.addWidget(self.mode_combo)
@@ -4050,7 +4027,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if not t:
             return 0
         tl = t.lower().replace(" ", "")
-        if tl in ("meum", "m") or tl.startswith("1.197580734"):
+        if tl in ("meum", "m"):
             return int(round(MEUM * 1_000_000_000_000_000)) % (2**31)
         try:
             val = float(t)
@@ -5447,8 +5424,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         for name in self.instrument_names_48:
             mem = self.instrument_sequencer_memory.get(name)
-            if not mem:
-                continue
+            if not isinstance(mem, dict):
+                mem = {"steps": [False] * count, "amplitudes": [1.0] * count, "pitches": [1.0] * count, "gates": [True] * count, "probabilities": [100] * count, "touched": set()}
+                self.instrument_sequencer_memory[name] = mem
             self._ensure_seq_mem_length(mem, count)
 
             # Normalize OFF steps to default amp 1.0 (frees "touched" false positives)
@@ -5714,7 +5692,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if not user_hits:
             # sparse seed-stable scatter
             for s in range(count):
-                if rng.random() < 0.22 + 0.1 * ((hash(name) + s) % 5) / 5.0:
+                stable = hashlib.sha256(f"{name}|{seed}|{s}".encode("utf-8", "replace")).digest()
+                u = int.from_bytes(stable[:8], "big") / float(2**64)
+                if u < 0.22 + 0.1 * ((int.from_bytes(stable[8:10], "big") % 5) / 5.0):
                     steps[s] = True
                     amps[s] = float(rng.uniform(0.35, 0.95))
                     pitches[s] = float(np.clip(0.85 + 0.3 * rng.random(), 0.5, 1.5))
@@ -5780,15 +5760,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 pitches[s] = 0.5 * (rp + lp)
             elif ro or lo:
                 # midpoint: partial acceptance, not full additive from one engine
-                keep_p = float(MEUM_NORM * PHI)  # ~0.27
-                if rng.random() < keep_p + 0.35:  # still musical density
+                # Deterministic Meum acceptance: the disagreement is resolved from
+                # the two source fields, never from a mutable/random sequence.
+                # This keeps the seed-only composition invariant across renders.
+                source_amp = ra if ro else la
+                source_pitch = rp if ro else lp
+                coherence = 0.5 + 0.5 * np.cos((s + 1) * MEUM_NORM * np.pi)
+                keep_p = float(np.clip(0.48 + 0.22 * coherence, 0.30, 0.72))
+                selector = 0.5 + 0.5 * np.sin((s + 1) * MEUM_INV + MEUM_NORM)
+                if selector < keep_p:
                     steps[s] = True
-                    amps[s] = (ra + la) * 0.5  # half of the single-engine amp
-                    pitches[s] = rp if ro else lp
-                    # micro time-smear: prefer neighboring slot when engines disagree hard
-                    if s + 1 < count and rng.random() < MEUM_NORM:
-                        # predictive offset — soft secondary tick at midpoint strength
-                        pass
+                    amps[s] = float(np.clip(source_amp * (0.72 + 0.18 * (0.5 + 0.5 * coherence)), 0.08, 0.95))
+                    pitches[s] = float(source_pitch)
             else:
                 steps[s] = False
         return steps, amps, pitches
@@ -5810,7 +5793,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             pass
         names = list(getattr(self, 'instrument_names_48', []) or [])
         for i, name in enumerate(names):
-            if not multi and active and name != active:
+            seed_only = (not any(any((m or {}).get("steps") or []) for m in (getattr(self, "instrument_sequencer_memory", {}) or {}).values()))
+            if not multi and active and name != active and not seed_only:
                 continue
             mem = self.instrument_sequencer_memory.get(name)
             if not mem:
@@ -6577,14 +6561,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 any((mem or {}).get('steps') or [])
                 for mem in (getattr(self, 'instrument_sequencer_memory', {}) or {}).values()
             )
-            if seed_present and not any_steps and not getattr(self, "_project_imported_user_state", False):
-                print('[Mixdown] seed present, empty pads → commission Meum hierarchy')
-                if hasattr(self, '_apply_meum_ideal_hierarchy'):
+            r_on, p_on = self._engines_both_live() if hasattr(self, "_engines_both_live") else (False, False)
+            if seed_present and not any_steps and r_on and p_on and not getattr(self, "_project_imported_user_state", False):
+                # Seed-only is one deterministic composition pass: simplify/idealize
+                # first, then a single Randomizer+Phase-Lock midpoint.  Do not stack
+                # independent generators, which was the source of overly dense/clippy
+                # seed-only renders and non-time-invariant results.
+                print('[Mixdown] seed-only empty program → deterministic Meum midpoint')
+                if hasattr(self, 'apply_composition_midpoint'):
+                    self.apply_composition_midpoint(live=False)
+                elif hasattr(self, '_apply_meum_ideal_hierarchy'):
                     self._apply_meum_ideal_hierarchy()
-                if hasattr(self, 'apply_unified_randomizer'):
-                    self.apply_unified_randomizer(live=False)
-                if hasattr(self, 'apply_unified_phase_lock'):
-                    self.apply_unified_phase_lock(live=False)
         except Exception as _ac:
             print(f'[Mixdown] auto-commission: {_ac}')
 
@@ -6598,8 +6585,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         master = np.zeros(n_samples, dtype=np.float32)
 
         base_eqr = self.slider_eqr.value() / 100.0 if hasattr(self, 'slider_eqr') else 0.5
-        pkp_decay = self.slider_pkp_decay.value() / 1000.0 if hasattr(self, 'slider_pkp_decay') else 0.25
-        fractalizer_val = self.slider_fractalizer.value() / 100.0 if hasattr(self, 'slider_fractalizer') else 0.85
+        pkp_decay = self.slider_pkp_decay.value() / 1000.0 if hasattr(self, 'slider_pkp_decay') else 0.50
+        fractalizer_val = self.slider_fractalizer.value() / 100.0 if hasattr(self, 'slider_fractalizer') else 0.33
         pkp_auto = self.chk_pkp_automod.isChecked() if hasattr(self, 'chk_pkp_automod') else True
         seed_val = self.get_numeric_seed()
         np.random.seed(seed_val)
@@ -6620,6 +6607,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         _prog(0, "Mixdown")
         self._render_stage = "DSP render"
+        phase_offsets = {}
         for row_idx in range(rows):
             start_time = row_idx * row_duration
             end_time = start_time + row_duration
@@ -6737,20 +6725,39 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     s_local = local_t[s_mask] - s_start
                     amp = float(amps[s_idx]) if s_idx < len(amps) else 1.0
                     pr = float(pitches[s_idx]) if s_idx < len(pitches) else 1.0
-                    # Classic exp decay envelope (preferred builds)
-                    step_env[s_mask] += amp * np.exp(-s_local / max(step_duration * 0.5, 0.01))
+                    # Click-safe deterministic envelope: short raised-cosine attack
+                    # plus exponential body.  The attack is seed-independent so the
+                    # geometric phase field remains the only compositional variable.
+                    attack = min(0.006, step_duration * 0.12)
+                    release = min(0.012, step_duration * 0.18)
+                    a = np.clip(s_local / max(attack, 1e-6), 0.0, 1.0)
+                    attack_env = 0.5 - 0.5 * np.cos(np.pi * a)
+                    body = np.exp(-s_local / max(step_duration * 0.82, 0.01))
+                    rel_start = max(step_duration - release, attack)
+                    rel = np.clip((s_local - rel_start) / max(release, 1e-6), 0.0, 1.0)
+                    release_env = 0.5 + 0.5 * np.cos(np.pi * rel)
+                    env = attack_env * body * release_env
+                    step_env[s_mask] += amp * env
                     pitch_track[s_mask] = pr
 
                 if float(np.max(step_env)) < 1e-6:
                     continue
 
                 freq = np.clip(base_freq * pitch_track, 40.0, 4800.0)
-                osc = np.sin(2.0 * np.pi * freq * local_t)
+                # Integrate instantaneous frequency instead of resetting phase at
+                # every step.  This makes the seed geometry time-invariant and removes
+                # the hard phase discontinuities that produced the audible clipping.
+                phase = 2.0 * np.pi * np.cumsum(freq, dtype=np.float64) / float(sample_rate)
+                phase -= phase[0] if phase.size else 0.0
+                phase += float(phase_offsets.get(op_idx, 0.0))
+                osc = np.sin(phase)
+                if phase.size:
+                    phase_offsets[op_idx] = float(np.mod(phase[-1] + 2.0 * np.pi * freq[-1] / float(sample_rate), 2.0 * np.pi))
                 if fm_enabled:
                     mod_freq = freq * MEUM_CONSTANT
                     fm_mod = np.sin(2.0 * np.pi * mod_freq * local_t)
                     fm_index = np.clip(dynamic_eqr * MEUM_CONSTANT * max(float(fractalizer_val), 0.15), 0.05, 3.5)
-                    osc = np.sin(2.0 * np.pi * freq * local_t + fm_mod * fm_index)
+                    osc = np.sin(phase + fm_mod * fm_index)
                 if am_enabled:
                     am_depth = float(np.clip(0.15 + 0.25 * float(base_eqr) * MEUM_NORM, 0.08, 0.45))
                     am_rate = np.maximum(freq * MEUM_NORM * 0.5, 0.5)
@@ -6778,7 +6785,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             sl = local_t[mm] - ss_start
                             env = np.exp(-sl / max(step_duration * 0.35, 0.01))
                             global_pkp[mm] += env * np.sin(2.0 * np.pi * gbase * sl)
-                row_mix += global_pkp * 0.35
+                # PKP is an explicit macro, not a hidden always-on transient layer.
+                # Default 50% therefore means a predictable half-strength contribution.
+                row_mix += global_pkp * (0.35 * float(np.clip(pkp_decay, 0.0, 1.0)))
             except Exception:
                 pass
 
@@ -6789,13 +6798,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         _prog(max(getattr(self, "_play_progress", 0), 86), "Mixdown")
 
-        # Neutral soft ceiling — no hidden AM/FM processing
+        # Transparent safety normalization. Avoid repeated tanh saturation: the old
+        # nonlinear ceiling was the main source of the audible clipped/flattened
+        # waveform on dense seed-only renders.
         try:
             peak = float(np.max(np.abs(master))) + 1e-9
-            if peak > 0.98:
-                master = (master * (0.95 / peak)).astype(np.float32)
+            if peak > 0.88:
+                master = (master * (0.88 / peak)).astype(np.float32)
+            master = np.clip(master, -0.98, 0.98).astype(np.float32)
         except Exception as _w:
-            print(f"[Mix] peak limit: {_w}")
+            print(f"[Mix] transparent peak limit: {_w}")
         # dansparta_warmth applied
         self._render_stage = "Global convolution"
         # Global Convolve: deterministic geometric cross-convolution of the rendered carrier.
@@ -6834,20 +6846,26 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Domain partition equations: longitudinal multivariate modulation (additive blend)
         if hasattr(self, 'domain_eq_engine') and self.domain_eq_engine.domains:
             try:
-                self.domain_eq_engine.set_seed(self.get_numeric_seed())
-                # Normalize time axis 0..1 across the full buffer for partition logic
-                t_norm = np.linspace(0.0, 1.0, len(master))
-                domain_mod = self.domain_eq_engine.evaluate_series(t_norm, x=0.0, y=0.0, z=0.0)
-                # Soft convolution: carrier * (1 + 0.45 * domain) — accentuates without erasing
-                master = master * (1.0 + 0.45 * domain_mod.astype(np.float32))
+                engines_active = bool(self._engines_both_live()[0] or self._engines_both_live()[1]) if hasattr(self, '_engines_both_live') else False
+                domains = [d for d in self.domain_eq_engine.domains
+                           if d.get('user_defined', True) or engines_active]
+                if domains:
+                    old_domains = self.domain_eq_engine.domains
+                    self.domain_eq_engine.domains = domains
+                    self.domain_eq_engine.set_seed(self.get_numeric_seed())
+                    t_norm = np.linspace(0.0, 1.0, len(master))
+                    domain_mod = self.domain_eq_engine.evaluate_series(t_norm, x=0.0, y=0.0, z=0.0)
+                    master = master * (1.0 + 0.30 * domain_mod.astype(np.float32))
+                    self.domain_eq_engine.domains = old_domains
             except Exception as e:
                 print(f"[DomainEQ] render modulation skipped: {e}")
 
         _prog(98, "Mixdown")
         self._render_stage = "Finalizing"
-        peak = np.max(np.abs(master))
-        if peak > 0:
-            master = (master / peak) * 0.98
+        peak = float(np.max(np.abs(master))) if master.size else 0.0
+        if peak > 0.88:
+            master = (master * (0.88 / max(peak, 1e-9))).astype(np.float32)
+        master = np.clip(master, -0.98, 0.98).astype(np.float32)
         _prog(100, "Mixdown")
         self._render_stage = "Complete"
         return master.astype(np.float32), sample_rate
@@ -6910,7 +6928,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         e['velocity'] = phi
                     if not e.get('operators') and names:
                         # sparse ideal operators by Meum step on the ring
-                        k = int((r * MEUM + seed * 1e-6) * 7) % n
+                        seed_phase = (seed % 1000003) / 1000003.0
+                        k = int(((r + 1) * MEUM + seed_phase * 17.0) * 7) % n
                         picks = [names[k]]
                         k2 = (k + int(round(MEUM * 5))) % n
                         if k2 != k:
@@ -6940,9 +6959,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     if s in touched:
                         continue
                     # Ψ = sin(n π s/L) threshold
-                    psi = np.sin(n_h * np.pi * (s + 0.5) / max(count, 1))
-                    psi *= np.sin(MEUM * np.pi * ((s + i) % count) / max(count, 1))
-                    on = bool(psi > (1.0 - MEUM_NORM))
+                    seed_phase = 2.0 * np.pi * ((seed % 1000003) / 1000003.0)
+                    n_h_seed = 1 + ((i + seed) % 7)
+                    m_h_seed = 1 + ((i * 3 + seed // 11) % 5)
+                    psi = np.sin(n_h_seed * np.pi * (s + 0.5) / max(count, 1) + seed_phase)
+                    psi *= np.sin(m_h_seed * np.pi * ((s + i + (seed % count if count else 0)) % count) / max(count, 1) + seed_phase * MEUM_NORM)
+                    threshold = 0.48 + 0.18 * np.sin(seed_phase + i * MEUM_INV)
+                    on = bool(abs(psi) > threshold)
                     # only write empty (False) slots — additive
                     if not mem['steps'][s] and on:
                         mem['steps'][s] = True
@@ -6951,12 +6974,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception as exc:
             print(f"[Meum hierarchy] sequencer: {exc}")
 
-        # L4 — Modular patches along Meum ring (gap fill only)
-        try:
-            if hasattr(self, 'generate_ideal_patch_bay_routing'):
-                self.generate_ideal_patch_bay_routing()
-        except Exception as exc:
-            print(f"[Meum hierarchy] patches: {exc}")
+        # L4 — Patch routing is generated only by an explicit Randomizer / Phase-Lock
+        # context pass.  The hierarchy itself never silently inserts wave-effect modules.
 
         # L5 — Scripts: Meum potential × standing wave template when empty
         try:
@@ -6967,15 +6986,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # treat default-ish / empty as fillable
                 if cur and "Meum hierarchy" not in cur and "operator rules" not in cur and len(cur) > 80:
                     continue
-                n_h = 1 + (i % 5)
-                m_h = 1 + ((i * 3) % 4)
+                seed_phase = 2.0 * np.pi * ((seed % 1000003) / 1000003.0)
+                n_h = 1 + ((i + seed) % 7)
+                m_h = 1 + ((i * 3 + seed // 11) % 5)
+                harmonic = 1 + ((seed + i * 13) % 9)
                 self.instrument_scripts[name] = (
-                    f"# Meum hierarchy L5 — potential × standing wave\n"
+                    f"# Meum hierarchy L5 — seed-locked potential × standing wave\n"
                     f"def evaluate_wave(x, y, z, t=0.0, seed=0.0):\n"
                     f"    r = (x*x + y*y + z*z) ** 0.5 + 1e-9\n"
-                    f"    phi = 1.0 / r  # Meum potential (no ε₀)\n"
-                    f"    psi = np.sin({n_h}*np.pi*np.clip(x,-1,1)) * np.sin({m_h}*np.pi*np.clip(y,-1,1))\n"
-                    f"    return float(np.clip(phi * psi * np.sin(t * {MEUM:.8f} + {i}), -1, 1))\n"
+                    f"    phi = 1.0 / r\n"
+                    f"    phase = {seed_phase:.12f} + seed * {MEUM_NORM:.12f}\n"
+                    f"    psi = np.sin({n_h}*np.pi*np.clip(x,-1,1) + phase) * np.sin({m_h}*np.pi*np.clip(y,-1,1) + phase*{MEUM_NORM:.8f})\n"
+                    f"    return float(np.clip(phi * psi * np.sin(t * {MEUM:.8f} * {harmonic} + phase), -1, 1))\n"
                 )
         except Exception as exc:
             print(f"[Meum hierarchy] scripts: {exc}")
@@ -7002,7 +7024,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _meum_wave_from_playlist(self, n_samples=512, sample_rate=44100):
         """Assemble a visualizer wave from the *final* commission path.
 
-        Same FM+AM / Meum spatial structure as ``_render_mixdown_buffer``, but
+        Same explicit-module / Meum spatial structure as ``_render_mixdown_buffer``, but
         coarse (few samples) so the 2.5D graph tracks the finished audio form
         rather than pre-mix engine fragments. Uses playlist operators + sequencer
         steps when present; otherwise a deterministic Meum standing field.
@@ -7062,16 +7084,30 @@ class MathematiciansGrooveboxApp(QMainWindow):
             pr = float(pitches[0]) if pitches else 1.0
             amp = float(amps[0]) if amps else 1.0
             freq = float(np.clip(gbase * (MEUM ** (op_idx % 12)) * pr, 40.0, 4800.0))
-            dynamic_eqr = base_eqr * (1.0 + 0.3 * np.sin(2.0 * np.pi * 0.2 * t + op_idx))
-            mod_freq = freq * MEUM_CONSTANT
-            fm_mod = np.sin(2.0 * np.pi * mod_freq * t)
-            fm_index = np.clip(dynamic_eqr * MEUM_CONSTANT * max(frac, 0.15), 0.05, 4.0)
-            carrier = np.sin(2.0 * np.pi * freq * t + fm_mod * fm_index)
-            am_n = 1 + (op_idx % 5)
-            am_rate = freq * MEUM_NORM * (am_n / max(MEUM_SQ, 1e-9))
-            am_depth = np.clip(0.35 + 0.45 * dynamic_eqr * MEUM_NORM, 0.15, 0.85)
-            am_env = 1.0 - am_depth + am_depth * (0.5 + 0.5 * np.sin(2.0 * np.pi * am_rate * t + op_idx * MEUM))
-            # Gate proxy: Meum potential-shaped pulse train from density
+            # Preview follows the same explicit-module rule as audio render: no
+            # automatic AM/FM or drifting EQR modulation is inserted into a plain
+            # seed composition.  The seed/Meum geometry controls phase and gating.
+            module_names = [str(op_name)]
+            for _c in (getattr(self, "patch_connections", []) or []):
+                if isinstance(_c, dict):
+                    if _c.get("source") == op_name:
+                        module_names.append(str(_c.get("target", "")))
+                    if _c.get("target") == op_name:
+                        module_names.append(str(_c.get("source", "")))
+            module_text = " ".join(module_names).lower()
+            fm_enabled = ("fm" in module_text or "frequency mod" in module_text)
+            am_enabled = ("am" in module_text or "amplitude mod" in module_text)
+            phase = 2.0 * np.pi * freq * t
+            carrier = np.sin(phase)
+            if fm_enabled:
+                fm_mod = np.sin(2.0 * np.pi * (freq * MEUM_CONSTANT) * t)
+                fm_index = np.clip(base_eqr * MEUM_CONSTANT * max(frac, 0.15), 0.05, 3.5)
+                carrier = np.sin(phase + fm_mod * fm_index)
+            am_env = 1.0
+            if am_enabled:
+                am_depth = float(np.clip(0.15 + 0.25 * base_eqr * MEUM_NORM, 0.08, 0.45))
+                am_rate = max(freq * MEUM_NORM * 0.5, 0.5)
+                am_env = 1.0 - am_depth + am_depth * (0.5 + 0.5 * np.sin(2.0 * np.pi * am_rate * t + op_idx * MEUM))
             phase_g = (t * (2.0 + density * 6.0 * MEUM) + seed * 1e-9 * op_idx) % 1.0
             gate = (phase_g < density).astype(np.float64) * (0.5 + 0.5 * amp)
             master += (carrier * am_env * gate) * (0.08 + 0.04 * (i % 3))
@@ -7080,7 +7116,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         return master
 
     def _refresh_visualizers_meum_playlist(self):
-        """Idle/pre-play: same Meum FM+AM structure as final mix, from playlist."""
+        """Idle/pre-play: same explicit-module Meum structure as final mix, from playlist."""
         try:
             wave = self._meum_wave_from_playlist(n_samples=1024)
             self._push_visualizers_from_wave(wave)
@@ -7841,15 +7877,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     track_table.set_cell_item(row_idx, 1, item_inst)
                     track_table.set_cell_item(row_idx, 2, QTableWidgetItem("" if empty else str(data_entry.get("script_tag", ""))))
                     track_table.set_cell_item(row_idx, 3, QTableWidgetItem("" if empty else f"{float(data_entry.get('velocity', 1.0))*100:.1f}%"))
-                    # 'effect_target'/'auto_amount' are the engine-paint fields; 'modulation'/
-                    # 'multi_seq' are the legacy flat-seed fields. Prefer whichever is present.
-                    track_table.set_cell_item(row_idx, 4, QTableWidgetItem("" if empty else str(data_entry.get("effect_target") or data_entry.get("modulation", ""))))
-                    track_table.set_cell_item(row_idx, 5, QTableWidgetItem("" if empty else str(data_entry.get("auto_amount") or data_entry.get("multi_seq", ""))))
-                    # Columns 6-9 were never populated here before, so Direction, Coverage,
-                    # and Blend Partner data computed at boot silently vanished the first
-                    # time the Playlist window was opened.
-                    direction_val = auto_entry.get("direction", 1.0)
-                    track_table.set_cell_item(row_idx, 6, QTableWidgetItem("" if empty else ("+1" if float(direction_val or 1.0) >= 0 else "-1")))
+                    # Paint all ten cell parameters from the authoritative row/automation state.
+                    track_table.set_cell_item(row_idx, 4, QTableWidgetItem("" if empty else str(data_entry.get("effect_target") or data_entry.get("auto_target") or data_entry.get("modulation", ""))))
+                    track_table.set_cell_item(row_idx, 5, QTableWidgetItem("" if empty else str(data_entry.get("auto_amount", ""))))
+                    direction_text = data_entry.get("direction_vector", "")
+                    if not direction_text and not empty:
+                        direction_text = "+1" if float(auto_entry.get("direction", 1.0) or 1.0) >= 0 else "-1"
+                    track_table.set_cell_item(row_idx, 6, QTableWidgetItem("" if empty else str(direction_text)))
                     track_table.set_cell_item(row_idx, 7, QTableWidgetItem("" if empty else str(data_entry.get("multi_seq", ""))))
                     track_table.set_cell_item(row_idx, 8, QTableWidgetItem("" if empty else str(data_entry.get("coverage", ""))))
                     track_table.set_cell_item(row_idx, 9, QTableWidgetItem("" if empty else str(data_entry.get("blend_partner", ""))))
