@@ -2789,16 +2789,34 @@ class MathematiciansGrooveboxApp(QMainWindow):
         return added
 
     def _paint_operator_pattern_to_playlist(self, source="randomizer", rng=None):
-        """Fill the complete 10-column playlist schema without touching user cells.
+        """Predictive multi-instance playlist paint (Randomizer + Phase-Lock).
 
-        Columns: time, operator, script, velocity, auto-target, auto-amount,
-        direction, multi-seq, coverage, blend-partner. Randomizer, Phase-Lock and
-        midpoint all use this same writer, so playlist arrangement is complete and
-        dual mode is a single coordinated pass.
+        Protection (Playlist only):
+          • Keep comma-separated user tokens that carry an explicit time offset
+            ``Name@u:<seconds>s`` (single user-painted instance + offset).
+          • Engine tokens (``@e:`` / prior generated_source) are stripped and
+            rewritten each pass — always rewritable.
+          • Engines may stack *additional* subjects on top of user tokens in the
+            same cell (multiple comma-separated lists / instances per cell).
+        Cells are NOT locked merely because the user once clicked the row.
         """
         if rng is None:
-            rng = np.random.default_rng(self.get_numeric_seed() or 1)
+            rng = np.random.default_rng(
+                (self.get_numeric_seed() or 1)
+                + getattr(self, '_composition_generation_counter', 0) * 104729
+                + (0 if "random" in source else 130363)
+            )
         rows = int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else 32
+        # Resize bays to fit user + generated density
+        target_rows = max(rows, int(16 + 8 * MEUM))
+        if hasattr(self, 'spin_playlist_length') and int(self.spin_playlist_length.value()) < target_rows:
+            try:
+                self.spin_playlist_length.blockSignals(True)
+                self.spin_playlist_length.setValue(int(target_rows))
+                self.spin_playlist_length.blockSignals(False)
+                rows = int(target_rows)
+            except Exception:
+                pass
         if not hasattr(self, 'master_playlist_data') or self.master_playlist_data is None:
             self.master_playlist_data = []
         while len(self.master_playlist_data) < rows:
@@ -2809,90 +2827,127 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.playlist_automation.append({})
         names = list(getattr(self, 'instrument_names_48', []) or ["Operator"])
         table = getattr(self, 'active_paint_table', None)
-        touched = getattr(self, 'playlist_user_touched', set())
-        phase_mode = source in ("phase-lock", "phaselock", "midpoint")
-
-        def locked(r, c):
-            if (r, c) in touched:
-                return True
-            e = self.master_playlist_data[r]
-            # Existing non-generated project data is treated as user-owned.
-            return bool(e) and not e.get('generated_source')
-
-        def put(r, c, value):
-            if locked(r, c):
-                return False
-            e = self.master_playlist_data[r]
-            if c == 0: e['time_marker'] = value
-            elif c == 1: e['operator'] = value
-            elif c == 2: e['script_tag'] = value
-            elif c == 3: e['velocity'] = float(value)
-            elif c == 4: e['modulation'] = value
-            elif c == 5: e['auto_amount'] = value
-            elif c == 6: e['direction_vector'] = value
-            elif c == 7: e['multi_seq'] = value
-            elif c == 8: e['coverage'] = value
-            elif c == 9: e['blend_partner'] = value
-            if table is not None and hasattr(table, 'set_cell_item'):
-                display = f"{value*100:.1f}%" if c == 3 else str(value)
-                table.set_cell_item(r, c, QTableWidgetItem(display))
-            return True
-
         painted = 0
-        for r in range(rows):
-            # Phase-Lock arranges every row deterministically; Randomizer uses a
-            # seeded occupancy field but also guarantees broad column coverage.
-            if phase_mode:
-                f = 0.5 + 0.5 * np.sin((r + 1) * MEUM_CONSTANT + self.get_numeric_seed() * 1.7e-6)
-                density = 0.55 + 0.40 * f
-                idx = int((r * 7 + self.get_numeric_seed()) % len(names))
-                op = names[idx]
-                partner = names[(idx + max(1, int(1 + f * 5))) % len(names)]
-                offset = (f - 0.5) * MEUM_CONSTANT * 2.0
-                vel = float(np.clip(0.35 + 0.9 * f, 0.05, 1.5))
-                auto_amt = int(round(20 + 75 * f))
-                direction = "←" if f < 0.33 else ("→" if f > 0.66 else "↔")
-                multi = f"Multi[{1 + int(f * 3)}]"
-                cov = int(round(25 + 75 * density))
-                values = [f"T{offset:+.3f}s", op, f"Phase:{r%8+1}", vel,
-                          ["eqr","fractalizer","pkp_decay","filter","drive"][r % 5],
-                          f"{auto_amt}%", direction, multi, f"{cov}%", partner]
+        eng_tag = f"e:{source[:4]}:{int(rng.integers(0, 1_000_000))}"
+        density = 0.42 if "random" in source else 0.55
+
+        def _is_user_token(tok: str) -> bool:
+            return "@u:" in (tok or "")
+
+        def _strip_engine(cell: str) -> str:
+            parts = [x.strip() for x in (cell or "").split(",") if x.strip()]
+            return ", ".join(p for p in parts if _is_user_token(p))
+
+        def _append_engine(cell: str, member: str, tag: str) -> str:
+            base = _strip_engine(cell)
+            parts = [x.strip() for x in base.split(",") if x.strip()]
+            parts.append(f"{member}@{tag}")
+            if len(parts) > 24:
+                user_p = [p for p in parts if _is_user_token(p)]
+                eng_p = [p for p in parts if not _is_user_token(p)][-16:]
+                parts = user_p + eng_p
+            return ", ".join(parts)
+
+        def put_csv(r, c, member, tag):
+            nonlocal painted
+            if table is None:
+                return
+            tw = getattr(table, 'table_widget', table)
+            try:
+                item = tw.item(r, c) if hasattr(tw, 'item') else None
+            except Exception:
+                item = None
+            existing = (item.text() if item is not None else "") or ""
+            key = (r, c)
+            if not hasattr(self, '_paint_pass_cells'):
+                self._paint_pass_cells = set()
+            if key not in self._paint_pass_cells:
+                existing = _strip_engine(existing)
+                self._paint_pass_cells.add(key)
+            val = _append_engine(existing, member, tag)
+            if hasattr(table, 'set_cell_item'):
+                table.set_cell_item(r, c, val)
             else:
-                # Seeded randomizer: deterministic for this composition edge.
-                op_idx = int(rng.integers(0, len(names)))
-                op = names[op_idx]
-                partner = names[int(rng.integers(0, len(names)))]
-                if partner == op and len(names) > 1:
-                    partner = names[(op_idx + 1) % len(names)]
-                offset = float(rng.uniform(-MEUM_CONSTANT, MEUM_CONSTANT))
-                vel = float(np.clip(rng.uniform(0.25, 1.25), 0.05, 1.5))
-                values = [f"T{offset:+.3f}s", op, f"Rand:{int(rng.integers(1,9))}", vel,
-                          str(rng.choice(["eqr","fractalizer","pkp_decay","filter","drive"])),
-                          f"{int(rng.integers(20,96))}%",
-                          str(rng.choice(["←","→","↔"])),
-                          f"Multi[{int(rng.integers(1,4))}]",
-                          f"{int(rng.integers(25,101))}%", partner]
+                tw.setItem(r, c, QTableWidgetItem(val))
+            painted += 1
+
+        self._paint_pass_cells = set()
+        for r in range(rows):
             e = self.master_playlist_data[r]
             if not isinstance(e, dict):
-                e = {}; self.master_playlist_data[r] = e
-            e['operators'] = list(dict.fromkeys([e.get('operator', op), op])) if e.get('operator') else [op]
-            e['position'] = values[0]
+                e = {}
+                self.master_playlist_data[r] = e
+            # Always clear prior engine-owned dict fields so patterns can be removed
+            if e.get('generated_source') and not e.get('user_instances'):
+                # keep only user_instances list if any
+                user_inst = list(e.get('user_instances') or [])
+                e.clear()
+                if user_inst:
+                    e['user_instances'] = user_inst
+                    e['operators'] = list(user_inst)
+                    e['operator'] = user_inst[0]
+            if float(rng.random()) > density:
+                # skip paint this row (engine pattern removed above)
+                if table is not None:
+                    # clear engine tokens from visible cells
+                    for c in (1, 3, 4, 5, 8, 9):
+                        try:
+                            tw = getattr(table, 'table_widget', table)
+                            item = tw.item(r, c) if hasattr(tw, 'item') else None
+                            if item is not None:
+                                kept = _strip_engine(item.text() or "")
+                                if hasattr(table, 'set_cell_item'):
+                                    table.set_cell_item(r, c, kept)
+                                else:
+                                    item.setText(kept)
+                        except Exception:
+                            pass
+                continue
+            n_inst = int(rng.integers(2, 5)) if "random" in source else int(rng.integers(1, 4))
+            idxs = list(rng.choice(len(names), size=min(n_inst, len(names)), replace=False))
+            picks = [names[i] for i in idxs]
+            t_off = float(r) * float(MEUM) + float(rng.uniform(-0.08, 0.08))
+            tag = f"{eng_tag}|{t_off:.3f}s"
+            user_inst = list(e.get('user_instances') or [])
+            eng_ops = list(picks)
+            e['operators'] = list(dict.fromkeys(user_inst + eng_ops))
+            e['operator'] = e['operators'][0] if e['operators'] else ""
+            e['position'] = f"e:{t_off:.3f}s"
+            e['time_marker'] = e['position']
             e['generated_source'] = source
-            e['coverage_map'] = {op: float(str(values[8]).rstrip('%')) / 100.0}
-            for c, value in enumerate(values):
-                if put(r, c, value):
-                    painted += 1
+            e['velocity'] = float(np.clip(rng.uniform(0.35, 1.15), 0.05, 1.5))
+            cov = {op: float(min(1.0, 0.2 * (i + 1) + 0.15 * rng.random())) for i, op in enumerate(eng_ops)}
+            e['coverage_map'] = cov
+            e['coverage'] = "|".join(f"{k}:{v:.0%}" for k, v in cov.items())
+            for op in eng_ops:
+                put_csv(r, 1, op, tag)
+            put_csv(r, 3, f"{e['velocity']*100:.1f}%", tag)
+            put_csv(r, 4, str(rng.choice(["eqr", "fractalizer", "pkp_decay", "filter", "drive"])), tag)
+            put_csv(r, 5, f"{int(rng.integers(25, 90))}%", tag)
+            put_csv(r, 8, e['coverage'], tag)
+            partner = eng_ops[1] if len(eng_ops) > 1 else ""
+            if partner:
+                put_csv(r, 9, partner, tag)
+                e['blend_partner'] = partner
             self.playlist_automation[r] = {
-                "operator": op, "operators": list(e['operators']),
-                "param": values[4], "amount": float(str(values[5]).rstrip('%')) / 100.0,
-                "direction": -1.0 if values[6] == "←" else (1.0 if values[6] == "→" else 0.0),
-                "coverage": float(str(values[8]).rstrip('%')) / 100.0,
-                "overlap": 0.5 if values[6] == "↔" else 0.0,
-                "blend_percent": float(str(values[8]).rstrip('%')),
-                "partner": partner, "mode": f"engine:{source}", "position": values[0],
+                "operator": eng_ops[0] if eng_ops else "",
+                "operators": list(eng_ops),
+                "param": "eqr",
+                "amount": float(0.35 + 0.5 * rng.random()),
+                "direction": 1.0 if rng.random() > 0.5 else -1.0,
+                "coverage": float(next(iter(cov.values()), 0.25)),
+                "overlap": float(min(cov.values())) if len(cov) > 1 else 0.0,
+                "blend_percent": float(rng.uniform(0, 100)),
+                "partner": partner,
+                "mode": f"engine:{source}",
+                "position": e['position'],
             }
-        if table is not None and hasattr(table, 'table_widget'):
-            table.table_widget.viewport().update()
+            painted += 1
+        if table is not None:
+            try:
+                getattr(table, 'table_widget', table).viewport().update()
+            except Exception:
+                pass
         return painted
 
 
@@ -4158,11 +4213,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         mem = self.instrument_sequencer_memory[curr_i]
         self._ensure_seq_mem_length(mem, max(s_idx + 1, len(mem.get("steps", []))))
 
-        # A single click both selects and toggles exactly this cell.
-        # No two-click state machine: the grid is immediately editable again.
-        self.selected_step_idx = s_idx
-        mem["steps"][s_idx] = not bool(mem["steps"][s_idx])
-        self._mark_step_touched(mem, s_idx)
+        # Two-click state machine:
+        #   1st click on a pad → select it (amp/pitch inspector)
+        #   2nd click on the *already selected* pad → toggle active/inactive
+        # Clicking a different pad only moves selection (does not toggle that pad).
+        if self.selected_step_idx == s_idx:
+            mem["steps"][s_idx] = not bool(mem["steps"][s_idx])
+            self._mark_step_touched(mem, s_idx)
+        else:
+            self.selected_step_idx = s_idx
 
         if hasattr(self, 'lbl_selected_step'):
             self.lbl_selected_step.setText(f"Step: {s_idx + 1}")
@@ -4339,6 +4398,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             try:
                 self._apply_live_engine_once("seeded", force=True)
                 self._cache_live_composition("randomizer")
+                self._invalidate_live_composition_cache("phase_base", "phase_locked")
                 if self._engines_both_live()[1]:
                     self._apply_live_midpoint_once(force=True)
                     self._cache_live_composition("both")
@@ -4364,6 +4424,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     self._live_euclid_timer.start(2000)
 
     def _on_unified_phase_lock_toggled(self, checked):
+        """Phase-Lock is a strict two-state toggle over the current base pattern.
+
+        Base can be any of:
+          • raw user data
+          • randomizer output (with or without user data underneath)
+          • free user data without randomizer
+
+        ON  → snapshot base as ``phase_base``, build phase-locked variant, show it
+        OFF → restore ``phase_base`` exactly (no re-roll)
+
+        Re-arming ON after the base changed (e.g. new randomizer pass) resnapshots
+        and builds a fresh locked variant of that new base.
+        """
         if getattr(self, 'chk_user_program_only', None) and self.chk_user_program_only.isChecked():
             for b in (getattr(self, 'btn_local_phase_lock', None), getattr(self, 'btn_idealize_rhythm', None)):
                 if b is not None:
@@ -4373,47 +4446,47 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if b is not None and b.isChecked() != checked:
                 b.blockSignals(True); b.setChecked(checked); b.blockSignals(False)
 
+        # stop autonomous live timers — phase-lock is finite two-state, not evolving
+        if hasattr(self, '_live_euclid_timer'):
+            self._live_euclid_timer.stop()
+        if hasattr(self, '_live_seeded_timer'):
+            self._live_seeded_timer.stop()
+
+        if not hasattr(self, '_live_composition_cache') or self._live_composition_cache is None:
+            self._live_composition_cache = {}
+
         if checked:
             try:
+                # 1) Snapshot the CURRENT composition as the unlocked base
+                #    (user data / raw random / random+user — whatever is showing)
+                self._cache_live_composition("phase_base")
                 r_on, _ = self._engines_both_live()
+                # 2) Build the phase-locked variant of that base
                 if r_on:
-                    # Save the stable Randomizer composition. Phase-Lock ON creates
-                    # exactly one alternate (both-engines) composition.
-                    if not getattr(self, '_live_composition_cache', {}).get("randomizer"):
-                        self._cache_live_composition("randomizer")
-                    if getattr(self, '_live_composition_cache', {}).get("both"):
-                        self._restore_composition_snapshot(self._live_composition_cache["both"])
-                    else:
-                        self._apply_live_midpoint_once(force=True)
-                        self._cache_live_composition("both")
+                    # randomizer still armed → midpoint-locked variant of random+user base
+                    self.apply_composition_midpoint(live=True)
                 else:
-                    if not getattr(self, '_live_composition_cache', {}).get("phase"):
-                        self._apply_live_engine_once("euclidean", force=True)
-                        self._cache_live_composition("phase")
-                    else:
-                        self._restore_composition_snapshot(self._live_composition_cache["phase"])
+                    # phase-lock alone over user data or prior random residue
+                    self.apply_unified_phase_lock(live=True)
+                # 3) Cache locked variant so re-toggling ON without base change restores it
+                self._cache_live_composition("phase_locked")
+                print("[Phase-Lock] ON — showing phase-locked variant of current base")
             except Exception as exc:
-                print(f"[Phase-Lock toggle] {exc}")
-            if hasattr(self, '_live_euclid_timer'):
-                self._live_euclid_timer.stop()
-            if hasattr(self, '_live_seeded_timer'):
-                self._live_seeded_timer.stop()
+                print(f"[Phase-Lock toggle ON] {exc}")
         else:
-            if hasattr(self, '_live_euclid_timer'):
-                self._live_euclid_timer.stop()
             try:
-                r_on, _ = self._engines_both_live()
-                if r_on:
-                    # Return to the exact Randomizer composition; do NOT rerun it.
-                    snap = getattr(self, '_live_composition_cache', {}).get("randomizer")
-                    if snap:
-                        self._restore_composition_snapshot(snap)
-                    elif not self._apply_live_engine_once("seeded", force=True):
-                        pass
+                base = self._live_composition_cache.get("phase_base")
+                if base:
+                    self._restore_composition_snapshot(base)
+                    print("[Phase-Lock] OFF — restored pre-lock base pattern")
+                else:
+                    # No base cached (first-run edge): leave current state as-is
+                    print("[Phase-Lock] OFF — no base snapshot; leaving current pattern")
+                # Drop locked cache so next ON rebuilds from whatever base exists then
+                self._live_composition_cache.pop("phase_locked", None)
             except Exception as exc:
-                print(f"[Phase-Lock off] {exc}")
-            if hasattr(self, '_live_seeded_timer'):
-                self._live_seeded_timer.stop()
+                print(f"[Phase-Lock toggle OFF] {exc}")
+
 
     def _on_seeded_live_toggled(self, checked):
         if hasattr(self, "_style_toggle_randomizer"):
@@ -5547,6 +5620,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             try:
                 n = self._paint_operator_pattern_to_playlist(source="randomizer", rng=rng)
                 print(f"[Randomizer] playlist multi-instance paint → {n} rows")
+                # New random base invalidates any prior phase-lock pair
+                self._invalidate_live_composition_cache("phase_base", "phase_locked", "phase", "both")
             except Exception as pe:
                 print(f"[Randomizer] playlist paint: {pe}")
             try:
@@ -5596,6 +5671,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     wf.apply_phase_locked_randomization()
                 except Exception as we:
                     print(f"[Phase-Lock] wavefield: {we}")
+            try:
+                n = self._paint_operator_pattern_to_playlist(source="phase-lock", rng=rng)
+                print(f"[Phase-Lock] playlist multi-instance paint → {n}")
+            except Exception as pe:
+                print(f"[Phase-Lock] playlist: {pe}")
             try:
                 self._paint_step_parameters(
                     rng=rng, randomize=False, strength=0.70,
@@ -6278,7 +6358,24 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
             # Cap concurrent voices; prefer lower registers (bass weight like target mix)
             if len(active_cluster) > 12:
-                active_cluster = sorted(active_cluster)[:12]
+                # Spread across full 48-wide harmonic spectrum (not first 12 only)
+                active_cluster = sorted(set(active_cluster))
+                if len(active_cluster) > 24:
+                    n = 24
+                    active_cluster = [active_cluster[int(round(j * (len(active_cluster) - 1) / max(n - 1, 1)))]
+                                      for j in range(n)]
+                single_mode = False
+                try:
+                    single_mode = "Single" in str(self.mode_combo.currentText())
+                except Exception:
+                    pass
+                if single_mode:
+                    try:
+                        cur = self.instrument_selector_dropdown.currentText()
+                        if cur in self.instrument_names_48:
+                            active_cluster = [self.instrument_names_48.index(cur)]
+                    except Exception:
+                        pass
 
             for op_idx in active_cluster:
                 op_name = self.instrument_names_48[op_idx]
@@ -6826,8 +6923,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._set_export_progress(98, "Writing WAV")
             master = np.asarray(master, dtype=np.float32).ravel()
             peak = float(np.max(np.abs(master))) if master.size else 0.0
-            if peak > 1.0:
-                master = master / peak
+            if peak > 1.15:
+                master = master * (1.0 / peak)  # soft ceiling — avoid flattening every mix
             pcm = (np.clip(master, -1.0, 1.0) * 32767.0).astype(np.int16)
             if wavfile is not None:
                 wavfile.write(file_path, sample_rate, pcm)
