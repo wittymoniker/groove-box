@@ -2824,7 +2824,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.master_playlist_data[r] = e
             # Always clear prior engine-owned dict fields so patterns can be removed
             if e.get('generated_source') and not e.get('user_instances'):
-                # keep only user_instances list if any
+                # Engine rows are disposable. Remove their automation lane too;
+                # otherwise a skipped/turned-off row can retain an old generated lane.
+                if r < len(self.playlist_automation):
+                    lane = self.playlist_automation[r]
+                    if isinstance(lane, dict) and lane.get('generated_by_engine'):
+                        self.playlist_automation[r] = {}
                 user_inst = list(e.get('user_instances') or [])
                 e.clear()
                 if user_inst:
@@ -2832,10 +2837,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     e['operators'] = list(user_inst)
                     e['operator'] = user_inst[0]
             if float(rng.random()) > density:
-                # skip paint this row (engine pattern removed above)
+                # skip paint this row; remove any prior engine-owned automation too.
+                if r < len(self.playlist_automation):
+                    lane = self.playlist_automation[r]
+                    if isinstance(lane, dict) and lane.get('generated_by_engine'):
+                        self.playlist_automation[r] = {}
                 if table is not None:
                     # clear engine tokens from visible cells
-                    for c in (1, 3, 4, 5, 8, 9):
+                    for c in range(10):
                         try:
                             tw = getattr(table, 'table_widget', table)
                             item = tw.item(r, c) if hasattr(tw, 'item') else None
@@ -2874,26 +2883,43 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # window can rebuild the full row from later — including the
             # multi-instance CSV string itself, which previously existed only
             # inside the (possibly nonexistent) table cell.
+            # Determine EVERY playlist cell parameter from the same generated row
+            # state. Previously only operator/velocity/automation/coverage/blend
+            # were painted, leaving time/script/direction/multi-seq cells undefined.
             e['operators_csv'] = ", ".join(f"{op}@{tag}" for op in eng_ops)
             e['effect_target'] = str(rng.choice(["eqr", "fractalizer", "pkp_decay", "filter", "drive"]))
             e['auto_amount'] = f"{int(rng.integers(25, 90))}%"
+            e['script_tag'] = str((self.instrument_scripts.get(eng_ops[0], "") if eng_ops and hasattr(self, 'instrument_scripts') else "").splitlines()[0]).strip() if eng_ops else ""
+            if not e['script_tag']:
+                e['script_tag'] = f"engine:{source}"
+            e['direction_vector'] = f"{float(rng.uniform(-1,1)):+.2f}"
+            e['multi_seq'] = ", ".join(eng_ops) if len(eng_ops) > 1 else (eng_ops[0] if eng_ops else "")
+            e['coverage'] = e['coverage']
+            e['time_offset'] = float(t_off)
+            e['time_marker'] = e['position']
             for op in eng_ops:
                 put_csv(r, 1, op, tag)
+            put_csv(r, 0, e['time_marker'], tag)
+            put_csv(r, 2, e['script_tag'], tag)
             put_csv(r, 3, f"{e['velocity']*100:.1f}%", tag)
             put_csv(r, 4, e['effect_target'], tag)
             put_csv(r, 5, e['auto_amount'], tag)
+            put_csv(r, 6, e['direction_vector'], tag)
+            put_csv(r, 7, e['multi_seq'], tag)
             put_csv(r, 8, e['coverage'], tag)
             partner = eng_ops[1] if len(eng_ops) > 1 else ""
             e['blend_partner'] = partner
             if partner:
                 put_csv(r, 9, partner, tag)
+            else:
+                put_csv(r, 9, "", tag)
             self.playlist_automation[r] = {
                 "generated_by_engine": True,
                 "operator": eng_ops[0] if eng_ops else "",
                 "operators": list(eng_ops),
-                "param": "eqr",
-                "amount": float(0.35 + 0.5 * rng.random()),
-                "direction": 1.0 if rng.random() > 0.5 else -1.0,
+                "param": e['effect_target'],
+                "amount": float(int(e['auto_amount'].rstrip('%')) / 100.0),
+                "direction": 1.0 if float(e['direction_vector']) >= 0.0 else -1.0,
                 "coverage": float(next(iter(cov.values()), 0.25)),
                 "overlap": float(min(cov.values())) if len(cov) > 1 else 0.0,
                 "blend_percent": float(rng.uniform(0, 100)),
@@ -3231,7 +3257,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.slider_fractalizer.setValue(33)
         self.slider_pkp_decay = QSlider(Qt.Orientation.Horizontal)
         self.slider_pkp_decay.setRange(1, 1000)
-        self.slider_pkp_decay.setValue(50)
+        self.slider_pkp_decay.setValue(500)
 
         self.chk_pkp_automod = QCheckBox("PKP Envelope Follower")
         self.chk_pkp_automod.setChecked(True)
@@ -4107,23 +4133,31 @@ class MathematiciansGrooveboxApp(QMainWindow):
             accum[param] = accum.get(param, 0.0) + amt * w
             weights[param] = weights.get(param, 0.0) + w
 
-        def _norm(p, default=0.5):
+        def _norm(p, default=None):
             if weights.get(p, 0) <= 1e-9:
-                return default
+                if default is not None:
+                    return float(default)
+                current = {
+                    "eqr": (self.slider_eqr.value() / 100.0) if hasattr(self, "slider_eqr") else 0.0,
+                    "fractalizer": (self.slider_fractalizer.value() / 100.0) if hasattr(self, "slider_fractalizer") else 0.33,
+                    "pkp_decay": (self.slider_pkp_decay.value() / 1000.0) if hasattr(self, "slider_pkp_decay") else 0.50,
+                }
+                return float(current.get(p, 0.0))
             return float(np.clip(0.5 + accum[p] / max(weights[p], 1e-9) * 0.5, 0.0, 1.0))
 
-        # Map onto main macros when present
+        # Map onto main macros with their actual slider scales.
+        # Fractallizer is 0..100, not 0..1000.
         if hasattr(self, 'slider_eqr'):
             self.slider_eqr.blockSignals(True)
-            self.slider_eqr.setValue(int(_norm("eqr") * 100))
+            self.slider_eqr.setValue(int(round(_norm("eqr") * 100)))
             self.slider_eqr.blockSignals(False)
         if hasattr(self, 'slider_fractalizer'):
             self.slider_fractalizer.blockSignals(True)
-            self.slider_fractalizer.setValue(int(_norm("fractalizer") * 1000))
+            self.slider_fractalizer.setValue(int(round(_norm("fractalizer") * 100)))
             self.slider_fractalizer.blockSignals(False)
         if hasattr(self, 'slider_pkp_decay'):
             self.slider_pkp_decay.blockSignals(True)
-            self.slider_pkp_decay.setValue(int(_norm("pkp_decay") * 1000))
+            self.slider_pkp_decay.setValue(int(round(_norm("pkp_decay") * 1000)))
             self.slider_pkp_decay.blockSignals(False)
 
         # Patch bay cable gains: scale by automation "drive" if any
@@ -4742,9 +4776,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "seq_length": int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16,
             "playlist_rows": int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else 32,
             "base_frequency": float(self.spin_base_frequency.value()) if hasattr(self, 'spin_base_frequency') else 432.0,
-            "eqr": float(self.slider_eqr.value()) if hasattr(self, 'slider_eqr') else 50.0,
-            "fractalizer": float(self.slider_fractalizer.value()) if hasattr(self, 'slider_fractalizer') else 85.0,
-            "pkp_decay": float(self.slider_pkp_decay.value()) if hasattr(self, 'slider_pkp_decay') else 250.0,
+            "eqr": float(self.slider_eqr.value()) if hasattr(self, 'slider_eqr') else 0.0,
+            "fractalizer": float(self.slider_fractalizer.value()) if hasattr(self, 'slider_fractalizer') else 33.0,
+            "pkp_decay": float(self.slider_pkp_decay.value()) if hasattr(self, 'slider_pkp_decay') else 500.0,
             "global_convolve": float(self.spin_global_convolve.value()) if hasattr(self, 'spin_global_convolve') else (
                 float(self.slider_global_convolve.value()) if hasattr(self, 'slider_global_convolve') else 0.0
             ),
