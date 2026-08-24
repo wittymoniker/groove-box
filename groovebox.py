@@ -70,7 +70,7 @@ MEUM_INV = 1.0 / MEUM
 MEUM_SQ = MEUM * MEUM
 MEUM_CUBE = MEUM_SQ * MEUM
 MEUM_FOURTH = MEUM_SQ * MEUM_SQ
-MEUM_NORM = MEUM_MINUS_1 * MEUM_INV          # (M-1)/M ≈ soft weight / pane opacity seed
+MEUM_NORM = MEUM_MINUS_1 * MEUM_INV          # (M-1)/M
 MEUM_OVER_1_5 = MEUM / 1.5
 MEUM_TWO_POW = 2.0 ** MEUM
 MEUM_TWO_POW_OVER_SQ = MEUM_TWO_POW / MEUM_SQ
@@ -80,9 +80,8 @@ MEUM_POWERS_36 = tuple(MEUM ** i for i in range(36))
 MEUM_IDENTITY_LHS = (MEUM_MINUS_1 * MEUM) + (MEUM_MINUS_1 * MEUM_INV)
 MEUM_IDENTITY_RHS = MEUM_TWO_POW_OVER_SQ - MEUM
 MEUM_IDENTITY_RESIDUAL = MEUM_IDENTITY_LHS - MEUM_IDENTITY_RHS
-# Relational aesthetic scales (UI + field motion). Meum-first; secondary book irrationals second.
-PHI = (1.0 + math.sqrt(5.0)) * 0.5          # golden ratio φ
-PHI_INV = PHI - 1.0                           # 1/φ = φ-1
+PHI = 1.6180339887
+PHI_INV = 0.6180339887
 E_IRR = math.e
 PI_IRR = math.pi
 SQRT2 = math.sqrt(2.0)
@@ -95,16 +94,7 @@ UI_TICK_MS = max(28, int(round(1000.0 / (MEUM_TWO_POW * 8.0))))  # decor frame p
 UI_DRIFT = MEUM_NORM * PHI_INV                                  # caption micro-wiggle scale
 PAINT_RATE_HZ = 2.395                                           # max single-cell stack rate
 PAINT_PERIOD_S = 1.0 / PAINT_RATE_HZ                            # ~0.418 s between stacks
-PAINT_INSTANCE_LIMIT = 8                                        # max CSV instances per cell
-# MEUM ideal-use guidance (spatial-dynamic constant, not a free gain knob):
-#   • Prefer powers of M (MEUM_POWERS_36) for hierarchical scale steps instead of
-#     arbitrary 0–100 % synth percentages — keeps topology self-similar.
-#   • MEUM_NORM = (M-1)/M ≈ 0.165 is a natural soft-weight / mix amount.
-#   • MEUM_LOG2 ≈ 0.26 is a good octave-fraction / detune seed scale.
-#   • MEUM_TWO_POW / MEUM_SQ is the identity residual partner; residual near 0
-#     means the local geometry is Meum-balanced. AsymmetryCorrection uses the
-#     residual field only for visual counter-offset, never for audio DSP.
-#   • Domain equation weights in [MEUM_NORM, 1+MEUM_NORM] stay longitudinally stable.
+PAINT_INSTANCE_LIMIT = 8
 # FONT_READABILITY_FIX: buttons/labels were clipping their own text at 11pt
 # because fixed/min widths elsewhere in the UI were sized for a smaller font
 # (see screenshot: "AY Audiovisual", "ded Live Rando", "uclidean Live L",
@@ -112,60 +102,19 @@ PAINT_INSTANCE_LIMIT = 8                                        # max CSV instan
 # the existing button widths, and let QPushButton auto-size to its label so
 # it clips less easily even if a translation/rename makes text longer later.
 DAW_STYLE = """
-    QMainWindow, QDialog {
-        background-color: rgba(8, 12, 18, 245); color: #f2f6fa;
-        font-family: 'Segoe UI', Arial, sans-serif; font-size: 9pt;
-    }
-    QWidget {
-        background-color: transparent; color: #f2f6fa;
-        font-family: 'Segoe UI', Arial, sans-serif; font-size: 9pt;
-    }
-    QWidget#ParametricMathBackground { background: transparent; }
-    QGroupBox {
-        background-color: rgba(12, 18, 26, 160);
-        color: #e8f0f8; border: 1px solid rgba(0, 200, 168, 90);
-        border-radius: 5px; margin-top: 8px; padding-top: 8px;
-    }
-    QPushButton {
-        background-color: rgba(22, 30, 40, 210); color: #e8f0f8;
-        border: 1px solid rgba(0, 200, 168, 140); border-radius: 4px;
-        padding: 5px 8px; font-weight: bold; font-size: 9pt; min-height: 20px;
-    }
-    QPushButton:hover { background-color: rgba(0, 200, 168, 60); border: 1px solid #00e0c0; }
-    QPushButton:pressed { background-color: #ff6b00; color: #ffffff; }
-    QLabel { color: #e8f0f8; font-size: 9pt; background: transparent; }
-    QCheckBox { color: #e8f0f8; font-size: 9pt; background: transparent; }
-    QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit {
-        background-color: rgba(10, 14, 20, 230); color: #ffffff;
-        border: 1px solid rgba(70, 90, 110, 200); border-radius: 4px; padding: 3px; font-size: 9pt;
-        selection-background-color: #00aaaa; selection-color: #061018;
-    }
-    QComboBox { combobox-popup: 0; }
-    QComboBox QAbstractItemView {
-        background-color: #12181e; color: #ffffff;
-        selection-background-color: #00aaaa; selection-color: #061018;
-        border: 1px solid #3a4550;
-    }
-    QTableWidget, QListWidget, QTreeWidget {
-        background-color: rgba(10, 14, 20, 220); color: #ffffff; gridline-color: #2a3340;
-        alternate-background-color: rgba(18, 24, 32, 200);
-    }
-    QHeaderView::section {
-        background-color: rgba(22, 30, 40, 230); color: #c8d8e8; border: 1px solid #2a3340; font-size: 8pt;
-    }
-    QSlider::groove:horizontal { height: 4px; background: rgba(50,60,70,200); border-radius: 2px; }
-    QSlider::handle:horizontal { background: #00c8a8; width: 12px; margin: -4px 0; border-radius: 6px; }
-    QProgressBar {
-        background-color: rgba(12, 18, 26, 220); color: #e8f0f8; border: 1px solid #2a3340;
-        border-radius: 4px; text-align: center;
-    }
-    QProgressBar::chunk { background-color: #00c8a8; border-radius: 3px; }
-    QMenu { background-color: #12181e; color: #ffffff; border: 1px solid #3a4550; }
-    QMenu::item:selected { background-color: #00aaaa; color: #061018; }
-    QScrollBar:vertical { background: transparent; width: 10px; }
-    QScrollBar::handle:vertical { background: rgba(60,80,100,180); border-radius: 4px; min-height: 24px; }
+    QMainWindow, QWidget { background-color: #121212; color: #e0e0e0; font-family: 'Segoe UI', Arial, sans-serif; font-size: 9pt; }
+    QPushButton { background-color: #2a2a2a; color: #ffffff; border: 1px solid #3a3a3a; border-radius: 3px; padding: 5px 8px; font-weight: bold; font-size: 9pt; min-height: 20px; }
+    QLabel { font-size: 9pt; }
+    QCheckBox { font-size: 9pt; }
+    QPushButton:hover { background-color: #383838; border: 1px solid #555555; }
+    QPushButton:pressed { background-color: #ff6b00; }
+    QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox { background-color: #1a1a1a; color: #00ffcc; border: 1px solid #333333; border-radius: 3px; padding: 3px; font-size: 9pt; }
+    QTableWidget { background-color: #161616; gridline-color: #282828; color: #ffffff; }
+    QHeaderView::section { background-color: #1f1f1f; color: #aaaaaa; border: 1px solid #333333; font-size: 8pt; }
+    QLabel { color: #cccccc; }
+    QSlider::groove:horizontal { height: 4px; background: #333333; border-radius: 2px; }
+    QSlider::handle:horizontal { background: #ff6b00; width: 12px; margin: -4px 0; border-radius: 6px; }
 """
-
 
 # --- 48 IDEAL INSTRUMENT & EFFECT TOPOLOGIES ---
 DEFAULT_INSTRUMENT_LIST = [
@@ -188,6 +137,38 @@ DEFAULT_INSTRUMENT_LIST = [
     "41. Spectral Centroid Dynamic Shifter", "42. Soliton Envelope Shaper", "43. Wavepacket Granulator Effect", "44. Non-Linear Diode Clipper Effect",
     "45. Plasma Ionization Gate", "46. Magnetostrictive Resonator Effect", "47. Crystalline Lattice Damper", "48. Event Horizon Limiter"
 ]
+class FormulaModulatorWidget(QWidget):
+    def __init__(self):
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("<b>Dynamic Coordinate Formula Inputs</b>"))
+
+        # Formula Inputs
+        self.x_input = self.create_formula_row(layout, "X-Axis Expr:", "np.sin(time * 2.0) + base_x")
+        self.y_input = self.create_formula_row(layout, "Y-Axis Expr:", "np.cos(time * 1.5) * base_y")
+        self.z_input = self.create_formula_row(layout, "Z-Axis Expr:", "abs(x + y) - time")
+
+        # Compile Button
+        self.compile_btn = QPushButton("Inject Formulas into Audio Thread")
+        self.compile_btn.setStyleSheet("background-color: darkred; color: white; font-weight: bold;")
+        layout.addWidget(self.compile_btn)
+
+    def create_formula_row(self, parent_layout, label_text, default_expr):
+        row = QHBoxLayout()
+        row.addWidget(QLabel(label_text))
+
+        line_edit = QLineEdit(default_expr)
+        line_edit.setStyleSheet("background-color: #222; color: #0f0; font-family: monospace;")
+        row.addWidget(line_edit)
+
+        # Add a macro slider for manual offset tuning
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(0, 100)
+        slider.setValue(50)
+        row.addWidget(slider)
+
+        parent_layout.addLayout(row)
+        return line_edit
 class VisualOscilloscope(QFrame):
     """Real-time signal output oscilloscope and vector scope."""
     def __init__(self, parent=None):
@@ -396,34 +377,9 @@ class VideoSynthViewer(QFrame):
         self.setMinimumSize(320, 200)
         self.setStyleSheet("background-color: #050608; border: 1px solid #2a2e39; border-radius: 6px;")
         self.engine = engine or VideoSynthEngine()
-        self._frame = None
+        self._frame = np.zeros((180, 320, 3), dtype=np.uint8)
         self.show_scope_overlay = True
         self.scope_wave = np.zeros(100, dtype=np.float32)
-        self._seed_idle_wave()
-        self._ensure_frame()
-
-    def _seed_idle_wave(self):
-        t = np.linspace(0.0, 4.0 * np.pi, 256, dtype=np.float32)
-        idle = (0.38 * np.sin(t * float(MEUM)) + 0.18 * np.sin(t * float(MEUM_SQ))).astype(np.float32)
-        self.engine.set_waveform(idle)
-        self.scope_wave = np.resize(idle, 100)
-
-    def _ensure_frame(self):
-        w = max(int(self.width()), 320)
-        h = max(int(self.height()), 180)
-        if self._frame is None or self._frame.shape[0] != h or self._frame.shape[1] != w:
-            self._frame = self.engine.render_frame(w, h)
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        self._ensure_frame()
-        self.update()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._frame = None
-        self._ensure_frame()
-        self.update()
 
     def update_from_audio(self, wave_data):
         self.engine.set_waveform(wave_data)
@@ -461,18 +417,584 @@ class VideoSynthViewer(QFrame):
                 painter.drawLine(x0, y0, x1, y1)
 
 
-class MathEngine:
-    """Meum-simplified spatial calculus on pure x,y,z (no metric tensors / renormalization).
+class ModulationMatrixWidget(QFrame):
+    def __init__(self):
+        super().__init__()
+        self.setFrameStyle(QFrame.Shape.StyledPanel | QFrame.Shadow.Sunken)
+        layout = QGridLayout(self)
 
-    Forms (user book → code):
-      • Field potential:  Φ = q / √(x²+y²+z²)
-      • Laplacian source: ∇²Ψ ≈ S  (finite-difference on grid)
-      • Standing wave:    Ψ_n = sin(n π x/L) sin(m π y/L) sin(p π z/L)
-      • State step:       Ψ_{t+1} = Ψ_t + α (Ψ_neighbors − Ψ_t)
-    """
+        layout.addWidget(QLabel("<b>Virtual Patch Matrix</b>"), 0, 0, 1, 4)
+        layout.addWidget(QLabel("Source"), 1, 0)
+        layout.addWidget(QLabel("Destination"), 1, 1)
+        layout.addWidget(QLabel("Amount"), 1, 2)
+
+        # Create 4 patch cables
+        self.patches = []
+        for i in range(4):
+            source_combo = QComboBox()
+            source_combo.addItems(["None", "X Coordinate", "Y Coordinate", "Z Coordinate", "LFO 1", "Step Sequencer"])
+
+            dest_combo = QComboBox()
+            dest_combo.addItems(["None", "Filter Cutoff", "Resonance", "Wave Drive", "Delay Time", "Delay Feedback", "Pitch Node"])
+
+            amount_spin = QDoubleSpinBox()
+            amount_spin.setRange(-1.0, 1.0)
+            amount_spin.setSingleStep(0.01)
+            amount_spin.setValue(0.5)
+
+            layout.addWidget(source_combo, i+2, 0)
+            layout.addWidget(dest_combo, i+2, 1)
+            layout.addWidget(amount_spin, i+2, 2)
+
+            self.patches.append({"source": source_combo, "dest": dest_combo, "amount": amount_spin})
+class PatchbayCanvas(QFrame):
+    """Interactive visual patchbay canvas for signal routing and node mapping."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(300, 200)
+        self.setStyleSheet("background-color: #121418; border: 1px solid #2a2e39; border-radius: 6px;")
+
+
+class MemoryBankSelector(QWidget):
+    """Memory Bank Selector pane for project workflow and preset management."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        self.bank_combo = QComboBox()
+        self.bank_combo.addItems([
+            "Bank Alpha [90uF/900V Resonant]",
+            "Bank Beta [2000uF/1350V]",
+            "Bank Gamma [3500uF/300V]"
+        ])
+        self.bank_combo.setStyleSheet("background-color: #1a1e24; color: #00ffcc; border: 1px solid #3a3f4b; padding: 4px;")
+
+        load_btn = QPushButton("Load Preset State")
+        save_btn = QPushButton("Save State Snapshot")
+        for btn in (load_btn, save_btn):
+            btn.setStyleSheet("background-color: #222733; color: #ffffff; border: 1px solid #3a3f4b; padding: 6px;")
+
+        layout.addWidget(QLabel("<b>Memory Bank Selector</b>"))
+        layout.addWidget(self.bank_combo)
+        layout.addWidget(load_btn)
+        layout.addWidget(save_btn)
+        layout.addStretch()
+class EQRMathEngine:
+    def __init__(self, use_meum=True):
+        """
+        Initializes the EQR math engine.
+        Args:
+            use_meum (bool): Flag to toggle Meum factor weighting.
+                             (Default set based on project optimization preference).
+        """
+        self.use_meum = use_meum
+
+    # --- Custom Isosceles Trigonometric Functions ---
+    def isn(self, val):
+        """Isosceles Sine implementation."""
+        arr = np.asarray(val, dtype=float)
+        return np.sin(arr) / (1.0 + np.abs(np.cos(arr)))
+
+    def ics(val):
+        """Isosceles Cosine implementation."""
+        arr = np.asarray(val, dtype=float)
+        return np.cos(arr) / (1.0 + np.abs(np.sin(arr)))
+
+    def arcisn(self, val):
+
+        arr = np.asarray(val, dtype=float)
+        v = np.clip(arr / 2.0, -1.0, 1.0)
+        return np.arcsin(v)
+
+    def arcics(self, val):
+
+        arr = np.asarray(val, dtype=float)
+        v = np.clip(arr / 2.0, -1.0, 1.0)
+        return np.arccos(v)
+
+    # --- Core Expression Evaluator ---
+    def evaluate_coordinate_expression(expr_str, x, y, z):
+
+    # Safe namespace dictionary for mathematical parsing
+        allowed_globals = {
+            "__builtins__": {},
+            "sin": np.sin,
+            "cos": np.cos,
+            "tan": np.tan,
+            "sqrt": np.sqrt,
+            "abs": np.abs,
+            "pi": np.pi,
+            "e": np.e
+        }
+
+        local_vars = {
+            "x": float(x),
+            "y": float(y),
+            "z": float(z)
+        }
+
+        try:
+            # Evaluates strictly against x, y, and z parameters
+            result = eval(expr_str, allowed_globals, local_vars)
+            return float(result)
+        except Exception as e:
+            print(f"Evaluation Error for expression '{expr_str}': {e}")
+            return 0.0
+class PortWidget(QWidget):
+    """Input/output terminal for the scientific patchbay node network."""
+    def __init__(self, port_type, parent=None):
+        super().__init__(parent)
+        self.port_type = port_type  # 'in' or 'out'
+        self.setFixedSize(22, 22)
+        self.color = "#00ffc8" if port_type == 'out' else "#ff6400"
+        self.setStyleSheet(f"""
+            background-color: {self.color};
+            border-radius: 11px;
+            border: 3px solid #1a1a1a;
+        """)
+
+    def mousePressEvent(self, event):
+        if self.parent() and hasattr(self.parent(), 'start_cable_drag'):
+            self.parent().start_cable_drag(self)
+        event.accept()
+
+
+class ScientificCanvas(QWidget):
+    """Interactive node patchbay canvas with Bezier signal cables."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(2400, 1800)
+        self.cables = []
+        self.active_cable_start = None
+        self.current_mouse_pos = QPoint(0, 0)
+        self.setMouseTracking(True)
+        self.setStyleSheet("background-color: #0b0b0e; border: 1px solid #1f1f2e;")
+
+    def start_cable_drag(self, port_widget):
+        self.active_cable_start = port_widget
+        self.current_mouse_pos = port_widget.mapTo(self, port_widget.rect().center())
+        self.update()
+
+    def mouseMoveEvent(self, event):
+        if self.active_cable_start:
+            self.current_mouse_pos = event.pos()
+            self.update()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self.active_cable_start:
+            target_widget = self.childAt(event.pos())
+            if isinstance(target_widget, PortWidget) and target_widget != self.active_cable_start:
+                if self.active_cable_start.port_type != target_widget.port_type:
+                    cable_pair = (self.active_cable_start, target_widget)
+                    reverse_pair = (target_widget, self.active_cable_start)
+                    if cable_pair not in self.cables and reverse_pair not in self.cables:
+                        self.cables.append(cable_pair)
+            self.active_cable_start = None
+            self.update()
+        super().mouseReleaseEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        for start, end in self.cables:
+            if start and end:
+                p1 = start.mapTo(self, start.rect().center())
+                p2 = end.mapTo(self, end.rect().center())
+
+                glow_pen = QPen(QColor(0, 255, 200, 50), 6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+                painter.setPen(glow_pen)
+                painter.drawPath(self.create_bezier_path(p1, p2))
+
+                core_pen = QPen(QColor(0, 255, 200), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+                painter.setPen(core_pen)
+                painter.drawPath(self.create_bezier_path(p1, p2))
+
+        if self.active_cable_start:
+            p1 = self.active_cable_start.mapTo(self, self.active_cable_start.rect().center())
+            p2 = self.current_mouse_pos
+            drag_pen = QPen(QColor(255, 100, 0, 200), 2, Qt.PenStyle.DashLine, Qt.PenCapStyle.RoundCap)
+            painter.setPen(drag_pen)
+            painter.drawPath(self.create_bezier_path(p1, p2))
+
+    def create_bezier_path(self, p1, p2):
+        path = QPainterPath()
+        path.moveTo(p1)
+        dx = (p2.x() - p1.x()) * 0.5
+        ctrl1 = QPoint(p1.x() + dx, p1.y())
+        ctrl2 = QPoint(p2.x() - dx, p2.y())
+        path.cubicTo(ctrl1, ctrl2, p2)
+        return path
+
+class MathNodeWidget(QFrame):
+    """Draggable processing node for algebra & vector fields."""
+    def __init__(self, name, x, y, parent=None):
+        super().__init__(parent)
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.resize(240, 150)
+        self.move(x, y)
+        self.setStyleSheet("""
+            background-color: #14141c;
+            color: #ffffff;
+            border: 1px solid #2e2e42;
+            border-radius: 8px;
+        """)
+
+        layout = QVBoxLayout(self)
+        self.title_input = QLineEdit(name)
+        self.title_input.setStyleSheet("""
+            background-color: #1c1c28;
+            color: #00ffc8;
+            border: 1px solid #3d3d5c;
+            padding: 4px;
+            font-weight: bold;
+            border-radius: 4px;
+        """)
+        layout.addWidget(self.title_input)
+
+        ports_layout = QHBoxLayout()
+        in_container = QVBoxLayout()
+        lbl_in = QLabel("IN")
+        lbl_in.setStyleSheet("color: #ff6400; border: none; font-size: 9px; font-weight: bold;")
+        in_container.addWidget(lbl_in)
+        self.in_port = PortWidget('in', self)
+        in_container.addWidget(self.in_port)
+
+        out_container = QVBoxLayout()
+        lbl_out = QLabel("OUT")
+        lbl_out.setStyleSheet("color: #00ffc8; border: none; font-size: 9px; font-weight: bold;")
+        out_container.addWidget(lbl_out)
+        self.out_port = PortWidget('out', self)
+        out_container.addWidget(self.out_port)
+
+        ports_layout.addLayout(in_container)
+        ports_layout.addLayout(out_container)
+        layout.addLayout(ports_layout)
+
+        self.dragging = False
+        self.drag_position = QPoint()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.dragging = True
+            self.drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            self.raise_()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.MouseButton.LeftButton and self.dragging:
+            self.move(event.globalPosition().toPoint() - self.drag_position)
+            if self.parent():
+                self.parent().update()
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self.dragging = False
+
+class SequencerPane(QWidget):
+    def __init__(self):
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("<b>16-Step Modulation Sequencer</b>"))
+
+        grid_layout = QGridLayout()
+        self.steps = []
+        for i in range(16):
+            btn = QPushButton(str(i+1))
+            btn.setCheckable(True)
+            btn.setStyleSheet("background-color: #222; color: #888;")
+            btn.clicked.connect(lambda checked, b=btn: b.setStyleSheet("background-color: #00aa55; color: #fff;" if b.isChecked() else "background-color: #222; color: #888;"))
+            row, col = divmod(i, 8)
+            grid_layout.addWidget(btn, row, col)
+            self.steps.append(btn)
+
+        layout.addLayout(grid_layout)
+class DoubleNumericSliderRow(QWidget):
+    """Precision double slider + spinbox widget."""
+    def __init__(self, min_val, max_val, default_val, decimals=2, unit="", parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(int(min_val * 100), int(max_val * 100))
+        self.slider.setValue(int(default_val * 100))
+        self.slider.setStyleSheet("background: transparent;")
+
+        self.spinbox = QDoubleSpinBox()
+        self.spinbox.setRange(min_val, max_val)
+        self.spinbox.setValue(default_val)
+        self.spinbox.setDecimals(decimals)
+        self.spinbox.setSuffix(unit)
+        self.spinbox.setStyleSheet("background-color: #1c1c28; color: #00ffc8; border: 1px solid #3d3d5c; padding: 2px; border-radius: 3px;")
+
+        self.slider.valueChanged.connect(lambda v: self.spinbox.setValue(v / 100.0))
+        self.spinbox.valueChanged.connect(lambda v: self.slider.setValue(int(v * 100)))
+
+        layout.addWidget(self.slider, 3)
+        layout.addWidget(self.spinbox, 1)
+
+
+class SoundCloudTimelineVisualizer(QWidget):
+    """SoundCloud-style static waveform overview with split-spectrum color gradient peaks and recursion trigger labels."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(140)
+        self.setStyleSheet("background-color: #0b0b0e; border: 1px solid #1f1f2e; border-radius: 6px;")
+        # Pre-calculated structural events: (x_ratio, label, color_mode, depth_param)
+        self.triggers = [
+            (0.08, "EskiBrutuses WaveMorph [x=0.2, d=3]", "#00ffc8", 1),
+            (0.22, "EQR Singularity Collapse [f(x,y,z)=0]", "#ff00ff", 2),
+            (0.35, "EskiPhased Non-Linear Matrix [Feedback 82%]", "#00bfff", 1.5),
+            (0.48, "Fractalizer Harmonic Fold [Depth 5x]", "#ff6400", 3),
+            (0.65, "EskiRecursive Wave-Fold [Chaos Mod 0.4]", "#ffff00", 2.2),
+            (0.82, "Z-Axis Field Resonance [Peak Phase]", "#ff0055", 2.8)
+        ]
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        w = self.width()
+        h = self.height()
+        mid_y = h / 2.0 - 10
+
+        # Draw background track bar
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(16, 16, 24))
+        painter.drawRoundedRect(10, 10, w - 20, h - 20, 6, 6)
+
+        # Draw SoundCloud style static amplitude peaks with split-spectrum colors
+        random.seed(42) # Consistent static peak generation
+        bar_width = 3
+        gap = 2
+        num_bars = (w - 40) // (bar_width + gap)
+
+        for i in range(num_bars):
+            x = 20 + i * (bar_width + gap)
+            ratio = i / num_bars
+
+            # Formulate multi-frequency loudness curve across duration
+            envelope = math.sin(ratio * math.pi * 3.5) * 0.5 + 0.5
+            harmonic = math.cos(ratio * math.pi * 12.0) * 0.25 + 0.75
+            noise = random.uniform(0.4, 1.0)
+            amplitude = int((h - 50) * envelope * harmonic * noise)
+
+            # Split spectrum color grading based on frequency band
+            if ratio < 0.3:
+                grad_color = QColor(0, 255, 200, 200) # Cyan / Sub-bass
+            elif ratio < 0.6:
+                grad_color = QColor(255, 0, 255, 200) # Magenta / Mid harmonics
+            else:
+                grad_color = QColor(255, 100, 0, 200) # Orange / High fractal folds
+
+            painter.setBrush(grad_color)
+            painter.drawRoundedRect(x, int(mid_y - amplitude / 2), bar_width, max(4, amplitude), 1, 1)
+
+        # Draw Timeline Trigger Labels & Recursion Markers
+        for rx, text, hex_col, depth in self.triggers:
+            tx = int(rx * w)
+            # Marker line
+            painter.setPen(QPen(QColor(hex_col), 2, Qt.PenStyle.SolidLine))
+            painter.drawLine(tx, 15, tx, h - 15)
+
+            # Floating label tag
+            painter.setBrush(QColor(18, 18, 28, 230))
+            painter.setPen(QPen(QColor(hex_col), 1))
+            label_w = min(170, len(text) * 6 + 12)
+            painter.drawRoundedRect(tx - 5, h - 38, label_w, 24, 4, 4)
+
+            painter.setPen(QColor(240, 240, 255))
+            painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+            painter.drawText(tx, h - 22, text)
+
+
+class SynthRackUnitWidget(QFrame):
+    """Dedicated interactive control panel for an active synth instance with all parameters & modes."""
+    def __init__(self, synth_name, synth_id, parent=None):
+        super().__init__(parent)
+        self.synth_name = synth_name
+        self.synth_id = synth_id
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setStyleSheet("""
+            background-color: #14141c;
+            border: 1px solid #2e2e42;
+            border-radius: 8px;
+            padding: 8px;
+        """)
+
+        layout = QVBoxLayout(self)
+
+        header_layout = QHBoxLayout()
+        title_lbl = QLabel(f"⚡ {synth_name} [Instance #{synth_id}]")
+        title_lbl.setStyleSheet("color: #00ffc8; font-weight: bold; font-size: 13px; border: none;")
+        header_layout.addWidget(title_lbl)
+        header_layout.addStretch()
+
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems([
+            "Mode A: Vector Space Warp",
+            "Mode B: Non-Linear Resonance",
+            "Mode C: Recursive Chaos Fold",
+            "Mode D: EQR Singularity Lock"
+        ])
+        self.mode_combo.setStyleSheet("background-color: #1c1c28; color: #fff; border: 1px solid #3d3d5c; padding: 3px; border-radius: 4px;")
+        header_layout.addWidget(self.mode_combo)
+        layout.addLayout(header_layout)
+
+        # Knobs & Implicit Parameters
+        params_grid = QGridLayout()
+
+        self.param1 = DoubleNumericSliderRow(0.01, 10.0, 1.2, decimals=2, unit="x")
+        self.param2 = DoubleNumericSliderRow(20.0, 20000.0, 880.0, decimals=1, unit=" Hz")
+        self.param3 = DoubleNumericSliderRow(0.0, 1.0, 0.75, decimals=2, unit="")
+        self.param4 = DoubleNumericSliderRow(1.0, 16.0, 4.0, decimals=1, unit=" Stp")
+
+        params_grid.addWidget(QLabel("Morph Rate / Speed:"), 0, 0)
+        params_grid.addWidget(self.param1, 0, 1)
+        params_grid.addWidget(QLabel("Harmonic Frequency:"), 1, 0)
+        params_grid.addWidget(self.param2, 1, 1)
+        params_grid.addWidget(QLabel("Feedback / Chaos Blend:"), 2, 0)
+        params_grid.addWidget(self.param3, 2, 1)
+        params_grid.addWidget(QLabel("Recursive Fold Depth:"), 3, 0)
+        params_grid.addWidget(self.param4, 3, 1)
+
+        layout.addLayout(params_grid)
+class WaveformVisualizer(QWidget):
+    """Custom visualizer widget for real-time amplitude peak monitoring."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(120)
+        self.amplitude_data = [0.0] * 50
+
+    def update_data(self, new_val):
+        self.amplitude_data.pop(0)
+        self.amplitude_data.append(new_val)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Background canvas
+        painter.fillRect(self.rect(), QColor(20, 20, 25))
+
+        # Draw waveform trace based on coordinate evaluations
+        pen = QPen(QColor(0, 220, 150))
+        pen.setWidth(2)
+        painter.setPen(pen)
+
+        width = self.width()
+        height = self.height()
+        step = width / max(len(self.amplitude_data) - 1, 1)
+
+        for i in range(len(self.amplitude_data) - 1):
+            x1 = int(i * step)
+            y1 = int(height / 2 - self.amplitude_data[i] * (height / 2))
+            x2 = int((i + 1) * step)
+            y2 = int(height / 2 - self.amplitude_data[i + 1] * (height / 2))
+            painter.drawLine(x1, y1, x2, y2)
+class DoubleNumericSliderRow(QWidget):
+    """Synchronized precision double-spinbox and slider layout for scientific variables."""
+    def __init__(self, min_val, max_val, default_val, decimals=2, unit="", parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(int(min_val * 100), int(max_val * 100))
+        self.slider.setValue(int(default_val * 100))
+        self.slider.setStyleSheet("background: transparent;")
+
+        self.spinbox = QDoubleSpinBox()
+        self.spinbox.setRange(min_val, max_val)
+        self.spinbox.setValue(default_val)
+        self.spinbox.setDecimals(decimals)
+        self.spinbox.setSuffix(unit)
+        self.spinbox.setStyleSheet("background-color: #27272a; color: #00ffc8; border: 1px solid #52525b; padding: 3px; border-radius: 3px;")
+
+        self.slider.valueChanged.connect(lambda v: self.spinbox.setValue(v / 100.0))
+        self.spinbox.valueChanged.connect(lambda v: self.slider.setValue(int(v * 100)))
+
+        layout.addWidget(self.slider, 3)
+        layout.addWidget(self.spinbox, 1)
+class FlexibleSequencer:
+    """Holds subsequence memory within intervals with non-destructive quantization."""
+    def __init__(self):
+        self.sequence_buffer = []
+        self.quantize_grid = None
+    def mousePressEvent(self, event):
+        if self.parent() and hasattr(self.parent(), 'start_cable_drag'):
+            self.parent().start_cable_drag(self)
+        event.accept()
+    def add_note(self, time, pitch, duration):
+        self.sequence_buffer.append({'time': time, 'pitch': pitch, 'duration': duration})
+
+    def get_subsequence(self, start_interval, end_interval):
+        sub = [n for n in self.sequence_buffer if start_interval <= n['time'] < end_interval]
+        if self.quantize_grid:
+            quantized = []
+            for note in sub:
+                q_note = note.copy()
+                q_note['time'] = round(note['time'] / self.quantize_grid) * self.quantize_grid
+                quantized.append(q_note)
+            return quantized
+        return sub
+class CablePatchPanel(QWidget):
+    """Interactive canvas workspace for nodes and cable patching via ports."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(1600, 1000)
+        self.cables = []
+        self.active_cable_start = None
+        self.current_mouse_pos = QPoint(0, 0)
+        self.setMouseTracking(True)
+        self.setStyleSheet("background-color: #121212; border: 1px solid #333;")
+
+    def start_cable_drag(self, port_widget):
+        self.active_cable_start = port_widget
+        self.current_mouse_pos = port_widget.mapTo(self, port_widget.rect().center())
+        self.update()
+
+    def mouseMoveEvent(self, event):
+        if self.active_cable_start:
+            self.current_mouse_pos = event.pos()
+            self.update()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self.active_cable_start:
+            target_widget = self.childAt(event.pos())
+            if isinstance(target_widget, PortWidget) and target_widget != self.active_cable_start:
+                if self.active_cable_start.port_type != target_widget.port_type:
+                    self.cables.append((self.active_cable_start, target_widget, QColor(0, 255, 200)))
+            self.active_cable_start = None
+            self.update()
+        super().mouseReleaseEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        for start, end, color in self.cables:
+            if start and end:
+                p1 = start.mapTo(self, start.rect().center())
+                p2 = end.mapTo(self, end.rect().center())
+                pen = QPen(color, 3.0, Qt.PenStyle.SolidLine)
+                painter.setPen(pen)
+                painter.drawLine(p1, p2)
+
+        if self.active_cable_start:
+            p1 = self.active_cable_start.mapTo(self, self.active_cable_start.rect().center())
+            pen = QPen(QColor(255, 100, 0, 220), 2.5, Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            painter.drawLine(p1, self.current_mouse_pos)
+class MathEngine:
+    """Core mathematical engine evaluated strictly on x, y, z variables without Meum factors."""
     @staticmethod
     def isn(val):
-
         return np.sin(val) / (1.0 + np.abs(np.cos(val)))
 
     @staticmethod
@@ -486,6 +1008,43 @@ class MathEngine:
     @staticmethod
     def eskitable(x, y, z):
         return np.clip((x + y) * 0.5, -1.0, 1.0) * MathEngine.ics(z)
+
+class GlobalPatchBus:
+    def __init__(self):
+        self.cables = []
+        self.nodes = {}
+
+    def add_cable(self, src, dst):
+        if (src, dst) not in self.cables:
+            self.cables.append((src, dst))
+
+    def remove_cable(self, src, dst):
+        if (src, dst) in self.cables:
+            self.cables.remove((src, dst))
+
+global_patch_bus = GlobalPatchBus()
+class EQRCoordinateEngine:
+    def __init__(self):
+        self.x = np.linspace(-1.0, 1.0, 512)
+        self.y = np.linspace(-1.0, 1.0, 512)
+        self.z = np.zeros(512)
+
+    def evaluate_composition_script(self, script_text: str, t: float):
+        x, y, z = self.x, self.y, self.z + t
+        namespace = {"np": np, "x": x, "y": y, "z": z, "isn": np.sin, "ics": np.cos, "result": np.zeros_like(x)}
+
+        try:
+            exec(script_text, namespace)
+            output = namespace.get("result", np.zeros_like(x))
+            return self.apply_heuristic_envelope(output)
+        except Exception as e:
+            print(f"Script Execution Error: {e}")
+            return np.zeros_like(x)
+
+    def apply_heuristic_envelope(self, signal_vector):
+        envelope = np.exp(-np.abs(self.x) * 2.5)
+        return signal_vector * envelope
+
 
 class DomainPartitionEquationEngine:
     """
@@ -572,9 +1131,7 @@ class DomainPartitionEquationEngine:
         try:
             self.seed = float(seed)
         except (TypeError, ValueError):
-            import hashlib
-            digest = hashlib.sha256(str(seed).encode("utf-8", "replace")).digest()
-            self.seed = int.from_bytes(digest[:8], "big") / float(2**64)
+            self.seed = float(abs(hash(str(seed))) % (10**8)) / 1e8
 
     def add_domain(self, domain_dict):
         self.domains.append(dict(domain_dict))
@@ -673,16 +1230,10 @@ class DomainPartitionEquationEngine:
         return float(weighted_sum / weight_total)
 
     def evaluate_series(self, t_array, x=0.0, y=0.0, z=0.0):
-        """Series evaluation over a 1D time array (normalized 0..1).
-
-        Full-buffer Python loops hung the render path at ~94% on long mixdowns.
-        Evaluate a coarse grid (≤1024 pts) and interpolate — same shape, far less CPU.
-        """
+        """Vectorized-friendly series evaluation over a 1D time array (normalized 0..1)."""
         t_array = np.asarray(t_array, dtype=float)
-        n = int(t_array.size)
-        if n == 0:
-            return t_array.astype(float)
-        t_min, t_max = float(t_array[0]), float(t_array[-1])
+        out = np.zeros_like(t_array, dtype=float)
+        t_min, t_max = float(t_array.min()), float(t_array.max())
         span = max(t_max - t_min, 1e-12)
         max_pts = 1024
         if n > max_pts:
@@ -732,7 +1283,6 @@ class DomainEquationEditorDialog(QDialog):
         layout.addWidget(self.table)
         self._reload_table()
         self.table.itemChanged.connect(self._schedule_live_apply)
-
         btn_row = QHBoxLayout()
         add_btn = QPushButton("+ Add Domain")
         add_btn.clicked.connect(self._add_row)
@@ -799,10 +1349,8 @@ class DomainEquationEditorDialog(QDialog):
     def _defaults(self):
         self.engine._load_defaults()
         self._reload_table()
-
     def _schedule_live_apply(self, *args):
         QTimer.singleShot(120, self._apply_live)
-
     def _apply_live(self):
         domains=[]
         for r in range(self.table.rowCount()):
@@ -811,7 +1359,6 @@ class DomainEquationEditorDialog(QDialog):
             except Exception: continue
         generated=[d for d in getattr(self.engine,"domains",[]) if isinstance(d,dict) and d.get("user_defined") is False]
         self.engine.domains=domains+generated
-
     def _parse_row(self, r):
         def cell(c, default=""):
             item = self.table.item(r, c)
@@ -838,10 +1385,16 @@ class DomainEquationEditorDialog(QDialog):
 
     def _apply(self):
         self._apply_live()
+        domains = []
+        for r in range(self.table.rowCount()):
+            try:
+                domains.append(self._parse_row(r))
+            except Exception as e:
+                QMessageBox.warning(self, "Parse Error", f"Row {r+1}: {e}")
+                return
+        self.engine.domains = domains
+        QMessageBox.information(self, "Domains Applied", f"{len(domains)} domain partition(s) active.")
         self.accept()
-
-
-
 def attach_math_decor(host_window, app=None, light=False):
     """Apply Meum field + DAW glass style to any top-level window."""
     try:
@@ -917,6 +1470,312 @@ class AsymmetryCorrection:
         y = max(-max_s, min(max_s, -(tb * MEUM_NORM * 0.3)))
         return x, y
 
+
+class FocusZone3DWidget(QWidget):
+    """3D zone widget featuring mouse point selection, right-click insert, and middle-click/scroll deletion."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(250)
+        self.focal_points = [{'x': 0.0, 'y': 0.0, 'z': 0.0}]
+        self.selected_point_idx = 0
+        self.setMouseTracking(True)
+
+    def mousePressEvent(self, event):
+        w, h = self.width(), self.height()
+        click_x = event.position().x()
+        click_y = event.position().y()
+
+        clicked_idx = -1
+        for idx, pt in enumerate(self.focal_points):
+            px = int((pt['x'] + 1.0) * (w / 2.0))
+            py = int((1.0 - pt['y']) * (h / 2.0))
+            if abs(click_x - px) < 14 and abs(click_y - py) < 14:
+                clicked_idx = idx
+                break
+
+        if event.button() == Qt.MouseButton.LeftButton:
+            if clicked_idx != -1:
+                self.selected_point_idx = clicked_idx
+                self.update()
+        elif event.button() == Qt.MouseButton.RightButton:
+            if clicked_idx != -1:
+                self.selected_point_idx = clicked_idx
+            else:
+                nx = (click_x / w) * 2.0 - 1.0
+                ny = 1.0 - (click_y / h) * 2.0
+                self.focal_points.append({'x': nx, 'y': ny, 'z': 0.0})
+                self.selected_point_idx = len(self.focal_points) - 1
+            self.update()
+        elif event.button() == Qt.MouseButton.MiddleButton:
+            # Middle-click directly deletes the clicked or currently selected point
+            target_idx = clicked_idx if clicked_idx != -1 else self.selected_point_idx
+            if len(self.focal_points) > 1:
+                self.focal_points.pop(target_idx)
+                self.selected_point_idx = max(0, target_idx - 1)
+                self.update()
+
+    def wheelEvent(self, event):
+        # Scrolling downward also deletes the selected point if more than one exists
+        if event.angleDelta().y() < 0 and len(self.focal_points) > 1:
+            self.focal_points.pop(self.selected_point_idx)
+            self.selected_point_idx = max(0, self.selected_point_idx - 1)
+            self.update()
+        event.accept()
+
+    def update_coordinate_axis(self, axis: str, val: float):
+        if self.focal_points:
+            self.focal_points[self.selected_point_idx][axis] = val
+            self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor(20, 20, 28))
+
+        painter.setPen(QPen(QColor(50, 50, 70), 1, Qt.PenStyle.DashLine))
+        w, h = self.width(), self.height()
+        painter.drawLine(0, h // 2, w, h // 2)
+        painter.drawLine(w // 2, 0, w // 2, h)
+
+        for idx, pt in enumerate(self.focal_points):
+            px = int((pt['x'] + 1.0) * (w / 2.0))
+            py = int((1.0 - pt['y']) * (h / 2.0))
+
+            color = QColor(255, 100, 100) if idx == self.selected_point_idx else QColor(0, 220, 180)
+            painter.setBrush(color)
+            painter.setPen(QPen(Qt.GlobalColor.white, 2))
+            painter.drawEllipse(px - 8, py - 8, 16, 16)
+
+            painter.setPen(QPen(Qt.GlobalColor.white, 1))
+            painter.setFont(QFont("Arial", 8))
+            painter.drawText(px + 12, py - 5, f"P{idx}({pt['x']:.2f},{pt['y']:.2f},{pt['z']:.2f})")
+
+
+class EQRVisualizerCanvas(QWidget):
+    """
+    Real-time parametric visualizer based on the Equation of Reality (EQR)
+    operator framework, mapping x, y, and z variables to dynamic phase-space renders.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(160)
+        self.setStyleSheet("background-color: #0b0b0b; border: 1px solid #ff6b00; border-radius: 4px;")
+
+        self.phase = 0.0
+        self.scale_factor = 1.0
+        self.x_offset = 0.0
+        self.y_offset = 0.0
+
+        # Timer for real-time mathematical phase updates
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_phase)
+        self.timer.start(30) # ~33 FPS smooth render
+
+    def update_phase(self):
+        self.phase += 0.03
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter()
+        if not painter.begin(self):
+            return
+        try:
+            painter.fillRect(self.rect(), QColor(11, 11, 11))
+            w, h = self.width(), self.height()
+            cx, cy = w / 2.0, h / 2.0
+
+            # Draw coordinate grid / field lines
+            painter.setPen(QPen(QColor(30, 30, 30), 1, Qt.PenStyle.DashLine))
+            painter.drawLine(0, int(cy), w, int(cy))
+            painter.drawLine(int(cx), 0, int(cx), h)
+
+            # EQR Parametric Curve Rendering (x, y, z operator mapping)
+            pen = QPen(QColor(0, 255, 204), 2)
+            painter.setPen(pen)
+
+            points = []
+            num_steps = 300
+            for i in range(num_steps):
+                t = (i / num_steps) * 4 * np.pi + self.phase
+
+                # EQR Core Equations for x, y, and z variables
+                x_val = np.sin(t * 1.5) * np.cos(t * 0.5 + self.phase * 0.2) * 120.0
+                y_val = np.cos(t * 2.0) * np.sin(t * 1.2) * 80.0
+                z_val = np.sin(t + self.phase) * 50.0 # Operator depth factor
+
+                # Projection mapping onto 2D canvas space
+                px = cx + x_val + (z_val * 0.3)
+                py = cy + y_val + (z_val * 0.2)
+                points.append(QPointF(px, py))
+
+            for i in range(len(points) - 1):
+                # Gradient color transition based on index
+                hue_color = QColor.fromHsvF((i / num_steps + self.phase * 0.1) % 1.0, 0.8, 1.0)
+                painter.setPen(QPen(hue_color, 2))
+                painter.drawLine(points[i], points[i+1])
+
+        finally:
+            painter.end()
+class AdvancedDSPEngine:
+    def __init__(self, sample_rate=44100):
+        self.sample_rate = sample_rate
+
+    def compute_synth_waveform(self, track_idx, sub_t, freq, state):
+        # Retrieve 6 internal sliding scale parameters
+        k1 = state.get("internal_p1", 0.5)
+        k2 = state.get("internal_p2", 0.5)
+        k3 = state.get("internal_p3", 0.5)
+        k4 = state.get("internal_p4", 0.5)
+        k5 = state.get("internal_p5", 0.5)
+        k6 = state.get("internal_p6", 0.5)
+
+        # External controls & preset selector
+        fractal = state.get("fractalizer", 0.5)
+        eqr = state.get("eqr_effect", 0.5)
+        preset = state.get("preset_idx", 0)
+
+        phase = 2 * np.pi * freq * sub_t
+
+        # Route math based on the Preset Dropdown selection (0 to 4)
+        if preset == 0:
+            # Preset 0: Non-Linear Wave-Folder Topology
+            raw = np.sin(phase * (1.0 + k1)) + k2 * np.sin(phase * 2.0 * k3)
+            folded = np.tanh(raw * (1.0 + fractal * 5.0))
+            return folded * (1.0 + k4 * np.cos(phase * k5)) * (1.0 - k6 * 0.5)
+
+        elif preset == 1:
+            # Preset 1: Z-Pinch / Quantum Field Resonance
+            pinched = np.sin(phase * (1.0 + track_idx * 0.05)) * (1.0 + k1 * np.tan(np.clip(sub_t * k2, -1.5, 1.5)))
+            resonance = np.arcsin(np.clip(pinched * (0.5 + eqr), -0.99, 0.99))
+            return resonance * k3 * (1.0 + k4 * np.sin(sub_t * k5 * 10.0)) * (1.0 - k6)
+
+        elif preset == 2:
+            # Preset 2: Hyperbolic & Torus Phase-Space
+            hyp = np.sinh(k1 * np.sin(phase)) / (1.0 + np.cosh(k2 * np.cos(phase * k3)))
+            torus_mod = np.cos(phase * (1.0 + k4)) + 0.5 * np.sin(phase * (2.0 + k5))
+            return hyp * torus_mod * (1.0 + fractal * 3.0) * (1.0 - k6 * 0.2)
+
+        elif preset == 3:
+            # Preset 3: Stochastic & Entropic Noise Lattice
+            stochastic_jitter = np.random.normal(0, 0.15, len(sub_t)) * k1
+            chaotic_wave = np.sin(phase * (1.0 + k2) + stochastic_jitter)
+            modulated = chaotic_wave / (1.0 + k3 * np.abs(np.sin(phase * k4)))
+            return modulated * k5 * (1.0 + eqr * 2.0) * (1.0 - k6 * 0.3)
+
+        else:
+            # Preset 4: Custom Polynomial / Matrix Operator
+            # Uses the track index to scale harmonic spacing dynamically across the 48 synths
+            harmonic_offset = 1.0 + (track_idx % 12) * 0.08
+            poly = k1 * (np.sin(phase * harmonic_offset)**3) - k2 * (np.cos(phase * k3)**2) + k4 * np.sin(phase)
+            return np.tanh(poly * (1.0 + fractal * 4.0)) * (1.0 + eqr) * (1.0 - k6 * 0.1)
+
+    def render_full_mixdown(self, filename, channel_states, grid_data, instrument_names, tempo_bpm=120):
+        seconds_per_beat = 60.0 / float(tempo_bpm)
+        total_cols = len(grid_data[0]) if grid_data else 128
+        total_duration = total_cols * seconds_per_beat * 0.25
+
+        num_samples = int(self.sample_rate * total_duration)
+        master_buffer = np.zeros(num_samples, dtype=np.float32)
+        t = np.linspace(0, total_duration, num_samples, endpoint=False)
+
+        for track_idx, row in enumerate(grid_data):
+            state = channel_states[track_idx % len(channel_states)]
+            base_tuning = state.get("tuning", 432.0)
+            duration_mult = state.get("duration", 1.0)
+            vol = state.get("volume", 0.8)
+            p1 = state.get("wave_param1", 0.5)
+            p2 = state.get("wave_param2", 0.5)
+
+            for col_idx, cell in enumerate(row):
+                if cell is not None and cell != "":
+                    start_time = (col_idx / total_cols) * total_duration
+                    note_dur = max(0.05, (total_duration / total_cols) * duration_mult)
+                    end_time = min(total_duration, start_time + note_dur)
+
+                    idx_start = int(start_time * self.sample_rate)
+                    idx_end = int(end_time * self.sample_rate)
+                    if idx_start >= num_samples: continue
+
+                    sub_t = t[idx_start:idx_end] - start_time
+                    if len(sub_t) == 0: continue
+
+                    freq = base_tuning * (1.0 + (col_idx % 12) * 0.03)
+                    raw = np.sin(2 * np.pi * freq * sub_t + p1 * np.sin(2 * np.pi * freq * 2 * sub_t))
+
+                    env = np.sin(np.pi * sub_t / note_dur) * (1.0 + p2 * 0.5)
+                    note_audio = np.tanh(raw * (1.0 + p1 * 2.0)) * env * 0.08 * vol
+                    master_buffer[idx_start:idx_start+len(note_audio)] += note_audio
+
+        max_val = np.max(np.abs(master_buffer))
+        if max_val > 0:
+            master_buffer = master_buffer / max_val * 0.95
+
+        scaled = np.int16(master_buffer * 32767)
+        with wave.open(filename, 'w') as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(self.sample_rate)
+            wav_file.writeframes(scaled.tobytes())
+class MathEngine:
+    """Core mathematical engine evaluated strictly on x, y, z variables without Meum factors."""
+    @staticmethod
+    def isn(val):
+        return np.sin(val) / (1.0 + np.abs(np.cos(val)))
+
+    @staticmethod
+    def ics(val):
+        return np.cos(val) / (1.0 + np.abs(np.sin(val)))
+
+    @staticmethod
+    def eskivector(x, y, z):
+        return MathEngine.isn(x) * y, MathEngine.ics(y) * z, np.sin(x * y * z)
+
+    @staticmethod
+    def eskitable(x, y, z):
+        return np.clip((x + y) * 0.5, -1.0, 1.0) * MathEngine.ics(z)
+
+class OperatorNode:
+    def __init__(self, op_type):
+        self.op_type = op_type  # e.g., 'isn', 'ics', 'eskivector', 'eskitable'
+
+    def compute(self, x, y, z):
+        engine = MathEngine()
+        if self.op_type == 'isn':
+            return engine.isn(x)
+        elif self.op_type == 'ics':
+            return engine.ics(y)
+        elif self.op_type == 'eskivector':
+            return engine.evaluate_eskivector(x, y, z)
+        elif self.op_type == 'eskitable':
+            return engine.evaluate_eskitable(x, y, z)
+        return x, y, z
+class InstrumentSpawner:
+    def __init__(self, inst_type):
+        self.inst_type = inst_type # 'percussion', 'pad', 'keys'
+        self.math_engine = MathEngine()
+        self.envelope = 1.0
+
+    def trigger_spawn(self, x, y, z):
+        """Spawns or evaluates an audio frame based on instrument type and x, y, z coordinates."""
+        # Evaluate base vector/table components
+        vx, vy, vz = self.math_engine.evaluate_eskivector(x, y, z)
+        table_val = self.math_engine.evaluate_eskitable(vx, vy, vz)
+
+        if self.inst_type == 'percussion':
+            # Fast decaying transient envelope with non-linear distortion
+            self.envelope *= 0.95
+            return np.tanh(table_val * self.envelope * 3.0)
+
+        elif self.inst_type == 'pad':
+            # Smooth, sustained harmonic evolution via isosceles trig
+            osc = self.math_engine.isn(vx) + self.math_engine.ics(vy)
+            return osc * 0.5
+
+        elif self.inst_type == 'keys':
+            # Punchy, discrete coordinate mapping
+            return table_val * np.cos(z)
+
+        return table_val
 class ParametricMathBackground(QWidget):
     """Lightweight animated mathematical background behind the global controls.
 
@@ -945,7 +1804,6 @@ class ParametricMathBackground(QWidget):
         self._timer.setInterval(int(UI_TICK_MS))
         self._timer.timeout.connect(self._advance)
         self._timer.start()
-        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._param_cache = ("", (), 0)
         self._rng = random.Random(0)
 
@@ -1138,7 +1996,6 @@ class ParametricMathBackground(QWidget):
         finally:
             if painter.isActive():
                 painter.end()
-
 class UIComponentManager(QWidget):
     """Minimal compatibility stub — full controls live on the main window.
 
@@ -1253,7 +2110,7 @@ class PhaseLockedWavefieldEngine:
             )
             euc, env, har = wf['euclidean'], wf['envelope'], wf['seed_harmonics']
             steps = mem.setdefault('steps', [False] * count)
-            amps = mem.setdefault('amplitudes', [0.5] * count)
+            amps = mem.setdefault('amplitudes', [1.0] * count)
             pitches = mem.setdefault('pitches', [1.0] * count)
             probs = mem.setdefault('probabilities', [100] * count)
 
@@ -1305,6 +2162,619 @@ class PhaseLockedWavefieldEngine:
     def generate_ideal_patch_bay_routing(self):
         if hasattr(self.app, 'generate_ideal_patch_bay_routing'):
             type(self.app).generate_ideal_patch_bay_routing(self.app)
+
+class EQRMasterController:
+    def __init__(self):
+        self.spawners = {
+            'kick_perc': InstrumentSpawner('percussion'),
+            'ambient_pad': InstrumentSpawner('pad'),
+            'lead_keys': InstrumentSpawner('keys')
+        }
+
+    def render_active_spawners(self, buffer_size, x_arr, y_arr, z_arr):
+        """Mixes active instrument spawners down to a master output buffer."""
+        master_buffer = np.zeros(buffer_size)
+
+        for name, spawner in self.spawners.items():
+            voice_buffer = np.zeros(buffer_size)
+            for i in range(buffer_size):
+                voice_buffer[i] = spawner.trigger_spawn(x_arr[i], y_arr[i], z_arr[i])
+
+            # Mix into master
+            master_buffer += voice_buffer
+
+        return master_buffer / len(self.spawners)
+class MemoryBankPane(QGroupBox):
+    """Manages project states, memory banks, and quick preset switching."""
+    def __init__(self, parent=None):
+        super().__init__("Memory Bank & Project Workflow", parent)
+        layout = QGridLayout()
+
+        self.bank_combo = QComboBox()
+        self.bank_combo.addItems([f"Bank {chr(65+i)}: Preset {i+1}" for i in range(8)])
+
+        btn_save = QPushButton("Save State")
+        btn_load = QPushButton("Load State")
+        btn_export = QPushButton("Export Buffer")
+        btn_clear = QPushButton("Clear Bank")
+
+        layout.addWidget(QLabel("Active Bank:"), 0, 0)
+        layout.addWidget(self.bank_combo, 0, 1, 1, 3)
+        layout.addWidget(btn_save, 1, 0)
+        layout.addWidget(btn_load, 1, 1)
+        layout.addWidget(btn_export, 1, 2)
+        layout.addWidget(btn_clear, 1, 3)
+
+        self.setLayout
+class PatchTerminal(QWidget):
+    def __init__(self, name, is_input=True, parent=None):
+        super().__init__(parent)
+        self.name = name
+        self.is_input = is_input
+        self.setFixedSize(110, 26)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        col = QColor("#00ffcc") if self.is_input else QColor("#58a6ff")
+        p.setBrush(QBrush(QColor("#161b22")))
+        p.setPen(QPen(col, 2.0))
+        p.drawEllipse(4, 4, 16, 16)
+        p.setPen(QPen(QColor("#c9d1d9"), 1))
+        p.drawText(24, 17, self.name)
+class PlaylistArrangerWidget(QWidget):
+    """Spicy multivariate modular playlist arranger where numeric program data, clips,
+    and automation tracks can be dynamically created and wired."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout()
+
+        top_bar = QHBoxLayout()
+        top_bar.addWidget(QLabel("<b>Multivariate Modular Playlist & Program Data Matrix</b>"))
+        btn_add_track = QPushButton("Add Arrangement Track")
+        top_bar.addWidget(btn_add_track)
+        layout.addLayout(top_bar)
+
+        self.tracks_layout = QVBoxLayout()
+        layout.addLayout(self.tracks_layout)
+
+        # Add initial track
+        self.add_track("Track 1: Master Rhythm & Eskibrutus Gate")
+        self.add_track("Track 2: Multivariate Modulation Timeline")
+
+        self.setLayout(layout)
+
+    def add_track(self, title="Modular Track"):
+        box = QGroupBox(title)
+        l = QHBoxLayout()
+        l.addWidget(QLabel("Program Data Intensity:"))
+        sl = QSlider(Qt.Orientation.Horizontal)
+        sl.setRange(0, 100)
+        sl.setValue(75)
+        l.addWidget(sl)
+        l.addWidget(PatchTerminal("Track CV Out", is_input=False))
+        box.setLayout(l)
+        self.tracks_layout.addWidget(box)
+class SequencerGridManager:
+    def __init__(self, app_instance):
+        self.app = app_instance
+
+    def rebuild_sequencer_steps(self, count, mem):
+        """Rebuilds step buttons displaying pad number and amplitude, omitting probability tags."""
+        self.app.seq_step_buttons = []
+        for s in range(int(count)):
+            amp_val = mem["amplitudes"][s] if s < len(mem["amplitudes"]) else 0.5
+            is_active = mem["steps"][s] if s < len(mem["steps"]) else False
+
+            step_btn = QPushButton(f"Pad {s+1}\nAmp:{amp_val:.2f}")
+            step_btn.setCheckable(True)
+            step_btn.setChecked(is_active)
+
+            if is_active:
+                step_btn.setStyleSheet("background-color: #00ffff; color: #060606; border: 2px solid #ffffff; font-weight: bold;")
+            else:
+                step_btn.setStyleSheet("background-color: #121212; color: #00ffff; border: 2px solid #444444;")
+
+            self.app.seq_step_buttons.append(step_btn)
+
+    def reload_active_instrument_sequencer_ui(self):
+        """Refreshes button states dynamically across active instruments."""
+        if not hasattr(self.app, 'seq_step_buttons') or not hasattr(self.app, 'active_instrument_memory'):
+            return
+
+        mem = self.app.active_instrument_memory
+        for s_idx, btn in enumerate(self.app.seq_step_buttons):
+            if s_idx < len(mem["steps"]):
+                btn.blockSignals(True)
+                is_active = mem["steps"][s_idx]
+                amp_val = mem["amplitudes"][s_idx]
+
+                btn.setChecked(is_active)
+                btn.setText(f"Pad {s_idx+1}\nAmp:{amp_val:.2f}")
+
+                if is_active:
+                    btn.setStyleSheet("background-color: #00ffff; color: #060606; border: 2px solid #ffffff; font-weight: bold;")
+                else:
+                    btn.setStyleSheet("background-color: #121212; color: #00ffff; border: 2px solid #444444;")
+                btn.blockSignals(False)
+class PlaylistArrangementWindow(QMainWindow):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Interactive Global Playlist & Arrangement Timeline")
+        self.resize(800, 600)
+        self.setStyleSheet(TELETUBBY_STYLE)
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+
+        controls = QHBoxLayout()
+        controls.addWidget(QLabel("<b>Timeline Snap & Polyrhythm Scaling:</b>"))
+        self.grid_scale_combo = QComboBox()
+        self.grid_scale_combo.addItems(["1 Bar (Quantized)", "1/2 Beat", "1/4 Beat", "1/8 Beat", "Fully Unquantized / De-quantized Flow"])
+        controls.addWidget(self.grid_scale_combo)
+
+        controls.addWidget(QLabel("<b>Tempo (BPM):</b>"))
+        self.global_tempo = QLineEdit("124.0")
+        controls.addWidget(self.global_tempo)
+        layout.addLayout(controls)
+
+        self.timeline_view = QTextEdit()
+        self.timeline_view.setPlainText(
+            "# Active Playlist Arrangement Channels\n"
+            "Track 1 [Instrument_1] |=======| [Bars 1 - 16]   (De-quant Offset: +4.2ms | Polyrhythm: 1.0x)\n"
+            "Track 2 [Instrument_2]   |===|   [Bars 8 - 20]   (De-quant Offset: -1.5ms | Polyrhythm: 0.75x)\n"
+            "Track 3 [Instrument_3] |=======| [Bars 12 - 32]  (De-quant Offset: 0.0ms  | Polyrhythm: 1.25x)"
+        )
+        self.timeline_view.setStyleSheet("background-color: #ffffff; color: #1e272e; font-family: monospace; font-size: 14px; border-radius: 12px;")
+        layout.addWidget(self.timeline_view)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addWidget(QPushButton("Universal Brush Painter Mode"))
+        btn_layout.addWidget(QPushButton("Quantize All Sequence Clips"))
+        btn_layout.addWidget(QPushButton("Render Instrument Stems to Disk"))
+        layout.addLayout(btn_layout)
+
+        container.setLayout(layout)
+        self.setCentralWidget(container)
+class MasterModuleNode(QGroupBox):
+    """Modular node for Tab 1 supporting Definers, Functions, and Combiner/Splitters."""
+    def __init__(self, title="Math Operator Module", parent=None, delete_callback=None):
+        super().__init__(title, parent)
+        layout = QVBoxLayout()
+
+        top_bar = QHBoxLayout()
+        self.type_combo = QComboBox()
+        self.type_combo.addItems(["Definer Hub (Var Data)", "Function Module (Match/Oppose/Attract)", "Combiner / Splitter (+/-)"])
+        top_bar.addWidget(self.type_combo)
+        if delete_callback:
+            btn_del = QPushButton("X")
+            btn_del.setFixedWidth(30)
+            btn_del.setStyleSheet("background-color: #da3633; color: white;")
+            btn_del.clicked.connect(lambda: delete_callback(self))
+            top_bar.addWidget(btn_del)
+        layout.addLayout(top_bar)
+
+        self.expr_edit = QLineEdit("isn(x) * t")
+        layout.addWidget(QLabel("Equation / F(x) Operator:"))
+        layout.addWidget(self.expr_edit)
+
+        # Jacks depending on module type
+        jacks_layout = QHBoxLayout()
+        self.jack_in = PatchTerminal("Signal In", is_input=True)
+        self.jack_out1 = PatchTerminal("Automated Out", is_input=False)
+        self.jack_out2 = PatchTerminal("Secondary Out", is_input=False)
+        jacks_layout.addWidget(self.jack_in)
+        jacks_layout.addWidget(self.jack_out1)
+        jacks_layout.addWidget(self.jack_out2)
+        layout.addLayout(jacks_layout)
+
+        self.setLayout(layout)
+class WaveformVectorCanvas(QWidget):
+    """Live interactive canvas supporting L/R clicks, mouse scroll for 'hardness/percussiveness',
+    scroll-drag for wavetable framing, and vector continuousity vs syncopation."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(220, 110)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.points = [QPointF(i * 13.7, 55 + math.sin(i)*30) for i in range(16)]
+        self.hardness = 50.0  # Controls percussiveness vs paddedness
+        self.vector_scale = 1.0
+        self.syncopation = 0.5
+        self.dragging_point = None
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        p.fillRect(0, 0, w, h, QColor("#0d1117"))
+
+        # Grid lines
+        p.setPen(QPen(QColor("#21262d"), 1))
+        for x in range(0, w, 30):
+            p.drawLine(x, 0, x, h)
+
+        # Draw Wavetable / Vector Line
+        path = QPainterPath()
+        if self.points:
+            path.moveTo(self.points[0])
+            for pt in self.points[1:]:
+                path.lineTo(pt)
+        p.setPen(QPen(QColor("#00ffcc"), 2.5))
+        p.drawPath(path)
+
+        # Draw handles
+        for pt in self.points:
+            p.setBrush(QBrush(QColor("#58a6ff")))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(pt, 4, 4)
+
+        p.setPen(QPen(QColor("#8b949e"), 1))
+        p.drawText(10, 18, f"Hardness: {self.hardness:.1f} | Vector Scale: {self.vector_scale:.2f}")
+
+    def mousePressEvent(self, event):
+        pos = event.position()
+        if event.button() == Qt.MouseButton.LeftButton:
+            for pt in self.points:
+                if (pt - pos).manhattanLength() < 12:
+                    self.dragging_point = pt
+                    break
+        elif event.button() == Qt.MouseButton.RightButton:
+            # Shift hardness / percussiveness mode on right click
+            self.hardness = (self.hardness + 10) % 100.0
+            self.update()
+
+    def mouseMoveEvent(self, event):
+        if self.dragging_point:
+            self.dragging_point.setY(max(5, min(self.height() - 5, event.position().y())))
+            self.update()
+
+    def mouseReleaseEvent(self, event):
+        self.dragging_point = None
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+            self.vector_scale = max(0.1, self.vector_scale + (0.1 if delta > 0 else -0.1))
+        else:
+            self.hardness = max(0.0, min(100.0, self.hardness + (5.0 if delta > 0 else -5.0)))
+        self.update()
+class InstrumentStrip(QGroupBox):
+    """Dynamic Instrument Node with modulation resistance profile (Padded, Keys, Percussion),
+    live waveform editor, and patch terminals."""
+    def __init__(self, title="Instrument Node", parent=None, delete_callback=None):
+        super().__init__(title, parent)
+        layout = QVBoxLayout()
+
+        top_row = QHBoxLayout()
+        self.engine_combo = QComboBox()
+        self.engine_combo.addItems(["Eskibrutus", "Vector Synth", "Oscillator Synth", "Wavetable Synth", "Equation Synth"])
+        top_row.addWidget(QLabel("Engine:"))
+        top_row.addWidget(self.engine_combo)
+
+        # Response Profile (Resistance to modulations over long/short periods)
+        self.profile_combo = QComboBox()
+        self.profile_combo.addItems(["Normal Response", "Padded (High Modulation Resistance)", "Keys (Tempo Envelope)", "Percussion (Fast Transient)"])
+        top_row.addWidget(QLabel("Profile:"))
+        top_row.addWidget(self.profile_combo)
+
+        if delete_callback:
+            btn_del = QPushButton("Delete")
+            btn_del.setStyleSheet("background-color: #da3633; color: white;")
+            btn_del.clicked.connect(lambda: delete_callback(self))
+            top_row.addWidget(btn_del)
+
+        layout.addLayout(top_row)
+
+        # Live Wavetable & Vector Canvas
+        self.wave_canvas = WaveformVectorCanvas()
+        layout.addWidget(self.wave_canvas)
+
+        # Patch Terminals for wiring across synth parameters
+        term_layout = QHBoxLayout()
+        self.in_term = PatchTerminal(f"{title} Mod In", is_input=True)
+        self.out_term = PatchTerminal(f"{title} Out", is_input=False)
+        term_layout.addWidget(self.in_term)
+        term_layout.addWidget(self.out_term)
+        layout.addLayout(term_layout)
+
+        # Sliders for Osc Effects, Wavetable Framing, Vector Scaling, Continuousity
+        sliders_grid = QGridLayout()
+        self.sliders = {}
+        s_defs = [("Cutoff", 80), ("Resonance", 30), ("Osc Effects", 50), ("Wavetable Frame", 40), ("Vector Scale", 70), ("Continuousity", 60)]
+        for idx, (s_name, val) in enumerate(s_defs):
+            row, col = dividx = divmod(idx, 2)
+            sliders_grid.addWidget(QLabel(s_name), row, col * 2)
+            sl = QSlider(Qt.Orientation.Horizontal)
+            sl.setRange(0, 100)
+            sl.setValue(val)
+            sliders_grid.addWidget(sl, row, col * 2 + 1)
+            self.sliders[s_name] = sl
+        layout.addLayout(sliders_grid)
+
+        self.setLayout(layout)
+class SongAutomationTimeline(QWidget):
+    """Timeline module for song length, module automation over time, and content duration mapping."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(220)
+        layout = QVBoxLayout()
+
+        controls_layout = QHBoxLayout()
+        controls_layout.addWidget(QLabel("Song Length (Bars):"))
+        self.bars_spin = QSpinBox()
+        self.bars_spin.setRange(4, 256)
+        self.bars_spin.setValue(32)
+        controls_layout.addWidget(self.bars_spin)
+
+        controls_layout.addWidget(QLabel("Global Tempo (BPM):"))
+        self.tempo_spin = QSpinBox()
+        self.tempo_spin.setRange(40, 300)
+        self.tempo_spin.setValue(120)
+        controls_layout.addWidget(self.tempo_spin)
+
+        layout.addLayout(controls_layout)
+
+        # Automation Lane Canvas representation
+        self.lane_canvas = MultiLaneSequencerCanvas()
+        layout.addWidget(self.lane_canvas)
+        self.setLayout(layout)
+# --- Modular Synthesizer/Sequencer Node ---
+class ModulationRoutingWindow(QMainWindow):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Ableton Style Modulation & Device Rack")
+        self.resize(750, 480)
+        self.setStyleSheet(DAW_STYLE)
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+
+        layout.addWidget(QLabel("<b>🎛️ Modular Device & LFO Modulation Matrix</b>"))
+
+        rack_layout = QGridLayout()
+        rack_layout.addWidget(QLabel("LFO 1 Rate (Hz):"), 0, 0)
+        self.lfo_slider = QSlider(Qt.Orientation.Horizontal)
+        self.lfo_slider.setValue(35)
+        rack_layout.addWidget(self.lfo_slider, 0, 1)
+
+        rack_layout.addWidget(QLabel("Filter Cutoff:"), 1, 0)
+        self.cutoff_slider = QSlider(Qt.Orientation.Horizontal)
+        self.cutoff_slider.setValue(70)
+        rack_layout.addWidget(self.cutoff_slider, 1, 1)
+
+        rack_layout.addWidget(QLabel("Wavefold Drive:"), 2, 0)
+        self.drive_slider = QSlider(Qt.Orientation.Horizontal)
+        self.drive_slider.setValue(50)
+        rack_layout.addWidget(self.drive_slider, 2, 1)
+        layout.addLayout(rack_layout)
+
+        self.routing_view = QTextEdit()
+        self.routing_view.setPlainText(
+            "# Active Modulation Routing Matrix (Ableton CV/Mod Style)\n"
+            "LFO 1 ------------> Filter Cutoff (Amount: +65%)\n"
+            "Macro 1 (Drive) --> Wavefolder Saturation (Amount: 80%)\n"
+            "Envelope 1 -------> Master Volume VCA"
+        )
+        self.routing_view.setStyleSheet("background-color: #161616; color: #00ffcc; font-family: monospace;")
+        layout.addWidget(self.routing_view)
+
+        container.setLayout(layout)
+        self.setCentralWidget(container)
+class SynthNodeWidget(QFrame):
+    """Editable modular node frame with visible ports and a rename field."""
+    def __init__(self, name, x, y, parent=None):
+        super().__init__(parent)
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setLineWidth(2)
+        self.resize(210, 140)
+        self.move(x, y)
+        self.setStyleSheet("background-color: #1e1e1e; color: #ffffff; border: 1px solid #555; border-radius: 6px;")
+
+        layout = QVBoxLayout(self)
+
+        # Editable title field
+        self.title_input = QLineEdit(name)
+        self.title_input.setStyleSheet("background-color: #2a2a2a; color: #ffffff; border: 1px solid #666; padding: 4px;")
+        self.title_label = self.title_input
+        layout.addWidget(self.title_input)
+
+        ports_layout = QHBoxLayout()
+
+        in_container = QVBoxLayout()
+        lbl_in = QLabel("In")
+        lbl_in.setStyleSheet("color: #00ffc8; border: none; font-size: 11px; font-weight: bold;")
+        in_container.addWidget(lbl_in)
+        self.in_port = PortWidget('in', self)
+        in_container.addWidget(self.in_port)
+
+        out_container = QVBoxLayout()
+        lbl_out = QLabel("Out")
+        lbl_out.setStyleSheet("color: #ff6400; border: none; font-size: 11px; font-weight: bold;")
+        out_container.addWidget(lbl_out)
+        self.out_port = PortWidget('out', self)
+        out_container.addWidget(self.out_port)
+
+        ports_layout.addLayout(in_container)
+        ports_layout.addLayout(out_container)
+        layout.addLayout(ports_layout)
+
+        self.dragging = False
+        self.drag_position = QPoint()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.dragging = True
+            self.drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.MouseButton.LeftButton and self.dragging:
+            self.move(event.globalPosition().toPoint() - self.drag_position)
+            if self.parent():
+                self.parent().update()
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self.dragging = False
+class ArrangementTrackWidget(QWidget):
+    """Arrangement timeline track for placing and editing sequence blocks."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("background-color: #181818; border: 1px solid #444; border-radius: 4px;")
+        layout = QHBoxLayout(self)
+
+        self.track_label = QLabel("Arrangement Track")
+        self.track_label.setStyleSheet("color: #ffffff; font-weight: bold;")
+
+        self.blocks_layout = QHBoxLayout()
+
+        self.add_block_btn = QPushButton("+ Add Subsequence")
+        self.add_block_btn.setStyleSheet("background-color: #333; color: #ffffff; border: 1px solid #555; padding: 6px 12px; border-radius: 4px;")
+        self.add_block_btn.clicked.connect(self.on_add_subsequence)
+
+        layout.addWidget(self.track_label)
+        layout.addLayout(self.blocks_layout)
+        layout.addStretch()
+        layout.addWidget(self.add_block_btn)
+
+    def on_add_subsequence(self):
+        block = QPushButton("Subsequence Clip")
+        block.setStyleSheet("background-color: #005555; color: #ffffff; border: 1px solid #00ffc8; padding: 6px; border-radius: 3px;")
+        self.blocks_layout.addWidget(block)
+class FitToFrameContainer(QWidget):
+    """A responsive container that scales its inner child widget to fit window bounds."""
+    def __init__(self, inner_widget, base_width=1200, base_height=800):
+        super().__init__()
+        self.inner_widget = inner_widget
+        self.base_width = base_width
+        self.base_height = base_height
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.inner_widget)
+        self.scale_factor = 1.0
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        w = self.width()
+        h = self.height()
+
+        scale_x = w / self.base_width
+        scale_y = h / self.base_height
+        self.scale_factor = min(scale_x, scale_y)
+
+# Import Reality Synth and Music Fractallizer from synth_engine (with fallback stubs)
+class FractallizerVisualizerCanvas(QWidget):
+    def __init__(self, parent=None, app_ref=None):
+        super().__init__(parent)
+        self.app_ref = app_ref
+        self.setMinimumHeight(160)
+        self.setStyleSheet("background-color: #080808; border: 1px solid #ff6b00; border-radius: 4px;")
+        self.phase = 0.0
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_fractal)
+        self.timer.start(25)
+
+    def update_fractal(self):
+        self.phase += 0.05
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter()
+        if not painter.begin(self): return
+        try:
+            painter.fillRect(self.rect(), QColor(8, 8, 8))
+            w, h = self.width(), self.height()
+            cx, cy = w / 2.0, h / 2.0
+            points = []
+            for i in range(200):
+                t = (i / 200.0) * 6 * np.pi + self.phase
+                r = (55.0 + (self.app_ref.macro_fractal.value() * 5 if self.app_ref else 10)) * np.sin(t * 2.5 + self.phase)
+                points.append(QPointF(cx + r * np.cos(t), cy + r * np.sin(t)))
+            for i in range(len(points) - 1):
+                col = QColor.fromHsvF((i / 200.0 + self.phase * 0.1) % 1.0, 0.9, 1.0)
+                painter.setPen(QPen(col, 2))
+                painter.drawLine(points[i], points[i+1])
+        finally:
+            painter.end()
+class CustomVSTKnobsDialog(QDialog):
+    def __init__(self, parent=None, channel_state=None):
+        super().__init__(parent)
+        self.channel_state = channel_state or {}
+        self.setWindowTitle("Custom VST & Waveform Parameters (Edit Synth)")
+        self.resize(450, 350)
+        self.setStyleSheet(DAW_STYLE)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("<b>⚙️ Custom VST Parameters & Wavefunction Mapping:</b>"))
+
+        form_layout = QFormLayout()
+
+        self.vst_param1 = QSlider(Qt.Orientation.Horizontal)
+        self.vst_param1.setRange(0, 100)
+        self.vst_param1.setValue(int(self.channel_state.get("vst_p1", random.random()) * 100))
+        form_layout.addRow("VST Resonance / Freq (p1):", self.vst_param1)
+
+        self.vst_param2 = QSlider(Qt.Orientation.Horizontal)
+        self.vst_param2.setRange(0, 100)
+        self.vst_param2.setValue(int(self.channel_state.get("vst_p2", random.random()) * 100))
+        form_layout.addRow("Harmonic Spread (p2):", self.vst_param2)
+
+        self.vst_param3 = QSlider(Qt.Orientation.Horizontal)
+        self.vst_param3.setRange(0, 100)
+        self.vst_param3.setValue(int(self.channel_state.get("vst_p3", random.random()) * 100))
+        form_layout.addRow("Meum Scaling Depth (p3):", self.vst_param3)
+
+        self.routing_combo = QComboBox()
+        self.routing_combo.addItems(["Direct Summation", "Phase Modulation (PM)", "Frequency Modulation (FM)", "Nonlinear Foldback"])
+        form_layout.addRow("Synthesis Routing Mode:", self.routing_combo)
+
+        layout.addLayout(form_layout)
+
+        btn_box = QHBoxLayout()
+        save_btn = QPushButton("Apply VST Settings")
+        save_btn.setStyleSheet("background-color: #00aa55; color: white; font-weight: bold;")
+        save_btn.clicked.connect(self.accept)
+        btn_box.addWidget(save_btn)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_box.addWidget(cancel_btn)
+
+        layout.addLayout(btn_box)
+
+    def get_values(self):
+        return {
+            "vst_p1": self.vst_param1.value() / 100.0,
+            "vst_p2": self.vst_param2.value() / 100.0,
+            "vst_p3": self.vst_param3.value() / 100.0,
+            "routing": self.routing_combo.currentText()
+        }
+class ModularPatchBayDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Modular Modulation Patch Bay")
+        self.resize(500, 400)
+        self.setStyleSheet(DAW_STYLE)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("<b>🔌 Cross-Modulation Matrix:</b>"))
+
+        self.matrix_table = QTableWidget(6, 6)
+        self.matrix_table.setHorizontalHeaderLabels(["Ch 1", "Ch 2", "Ch 3", "Ch 4", "Mod A", "Mod B"])
+        self.matrix_table.setVerticalHeaderLabels(["Src 1", "Src 2", "Src 3", "Src 4", "Env 1", "LFO 1"])
+        layout.addWidget(self.matrix_table)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+
+    def randomize_matrix(self):
+        for r in range(self.matrix_table.rowCount()):
+            for c in range(self.matrix_table.columnCount()):
+                val = f"{random.choice([0.0, 0.25, 0.5, 0.75, 1.0])}"
+                self.matrix_table.setItem(r, c, QTableWidgetItem(val))
+
+
 
 class ReadmeGuideDialog(QDialog):
     """Full Help / Readme: philosophy, workflow, scripting syntax, disclaimer."""
@@ -1379,10 +2849,9 @@ Runs automatically before Euclidean lock / Seeded randomizer.
   Program = net-effect data only (playlist-effective instruments with audible steps).
 
   Case A — no seed AND no program (system is free to assign):
-      25% → BOTH: random kit seed + kit program/sequences
+      50% → BOTH: random kit seed + kit program parameters
       25% → SEED ONLY: random kit seed; pads/playlist left empty
-      25% → SEQUENCES ONLY: kit program/sequences; seed field stays empty
-      25% → NEITHER: no kit seed, no sequences (fully empty boot)
+      25% → PROGRAM ONLY: kit program parameters; seed field stays empty
 
   Case B — program present, no seed:
       Derive seed from fingerprint of net-effect steps (simplifies playlist superwrite)
@@ -1607,6 +3076,1039 @@ Each has sequencer memory (steps, amplitudes, gates, probabilities) and optional
         close_btn.clicked.connect(self.accept)
         layout.addWidget(close_btn)
 
+class ModularPatchBayDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Modular Modulation Bay & Routing Matrix")
+        self.resize(700, 500)
+        self.setStyleSheet(DAW_STYLE)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("<h3>🔌 Master Modular Patch Bay & CV Routing Matrix</h3>"))
+
+        toolbar = QHBoxLayout()
+        random_patch_btn = QPushButton("🎲 Randomize Patch Bay")
+        random_patch_btn.setStyleSheet("background-color: #ff6b00; color: white;")
+        random_patch_btn.clicked.connect(self.randomize_matrix)
+        toolbar.addWidget(random_patch_btn)
+
+        clear_patch_btn = QPushButton("Clear Patch Bay")
+        clear_patch_btn.clicked.connect(self.clear_matrix)
+        toolbar.addWidget(clear_patch_btn)
+        layout.addLayout(toolbar)
+
+        self.table = QTableWidget(12, 12)
+        self.table.setHorizontalHeaderLabels([f"Mod Out {i+1}" for i in range(12)])
+        self.table.setVerticalHeaderLabels([f"Dest {i+1}" for i in range(12)])
+        self.table.setStyleSheet("QTableWidget { background-color: #161616; gridline-color: #282828; }")
+        layout.addWidget(self.table)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+
+    def randomize_matrix(self):
+        for r in range(12):
+            for c in range(12):
+                if random.random() > 0.7:
+                    item = QTableWidgetItem("⚡ CV")
+                    item.setBackground(QColor(255, 107, 0))
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    self.table.setItem(r, c, item)
+                else:
+                    self.table.setItem(r, c, None)
+        QMessageBox.information(self, "Patch Bay", "Modular routing matrix randomized successfully.")
+
+    def clear_matrix(self):
+        self.table.clearContents()
+
+# ==========================================
+# SCRIPT PANEL DIALOG
+# ==========================================
+class ScriptPanelDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Mathematician's EQR & Chaos Scripting Suite")
+        self.resize(700, 500)
+        self.setStyleSheet(DAW_STYLE)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("<h3>📜 Python / EQR Phase-Space Script Console</h3>"))
+
+        self.editor = QTextEdit()
+        self.editor.setPlainText(
+            "# Custom EQR Operator & Curvature Evaluation Script\n"
+            "import numpy as np\n\n"
+            "def evaluate_phase_space(step_matrix, curvature=1.618):\n"
+            "    print(f'Evaluating EQR tensor across matrix with curvature {curvature}')\n"
+            "    return True\n\n"
+            "evaluate_phase_space(None, 1.618033)\n"
+        )
+        self.editor.setStyleSheet("background-color: #141414; color: #00ffcc; font-family: monospace; font-size: 11px;")
+        layout.addWidget(self.editor)
+
+        btn_layout = QHBoxLayout()
+        run_btn = QPushButton("▶ Run Script Evaluation")
+        run_btn.setStyleSheet("background-color: #ff6b00; color: white;")
+        run_btn.clicked.connect(lambda: QMessageBox.information(self, "Script Engine", "Script executed successfully in active memory namespace."))
+        btn_layout.addWidget(run_btn)
+
+        close_btn = QPushButton("Close Panel")
+        close_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(close_btn)
+        layout.addLayout(btn_layout)
+class MusicFractallizer:
+    def __init__(self, dimensions=('x', 'y', 'z'), survival_mode=True):
+        self.dimensions = dimensions
+        self.survival_mode = survival_mode
+        self.active_patches = []
+    def generate_fractal_stream(self, seed_data):
+        return {dim: np.tanh(seed_data) for dim in self.dimensions}
+
+class RealitySynthEngine:
+    def __init__(self, survival_mode=True):
+        self.fractallizer = MusicFractallizer(dimensions=('x', 'y', 'z'), survival_mode=survival_mode)
+    def render_reality_patch(self, base_patch_data):
+        return {coord: sig.tolist() for coord, sig in self.fractallizer.generate_fractal_stream(base_patch_data).items()}
+
+
+class AdvancedWaveformVisualizerCanvas(QWidget):
+    """Multi-model real-time Wavetable, Vector, and Algebraic Equation Visualizer."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(280)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.phase = 0.0
+        self.active_mode = "Eskivector"
+
+    def update_phase(self):
+        self.phase += 0.05
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+
+        p.fillRect(0, 0, w, h, QColor("#0a0e14"))
+        p.setPen(QPen(QColor("#161b22"), 1))
+        for x in range(0, w, 40):
+            p.drawLine(x, 0, x, h)
+        for y in range(0, h, 40):
+            p.drawLine(0, y, w, y)
+
+        path = QPainterPath()
+        center_y = h / 2.0
+        meum_ratio = MEUM
+
+        for px in range(w):
+            t_val = (px / w) * 4.0 * math.pi + self.phase
+            if self.active_mode == "Eskivector":
+                val = MathEngine.isn(t_val * meum_ratio) + 0.5 * MathEngine.ics(t_val)
+            elif self.active_mode == "Eskitable":
+                val = MathEngine.arcisn(math.sin(t_val)) * MathEngine.arcics(math.cos(t_val * 0.5))
+            elif self.active_mode == "Eskiosc":
+                val = MathEngine.isn_inv(math.sin(t_val))
+            else: # Eskiequation
+                val = MathEngine.isn(t_val) * MathEngine.ics(t_val * meum_ratio) + MathEngine.arcisn(math.sin(t_val * 0.25))
+
+            py = center_y - (val * (h * 0.35))
+            if px == 0:
+                path.moveTo(px, py)
+            else:
+                path.lineTo(px, py)
+
+        p.setPen(QPen(QColor("#00ffcc"), 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        p.drawPath(path)
+
+        p.setPen(QPen(QColor("#58a6ff"), 1, Qt.PenStyle.DashLine))
+        p.drawLine(0, int(center_y), w, int(center_y))
+        p.drawText(15, 25, f"Visualizer Active Model: [{self.active_mode}] — Isosceles Trig & Algebraic Waveform")
+class MultiLaneSequencerCanvas(QWidget):
+    """Sequencer canvas with built-in modulation patch outputs per track."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.step_count = 16
+        self.setMinimumHeight(200)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.steps = [{"amp": 0.9, "pitch": 440.0, "gate": True} for _ in range(16)]
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        p.fillRect(0, 0, w, h, QColor("#0a0e14"))
+        step_w = w / self.step_count
+        for i in range(self.step_count):
+            sx = i * step_w
+            val_h = self.steps[i]["amp"] * (h - 20)
+            p.setBrush(QBrush(QColor("#00ffcc")))
+            p.drawRoundedRect(QRectF(sx + 2, h - val_h - 10, step_w - 4, val_h), 2, 2)
+class StepPainterSequencerCanvas(QWidget):
+    """Sequencer supporting color-coded step painting for frequency, amplitude, and duration."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.step_count = 16
+        self.setMinimumHeight(300)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.steps = [
+            {"freq": 220.0 + i*30, "amp": 0.7, "duration": 1.0, "color": QColor("#00ffcc" if i%2==0 else "#58a6ff")}
+            for i in range(32)
+        ]
+        self.painting_mode = "amplitude"
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        p.fillRect(0, 0, w, h, QColor("#0a0e14"))
+        p.setPen(QPen(QColor("#00ffcc"), 1))
+        p.drawText(15, 25, f"Step Painter Mode: [{self.painting_mode}] — Active Step Count: {self.step_count}")
+
+class IdealizedMathKnob(QWidget):
+    """Skeuomorphic rotary controller designed for mathematical mapping ($x, y, z, t$ space)."""
+    def __init__(self, label_text, min_val=0.0, max_val=100.0, default_val=50.0, math_note="", parent=None):
+        super().__init__(parent)
+        self.label_text = label_text
+        self.min_val = min_val
+        self.max_val = max_val
+        self.value = default_val
+        self.math_note = math_note
+        self.setFixedSize(110, 130)
+        self.dragging = False
+        self.last_y = 0
+        self.is_patched = True
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        painter.setPen(QPen(QColor("#58a6ff"), 1))
+        painter.drawText(0, 8, self.width(), 14, Qt.AlignmentFlag.AlignCenter, self.label_text)
+
+        painter.setPen(QPen(QColor("#8b949e"), 1))
+        painter.drawText(0, 22, self.width(), 12, Qt.AlignmentFlag.AlignCenter, f"Val: {self.value:.3f}")
+
+        center = QPointF(55, 62)
+        radius = 20.0
+
+        painter.setBrush(QBrush(QColor("#161b22")))
+        painter.setPen(QPen(QColor("#30363d"), 2))
+        painter.drawEllipse(center, radius, radius)
+
+        span_val = self.max_val - self.min_val if self.max_val != self.min_val else 1.0
+        normalized = (self.value - self.min_val) / span_val
+        angle = math.radians(-130 + (normalized * 260))
+        tip_x = center.x() + (radius - 5) * math.sin(angle)
+        tip_y = center.y() - (radius - 5) * math.cos(angle)
+
+        painter.setPen(QPen(QColor("#00ffcc"), 2.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(center, QPointF(tip_x, tip_y))
+
+        jack_center = QPointF(55, 96)
+        painter.setBrush(QBrush(QColor("#0d1117")))
+        painter.setPen(QPen(QColor("#00ffcc") if self.is_patched else QColor("#484f58"), 1.5))
+        painter.drawEllipse(jack_center, 5.0, 5.0)
+
+        painter.setPen(QPen(QColor("#c9d1d9"), 1))
+        painter.drawText(2, 108, self.width() - 4, 20, Qt.AlignmentFlag.AlignCenter, self.math_note)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            jack_center = QPointF(55, 96)
+            if (event.position() - jack_center).manhattanLength() < 12:
+                self.is_patched = not self.is_patched
+                self.update()
+            else:
+                self.dragging = True
+                self.last_y = event.position().y()
+
+    def mouseMoveEvent(self, event):
+        if self.dragging:
+            dy = self.last_y - event.position().y()
+            self.last_y = event.position().y()
+            span = self.max_val - self.min_val
+            step = span * (dy / 150.0)
+            self.value = max(self.min_val, min(self.max_val, self.value + step))
+            self.update()
+
+    def mouseReleaseEvent(self, event):
+        self.dragging = False
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        span = self.max_val - self.min_val
+        step = span * (0.02 if delta > 0 else -0.02)
+        self.value = max(self.min_val, min(self.max_val, self.value + step))
+        self.update()
+class SequencerEngine:
+    def __init__(self, steps=16):
+        self.steps = steps
+        self.current_step = 0
+        self.active_pattern = [0.0] * steps
+
+    def step_forward(self, synth_callback):
+        """Advances the sequencer step and triggers sound generation."""
+        val = self.active_pattern[self.current_step]
+
+        # Trigger synth callback with current coordinate step intensity
+        if synth_callback and callable(synth_callback):
+            synth_callback(self.current_step, val)
+
+        self.current_step = (self.current_step + 1) % self.steps
+        return self.current_step
+class ModularSequencerEngine:
+    """Drives step logic across tabs and translates steps into active synth events."""
+    def __init__(self, total_steps=16):
+        self.total_steps = total_steps
+        self.current_step = 0
+        self.tab_triggers = {} # Maps tab index/name to step arrays
+
+    def register_tab_grid(self, tab_id, default_pattern=None):
+        if default_pattern is None:
+            default_pattern = [1 if i % 4 == 0 else 0 for i in range(self.total_steps)]
+        self.tab_triggers[tab_id] = default_pattern
+
+    def advance_clock(self, synth_bank, active_tab_id, x_val, y_val, z_val):
+        # Advance step counter
+        self.current_step = (self.current_step + 1) % self.total_steps
+
+        # Check if current tab has a trigger pattern
+        if active_tab_id in self.tab_triggers:
+            pattern = self.tab_triggers[active_tab_id]
+            is_triggered = pattern[self.current_step]
+
+            if is_triggered:
+                # Force generation check across active synths using x, y, z variables
+                freq = 220.0 * (1.0 + (self.current_step % 7) * 0.15)
+                synth_bank.spawn_synth("Additive", base_freq=freq)
+
+        return self.current_step
+class InteractivePatchbayCanvas(QWidget):
+    """Master Hub visualizing all cross-panel connections."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(1000, 700)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        p.fillRect(0, 0, w, h, QColor("#0a0e14"))
+
+        # Grid lines
+        p.setPen(QPen(QColor("#161b22"), 1))
+        for x in range(0, w, 40):
+            p.drawLine(x, 0, x, h)
+        for y in range(0, h, 40):
+            p.drawLine(0, y, w, y)
+
+        # Render global cross-panel cables
+        p.setPen(QPen(QColor("#ff7b72"), 3.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        for src, dst in global_patch_bus.cables:
+            # Placeholder coordinates mapping for visualization overview
+            p.drawLine(150, 150, 750, 400)
+
+        p.setPen(QPen(QColor("#8b949e"), 1))
+        p.drawText(25, 35, "Master Patchbay: Monitoring all cross-panel connections between Panels 1, 2, and 3.")
+class SideDisplayPanelManager:
+    """Rebuilds and populates side display panels with active modular routing controls."""
+    def __init__(self, parent_layout):
+        self.layout = parent_layout
+        self.panels = {}
+        self.init_panels()
+
+    def init_panels(self):
+        # Panel A: Macro X-Y-Z Variable Monitor
+        self.panels['xyz_monitor'] = {
+            "label": "XYZ Matrix Spatial State",
+            "widgets": ["x_slider", "y_slider", "z_slider"],
+            "status": "Active"
+        }
+
+        # Panel B: Reapplied Side Feature (Spectral Tilt & Harmonic Spread)
+        self.panels['spectral_control'] = {
+            "label": "Harmonic Spectrum Balancer",
+            "widgets": ["tilt_dial", "spread_dial"],
+            "status": "Rebuilt & Live"
+        }
+
+        # Panel C: Unused Feature Activation (Stochastic Grain Cloud)
+        self.panels['stochastic_mod'] = {
+            "label": "Stochastic Grain Generator",
+            "widgets": ["density_knob", "scatter_knob"],
+            "status": "Newly Appplied"
+        }
+
+    def render_panel_data(self, x, y, z):
+        """Updates side panel readouts dynamically based on core calculations."""
+        metrics = {
+            "X_Var": round(x, 4),
+            "Y_Var": round(y, 4),
+            "Z_Var": round(z, 4),
+            "Active_Panels": len(self.panels)
+        }
+        return metrics
+
+class FreeformSequencerCanvas(QWidget):
+    """Sequencer canvas supporting dynamic step length and micro-timing."""
+    def __init__(self, sequence_data=None, parent=None):
+        super().__init__(parent)
+        self.seq_data = sequence_data if sequence_data is not None else [0.0] * 16
+        self.step_count = 16
+        self.non_quant_offset = 0.0
+        self.setMinimumHeight(260)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.nodes = [QPointF(60, 180), QPointF(340, 60), QPointF(680, 140), QPointF(960, 50)]
+        self.wires = [(self.nodes[0], self.nodes[1]), (self.nodes[2], self.nodes[3])]
+        self.active_node = None
+        self.wiring_start = None
+
+    def set_step_count(self, count):
+        self.step_count = count
+        if len(self.seq_data) < count:
+            self.seq_data.extend([0.0] * (count - len(self.seq_data)))
+        self.update()
+
+    def set_non_quant_offset(self, offset):
+        self.non_quant_offset = offset
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        try:
+            if isinstance(self.seq_data, dict):
+                notes = self.seq_data.get("notes", [])
+            elif isinstance(self.seq_data, list):
+                notes = [
+                    {"time": float(i) + self.non_quant_offset, "duration": 1.0, "active": bool(val != 0)}
+                    for i, val in enumerate(self.seq_data[:self.step_count])
+                ]
+            else:
+                notes = []
+
+            w, h = self.width(), self.height()
+            p.fillRect(0, 0, w, h, QColor("#0a0e14"))
+
+            p.setPen(QPen(QColor("#161b22"), 1))
+            for x in range(0, w, 40):
+                p.drawLine(x, 0, x, h)
+            for y in range(0, h, 40):
+                p.drawLine(0, y, w, y)
+
+            for p1, p2 in self.wires:
+                ctrl = QPointF((p1.x() + p2.x()) / 2, max(p1.y(), p2.y()) + 60)
+                path = QPainterPath()
+                path.moveTo(p1)
+                path.cubicTo(ctrl, ctrl, p2)
+                p.setPen(QPen(QColor("#00ffcc"), 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                p.drawPath(path)
+
+            max_time = max([n.get("time", 0.0) + n.get("duration", 1.0) for n in notes] + [float(self.step_count)])
+            scale_x = w / max(float(self.step_count), max_time)
+
+            for i, note in enumerate(notes):
+                nx = note.get("time", float(i)) * scale_x
+                nw = max(12, note.get("duration", 1.0) * scale_x)
+                ny = 15 + (i % 4) * 24
+
+                is_active = note.get("active", True)
+                p.setBrush(QBrush(QColor("#00ffcc" if is_active else "#21262d")))
+                p.setPen(QPen(QColor("#ffffff" if is_active else "#484f58"), 1))
+                p.drawRoundedRect(int(nx), int(ny), int(nw), 18, 4, 4)
+
+                p.setPen(QPen(QColor("#ffffff" if is_active else "#8b949e"), 1))
+                p.drawText(int(nx) + 4, int(ny) + 13, f"N{i+1}")
+
+        finally:
+            p.end()
+
+    def mousePressEvent(self, event):
+        pos = event.position()
+        if event.button() == Qt.MouseButton.RightButton:
+            self.nodes.append(QPointF(pos.x(), pos.y()))
+            self.nodes.sort(key=lambda p: p.x())
+            self.update()
+        elif event.button() == Qt.MouseButton.LeftButton:
+            for node in self.nodes:
+                if (node - pos).manhattanLength() < 14:
+                    self.wiring_start = node
+                    return
+            for idx, node in enumerate(self.nodes):
+                if (node - pos).manhattanLength() < 22:
+                    self.active_node = idx
+                    break
+
+    def mouseMoveEvent(self, event):
+        if self.active_node is not None:
+            new_pos = event.position()
+            self.nodes[self.active_node] = QPointF(max(0, min(self.width(), new_pos.x())), max(0, min(self.height(), new_pos.y())))
+            self.update()
+
+    def mouseReleaseEvent(self, event):
+        if self.wiring_start:
+            pos = event.position()
+            for node in self.nodes:
+                if (node - pos).manhattanLength() < 18 and node != self.wiring_start:
+                    self.wires.append((self.wiring_start, node))
+                    break
+            self.wiring_start = None
+        self.active_node = None
+        self.update()
+import math
+import random
+
+class DynamicSynthManager:
+    """Manages live instantiation, tracking, and audio block generation for active synths."""
+    def __init__(self, sample_rate=44100.0):
+        self.sr = sample_rate
+        self.active_instances = []
+
+    def spawn_instance(self, module_type, base_freq=440.0):
+        """Spawns a specific interactive synth instance."""
+        if module_type == "AdditiveNode":
+            inst = AdditiveSynthInstance(base_freq, self.sr)
+        elif module_type == "FormantNode":
+            inst = FormantSynthInstance(base_freq, self.sr)
+        elif module_type == "StochasticNode":
+            inst = StochasticNoiseInstance(base_freq, self.sr)
+        else:
+            inst = StandardSynthInstance(base_freq, self.sr)
+
+        self.active_instances.append(inst)
+        # Prune older instances if max polyphony is reached to prevent lag
+        if len(self.active_instances) > 16:
+            self.active_instances.pop(0)
+        return inst
+
+    def process_audio_stream(self, num_samples, x, y, z):
+        """Renders and sums all active synth instances using x, y, z coordinate parameters."""
+        master_buffer = [0.0] * num_samples
+        for instance in list(self.active_instances):
+            if instance.is_finished():
+                self.active_instances.remove(instance)
+                continue
+            buf = instance.render_block(num_samples, x, y, z)
+            for i in range(num_samples):
+                master_buffer[i] += buf[i]
+        return master_buffer
+class PatchbayCanvas(QWidget):
+    """Interactive canvas that visually renders node patching wires and real-time waveforms."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(200)
+        self.amplitude_data = [0.0] * 60
+        self.connections = [
+            ("EskiVector Node", "Reality Wave-Folder"),
+            ("EskiTable Unit", "Fractalizer Matrix")
+        ]
+
+    def update_data(self, new_val):
+        self.amplitude_data.pop(0)
+        # Scaled up gain for high-visibility waveforms
+        self.amplitude_data.append(new_val * 4.5)
+        self.update()
+
+    def add_connection(self, source, target):
+        if (source, target) not in self.connections:
+            self.connections.append((source, target))
+            self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Dark studio background
+        painter.fillRect(self.rect(), QColor(15, 15, 20))
+
+        # Draw Coded Patching Wires
+        wire_pen = QPen(QColor(255, 140, 0))
+        wire_pen.setWidth(3)
+        painter.setPen(wire_pen)
+
+        # Render visual nodes and connecting wires across the canvas
+        node_positions = {
+            "EskiVector Node": QPointF(100, 60),
+            "EskiTable Unit": QPointF(100, 140),
+            "Reality Wave-Folder": QPointF(400, 60),
+            "Fractalizer Matrix": QPointF(400, 140)
+        }
+
+        for src, tgt in self.connections:
+            if src in node_positions and tgt in node_positions:
+                p1 = node_positions[src]
+                p2 = node_positions[tgt]
+                # Draw curved patching wire
+                painter.drawLine(int(p1.x()), int(p1.y()), int(p2.x()), int(p2.y()))
+
+        # Draw Node Blocks
+        for name, pt in node_positions.items():
+            painter.setBrush(QBrush(QColor(40, 40, 55)))
+            painter.setPen(QPen(QColor(0, 220, 150), 2))
+            painter.drawRoundedRect(int(pt.x() - 70), int(pt.y() - 25), 140, 50, 8, 8)
+            painter.setPen(QColor(255, 255, 255))
+            painter.drawText(int(pt.x() - 60), int(pt.y() + 5), name)
+
+        # Draw Scaled Waveform / Vector Display at the bottom half
+        graph_y_offset = 220
+        wave_pen = QPen(QColor(0, 255, 180))
+        wave_pen.setWidth(3)
+        painter.setPen(wave_pen)
+
+        width = self.width()
+        step = width / max(len(self.amplitude_data) - 1, 1)
+
+        for i in range(len(self.amplitude_data) - 1):
+            x1 = int(i * step)
+            y1 = int(graph_y_offset - self.amplitude_data[i] * 40)
+            x2 = int((i + 1) * step)
+            y2 = int(graph_y_offset - self.amplitude_data[i + 1] * 40)
+            painter.drawLine(x1, y1, x2, y2)
+# -------------------------------------------------------------------------
+# CONSTANTS & CONFIGURATION DATABASE
+# -------------------------------------------------------------------------
+FREQUENCY_432HZ = 432.0
+class StandardSynthInstance:
+    def __init__(self, freq, sr):
+        self.freq = freq
+        self.sr = sr
+        self.phase = 0.0
+        self.life = 100
+
+    def is_finished(self):
+        return self.life <= 0
+
+    def render_block(self, num_samples, x, y, z):
+        buf = []
+        modulated_freq = self.freq * (0.8 + abs(x) * 0.4)
+        step = (2.0 * math.pi * modulated_freq) / self.sr
+        for _ in range(num_samples):
+            self.phase += step
+            val = math.sin(self.phase) * 0.3 * max(0.0, y)
+            buf.append(val)
+        self.life -= 1
+        return buf
+
+class AdditiveSynthInstance(StandardSynthInstance):
+    def render_block(self, num_samples, x, y, z):
+        buf = []
+        harmonics = [1.0, 2.0, 3.5, 4.0, 6.0]
+        step = (2.0 * math.pi * self.freq) / self.sr
+        for i in range(num_samples):
+            self.phase += step
+            sample = 0.0
+            for h in harmonics:
+                sample += math.sin(self.phase * h * (1.0 + z * 0.05)) / h
+            buf.append(sample * 0.15 * max(0.0, y))
+        self.life -= 1
+        return buf
+
+class FormantSynthInstance(StandardSynthInstance):
+    def render_block(self, num_samples, x, y, z):
+        buf = []
+        carrier_step = (2.0 * math.pi * self.freq) / self.sr
+        formant_step = (2.0 * math.pi * (self.freq * abs(x * 3.0))) / self.sr
+        for _ in range(num_samples):
+            self.phase += carrier_step
+            c = math.sin(self.phase)
+            m = math.cos(self.phase * 1.5) * math.sin(formant_step)
+            val = c * m * 0.2 * abs(z)
+            buf.append(val)
+        self.life -= 1
+        return buf
+
+class StochasticNoiseInstance(StandardSynthInstance):
+    def render_block(self, num_samples, x, y, z):
+        buf = []
+        for _ in range(num_samples):
+            noise = (random.random() * 2.0 - 1.0)
+            val = noise * 0.1 * abs(x) * max(0.0, y)
+            buf.append(val)
+        self.life -= 1
+        return buf
+class MasterSynthBank:
+    """Manages dynamic spawning and audio rendering for modular synths."""
+    def __init__(self, sample_rate=44100.0):
+        self.sr = sample_rate
+        self.active_synths = []
+
+    def spawn_synth(self, synth_type, base_freq=440.0):
+        if synth_type == "Additive":
+            synth = AdditiveSynthNode(base_freq, self.sr)
+        elif synth_type == "Formant":
+            synth = FormantSynthNode(base_freq, self.sr)
+        elif synth_type == "NoiseBurst":
+            synth = NoiseBurstNode(base_freq, self.sr)
+        else:
+            synth = StandardWaveSynthNode(base_freq, self.sr)
+        self.active_synths.append(synth)
+        return synth
+
+    def render_buffer(self, num_samples, x_mod=1.0, y_mod=1.0, z_mod=1.0):
+        buffer = [0.0] * num_samples
+        for synth in self.active_synths:
+            s_buf = synth.generate_block(num_samples, x_mod, y_mod, z_mod)
+            for i in range(num_samples):
+                buffer[i] += s_buf[i]
+        return buffer
+# ==========================================
+# 3. INTERACTIVE SEQUENCER, SERIALIZATION & VISUAL LAYERS
+# ==========================================
+class InteractiveSequencerGrid:
+    """Handles step sequencing and triggers live synth module generation."""
+    def __init__(self, steps=16):
+        self.steps = steps
+        self.current_step = 0
+        self.pattern_matrix = [1 if i % 4 == 0 else 0 for i in range(steps)]
+
+    def step_clock(self, synth_manager, x, y, z):
+        self.current_step = (self.current_step + 1) % self.steps
+        if self.pattern_matrix[self.current_step] == 1:
+            if x > 0.3:
+                m_type = "Additive"
+            elif z > 0.5:
+                m_type = "Formant"
+            else:
+                m_type = "Stochastic"
+            base_f = 110.0 * (1.0 + (self.current_step % 8) * 0.2)
+            synth_manager.spawn_instance(m_type, base_freq=base_f)
+        return self.current_step
+
+
+
+class AudioEngineBridge:
+    """Bridges the UI coordinate state and sequencer ticks directly to the audio output stream."""
+    def __init__(self, synth_manager, sequencer_grid):
+        self.synth_manager = synth_manager
+        self.sequencer = sequencer_grid
+
+    def audio_callback(self, outdata, frames, time_info, status, x_val, y_val, z_val):
+        """Standard NumPy/SoundDevice or PyAudio callback hook."""
+        # 1. Advance sequencer clock per audio buffer block / tick
+        self.sequencer.step_clock(self.synth_manager, x_val, y_val, z_val)
+
+        # 2. Render live audio buffer from active synth instances using x, y, z
+        buffer = self.synth_manager.process_audio_stream(frames, x_val, y_val, z_val)
+
+        # 3. Format output for playback stream
+        for i in range(frames):
+            val = buffer[i] if i < len(buffer) else 0.0
+            # Simple soft-clip limiter to prevent distortion
+            outdata[i] = max(-1.0, min(1.0, val))
+class StandardWaveSynthNode:
+    def __init__(self, freq, sr):
+        self.freq = freq
+        self.sr = sr
+        self.phase = 0.0
+        self.amp = 0.5
+
+    def generate_block(self, num_samples, x, y, z):
+        buf = []
+        # Incorporating x, y, z variables for mathematical spatial modulation
+        effective_freq = self.freq * (0.5 + abs(x) * 0.5)
+        step = (2.0 * math.pi * effective_freq) / self.sr
+        for _ in range(num_samples):
+            self.phase += step
+            val = math.sin(self.phase) * self.amp * y
+            buf.append(val)
+        return buf
+class ModularTabManager(QTabWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setTabsClosable(True)
+        self.tabCloseRequested.connect(self.close_tab)
+
+        # Add initial control tab workspace
+        self.add_new_module_tab("Core Synthesizer Matrix")
+    def add_new_module_tab(self, title_prefix="Node Module"):
+        tab_count = self.count()
+        tab_title = f"{title_prefix} {tab_count + 1}"
+
+        container = QWidget()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+
+        inner_widget = QWidget()
+        layout = QVBoxLayout(inner_widget)
+
+        # Populate workspace with expanded DSP control and patch routing panels
+        layout.addWidget(QLabel(f"--- {tab_title} Workspace ---"))
+        layout.addWidget(self.create_dsp_control_panel())
+        layout.addWidget(self.create_patch_bay_panel())
+        layout.addWidget(QLabel(f"--- {tab_title} Workspace ---"))
+        layout.addWidget(CoordinateVisualizer())       # Snippet 5
+        layout.addWidget(FormulaModulatorWidget())     # Snippet 3
+        layout.addWidget(ModulationMatrixWidget())     # Snippet 4
+        layout.addWidget(self.create_dsp_control_panel())
+        scroll.setWidget(inner_widget)
+
+        tab_layout = QVBoxLayout(container)
+        tab_layout.addWidget(scroll)
+        container.setLayout(tab_layout)
+
+        self.addTab(container, tab_title)
+        self.setCurrentWidget(container)
+
+    def close_tab(self, index):
+        if self.count() > 1:
+            widget = self.widget(index)
+            self.removeTab(index)
+            widget.deleteLater()
+
+    def create_dsp_control_panel(self):
+        panel = QWidget()
+        layout = QHBoxLayout()
+        layout.addWidget(QPushButton("Bypass FX"))
+        layout.addWidget(QPushButton("Sync LFO"))
+        layout.addWidget(QPushButton("Resonant Feedback"))
+        panel.setLayout(layout)
+        return panel
+
+    def create_patch_bay_panel(self):
+        panel = QWidget()
+        layout = QHBoxLayout()
+        layout.addWidget(QLabel("Patch Matrix: [X -> Cutoff] [Y -> Resonance] [Z -> Delay Time]"))
+        panel.setLayout(layout)
+        return panel
+class ModularTabController:
+    """Manages active tabs and links user interface adjustments to synth modulation."""
+    def __init__(self):
+        self.active_tab_index = 0
+        self.tab_names = ["Additive Grid", "Formant Space", "Stochastic Cloud", "Master Matrix"]
+
+    def switch_tab(self, index):
+        self.active_tab_index = index % len(self.tab_names)
+        return self.tab_names[self.active_tab_index]
+
+    def get_tab_specific_multiplier(self, x, y, z):
+        """Applies distinct mathematical scaling based on the currently selected tab."""
+        if self.active_tab_index == 0:
+            return x * 1.5 # Additive focus
+        elif self.active_tab_index == 1:
+            return y * 2.0 # Formant vocal resonance focus
+        elif self.active_tab_index == 2:
+            return z * 1.2 # Stochastic noise scatter focus
+        else:
+            return (x + y + z) / 3.0 # Master blend
+
+class GrooveboxSerializationManager:
+    """Handles saving and loading of sequencer patterns and active synth configurations."""
+
+    @staticmethod
+    def export_project(filepath, sequencer_grid, synth_manager, x, y, z):
+        data = {
+            "version": "2.0",
+            "coordinates": {"x": x, "y": y, "z": z},
+            "sequencer_pattern": sequencer_grid.pattern_matrix,
+            "active_synths": [type(s).__name__ for s in synth_manager.active_instances]
+        }
+        try:
+            with open(filepath, 'w') as f:
+                json.dump(data, f, indent=4)
+            return True
+        except Exception as e:
+            print(f"Export failed: {e}")
+            return False
+
+    @staticmethod
+    def import_project(filepath, sequencer_grid, synth_manager):
+        try:
+            with open(filepath, 'r') as f:
+                data = json.load(f)
+
+            if "sequencer_pattern" in data:
+                sequencer_grid.pattern_matrix = data["sequencer_pattern"]
+
+            synth_manager.active_instances.clear()
+            if "active_synths" in data:
+                for s_type in data["active_synths"]:
+                    synth_manager.spawn_instance(s_type, base_freq=220.0)
+
+            return data.get("coordinates", {"x": 0.5, "y": 0.5, "z": 0.5})
+        except Exception as e:
+            print(f"Import failed: {e}")
+            return None
+
+
+
+class AdditiveSynthNode(StandardWaveSynthNode):
+    """Generates sound using harmonic overtone stacking modulated by z."""
+    def generate_block(self, num_samples, x, y, z):
+        buf = []
+        harmonics = [1.0, 2.0, 3.0, 4.0, 6.0, 8.0]
+        weights = [1.0, 0.5, 0.25, 0.125, 0.0625, 0.03]
+        step = (2.0 * math.pi * self.freq) / self.sr
+
+        for i in range(num_samples):
+            self.phase += step
+            sample = 0.0
+            for h, w in zip(harmonics, weights):
+                sample += math.sin(self.phase * h * (1.0 + z * 0.1)) * w
+            buf.append(sample * self.amp * y * 0.5)
+        return buf
+
+class FormantSynthNode(StandardWaveSynthNode):
+    """Vocal/formant filtered oscillation powered by variable x, y, z mapping."""
+    def generate_block(self, num_samples, x, y, z):
+        buf = []
+        formant_freq = 800.0 * abs(x + 0.1)
+        step = (2.0 * math.pi * self.freq) / self.sr
+        f_step = (2.0 * math.pi * formant_freq) / self.sr
+
+        for _ in range(num_samples):
+            self.phase += step
+            carrier = math.sin(self.phase)
+            modulator = math.sin(self.phase * 1.414) * math.cos(f_step)
+            val = carrier * modulator * self.amp * z
+            buf.append(val)
+        return buf
+class VirtualPatchCable:
+    def __init__(self, source_node, target_param, attenuation=1.0):
+        self.source_node = source_node
+        self.target_param = target_param
+        self.attenuation = attenuation
+        self.is_connected = True
+
+    def route(self, x_val, y_val, z_val):
+        """Routes coordinate outputs or LFO signals into target DSP parameters."""
+        if not self.is_connected:
+            return 0.0
+
+        # Select coordinate source based on mapping string
+        val = 0.0
+        if self.source_node == 'X':
+            val = x_val
+        elif self.source_node == 'Y':
+            val = y_val
+        elif self.source_node == 'Z':
+            val = z_val
+
+        return val * self.attenuation
+class NoiseBurstNode(StandardWaveSynthNode):
+    """Stochastic rhythmic noise burst generator for percussion/texture tabs."""
+    def generate_block(self, num_samples, x, y, z):
+        buf = []
+        for _ in range(num_samples):
+            noise = (random.random() * 2.0 - 1.0)
+            envelope = max(0.0, 1.0 - (self.phase % 1.0))
+            val = noise * envelope * self.amp * x * y
+            buf.append(val)
+        return buf
+class VisualInstrumentLayerManager:
+    """Manages the visual stacking and layout rendering of active synth modules on screen."""
+    def __init__(self):
+        self.visual_nodes = []
+
+    def update_visual_stack(self, active_instances):
+        self.visual_nodes.clear()
+        for idx, instance in enumerate(active_instances):
+            node_name = type(instance).__name__
+            ui_node_card = {
+                "id": idx,
+                "type": node_name,
+                "layer_depth": idx * 15,
+                "status": "Active"
+            }
+            self.visual_nodes.append(ui_node_card)
+        return self.visual_nodes
+# -------------------------------------------------------------------------
+# GLOBAL CABLE ROUTING & RESAMPLING BUS MANAGER
+# -------------------------------------------------------------------------
+class JackButton(QPushButton):
+    """Custom interactive jack button assignable to every waveform and musical parameter."""
+    def __init__(self, param_name, parent=None):
+        super().__init__("JACK", parent)
+        self.param_name = param_name
+        self.setCheckable(True)
+        self.setStyleSheet("""
+            QPushButton {
+                background-color: #2b2b2b;
+                color: #00ffcc;
+                border: 1px solid #00ffcc;
+                border-radius: 4px;
+                font-size: 10px;
+                font-weight: bold;
+                padding: 3px;
+            }
+            QPushButton:checked {
+                background-color: #00ffcc;
+                color: #121212;
+            }
+        """)
+        self.toggled.connect(self.on_toggle)
+
+    def on_toggle(self, checked):
+        state = "PATCHED" if checked else "UNPATCHED"
+        print(f"Jack Control [{self.param_name}]: {state}")
+
+
+class ParameterControlRow(QWidget):
+    """A wrapper widget containing a label, slider, and an assigned JackButton for modulation routing."""
+    def __init__(self, label_text, min_val=0, max_val=100, default_val=50, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.label = QLabel(label_text)
+        self.label.setStyleSheet("color: #ffffff; font-size: 11px;")
+
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(min_val, max_val)
+        self.slider.setValue(default_val)
+
+        self.jack_btn = JackButton(label_text)
+
+        layout.addWidget(self.label, 2)
+        layout.addWidget(self.slider, 3)
+        layout.addWidget(self.jack_btn, 1)
+
+        self.setLayout(layout)
+class WavetableVectorVisualizerCanvas(QWidget):
+    """Real-time Wavetable and Isosceles Trigonometric Polynomial Waveform Visualizer."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(260)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.phase = 0.0
+
+    def update_phase(self):
+        self.phase += 0.05
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+
+        p.fillRect(0, 0, w, h, QColor("#0a0e14"))
+        p.setPen(QPen(QColor("#161b22"), 1))
+        for x in range(0, w, 40):
+            p.drawLine(x, 0, x, h)
+        for y in range(0, h, 40):
+            p.drawLine(0, y, w, y)
+
+        path = QPainterPath()
+        center_y = h / 2.0
+        meum_ratio = MEUM
+
+        for px in range(w):
+            t_val = (px / w) * 4.0 * math.pi + self.phase
+            val = MathEngine.isn(t_val * meum_ratio) + 0.5 * MathEngine.ics(t_val) * MathEngine.arcisn(math.sin(t_val * 0.5))
+            py = center_y - (val * (h * 0.35))
+            if px == 0:
+                path.moveTo(px, py)
+            else:
+                path.lineTo(px, py)
+
+        p.setPen(QPen(QColor("#00ffcc"), 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        p.drawPath(path)
+
+        p.setPen(QPen(QColor("#58a6ff"), 1, Qt.PenStyle.DashLine))
+        p.drawLine(0, int(center_y), w, int(center_y))
+        p.drawText(10, 20, "Eskivector / Eskitable / Eskiosc / Eskiequation Real-Time Wavetable Visualizer")
 class GlobalCrossTabBusManager:
     """Manages universal inter-synth wiring, dedicated synth input/output jacks, master audio routing, and resampling."""
     def __init__(self):
@@ -1663,6 +4165,2193 @@ GLOBAL_BUS = GlobalCrossTabBusManager()
 # -------------------------------------------------------------------------
 # ACTIVATED DRUM & SEQUENCER RUNTIME CONTROLLER WITH RHYTHM FLUX LINKING
 # -------------------------------------------------------------------------
+class ActiveEngineClock:
+    """Drives real-time activation states, step triggers, automation clock ticks, and Rhythm Flux Linking (Global/Concurrent)."""
+    def __init__(self, engine):
+        self.engine = engine
+        self.current_step = 0
+        self.transport_active = True
+        self.clock_ticks_executed = 0
+
+        # New Rhythm Flux Linking Modes & Parameters
+        self.rhythm_flux_mode = "Global" # Options: "Global", "Active Concurrent", "Unlinked"
+        self.rhythm_flux_rate = 1.0     # Multiplier governing synchronized rhythm flux across synths/drums
+        self.flux_sync_enabled = True
+
+    def tick_clock(self):
+        if not self.transport_active:
+            return self.current_step
+        # Apply rhythm flux rate scaling to step progression
+        step_increment = max(1, int(round(self.rhythm_flux_rate)))
+        self.current_step = (self.current_step + step_increment) % 64
+        self.clock_ticks_executed += 1
+        return self.current_step
+
+    def evaluate_drum_trigger(self, kit_name, step_index):
+        flux_offset = int(self.rhythm_flux_rate * 2) % 5
+        if self.rhythm_flux_mode == "Global":
+            return ((step_index + flux_offset) % 4 == 0) or ((step_index + flux_offset) % 3 == 0 and self.engine.survival_mode)
+        elif self.rhythm_flux_mode == "Active Concurrent":
+            # Interleaved concurrent flux across synths and drums
+            return (step_index % max(2, int(3 * self.rhythm_flux_rate)) == 0)
+        else:
+            return (step_index % 4 == 0)
+
+    def evaluate_sequencer_gate(self, seq_name, step_index):
+        if self.rhythm_flux_mode == "Global":
+            return (step_index % 2 == 0) or (step_index % int(max(2, 4 / self.rhythm_flux_rate)) == 0)
+        elif self.rhythm_flux_mode == "Active Concurrent":
+            return (step_index % 3 != 0)
+        else:
+            return (step_index % 2 == 0)
+
+
+# -------------------------------------------------------------------------
+# CORE GROOVEBOX & HARDWARE ENGINE
+# -------------------------------------------------------------------------
+class DAWPlaylistGrid(QMainWindow):
+    def __init__(self, parent=None, app_ref=None):
+        super().__init__(parent)
+        self.app_ref = app_ref
+        self.setWindowTitle("Master Arrangement Playlist & Playhead")
+        self.resize(1200, 750)
+        self.setStyleSheet(DAW_STYLE)
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+
+        toolbar = QHBoxLayout()
+        toolbar.addWidget(QLabel("<b>Arrangement Master:</b>"))
+
+        self.play_btn = QPushButton("▶ PLAY / PAUSE")
+        self.play_btn.setStyleSheet("background-color: #00aa55; color: white; font-weight: bold;")
+        toolbar.addWidget(self.play_btn)
+
+        toolbar.addWidget(QLabel("Global Tempo:"))
+        self.tempo_spin = QSpinBox()
+        self.tempo_spin.setRange(40, 300)
+        self.tempo_spin.setValue(120)
+        toolbar.addWidget(self.tempo_spin)
+
+        random_song_btn = QPushButton("🎲 Randomize Song")
+        random_song_btn.setStyleSheet("background-color: #9900cc; color: white; font-weight: bold;")
+        random_song_btn.clicked.connect(self.randomize_entire_song_from_playlist)
+        toolbar.addWidget(random_song_btn)
+
+        clear_grid_btn = QPushButton("Clear Global Playlist")
+        clear_grid_btn.clicked.connect(self.clear_grid)
+        toolbar.addWidget(clear_grid_btn)
+
+        layout.addLayout(toolbar)
+
+        self.grid_table = QTableWidget(len(DEFAULT_INSTRUMENT_LIST), 128)
+        self.update_vertical_headers()
+        self.grid_table.horizontalHeader().setDefaultSectionSize(40)
+        self.grid_table.verticalHeader().setDefaultSectionSize(24)
+        self.grid_table.setStyleSheet("""
+            QTableWidget { background-color: #161616; gridline-color: #282828; }
+            QHeaderView::section { background-color: #1f1f1f; color: #aaaaaa; border: 1px solid #333333; font-size: 9px; }
+        """)
+        self.grid_table.cellClicked.connect(self.paint_clip)
+        layout.addWidget(self.grid_table)
+
+        self.status_bar = QLabel("Status: Playlist ready.")
+        self.status_bar.setStyleSheet("color: #00ffcc; font-family: monospace;")
+        layout.addWidget(self.status_bar)
+
+        container.setLayout(layout)
+        self.setCentralWidget(container)
+
+    def update_vertical_headers(self):
+        if self.app_ref and hasattr(self.app_ref, 'instrument_names'):
+            names = self.app_ref.instrument_names
+        else:
+            names = DEFAULT_INSTRUMENT_LIST
+        self.grid_table.setRowCount(len(names))
+        self.grid_table.setVerticalHeaderLabels(names)
+
+    def paint_clip(self, row, col):
+        item = QTableWidgetItem("■ Seq")
+        item.setBackground(QColor(255, 107, 0))
+        item.setForeground(QColor(255, 255, 255))
+        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.grid_table.setItem(row, col, item)
+
+    def clear_grid(self):
+        self.grid_table.clearContents()
+        self.status_bar.setText("Status: Global playlist cleared.")
+
+    def randomize_entire_song_from_playlist(self):
+        if self.app_ref and hasattr(self.app_ref, 'randomize_entire_song'):
+            self.app_ref.randomize_entire_song()
+
+    def get_grid_data(self):
+        rows = self.grid_table.rowCount()
+        cols = self.grid_table.columnCount()
+        data = []
+        for r in range(rows):
+            row_items = []
+            for c in range(cols):
+                item = self.grid_table.item(r, c)
+                row_items.append(item.text() if item is not None else None)
+            data.append(row_items)
+        return data
+class GrooveboxEngine:
+    """Core groovebox engine supporting advanced x,y,z operator equations, stochastic micro-timing, and Rhythm Flux linking."""
+    def __init__(self):
+        self.global_bpm = 112.0
+        self.scale_system = "Equation Tonal Scale (Dynamic)"
+        self.scale_equation = "x**2 + y - z"
+        self.scale_increment = 0.25
+        self.divergence_steps_count = 16
+
+        self.survival_mode = False
+        self.creative_mode = False
+        self.normal_mode = True
+        self.fractallizer_enabled = True
+        self.eqr_processor_enabled = True
+
+        self.runtime_clock = ActiveEngineClock(self)
+        self.runtime_clock.transport_active = True
+
+        self.reality_synth = RealitySynthEngine()
+        self.reality_synth.survival_mode = self.survival_mode
+        self.fractalizer = MusicFractallizer(dimensions=('x', 'y', 'z'))
+        self.fractalizer.survival_mode = self.survival_mode
+
+        self.available_synths = [f"Synth_Node_{i+1}" for i in range(32)]
+        self.active_synth_count = 32
+        self.active_synths = []
+        self.synth_wiring_matrix = {}
+
+        self.math_chord_library = {
+            "Unit Harmonic Stack (+/- 1, 2, 3)": [(-3.0, 0.4), (-2.0, 0.6), (-1.0, 0.8), (1.0, 1.0), (2.0, 0.7), (3.0, 0.4)],
+            "Divergent Asymmetric Point Pair": [(-4.25, 0.5), (-1.5, 0.9), (0.25, 1.0), (3.75, 0.6)],
+            "Scalar Cluster": [(-1.0, 0.5), (0.0, 1.0), (1.0, 0.5), (2.0, 0.25)],
+            "Linear Step Sweep (+/- 1 to 5)": [(float(i), 1.0 / abs(i) if i != 0 else 1.0) for i in range(-5, 6) if i != 0],
+            "Quantum Divergence Cluster": [(-6.0, 0.2), (-3.5, 0.5), (-1.2, 0.9), (1.2, 0.9), (3.5, 0.5), (6.0, 0.2)],
+            "Equation Polynomial Resonance": [(-4.0, 0.3), (-2.0, 0.7), (0.0, 1.0), (2.0, 0.7), (4.0, 0.3)],
+            "Hyperbolic Phase Web": [(-5.0, 0.5), (-2.5, 0.8), (2.5, 0.8), (5.0, 0.5)],
+            "Advanced Operator Matrix [x*y - z**3]": [(-3.14, 0.7), (-1.57, 0.9), (1.57, 0.9), (3.14, 0.7)]
+        }
+
+        self.instrument_sequence_banks = {}
+        self.custom_wavetable_shapes = {}
+        self.playlist_clips = {}
+
+        self.active_fx_modules = ["Cloud Granulator 1", "Spectral Phase Shifter", "Nonlinear Wavefolder", "Feedback Delay", "Quantum Resonator"]
+        self.active_sequencer_modules = ["Master Sequencer Lane 1", "Rhythmic Gate Generator 1", "Polyphonic Arpeggiator 1", "Stochastic Probability Matrix"]
+        self.active_drum_kits = ["Kick Matrix 808", "Snare Divergence Engine", "Hi-Hat Noise Burst", "Percussion Cluster"]
+        self.active_synth_panels = ["Master Equation Polynomial Synthesizer", "Eskibrutus Vectoreski Synth 1"]
+
+        self.automation_patterns = {
+            "Default Filter Sweep": [0.0, 25.0, 50.0, 85.0, 100.0, 75.0, 40.0, 10.0],
+            "Resonance Pulse": [10.0, 90.0, 10.0, 90.0, 50.0, 50.0, 100.0, 0.0],
+            "Exponential Pitch Ramp": [0.0, 12.0, 24.0, 36.0, 48.0, 60.0, 80.0, 100.0],
+            "Chaotic LFO Modulation": [15.0, 85.0, 45.0, 95.0, 10.0, 60.0, 30.0, 90.0],
+            "Harmonic Stepped Envelope": [0.0, 33.0, 33.0, 66.0, 66.0, 100.0, 50.0, 25.0],
+            "Stochastic Micro-Drift": [50.0, 52.0, 48.0, 55.0, 45.0, 58.0, 42.0, 50.0]
+        }
+
+        self.available_patterns = [
+            "Primary Bank - Unit Harmonic Stack",
+            "Secondary Bank - Divergent Asymmetric",
+            "Pulse Pattern A",
+            "Pulse Pattern B",
+            "Granular Noise Burst",
+            "Sub-Bass Oscillator Sweep",
+            "Algebraic Lead Motif",
+            "Fractal Rhythm Pulse",
+            "Quantum Stochastic Groove"
+        ]
+
+    def randomize_synth_routing(self):
+        count = random.randint(1, 32) if self.creative_mode else 32
+        self.active_synths = random.sample(self.available_synths, count)
+
+        self.synth_wiring_matrix = {}
+        for i, synth in enumerate(self.active_synths):
+            downstream_target = self.active_synths[(i + 1) % len(self.active_synths)]
+            modulation_source = random.choice(self.active_synths)
+            attenuation_val = 0.75 if self.survival_mode else (1.25 if self.creative_mode else 1.0)
+
+            self.synth_wiring_matrix[synth] = {
+                "primary_output": downstream_target,
+                "modulator": modulation_source,
+                "attenuation": attenuation_val
+            }
+        return self.active_synths, self.synth_wiring_matrix
+
+    def activate_fractalizer_stream(self):
+        if not self.fractallizer_enabled:
+            return {}
+        dummy_seed = np.linspace(-1, 1, 512)
+        self.last_fractal_output = self.fractalizer.generate_fractal_stream(dummy_seed)
+        self.fractal_stream_active = True
+        return self.last_fractal_output
+
+    def activate_reality_synth_render(self):
+        dummy_patch = np.linspace(-1, 1, 512)
+        rendered_buffer = self.reality_synth.render_reality_patch(dummy_patch)
+        return rendered_buffer
+
+    def add_instrument_sequence_bank(self, instrument_name, seq_name, pitch=0.0, amp=1.0, math_chord="Unit Harmonic Stack (+/- 1, 2, 3)", stretch=1.0, length_steps=16):
+        if instrument_name not in self.instrument_sequence_banks:
+            self.instrument_sequence_banks[instrument_name] = []
+
+        new_seq = {
+            "name": seq_name,
+            "pitch": pitch,
+            "amp": amp,
+            "math_chord": math_chord,
+            "stretch": stretch,
+            "length_steps": length_steps,
+            "notes": [{"time": i * 1.5, "duration": 1.0, "active": self.runtime_clock.evaluate_sequencer_gate(seq_name, i)} for i in range(length_steps)]
+        }
+        self.instrument_sequence_banks[instrument_name].append(new_seq)
+        pat_title = f"{instrument_name} : {seq_name}"
+        if pat_title not in self.available_patterns:
+            self.available_patterns.append(pat_title)
+        return new_seq
+
+    def get_instrument_banks(self, instrument_name):
+        if instrument_name not in self.instrument_sequence_banks:
+            self.add_instrument_sequence_bank(instrument_name, "Primary Bank", 0.0, 1.0, "Unit Harmonic Stack (+/- 1, 2, 3)", 1.0, 16)
+        return self.instrument_sequence_banks[instrument_name]
+
+    def save_custom_wavetable(self, instrument_name, points):
+        self.custom_wavetable_shapes[instrument_name] = [QPointF(p.x(), p.y()) for p in points]
+
+    def get_custom_wavetable(self, instrument_name):
+        return self.custom_wavetable_shapes.get(instrument_name, [])
+
+    def assign_playlist_clip(self, track: int, bar_pos: float, clip_data: dict):
+        self.playlist_clips[(track, bar_pos)] = clip_data
+
+    def remove_playlist_clip(self, track: int, bar_pos: float):
+        if (track, bar_pos) in self.playlist_clips:
+            del self.playlist_clips[(track, bar_pos)]
+
+    def randomize_song(self):
+        self.playlist_clips.clear()
+        GLOBAL_BUS.clear_all()
+        self.randomize_synth_routing()
+
+        possible_fx = [
+            "Cloud Granulator 1", "Cloud Granulator 2", "Spectral Phase Shifter",
+            "Nonlinear Wavefolder", "Feedback Delay", "Quantum Resonator",
+            "Algebraic Distortion Unit", "Convolution Reverb Matrix", "Stochastic Spectral Shifter"
+        ]
+        possible_seqs = [
+            "Master Sequencer Lane 1", "Rhythmic Gate Generator 1", "Polyphonic Arpeggiator 1",
+            "Euclidean Rhythm Engine", "Stochastic Step Sequencer", "Probability Trigger Matrix", "Quantum Operator Sequencer"
+        ]
+        possible_drums = [
+            "Kick Matrix 808", "Snare Divergence Engine", "Hi-Hat Noise Burst",
+            "Percussion Cluster", "Algebraic Tom Unit", "Quantum Claves"
+        ]
+        possible_synths = [
+            "Master Equation Polynomial Synthesizer", "Eskibrutus Vectoreski Synth 1",
+            "Vector Morph Synth Alpha", "Quantum Phase Synthesizer 2", "Stochastic Harmonic Engine"
+        ]
+
+        self.active_fx_modules = random.sample(possible_fx, random.randint(4, len(possible_fx)))
+        self.active_sequencer_modules = random.sample(possible_seqs, random.randint(3, len(possible_seqs)))
+        self.active_drum_kits = random.sample(possible_drums, random.randint(2, len(possible_drums)))
+        self.active_synth_panels = random.sample(possible_synths, random.randint(2, len(possible_synths)))
+
+        equations = [
+            "x**2 + y - z",
+            "math.sin(x) * y - z**2",
+            "x * y - z",
+            "abs(x) + math.cos(y) - z",
+            "x**3 - y**2 + z",
+            "math.tanh(x * y) - z"
+        ]
+        self.scale_equation = random.choice(equations)
+        self.global_bpm = float(random.randint(98, 142))
+        self.scale_increment = round(random.uniform(0.15, 0.35), 2)
+        self.divergence_steps_count = 16
+
+        modules = self.active_synth_panels + self.active_fx_modules
+        for mod in modules:
+            rand_points = [QPointF(i * (500 / 16), random.randint(10, 90)) for i in range(17)]
+            self.save_custom_wavetable(mod, rand_points)
+            self.get_instrument_banks(mod)
+
+        sources = [(self.active_synth_panels[0], "Audio Gain"), (self.active_synth_panels[min(1, len(self.active_synth_panels)-1)], "Filter Q")] + [(fx, "Scatter") for fx in self.active_fx_modules[:2]]
+        targets = ["Master Audio Output Bus", "Auxiliary Bus A", "Auxiliary Bus B"]
+        polarities = ["+", "-", "Neutral"]
+
+        for _ in range(random.randint(5, 12)):
+            src_mod, src_node = random.choice(sources)
+            tgt_mod = random.choice(targets)
+            pol = random.choice(polarities)
+            gain_val = round(random.uniform(0.4, 2.2), 2)
+            GLOBAL_BUS.add_cable(src_mod, src_node, tgt_mod, "Primary Sum Node", polarity=pol, gain=gain_val)
+
+        target_bars = random.randint(64, 192)
+        num_tracks = random.randint(8, 32)
+        pattern_names = self.available_patterns
+        chord_names = list(self.math_chord_library.keys())
+        auto_names = list(self.automation_patterns.keys())
+
+        for trk in range(num_tracks):
+            bar_steps = list(range(0, target_bars, 2))
+            chosen_bars = random.sample(bar_steps, min(len(bar_steps), random.randint(14, 40)))
+
+            for bar in chosen_bars:
+                clip_data = {
+                    "name": random.choice(pattern_names),
+                    "chord": random.choice(chord_names),
+                    "pitch": float(random.choice([-12, -7, -5, 0, 5, 7, 12, 14])),
+                    "amplitude": round(random.uniform(0.4, 1.5), 2),
+                    "stretch": round(random.uniform(0.5, 2.0), 2),
+                    "automation_pattern": random.choice(auto_names)
+                }
+                self.playlist_clips[(trk, float(bar))] = clip_data
+
+    def generate_equation_scale_frequencies(self):
+        freqs = []
+        for i in range(self.divergence_steps_count):
+            x = i * self.scale_increment
+            y = x * 1.618
+            z = 1.0 if (i % 4 == 0 or i % 3 == 0) else 0.0
+            try:
+                val = eval(self.scale_equation, {"__builtins__": None}, {"x": x, "y": y, "z": z, "math": math})
+                freq = FREQUENCY_432HZ + (float(val) * 22.5)
+                freqs.append(max(35.0, freq))
+            except Exception:
+                freqs.append(FREQUENCY_432HZ + (i * 12.0 * self.scale_increment))
+        return freqs
+
+    def resolve_math_chord_frequencies(self, chord_name, x_var=1.0, y_var=1.0, z_var=1.0):
+        base_freqs = self.generate_equation_scale_frequencies()
+        base_f = base_freqs[0] if base_freqs else FREQUENCY_432HZ
+        point_pairs = self.math_chord_library.get(chord_name, [(1.0, 1.0)])
+
+        resolved = []
+        for offset_mult, amp_val in point_pairs:
+            adjusted_offset = offset_mult * x_var * y_var - (z_var * 0.1)
+            freq = base_f + (adjusted_offset * self.scale_increment * 55.0)
+            resolved.append((max(20.0, freq), amp_val))
+        return resolved
+
+    def serialize_project(self, filepath):
+        data = {
+            "global_bpm": self.global_bpm,
+            "scale_system": self.scale_system,
+            "scale_equation": self.scale_equation,
+            "scale_increment": self.scale_increment,
+            "divergence_steps_count": self.divergence_steps_count,
+            "survival_mode": self.survival_mode,
+            "creative_mode": self.creative_mode,
+            "normal_mode": self.normal_mode,
+            "fractallizer_enabled": self.fractallizer_enabled,
+            "eqr_processor_enabled": self.eqr_processor_enabled,
+            "math_chord_library": self.math_chord_library,
+            "instrument_sequence_banks": self.instrument_sequence_banks,
+            "automation_patterns": self.automation_patterns,
+            "playlist_clips": {f"{t},{b}": dat for (t, b), dat in self.playlist_clips.items()},
+            "global_cables": GLOBAL_BUS.global_cables,
+            "resampled_buffers": GLOBAL_BUS.resampled_buffers,
+            "active_synths": self.active_synths,
+            "synth_wiring_matrix": self.synth_wiring_matrix,
+            "active_fx_modules": self.active_fx_modules,
+            "active_sequencer_modules": self.active_sequencer_modules,
+            "active_drum_kits": self.active_drum_kits,
+            "active_synth_panels": self.active_synth_panels
+        }
+        with open(filepath, 'w') as f:
+            json.dump(data, f, indent=4)
+
+    def deserialize_project(self, filepath):
+        with open(filepath, 'r') as f:
+            data = json.load(f)
+        self.global_bpm = data.get("global_bpm", 112.0)
+        self.scale_equation = data.get("scale_equation", "x**2 + y - z")
+        self.scale_increment = data.get("scale_increment", 0.25)
+        self.divergence_steps_count = data.get("divergence_steps_count", 16)
+        self.survival_mode = data.get("survival_mode", False)
+        self.creative_mode = data.get("creative_mode", False)
+        self.normal_mode = data.get("normal_mode", True)
+        self.fractallizer_enabled = data.get("fractallizer_enabled", True)
+        self.eqr_processor_enabled = data.get("eqr_processor_enabled", True)
+        if "math_chord_library" in data:
+            self.math_chord_library = data.get("math_chord_library")
+        self.instrument_sequence_banks = data.get("instrument_sequence_banks", {})
+        self.automation_patterns = data.get("automation_patterns", {"Default Filter Sweep": [0, 50, 100]})
+        self.active_synths = data.get("active_synths", [])
+        self.synth_wiring_matrix = data.get("synth_wiring_matrix", {})
+        self.active_fx_modules = data.get("active_fx_modules", self.active_fx_modules)
+        self.active_sequencer_modules = data.get("active_sequencer_modules", self.active_sequencer_modules)
+        self.active_drum_kits = data.get("active_drum_kits", self.active_drum_kits)
+        self.active_synth_panels = data.get("active_synth_panels", self.active_synth_panels)
+        pc = data.get("playlist_clips", {})
+        self.playlist_clips = {}
+        for key_str, dat in pc.items():
+            t_str, b_str = key_str.split(",")
+            self.playlist_clips[(int(t_str), float(b_str))] = dat
+        GLOBAL_BUS.global_cables = data.get("global_cables", [])
+        GLOBAL_BUS.resampled_buffers = data.get("resampled_buffers", [])
+        GLOBAL_BUS.broadcast_update()
+
+    def export_audio(self, filepath, duration_sec=300.0, sample_rate=44100):
+        num_samples = int(sample_rate * duration_sec)
+        t = np.linspace(0, duration_sec, num_samples, endpoint=False)
+        wave_data = np.zeros(num_samples)
+
+        bank_index = 0
+        total_banks = sum(len(banks) for banks in self.instrument_sequence_banks.values())
+        if total_banks == 0:
+            total_banks = 1
+
+        for instr_name, banks in self.instrument_sequence_banks.items():
+            for bank in banks:
+                chord_name = bank.get("math_chord", "Unit Harmonic Stack (+/- 1, 2, 3)")
+                pitch_shift = bank.get("pitch", 0.0)
+                pitch_multiplier = 2.0 ** (pitch_shift / 12.0)
+                resolved_pairs = self.resolve_math_chord_frequencies(chord_name)
+                bank_amp = bank.get("amp", 1.0)
+
+                layer_detune = 1.0 + (bank_index - (total_banks / 2.0)) * 0.002
+                phase_offset = (bank_index / float(total_banks)) * 2.0 * np.pi
+
+                for freq, pt_amp in resolved_pairs:
+                    adjusted_freq = freq * pitch_multiplier * layer_detune
+                    tempo_mod_factor = 1.0 + 0.15 * np.sin(2.0 * np.pi * (self.global_bpm / 112.0) * t * 0.05 + phase_offset)
+                    gate = 0.5 * (1 + np.sin(2 * np.pi * (self.global_bpm / 60.0) * t * tempo_mod_factor + phase_offset + np.sin(t * 0.1) * 0.05))
+                    wave_data += bank_amp * pt_amp * 0.08 * gate * np.sin(2 * np.pi * (adjusted_freq * tempo_mod_factor) * t + phase_offset)
+
+                bank_index += 1
+
+        max_val = np.max(np.abs(wave_data))
+        if max_val > 0:
+            wave_data = wave_data / max_val
+        audio_int = np.int16(wave_data * 32767)
+
+        with wave.open(filepath, 'w') as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            wav_file.writeframes(audio_int.tobytes())
+
+
+# -------------------------------------------------------------------------
+# FREE-FLOATING & RESIZABLE WORKSPACE PANEL
+# -------------------------------------------------------------------------
+class ResizableWorkspacePanel(QWidget):
+    def __init__(self, title, content_widget, parent=None):
+        super().__init__(parent)
+        self.title = title
+        self.setMinimumSize(340, 260)
+        self.resize(620, 390)
+        self.setStyleSheet("""
+            ResizableWorkspacePanel {
+                background-color: #0d1117;
+                border: 1px solid #30363d;
+                border-radius: 6px;
+            }
+            QLabel { color: #c9d1d9; background: transparent; }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(4)
+
+        header_layout = QHBoxLayout()
+        self.title_lbl = QLabel(f"🎛 {title} [Resizable Panel]")
+        self.title_lbl.setStyleSheet("color: #f5d97d; font-weight: bold; font-size: 11px; background: transparent;")
+        header_layout.addWidget(self.title_lbl)
+        header_layout.addStretch()
+
+        resize_hint = QLabel("↔ Drag borders to resize")
+        resize_hint.setStyleSheet("color: #8b949e; font-size: 9px; background: transparent;")
+        header_layout.addWidget(resize_hint)
+        layout.addLayout(header_layout)
+        layout.addWidget(content_widget)
+
+        self.dragging = False
+        self.resizing = False
+        self.drag_position = QPointF()
+        self.resize_margin = 12
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            if event.position().x() >= self.width() - self.resize_margin and event.position().y() >= self.height() - self.resize_margin:
+                self.resizing = True
+            else:
+                self.dragging = True
+                self.drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self.resizing:
+            new_w = max(340, event.position().x())
+            new_h = max(260, event.position().y())
+            self.resize(int(new_w), int(new_h))
+            event.accept()
+        elif self.dragging:
+            self.move(event.globalPosition().toPoint() - self.drag_position)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self.dragging = False
+        self.resizing = False
+        event.accept()
+
+
+# -------------------------------------------------------------------------
+# FREEHAND DRAWABLE WAVETABLE CANVAS
+# -------------------------------------------------------------------------
+class WavetableCanvas(QWidget):
+    def __init__(self, instrument_name, engine, parent=None):
+        super().__init__(parent)
+        self.instrument_name = instrument_name
+        self.engine = engine
+        self.setMinimumHeight(110)
+        self.setStyleSheet("background-color: #0d1117; border: 1px solid #30363d; border-radius: 4px;")
+
+        existing = self.engine.get_custom_wavetable(self.instrument_name)
+        if existing:
+            self.points = list(existing)
+        else:
+            self.points = [QPointF(i * (500 / 16), 55 + 25 * math.sin(i * 0.4)) for i in range(17)]
+
+    def paintEvent(self, event):
+        p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.fillRect(self.rect(), QColor("#0d1117"))
+
+        p.setPen(QPen(QColor("#161b22"), 1, Qt.PenStyle.DashLine))
+        for x in range(0, self.width(), 50): p.drawLine(x, 0, x, self.height())
+        for y in range(0, self.height(), 30): p.drawLine(0, y, self.width(), y)
+
+        if len(self.points) >= 2:
+            path = QPainterPath(); path.moveTo(self.points[0])
+            for pt in self.points[1:]: path.lineTo(pt)
+            p.setPen(QPen(QColor("#00ffcc"), 2.0))
+            p.drawPath(path)
+
+        p.setBrush(QBrush(QColor("#f5d97d")))
+        p.setPen(QPen(QColor("#ffffff"), 1))
+        for pt in self.points: p.drawEllipse(pt, 3, 3)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            pos = event.position()
+            self.points.append(QPointF(max(0, min(self.width(), pos.x())), max(5, min(self.height() - 5, pos.y()))))
+            self.points.sort(key=lambda pt: pt.x())
+            if len(self.points) > 24:
+                self.points = self.points[:24]
+            self.engine.save_custom_wavetable(self.instrument_name, self.points)
+            self.update()
+
+
+# -------------------------------------------------------------------------
+# INTERACTIVE PATCHABLE KNOB & PATCH JACK
+# -------------------------------------------------------------------------
+class PatchableKnob(QWidget):
+    """Features direct straightforward envelope/decay responsiveness and patch jack capability."""
+    def __init__(self, label_text, min_val=0.0, max_val=100.0, default_val=50.0, unit="", module_name="Synth 1", parent=None):
+        super().__init__(parent)
+        self.label_text = label_text
+        self.min_val = min_val
+        self.max_val = max_val
+        self.current_val = default_val
+        self.unit = unit
+        self.module_name = module_name
+        self.is_patched = False
+
+        self.polarity = "Neutral"
+        self.gain_multiplier = 1.0
+        self.setFixedSize(140, 125)
+        self.setStyleSheet("background: #0d1117;")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(2)
+
+        self.label = QLabel(f"{label_text}: {default_val:.1f}{unit}")
+        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.label.setStyleSheet("color: #c9d1d9; font-size: 9px; font-weight: bold; background: transparent;")
+        layout.addWidget(self.label)
+
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(int(min_val * 10), int(max_val * 10))
+        self.slider.setValue(int(default_val * 10))
+        self.slider.setStyleSheet("""
+            QSlider::groove:horizontal { background: #161b22; height: 4px; border-radius: 2px; }
+            QSlider::handle:horizontal { background: #00ffcc; width: 12px; margin: -4px 0; border-radius: 6px; }
+        """)
+        self.slider.valueChanged.connect(self._on_slider_changed)
+        layout.addWidget(self.slider)
+
+        target_row = QHBoxLayout()
+        target_lbl = QLabel("Tgt:")
+        target_lbl.setStyleSheet("color: #8b949e; font-size: 8px; background: transparent;")
+        target_row.addWidget(target_lbl)
+
+        self.target_combo = QComboBox()
+        self.target_combo.setFixedHeight(20)
+        self.target_combo.setStyleSheet("background-color: #161b22; color: #00ffcc; font-size: 8px; border: 1px solid #30363d;")
+        self.target_combo.addItems([
+            "Master Audio Sum", "Filter Cutoff", "Resonance Mod",
+            "Granular Scatter", "Amplitude Envelope", "Phase Distortion"
+        ])
+        self.target_combo.currentIndexChanged.connect(self._on_target_changed)
+        target_row.addWidget(self.target_combo)
+        layout.addLayout(target_row)
+
+        bottom_row = QHBoxLayout()
+        self.polarity_btn = QPushButton("Neutral")
+        self.polarity_btn.setFixedHeight(20)
+        self.polarity_btn.setStyleSheet("background-color: #161b22; color: #00ffcc; font-size: 8px; border: 1px solid #30363d; font-weight: bold;")
+        self.polarity_btn.clicked.connect(self._toggle_polarity)
+        bottom_row.addWidget(self.polarity_btn)
+
+        self.port_btn = QPushButton("Deactivate" if self.is_patched else "Activate")
+        self.port_btn.setFixedSize(65, 22)
+        self.port_btn.setCheckable(True)
+        self.port_btn.setChecked(self.is_patched)
+        self.port_btn.setStyleSheet("""
+            QPushButton { background-color: #161b22; color: #8b949e; border: 1px solid #30363d; border-radius: 4px; font-weight: bold; font-size: 9px; }
+            QPushButton:checked { background-color: #00ffcc; color: #0d1117; border: 1px solid #ffffff; }
+        """)
+        self.port_btn.clicked.connect(self._toggle_patch)
+        bottom_row.addWidget(self.port_btn)
+        layout.addLayout(bottom_row)
+
+        gain_row = QHBoxLayout()
+        self.gain_down_btn = QPushButton("-")
+        self.gain_down_btn.setFixedSize(18, 18)
+        self.gain_down_btn.setStyleSheet("background-color: #161b22; color: #ff7b72; font-size: 9px; font-weight: bold;")
+        self.gain_down_btn.clicked.connect(lambda: self._adjust_gain(-0.25))
+
+        self.gain_lbl = QLabel("Amt: 1.0x")
+        self.gain_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.gain_lbl.setStyleSheet("color: #8b949e; font-size: 8px; background: transparent;")
+
+        self.gain_up_btn = QPushButton("+")
+        self.gain_up_btn.setFixedSize(18, 18)
+        self.gain_up_btn.setStyleSheet("background-color: #161b22; color: #00ffcc; font-size: 9px; font-weight: bold;")
+        self.gain_up_btn.clicked.connect(lambda: self._adjust_gain(0.25))
+
+        gain_row.addWidget(self.gain_down_btn)
+        gain_row.addWidget(self.gain_lbl)
+        gain_row.addWidget(self.gain_up_btn)
+        layout.addLayout(gain_row)
+
+    def _on_slider_changed(self, val):
+        self.current_val = val / 10.0
+        self.label.setText(f"{self.label_text}: {self.current_val:.1f}{self.unit}")
+
+    def _on_target_changed(self, index):
+        if self.is_patched:
+            target_name = self.target_combo.currentText()
+            for i, c in enumerate(GLOBAL_BUS.global_cables):
+                if c["src_module"] == self.module_name and c["src_node"] == self.label_text:
+                    GLOBAL_BUS.global_cables[i]["tgt_module"] = target_name
+                    GLOBAL_BUS.broadcast_update()
+                    break
+
+    def _toggle_polarity(self):
+        if self.polarity == "Neutral":
+            self.polarity = "+"
+            self.polarity_btn.setStyleSheet("background-color: #161b22; color: #f5d97d; font-size: 8px; border: 1px solid #f5d97d; font-weight: bold;")
+            self.polarity_btn.setText("+ (Pos)")
+        elif self.polarity == "+":
+            self.polarity = "-"
+            self.polarity_btn.setStyleSheet("background-color: #161b22; color: #ff7b72; font-size: 8px; border: 1px solid #ff7b72; font-weight: bold;")
+            self.polarity_btn.setText("- (Inv)")
+        else:
+            self.polarity = "Neutral"
+            self.polarity_btn.setStyleSheet("background-color: #161b22; color: #00ffcc; font-size: 8px; border: 1px solid #30363d; font-weight: bold;")
+            self.polarity_btn.setText("Neutral")
+
+        if self.is_patched:
+            for i, c in enumerate(GLOBAL_BUS.global_cables):
+                if c["src_module"] == self.module_name and c["src_node"] == self.label_text:
+                    GLOBAL_BUS.update_cable_polarity_gain(i, self.polarity, 0.0)
+                    break
+
+    def _adjust_gain(self, delta):
+        self.gain_multiplier = max(0.25, round(self.gain_multiplier + delta, 2))
+        self.gain_lbl.setText(f"Amt: {self.gain_multiplier:.2f}x")
+        if self.is_patched:
+            for i, c in enumerate(GLOBAL_BUS.global_cables):
+                if c["src_module"] == self.module_name and c["src_node"] == self.label_text:
+                    GLOBAL_BUS.update_cable_polarity_gain(i, self.polarity, delta)
+                    break
+
+    def _toggle_patch(self, checked):
+        self.is_patched = checked
+        target_name = self.target_combo.currentText()
+        if checked:
+            self.port_btn.setText("Deactivate")
+            GLOBAL_BUS.add_cable(
+                src_module=self.module_name, src_node=self.label_text,
+                tgt_module=target_name, tgt_node="Primary Sum Node",
+                polarity=self.polarity, gain=self.gain_multiplier
+            )
+        else:
+            self.port_btn.setText("Activate")
+            for i, c in enumerate(GLOBAL_BUS.global_cables):
+                if c["src_module"] == self.module_name and c["src_node"] == self.label_text:
+                    GLOBAL_BUS.remove_cable(i)
+                    break
+
+
+# -------------------------------------------------------------------------
+# FREEFORM SEQUENCER CANVAS
+# -------------------------------------------------------------------------
+class FreeformSequencerCanvas(QWidget):
+    def __init__(self, sequence_data, parent=None):
+        super().__init__(parent)
+        self.seq_data = sequence_data
+        self.setMinimumHeight(130)
+        self.setStyleSheet("background-color: #0b0f15; border: 1px solid #30363d; border-radius: 4px;")
+
+    def paintEvent(self, event):
+        # Initialize the painter once for the widget
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        try:
+            # Safely resolve sequence data or notes fallback
+            notes = self.seq_data.get("notes", []) if isinstance(self.seq_data, dict) else [
+                {"time": float(i), "duration": 1.0, "active": True} for i, val in enumerate(self.seq_data)
+            ]
+
+            formatted_notes = []
+            for i, n in enumerate(notes):
+                if isinstance(n, dict):
+                    formatted_notes.append({
+                        "time": n.get("time", float(i)),
+                        "duration": n.get("duration", 1.0),
+                        "active": n.get("active", True)
+                    })
+                else:
+                    formatted_notes.append({
+                        "time": float(i),
+                        "duration": 1.0,
+                        "active": bool(n)
+                    })
+
+            max_time = max([n["time"] + n["duration"] for n in formatted_notes] + [16.0])
+            scale_x = self.width() / max(16.0, max_time)
+
+            # Draw background grid/fill manually here if needed, then render notes:
+            for i, note in enumerate(formatted_notes):
+                nx = note["time"] * scale_x
+                nw = max(12, note["duration"] * scale_x)
+                ny = 15 + (i % 4) * 24
+
+                is_active = note["active"]
+                p.setBrush(QBrush(QColor("#00ffcc" if is_active else "#21262d")))
+                p.setPen(QPen(QColor("#ffffff") if is_active else QColor("#484f58"), 1))
+                p.drawRoundedRect(int(nx), int(ny), int(nw), 18, 4, 4)
+
+                p.setPen(QPen(QColor("#ffffff" if is_active else "#8b949e"), 1))
+                p.drawText(int(nx) + 4, int(ny) + 13, f"N{i+1}")
+
+        finally:
+            # Explicitly end painting so QBackingStore releases the canvas device
+            p.end()
+
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            pos = event.position()
+            max_time = max([n["time"] + n["duration"] for n in self.seq_data.get("notes", [])] + [16.0])
+            scale_x = self.width() / max(16.0, max_time)
+            clicked_time = pos.x() / scale_x
+
+            notes = self.seq_data.get("notes", [])
+            found = False
+            for note in notes:
+                if note["time"] <= clicked_time <= (note["time"] + note["duration"]):
+                    note["active"] = not note["active"]
+                    found = True
+                    break
+            if not found:
+                notes.append({"time": round(clicked_time, 2), "duration": 1.5, "active": True})
+            self.update()
+
+
+# -------------------------------------------------------------------------
+# TAB 1: SYNTHS, MULTI-SEQUENCE STACKS & EQUATION POLYNOMIAL SYNTH
+# -------------------------------------------------------------------------
+class SynthModulePage(QWidget):
+    def __init__(self, engine):
+        super().__init__()
+        self.engine = GrooveboxEngine()
+        self.setStyleSheet("background-color: #070b10;")
+        layout = QVBoxLayout(self)
+
+        top_bar = QHBoxLayout()
+        spawn_audio_in_btn = QPushButton("+ Spawn Audio In/Out Jack Module")
+        spawn_audio_in_btn.setStyleSheet("background-color: #1f242c; color: #ff7b72; font-weight: bold; border: 1px solid #ff7b72; padding: 6px;")
+        spawn_audio_in_btn.clicked.connect(lambda: self._spawn_panel("Dedicated Audio I/O Loop", is_audio_in=True))
+
+        spawn_poly_btn = QPushButton("+ Spawn Equation Polynomial Synth")
+        spawn_poly_btn.setStyleSheet("background-color: #1f242c; color: #f5d97d; font-weight: bold; border: 1px solid #f5d97d; padding: 6px;")
+        spawn_poly_btn.clicked.connect(lambda: self._spawn_panel("Equation Polynomial Algebra Synth", is_polynomial=True))
+
+        spawn_synth_btn = QPushButton("+ Spawn Resizable Multi-Seq Synth")
+        spawn_synth_btn.setStyleSheet("background-color: #1f242c; color: #00ffcc; font-weight: bold; border: 1px solid #00ffcc; padding: 6px;")
+        spawn_synth_btn.clicked.connect(lambda: self._spawn_panel("Vector Synth & Multi-Seq Engine", is_synth=True))
+
+        spawn_random_instr_btn = QPushButton("🎲 Spawn Randomizer Instrument")
+        spawn_random_instr_btn.setStyleSheet("background-color: #2b1135; color: #f5d97d; font-weight: bold; border: 1px solid #f5d97d; padding: 6px;")
+        spawn_random_instr_btn.clicked.connect(self._spawn_randomizer_instrument)
+
+        activate_fractal_btn = QPushButton("🌀 Activate Fractallizer")
+        activate_fractal_btn.setStyleSheet("background-color: #2b1135; color: #ff7b72; font-weight: bold; border: 1px solid #ff7b72; padding: 6px;")
+        activate_fractal_btn.clicked.connect(self._trigger_fractalizer)
+
+        activate_reality_btn = QPushButton("🌌 Activate Reality Synth")
+        activate_reality_btn.setStyleSheet("background-color: #112b35; color: #00ffcc; font-weight: bold; border: 1px solid #00ffcc; padding: 6px;")
+        activate_reality_btn.clicked.connect(self._trigger_reality_synth)
+
+        top_bar.addWidget(spawn_audio_in_btn)
+        top_bar.addWidget(spawn_poly_btn)
+        top_bar.addWidget(spawn_synth_btn)
+        top_bar.addWidget(spawn_random_instr_btn)
+        top_bar.addWidget(activate_fractal_btn)
+        top_bar.addWidget(activate_reality_btn)
+        top_bar.addStretch()
+        layout.addLayout(top_bar)
+
+        toggles_bar = QHBoxLayout()
+
+        self.fractal_toggle = QCheckBox("Enable Music Fractallizer")
+        self.fractal_toggle.setChecked(getattr(self.engine, 'fractallizer_enabled', True))
+        self.fractal_toggle.setStyleSheet("""
+            QCheckBox { color: #888888; font-weight: bold; background: #161b22; padding: 4px; border: 1px solid #30363d; }
+            QCheckBox:checked { color: #00ffcc; border-color: #00ffcc; }
+        """)
+        self.fractal_toggle.stateChanged.connect(self._toggle_fractalizer_state)
+
+        self.eqr_toggle = QCheckBox("Enable EQR Processor")
+        self.eqr_toggle.setChecked(getattr(self.engine, 'eqr_processor_enabled', True))
+        self.eqr_toggle.setStyleSheet("""
+            QCheckBox { color: #888888; font-weight: bold; background: #161b22; padding: 4px; border: 1px solid #30363d; }
+            QCheckBox:checked { color: #f5d97d; border-color: #f5d97d; }
+        """)
+        self.eqr_toggle.stateChanged.connect(self._toggle_eqr_processor_state)
+
+        toggles_bar.addWidget(self.fractal_toggle)
+        toggles_bar.addWidget(self.eqr_toggle)
+        toggles_bar.addStretch()
+        layout.addLayout(toggles_bar)
+
+        mode_bar = QHBoxLayout()
+        self.mode_status_lbl = QLabel()
+        self._update_mode_label()
+        self.mode_status_lbl.setStyleSheet("color: #f5d97d; font-weight: bold; background: #161b22; padding: 4px; border: 1px solid #30363d;")
+
+        toggle_mode_btn = QPushButton("🔄 Cycle Operational Mode (Normal ➔ Creative ➔ Survival)")
+        toggle_mode_btn.setStyleSheet("background-color: #1f242c; color: #00ffcc; font-weight: bold; border: 1px solid #00ffcc; padding: 4px;")
+        toggle_mode_btn.clicked.connect(self._toggle_modes)
+
+        mode_bar.addWidget(self.mode_status_lbl)
+        mode_bar.addWidget(toggle_mode_btn)
+        mode_bar.addStretch()
+        layout.addLayout(mode_bar)
+
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setStyleSheet("background-color: #070b10; border: none;")
+        self.container = QWidget(self)
+        self.container.setStyleSheet("background-color: #070b10;")
+        self.container_layout = QGridLayout(self.container)
+
+        self.refresh_synth_grid()
+
+        self.container.setLayout(self.container_layout)
+        self.scroll.setWidget(self.container)
+        layout.addWidget(self.scroll)
+
+    def refresh_synth_grid(self):
+        while self.container_layout.count():
+            item = self.container_layout.takeAt(0)
+            if item and item.widget():
+                item.widget().deleteLater()
+
+        for idx, synth_name in enumerate(self.engine.active_synth_panels):
+            is_poly = "Polynomial" in synth_name or "Algebra" in synth_name
+            is_synth_type = not is_poly
+            row = idx // 2
+            col = idx % 2
+            self._add_panel_to_grid(synth_name, is_synth=is_synth_type, is_polynomial=is_poly, row=row, col=col)
+
+        self.container.update()
+
+    def _toggle_fractalizer_state(self, state):
+        self.engine.fractallizer_enabled = bool(state)
+        status = "Enabled" if self.engine.fractallizer_enabled else "Disabled"
+        QMessageBox.information(self, "Fractallizer State", f"Music Fractallizer has been {status}.")
+
+    def _toggle_eqr_processor_state(self, state):
+        self.engine.eqr_processor_enabled = bool(state)
+        status = "Enabled" if self.engine.eqr_processor_enabled else "Disabled"
+        QMessageBox.information(self, "EQR Processor State", f"EQR Processor has been {status}.")
+
+    def _update_mode_label(self):
+        s_mode = "ON" if self.engine.survival_mode else "OFF"
+        n_mode = "ON" if self.engine.normal_mode else "OFF"
+        c_mode = "ON" if self.engine.creative_mode else "OFF"
+        self.mode_status_lbl.setText(f"Electron Sling State -> Survival: {s_mode} | Normal: {n_mode} | Creative: {c_mode}")
+
+    def _toggle_modes(self):
+        if self.engine.normal_mode:
+            self.engine.normal_mode = False
+            self.engine.creative_mode = True
+            self.engine.survival_mode = False
+        elif self.engine.creative_mode:
+            self.engine.normal_mode = False
+            self.engine.creative_mode = False
+            self.engine.survival_mode = True
+        else:
+            self.engine.normal_mode = True
+            self.engine.creative_mode = False
+            self.engine.survival_mode = False
+
+        self.engine.reality_synth.survival_mode = self.engine.survival_mode
+        self.engine.fractalizer.survival_mode = self.engine.survival_mode
+        self._update_mode_label()
+
+        active_name = "Normal" if self.engine.normal_mode else ("Creative" if self.engine.creative_mode else "Survival")
+        QMessageBox.information(self, "Operational Mode Updated", f"Electron Sling mode switched to: {active_name} Mode.")
+
+    def _trigger_fractalizer(self):
+        if not self.engine.fractallizer_enabled:
+            QMessageBox.warning(self, "Fractallizer Disabled", "Cannot trigger stream: Music Fractallizer is currently disabled via UI controls.")
+            return
+        stream = self.engine.activate_fractalizer_stream()
+        QMessageBox.information(self, "Music Fractallizer Activated", f"Music Fractallizer stream successfully generated with spatial dimensions: {list(stream.keys())}.")
+
+    def _trigger_reality_synth(self):
+        buffer_data = self.engine.activate_reality_synth_render()
+        QMessageBox.information(self, "Reality Synth Rendered", f"Reality Synth active buffer rendered for coordinates: {list(buffer_data.keys())}.")
+
+    def _spawn_panel(self, kind, is_synth=False, is_audio_in=False, is_polynomial=False):
+        name = f"{kind} #{len(self.engine.active_synth_panels) + 1}"
+        if name not in self.engine.active_synth_panels:
+            self.engine.active_synth_panels.append(name)
+        self.refresh_synth_grid()
+
+    def _spawn_randomizer_instrument(self):
+        rand_prefixes = ["Stochastic", "Quantum", "Algebraic", "Fractal", "Harmonic", "Resonant", "Vectoreski"]
+        rand_suffixes = ["Oscillator", "Sling", "Resonator", "Generator", "Synth Node", "Phase Wave"]
+        instr_name = f"{random.choice(rand_prefixes)} {random.choice(rand_suffixes)} {random.randint(100, 999)}"
+
+        chords = list(self.engine.math_chord_library.keys())
+        chosen_chord = random.choice(chords)
+        self.engine.add_instrument_sequence_bank(instr_name, "Differentiated Tempo Bank", pitch=float(random.randint(-12, 12)), amp=round(random.uniform(0.5, 1.5), 2), math_chord=chosen_chord)
+
+        if instr_name not in self.engine.active_synth_panels:
+            self.engine.active_synth_panels.append(instr_name)
+        self.refresh_synth_grid()
+        QMessageBox.information(self, "Randomizer Instrument Spawned", f"Successfully spawned randomizer instrument '{instr_name}' with differentiated tempo interval parameters and cross-mod heuristic routing.")
+
+    def _add_panel_to_grid(self, title, is_synth=False, is_audio_in=False, is_polynomial=False, row=0, col=0):
+        self.content_widget = QWidget(self)
+        self.content_widget.setStyleSheet("background-color: #0d1117;")
+        c_layout = QVBoxLayout(content_widget)
+        c_layout.setContentsMargins(4, 4, 4, 4)
+
+        if is_polynomial:
+            poly_hud_layout = QVBoxLayout()
+            poly_lbl = QLabel("📐 Live Polynomial Algebra Evaluator (Step-Gated x, y, z Variables)")
+            poly_lbl.setStyleSheet("color: #f5d97d; font-weight: bold; background: transparent;")
+            poly_hud_layout.addWidget(poly_lbl)
+
+            eq_row = QHBoxLayout()
+            eq_label = QLabel("Eq:")
+            eq_label.setStyleSheet("color: #c9d1d9; background: transparent;")
+            eq_row.addWidget(eq_label)
+
+            eq_field = QLineEdit(self.engine.scale_equation)
+            eq_field.setStyleSheet("background-color: #161b22; color: #00ffcc; font-family: monospace; border: 1px solid #30363d;")
+            eq_row.addWidget(eq_field)
+
+            eval_btn = QPushButton("Evaluate & Map")
+            eval_btn.setStyleSheet("background-color: #1f242c; color: #f5d97d; font-weight: bold; border: 1px solid #f5d97d;")
+            eval_btn.clicked.connect(lambda: self._evaluate_polynomial_osc(eq_field.text(), title))
+            eq_row.addWidget(eval_btn)
+            poly_hud_layout.addLayout(eq_row)
+            c_layout.addLayout(poly_hud_layout)
+
+        if is_audio_in:
+            io_header = QHBoxLayout()
+            lbl_in = QLabel("🔴 Input Jack [IN]")
+            lbl_in.setStyleSheet("color: #ff7b72; background: transparent;")
+            io_header.addWidget(lbl_in)
+
+            in_jack = QPushButton("● Audio Input Bus")
+            in_jack.setStyleSheet("background-color: #00ffcc; color: #0d1117; font-weight: bold; font-size: 9px;")
+            io_header.addWidget(in_jack)
+
+            lbl_out = QLabel("🟢 Output Jack [OUT]")
+            lbl_out.setStyleSheet("color: #00ffcc; background: transparent;")
+            io_header.addWidget(lbl_out)
+
+            out_jack = QPushButton("● Audio Output Bus")
+            out_jack.setStyleSheet("background-color: #f5d97d; color: #0d1117; font-weight: bold; font-size: 9px;")
+            io_header.addWidget(out_jack)
+
+            resample_btn = QPushButton("Buffer Resample")
+            resample_btn.setStyleSheet("background-color: #2b1115; color: #ff7b72; border: 1px solid #ff7b72; font-weight: bold; padding: 3px;")
+            resample_btn.clicked.connect(lambda: self._trigger_resampling(title))
+            io_header.addWidget(resample_btn)
+            c_layout.addLayout(io_header)
+
+        if is_synth:
+            banks_layout = QHBoxLayout()
+            lbl_bks = QLabel("Sequence Banks:")
+            lbl_bks.setStyleSheet("color: #c9d1d9; background: transparent;")
+            banks_layout.addWidget(lbl_bks)
+
+            bank_combo = QComboBox()
+            bank_combo.setStyleSheet("background-color: #161b22; color: #00ffcc; border: 1px solid #30363d;")
+
+            instr_banks = self.engine.get_instrument_banks(title)
+            for b in instr_banks:
+                bank_combo.addItem(b["name"])
+            banks_layout.addWidget(bank_combo)
+
+            add_bank_btn = QPushButton("+ New Sequence")
+            add_bank_btn.setStyleSheet("background-color: #161b22; color: #00ffcc; border: 1px solid #00ffcc; font-size: 9px; font-weight: bold;")
+            add_bank_btn.clicked.connect(lambda: self._add_new_sequence_bank(title, bank_combo))
+            banks_layout.addWidget(add_bank_btn)
+            c_layout.addLayout(banks_layout)
+
+            param_grid = QGridLayout()
+            pitch_spin = QDoubleSpinBox(); pitch_spin.setRange(-24.0, 24.0); pitch_spin.setValue(0.0); pitch_spin.setSuffix(" st")
+            pitch_spin.setStyleSheet("background-color: #161b22; color: #00ffcc; border: 1px solid #30363d;")
+
+            amp_spin = QDoubleSpinBox(); amp_spin.setRange(0.0, 2.0); amp_spin.setValue(1.0); amp_spin.setSingleStep(0.1)
+            amp_spin.setStyleSheet("background-color: #161b22; color: #00ffcc; border: 1px solid #30363d;")
+
+            stretch_spin = QDoubleSpinBox(); stretch_spin.setRange(0.2, 4.0); stretch_spin.setValue(1.0); stretch_spin.setSingleStep(0.1)
+            stretch_spin.setStyleSheet("background-color: #161b22; color: #00ffcc; border: 1px solid #30363d;")
+
+            math_chord_combo = QComboBox()
+            math_chord_combo.setStyleSheet("background-color: #161b22; color: #00ffcc; border: 1px solid #30363d;")
+            math_chord_combo.addItems(list(self.engine.math_chord_library.keys()))
+
+            length_spin = QSpinBox(); length_spin.setRange(4, 128); length_spin.setValue(16)
+            length_spin.setStyleSheet("background-color: #161b22; color: #00ffcc; border: 1px solid #30363d;")
+
+            param_grid.addWidget(QLabel("Pitch Shift:"), 0, 0); param_grid.addWidget(pitch_spin, 0, 1)
+            param_grid.addWidget(QLabel("Amp:"), 0, 2); param_grid.addWidget(amp_spin, 0, 3)
+            param_grid.addWidget(QLabel("Stretch:"), 1, 0); param_grid.addWidget(stretch_spin, 1, 1)
+            param_grid.addWidget(QLabel("Math Chords (Point Pairs):"), 1, 2); param_grid.addWidget(math_chord_combo, 1, 3)
+            param_grid.addWidget(QLabel("Steps:"), 2, 0); param_grid.addWidget(length_spin, 2, 1)
+            c_layout.addLayout(param_grid)
+
+            active_bank = instr_banks[0]
+            seq_canvas = FreeformSequencerCanvas(active_bank)
+            c_layout.addWidget(seq_canvas)
+
+        wt_canvas = WavetableCanvas(title, self.engine)
+        c_layout.addWidget(wt_canvas)
+
+        knobs_layout = QHBoxLayout()
+        knobs_layout.addWidget(PatchableKnob("Envelope Decay", 10.0, 1000.0, 250.0, "ms", title, self))
+        knobs_layout.addWidget(PatchableKnob("Audio Gain", 0.0, 100.0, 75.0, "%", title, self))
+        knobs_layout.addWidget(PatchableKnob("Filter Q", 0.1, 20.0, 4.0, "Q", title, self))
+        c_layout.addLayout(knobs_layout)
+
+        panel = ResizableWorkspacePanel(title, content_widget)
+        panel.show()
+        self.container_layout.addWidget(panel, row, col)
+
+    def _add_new_sequence_bank(self, title, combo):
+        bank_name = f"Sequence Bank {len(self.engine.get_instrument_banks(title)) + 1}"
+        self.engine.add_instrument_sequence_bank(title, bank_name)
+        combo.addItem(bank_name)
+        combo.setCurrentIndex(combo.count() - 1)
+        QMessageBox.information(self, "Sequence Bank Added", f"Created new freeform sequence bank '{bank_name}' for {title}.")
+
+    def _trigger_resampling(self, title):
+        buf_name = GLOBAL_BUS.trigger_resampling()
+        QMessageBox.information(self, "Live Resampling Captured", f"Active audio input loop from '{title}' successfully resampled into buffer: {buf_name}")
+
+    def _evaluate_polynomial_osc(self, eq_text, title):
+        self.engine.scale_equation = eq_text
+        freqs = self.engine.generate_equation_scale_frequencies()
+        QMessageBox.information(self, "Polynomial Evaluated", f"Equation '{eq_text}' successfully computed across step-gated x, y, z variables for '{title}'. Generated {len(freqs)} rhythmic frequencies!")
+
+
+# -------------------------------------------------------------------------
+# TAB 2: FULLY ACTIVATED DRUM & PERCUSSION MATRIX
+# -------------------------------------------------------------------------
+class DrumMatrixPage(QWidget):
+    def __init__(self, engine):
+        super().__init__()
+        self.engine = engine
+        self.setStyleSheet("background-color: #070b10;")
+        layout = QVBoxLayout(self)
+
+        top_bar = QHBoxLayout()
+        top_info = QLabel("🥁 Fully Activated Drum & Percussion Synthesizer Matrix (Live Step-Clock Gated Transients)")
+        top_info.setStyleSheet("color: #f5d97d; font-weight: bold; font-size: 12px; background: transparent;")
+        top_bar.addWidget(top_info)
+        top_bar.addStretch()
+
+        activate_all_drums_btn = QPushButton("⚡ Force Trigger All Drum Gates")
+        activate_all_drums_btn.setStyleSheet("background-color: #2b1135; color: #00ffcc; font-weight: bold; border: 1px solid #00ffcc; padding: 6px;")
+        activate_all_drums_btn.clicked.connect(self._force_trigger_drums)
+        top_bar.addWidget(activate_all_drums_btn)
+
+        spawn_drum_btn = QPushButton("+ Spawn Drum Machine Unit")
+        spawn_drum_btn.setStyleSheet("background-color: #1f242c; color: #00ffcc; font-weight: bold; border: 1px solid #00ffcc; padding: 6px;")
+        spawn_drum_btn.clicked.connect(self._spawn_new_drum_unit)
+        top_bar.addWidget(spawn_drum_btn)
+        layout.addLayout(top_bar)
+
+        self.scroll = QScrollArea(); self.scroll.setWidgetResizable(True)
+        self.scroll.setStyleSheet("background-color: #070b10; border: none;")
+        self.container = QWidget(self); self.container.setStyleSheet("background-color: #070b10;")
+        self.grid = QGridLayout(self.container)
+
+        self.refresh_drum_grid()
+
+        self.container.setLayout(self.grid)
+        self.scroll.setWidget(self.container)
+        layout.addWidget(self.scroll)
+
+    def refresh_drum_grid(self):
+        while self.grid.count():
+            item = self.grid.takeAt(0)
+            if item and item.widget():
+                item.widget().deleteLater()
+
+        for idx, kit_name in enumerate(self.engine.active_drum_kits):
+            self.w = QWidget(self); w.setStyleSheet("background-color: #0d1117;")
+            l = QVBoxLayout(w)
+
+            kit_header = QHBoxLayout()
+            lbl_kit = QLabel(f"Kit: {kit_name} [Activated Runtime Triggers]")
+            lbl_kit.setStyleSheet("color: #c9d1d9; font-weight: bold; background: transparent;")
+            kit_header.addWidget(lbl_kit)
+            kit_header.addStretch()
+
+            despawn_btn = QPushButton("✕ Despawn")
+            despawn_btn.setFixedSize(70, 20)
+            despawn_btn.setStyleSheet("background-color: #2b1115; color: #ff7b72; border: 1px solid #ff7b72; font-size: 8px; font-weight: bold;")
+            despawn_btn.clicked.connect(lambda checked, name=kit_name: self._despawn_drum_unit(name))
+            kit_header.addWidget(despawn_btn)
+            l.addLayout(kit_header)
+
+            grid_row = QGridLayout()
+            for step in range(16):
+                btn = QPushButton(str(step + 1))
+                btn.setCheckable(True)
+                is_active_gate = self.engine.runtime_clock.evaluate_drum_trigger(kit_name, step)
+                btn.setChecked(is_active_gate)
+                if is_active_gate:
+                    btn.setStyleSheet("background-color: #00ffcc; color: #0d1117; font-weight: bold; font-size: 9px; border: 1px solid #ffffff;")
+                else:
+                    btn.setStyleSheet("background-color: #161b22; color: #8b949e; font-size: 9px;")
+                grid_row.addWidget(btn, 0, step)
+            l.addLayout(grid_row)
+
+            knobs = QHBoxLayout()
+            knobs.addWidget(PatchableKnob("Decay", 10.0, 500.0, 150.0, "ms", kit_name))
+            knobs.addWidget(PatchableKnob("Pitch Mod", 0.0, 100.0, 40.0, "%", kit_name))
+            knobs.addWidget(PatchableKnob("Drive", 0.0, 10.0, 2.0, "x", kit_name))
+            l.addLayout(knobs)
+
+            panel = ResizableWorkspacePanel(kit_name, w)
+            panel.show()
+            self.grid.addWidget(panel, idx // 2, idx % 2)
+        self.container.update()
+
+    def _force_trigger_drums(self):
+        tick = self.engine.runtime_clock.tick_clock()
+        self.refresh_drum_grid()
+        QMessageBox.information(self, "Drum Matrices Triggered", f"Successfully advanced runtime clock to step {tick}. All active drum machine banks are firing transient triggers!")
+
+    def _spawn_new_drum_unit(self):
+        new_name = f"Custom Drum Unit {len(self.engine.active_drum_kits) + 1}"
+        self.engine.active_drum_kits.append(new_name)
+        self.refresh_drum_grid()
+        QMessageBox.information(self, "Drum Machine Spawned", f"Successfully spawned new fully activated drum machine unit '{new_name}' under Tab 2.")
+
+    def _despawn_drum_unit(self, kit_name):
+        if len(self.engine.active_drum_kits) > 1:
+            self.engine.active_drum_kits.remove(kit_name)
+            self.refresh_drum_grid()
+            QMessageBox.information(self, "Drum Machine Despawned", f"Successfully despawned drum machine '{kit_name}'.")
+        else:
+            QMessageBox.warning(self, "Despawn Failed", "At least one drum machine unit must remain active.")
+
+
+# -------------------------------------------------------------------------
+# TAB 3: GRANULAR FX & FREQUENCY SHIFTER
+# -------------------------------------------------------------------------
+class GranularFXPage(QWidget):
+    def __init__(self, engine):
+        super().__init__()
+        self.engine = engine
+        self.setStyleSheet("background-color: #070b10;")
+        self.layout = QVBoxLayout(self)
+
+        top_bar = QHBoxLayout()
+        title = QLabel("🌌 Granular FX, Spectral Shifter & Wavefolder Matrix (Dynamic FX Instances)")
+        title.setStyleSheet("color: #00ffcc; font-weight: bold; font-size: 12px; background: transparent;")
+        top_bar.addWidget(title)
+        top_bar.addStretch()
+
+        spawn_fx_btn = QPushButton("+ Spawn Custom FX Module")
+        spawn_fx_btn.setStyleSheet("background-color: #1f242c; color: #00ffcc; font-weight: bold; border: 1px solid #00ffcc; padding: 6px;")
+        spawn_fx_btn.clicked.connect(self._spawn_new_fx_unit)
+        top_bar.addWidget(spawn_fx_btn)
+        self.layout.addLayout(top_bar)
+
+        self.scroll = QScrollArea(); self.scroll.setWidgetResizable(True)
+        self.scroll.setStyleSheet("background-color: #070b10; border: none;")
+        self.container = QWidget(self); self.container.setStyleSheet("background-color: #070b10;")
+        self.grid = QGridLayout(self.container)
+
+        self.refresh_fx_grid()
+        self.container.setLayout(self.grid)
+        self.scroll.setWidget(self.container)
+        self.layout.addWidget(self.scroll)
+
+    def refresh_fx_grid(self):
+        while self.grid.count():
+            item = self.grid.takeAt(0)
+            if item and item.widget():
+                item.widget().deleteLater()
+
+        for idx, fx_name in enumerate(self.engine.active_fx_modules):
+            self.w = QWidget(self); w.setStyleSheet("background-color: #0d1117;")
+            l = QVBoxLayout(w)
+
+            sub_header = QHBoxLayout()
+            sub_lbl = QLabel(f"Processor Subtype: Advanced {fx_name}")
+            sub_lbl.setStyleSheet("color: #f5d97d; font-size: 9px; background: transparent;")
+            sub_header.addWidget(sub_lbl)
+            sub_header.addStretch()
+
+            despawn_btn = QPushButton("✕ Despawn")
+            despawn_btn.setFixedSize(70, 20)
+            despawn_btn.setStyleSheet("background-color: #2b1115; color: #ff7b72; border: 1px solid #ff7b72; font-size: 8px; font-weight: bold;")
+            despawn_btn.clicked.connect(lambda checked, name=fx_name: self._despawn_fx_unit(name))
+            sub_header.addWidget(despawn_btn)
+            l.addLayout(sub_header)
+
+            knobs = QHBoxLayout()
+            knobs.addWidget(PatchableKnob("Grain Size", 10.0, 250.0, 50.0, "ms", fx_name))
+            knobs.addWidget(PatchableKnob("Density", 1.0, 100.0, 32.0, "gr/s", fx_name))
+            knobs.addWidget(PatchableKnob("Scatter", 0.0, 100.0, 75.0, "%", fx_name))
+            knobs.addWidget(PatchableKnob("Feedback", 0.0, 100.0, 40.0, "%", fx_name))
+            l.addLayout(knobs)
+
+            wt = WavetableCanvas(fx_name, self.engine)
+            l.addWidget(wt)
+
+            panel = ResizableWorkspacePanel(fx_name, w)
+            panel.show()
+            self.grid.addWidget(panel, idx // 2, idx % 2)
+        self.container.update()
+
+    def _spawn_new_fx_unit(self):
+        new_name = f"Custom FX Unit {len(self.engine.active_fx_modules) + 1}"
+        if new_name not in self.engine.active_fx_modules:
+            self.engine.active_fx_modules.append(new_name)
+            self.refresh_fx_grid()
+            QMessageBox.information(self, "FX Module Spawned", f"Successfully spawned new FX module '{new_name}' into the signal chain.")
+
+    def _despawn_fx_unit(self, fx_name):
+        if len(self.engine.active_fx_modules) > 1:
+            self.engine.active_fx_modules.remove(fx_name)
+            self.refresh_fx_grid()
+            QMessageBox.information(self, "FX Module Despawned", f"Successfully despawned FX module '{fx_name}'.")
+        else:
+            QMessageBox.warning(self, "Despawn Failed", "At least one active FX module must remain in the routing matrix.")
+
+
+# -------------------------------------------------------------------------
+# TAB 4: FULLY ACTIVATED AUTOMATION & STEP SEQUENCER SUITE
+# -------------------------------------------------------------------------
+class AutomationCurveCanvas(QWidget):
+    def __init__(self, points_list, parent=None):
+        super().__init__(parent)
+        self.points_list = points_list
+        self.setMinimumHeight(120)
+        self.setStyleSheet("background-color: #0b0f15; border: 1px solid #30363d; border-radius: 4px;")
+
+    def paintEvent(self, event):
+        p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.fillRect(self.rect(), QColor("#0b0f15"))
+
+        p.setPen(QPen(QColor("#161b22"), 1, Qt.PenStyle.DashLine))
+        for x in range(0, self.width(), 50): p.drawLine(x, 0, x, self.height())
+        for y in range(0, self.height(), 30): p.drawLine(0, y, self.width(), y)
+
+        n = len(self.points_list)
+        if n >= 2:
+            step_w = self.width() / max(1, n - 1)
+            path = QPainterPath()
+            pts = []
+            for i, val in enumerate(self.points_list):
+                px = i * step_w
+                py = self.height() - (val / 100.0) * (self.height() - 20) - 10
+                pts.append(QPointF(px, py))
+
+            path.moveTo(pts[0])
+            for pt in pts[1:]:
+                path.lineTo(pt)
+
+            p.setPen(QPen(QColor("#f5d97d"), 2.0))
+            p.drawPath(path)
+
+            p.setBrush(QBrush(QColor("#00ffcc")))
+            p.setPen(QPen(QColor("#ffffff"), 1))
+            for pt in pts:
+                p.drawEllipse(pt, 4, 4)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            pos = event.position()
+            n = len(self.points_list)
+            if n > 0:
+                idx = min(n - 1, max(0, int(round((pos.x() / self.width()) * (n - 1)))))
+                val = max(0.0, min(100.0, round((self.height() - pos.y() - 10) / (self.height() - 20) * 100.0, 1)))
+                self.points_list[idx] = val
+                self.update()
+
+
+class AutomationPatternPage(QWidget):
+    def __init__(self, engine):
+        super().__init__()
+        self.engine = engine
+        self.setStyleSheet("background-color: #070b10;")
+        layout = QVBoxLayout(self)
+
+        top_bar = QHBoxLayout()
+        title = QLabel("⚙️ Fully Activated Modular Step Sequencer, Automation Envelopes & Pattern Designer")
+        title.setStyleSheet("color: #f5d97d; font-weight: bold; font-size: 12px; background: transparent;")
+        top_bar.addWidget(title)
+        top_bar.addStretch()
+
+        activate_all_seqs_btn = QPushButton("⚡ Force Trigger All Sequencers")
+        activate_all_seqs_btn.setStyleSheet("background-color: #2b1135; color: #f5d97d; font-weight: bold; border: 1px solid #f5d97d; padding: 6px;")
+        activate_all_seqs_btn.clicked.connect(self._force_trigger_sequencers)
+        top_bar.addWidget(activate_all_seqs_btn)
+
+        add_pat_btn = QPushButton("+ New Automation Pattern")
+        add_pat_btn.setStyleSheet("background-color: #1f242c; color: #00ffcc; font-weight: bold; border: 1px solid #00ffcc; padding: 6px;")
+        add_pat_btn.clicked.connect(self._add_automation_pattern)
+        top_bar.addWidget(add_pat_btn)
+
+        spawn_seq_btn = QPushButton("+ Spawn Sequencer Module")
+        spawn_seq_btn.setStyleSheet("background-color: #1f242c; color: #f5d97d; font-weight: bold; border: 1px solid #f5d97d; padding: 6px;")
+        spawn_seq_btn.clicked.connect(self._spawn_sequencer_module)
+        top_bar.addWidget(spawn_seq_btn)
+
+        layout.addLayout(top_bar)
+
+        self.scroll = QScrollArea(); self.scroll.setWidgetResizable(True)
+        self.scroll.setStyleSheet("background-color: #070b10; border: none;")
+        self.container = QWidget(self); self.container.setStyleSheet("background-color: #070b10;")
+        self.grid = QGridLayout(self.container)
+
+        self._refresh_automation_panels()
+        self.container.setLayout(self.grid)
+        self.scroll.setWidget(self.container)
+        layout.addWidget(self.scroll)
+
+    def _refresh_automation_panels(self):
+        while self.grid.count():
+            item = self.grid.takeAt(0)
+            if item and item.widget():
+                item.widget().deleteLater()
+
+        total_idx = 0
+        for pat_name, points in self.engine.automation_patterns.items():
+            self.w = QWidget(self); w.setStyleSheet("background-color: #0d1117;")
+            l = QVBoxLayout(w)
+
+            lbl = QLabel(f"Automation & Step Sequencer Lane: '{pat_name}' (Active Automation Curve)")
+            lbl.setStyleSheet("color: #00ffcc; font-weight: bold; background: transparent;")
+            l.addWidget(lbl)
+
+            canvas = AutomationCurveCanvas(points)
+            l.addWidget(canvas)
+
+            panel = ResizableWorkspacePanel(f"Sequencer / Automation: {pat_name}", w)
+            panel.show()
+            self.grid.addWidget(panel, total_idx // 2, total_idx % 2)
+            total_idx += 1
+
+        for seq_mod_name in self.engine.active_sequencer_modules:
+            self.w = QWidget(self); w.setStyleSheet("background-color: #0d1117;")
+            l = QVBoxLayout(w)
+
+            seq_header = QHBoxLayout()
+            seq_lbl = QLabel(f"Poly-Rhythmic Sequencer Instance: {seq_mod_name} [Activated Gates]")
+            seq_lbl.setStyleSheet("color: #ff7b72; font-weight: bold; background: transparent;")
+            seq_header.addWidget(seq_lbl)
+            seq_header.addStretch()
+
+            despawn_seq_btn = QPushButton("✕ Despawn")
+            despawn_seq_btn.setFixedSize(70, 20)
+            despawn_seq_btn.setStyleSheet("background-color: #2b1115; color: #ff7b72; border: 1px solid #ff7b72; font-size: 8px; font-weight: bold;")
+            despawn_seq_btn.clicked.connect(lambda checked, name=seq_mod_name: self._despawn_sequencer_module(name))
+            seq_header.addWidget(despawn_seq_btn)
+            l.addLayout(seq_header)
+
+            step_grid = QGridLayout()
+            for step in range(16):
+                s_btn = QPushButton(str(step + 1))
+                s_btn.setCheckable(True)
+                is_gate_active = self.engine.runtime_clock.evaluate_sequencer_gate(seq_mod_name, step)
+                s_btn.setChecked(is_gate_active)
+                if is_gate_active:
+                    s_btn.setStyleSheet("background-color: #f5d97d; color: #0d1117; font-weight: bold; font-size: 9px; border: 1px solid #ffffff;")
+                else:
+                    s_btn.setStyleSheet("background-color: #161b22; color: #8b949e; font-size: 9px;")
+                step_grid.addWidget(s_btn, 0, step)
+            l.addLayout(step_grid)
+
+            knobs = QHBoxLayout()
+            knobs.addWidget(PatchableKnob("Gate Length", 10.0, 100.0, 50.0, "%", seq_mod_name))
+            knobs.addWidget(PatchableKnob("Probability", 0.0, 100.0, 85.0, "%", seq_mod_name))
+            knobs.addWidget(PatchableKnob("Swing Rate", 0.0, 50.0, 12.0, "%", seq_mod_name))
+            l.addLayout(knobs)
+
+            panel = ResizableWorkspacePanel(f"Sequencer Module: {seq_mod_name}", w)
+            panel.show()
+            self.grid.addWidget(panel, total_idx // 2, total_idx % 2)
+            total_idx += 1
+        self.container.update()
+
+    def _force_trigger_sequencers(self):
+        tick = self.engine.runtime_clock.tick_clock()
+        self._refresh_automation_panels()
+        QMessageBox.information(self, "Sequencer Modules Triggered", f"Successfully advanced sequencer clock to step {tick}. All poly-rhythmic step sequencers and automation curves are fully engaged!")
+
+    def _add_automation_pattern(self):
+        pat_name = f"Custom Sequencer Lane {len(self.engine.automation_patterns) + 1}"
+        self.engine.automation_patterns[pat_name] = [0.0, 50.0, 100.0, 50.0, 25.0, 80.0, 100.0, 0.0]
+        self._refresh_automation_panels()
+        QMessageBox.information(self, "Sequencer Lane Created", f"New modular step/automation envelope '{pat_name}' successfully added.")
+
+    def _spawn_sequencer_module(self):
+        seq_name = f"Advanced Sequencer Instance {len(self.engine.active_sequencer_modules) + 1}"
+        if seq_name not in self.engine.active_sequencer_modules:
+            self.engine.active_sequencer_modules.append(seq_name)
+            self._refresh_automation_panels()
+            QMessageBox.information(self, "Sequencer Module Spawned", f"Successfully spawned new sequencer module '{seq_name}'.")
+
+    def _despawn_sequencer_module(self, seq_name):
+        if len(self.engine.active_sequencer_modules) > 1:
+            self.engine.active_sequencer_modules.remove(seq_name)
+            self._refresh_automation_panels()
+            QMessageBox.information(self, "Sequencer Module Despawned", f"Successfully despawned sequencer module '{seq_name}'.")
+        else:
+            QMessageBox.warning(self, "Despawn Failed", "At least one sequencer module must remain active.")
+
+
+# -------------------------------------------------------------------------
+# INFINITE SCROLLABLE PLAYLIST CANVAS
+# -------------------------------------------------------------------------
+class InfinitePlaylistInnerWidget(QWidget):
+    def __init__(self, engine, parent_page, parent=None):
+        super().__init__(parent)
+        self.engine = engine
+        self.parent_page = parent_page
+        self.setMinimumSize(8000, 1600)
+        self.setStyleSheet("background-color: #070b10;")
+
+    def paintEvent(self, event):
+        p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.fillRect(self.rect(), QColor("#070b10"))
+
+        p.setPen(QPen(QColor("#161b22"), 1, Qt.PenStyle.DashLine))
+        for x in range(0, self.width(), 80):
+            p.drawLine(x, 0, x, self.height())
+            p.setPen(QPen(QColor("#484f58"), 1))
+            p.drawText(x + 4, 15, f"Bar {x // 80 + 1}")
+            p.setPen(QPen(QColor("#161b22"), 1, Qt.PenStyle.DashLine))
+
+        for (trk, bar_pos), clip in self.engine.playlist_clips.items():
+            cx = bar_pos * 80
+            cy = 25 + (trk * 50)
+            p.setBrush(QBrush(QColor("#1f242c")))
+            p.setPen(QPen(QColor("#00ffcc"), 1.5))
+            p.drawRoundedRect(int(cx), cy, 140, 42, 4, 4)
+
+            p.setPen(QPen(QColor("#f5d97d"), 9))
+            p.drawText(int(cx) + 6, cy + 14, f"{clip.get('name', 'Clip')}")
+            p.setPen(QPen(QColor("#8b949e"), 8))
+            p.drawText(int(cx) + 6, cy + 28, f"P:{clip.get('pitch', 0)} | A:{clip.get('amplitude', 1)} | Auto:{clip.get('automation_pattern', 'Def')}")
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            pos = event.position()
+            bar_pos = pos.x() / 80.0
+            track = int(pos.y() // 50)
+
+            pattern_name = self.parent_page.pattern_combo.currentText()
+            math_chord = self.parent_page.playlist_chord_combo.currentText()
+            pitch_val = self.parent_page.playlist_pitch_spin.value()
+            amp_val = self.parent_page.playlist_amp_spin.value()
+            auto_pat = self.parent_page.playlist_auto_combo.currentText()
+
+            clip_data = {
+                "name": pattern_name,
+                "chord": math_chord,
+                "pitch": pitch_val,
+                "amplitude": amp_val,
+                "automation_pattern": auto_pat
+            }
+            self.engine.assign_playlist_clip(track, round(bar_pos, 2), clip_data)
+            self.update()
+
+
+class InfinitePlaylistCanvas(QScrollArea):
+    def __init__(self, engine, parent_page, parent=None):
+        super().__init__(parent)
+        self.engine = engine
+        self.parent_page = parent_page
+        self.setWidgetResizable(True)
+        self.setStyleSheet("background-color: #070b10; border: none;")
+        self.canvas_inner = InfinitePlaylistInnerWidget(self.engine, self.parent_page)
+        self.setWidget(self.canvas_inner)
+
+class EQRVisualizerCanvas(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(160)
+        self.setStyleSheet("background-color: #0b0b0b; border: 1px solid #ff6b00; border-radius: 4px;")
+
+        self.phase = 0.0
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_phase)
+        self.timer.start(30)
+
+    def update_phase(self):
+        self.phase += 0.03
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter()
+        if not painter.begin(self):
+            return
+        try:
+            painter.fillRect(self.rect(), QColor(11, 11, 11))
+            w, h = self.width(), self.height()
+            cx, cy = w / 2.0, h / 2.0
+
+            painter.setPen(QPen(QColor(30, 30, 30), 1, Qt.PenStyle.DashLine))
+            painter.drawLine(0, int(cy), w, int(cy))
+            painter.drawLine(int(cx), 0, int(cx), h)
+
+            num_steps = 300
+            points = []
+            for i in range(num_steps):
+                t = (i / num_steps) * 4 * np.pi + self.phase
+                x_val = np.sin(t * 1.5) * np.cos(t * 0.5 + self.phase * 0.2) * 120.0
+                y_val = np.cos(t * 2.0) * np.sin(t * 1.2) * 80.0
+                z_val = np.sin(t + self.phase) * 50.0
+
+                px = cx + x_val + (z_val * 0.3)
+                py = cy + y_val + (z_val * 0.2)
+                points.append(QPointF(px, py))
+
+            for i in range(len(points) - 1):
+                hue_color = QColor.fromHsvF((i / num_steps + self.phase * 0.1) % 1.0, 0.8, 1.0)
+                painter.setPen(QPen(hue_color, 2))
+                painter.drawLine(points[i], points[i+1])
+        finally:
+            painter.end()
+# -------------------------------------------------------------------------
+# MASTER PATCH CANVAS (Visual Wires & Dedicated Synth Jacks)
+# -------------------------------------------------------------------------
+class EQRVectorEngine(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Mathematician's Groovebox")
+        self.resize(1000, 700)
+
+        # Initialize core layout container
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        self.layout = QVBoxLayout(central_widget)
+
+        # Title Label / Workspace Indicator
+        self.label = QLabel("Coordinate Audio Synthesis Workspace Active")
+        self.layout.addWidget(self.label)
+
+        layout.addRow("Operator Variable X:", self.x_input)
+        layout.addRow("Operator Variable Y:", self.y_input)
+        layout.addRow("Operator Variable Z:", self.z_input)
+class MasterPatchCanvas(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.cables = GLOBAL_BUS.global_cables
+        self.setMinimumHeight(220)
+        self.setStyleSheet("background-color: #0b0f15; border: 1px solid #30363d; border-radius: 4px;")
+
+    def paintEvent(self, event):
+        p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.fillRect(self.rect(), QColor("#0b0f15"))
+
+        p.setPen(QPen(QColor("#161b22"), 1, Qt.PenStyle.DashLine))
+        for x in range(0, self.width(), 60): p.drawLine(x, 0, x, self.height())
+        for y in range(0, self.height(), 40): p.drawLine(0, y, self.width(), y)
+
+        if not self.cables:
+            p.setPen(QPen(QColor("#8b949e"), 10))
+            p.drawText(20, 30, "No active patch cables. Activate Parameter Jacks in synth modules or use the Song Randomizer.")
+            return
+
+        for i, cable in enumerate(self.cables):
+            src = cable.get("src_module", "Src")
+            tgt = cable.get("tgt_module", "Tgt")
+            pol = cable.get("polarity", "Neutral")
+            gain = cable.get("gain", 1.0)
+
+            y_pos = 35 + (i * 30) % max(40, self.height() - 40)
+            color = "#00ffcc" if pol == "+" else ("#ff7b72" if pol == "-" else "#f5d97d")
+
+            p.setPen(QPen(QColor(color), 2.0))
+            p.drawLine(30, y_pos, self.width() - 30, y_pos)
+
+            p.setBrush(QBrush(QColor("#161b22")))
+            p.setPen(QPen(QColor(color), 1))
+            p.drawRoundedRect(35, y_pos - 12, 190, 24, 4, 4)
+            p.drawRoundedRect(self.width() - 225, y_pos - 12, 190, 24, 4, 4)
+
+            p.setPen(QPen(QColor("#ffffff"), 9))
+            p.drawText(43, y_pos + 4, f"{src}")
+            p.drawText(self.width() - 217, y_pos + 4, f"{tgt} [{pol}, {gain}x]")
+
+class MasterControlPanel(QWidget):
+    """Global parameters featuring Master Tempo and Quantization options."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("color: #ffffff;")
+        layout = QHBoxLayout(self)
+
+        self.tempo_label = QLabel("Master Tempo: 120 BPM")
+        self.tempo_slider = QDoubleSpinBox()
+        self.tempo_slider.setRange(0.0, 512.0)
+        self.tempo_slider.setDecimals(3)
+        self.tempo_slider.setSingleStep(0.1)
+        self.tempo_slider.setValue(120.0)
+        self.tempo_slider.valueChanged.connect(self.update_tempo_display)
+
+        self.quant_label = QLabel("Quantize:")
+        self.quant_combo = QComboBox()
+        self.quant_combo.addItems(["Off (Free Timing)", "1/4 Note", "1/8 Note", "1/16 Note"])
+        self.quant_combo.setStyleSheet("background-color: #222; color: #fff; border: 1px solid #444; padding: 4px;")
+
+        layout.addWidget(self.tempo_label)
+        layout.addWidget(self.tempo_slider)
+        layout.addSpacing(20)
+        layout.addWidget(self.quant_label)
+        layout.addWidget(self.quant_combo)
+
+    def update_tempo_display(self, value):
+        self.tempo_label.setText(f"Master Tempo: {value} BPM")
+# -------------------------------------------------------------------------
+# TAB 5: EQUATION SCALES, INFINITE PLAYLIST & PATCHBAY
+# -------------------------------------------------------------------------
+class GeometricSymbolicCanvas(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(140)
+        self.setStyleSheet("""
+            background-color: #2d3436;
+            border: 3px solid #00b894;
+            border-radius: 12px;
+        """)
+        self.nodes = [
+            {"label": "Node α: Sine", "pos": (60, 45), "color": "#ff7675"},
+            {"label": "Node β: Fold", "pos": (220, 80), "color": "#74b9ff"},
+            {"label": "Node γ: Resonator", "pos": (400, 40), "color": "#55efc4"},
+            {"label": "Node δ: Attractor", "pos": (580, 75), "color": "#ffeaa7"}
+        ]
+
+    def paintEvent(self, event):
+        painter = QPainter()
+        if not painter.begin(self):
+            return
+        try:
+            painter.fillRect(self.rect(), QColor(45, 52, 54))
+            pen = QPen(QColor(162, 155, 254), 2, Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            for i in range(len(self.nodes) - 1):
+                p1 = self.nodes[i]["pos"]
+                p2 = self.nodes[i+1]["pos"]
+                painter.drawLine(p1[0], p1[1], p2[0], p2[1])
+
+            for node in self.nodes:
+                painter.setPen(QPen(QColor(255, 255, 255), 2))
+                painter.setBrush(QColor(node["color"]))
+                x, y = node["pos"]
+                painter.drawEllipse(QPoint(x, y), 22, 22)
+
+                painter.setPen(QColor(253, 203, 110))
+                painter.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+                painter.drawText(x - 30, y + 36, node["label"])
+        finally:
+            painter.end()
+class MasterControlPatchbayPage(QWidget):
+    def __init__(self, engine, main_window):
+        super().__init__()
+        self.engine = engine
+        self.main_window = main_window
+        GLOBAL_BUS.register_subscriber(self)
+
+        layout = QVBoxLayout(self)
+
+        # Top Global Controls Group (Enhanced with Rhythm Flux Linking Controls)
+        controls_group = QGroupBox("Master Engine Controls, Equation Scale & Rhythm Flux Linking")
+        controls_group.setStyleSheet("QGroupBox { color: #00ffcc; font-weight: bold; border: 1px solid #30363d; margin-top: 6px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px; }")
+        ctrl_layout = QGridLayout(controls_group)
+
+        # BPM Slider
+        self.bpm_label = QLabel(f"{self.engine.global_bpm:.1f} BPM")
+        self.bpm_label.setStyleSheet("color: #f5d97d; font-weight: bold;")
+        self.bpm_slider = QSlider(Qt.Orientation.Horizontal)
+        self.bpm_slider.setRange(400, 2400)
+        self.bpm_slider.setValue(int(self.engine.global_bpm * 10))
+        self.bpm_slider.valueChanged.connect(self._on_bpm_changed)
+
+        ctrl_layout.addWidget(QLabel("Global Tempo:"), 0, 0)
+        ctrl_layout.addWidget(self.bpm_slider, 0, 1)
+        ctrl_layout.addWidget(self.bpm_label, 0, 2)
+
+        # Rhythm Flux Link Mode Controls
+        ctrl_layout.addWidget(QLabel("Rhythm Flux Mode:"), 0, 3)
+        self.flux_mode_combo = QComboBox()
+        self.flux_mode_combo.addItems(["Global", "Active Concurrent", "Unlinked"])
+        self.flux_mode_combo.setCurrentText(self.engine.runtime_clock.rhythm_flux_mode)
+        self.flux_mode_combo.setStyleSheet("background-color: #161b22; color: #00ffcc; border: 1px solid #30363d;")
+        self.flux_mode_combo.currentTextChanged.connect(self._on_flux_mode_changed)
+        ctrl_layout.addWidget(self.flux_mode_combo, 0, 4)
+
+        ctrl_layout.addWidget(QLabel("Flux Rate:"), 0, 5)
+        self.flux_rate_spin = QDoubleSpinBox()
+        self.flux_rate_spin.setRange(0.25, 4.0)
+        self.flux_rate_spin.setValue(self.engine.runtime_clock.rhythm_flux_rate)
+        self.flux_rate_spin.setSingleStep(0.25)
+        self.flux_rate_spin.setStyleSheet("background-color: #161b22; color: #00ffcc; border: 1px solid #30363d;")
+        self.flux_rate_spin.valueChanged.connect(self._on_flux_rate_changed)
+        ctrl_layout.addWidget(self.flux_rate_spin, 0, 6)
+
+        # Equation Controls
+        self.eq_input = QLineEdit(self.engine.scale_equation)
+        self.eq_input.setStyleSheet("background-color: #161b22; color: #00ffcc; font-family: monospace; border: 1px solid #30363d;")
+
+        self.inc_spin = QDoubleSpinBox()
+        self.inc_spin.setRange(0.01, 5.0)
+        self.inc_spin.setValue(self.engine.scale_increment)
+        self.inc_spin.setSingleStep(0.05)
+        self.inc_spin.setStyleSheet("background-color: #161b22; color: #00ffcc; border: 1px solid #30363d;")
+
+        self.steps_spin = QSpinBox()
+        self.steps_spin.setRange(1, 1024)
+        self.steps_spin.setValue(self.engine.divergence_steps_count)
+        self.steps_spin.setStyleSheet("background-color: #161b22; color: #00ffcc; border: 1px solid #30363d;")
+
+        apply_eq_btn = QPushButton("Apply Equation Scale")
+        apply_eq_btn.setStyleSheet("background-color: #1f242c; color: #f5d97d; font-weight: bold; border: 1px solid #f5d97d; padding: 4px;")
+        apply_eq_btn.clicked.connect(self._apply_equation_scale)
+
+        ctrl_layout.addWidget(QLabel("Scale Equation:"), 1, 0)
+        ctrl_layout.addWidget(self.eq_input, 1, 1, 1, 3)
+        ctrl_layout.addWidget(apply_eq_btn, 1, 4, 1, 3)
+
+        ctrl_layout.addWidget(QLabel("Increment:"), 2, 0)
+        ctrl_layout.addWidget(self.inc_spin, 2, 1)
+        ctrl_layout.addWidget(QLabel("Steps:"), 2, 2)
+        ctrl_layout.addWidget(self.steps_spin, 2, 3)
+
+        # Action Buttons Row
+        actions_layout = QHBoxLayout()
+        rand_btn = QPushButton("🎲 Randomize Song & Patchbay")
+        rand_btn.setStyleSheet("background-color: #2b1135; color: #00ffcc; font-weight: bold; border: 1px solid #00ffcc; padding: 6px;")
+        rand_btn.clicked.connect(self._randomize_song_action)
+
+        save_btn = QPushButton("💾 Save Project")
+        save_btn.setStyleSheet("background-color: #1f242c; color: #ffffff; border: 1px solid #30363d; padding: 6px;")
+        save_btn.clicked.connect(self._save_project)
+
+        load_btn = QPushButton("📂 Load Project")
+        load_btn.setStyleSheet("background-color: #1f242c; color: #ffffff; border: 1px solid #30363d; padding: 6px;")
+        load_btn.clicked.connect(self._load_project)
+
+        export_btn = QPushButton("📻 Export Master WAV Audio")
+        export_btn.setStyleSheet("background-color: #112b35; color: #f5d97d; font-weight: bold; border: 1px solid #f5d97d; padding: 6px;")
+        export_btn.clicked.connect(self._export_audio)
+
+        actions_layout.addWidget(rand_btn)
+        actions_layout.addWidget(save_btn)
+        actions_layout.addWidget(load_btn)
+        actions_layout.addWidget(export_btn)
+
+        layout.addWidget(controls_group)
+        layout.addLayout(actions_layout)
+
+        # Playlist Options & Controls
+        pl_options_layout = QHBoxLayout()
+        pl_options_layout.addWidget(QLabel("Pattern:"))
+        self.pattern_combo = QComboBox()
+        self.pattern_combo.addItems(self.engine.available_patterns)
+        self.pattern_combo.setStyleSheet("background-color: #161b22; color: #00ffcc; border: 1px solid #30363d;")
+        pl_options_layout.addWidget(self.pattern_combo)
+
+        pl_options_layout.addWidget(QLabel("Chord:"))
+        self.playlist_chord_combo = QComboBox()
+        self.playlist_chord_combo.addItems(list(self.engine.math_chord_library.keys()))
+        self.playlist_chord_combo.setStyleSheet("background-color: #161b22; color: #00ffcc; border: 1px solid #30363d;")
+        pl_options_layout.addWidget(self.playlist_chord_combo)
+
+        pl_options_layout.addWidget(QLabel("Pitch St:"))
+        self.playlist_pitch_spin = QDoubleSpinBox()
+        self.playlist_pitch_spin.setRange(-24.0, 24.0)
+        self.playlist_pitch_spin.setValue(0.0)
+        self.playlist_pitch_spin.setStyleSheet("background-color: #161b22; color: #00ffcc; border: 1px solid #30363d;")
+        pl_options_layout.addWidget(self.playlist_pitch_spin)
+
+        pl_options_layout.addWidget(QLabel("Amp:"))
+        self.playlist_amp_spin = QDoubleSpinBox()
+        self.playlist_amp_spin.setRange(0.1, 2.0)
+        self.playlist_amp_spin.setValue(1.0)
+        self.playlist_amp_spin.setStyleSheet("background-color: #161b22; color: #00ffcc; border: 1px solid #30363d;")
+        pl_options_layout.addWidget(self.playlist_amp_spin)
+
+        pl_options_layout.addWidget(QLabel("Auto Pattern:"))
+        self.playlist_auto_combo = QComboBox()
+        self.playlist_auto_combo.addItems(list(self.engine.automation_patterns.keys()))
+        self.playlist_auto_combo.setStyleSheet("background-color: #161b22; color: #00ffcc; border: 1px solid #30363d;")
+        pl_options_layout.addWidget(self.playlist_auto_combo)
+
+        create_patch_btn = QPushButton("⚡ Create Patch")
+        create_patch_btn.setStyleSheet("background-color: #1f242c; color: #00ffcc; font-weight: bold; border: 1px solid #00ffcc; padding: 4px;")
+        create_patch_btn.clicked.connect(self._create_patch_prompt)
+        pl_options_layout.addWidget(create_patch_btn)
+
+        layout.addLayout(pl_options_layout)
+
+        # Splitter for Playlist and Patch Canvas
+        splitter = QSplitter(Qt.Orientation.Vertical)
+
+        # Infinite Playlist Section
+        playlist_group = QGroupBox("Infinite Playlist Arrangement Canvas (Click to Place Clip)")
+        playlist_group.setStyleSheet("QGroupBox { color: #f5d97d; font-weight: bold; border: 1px solid #30363d; margin-top: 6px; }")
+        pl_layout = QVBoxLayout(playlist_group)
+        self.infinite_playlist_canvas = InfinitePlaylistCanvas(self.engine, self)
+        pl_layout.addWidget(self.infinite_playlist_canvas)
+        splitter.addWidget(playlist_group)
+
+        # Patch Canvas Section
+        patch_group = QGroupBox("Master Visual Patchbay & Cable Wiring Matrix")
+        patch_group.setStyleSheet("QGroupBox { color: #00ffcc; font-weight: bold; border: 1px solid #30363d; margin-top: 6px; }")
+        patch_layout = QVBoxLayout(patch_group)
+        self.patch_canvas = MasterPatchCanvas(self)
+        patch_layout.addWidget(self.patch_canvas)
+
+        self.manual_patch_panel = QWidget(self)
+        manual_patch_layout = QHBoxLayout(manual_patch_panel)
+        manual_patch_layout.setContentsMargins(0, 0, 0, 0)
+        manual_patch_layout.addWidget(QLabel("Manual Target Override Route:"))
+        self.manual_patch_combo = QComboBox()
+        self.manual_patch_combo.addItems([
+            "Direct Bus Sum [Master Audio]",
+            "Auxiliary Shifter Loop A",
+            "Auxiliary Shifter Loop B",
+            "Quantum Resonator Feedback In",
+            "Stochastic Granular Direct Send"
+        ])
+        self.manual_patch_combo.setStyleSheet("background-color: #161b22; color: #00ffcc; border: 1px solid #30363d;")
+        manual_patch_layout.addWidget(self.manual_patch_combo)
+
+        apply_manual_route_btn = QPushButton("Apply Override Route")
+        apply_manual_route_btn.setStyleSheet("background-color: #1f242c; color: #f5d97d; font-weight: bold; border: 1px solid #f5d97d; padding: 3px;")
+        apply_manual_route_btn.clicked.connect(self._apply_manual_override_route)
+        manual_patch_layout.addWidget(apply_manual_route_btn)
+
+        patch_layout.addWidget(manual_patch_panel)
+        splitter.addWidget(patch_group)
+
+        layout.addWidget(splitter)
+
+    def _on_bpm_changed(self, val):
+        self.engine.global_bpm = val / 10.0
+        self.bpm_label.setText(f"{self.engine.global_bpm:.1f} BPM")
+
+    def _on_flux_mode_changed(self, mode):
+        self.engine.runtime_clock.rhythm_flux_mode = mode
+        print(f"Rhythm Flux Link Mode updated to: {mode}")
+
+    def _on_flux_rate_changed(self, val):
+        self.engine.runtime_clock.rhythm_flux_rate = val
+        print(f"Rhythm Flux Rate multiplier updated to: {val}x")
+
+    def _apply_equation_scale(self):
+        self.engine.scale_equation = self.eq_input.text()
+        self.engine.scale_increment = self.inc_spin.value()
+        self.engine.divergence_steps_count = self.steps_spin.value()
+        freqs = self.engine.generate_equation_scale_frequencies()
+        QMessageBox.information(self, "Equation Applied", f"Successfully recalculated equation scale! Generated {len(freqs)} frequencies.")
+
+    def _randomize_song_action(self):
+        self.engine.randomize_song()
+        self.patch_canvas.update()
+        self.infinite_playlist_canvas.canvas_inner.update()
+        QMessageBox.information(self, "Song & Patchbay Randomizer", "Successfully randomized song arrangement, synth wiring, effects modules, and global cross-tab patch cables!")
+
+    def _save_project(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Save Project File", "", "EQ爾 Groovebox Files (*.json)")
+        if path:
+            self.engine.serialize_project(path)
+            QMessageBox.information(self, "Project Saved", f"Project successfully saved to:\n{path}")
+
+    def _load_project(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Open Project File", "", "EQ爾 Groovebox Files (*.json)")
+        if path:
+            self.engine.deserialize_project(path)
+            self.bpm_slider.setValue(int(self.engine.global_bpm * 10))
+            self.eq_input.setText(self.engine.scale_equation)
+            self.patch_canvas.update()
+            self.infinite_playlist_canvas.canvas_inner.update()
+            QMessageBox.information(self, "Project Loaded", f"Project successfully loaded from:\n{path}")
+
+    def _export_audio(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Export Master WAV Audio", "", "WAV Audio Files (*.wav)")
+        if path:
+            self.engine.export_audio(path)
+            QMessageBox.information(self, "Audio Exported", f"Master audio successfully rendered and exported to:\n{path}")
+
+    def _create_patch_prompt(self):
+        source, ok1 = QInputDialog.getText(self, "Create Patch", "Enter Source Module/Node:")
+        if not ok1 or not source:
+            return
+        destination, ok2 = QInputDialog.getText(self, "Create Patch", "Enter Target Destination Module/Node:")
+        if not ok2 or not destination:
+            return
+        amount, ok3 = QInputDialog.getDouble(self, "Create Patch", "Enter Modulation Gain Amount:", 1.0, 0.1, 10.0, 2)
+        if not ok3:
+            return
+
+        GLOBAL_BUS.add_cable(
+            src_module=source, src_node="Custom Node",
+            tgt_module=destination, tgt_node="Primary Sum Node",
+            polarity="+", gain=amount
+        )
+        self.patch_canvas.update()
+        QMessageBox.information(self, "Patch Created", f"Successfully created custom patch connection from '{source}' to '{destination}' with amount {amount}x!")
+
+    def _apply_manual_override_route(self):
+        selected_route = self.manual_patch_combo.currentText()
+        if GLOBAL_BUS.global_cables:
+            GLOBAL_BUS.global_cables[-1]["tgt_module"] = selected_route
+            GLOBAL_BUS.broadcast_update()
+            QMessageBox.information(self, "Manual Patch Route Applied", f"Successfully reconfigured the patch route to target: {selected_route}")
+        else:
+            QMessageBox.warning(self, "No Active Cables", "There are no active global cables in the patchbay to re-route. Create a patch or run the randomizer first.")
+
+    def on_global_patch_updated(self, cables):
+        self.patch_canvas.cables = cables
+        self.patch_canvas.update()
+
+
+# -------------------------------------------------------------------------
+# MAIN WINDOW FRAMEWORK
+# -------------------------------------------------------------------------
+
+
+class PortWidget(QWidget):
+    """Represents an input or output data jack on a scientific processing node."""
+    def __init__(self, port_type, parent=None):
+        super().__init__(parent)
+        self.port_type = port_type  # 'in' or 'out'
+        self.setFixedSize(22, 22)
+        self.color = "#00ffc8" if port_type == 'out' else "#ff6400"
+        self.setStyleSheet(f"""
+            background-color: {self.color};
+            border-radius: 11px;
+            border: 3px solid #1a1a1a;
+        """)
+
+    def mousePressEvent(self, event):
+        if self.parent() and hasattr(self.parent(), 'start_cable_drag'):
+            self.parent().start_cable_drag(self)
+        event.accept()
+
+
+class ScientificCanvas(QWidget):
+    """Interactive canvas workspace mapping mathematical data pipelines with glowing bezier patch lines."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(2400, 1800)
+        self.cables = []
+        self.active_cable_start = None
+        self.current_mouse_pos = QPoint(0, 0)
+        self.setMouseTracking(True)
+        self.setStyleSheet("background-color: #0d0d0d; border: 1px solid #222;")
+
+    def start_cable_drag(self, port_widget):
+        self.active_cable_start = port_widget
+        self.current_mouse_pos = port_widget.mapTo(self, port_widget.rect().center())
+        self.update()
+
+    def mouseMoveEvent(self, event):
+        if self.active_cable_start:
+            self.current_mouse_pos = event.pos()
+            self.update()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self.active_cable_start:
+            target_widget = self.childAt(event.pos())
+            if isinstance(target_widget, PortWidget) and target_widget != self.active_cable_start:
+                if self.active_cable_start.port_type != target_widget.port_type:
+                    cable_pair = (self.active_cable_start, target_widget)
+                    reverse_pair = (target_widget, self.active_cable_start)
+                    if cable_pair not in self.cables and reverse_pair not in self.cables:
+                        self.cables.append(cable_pair)
+            self.active_cable_start = None
+            self.update()
+        super().mouseReleaseEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        for start, end in self.cables:
+            if start and end:
+                p1 = start.mapTo(self, start.rect().center())
+                p2 = end.mapTo(self, end.rect().center())
+
+                glow_pen = QPen(QColor(0, 255, 200, 60), 6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+                painter.setPen(glow_pen)
+                painter.drawPath(self.create_bezier_path(p1, p2))
+
+                core_pen = QPen(QColor(0, 255, 200), 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+                painter.setPen(core_pen)
+                painter.drawPath(self.create_bezier_path(p1, p2))
+
+        if self.active_cable_start:
+            p1 = self.active_cable_start.mapTo(self, self.active_cable_start.rect().center())
+            p2 = self.current_mouse_pos
+
+            drag_pen = QPen(QColor(255, 100, 0, 200), 3, Qt.PenStyle.DashLine, Qt.PenCapStyle.RoundCap)
+            painter.setPen(drag_pen)
+            painter.drawPath(self.create_bezier_path(p1, p2))
+
+    def create_bezier_path(self, p1, p2):
+        path = QPainterPath()
+        path.moveTo(p1)
+        dx = (p2.x() - p1.x()) * 0.5
+        ctrl1 = QPoint(p1.x() + dx, p1.y())
+        ctrl2 = QPoint(p2.x() - dx, p2.y())
+        path.cubicTo(ctrl1, ctrl2, p2)
+        return path
+
+
+
+class DoubleNumericSliderRow(QWidget):
+    """Synchronized precision double-spinbox and slider layout for scientific variables."""
+    def __init__(self, min_val, max_val, default_val, decimals=2, unit="", parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(int(min_val * 100), int(max_val * 100))
+        self.slider.setValue(int(default_val * 100))
+        self.slider.setStyleSheet("background: transparent;")
+
+        self.spinbox = QDoubleSpinBox()
+        self.spinbox.setRange(min_val, max_val)
+        self.spinbox.setValue(default_val)
+        self.spinbox.setDecimals(decimals)
+        self.spinbox.setSuffix(unit)
+        self.spinbox.setStyleSheet("background-color: #27272a; color: #00ffc8; border: 1px solid #52525b; padding: 3px; border-radius: 3px;")
+
+        self.slider.valueChanged.connect(lambda v: self.spinbox.setValue(v / 100.0))
+        self.spinbox.valueChanged.connect(lambda v: self.slider.setValue(int(v * 100)))
+
+        layout.addWidget(self.slider, 3)
+        layout.addWidget(self.spinbox, 1)
+
+class BottomToolboxesPane(QScrollArea):
+    def __init__(self, spawn_callback, parent=None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.spawn_callback = spawn_callback
+
+        container = QWidget()
+        layout = QGridLayout(container)
+
+        # 24 distinct instrument & toolbox variants (including Eskibrutus)
+        toolboxes = [
+            ("1. Step Sequencer Grid", "16-step trigger matrix for rhythmic coordinate pulsing."),
+            ("2. Additive Harmonic Bank", "Draw and morph partial frequencies via x, y, z vectors."),
+            ("3. Formant Vocal Filter", "Vowel transition generator modeled on acoustic formants."),
+            ("4. Stochastic Probability Node", "Randomized weight gates for generative melody generation."),
+            ("5. Vector Synthesizer Pad", "2D joystick space for real-time timbre morphing."),
+            ("6. State-Variable Filter Rack", "Resonant lowpass/highpass sweep filters."),
+            ("7. Non-Linear Waveshaper", "Harmonic saturation and distortion drive controls."),
+            ("8. Stereo Feedback Delay Line", "Echo matrix with adjustable feedback attenuation."),
+            ("9. LFO Modulation Generator", "Waveform shape, rate, and depth assignment units."),
+            ("10. Granular Texture Scraper", "Audio grain cloud pulverizer and pitch scatterer."),
+            ("11. Envelope Generator (ADSR)", "Amplitude shape shaping for dynamic note articulation."),
+            ("12. Coordinate Formula Router", "Direct injection parser for custom runtime math nodes."),
+            ("13. Eskibrutus Heavy Node", "Aggressive distortion matrix with harmonic fold reset."),
+            ("14. Isosceles Operator Synth", "Triangular geometric wave-interference oscillator."),
+            ("15. Wavetable Morph Engine", "Crossfade matrix for multi-frame sequential tables."),
+            ("16. Frequency Modulation Bank", "Complex 4-operator carrier/modulator algorithm matrix."),
+            ("17. Ring Modulator Matrix", "Sideband frequency multiplication grid."),
+            ("18. Bitcrush Quantizer", "Sample-rate and bit-depth degradation processor."),
+            ("19. Spectral Resonator", "Comb-filter bank tuned to harmonic overtones."),
+            ("20. Chaos Attractor Synth", "Lorenz/Rössler differential equation sound source."),
+            ("21. Sub-Bass Fundamental Generator", "Pure low-end sub-harmonic reinforcement node."),
+            ("22. Noise Texture Generator", "Filtered white/pink/brownian architectural noise."),
+            ("23. Resonant Body Simulator", "Modal physical modeling plate and string exciter."),
+            ("24. Master Bus Limiter", "Brickwall peak processor and output saturator.")
+        ]
+
+        for idx, (title, desc) in enumerate(toolboxes):
+            box = QFrame()
+            box.setFrameStyle(QFrame.Shape.StyledPanel | QFrame.Shadow.Raised)
+            box.setStyleSheet("background-color: #1b1b1b; border: 1px solid #333; border-radius: 4px;")
+            box_layout = QVBoxLayout(box)
+
+            title_lbl = QLabel(f"<b>{title}</b>")
+            title_lbl.setStyleSheet("color: #00ffaa;")
+            desc_lbl = QLabel(desc)
+            desc_lbl.setWordWrap(True)
+            desc_lbl.setStyleSheet("color: #aaa; font-size: 11px;")
+
+            box_layout.addWidget(title_lbl)
+            box_layout.addWidget(desc_lbl)
+
+            # Action button to spawn this specific synth variant into the top tabs!
+            spawn_btn = QPushButton(f"Spawn Instance [{idx+1}]")
+            spawn_btn.setStyleSheet("background-color: #333; color: #fff; font-size: 10px;")
+            # Capture title for the callback
+            spawn_btn.clicked.connect(lambda checked, t=title: self.spawn_callback(t))
+            box_layout.addWidget(spawn_btn)
+
+            row, col = divmod(idx, 4)  # 4 columns for 24 items
+            layout.addWidget(box, row, col)
+
+        container.setLayout(layout)
+        self.setWidget(container)
+TRANSCENDENTAL_BASE = np.e
 class PaintbrushTable(QWidget):
     """
     Wide unquantized playlist paint surface.
@@ -1683,9 +6372,6 @@ class PaintbrushTable(QWidget):
         super().__init__(parent)
         self.app = parent
         self.is_drawing_stroke = False
-        # Per-cell flash deadlines used by the paint visual feedback.
-        # Kept as instance state so the flash routine is safe on first paint.
-        self._cell_flash_until = {}
         # Per-row coverage map for overlap blending: row -> {op_name: coverage 0..1}
         self.row_coverage = {}
         self.init_ui(rows, cols)
@@ -1722,9 +6408,11 @@ class PaintbrushTable(QWidget):
         self.chk_snap_grid.setToolTip("Off = fully unquantized free-time. On = snap time markers to grid.")
         toolbar.addWidget(self.chk_snap_grid)
 
-        blend_info = QLabel("Blend: 100% = 50/50")
-        blend_info.setToolTip("Blend Max is deprecated. A 100% blend is the midpoint: both sources contribute 50%.")
-        toolbar.addWidget(blend_info)
+        toolbar.addWidget(QLabel("Blend max:"))
+        self.blend_max_combo = QComboBox()
+        self.blend_max_combo.addItems(["Half (50%)", "Quarter (25%)"])
+        self.blend_max_combo.setToolTip("Max parameter travel when two instrument paints fully overlap.")
+        toolbar.addWidget(self.blend_max_combo)
         self.btn_convolve_colors = QPushButton("🎨 Convolve Color Coding")
         self.btn_convolve_colors.setToolTip("Assign distinct cross-labeled colors per instrument across the playlist.")
         self.btn_convolve_colors.clicked.connect(self.convolve_color_coding)
@@ -1743,22 +6431,22 @@ class PaintbrushTable(QWidget):
                 self.parent_table.is_drawing_stroke = True
                 item = self.itemAt(event.pos())
                 if item:
-                    self.parent_table.engage_paint(item.row(), item.column(), event=event, table=self)
+                    self.parent_table.engage_paint(item.row(), item.column())
                 else:
                     index = self.indexAt(event.pos())
                     if index.isValid():
-                        self.parent_table.engage_paint(index.row(), index.column(), event=event, table=self)
+                        self.parent_table.engage_paint(index.row(), index.column())
                 super().mousePressEvent(event)
 
             def mouseMoveEvent(self, event):
                 if self.parent_table.is_drawing_stroke:
                     item = self.itemAt(event.pos())
                     if item:
-                        self.parent_table.engage_paint(item.row(), item.column(), event=event, table=self)
+                        self.parent_table.engage_paint(item.row(), item.column())
                     else:
                         index = self.indexAt(event.pos())
                         if index.isValid():
-                            self.parent_table.engage_paint(index.row(), index.column(), event=event, table=self)
+                            self.parent_table.engage_paint(index.row(), index.column())
                 super().mouseMoveEvent(event)
 
             def mouseReleaseEvent(self, event):
@@ -1804,24 +6492,8 @@ class PaintbrushTable(QWidget):
             if bg and bg.color().isValid():
                 item.setBackground(bg)
 
-    def setItem(self, row, col, item):
-        """Compatibility shim: PaintbrushTable wraps a QTableWidget.
-
-        Older/generated code may treat the wrapper like QTableWidget and call
-        setItem() directly. Delegate that operation to the real inner table.
-        """
-        self.table_widget.setItem(row, col, item)
-
     def setHorizontalHeaderLabels(self, labels):
         self.table_widget.setHorizontalHeaderLabels(labels)
-
-    def viewport(self):
-        """Expose the wrapped QTableWidget viewport to legacy/generated code."""
-        return self.table_widget.viewport()
-
-    def clearContents(self):
-        """Delegate QTableWidget-style clearing to the wrapped table."""
-        return self.table_widget.clearContents()
 
     def toggle_draw_random_synth_style(self):
         is_active = self.chk_draw_random_synth.isChecked()
@@ -1840,12 +6512,8 @@ class PaintbrushTable(QWidget):
         return self.paint_mode_combo.currentText() if hasattr(self, 'paint_mode_combo') else self.MODE_IDENTITY_STEPS_AUTO
 
     def _blend_max_fraction(self):
-        """Deprecated compatibility shim: 100% blend is always the 50/50 midpoint."""
-        return 0.5
-
-    def _blend_fraction(self, percent):
-        """Map 0..100 blend UI to a symmetric 0..0.5 parameter travel."""
-        return float(np.clip(float(percent) / 100.0, 0.0, 1.0) * 0.5)
+        txt = self.blend_max_combo.currentText() if hasattr(self, 'blend_max_combo') else "Half"
+        return 0.25 if "Quarter" in txt else 0.5
 
     def _selected_operator(self, rng):
         if self.chk_draw_random_synth.isChecked():
@@ -1872,14 +6540,7 @@ class PaintbrushTable(QWidget):
                     "drive": 0.2,
                 }
 
-    def engage_paint(self, row, col, event=None, table=None):
-        """Paint one cell at up to PAINT_RATE_HZ; stack CSV instances with multidimensional overlaps.
-
-        Ordinary drag paint: if the pointer stays within 50% of the cell width/height of the
-        previous paint locus on the same cell, overlap is cancelled (no new stack entry).
-        Successful paints flash the cell; reaching PAINT_INSTANCE_LIMIT substitutes and
-        convolves color to show the replacement.
-        """
+    def engage_paint(self, row, col):
         if not hasattr(self.app, 'instrument_names_48'):
             return
         self._ensure_automation_store()
@@ -1932,18 +6593,15 @@ class PaintbrushTable(QWidget):
             self._last_paint_mono = now
             self._last_flash_paint_cell = (row, col)
             self._last_flash_paint_locus = local
-
-        seed_val = 42
-        if hasattr(self.app, 'get_numeric_seed'):
-            seed_val = int(self.app.get_numeric_seed()) % (2**31)
-        elif hasattr(self.app, 'input_seed_val'):
+        seed_val = 0
+        if hasattr(self.app, 'input_seed_val'):
             try:
                 txt = self.app._seed_text()
-                seed_val = int(struct.unpack(">Q", struct.pack(">d", float(txt)))[0] % (2**31)) if txt else 42
-            except Exception:
-                seed_val = 42
-        # Deterministic per cell — no wall clock
-        rng = np.random.default_rng((seed_val + row * 131 + col * 17) % (2**31))
+                seed_val = abs(hash(float(txt))) % (2**31) if txt and abs(float(txt)) != 0.0 else int(time.time()) % (2**31)
+            except ValueError:
+                seed_val = abs(hash(self.app._seed_text())) % (2**31)
+
+        rng = np.random.default_rng(seed_val + row + col + int(time.time() * 1000) % 10000)
         mode = self._current_paint_mode()
         snap = bool(self.chk_snap_grid.isChecked()) if hasattr(self, 'chk_snap_grid') else False
         # Position along the row (unquantized free-time uses Meum spacing)
@@ -1990,12 +6648,7 @@ class PaintbrushTable(QWidget):
             return text_val
 
         target_operator_name = self._selected_operator(rng)
-        palette_colors = [
-            QColor(20, 90, 100), QColor(70, 30, 90), QColor(20, 90, 40),
-            QColor(90, 50, 20), QColor(90, 20, 30), QColor(30, 40, 90)
-        ]
 
-        # Ensure playlist row dict exists
         while len(getattr(self.app, 'master_playlist_data', [])) <= row:
             self.app.master_playlist_data.append({})
         entry = self.app.master_playlist_data[row]
@@ -2182,7 +6835,6 @@ class PaintbrushTable(QWidget):
         for k in a:
             if k in b:
                 a[k] = float(a[k] * (1.0 - amount) + b[k] * amount)
-
     def resolve_row_overlaps(self):
         """After a stroke, re-assert coverage labels and push automation UI state."""
         self._ensure_automation_store()
@@ -2222,6 +6874,1185 @@ class PaintbrushTable(QWidget):
 # ==========================================
 # 4. MODULAR TAB MANAGER (TOP PANE)
 # ==========================================
+class ModularTabManager(QTabWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setTabsClosable(True)
+        self.tabCloseRequested.connect(self.close_tab)
+        self.add_new_module_tab("Core Eskibrutus Node")
+
+    def add_new_module_tab(self, title_prefix="Synth Node"):
+        container = QWidget()
+        layout = QVBoxLayout(container)
+
+        visualizer = CoordinateVisualizer()
+        formula_edit = QLineEdit("np.sin(t * 2.0) * x")
+        formula_edit.setStyleSheet("background-color: #111; color: #0f0; font-family: monospace;")
+
+        layout.addWidget(QLabel(f"--- Active Workspace: {title_prefix} ---"))
+        layout.addWidget(visualizer)
+        layout.addWidget(QLabel("Runtime Expression (x, y, z, t):"))
+        layout.addWidget(formula_edit)
+
+        # Add custom control switches for this spawned instance
+        controls_layout = QHBoxLayout()
+        controls_layout.addWidget(QPushButton("Fold Reset"))
+        controls_layout.addWidget(QPushButton("Bypass FX"))
+        layout.addLayout(controls_layout)
+
+        container.setLayout(layout)
+        self.addTab(container, title_prefix)
+        self.setCurrentWidget(container)
+
+        # Live visual feedback simulation timer
+        self.timer = QTimer(self)
+        t_val = [0.0]
+        def sim_tick():
+            t_val[0] += 0.1
+            try:
+                x = float(eval(formula_edit.text(), {"np": np, "t": t_val[0], "x": 1.0, "y": 1.0, "z": 0.0}))
+                y = float(eval("np.cos(t * 1.5) * y", {"np": np, "t": t_val[0], "x": 1.0, "y": 1.0, "z": 0.0}))
+                visualizer.update_coordinates(x, y)
+            except Exception:
+                pass
+        self.timer.timeout.connect(sim_tick)
+        self.timer.start(50)
+
+    def close_tab(self, index):
+        if self.count() > 1:
+            widget = self.widget(index)
+            self.removeTab(index)
+            widget.deleteLater()
+
+class VisualNodeScriptingWindow(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Visual Equation & Symbolic Scripting Canvas")
+        self.resize(1000, 650)
+        self.setStyleSheet(TELETUBBY_STYLE)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("<b>Interactive Geometric Node Patch Builder & Symbolic Engine</b>"))
+
+        self.geom_canvas = GeometricSymbolicCanvas(self)
+        layout.addWidget(self.geom_canvas)
+
+        canvas_splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        toolbox_widget = QWidget()
+        tb_layout = QVBoxLayout(toolbox_widget)
+        tb_layout.addWidget(QLabel("<b>Click Blocks to Insert</b>"))
+
+        blocks = [
+            "⚡ Eski Sine [Jack]", "🔀 Wavefold Node [Jack]", "🔁 For-Loop Repeater [Jack]",
+            "⚖️ Heuristic Branch [Jack]", "🌀 Noise Generator [Jack]", "📉 Low-Pass Filter [Jack]",
+            "➕ Additive Sum [Jack]", "✖️ Ring Modulator [Jack]", "⏱️ Delay Line [Jack]",
+            "🎛️ Envelope Shaper [Jack]", "🔍 Phase Root [Jack]", "💥 Eskibrutus Fold [Jack]"
+        ]
+        for b in blocks:
+            btn = QPushButton(b)
+            btn.setStyleSheet("background-color: #6c5ce7; color: white; text-align: left; padding-left: 8px;")
+            btn.clicked.connect(lambda checked, text=b: self.append_node_text(text))
+            tb_layout.addWidget(btn)
+
+        canvas_splitter.addWidget(toolbox_widget)
+
+        self.assembly_board = QTextEdit()
+        self.assembly_board.setPlainText(
+            "# Interactive Modular Patch Assembly & Geometric Symbolic Equation Network\n"
+            "[ Node α: Eski-Prime Sine ] ===(Symbolic Jack)===> [ Node β: Dipsy Wavefolder ]\n"
+        )
+        self.assembly_board.setStyleSheet("background-color: #ffffff; color: #1e272e; font-family: monospace; font-size: 13px; border-radius: 10px;")
+        canvas_splitter.addWidget(self.assembly_board)
+
+        canvas_splitter.setSizes([320, 680])
+        layout.addWidget(canvas_splitter)
+
+        compile_btn = QPushButton("Compile and Apply Geometric Symbolic Matrix to Active Stream")
+        compile_btn.setStyleSheet("background-color: #00b894; color: white; font-weight: bold;")
+        compile_btn.clicked.connect(lambda: QMessageBox.information(self, "Compiled", "Interactive visual graph and symbolic equations successfully compiled."))
+        layout.addWidget(compile_btn)
+
+    def append_node_text(self, node_name):
+        current = self.assembly_board.toPlainText()
+        updated = current + f"\n[ Geometric Linked: {node_name} ] ===(Symbolic Patch Jack)===> [ Routing Matrix Bus ]"
+        self.assembly_board.setPlainText(updated)
+# ==========================================
+# 2. COORDINATE VISUALIZER
+# ==========================================
+class CoordinateVisualizer(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setMinimumHeight(110)
+        self.setStyleSheet("background-color: black; border: 1px solid #00ffaa;")
+        self.point_history = []
+        self.max_points = 150
+
+    def update_coordinates(self, x, y):
+        self.point_history.append((x, y))
+        if len(self.point_history) > self.max_points:
+            self.point_history.pop(0)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter()
+        if not painter.begin(self):
+            return
+        try:
+            painter.fillRect(self.rect(), QColor(10, 10, 10))
+            if len(self.point_history) >= 2:
+                pen = QPen(QColor(0, 255, 150))
+                pen.setWidth(2)
+                painter.setPen(pen)
+                width, height = self.width(), self.height()
+                for i in range(1, len(self.point_history)):
+                    x1 = (self.point_history[i-1][0] + 1) * 0.5 * width
+                    y1 = (self.point_history[i-1][1] + 1) * 0.5 * height
+                    x2 = (self.point_history[i][0] + 1) * 0.5 * width
+                    y2 = (self.point_history[i][1] + 1) * 0.5 * height
+                    painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+        finally:
+            painter.end()
+
+class PianoRollEditor(QDialog):
+    def __init__(self, instrument_name, step_count=48, parent=None):
+        super().__init__(parent)
+        self.instrument_name = instrument_name
+        self.setWindowTitle(f"Sequencer & Piano Roll: {instrument_name}")
+        self.resize(1000, 520)
+        self.setStyleSheet(TELETUBBY_STYLE)
+
+        layout = QVBoxLayout(self)
+        top_ctrl = QHBoxLayout()
+        top_ctrl.addWidget(QLabel(f"<b>Polyrhythmic Sequence Matrix for {instrument_name}</b>"))
+
+        top_ctrl.addWidget(QLabel("Grid Length:"))
+        self.steps_combo = QComboBox()
+        self.steps_combo.addItems(["16 Steps", "32 Steps", "48 Steps", "64 Steps"])
+        self.steps_combo.setCurrentText(f"{step_count} Steps")
+        top_ctrl.addWidget(self.steps_combo)
+
+        top_ctrl.addWidget(QLabel("Polyrhythm Divisor:"))
+        self.poly_spin = QDoubleSpinBox()
+        self.poly_spin.setRange(0.25, 4.0)
+        self.poly_spin.setValue(1.0)
+        self.poly_spin.setSingleStep(0.05)
+        top_ctrl.addWidget(self.poly_spin)
+
+        layout.addLayout(top_ctrl)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        grid_container = QWidget()
+        self.grid_layout = QGridLayout(grid_container)
+
+        self.cells = []
+        for step in range(48):
+            cell_frame = QFrame()
+            c_layout = QVBoxLayout(cell_frame)
+
+            seq_name = f"{instrument_name}_seq_{step+1}"
+            # POWER_V3_EMPTY_BOOT: standalone piano-roll editors also open blank.
+            btn = QPushButton(f"{seq_name}\n[Gate Off]")
+            btn.setCheckable(True)
+            btn.setChecked(False)
+
+            offset_slider = QSlider(Qt.Orientation.Horizontal)
+            offset_slider.setRange(-50, 50)
+            offset_slider.setValue(0)
+
+            c_layout.addWidget(btn)
+            c_layout.addWidget(QLabel("De-quant Offset:"))
+            c_layout.addWidget(offset_slider)
+
+            self.grid_layout.addWidget(cell_frame, 0, step)
+            self.cells.append((btn, offset_slider))
+
+        grid_container.setLayout(self.grid_layout)
+        scroll.setWidget(grid_container)
+        layout.addWidget(scroll)
+
+        apply_btn = QPushButton(f"Commit Sequences for {instrument_name} to Master Timeline")
+        apply_btn.setStyleSheet("background-color: #00b894; color: white;")
+        apply_btn.clicked.connect(lambda: QMessageBox.information(self, "Committed", f"Polyrhythmic unquantized sequences for {instrument_name} updated."))
+        layout.addWidget(apply_btn)
+# ==========================================
+# 3. STANDALONE PLAYLIST WINDOW
+# ==========================================
+class PlaylistArrangementWindow(QMainWindow):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Global Playlist & Arrangement Timeline")
+        self.resize(750, 520)
+        self.setStyleSheet(TELETUBBY_STYLE)
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+
+        controls = QHBoxLayout()
+        controls.addWidget(QLabel("<b>Timeline Snap & Polyrhythm Scaling:</b>"))
+        self.grid_scale_combo = QComboBox()
+        self.grid_scale_combo.addItems(["1 Bar (Quantized)", "1/2 Beat", "1/4 Beat", "1/8 Beat", "Fully Unquantized / De-quantized Flow"])
+        controls.addWidget(self.grid_scale_combo)
+
+        controls.addWidget(QLabel("<b>Tempo (BPM):</b>"))
+        self.global_tempo = QLineEdit("124.0")
+        controls.addWidget(self.global_tempo)
+        layout.addLayout(controls)
+
+        self.timeline_view = QTextEdit()
+        self.timeline_view.setPlainText(
+            "# Global Playlist Arrangement Channels & Paintbrush Clips\n"
+            "# Empty by design — paint, calculate, or randomize explicitly.\n"
+            "# Capacity and mathematical context are initialized without a musical program."
+        )
+        self.timeline_view.setStyleSheet("background-color: #ffffff; color: #1e272e; font-family: monospace; font-size: 13px; border-radius: 10px;")
+        layout.addWidget(self.timeline_view)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addWidget(QPushButton("Universal Brush Painter Mode"))
+        btn_layout.addWidget(QPushButton("Quantize All Sequence Clips"))
+        btn_layout.addWidget(QPushButton("Render Instrument Stems to Disk"))
+        layout.addLayout(btn_layout)
+
+        container.setLayout(layout)
+        self.setCentralWidget(container)
+
+# ==========================================
+# MODULATION ROUTING HUB
+# ==========================================
+class ModulationRoutingWindow(QMainWindow):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Global Modulation & LFO Hub")
+        self.resize(700, 480)
+        self.setStyleSheet(DAW_STYLE)
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+
+        layout.addWidget(QLabel("<b>🌸 Direct Interactive LFO & Envelope Modulation Hub 🌸</b>"))
+
+        mod_grid = QGridLayout()
+        mod_grid.addWidget(QLabel("LFO 1 Rate (Hz):"), 0, 0)
+        self.lfo1_slider = QSlider(Qt.Orientation.Horizontal)
+        self.lfo1_slider.setRange(0, 100)
+        # POWER_V3_DEFAULTS: retain the Gemini/original 45% modulation-rate starting point.
+        # Meum is applied by the contextual field; it does not replace this UI default.
+        self.lfo1_slider.setValue(45)
+        mod_grid.addWidget(self.lfo1_slider, 0, 1)
+
+        mod_grid.addWidget(QLabel("LFO Shape:"), 1, 0)
+        self.shape_box = QComboBox()
+        self.shape_box.addItems(["Sine Wave", "Triangle Wave", "Square Wave", "Random Chaos Curve", "Tubby Step Vector"])
+        mod_grid.addWidget(self.shape_box, 1, 1)
+
+        mod_grid.addWidget(QLabel("Envelope Decay (ms):"), 2, 0)
+        self.env_slider = QSlider(Qt.Orientation.Horizontal)
+        self.env_slider.setRange(0, 100)
+        # POWER_V3_DEFAULTS: retain the Gemini/original 70% envelope starting point.
+        self.env_slider.setValue(70)
+        mod_grid.addWidget(self.env_slider, 2, 1)
+
+        layout.addLayout(mod_grid)
+
+        self.mod_view = QTextEdit()
+        self.mod_view.setPlainText(
+            "# Active Modulation & LFO Routing Table\n"
+            "LFO 1 ---> Routed to Filter Cutoff (Depth: 75%)\n"
+            "LFO 2 ---> Routed to Chaos Attractor (Depth: 100%)\n"
+            "Envelope Shaper ---> Routed to Master Limiter Threshold"
+        )
+        self.mod_view.setStyleSheet("background-color: #ffffff; color: #1e272e; font-family: monospace; font-size: 13px; border-radius: 10px;")
+        layout.addWidget(self.mod_view)
+
+        apply_btn = QPushButton("Commit Modulation Patches")
+        apply_btn.setStyleSheet("background-color: #00b894; color: white;")
+        apply_btn.clicked.connect(lambda: QMessageBox.information(self, "Modulation Updated", "Modulation matrix parameters updated."))
+        layout.addWidget(apply_btn)
+
+        container.setLayout(layout)
+        self.setCentralWidget(container)
+class PlaylistWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Tubby-Land Global Arrangement & Painter")
+        self.resize(1050, 620)
+        self.setStyleSheet(TELETUBBY_STYLE)
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+
+        controls = QHBoxLayout()
+        controls.addWidget(QLabel("<b>Snap-to-Grid Scale:</b>"))
+        self.grid_scale_combo = QComboBox()
+        self.grid_scale_combo.addItems(["1 Bar", "1/2 Beat", "1/4 Beat", "1/8 Beat", "Free / Unquantized Tubby Flow"])
+        controls.addWidget(self.grid_scale_combo)
+
+        controls.addWidget(QLabel("<b>Global Tempo (BPM):</b>"))
+        self.global_tempo = QLineEdit("120.0")
+        controls.addWidget(self.global_tempo)
+        layout.addLayout(controls)
+
+        self.timeline_view = QTextEdit()
+        self.timeline_view.setPlainText(
+            "# Global arrangement / painter\n"
+            "# Empty by design — no preset clips or gates are injected on boot."
+        )
+        self.timeline_view.setStyleSheet("background-color: #ffffff; color: #2f3640; font-family: monospace; font-size: 13px; border-radius: 15px;")
+        layout.addWidget(self.timeline_view)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addWidget(QPushButton("Universal Brush Painter Mode"))
+        btn_layout.addWidget(QPushButton("Render Tubby Stems to Disk"))
+        layout.addLayout(btn_layout)
+
+        container.setLayout(layout)
+        self.setCentralWidget(container)
+# ==========================================
+# 4. MINIATURE SYNTH WIDGET WITH PATCH CABLES
+# ==========================================
+class MiniSynthNodeWidget(QFrame):
+    def __init__(self, synth_name):
+        super().__init__()
+        self.setFrameStyle(QFrame.Shape.StyledPanel | QFrame.Shadow.Raised)
+        self.setStyleSheet("background-color: #1e1e1e; border: 1px solid #444; border-radius: 6px;")
+
+        layout = QVBoxLayout(self)
+        title = QLabel(f"<b>Mini-Synth: {synth_name}</b>")
+        title.setStyleSheet("color: #ffaa00;")
+        layout.addWidget(title)
+
+        self.cutoff_slider = QSlider(Qt.Orientation.Horizontal)
+        self.cutoff_slider.setRange(0, 100)
+        # POWER_V3_DEFAULTS: retain the Gemini/original 75% cutoff starting point.
+        # Meum contextual modulation operates around this baseline.
+        self.cutoff_slider.setValue(75)
+        self.drive_slider = QSlider(Qt.Orientation.Horizontal)
+        self.drive_slider.setRange(0, 100)
+        # POWER_V3_DEFAULTS: retain the Gemini/original 50% wavefold starting point.
+        # Meum contextual modulation operates around this baseline rather than redefining it.
+        self.drive_slider.setValue(50)
+
+        layout.addWidget(QLabel("Cutoff / Frequency Freq:"))
+        layout.addWidget(self.cutoff_slider)
+        layout.addWidget(QLabel("Distortion / Fold Drive:"))
+        layout.addWidget(self.drive_slider)
+
+        patch_layout = QHBoxLayout()
+        self.src_combo = QComboBox()
+        self.src_combo.addItems(["X Coord", "Y Coord", "Z Coord", "LFO 1"])
+        self.dest_combo = QComboBox()
+        self.dest_combo.addItems(["-> Filter Cutoff", "-> Fold Threshold", "-> Pitch Mod"])
+
+        patch_layout.addWidget(self.src_combo)
+        patch_layout.addWidget(QLabel("⤹"))
+        patch_layout.addWidget(self.dest_combo)
+        layout.addLayout(patch_layout)
+class FloatingSynthWindow(QMainWindow):
+    def __init__(self, synth_name, synth_id, custom_title="", parent=None):
+        super().__init__(parent)
+        self.synth_name = synth_name
+        self.custom_title = custom_title if custom_title else f"Plugin_{synth_id}"
+        self.setWindowTitle(f"Advanced Device Plugin: {self.custom_title} ({synth_name})")
+        self.resize(520, 620)
+        self.setStyleSheet(DAW_STYLE)
+
+        self.dsp_engine = AdvancedDSPEngine()
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(QLabel("<b>Device Name:</b>"))
+        self.name_edit = QLineEdit(self.custom_title)
+        name_layout.addWidget(self.name_edit)
+
+        name_layout.addWidget(QLabel("Alg:"))
+        self.wave_combo = QComboBox()
+        self.wave_combo.addItems(["Sine FM", "Square PWM", "Saw Supersaw", "Noise Chaos"])
+        self.wave_combo.currentIndexChanged.connect(self.update_synth_algorithm)
+        name_layout.addWidget(self.wave_combo)
+        layout.addLayout(name_layout)
+
+        layout.addWidget(QLabel("<b>Live Oscilloscope & Wavefolder View</b>"))
+        self.oscilloscope = RealtimeOscilloscope(self)
+        layout.addWidget(self.oscilloscope)
+
+        controls_layout = QGridLayout()
+
+        controls_layout.addWidget(QLabel("Cutoff / Resonance:"), 0, 0)
+        self.cutoff_slider = QSlider(Qt.Orientation.Horizontal)
+        self.cutoff_slider.setRange(0, 100)
+        # POWER_V3_DEFAULTS: retain the Gemini/original 75% cutoff starting point.
+        self.cutoff_slider.setValue(75)
+        controls_layout.addWidget(self.cutoff_slider, 0, 1)
+
+        controls_layout.addWidget(QLabel("Wavefold Drive:"), 1, 0)
+        self.drive_slider = QSlider(Qt.Orientation.Horizontal)
+        self.drive_slider.setRange(0, 100)
+        # POWER_V3_DEFAULTS: retain the Gemini/original 50% wavefold starting point.
+        self.drive_slider.setValue(50)
+        self.drive_slider.valueChanged.connect(self.update_drive_param)
+        controls_layout.addWidget(self.drive_slider, 1, 1)
+
+        controls_layout.addWidget(QLabel("Envelope Decay (s):"), 2, 0)
+        self.decay_spin = QDoubleSpinBox()
+        # POWER_V3_DEFAULTS: retain the Gemini/original 0.30 s envelope decay.
+        # Meum shapes generated phase/space relationships rather than overriding the synth envelope baseline.
+        self.decay_spin.setValue(0.3)
+        self.decay_spin.setRange(0.01, 5.0)
+        self.decay_spin.setSingleStep(0.05)
+        controls_layout.addWidget(self.decay_spin, 2, 1)
+
+        layout.addLayout(controls_layout)
+
+        pad_layout = QHBoxLayout()
+        pad_layout.addWidget(QLabel("<b>Trigger Keys:</b>"))
+        for note_name, freq in [("C4", 261.63), ("D4", 293.66), ("E4", 329.63), ("F4", 349.23), ("G4", 392.00)]:
+            btn = QPushButton(note_name)
+            btn.setStyleSheet("background-color: #2b2b2b; color: #ff6b00; border: 1px solid #ff6b00;")
+            btn.clicked.connect(lambda checked, f=freq: self.trigger_local_note(f))
+            pad_layout.addWidget(btn)
+        layout.addLayout(pad_layout)
+
+        export_btn = QPushButton("💾 Export Plugin Stem (.wav)")
+        export_btn.setStyleSheet("background-color: #007acc; color: white;")
+        export_btn.clicked.connect(self.export_plugin_stem)
+        layout.addWidget(export_btn)
+
+        container.setLayout(layout)
+        self.setCentralWidget(container)
+
+    def update_synth_algorithm(self, index):
+        self.oscilloscope.wave_type = index
+        self.oscilloscope.update()
+
+    def update_drive_param(self, value):
+        normalized_drive = 1.0 + (value / 25.0)
+        self.oscilloscope.drive = normalized_drive
+        self.oscilloscope.update()
+
+    def trigger_local_note(self, freq):
+        try:
+            drive_val = 1.0 + (self.drive_slider.value() / 25.0)
+            dur = self.decay_spin.value()
+            w_type = self.wave_combo.currentIndex()
+            self.dsp_engine.export_to_wav("plugin_trigger.wav", duration_sec=dur, freq=freq, drive=drive_val, wave_type=w_type)
+        except Exception:
+            pass
+
+    def export_plugin_stem(self):
+        file_path, _ = QFileDialog.getSaveFileName(self, "Export Plugin Stem", f"{self.name_edit.text()}_stem.wav", "WAV Files (*.wav)")
+        if file_path:
+            try:
+                drive_val = 1.0 + (self.drive_slider.value() / 25.0)
+                w_type = self.wave_combo.currentIndex()
+                self.dsp_engine.export_to_wav(file_path, duration_sec=4.0, freq=261.63, drive=drive_val, wave_type=w_type)
+                QMessageBox.information(self, "Stem Exported", f"Successfully rendered device stem to:\n{file_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Export Failed", str(e))
+class PermanentPatchBayPanel(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("""
+            background-color: #ff9ff3;
+            border: 3px solid #ffffff;
+            border-radius: 12px;
+            padding: 4px;
+        """)
+        layout = QHBoxLayout(self)
+
+        layout.addWidget(QLabel("<b>GLOBAL 48-INSTRUMENT PATCH BAY</b>"))
+
+        self.global_src = QComboBox()
+        self.global_src.addItems(["Master Clock Gate", "QWERTY Live Trigger", "Global Sequencer Trigger", "Playlist Timeline Cursor"])
+
+        self.global_dest = QComboBox()
+        self.global_dest.addItems(["All 48 Instrument Folds", "Master Bus Limiter", "Repeater Matrix Bus", "Global Pitch Shift"])
+
+        self.repeater_slider = QSlider(Qt.Orientation.Horizontal)
+        self.repeater_slider.setRange(1, 16)
+
+        layout.addWidget(self.global_src)
+        layout.addWidget(QLabel("➔"))
+        layout.addWidget(self.global_dest)
+        layout.addWidget(QLabel("Repeaters:"))
+        layout.addWidget(self.repeater_slider)
+        # Inside your main application or control panel __init__:
+# 1. Tuning (SpinBox or Slider)
+        self.spin_tuning = QSpinBox()
+        self.spin_tuning.setRange(100, 1200)
+
+        # 2. Amplitude Slider
+        self.slider_amplitude = QSlider(Qt.Orientation.Horizontal)
+        self.slider_amplitude.setRange(0, 100)
+
+        # 3. Duration / Percussive-Keylike-Padded Slider
+        self.slider_duration = QSlider(Qt.Orientation.Horizontal)
+        self.slider_duration.setRange(0, 100)
+
+        # 4. Fractalizer Slider
+        self.slider_fractalizer = QSlider(Qt.Orientation.Horizontal)
+        self.slider_fractalizer.setRange(0, 100)
+
+        # 5. EQR Effect Slider / Fifth Option Control Dropdown or Slider
+        self.slider_eqr = QSlider(Qt.Orientation.Horizontal)
+        self.slider_eqr.setRange(0, 100)
+
+        # Fifth Option Dropdown Preset Selector (shared or per instrument)
+        self.preset_combo = QComboBox()
+        self.preset_combo.currentIndexChanged.connect(self.on_preset_changed)
+
+    def on_preset_changed(self, index):
+        curr_idx = self.instrument_selector_dropdown.currentIndex()
+        if 0 <= curr_idx < len(self.channel_states):
+            self.channel_states[curr_idx]["preset_idx"] = index
+        connect_btn = QPushButton("Patch Global Bus")
+        connect_btn.setStyleSheet("background-color: #0984e3; color: white;")
+        connect_btn.clicked.connect(lambda: QMessageBox.information(self, "Global Bus Patched", "Global patch bus updated."))
+        layout.addWidget(connect_btn)
+# ==========================================
+# 5. SCRIPTER'S PANE WITH FUNCTION KEYSET
+# ==========================================
+class DenseCoordinateVisualizer(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(200)
+        self.setStyleSheet("background-color: #1e272e; border: 3px solid #feca57; border-radius: 14px;")
+        self.point_history = []
+        self.max_points = 250
+
+    def update_coordinates(self, x, y):
+        self.point_history.append((x, y))
+        if len(self.point_history) > self.max_points:
+            self.point_history.pop(0)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter()
+        if not painter.begin(self):
+            return
+        try:
+            painter.fillRect(self.rect(), QColor(30, 39, 46))
+            width, height = self.width(), self.height()
+
+            painter.setPen(QPen(QColor(72, 84, 96), 1, Qt.PenStyle.DashLine))
+            painter.drawLine(0, height // 2, width, height // 2)
+            painter.drawLine(width // 2, 0, width // 2, height)
+
+            if len(self.point_history) >= 2:
+                pen = QPen(QColor(255, 107, 107))
+                pen.setWidth(3)
+                painter.setPen(pen)
+                for i in range(1, len(self.point_history)):
+                    x1 = (self.point_history[i-1][0] + 1.2) * 0.41 * width
+                    y1 = (self.point_history[i-1][1] + 1.2) * 0.41 * height
+                    x2 = (self.point_history[i][0] + 1.2) * 0.41 * width
+                    y2 = (self.point_history[i][1] + 1.2) * 0.41 * height
+                    painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+        finally:
+            painter.end()
+class TopSideInstrumentSequencerPanel(QWidget):
+    def __init__(self, parent=None, app_ref=None):
+        super().__init__(parent)
+        self.app_ref = app_ref
+        self.setStyleSheet("background-color: #1a1a1a; border: 1px solid #333333; border-radius: 4px; padding: 6px;")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("<b>Instance:</b>"))
+        self.instance_combo = QComboBox()
+        self.update_instance_list()
+        self.instance_combo.currentIndexChanged.connect(self.on_instance_changed)
+        row1.addWidget(self.instance_combo, stretch=2)
+
+        row1.addWidget(QLabel("<b>Type:</b>"))
+        self.inst_combo = QComboBox()
+        self.inst_combo.addItems(DEFAULT_INSTRUMENT_LIST)
+        row1.addWidget(self.inst_combo, stretch=3)
+
+        row1.addWidget(QLabel("Tonal Curvature Eq (x, y, z):"))
+        self.curvature_eq_input = QLineEdit("x * 1.618033 + y - z")
+        self.curvature_eq_input.textChanged.connect(self.on_curvature_changed)
+        row1.addWidget(self.curvature_eq_input, stretch=3)
+
+        self.local_play_btn = QPushButton("▶ Loop")
+        self.local_play_btn.setStyleSheet("background-color: #00aa55; color: white;")
+        self.local_play_btn.clicked.connect(self.audition_sequence)
+        row1.addWidget(self.local_play_btn)
+
+        layout.addLayout(row1)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFixedHeight(95)
+        self.scroll_area.setStyleSheet("background-color: #161616; border: 1px solid #282828;")
+
+        self.step_buttons_container = QWidget()
+        self.step_buttons_layout = QHBoxLayout(self.step_buttons_container)
+        self.step_boxes = []
+
+        self.rebuild_step_buttons(16)
+        self.scroll_area.setWidget(self.step_buttons_container)
+        layout.addWidget(self.scroll_area)
+
+    def update_instance_list(self):
+        self.instance_combo.blockSignals(True)
+        self.instance_combo.clear()
+        if self.app_ref and hasattr(self.app_ref, 'instrument_names'):
+            labels = [f"Ch {i+1}: {name}" for i, name in enumerate(self.app_ref.instrument_names)]
+            self.instance_combo.addItems(labels)
+        else:
+            self.instance_combo.addItems([f"Ch {i+1}: {name}" for i, name in enumerate(DEFAULT_INSTRUMENT_LIST)])
+        self.instance_combo.blockSignals(False)
+
+    def on_instance_changed(self, index):
+        if self.app_ref and hasattr(self.app_ref, 'sync_ui_to_current_channel'):
+            self.app_ref.sync_ui_to_current_channel(index)
+
+    def on_curvature_changed(self, text):
+        curr_idx = self.instance_combo.currentIndex()
+        if self.app_ref and hasattr(self.app_ref, 'channel_states') and 0 <= curr_idx < len(self.app_ref.channel_states):
+            self.app_ref.channel_states[curr_idx]["curvature_eq"] = text
+
+    def rebuild_step_buttons(self, count):
+        for box in self.step_boxes:
+            box.setParent(None)
+            box.deleteLater()
+        self.step_boxes = []
+
+        default_intervals = ["0(432Hz)", "1", "2", "-1", "-3", "3", "0", "2", "1", "-1", "0(432Hz)", "3", "-2", "1", "0", "2"]
+
+        for i in range(count):
+            step_frame = QFrame()
+            step_frame.setStyleSheet("background-color: #222222; border: 1px solid #383838; border-radius: 2px;")
+            step_layout = QVBoxLayout(step_frame)
+            step_layout.setContentsMargins(2, 2, 2, 2)
+            step_layout.setSpacing(2)
+
+            btn = QPushButton(str(i+1))
+            btn.setCheckable(True)
+            btn.setChecked(i in [0, 4, 8, 12])
+            btn.setFixedWidth(42)
+            btn.setFixedHeight(20)
+            btn.setStyleSheet("""
+                QPushButton { background-color: #2b2b2b; color: #888888; border-radius: 2px; font-size: 8px; font-weight: bold; border: 1px solid #3a3a3a; }
+                QPushButton:checked { background-color: #ff6b00; color: #ffffff; border: 1px solid #ff8533; }
+            """)
+            step_layout.addWidget(btn)
+
+            default_val = default_intervals[i % len(default_intervals)]
+            interval_input = QLineEdit(default_val)
+            interval_input.setFixedWidth(42)
+            interval_input.setStyleSheet("font-size: 8px; padding: 1px; background-color: #121212; color: #00ffcc;")
+            step_layout.addWidget(interval_input)
+
+            self.step_buttons_layout.addWidget(step_frame)
+            self.step_boxes.append((btn, interval_input))
+
+    def audition_sequence(self):
+        QMessageBox.information(self, "Sequence Audition", "Looping active instrument sequence in memory buffer.")
+
+# --- PLAYLIST WINDOW ---
+# ==========================================
+# 6. SEQUENCER PANE
+# ==========================================
+class SequencerPane(QWidget):
+    def __init__(self):
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("<b>16-Step Modulation Sequencer</b>"))
+
+        grid_layout = QGridLayout()
+        self.steps = []
+        for i in range(16):
+            btn = QPushButton(str(i+1))
+            btn.setCheckable(True)
+            btn.setStyleSheet("background-color: #222; color: #888;")
+            btn.clicked.connect(lambda checked, b=btn: b.setStyleSheet("background-color: #00aa55; color: #fff;" if b.isChecked() else "background-color: #222; color: #888;"))
+            row, col = divmod(i, 8)
+            grid_layout.addWidget(btn, row, col)
+            self.steps.append(btn)
+
+        layout.addLayout(grid_layout)
+class CustomVSTKnobsDialog(QDialog):
+    def __init__(self, parent=None, channel_state=None):
+        super().__init__(parent)
+        self.channel_state = channel_state or {}
+        self.setWindowTitle("Custom VST & Waveform Parameters (Edit Synth)")
+        self.resize(450, 350)
+        self.setStyleSheet(DAW_STYLE)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("<b>⚙️ Custom VST Parameters & Wavefunction Mapping:</b>"))
+
+        form_layout = QFormLayout()
+
+        self.vst_param1 = QSlider(Qt.Orientation.Horizontal)
+        self.vst_param1.setRange(0, 100)
+        self.vst_param1.setValue(int(self.channel_state.get("vst_p1", 0.5) * 100))
+        form_layout.addRow("VST Resonance / Freq (p1):", self.vst_param1)
+
+        self.vst_param2 = QSlider(Qt.Orientation.Horizontal)
+        self.vst_param2.setRange(0, 100)
+        self.vst_param2.setValue(int(self.channel_state.get("vst_p2", 0.618) * 100))
+        form_layout.addRow("Harmonic Spread (p2):", self.vst_param2)
+
+        self.vst_param3 = QSlider(Qt.Orientation.Horizontal)
+        self.vst_param3.setRange(0, 100)
+        self.vst_param3.setValue(int(self.channel_state.get("vst_p3", 0.33) * 100))
+        form_layout.addRow("Meum Scaling Depth (p3):", self.vst_param3)
+
+        self.routing_combo = QComboBox()
+        self.routing_combo.addItems(["Direct Summation", "Phase Modulation (PM)", "Frequency Modulation (FM)", "Nonlinear Foldback"])
+        form_layout.addRow("Synthesis Routing Mode:", self.routing_combo)
+
+        layout.addLayout(form_layout)
+
+        btn_box = QHBoxLayout()
+        save_btn = QPushButton("Apply VST Settings")
+        save_btn.setStyleSheet("background-color: #00aa55; color: white; font-weight: bold;")
+        save_btn.clicked.connect(self.accept)
+        btn_box.addWidget(save_btn)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_box.addWidget(cancel_btn)
+
+        layout.addLayout(btn_box)
+
+    def get_values(self):
+        return {
+            "vst_p1": self.vst_param1.value() / 100.0,
+            "vst_p2": self.vst_param2.value() / 100.0,
+            "vst_p3": self.vst_param3.value() / 100.0,
+            "routing": self.routing_combo.currentText()
+        }
+# ==========================================
+# 7. MAIN WINDOW & LAYOUT INTEGRATION
+# ==========================================
+import sys
+import json
+import random
+import wave
+import numpy as np
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QSlider, QSpinBox, QComboBox, QPushButton, QLabel, QMessageBox, QSplitter
+)
+from PyQt6.QtCore import Qt
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 class MathematiciansGrooveboxApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -2237,26 +8068,26 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.domain_eq_engine = DomainPartitionEquationEngine(seed=0.0)
         self.domain_eq_dialog = None
 
-        # IMPORTED_PROJECT_AUTHORITY:
-        # A loaded project is a user-authored source of truth.  Engine output may
-        # decorate it only when explicitly armed; loading/rendering must never
-        # bootstrap, randomize, or phase-lock an imported empty/partial state.
-        self._project_imported_user_state = False
-        self._project_audio_data_loaded = False
-        self._engine_generated_playlist_rows = set()
-        self._engine_generated_automation_rows = set()
-
         # Initialize the UI Manager as an independent floating control panel
         # that stays attached to your main app window
-        # Hidden compatibility stub (btn_seeded_randomizer only). No floating panel.
         self.ui_manager = UIComponentManager(self)
+        self.ui_manager.setWindowTitle("EQR Phase-Locked Wavefield Controls")
+        self.ui_manager.resize(850, 120)
+
+        # Force UI manager to render
+        self.ui_manager.show()
+
+        # Instantiate and add the UIComponentManager
         if not self.centralWidget():
             central_widget = QWidget(self)
             self.setCentralWidget(central_widget)
+
         if not hasattr(self, 'main_window_layout') or self.main_window_layout is None:
             self.main_window_layout = QVBoxLayout(self.centralWidget())
 
-        # ----------------------------------------------------------------
+        # Instantiate and add the UIComponentManager to the main window layout
+        self.main_window_layout.addWidget(self.ui_manager)
+		# ----------------------------------------------------------------
         # FULL-WINDOW parametric math background (asking-for.txt fix).
         # Previously the background lived only on UIComponentManager, which
         # is resized to 850×120 — so the field was effectively invisible.
@@ -2287,13 +8118,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         pass
         except Exception as _bg_exc:
             print(f"[Background] attach skipped: {_bg_exc}")
-
         # Seeded randomizer button → randomizer ONLY (never chains phase-lock)
         try:
             self.ui_manager.btn_seeded_randomizer.clicked.disconnect()
         except TypeError:
             pass
-        self.ui_manager.btn_seeded_randomizer.clicked.connect(lambda: self.apply_unified_randomizer(live=False))
+        self.ui_manager.btn_seeded_randomizer.clicked.connect(self.apply_seeded_harmonic_randomization)
         self.instrument_names_48 = [f"Operator_{i+1}" for i in range(48)]
         self.instrument_sequencer_memory = {}
         default_seq_len = 48
@@ -2368,7 +8198,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # musical material only when explicitly invoked.
         self.init_ui_components()
         self.initialize_default_playlist_memory()
-        self._composition_generation_counter = 0
 
     def apply_hardcoded_compositions(self):
         # POWER_V3_EMPTY_BOOT: compatibility hook intentionally does nothing.
@@ -2384,44 +8213,33 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.playlist_automation = [{} for _ in range(rows)]
 
     def sync_playlist_grid_to_memory(self):
-        """Round-trip ALL ten playlist cell types without erasing engine metadata."""
-        if not (hasattr(self, 'active_paint_table') and self.active_paint_table):
-            return
-        table = self.active_paint_table
-        old_rows = list(getattr(self, "master_playlist_data", []) or [])
-        rebuilt = []
-        for r in range(table.rowCount()):
-            prior = old_rows[r] if r < len(old_rows) and isinstance(old_rows[r], dict) else {}
-            def cell(c):
-                item = table.item(r, c)
-                return item.text().strip() if item else ""
-            row_dict = dict(prior)  # preserve generated/user ownership and hidden fields
-            row_dict.update({
-                "time_marker": cell(0),
-                "operator": cell(1),
-                "script_tag": cell(2),
-                "auto_target": cell(4),
-                "effect_target": cell(4),
-                "auto_amount": cell(5),
-                "direction_vector": cell(6),
-                "multi_seq": cell(7),
-                "coverage": cell(8),
-                "blend_partner": cell(9),
-            })
-            # Column 3 is velocity; never silently reset a generated/user value.
-            if cell(3):
-                try:
-                    v = float(cell(3).replace("%", "").strip())
-                    row_dict["velocity"] = v / 100.0 if v > 1.0 else v
-                except Exception:
-                    row_dict["velocity"] = prior.get("velocity", 1.0)
-            else:
-                row_dict["velocity"] = prior.get("velocity", 1.0)
-            # Preserve the complete multi-instance identity string when present.
-            row_dict["operators_csv"] = cell(1)
-            row_dict["user_defined"] = bool(prior.get("user_defined", False))
-            rebuilt.append(row_dict)
-        self.master_playlist_data = rebuilt
+        """Reads back current table items from the playlist window into master memory backend."""
+        if hasattr(self, 'active_paint_table') and self.active_paint_table:
+            table = self.active_paint_table
+            self.master_playlist_data = []
+            old_rows = list(getattr(self, "master_playlist_data", []) or [])
+            for r in range(table.rowCount()):
+                prior = old_rows[r] if r < len(old_rows) and isinstance(old_rows[r], dict) else {}
+                row_dict = {
+                    "time_marker": table.item(r, 0).text() if table.item(r, 0) else "",
+                    "operator": table.item(r, 1).text() if table.item(r, 1) else self.instrument_names_48[0],
+                    "script_tag": table.item(r, 2).text() if table.item(r, 2) else "",
+                    "velocity": 1.0,
+                    "modulation": table.item(r, 4).text() if table.item(r, 4) else "",
+                    "multi_seq": table.item(r, 5).text() if table.item(r, 5) else ""
+                }
+                # Keep the generated layer alongside the user-visible row.
+                for _k in ("generated_overlay", "generated_source", "generated_operator", "generated_step", "generated_velocity"):
+                    if _k in prior:
+                        row_dict[_k] = prior[_k]
+                if table.item(r, 3):
+                    try:
+                        vtxt = table.item(r, 3).text().replace("%", "").strip()
+                        v = float(vtxt)
+                        row_dict["velocity"] = (v / 100.0) if v > 1.0 else v
+                    except Exception:
+                        row_dict["velocity"] = 1.0
+                self.master_playlist_data.append(row_dict)
 
 
     # =====================================================================
@@ -2430,7 +8248,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
     # AttributeError at startup when building the LOCAL CONTEXT panel).
     # =====================================================================
     def _make_local_context_button(self, text, tooltip):
-        """Square local-context action button (synth / script / modular). Classic single-label."""
+        """Square local-context action button (synth / script / modular / etc.)."""
         btn = QPushButton(text)
         btn.setToolTip(tooltip)
         btn.setFixedSize(92, 92)
@@ -2442,51 +8260,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "QPushButton:pressed { background-color:#ff6b00; color:white; }"
         )
         return btn
-
-    def _make_integral_domain_button(self, tooltip):
-        """Self-contained ƒ Domain control.
-
-        The button paints its own function glyph and DOMAIN caption. No nested
-        labels, no newlines, no user-supplied "Domain" text. Synth / Script /
-        Modular still use the classic helper and stay 92×92.
-        """
-        class IntegralDomainButton(QPushButton):
-            def __init__(self, tip, parent=None):
-                super().__init__(parent)
-                self.setToolTip(tip)
-                self.setFixedSize(92, 92)
-                self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-                self.setText("")
-                self.setStyleSheet(
-                    "QPushButton { background-color:#121212; color:#00ffff; "
-                    "border:2px solid #00ffff; border-radius:8px; padding:0; } "
-                    "QPushButton:hover { background-color:#202830; } "
-                    "QPushButton:pressed { background-color:#ff6b00; }"
-                )
-
-            def paintEvent(self, event):
-                super().paintEvent(event)
-                p = QPainter(self)
-                p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-                pressed = self.isDown()
-                color = QColor("#ffffff") if pressed else QColor("#00ffff")
-                p.setPen(color)
-                glyph = QFont(self.font())
-                glyph.setPointSize(19)
-                glyph.setBold(True)
-                p.setFont(glyph)
-                r = self.rect().adjusted(4, 4, -4, -22)
-                p.drawText(r, int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter), "ƒ")
-                cap = QFont(self.font())
-                cap.setPointSize(7)
-                cap.setBold(True)
-                cap.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.0)
-                p.setFont(cap)
-                cr = self.rect().adjusted(4, self.height() - 24, -4, -6)
-                p.drawText(cr, int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter), "DOMAIN")
-                p.end()
-
-        return IntegralDomainButton(tooltip)
 
     # =====================================================================
     # RECOMMENDED_POWER_LAYER_V1 — CONTEXT FIELD + PARAMETER PAINT
@@ -2520,6 +8293,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
             except Exception:
                 pass
         synth_blob = repr(sorted(numeric_synth))
+        generated = getattr(self, 'instrument_param_generated', {}) or {}
+        generated_state = generated.get(instrument_name, {}) if isinstance(generated, dict) else {}
+        generated_numeric = []
+        if isinstance(generated_state, dict):
+            for k, v in generated_state.items():
+                if isinstance(v, (int, float, np.integer, np.floating)):
+                    generated_numeric.append((str(k), float(v)))
+                elif isinstance(v, (list, tuple)):
+                    vals = []
+                    for x in v[:16]:
+                        if isinstance(x, (int, float, np.integer, np.floating)):
+                            vals.append(float(x))
+                    if vals:
+                        generated_numeric.append((str(k), tuple(round(x, 8) for x in vals)))
+        generated_blob = repr(sorted(generated_numeric))
+        generated_score = (int(hashlib.sha256(generated_blob.encode('utf-8','replace')).hexdigest()[:12], 16) % 10000) / 10000.0
         synth_score = (int(hashlib.sha256(synth_blob.encode('utf-8','replace')).hexdigest()[:12], 16) % 10000) / 10000.0
 
         # Imported WAV/video is a shared carrier. Its coarse energy is context,
@@ -2599,7 +8388,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
             'playlist_density': density, 'row_velocity': row_velocity,
             'phase': float(meum_phase), 'meum_field': float(meum_field)
         }
-
     def _seed_geometry(self, salt=""):
         """Return three uniform deterministic coordinates for the literal seed token."""
         import hashlib
@@ -2611,89 +8399,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
             int.from_bytes(digest[i:i+8], "big") / float(2**64)
             for i in (0, 8, 16)
         )
-
-    def _seed_audio_geometry(self, salt="audio"):
-        """Return seed-owned irrational coordinates for audio/engine decisions.
-
-        The literal seed token is the identity. Meum is only one mathematical
-        basis among phi/e/sqrt(2); it never supplies the identity by itself.
-        The coordinates are deterministic, time-independent, and independent
-        across subsystems through the salt.
-        """
-        import hashlib
-        seed_text = self._seed_text() if hasattr(self, "_seed_text") else str(
-            self.get_numeric_seed() if hasattr(self, "get_numeric_seed") else 0
-        )
-        digest = hashlib.blake2b(
-            f"GROOVEBOX-SEED-V4|{salt}|{seed_text}".encode("utf-8", "replace"),
-            digest_size=32,
-        ).digest()
-        u = tuple(int.from_bytes(digest[i:i+8], "big") / float(2**64) for i in (0, 8, 16, 24))
-        return u
-
-    def _seed_ratio(self, op_idx=0, row_idx=0, salt="audio"):
-        """Bounded, seed-specific harmonic ratio; avoids collapsing seeds onto Meum."""
-        u0, u1, u2, u3 = self._seed_audio_geometry(f"{salt}|{op_idx}|{row_idx}")
-        phase = (
-            2.0 * math.pi * u0
-            + PHI * u1
-            + SQRT2 * u2
-            + MEUM_LOG2 * u3
-            + (op_idx + 1) * PHI_INV
-            + (row_idx + 1) * MEUM_NORM
-        )
-        a = 0.5 + 0.5 * math.sin(phase)
-        b = 0.5 + 0.5 * math.cos(phase * SQRT2 + u2 * 2.0 * math.pi)
-        # About +/- 0.42 octave: large enough to separate seeds, small enough
-        # to preserve harmonic musicality.
-        return float(2.0 ** (((a - 0.5) * 0.52) + ((b - 0.5) * 0.24)))
-
     def _contextual_numerology(self, instrument_name="", step=0, row=0):
-        """Seed-first deterministic field; Meum is an invariant, not the identity of every seed."""
+        """Shared deterministic score; includes Meum spatial field, scripts, patch topology, domains, synth/effects, media, and playlist state."""
         import hashlib
         f = self._contextual_feature_vector(instrument_name, step, row)
-        seed_text = self._seed_text() if hasattr(self, "_seed_text") else "0"
-        seed_num = int(self.get_numeric_seed()) if hasattr(self, "get_numeric_seed") else 0
-
-        # Independent irrational coordinates keep distinct seed values geometrically
-        # separated even when the surrounding project topology is identical.
-        payload = f"{seed_text}|{seed_num}|{instrument_name}|{int(step)}|{int(row)}"
-        d = hashlib.sha256(payload.encode("utf-8", "replace")).digest()
-        u0 = int.from_bytes(d[0:8], "big") / float(2**64)
-        u1 = int.from_bytes(d[8:16], "big") / float(2**64)
-        u2 = int.from_bytes(d[16:24], "big") / float(2**64)
-
-        # Meum remains part of the field, but it is only one coordinate among
-        # phi/e/pi/sqrt(2). This prevents "every seed == Meum" behavior.
-        phase = (
-            u0 * 2.0 * math.pi
-            + u1 * PHI
-            + u2 * MEUM_LOG2
-            + (seed_num % 1000003) * 1.7e-6
-            + (int(step) + 1) * MEUM
-            + (int(row) + 1) * PHI_INV
-        )
-        seed_field = 0.5 + 0.5 * math.sin(phase)
-        harmonic_field = 0.5 + 0.5 * math.cos(
-            phase * SQRT2 + (int(step) + 1) * MEUM_NORM
-        )
-        # A low-amplitude deterministic interaction term adds geometric
-        # differentiation without turning the field into unconstrained noise.
-        interaction = 0.5 + 0.5 * math.sin(
-            phase * PHI + seed_field * math.pi + harmonic_field * MEUM
-        )
-        seed_score = float(np.clip(
-            0.50 * seed_field + 0.32 * harmonic_field + 0.18 * interaction,
-            0.0, 1.0
-        ))
-
-        # Existing contextual state remains useful, but no longer dominates.
-        # This makes Randomizer/Phase-Lock respond to the actual seed first.
-        tie_break = u0 * 0.35 + u1 * 0.25 + u2 * 0.40
-        return float(np.clip(
-            0.80 * seed_score + 0.12 * f["score"] + 0.08 * tie_break,
-            0.0, 1.0
-        ))
+        payload = repr((instrument_name, step, row, self._seed_text() if hasattr(self, '_seed_text') else '0', f))
+        digest = hashlib.sha256(payload.encode('utf-8','replace')).digest()
+        tie_break = int.from_bytes(digest[:8], 'big') / float(2**64)
+        return float(np.clip(0.78*f['score'] + 0.22*tie_break, 0.0, 1.0))
 
     def _paint_generated_parameters(self, rng=None, rows=None, source='context'):
         """Paint calculated/random playlist parameters, including velocity.
@@ -2758,6 +8471,31 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.reload_active_instrument_sequencer_ui()
         return changed
 
+    def _randomize_local_context(self):
+        """Safe local randomization: preserve explicit user gates, vary free material and playlist velocity."""
+        try:
+            # Existing seeded engine already respects the protected/user-mask policy.
+            self.apply_seeded_harmonic_randomization()
+            rng = np.random.default_rng(self.get_numeric_seed())
+            self._paint_step_parameters(rng=rng, randomize=True, strength=0.55, include_velocity=True, include_pitch=True, include_probability=True)
+            self._paint_generated_parameters(rng=rng, source='randomizer')
+            self._phase_lock_playlist_velocity(rng, strength=0.35, randomize=True)
+            self.reload_active_instrument_sequencer_ui()
+        except Exception as e:
+            print(f"[Local Randomize] skipped: {e}")
+
+    def _phase_lock_local_context(self):
+        """Phase-lock local instrument context + playlist velocity without rewriting user gates."""
+        try:
+            if hasattr(self, "wavefield_engine") and self.wavefield_engine is not None:
+                self.wavefield_engine.apply_phase_locked_randomization()
+            rng = np.random.default_rng(self.get_numeric_seed())
+            self._paint_step_parameters(rng=rng, randomize=False, strength=0.70, include_velocity=True, include_pitch=True, include_probability=True)
+            self._paint_generated_parameters(rng=rng, source='phase-lock')
+            self._phase_lock_playlist_velocity(rng, strength=0.70, randomize=False)
+            self.reload_active_instrument_sequencer_ui()
+        except Exception as e:
+            print(f"[Local Phase Lock] skipped: {e}")
     def _snapshot_global_effect_sliders(self):
         """Capture user-owned global macro values before composition operators run."""
         snap = {}
@@ -2769,7 +8507,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 except Exception:
                     pass
         return snap
-
     def _restore_global_effect_sliders(self, snap):
         """Restore global macro values without retriggering their signals."""
         for attr, value in (snap or {}).items():
@@ -2780,145 +8517,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     obj.setValue(int(value))
                 finally:
                     obj.blockSignals(False)
-
-    def _playlist_time_base_seconds(self):
-        """Return the user-entered playlist base; free-time remains unquantized."""
-        text = str(getattr(getattr(self, "playlist_time_base_input", None), "text", lambda: "Unquantized Free Time")()).strip()
-        if not text or "unquantized" in text.lower() or "free time" in text.lower():
-            return None
-        import re
-        m = re.search(r"(-?\d+(?:\.\d+)?)\s*s?", text)
-        try:
-            return max(1e-4, float(m.group(1))) if m else None
-        except Exception:
-            return None
-
-    def _random_playlist_interval(self, rng, row_index=0):
-        """Generate an interval around the selected row base instead of quantizing rows."""
-        base = self._playlist_time_base_seconds()
-        if base is None:
-            base = MEUM_CONSTANT
-        # Log-uniform-ish multiplicative spread keeps intervals musical but genuinely random.
-        spread = float(rng.uniform(0.58, 1.72))
-        return max(1e-4, float(base) * spread)
-
-    def _randomize_all_local_parameters(self, rng=None, source="randomizer"):
-        """Composer pass over every local parameter surface: synth, sequence, script, domain, patch.
-
-        Amp and pitch are deliberately first-class sequence targets. Existing user state is modified
-        by explicit Randomizer / Phase-Lock actions, while global macro sliders remain user-owned.
-        """
-        rng = rng or np.random.default_rng(self.get_numeric_seed() or 1)
-        names = list(getattr(self, "instrument_names_48", []) or [])
-        changed = {"synth": 0, "sequence": 0, "scripts": 0, "domains": 0, "patches": 0}
-        self.instrument_param_state = getattr(self, "instrument_param_state", {}) or {}
-        self.instrument_param_generated = getattr(self, "instrument_param_generated", {}) or {}
-        self.instrument_scripts = getattr(self, "instrument_scripts", {}) or {}
-
-        for i, name in enumerate(names):
-            state = self.instrument_param_state.setdefault(name, {})
-            ctx = float(self._contextual_numerology(name, i, i)) if hasattr(self, "_contextual_numerology") else 0.5
-            defaults = {
-                "tuning": (0.70, 1.30), "filter": (0.02, 0.98), "drive": (0.0, 0.90),
-                "amplitude": (0.05, 1.0), "duration": (0.03, 1.0), "eqr": (0.0, 1.0),
-                "fractalizer": (0.0, 1.0), "pkp_decay": (0.0, 1.0),
-            }
-            if not state:
-                state.update({k: (lo + hi) * 0.5 for k, (lo, hi) in defaults.items()})
-            for key in list(state.keys()):
-                val = state.get(key)
-                if not isinstance(val, (int, float, np.integer, np.floating)):
-                    continue
-                key_l = str(key).lower()
-                if any(x in key_l for x in ("pitch", "tune", "ratio", "freq")):
-                    lo, hi = (0.5, 1.5)
-                elif any(x in key_l for x in ("amp", "gain", "level", "mix", "amount", "drive", "decay", "filter", "cutoff", "resonance", "eqr", "fractal")):
-                    lo, hi = (0.0, 1.0)
-                elif any(x in key_l for x in ("pan", "spread", "width")):
-                    lo, hi = (-1.0, 1.0)
-                else:
-                    lo, hi = defaults.get(key, (0.0, 1.0))
-                target = lo + (hi - lo) * float(np.clip(0.15 + 0.70 * ctx + rng.uniform(-0.22, 0.22), 0.0, 1.0))
-                state[key] = float(target)
-                changed["synth"] += 1
-            # Ensure core synth dimensions always exist and are actually modified.
-            for key, (lo, hi) in defaults.items():
-                state[key] = float(lo + (hi - lo) * np.clip(ctx + rng.uniform(-0.20, 0.20), 0.0, 1.0))
-            changed["synth"] += len(defaults)
-            self.instrument_param_generated[name] = dict(state)
-
-            mem = self.instrument_sequencer_memory.setdefault(name, {"steps": [], "gates": [], "amplitudes": [], "pitches": [], "probabilities": []})
-            count = int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else 48
-            self._ensure_seq_mem_length(mem, count)
-            for step in range(count):
-                phase = 2.0 * np.pi * (step + 0.5) / max(count, 1)
-                mem["steps"][step] = bool(rng.random() < np.clip(0.20 + 0.62 * (0.5 + 0.5 * np.sin(phase * (1 + i % 5) + ctx * np.pi)), 0.05, 0.92))
-                mem["gates"][step] = bool(rng.random() < 0.82)
-                mem["amplitudes"][step] = float(np.clip(0.15 + 0.80 * rng.random() * (0.55 + 0.45 * ctx), 0.03, 1.0))
-                mem["pitches"][step] = float(np.clip(0.72 + 0.56 * rng.random() + 0.10 * np.sin(phase), 0.5, 1.5))
-                mem["probabilities"][step] = int(np.clip(round(45 + 55 * rng.random()), 1, 100))
-                changed["sequence"] += 1
-
-            script = str(self.instrument_scripts.get(name, "") or "")
-            marker = f"# --- {source.upper()} COMPOSER PASS ---"
-            layer = (f"\n\n{marker}\n"
-                     f"composer_seed={int(self.get_numeric_seed() or 1)}\n"
-                     f"composer_ctx={ctx:.8f}\n"
-                     f"composer_amp={state['amplitude']:.8f}\n"
-                     f"composer_pitch={state['tuning']:.8f}\n"
-                     f"composer_filter={state['filter']:.8f}\n"
-                     f"composer_phase={float(rng.uniform(-np.pi, np.pi)):.8f}\n")
-            if marker in script:
-                script = script.split(marker, 1)[0].rstrip()
-            self.instrument_scripts[name] = script + layer
-            changed["scripts"] += 1
-
-        # Domains: modify existing domains and add a compact generated field when empty.
-        eng = getattr(self, "domain_eq_engine", None)
-        if eng is not None:
-            for i, dom in enumerate(getattr(eng, "domains", []) or []):
-                if not isinstance(dom, dict):
-                    continue
-                dom["weight"] = float(np.clip(rng.uniform(0.20, 1.80), 0.05, 2.5))
-                dom["seed_weight"] = float(rng.uniform(0.0, 1.0))
-                dom["t0"], dom["t1"] = 0.0, 1.0
-                freq = int(rng.integers(1, 13))
-                dom["equation"] = f"sin({freq}*pi*t + MEUM*seed_w) * cos({int(rng.integers(1,9))}*x)"
-                dom["logic"] = f"sin({int(rng.integers(1,16))}*t + seed) > {float(rng.uniform(-0.7,0.7)):.4f}"
-                changed["domains"] += 1
-
-        # Modular topology: reweight every existing cable and ensure every instrument participates.
-        self.patch_connections = getattr(self, "patch_connections", []) or []
-        for c in self.patch_connections:
-            if isinstance(c, dict):
-                c["weight"] = float(np.clip(rng.uniform(0.05, 0.95), 0.01, 1.0))
-                c["origin"] = f"randomized_{source}"
-                changed["patches"] += 1
-        existing = {(c.get("source"), c.get("target")) for c in self.patch_connections if isinstance(c, dict)}
-        for i, name in enumerate(names):
-            target = names[int(rng.integers(0, len(names)))] if names else name
-            if target == name and len(names) > 1:
-                target = names[(i + 1) % len(names)]
-            if (name, target) not in existing:
-                self.patch_connections.append({"source": name, "target": target, "weight": float(rng.uniform(0.10, 0.80)), "origin": f"randomized_{source}", "user_defined": False})
-                existing.add((name, target)); changed["patches"] += 1
-
-        return changed
-
     def _randomize_local_context(self, checked=True):
-        self._bare_seed_sonic_disabled = True
         if hasattr(self, 'btn_local_randomize') and self.btn_local_randomize.isCheckable() and not checked and "randomizer"=="randomizer": return
         if hasattr(self, 'btn_local_phase_lock') and self.btn_local_phase_lock.isCheckable() and not checked and "randomizer"=="phase-lock": return
         self._composition_generation_counter=getattr(self,"_composition_generation_counter",0)+1
         snap=self._snapshot_global_effect_sliders()
         try:
-            ru = self._seed_audio_geometry("randomizer-rng")
-            live_seed = int.from_bytes(bytes(int(x * 255) & 0xFF for x in ru), "little") % (2**31)
+            live_seed=int(self.get_numeric_seed())%(2**31)
             rng=np.random.default_rng(live_seed)
             if "randomizer"=="randomizer": self.apply_seeded_harmonic_randomization()
             elif hasattr(self,"wavefield_engine") and self.wavefield_engine is not None: self.wavefield_engine.apply_phase_locked_randomization()
-            self._paint_step_parameters(rng=rng, randomize=True, strength=.70, include_velocity=True, include_pitch=True, include_probability=True)
-            self._randomize_all_local_parameters(rng=rng, source="randomizer")
+            self._paint_step_parameters(rng=rng, randomize=("randomizer"=="randomizer"), strength=.55 if "randomizer"=="randomizer" else .70, include_velocity=True, include_pitch=True, include_probability=True)
             self._paint_generated_parameters(rng=rng, source="randomizer")
             self._phase_lock_playlist_velocity(rng,strength=.35 if "randomizer"=="randomizer" else .70,randomize=("randomizer"=="randomizer"))
             self._run_composition_context_engine(source="randomizer",rng=rng)
@@ -2927,19 +8536,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
         finally: self._restore_global_effect_sliders(snap)
 
     def _phase_lock_local_context(self, checked=True):
-        self._bare_seed_sonic_disabled = True
         if hasattr(self, 'btn_local_randomize') and self.btn_local_randomize.isCheckable() and not checked and "phase-lock"=="randomizer": return
         if hasattr(self, 'btn_local_phase_lock') and self.btn_local_phase_lock.isCheckable() and not checked and "phase-lock"=="phase-lock": return
         self._composition_generation_counter=getattr(self,"_composition_generation_counter",0)+1
         snap=self._snapshot_global_effect_sliders()
         try:
-            pu = self._seed_audio_geometry("phase-lock-rng-local")
-            live_seed = int.from_bytes(bytes(int(x * 255) & 0xFF for x in pu), "little") % (2**31)
+            live_seed=int(self.get_numeric_seed())%(2**31)
             rng=np.random.default_rng(live_seed)
             if "phase-lock"=="randomizer": self.apply_seeded_harmonic_randomization()
             elif hasattr(self,"wavefield_engine") and self.wavefield_engine is not None: self.wavefield_engine.apply_phase_locked_randomization()
-            self._paint_step_parameters(rng=rng, randomize=True, strength=.75, include_velocity=True, include_pitch=True, include_probability=True)
-            self._randomize_all_local_parameters(rng=rng, source="phase-lock")
+            self._paint_step_parameters(rng=rng, randomize=("phase-lock"=="randomizer"), strength=.55 if "phase-lock"=="randomizer" else .70, include_velocity=True, include_pitch=True, include_probability=True)
             self._paint_generated_parameters(rng=rng, source="phase-lock")
             self._phase_lock_playlist_velocity(rng,strength=.35 if "phase-lock"=="randomizer" else .70,randomize=("phase-lock"=="randomizer"))
             self._run_composition_context_engine(source="phase-lock",rng=rng)
@@ -3071,23 +8677,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
             idxs = list(rr.choice(len(names), size=min(n_inst, len(names)), replace=False)) if names else [0]
             eng_ops = [names[i] for i in idxs]
             tag = f"@e:{source[:4]}:{seed & 0xFFFFF:05x}:{r:03d}"
-            pu0, pu1, pu2, pu3 = self._seed_audio_geometry(f"playlist|{source}|{r}")
-            row_phase = 2.0 * np.pi * pu0 + PHI * pu1 + SQRT2 * pu2 + MEUM_LOG2 * pu3
-            if r == 0:
-                t_off = 0.0
-            else:
-                prev = float(self.master_playlist_data[r - 1].get("time_offset", (r - 1) * MEUM_CONSTANT) or 0.0)
-                interval = self._random_playlist_interval(rr, r)
-                # Preserve a gentle Meum phase bias while keeping the interval genuinely random.
-                interval *= float(np.clip(0.88 + 0.24 * (0.5 + 0.5 * np.sin(row_phase)), 0.72, 1.18))
-                t_off = prev + interval
+            t_off = (r * (0.125 + 0.031 * MEUM_NORM) + float(rr.uniform(-0.045, 0.045)))
             if not active:
-                # Inactive rows still get a randomized free-time position; they do not collapse to a quantized grid.
-                t_off = (t_off if r else 0.0) + (float(rr.uniform(0.0, self._playlist_time_base_seconds() or MEUM_CONSTANT)) if r else 0.0)
-            velocity = float(np.clip(0.40 + 0.50 * (0.5 + 0.5 * np.sin(row_phase + (r + 1) * PHI_INV)), 0.08, 0.98)) if active else 0.0
+                t_off = r * (0.125 + 0.031 * MEUM_NORM)
+            velocity = float(np.clip(0.42 + 0.48 * (0.5 + 0.5 * np.sin((r + 1) * MEUM + (seed % 997) * 0.017)), 0.08, 0.98)) if active else 0.0
             target = ("eqr", "fractalizer", "pkp_decay", "filter", "drive")[int(rr.integers(0, 5))] if active else "none"
-            amount = float(np.clip(0.20 + 0.64 * (0.5 + 0.5 * np.sin(row_phase * SQRT2)), 0.0, 0.95)) if active else 0.0
-            direction = float(np.sin(row_phase * PHI + (r + 1) * MEUM_INV)) if active else 0.0
+            amount = float(np.clip(0.22 + 0.62 * rr.random(), 0.0, 0.95)) if active else 0.0
+            direction = float(np.sin((r + 1) * MEUM_INV + (seed % 991) * 0.013)) if active else 0.0
             coverage_map = {op: float(np.clip(0.30 + 0.55 * rr.random(), 0.0, 1.0)) for op in eng_ops}
             coverage = "|".join(f"{k}:{v:.0%}" for k, v in coverage_map.items()) if active else "0%"
             partner = eng_ops[1] if active and len(eng_ops) > 1 else ""
@@ -3136,7 +8732,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 'direction': 1.0 if direction >= 0 else -1.0,
                 'coverage': float(np.mean(list(coverage_map.values()))) if coverage_map else 0.0,
                 'overlap': float(min(coverage_map.values())) if len(coverage_map) > 1 else 0.0,
-                'blend_percent': float(np.clip(50.0 + 50.0 * np.sin(row_phase + (r + 1) * MEUM_NORM), 0.0, 100.0)),
+                'blend_percent': float(np.clip(50.0 + 35.0 * np.sin((r + 1) * MEUM_NORM + seed * 0.001), 0.0, 100.0)),
                 'partner': partner,
                 'mode': f"engine:{source}",
                 'position': position,
@@ -3176,22 +8772,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def init_ui_components(self):
         high_contrast_stylesheet = """
-            QMainWindow, QDialog {
+            QMainWindow, QWidget, QDialog {
                 background-color: #060606;
-                color: #e8eef4;
+                color: #ffffff;
                 font-family: sans-serif;
                 font-size: 10pt;
-            }
-            QWidget#GrooveboxCentral, QWidget#ParametricMathBackground {
-                background: transparent;
-            }
-            QGroupBox {
-                background-color: rgba(8, 10, 14, 150);
-                color: #e8eef4;
-                border: 1px solid #2a3340;
-                border-radius: 6px;
-                margin-top: 8px;
-                padding-top: 8px;
             }
             QPushButton {
                 background-color: #121212;
@@ -3210,61 +8795,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 color: #060606;
                 border: 2px solid #ffffff;
             }
-            QLabel { color: #e8eef4; font-weight: bold; }
-            QLineEdit, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit {
-                background-color: #12181e;
+            QSpinBox, QComboBox, QLineEdit, QDoubleSpinBox {
+                background-color: #181818;
                 color: #ffffff;
                 border: 2px solid #444444;
                 border-radius: 3px;
                 padding: 3px;
-                selection-background-color: #00aaaa;
-                selection-color: #061018;
             }
-            QComboBox {
-                background-color: #181818;
-                color: #e8eef4;
-                border: 2px solid #444444;
-                border-radius: 3px;
-                padding: 3px 8px;
-                combobox-popup: 0;
-                min-height: 22px;
+            QLabel {
+                color: #ffffff;
+                font-weight: bold;
             }
-            QComboBox:on { background-color: #222830; color: #e8eef4; }
-            QComboBox QAbstractItemView {
-                background-color: #181818;
-                color: #e8eef4;
-                selection-background-color: #00aaaa;
-                selection-color: #061018;
-                border: 1px solid #444444;
-                outline: 0;
-            }
-            QComboBox QAbstractItemView::item {
-                min-height: 22px;
-                color: #e8eef4;
-                background-color: #181818;
-                padding: 3px 8px;
-            }
-            QComboBox QAbstractItemView::item:selected {
-                background-color: #00aaaa;
-                color: #061018;
-            }
-            QComboBox::drop-down {
-                background-color: #242a32;
-                border-left: 1px solid #555555;
-                width: 22px;
-            }
-            QProgressBar {
-                background-color: #12181e;
-                color: #e8eef4;
-                border: 1px solid #2a3340;
-                border-radius: 4px;
-                text-align: center;
-                min-height: 16px;
-                max-height: 18px;
-            }
-            QProgressBar#playProgressBar::chunk { background-color: #00c8a8; border-radius: 3px; }
-            QProgressBar#exportProgressBar::chunk { background-color: #ff9a3c; border-radius: 3px; }
-            QProgressBar::chunk { background-color: #00c8a8; border-radius: 3px; }
         """
         if QApplication.instance():
             QApplication.instance().setStyleSheet(high_contrast_stylesheet)
@@ -3274,10 +8815,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if central_widget is None:
             central_widget = QWidget(self)
             self.setCentralWidget(central_widget)
-        central_widget.setObjectName("GrooveboxCentral")
-        central_widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        central_widget.setAutoFillBackground(False)
-        central_widget.setStyleSheet("background: transparent;")
 
         master_container = central_widget.layout()
         if master_container is None:
@@ -3371,20 +8908,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.input_seed_val.setMaximumWidth(520)
         self.input_seed_val.setMaximumHeight(150)
         self.input_seed_val.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        # White seed text on dark field so boot seeds and scripts are readable.
-        self.input_seed_val.setStyleSheet(
-            "QTextEdit {"
-            " background-color: #12181e;"
-            " color: #ffffff;"
-            " border: 2px solid #3a4550;"
-            " border-radius: 4px;"
-            " padding: 6px;"
-            " font-family: Consolas, 'Courier New', monospace;"
-            " font-size: 11pt;"
-            " selection-background-color: #00aaaa;"
-            " selection-color: #061018;"
-            "}"
-        )
 
         # NOTE: transport-bar WAV-only export button removed — the single
         # EXPORT control lives next to the 2.5D video panel (self.btn_export,
@@ -3404,14 +8927,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.global_controls_side.setSpacing(6)
         self.global_controls_side.setContentsMargins(0, 0, 0, 0)
         self.global_controls_side.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.global_controls_side.addWidget(QLabel("CONTROLS"), 0, Qt.AlignmentFlag.AlignTop)
+        self.global_controls_side.addWidget(QLabel("GLOBAL PROCESSOR CONTROLS"), 0, Qt.AlignmentFlag.AlignTop)
         self.global_geometry_layout.addLayout(self.global_controls_side, 1)
         self.global_geometry_layout.setAlignment(self.global_controls_side, Qt.AlignmentFlag.AlignTop)
 
         self.btn_play.clicked.connect(self.toggle_playback)
         self.btn_stop.clicked.connect(self.stop_playback)
-        self.btn_idealize_rhythm.toggled.connect(self._on_unified_phase_lock_toggled)
-        self.btn_seeded_randomize.toggled.connect(self._on_unified_randomizer_toggled)
+        self.btn_idealize_rhythm.toggled.connect(self._on_euclidean_live_toggled)
+        self.btn_seeded_randomize.toggled.connect(self._on_seeded_live_toggled)
         self.chk_user_program_only.toggled.connect(self._on_user_program_only_toggled)
         self.btn_save_project.clicked.connect(self.save_project_dialog)
         self.btn_load_project.clicked.connect(self.load_project_dialog)
@@ -3422,9 +8945,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.transport_layout.addWidget(self.btn_stop)
         self.transport_layout.addWidget(self.lbl_bpm)
         self.transport_layout.addWidget(self.spin_bpm)
-        self.transport_layout.addWidget(QLabel("Select Instrument"))
-        self.instrument_selector_dropdown.setMinimumWidth(260)
-        self.instrument_selector_dropdown.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.transport_layout.addWidget(QLabel("Active Operator:"))
         self.transport_layout.addWidget(self.instrument_selector_dropdown)
         self.transport_layout.addWidget(self.btn_keyboard)
         self.transport_layout.addWidget(self.btn_trigger_all)
@@ -3436,24 +8957,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # window was narrower than the sum of everything's natural width
         # (visible as "ded Live Rando", "uclidean Live L", etc). Splitting the
         # tail onto its own row fixes that regardless of font size.
-        # MERGED_ENGINE_UI: one Randomizer + one Phase-Lock live in GLOBAL COMPOSITION.
-        # Transport row keeps user-program / save-load only (no duplicate engine toggles).
         self.transport_layout_row2 = QHBoxLayout()
+        self.transport_layout_row2.addWidget(self.btn_seeded_randomize)
+        self.transport_layout_row2.addWidget(self.btn_idealize_rhythm)
         self.transport_layout_row2.addWidget(self.chk_user_program_only)
         self.transport_layout_row2.addStretch(1)
         self.transport_layout_row2.addWidget(self.btn_save_project)
         self.transport_layout_row2.addWidget(self.btn_load_project)
-        # Keep buttons alive for any legacy signal paths, but hidden
-        self.btn_seeded_randomize.setVisible(False)
-        self.btn_idealize_rhythm.setVisible(False)
 
         # Live engine timers
         self._live_euclid_timer = QTimer(self)
         self._live_euclid_timer.setInterval(2000)
-        self._live_euclid_timer.timeout.connect(self._live_composition_tick)
+        self._live_euclid_timer.timeout.connect(lambda: self._live_engine_tick("euclidean"))
         self._live_seeded_timer = QTimer(self)
         self._live_seeded_timer.setInterval(2500)
-        self._live_seeded_timer.timeout.connect(self._live_composition_tick)
+        self._live_seeded_timer.timeout.connect(lambda: None)
         self._live_engine_signatures = {}
         self._live_engine_update_guard = False
 
@@ -3483,17 +9001,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         self.slider_eqr = QSlider(Qt.Orientation.Horizontal)
         self.slider_eqr.setRange(0, 100)
-        self.slider_eqr.setValue(0)
+        self.slider_eqr.setValue(50)
         self.slider_fractalizer = QSlider(Qt.Orientation.Horizontal)
         self.slider_fractalizer.setRange(0, 100)
-        self.slider_fractalizer.setValue(33)
+        self.slider_fractalizer.setValue(85)
         self.slider_pkp_decay = QSlider(Qt.Orientation.Horizontal)
-        self.slider_pkp_decay.setRange(0, 1000)
-        self.slider_pkp_decay.setValue(500)
+        self.slider_pkp_decay.setRange(1, 1000)
+        self.slider_pkp_decay.setValue(250)
 
         self.chk_pkp_automod = QCheckBox("PKP Envelope Follower")
-        self.chk_pkp_automod.setChecked(False)
-        self.chk_pkp_automod.setStyleSheet("QCheckBox { color: #ffffff; }")
+        self.chk_pkp_automod.setChecked(True)
 
         self.top_layout.addWidget(self.mode_combo)
         self.top_layout.addWidget(self.chk_global_playlist)
@@ -3548,13 +9065,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "Open the global arrangement, velocity, automation, and paint context"
         )
         self.btn_local_randomize = _make_global_operator_button(
-            "🎲 RANDOMIZER",
-            "Unified randomizer (seeded harmonics + multi-instance playlist paint). One predictive step.",
+            "🎲 RANDOMIZE",
+            "Toggle global randomization; ON paints the generated pattern into Playlist.",
             checkable=True, active_color="#00d084"
         )
         self.btn_local_phase_lock = _make_global_operator_button(
             "🔒 PHASE-LOCK",
-            "Unified phase-lock (Euclidean geometry + wavefield). One coordinated step.",
+            "Toggle global phase-lock; ON paints the phase-locked pattern into Playlist.",
             checkable=True, active_color="#00bfff"
         )
 
@@ -3588,10 +9105,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         local_context_layout = QHBoxLayout(local_context_group)
         local_context_layout.setSpacing(8)
 
-        self.btn_edit_synth = self._make_local_context_button("∿  SYNTH", "Edit synth settings and wavetable for the active instrument")
-        self.btn_script_inst = self._make_local_context_button("∂  SCRIPT", "Edit the script attached to the active instrument")
-        self.btn_view_patchbay = self._make_local_context_button("⟷  MODULAR", "Open modular routing for the active instrument context")
-        self.btn_domain_eq = self._make_integral_domain_button("Edit time/space equations used as contextual modulation")
+        self.btn_edit_synth = self._make_local_context_button("🛠\nSYNTH", "Edit synth settings and wavetable for the active instrument")
+        self.btn_script_inst = self._make_local_context_button("📝\nSCRIPT", "Edit the script attached to the active instrument")
+        self.btn_view_patchbay = self._make_local_context_button("🔌\nMODULAR", "Open modular routing for the active instrument context")
+        self.btn_domain_eq = self._make_local_context_button("∫\nDOMAIN", "Edit time/space equations used as contextual modulation")
 
         # POWER_V3_GLOBAL_CONTROLS: buttons were constructed above so the Global
         # panel can safely reference them before the Local panel is assembled.
@@ -3601,8 +9118,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_view_patchbay.clicked.connect(lambda: self.spawn_floating_window('patch_bay_dialog', "Advanced Modular Patch Bay & Visualizer"))
         self.btn_domain_eq.clicked.connect(self.open_domain_equation_editor)
         self.btn_view_playlist.clicked.connect(lambda: self.spawn_floating_window('playlist_window', "Unquantized Playlist & Paintbrush Window"))
-        self.btn_local_randomize.toggled.connect(self._on_unified_randomizer_toggled)
-        self.btn_local_phase_lock.toggled.connect(self._on_unified_phase_lock_toggled)
+        self.btn_local_randomize.toggled.connect(self._randomize_local_context)
+        self.btn_local_phase_lock.toggled.connect(self._phase_lock_local_context)
         self.btn_help.clicked.connect(self.open_help_readme)
 
         for b in (self.btn_edit_synth, self.btn_script_inst, self.btn_view_patchbay, self.btn_domain_eq):
@@ -3664,13 +9181,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_seq_length.setValue(48)
         sizing_layout.addWidget(self.spin_seq_length)
 
-        self.chk_multi_seq_load = QCheckBox("Allow Multiple Sequence Load & Paint")
-        self.chk_multi_seq_load.setChecked(True)
-        self.chk_multi_seq_load.setToolTip(
-            "When on, load/paint may write into more than one sequence slot. "
-            "Reserved control — wiring is not invented here."
-        )
-        sizing_layout.addWidget(self.chk_multi_seq_load)
+
+
         sizing_layout.addStretch(1)
 
         sizing_container = QWidget()
@@ -3682,14 +9194,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         seq_inner.setContentsMargins(0, 0, 0, 0)
 
         seq_header_layout = QHBoxLayout()
-        # Compact live-jam controls: the instrument selector lives in the global transport above.
-        # Keep the PKP NullLock Boost button and its live-jam amount control here.
+        seq_header_layout.addWidget(QLabel("⚡ STEP Sequencer"))
 
-        # PKP BOOST — arm global note-triggered NullLock layer + one-shot audition.
+        # The instrument selector chooses WHICH instrument the PKP NullLock play button auditions.
+
+        # PKP NullLock BOOST — arm global note-triggered NullLock layer + one-shot audition.
         # Boost amount scales the global PKP layer in the mixdown (0.5× … 2.0×).
         self.pkp_boost_amount = 1.0
-        self.btn_pkp_nullock_boost = QPushButton("PKP Nulllock Boost (using Current Instrument, for Live Playback Effect)")
-        self.btn_pkp_nullock_boost.setMinimumWidth(390)
+        self.btn_pkp_nullock_boost = QPushButton("⚡ PKP NullLock BOOST")
         self.btn_pkp_nullock_boost.setCheckable(False)
         self.btn_pkp_nullock_boost.setToolTip("Momentary one-shot PKP remix burst; never arms a sustained layer.")
         self.btn_pkp_nullock_boost.setStyleSheet(
@@ -3698,31 +9210,29 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "QPushButton:pressed { background-color:#ff66cc; color:#120818; border-color:#ffffff; }"
         )
         self.btn_pkp_nullock_boost.clicked.connect(self._on_pkp_nullock_boost_clicked)
-        seq_header_layout.setSpacing(6)
-        seq_header_layout.setContentsMargins(0, 0, 0, 0)
-        seq_header_layout.addWidget(self.btn_pkp_nullock_boost, 0, Qt.AlignmentFlag.AlignVCenter)
+        seq_header_layout.addWidget(self.btn_pkp_nullock_boost)
 
         self.slider_pkp_boost = QSlider(Qt.Orientation.Horizontal)
         self.slider_pkp_boost.setRange(50, 200)  # 0.5× … 2.0×
         self.slider_pkp_boost.setValue(100)
-        self.slider_pkp_boost.setFixedWidth(88)
+        self.slider_pkp_boost.setFixedWidth(100)
         self.slider_pkp_boost.setToolTip("NullLock boost amount (50%–200%) applied to the global PKP layer.")
         self.slider_pkp_boost.valueChanged.connect(self._on_pkp_boost_amount_changed)
-        seq_header_layout.addWidget(self.slider_pkp_boost, 0, Qt.AlignmentFlag.AlignVCenter)
+        seq_header_layout.addWidget(QLabel("Boost:"))
+        seq_header_layout.addWidget(self.slider_pkp_boost)
         self.lbl_pkp_boost = QLabel("100%")
         self.lbl_pkp_boost.setStyleSheet("color: #ff66cc; font-weight: bold; min-width: 40px;")
         seq_header_layout.addWidget(self.lbl_pkp_boost)
 
         seq_inner.addLayout(seq_header_layout)
 
-        # PKP is an audition/play action, not a dropdown, timeline event, or independent clock.
+        # PKP NullLock is an audition/play action, not a dropdown, timeline event, or independent clock.
         self.pkp_pad_bank_active = False
         self.pkp_current_step = 0
 
         self.steps_layout_widget = QWidget()
         self.steps_inner_layout = QHBoxLayout(self.steps_layout_widget)
         self.steps_inner_layout.setContentsMargins(0, 0, 0, 0)
-        self.steps_inner_layout.setSpacing(3)
         self.seq_step_buttons = []
 
         self.rebuild_sequencer_steps(self.spin_seq_length.value())
@@ -3730,7 +9240,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_seq_length.valueChanged.connect(self._on_live_source_changed)
         self.spin_playlist_length.valueChanged.connect(self._on_live_source_changed)
         self.spin_bpm.valueChanged.connect(self._on_live_source_changed)
-        self.input_seed_val.textChanged.connect(lambda *_: setattr(self, "_bare_seed_sonic_disabled", False))
         self.input_seed_val.textChanged.connect(self._on_live_source_changed)
         # LOCAL_CONTEXT_ISOLATION: changing the active instrument only changes context;
         # it must never re-randomize or phase-fill the sequence.
@@ -3751,7 +9260,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "#stepEditorPopup { background:#0b1116; border:2px solid #f5d97d; "
             "border-radius:8px; padding:6px; } QLabel { color:#ffffff; font-weight:bold; }"
         )
-        self.step_editor_popup.setFixedSize(430, 42)
+        self.step_editor_popup.setFixedHeight(32)
         step_edit = QHBoxLayout(self.step_editor_popup)
         step_edit.setContentsMargins(8, 6, 8, 6)
         self.lbl_selected_step = QLabel("Step: —")
@@ -3761,7 +9270,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.slider_step_amp = QSlider(Qt.Orientation.Horizontal)
         self.slider_step_amp.setRange(0, 100)
         self.slider_step_amp.setValue(100)
-        self.slider_step_amp.setFixedWidth(78)
+        self.slider_step_amp.setFixedWidth(120)
         self.slider_step_amp.valueChanged.connect(self._on_step_amp_slider)
         step_edit.addWidget(self.slider_step_amp)
         self.lbl_step_amp = QLabel("100%")
@@ -3770,7 +9279,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.slider_step_pitch = QSlider(Qt.Orientation.Horizontal)
         self.slider_step_pitch.setRange(25, 400)
         self.slider_step_pitch.setValue(100)
-        self.slider_step_pitch.setFixedWidth(78)
+        self.slider_step_pitch.setFixedWidth(120)
         self.slider_step_pitch.valueChanged.connect(self._on_step_pitch_slider)
         step_edit.addWidget(self.slider_step_pitch)
         self.lbl_step_pitch = QLabel("1.00×")
@@ -3815,7 +9324,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.video_synth_engine = VideoSynthEngine(n_instruments=48)
         self.video_synth_viewer = VideoSynthViewer(self, engine=self.video_synth_engine)
         self.video_synth_viewer.setMinimumHeight(220)
-        self.video_synth_viewer.set_mode(0)
         if not isinstance(getattr(self, 'visual_oscilloscope', None), VisualOscilloscope):
             self.visual_oscilloscope = VisualOscilloscope(self)
             self.visual_oscilloscope.setMinimumHeight(100)
@@ -3830,7 +9338,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         self.btn_export = QToolButton()
         self.btn_export.setText("⬇ EXPORT")
-        self.btn_export.setStyleSheet("QToolButton { color: #ffffff; font-weight: bold; } QMenu { color: #ffffff; } QMenu::item { color: #ffffff; }")
         self.btn_export.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         export_menu = QMenu(self.btn_export)
         export_video_only_action = export_menu.addAction("Video only")
@@ -3841,41 +9348,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         export_video_audio_action.triggered.connect(lambda: self.export_video_dialog(include_audio=True))
         self.btn_export.setMenu(export_menu)
         self.btn_export_video = self.btn_export  # compatibility alias
-        self.btn_clear_memory = QPushButton("🧹 CLEAR MEMORY")
-        self.btn_clear_memory.setFixedSize(160, 32)
-        self.btn_clear_memory.setToolTip("Clear user data and reset the user-edit tracker.")
-        self.btn_clear_memory.clicked.connect(self.clear_user_memory)
-        utility_bar=QHBoxLayout(); utility_bar.addStretch(1);
-        master_container.insertLayout(0, utility_bar)
-        self.scope_status_label = QLabel("📊 2.5D Video Synth + Oscilloscope  |  Status: Active")
+        self.scope_status_label = QLabel("📊 2.5D Video Synth + Oscilloscope  |  Status: Idle")
         self.scope_status_label.setStyleSheet("color: #00ffff; font-weight: bold;")
         scope_bar.addWidget(self.scope_status_label, stretch=1)
-        self.lbl_boot_mode = QLabel("Boot: —")
-        self.lbl_boot_mode.setStyleSheet(
-            "color:#f5d97d; font-weight:bold; padding:2px 8px; "
-            "background:#1a1810; border:1px solid #5a4a20; border-radius:4px;"
-        )
-        self.lbl_boot_mode.setToolTip(
-            "Case A empty boot rolls 25% each: BOTH / SEED only / SEQUENCES only / NEITHER."
-        )
-        scope_bar.addWidget(self.lbl_boot_mode)
-        # Two independent bars: play/DSP can run while export runs (and vice versa).
-        self.play_progress_bar = QProgressBar()
-        self.play_progress_bar.setObjectName("playProgressBar")
-        self.play_progress_bar.setRange(0, 100)
-        self.play_progress_bar.setValue(0)
-        self.play_progress_bar.setFormat("Play %p%")
-        self.play_progress_bar.setFixedWidth(140)
-        self.play_progress_bar.setTextVisible(True)
-        self.play_progress_bar.setVisible(False)
-        self.lbl_play_progress = QLabel("Play")
-        self.lbl_play_progress.setVisible(False)
-        scope_bar.addWidget(self.lbl_play_progress)
-        scope_bar.addWidget(self.play_progress_bar)
-        self.render_progress_bar = self.play_progress_bar
         scope_bar.addStretch(1)
-        self.export_progress_bar = None
-        self.lbl_export_progress = None
+        scope_bar.addWidget(self.btn_export, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
 
         # POWER_V3_VISUAL_LAYOUT: master volume lives above Visualizer settings.
 
@@ -3883,28 +9360,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         visual_pair = QHBoxLayout()
         visual_pair.setSpacing(8)
         visual_left = QVBoxLayout()
-        visual_left.addWidget(self.btn_clear_memory)
         visual_left.addWidget(QLabel("LIVE AUDIO VISUALIZER"))
         self.visual_oscilloscope.setMinimumSize(260, 180)
         self.visual_oscilloscope.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         visual_left.addWidget(self.visual_oscilloscope, stretch=1)
         visual_right = QVBoxLayout()
-        export_row = QHBoxLayout()
-        export_row.addWidget(self.btn_export)
-        self.lbl_export_progress = QLabel("Export")
-        self.lbl_export_progress.setVisible(False)
-        self.export_progress_bar = QProgressBar()
-        self.export_progress_bar.setObjectName("exportProgressBar")
-        self.export_progress_bar.setRange(0, 100)
-        self.export_progress_bar.setValue(0)
-        self.export_progress_bar.setFormat("Export %p%")
-        self.export_progress_bar.setFixedWidth(160)
-        self.export_progress_bar.setTextVisible(True)
-        self.export_progress_bar.setVisible(False)
-        export_row.addWidget(self.lbl_export_progress)
-        export_row.addWidget(self.export_progress_bar)
-        export_row.addStretch(1)
-        visual_right.addLayout(export_row)
         visual_right.addWidget(QLabel("2.5D VIDEO GEOMETRY"))
         self.video_synth_viewer.setMinimumSize(320, 320)
         self.video_synth_viewer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -3915,7 +9375,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         visual_container.setLayout(visual_pair)
         visual_container.setMinimumHeight(330)
         master_container.addWidget(visual_container, stretch=1)
-        QTimer.singleShot(0, lambda: self._on_viz_mode_changed(int(self.viz_mode_combo.currentIndex()) if hasattr(self, "viz_mode_combo") else 0))
 
         # Realtime audio engine state (sounddevice stream)
         self.is_playing = False
@@ -3931,179 +9390,42 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._scope_update_timer.timeout.connect(self._update_scope_from_playhead)
         self._last_scope_chunk = np.zeros(100, dtype=np.float32)
 
-        # ASYNC_RENDER: never build the full DSP mixdown on the Qt GUI thread.
-        # The worker only produces data; all Qt widgets/audio-stream operations
-        # remain on the GUI thread via the polling timer below.
-        self._mixdown_lock = threading.Lock()
-        self._render_result_queue = queue.Queue()
-        self._render_thread = None
-        self._render_generation = 0
-        self._render_poll_timer = QTimer(self)
-        self._render_poll_timer.setInterval(40)
-        self._render_poll_timer.timeout.connect(self._poll_async_render_result)
-        self._render_progress = 0
-        self._play_progress = 0
-        self._export_progress = 0
-        self._export_stage = "Idle"
-        self._render_stage = "Idle"
-        self._export_result_queue = queue.Queue()
-        self._export_thread = None
-        self._export_poll_timer = QTimer(self)
-        self._export_poll_timer.setInterval(50)
-        self._export_poll_timer.timeout.connect(self._poll_export_result)
-
-        # ------------------------------------------------------------------
-        # Re-attach full-window parametric background AFTER the central
-        # layout was rebuilt (init_ui_components clears/recreates children).
-        # Without this, the earlier __init__ attach is destroyed.
-        # ------------------------------------------------------------------
-        try:
-            cw = self.centralWidget()
-            if cw is not None:
-                bg = getattr(self, "parametric_background", None)
-                if bg is None or bg.parent() is not cw:
-                    self.parametric_background = ParametricMathBackground(self, cw)
-                    bg = self.parametric_background
-                bg.setParent(cw)
-                bg.setGeometry(cw.rect())
-                bg.lower()
-                bg.show()
-                if hasattr(self, "instrument_selector_dropdown"):
-                    try:
-                        self.instrument_selector_dropdown.currentIndexChanged.connect(
-                            lambda _i, b=bg: b._reseed()
-                        )
-                    except Exception:
-                        pass
-        except Exception as _bg_exc:
-            print(f"[Background] post-init attach: {_bg_exc}")
-        # Startup Case A/B/C/D roll so seed/sequences probability is real at boot.
-        try:
-            self.bootstrap_seed_and_program_parameters()
-            if hasattr(self, "reload_active_instrument_sequencer_ui"):
-                self.reload_active_instrument_sequencer_ui()
-            # Persistent boot-mode readout so the 25% Case A roll is visible.
-            mode = getattr(self, "_bootstrap_mode", "")
-            if hasattr(self, "lbl_boot_mode"):
-                labels = {
-                    "CASE_A_BOTH": "Boot 25%: seed + sequences",
-                    "CASE_A_SEED": "Boot 25%: seed only",
-                    "CASE_A_SEQUENCES": "Boot 25%: sequences only",
-                    "CASE_A_NEITHER": "Boot 25%: neither (empty)",
-                    "CASE_A_NEITHER_EMPTY": "Empty — no seed / no program",
-                    "CASE_B_FINGERPRINT": "Boot: program present → derived seed",
-                    "CASE_C_SEED_PROGRAM": "Boot: seed present → sparse sequences",
-                    "CASE_D_UNCHANGED": "Boot: seed + program kept",
-                }
-                self.lbl_boot_mode.setText(f"🎲 {labels.get(mode, mode or '—')}")
-            elif hasattr(self, "scope_status_label") and mode:
-                self._set_scope_status(f"🎲 Boot: {mode}")
-        except Exception as _boot_exc:
-            print(f"[Bootstrap] startup: {_boot_exc}")
-
-
-
-    def _sync_floating_windows_to_instrument(self, inst_name):
-        """Open floating editors immediately reflect the selected instrument."""
-        if not inst_name:
-            return
-        for attr, prefix in (
-            ('synth_editor_window', 'Synth'),
-            ('script_editor_window', 'Script'),
-            ('patch_bay_dialog', 'Modular'),
-        ):
-            win = getattr(self, attr, None)
-            if win is None:
-                continue
-            try:
-                if not win.isVisible():
-                    continue
-            except Exception:
-                continue
-            try:
-                win.setWindowTitle(f"{prefix} — {inst_name}")
-            except Exception:
-                pass
-            try:
-                for child in win.findChildren(QLabel):
-                    txt = child.text() or ""
-                    if any(k in txt for k in ("Instrument", "Operator", "Workspace", "Synth Settings")):
-                        if "Workspace" in txt:
-                            child.setText(f"Instrument Script Workspace: {inst_name}")
-                        elif ":" in txt:
-                            child.setText(txt.split(":")[0] + f": {inst_name}")
-            except Exception:
-                pass
-            if attr == 'script_editor_window':
-                try:
-                    scripts = getattr(self, 'instrument_scripts', {})
-                    for child in win.findChildren(QTextEdit):
-                        child.setPlainText(scripts.get(inst_name, child.toPlainText()))
-                        break
-                except Exception:
-                    pass
-
     def on_instrument_switched(self, idx):
-        inst_name = self.instrument_names_48[idx] if 0 <= idx < len(self.instrument_names_48) else ""
-        if hasattr(self, 'instrument_selector_dropdown') and self.instrument_selector_dropdown.currentIndex() != idx:
-            self.instrument_selector_dropdown.blockSignals(True)
+        inst_name = self.instrument_names_48[idx]
+        if hasattr(self, 'top_sequencer') and self.instrument_selector_dropdown.currentIndex() != idx:
             self.instrument_selector_dropdown.setCurrentIndex(idx)
-            self.instrument_selector_dropdown.blockSignals(False)
         self.reload_active_instrument_sequencer_ui()
-        try:
-            self._sync_floating_windows_to_instrument(inst_name)
-        except Exception as exc:
-            print(f"[Sync] {exc}")
 
     def reload_active_instrument_sequencer_ui(self):
-        if getattr(self, '_composition_ui_batch', False):
-            self._seq_ui_pending = True
-            return
         if not hasattr(self, 'top_sequencer'):
             return
-        # Debounce: live engines were rewriting styles every 2s → visible flicker
-        now = time.monotonic()
-        if getattr(self, '_seq_ui_guard', False):
-            return
-        if now - float(getattr(self, '_seq_ui_last', 0.0)) < 0.12:
-            self._seq_ui_pending = True
-            return
-        self._seq_ui_last = now
-        self._seq_ui_pending = False
         curr_inst = self.instrument_selector_dropdown.currentText()
-        mem = self.instrument_sequencer_memory.get(curr_inst)
-        if not mem:
-            return
+        mem = self.instrument_sequencer_memory[curr_inst]
         self._ensure_seq_mem_length(mem, len(self.seq_step_buttons) or 16)
         for s_idx, btn in enumerate(self.seq_step_buttons):
-            if s_idx >= len(mem["steps"]):
-                continue
-            amp = float(mem["amplitudes"][s_idx]) if s_idx < len(mem.get("amplitudes", [])) else 1.0
-            pitch = float(mem["pitches"][s_idx]) if s_idx < len(mem.get("pitches", [])) else 1.0
-            is_on = bool(mem["steps"][s_idx])
-            label = "□" if is_on else "■"
-            selected = (self.selected_step_idx == s_idx)
-            # Only touch Qt when something actually changed (stops flicker)
-            prev = getattr(btn, '_seq_cache', None)
-            cache = (label, is_on, selected)
-            if prev == cache:
-                continue
-            btn._seq_cache = cache
-            if btn.text() != label:
-                btn.setText(label)
-            self._style_pad_button(btn, s_idx, is_on, selected=selected)
+            if s_idx < len(mem["steps"]):
+                amp = mem["amplitudes"][s_idx]
+                pitch = mem["pitches"][s_idx] if s_idx < len(mem.get("pitches", [])) else 1.0
+                btn.setText(f"STEP {s_idx+1}\nV:{amp:.2f} P:{pitch:.2f}×")
+                self._style_pad_button(btn, s_idx, mem["steps"][s_idx])
+                if self.selected_step_idx == s_idx:
+                    btn.setStyleSheet(btn.styleSheet() + " border: 3px solid #f5d97d;")
 
-    def _style_pad_button(self, btn, s_idx, is_active_step, selected=False):
-        """Style a STEP: selected gold > programmed on (cyan) > off (dark). No stylesheet appends."""
-        if selected:
-            sheet = "background-color: #1a1810; color: #f5d97d; border: 3px solid #f5d97d; font-weight: bold; font-size: 20pt;"
+    def _style_pad_button(self, btn, s_idx, is_active_step):
+        """Style a STEP: playhead (orange) > programmed on (cyan) > off (dark)."""
+        is_playhead = False
+        if is_playhead:
+            btn.setStyleSheet(
+                "background-color: #ff6b00; color: #ffffff; border: 2px solid #ffaa55; font-weight: bold;"
+            )
         elif is_active_step:
-            sheet = "background-color: #00ffff; color: #060606; border: 2px solid #ffffff; font-weight: bold; font-size: 20pt;"
+            btn.setStyleSheet(
+                "background-color: #00ffff; color: #060606; border: 2px solid #ffffff; font-weight: bold;"
+            )
         else:
-            sheet = "background-color: #121212; color: #00ffff; border: 2px solid #444444; font-size: 20pt;"
-        if getattr(btn, '_seq_sheet', None) != sheet:
-            btn._seq_sheet = sheet
-            btn.setStyleSheet(sheet)
+            btn.setStyleSheet(
+                "background-color: #121212; color: #00ffff; border: 2px solid #444444;"
+            )
 
     def _on_pkp_boost_amount_changed(self, val):
         self.pkp_boost_amount = float(val) / 100.0
@@ -4116,7 +9438,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._play_selected_instrument_pkp()
         if hasattr(self, "scope_status_label"):
             boost=int(getattr(self,"pkp_boost_amount",1.0)*100)
-            self._set_scope_status(f"⚡ PKP one-shot remix · {boost}%")
+            self.scope_status_label.setText(f"⚡Visualizers")
 
     def _play_selected_instrument_pkp(self):
         """One-shot audition of a modified PKP/Null-Lock instance of the selected instrument."""
@@ -4135,17 +9457,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 amp = float(mem["amplitudes"][step_idx])
             self._pkp_fire_step_hit(inst_name, step_idx, amp=max(0.0, min(1.0, amp)))
             if hasattr(self, "scope_status_label"):
-                self._set_scope_status(f"▶ PKP audition · {inst_name[:24]} · step {step_idx + 1}")
+                self.scope_status_label.setText(f"▶ PKP NullLock audition · {inst_name[:24]} · step {step_idx + 1}")
         except Exception as e:
-            print(f"[PKP] audition error: {e}")
+            print(f"[PKP NullLock] audition error: {e}")
 
     def toggle_pkp_pad_bank(self, checked):
-        """Compatibility hook: PKP is global and never owns a timeline clock."""
+        """Compatibility hook: PKP NullLock is global and never owns a timeline clock."""
         self.pkp_pad_bank_active = bool(checked)
-        print(f"[PKP] {'ARMED' if checked else 'DISARMED'} — global note-triggered layer")
+        print(f"[PKP NullLock] {'ARMED' if checked else 'DISARMED'} — global note-triggered layer")
 
     def _pkp_step_tick(self):
-        """Retained for compatibility; PKP is not a timeline event."""
+        """Retained for compatibility; PKP NullLock is not a timeline event."""
         return
 
     def _estimate_other_47_rms(self, selected_step, step_duration, n_samples, sample_rate):
@@ -4211,7 +9533,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 idx = np.linspace(0, len(hit) - 1, 100).astype(int)
                 self.visual_oscilloscope.update_waveform(hit[idx])
                 if hasattr(self, 'scope_status_label'):
-                    self._set_scope_status(
+                    self.scope_status_label.setText(
                         f"📊 PKP Hit  ·  {inst_name[:18]}  STEP {step_idx+1}  ·  {freq:.1f} Hz"
                     )
 
@@ -4253,10 +9575,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         for s in range(count):
             amp = mem["amplitudes"][s]
             pitch = mem["pitches"][s] if s < len(mem["pitches"]) else 1.0
-            step_btn = QPushButton(f"{'□' if mem['steps'][s] else '■'}")
+            step_btn = QPushButton(f"STEP {s+1}\nV:{amp:.2f} P:{pitch:.2f}×")
             step_btn.setCheckable(False)  # selection vs toggle handled in click
-            step_btn.setMinimumSize(42, 52)
-            step_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            step_btn.setMinimumSize(86, 70)
+            step_btn.setMaximumWidth(110)
             self._style_pad_button(step_btn, s, mem["steps"][s])
 
             def make_handler(s_idx):
@@ -4278,29 +9600,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return self.input_seed_val.text().strip()
 
     def get_numeric_seed(self):
-        """Stable integer seed — same text always → same song (incl. 1337, MEUM)."""
+        """Converts irrational string seeds into a stable integer hash for NumPy."""
         seed_text = self._seed_text() if hasattr(self, 'input_seed_val') else "42"
-        t = (seed_text or "").strip()
-        if not t:
-            return 0
-        tl = t.lower().replace(" ", "")
-        if tl in ("meum", "m"):
-            return int(round(MEUM * 1_000_000_000_000_000)) % (2**31)
         try:
-            val = float(t)
-            if abs(val) == 0.0:
-                return 0
-            # Mix IEEE bits with magnitude so integer seeds (1337, 1024, …) are non-zero
-            bits = struct.unpack(">Q", struct.pack(">d", float(val)))[0]
-            mag = int(abs(val) * 1_000_000) & 0x7FFFFFFF
-            mixed = (bits ^ (bits >> 33) ^ (mag * 2654435761)) & 0x7FFFFFFF
-            return int(mixed) if mixed else (mag or 1)
+            val = float(seed_text)
+            return abs(hash(val)) % (2**31)
         except ValueError:
-            h = 2166136261
-            for b in t.encode("utf-8", "replace"):
-                h ^= b
-                h = (h * 16777619) & 0xFFFFFFFF
-            return int(h % (2**31)) or 1
+            return abs(hash(seed_text)) % (2**31)
 
     def open_domain_equation_editor(self):
         """Open the partitionable time/space domain equation editor dialog."""
@@ -4312,39 +9618,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.domain_eq_engine.set_seed(float(seed_txt) if seed_txt not in ("",) else 0.0)
         except ValueError:
             self.domain_eq_engine.set_seed(self.get_numeric_seed() / 1e9)
-        # Non-modal: Domain must never freeze the main panel (exec() blocked UI).
-        if getattr(self, "domain_eq_dialog", None) is not None:
-            try:
-                if self.domain_eq_dialog.isVisible():
-                    self.domain_eq_dialog.raise_()
-                    self.domain_eq_dialog.activateWindow()
-                    return
-            except Exception:
-                pass
         dlg = DomainEquationEditorDialog(self.domain_eq_engine, parent=self)
-        dlg.setModal(False)
-        dlg.setWindowModality(Qt.WindowModality.NonModal)
-        try:
-            attach_math_decor(dlg, app=self, light=True)
-        except Exception:
-            try:
-                dlg.setStyleSheet(DAW_STYLE)
-            except Exception:
-                pass
+        dlg.exec()
         self.domain_eq_dialog = dlg
-        dlg.show()
-        dlg.raise_()
 
     def open_help_readme(self):
         """Open the full Help / Readme / scripting documentation dialog."""
         dlg = ReadmeGuideDialog(parent=self)
-        dlg.setModal(False)
-        dlg.setWindowModality(Qt.WindowModality.NonModal)
-        try:
-            attach_math_decor(dlg, app=self)
-        except Exception:
-            pass
-        dlg.show()
+        dlg.exec()
 
     def apply_playlist_automation_to_ui(self):
         """
@@ -4367,31 +9648,23 @@ class MathematiciansGrooveboxApp(QMainWindow):
             accum[param] = accum.get(param, 0.0) + amt * w
             weights[param] = weights.get(param, 0.0) + w
 
-        def _norm(p, default=None):
+        def _norm(p, default=0.5):
             if weights.get(p, 0) <= 1e-9:
-                if default is not None:
-                    return float(default)
-                current = {
-                    "eqr": (self.slider_eqr.value() / 100.0) if hasattr(self, "slider_eqr") else 0.0,
-                    "fractalizer": (self.slider_fractalizer.value() / 100.0) if hasattr(self, "slider_fractalizer") else 0.33,
-                    "pkp_decay": (self.slider_pkp_decay.value() / 1000.0) if hasattr(self, "slider_pkp_decay") else 0.50,
-                }
-                return float(current.get(p, 0.0))
+                return default
             return float(np.clip(0.5 + accum[p] / max(weights[p], 1e-9) * 0.5, 0.0, 1.0))
 
-        # Map onto main macros with their actual slider scales.
-        # Fractallizer is 0..100, not 0..1000.
+        # Map onto main macros when present
         if hasattr(self, 'slider_eqr'):
             self.slider_eqr.blockSignals(True)
-            self.slider_eqr.setValue(int(round(_norm("eqr") * 100)))
+            self.slider_eqr.setValue(int(_norm("eqr") * 100))
             self.slider_eqr.blockSignals(False)
         if hasattr(self, 'slider_fractalizer'):
             self.slider_fractalizer.blockSignals(True)
-            self.slider_fractalizer.setValue(int(round(_norm("fractalizer") * 100)))
+            self.slider_fractalizer.setValue(int(_norm("fractalizer") * 1000))
             self.slider_fractalizer.blockSignals(False)
         if hasattr(self, 'slider_pkp_decay'):
             self.slider_pkp_decay.blockSignals(True)
-            self.slider_pkp_decay.setValue(int(round(_norm("pkp_decay") * 1000)))
+            self.slider_pkp_decay.setValue(int(_norm("pkp_decay") * 1000))
             self.slider_pkp_decay.blockSignals(False)
 
         # Patch bay cable gains: scale by automation "drive" if any
@@ -4443,10 +9716,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         vw = viewport.width()
         vh = viewport.height()
         x = max(4, min(pos.x() + (btn.width() - pw) // 2, max(4, vw - pw - 4)))
-        # Keep the inspector in the strip immediately below the step row and
-        # immediately above the QScrollArea horizontal scrollbar. It no longer
-        # teleports over the pads themselves.
-        y = max(2, vh - ph - 2)
+        # STEP_EDITOR_VERTICAL_OFFSET_V2: move the floating step inspector
+        # downward by ~42% of the selected step button height so it clears the
+        # step-row hit area more reliably while remaining visually attached.
+        vertical_offset = max(1, int(round(btn.height() * 0.42)))
+        above_y = pos.y() - ph - 6 + vertical_offset
+        below_y = pos.y() + btn.height() + 6 + vertical_offset
+        y = above_y if above_y >= 4 else below_y
+        y = max(4, min(y, max(4, vh - ph - 4)))
         self.step_editor_popup.move(x, y)
         self.step_editor_popup.raise_()
         self.step_editor_popup.show()
@@ -4456,15 +9733,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
         mem = self.instrument_sequencer_memory[curr_i]
         self._ensure_seq_mem_length(mem, max(s_idx + 1, len(mem.get("steps", []))))
 
-        # Two-click state machine:
-        #   1st click on a pad → select it (amp/pitch inspector)
-        #   2nd click on the *already selected* pad → toggle active/inactive
-        # Clicking a different pad only moves selection (does not toggle that pad).
-        if self.selected_step_idx == s_idx:
+        # STEP SELECTION CONTRACT:
+        #   first click on a different cell = SELECT ONLY; never touch gates.
+        #   second click on that same selected cell = TOGGLE ONLY THAT CELL.
+        # Randomizer/Phase-Locker are the only engines permitted to change other cells.
+        same_step = (self.selected_step_idx == s_idx)
+        self.selected_step_idx = s_idx
+        if same_step:
             mem["steps"][s_idx] = not bool(mem["steps"][s_idx])
+            # USER_TOUCHED_TRACKING: this is an actual manual click — the only
+            # place besides the amp/pitch sliders where a human is editing the
+            # grid — so mark the step touched. Presets/patches/randomizer output
+            # loaded straight into memory never pass through here, so they are
+            # correctly left untouched until a person edits them by hand.
             self._mark_step_touched(mem, s_idx)
-        else:
-            self.selected_step_idx = s_idx
 
         if hasattr(self, 'lbl_selected_step'):
             self.lbl_selected_step.setText(f"Step: {s_idx + 1}")
@@ -4491,44 +9773,26 @@ class MathematiciansGrooveboxApp(QMainWindow):
     # are preserved; only rows marked/recognized as available are fitted.
     # =====================================================================
     def _phase_lock_playlist_velocity(self, rng=None, strength=0.65, randomize=False):
-        """Generate stable playlist velocity without recursively fading user rows.
-
-        User/imported rows are authoritative.  Engine rows are recomputed from the
-        seeded field instead of blending against their previous value, so repeated
-        Randomizer + Phase-Lock passes cannot drift toward silence.
-        """
         rows = int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else len(getattr(self, 'master_playlist_data', []))
         if not getattr(self, 'master_playlist_data', None):
             return
         numeric_seed = self.get_numeric_seed()
         if rng is None:
             rng = np.random.default_rng(numeric_seed)
-
         for i, entry in enumerate(self.master_playlist_data[:rows]):
-            if not isinstance(entry, dict):
-                continue
-            generated = bool(entry.get("generated_by_engine") or entry.get("generated_source"))
-            user_locked = bool(entry.get("velocity_user_locked") or entry.get("user_defined"))
-            # Never touch an explicitly user-owned/imported row.
-            if user_locked and not generated:
-                continue
-
-            vu0, vu1, vu2, vu3 = self._seed_audio_geometry(f"playlist-velocity|{i}")
-            phase = 2.0 * np.pi * vu0 + (i / max(rows, 1)) * 2.0 * np.pi * PHI_INV
-            field = 0.5 + 0.5 * np.sin(phase + vu1 * PHI + vu2 * SQRT2 + vu3 * MEUM_LOG2)
-            if hasattr(self, "_contextual_numerology"):
-                field = 0.5 * field + 0.5 * self._contextual_numerology(step=i, row=i)
+            # Seed/phase field: smooth, deterministic, with optional random perturbation.
+            phase = (i / max(rows, 1)) * 2.0 * np.pi + (numeric_seed % 100000) * 0.000013
+            field = 0.5 + 0.5 * np.sin(phase * MEUM_CONSTANT + numeric_seed * 0.0000017)
+            field = 0.5 * field + 0.5 * self._contextual_numerology(step=i, row=i) if hasattr(self, "_contextual_numerology") else field
             target = 0.25 + 0.75 * field
             if randomize:
                 target = 0.75 * target + 0.25 * float(rng.uniform(0.25, 1.0))
-
-            # Generated rows are absolute/stable for this seed/pass, not feedback.
-            if generated:
-                entry["velocity"] = float(np.clip(target, 0.05, 1.5))
-                entry["velocity_user_locked"] = False
-            else:
-                entry["velocity"] = float(np.clip(target, 0.05, 1.5))
-                entry["velocity_user_locked"] = False
+            old = float(entry.get("velocity", 1.0) or 1.0)
+            # Treat explicit non-default velocities as user data and preserve them.
+            user_locked = bool(entry.get("velocity_user_locked", False))
+            if user_locked:
+                continue
+            entry["velocity"] = float(np.clip((1.0-strength) * old + strength * target, 0.05, 1.5))
 
         if hasattr(self, 'active_paint_table') and self.active_paint_table:
             table = self.active_paint_table
@@ -4554,7 +9818,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Amp is velocity / step-trigger blend amount into painted together steps
         if mem["steps"][s] and s < len(self.seq_step_buttons):
             pitch = mem["pitches"][s] if s < len(mem.get("pitches", [])) else 1.0
-            self.seq_step_buttons[s].setText("□" if mem["steps"][s] else "■")
+            self.seq_step_buttons[s].setText(f"Pad {s+1}\nA:{val/100:.2f} P:{pitch:.2f}×")
 
     def _on_step_pitch_slider(self, val):
         ratio = val / 100.0
@@ -4569,7 +9833,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         mem["pitches"][s] = ratio
         if s < len(self.seq_step_buttons):
             amp = mem["amplitudes"][s] if s < len(mem["amplitudes"]) else 1.0
-            self.seq_step_buttons[s].setText("□" if mem["steps"][s] else "■")
+            self.seq_step_buttons[s].setText(f"Pad {s+1}\nA:{amp:.2f} P:{ratio:.2f}×")
 
     def _on_euclidean_live_toggled(self, checked):
         # Keep persistent :checked stylesheet — never clear to "" (would lose OFF look).
@@ -4581,173 +9845,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.btn_idealize_rhythm.blockSignals(False)
             return
         if checked:
-            try:
-                self._apply_live_engine_once("euclidean")
-            except Exception as exc:
-                print(f"[euclidean-toggle] {exc}")
+            self._apply_live_engine_once("euclidean")
             self.btn_idealize_rhythm.setText("✨ Euclidean Live Lock · ON")
         else:
             self._live_euclid_timer.stop()
             self.btn_idealize_rhythm.setText("✨ Euclidean Live Lock")
-
-
-    def _composition_snapshot(self):
-        """Deep snapshot of generated composition state for finite live-mode states."""
-        snap = {}
-        for key in (
-            "instrument_sequencer_memory", "master_playlist_data", "playlist_automation",
-            "instrument_scripts", "instrument_param_state", "instrument_param_generated",
-            "patch_connections", "generated_domains", "playlist_generated_overlay",
-        ):
-            if hasattr(self, key):
-                snap[key] = copy.deepcopy(getattr(self, key))
-        try:
-            if hasattr(self, "domain_eq_engine") and self.domain_eq_engine:
-                snap["domain_eq"] = copy.deepcopy(self.domain_eq_engine.to_json())
-        except Exception:
-            pass
-        return snap
-
-    def _restore_composition_snapshot(self, snap):
-        """Restore a previously generated composition without invoking any engine."""
-        if not snap:
-            return False
-        for key, value in snap.items():
-            if key == "domain_eq":
-                try:
-                    if hasattr(self, "domain_eq_engine") and self.domain_eq_engine:
-                        self.domain_eq_engine.from_json(copy.deepcopy(value))
-                except Exception:
-                    pass
-                continue
-            setattr(self, key, copy.deepcopy(value))
-        try:
-            self.reload_active_instrument_sequencer_ui()
-        except Exception:
-            pass
-        return True
-
-    def _invalidate_live_composition_cache(self, *keys):
-        cache = getattr(self, "_live_composition_cache", None)
-        if cache is None:
-            cache = self._live_composition_cache = {}
-        if keys:
-            for key in keys:
-                cache.pop(key, None)
-        else:
-            cache.clear()
-
-    def _cache_live_composition(self, key):
-        if not hasattr(self, "_live_composition_cache") or self._live_composition_cache is None:
-            self._live_composition_cache = {}
-        self._live_composition_cache[key] = self._composition_snapshot()
-
-    def _on_unified_randomizer_toggled(self, checked):
-        if getattr(self, 'chk_user_program_only', None) and self.chk_user_program_only.isChecked():
-            for b in (getattr(self, 'btn_local_randomize', None), getattr(self, 'btn_seeded_randomize', None)):
-                if b is not None:
-                    b.blockSignals(True); b.setChecked(False); b.blockSignals(False)
-            return
-        for b in (getattr(self, 'btn_local_randomize', None), getattr(self, 'btn_seeded_randomize', None)):
-            if b is not None and b.isChecked() != checked:
-                b.blockSignals(True); b.setChecked(checked); b.blockSignals(False)
-
-        if checked:
-            # A Randomizer ON edge is the ONLY thing allowed to create a fresh
-            # random composition. It creates once, then remains stable.
-            self._invalidate_live_composition_cache("both")
-            try:
-                self._apply_live_engine_once("seeded", force=True)
-                self._cache_live_composition("randomizer")
-                self._invalidate_live_composition_cache("phase_base", "phase_locked")
-                if self._engines_both_live()[1]:
-                    self._apply_live_midpoint_once(force=True)
-                    self._cache_live_composition("both")
-            except Exception as exc:
-                print(f"[Randomizer toggle] {exc}")
-            if hasattr(self, '_live_seeded_timer'):
-                self._live_seeded_timer.stop()
-            if hasattr(self, '_live_euclid_timer') and self._engines_both_live()[1]:
-                self._live_euclid_timer.stop()
-        else:
-            if hasattr(self, '_live_seeded_timer'):
-                self._live_seeded_timer.stop()
-            # Removing Randomizer does not create another random composition.
-            # If Phase-Lock is still ON, make/restore its one stable state.
-            self._invalidate_live_composition_cache("both")
-            if self._engines_both_live()[1]:
-                try:
-                    self._apply_live_engine_once("euclidean", force=True)
-                    self._cache_live_composition("phase")
-                except Exception as exc:
-                    print(f"[Randomizer off] {exc}")
-                if hasattr(self, '_live_euclid_timer'):
-                    self._live_euclid_timer.start(2000)
-
-    def _on_unified_phase_lock_toggled(self, checked):
-        """Phase-Lock is a strict two-state toggle over the current base pattern.
-
-        Base can be any of:
-          • raw user data
-          • randomizer output (with or without user data underneath)
-          • free user data without randomizer
-
-        ON  → snapshot base as ``phase_base``, build phase-locked variant, show it
-        OFF → restore ``phase_base`` exactly (no re-roll)
-
-        Re-arming ON after the base changed (e.g. new randomizer pass) resnapshots
-        and builds a fresh locked variant of that new base.
-        """
-        if getattr(self, 'chk_user_program_only', None) and self.chk_user_program_only.isChecked():
-            for b in (getattr(self, 'btn_local_phase_lock', None), getattr(self, 'btn_idealize_rhythm', None)):
-                if b is not None:
-                    b.blockSignals(True); b.setChecked(False); b.blockSignals(False)
-            return
-        for b in (getattr(self, 'btn_local_phase_lock', None), getattr(self, 'btn_idealize_rhythm', None)):
-            if b is not None and b.isChecked() != checked:
-                b.blockSignals(True); b.setChecked(checked); b.blockSignals(False)
-
-        # stop autonomous live timers — phase-lock is finite two-state, not evolving
-        if hasattr(self, '_live_euclid_timer'):
-            self._live_euclid_timer.stop()
-        if hasattr(self, '_live_seeded_timer'):
-            self._live_seeded_timer.stop()
-
-        if not hasattr(self, '_live_composition_cache') or self._live_composition_cache is None:
-            self._live_composition_cache = {}
-
-        if checked:
-            try:
-                # 1) Snapshot the CURRENT composition as the unlocked base
-                #    (user data / raw random / random+user — whatever is showing)
-                self._cache_live_composition("phase_base")
-                r_on, _ = self._engines_both_live()
-                # 2) Build the phase-locked variant of that base
-                if r_on:
-                    # randomizer still armed → midpoint-locked variant of random+user base
-                    self.apply_composition_midpoint(live=True)
-                else:
-                    # phase-lock alone over user data or prior random residue
-                    self.apply_unified_phase_lock(live=True)
-                # 3) Cache locked variant so re-toggling ON without base change restores it
-                self._cache_live_composition("phase_locked")
-                print("[Phase-Lock] ON — showing phase-locked variant of current base")
-            except Exception as exc:
-                print(f"[Phase-Lock toggle ON] {exc}")
-        else:
-            try:
-                base = self._live_composition_cache.get("phase_base")
-                if base:
-                    self._restore_composition_snapshot(base)
-                    print("[Phase-Lock] OFF — restored pre-lock base pattern")
-                else:
-                    # No base cached (first-run edge): leave current state as-is
-                    print("[Phase-Lock] OFF — no base snapshot; leaving current pattern")
-                # Drop locked cache so next ON rebuilds from whatever base exists then
-                self._live_composition_cache.pop("phase_locked", None)
-            except Exception as exc:
-                print(f"[Phase-Lock toggle OFF] {exc}")
-
 
     def _on_seeded_live_toggled(self, checked):
         if hasattr(self, "_style_toggle_randomizer"):
@@ -4758,10 +9860,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.btn_seeded_randomize.blockSignals(False)
             return
         if checked:
-            try:
-                self._apply_live_engine_once("seeded")
-            except Exception as exc:
-                print(f"[seeded-toggle] {exc}")
+            self._apply_live_engine_once("seeded")
             self.btn_seeded_randomize.setText("🎲 Seeded Live Randomizer · ON")
         else:
             self._live_seeded_timer.stop()
@@ -4786,265 +9885,71 @@ class MathematiciansGrooveboxApp(QMainWindow):
             print("[User program only] OFF — live engines may be re-armed")
 
     def _live_engine_signature(self, which):
-        """Snapshot only *sources* owned by the user. Generated engine output is excluded.
-
-        The previous implementation included the entire sequencer memory and playlist in
-        the signature. Every live pass changes those structures, so the next timer tick
-        necessarily looked like a new user input and recomposed again. That feedback loop
-        was the direct cause of the Phase-Lock flicker/recomposition.
-        """
+        """Stable snapshot of user-visible inputs; engines write only once per new snapshot."""
         seed = self._seed_text() if hasattr(self, 'input_seed_val') else "0.0"
         inst = self.instrument_selector_dropdown.currentText() if hasattr(self, 'instrument_selector_dropdown') else ""
         seq_len = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16
         rows = int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else 32
-        bpm = float(self.spin_bpm.value()) if hasattr(self, 'spin_bpm') else 120.0
-        base_freq = float(self.spin_base_frequency.value()) if hasattr(self, 'spin_base_frequency') else 432.0
-        convolve = float(self.slider_global_convolve.value()) if hasattr(self, 'slider_global_convolve') else 0.0
-
-        # Only manually-touched step data belongs in the live source signature.
-        # Generated pads, generated playlist rows, generated scripts, etc. are deliberately
-        # ignored because they are outputs of the engine rather than new instructions.
-        touched = []
-        memories = getattr(self, 'instrument_sequencer_memory', {}) or {}
-        for name in sorted(memories):
-            mem = memories.get(name) or {}
-            indices = sorted(int(i) for i in (mem.get('touched', set()) or set()))
-            for i in indices:
-                if i >= seq_len:
-                    continue
-                steps = mem.get('steps', [])
-                amps = mem.get('amplitudes', [])
-                pitches = mem.get('pitches', [])
-                probs = mem.get('probabilities', [])
-                touched.append((
-                    name, i,
-                    bool(steps[i]) if i < len(steps) else False,
-                    round(float(amps[i]), 6) if i < len(amps) else 1.0,
-                    round(float(pitches[i]), 6) if i < len(pitches) else 1.0,
-                    int(probs[i]) if i < len(probs) else 100,
-                ))
-
-        return (which, seed, inst, seq_len, rows, bpm, base_freq, convolve, tuple(touched))
-
-    def _store_live_engine_signature(self, which):
-        if not hasattr(self, '_live_engine_signatures') or self._live_engine_signatures is None:
-            self._live_engine_signatures = {}
-        self._live_engine_signatures[which] = self._live_engine_signature(which)
+        return (which, seed, inst, seq_len, rows, repr(getattr(self, 'instrument_sequencer_memory', {})), repr(getattr(self, 'master_playlist_data', [])))
 
     def _apply_live_engine_once(self, which, force=False):
         if getattr(self, '_live_engine_update_guard', False):
-            return False
+            return
         sig = self._live_engine_signature(which)
         if not force and getattr(self, '_live_engine_signatures', {}).get(which) == sig:
-            return False
+            return
         self._live_engine_update_guard = True
         try:
-            self._composition_generation_counter = getattr(self, "_composition_generation_counter", 0) + 1
             if which == "euclidean":
-                self.apply_unified_phase_lock(live=True)
+                self.apply_euclidean_and_idealized_rhythms()
             else:
-                self.apply_unified_randomizer(live=True)
-            # Store the source signature, not a signature of the newly generated output.
-            self._store_live_engine_signature(which)
-            return True
-        except Exception as exc:
-            print(f"[live-engine] {which} skipped: {exc}")
-            return False
+                self.apply_seeded_harmonic_randomization()
         finally:
             self._live_engine_update_guard = False
-
-    def _apply_live_midpoint_once(self, force=False):
-        """Run the combined Randomizer+Phase-Lock composition at most once per source state."""
-        if getattr(self, '_live_engine_update_guard', False):
-            return False
-        sig = self._live_engine_signature("midpoint")
-        if not force and getattr(self, '_live_engine_signatures', {}).get("midpoint") == sig:
-            return False
-        self._live_engine_update_guard = True
-        try:
-            self._composition_generation_counter = getattr(self, "_composition_generation_counter", 0) + 1
-            self.apply_composition_midpoint(live=True)
-            self._store_live_engine_signature("midpoint")
-            return True
-        except Exception as exc:
-            print(f"[live-engine] midpoint skipped: {exc}")
-            return False
-        finally:
-            self._live_engine_update_guard = False
+        self._live_engine_signatures[which] = self._live_engine_signature(which)
 
     def _on_live_source_changed(self, *args):
-        """One recomposition per genuine user source change; empty seed is an intentional state.
-
-        Clearing the seed field must never cause Randomizer/Phase-Lock/live automation
-        to manufacture a replacement seed or silently re-commission the composition.
-        """
+        """Live engines respond once to a genuine user change, never recursively on their own writes."""
         if getattr(self, '_live_engine_update_guard', False):
             return
-        # EMPTY MEANS EMPTY: user deletion is authoritative. Live engines may not
-        # resurrect a seed, derive one into the UI, or run a seed-driven composer.
-        if hasattr(self, '_seed_text') and not self._seed_text().strip():
-            self._invalidate_live_composition_cache()
-            self._seed_cleared_by_user = True
-            return
-        self._seed_cleared_by_user = False
-        r_on, p_on = self._engines_both_live()
-        self._invalidate_live_composition_cache()
-        try:
-            if r_on and p_on:
-                # Build the Randomizer-only base once, then the combined state once.
-                self._apply_live_engine_once("seeded", force=True)
-                self._cache_live_composition("randomizer")
-                self._apply_live_midpoint_once(force=True)
-                self._cache_live_composition("both")
-            elif r_on:
-                self._apply_live_engine_once("seeded", force=True)
-                self._cache_live_composition("randomizer")
-            elif p_on:
-                self._apply_live_engine_once("euclidean", force=True)
-                self._cache_live_composition("phase")
-        except Exception as exc:
-            print(f"[live-source] {exc}")
+        if getattr(self, 'btn_idealize_rhythm', None) and self.btn_idealize_rhythm.isChecked():
+            self._apply_live_engine_once("euclidean")
+        if getattr(self, 'btn_seeded_randomize', None) and self.btn_seeded_randomize.isChecked():
+            self._apply_live_engine_once("seeded")
 
     def _live_engine_tick(self, which):
-        """Compatibility heartbeat: deliberately does not mutate composition."""
-        return
-
-    def _remove_engine_generated_playlist_writes(self):
-        """Remove only Randomizer/Phase-Lock-owned playlist state.
-
-        User-painted/imported rows, automation lanes, and @u: tokens survive.
-        This is intentionally idempotent so either engine can be switched off in
-        any order, including the combined Randomizer+Phase-Lock state.
-        """
-        rows = len(getattr(self, "master_playlist_data", []) or [])
-        generated_rows = set(getattr(self, "_engine_generated_playlist_rows", set()) or set())
-
-        def keep_user_tokens(value):
-            if not isinstance(value, str):
-                return value
-            return ", ".join(
-                tok.strip() for tok in value.split(",")
-                if tok.strip() and "@u:" in tok
-            )
-
-        for r in range(rows):
-            entry = self.master_playlist_data[r]
-            if not isinstance(entry, dict):
-                continue
-            if r in generated_rows or entry.get("generated_by_engine") or entry.get("generated_source"):
-                user_inst = list(entry.get("user_instances") or [])
-                if user_inst:
-                    entry.clear()
-                    entry.update({
-                        "user_instances": user_inst,
-                        "operators": list(user_inst),
-                        "operator": user_inst[0],
-                        "user_defined": True,
-                    })
-                else:
-                    self.master_playlist_data[r] = {}
-            else:
-                # Strip engine-only CSV residue while preserving explicit @u: data.
-                for key in ("operator", "operators_csv", "coverage", "blend_partner"):
-                    if key in entry and isinstance(entry[key], str) and "@e:" in entry[key]:
-                        entry[key] = keep_user_tokens(entry[key])
-
-            if r < len(getattr(self, "playlist_automation", []) or []):
-                lane = self.playlist_automation[r]
-                if isinstance(lane, dict) and (
-                    r in getattr(self, "_engine_generated_automation_rows", set())
-                    or lane.get("generated_by_engine")
-                    or str(lane.get("mode", "")).startswith("engine:")
-                ):
-                    self.playlist_automation[r] = {}
-
-        self._engine_generated_playlist_rows.clear()
-        self._engine_generated_automation_rows.clear()
-
-        table = getattr(self, "active_paint_table", None)
-        if table is not None:
-            try:
-                tw = getattr(table, "table_widget", table)
-                for r in range(tw.rowCount()):
-                    for c in (1, 3, 4, 5, 8, 9):
-                        item = tw.item(r, c)
-                        if item is not None and "@e:" in (item.text() or ""):
-                            kept = keep_user_tokens(item.text())
-                            if hasattr(table, "set_cell_item"):
-                                table.set_cell_item(r, c, kept)
-                            else:
-                                item.setText(kept)
-                tw.viewport().update()
-            except Exception as exc:
-                print(f"[Playlist cleanup] UI refresh skipped: {exc}")
-
-    def clear_user_memory(self):
-        self._remove_engine_generated_playlist_writes()
-        self._project_imported_user_state = False
-        self._project_audio_data_loaded = False
-        rows=int(self.spin_playlist_length.value()) if hasattr(self,"spin_playlist_length") else 96
-        self.master_playlist_data=[{} for _ in range(rows)]; self.playlist_automation=[{} for _ in range(rows)]; self.playlist_user_touched=set()
-        for mem in getattr(self,"instrument_sequencer_memory",{}).values():
-            n=int(self.spin_seq_length.value()) if hasattr(self,"spin_seq_length") else len(mem.get("steps",[]))
-            mem["steps"]=[False]*n; mem["amplitudes"]=[1.0]*n; mem["pitches"]=[1.0]*n; mem["probabilities"]=[100]*n; mem["touched"]=set()
-        self.instrument_scripts={name:"" for name in getattr(self,"instrument_names_48",[])}
-        self.instrument_param_state={}; self.instrument_param_generated={}; self.patch_connections=[]
-        try:
-            if hasattr(GLOBAL_BUS,"global_cables"): GLOBAL_BUS.global_cables=[]
-        except Exception: pass
-        if getattr(self,"domain_eq_engine",None): self.domain_eq_engine._load_defaults()
-        self.generated_domains=[]; self.playlist_generated_overlay={}; self._composition_generation_counter=0
-        self.reload_active_instrument_sequencer_ui()
-        if getattr(self,"active_paint_table",None): self.active_paint_table.clearContents(); self.active_paint_table.viewport().update()
+        if getattr(self, 'chk_user_program_only', None) and self.chk_user_program_only.isChecked():
+            return
+        if which == "euclidean" and self.btn_idealize_rhythm.isChecked():
+            self.apply_euclidean_and_idealized_rhythms()
+        elif which == "seeded" and self.btn_seeded_randomize.isChecked():
+            self.apply_seeded_harmonic_randomization()
 
     def save_project_dialog(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save EQR Project", "", "EQR Project (*.json)")
         if not path:
             return
-        if not path.lower().endswith(".json"):
-            path += ".json"
-        # Snapshot full playback state so Load → Play reproduces the same track
-        def _ser_mem(m):
-            out = {
-                "steps": [bool(x) for x in (m.get("steps") or [])],
-                "amplitudes": [float(x) for x in (m.get("amplitudes") or [])],
-                "pitches": [float(x) for x in (m.get("pitches") or [])],
-                "probabilities": [int(x) for x in (m.get("probabilities") or [])],
-                "touched": sorted(int(i) for i in (m.get("touched") or set())),
-            }
-            if "gates" in m:
-                out["gates"] = [bool(x) for x in (m.get("gates") or [])]
-            return out
         data = {
             "version": "3.6.8+",
             "seed": self._seed_text() if hasattr(self, 'input_seed_val') else "",
-            "bpm": float(self.spin_bpm.value()) if hasattr(self, 'spin_bpm') else 120.0,
+            "bpm": self.spin_bpm.value() if hasattr(self, 'spin_bpm') else 120,
             "seq_length": int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16,
             "playlist_rows": int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else 32,
             "base_frequency": float(self.spin_base_frequency.value()) if hasattr(self, 'spin_base_frequency') else 432.0,
-            "eqr": float(self.slider_eqr.value()) if hasattr(self, 'slider_eqr') else 0.0,
-            "fractalizer": float(self.slider_fractalizer.value()) if hasattr(self, 'slider_fractalizer') else 33.0,
-            "pkp_decay": float(self.slider_pkp_decay.value()) if hasattr(self, 'slider_pkp_decay') else 500.0,
-            "global_convolve": float(self.spin_global_convolve.value()) if hasattr(self, 'spin_global_convolve') else (
-                float(self.slider_global_convolve.value()) if hasattr(self, 'slider_global_convolve') else 0.0
-            ),
-            "global_playlist": bool(self.chk_global_playlist.isChecked()) if hasattr(self, 'chk_global_playlist') else True,
-            "mode_index": int(self.mode_combo.currentIndex()) if hasattr(self, 'mode_combo') else 0,
-            "active_instrument": self.instrument_selector_dropdown.currentText() if hasattr(self, 'instrument_selector_dropdown') else "",
+            "global_convolve": float(self.spin_global_convolve.value()) if hasattr(self, 'spin_global_convolve') else 0.0,
+            # USER_TOUCHED_TRACKING: 'touched' is stored as a set() in memory
+            # (for fast membership checks) but JSON has no set type, so it is
+            # serialized as a sorted list here and restored as a set on load.
             "instrument_sequencer_memory": {
-                name: _ser_mem(m) for name, m in (self.instrument_sequencer_memory or {}).items()
+                name: {**m, "touched": sorted(m.get("touched", set()))}
+                for name, m in self.instrument_sequencer_memory.items()
             },
-            "master_playlist_data": copy.deepcopy(getattr(self, 'master_playlist_data', []) or []),
-            "playlist_automation": copy.deepcopy(getattr(self, 'playlist_automation', []) or []),
-            "instrument_scripts": dict(getattr(self, 'instrument_scripts', {}) or {}),
-            "instrument_param_state": copy.deepcopy(getattr(self, 'instrument_param_state', {}) or {}),
-            "patch_connections": copy.deepcopy(getattr(self, 'patch_connections', []) or []),
+            "master_playlist_data": getattr(self, 'master_playlist_data', []),
+            "playlist_automation": getattr(self, 'playlist_automation', []),
+            "instrument_scripts": getattr(self, 'instrument_scripts', {}),
+            "instrument_param_state": getattr(self, 'instrument_param_state', {}),
+            "patch_connections": getattr(self, 'patch_connections', []),
             "domain_eq": self.domain_eq_engine.to_json() if hasattr(self, 'domain_eq_engine') and self.domain_eq_engine else {},
-            "instrument_param_generated": copy.deepcopy(getattr(self, 'instrument_param_generated', {}) or {}),
-            "generation_counter": int(getattr(self, '_composition_generation_counter', 0)),
-            "project_user_authoritative": True,
-            "imported_wav_path": str(getattr(self, "imported_wav_path", "") or ""),
-            "imported_sample_rate": int(getattr(self, "imported_sample_rate", 44100)),
         }
         try:
             with open(path, "w", encoding="utf-8") as f:
@@ -5060,185 +9965,43 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            # Imported project files are user-authored source material.  Do not let
-            # live/seed engines reinterpret them during or immediately after load.
-            self._project_imported_user_state = True
-            self._project_audio_data_loaded = False
-            self._engine_generated_playlist_rows.clear()
-            self._engine_generated_automation_rows.clear()
-
-            # Restore an optional WAV carrier referenced by the project.
-            imported_wav = str(data.get("imported_wav_path", "") or "")
-            if imported_wav and os.path.isfile(imported_wav):
-                try:
-                    self._load_wav_path(imported_wav)
-                    self._project_audio_data_loaded = True
-                except Exception as _iw:
-                    print(f"[Project] imported WAV restore skipped: {_iw}")
-
-            # Guard live engines from reacting mid-load
-            self._live_engine_update_guard = True
-            self._step_ui_guard = True
-            try:
-                if hasattr(self, 'input_seed_val'):
-                    try:
-                        self.input_seed_val.blockSignals(True)
-                        self.input_seed_val.setPlainText(str(data.get("seed", "")))
-                    finally:
-                        self.input_seed_val.blockSignals(False)
-                if hasattr(self, 'spin_bpm'):
-                    self.spin_bpm.blockSignals(True)
-                    self.spin_bpm.setValue(float(data.get("bpm", 120.0)))
-                    self.spin_bpm.blockSignals(False)
-                seq_len = int(data.get("seq_length", 16))
-                if hasattr(self, 'spin_seq_length'):
-                    self.spin_seq_length.blockSignals(True)
-                    self.spin_seq_length.setValue(seq_len)
-                    self.spin_seq_length.blockSignals(False)
-                rows = int(data.get("playlist_rows", 32))
-                if hasattr(self, 'spin_playlist_length'):
-                    self.spin_playlist_length.blockSignals(True)
-                    self.spin_playlist_length.setValue(rows)
-                    self.spin_playlist_length.blockSignals(False)
-                if hasattr(self, 'spin_base_frequency'):
-                    self.spin_base_frequency.setValue(float(data.get("base_frequency", 432.0)))
-                if hasattr(self, 'slider_eqr') and "eqr" in data:
-                    self.slider_eqr.setValue(int(round(float(data["eqr"]))))
-                if hasattr(self, 'slider_fractalizer') and "fractalizer" in data:
-                    self.slider_fractalizer.setValue(int(round(float(data["fractalizer"]))))
-                if hasattr(self, 'slider_pkp_decay') and "pkp_decay" in data:
-                    self.slider_pkp_decay.setValue(int(round(float(data["pkp_decay"]))))
-                gc = float(data.get("global_convolve", 0.0))
-                if hasattr(self, 'spin_global_convolve'):
-                    # spin may be 0–100 or 0–1 depending on build — clamp sensibly
-                    self.spin_global_convolve.setValue(gc if gc <= 100 else gc)
-                if hasattr(self, 'slider_global_convolve'):
-                    self.slider_global_convolve.setValue(int(round(gc if gc <= 100 else gc * 100)))
-                if hasattr(self, 'chk_global_playlist'):
-                    self.chk_global_playlist.setChecked(bool(data.get("global_playlist", True)))
-                if hasattr(self, 'mode_combo'):
-                    self.mode_combo.setCurrentIndex(int(data.get("mode_index", 0)))
-
-                # Full replace sequencer memory (not update) so empty instruments stay empty
-                raw_mem = data.get("instrument_sequencer_memory", {}) or {}
-                new_mem = {}
-                for name, m in raw_mem.items():
-                    if not isinstance(m, dict):
-                        continue
-                    steps = [bool(x) for x in (m.get("steps") or [])]
-                    # pad / trim to seq_len
-                    if len(steps) < seq_len:
-                        steps.extend([False] * (seq_len - len(steps)))
-                    else:
-                        steps = steps[:seq_len]
-                    amps = [float(x) for x in (m.get("amplitudes") or [])]
-                    pitches = [float(x) for x in (m.get("pitches") or [])]
-                    probs = [int(x) for x in (m.get("probabilities") or [])]
-                    while len(amps) < seq_len:
-                        amps.append(1.0)
-                    while len(pitches) < seq_len:
-                        pitches.append(1.0)
-                    while len(probs) < seq_len:
-                        probs.append(100)
-                    touched = m.get("touched", [])
-                    if isinstance(touched, list):
-                        touched = set(int(i) for i in touched)
-                    elif not isinstance(touched, set):
-                        touched = set()
-                    entry = {
-                        "steps": steps,
-                        "amplitudes": amps[:seq_len],
-                        "pitches": pitches[:seq_len],
-                        "probabilities": probs[:seq_len],
-                        "touched": touched,
-                    }
-                    if "gates" in m:
-                        entry["gates"] = [bool(x) for x in m["gates"]]
-                    new_mem[name] = entry
-                # Ensure every known instrument exists
-                for name in getattr(self, 'instrument_names_48', []):
-                    if name not in new_mem:
-                        new_mem[name] = {
-                            "steps": [False] * seq_len,
-                            "amplitudes": [1.0] * seq_len,
-                            "pitches": [1.0] * seq_len,
-                            "probabilities": [100] * seq_len,
-                            "touched": set(),
-                        }
-                self.instrument_sequencer_memory = new_mem
-
-                # Every active module in an imported project is user-owned unless
-                # explicitly absent.  This makes old projects behave like hand-built
-                # programs even if their older file format lacked touched/lock flags.
-                for _name, _mem in self.instrument_sequencer_memory.items():
-                    _steps = _mem.get("steps", [])
-                    _mem["touched"] = set(range(min(seq_len, len(_steps)))) if any(_steps) else set()
-                    _mem["user_defined"] = bool(any(_steps))
-
-                self.master_playlist_data = list(data.get("master_playlist_data", []) or [])
-                while len(self.master_playlist_data) < rows:
-                    self.master_playlist_data.append({})
-                self.playlist_automation = list(data.get("playlist_automation", []) or [])
-                while len(self.playlist_automation) < rows:
-                    self.playlist_automation.append({})
-                for _r, _entry in enumerate(self.master_playlist_data):
-                    if isinstance(_entry, dict) and _entry:
-                        _entry["user_defined"] = True
-                        _entry["velocity_user_locked"] = True
-                for _r, _lane in enumerate(self.playlist_automation):
-                    if isinstance(_lane, dict) and _lane:
-                        _lane["user_defined"] = True
-                if hasattr(self, 'instrument_scripts'):
-                    self.instrument_scripts = dict(data.get("instrument_scripts", {}) or {})
-                self.instrument_param_state = dict(data.get("instrument_param_state", {}) or {})
-                for _name, _state in self.instrument_param_state.items():
-                    if isinstance(_state, dict) and _state:
-                        _state["user_locked"] = True
-                self.patch_connections = list(data.get("patch_connections", []) or [])
-                self.instrument_param_generated = dict(data.get("instrument_param_generated", {}) or {})
-                self._composition_generation_counter = int(data.get("generation_counter", 0))
-                if hasattr(self, 'domain_eq_engine') and data.get("domain_eq"):
-                    try:
-                        self.domain_eq_engine.from_json(data["domain_eq"])
-                    except Exception:
-                        pass
-
-                # Rebuild pad grid to match seq_length, then paint from memory
-                if hasattr(self, 'rebuild_sequencer_steps'):
-                    self.rebuild_sequencer_steps(seq_len)
-                if hasattr(self, 'reload_active_instrument_sequencer_ui'):
-                    self.reload_active_instrument_sequencer_ui()
-                # Restore active instrument selection after rebuild
-                act = data.get("active_instrument") or ""
-                if act and hasattr(self, 'instrument_selector_dropdown'):
-                    idx = self.instrument_selector_dropdown.findText(act)
-                    if idx >= 0:
-                        self.instrument_selector_dropdown.setCurrentIndex(idx)
-                # Invalidate play buffer so next Play re-renders from loaded state
-                with getattr(self, 'play_lock', threading.Lock()):
-                    self.play_buffer = None
-                    self.play_cursor = 0
-                try:
-                    self._refresh_visualizers_meum_playlist()
-                except Exception:
-                    pass
-            finally:
-                self._live_engine_update_guard = False
-                self._step_ui_guard = False
-            QMessageBox.information(
-                self, "Loaded",
-                f"Project loaded:\n{path}\n\n"
-                f"BPM {data.get('bpm')} · {seq_len} steps · {rows} playlist rows\n"
-                f"Global playlist: {'ON' if data.get('global_playlist', True) else 'OFF'}\n"
-                f"Hit ▶ PLAY to render this arrangement."
-            )
+            if hasattr(self, 'input_seed_val'):
+                self.input_seed_val.setPlainText(str(data.get("seed", "")))
+            if hasattr(self, 'spin_bpm'):
+                self.spin_bpm.setValue(float(data.get("bpm", 120.0)))
+            if hasattr(self, 'spin_seq_length'):
+                self.spin_seq_length.setValue(int(data.get("seq_length", 16)))
+            if hasattr(self, 'spin_playlist_length'):
+                self.spin_playlist_length.setValue(int(data.get("playlist_rows", 32)))
+            if hasattr(self, 'spin_base_frequency'):
+                self.spin_base_frequency.setValue(float(data.get("base_frequency", 432.0)))
+            if hasattr(self, 'slider_global_convolve'):
+                self.slider_global_convolve.setValue(int(round(float(data.get("global_convolve", 0.0)) * 100.0)))
+            mem = data.get("instrument_sequencer_memory", {})
+            if mem:
+                # USER_TOUCHED_TRACKING: convert the saved 'touched' list back
+                # into a set. Older project files won't have this key at all —
+                # treat those as untouched (nothing loses net-effect status
+                # that a step's own ON/amplitude already implies elsewhere;
+                # this only restores which steps were user-programmed).
+                for m in mem.values():
+                    if "touched" in m:
+                        m["touched"] = set(m["touched"])
+                self.instrument_sequencer_memory.update(mem)
+            self.master_playlist_data = data.get("master_playlist_data", [])
+            self.playlist_automation = data.get("playlist_automation", [])
+            if hasattr(self, 'instrument_scripts'):
+                self.instrument_scripts.update(data.get("instrument_scripts", {}))
+            self.instrument_param_state = data.get("instrument_param_state", {})
+            self.patch_connections = data.get("patch_connections", [])
+            if hasattr(self, 'domain_eq_engine') and data.get("domain_eq"):
+                self.domain_eq_engine.from_json(data["domain_eq"])
+            self.reload_active_instrument_sequencer_ui()
+            QMessageBox.information(self, "Loaded", f"Project loaded:\n{path}")
         except Exception as e:
-            self._live_engine_update_guard = False
-            self._step_ui_guard = False
             QMessageBox.warning(self, "Load failed", str(e))
 
     def open_keyboard_test_window(self):
-
         """One-shot keyboard / pad test for selected or global instruments."""
         dlg = QDialog(self)
         dlg.setWindowTitle("Keyboard / Instrument Test")
@@ -5299,11 +10062,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception as e:
             print(f"[DJ] trigger all error: {e}")
 
-    def _set_scope_status(self, text):
-        """Keep the audiovisual/video status permanently active while exposing current activity."""
-        if hasattr(self, "scope_status_label"):
-            self.scope_status_label.setText(f"{text}  |  Video: Active")
-
     def _on_viz_mode_changed(self, idx):
         labels = [
             "📊 2.5D Scenograph + Scope",
@@ -5312,7 +10070,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "📊 Per-Instrument Activity Vectors",
         ]
         if hasattr(self, 'scope_status_label') and 0 <= idx < len(labels):
-            self._set_scope_status(labels[idx] + "  |  Status: Live")
+            self.scope_status_label.setText(labels[idx] + "  |  Status: Live")
         if hasattr(self, 'video_synth_viewer'):
             self.video_synth_viewer.set_mode(idx)
 
@@ -5497,93 +10255,55 @@ class MathematiciansGrooveboxApp(QMainWindow):
         return False
 
     def bootstrap_seed_and_program_parameters(self):
-        """Resolve the current composer seed without ever resurrecting a deleted seed.
+        """Return an engine seed without ever writing the USER seed field.
 
-        Empty seed is an intentional user state. Automatic/background paths may use a
-        transient runtime entropy value internally when an engine explicitly needs an
-        RNG, but they MUST NOT write that value into the seed field or create a
-        seed-derived musical program.
+        The global seed field is strictly user-owned. Empty means "no explicit seed".
+        Randomizer/Phase-Locker may use a transient runtime seed, but that value is
+        never written into the UI and bootstrap never changes sequencer gates.
         """
-        seed_absent = self._seed_is_absent()
-        try:
-            program_present = bool(self._program_has_net_effect())
-        except Exception:
-            program_present = False
-
-        if not seed_absent and program_present:
-            self._bootstrap_mode = "CASE_D_UNCHANGED"
+        if not self._seed_is_absent():
             return self.get_numeric_seed()
 
-        if seed_absent and program_present:
-            try:
-                fingerprint = self._fingerprint_program()
-            except Exception:
-                fingerprint = 0
-            self._bootstrap_mode = "CASE_B_FINGERPRINT"
-            if fingerprint:
-                return int(fingerprint % (2**31))
-            if not hasattr(self, "_runtime_engine_seed"):
-                self._runtime_engine_seed = int((time.time_ns() ^ id(self)) & 0x7fffffff) or 1
-            return int(self._runtime_engine_seed)
+        # Explicitly seed-free program: derive a transient engine seed only.
+        # No UI mutation and no automatic program generation.
+        try:
+            fingerprint = self._fingerprint_program()
+        except Exception:
+            fingerprint = 0
+        if fingerprint:
+            return int(fingerprint % (2**31))
 
-        if not seed_absent and not program_present:
-            numeric = self.get_numeric_seed()
-            self._bootstrap_mode = "CASE_C_SEED_PROGRAM"
-            try:
-                self._provide_seed_program_parameters(numeric)
-            except Exception as exc:
-                print(f"[Bootstrap] Case C program fill skipped: {exc}")
-            return numeric
-
-        # EMPTY + EMPTY: NEVER WRITE A SEED, NEVER GENERATE A SEED PROGRAM.
-        # A transient RNG identity is allowed only for an explicitly invoked engine
-        # that needs one internally; it is not a composer seed and never reaches UI.
-        self._bootstrap_mode = "CASE_A_NEITHER_EMPTY"
-        self._seed_cleared_by_user = True
-        if not hasattr(self, "_runtime_engine_seed"):
-            self._runtime_engine_seed = int((time.time_ns() ^ id(self)) & 0x7fffffff) or 1
+        # Runtime-only entropy for an explicitly invoked randomizing engine.
+        if not hasattr(self, '_runtime_engine_seed'):
+            self._runtime_engine_seed = int((time.time_ns() ^ id(self)) & 0x7fffffff)
         return int(self._runtime_engine_seed)
 
     def _provide_seed_program_parameters(self, numeric_seed):
         """
-        Seed-only bootstrap creates a musical carrier, not a percussion/PKP pattern.
-        A bare seed must sound like a normal sustained composition; scripts and explicit
-        randomizer/phase-lock actions may still introduce rhythmic structure later.
+        Kit-provided program parameters from seed — sparse Euclidean-ish carriers
+        so the playlist editor has structure to write against. Only fills empty fields.
         """
         rng = np.random.default_rng(int(numeric_seed) % (2**31))
         count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16
         names = list(getattr(self, 'instrument_names_48', []))
-        self._seed_bootstrap_active = True
-
-        # Do not seed every one of the 48 operators.  A bare seed gets a small, coherent
-        # carrier (two voices max), avoiding the sparse Euclidean/pluck cascade.
-        active_n = min(2, len(names))
-        if active_n:
-            start = int(numeric_seed) % len(names)
-            active = [names[(start + j * 7) % len(names)] for j in range(active_n)]
-        else:
-            active = []
 
         for i, name in enumerate(names):
             mem = self.instrument_sequencer_memory.setdefault(name, {
                 "steps": [False] * count,
                 "amplitudes": [1.0] * count,
-                "pitches": [1.0] * count,
                 "gates": [True] * count,
                 "probabilities": [100] * count,
             })
             self._ensure_seq_mem_length(mem, count)
-            if name not in active:
-                # Only initialize empty/non-user slots; never manufacture percussion.
-                continue
-            for step in range(count):
-                mem["steps"][step] = True
-                mem["gates"][step] = True
-                mem["probabilities"][step] = 100
-                mem["amplitudes"][step] = float(0.72 + 0.16 * (0.5 + 0.5 * math.sin(
-                    2.0 * math.pi * step / max(count, 1) + i * PHI
-                )))
-                mem["pitches"][step] = 1.0
+            pulses = max(1, int((i * MEUM_CONSTANT + (numeric_seed % 5) + 2) % 5) + 1)
+            pulses = min(pulses, max(1, count // 2))
+            for s in range(count):
+                on = ((s * pulses) % count) < pulses and (rng.random() < 0.85)
+                mem["steps"][s] = bool(on)
+                if on:
+                    ladder = [0.5, 0.75, 1.0]
+                    mem["amplitudes"][s] = float(ladder[(i + s + int(numeric_seed)) % len(ladder)])
+                    mem["probabilities"][s] = 100
 
         rows = int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else 32
         if not hasattr(self, 'master_playlist_data') or self.master_playlist_data is None:
@@ -5618,9 +10338,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if table.item(row_idx, 3) is None or not (table.item(row_idx, 3).text() or "").strip():
                     table.set_cell_item(row_idx, 3, "100%")
 
-        # Do not phase-lock a bare seed during bootstrap.  Phase-Lock is an explicit
-        # composer action; applying it here was one of the routes that reintroduced
-        # short, plucked gates immediately after entering a seed.
+        # Playlist velocity follows the seeded harmonic field as well.
+        self._phase_lock_playlist_velocity(rng=np.random.default_rng(numeric_seed), strength=0.45, randomize=True)
 
         if hasattr(self, 'reload_active_instrument_sequencer_ui'):
             self.reload_active_instrument_sequencer_ui()
@@ -5651,9 +10370,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         for name in self.instrument_names_48:
             mem = self.instrument_sequencer_memory.get(name)
-            if not isinstance(mem, dict):
-                mem = {"steps": [False] * count, "amplitudes": [1.0] * count, "pitches": [1.0] * count, "gates": [True] * count, "probabilities": [100] * count, "touched": set()}
-                self.instrument_sequencer_memory[name] = mem
+            if not mem:
+                continue
             self._ensure_seq_mem_length(mem, count)
 
             # Normalize OFF steps to default amp 1.0 (frees "touched" false positives)
@@ -5773,15 +10491,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
         return stats
 
     def apply_euclidean_and_idealized_rhythms(self):
-        """Euclidean idealization — may touch any combination of step geometry subsystems."""
+        """
+        Additive Euclidean Phase-Lock (non-destructive where possible).
 
-        numeric_seed = self.get_numeric_seed()
-        rng = np.random.default_rng(numeric_seed if numeric_seed else 1)
-        combo = int(rng.integers(1, 16))
-        do_steps = bool(combo & 1)
-        do_amps = bool(combo & 2)
-        do_pitches = bool(combo & 4)
-        do_probs = bool(combo & 8)
+        - Never turns OFF a user-specified step.
+        - Never lowers a user-specified amplitude.
+        - Fills empty slots with Euclidean structure + spectral 'opposites'
+          (low-amp complement hits) so the grid phase-locks without erasing
+          the carrier (user) pattern.
+        - Sporadic spectrum commutation via probability only on non-user slots.
+        """
         # Explicit engine action may use a transient seed, but never writes the user field.
         seed = self.bootstrap_seed_and_program_parameters()
         self.simplify_redundant_user_definitions()
@@ -5797,10 +10516,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._ensure_seq_mem_length(mem, count)
             user_mask = self._user_pattern_mask(mem, count, instrument_name=name)
 
-            # Per-instrument Euclidean pulse count: seed is the identity;
-            # Meum only participates as one irrational basis.
-            eu0, eu1, eu2, _eu3 = self._seed_audio_geometry(f"euclidean|{i}")
-            pulses = max(2, int((eu0 * 5.0 + eu1 * 3.0 + eu2 * 2.0 + i * PHI_INV) % 7) + 2)
+            # Per-instrument Euclidean pulse count (golden-ish, seed-stable)
+            pulses = max(2, int((i * MEUM_CONSTANT + (seed % 5) + 3) % 7) + 2)
             pulses = min(pulses, count)
             euclidean = [((s * pulses) % count) < pulses for s in range(count)]
 
@@ -5823,15 +10540,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 complement = (not is_eucl) and (user_density > 0.35) and (rng.random() < 0.18)
 
                 if is_eucl or complement:
-                    if do_steps:
-                        mem["steps"][s] = True
+                    mem["steps"][s] = True
                     base_amp = 0.55 + 0.35 * abs(np.sin(s * np.pi / count + i * 0.1))
                     if complement:
                         base_amp *= 0.45  # softer opposite
-                    if do_amps:
-                        mem["amplitudes"][s] = float(np.clip(base_amp, 0.15, 1.0))
-                    if do_probs:
-                        mem["probabilities"][s] = 100 if is_eucl else int(rng.integers(55, 85))
+                    mem["amplitudes"][s] = float(np.clip(base_amp, 0.15, 1.0))
+                    # Sporadic spectrum commutation: slightly lower probability on complements
+                    mem["probabilities"][s] = 100 if is_eucl else int(rng.integers(55, 85))
                     filled += 1
                 # else leave False / untouched
 
@@ -5867,7 +10582,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
             param = params[(r + (0 if source == "seeded" else 2)) % len(params)]
             amt = float(0.35 + 0.5 * rng.random())
             self.playlist_automation[r] = {
-                "generated_by_engine": True,
                 "operator": op,
                 "param": param,
                 "amount": amt,
@@ -5878,7 +10592,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "mode": f"engine:{source}",
                 "write_steps": False,
             }
-            self._engine_generated_automation_rows.add(r)
             written += 1
         # RECOMMENDED_POWER_LAYER: couple automation generation to calculated
         # velocity painting. This remains opt-in because this method is called by
@@ -5893,389 +10606,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         elif painted_velocity:
             print(f"[Automation] {source} velocity paint={painted_velocity}")
 
-
-
-    def _engines_both_live(self):
-        r = bool(getattr(self, 'btn_local_randomize', None) and self.btn_local_randomize.isChecked())
-        r = r or bool(getattr(self, 'btn_seeded_randomize', None) and self.btn_seeded_randomize.isChecked())
-        p = bool(getattr(self, 'btn_local_phase_lock', None) and self.btn_local_phase_lock.isChecked())
-        p = p or bool(getattr(self, 'btn_idealize_rhythm', None) and self.btn_idealize_rhythm.isChecked())
-        return r, p
-
-    def _ideal_randomizer_pattern(self, name, count, rng):
-        """Non-writing seed-first ideal for the Randomizer/Phase-Lock midpoint."""
-        import hashlib
-        seed = int(self.get_numeric_seed()) if hasattr(self, "get_numeric_seed") else 1
-        mem = self.instrument_sequencer_memory.get(name, {})
-        steps = [False] * count
-        amps = [0.0] * count
-        pitches = [1.0] * count
-
-        try:
-            user_mask = self._user_pattern_mask(mem, count, instrument_name=name)
-        except Exception:
-            user_mask = [False] * count
-
-        user_hits = [
-            s for s in range(count)
-            if s < len(mem.get("steps", []))
-            and s < len(user_mask)
-            and user_mask[s]
-            and mem["steps"][s]
-        ]
-
-        try:
-            op_idx = self.instrument_names_48.index(name)
-        except Exception:
-            op_idx = 0
-
-        if not user_hits:
-            for s in range(count):
-                stable = hashlib.sha256(
-                    f"R|{seed}|{name}|{op_idx}|{s}".encode("utf-8", "replace")
-                ).digest()
-                u = int.from_bytes(stable[:8], "big") / float(2**64)
-                v = int.from_bytes(stable[8:16], "big") / float(2**64)
-                # Seed-dependent but convergent density; no Meum-only identity.
-                density = 0.18 + 0.18 * (
-                    0.5 + 0.5 * math.sin(
-                        2.0 * math.pi * (u * PHI + seed * 1.3e-6)
-                        + (s + 1) * MEUM_LOG2
-                    )
-                )
-                if v < density:
-                    steps[s] = True
-                    amps[s] = float(np.clip(0.30 + 0.55 * u, 0.20, 0.95))
-                    pitch_field = 0.5 + 0.5 * math.cos(
-                        2.0 * math.pi * (v * SQRT2 + u * MEUM)
-                    )
-                    pitches[s] = float(np.clip(
-                        2.0 ** ((pitch_field - 0.5) * 0.62),
-                        0.60, 1.55
-                    ))
-            return steps, amps, pitches
-
-        # Fractal echoes preserve the carrier while changing the geometric scale
-        # according to the actual seed.
-        scales = [1]
-        for k in (1, 2, 3):
-            sc = int(round(count / (2 ** k) * (
-                1.0 + (((seed >> k) % 7) - 3) * 0.035
-            )))
-            if 1 <= sc < count and sc not in scales:
-                scales.append(sc)
-
-        for s in range(count):
-            for sc in scales:
-                src = user_hits[(s * sc + seed) % len(user_hits)]
-                stable = hashlib.sha256(
-                    f"R|{seed}|{name}|{s}|{sc}".encode("utf-8", "replace")
-                ).digest()
-                u = int.from_bytes(stable[:8], "big") / float(2**64)
-                if u < 0.20 + 0.10 * ((sc % 5) / 5.0):
-                    steps[s] = True
-                    src_amp = float(mem.get("amplitudes", [0.7] * count)[src]) if src < len(mem.get("amplitudes", [])) else 0.7
-                    amps[s] = max(amps[s], float(np.clip(src_amp * (0.55 / sc), 0.15, 1.0)))
-                    v = int.from_bytes(stable[8:16], "big") / float(2**64)
-                    pitches[s] = float(np.clip(
-                        2.0 ** ((v - 0.5) * 0.56) * (0.96 + 0.04 * MEUM_NORM),
-                        0.60, 1.55
-                    ))
-                    break
-        return steps, amps, pitches
-
-    def _ideal_phaselock_pattern(self, name, count, i, seed):
-        """Non-writing Euclidean + seed-specific wavefield ideal for midpoint merge."""
-        import hashlib
-        seed = int(seed)
-        steps = [False] * count
-        amps = [0.0] * count
-        pitches = [1.0] * count
-
-        # Seed chooses both pulse count and phase origin; Meum supplies the metric.
-        seed_u, seed_v, seed_w = self._seed_geometry(f"phase|{name}|{i}")
-        pulse_field = 0.5 + 0.5 * math.sin(
-            2.0 * math.pi * (seed_u * PHI + seed_v * PHI_INV + i * MEUM_LOG2) + seed_w * MEUM
-        )
-        pulses = max(2, min(
-            count,
-            int(round(2 + pulse_field * max(2, min(6, count - 2))))
-        ))
-        phase0 = 2.0 * math.pi * (
-            seed_u * SQRT2 + seed_v * PHI_INV + (i + 1) * MEUM_LOG2
-        )
-
-        euc = [
-            bool(((s * pulses + int(seed % max(count, 1))) % count) < pulses)
-            for s in range(count)
-        ]
-
-        wf = None
-        eng = getattr(self, "wavefield_engine", None)
-        if eng is not None:
-            try:
-                if not getattr(eng, "wavefield", None):
-                    eng.compute_wavefield()
-                wf = eng.wavefield.get(name) if eng.wavefield else None
-            except Exception:
-                wf = None
-
-        for s in range(count):
-            on = bool(euc[s])
-            if wf and s < len(wf.get("euclidean", [])):
-                # Union the field with the seed-rotated Euclidean carrier.
-                on = on or bool(wf["euclidean"][s])
-            if on:
-                env = float(wf["envelope"][s]) if wf and s < len(wf.get("envelope", [])) else 0.55
-                har = float(wf["seed_harmonics"][s]) if wf and s < len(wf.get("seed_harmonics", [])) else 0.5
-                seed_h = 0.5 + 0.5 * math.sin(
-                    phase0 + (s + 1) * MEUM_LOG2 + har * math.pi
-                )
-                amps[s] = float(np.clip(
-                    0.30 + 0.52 * env * (0.72 + 0.28 * seed_h),
-                    0.15, 1.0
-                ))
-                pitches[s] = float(np.clip(
-                    2.0 ** (
-                        (seed_h - 0.5) * 0.58
-                        + (har - 0.5) * 0.20
-                    ),
-                    0.60, 1.60
-                ))
-        return steps, amps, pitches
-
-    def _midpoint_merge_patterns(self, r_steps, r_amps, r_pitches, l_steps, l_amps, l_pitches, count, rng):
-        """Combine randomizer + phase-lock ideals at the midpoint — not additive stack.
-
-        Predictive unison:
-          • both ON  → keep, average amp/pitch (shared conviction)
-          • one ON   → soft keep at Meum soft-weight (not full force of either alone)
-          • both OFF → stay off
-        Trigger preference shifts toward averaged density (no double hits).
-        """
-        steps, amps, pitches = [False] * count, [0.0] * count, [1.0] * count
-        for s in range(count):
-            ro, lo = bool(r_steps[s]), bool(l_steps[s])
-            ra = float(r_amps[s]) if ro else 0.0
-            la = float(l_amps[s]) if lo else 0.0
-            rp = float(r_pitches[s]) if ro else 1.0
-            lp = float(l_pitches[s]) if lo else 1.0
-            if ro and lo:
-                steps[s] = True
-                amps[s] = 0.5 * (ra + la)
-                pitches[s] = 0.5 * (rp + lp)
-            elif ro or lo:
-                # midpoint: partial acceptance, not full additive from one engine
-                # Deterministic Meum acceptance: the disagreement is resolved from
-                # the two source fields, never from a mutable/random sequence.
-                # This keeps the seed-only composition invariant across renders.
-                source_amp = ra if ro else la
-                source_pitch = rp if ro else lp
-                coherence = 0.5 + 0.5 * np.cos((s + 1) * MEUM_NORM * np.pi)
-                keep_p = float(np.clip(0.48 + 0.22 * coherence, 0.30, 0.72))
-                selector = 0.5 + 0.5 * np.sin((s + 1) * MEUM_INV + MEUM_NORM)
-                if selector < keep_p:
-                    steps[s] = True
-                    amps[s] = float(np.clip(source_amp * (0.72 + 0.18 * (0.5 + 0.5 * coherence)), 0.08, 0.95))
-                    pitches[s] = float(source_pitch)
-            else:
-                steps[s] = False
-        return steps, amps, pitches
-
-    def apply_composition_midpoint(self, live=False):
-        """When BOTH engines are live: one idealization pass (midpoint), not A then B stacked."""
-        if getattr(self, 'chk_user_program_only', None) and self.chk_user_program_only.isChecked():
-            return
-        count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16
-        seed = self.get_numeric_seed() if hasattr(self, 'get_numeric_seed') else 1
-        self._composition_generation_counter = getattr(self, '_composition_generation_counter', 0) + 1
-        # Pure seed RNG — midpoint is a function of seed + current user pads only
-        rng = np.random.default_rng(int(seed) % (2**31))
-        multi = bool(getattr(self, 'chk_multi_seq_load', None) and self.chk_multi_seq_load.isChecked())
-        active = ""
-        try:
-            active = self.instrument_selector_dropdown.currentText()
-        except Exception:
-            pass
-        names = list(getattr(self, 'instrument_names_48', []) or [])
-        for i, name in enumerate(names):
-            seed_only = (not any(any((m or {}).get("steps") or []) for m in (getattr(self, "instrument_sequencer_memory", {}) or {}).values()))
-            if not multi and active and name != active and not seed_only:
-                continue
-            mem = self.instrument_sequencer_memory.get(name)
-            if not mem:
-                continue
-            self._ensure_seq_mem_length(mem, count)
-            user_mask = (
-                self._user_pattern_mask(mem, count, instrument_name=name)
-                if hasattr(self, '_user_pattern_mask') else [False] * count
-            )
-            r_s, r_a, r_p = self._ideal_randomizer_pattern(name, count, rng)
-            l_s, l_a, l_p = self._ideal_phaselock_pattern(name, count, i, seed)
-            m_s, m_a, m_p = self._midpoint_merge_patterns(r_s, r_a, r_p, l_s, l_a, l_p, count, rng)
-            for s in range(count):
-                if s < len(user_mask) and user_mask[s]:
-                    continue  # never overwrite user defs
-                mem['steps'][s] = bool(m_s[s])
-                if s < len(mem.get('amplitudes', [])):
-                    mem['amplitudes'][s] = float(m_a[s]) if m_s[s] else 0.0
-                if s < len(mem.get('pitches', [])):
-                    mem['pitches'][s] = float(m_p[s])
-                if s < len(mem.get('probabilities', [])):
-                    mem['probabilities'][s] = 100 if m_s[s] else 0
-        try:
-            self._paint_operator_pattern_to_playlist(source="midpoint", rng=rng)
-            try:
-                self._apply_meum_ideal_hierarchy(rng=rng)
-            except Exception as _mh:
-                print(f"[Meum hierarchy] {_mh}")
-            try:
-                self._refresh_visualizers_meum_playlist()
-            except Exception:
-                pass
-        except Exception as e:
-            print(f"[Midpoint] playlist: {e}")
-        self.reload_active_instrument_sequencer_ui()
-        print("[Composition] midpoint unison (randomizer ∧ phase-lock) — not additive stack")
-
-    def _live_composition_tick(self):
-        """Heartbeat only: recompute when a real source changed, otherwise do nothing."""
-        if getattr(self, 'chk_user_program_only', None) and self.chk_user_program_only.isChecked():
-            return
-        r_on, p_on = self._engines_both_live()
-        try:
-            if r_on and p_on:
-                self._apply_live_midpoint_once()
-            elif r_on:
-                # Compatibility path only; the Randomizer timer is intentionally stopped.
-                self._apply_live_engine_once("seeded")
-            elif p_on:
-                self._apply_live_engine_once("euclidean")
-        except Exception as e:
-            print(f"[live-composition] {e}")
-        if getattr(self, '_seq_ui_pending', False) and not getattr(self, '_live_engine_update_guard', False):
-            self._seq_ui_last = 0.0
-            self.reload_active_instrument_sequencer_ui()
-
-    def apply_unified_randomizer(self, live=False):
-        """Single randomizer path: seeded harmonic fill + multi-instance playlist paint.
-
-        Replaces the dual Seeded Live / GLOBAL RANDOMIZE split so both controls
-        share one predictive step (patternology + playlist instances together).
-        """
-        if getattr(self, 'chk_user_program_only', None) and self.chk_user_program_only.isChecked():
-            return
-        snap = self._snapshot_global_effect_sliders() if hasattr(self, '_snapshot_global_effect_sliders') else None
-        self._composition_ui_batch = True
-        try:
-            # Deterministic: same seed → same composition (no generation counter drift)
-            self._composition_generation_counter = getattr(self, '_composition_generation_counter', 0) + 1
-            phase_u = self._seed_audio_geometry("phase-lock-rng")
-            phase_seed = int.from_bytes(bytes(int(x * 255) & 0xFF for x in phase_u), "little") % (2**31)
-            rng = np.random.default_rng(phase_seed)
-            # Patternology (sequencer memory) first
-            self.apply_seeded_harmonic_randomization()
-            # Playlist multi-instance paint (velocity, blends, overlaps, time offsets)
-            try:
-                n = self._paint_operator_pattern_to_playlist(source="randomizer", rng=rng)
-                print(f"[Randomizer] playlist multi-instance paint → {n} rows")
-                try:
-                    self._apply_meum_ideal_hierarchy(rng=rng)
-                except Exception as _mh:
-                    print(f"[Meum hierarchy] {_mh}")
-                try:
-                    self._refresh_visualizers_meum_playlist()
-                except Exception:
-                    pass
-                # New random base invalidates any prior phase-lock pair
-                self._invalidate_live_composition_cache("phase_base", "phase_locked", "phase", "both")
-            except Exception as pe:
-                print(f"[Randomizer] playlist paint: {pe}")
-            try:
-                self._paint_step_parameters(
-                    rng=rng, randomize=True, strength=0.55,
-                    include_velocity=True, include_pitch=True, include_probability=True,
-                )
-            except Exception:
-                pass
-            try:
-                self._run_composition_context_engine(source="randomizer", rng=rng)
-            except Exception as ce:
-                print(f"[Randomizer] context: {ce}")
-            if hasattr(self, 'reload_active_instrument_sequencer_ui'):
-                self.reload_active_instrument_sequencer_ui()
-        except Exception as e:
-            print(f"[Randomizer] unified skipped: {e}")
-        finally:
-            self._composition_ui_batch = False
-            if snap is not None and hasattr(self, '_restore_global_effect_sliders'):
-                self._restore_global_effect_sliders(snap)
-            if getattr(self, '_seq_ui_pending', False):
-                self._seq_ui_last = 0.0
-                self.reload_active_instrument_sequencer_ui()
-
-    def apply_unified_phase_lock(self, live=False):
-        """Single phase-lock path: Euclidean geometry + wavefield transducer in one step.
-
-        Replaces Euclidean Live Lock / GLOBAL PHASE-LOCK split so both share one
-        coordinated arrangement (geometry + field coherence together).
-        """
-        if getattr(self, 'chk_user_program_only', None) and self.chk_user_program_only.isChecked():
-            return
-        snap = self._snapshot_global_effect_sliders() if hasattr(self, '_snapshot_global_effect_sliders') else None
-        self._composition_ui_batch = True
-        try:
-            self._composition_generation_counter = getattr(self, '_composition_generation_counter', 0) + 1
-            rng = np.random.default_rng(int(self.get_numeric_seed()) % (2**31))
-            # Euclidean additive structure
-            self.apply_euclidean_and_idealized_rhythms()
-            # Wavefield sensor→director on the same snapshot
-            wf = getattr(self, 'wavefield_engine', None)
-            if wf is not None:
-                try:
-                    wf.apply_phase_locked_randomization()
-                except Exception as we:
-                    print(f"[Phase-Lock] wavefield: {we}")
-            try:
-                n = self._paint_operator_pattern_to_playlist(source="phase-lock", rng=rng)
-                print(f"[Phase-Lock] playlist multi-instance paint → {n}")
-                try:
-                    self._apply_meum_ideal_hierarchy(rng=rng)
-                except Exception as _mh:
-                    print(f"[Meum hierarchy] {_mh}")
-                try:
-                    self._refresh_visualizers_meum_playlist()
-                except Exception:
-                    pass
-            except Exception as pe:
-                print(f"[Phase-Lock] playlist: {pe}")
-            try:
-                self._paint_step_parameters(
-                    rng=rng, randomize=False, strength=0.70,
-                    include_velocity=True, include_pitch=True, include_probability=True,
-                )
-            except Exception:
-                pass
-            try:
-                self._phase_lock_playlist_velocity(rng, strength=0.70, randomize=False)
-            except Exception:
-                pass
-            try:
-                self._run_composition_context_engine(source="phase-lock", rng=rng)
-            except Exception as ce:
-                print(f"[Phase-Lock] context: {ce}")
-            if hasattr(self, 'reload_active_instrument_sequencer_ui'):
-                self.reload_active_instrument_sequencer_ui()
-        except Exception as e:
-            print(f"[Phase-Lock] unified skipped: {e}")
-        finally:
-            self._composition_ui_batch = False
-            if snap is not None and hasattr(self, '_restore_global_effect_sliders'):
-                self._restore_global_effect_sliders(snap)
-            if getattr(self, '_seq_ui_pending', False):
-                self._seq_ui_last = 0.0
-                self.reload_active_instrument_sequencer_ui()
-
     def apply_seeded_harmonic_randomization(self):
         """
         Additive Seeded Harmonic Randomizer (non-destructive where possible).
@@ -6287,7 +10617,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         - Only writes parameters the user has not specified.
         """
         # Explicit engine action may use a transient seed, but never writes the user field.
-        numeric_seed = int(self.bootstrap_seed_and_program_parameters()) % (2**31)
+        numeric_seed = self.bootstrap_seed_and_program_parameters()
         self.simplify_redundant_user_definitions()
         rng = np.random.default_rng(numeric_seed)
         count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16
@@ -6299,32 +10629,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
         preserved_steps = 0
         scripts_written = 0
 
-        # Any non-empty combination of subsystems (predictive, seed-stable per call):
-        # bit0 steps  bit1 amps  bit2 pitches  bit3 probs  bit4 scripts  bit5 playlist-vel
-        combo = int(rng.integers(1, 64))
-        do_steps = bool(combo & 1)
-        do_amps = bool(combo & 2)
-        do_pitches = bool(combo & 4)
-        do_probs = bool(combo & 8)
-        do_scripts = bool(combo & 16)
-        do_playlist = bool(combo & 32)
-        # Multi-seq load: when checkbox on, randomizer may touch several instruments' slots
-        multi = bool(getattr(self, 'chk_multi_seq_load', None) and self.chk_multi_seq_load.isChecked())
-        active_name = ""
-        try:
-            active_name = self.instrument_selector_dropdown.currentText()
-        except Exception:
-            pass
-
         # Read wavefield hints if available (does NOT run PLL apply / Euclidean button)
         wf_engine = getattr(self, 'wavefield_engine', None)
         if wf_engine is not None:
-            wf_engine.compute_wavefield()
+            if not getattr(wf_engine, 'wavefield', None):
+                wf_engine.compute_wavefield()
+            else:
+                # Refresh field for current seed/length without applying lock
+                wf_engine.compute_wavefield()
 
         for i, name in enumerate(self.instrument_names_48):
-            if not multi and active_name and name != active_name:
-                # Single-seq mode: only the active instrument is rewritten
-                continue
             mem = self.instrument_sequencer_memory[name]
             self._ensure_seq_mem_length(mem, count)
             user_mask = self._user_pattern_mask(mem, count, instrument_name=name)
@@ -6344,8 +10658,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if user_mask[s]:
                     preserved_steps += 1
                     continue  # hard preserve
-                if not (do_steps or do_amps or do_pitches or do_probs):
-                    continue
 
                 # Fractal echo: map step s back onto the user carrier at each scale
                 echo_on = False
@@ -6358,7 +10670,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         gate_p = 0.22 + 0.15 * ((numeric_seed + i + sc) % 5) / 5.0
                         # Wavefield communication: bias gate toward Euclidean + seed-harmonic slots
                         if wf_engine is not None:
-                            hints = wf_engine.get_hints(name, s) if hasattr(wf_engine, "get_hints") else None
+                            hints = wf_engine.get_hints(name, s)
                             if hints:
                                 context = self._contextual_numerology(name, s, s) if hasattr(self, "_contextual_numerology") else 0.5
                                 gate_p *= (0.75 + 0.5 * context)
@@ -6372,7 +10684,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             src_amp = mem["amplitudes"][src] if src < len(mem["amplitudes"]) else 0.7
                             echo_amp = max(echo_amp, float(src_amp) * (0.55 / sc))
                             if wf_engine is not None:
-                                hints = wf_engine.get_hints(name, s) if hasattr(wf_engine, "get_hints") else None
+                                hints = wf_engine.get_hints(name, s)
                                 if hints:
                                     echo_amp = max(echo_amp, float(hints["envelope"]) * 0.5)
                 else:
@@ -6381,14 +10693,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     context = self._contextual_numerology(name, s, s) if hasattr(self, "_contextual_numerology") else 0.5
                     base_p *= (0.65 + 0.7 * context)
                     if wf_engine is not None:
-                        hints = wf_engine.get_hints(name, s) if hasattr(wf_engine, "get_hints") else None
+                        hints = wf_engine.get_hints(name, s)
                         if hints and hints["euclidean"]:
                             base_p = 0.28 * hints["seed_harmonic"]
                     if rng.random() < base_p:
                         echo_on = True
                         echo_amp = 0.35 + 0.25 * rng.random()
                         if wf_engine is not None:
-                            hints = wf_engine.get_hints(name, s) if hasattr(wf_engine, "get_hints") else None
+                            hints = wf_engine.get_hints(name, s)
                             if hints:
                                 echo_amp = max(echo_amp, float(hints["envelope"]) * 0.55)
 
@@ -6409,7 +10721,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     or existing.strip().startswith("# Script workspace for")
                     or "Seeded Geometric Resonance Script" in existing
                 )
-                if do_scripts and is_stock:
+                if is_stock:
                     harmonic_multiplier = float((i % 7) + 1) * MEUM_OVER_1_5
                     self.instrument_scripts[name] = (
                         f"# Seeded Geometric Resonance Script [{self._seed_text()}] for {name}\n"
@@ -6424,10 +10736,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.generate_ideal_patch_bay_routing()
         self._engines_write_automation_lanes(source="seeded")
         self.reload_active_instrument_sequencer_ui()
-        try:
-            self._apply_meum_ideal_hierarchy(rng=rng)
-        except Exception as _mh:
-            print(f"[Meum hierarchy] {_mh}")
         print(
             f"[Seeded Harmonic Randomizer] Additive fractal fill. "
             f"Preserved≈{preserved_steps}, filled={filled_steps}, scripts_updated={scripts_written}. "
@@ -6747,7 +11055,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if is_video:
                 m = self.imported_video_meta
                 extra = f" · {m.get('width',0)}×{m.get('height',0)} · {m.get('fps',0.0):.2f} fps"
-            self._set_scope_status(
+            self.scope_status_label.setText(
                 f"📂 {tag} carrier loaded · {name} · {sample_rate} Hz{extra}"
             )
         if hasattr(self, "visual_oscilloscope"):
@@ -6815,193 +11123,39 @@ class MathematiciansGrooveboxApp(QMainWindow):
             out = voice.copy(); out[:n] = fitted; return out
         return fitted
 
-
-    @staticmethod
-    def _as_scalar(value, default=0.0):
-        """Safe Python float from scalar / length-1 array / nested list (export crash fix)."""
-        try:
-            if value is None:
-                return float(default)
-            if isinstance(value, (list, tuple)):
-                if not value:
-                    return float(default)
-                return MathematiciansGrooveboxApp._as_scalar(value[0], default)
-            arr = np.asarray(value)
-            if arr.size == 0:
-                return float(default)
-            if arr.size == 1:
-                return float(arr.reshape(-1)[0])
-            # multi-element: average (pitch stacks, velocity blends)
-            return float(np.mean(arr.astype(np.float64)))
-        except Exception:
-            try:
-                return float(value)
-            except Exception:
-                return float(default)
-
-    def _render_bare_seed_mine_style(self, seed_value, rows, seq_len, bpm, sample_rate=44100):
-        """Sonic compatibility path for a lone numeric seed.
-
-        This deliberately follows groovebox_mine's simple carrier architecture:
-        stable seed-selected voices, sine/additive phase, smooth note body, and
-        no per-note global phase-lock, PKP, randomizer, or generated trigger.
-        The seed is read once; audio rendering is otherwise read-only.
-        """
-        seconds_per_beat = 60.0 / max(float(bpm), 0.001)
-        step_duration = seconds_per_beat / 4.0
-        row_duration = step_duration * max(int(seq_len), 1)
-        total_duration = max(0.25, max(int(rows), 1) * row_duration)
-        n = int(sample_rate * total_duration)
-        t = np.arange(n, dtype=np.float64) / float(sample_rate)
-        out = np.zeros(n, dtype=np.float64)
-
-        # Deterministic numeric-seed geometry; never re-hash per note.
-        seed = int(seed_value) & 0x7fffffff
-        u = self._seed_audio_geometry("mine-sonic")
-        # Keep the familiar 432 Hz anchor and bounded seed-dependent cell.
-        base = 432.0 * (2.0 ** ((u[0] - 0.5) * 0.18))
-        base *= (0.985 + 0.03 * u[1])
-        base = float(np.clip(base, 180.0, 720.0))
-
-        # Two coherent carrier voices, like groovebox_mine's simple renderer.
-        voice_ratios = (1.0, 1.5)
-        voice_gains = (0.62, 0.34)
-        phases = [2.0 * np.pi * u[2], 2.0 * np.pi * u[3]]
-        phase_acc = [phases[0], phases[1]]
-
-        for row_idx in range(max(int(rows), 1)):
-            start = int(row_idx * row_duration * sample_rate)
-            end = min(n, int((row_idx + 1) * row_duration * sample_rate))
-            if end <= start:
-                continue
-            local = t[start:end] - row_idx * row_duration
-            # Gentle deterministic evolution, not a trigger/restart modulation.
-            row_shift = 2.0 ** (0.035 * math.sin((row_idx + 1) * MEUM + seed * 1e-6))
-            row_buf = np.zeros_like(local)
-            for vi, (ratio, gain) in enumerate(zip(voice_ratios, voice_gains)):
-                freq = base * ratio * row_shift
-                # Continuous phase within and across rows.
-                ph = phase_acc[vi] + 2.0 * np.pi * freq * local
-                phase_acc[vi] = float((ph[-1] + 2.0 * np.pi * freq / sample_rate) % (2.0 * np.pi))
-                raw = np.sin(ph + 0.035 * np.sin(2.0 * np.pi * freq * 2.0 * local))
-                # Mine-style smooth note body; no exponential pluck transient.
-                attack = min(0.025, row_duration * 0.08)
-                release = min(0.045, row_duration * 0.10)
-                a = np.clip(local / max(attack, 1e-6), 0.0, 1.0)
-                attack_env = 0.5 - 0.5 * np.cos(np.pi * a)
-                rel_start = max(row_duration - release, attack)
-                r = np.clip((local - rel_start) / max(release, 1e-6), 0.0, 1.0)
-                release_env = 0.5 + 0.5 * np.cos(np.pi * r)
-                env = attack_env * release_env
-                row_buf += raw * env * gain
-            out[start:end] += row_buf * 0.08
-
-        peak = float(np.max(np.abs(out))) if out.size else 0.0
-        if peak > 1e-9:
-            out = out * min(0.95 / peak, 1.0)
-        return out.astype(np.float32), sample_rate
-
-    def _render_mixdown_buffer(self, max_rows=None, progress="play"):
-        """Shared deterministic audio render.
-
-        The DSP keeps the newer build's click-safe, phase-continuous transport and
-        explicit-module rules, while restoring the older engine's strongest audio
-        ideas: additive harmonic voices, geometric detune/phase separation,
-        stable 432 Hz anchoring, and conservative spectral fitting.
-
-        Important invariant:
-          Meum is the metric. The *seed* selects the geometric cell.
-          Therefore seed A, seed B, and the literal text "Meum" are different
-          compositions even when the carrier sequence is identical.
-        """
+    def _render_mixdown_buffer(self, max_rows=None):
+        """Shared float32 mono render used by both realtime Play and WAV Export."""
         sample_rate = 44100
-
-        def _prog(value, stage=None):
-            if progress == "play":
-                self._set_play_progress(value, stage)
-            elif progress == "export":
-                self._set_export_progress(value, stage)
-
-        bpm = self.spin_bpm.value() if hasattr(self, "spin_bpm") else 120
-        rows = self.spin_playlist_length.value() if hasattr(self, "spin_playlist_length") else 32
+        bpm = self.spin_bpm.value() if hasattr(self, 'spin_bpm') else 120
+        rows = self.spin_playlist_length.value() if hasattr(self, 'spin_playlist_length') else 32
         if max_rows is not None:
             rows = min(rows, int(max_rows))
-        seq_len = self.spin_seq_length.value() if hasattr(self, "spin_seq_length") else 16
-        global_playlist_enabled = (
-            self.chk_global_playlist.isChecked()
-            if hasattr(self, "chk_global_playlist") else True
-        )
+        seq_len = self.spin_seq_length.value() if hasattr(self, 'spin_seq_length') else 16
+        global_playlist_enabled = self.chk_global_playlist.isChecked() if hasattr(self, 'chk_global_playlist') else True
 
-        if hasattr(self, "sync_playlist_grid_to_memory"):
+        if hasattr(self, 'sync_playlist_grid_to_memory'):
             try:
                 self.sync_playlist_grid_to_memory()
             except Exception:
                 pass
 
-        # Bare numeric seed uses the groovebox_mine sonic carrier. This is a
-        # compatibility path: it is deliberately isolated from the global
-        # randomizer/phase-lock machinery and cannot trigger it per note.
-        try:
-            seed_txt0 = (self._seed_text() if hasattr(self, "_seed_text") else "").strip()
-            bare_numeric = False
-            if seed_txt0 and seed_txt0 not in ("0", "0.0"):
-                float(seed_txt0)
-                r_live, p_live = self._engines_both_live() if hasattr(self, "_engines_both_live") else (False, False)
-                bare_numeric = (not bool(getattr(self, "_bare_seed_sonic_disabled", False))
-                                and not r_live and not p_live)
-            if bare_numeric and not bool(getattr(self, "pkp_pad_bank_active", False)):
-                return self._render_bare_seed_mine_style(
-                    self.get_numeric_seed(), rows, seq_len, bpm, sample_rate
-                )
-        except Exception as exc:
-            print(f"[Mine sonic compatibility] skipped: {exc}")
-
-        # Rendering is read-only.  If a bare seed needs its initial carrier, it is
-        # commissioned exactly once into the current state, never by the render
-        # algorithm itself and never through Randomizer/Phase-Lock.
-        try:
-            seed_txt = (self._seed_text() if hasattr(self, "_seed_text") else "") or ""
-            seed_present = bool(seed_txt.strip()) and seed_txt.strip() not in ("0", "0.0")
-            any_steps = any(
-                any((mem or {}).get("steps") or [])
-                for mem in (getattr(self, "instrument_sequencer_memory", {}) or {}).values()
-            )
-            if (seed_present and not any_steps
-                    and not getattr(self, "_seed_program_commissioned", False)
-                    and not getattr(self, "_project_imported_user_state", False)):
-                if hasattr(self, "_provide_seed_program_parameters"):
-                    self._provide_seed_program_parameters(self.get_numeric_seed())
-                    self._seed_program_commissioned = True
-        except Exception as exc:
-            print(f"[Mixdown] seed carrier initialization skipped: {exc}")
-
         seconds_per_beat = 60.0 / max(float(bpm), 0.001)
         step_duration = seconds_per_beat / 4.0
         row_duration = step_duration * seq_len
         total_duration = max(0.25, rows * row_duration)
+
         n_samples = int(sample_rate * total_duration)
         t = np.linspace(0.0, total_duration, n_samples, endpoint=False)
         master = np.zeros(n_samples, dtype=np.float32)
 
-        base_eqr = self.slider_eqr.value() / 100.0 if hasattr(self, "slider_eqr") else 0.5
-        pkp_decay = self.slider_pkp_decay.value() / 1000.0 if hasattr(self, "slider_pkp_decay") else 0.50
-        fractalizer_val = self.slider_fractalizer.value() / 100.0 if hasattr(self, "slider_fractalizer") else 0.33
-        pkp_auto = self.chk_pkp_automod.isChecked() if hasattr(self, "chk_pkp_automod") else True
-        seed_val = int(self.get_numeric_seed()) if hasattr(self, "get_numeric_seed") else 0
-        seed_txt_render = (self._seed_text() if hasattr(self, "_seed_text") else "") or ""
-        seed_present = bool(seed_txt_render.strip()) and seed_txt_render.strip() not in ("0", "0.0")
-        # No process-global RNG mutation: render determinism belongs to the literal seed.
+        base_eqr = self.slider_eqr.value() / 100.0 if hasattr(self, 'slider_eqr') else 0.5
+        pkp_decay = self.slider_pkp_decay.value() / 1000.0 if hasattr(self, 'slider_pkp_decay') else 0.25
+        fractalizer_val = self.slider_fractalizer.value() / 100.0 if hasattr(self, 'slider_fractalizer') else 0.85
+        pkp_auto = self.chk_pkp_automod.isChecked() if hasattr(self, 'chk_pkp_automod') else True
+        seed_val = self.get_numeric_seed()
+        np.random.seed(seed_val)
 
-        # Seed geometry: several irrational coordinates, not a single Meum mapping.
-        seed_u0, seed_u1, seed_u2 = self._seed_geometry("audio")
-        seed_phase = 2.0 * np.pi * (
-            0.52 * seed_u0 + 0.31 * seed_u1 * PHI_INV + 0.17 * seed_u2 * MEUM_LOG2
-        )
-        seed_axis = float(np.clip(
-            0.37 * seed_u0 + 0.33 * seed_u1 + 0.30 * seed_u2,
-            0.0, 1.0
-        ))
-
+        # CONVOLVE_FIT_FEATURE: carrier is loaded once per render.
         imported_carrier = self._resample_carrier(n_samples, sample_rate)
         convolve_fit_enabled = bool(
             hasattr(self, "chk_convolve_fit") and self.chk_convolve_fit.isChecked()
@@ -7010,14 +11164,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             float(self.slider_global_convolve.value()) / 100.0
             if hasattr(self, "slider_global_convolve") else 0.0
         )
-        if convolve_fit_enabled and imported_carrier is not None:
-            master += imported_carrier * 0.35
-
-        _prog(0, "Mixdown")
-        self._render_stage = "DSP render"
-
-        # Stable phase state is continuous across rows for each operator.
-        phase_offsets = {}
+        if imported_carrier is not None:
+            # Carrier is additive; it never replaces the programmed groove.
+            master += imported_carrier * (0.85 if convolve_fit_enabled else 0.60)
 
         for row_idx in range(rows):
             start_time = row_idx * row_duration
@@ -7026,223 +11175,62 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if not np.any(mask):
                 continue
             local_t = t[mask] - start_time
-            row_mix = np.zeros_like(local_t, dtype=np.float64)
+            row_mix = np.zeros_like(local_t, dtype=np.float32)
             velocity_scale = 1.0
-            op_indices = []
-            primary_op = self.instrument_names_48[0] if self.instrument_names_48 else ""
 
-            if global_playlist_enabled and row_idx < len(getattr(self, "master_playlist_data", [])):
+            if global_playlist_enabled and row_idx < len(getattr(self, 'master_playlist_data', [])):
                 entry = self.master_playlist_data[row_idx]
-                if isinstance(entry, dict):
-                    primary_op = entry.get("operator", primary_op)
-                    velocity_scale = self._as_scalar(entry.get("velocity", 1.0), 1.0)
-                    ops = list(entry.get("operators") or [])
-                    if not ops and primary_op:
-                        for tok in str(primary_op).split(","):
-                            name = tok.split("@")[0].strip()
-                            if name:
-                                ops.append(name)
-                    for op in ops:
-                        if op in self.instrument_names_48:
-                            op_indices.append(self.instrument_names_48.index(op))
-
-            # Hear every instrument that actually acts. No random companion selection:
-            # this was one of the old renderer's least predictable behaviors.
-            active_cluster = []
-            seen = set()
-            for i, name in enumerate(self.instrument_names_48):
-                mem = self.instrument_sequencer_memory.get(name)
-                acting = bool(mem and any(mem.get("steps", []))) or (i in op_indices)
-                if acting and i not in seen:
-                    active_cluster.append(i)
-                    seen.add(i)
-
-            if not active_cluster:
-                try:
-                    cur = self.instrument_selector_dropdown.currentText()
-                    active_cluster = [self.instrument_names_48.index(cur)] if cur in self.instrument_names_48 else [0]
-                except Exception:
-                    active_cluster = [0]
-
-            # Keep the mix sparse enough that RMS remains controlled while preserving
-            # broad harmonic/geometric separation.
-            if len(active_cluster) > 24:
-                active_cluster = [
-                    active_cluster[int(round(j * (len(active_cluster) - 1) / 23.0))]
-                    for j in range(24)
-                ]
-
-            active_count = max(len(active_cluster), 1)
+                primary_op = entry.get("operator", self.instrument_names_48[0])
+                velocity_scale = float(entry.get("velocity", 1.0))
+                op_indices = [self.instrument_names_48.index(primary_op)] if primary_op in self.instrument_names_48 else [0]
+                remaining = [i for i in range(len(self.instrument_names_48)) if i != op_indices[0]]
+                n_comp = min(3, len(remaining))
+                companions = np.random.choice(remaining, size=n_comp, replace=False).tolist() if n_comp else []
+                active_cluster = op_indices + companions
+            else:
+                active_cluster = np.random.choice(len(self.instrument_names_48), size=4, replace=False).tolist()
 
             for op_idx in active_cluster:
                 op_name = self.instrument_names_48[op_idx]
                 mem = self.instrument_sequencer_memory.get(
-                    op_name,
-                    {"steps": [False] * 48, "amplitudes": [1.0] * 48,
-                     "pitches": [1.0] * 48, "probabilities": [100] * 48},
+                    op_name, {"steps": [False] * 48, "amplitudes": [1.0] * 48, "pitches": [1.0] * 48}
                 )
-
-                # Legacy-good 432 Hz anchor + Meum ladder, now with a seed-selected
-                # geometric cell. This is the key distinction between seeds.
                 base_freq = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
-                if abs(base_freq - 110.0) < 0.5:
-                    base_freq = 432.0
+                base_freq *= MEUM_POWERS_36[op_idx % 36]
+                dynamic_eqr = base_eqr * (1.0 + 0.3 * np.sin(2.0 * np.pi * 0.2 * local_t + op_idx))
 
-                op_phase = (
-                    seed_phase * PHI
-                    + (op_idx + 1) * 2.0 * np.pi * PHI_INV
-                    + row_idx * MEUM_LOG2
-                )
-                op_field = 0.5 + 0.5 * math.sin(op_phase)
-                op_field2 = 0.5 + 0.5 * math.cos(op_phase * SQRT2 + MEUM)
-                # Seed-selected pitch cell: ±~0.36 octave, deterministic and bounded.
-                seed_ratio = 2.0 ** (
-                    (seed_axis - 0.5) * 0.32
-                    + (op_field - 0.5) * 0.22
-                    + (op_field2 - 0.5) * 0.12
-                )
-                # Legacy-good Meum ladder is retained, but the literal seed owns
-                # the cell selection so different seeds cannot collapse to one Meum song.
-                meum_ratio = float(MEUM_POWERS_36[op_idx % 12])
-                seed_harmonic_ratio = self._seed_ratio(op_idx, row_idx, "audio-harmonic-cell")
-                base_freq *= meum_ratio * seed_ratio * seed_harmonic_ratio
+                step_env = np.zeros_like(local_t)
+                pitch_track = np.ones_like(local_t)
+                steps = mem.get("steps", [])
+                amps = mem.get("amplitudes", [1.0] * 16)
+                pitches = mem.get("pitches", [1.0] * 16)
+                for s_idx in range(min(seq_len, len(steps))):
+                    if steps[s_idx]:
+                        s_start = s_idx * step_duration
+                        s_end = s_start + step_duration
+                        s_mask = (local_t >= s_start) & (local_t < s_end)
+                        if np.any(s_mask):
+                            s_local = local_t[s_mask] - s_start
+                            amp = amps[s_idx] if s_idx < len(amps) else 1.0
+                            pr = pitches[s_idx] if s_idx < len(pitches) else 1.0
+                            step_env[s_mask] += amp * np.exp(-s_local / max(step_duration * 0.5, 0.01))
+                            pitch_track[s_mask] = pr
 
-                while base_freq > 1800.0:
-                    base_freq *= 0.5
-                base_freq = float(np.clip(base_freq, 55.0, 1800.0))
+                freq = base_freq * pitch_track
+                mod_freq = freq * MEUM_CONSTANT
+                carrier = np.sin(2 * np.pi * mod_freq * local_t)
+                osc = np.sin(2 * np.pi * freq * local_t + carrier * (dynamic_eqr * MEUM_CONSTANT * fractalizer_val))
+                env_f = np.exp(-local_t / max(pkp_decay * (MEUM_CONSTANT if pkp_auto else 1.0), 0.015))
+                pkp = env_f * np.sin(2 * np.pi * (base_freq * 2.0) * pitch_track * local_t)
+                gate = np.maximum(step_env, 0.1)
+                voice = osc * gate * velocity_scale
 
-                # Explicit FM/AM only when a connected/selected module actually says so.
-                module_names = [str(op_name)]
-                for cable in (getattr(self, "patch_connections", []) or []):
-                    if isinstance(cable, dict):
-                        if cable.get("source") == op_name:
-                            module_names.append(str(cable.get("target", "")))
-                        if cable.get("target") == op_name:
-                            module_names.append(str(cable.get("source", "")))
-                module_text = " ".join(module_names).lower()
-                fm_enabled = ("fm" in module_text or "frequency mod" in module_text)
-                am_enabled = ("am" in module_text or "amplitude mod" in module_text)
-
-                step_env = np.zeros_like(local_t, dtype=np.float64)
-                pitch_track = np.ones_like(local_t, dtype=np.float64)
-
-                steps = list(mem.get("steps", []) or [])
-                amps = list(mem.get("amplitudes", []) or [])
-                pitches = list(mem.get("pitches", []) or [])
-                probs = list(mem.get("probabilities", []) or [])
-
-                for s_idx in range(min(int(seq_len), len(steps) if steps else int(seq_len))):
-                    if not (steps[s_idx] if s_idx < len(steps) else False):
-                        continue
-                    s_start = s_idx * step_duration
-                    s_end = s_start + step_duration
-                    s_mask = (local_t >= s_start) & (local_t < s_end)
-                    if not np.any(s_mask):
-                        continue
-
-                    s_local = local_t[s_mask] - s_start
-                    amp = float(amps[s_idx]) if s_idx < len(amps) else 1.0
-                    pr = float(pitches[s_idx]) if s_idx < len(pitches) else 1.0
-                    prob = float(probs[s_idx]) / 100.0 if s_idx < len(probs) else 1.0
-                    prob = float(np.clip(prob, 0.0, 1.0))
-
-                    # Seed-only bootstrap is a sustained musical carrier, not a pluck.
-                    # Explicitly generated/randomized/PKP material keeps the click-safe
-                    # short envelope, while the bare-seed carrier gets a smooth ADSR-like
-                    # contour that remains stable regardless of the numeric seed.
-                    if (getattr(self, "_seed_bootstrap_active", False) or seed_present):
-                        attack = min(0.025, step_duration * 0.22)
-                        release = min(0.045, step_duration * 0.30)
-                        a = np.clip(s_local / max(attack, 1e-6), 0.0, 1.0)
-                        attack_env = 0.5 - 0.5 * np.cos(np.pi * a)
-                        body = 0.96 - 0.10 * (s_local / max(step_duration, 1e-6))
-                        rel_start = max(step_duration - release, attack)
-                        rel = np.clip((s_local - rel_start) / max(release, 1e-6), 0.0, 1.0)
-                        release_env = 0.5 + 0.5 * np.cos(np.pi * rel)
-                        env = attack_env * body * release_env * prob
-                    else:
-                        attack = min(0.006, step_duration * 0.12)
-                        release = min(0.012, step_duration * 0.18)
-                        a = np.clip(s_local / max(attack, 1e-6), 0.0, 1.0)
-                        attack_env = 0.5 - 0.5 * np.cos(np.pi * a)
-                        body = np.exp(-s_local / max(step_duration * 0.82, 0.01))
-                        rel_start = max(step_duration - release, attack)
-                        rel = np.clip((s_local - rel_start) / max(release, 1e-6), 0.0, 1.0)
-                        release_env = 0.5 + 0.5 * np.cos(np.pi * rel)
-                        env = attack_env * body * release_env * prob
-                    step_env[s_mask] += amp * env
-                    pitch_track[s_mask] = pr
-
-                if float(np.max(step_env)) < 1e-7:
-                    continue
-
-                freq = np.clip(base_freq * pitch_track, 40.0, 9000.0)
-
-                # Continuous phase prevents step-boundary discontinuities.
-                phase = 2.0 * np.pi * np.cumsum(freq, dtype=np.float64) / float(sample_rate)
-                phase -= phase[0] if phase.size else 0.0
-                # Golden-angle / Meum phase dispersion lowers coherent summation
-                # (therefore lower RMS) without making the result stochastic.
-                phase0 = float(np.mod(
-                    seed_phase * MEUM
-                    + (op_idx + 1) * 2.0 * np.pi * PHI_INV
-                    + row_idx * MEUM_LOG2,
-                    2.0 * np.pi,
-                ))
-                phase += phase0
-                osc = np.sin(phase)
-
-                # Restore the older engine's useful additive harmonic character, but
-                # normalize partial energy so adding harmonics does not simply inflate RMS.
-                # Preserve the older engine's richer additive character: integer
-                # harmonics plus the useful 3.5/6 partials. Normalize partial energy
-                # so richer spectra do not become louder; the seed selects the phase
-                # cell, not the musical identity Meum.
-                partial_weights = np.array([0.90, 0.32, 0.20, 0.08, 0.055], dtype=np.float64)
-                partial_weights /= max(float(np.sqrt(np.sum(partial_weights ** 2))), 1e-9)
-                partial_harmonics = (1.0, 2.0, 3.5, 4.0, 6.0)
-                partials = np.zeros_like(osc)
-                partial_stretch = 1.0 + (op_field2 - 0.5) * 0.018
-                for h_pos, (harmonic, wt) in enumerate(zip(partial_harmonics, partial_weights)):
-                    ph = phase * harmonic * partial_stretch + phase0 * h_pos * MEUM_NORM
-                    partials += wt * np.sin(ph)
-                osc = partials
-
-                if fm_enabled:
-                    mod_freq = freq * MEUM_CONSTANT
-                    fm_mod = np.sin(2.0 * np.pi * mod_freq * local_t + phase0)
-                    fm_index = np.clip(
-                        base_eqr * MEUM_CONSTANT * max(fractalizer_val, 0.15),
-                        0.05, 3.5
-                    )
-                    osc = np.sin(phase + fm_mod * fm_index)
-
-                if am_enabled:
-                    am_depth = float(np.clip(
-                        0.15 + 0.25 * base_eqr * MEUM_NORM, 0.08, 0.45
-                    ))
-                    am_rate = np.maximum(freq * MEUM_NORM * 0.5, 0.5)
-                    am_env = (
-                        1.0 - am_depth
-                        + am_depth * (
-                            0.5 + 0.5 * np.sin(
-                                2.0 * np.pi * am_rate * local_t
-                                + op_idx * MEUM
-                                + seed_phase
-                            )
-                        )
-                    )
-                    osc *= am_env
-
-                voice = osc * np.maximum(step_env, 0.0) * float(velocity_scale)
-
-                # Optional old-build spectral/phase fitting remains available, but only
-                # when explicitly enabled by the user.
+                # CONVOLVE_FIT_FEATURE: reshape only non-user voices.
                 if convolve_fit_enabled:
                     try:
                         is_user_voice = self._instrument_has_net_effect(op_name, seq_len)
                     except Exception:
-                        is_user_voice = op_idx in op_indices
+                        is_user_voice = (op_name == primary_op)
                     if not is_user_voice:
                         fit_target = None
                         if imported_carrier is not None:
@@ -7251,30 +11239,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             if global_end > global_start:
                                 fit_target = imported_carrier[global_start:global_end]
                         if fit_target is None or fit_target.size < 32:
-                            fit_target = row_mix.copy() if np.max(np.abs(row_mix)) > 1e-7 else osc
+                            fit_target = row_mix.copy() if np.max(np.abs(row_mix)) > 1e-6 else carrier
                         voice = self._spectral_fit_voice(
-                            voice.astype(np.float32),
-                            fit_target.astype(np.float32),
-                            max(0.15, convolve_fit_amount),
-                        ).astype(np.float64)
-
-                # Energy-normalized cluster contribution: distinct voices do not sum
-                # coherently into a loudness spike just because several are active.
-                voice *= (0.86 / math.sqrt(active_count))
+                            voice, fit_target, max(0.15, convolve_fit_amount)
+                        )
                 row_mix += voice
 
-            # PKP is an explicit percussion layer.  Never let ordinary synth/seed
-            # steps acquire a hidden pluck simply because the PKP macro has a value.
+            # PKP NullLock is global and is never a separate timeline event.
+            # It is triggered only by notes in the currently selected instrument, at the global base frequency.
             try:
-                if not bool(getattr(self, "pkp_pad_bank_active", False)):
-                    raise RuntimeError("PKP pad bank not armed")
                 selected = self.instrument_selector_dropdown.currentText()
                 smem = self.instrument_sequencer_memory.get(selected, {})
-                ssteps = smem.get("steps", []) or []
-                global_pkp = np.zeros_like(local_t, dtype=np.float64)
+                ssteps = smem.get("steps", [])
+                global_pkp = np.zeros_like(local_t, dtype=np.float32)
                 gbase = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
-                if abs(gbase - 110.0) < 0.5:
-                    gbase = 432.0
                 for ss in range(min(int(seq_len), len(ssteps))):
                     if ssteps[ss]:
                         ss_start = ss * step_duration
@@ -7283,43 +11261,32 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         if np.any(mm):
                             sl = local_t[mm] - ss_start
                             env = np.exp(-sl / max(step_duration * 0.35, 0.01))
-                            pkp_phase = 2.0 * np.pi * gbase * sl + seed_phase
-                            global_pkp[mm] += env * np.sin(pkp_phase)
-                row_mix += global_pkp * (0.35 * float(np.clip(pkp_decay, 0.0, 1.0)))
+                            global_pkp[mm] += env * np.sin(2.0 * np.pi * gbase * sl)
+                # Normal PKP layer is always base-level; BOOST is realtime one-shot only.
+                row_mix += global_pkp * 0.35
             except Exception:
                 pass
 
-            master[mask] += (row_mix / max(active_count, 1)).astype(np.float32)
-            _prog(min(85, int(((row_idx + 1) / max(rows, 1)) * 85)), "Mixdown")
+            master[mask] += row_mix / max(len(active_cluster), 1)
 
-        # Keep the older build's geometric global convolution, but make its kernel
-        # explicitly seed-specific so it cannot collapse every seed into one timbre.
-        self._render_stage = "Global convolution"
+        # Global Convolve: deterministic geometric cross-convolution of the rendered carrier.
+        # User-edited controls remain upstream; this stage only mixes the structural wave result.
         try:
-            conv_amt = (
-                float(self.spin_global_convolve.value()) / 100.0
-                if hasattr(self, "spin_global_convolve") else 0.0
-            )
+            conv_amt = (float(self.spin_global_convolve.value()) / 100.0) if hasattr(self, "spin_global_convolve") else 0.0
             if conv_amt > 0.0 and len(master) > 8:
                 klen = min(2048, max(32, len(master) // 200))
-                idx = np.arange(klen, dtype=np.float64)
-                gf = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
-                kphase = seed_phase + idx * (2.0 * np.pi * MEUM_LOG2 / max(klen, 1))
-                kernel = (
-                    np.sin(2.0 * np.pi * (gf / sample_rate) * idx + kphase)
-                    + 0.5 * np.sin(
-                        2.0 * np.pi * (gf * MEUM_CONSTANT / sample_rate) * idx
-                        + kphase * PHI
-                    )
-                ).astype(np.float32)
+                kt = np.linspace(0.0, 1.0, klen, endpoint=False)
+                # Seed-stable geometric kernel; loaded WAV becomes the kernel source
+                # when present, otherwise retain the original mathematical kernel.
                 if imported_carrier is not None:
-                    # Blend the carrier into the kernel rather than replacing the
-                    # seed-specific mathematical kernel.
-                    carrier_k = imported_carrier[:klen].copy()
-                    if carrier_k.size < klen:
-                        carrier_k = np.pad(carrier_k, (0, klen - carrier_k.size), mode="wrap")
-                    kernel = 0.70 * kernel + 0.30 * carrier_k
-
+                    kernel = imported_carrier[:klen].copy()
+                    if kernel.size < klen:
+                        kernel = np.pad(kernel, (0, klen - kernel.size), mode="wrap")
+                else:
+                    gf = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
+                    kernel = (np.sin(2*np.pi*(gf/ max(sample_rate,1))*np.arange(klen)) +
+                              0.5*np.sin(2*np.pi*(gf*MEUM_CONSTANT/max(sample_rate,1))*np.arange(klen)))
+                    kernel = kernel.astype(np.float32)
                 kn = np.linalg.norm(kernel)
                 if kn > 1e-9:
                     kernel /= kn
@@ -7330,317 +11297,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     if cn > 1e-9:
                         conv *= np.max(np.abs(master)) / cn
                     master = (1.0 - conv_amt) * master + conv_amt * conv
-        except Exception as exc:
-            print(f"[Global Convolve] skipped: {exc}")
+        except Exception as e:
+            print(f"[Global Convolve] skipped: {e}")
 
-        _prog(max(getattr(self, "_play_progress", 0), 94), "Mixdown")
-        self._render_stage = "Domain modulation"
-
-        if hasattr(self, "domain_eq_engine") and self.domain_eq_engine.domains:
+        # Domain partition equations: longitudinal multivariate modulation (additive blend)
+        if hasattr(self, 'domain_eq_engine') and self.domain_eq_engine.domains:
             try:
-                engines_active = (
-                    bool(self._engines_both_live()[0] or self._engines_both_live()[1])
-                    if hasattr(self, "_engines_both_live") else False
-                )
-                domains = [
-                    d for d in self.domain_eq_engine.domains
-                    if d.get("user_defined", True) or engines_active
-                ]
-                if domains:
-                    old_domains = self.domain_eq_engine.domains
-                    self.domain_eq_engine.domains = domains
-                    self.domain_eq_engine.set_seed(self.get_numeric_seed())
-                    t_norm = np.linspace(0.0, 1.0, len(master))
-                    domain_mod = self.domain_eq_engine.evaluate_series(
-                        t_norm, x=0.0, y=0.0, z=0.0
-                    )
-                    master = master * (1.0 + 0.30 * domain_mod.astype(np.float32))
-                    self.domain_eq_engine.domains = old_domains
-            except Exception as exc:
-                print(f"[DomainEQ] render modulation skipped: {exc}")
+                self.domain_eq_engine.set_seed(self.get_numeric_seed())
+                # Normalize time axis 0..1 across the full buffer for partition logic
+                t_norm = np.linspace(0.0, 1.0, len(master))
+                domain_mod = self.domain_eq_engine.evaluate_series(t_norm, x=0.0, y=0.0, z=0.0)
+                # Soft convolution: carrier * (1 + 0.45 * domain) — accentuates without erasing
+                master = master * (1.0 + 0.45 * domain_mod.astype(np.float32))
+            except Exception as e:
+                print(f"[DomainEQ] render modulation skipped: {e}")
 
-        _prog(98, "Mixdown")
-        self._render_stage = "Finalizing"
-        peak = float(np.max(np.abs(master))) if master.size else 0.0
-        if peak > 0.88:
-            master = master * (0.88 / max(peak, 1e-9))
-        master = np.clip(master, -0.98, 0.98).astype(np.float32)
-        _prog(100, "Mixdown")
-        self._render_stage = "Complete"
-        return master, sample_rate
-
-
-
-    def _apply_meum_ideal_hierarchy(self, rng=None):
-        """Geometric Meum hierarchy over synth, playlist, domain, modular, scripts.
-
-        Levels (self-similar powers of M):
-          L0  seed          — root
-          L1  domain weights — MEUM_POWERS longitudinal
-          L2  playlist density / velocity — potential Φ geometry
-          L3  sequencer steps — standing-wave harmonics
-          L4  modular patches — feedforward along M-step indices
-          L5  scripts         — evaluate_wave from Meum potential × standing wave
-
-        Only fills empty / engine-owned slots; preserves user @u: and touched steps.
-        """
-        seed = int(self.get_numeric_seed()) if hasattr(self, 'get_numeric_seed') else 1
-        if rng is None:
-            rng = np.random.default_rng(seed)
-        names = list(getattr(self, 'instrument_names_48', []) or [])
-        n = max(len(names), 1)
-        count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16
-
-        # L1 — Domain equation weights (longitudinal Meum)
-        try:
-            eng = getattr(self, 'domain_eq_engine', None)
-            if eng is not None and hasattr(eng, 'domains'):
-                for di, dom in enumerate(eng.domains):
-                    if not isinstance(dom, dict):
-                        continue
-                    # only soft-adjust weight if unmarked user
-                    if dom.get('user_locked'):
-                        continue
-                    w = float(MEUM_POWERS_36[di % 36] * MEUM_NORM + MEUM_NORM)
-                    dom['weight'] = float(np.clip(w, 0.05, 2.5))
-                    dom['seed_weight'] = float(np.clip(MEUM_NORM * (1.0 + 0.5 * np.sin(di * MEUM)), 0.05, 1.0))
-        except Exception as exc:
-            print(f"[Meum hierarchy] domain: {exc}")
-
-        # L2 — Playlist velocity / coverage from Φ = 1/r style falloff along row
-        try:
-            rows = int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else 32
-            pl = getattr(self, 'master_playlist_data', None)
-            if pl is not None:
-                while len(pl) < rows:
-                    pl.append({})
-                for r in range(rows):
-                    e = pl[r] if isinstance(pl[r], dict) else {}
-                    # skip rows that only have user instances
-                    if e.get('user_instances') and not e.get('generated_source'):
-                        continue
-                    # geometric falloff along playlist axis
-                    x = (r + 1) / max(rows, 1)
-                    phi = 1.0 / max(np.sqrt(x * x + MEUM_NORM * MEUM_NORM), 1e-6)
-                    phi = float(np.clip(phi * MEUM_NORM * 2.0, 0.15, 1.35))
-                    if not e.get('velocity_user_locked'):
-                        e['velocity'] = phi
-                    if not e.get('operators') and names:
-                        # sparse ideal operators by Meum step on the ring
-                        seed_phase = (seed % 1000003) / 1000003.0
-                        k = int(((r + 1) * MEUM + seed_phase * 17.0) * 7) % n
-                        picks = [names[k]]
-                        k2 = (k + int(round(MEUM * 5))) % n
-                        if k2 != k:
-                            picks.append(names[k2])
-                        e['operators'] = picks
-                        e['operator'] = ','.join(picks)
-                        e['generated_source'] = e.get('generated_source') or 'meum_hierarchy'
-                    pl[r] = e
-        except Exception as exc:
-            print(f"[Meum hierarchy] playlist: {exc}")
-
-        # L3 — Sequencer: standing-wave step masks for untouched pads
-        try:
-            for i, name in enumerate(names):
-                mem = self.instrument_sequencer_memory.setdefault(name, {
-                    "steps": [False] * count,
-                    "amplitudes": [1.0] * count,
-                    "pitches": [1.0] * count,
-                    "probabilities": [100] * count,
-                    "touched": set(),
-                })
-                self._ensure_seq_mem_length(mem, count)
-                touched = mem.get('touched') or set()
-                # harmonic indices from Meum standing wave n,m
-                n_h = 1 + (i % 5)
-                for s in range(count):
-                    if s in touched:
-                        continue
-                    # Ψ = sin(n π s/L) threshold
-                    hu0, hu1, hu2, _hu3 = self._seed_audio_geometry(f"hierarchy|{i}")
-                    seed_phase = 2.0 * np.pi * hu0
-                    n_h_seed = 1 + int((hu1 * 6.0 + i * PHI) % 7)
-                    m_h_seed = 1 + int((hu2 * 4.0 + i * SQRT2) % 5)
-                    psi = np.sin(n_h_seed * np.pi * (s + 0.5) / max(count, 1) + seed_phase)
-                    psi *= np.sin(m_h_seed * np.pi * ((s + i + (seed % count if count else 0)) % count) / max(count, 1) + seed_phase * MEUM_NORM)
-                    threshold = 0.48 + 0.18 * np.sin(seed_phase + i * MEUM_INV)
-                    on = bool(abs(psi) > threshold)
-                    # only write empty (False) slots — additive
-                    if not mem['steps'][s] and on:
-                        mem['steps'][s] = True
-                        mem['amplitudes'][s] = float(np.clip(abs(psi) * MEUM, 0.25, 1.2))
-                        mem['pitches'][s] = float(np.clip((MEUM ** ((s % 7) - 3)) * (2.0 ** ((((seed + i * 17 + s * 31) % 1009) / 1008.0 - 0.5) * 0.42)) * 0.15 + 1.0, 0.5, 2.0))
-        except Exception as exc:
-            print(f"[Meum hierarchy] sequencer: {exc}")
-
-        # L4 — Patch routing is generated only by an explicit Randomizer / Phase-Lock
-        # context pass.  The hierarchy itself never silently inserts wave-effect modules.
-
-        # L5 — Scripts: Meum potential × standing wave template when empty
-        try:
-            if not hasattr(self, 'instrument_scripts') or self.instrument_scripts is None:
-                self.instrument_scripts = {}
-            for i, name in enumerate(names):
-                cur = (self.instrument_scripts.get(name) or "").strip()
-                # treat default-ish / empty as fillable
-                if cur and "Meum hierarchy" not in cur and "operator rules" not in cur and len(cur) > 80:
-                    continue
-                seed_phase = 2.0 * np.pi * ((seed % 1000003) / 1000003.0)
-                n_h = 1 + ((i + seed) % 7)
-                m_h = 1 + ((i * 3 + seed // 11) % 5)
-                harmonic = 1 + ((seed + i * 13) % 9)
-                self.instrument_scripts[name] = (
-                    f"# Meum hierarchy L5 — seed-locked potential × standing wave\n"
-                    f"def evaluate_wave(x, y, z, t=0.0, seed=0.0):\n"
-                    f"    r = (x*x + y*y + z*z) ** 0.5 + 1e-9\n"
-                    f"    phi = 1.0 / r\n"
-                    f"    phase = {seed_phase:.12f} + seed * {MEUM_NORM:.12f}\n"
-                    f"    psi = np.sin({n_h}*np.pi*np.clip(x,-1,1) + phase) * np.sin({m_h}*np.pi*np.clip(y,-1,1) + phase*{MEUM_NORM:.8f})\n"
-                    f"    return float(np.clip(phi * psi * np.sin(t * {MEUM:.8f} * {harmonic} + phase), -1, 1))\n"
-                )
-        except Exception as exc:
-            print(f"[Meum hierarchy] scripts: {exc}")
-
-        # Synth macros: soft Meum defaults when no user param state
-        try:
-            if not hasattr(self, 'instrument_param_state'):
-                self.instrument_param_state = {}
-            for i, name in enumerate(names):
-                st = self.instrument_param_state.setdefault(name, {})
-                if not st.get('user_locked'):
-                    st.setdefault('eqr', float(np.clip(MEUM_NORM * (1 + (i % 5) * 0.1), 0.05, 1.0)))
-                    st.setdefault('fractalizer', float(np.clip(MEUM_INV * (0.8 + 0.05 * (i % 7)), 0.05, 1.0)))
-        except Exception as exc:
-            print(f"[Meum hierarchy] synth: {exc}")
-
-        # Refresh visualizers from playlist-simultaneous Meum wave
-        try:
-            self._refresh_visualizers_meum_playlist()
-        except Exception:
-            pass
-        return True
-
-    def _meum_wave_from_playlist(self, n_samples=512, sample_rate=44100):
-        """Assemble a visualizer wave from the *final* commission path.
-
-        Same explicit-module / Meum spatial structure as ``_render_mixdown_buffer``, but
-        coarse (few samples) so the 2.5D graph tracks the finished audio form
-        rather than pre-mix engine fragments. Uses playlist operators + sequencer
-        steps when present; otherwise a deterministic Meum standing field.
-        """
-        n_samples = max(64, int(n_samples))
-        t = np.linspace(0.0, n_samples / float(sample_rate), n_samples, endpoint=False)
-        master = np.zeros(n_samples, dtype=np.float64)
-        seed = int(self.get_numeric_seed()) if hasattr(self, 'get_numeric_seed') else 1
-        rng = np.random.default_rng(seed)
-        base_eqr = (self.slider_eqr.value() / 100.0) if hasattr(self, 'slider_eqr') else 0.5
-        frac = (self.slider_fractalizer.value() / 100.0) if hasattr(self, 'slider_fractalizer') else 0.85
-        gbase = float(self.spin_base_frequency.value()) if hasattr(self, 'spin_base_frequency') else 432.0
-        names = list(getattr(self, 'instrument_names_48', []) or [])
-        # Prefer playlist-commissioned operators (final arrangement)
-        ops = []
-        pl = getattr(self, 'master_playlist_data', None) or []
-        for entry in pl:
-            if not isinstance(entry, dict):
-                continue
-            for key in ('operators', 'operator'):
-                val = entry.get(key)
-                if isinstance(val, list):
-                    ops.extend([o for o in val if o in names])
-                elif isinstance(val, str) and val:
-                    for tok in val.split(','):
-                        name = tok.split('@')[0].strip()
-                        if name in names:
-                            ops.append(name)
-        if not ops:
-            # fall back to instruments with active steps (post-engine commission)
-            for name in names:
-                mem = (getattr(self, 'instrument_sequencer_memory', {}) or {}).get(name) or {}
-                if any(mem.get('steps') or []):
-                    ops.append(name)
-        if not ops:
-            ops = names[:8] if names else []
-        # Unique, stable order
-        seen = set()
-        ordered = []
-        for o in ops:
-            if o not in seen:
-                seen.add(o)
-                ordered.append(o)
-        ordered = ordered[:16]
-        for i, op_name in enumerate(ordered):
-            try:
-                op_idx = names.index(op_name)
-            except ValueError:
-                op_idx = i
-            mem = (getattr(self, 'instrument_sequencer_memory', {}) or {}).get(op_name) or {}
-            steps = mem.get('steps') or []
-            amps = mem.get('amplitudes') or [1.0]
-            pitches = mem.get('pitches') or [1.0]
-            # duty from step density (Meum-weighted)
-            density = (sum(1 for s in steps if s) / max(len(steps), 1)) if steps else (0.35 + 0.1 * (i % 3))
-            density = float(np.clip(density * MEUM, 0.08, 0.95))
-            pr = float(pitches[0]) if pitches else 1.0
-            amp = float(amps[0]) if amps else 1.0
-            freq = float(np.clip(gbase * (MEUM ** (op_idx % 12)) * pr, 40.0, 4800.0))
-            # Preview follows the same explicit-module rule as audio render: no
-            # automatic AM/FM or drifting EQR modulation is inserted into a plain
-            # seed composition.  The seed/Meum geometry controls phase and gating.
-            module_names = [str(op_name)]
-            for _c in (getattr(self, "patch_connections", []) or []):
-                if isinstance(_c, dict):
-                    if _c.get("source") == op_name:
-                        module_names.append(str(_c.get("target", "")))
-                    if _c.get("target") == op_name:
-                        module_names.append(str(_c.get("source", "")))
-            module_text = " ".join(module_names).lower()
-            fm_enabled = ("fm" in module_text or "frequency mod" in module_text)
-            am_enabled = ("am" in module_text or "amplitude mod" in module_text)
-            phase = 2.0 * np.pi * freq * t
-            carrier = np.sin(phase)
-            if fm_enabled:
-                fm_mod = np.sin(2.0 * np.pi * (freq * MEUM_CONSTANT) * t)
-                fm_index = np.clip(base_eqr * MEUM_CONSTANT * max(frac, 0.15), 0.05, 3.5)
-                carrier = np.sin(phase + fm_mod * fm_index)
-            am_env = 1.0
-            if am_enabled:
-                am_depth = float(np.clip(0.15 + 0.25 * base_eqr * MEUM_NORM, 0.08, 0.45))
-                am_rate = max(freq * MEUM_NORM * 0.5, 0.5)
-                am_env = 1.0 - am_depth + am_depth * (0.5 + 0.5 * np.sin(2.0 * np.pi * am_rate * t + op_idx * MEUM))
-            phase_g = (t * (2.0 + density * 6.0 * MEUM) + seed * 1e-9 * op_idx) % 1.0
-            gate = (phase_g < density).astype(np.float64) * (0.5 + 0.5 * amp)
-            master += (carrier * am_env * gate) * (0.08 + 0.04 * (i % 3))
-        peak = float(np.max(np.abs(master))) + 1e-12
-        master = (master / peak * 0.9).astype(np.float32)
-        return master
-
-    def _refresh_visualizers_meum_playlist(self):
-        """Idle/pre-play: same explicit-module Meum structure as final mix, from playlist."""
-        try:
-            wave = self._meum_wave_from_playlist(n_samples=1024)
-            self._push_visualizers_from_wave(wave)
-        except Exception as exc:
-            print(f"[Viz] meum playlist preview: {exc}")
-
-    def _push_visualizers_from_wave(self, wave):
-
-        """Feed scope + 2.5D from one wave buffer (final form only)."""
-        if wave is None:
-            return
-        arr = np.asarray(wave, dtype=np.float32).ravel()
-        if arr.size == 0:
-            return
-        if arr.size >= 100:
-            idx = np.linspace(0, arr.size - 1, 100).astype(int)
-            chunk = arr[idx]
-        else:
-            chunk = np.zeros(100, dtype=np.float32)
-            chunk[:arr.size] = arr
-        if isinstance(getattr(self, 'visual_oscilloscope', None), VisualOscilloscope):
-            self.visual_oscilloscope.update_waveform(chunk)
-        if hasattr(self, 'video_synth_viewer'):
-            self.video_synth_viewer.update_from_audio(arr)
+        peak = np.max(np.abs(master))
+        if peak > 0:
+            master = (master / peak) * 0.98
+        return master.astype(np.float32), sample_rate
 
     def _audio_callback(self, outdata, frames, time_info, status):
         """sounddevice stream callback — pulls from play_buffer under lock."""
@@ -7666,155 +11341,24 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if n < frames:
                 outdata[n:, 0] = 0
             if self.play_cursor >= len(self.play_buffer):
-                self.is_playing = False
-                self._play_finished_flag = True
+                self.is_playing = False  # end of buffer; UI timer will finalize stop
 
     def _update_scope_from_playhead(self):
-        """UI timer: graph always follows the *final* commissioned play_buffer."""
-        if getattr(self, "_play_finished_flag", False):
-            self._play_finished_flag = False
-            try:
-                if self.audio_stream is not None:
-                    self.audio_stream.stop(); self.audio_stream.close()
-            except Exception:
-                pass
-            self.audio_stream = None
-            if hasattr(self, "btn_play"):
-                self.btn_play.setText("▶ PLAY Audiovisual Track")
-                self.btn_play.setStyleSheet("")
-            if hasattr(self, "scope_status_label"):
-                self._set_scope_status("📊 Audiovisual Track  |  Finished")
-            if hasattr(self, "_scope_update_timer"):
-                self._scope_update_timer.stop()
-            return
+        """UI-thread timer: push latest audio chunk into scope + 2.5D video synth."""
         if not self.is_playing:
             self.stop_playback()
             return
-        # Prefer a window of the final mix at the playhead (not pre-mix engine parts)
-        wave = None
-        buf = getattr(self, 'play_buffer', None)
-        if buf is not None and len(buf) > 0:
-            cur = int(getattr(self, 'play_cursor', 0))
-            win = min(2048, len(buf))
-            a = max(0, min(cur, len(buf) - win))
-            wave = buf[a:a + win] * float(getattr(self, 'master_volume', 1.0))
-        elif getattr(self, '_last_scope_chunk', None) is not None:
-            wave = self._last_scope_chunk
-        if wave is not None:
-            self._push_visualizers_from_wave(wave)
-        elif not self.is_playing:
-            # Simultaneous Meum playlist path — same structure as final mix
-            try:
-                self._refresh_visualizers_meum_playlist()
-            except Exception:
-                pass
-        if buf is not None and len(buf) > 0:
-            pct = int(100 * self.play_cursor / len(buf))
+        chunk = self._last_scope_chunk
+        if isinstance(getattr(self, 'visual_oscilloscope', None), VisualOscilloscope):
+            self.visual_oscilloscope.update_waveform(chunk)
+        if hasattr(self, 'video_synth_viewer'):
+            self.video_synth_viewer.update_from_audio(chunk)
+        if self.play_buffer is not None and len(self.play_buffer) > 0:
+            pct = int(100 * self.play_cursor / len(self.play_buffer))
             if hasattr(self, 'scope_status_label'):
-                self._set_scope_status(
+                self.scope_status_label.setText(
                     f"📊 2.5D Video Synth  |  LIVE  {pct}%  ·  Vol {int(self.master_volume*100)}%"
                 )
-
-    def _start_async_play_render(self):
-        """Start the expensive DSP mixdown off the Qt GUI thread."""
-        if self._render_thread is not None and self._render_thread.is_alive():
-            return
-
-        # Keep the existing playlist synchronization on the GUI thread; the
-        # renderer then works from the synchronized application state.
-        try:
-            self.sync_playlist_grid_to_memory()
-        except Exception as e:
-            print(f"[Audio] Playlist sync before render skipped: {e}")
-
-        self._render_generation += 1
-        generation = self._render_generation
-        self._render_result_queue = queue.Queue()
-        self._render_thread = threading.Thread(
-            target=self._render_mixdown_worker,
-            args=(generation,),
-            name="groovebox-dsp-render",
-            daemon=True,
-        )
-        self._show_play_progress()
-        self._render_poll_timer.start()
-        self._render_thread.start()
-
-    def _render_mixdown_worker(self, generation):
-        """Worker-side DSP render. Never touches Qt widgets directly."""
-        try:
-            with self._mixdown_lock:
-                buf, sr = self._render_mixdown_buffer(progress="play")
-            self._render_result_queue.put((generation, buf, sr, None))
-        except Exception as e:
-            self._render_result_queue.put((generation, None, None, e))
-
-    def _poll_async_render_result(self):
-        """GUI-thread handoff from the DSP worker into sounddevice playback."""
-        bar = getattr(self, 'play_progress_bar', getattr(self, 'render_progress_bar', None))
-        if bar is not None:
-            pct = int(getattr(self, '_play_progress', getattr(self, '_render_progress', 0)))
-            bar.setValue(pct)
-            if getattr(self, '_render_stage', '') and not getattr(self, 'is_playing', False):
-                self._set_scope_status(f"📊 {self._render_stage}… {pct}%")
-        try:
-            generation, buf, sr, error = self._render_result_queue.get_nowait()
-        except queue.Empty:
-            return
-
-        self._render_poll_timer.stop()
-        self._render_thread = None
-
-        # A Stop pressed while rendering invalidates the completed worker.
-        if generation != self._render_generation or not self.is_paused and getattr(self, '_render_cancelled', False):
-            return
-        self._render_cancelled = False
-
-        if error is not None:
-            self.is_playing = False
-            self.is_paused = False
-            print(f"[Audio] Background render failed: {error}")
-            if hasattr(self, 'scope_status_label'):
-                self._set_scope_status(f"📊 Render error: {error}")
-            QMessageBox.critical(self, "Playback Render Error", str(error))
-            return
-
-        try:
-            with self.play_lock:
-                self.play_buffer = np.asarray(buf, dtype=np.float32)
-                # Visualizers lock to final mix immediately (not intermediate engine waves)
-                try:
-                    self._push_visualizers_from_wave(self.play_buffer[:min(4096, len(self.play_buffer))])
-                except Exception:
-                    pass
-                self.play_sample_rate = int(sr)
-                self.play_cursor = 0
-                self.is_playing = True
-                self.is_paused = False
-            if HAS_SOUNDDEVICE:
-                if self.audio_stream is not None:
-                    try:
-                        self.audio_stream.stop(); self.audio_stream.close()
-                    except Exception:
-                        pass
-                self.audio_stream = sd.OutputStream(
-                    samplerate=sr, channels=1, dtype='float32',
-                    callback=self._audio_callback, blocksize=1024, latency='low'
-                )
-                self.audio_stream.start()
-            self.btn_play.setText("⏸ PAUSE Audiovisual Track")
-            self.btn_play.setStyleSheet("background-color: #00aa55; color: white; font-weight: bold;")
-            self._scope_update_timer.start()
-            if hasattr(self, 'scope_status_label'):
-                self._hide_play_progress(); self._set_scope_status("📊 Audiovisual Track  |  LIVE")
-            if hasattr(self, 'play_progress_bar'):
-                self.play_progress_bar.setValue(100)
-            self._play_finished_flag = False
-        except Exception as e:
-            self.is_playing = False
-            self.is_paused = False
-            print(f"[Audio] Playback start failed after render: {e}")
-            QMessageBox.critical(self, "Playback Error", str(e))
 
     def toggle_playback(self):
         """Unified PLAY/PAUSE/RESUME transport over the rendered audiovisual data stream."""
@@ -7834,7 +11378,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.btn_play.setText("▶ RESUME Audiovisual Track")
             self.btn_play.setStyleSheet("background-color: #b8860b; color: white; font-weight: bold;")
             if hasattr(self, 'scope_status_label'):
-                self._set_scope_status("📊 Audiovisual Track  |  PAUSED")
+                self.scope_status_label.setText("📊 Audiovisual Track  |  PAUSED")
             return
 
         # Paused -> resume exactly where the audio cursor stopped.
@@ -7859,26 +11403,41 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         if not HAS_SOUNDDEVICE:
             QMessageBox.warning(self, "Audio Engine", "sounddevice is not available. Install with: pip install sounddevice")
-            return
-
-        if self._render_thread is not None and self._render_thread.is_alive():
+        try:
             if hasattr(self, 'scope_status_label'):
-                self._set_scope_status("📊 Rendering Audiovisual Track…")
-            return
-
-        self._render_cancelled = False
-        if hasattr(self, 'scope_status_label'):
-            self._set_scope_status("📊 Rendering Audiovisual Track in background…")
-        self.btn_play.setText("⏳ RENDERING…")
-        self.btn_play.setStyleSheet("background-color: #6b5b00; color: white; font-weight: bold;")
-        self._start_async_play_render()
+                self.scope_status_label.setText("📊 Rendering Audiovisual Track…")
+            QApplication.processEvents()
+            buf, sr = self._render_mixdown_buffer()
+            with self.play_lock:
+                self.play_buffer = buf
+                self.play_sample_rate = sr
+                self.play_cursor = 0
+                self.is_playing = True
+                self.is_paused = False
+            if HAS_SOUNDDEVICE:
+                if self.audio_stream is not None:
+                    try:
+                        self.audio_stream.stop(); self.audio_stream.close()
+                    except Exception:
+                        pass
+                self.audio_stream = sd.OutputStream(
+                    samplerate=sr, channels=1, dtype='float32', callback=self._audio_callback,
+                    blocksize=1024, latency='low'
+                )
+                self.audio_stream.start()
+            self.btn_play.setText("⏸ PAUSE Audiovisual Track")
+            self.btn_play.setStyleSheet("background-color: #00aa55; color: white; font-weight: bold;")
+            self._scope_update_timer.start()
+            if hasattr(self, 'scope_status_label'):
+                self.scope_status_label.setText("📊 Audiovisual Track  |  LIVE")
+        except Exception as e:
+            self.is_playing = False
+            self.is_paused = False
+            print(f"[Audio] Playback start failed: {e}")
+            QMessageBox.critical(self, "Playback Error", str(e))
 
     def stop_playback(self):
         """Hard stop: reset the audiovisual transport to the beginning."""
-        self._render_generation += 1
-        self._render_cancelled = True
-        if hasattr(self, '_render_poll_timer'):
-            self._render_poll_timer.stop()
         was_active = self.is_playing or self.is_paused
         self.is_playing = False
         self.is_paused = False
@@ -7896,7 +11455,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.btn_play.setText("▶ PLAY Audiovisual Track")
             self.btn_play.setStyleSheet("")
         if hasattr(self, 'scope_status_label'):
-            self._hide_play_progress(); self._set_scope_status("📊 Audiovisual Track  |  Stopped")
+            self.scope_status_label.setText("📊 Audiovisual Track  |  Stopped")
         if isinstance(getattr(self, 'visual_oscilloscope', None), VisualOscilloscope):
             self.visual_oscilloscope.update_waveform(np.zeros(100))
         if hasattr(self, 'video_synth_viewer'):
@@ -7905,183 +11464,70 @@ class MathematiciansGrooveboxApp(QMainWindow):
             print("[Audio] Audiovisual playback stopped.")
 
     def export_mixdown_dialog(self):
-        """Queue WAV rendering/writing off the Qt GUI thread."""
         try:
-            if self._export_thread is not None and self._export_thread.is_alive():
-                if hasattr(self, 'scope_status_label'):
-                    self._set_scope_status("📊 Export already running…")
-                return
             default_filename = f"groovebox_mixdown_{self.export_counter:03d}.wav"
             file_path, _ = QFileDialog.getSaveFileName(
                 self, "Save Mixdown Audio", default_filename, "WAV Audio Files (*.wav)"
             )
             if not file_path:
                 return
-            self._export_progress = 0
-            self._export_stage = "Rendering WAV"
-            if hasattr(self, "export_progress_bar"):
-                self.export_progress_bar.setValue(0)
-            if hasattr(self, "scope_status_label"):
-                self._set_scope_status("📤 Rendering WAV in background… 0%")
-            self._export_result_queue = queue.Queue()
-            self._export_thread = threading.Thread(
-                target=self._export_wav_worker, args=(file_path,),
-                name="groovebox-wav-export", daemon=True
-            )
-            self._show_export_progress()
-            self._export_poll_timer.start()
-            self._export_thread.start()
-        except Exception as e:
-            print(f"[System] Export setup error: {e}")
-            QMessageBox.critical(self, "Export Error", str(e))
 
-    def _show_play_progress(self):
-        bar = getattr(self, "play_progress_bar", None)
-        if bar is not None:
-            bar.setVisible(True)
-        lbl = getattr(self, "lbl_play_progress", None)
-        if lbl is not None:
-            lbl.setVisible(True)
+            if hasattr(self, 'scope_status_label'):
+                self.scope_status_label.setText("📊 Rendering full mixdown for export…")
+            QApplication.processEvents()
 
-    def _hide_play_progress(self):
-        bar = getattr(self, "play_progress_bar", None)
-        if bar is not None:
-            bar.setVisible(False)
-            bar.setValue(0)
-        lbl = getattr(self, "lbl_play_progress", None)
-        if lbl is not None:
-            lbl.setVisible(False)
+            master, sample_rate = self._render_mixdown_buffer()
+            pcm = (master * 32767.0).astype(np.int16)
 
-    def _show_export_progress(self):
-        bar = getattr(self, "export_progress_bar", None)
-        if bar is not None:
-            bar.setVisible(True)
-        lbl = getattr(self, "lbl_export_progress", None)
-        if lbl is not None:
-            lbl.setVisible(True)
-
-    def _hide_export_progress(self):
-        bar = getattr(self, "export_progress_bar", None)
-        if bar is not None:
-            bar.setVisible(False)
-            bar.setValue(0)
-        lbl = getattr(self, "lbl_export_progress", None)
-        if lbl is not None:
-            lbl.setVisible(False)
-
-    def _set_play_progress(self, value, stage=None):
-
-        """Drive the Play bar only — never touches Export progress."""
-        self._play_progress = int(max(0, min(100, value)))
-        self._render_progress = self._play_progress  # legacy alias for play path
-        if stage is not None:
-            self._render_stage = stage
-
-    def _set_export_progress(self, value, stage=None):
-        """Drive the Export bar only — never touches Play progress."""
-        self._export_progress = int(max(0, min(100, value)))
-        if stage is not None:
-            self._export_stage = stage
-        bar = getattr(self, "export_progress_bar", None)
-        # Worker threads must not touch Qt; poller updates the bar.
-
-    def _export_wav_worker(self, file_path):
-
-        try:
-            with getattr(self, "_mixdown_lock", threading.Lock()):
-                master, sample_rate = self._render_mixdown_buffer(progress="export")
-            self._set_export_progress(98, "Writing WAV")
-            master = np.asarray(master, dtype=np.float32).ravel()
-            peak = float(np.max(np.abs(master))) if master.size else 0.0
-            if peak > 1.15:
-                master = master * (1.0 / peak)  # soft ceiling — avoid flattening every mix
-            pcm = (np.clip(master, -1.0, 1.0) * 32767.0).astype(np.int16)
             if wavfile is not None:
                 wavfile.write(file_path, sample_rate, pcm)
             else:
-                with wave.open(file_path, 'wb') as wf:
-                    wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sample_rate)
+                with wave.open(file_path, 'w') as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(sample_rate)
                     wf.writeframes(pcm.tobytes())
-            self._export_result_queue.put(("wav", file_path, None, master, sample_rate))
-        except Exception as e:
-            self._export_result_queue.put(("wav", file_path, e, None, None))
 
-    def _poll_export_result(self):
-        bar = getattr(self, 'export_progress_bar', None)
-        pct = int(getattr(self, '_export_progress', 0))
-        if bar is not None:
-            bar.setValue(pct)
-        stage = getattr(self, '_export_stage', getattr(self, '_render_stage', 'Export'))
-        if hasattr(self, 'scope_status_label') and self._export_thread is not None and self._export_thread.is_alive():
-            self._set_scope_status(f"📤 {stage}… {pct}%")
-        try:
-            kind, path, error, master, sr = self._export_result_queue.get_nowait()
-        except queue.Empty:
-            return
-        self._export_poll_timer.stop()
-        self._export_thread = None
-        if error is not None:
-            self._set_scope_status(f"📊 Export error: {error}")
-            QMessageBox.critical(self, "Export Error", str(error))
-            return
-        if kind == "wav":
-            getattr(self, "export_progress_bar", self.render_progress_bar).setValue(100)
-            self._export_progress = 100
-            if isinstance(getattr(self, 'visual_oscilloscope', None), VisualOscilloscope) and master is not None:
-                prev = master[: min(len(master), int(sr) // 2)]
-                if len(prev):
-                    idx = np.linspace(0, len(prev) - 1, min(100, len(prev))).astype(int)
-                    self.visual_oscilloscope.update_waveform(prev[idx])
+            # Preview into scope
+            if isinstance(getattr(self, 'visual_oscilloscope', None), VisualOscilloscope):
+                prev = master[: min(len(master), sample_rate // 2)]
+                idx = np.linspace(0, len(prev) - 1, 100).astype(int)
+                self.visual_oscilloscope.update_waveform(prev[idx])
+
+            print(f"[System] Success: exported → {file_path}")
             self.export_counter += 1
-            self._hide_export_progress(); self._set_scope_status(f"📊 Export complete → {os.path.basename(path)}")
-            print(f"[System] Success: exported → {path}")
+            if hasattr(self, 'scope_status_label'):
+                self.scope_status_label.setText(f"📊 Export complete → {os.path.basename(file_path)}")
+        except Exception as e:
+            print(f"[System] Export error: {e}")
+            if hasattr(self, 'scope_status_label'):
+                self.scope_status_label.setText(f"📊 Export error: {e}")
+            QMessageBox.critical(self, "Export Error", str(e))
 
     # =====================================================================
     # VIDEO_EXPORT_FEATURE — 2.5D render + audio mux + optional source-video blend
     # Revert: restore the prior export_video_dialog implementation.
     # =====================================================================
     def export_video_dialog(self, include_audio=True):
-        """Start 2.5D video export off the Qt GUI thread."""
-        try:
-            if self._export_thread is not None and self._export_thread.is_alive():
-                self._set_scope_status("🎬 Export already running…")
-                return
-            out_path, _ = QFileDialog.getSaveFileName(
-                self, "Export Video", f"groovebox_video_{self.export_counter:03d}.mp4",
-                "MP4 Video (*.mp4);;All Files (*)"
-            )
-            if not out_path:
-                return
-            self._export_progress = 0
-            self._export_stage = "Rendering video audio"
-            if hasattr(self, "export_progress_bar"):
-                self.export_progress_bar.setValue(0)
-            if hasattr(self, "scope_status_label"):
-                self._set_scope_status("🎬 Rendering video + audio in background… 0%")
-            self._export_result_queue = queue.Queue()
-            self._export_thread = threading.Thread(
-                target=self._export_video_worker, args=(out_path, bool(include_audio)),
-                name="groovebox-video-export", daemon=True
-            )
-            self._show_export_progress()
-            self._export_poll_timer.start()
-            self._export_thread.start()
-        except Exception as e:
-            print(f"[Video] export setup error: {e}")
-            QMessageBox.critical(self, "Video Export Error", str(e))
-
-    def _export_video_worker(self, out_path, include_audio):
+        """Render the 2.5D geometry, optionally mux rendered audio, and optionally blend source video."""
         tmp = None
         try:
             from PIL import Image
             ffmpeg = shutil.which("ffmpeg")
             if not ffmpeg:
                 raise RuntimeError("ffmpeg is required for video export. Install ffmpeg and try again.")
-            self._export_progress = 0
-            self._render_stage = "Rendering video audio"
-            master, sr = self._render_mixdown_buffer(progress="export")
-            self._export_progress = 50
-            self._render_stage = "Rendering video frames"
+
+            out_path, _ = QFileDialog.getSaveFileName(
+                self, "Export Video", f"groovebox_video_{self.export_counter:03d}.mp4",
+                "MP4 Video (*.mp4);;All Files (*)"
+            )
+            if not out_path:
+                return
+            if hasattr(self, 'scope_status_label'):
+                self.scope_status_label.setText("🎬 Rendering 2.5D video + audio…")
+            QApplication.processEvents()
+
+            master, sr = self._render_mixdown_buffer()
             fps = 24
             frame_samples = max(1, int(sr / fps))
             n_frames = max(1, int(np.ceil(len(master) / frame_samples)))
@@ -8092,28 +11538,34 @@ class MathematiciansGrooveboxApp(QMainWindow):
             audio_path = os.path.join(tmp, "groovebox_audio.wav")
             if include_audio:
                 if wavfile is not None:
-                    wavfile.write(audio_path, sr, (np.clip(np.asarray(master, dtype=np.float32).ravel(), -1, 1) * 32767).astype(np.int16))
+                    wavfile.write(audio_path, sr, (np.clip(master, -1, 1) * 32767).astype(np.int16))
                 else:
                     with wave.open(audio_path, 'wb') as wf:
                         wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr)
                         wf.writeframes((np.clip(master, -1, 1) * 32767).astype(np.int16).tobytes())
-            self._render_stage = "Rendering video frames"
+
             eng = getattr(self, 'video_synth_engine', None) or VideoSynthEngine(48)
             w, h = 640, 360
             for fi in range(n_frames):
-                a = fi * frame_samples; b = min(len(master), a + frame_samples)
-                eng.set_waveform(master[a:b])
+                a = fi * frame_samples
+                b = min(len(master), a + frame_samples)
+                chunk = master[a:b]
+                eng.set_waveform(chunk)
                 frame = eng.render_frame(w, h)
                 Image.fromarray(frame, mode="RGB").save(os.path.join(frames_dir, f"frame_{fi:05d}.png"))
-                self._export_progress = 60 + int(((fi + 1) / max(n_frames, 1)) * 30)
-            self._export_progress = 92
-            self._render_stage = "Encoding MP4"
+                if fi % 12 == 0 and hasattr(self, 'scope_status_label'):
+                    self.scope_status_label.setText(f"🎬 Frames {fi}/{n_frames}…")
+                    QApplication.processEvents()
+
             pattern = os.path.join(frames_dir, "frame_%05d.png")
             source_video = self.imported_video_path if getattr(self, 'imported_video_path', '') else ''
-            source_has_audio = bool(getattr(self, 'imported_video_meta', {}).get('has_audio', False))
-            duration = f"{n_frames / fps:.6f}"
             if source_video and os.path.abspath(source_video) != os.path.abspath(out_path):
-                if include_audio and source_has_audio:
+                # VIDEO_REEMULATION_PIPELINE: source video is the visual reference. Its
+                # decoded audio has already become the imported carrier; if it has an
+                # audio stream, a quiet direct source channel is also mixed into the final
+                # rendered audio. The 2.5D frame sequence is the visual re-emulation.
+                source_has_audio = bool(getattr(self, 'imported_video_meta', {}).get('has_audio', False))
+                if source_has_audio:
                     filter_complex = (
                         "[1:v]scale=640:360:force_original_aspect_ratio=increase,"
                         "crop=640:360,setsar=1,format=yuv420p[iv];"
@@ -8125,22 +11577,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         ffmpeg, "-y", "-framerate", str(fps), "-i", pattern,
                         "-stream_loop", "-1", "-i", source_video,
                         "-i", audio_path, "-i", source_video,
-                        "-filter_complex", filter_complex, "-map", "[v]", "-map", "[a]",
-                        "-t", duration, "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-                        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-shortest", out_path
-                    ]
-                elif include_audio:
-                    filter_complex = (
-                        "[1:v]scale=640:360:force_original_aspect_ratio=increase,"
-                        "crop=640:360,setsar=1,format=yuv420p[iv];"
-                        "[0:v][iv]blend=all_mode=screen:all_opacity=0.35[v]"
-                    )
-                    cmd = [
-                        ffmpeg, "-y", "-framerate", str(fps), "-i", pattern,
-                        "-stream_loop", "-1", "-i", source_video, "-i", audio_path,
-                        "-filter_complex", filter_complex, "-map", "[v]", "-map", "2:a:0",
-                        "-t", duration, "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-                        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-shortest", out_path
+                        "-filter_complex", filter_complex,
+                        "-map", "[v]", "-map", "[a]",
+                        "-t", f"{n_frames / fps:.6f}",
+                        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+                        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+                        "-shortest", out_path,
                     ]
                 else:
                     filter_complex = (
@@ -8151,49 +11593,36 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     cmd = [
                         ffmpeg, "-y", "-framerate", str(fps), "-i", pattern,
                         "-stream_loop", "-1", "-i", source_video,
-                        "-filter_complex", filter_complex, "-map", "[v]",
-                        "-t", duration, "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-                        "-pix_fmt", "yuv420p", out_path
+                        "-i", audio_path,
+                        "-filter_complex", filter_complex,
+                        "-map", "[v]", "-map", "2:a:0",
+                        "-t", f"{n_frames / fps:.6f}",
+                        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+                        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+                        "-shortest", out_path,
                     ]
-            elif include_audio:
-                cmd = [
-                    ffmpeg, "-y", "-framerate", str(fps), "-i", pattern, "-i", audio_path,
-                    "-map", "0:v:0", "-map", "1:a:0", "-shortest", "-c:v", "libx264",
-                    "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
-                    "-c:a", "aac", "-b:a", "192k", out_path
-                ]
             else:
                 cmd = [
                     ffmpeg, "-y", "-framerate", str(fps), "-i", pattern,
-                    "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-                    "-pix_fmt", "yuv420p", out_path
+                    "-i", audio_path, "-map", "0:v:0", "-map", "1:a:0",
+                    "-shortest", "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+                    "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", out_path,
                 ]
             proc = subprocess.run(cmd, capture_output=True, text=True)
             if proc.returncode != 0:
                 raise RuntimeError(proc.stderr[-1600:] if proc.stderr else "ffmpeg failed")
-            self._export_progress = 100
-            self._render_stage = "Complete"
-            self._export_result_queue.put(("video", out_path, None, None, None))
+
+            self.export_counter += 1
+            if hasattr(self, 'scope_status_label'):
+                suffix = " + source video blend" if source_video else ""
+                self.scope_status_label.setText(f"🎬 Video + rendered audio exported{suffix} → {os.path.basename(out_path)}")
+            QMessageBox.information(self, "Export complete", f"Saved:\n{out_path}")
         except Exception as e:
-            self._export_result_queue.put(("video", out_path, e, None, None))
+            print(f"[Video] export error: {e}")
+            QMessageBox.critical(self, "Video Export Error", str(e))
         finally:
             if tmp:
                 shutil.rmtree(tmp, ignore_errors=True)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        cw = self.centralWidget()
-        canvas = getattr(self, "parametric_background", None)
-        if canvas is None and hasattr(self, "ui_manager"):
-            canvas = getattr(self.ui_manager, "parametric_background", None)
-        if canvas is not None and cw is not None:
-            try:
-                canvas.setParent(cw)
-                canvas.setGeometry(cw.rect())
-                canvas.lower()
-                canvas.show()
-            except Exception:
-                pass
 
     def closeEvent(self, event):
         """Ensure audio stream and PKP pad clock are torn down on close."""
@@ -8206,54 +11635,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
         super().closeEvent(event)
-
-
-    def changeEvent(self, event):
-        """Bring main window back when restored from minimized / under floating windows."""
-        try:
-            from PyQt6.QtCore import QEvent
-            if event.type() == QEvent.Type.WindowStateChange:
-                if not self.isMinimized():
-                    self.showNormal()
-                    self.raise_()
-                    self.activateWindow()
-        except Exception:
-            pass
-        try:
-            super().changeEvent(event)
-        except Exception:
-            pass
-
-    def showEvent(self, event):
-        try:
-            super().showEvent(event)
-        except Exception:
-            pass
-        try:
-            self.raise_()
-            self.activateWindow()
-        except Exception:
-            pass
-
-    def focusInEvent(self, event):
-        try:
-            super().focusInEvent(event)
-        except Exception:
-            pass
-        try:
-            self.raise_()
-        except Exception:
-            pass
-
-    def _bring_main_to_front(self):
-        """Call when user needs the main DAW above floating editors."""
-        try:
-            self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
-            self.showNormal()
-            self.raise_()
-            self.activateWindow()
-        except Exception as exc:
-            print(f"[Window] restore: {exc}")
 
     def spawn_floating_window(self, attr_name, window_title):
         window = getattr(self, attr_name, None)
@@ -8281,13 +11662,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 ))
 
                 time_scale_layout = QHBoxLayout()
-                time_scale_layout.addWidget(QLabel("Playlist Row Time Base:"))
-                time_scale_input = QLineEdit("Unquantized Free Time")
-                time_scale_input.setObjectName("playlistRowTimeBase")
-                time_scale_input.setToolTip("Default is Unquantized Free Time. Enter a numeric seconds value such as 3.5s for a fixed base; generation still adds randomized intervals.")
-                time_scale_input.setMinimumWidth(190)
-                self.playlist_time_base_input = time_scale_input
-                time_scale_layout.addWidget(time_scale_input)
+                time_scale_layout.addWidget(QLabel("Row time base (unquantized unless Snap):"))
+                time_scale_combo = QComboBox()
+                time_scale_combo.addItems(["Unquantized Free-Time", "1.0s", "3.5s (Standard)", "15.0s", "30.0s", "60.0s (1 Minute)"])
+                time_scale_combo.setCurrentIndex(0)  # unquantized default
+                time_scale_layout.addWidget(time_scale_combo)
                 time_scale_layout.addStretch(1)
                 main_layout.addLayout(time_scale_layout)
 
@@ -8327,7 +11706,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             item.setBackground(bg_color)
 
                 def update_time_markers():
-                    selection_text = time_scale_input.text().strip()
+                    selection_text = time_scale_combo.currentText()
                     # POWER_V3_EMPTY_PLAYLIST: timing is generated only for rows that
                     # actually contain a painted/programmed event. Opening the editor
                     # therefore does not silently turn 96 blank rows into playlist data.
@@ -8339,58 +11718,30 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         )
                         if not has_content:
                             continue
-                        if selection_text.lower().replace("-", " ").strip() in ("unquantized free time", "unquantized free-time", "free time") or "unquantized" in selection_text.lower():
+                        if "Unquantized" in selection_text:
                             time_str = f"Free-Time [{row_idx * MEUM_CONSTANT:.2f}s]"
                         else:
-                            import re
-                            m = re.search(r"(-?\d+(?:\.\d+)?)\s*s?", selection_text)
-                            step_seconds = max(1e-4, float(m.group(1))) if m else 1.0
+                            step_seconds = 60.0 if "60.0s" in selection_text else (30.0 if "30.0s" in selection_text else (15.0 if "15.0s" in selection_text else (3.5 if "3.5s" in selection_text else 1.0)))
                             total_seconds = row_idx * step_seconds
                             time_str = f"T + {int(total_seconds // 60)}m {int(total_seconds % 60)}s" if total_seconds >= 60 else f"T + {total_seconds:.1f}s"
                         track_table.set_cell_item(row_idx, 0, QTableWidgetItem(time_str))
                     self.sync_playlist_grid_to_memory()
 
-                time_scale_input.editingFinished.connect(update_time_markers)
+                time_scale_combo.currentIndexChanged.connect(update_time_markers)
 
                 for row_idx in range(rows):
                     data_entry = self.master_playlist_data[row_idx] if row_idx < len(self.master_playlist_data) else {}
-                    auto_list = getattr(self, 'playlist_automation', None) or []
-                    auto_entry = auto_list[row_idx] if row_idx < len(auto_list) and isinstance(auto_list[row_idx], dict) else {}
 
                     empty = not any(v not in (None, "", [], {}) for v in data_entry.values())
-
-                    # Column 1 identity: two schemas can land here.
-                    #  - Randomizer/Phase-Lock/midpoint boots (_paint_operator_pattern_to_playlist)
-                    #    store the full multi-instance CSV in 'operators_csv' (preferred) or
-                    #    the raw 'operators' list.
-                    #  - Plain seed/sequence boots (_provide_seed_program_parameters) only ever
-                    #    set the single legacy 'operator' field.
-                    # Previously this always read 'operator' alone, so a boot with both engines
-                    # active showed just the first picked instrument instead of the full
-                    # comma-separated list.
-                    operators_csv = ""
-                    if not empty:
-                        operators_csv = data_entry.get("operators_csv") or ""
-                        if not operators_csv:
-                            ops_list = data_entry.get("operators") or []
-                            operators_csv = ", ".join(str(o) for o in ops_list) if ops_list else str(data_entry.get("operator", ""))
-                    item_inst = QTableWidgetItem(operators_csv)
+                    item_inst = QTableWidgetItem("" if empty else str(data_entry.get("operator", "")))
                     if not empty:
                         item_inst.setBackground(palette_colors[row_idx % len(palette_colors)])
                     track_table.set_cell_item(row_idx, 0, QTableWidgetItem("" if empty else str(data_entry.get("time_marker", ""))))
                     track_table.set_cell_item(row_idx, 1, item_inst)
                     track_table.set_cell_item(row_idx, 2, QTableWidgetItem("" if empty else str(data_entry.get("script_tag", ""))))
                     track_table.set_cell_item(row_idx, 3, QTableWidgetItem("" if empty else f"{float(data_entry.get('velocity', 1.0))*100:.1f}%"))
-                    # Paint all ten cell parameters from the authoritative row/automation state.
-                    track_table.set_cell_item(row_idx, 4, QTableWidgetItem("" if empty else str(data_entry.get("effect_target") or data_entry.get("auto_target") or data_entry.get("modulation", ""))))
-                    track_table.set_cell_item(row_idx, 5, QTableWidgetItem("" if empty else str(data_entry.get("auto_amount", ""))))
-                    direction_text = data_entry.get("direction_vector", "")
-                    if not direction_text and not empty:
-                        direction_text = "+1" if float(auto_entry.get("direction", 1.0) or 1.0) >= 0 else "-1"
-                    track_table.set_cell_item(row_idx, 6, QTableWidgetItem("" if empty else str(direction_text)))
-                    track_table.set_cell_item(row_idx, 7, QTableWidgetItem("" if empty else str(data_entry.get("multi_seq", ""))))
-                    track_table.set_cell_item(row_idx, 8, QTableWidgetItem("" if empty else str(data_entry.get("coverage", ""))))
-                    track_table.set_cell_item(row_idx, 9, QTableWidgetItem("" if empty else str(data_entry.get("blend_partner", ""))))
+                    track_table.set_cell_item(row_idx, 4, QTableWidgetItem("" if empty else str(data_entry.get("modulation", ""))))
+                    track_table.set_cell_item(row_idx, 5, QTableWidgetItem("" if empty else str(data_entry.get("multi_seq", ""))))
 
                 update_time_markers()
                 main_layout.addWidget(track_table)
@@ -8458,9 +11809,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 main_layout.addLayout(btn_layout)
             else:
                 main_layout.addWidget(QLabel(f"Active Panel: {window_title}"))
-
-            setattr(self, attr_name, window)
-
+        setattr(self, attr_name, window)
         try:
             attach_math_decor(window, app=self)
         except Exception as _de:
