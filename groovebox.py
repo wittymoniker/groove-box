@@ -1863,7 +1863,17 @@ class ParametricMathBackground(QWidget):
         sf = scalars[index % len(scalars)]
         sf2 = scalars[(index * 7 + 3) % len(scalars)]
         hue = (index / self.WAVE_COUNT + 0.12 * sf + 0.08 * math.sin(phase * 0.7 + index)) % 1.0
-        painter.setPen(QPen(QColor.fromHsvF(hue, 0.72, 0.95, 0.38 + 0.22 * sf), 1.4 + 1.6 * sf))
+        painter.setPen(
+            QPen(
+                QColor.fromHsvF(
+                    hue,
+                    0.72,
+                    0.95,
+                    0.48 + 0.24 * sf
+                ),
+                2.8 + 2.8 * sf
+            )
+        )
         path = QPainterPath()
         corr_x, corr_y = AsymmetryCorrection.offset(index, self.WAVE_COUNT, phase, scalars)
         base_y = height * (0.08 + 0.84 * ((index * 0.6180339887) % 1.0) + corr_y)
@@ -8772,39 +8782,131 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def init_ui_components(self):
         high_contrast_stylesheet = """
-            QMainWindow, QWidget, QDialog {
-                background-color: #060606;
-                color: #ffffff;
-                font-family: sans-serif;
+            QMainWindow, QDialog {
+                background: transparent;
+                color: #050505;
+                font-family: 'Segoe UI', Arial, sans-serif;
                 font-size: 10pt;
             }
-            QPushButton {
-                background-color: #121212;
-                color: #00ffff;
-                border: 2px solid #00ffff;
-                border-radius: 4px;
-                padding: 5px 10px;
-                font-weight: bold;
+
+            QWidget {
+                background: transparent;
+                color: #050505;
+                font-family: 'Segoe UI', Arial, sans-serif;
             }
-            QPushButton:hover {
-                background-color: #00ffff;
-                color: #060606;
+
+            QWidget#GrooveboxCentral,
+            QWidget#ParametricMathBackground {
+                background: transparent;
             }
-            QPushButton:checked {
-                background-color: #00ffff;
-                color: #060606;
-                border: 2px solid #ffffff;
+
+            QGroupBox {
+                background: rgba(255,255,255,0.08);
+                color: #050505;
+                border: none;
+                margin-top: 10px;
+                padding-top: 12px;
             }
-            QSpinBox, QComboBox, QLineEdit, QDoubleSpinBox {
-                background-color: #181818;
-                color: #ffffff;
-                border: 2px solid #444444;
-                border-radius: 3px;
-                padding: 3px;
+
+            QGroupBox::title {
+                background: transparent;
+                color: #050505;
+                border: none;
+                padding: 0;
+                font-weight: 900;
             }
+
             QLabel {
-                color: #ffffff;
-                font-weight: bold;
+                background: transparent;
+                color: #050505;
+                border: none;
+                font-weight: 700;
+            }
+
+            QPushButton {
+                background: transparent;
+                color: #050505;
+                border: none;
+                border-radius: 0;
+                padding: 6px 10px;
+                font-weight: 900;
+            }
+
+            QPushButton:hover {
+                background: rgba(255,255,255,0.20);
+            }
+
+            QPushButton:checked {
+                background: rgba(255,255,255,0.28);
+                color: #050505;
+            }
+
+            QLineEdit,
+            QSpinBox,
+            QDoubleSpinBox,
+            QTextEdit,
+            QPlainTextEdit {
+                background: rgba(255,255,255,0.10);
+                color: #050505;
+                border: none;
+                border-bottom: 2px solid rgba(0,0,0,0.45);
+                border-radius: 0;
+                padding: 4px 2px;
+                selection-background-color: rgba(0,0,0,0.20);
+                selection-color: #050505;
+            }
+
+            QLineEdit:focus,
+            QTextEdit:focus,
+            QPlainTextEdit:focus {
+                border-bottom: 3px solid #050505;
+            }
+
+            QComboBox {
+                background: transparent;
+                color: #050505;
+                border: none;
+                border-bottom: 2px solid rgba(0,0,0,0.40);
+                border-radius: 0;
+                padding: 4px;
+            }
+
+            QTableWidget,
+            QListWidget {
+                background: rgba(255,255,255,0.07);
+                color: #050505;
+                border: none;
+                gridline-color: rgba(0,0,0,0.12);
+            }
+
+            QHeaderView::section {
+                background: transparent;
+                color: #050505;
+                border: none;
+                font-weight: 900;
+            }
+
+            QSlider::groove:horizontal {
+                height: 3px;
+                background: rgba(0,0,0,0.30);
+            }
+
+            QSlider::handle:horizontal {
+                width: 10px;
+                margin: -4px 0;
+                border-radius: 5px;
+                background: #050505;
+            }
+
+            QProgressBar {
+                background: rgba(255,255,255,0.10);
+                color: #050505;
+                border: none;
+                text-align: center;
+            }
+
+            QProgressBar::chunk {
+                background: #050505;
             }
         """
         if QApplication.instance():
@@ -9600,13 +9702,147 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return self.input_seed_val.text().strip()
 
     def get_numeric_seed(self):
-        """Converts irrational string seeds into a stable integer hash for NumPy."""
-        seed_text = self._seed_text() if hasattr(self, 'input_seed_val') else "42"
-        try:
-            val = float(seed_text)
-            return abs(hash(val)) % (2**31)
-        except ValueError:
-            return abs(hash(seed_text)) % (2**31)
+        """
+        Resolve the Seed field exactly once into a deterministic numeric value.
+
+        Accepted:
+            123
+            123.45
+            (123)
+            1, 2, 3
+            1
+            2
+            3
+            sin(t)
+            1 if sin(t) >= -0.5 else 2
+
+        Also accepts shorthand:
+            if(sin(t)>=-0.5) 1 elif 2
+
+        'return expr' is accepted for script-style seed input.
+
+        IMPORTANT:
+            This method is composition-state evaluation.
+            It must never be called from an audio-note/unison/sample loop.
+        """
+        import hashlib
+        import re
+
+        raw = self._seed_text() if hasattr(self, "_seed_text") else ""
+        text = str(raw or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+
+        if not text:
+            return 0.0
+
+        # Accept script-style "return expression".
+        text = re.sub(r"^\s*return\s+", "", text, count=1, flags=re.I)
+
+        # Accept:
+        #   if(condition) true elif false
+        shorthand = re.fullmatch(
+            r"\s*if\s*\((.*?)\)\s*(.*?)\s+elif\s+(.*?)\s*",
+            text,
+            flags=re.S,
+        )
+        if shorthand:
+            condition, yes_expr, no_expr = shorthand.groups()
+            text = f"({yes_expr}) if ({condition}) else ({no_expr})"
+
+        env = {
+            "__builtins__": {},
+            "sin": math.sin,
+            "cos": math.cos,
+            "tan": math.tan,
+            "sqrt": math.sqrt,
+            "log": math.log,
+            "log2": math.log2,
+            "exp": math.exp,
+            "abs": abs,
+            "min": min,
+            "max": max,
+            "pi": math.pi,
+            "e": math.e,
+            "PHI": PHI,
+            "MEUM": MEUM,
+            "MEUM_NORM": MEUM_NORM,
+            "MEUM_INV": MEUM_INV,
+            "t": 0.0,
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0,
+        }
+
+        def evaluate(expr):
+            expr = expr.strip()
+
+            # Remove harmless outer parentheses.
+            while len(expr) >= 2 and expr[0] == "(" and expr[-1] == ")":
+                try:
+                    ast.parse(expr, mode="eval")
+                except Exception:
+                    break
+                expr = expr[1:-1].strip()
+
+            try:
+                value = float(expr)
+                return value if math.isfinite(value) else None
+            except Exception:
+                pass
+
+            try:
+                tree = ast.parse(expr, mode="eval")
+                value = eval(
+                    compile(tree, "<groovebox-seed>", "eval"),
+                    env,
+                )
+                value = float(value)
+                return value if math.isfinite(value) else None
+            except Exception:
+                return None
+
+        # Whole expression first.
+        value = evaluate(text)
+        if value is not None:
+            return value
+
+        # Commas and line returns are composite seed components.
+        parts = [
+            p.strip()
+            for p in re.split(r"[,\n]+", text)
+            if p.strip()
+        ]
+
+        values = []
+        for part in parts:
+            # Permit "return ..." on individual lines too.
+            part = re.sub(r"^\s*return\s+", "", part, count=1, flags=re.I)
+            value = evaluate(part)
+            if value is not None:
+                values.append(value)
+
+        if values:
+            payload = "|".join(
+                f"{v:.17g}" for v in values
+            ).encode("utf-8")
+
+            digest = hashlib.sha256(payload).digest()
+            integer = int.from_bytes(digest[:8], "big")
+
+            return (
+                integer / float(2**64 - 1)
+            ) * 2.0 - 1.0
+
+        # Unsupported text gets a deterministic token.
+        # It does NOT get Python's randomized hash().
+        digest = hashlib.sha256(
+            text.encode("utf-8", "replace")
+        ).digest()
+
+        integer = int.from_bytes(digest[:8], "big")
+
+        return (
+            integer / float(2**64 - 1)
+        ) * 2.0 - 1.0
 
     def open_domain_equation_editor(self):
         """Open the partitionable time/space domain equation editor dialog."""
@@ -10215,20 +10451,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _seed_is_absent(self):
         """
-        True when seed field is empty/whitespace OR numeric zero (0, 0.0, 0.00…).
-        Empty and zero are treated the same for bootstrap: no geometric anchor is
-        considered present, so seed may be derived or kit-assigned. Non-zero values
-        (incl. tiny irrationals) count as a real seed.
+        Empty/zero seed means no explicit geometric anchor.
+        Expressions/scripts count as present when they evaluate successfully.
         """
-        if not hasattr(self, 'input_seed_val'):
+        if not hasattr(self, "input_seed_val"):
             return True
-        text = self._seed_text()
-        if text == "":
+
+        text = self._seed_text().strip()
+
+        if not text:
             return True
+
         try:
-            return abs(float(text)) == 0.0
-        except ValueError:
-            # Non-numeric text still counts as a seed token (hashed later)
+            return abs(float(self.get_numeric_seed())) == 0.0
+        except Exception:
             return False
 
     def _fingerprint_program(self):
@@ -11341,11 +11577,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if n < frames:
                 outdata[n:, 0] = 0
             if self.play_cursor >= len(self.play_buffer):
-                self.is_playing = False  # end of buffer; UI timer will finalize stop
+                self.play_cursor = len(self.play_buffer)
+                self.is_playing = False
+                self.is_paused = False
+                self._play_finished_flag = True
+                self._transport_finished = True  # end of buffer; UI timer will finalize stop
 
     def _update_scope_from_playhead(self):
         """UI-thread timer: push latest audio chunk into scope + 2.5D video synth."""
         if not self.is_playing:
+            self._transport_finished = True
+            self.is_playing = False
+            self.is_paused = False
             self.stop_playback()
             return
         chunk = self._last_scope_chunk
@@ -11362,6 +11605,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def toggle_playback(self):
         """Unified PLAY/PAUSE/RESUME transport over the rendered audiovisual data stream."""
+        # A completed one-shot is NOT a paused stream.
+        # Start a fresh transport on the next PLAY.
+        if getattr(self, "_transport_finished", False):
+            self.is_playing = False
+            self.is_paused = False
+            self.play_cursor = 0
+            self._transport_finished = False
+            self._render_cancelled = False
+
         # Playing -> pause without destroying the rendered buffer/cursor.
         if self.is_playing:
             self.is_playing = False
@@ -11386,6 +11638,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             try:
                 self.is_playing = True
                 self.is_paused = False
+                self._transport_finished = False
+                self._play_finished_flag = False
                 if HAS_SOUNDDEVICE:
                     self.audio_stream = sd.OutputStream(
                         samplerate=self.play_sample_rate, channels=1, dtype='float32',
@@ -11414,6 +11668,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.play_cursor = 0
                 self.is_playing = True
                 self.is_paused = False
+                self._transport_finished = False
+                self._play_finished_flag = False
             if HAS_SOUNDDEVICE:
                 if self.audio_stream is not None:
                     try:
@@ -11441,6 +11697,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         was_active = self.is_playing or self.is_paused
         self.is_playing = False
         self.is_paused = False
+        self._transport_finished = True
+        self._stop_requested = True
         if hasattr(self, '_scope_update_timer') and self._scope_update_timer.isActive():
             self._scope_update_timer.stop()
         if getattr(self, 'audio_stream', None) is not None:
@@ -11462,6 +11720,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.video_synth_viewer.update_from_audio(np.zeros(100, dtype=np.float32))
         if was_active:
             print("[Audio] Audiovisual playback stopped.")
+        self._stop_requested = False
 
     def export_mixdown_dialog(self):
         try:
