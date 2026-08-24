@@ -19,6 +19,7 @@ import random
 import struct
 import math
 import ast
+import hashlib
 import copy
 import wave
 import time
@@ -95,6 +96,115 @@ UI_DRIFT = MEUM_NORM * PHI_INV                                  # caption micro-
 PAINT_RATE_HZ = 2.395                                           # max single-cell stack rate
 PAINT_PERIOD_S = 1.0 / PAINT_RATE_HZ                            # ~0.418 s between stacks
 PAINT_INSTANCE_LIMIT = 8
+
+# SAFE_SEED_CAST — get_numeric_seed() intentionally returns a float (it's a
+# script/expression evaluator: sin(t), fractional values, hashed floats for
+# non-numeric text). NumPy's RNG APIs (np.random.seed, np.random.default_rng)
+# require a true integer and raise:
+#   "Cannot cast scalar from dtype('float64') to dtype('int64')
+#    according to the rule 'safe'"
+# if handed a float directly — that's the render/export popup. Every call
+# site that seeds NumPy from a user/composition seed value goes through this
+# instead of relying on an implicit/unsafe cast.
+def _parse_if_elif_shorthand(text):
+    """Parse "if(<condition>) <yes> elif <no>" into (condition, yes, no).
+
+    Uses balanced-parenthesis scanning rather than a lazy regex, because a
+    naive r"\\((.*?)\\)" stops at the FIRST ")" it finds — which breaks the
+    moment the condition itself contains a call like sin(t), e.g.
+    "if(sin(t)>=-0.5) 1 elif 2" would wrongly split the condition as
+    "sin(t" instead of "sin(t)>=-0.5". Returns None if the text doesn't
+    match the "if (...) ... elif ..." shape at all.
+    """
+    import re as _re
+    m = _re.match(r"\s*if\s*\(", text, flags=_re.I)
+    if not m:
+        return None
+    depth = 0
+    i = m.end() - 1  # index of the opening '('
+    start = m.end()
+    for j in range(i, len(text)):
+        if text[j] == "(":
+            depth += 1
+        elif text[j] == ")":
+            depth -= 1
+            if depth == 0:
+                condition = text[start:j]
+                rest = text[j + 1:]
+                em = _re.search(r"\belif\b", rest, flags=_re.I)
+                if not em:
+                    return None
+                yes_expr = rest[:em.start()].strip()
+                no_expr = rest[em.end():].strip()
+                return condition, yes_expr, no_expr
+    return None
+
+
+def _safe_int_seed(value):
+    """Deterministically fold any seed value into a NumPy-safe non-negative
+    int32-range integer. Whole-number floats map to their exact integer
+    (so seed=7 and seed=7.0 behave identically); fractional or otherwise
+    unrepresentable values are hashed so the mapping stays deterministic
+    and well distributed instead of raising or truncating unpredictably."""
+    import struct
+    try:
+        as_float = float(value)
+    except Exception:
+        as_float = 0.0
+    if not math.isfinite(as_float):
+        as_float = 0.0
+    if as_float == int(as_float) and abs(as_float) < 2**31:
+        return int(as_float) & 0x7FFFFFFF
+    packed = struct.pack('>d', as_float)
+    digest = hashlib.sha256(packed).digest()
+    return int.from_bytes(digest[:4], 'big') & 0x7FFFFFFF
+
+
+def evaluate_seed_expression_at_time(seed_text, t_value):
+    """Time-domain (T-axis) evaluation of a seed/script expression, for use
+    INSIDE the audio/DSP render loop — the counterpart to get_numeric_seed(),
+    which is composition-state evaluation and is documented to never be
+    called per-sample. Scripts that reference `t`, or use if/elif shorthand
+    keyed on `t` (e.g. "if(sin(t)>=-0.5) 1 elif 2"), resolve against the
+    real render-time `t` here instead of the static t=0.0 used at the
+    composition-state boundary. Returns a float; callers that need an
+    integer NumPy seed should pass the result through _safe_int_seed().
+    """
+    import re as _re
+
+    text = str(seed_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return 0.0
+
+    text = _re.sub(r"^\s*return\s+", "", text, count=1, flags=_re.I)
+    shorthand = _parse_if_elif_shorthand(text)
+    if shorthand:
+        condition, yes_expr, no_expr = shorthand
+        text = f"({yes_expr}) if ({condition}) else ({no_expr})"
+
+    try:
+        t_scalar = float(np.asarray(t_value).reshape(-1)[0]) if hasattr(t_value, "__len__") else float(t_value)
+    except Exception:
+        t_scalar = 0.0
+
+    env = {
+        "__builtins__": {},
+        "sin": math.sin, "cos": math.cos, "tan": math.tan, "sqrt": math.sqrt,
+        "log": math.log, "log2": math.log2, "exp": math.exp, "abs": abs,
+        "min": min, "max": max, "pi": math.pi, "e": math.e,
+        "PHI": PHI, "MEUM": MEUM, "MEUM_NORM": MEUM_NORM, "MEUM_INV": MEUM_INV,
+        "t": t_scalar, "x": t_scalar, "y": 0.0, "z": 0.0,
+    }
+    try:
+        tree = ast.parse(text, mode="eval")
+        value = float(eval(compile(tree, "<groovebox-seed-t>", "eval"), env))
+        return value if math.isfinite(value) else 0.0
+    except Exception:
+        digest = hashlib.sha256(text.encode("utf-8", "replace")).digest()
+        integer = int.from_bytes(digest[:8], "big")
+        return (integer / float(2**64 - 1)) * 2.0 - 1.0
+
+
 # FONT_READABILITY_FIX: buttons/labels were clipping their own text at 11pt
 # because fixed/min widths elsewhere in the UI were sized for a smaller font
 # (see screenshot: "AY Audiovisual", "ded Live Rando", "uclidean Live L",
@@ -2039,7 +2149,7 @@ class PhaseLockedWavefieldEngine:
         app = self.app
         count = int(app.spin_seq_length.value()) if hasattr(app, 'spin_seq_length') else 16
         seed = self.get_numeric_seed()
-        rng = np.random.default_rng(seed if seed else 1)
+        rng = np.random.default_rng(_safe_int_seed(seed if seed else 1))
         names = list(getattr(app, 'instrument_names_48', []) or [])
         self.wavefield = {}
         for i, name in enumerate(names):
@@ -2160,7 +2270,7 @@ class PhaseLockedWavefieldEngine:
 
         if hasattr(app, '_phase_lock_playlist_velocity'):
             app._phase_lock_playlist_velocity(
-                rng=np.random.default_rng(seed or 1),
+                rng=np.random.default_rng(_safe_int_seed(seed or 1)),
                 strength=0.62, randomize=False,
             )
         if hasattr(app, 'reload_active_instrument_sequencer_ui'):
@@ -6611,7 +6721,7 @@ class PaintbrushTable(QWidget):
             except ValueError:
                 seed_val = abs(hash(self.app._seed_text())) % (2**31)
 
-        rng = np.random.default_rng(seed_val + row + col + int(time.time() * 1000) % 10000)
+        rng = np.random.default_rng(_safe_int_seed(seed_val) + row + col + int(time.time() * 1000) % 10000)
         mode = self._current_paint_mode()
         snap = bool(self.chk_snap_grid.isChecked()) if hasattr(self, 'chk_snap_grid') else False
         # Position along the row (unquantized free-time uses Meum spacing)
@@ -8107,17 +8217,24 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             cw = self.centralWidget()
             if cw is not None:
+                cw.setObjectName("GrooveboxCentral")
                 self.parametric_background = ParametricMathBackground(self, cw)
-                self.parametric_background.setGeometry(cw.rect())
+                self.parametric_background.setObjectName("ParametricMathBackground")
+                # Size to the window's real target size, not cw.rect() — at this
+                # point in __init__ no layout pass has happened yet, so cw.rect()
+                # is still Qt's tiny default and the field never grows from there.
+                self.parametric_background.setGeometry(0, 0, self.width(), self.height())
                 self.parametric_background.lower()
                 self.parametric_background.show()
-                # Soften the central fill so the math field reads through
-                # without washing out the high-contrast controls.
-                existing = cw.styleSheet() or ""
-                if "background-color" not in existing:
-                    cw.setStyleSheet(
-                        "background-color: rgba(6, 6, 6, 210);"
-                    )
+                # Re-apply once more after the event loop does its first real
+                # layout pass, and keep it synced on every future resize via
+                # resizeEvent (see below) — belt-and-suspenders against timing.
+                QTimer.singleShot(0, self._sync_parametric_background_geometry)
+                # NOTE: no opaque/near-opaque fill here — the stylesheet already
+                # makes GrooveboxCentral transparent so the math field reads
+                # through. An explicit background-color here was previously
+                # painting over it almost completely (rgba(6,6,6,210) ≈ 82%
+                # opaque), which is why only a sliver of the field was visible.
                 # Reseed glyphs when the active instrument changes
                 if hasattr(self, "instrument_selector_dropdown"):
                     try:
@@ -8208,6 +8325,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # musical material only when explicitly invoked.
         self.init_ui_components()
         self.initialize_default_playlist_memory()
+
+    def _sync_parametric_background_geometry(self):
+        """Keep the full-window math field sized to the central widget.
+
+        Called once after the first real layout pass (via QTimer.singleShot)
+        and on every subsequent resize (via resizeEvent below). Without this,
+        the field keeps whatever tiny geometry it was given at construction
+        time, before Qt had laid anything out.
+        """
+        bg = getattr(self, "parametric_background", None)
+        cw = self.centralWidget()
+        if bg is None or cw is None:
+            return
+        try:
+            bg.setGeometry(0, 0, cw.width(), cw.height())
+            bg.lower()
+        except Exception:
+            pass
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._sync_parametric_background_geometry()
 
     def apply_hardcoded_compositions(self):
         # POWER_V3_EMPTY_BOOT: compatibility hook intentionally does nothing.
@@ -8430,7 +8569,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.master_playlist_data = []
         while len(self.master_playlist_data) < rows:
             self.master_playlist_data.append({})
-        rng = rng or np.random.default_rng(self.get_numeric_seed())
+        rng = rng or np.random.default_rng(_safe_int_seed(self.get_numeric_seed()))
         painted = 0
         for r in range(rows):
             entry = self.master_playlist_data[r]
@@ -8463,7 +8602,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return 0
         count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 48
         self._ensure_seq_mem_length(mem, count)
-        rng = rng or np.random.default_rng(self.get_numeric_seed())
+        rng = rng or np.random.default_rng(_safe_int_seed(self.get_numeric_seed()))
         changed = 0
         for i in range(count):
             ctx = self._contextual_numerology(name, i, i)
@@ -8486,7 +8625,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             # Existing seeded engine already respects the protected/user-mask policy.
             self.apply_seeded_harmonic_randomization()
-            rng = np.random.default_rng(self.get_numeric_seed())
+            rng = np.random.default_rng(_safe_int_seed(self.get_numeric_seed()))
             self._paint_step_parameters(rng=rng, randomize=True, strength=0.55, include_velocity=True, include_pitch=True, include_probability=True)
             self._paint_generated_parameters(rng=rng, source='randomizer')
             self._phase_lock_playlist_velocity(rng, strength=0.35, randomize=True)
@@ -8499,7 +8638,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             if hasattr(self, "wavefield_engine") and self.wavefield_engine is not None:
                 self.wavefield_engine.apply_phase_locked_randomization()
-            rng = np.random.default_rng(self.get_numeric_seed())
+            rng = np.random.default_rng(_safe_int_seed(self.get_numeric_seed()))
             self._paint_step_parameters(rng=rng, randomize=False, strength=0.70, include_velocity=True, include_pitch=True, include_probability=True)
             self._paint_generated_parameters(rng=rng, source='phase-lock')
             self._phase_lock_playlist_velocity(rng, strength=0.70, randomize=False)
@@ -8565,7 +8704,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _mark_generated_synth_context(self, source="randomizer", rng=None):
         """Generate algorithmic synth/script context in the shared state; user values remain authoritative."""
-        rng = rng or np.random.default_rng(self.get_numeric_seed())
+        rng = rng or np.random.default_rng(_safe_int_seed(self.get_numeric_seed()))
         self.instrument_param_generated = getattr(self, "instrument_param_generated", {})
         if not hasattr(self, "instrument_scripts") or self.instrument_scripts is None: self.instrument_scripts = {}
         for i,name in enumerate(getattr(self,"instrument_names_48",[])):
@@ -8784,14 +8923,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         high_contrast_stylesheet = """
             QMainWindow, QDialog {
                 background: transparent;
-                color: #050505;
+                color: #f5f5f5;
                 font-family: 'Segoe UI', Arial, sans-serif;
                 font-size: 10pt;
             }
 
             QWidget {
                 background: transparent;
-                color: #050505;
+                color: #f5f5f5;
                 font-family: 'Segoe UI', Arial, sans-serif;
             }
 
@@ -8802,7 +8941,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
             QGroupBox {
                 background: rgba(255,255,255,0.08);
-                color: #050505;
+                color: #f5f5f5;
                 border: none;
                 margin-top: 10px;
                 padding-top: 12px;
@@ -8810,7 +8949,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
             QGroupBox::title {
                 background: transparent;
-                color: #050505;
+                color: #f5f5f5;
                 border: none;
                 padding: 0;
                 font-weight: 900;
@@ -8818,14 +8957,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
             QLabel {
                 background: transparent;
-                color: #050505;
+                color: #f5f5f5;
                 border: none;
                 font-weight: 700;
             }
 
             QPushButton {
                 background: transparent;
-                color: #050505;
+                color: #f5f5f5;
                 border: none;
                 border-radius: 0;
                 padding: 6px 10px;
@@ -8838,7 +8977,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
             QPushButton:checked {
                 background: rgba(255,255,255,0.28);
-                color: #050505;
+                color: #f5f5f5;
             }
 
             QLineEdit,
@@ -8847,26 +8986,26 @@ class MathematiciansGrooveboxApp(QMainWindow):
             QTextEdit,
             QPlainTextEdit {
                 background: rgba(255,255,255,0.10);
-                color: #050505;
+                color: #f5f5f5;
                 border: none;
-                border-bottom: 2px solid rgba(0,0,0,0.45);
+                border-bottom: 2px solid rgba(255,255,255,0.45);
                 border-radius: 0;
                 padding: 4px 2px;
-                selection-background-color: rgba(0,0,0,0.20);
+                selection-background-color: rgba(255,255,255,0.30);
                 selection-color: #050505;
             }
 
             QLineEdit:focus,
             QTextEdit:focus,
             QPlainTextEdit:focus {
-                border-bottom: 3px solid #050505;
+                border-bottom: 3px solid #f5f5f5;
             }
 
             QComboBox {
                 background: transparent;
-                color: #050505;
+                color: #f5f5f5;
                 border: none;
-                border-bottom: 2px solid rgba(0,0,0,0.40);
+                border-bottom: 2px solid rgba(255,255,255,0.40);
                 border-radius: 0;
                 padding: 4px;
             }
@@ -8874,39 +9013,39 @@ class MathematiciansGrooveboxApp(QMainWindow):
             QTableWidget,
             QListWidget {
                 background: rgba(255,255,255,0.07);
-                color: #050505;
+                color: #f5f5f5;
                 border: none;
-                gridline-color: rgba(0,0,0,0.12);
+                gridline-color: rgba(255,255,255,0.12);
             }
 
             QHeaderView::section {
                 background: transparent;
-                color: #050505;
+                color: #f5f5f5;
                 border: none;
                 font-weight: 900;
             }
 
             QSlider::groove:horizontal {
                 height: 3px;
-                background: rgba(0,0,0,0.30);
+                background: rgba(255,255,255,0.30);
             }
 
             QSlider::handle:horizontal {
                 width: 10px;
                 margin: -4px 0;
                 border-radius: 5px;
-                background: #050505;
+                background: #f5f5f5;
             }
 
             QProgressBar {
                 background: rgba(255,255,255,0.10);
-                color: #050505;
+                color: #f5f5f5;
                 border: none;
                 text-align: center;
             }
 
             QProgressBar::chunk {
-                background: #050505;
+                background: #f5f5f5;
             }
         """
         if QApplication.instance():
@@ -9103,13 +9242,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         self.slider_eqr = QSlider(Qt.Orientation.Horizontal)
         self.slider_eqr.setRange(0, 100)
-        self.slider_eqr.setValue(50)
+        self.slider_eqr.setValue(0)
         self.slider_fractalizer = QSlider(Qt.Orientation.Horizontal)
         self.slider_fractalizer.setRange(0, 100)
-        self.slider_fractalizer.setValue(85)
+        self.slider_fractalizer.setValue(33)
         self.slider_pkp_decay = QSlider(Qt.Orientation.Horizontal)
         self.slider_pkp_decay.setRange(1, 1000)
-        self.slider_pkp_decay.setValue(250)
+        self.slider_pkp_decay.setValue(500)
 
         self.chk_pkp_automod = QCheckBox("PKP Envelope Follower")
         self.chk_pkp_automod.setChecked(True)
@@ -9207,10 +9346,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         local_context_layout = QHBoxLayout(local_context_group)
         local_context_layout.setSpacing(8)
 
-        self.btn_edit_synth = self._make_local_context_button("🛠\nSYNTH", "Edit synth settings and wavetable for the active instrument")
-        self.btn_script_inst = self._make_local_context_button("📝\nSCRIPT", "Edit the script attached to the active instrument")
-        self.btn_view_patchbay = self._make_local_context_button("🔌\nMODULAR", "Open modular routing for the active instrument context")
-        self.btn_domain_eq = self._make_local_context_button("∫\nDOMAIN", "Edit time/space equations used as contextual modulation")
+        self.btn_edit_synth = self._make_local_context_button("EDIT\nSYNTH", "Edit synth settings and wavetable for the active instrument")
+        self.btn_script_inst = self._make_local_context_button("WRITE\nSCRIPT", "Edit the script attached to the active instrument")
+        self.btn_view_patchbay = self._make_local_context_button("PATCH\nMODULAR", "Open modular routing for the active instrument context")
+        self.btn_domain_eq = self._make_local_context_button("CALC\nDOMAIN", "Edit time/space equations used as contextual modulation")
 
         # POWER_V3_GLOBAL_CONTROLS: buttons were constructed above so the Global
         # panel can safely reference them before the Local panel is assembled.
@@ -9739,13 +9878,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         # Accept:
         #   if(condition) true elif false
-        shorthand = re.fullmatch(
-            r"\s*if\s*\((.*?)\)\s*(.*?)\s+elif\s+(.*?)\s*",
-            text,
-            flags=re.S,
-        )
+        shorthand = _parse_if_elif_shorthand(text)
         if shorthand:
-            condition, yes_expr, no_expr = shorthand.groups()
+            condition, yes_expr, no_expr = shorthand
             text = f"({yes_expr}) if ({condition}) else ({no_expr})"
 
         env = {
@@ -9855,8 +9990,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except ValueError:
             self.domain_eq_engine.set_seed(self.get_numeric_seed() / 1e9)
         dlg = DomainEquationEditorDialog(self.domain_eq_engine, parent=self)
-        dlg.exec()
+        # Non-modal: it should run alongside the main window instead of
+        # blocking it, and it gets the same animated math field as other
+        # floating panels so it isn't a flat/blank dialog.
+        dlg.setModal(False)
+        dlg.setWindowModality(Qt.WindowModality.NonModal)
+        try:
+            attach_math_decor(dlg, app=self, light=True)
+        except Exception as _de:
+            print(f"[Decor] domain dialog: {_de}")
+        # Keep a reference on self BEFORE showing — a non-modal dialog with
+        # no surviving Python reference gets garbage-collected and vanishes.
         self.domain_eq_dialog = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     def open_help_readme(self):
         """Open the full Help / Readme / scripting documentation dialog."""
@@ -10014,7 +10162,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return
         numeric_seed = self.get_numeric_seed()
         if rng is None:
-            rng = np.random.default_rng(numeric_seed)
+            rng = np.random.default_rng(_safe_int_seed(numeric_seed))
         for i, entry in enumerate(self.master_playlist_data[:rows]):
             # Seed/phase field: smooth, deterministic, with optional random perturbation.
             phase = (i / max(rows, 1)) * 2.0 * np.pi + (numeric_seed % 100000) * 0.000013
@@ -10037,7 +10185,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 table.set_cell_item(r, 3, item)
 
     def randomize_playlist_velocity(self):
-        self._phase_lock_playlist_velocity(np.random.default_rng(self.get_numeric_seed()), strength=1.0, randomize=True)
+        self._phase_lock_playlist_velocity(np.random.default_rng(_safe_int_seed(self.get_numeric_seed())), strength=1.0, randomize=True)
         self._live_engine_signatures.pop("playlist", None)
 
     def _on_step_amp_slider(self, val):
@@ -10575,7 +10723,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     table.set_cell_item(row_idx, 3, "100%")
 
         # Playlist velocity follows the seeded harmonic field as well.
-        self._phase_lock_playlist_velocity(rng=np.random.default_rng(numeric_seed), strength=0.45, randomize=True)
+        self._phase_lock_playlist_velocity(rng=np.random.default_rng(_safe_int_seed(numeric_seed)), strength=0.45, randomize=True)
 
         if hasattr(self, 'reload_active_instrument_sequencer_ui'):
             self.reload_active_instrument_sequencer_ui()
@@ -10742,7 +10890,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.simplify_redundant_user_definitions()
 
         count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16
-        rng = np.random.default_rng(seed)
+        rng = np.random.default_rng(_safe_int_seed(seed))
 
         filled = 0
         preserved = 0
@@ -10855,7 +11003,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Explicit engine action may use a transient seed, but never writes the user field.
         numeric_seed = self.bootstrap_seed_and_program_parameters()
         self.simplify_redundant_user_definitions()
-        rng = np.random.default_rng(numeric_seed)
+        rng = np.random.default_rng(_safe_int_seed(numeric_seed))
         count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16
 
         # Do NOT forcibly change the user's selected instrument.
@@ -11001,7 +11149,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         names = list(self.instrument_names_48)
         n = len(names)
         numeric_seed = self.get_numeric_seed()
-        rng = np.random.default_rng(numeric_seed)
+        rng = np.random.default_rng(_safe_int_seed(numeric_seed))
 
         # --- Snapshot user topology (do not clear) ---
         existing_edges = set()
@@ -11384,12 +11532,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         t = np.linspace(0.0, total_duration, n_samples, endpoint=False)
         master = np.zeros(n_samples, dtype=np.float32)
 
-        base_eqr = self.slider_eqr.value() / 100.0 if hasattr(self, 'slider_eqr') else 0.5
-        pkp_decay = self.slider_pkp_decay.value() / 1000.0 if hasattr(self, 'slider_pkp_decay') else 0.25
-        fractalizer_val = self.slider_fractalizer.value() / 100.0 if hasattr(self, 'slider_fractalizer') else 0.85
+        base_eqr = self.slider_eqr.value() / 100.0 if hasattr(self, 'slider_eqr') else 0.0
+        pkp_decay = self.slider_pkp_decay.value() / 1000.0 if hasattr(self, 'slider_pkp_decay') else 0.5
+        fractalizer_val = self.slider_fractalizer.value() / 100.0 if hasattr(self, 'slider_fractalizer') else 0.33
         pkp_auto = self.chk_pkp_automod.isChecked() if hasattr(self, 'chk_pkp_automod') else True
         seed_val = self.get_numeric_seed()
-        np.random.seed(seed_val)
+        np.random.seed(_safe_int_seed(seed_val))
 
         # CONVOLVE_FIT_FEATURE: carrier is loaded once per render.
         imported_carrier = self._resample_carrier(n_samples, sample_rate)
@@ -11547,6 +11695,37 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 master = master * (1.0 + 0.45 * domain_mod.astype(np.float32))
             except Exception as e:
                 print(f"[DomainEQ] render modulation skipped: {e}")
+
+        # SEED_SCRIPT_T_AXIS: seed/script expressions that reference `t` or use
+        # the if(...)/elif shorthand are DSP-boundary constructs — they describe
+        # a signal over render time, not a single composition-state number.
+        # get_numeric_seed() only ever sees t=0.0 (by design: it's called from
+        # UI/composition code, never per-sample). This is the actual DSP-side
+        # evaluation: the seed text is resolved across the real render-time
+        # axis `t` and blended in as a gentle, seed-driven texture — a no-op
+        # for a plain numeric seed like "432" (constant curve, ~0 contribution)
+        # and only audible when the seed field is an actual time-varying script.
+        try:
+            seed_script_text = self._seed_text() if hasattr(self, "_seed_text") else ""
+            _looks_time_varying = any(
+                token in seed_script_text for token in ("t", "if(", "if (", "elif", "sin", "cos")
+            )
+            if seed_script_text.strip() and _looks_time_varying:
+                control_n = min(256, max(8, len(master) // 512))
+                control_t = np.linspace(0.0, total_duration, control_n, endpoint=False)
+                control_vals = np.array([
+                    evaluate_seed_expression_at_time(seed_script_text, ct) for ct in control_t
+                ], dtype=np.float64)
+                seed_time_curve = np.interp(t, control_t, control_vals)
+                # Keep on self so per-voice code elsewhere can sample the same
+                # curve by absolute time if it wants finer-grained access.
+                self._seed_time_curve = seed_time_curve
+                peak_curve = np.max(np.abs(seed_time_curve))
+                if peak_curve > 1e-9:
+                    seed_mod = (seed_time_curve / peak_curve).astype(np.float32)
+                    master = master * (1.0 + 0.20 * MEUM_NORM * seed_mod)
+        except Exception as e:
+            print(f"[SeedScript] T-axis modulation skipped: {e}")
 
         peak = np.max(np.abs(master))
         if peak > 0:
