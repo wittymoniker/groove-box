@@ -1977,8 +1977,8 @@ class ParametricMathBackground(QWidget):
             QPen(
                 QColor.fromHsvF(
                     hue,
-                    0.72,
-                    0.95,
+                    0.19758,
+                    0.19758,
                     0.48 + 0.24 * sf
                 ),
                 2.8 + 2.8 * sf
@@ -2023,8 +2023,8 @@ class ParametricMathBackground(QWidget):
             r = radius * wobble
             points.append(QPointF(x + math.cos(a) * r, y + math.sin(a) * r))
         hue = (0.56 + 0.42 * sf + 0.19 * sf2 + index * 0.027) % 1.0
-        painter.setBrush(QBrush(QColor.fromHsvF(hue, 0.62, 0.92, 0.18 + 0.12 * sf)))
-        painter.setPen(QPen(QColor.fromHsvF((hue + 0.08 * sf2) % 1.0, 0.72, 1.0, 0.55 + 0.20 * sf), 1.4))
+        painter.setBrush(QBrush(QColor.fromHsvF(hue, 0.19758, 0.19758, 0.18 + 0.12 * sf)))
+        painter.setPen(QPen(QColor.fromHsvF((hue + 0.08 * sf2) % 0.19758, 0.19758, 0.19758, 0.55 + 0.20 * sf), 1.4))
         painter.drawPolygon(QPolygonF(points))
         if self._param_cache[1]:
             label = self._param_cache[1][index % len(self._param_cache[1])]
@@ -2032,7 +2032,7 @@ class ParametricMathBackground(QWidget):
             # Text follows a larger independent vertical orbit than the glyph.
             text_y = y + radius + 8 + height * 0.09 * math.sin(phase * (0.28 + sf2) + index * 1.63)
             text_y = max(12.0, min(height - 3.0, text_y))
-            painter.setPen(QPen(QColor.fromHsvF(hue, 0.35, 1.0, 0.62), 1.0))
+            painter.setPen(QPen(QColor.fromHsvF(hue, 0.19758, 0.19758, 0.19758), 1.0))
             painter.setFont(QFont("Consolas", 7))
             painter.drawText(QPointF(max(2.0, x - radius), text_y), text)
 
@@ -2776,12 +2776,12 @@ class FitToFrameContainer(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        w = self.width()
-        h = self.height()
-
-        scale_x = w / self.base_width
-        scale_y = h / self.base_height
-        self.scale_factor = min(scale_x, scale_y)
+        cw = self.centralWidget()
+        bg = getattr(self, "_math_decor", None)
+        if cw is not None and bg is not None:
+            bg.setGeometry(cw.rect())
+            bg.lower()
+            bg.update()
 
 # Import Reality Synth and Music Fractallizer from synth_engine (with fallback stubs)
 class FractallizerVisualizerCanvas(QWidget):
@@ -3904,20 +3904,42 @@ class AudioEngineBridge:
     def __init__(self, synth_manager, sequencer_grid):
         self.synth_manager = synth_manager
         self.sequencer = sequencer_grid
-
-    def audio_callback(self, outdata, frames, time_info, status, x_val, y_val, z_val):
-        """Standard NumPy/SoundDevice or PyAudio callback hook."""
-        # 1. Advance sequencer clock per audio buffer block / tick
-        self.sequencer.step_clock(self.synth_manager, x_val, y_val, z_val)
-
-        # 2. Render live audio buffer from active synth instances using x, y, z
-        buffer = self.synth_manager.process_audio_stream(frames, x_val, y_val, z_val)
-
-        # 3. Format output for playback stream
-        for i in range(frames):
-            val = buffer[i] if i < len(buffer) else 0.0
-            # Simple soft-clip limiter to prevent distortion
-            outdata[i] = max(-1.0, min(1.0, val))
+    def _audio_callback(self, outdata, frames, time_info, status):
+        """sounddevice stream callback — pulls from play_buffer under lock."""
+        if status:
+            pass  # underrun etc. ignored for now
+        with self.play_lock:
+            if self.play_buffer is None or not self.is_playing:
+                outdata.fill(0)
+                return
+            remaining = len(self.play_buffer) - self.play_cursor
+            n = min(frames, remaining)
+            if n > 0:
+                chunk = self.play_buffer[self.play_cursor:self.play_cursor + n] * self.master_volume
+                outdata[:n, 0] = chunk
+                # stash a short window for the UI scope
+                if n >= 100:
+                    self._last_scope_chunk = chunk[::max(1, n // 100)][:100].copy()
+                else:
+                    pad = np.zeros(100, dtype=np.float32)
+                    pad[:n] = chunk
+                    self._last_scope_chunk = pad
+                self.play_cursor += n
+            if n < frames:
+                outdata[n:, 0] = 0
+            if self.play_cursor >= len(self.play_buffer):
+                self.play_cursor = len(self.play_buffer)
+                self.is_playing = False
+                self.is_paused = False
+                self._play_finished_flag = True
+                self._transport_finished = True   # natural end of one-shot
+                self._stop_requested = False
+    def _update_scope_from_playhead(self):
+        if not self.is_playing:
+            if not getattr(self, "_stop_requested", False):
+                self._transport_finished = True
+            self.stop_playback()
+            return
 class StandardWaveSynthNode:
     def __init__(self, freq, sr):
         self.freq = freq
@@ -8325,7 +8347,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # musical material only when explicitly invoked.
         self.init_ui_components()
         self.initialize_default_playlist_memory()
-
+        self._composition_generation_guard = False
+        self._live_source_update_pending = False
+        self._composition_generation_counter = 0
+        self._transport_finished = False
+        self._stop_requested = False
     def _sync_parametric_background_geometry(self):
         """Keep the full-window math field sized to the central widget.
 
@@ -8620,87 +8646,176 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.reload_active_instrument_sequencer_ui()
         return changed
 
-    def _randomize_local_context(self):
-        """Safe local randomization: preserve explicit user gates, vary free material and playlist velocity."""
-        try:
-            # Existing seeded engine already respects the protected/user-mask policy.
-            self.apply_seeded_harmonic_randomization()
-            rng = np.random.default_rng(_safe_int_seed(self.get_numeric_seed()))
-            self._paint_step_parameters(rng=rng, randomize=True, strength=0.55, include_velocity=True, include_pitch=True, include_probability=True)
-            self._paint_generated_parameters(rng=rng, source='randomizer')
-            self._phase_lock_playlist_velocity(rng, strength=0.35, randomize=True)
-            self.reload_active_instrument_sequencer_ui()
-        except Exception as e:
-            print(f"[Local Randomize] skipped: {e}")
-
-    def _phase_lock_local_context(self):
-        """Phase-lock local instrument context + playlist velocity without rewriting user gates."""
-        try:
-            if hasattr(self, "wavefield_engine") and self.wavefield_engine is not None:
-                self.wavefield_engine.apply_phase_locked_randomization()
-            rng = np.random.default_rng(_safe_int_seed(self.get_numeric_seed()))
-            self._paint_step_parameters(rng=rng, randomize=False, strength=0.70, include_velocity=True, include_pitch=True, include_probability=True)
-            self._paint_generated_parameters(rng=rng, source='phase-lock')
-            self._phase_lock_playlist_velocity(rng, strength=0.70, randomize=False)
-            self.reload_active_instrument_sequencer_ui()
-        except Exception as e:
-            print(f"[Local Phase Lock] skipped: {e}")
-    def _snapshot_global_effect_sliders(self):
-        """Capture user-owned global macro values before composition operators run."""
-        snap = {}
-        for attr in ("slider_eqr", "slider_fractalizer", "slider_pkp_decay"):
-            obj = getattr(self, attr, None)
-            if obj is not None and hasattr(obj, "value"):
-                try:
-                    snap[attr] = int(obj.value())
-                except Exception:
-                    pass
-        return snap
-    def _restore_global_effect_sliders(self, snap):
-        """Restore global macro values without retriggering their signals."""
-        for attr, value in (snap or {}).items():
-            obj = getattr(self, attr, None)
-            if obj is not None and hasattr(obj, "setValue"):
-                try:
-                    obj.blockSignals(True)
-                    obj.setValue(int(value))
-                finally:
-                    obj.blockSignals(False)
     def _randomize_local_context(self, checked=True):
-        if hasattr(self, 'btn_local_randomize') and self.btn_local_randomize.isCheckable() and not checked and "randomizer"=="randomizer": return
-        if hasattr(self, 'btn_local_phase_lock') and self.btn_local_phase_lock.isCheckable() and not checked and "randomizer"=="phase-lock": return
-        self._composition_generation_counter=getattr(self,"_composition_generation_counter",0)+1
-        snap=self._snapshot_global_effect_sliders()
-        try:
-            live_seed=int(self.get_numeric_seed())%(2**31)
-            rng=np.random.default_rng(live_seed)
-            if "randomizer"=="randomizer": self.apply_seeded_harmonic_randomization()
-            elif hasattr(self,"wavefield_engine") and self.wavefield_engine is not None: self.wavefield_engine.apply_phase_locked_randomization()
-            self._paint_step_parameters(rng=rng, randomize=("randomizer"=="randomizer"), strength=.55 if "randomizer"=="randomizer" else .70, include_velocity=True, include_pitch=True, include_probability=True)
-            self._paint_generated_parameters(rng=rng, source="randomizer")
-            self._phase_lock_playlist_velocity(rng,strength=.35 if "randomizer"=="randomizer" else .70,randomize=("randomizer"=="randomizer"))
-            self._run_composition_context_engine(source="randomizer",rng=rng)
-            self.reload_active_instrument_sequencer_ui()
-        except Exception as e: print(f"[randomizer] skipped: {e}")
-        finally: self._restore_global_effect_sliders(snap)
+        if not checked:
+            return
+        if getattr(self, "_composition_generation_guard", False):
+            return
 
-    def _phase_lock_local_context(self, checked=True):
-        if hasattr(self, 'btn_local_randomize') and self.btn_local_randomize.isCheckable() and not checked and "phase-lock"=="randomizer": return
-        if hasattr(self, 'btn_local_phase_lock') and self.btn_local_phase_lock.isCheckable() and not checked and "phase-lock"=="phase-lock": return
-        self._composition_generation_counter=getattr(self,"_composition_generation_counter",0)+1
-        snap=self._snapshot_global_effect_sliders()
+        self._composition_generation_guard = True
+        snap = self._snapshot_global_effect_sliders()
         try:
-            live_seed=int(self.get_numeric_seed())%(2**31)
-            rng=np.random.default_rng(live_seed)
-            if "phase-lock"=="randomizer": self.apply_seeded_harmonic_randomization()
-            elif hasattr(self,"wavefield_engine") and self.wavefield_engine is not None: self.wavefield_engine.apply_phase_locked_randomization()
-            self._paint_step_parameters(rng=rng, randomize=("phase-lock"=="randomizer"), strength=.55 if "phase-lock"=="randomizer" else .70, include_velocity=True, include_pitch=True, include_probability=True)
-            self._paint_generated_parameters(rng=rng, source="phase-lock")
-            self._phase_lock_playlist_velocity(rng,strength=.35 if "phase-lock"=="randomizer" else .70,randomize=("phase-lock"=="randomizer"))
-            self._run_composition_context_engine(source="phase-lock",rng=rng)
-            self.reload_active_instrument_sequencer_ui()
-        except Exception as e: print(f"[phase-lock] skipped: {e}")
-        finally: self._restore_global_effect_sliders(snap)
+            seed = _safe_int_seed(self.get_numeric_seed())
+            rng = np.random.default_rng(seed)
+            self._composition_generation_counter = (
+                getattr(self, "_composition_generation_counter", 0) + 1
+            )
+
+            self.apply_seeded_harmonic_randomization()
+
+            if hasattr(self, "_canonical_playlist_paint"):
+                self._canonical_playlist_paint(rng=rng, mode="randomize", strength=0.55)
+            elif hasattr(self, "_paint_generated_parameters"):
+                self._paint_generated_parameters(rng=rng, source="randomizer")
+                if hasattr(self, "_phase_lock_playlist_velocity"):
+                    self._phase_lock_playlist_velocity(
+                        rng=rng, strength=0.35, randomize=True
+                    )
+
+            if hasattr(self, "reload_active_instrument_sequencer_ui"):
+                self.reload_active_instrument_sequencer_ui()
+        except Exception as exc:
+            print(f"[Randomizer] {type(exc).__name__}: {exc}")
+        finally:
+            self._restore_global_effect_sliders(snap)
+            self._composition_generation_guard = False
+    def _canonical_playlist_paint(self, rng, mode="randomize", strength=0.55):
+        """
+        Sole authority for writing the full playlist schema once per transaction.
+        mode: "randomize" | "phase_lock"
+        """
+        rows = int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else 32
+        names = list(getattr(self, "instrument_names_48", []) or ["Operator"])
+        if not hasattr(self, "master_playlist_data") or self.master_playlist_data is None:
+            self.master_playlist_data = []
+        while len(self.master_playlist_data) < rows:
+            self.master_playlist_data.append({})
+
+        seed = self.get_numeric_seed() if hasattr(self, "get_numeric_seed") else 0.0
+        seed_bits = _safe_int_seed(seed)
+        randomize = (mode == "randomize")
+
+        for r in range(rows):
+            entry = self.master_playlist_data[r]
+            if not isinstance(entry, dict):
+                entry = {}
+                self.master_playlist_data[r] = entry
+
+            # Only fill empty / engine-owned fields (keep real user paint)
+            def _empty(key):
+                v = entry.get(key)
+                return v in (None, "", [], {})
+
+            if _empty("operator"):
+                entry["operator"] = names[(r + seed_bits) % len(names)]
+            if _empty("time_marker"):
+                entry["time_marker"] = f"T + {r * MEUM_CONSTANT:.2f}s"
+            if _empty("script_tag"):
+                op = str(entry.get("operator", "OP"))[:4].upper()
+                entry["script_tag"] = f"Script::{op}-X{r}"
+            if entry.get("velocity") is None or (randomize and not entry.get("_user_velocity")):
+                # gentle field; phase_lock more structured, randomize more jitter
+                base = 0.55 + 0.35 * abs(math.sin(r * MEUM + seed_bits * 0.001))
+                jitter = (rng.random() - 0.5) * 0.25 * strength if randomize else 0.0
+                entry["velocity"] = float(max(0.05, min(1.0, base + jitter)))
+            if _empty("modulation"):
+                mods = [
+                    "Geometric Nullifier Lock",
+                    "EQR Fold Accent",
+                    "Fractal Echo Lane",
+                    "PKP Envelope Follow",
+                ]
+                entry["modulation"] = mods[(r + seed_bits) % len(mods)]
+            if _empty("multi_seq"):
+                entry["multi_seq"] = f"Multi-Load Active [{(r % 3) + 1}]"
+            # Optional extra columns if your schema uses them
+            if _empty("direction") and "direction" in entry or True:
+                if _empty("direction"):
+                    entry["direction"] = 1.0 if ((r + seed_bits) % 2) == 0 else -1.0
+            if _empty("coverage"):
+                entry["coverage"] = f"{int(40 + 50 * ((r * MEUM_NORM + seed_bits * 0.01) % 1.0))}%"
+            if _empty("blend_partner"):
+                entry["blend_partner"] = names[(r + 3 + seed_bits) % len(names)]
+
+            self.master_playlist_data[r] = entry
+
+        # Automation lanes (empty only) — existing helper
+        if hasattr(self, "_engines_write_automation_lanes"):
+            self._engines_write_automation_lanes(source=mode)
+        self._sync_playlist_paint_table_from_memory()
+    def _sync_playlist_paint_table_from_memory(self):
+        table = getattr(self, "active_paint_table", None)
+        data = getattr(self, "master_playlist_data", None) or []
+        if table is None:
+            return
+        colmap = {
+            0: "time_marker",
+            1: "operator",
+            2: "script_tag",
+            3: "velocity",   # show as percent string
+            4: "modulation",
+            5: "multi_seq",
+            # extend if your headers include more columns
+        }
+        rows = min(table.rowCount(), len(data))
+        for r in range(rows):
+            entry = data[r] if isinstance(data[r], dict) else {}
+            for c, key in colmap.items():
+                val = entry.get(key, "")
+                if key == "velocity" and val not in (None, ""):
+                    try:
+                        val = f"{float(val) * 100:.1f}%"
+                    except Exception:
+                        val = str(val)
+                text = "" if val in (None, "") else str(val)
+                item = table.item(r, c)
+                if item is None:
+                    if hasattr(table, "set_cell_item"):
+                        table.set_cell_item(r, c, text)
+                    else:
+                        from PyQt6.QtWidgets import QTableWidgetItem
+                        table.setItem(r, c, QTableWidgetItem(text))
+                else:
+                    # Do not clobber a cell the user is actively editing if you track that;
+                    # otherwise always refresh engine-owned empties:
+                    if not (item.text() or "").strip() or True:
+                        item.setText(text)
+    def _phase_lock_local_context(self, checked=True):
+        if not checked:
+            return
+        if getattr(self, "_composition_generation_guard", False):
+            return
+
+        self._composition_generation_guard = True
+        snap = self._snapshot_global_effect_sliders()
+        try:
+            seed = _safe_int_seed(self.get_numeric_seed())
+            rng = np.random.default_rng(seed)
+            self._composition_generation_counter = (
+                getattr(self, "_composition_generation_counter", 0) + 1
+            )
+
+            if hasattr(self, "wavefield_engine") and self.wavefield_engine:
+                self.wavefield_engine.apply_phase_locked_randomization()
+            else:
+                self.apply_euclidean_and_idealized_rhythms()
+
+            if hasattr(self, "_canonical_playlist_paint"):
+                self._canonical_playlist_paint(rng=rng, mode="phase_lock", strength=0.55)
+            elif hasattr(self, "_paint_generated_parameters"):
+                self._paint_generated_parameters(rng=rng, source="phase_lock")
+                if hasattr(self, "_phase_lock_playlist_velocity"):
+                    self._phase_lock_playlist_velocity(
+                        rng=rng, strength=0.45, randomize=False
+                    )
+
+            if hasattr(self, "reload_active_instrument_sequencer_ui"):
+                self.reload_active_instrument_sequencer_ui()
+        except Exception as exc:
+            print(f"[PhaseLock] {type(exc).__name__}: {exc}")
+        finally:
+            self._restore_global_effect_sliders(snap)
+            self._composition_generation_guard = False
 
     def _mark_generated_synth_context(self, source="randomizer", rng=None):
         """Generate algorithmic synth/script context in the shared state; user values remain authoritative."""
@@ -8744,7 +8859,36 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.patch_connections.append({"source":name,"target":target,"weight":.2+.55*((i+n)%13)/12.0,"origin":f"generated_{source}","user_defined":False})
             existing.add((name,target)); added+=1
         return added
+    def _snapshot_global_effect_sliders(self):
+        """Capture global effect slider positions so engines can restore them."""
+        out = {}
+        for attr in (
+            "slider_eqr",
+            "slider_fractalizer",
+            "slider_pkp_decay",
+            "slider_pkp_boost",
+            "slider_global_convolve",
+        ):
+            w = getattr(self, attr, None)
+            if w is not None and hasattr(w, "value"):
+                try:
+                    out[attr] = int(w.value())
+                except Exception:
+                    pass
+        return out
 
+    def _restore_global_effect_sliders(self, snap):
+        if not snap:
+            return
+        for attr, val in snap.items():
+            w = getattr(self, attr, None)
+            if w is not None and hasattr(w, "setValue"):
+                try:
+                    w.blockSignals(True)
+                    w.setValue(int(val))
+                    w.blockSignals(False)
+                except Exception:
+                    pass
     def _paint_operator_pattern_to_playlist(self, source="randomizer", rng=None):
         """Deterministically paint the complete 10-column playlist schema.
 
@@ -9137,6 +9281,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # preferred again. All code reads the field through _seed_text().
         # =====================================================================
         self.input_seed_val = QTextEdit()
+        self.input_seed_val.setMinimumSize(0, 110)
+        self.input_seed_val.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
+        self.input_seed_val.setStyleSheet("""
+            QTextEdit {
+                background: rgba(255,255,255,0.16);
+                color: #ffffff;
+                border: none;
+                border-bottom: 2px solid rgba(0,0,0,0.45);
+                padding: 6px;
+                font-family: Consolas, monospace;
+            }
+            QTextEdit:focus {
+                background: rgba(255,255,255,0.24);
+                border-bottom: 3px solid #ffffff;
+            }
+        """)
         # USER-CONTROLLED FIELD: never assign a random/default seed here.
         self.input_seed_val.setPlainText("")
         self.input_seed_val.setToolTip(
@@ -9146,8 +9309,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.input_seed_val.setAcceptRichText(False)
         self.input_seed_val.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         self.input_seed_val.setMinimumSize(360, 110)
-        self.input_seed_val.setMaximumWidth(520)
-        self.input_seed_val.setMaximumHeight(150)
+
         self.input_seed_val.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         # NOTE: transport-bar WAV-only export button removed — the single
@@ -9162,7 +9324,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         seed_panel.addWidget(QLabel("GLOBAL SEED / PARAMETRIC SCRIPT (USER CONTROLLED):"))
         seed_panel.addWidget(self.input_seed_val, 1)
         seed_panel.addWidget(self.btn_help)
-        self.global_geometry_layout.addLayout(seed_panel, 1)
+        self.global_geometry_layout.addLayout(seed_panel, 2)
 
         self.global_controls_side = QVBoxLayout()
         self.global_controls_side.setSpacing(6)
@@ -9215,7 +9377,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._live_seeded_timer.timeout.connect(lambda: None)
         self._live_engine_signatures = {}
         self._live_engine_update_guard = False
-
+        self._composition_generation_guard = False
+        self._live_source_update_pending = False
+        self._composition_generation_counter = 0
+        self._transport_finished = False
+        self._stop_requested = False
         # Keep transport/global controls beside the script field rather than
         # consuming the width needed by the large script editor.
         self.global_controls_side.addLayout(self.transport_layout)
@@ -9619,6 +9785,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         # Realtime audio engine state (sounddevice stream)
         self.is_playing = False
+        self._composition_generation_guard = False
+        self._live_source_update_pending = False
+        self._composition_generation_counter = 0
+        self._transport_finished = False
+        self._stop_requested = False
         self.is_paused = False
         self.play_buffer = None
         self.play_sample_rate = 44100
@@ -9996,7 +10167,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
         dlg.setModal(False)
         dlg.setWindowModality(Qt.WindowModality.NonModal)
         try:
-            attach_math_decor(dlg, app=self, light=True)
+            attach_math_decor(dlg, app=self, light=False)
+            cw = self.centralWidget()
+            bg = ParametricMathBackground(self, cw)
+            cw = self.centralWidget()
+            bg = ParametricMathBackground(self, cw)
+            bg.setGeometry(cw.rect())
+            bg.lower()
+            bg.show()
+            self._math_decor = bg
+            bg.setGeometry(cw.rect())
+            bg.lower()
+            bg.show()
+            self._math_decor = bg
         except Exception as _de:
             print(f"[Decor] domain dialog: {_de}")
         # Keep a reference on self BEFORE showing — a non-modal dialog with
@@ -10277,29 +10460,61 @@ class MathematiciansGrooveboxApp(QMainWindow):
         return (which, seed, inst, seq_len, rows, repr(getattr(self, 'instrument_sequencer_memory', {})), repr(getattr(self, 'master_playlist_data', [])))
 
     def _apply_live_engine_once(self, which, force=False):
-        if getattr(self, '_live_engine_update_guard', False):
+        if getattr(self, "_live_engine_update_guard", False):
             return
-        sig = self._live_engine_signature(which)
-        if not force and getattr(self, '_live_engine_signatures', {}).get(which) == sig:
+        if getattr(self, "_composition_generation_guard", False):
             return
+
+        sig = self._live_engine_signature(which) if hasattr(self, "_live_engine_signature") else None
+        if (
+            not force
+            and sig is not None
+            and getattr(self, "_live_engine_signatures", {}).get(which) == sig
+        ):
+            return
+
+        snap = self._snapshot_global_effect_sliders()
         self._live_engine_update_guard = True
+        self._composition_generation_guard = True
         try:
             if which == "euclidean":
                 self.apply_euclidean_and_idealized_rhythms()
             else:
                 self.apply_seeded_harmonic_randomization()
+        except Exception as exc:
+            print(f"[LiveEngine:{which}] {type(exc).__name__}: {exc}")
         finally:
             self._live_engine_update_guard = False
-        self._live_engine_signatures[which] = self._live_engine_signature(which)
-
-    def _on_live_source_changed(self, *args):
-        """Live engines respond once to a genuine user change, never recursively on their own writes."""
-        if getattr(self, '_live_engine_update_guard', False):
+            self._composition_generation_guard = False
+            self._restore_global_effect_sliders(snap)
+            if sig is not None:
+                if not hasattr(self, "_live_engine_signatures"):
+                    self._live_engine_signatures = {}
+                self._live_engine_signatures[which] = (
+                    self._live_engine_signature(which)
+                    if hasattr(self, "_live_engine_signature")
+                    else sig
+                )
+    def _flush_live_source_update(self):
+        self._live_source_update_pending = False
+        if getattr(self, "_composition_generation_guard", False):
             return
-        if getattr(self, 'btn_idealize_rhythm', None) and self.btn_idealize_rhythm.isChecked():
-            self._apply_live_engine_once("euclidean")
-        if getattr(self, 'btn_seeded_randomize', None) and self.btn_seeded_randomize.isChecked():
-            self._apply_live_engine_once("seeded")
+        self._composition_generation_guard = True
+        try:
+            if (
+                getattr(self, "btn_idealize_rhythm", None)
+                and self.btn_idealize_rhythm.isChecked()
+            ):
+                self._apply_live_engine_once("euclidean", force=True)
+            if (
+                getattr(self, "btn_seeded_randomize", None)
+                and self.btn_seeded_randomize.isChecked()
+            ):
+                self._apply_live_engine_once("seeded", force=True)
+        except Exception as exc:
+            print(f"[LiveSourceUpdate] {type(exc).__name__}: {exc}")
+        finally:
+            self._composition_generation_guard = False
 
     def _live_engine_tick(self, which):
         if getattr(self, 'chk_user_program_only', None) and self.chk_user_program_only.isChecked():
@@ -11002,6 +11217,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """
         # Explicit engine action may use a transient seed, but never writes the user field.
         numeric_seed = self.bootstrap_seed_and_program_parameters()
+        seed_bits = _safe_int_seed(numeric_seed)
         self.simplify_redundant_user_definitions()
         rng = np.random.default_rng(_safe_int_seed(numeric_seed))
         count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16
@@ -11034,10 +11250,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # Fractal scale factors from seed (self-similar echoes of the carrier)
             scales = [1]
             for k in range(1, 4):
-                sc = int(round(count / (2 ** k) * (1.0 + ((numeric_seed >> k) % 5) * 0.05))) or 1
+                seed_bits = _safe_int_seed(numeric_seed)
+                sc = int(round(count / (2 ** k) * (1.0 + ((seed_bits >> k) % 5) * 0.05))) or 1
                 if sc not in scales and sc < count:
                     scales.append(sc)
-
             for s in range(count):
                 if user_mask[s]:
                     preserved_steps += 1
@@ -11731,7 +11947,35 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if peak > 0:
             master = (master / peak) * 0.98
         return master.astype(np.float32), sample_rate
+    def _on_live_source_changed(self, *args):
+        """Coalesce seed/seq-length changes into one deferred composition transaction."""
+        if getattr(self, "_composition_generation_guard", False):
+            return
+        if getattr(self, "_live_source_update_pending", False):
+            return
+        self._live_source_update_pending = True
+        QTimer.singleShot(0, self._flush_live_source_update)
 
+    def _flush_live_source_update(self):
+        self._live_source_update_pending = False
+        if getattr(self, "_composition_generation_guard", False):
+            return
+        self._composition_generation_guard = True
+        try:
+            if (
+                getattr(self, "btn_idealize_rhythm", None)
+                and self.btn_idealize_rhythm.isChecked()
+            ):
+                self._apply_live_engine_once("euclidean", force=True)
+            if (
+                getattr(self, "btn_seeded_randomize", None)
+                and self.btn_seeded_randomize.isChecked()
+            ):
+                self._apply_live_engine_once("seeded", force=True)
+        except Exception as exc:
+            print(f"[LiveSourceUpdate] {type(exc).__name__}: {exc}")
+        finally:
+            self._composition_generation_guard = False
     def _audio_callback(self, outdata, frames, time_info, status):
         """sounddevice stream callback — pulls from play_buffer under lock."""
         if status:
@@ -11755,19 +11999,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.play_cursor += n
             if n < frames:
                 outdata[n:, 0] = 0
-            if self.play_cursor >= len(self.play_buffer):
-                self.play_cursor = len(self.play_buffer)
+            if not self.is_playing:
+                self._transport_finished = True
                 self.is_playing = False
-                self.is_paused = False
-                self._play_finished_flag = True
-                self._transport_finished = True  # end of buffer; UI timer will finalize stop
-
+                self._composition_generation_guard = False
+                self.stop_playback()
+                return
     def _update_scope_from_playhead(self):
         """UI-thread timer: push latest audio chunk into scope + 2.5D video synth."""
         if not self.is_playing:
-            self._transport_finished = True
-            self.is_playing = False
-            self.is_paused = False
+            # End-of-buffer path sets _transport_finished in the audio callback.
+            # Here we only ensure UI stops; stop_playback must not look like "finished"
+            # if the user already stopped, so prefer the flags already set.
+            if not getattr(self, "_stop_requested", False):
+                self._transport_finished = True
             self.stop_playback()
             return
         chunk = self._last_scope_chunk
@@ -11787,12 +12032,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # A completed one-shot is NOT a paused stream.
         # Start a fresh transport on the next PLAY.
         if getattr(self, "_transport_finished", False):
+            # Completed one-shot → fresh transport. Do not touch composition guards here.
             self.is_playing = False
             self.is_paused = False
             self.play_cursor = 0
             self._transport_finished = False
+            self._stop_requested = False
             self._render_cancelled = False
-
         # Playing -> pause without destroying the rendered buffer/cursor.
         if self.is_playing:
             self.is_playing = False
@@ -11876,8 +12122,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         was_active = self.is_playing or self.is_paused
         self.is_playing = False
         self.is_paused = False
-        self._transport_finished = True
         self._stop_requested = True
+        self._transport_finished = False
         if hasattr(self, '_scope_update_timer') and self._scope_update_timer.isActive():
             self._scope_update_timer.stop()
         if getattr(self, 'audio_stream', None) is not None:
@@ -12209,7 +12455,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 btn_patch.clicked.connect(lambda: patch_log.append(f"- {source_list.currentText()} ====> {target_list.currentText()} (Geometric Link Established)"))
 
             elif attr_name == 'synth_editor_window':
-                main_layout.addWidget(QLabel(f"Interactive Wavetable & Vector Synthesis Interface: {current_instrument} (Node ID: {inst_index})"))
+                window.setStyleSheet("""
+                    QWidget {
+                        background-color: rgba(28, 28, 32, 180);
+                        color: #e0e0e0;
+                    }
+                    QLabel { color: #cccccc; }
+                    QSlider::groove:horizontal {
+                        height: 4px; background: #333333; border-radius: 2px;
+                    }
+                    QSlider::handle:horizontal {
+                        background: #ff6b00; width: 12px; margin: -4px 0; border-radius: 6px;
+                    }
+                """)
+                attach_math_decor(window, app=self, light=True)
+                window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+                main_layout.addWidget(QLabel(
+                    f"Interactive Wavetable & Vector Synthesis Interface: "
+                    f"{current_instrument} (Node ID: {inst_index})"
+                ))
                 scroll_area = QScrollArea()
                 scroll_area.setWidgetResizable(True)
                 scroll_content = QWidget()
@@ -12227,6 +12491,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 scroll_content.setLayout(scroll_layout)
                 scroll_area.setWidget(scroll_content)
                 main_layout.addWidget(scroll_area)
+
 
             elif attr_name == 'script_editor_window':
                 main_layout.addWidget(QLabel(f"Instrument Script Workspace: {current_instrument}"))
@@ -12250,6 +12515,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         setattr(self, attr_name, window)
         try:
             attach_math_decor(window, app=self)
+            cw = self.centralWidget()
+            bg = ParametricMathBackground(self, cw)
+            bg.setGeometry(cw.rect())
+            bg.lower()
+            bg.show()
+            self._math_decor = bg
         except Exception as _de:
             print(f"[Decor] floating: {_de}")
         window.show()
