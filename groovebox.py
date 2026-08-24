@@ -9007,12 +9007,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     break
 
         if table is None or not hasattr(table, "rowCount"):
-            # Keep the older engines available if this UI isn't present.
+    # The playlist UI may not exist yet during initial activation.
+    # Still generate the complete playlist state in memory so that
+    # columns 6–9 are available when the UI is subsequently created.
+            if hasattr(self, "_paint_operator_pattern_to_playlist"):
+                self._paint_operator_pattern_to_playlist(
+                    source=mode,
+                    rng=rng,
+                )
+
             if hasattr(self, "_paint_generated_parameters"):
                 self._paint_generated_parameters(
                     rng=rng,
                     source=mode,
                 )
+
             if hasattr(self, "_run_composition_context_engine"):
                 self._run_composition_context_engine(
                     source=mode,
@@ -11539,6 +11548,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # else leave False / untouched
 
         self._engines_write_automation_lanes(source="euclidean")
+        if hasattr(self, "_canonical_playlist_paint"):
+            self._canonical_playlist_paint(
+                rng=rng,
+                mode="seeded",
+                strength=0.55,
+            )
+        elif hasattr(self, "_paint_operator_pattern_to_playlist"):
+            self._paint_operator_pattern_to_playlist(
+                source="seeded",
+                rng=rng,
+            )
         self.reload_active_instrument_sequencer_ui()
         print(
             f"[Euclidean Phase-Lock] Additive fill complete. "
