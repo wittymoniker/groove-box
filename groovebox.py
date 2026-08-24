@@ -9481,7 +9481,23 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 border-radius: 0;
                 padding: 4px;
             }
+            QComboBox QAbstractItemView {
+                background-color: rgba(5, 5, 5, 225);
+                color: #f5f5f5;
+                border: 1px solid rgba(255,255,255,0.25);
+                selection-background-color: rgba(255,255,255,0.18);
+                selection-color: #ffffff;
+                outline: none;
+            }
 
+            QComboBox QAbstractItemView::item {
+                background-color: transparent;
+                padding: 5px 8px;
+            }
+
+            QComboBox QAbstractItemView::item:hover {
+                background-color: rgba(255,255,255,0.12);
+            }
             QTableWidget,
             QListWidget {
                 background: rgba(255,255,255,0.07);
