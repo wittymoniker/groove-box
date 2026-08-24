@@ -1992,16 +1992,18 @@ class ParametricMathBackground(QWidget):
         fm = 0.25 + 1.7 * sf2
         am = 0.15 + 0.65 * scalars[(index * 11 + 5) % len(scalars)]
         vertical = height * 0.055 * math.sin(phase * (0.30 + sf) + index * 0.91)
+
         for px in range(0, max(2, width), 8):
             x = px / max(width, 1) + corr_x
-            carrier = math.sin((x * freq * math.tau) + phase * direction * (0.7 + sf))
-            mod = math.sin((x * fm * math.tau) + phase * (0.35 + sf2))
-            amp = (5.0 + 20.0 * sf) * (1.0 + am * mod)
-            y = base_y + vertical + direction * amp * carrier
+            carrier = math.sin((x * freq * math.tau) + phase * direction * fm)
+            envelope = math.cos((x * am * math.tau) - phase)
+            y = base_y + vertical + (height * 0.15 * sf * carrier * envelope)
+
             if px == 0:
                 path.moveTo(px, y)
             else:
                 path.lineTo(px, y)
+
         painter.drawPath(path)
 
     def _paint_shape(self, painter, index, width, height, scalars, phase):
@@ -2095,8 +2097,29 @@ class ParametricMathBackground(QWidget):
             painter.setFont(body)
             val = fmt.format(value)
             painter.drawText(rect.adjusted(8, 18, -8, -3), int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), f"{meaning}  {val}")
-
+        for j in range(sides):
+            a = angle + math.tau * j / sides
+            wobble = 0.72 + 0.55 * math.sin(phase * (0.4 + j * 0.1) + index)
+            pts = QPointF(x + radius * wobble * math.cos(a), y + radius * wobble * math.sin(a))
+            points.append(pts)
+        poly = QPolygonF(points)
+        painter.setPen(QPen(QColor.fromHsvF((hue + 0.5) % 1.0, 0.4, 0.8, 0.35 + 0.3 * sf), 1.2))
+        painter.setBrush(QBrush(QColor.fromHsvF(hue, 0.3, 0.5, 0.15 + 0.15 * sf2)))
+        painter.drawPolygon(poly)
     def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        width, height = self.width(), self.height()
+        phase = (time.monotonic() - self._started) * 0.5
+        scalars = self._scalars()
+
+        # Render background wave field lines
+        for i in range(self.WAVE_COUNT):
+            self._paint_wave(painter, i, width, height, scalars, phase)
+
+        # Render parametric geometric glyphs
+        for i in range(self.SHAPE_COUNT):
+            self._paint_shape(painter, i, width, height, scalars, phase)
         if self.width() < 10 or self.height() < 10:
             return
         painter = QPainter(self)
@@ -2116,6 +2139,7 @@ class ParametricMathBackground(QWidget):
         finally:
             if painter.isActive():
                 painter.end()
+
 class UIComponentManager(QWidget):
     """Minimal compatibility stub — full controls live on the main window.
 
@@ -6577,7 +6601,8 @@ class PaintbrushTable(QWidget):
                 else:
                     index = self.indexAt(event.pos())
                     if index.isValid():
-                        self.parent_table.engage_paint(index.row(), index.column())
+                        # Inside your mousePressEvent and mouseMoveEvent
+                        self.parent_table.engage_paint(index.row(), index.column(), event)
                 super().mousePressEvent(event)
 
             def mouseMoveEvent(self, event):
@@ -6588,7 +6613,8 @@ class PaintbrushTable(QWidget):
                     else:
                         index = self.indexAt(event.pos())
                         if index.isValid():
-                            self.parent_table.engage_paint(index.row(), index.column())
+                            # Inside your mousePressEvent and mouseMoveEvent
+                            self.parent_table.engage_paint(index.row(), index.column(), event)
                 super().mouseMoveEvent(event)
 
             def mouseReleaseEvent(self, event):
@@ -6682,243 +6708,285 @@ class PaintbrushTable(QWidget):
                     "drive": 0.2,
                 }
 
-    def engage_paint(self, row, col):
-        if not hasattr(self.app, 'instrument_names_48'):
-            return
-        self._ensure_automation_store()
-        rows = self.table_widget.rowCount()
-        cols = self.table_widget.columnCount()
-        if row < 0 or col < 0 or row >= rows or col >= cols:
-            return
-        # Explicitly remember user-painted playlist cells so additive engines
-        # can fill every other cell without ever overwriting a human edit.
-        touched = getattr(self, "playlist_user_touched", None)
-        if touched is None:
-            touched = self.playlist_user_touched = set()
-        touched.add((int(row), int(col)))
+    def engage_paint(self, row, col, event=None):
+        app = self.app   # ← change to the real attribute name from __init__
 
-        now = time.monotonic()
-        if not hasattr(self, "_last_flash_paint_cell"):
-            self._last_flash_paint_cell = None
-        if not hasattr(self, "_last_flash_paint_locus"):
-            self._last_flash_paint_locus = None
-        # Rate-limit stacking to 2.395 Hz (except mode-expansion internal calls)
-        expanding = bool(getattr(self, '_paint_expanding', False))
-        if not expanding:
-            if (now - float(getattr(self, '_last_paint_mono', 0.0))) < PAINT_PERIOD_S:
-                if self._last_flash_paint_cell == (row, col):
-                    return  # too soon on same cell
-            # Proximity cancel: same cell, within 50% of cell size of last locus
-            local = None
-            if event is not None and table is not None:
-                try:
-                    pos = event.position().toPoint()
-                    idx = table.indexAt(pos)
-                    rect = table.visualRect(idx) if idx.isValid() else None
-                    if rect is not None and rect.width() > 0 and rect.height() > 0:
-                        local = (
-                            (pos.x() - rect.x()) / max(rect.width(), 1),
-                            (pos.y() - rect.y()) / max(rect.height(), 1),
-                        )
-                except Exception:
-                    local = None
-            if (
-                self._last_flash_paint_cell == (row, col)
-                and local is not None
-                and self._last_flash_paint_locus is not None
-            ):
-                dx = abs(local[0] - self._last_flash_paint_locus[0])
-                dy = abs(local[1] - self._last_flash_paint_locus[1])
-                # 50% of cell length/width is enough to cancel any overlap
-                if dx < 0.50 and dy < 0.50:
-                    return
-            self._last_paint_mono = now
-            self._last_flash_paint_cell = (row, col)
-            self._last_flash_paint_locus = local
-        seed_val = 0
-        if hasattr(self.app, 'input_seed_val'):
-            try:
-                txt = self.app._seed_text()
-                seed_val = abs(hash(float(txt))) % (2**31) if txt and abs(float(txt)) != 0.0 else int(time.time()) % (2**31)
-            except ValueError:
-                seed_val = abs(hash(self.app._seed_text())) % (2**31)
+        if not hasattr(app, "master_playlist_data") or app.master_playlist_data is None:
+            app.master_playlist_data = []
+        while len(app.master_playlist_data) <= row:
+            app.master_playlist_data.append({})
 
-        rng = np.random.default_rng(_safe_int_seed(seed_val) + row + col + int(time.time() * 1000) % 10000)
-        mode = self._current_paint_mode()
-        snap = bool(self.chk_snap_grid.isChecked()) if hasattr(self, 'chk_snap_grid') else False
-        # Position along the row (unquantized free-time uses Meum spacing)
-        if snap:
-            pos_tag = f"q:{row}"
-        else:
-            pos_tag = f"u:{(row * MEUM):.3f}s"
-
-        def _append_cell_member(r, c, member):
-            """CSV members with limit, substitution, flash, and overlap data-points."""
-            existing = ""
-            item = self.table_widget.item(r, c)
-            if item is not None:
-                existing = (item.text() or "").strip()
-            token = f"{member}@{pos_tag}"
-            parts = [p.strip() for p in existing.split(",") if p.strip()] if existing else []
-            base = member.split("@")[0].strip()
-            out = []
-            replaced = False
-            substituted = False
-            for p in parts:
-                pbase = p.split("@")[0].strip()
-                if pbase == base:
-                    out.append(token)
-                    replaced = True
-                else:
-                    out.append(p)
-            if not replaced:
-                if len(out) >= PAINT_INSTANCE_LIMIT:
-                    # Limit reached: substitute oldest instance, mark substitution
-                    out = out[1:] + [token]
-                    substituted = True
-                else:
-                    out.append(token)
-            text_val = ", ".join(out)
-            self.set_cell_item(r, c, text_val)
-            overlap_n = len(out)
-            # Flash + overlap data-points on the programmed cell
-            self._flash_paint_cell(
-                r, c, overlap_n,
-                substituted=substituted,
-                member=member
-            )
-            return text_val
-
-        target_operator_name = self._selected_operator(rng)
-
-        while len(getattr(self.app, 'master_playlist_data', [])) <= row:
-            self.app.master_playlist_data.append({})
-        entry = self.app.master_playlist_data[row]
+        entry = app.master_playlist_data[row]
         if not isinstance(entry, dict):
             entry = {}
-            self.app.master_playlist_data[row] = entry
+            app.master_playlist_data[row] = entry  # or however you reach the main app
+
+        # Guarantee the playlist list is long enough
+
+        # Now safe on every path
+        pos_tag = ...  # your existing position calculation
         entry['position'] = pos_tag
-        entry['quantized'] = snap
 
-        # --- Only the clicked cell is painted ---
-        if col == 0:
-            _append_cell_member(row, 0, pos_tag.split(":", 1)[-1] if ":" in pos_tag else pos_tag)
-            entry['time_marker'] = pos_tag
-            return
+    # 2. Your existing logic (whatever it is) runs next:
+    # if some_condition:
+    #     pos_tag = calculate_position()
 
-        if col == 1:
-            # identity column — accumulate operators comma-separated
-            name = target_operator_name
-            if mode == self.MODE_RANDOM_PARAMETERS:
-                name = self.app.instrument_names_48[int(rng.integers(0, len(self.app.instrument_names_48)))]
-            _append_cell_member(row, 1, name)
-            # Random multidimensional overlaps: stack secondary instances on related cells
-            if not getattr(self, '_paint_expanding', False) and float(rng.random()) < 0.55:
-                extra = self.app.instrument_names_48[int(rng.integers(0, len(self.app.instrument_names_48)))]
-                if extra != name:
-                    _append_cell_member(row, 1, extra)
-                # random axes of automation overlap
-                _append_cell_member(row, 4, str(rng.choice(["eqr", "fractalizer", "pkp_decay", "filter", "drive"])))
-                _append_cell_member(row, 5, f"{int(rng.integers(20, 90))}%")
-                _append_cell_member(row, 8, f"Cover{float(rng.uniform(0.25, 1.0)):.0%}")
-            # multi-op list on the row
-            ops = [p.split("@")[0].strip() for p in (self.table_widget.item(row, 1).text() or "").split(",") if p.strip()]
-            entry['operator'] = ops[0] if ops else name
-            entry['operators'] = ops
-            item = self.table_widget.item(row, 1)
-            if item is not None:
-                item.setBackground(palette_colors[row % len(palette_colors)])
-            return
+    # 3. Now this line will always execute safely, even if the 'if' block was skipped!
+        if event is not None:
+            # Safely convert whatever seed_val is into an integer
+            seed_val = 0
+            if hasattr(self.app, 'input_seed_val'):
+                try:
+                    txt = self.app._seed_text()
+                    seed_val = abs(hash(float(txt))) % (2**31) if txt and abs(float(txt)) != 0.0 else int(time.time()) % (2**31)
+                except ValueError:
+                    seed_val = abs(hash(self.app._seed_text())) % (2**31)
 
-        if col == 2:
-            tag = f"Script::{target_operator_name[:6].upper()}"
-            _append_cell_member(row, 2, tag)
-            entry['script_tag'] = tag
-            return
-
-        if col == 3:
-            ctx = self.app._contextual_numerology(target_operator_name, row, row) if hasattr(self.app, '_contextual_numerology') else 0.5
-            if mode == self.MODE_RANDOM_PARAMETERS:
-                velocity = float(rng.uniform(0.10, 1.20))
-            else:
-                velocity = float(np.clip(0.15 + 1.15 * ctx, 0.05, 1.5))
-            _append_cell_member(row, 3, f"{velocity * 100:.1f}%")
-            entry['velocity'] = velocity
-            return
-
-        if col == 4:
-            params = list(self.app.instrument_param_state.get(target_operator_name, {"eqr": 0.5, "fractal": 0.5, "pkp": 0.5}).keys()) or ["eqr"]
-            # any combination of param names can accumulate
-            if mode == self.MODE_RANDOM_PARAMETERS:
-                k = int(rng.integers(1, min(4, len(params) + 1)))
-                chosen = list(rng.choice(params, size=min(k, len(params)), replace=False))
-            else:
-                chosen = [params[(row + col) % len(params)]]
-            for p in chosen:
-                _append_cell_member(row, 4, str(p))
-            entry['auto_targets'] = [p.split("@")[0].strip() for p in (self.table_widget.item(row, 4).text() or "").split(",") if p.strip()]
-            return
-
-        if col == 5:
-            ctx = 0.5
             try:
-                ctx = float(self.app._contextual_numerology(target_operator_name, row, row))
-            except Exception:
-                pass
-            if mode == self.MODE_RANDOM_PARAMETERS:
-                amt = int(rng.integers(20, 90))
+                safe_base = int(seed_val)
+            except (ValueError, TypeError):
+                safe_base = abs(hash(str(seed_val)))
+
+            # Calculate the raw seed
+            raw_seed = safe_base + int(row) + int(col) + int(time.time() * 1000) % 10000
+
+            # Force the seed into a safe, positive 32-bit integer range for NumPy
+            safe_seed = abs(raw_seed) % (2**32)
+
+            # Initialize the random number generator safely
+            rng = np.random.default_rng(safe_seed)
+
+            # Now rng is safely bound locally before being passed
+            target_operator_name = self._selected_operator(rng)
+        # Now this line will work perfectly
+            if not hasattr(self.app, 'instrument_names_48'):
+                return
+            self._ensure_automation_store()
+            rows = self.table_widget.rowCount()
+            cols = self.table_widget.columnCount()
+            if row < 0 or col < 0 or row >= rows or col >= cols:
+                return
+            # Explicitly remember user-painted playlist cells so additive engines
+            # can fill every other cell without ever overwriting a human edit.
+            touched = getattr(self, "playlist_user_touched", None)
+            if touched is None:
+                touched = self.playlist_user_touched = set()
+            touched.add((int(row), int(col)))
+
+            now = time.monotonic()
+            if not hasattr(self, "_last_flash_paint_cell"):
+                self._last_flash_paint_cell = None
+            if not hasattr(self, "_last_flash_paint_locus"):
+                self._last_flash_paint_locus = None
+            # Rate-limit stacking to 2.395 Hz (except mode-expansion internal calls)
+            expanding = bool(getattr(self, '_paint_expanding', False))
+            if not expanding:
+                if (now - float(getattr(self, '_last_paint_mono', 0.0))) < PAINT_PERIOD_S:
+                    if self._last_flash_paint_cell == (row, col):
+                        return  # too soon on same cell
+                # Proximity cancel: same cell, within 50% of cell size of last locus
+                local = None
+                if event is not None:
+                    try:
+                        pos = event.position().toPoint()
+                        idx = table.indexAt(pos)
+                        rect = table.visualRect(idx) if idx.isValid() else None
+                        if rect is not None and rect.width() > 0 and rect.height() > 0:
+                            local = (
+                                (pos.x() - rect.x()) / max(rect.width(), 1),
+                                (pos.y() - rect.y()) / max(rect.height(), 1),
+                            )
+                    except Exception:
+                        local = None
+                if (
+                    self._last_flash_paint_cell == (row, col)
+                    and local is not None
+                    and self._last_flash_paint_locus is not None
+                ):
+                    dx = abs(local[0] - self._last_flash_paint_locus[0])
+                    dy = abs(local[1] - self._last_flash_paint_locus[1])
+                    # 50% of cell length/width is enough to cancel any overlap
+                    if dx < 0.50 and dy < 0.50:
+                        return
+                self._last_paint_mono = now
+                self._last_flash_paint_cell = (row, col)
+                self._last_flash_paint_locus = local
+
+            rng = np.random.default_rng(_safe_int_seed(seed_val) + row + col + int(time.time() * 1000) % 10000)
+            mode = self._current_paint_mode()
+            snap = bool(self.chk_snap_grid.isChecked()) if hasattr(self, 'chk_snap_grid') else False
+            # Position along the row (unquantized free-time uses Meum spacing)
+            if snap:
+                pos_tag = f"q:{row}"
             else:
-                amt = int(round(100 * float(np.clip(0.50 + 0.24 * (ctx - 0.5) * 2.0, 0.20, 0.80))))
-            _append_cell_member(row, 5, f"{amt}%")
-            entry['auto_amount'] = amt / 100.0
-            return
+                pos_tag = f"u:{(row * MEUM):.3f}s"
+            def _append_cell_member(r, c, member):
+                """CSV members with limit, substitution, flash, and overlap data-points."""
+                existing = ""
+                item = self.table_widget.item(r, c)
+                if item is not None:
+                    existing = (item.text() or "").strip()
+                token = f"{member}@{pos_tag}"
+                parts = [p.strip() for p in existing.split(",") if p.strip()] if existing else []
+                base = member.split("@")[0].strip()
+                out = []
+                replaced = False
+                substituted = False
+                for p in parts:
+                    pbase = p.split("@")[0].strip()
+                    if pbase == base:
+                        out.append(token)
+                        replaced = True
+                    else:
+                        out.append(p)
+                if not replaced:
+                    if len(out) >= PAINT_INSTANCE_LIMIT:
+                        # Limit reached: substitute oldest instance, mark substitution
+                        out = out[1:] + [token]
+                        substituted = True
+                    else:
+                        out.append(token)
+                text_val = ", ".join(out)
+                self.set_cell_item(r, c, text_val)
+                overlap_n = len(out)
+                # Flash + overlap data-points on the programmed cell
+                self._flash_paint_cell(
+                    r, c, overlap_n,
+                    substituted=substituted,
+                    member=member
+                )
+                return text_val
 
-        if col == 6:
-            direction = "+" if (row + col) % 2 == 0 else "−"
-            _append_cell_member(row, 6, f"Vector{direction}")
-            entry['direction'] = 1.0 if direction == "+" else -1.0
-            return
+            target_operator_name = self._selected_operator(rng)
 
-        if col == 7:
-            multi = f"Multi[{(row % 3) + 1}]"
-            _append_cell_member(row, 7, multi)
-            entry['multi_seq'] = multi
-            return
+            while len(getattr(self.app, 'master_playlist_data', [])) <= row:
+                self.app.master_playlist_data.append({})
+            entry = self.app.master_playlist_data[row]
+            if not isinstance(entry, dict):
+                entry = {}
+                self.app.master_playlist_data[row] = entry
+            entry['position'] = pos_tag
+            entry['quantized'] = snap
 
-        if col == 8:
-            cov = 0.25
-            rc = self.row_coverage.setdefault(row, {})
-            prev = float(rc.get(target_operator_name, 0.0))
-            cov = min(1.0, prev + 0.25)
-            rc[target_operator_name] = cov
-            _append_cell_member(row, 8, f"Cover{cov:.0%}")
-            entry['coverage'] = cov
-            return
+            # --- Only the clicked cell is painted ---
+            if col == 0:
+                _append_cell_member(row, 0, pos_tag.split(":", 1)[-1] if ":" in pos_tag else pos_tag)
+                entry['time_marker'] = pos_tag
+                return
 
-        if col >= 9:
-            blend = float(rng.uniform(0.0, 100.0))
-            _append_cell_member(row, col, f"Blend{blend:.1f}%")
-            entry['blend_percent'] = blend
-            return
+            if col == 1:
+                # identity column — accumulate operators comma-separated
+                name = target_operator_name
+                if mode == self.MODE_RANDOM_PARAMETERS:
+                    name = self.app.instrument_names_48[int(rng.integers(0, len(self.app.instrument_names_48)))]
+                _append_cell_member(row, 1, name)
+                # Random multidimensional overlaps: stack secondary instances on related cells
+                if not getattr(self, '_paint_expanding', False) and float(rng.random()) < 0.55:
+                    extra = self.app.instrument_names_48[int(rng.integers(0, len(self.app.instrument_names_48)))]
+                    if extra != name:
+                        _append_cell_member(row, 1, extra)
+                    # random axes of automation overlap
+                    _append_cell_member(row, 4, str(rng.choice(["eqr", "fractalizer", "pkp_decay", "filter", "drive"])))
+                    _append_cell_member(row, 5, f"{int(rng.integers(20, 90))}%")
+                    _append_cell_member(row, 8, f"Cover{float(rng.uniform(0.25, 1.0)):.0%}")
+                # multi-op list on the row
+                ops = [p.split("@")[0].strip() for p in (self.table_widget.item(row, 1).text() or "").split(",") if p.strip()]
+                entry['operator'] = ops[0] if ops else name
+                entry['operators'] = ops
+                item = self.table_widget.item(row, 1)
+                if item is not None:
+                    item.setBackground(palette_colors[row % len(palette_colors)])
+                return
 
-        # Mode-driven subjects: ensure every relevant cell type can be painted
-        mode_cols = set()
-        if mode in (self.MODE_IDENTITY_STEPS_AUTO, self.MODE_IDENTITY_ONLY):
-            mode_cols.update([1])
-        if mode in (self.MODE_IDENTITY_STEPS_AUTO, self.MODE_STEPS_ONLY, self.MODE_STEPS_AUTO):
-            mode_cols.update([2, 3])
-        if mode in (self.MODE_IDENTITY_STEPS_AUTO, self.MODE_STEPS_AUTO, self.MODE_AUTO_ONLY,
-                    self.MODE_RANDOM_PARAMETERS, self.MODE_CALCULATED_PARAMETERS):
-            mode_cols.update([4, 5, 6, 8, 9])
-        # Paint additional mode columns once (avoid infinite recursion: only expand from primary click)
-        if not getattr(self, '_paint_expanding', False):
-            self._paint_expanding = True
-            try:
-                for mc in sorted(mode_cols):
-                    if mc != col:
-                        self.engage_paint(row, mc)
-            finally:
-                self._paint_expanding = False
+            if col == 2:
+                tag = f"Script::{target_operator_name[:6].upper()}"
+                _append_cell_member(row, 2, tag)
+                entry['script_tag'] = tag
+                return
+
+            if col == 3:
+                ctx = self.app._contextual_numerology(target_operator_name, row, row) if hasattr(self.app, '_contextual_numerology') else 0.5
+                if mode == self.MODE_RANDOM_PARAMETERS:
+                    velocity = float(rng.uniform(0.10, 1.20))
+                else:
+                    velocity = float(np.clip(0.15 + 1.15 * ctx, 0.05, 1.5))
+                _append_cell_member(row, 3, f"{velocity * 100:.1f}%")
+                entry['velocity'] = velocity
+                return
+
+            if col == 4:
+                params = list(self.app.instrument_param_state.get(target_operator_name, {"eqr": 0.5, "fractal": 0.5, "pkp": 0.5}).keys()) or ["eqr"]
+                # any combination of param names can accumulate
+                if mode == self.MODE_RANDOM_PARAMETERS:
+                    k = int(rng.integers(1, min(4, len(params) + 1)))
+                    chosen = list(rng.choice(params, size=min(k, len(params)), replace=False))
+                else:
+                    chosen = [params[(row + col) % len(params)]]
+                for p in chosen:
+                    _append_cell_member(row, 4, str(p))
+                entry['auto_targets'] = [p.split("@")[0].strip() for p in (self.table_widget.item(row, 4).text() or "").split(",") if p.strip()]
+                return
+
+            if col == 5:
+                ctx = 0.5
+                try:
+                    ctx = float(self.app._contextual_numerology(target_operator_name, row, row))
+                except Exception:
+                    pass
+                if mode == self.MODE_RANDOM_PARAMETERS:
+                    amt = int(rng.integers(20, 90))
+                else:
+                    amt = int(round(100 * float(np.clip(0.50 + 0.24 * (ctx - 0.5) * 2.0, 0.20, 0.80))))
+                _append_cell_member(row, 5, f"{amt}%")
+                entry['auto_amount'] = amt / 100.0
+                return
+
+            if col == 6:
+                direction = "+" if (row + col) % 2 == 0 else "−"
+                _append_cell_member(row, 6, f"Vector{direction}")
+                entry['direction'] = 1.0 if direction == "+" else -1.0
+                return
+
+            if col == 7:
+                multi = f"Multi[{(row % 3) + 1}]"
+                _append_cell_member(row, 7, multi)
+                entry['multi_seq'] = multi
+                return
+
+            if col == 8:
+                cov = 0.25
+                rc = self.row_coverage.setdefault(row, {})
+                prev = float(rc.get(target_operator_name, 0.0))
+                cov = min(1.0, prev + 0.25)
+                rc[target_operator_name] = cov
+                _append_cell_member(row, 8, f"Cover{cov:.0%}")
+                entry['coverage'] = cov
+                return
+
+            if col >= 9:
+                blend = float(rng.uniform(0.0, 100.0))
+                _append_cell_member(row, col, f"Blend{blend:.1f}%")
+                entry['blend_percent'] = blend
+                return
+
+            # Mode-driven subjects: ensure every relevant cell type can be painted
+            mode_cols = set()
+            if mode in (self.MODE_IDENTITY_STEPS_AUTO, self.MODE_IDENTITY_ONLY):
+                mode_cols.update([1])
+            if mode in (self.MODE_IDENTITY_STEPS_AUTO, self.MODE_STEPS_ONLY, self.MODE_STEPS_AUTO):
+                mode_cols.update([2, 3])
+            if mode in (self.MODE_IDENTITY_STEPS_AUTO, self.MODE_STEPS_AUTO, self.MODE_AUTO_ONLY,
+                        self.MODE_RANDOM_PARAMETERS, self.MODE_CALCULATED_PARAMETERS):
+                mode_cols.update([4, 5, 6, 8, 9])
+            # Paint additional mode columns once (avoid infinite recursion: only expand from primary click)
+            if not getattr(self, '_paint_expanding', False):
+                self._paint_expanding = True
+                try:
+                    for mc in sorted(mode_cols):
+                        if mc != col:
+                            self.engage_paint(row, mc)
+                finally:
+                    self._paint_expanding = False
 
 
     def _flash_paint_cell(self, row, col, overlap_n, substituted=False, member=""):
