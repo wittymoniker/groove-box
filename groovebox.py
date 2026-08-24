@@ -1178,10 +1178,8 @@ class PhaseLockedWavefieldEngine:
             offset = int((i * 3 + seed) % max(period, 1))
             euc = [((s + offset) % period) == 0 for s in range(count)]
             t = np.linspace(0, 1, count, endpoint=False)
-            evo = int(getattr(app, "_live_evolution_index", 0))
-            phase_e = (evo + 1) * PHI_INV + seed * 1.7e-6
-            env = 0.45 + 0.45 * np.sin(2 * np.pi * (t * MEUM + phase_e) + i * 0.17)
-            har = 0.5 + 0.4 * np.sin(2 * np.pi * (t * MEUM_LOG2 + phase_e * SQRT2) + i * 0.31)
+            env = 0.45 + 0.45 * np.sin(2 * np.pi * t * MEUM + i * 0.17)
+            har = 0.5 + 0.4 * np.sin(2 * np.pi * t * MEUM_LOG2 + i * 0.31)
             self.wavefield[name] = {
                 "euclidean": euc,
                 "envelope": env.astype(float).tolist(),
@@ -4754,29 +4752,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             print(f"[live-source] {exc}")
 
     def _live_engine_tick(self, which):
-        """Deterministic evolving heartbeat: Randomizer and Phase-Lock co-direct each pass."""
-        if getattr(self, '_live_engine_update_guard', False):
-            return False
-        if getattr(self, 'chk_user_program_only', None) and self.chk_user_program_only.isChecked():
-            return False
-        r_on, p_on = self._engines_both_live()
-        if not (r_on or p_on):
-            return False
-        self._live_evolution_index = int(getattr(self, '_live_evolution_index', 0)) + 1
-        self._live_engine_update_guard = True
-        try:
-            if r_on and p_on:
-                self.apply_composition_midpoint(live=True)
-            elif r_on:
-                self.apply_unified_randomizer(live=True)
-            else:
-                self.apply_unified_phase_lock(live=True)
-            return True
-        except Exception as exc:
-            print(f"[live-engine evolution] {exc}")
-            return False
-        finally:
-            self._live_engine_update_guard = False
+        """Compatibility heartbeat: deliberately does not mutate composition."""
+        return
 
     def _remove_engine_generated_playlist_writes(self):
         """Remove only Randomizer/Phase-Lock-owned playlist state.
@@ -5880,7 +5857,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             for sc in scales:
                 src = user_hits[(s * sc + seed) % len(user_hits)]
                 stable = hashlib.sha256(
-                    f"R|{seed}|{getattr(self, "_live_evolution_index", 0)}|{name}|{s}|{sc}".encode("utf-8", "replace")
+                    f"R|{seed}|{name}|{s}|{sc}".encode("utf-8", "replace")
                 ).digest()
                 u = int.from_bytes(stable[:8], "big") / float(2**64)
                 if u < 0.20 + 0.10 * ((sc % 5) / 5.0):
@@ -5899,14 +5876,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """Non-writing Euclidean + seed-specific wavefield ideal for midpoint merge."""
         import hashlib
         seed = int(seed)
-        evo = int(getattr(self, "_live_evolution_index", 0))
         steps = [False] * count
         amps = [0.0] * count
         pitches = [1.0] * count
 
         # Seed chooses both pulse count and phase origin; Meum supplies the metric.
-        evo = int(getattr(self, "_live_evolution_index", 0))
-        seed_u, seed_v, seed_w = self._seed_geometry(f"phase|{name}|{i}|{evo}")
+        seed_u, seed_v, seed_w = self._seed_geometry(f"phase|{name}|{i}")
         pulse_field = 0.5 + 0.5 * math.sin(
             2.0 * math.pi * (seed_u * PHI + seed_v * PHI_INV + i * MEUM_LOG2) + seed_w * MEUM
         )
@@ -6003,8 +5978,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         seed = self.get_numeric_seed() if hasattr(self, 'get_numeric_seed') else 1
         self._composition_generation_counter = getattr(self, '_composition_generation_counter', 0) + 1
         # Pure seed RNG — midpoint is a function of seed + current user pads only
-        evo = int(getattr(self, "_live_evolution_index", 0))
-        rng = np.random.default_rng((int(seed) + 0x9E3779B9 * evo) % (2**31))
+        rng = np.random.default_rng(int(seed) % (2**31))
         multi = bool(getattr(self, 'chk_multi_seq_load', None) and self.chk_multi_seq_load.isChecked())
         active = ""
         try:
@@ -6722,6 +6696,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         phase_unit /= (np.abs(phase_unit) + 1e-7)
         fitted_spec = (v_mag * (1.0 + fit_amt * (ratio - 1.0))) * phase_unit
         fitted = np.fft.irfft(fitted_spec, nfft)[:n].astype(np.float32)
+        peak = max(float(np.max(np.abs(fitted))), 1e-9)
+        original_peak = max(float(np.max(np.abs(v))), 1e-9)
+        fitted *= original_peak / peak
         if n < voice.size:
             out = voice.copy(); out[:n] = fitted; return out
         return fitted
@@ -6818,6 +6795,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         pkp_auto = self.chk_pkp_automod.isChecked() if hasattr(self, "chk_pkp_automod") else True
         seed_val = int(self.get_numeric_seed()) if hasattr(self, "get_numeric_seed") else 0
         # No process-global RNG mutation: render determinism belongs to the literal seed.
+        # Build the parameter field from the CURRENT user/program/synth/context state.
+        # This is the triangular resonance source for pitch/amplitude/waveform/harmonics.
+        try:
+            r_on, p_on = self._engines_both_live()
+            if r_on or p_on:
+                self._build_unison_synth_field(source='render')
+        except Exception as exc:
+            print(f"[Unison field] render build skipped: {exc}")
+
 
         # Seed geometry: several irrational coordinates, not a single Meum mapping.
         seed_u0, seed_u1, seed_u2 = self._seed_geometry("audio")
@@ -6950,13 +6936,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 fm_enabled = ("fm" in module_text or "frequency mod" in module_text)
                 am_enabled = ("am" in module_text or "amplitude mod" in module_text)
 
-                step_env = np.zeros_like(local_t, dtype=np.float64)
+                # HARD PARAMETER GATE ONLY. No ADSR, decay, fade, or synthetic envelope.
+                # Amplitude/probability come from the user × randomizer × phase/context field.
+                step_amp = np.zeros_like(local_t, dtype=np.float64)
                 pitch_track = np.ones_like(local_t, dtype=np.float64)
+                h2_track = np.zeros_like(local_t, dtype=np.float64)
+                h3_track = np.zeros_like(local_t, dtype=np.float64)
+                h5_track = np.zeros_like(local_t, dtype=np.float64)
+                shape_track = np.zeros_like(local_t, dtype=np.float64)
 
                 steps = list(mem.get("steps", []) or [])
                 amps = list(mem.get("amplitudes", []) or [])
                 pitches = list(mem.get("pitches", []) or [])
                 probs = list(mem.get("probabilities", []) or [])
+                fields = ((getattr(self, 'instrument_param_generated', {}) or {}).get(op_name, {}) or {}).get('step_fields', [])
 
                 for s_idx in range(min(int(seq_len), len(steps) if steps else int(seq_len))):
                     if not (steps[s_idx] if s_idx < len(steps) else False):
@@ -6966,33 +6959,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     s_mask = (local_t >= s_start) & (local_t < s_end)
                     if not np.any(s_mask):
                         continue
-
-                    s_local = local_t[s_mask] - s_start
-                    amp = float(amps[s_idx]) if s_idx < len(amps) else 1.0
-                    pr = float(pitches[s_idx]) if s_idx < len(pitches) else 1.0
-                    prob = float(probs[s_idx]) / 100.0 if s_idx < len(probs) else 1.0
-                    prob = float(np.clip(prob, 0.0, 1.0))
-
-                    # Same click-safe envelope as the newest build.
-                    attack = min(0.006, step_duration * 0.12)
-                    release = min(0.012, step_duration * 0.18)
-                    a = np.clip(s_local / max(attack, 1e-6), 0.0, 1.0)
-                    attack_env = 0.5 - 0.5 * np.cos(np.pi * a)
-                    body = 1.0
-                    rel_start = max(step_duration - release, attack)
-                    rel = np.clip((s_local - rel_start) / max(release, 1e-6), 0.0, 1.0)
-                    release_env = 0.5 + 0.5 * np.cos(np.pi * rel)
-                    wf_env = 1.0
-                    try:
-                        wf = getattr(self, "wavefield_engine", None)
-                        hints = wf.get_hints(op_name, s_idx) if wf is not None else None
-                        if hints is not None:
-                            wf_env = float(np.clip(hints.get("envelope", 0.5) * 0.75 + 0.25, 0.25, 1.0))
-                    except Exception:
-                        wf_env = 1.0
-                    env = attack_env * body * release_env * wf_env * prob
-                    step_env[s_mask] += amp * env
-                    pitch_track[s_mask] = pr
+                    fld = fields[s_idx] if s_idx < len(fields) else {}
+                    user_amp = float(amps[s_idx]) if s_idx < len(amps) else 1.0
+                    user_pitch = float(pitches[s_idx]) if s_idx < len(pitches) else 1.0
+                    user_prob = float(probs[s_idx]) / 100.0 if s_idx < len(probs) else 1.0
+                    amp_v = float(fld.get('amplitude', user_amp))
+                    prob_v = float(fld.get('probability', user_prob))
+                    step_amp[s_mask] = np.clip(amp_v * prob_v * float(velocity_scale), 0.0, 1.0)
+                    pitch_track[s_mask] = user_pitch * float(fld.get('pitch_ratio', 1.0))
+                    h2_track[s_mask] = float(fld.get('h2', 0.32))
+                    h3_track[s_mask] = float(fld.get('h3', 0.20))
+                    h5_track[s_mask] = float(fld.get('h5', 0.08))
+                    shape_track[s_mask] = float(fld.get('shape', 0.5))
 
                 if float(np.max(step_env)) < 1e-7:
                     continue
@@ -7013,50 +6991,29 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 phase += phase0
                 osc = np.sin(phase)
 
-                # Restore the older engine's useful additive harmonic character, but
-                # normalize partial energy so adding harmonics does not simply inflate RMS.
-                # Preserve the older engine's richer additive character: integer
-                # harmonics plus the useful 3.5/6 partials. Normalize partial energy
-                # so richer spectra do not become louder; the seed selects the phase
-                # cell, not the musical identity Meum.
-                # Phase-lock owns waveform parameters, not just note placement.
-                wf_h = 0.5
-                wf_e = 0.5
-                try:
-                    wf = getattr(self, "wavefield_engine", None)
-                    if wf is not None:
-                        hints = wf.get_hints(op_name, int(np.clip(np.floor((s_local.mean() / max(step_duration, 1e-9))), 0, seq_len - 1)))
-                        if hints is not None:
-                            wf_h = float(hints.get("seed_harmonic", 0.5))
-                            wf_e = float(hints.get("envelope", 0.5))
-                except Exception:
-                    pass
-                # Geometric waveform cell: continuously changes harmonic spread, FM/AM depth,
-                # and phase offset with the same field that selected the pattern.
-                waveform_stretch = 1.0 + (wf_h - 0.5) * 0.11
-                waveform_phase = phase0 + (wf_h - 0.5) * MEUM * np.pi
-                partial_weights = np.array([0.90, 0.32, 0.20, 0.08, 0.055], dtype=np.float64)
-                partial_weights /= max(float(np.sqrt(np.sum(partial_weights ** 2))), 1e-9)
-                partial_harmonics = (1.0, 2.0, 3.5, 4.0, 6.0)
-                partials = np.zeros_like(osc)
-                partial_stretch = waveform_stretch + (op_field2 - 0.5) * 0.018
-                for h_pos, (harmonic, wt) in enumerate(zip(partial_harmonics, partial_weights)):
-                    ph = phase * harmonic * partial_stretch + waveform_phase * h_pos * MEUM_NORM
-                    partials += wt * np.sin(ph)
-                osc = partials
+                # Waveform/harmonics are owned by the unison parameter field.
+                # Do NOT normalize the partial stack per voice: the actual final stack
+                # is measured once at the end.
+                partials = np.sin(phase)
+                partials += h2_track * np.sin(phase * 2.0 + phase0 * 0.37)
+                partials += h3_track * np.sin(phase * 3.5 + phase0 * 0.61)
+                partials += (0.06 + 0.10 * shape_track) * np.sin(phase * 4.0 + phase0 * 0.83)
+                partials += h5_track * np.sin(phase * 6.0 + phase0 * 1.07)
+                # Bounded field-owned waveshaping. This is a waveform parameter, not an envelope.
+                osc = np.tanh(partials * (1.0 + 1.8 * shape_track))
 
                 if fm_enabled:
                     mod_freq = freq * MEUM_CONSTANT
                     fm_mod = np.sin(2.0 * np.pi * mod_freq * local_t + phase0)
                     fm_index = np.clip(
-                        base_eqr * MEUM_CONSTANT * max(fractalizer_val, 0.15) * (0.65 + 0.70 * wf_h),
+                        base_eqr * MEUM_CONSTANT * max(fractalizer_val, 0.15),
                         0.05, 3.5
                     )
                     osc = np.sin(phase + fm_mod * fm_index)
 
                 if am_enabled:
                     am_depth = float(np.clip(
-                        (0.08 + 0.37 * wf_e) * (0.55 + 0.45 * base_eqr), 0.05, 0.48
+                        0.15 + 0.25 * base_eqr * MEUM_NORM, 0.08, 0.45
                     ))
                     am_rate = np.maximum(freq * MEUM_NORM * 0.5, 0.5)
                     am_env = (
@@ -7095,8 +7052,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             max(0.15, convolve_fit_amount),
                         ).astype(np.float64)
 
-                # Energy-normalized cluster contribution: distinct voices do not sum
-                # coherently into a loudness spike just because several are active.
+                # Raw physical stack: no per-voice RMS normalization.
                 row_mix += voice
 
             # Explicit PKP layer; no hidden transient beyond its macro.
@@ -7159,9 +7115,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     nfft = 1 << int(np.ceil(np.log2(len(master) + len(kernel) - 1)))
                     spec = np.fft.rfft(master, nfft) * np.fft.rfft(kernel, nfft)
                     conv = np.fft.irfft(spec, nfft)[:len(master)].astype(np.float32)
-                    cn = np.max(np.abs(conv))
-                    if cn > 1e-9:
-                        conv *= np.max(np.abs(master)) / cn
                     master = (1.0 - conv_amt) * master + conv_amt * conv
         except Exception as exc:
             print(f"[Global Convolve] skipped: {exc}")
@@ -7194,15 +7147,106 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         _prog(98, "Mixdown")
         self._render_stage = "Finalizing"
-        peak = float(np.max(np.abs(master))) if master.size else 0.0
-        if peak > 1e-12:
-            master = master * (0.98 / peak)
-        master = np.clip(master, -0.98, 0.98).astype(np.float32)
+        # FINAL OUTPUT = actual measured extrema. No target RMS, ceiling, or synthetic normalizer.
+        if master.size:
+            lo = float(np.min(master)); hi = float(np.max(master))
+            extent = max(abs(lo), abs(hi))
+            if extent > 1e-12:
+                master = master / extent
+        master = np.asarray(master, dtype=np.float32)
         _prog(100, "Mixdown")
         self._render_stage = "Complete"
         return master, sample_rate
 
 
+
+    def _build_unison_synth_field(self, source="unison"):
+        """Build the three-way resonance field: USER × RANDOMIZER × PHASE-LOCK.
+
+        This is parameter geometry, not an amplitude envelope.  Every synth voice
+        gets a deterministic per-step waveform/frequency field so Phase-Lock owns
+        the *shape* of the sound rather than merely deciding whether a note fires.
+        User values are one vertex of the triangle; deterministic random geometry
+        and phase geometry are the other two.  The result is time-independent for
+        a fixed seed + user state and changes immediately when user data changes.
+        """
+        import hashlib
+        seed_text = self._seed_text() if hasattr(self, "_seed_text") else str(self.get_numeric_seed())
+        count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16
+        count = max(1, count)
+        generated = getattr(self, 'instrument_param_generated', None)
+        if not isinstance(generated, dict):
+            generated = {}; self.instrument_param_generated = generated
+        state = getattr(self, 'instrument_param_state', {}) or {}
+        names = list(getattr(self, 'instrument_names_48', []) or [])
+
+        r_on, p_on = self._engines_both_live() if hasattr(self, '_engines_both_live') else (False, False)
+        for i, name in enumerate(names):
+            mem = (getattr(self, 'instrument_sequencer_memory', {}) or {}).get(name) or {}
+            user_steps = list(mem.get('steps') or [])
+            user_amp = list(mem.get('amplitudes') or [])
+            user_pitch = list(mem.get('pitches') or [])
+            user_prob = list(mem.get('probabilities') or [])
+            base = state.get(name, {}) if isinstance(state.get(name, {}), dict) else {}
+            fields=[]
+            for step in range(count):
+                payload=f"UNISON-V1|{seed_text}|{name}|{i}|{step}|{source}"
+                d=hashlib.blake2b(payload.encode('utf-8','replace'), digest_size=32).digest()
+                u=[int.from_bytes(d[j:j+8],'big')/float(2**64) for j in (0,8,16,24)]
+                # User vertex: actual current parameters, with deterministic fallbacks.
+                ua=float(user_amp[step]) if step < len(user_amp) else float(base.get('amplitude',0.65))
+                up=float(user_pitch[step]) if step < len(user_pitch) else 1.0
+                uq=float(base.get('eqr',0.5)); uf=float(base.get('filter',0.5)); ud=float(base.get('drive',0.2))
+                # Random vertex: bounded deterministic geometry, never free-running noise.
+                r1=0.5+0.5*math.sin(2*math.pi*(u[0]*PHI+u[1]*SQRT2)+step*MEUM_LOG2)
+                r2=0.5+0.5*math.cos(2*math.pi*(u[1]*PHI_INV+u[2]*MEUM)+i*MEUM_NORM)
+                r3=0.5+0.5*math.sin(2*math.pi*(u[2]*MEUM_LOG2+u[3]*PHI)+step*PHI_INV)
+                # Phase/context vertex: Phase-Lock reads the live composition/synth context
+                # as well as its own geometric coordinates.  This is a data dependency,
+                # not a free-running modulation source.
+                pu,pv,pw,_ = self._seed_audio_geometry(f"UNISON-P|{name}|{step}|{i}")
+                try:
+                    ctx = self._contextual_numerology(name, step, i)
+                except Exception:
+                    ctx = 0.5
+                ctx = float(np.clip(ctx, 0.0, 1.0))
+                phase = 2*math.pi*(pu*PHI+pv*SQRT2+pw*MEUM_LOG2+ctx*PHI_INV)+(step+1)*MEUM
+                p1=0.5+0.5*math.sin(phase)
+                p2=0.5+0.5*math.cos(phase*PHI)
+                p3=0.5+0.5*math.sin(phase*SQRT2+MEUM)
+                # Barycentric resonance. User remains audible; engines pull toward it.
+                w_u = 0.52
+                w_r = 0.24 if r_on else 0.0
+                w_p = 0.24 if p_on else 0.0
+                if not (r_on or p_on):
+                    w_u,w_r,w_p=1.0,0.0,0.0
+                sw=max(w_u+w_r+w_p,1e-9); w_u/=sw; w_r/=sw; w_p/=sw
+                field = lambda a,b,c: float(np.clip(w_u*a+w_r*b+w_p*c,0.0,1.0))
+                q=field(float(np.clip(uq,0,1)),r1,p1)
+                filt=field(float(np.clip(uf,0,1)),r2,p2)
+                drive=field(float(np.clip(ud,0,1)),r3,p3)
+                # Amplitude is a parameter, not an envelope: the user's amplitude,
+                # deterministic random field, and phase/context field jointly own it.
+                amp_field=field(float(np.clip(ua,0,1)),r1,p1)
+                prob_field=field(float(np.clip((user_prob[step]/100.0) if step < len(user_prob) else 1.0,0,1)),r3,p3)
+                # Waveform coordinates are directly owned by the triangle.
+                h2=field(0.35+0.30*uq,r1,p1)
+                h3=field(0.20+0.35*uf,r2,p2)
+                h5=field(0.08+0.24*ud,r3,p3)
+                shape=field(0.15+0.65*(step%5)/4.0,r1,p2)
+                # Deterministic harmonic cell, always near the user pitch.
+                ratio=up * self._seed_ratio(i,step,"unison-pitch")
+                ratio *= 2.0 ** ((field(0.5,r2,p1)-0.5)*0.22)
+                fields.append({
+                    'eqr':q,'filter':filt,'drive':drive,
+                    'h2':h2,'h3':h3,'h5':h5,'shape':shape,
+                    'pitch_ratio':float(np.clip(ratio,0.5,2.0)),
+                    'phase':float(2*math.pi*field(0.5,u[0],p1)),
+                    'random':(r1,r2,r3),'phase_field':(p1,p2,p3),
+                })
+            generated.setdefault(name,{})['step_fields']=fields
+            generated[name]['unison_weights']=(w_u,w_r,w_p)
+        return generated
 
     def _apply_meum_ideal_hierarchy(self, rng=None):
         """Geometric Meum hierarchy over synth, playlist, domain, modular, scripts.
@@ -7444,7 +7488,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             phase_g = (t * (2.0 + density * 6.0 * MEUM) + seed * 1e-9 * op_idx) % 1.0
             gate = (phase_g < density).astype(np.float64) * (0.5 + 0.5 * amp)
             master += (carrier * am_env * gate) * (0.08 + 0.04 * (i % 3))
-        return master.astype(np.float32)
+        peak = float(np.max(np.abs(master))) + 1e-12
+        master = (master / peak * 0.9).astype(np.float32)
+        return master
 
     def _refresh_visualizers_meum_playlist(self):
         """Idle/pre-play: same explicit-module Meum structure as final mix, from playlist."""
@@ -7823,7 +7869,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 master, sample_rate = self._render_mixdown_buffer(progress="export")
             self._set_export_progress(98, "Writing WAV")
             master = np.asarray(master, dtype=np.float32).ravel()
-            peak = float(np.max(np.abs(master))) if master.size else 0.0
             pcm = (np.clip(master, -1.0, 1.0) * 32767.0).astype(np.int16)
             if wavfile is not None:
                 wavfile.write(file_path, sample_rate, pcm)
