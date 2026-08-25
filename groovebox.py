@@ -248,13 +248,148 @@ DEFAULT_INSTRUMENT_LIST = [
     "45. Plasma Ionization Gate", "46. Magnetostrictive Resonator Effect", "47. Crystalline Lattice Damper", "48. Event Horizon Limiter"
 ]
 # Canonical playlist record schema. Every engine, UI sync, and CSV/member path
-# must preserve all ten visible playlist columns in this order.
+# must preserve all visible playlist columns in this order.
+# Each row can carry a fully idealized instrument data-struct set:
+#   Script + Domain + Synth + Modular Patch, plus time offset and blend/coverage
+# so instruments can Unison-module with each other via virtual overlap only.
 PLAYLIST_COLUMNS = (
-    "time_marker", "operators_csv", "script_tag", "velocity",
-    "effect_target", "auto_amount", "direction_vector", "multi_seq",
-    "coverage", "blend_partner",
+    "time_marker", "operators_csv",
+    "script_tag", "domain_tag", "synth_tag", "patch_tag",
+    "velocity", "effect_target", "auto_amount",
+    "direction_vector", "multi_seq", "coverage", "blend_partner",
 )
 PLAYLIST_COLUMN_COUNT = len(PLAYLIST_COLUMNS)
+# Semantic groups used by cross-cell blend (any of these can blend under coverage).
+PLAYLIST_STRUCT_COLUMNS = ("script_tag", "domain_tag", "synth_tag", "patch_tag")
+PLAYLIST_STRUCT_COL_INDICES = (2, 3, 4, 5)  # indices into PLAYLIST_COLUMNS
+
+def idealized_operator_struct(app, op_name, row=0, seed=0):
+    """Build the canonical per-instrument data-struct set used by playlist cells.
+
+    Returns dict with script_tag, domain_tag, synth_tag, patch_tag — compact
+    labels that point at the live instrument_scripts / domain_eq_engine /
+    instrument_param_state / patch_connections stores so Unison composition
+    only needs time_offset + coverage/blend to recycle patterns.
+    """
+    op = str(op_name or "Operator")
+    short = op.split(".")[-1].strip()[:18] if op else "Op"
+    # Script
+    script_body = ""
+    if app is not None and hasattr(app, "instrument_scripts"):
+        script_body = str((app.instrument_scripts or {}).get(op, "") or "")
+    script_line = ""
+    for line in script_body.splitlines():
+        s = line.strip()
+        if s and not s.startswith("#"):
+            script_line = s[:48]
+            break
+    if not script_line:
+        script_line = f"Script::{short.upper()[:6]}"
+    script_tag = script_line
+
+    # Domain — prefer a matching domain_eq_engine partition, else a Meum-stable tag
+    domain_tag = f"Dom::{short[:8]}[t]"
+    engine = getattr(app, "domain_eq_engine", None) if app is not None else None
+    if engine is not None:
+        for dom in getattr(engine, "domains", []) or []:
+            if not isinstance(dom, dict):
+                continue
+            name = str(dom.get("name", ""))
+            if short[:6].lower() in name.lower() or op[:8].lower() in name.lower():
+                axis = dom.get("axis", "time")
+                t0, t1 = dom.get("t0", 0.0), dom.get("t1", 1.0)
+                domain_tag = f"{name[:16]}|{axis}|{float(t0):.2f}-{float(t1):.2f}"
+                break
+        else:
+            # Seed-stable synthetic domain label from first partition template
+            if engine.domains:
+                d0 = engine.domains[min(row % max(len(engine.domains), 1), len(engine.domains) - 1)]
+                domain_tag = f"{str(d0.get('name', 'Dom'))[:14]}@r{row}"
+
+    # Synth snapshot from instrument_param_state
+    synth_tag = f"Synth::{short[:10]}"
+    params = {}
+    if app is not None:
+        params = dict((getattr(app, "instrument_param_state", {}) or {}).get(op, {}) or {})
+        gen = dict((getattr(app, "instrument_param_generated", {}) or {}).get(op, {}) or {})
+        for k, v in gen.items():
+            params.setdefault(k, v)
+    if params:
+        # Compact key=val list of primary macros
+        keys = ("eqr", "fractalizer", "pkp_decay", "tuning", "filter", "drive", "amplitude")
+        parts = []
+        for k in keys:
+            if k in params:
+                try:
+                    parts.append(f"{k[0:3]}={float(params[k]):.2f}")
+                except Exception:
+                    parts.append(f"{k[0:3]}={params[k]}")
+        if parts:
+            synth_tag = "|".join(parts[:5])
+
+    # Modular patch — incident edges for this operator
+    patch_tag = f"Patch::{short[:8]}"
+    edges = []
+    if app is not None:
+        for c in getattr(app, "patch_connections", []) or []:
+            if not isinstance(c, dict):
+                continue
+            src, tgt = c.get("source"), c.get("target")
+            if src == op or tgt == op:
+                w = c.get("weight", c.get("gain", 0.5))
+                try:
+                    w = float(w)
+                except Exception:
+                    w = 0.5
+                other = tgt if src == op else src
+                arrow = "→" if src == op else "←"
+                edges.append(f"{arrow}{str(other).split('.')[-1].strip()[:10]}@{w:.2f}")
+        if not edges:
+            try:
+                for c in getattr(globals().get("GLOBAL_BUS", None), "global_cables", []) or []:
+                    src, tgt = c.get("src_module"), c.get("tgt_module")
+                    if src == op or tgt == op:
+                        other = tgt if src == op else src
+                        edges.append(f"{'→' if src == op else '←'}{str(other)[:10]}")
+            except Exception:
+                pass
+    if edges:
+        patch_tag = ",".join(edges[:3])
+
+    return {
+        "script_tag": script_tag,
+        "domain_tag": domain_tag,
+        "synth_tag": synth_tag,
+        "patch_tag": patch_tag,
+        "operator": op,
+    }
+
+
+def blend_struct_labels(a, b, amount):
+    """Blend two structure cell labels under coverage amount in [0,1].
+
+    amount is the virtual-overlap fraction (same meaning as row_coverage /
+    blend_max Half|Quarter). Result is a dual-label so Unison recycling can
+    see both parents, weighted by overlap.
+    """
+    a = str(a or "").strip()
+    b = str(b or "").strip()
+    try:
+        amt = float(amount)
+    except Exception:
+        amt = 0.5
+    amt = max(0.0, min(1.0, amt))
+    if not a and not b:
+        return ""
+    if not b or amt <= 0.02:
+        return a
+    if not a or amt >= 0.98:
+        return b
+    # Keep both parents visible; mark the dominant side.
+    if amt < 0.5:
+        return f"{a}~{b[:18]}@{amt:.0%}"
+    return f"{b}~{a[:18]}@{(1.0 - amt):.0%}"
+
 
 class FormulaModulatorWidget(QWidget):
     def __init__(self):
@@ -1801,7 +1936,7 @@ class AdvancedDSPEngine:
             state = channel_states[track_idx % len(channel_states)]
             base_tuning = state.get("tuning", 432.0)
             duration_mult = state.get("duration", 1.0)
-            vol = state.get("volume", 0.8)
+            vol = state.get("volume", 1.0)
             p1 = state.get("wave_param1", 0.5)
             p2 = state.get("wave_param2", 0.5)
 
@@ -6607,9 +6742,9 @@ class PaintbrushTable(QWidget):
                     self.parent_table.resolve_row_overlaps()
                 super().mouseReleaseEvent(event)
 
-        # Wider grid: time, operator, script, velocity, automation target, auto amount,
-        # modulation, multi-seq, coverage, blend partner
-        n_cols = max(cols, 10)
+        # Wider grid: time, operator, script, domain, synth, patch, velocity,
+        # automation target/amount, modulation, multi-seq, coverage, blend partner
+        n_cols = max(cols, PLAYLIST_COLUMN_COUNT)
         self.table_widget = PaintTableWidget(self, rows, n_cols)
         self.table_widget.setMinimumWidth(1200)
         self.table_widget.horizontalHeader().setStretchLastSection(True)
@@ -6929,6 +7064,17 @@ class PaintbrushTable(QWidget):
 
             _append_cell_member(row, 1, name)
 
+            # Seed the idealized structure set for this operator (Script/Domain/
+            # Synth/Patch) so a single identity paint is enough for Unison recycle.
+            try:
+                struct = idealized_operator_struct(self.app, name, row=row)
+                for sk, sc in zip(PLAYLIST_STRUCT_COLUMNS, PLAYLIST_STRUCT_COL_INDICES):
+                    if not entry.get(sk):
+                        _append_cell_member(row, sc, struct.get(sk, ""))
+                        entry[sk] = struct.get(sk, "")
+            except Exception:
+                pass
+
             # Additional overlapping synth identity / automation.
             if (
                 not getattr(self, "_paint_expanding", False)
@@ -6945,10 +7091,23 @@ class PaintbrushTable(QWidget):
 
                 if extra != name:
                     _append_cell_member(row, 1, extra)
+                    # Cross-blend structure cells under virtual half-overlap
+                    try:
+                        self.row_coverage.setdefault(row, {})
+                        self.row_coverage[row][name] = max(
+                            float(self.row_coverage[row].get(name, 0.0)), 0.55
+                        )
+                        self.row_coverage[row][extra] = max(
+                            float(self.row_coverage[row].get(extra, 0.0)), 0.45
+                        )
+                        self._blend_row_structs(row, name, extra, 0.5 * self._blend_max_fraction())
+                    except Exception:
+                        pass
 
+                # Auto-target / amount / coverage (shifted indices in 13-col schema)
                 _append_cell_member(
                     row,
-                    4,
+                    7,
                     str(
                         rng.choice(
                             [
@@ -6964,13 +7123,13 @@ class PaintbrushTable(QWidget):
 
                 _append_cell_member(
                     row,
-                    5,
+                    8,
                     f"{int(rng.integers(20, 90))}%",
                 )
 
                 _append_cell_member(
                     row,
-                    8,
+                    11,
                     f"Cover{float(rng.uniform(0.25, 1.0)):.0%}",
                 )
 
@@ -7001,7 +7160,8 @@ class PaintbrushTable(QWidget):
         # Column 2 — script.
         # ------------------------------------------------------------
         if col == 2:
-            tag = f"Script::{target_operator_name[:6].upper()}"
+            struct = idealized_operator_struct(self.app, target_operator_name, row=row)
+            tag = struct.get("script_tag") or f"Script::{target_operator_name[:6].upper()}"
 
             _append_cell_member(row, 2, tag)
 
@@ -7009,9 +7169,44 @@ class PaintbrushTable(QWidget):
             return
 
         # ------------------------------------------------------------
-        # Column 3 — velocity / amp.
+        # Column 3 — domain partition tag.
         # ------------------------------------------------------------
         if col == 3:
+            struct = idealized_operator_struct(self.app, target_operator_name, row=row)
+            tag = struct.get("domain_tag") or f"Dom::{target_operator_name[:8]}[t]"
+
+            _append_cell_member(row, 3, tag)
+
+            entry["domain_tag"] = tag
+            return
+
+        # ------------------------------------------------------------
+        # Column 4 — synth parameter snapshot.
+        # ------------------------------------------------------------
+        if col == 4:
+            struct = idealized_operator_struct(self.app, target_operator_name, row=row)
+            tag = struct.get("synth_tag") or f"Synth::{target_operator_name[:10]}"
+
+            _append_cell_member(row, 4, tag)
+
+            entry["synth_tag"] = tag
+            return
+
+        # ------------------------------------------------------------
+        # Column 5 — modular patch topology tag.
+        # ------------------------------------------------------------
+        if col == 5:
+            struct = idealized_operator_struct(self.app, target_operator_name, row=row)
+            tag = struct.get("patch_tag") or f"Patch::{target_operator_name[:8]}"
+
+            _append_cell_member(row, 5, tag)
+
+            entry["patch_tag"] = tag
+            return
+
+# Column 6 — velocity / amp.
+        # ------------------------------------------------------------
+        if col == 6:
             if hasattr(self.app, "_contextual_numerology"):
                 try:
                     ctx = float(
@@ -7039,7 +7234,7 @@ class PaintbrushTable(QWidget):
 
             _append_cell_member(
                 row,
-                3,
+                6,
                 f"{velocity * 100:.1f}%",
             )
 
@@ -7052,9 +7247,9 @@ class PaintbrushTable(QWidget):
             return
 
         # ------------------------------------------------------------
-        # Column 4 — automation target / synth parameter.
+        # Column 7 — automation target / synth parameter.
         # ------------------------------------------------------------
-        if col == 4:
+        if col == 7:
             params = list(
                 self.app.instrument_param_state.get(
                     target_operator_name,
@@ -7102,7 +7297,7 @@ class PaintbrushTable(QWidget):
                 ]
 
             for p in chosen:
-                _append_cell_member(row, 4, str(p))
+                _append_cell_member(row, 7, str(p))
 
             item = table.item(row, 4)
 
@@ -7119,9 +7314,9 @@ class PaintbrushTable(QWidget):
             return
 
         # ------------------------------------------------------------
-        # Column 5 — automation amount.
+        # Column 8 — automation amount.
         # ------------------------------------------------------------
-        if col == 5:
+        if col == 8:
             try:
                 ctx = float(
                     self.app._contextual_numerology(
@@ -7154,7 +7349,7 @@ class PaintbrushTable(QWidget):
 
             _append_cell_member(
                 row,
-                5,
+                8,
                 f"{amt}%",
             )
 
@@ -7162,9 +7357,9 @@ class PaintbrushTable(QWidget):
             return
 
         # ------------------------------------------------------------
-        # Column 6 — modulation/vector.
+        # Column 9 — modulation/vector.
         # ------------------------------------------------------------
-        if col == 6:
+        if col == 9:
             direction = (
                 "+"
                 if (row + col) % 2 == 0
@@ -7175,7 +7370,7 @@ class PaintbrushTable(QWidget):
 
             _append_cell_member(
                 row,
-                6,
+                9,
                 vector_text,
             )
 
@@ -7186,14 +7381,14 @@ class PaintbrushTable(QWidget):
             return
 
         # ------------------------------------------------------------
-        # Column 7 — multi sequence.
+        # Column 10 — multi sequence.
         # ------------------------------------------------------------
-        if col == 7:
+        if col == 10:
             multi = f"Multi[{(row % 3) + 1}]"
 
             _append_cell_member(
                 row,
-                7,
+                10,
                 multi,
             )
 
@@ -7201,9 +7396,9 @@ class PaintbrushTable(QWidget):
             return
 
         # ------------------------------------------------------------
-        # Column 8 — coverage.
+        # Column 11 — coverage.
         # ------------------------------------------------------------
-        if col == 8:
+        if col == 11:
             rc = self.row_coverage.setdefault(row, {})
 
             previous = float(
@@ -7222,7 +7417,7 @@ class PaintbrushTable(QWidget):
 
             _append_cell_member(
                 row,
-                8,
+                11,
                 f"Cover{coverage:.0%}",
             )
 
@@ -7230,9 +7425,9 @@ class PaintbrushTable(QWidget):
             return
 
         # ------------------------------------------------------------
-        # Column 9+ — blend.
+        # Column 12+ — blend.
         # ------------------------------------------------------------
-        if col >= 9:
+        if col >= 12:
             blend = float(
                 rng.uniform(0.0, 100.0)
             )
@@ -7311,16 +7506,80 @@ class PaintbrushTable(QWidget):
             return
         for k in a:
             if k in b:
-                a[k] = float(a[k] * (1.0 - amount) + b[k] * amount)
+                try:
+                    a[k] = float(a[k] * (1.0 - amount) + float(b[k]) * amount)
+                except Exception:
+                    pass
+
+    def _blend_row_structs(self, row, op_a, op_b, amount):
+        """Blend Script/Domain/Synth/Patch cells on a row under virtual overlap.
+
+        amount is the same coverage-derived fraction used for instrument-param
+        travel (already scaled by Half/Quarter blend max). Any structure cell
+        can blend; the dual-label form preserves both parents for Unison recycle.
+        """
+        if not hasattr(self.app, "master_playlist_data"):
+            return
+        while len(self.app.master_playlist_data) <= row:
+            self.app.master_playlist_data.append({})
+        entry = self.app.master_playlist_data[row]
+        if not isinstance(entry, dict):
+            entry = {}
+            self.app.master_playlist_data[row] = entry
+
+        sa = idealized_operator_struct(self.app, op_a, row=row)
+        sb = idealized_operator_struct(self.app, op_b, row=row)
+        for key, col in zip(PLAYLIST_STRUCT_COLUMNS, PLAYLIST_STRUCT_COL_INDICES):
+            # Prefer already-painted cell text as the local left/right parent
+            left = ""
+            right = ""
+            item = self.table_widget.item(row, col) if self.table_widget else None
+            if item and (item.text() or "").strip():
+                left = item.text().strip()
+            left = left or entry.get(key) or sa.get(key, "")
+            right = sb.get(key, "")
+            blended = blend_struct_labels(left, right, amount)
+            entry[key] = blended
+            self.set_cell_item(row, col, blended)
+
+        # Also blend the live synth param store (existing dynamic)
+        self._blend_instrument_params(op_a, op_b, amount)
+
     def resolve_row_overlaps(self):
-        """After a stroke, re-assert coverage labels and push automation UI state."""
+        """After a stroke, re-assert coverage, blend overlapping structs, push UI."""
         self._ensure_automation_store()
+        max_frac = self._blend_max_fraction()
         for row, cov in self.row_coverage.items():
             if not cov:
                 continue
             parts = [f"{k[:10]}:{v:.0%}" for k, v in cov.items()]
-            self.set_cell_item(row, 8, " | ".join(parts)[:48])
-        # Reflect automation into global macros lightly (UI update)
+            # Coverage column is index 11 in the 13-col schema
+            cov_col = 11 if self.table_widget.columnCount() > 11 else min(8, self.table_widget.columnCount() - 1)
+            self.set_cell_item(row, cov_col, " | ".join(parts)[:64])
+
+            # Virtual overlap: when two+ operators share a row, blend their
+            # idealized Script/Domain/Synth/Patch structs by relative coverage.
+            ops = list(cov.keys())
+            if len(ops) >= 2:
+                # Sort by coverage desc; blend secondary into primary
+                ops_sorted = sorted(ops, key=lambda k: cov.get(k, 0.0), reverse=True)
+                primary = ops_sorted[0]
+                for other in ops_sorted[1:]:
+                    # Overlap fraction = min coverage * blend max (Half/Quarter)
+                    overlap = float(min(cov.get(primary, 0.0), cov.get(other, 0.0)))
+                    amount = float(np.clip(overlap * max_frac, 0.0, max_frac))
+                    if amount > 0.01:
+                        self._blend_row_structs(row, primary, other, amount)
+                # Record blend partner as the strongest secondary
+                if hasattr(self.app, "master_playlist_data") and row < len(self.app.master_playlist_data):
+                    entry = self.app.master_playlist_data[row]
+                    if isinstance(entry, dict):
+                        entry["blend_partner"] = ops_sorted[1]
+                        entry["coverage"] = " | ".join(parts)[:64]
+                        entry["coverage_map"] = dict(cov)
+                        blend_col = 12 if self.table_widget.columnCount() > 12 else min(9, self.table_widget.columnCount() - 1)
+                        self.set_cell_item(row, blend_col, ops_sorted[1])
+
         if hasattr(self.app, 'apply_playlist_automation_to_ui'):
             self.app.apply_playlist_automation_to_ui()
 
@@ -7346,7 +7605,8 @@ class PaintbrushTable(QWidget):
             # Coverage multi-color note in col 8
             cov = self.row_coverage.get(row, {})
             if len(cov) > 1:
-                self.set_cell_item(row, 8, "BLEND " + "+".join(f"{k[:6]}" for k in cov.keys()))
+                cov_col = 11 if self.table_widget.columnCount() > 11 else 8
+                self.set_cell_item(row, cov_col, "BLEND " + "+".join(f"{k[:6]}" for k in cov.keys()))
         print("[Playlist] Convolve color coding applied")
 # ==========================================
 # 4. MODULAR TAB MANAGER (TOP PANE)
@@ -8534,8 +8794,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Groovebox")
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16777215, 16777215)
         self.resize(1300, 950)
-
         self.playlist_window = None
         self.patch_bay_dialog = None
         self.synth_editor_window = None
@@ -8752,30 +9013,41 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 prior = old_rows[r] if r < len(old_rows) and isinstance(old_rows[r], dict) else {}
                 values = [cell(r, c) for c in range(min(PLAYLIST_COLUMN_COUNT, table.columnCount()))]
                 values += [""] * (PLAYLIST_COLUMN_COUNT - len(values))
-                col4, col5, col6, col7, col8, col9 = values[4:10]
+                # 13-col layout: 0 time, 1 ops, 2 script, 3 domain, 4 synth, 5 patch,
+                # 6 velocity, 7 effect, 8 amount, 9 direction, 10 multi, 11 coverage, 12 blend
+                vel_txt = values[6]
+                effect = values[7]
+                amount = values[8]
+                direction = values[9]
+                multi = values[10]
+                coverage = values[11]
+                blend = values[12]
 
                 row_dict = {
                     "time_marker": values[0],
                     "operator": values[1] or prior.get("operator", self.instrument_names_48[0]),
                     "operators_csv": values[1],
                     "script_tag": values[2],
+                    "domain_tag": values[3],
+                    "synth_tag": values[4],
+                    "patch_tag": values[5],
                     "velocity": 1.0,
-                    "effect_target": col4,
-                    "modulation": col4,
-                    "auto_amount": col5,
-                    "direction_vector": col6,
+                    "effect_target": effect,
+                    "modulation": effect,
+                    "auto_amount": amount,
+                    "direction_vector": direction,
                     "direction": (
-                        1.0 if col6.strip().startswith("+") or col6.strip().endswith("+")
-                        else -1.0 if col6.strip().startswith(("-", "−")) or col6.strip().endswith(("-", "−"))
+                        1.0 if direction.strip().startswith("+") or direction.strip().endswith("+")
+                        else -1.0 if direction.strip().startswith(("-", "−")) or direction.strip().endswith(("-", "−"))
                         else 0.0
                     ),
-                    "multi_seq": col7,
-                    "coverage": col8,
-                    "blend_partner": col9,
+                    "multi_seq": multi,
+                    "coverage": coverage,
+                    "blend_partner": blend,
                 }
 
                 try:
-                    v = float(values[3].replace("%", "").strip())
+                    v = float(vel_txt.replace("%", "").strip())
                     row_dict["velocity"] = v / 100.0 if v > 1.0 else v
                 except Exception:
                     row_dict["velocity"] = float(prior.get("velocity", 1.0) or 1.0)
@@ -8786,11 +9058,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     if key not in visible:
                         row_dict[key] = value
 
-                # A malformed/old table must never cause the canonical tail to
-                # disappear from memory: recover missing tail fields from prior state.
+                # Recover missing canonical fields from prior state (incl. new structs).
                 for c, key in {
-                    6: "direction_vector", 7: "multi_seq",
-                    8: "coverage", 9: "blend_partner",
+                    2: "script_tag", 3: "domain_tag", 4: "synth_tag", 5: "patch_tag",
+                    9: "direction_vector", 10: "multi_seq",
+                    11: "coverage", 12: "blend_partner",
                 }.items():
                     if not values[c] and prior.get(key) not in (None, ""):
                         row_dict[key] = prior[key]
@@ -9108,7 +9380,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return
 
         rows = table.rowCount()
-        cols = min(table.columnCount(), 10)
+        cols = min(table.columnCount(), PLAYLIST_COLUMN_COUNT)
 
         # Prevent the brush's expansion logic from recursively expanding
         # every procedural paint, and from tagging cells as user-owned.
@@ -9170,13 +9442,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
             0: "time_marker",
             1: "operators_csv",
             2: "script_tag",
-            3: "velocity",
-            4: "effect_target",
-            5: "auto_amount",
-            6: "direction_vector",
-            7: "multi_seq",
-            8: "coverage",
-            9: "blend_partner",
+            3: "domain_tag",
+            4: "synth_tag",
+            5: "patch_tag",
+            6: "velocity",
+            7: "effect_target",
+            8: "auto_amount",
+            9: "direction_vector",
+            10: "multi_seq",
+            11: "coverage",
+            12: "blend_partner",
         }
         rows = min(table.rowCount(), len(data))
         for r in range(rows):
@@ -9311,7 +9586,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 except Exception:
                     pass
     def _paint_operator_pattern_to_playlist(self, source="randomizer", rng=None):
-        """Deterministically paint the complete 10-column playlist schema.
+        """Deterministically paint the complete playlist schema (Script/Domain/Synth/Patch + timeline).
 
         User cells (``@u:`` instances) are immutable. Engine-owned material is
         regenerated from the seed + source and is fully tagged, so Randomizer /
@@ -9401,11 +9676,26 @@ class MathematiciansGrooveboxApp(QMainWindow):
             coverage_map = {op: float(np.clip(0.30 + 0.55 * rr.random(), 0.0, 1.0)) for op in eng_ops}
             coverage = "|".join(f"{k}:{v:.0%}" for k, v in coverage_map.items()) if active else "0%"
             partner = eng_ops[1] if active and len(eng_ops) > 1 else ""
-            script = ""
-            if eng_ops and hasattr(self, 'instrument_scripts'):
+            primary_op = eng_ops[0] if eng_ops else (users[0] if users else "Operator")
+            struct = idealized_operator_struct(self, primary_op, row=r, seed=seed)
+            # When multiple ops share a row, fold secondary structs under coverage
+            # so Unison recycling sees blended Script/Domain/Synth/Patch parents.
+            if len(eng_ops) > 1:
+                for sec in eng_ops[1:]:
+                    sec_struct = idealized_operator_struct(self, sec, row=r, seed=seed)
+                    cov_a = float(coverage_map.get(primary_op, 0.5))
+                    cov_b = float(coverage_map.get(sec, 0.5))
+                    amt = float(min(cov_a, cov_b)) * 0.5  # Half blend max default
+                    for sk in PLAYLIST_STRUCT_COLUMNS:
+                        struct[sk] = blend_struct_labels(struct.get(sk, ""), sec_struct.get(sk, ""), amt)
+            script = struct.get("script_tag") or ""
+            if not script and eng_ops and hasattr(self, 'instrument_scripts'):
                 script = str((self.instrument_scripts.get(eng_ops[0]) or '').splitlines()[0]).strip()
             if not script:
                 script = f"Meum:{source}:seed={seed}:row={r}"
+            domain_tag = struct.get("domain_tag") or f"Dom::{str(primary_op)[:8]}[t]"
+            synth_tag = struct.get("synth_tag") or f"Synth::{str(primary_op)[:10]}"
+            patch_tag = struct.get("patch_tag") or f"Patch::{str(primary_op)[:8]}"
 
             engine_csv = ", ".join(f"{op}{tag}" for op in eng_ops)
             combined_csv = ", ".join(users + ([engine_csv] if engine_csv else []))
@@ -9417,6 +9707,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 'operators': list(dict.fromkeys(users + eng_ops)),
                 'operators_csv': combined_csv,
                 'script_tag': script,
+                'domain_tag': domain_tag,
+                'synth_tag': synth_tag,
+                'patch_tag': patch_tag,
                 'velocity': velocity,
                 'effect_target': target,
                 'auto_amount': f"{amount * 100:.1f}%",
@@ -9447,13 +9740,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 0: "time_marker",
                 1: "operators_csv",
                 2: "script_tag",
-                3: "velocity",
-                4: "effect_target",
-                5: "auto_amount",
-                6: "direction_vector",
-                7: "multi_seq",
-                8: "coverage",
-                9: "blend_partner",
+                3: "domain_tag",
+                4: "synth_tag",
+                5: "patch_tag",
+                6: "velocity",
+                7: "effect_target",
+                8: "auto_amount",
+                9: "direction_vector",
+                10: "multi_seq",
+                11: "coverage",
+                12: "blend_partner",
             }
             for c in sorted(locked_cols):
                 key = field_by_col.get(c)
@@ -9463,7 +9759,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if item is None:
                     continue
                 text = (item.text() or "").strip()
-                if c == 3:
+                if c == 6:
                     try:
                         text_v = float(text.replace("%", "").strip())
                         fields[key] = text_v / 100.0 if text_v > 1.0 else text_v
@@ -9476,9 +9772,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     fields["operator"] = ops_locked[0] if ops_locked else fields.get("operator", "")
                     fields["operators"] = ops_locked
                     fields["operators_csv"] = text
-                elif c == 4:
+                elif c == 7:
                     fields["modulation"] = text
-                elif c == 6:
+                    fields["effect_target"] = text
+                elif c == 9:
                     fields["direction"] = (
                         1.0 if text.startswith("+") or text.endswith("+")
                         else -1.0 if text.startswith(("-", "−")) or text.endswith(("-", "−"))
@@ -9513,13 +9810,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
             table_set(r, 0, fields['time_marker'])
             table_set(r, 1, fields['operators_csv'])
             table_set(r, 2, fields['script_tag'])
-            table_set(r, 3, f"{velocity * 100:.1f}%")
-            table_set(r, 4, target)
-            table_set(r, 5, fields['auto_amount'])
-            table_set(r, 6, fields['direction_vector'])
-            table_set(r, 7, multi_seq)
-            table_set(r, 8, coverage)
-            table_set(r, 9, partner)
+            table_set(r, 3, fields['domain_tag'])
+            table_set(r, 4, fields['synth_tag'])
+            table_set(r, 5, fields['patch_tag'])
+            table_set(r, 6, f"{velocity * 100:.1f}%")
+            table_set(r, 7, target)
+            table_set(r, 8, fields['auto_amount'])
+            table_set(r, 9, fields['direction_vector'])
+            table_set(r, 10, multi_seq)
+            table_set(r, 11, coverage)
+            table_set(r, 12, partner)
             painted += 1
 
         # Structural postcondition: every generated row has all ten canonical fields.
@@ -9529,15 +9829,23 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if not isinstance(_entry, dict):
                 continue
             if not _entry.get("generated_by_engine"):
-                _entry.setdefault("direction_vector", "")
-                _entry.setdefault("multi_seq", "")
-                _entry.setdefault("coverage", "")
-                _entry.setdefault("blend_partner", "")
+                for _k in ("script_tag", "domain_tag", "synth_tag", "patch_tag",
+                           "direction_vector", "multi_seq", "coverage", "blend_partner"):
+                    _entry.setdefault(_k, "")
                 continue
             if not str(_entry.get("time_marker") or "").strip():
                 t_off = _ri * (0.125 + 0.031 * MEUM_NORM)
                 _entry["time_marker"] = f"e:{t_off:.4f}s"
                 _entry["time_offset"] = float(t_off)
+            # Ensure idealized structure set is present for Unison recycling.
+            op_name = _entry.get("operator") or (names[_ri % len(names)] if names else "Operator")
+            try:
+                _struct = idealized_operator_struct(self, op_name, row=_ri)
+            except Exception:
+                _struct = {}
+            for _sk in PLAYLIST_STRUCT_COLUMNS:
+                if not str(_entry.get(_sk) or "").strip():
+                    _entry[_sk] = _struct.get(_sk, "")
             if not str(_entry.get("direction_vector") or "").strip():
                 signed = 1.0 if (_ri % 2 == 0) else -1.0
                 _entry["direction_vector"] = f"{signed:+.4f}"
@@ -12924,7 +13232,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             window.setWindowTitle(window_title)
 
             if attr_name == 'playlist_window':
-                window.resize(1100, 750)
+                window.resize(1300, 875)
             elif attr_name == 'patch_bay_dialog':
                 window.resize(950, 700)
             else:
@@ -12954,13 +13262,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 rows = min(1024, max(1, int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else 96))
                 if hasattr(self, 'spin_playlist_length'):
                     self.spin_playlist_length.setValue(rows)
-                track_table = PaintbrushTable(self, rows, 10)
+                track_table = PaintbrushTable(self, rows, PLAYLIST_COLUMN_COUNT)
                 self.active_paint_table = track_table
                 if not hasattr(self, 'playlist_automation') or self.playlist_automation is None:
                     self.playlist_automation = [{} for _ in range(rows)]
 
                 track_table.setHorizontalHeaderLabels([
-                    "Time Marker", "Operator Identity", "Script Tag",
+                    "Time Marker", "Operator Identity",
+                    "Script Tag", "Domain Tag", "Synth Snapshot", "Modular Patch",
                     "Velocity", "Auto Target", "Auto Amount",
                     "Direction Vector", "Multi-Seq", "Coverage", "Blend Partner"
                 ])
@@ -13019,13 +13328,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     track_table.set_cell_item(row_idx, 0, QTableWidgetItem("" if empty else str(data_entry.get("time_marker", ""))))
                     track_table.set_cell_item(row_idx, 1, item_inst)
                     track_table.set_cell_item(row_idx, 2, QTableWidgetItem("" if empty else str(data_entry.get("script_tag", ""))))
-                    track_table.set_cell_item(row_idx, 3, QTableWidgetItem("" if empty else f"{float(data_entry.get('velocity', 1.0))*100:.1f}%"))
-                    track_table.set_cell_item(row_idx, 4, QTableWidgetItem("" if empty else str(data_entry.get("effect_target", data_entry.get("modulation", "")))))
-                    track_table.set_cell_item(row_idx, 5, QTableWidgetItem("" if empty else str(data_entry.get("auto_amount", ""))))
-                    track_table.set_cell_item(row_idx, 6, QTableWidgetItem("" if empty else str(data_entry.get("direction_vector", data_entry.get("direction", "")))))
-                    track_table.set_cell_item(row_idx, 7, QTableWidgetItem("" if empty else str(data_entry.get("multi_seq", ""))))
-                    track_table.set_cell_item(row_idx, 8, QTableWidgetItem("" if empty else str(data_entry.get("coverage", ""))))
-                    track_table.set_cell_item(row_idx, 9, QTableWidgetItem("" if empty else str(data_entry.get("blend_partner", ""))))
+                    track_table.set_cell_item(row_idx, 3, QTableWidgetItem("" if empty else str(data_entry.get("domain_tag", ""))))
+                    track_table.set_cell_item(row_idx, 4, QTableWidgetItem("" if empty else str(data_entry.get("synth_tag", ""))))
+                    track_table.set_cell_item(row_idx, 5, QTableWidgetItem("" if empty else str(data_entry.get("patch_tag", ""))))
+                    track_table.set_cell_item(row_idx, 6, QTableWidgetItem("" if empty else f"{float(data_entry.get('velocity', 1.0))*100:.1f}%"))
+                    track_table.set_cell_item(row_idx, 7, QTableWidgetItem("" if empty else str(data_entry.get("effect_target", data_entry.get("modulation", "")))))
+                    track_table.set_cell_item(row_idx, 8, QTableWidgetItem("" if empty else str(data_entry.get("auto_amount", ""))))
+                    track_table.set_cell_item(row_idx, 9, QTableWidgetItem("" if empty else str(data_entry.get("direction_vector", data_entry.get("direction", "")))))
+                    track_table.set_cell_item(row_idx, 10, QTableWidgetItem("" if empty else str(data_entry.get("multi_seq", ""))))
+                    track_table.set_cell_item(row_idx, 11, QTableWidgetItem("" if empty else str(data_entry.get("coverage", ""))))
+                    track_table.set_cell_item(row_idx, 12, QTableWidgetItem("" if empty else str(data_entry.get("blend_partner", ""))))
 
                 update_time_markers()
                 main_layout.addWidget(track_table)
