@@ -581,25 +581,45 @@ class SpectrumAnalyzer(QFrame):
 
 class VideoSynthEngine:
     """
-    Meum-stable 2.5D↔3D scenograph. Perspective uses MEUM_POWERS for depth
-    falloff; formation/dissolution driven by live audio + composition state.
+    Meum calculus-driven multi-subscene 2.5D/3D scenograph for live + export.
+
+    Simplified Meum identities track the playhead and bulk audio state:
+        u(t) = (M−1)/M · sin(M·t + φ) + (1/M)·centroid     [formation]
+        ρ(t) = M^{k mod 6} · band_k · (1 + ε·seeded)         [radial scale]
+        depth falloff via MEUM_POWERS; faces/segments/volumes from expanded
+        or contracted vertex sets with selective constant insert/remove.
+
+    Live engines (seeded / Euclidean) and playlist density drive substitutions.
+    Oscilloscope/FFT are UI-only — never drawn into export frames.
     """
+
+    SUBSCENE_COUNT = 6  # field, ribbon, volumes, faces, segments, particles
 
     def __init__(self, n_instruments=48):
         self.n = int(n_instruments)
         self.wave = np.zeros(256, dtype=np.float32)
         self.t = 0.0
+        self.playhead = 0.0  # 0..1 composition progress
         self.mode = 0
         self.app = None
+        self.export_mode = False  # True during video export (no UI chrome)
         self._band = np.zeros(8, dtype=np.float32)
         self._rms = 0.0
         self._centroid = 0.5
+        self._peak = 0.0
         self._video_hue_shift = 0.0
         self._video_energy = 0.0
+        self._rng = np.random.RandomState(7)
+        # Implode-to-fit: map scene bbox onto the full frame
+        self._fit_cx = 0.0
+        self._fit_cy = 0.0
+        self._fit_sx = 1.0
+        self._fit_sy = 1.0
+        self._fit_ox = 0.0
+        self._fit_oy = 0.0
         self.layers = []
         for i in range(self.n):
-            # Meum radial depth ladder: M^0.. scales
-            depth = 1.4 + float(MEUM_POWERS_36[min(i % 12, 35)]) * 0.15
+            depth = 1.35 + float(MEUM_POWERS_36[min(i % 12, 35)]) * 0.18
             self.layers.append({
                 "i": i,
                 "distance": depth,
@@ -607,14 +627,15 @@ class VideoSynthEngine:
                 "pitch": 0.12 * np.sin(i * MEUM),
                 "roll": 0.09 * np.cos(i * MEUM_INV),
                 "hue": int((i * 360 / max(self.n, 1) + i * 7) % 360),
-                "life": 0.35,
+                "life": 0.3,
                 "family": i // 8,
+                "active_verts": 4 + (i % 5),  # expanded/contracted poly size
             })
 
     def bind_app(self, app):
         self.app = app
 
-    def set_waveform(self, data):
+    def set_waveform(self, data, playhead=None):
         if data is None:
             return
         arr = np.asarray(data, dtype=np.float32).ravel()
@@ -625,8 +646,12 @@ class VideoSynthEngine:
             np.arange(arr.size),
             arr,
         ).astype(np.float32)
-        # Meum time step (self-similar tick)
         self.t += PAINT_PERIOD_S * MEUM_NORM
+        if playhead is not None:
+            try:
+                self.playhead = float(max(0.0, min(1.0, playhead)))
+            except Exception:
+                pass
         self._analyze()
 
     def ingest_video_frame_stats(self, mean_rgb=None, energy=0.0):
@@ -638,13 +663,10 @@ class VideoSynthEngine:
     def _analyze(self):
         w = self.wave
         self._rms = float(np.sqrt(np.mean(w ** 2)) + 1e-9)
-        bands = []
-        for b in range(8):
-            a = int(b * 32)
-            bands.append(float(np.sqrt(np.mean(w[a:a + 32] ** 2)) + 1e-9))
+        self._peak = float(np.max(np.abs(w)) + 1e-9)
+        bands = [float(np.sqrt(np.mean(w[b * 32:(b + 1) * 32] ** 2)) + 1e-9) for b in range(8)]
         self._band = np.asarray(bands, dtype=np.float32)
-        mx = float(np.max(self._band)) + 1e-9
-        self._band /= mx
+        self._band /= (float(np.max(self._band)) + 1e-9)
         idx = np.arange(256, dtype=np.float32)
         mag = np.abs(w) + 1e-9
         self._centroid = float(np.sum(idx * mag) / (np.sum(mag) * 255.0))
@@ -652,17 +674,119 @@ class VideoSynthEngine:
     def energy(self):
         return self._rms
 
+    # ----- Meum calculus state (playhead-tracking simplified identities) -----
+    def _meum_state(self):
+        """Evaluate simplified Meum equations with live substitutions."""
+        snap = self._live_snap()
+        ph = self.playhead
+        t = self.t
+        # Base identities
+        u = MEUM_NORM * math.sin(MEUM * t + ph * math.tau) + MEUM_INV * self._centroid
+        # Dimensional expand/contract: insert/remove powers based on engines
+        k_pow = 1
+        if snap["seeded"]:
+            k_pow += 1  # insert M^2 term
+        if snap["euclid"]:
+            k_pow += 1  # insert M^3 influence
+        if snap["struct"] > 0.4:
+            k_pow = max(0, k_pow - 1)  # contract: remove a power
+        rho = float(MEUM_POWERS_36[min(k_pow, 35)]) * (0.4 + 0.6 * self._rms)
+        # Variable substitution: ε from residual + live randomizer pulse
+        eps = abs(MEUM_IDENTITY_RESIDUAL) * 10.0 + (0.08 if snap["seeded"] else 0.0)
+        form = float(np.clip(0.25 + 0.45 * abs(u) + 0.2 * rho + eps * self._band[int(ph * 7) % 8], 0.05, 1.0))
+        # Volume shell scale from 2^M / M^2 partner
+        vol_s = float(MEUM_TWO_POW_OVER_SQ) * (0.5 + 0.5 * self._peak) * (0.6 + 0.4 * snap["eqr"])
+        # Line density from log2(M) · BPM coupling
+        line_d = MEUM_LOG2 * (0.5 + 0.5 * (snap["bpm"] / 140.0)) * (0.4 + 0.6 * snap["fractal"])
+        return {
+            "u": u, "rho": rho, "form": form, "vol_s": vol_s, "line_d": line_d,
+            "eps": eps, "k_pow": k_pow, "snap": snap, "ph": ph,
+        }
+
+    def _live_snap(self):
+        snap = {
+            "seeded": False, "euclid": False, "eqr": 0.5, "fractal": 0.33,
+            "struct": 0.0, "bpm": 120.0, "carrier": 0.0, "pkp": 0.5, "seed": 0.0,
+        }
+        app = self.app
+        if app is None:
+            return snap
+        try:
+            snap["seeded"] = bool(getattr(app, "btn_seeded_randomize", None) and app.btn_seeded_randomize.isChecked())
+            snap["euclid"] = bool(getattr(app, "btn_idealize_rhythm", None) and app.btn_idealize_rhythm.isChecked())
+            if hasattr(app, "slider_eqr"):
+                snap["eqr"] = app.slider_eqr.value() / 100.0
+            if hasattr(app, "slider_fractalizer"):
+                snap["fractal"] = app.slider_fractalizer.value() / 100.0
+            if hasattr(app, "slider_pkp_decay"):
+                snap["pkp"] = app.slider_pkp_decay.value() / 1000.0
+            if hasattr(app, "spin_bpm"):
+                snap["bpm"] = float(app.spin_bpm.value())
+            if hasattr(app, "get_numeric_seed"):
+                try:
+                    snap["seed"] = float(app.get_numeric_seed() or 0.0)
+                except Exception:
+                    pass
+            if getattr(app, "imported_waveform", None) is not None:
+                snap["carrier"] = 1.0
+            rows = getattr(app, "master_playlist_data", None) or []
+            active = sum(1 for r in rows if isinstance(r, dict) and any(
+                r.get(k) not in (None, "", [], {}) for k in
+                ("operator", "script_tag", "domain_tag", "synth_tag", "patch_tag")
+            ))
+            snap["struct"] = min(1.0, active / 24.0)
+        except Exception:
+            pass
+        return snap
+
+    def _reset_fit(self, w, h):
+        self._fit_cx = w * 0.5
+        self._fit_cy = h * 0.5
+        self._fit_sx = 1.0
+        self._fit_sy = 1.0
+        self._fit_ox = w * 0.5
+        self._fit_oy = h * 0.5
+
+    def _map_xy(self, x, y):
+        """Implode a screen point into the fitted outer bounds."""
+        return (
+            self._fit_ox + (x - self._fit_cx) * self._fit_sx,
+            self._fit_oy + (y - self._fit_cy) * self._fit_sy,
+        )
+
+    def _commit_fit(self, pts, w, h):
+        """Scale every part so the union bbox fills the frame (padded outer bounds)."""
+        if not pts:
+            return
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        minx, maxx = min(xs), max(xs)
+        miny, maxy = min(ys), max(ys)
+        bw = max(maxx - minx, 1.0)
+        bh = max(maxy - miny, 1.0)
+        # Meum-thin margin so geometry kisses the outer bounds without clipping
+        m = max(3.0, min(w, h) * MEUM_NORM * 0.08)
+        avail_w = max(w - 2.0 * m, 8.0)
+        avail_h = max(h - 2.0 * m, 8.0)
+        # Anisotropic implode: fill both axes (fills screen, stays inside bounds)
+        self._fit_sx = avail_w / bw
+        self._fit_sy = avail_h / bh
+        self._fit_cx = 0.5 * (minx + maxx)
+        self._fit_cy = 0.5 * (miny + maxy)
+        self._fit_ox = w * 0.5
+        self._fit_oy = h * 0.5
+
     def _project(self, x, y, z, w, h, fov=None):
-        # Meum FOV: slightly wider than classic 1.2
         if fov is None:
-            fov = MEUM + MEUM_NORM * 0.15  # ~1.23
+            fov = MEUM + MEUM_NORM * 0.15
         z = max(z, 0.12)
-        # Depth compression via inverse Meum power (soft perspective)
         inv = 1.0 / z
         sx = (x * inv) * fov
         sy = (y * inv) * fov
-        px = w * 0.5 + sx * (w * 0.36)
-        py = h * 0.5 - sy * (h * 0.36)
+        # Base projection uses ~half-frame so implode-to-fit has room to expand
+        px = w * 0.5 + sx * (w * 0.46)
+        py = h * 0.5 - sy * (h * 0.46)
+        px, py = self._map_xy(px, py)
         return px, py, inv
 
     def _hsv(self, h, s, v):
@@ -674,8 +798,8 @@ class VideoSynthEngine:
         steps = max(abs(int(x1) - int(x0)), abs(int(y1) - int(y0)), 1)
         a = float(np.clip(alpha, 0.0, 1.0))
         c = np.array(col, dtype=np.float32)
-        for t in range(int(steps) + 1):
-            u = t / steps
+        for ti in range(int(steps) + 1):
+            u = ti / steps
             x = int(x0 + (x1 - x0) * u)
             y = int(y0 + (y1 - y0) * u)
             if 0 <= x < ww and 0 <= y < hh:
@@ -697,87 +821,110 @@ class VideoSynthEngine:
             self._line(img, pts[i][0], pts[i][1], pts[(i + 1) % 3][0], pts[(i + 1) % 3][1], col, alpha)
         cx = (p0[0] + p1[0] + p2[0]) / 3.0
         cy = (p0[1] + p1[1] + p2[1]) / 3.0
-        self._dot(img, cx, cy, col, alpha * 0.5, r=2)
+        self._dot(img, cx, cy, col, alpha * 0.45, r=2)
+        for t in (0.3, 0.6):
+            for i in range(3):
+                ax = pts[i][0] * (1 - t) + cx * t
+                ay = pts[i][1] * (1 - t) + cy * t
+                self._dot(img, ax, ay, col, alpha * 0.25, r=1)
 
-    def _live_snap(self):
-        snap = {"seeded": False, "euclid": False, "eqr": 0.5, "fractal": 0.33, "struct": 0.0, "bpm": 120.0}
-        app = self.app
-        if app is None:
-            return snap
-        try:
-            snap["seeded"] = bool(getattr(app, "btn_seeded_randomize", None) and app.btn_seeded_randomize.isChecked())
-            snap["euclid"] = bool(getattr(app, "btn_idealize_rhythm", None) and app.btn_idealize_rhythm.isChecked())
-            if hasattr(app, "slider_eqr"):
-                snap["eqr"] = app.slider_eqr.value() / 100.0
-            if hasattr(app, "slider_fractalizer"):
-                snap["fractal"] = app.slider_fractalizer.value() / 100.0
-            if hasattr(app, "spin_bpm"):
-                snap["bpm"] = float(app.spin_bpm.value())
-            rows = getattr(app, "master_playlist_data", None) or []
-            active = sum(1 for r in rows if isinstance(r, dict) and any(
-                r.get(k) not in (None, "", [], {}) for k in ("operator", "script_tag", "domain_tag", "synth_tag", "patch_tag")
-            ))
-            snap["struct"] = min(1.0, active / 24.0)
-        except Exception:
-            pass
-        return snap
-
-    def render_frame(self, w=640, h=360):
-        img = np.zeros((h, w, 3), dtype=np.float32)
-        e = self.energy()
-        snap = self._live_snap()
-        hue_bg = (190 + self._centroid * 90 + self._video_hue_shift) % 360
-        c0 = np.array(self._hsv(hue_bg, 0.35, 0.10 + 0.22 * e), dtype=np.float32)
-        c1 = np.array(self._hsv((hue_bg + 50) % 360, 0.4, 0.07 + 0.18 * e), dtype=np.float32)
+    def _subscene_field(self, img, w, h, st):
+        """Background Meum gradient field + playhead vertical."""
+        e = self._rms
+        hue_bg = (185 + self._centroid * 90 + self._video_hue_shift + st["ph"] * 40) % 360
+        c0 = np.array(self._hsv(hue_bg, 0.32, 0.08 + 0.18 * e), dtype=np.float32)
+        c1 = np.array(self._hsv((hue_bg + 55) % 360, 0.38, 0.06 + 0.14 * e), dtype=np.float32)
         for yy in range(h):
-            u = yy / max(h - 1, 1)
-            # Meum ease between gradients
-            u_m = u ** MEUM_INV
-            img[yy, :] = c0 * (1 - u_m) + c1 * u_m
+            u = (yy / max(h - 1, 1)) ** MEUM_INV
+            img[yy, :] = c0 * (1 - u) + c1 * u
+        # Playhead tracker line (thin, translucent)
+        phx = int(st["ph"] * (w - 1))
+        col = self._hsv(30, 0.7, 0.7)
+        self._line(img, phx, 0, phx, h - 1, col, alpha=0.18)
 
-        # Ground ribbon
+    def _subscene_ribbon(self, img, w, h, st):
+        """Waveform ribbon — audio bulk as ground reference (not an oscilloscope chrome)."""
+        e = self._rms
         for i in range(255):
             x0 = int(i / 255.0 * (w - 1))
             x1 = int((i + 1) / 255.0 * (w - 1))
-            y0 = int(h * 0.78 - self.wave[i] * h * 0.18)
-            y1 = int(h * 0.78 - self.wave[i + 1] * h * 0.18)
-            col = self._hsv(150 + int(self._band[i // 32] * 70), 0.7, 0.5 + 0.4 * e)
-            self._line(img, x0, y0, x1, y1, col, alpha=0.5 + 0.35 * e)
+            y0 = int(h * 0.80 - self.wave[i] * h * 0.16 * st["rho"])
+            y1 = int(h * 0.80 - self.wave[i + 1] * h * 0.16 * st["rho"])
+            col = self._hsv(145 + int(self._band[i // 32] * 60), 0.65, 0.45 + 0.35 * e)
+            self._line(img, x0, y0, x1, y1, col, alpha=0.22 + 0.25 * e)
 
-        n_show = min(self.n, 24 if self.mode != 3 else 40)
+    def _subscene_volumes(self, img, w, h, st):
+        """Partly transparent volume shells from Meum 2^M/M² scale."""
+        snap = st["snap"]
+        n_shells = 3 + int(2 * snap["struct"]) + (1 if snap["carrier"] else 0)
+        for s in range(n_shells):
+            rad = st["vol_s"] * (0.15 + 0.12 * s) * (0.7 + 0.3 * self._band[s % 8])
+            cx, cy = w * 0.5, h * 0.45
+            segs = 16 + int(8 * st["line_d"])
+            pts = []
+            for k in range(segs):
+                a = self.t * MEUM_NORM + k * (math.tau / segs) + s * 0.4
+                # Meum ellipse: x·M vs y/M
+                px = cx + rad * w * 0.35 * math.cos(a) * MEUM_INV
+                py = cy + rad * h * 0.28 * math.sin(a) * MEUM
+                pts.append(self._map_xy(px, py))
+            col = self._hsv(int(200 + s * 25 + self._video_hue_shift) % 360, 0.4, 0.5)
+            alpha = 0.08 + 0.06 * st["form"]  # more transparent volumes
+            for k in range(len(pts)):
+                self._line(img, pts[k][0], pts[k][1], pts[(k + 1) % len(pts)][0], pts[(k + 1) % len(pts)][1], col, alpha)
+
+    def _subscene_faces_segments(self, img, w, h, st):
+        """Instrument layers: expanded/contracted faces + segments from Meum verts."""
+        e = self._rms
+        snap = st["snap"]
+        n_show = min(self.n, 22 if self.mode != 3 else 36)
         order = sorted(range(n_show), key=lambda i: -self.layers[i]["distance"])
         for i in order:
             layer = self.layers[i]
             local = float(self.wave[i % 256])
             band = float(self._band[i % 8])
-            target = 0.2 + 0.5 * band + 0.2 * snap["struct"] + 0.1 * self._video_energy
+            # Formation target from Meum form + engines
+            target = st["form"] * (0.5 + 0.5 * band) + 0.15 * abs(local)
             if snap["seeded"]:
-                target += 0.1 * abs(np.sin(self.t * MEUM + i))
+                target += 0.1 * abs(math.sin(self.t * MEUM + i))
             if snap["euclid"]:
-                target += 0.08 * abs(np.cos(self.t * (snap["bpm"] / 60.0) + i * MEUM_INV))
+                target += 0.08 * abs(math.cos(self.t * (snap["bpm"] / 60.0) + i * MEUM_INV))
             target = float(np.clip(target, 0.05, 1.0))
-            layer["life"] += (target - layer["life"]) * MEUM_NORM  # Meum lerp
+            layer["life"] += (target - layer["life"]) * MEUM_NORM
             life = layer["life"]
-            if life < 0.05:
+            if life < 0.04:
                 continue
 
-            dist = layer["distance"] * (1.0 - 0.25 * e) + 0.3 * abs(local)
-            yaw = layer["yaw"] + self.t * (0.3 + 0.6 * e + 0.2 * snap["eqr"]) + local * 0.35
-            pitch = layer["pitch"] + 0.18 * local + 0.1 * snap["fractal"] * np.sin(self.t + i)
-            roll = layer["roll"] + 0.1 * e * np.sin(self.t * MEUM + i)
+            # Vertex count expand/contract from k_pow + selective removal
+            base_v = 3 + (i % 4)
+            if st["k_pow"] >= 2:
+                base_v += 2  # expand
+            if st["k_pow"] == 0:
+                base_v = max(3, base_v - 1)  # contract
+            if snap["struct"] < 0.15 and (i % 3 == 0):
+                base_v = max(3, base_v - 1)  # random-ish removal when sparse playlist
+            layer["active_verts"] = base_v
+            n_v = base_v
 
-            # Meum regular polygon verts
-            n_v = 3 + (i % 4)
-            ang0 = self.t * 0.4 + i * 0.2
-            s = (0.28 + 0.35 * abs(local) + 0.15 * e) * (0.3 + 0.7 * life)
+            dist = layer["distance"] * (1.0 - 0.22 * e) + 0.28 * abs(local)
+            yaw = layer["yaw"] + self.t * (0.28 + 0.55 * e + 0.18 * snap["eqr"]) + local * 0.3
+            pitch = layer["pitch"] + 0.16 * local + 0.1 * snap["fractal"] * math.sin(self.t + i)
+            roll = layer["roll"] + 0.1 * e * math.sin(self.t * MEUM + i)
+
+            ang0 = self.t * 0.35 + i * 0.2
+            scale = (0.26 + 0.32 * abs(local) + 0.14 * e) * (0.28 + 0.72 * life) * st["rho"]
             verts = []
             for k in range(n_v):
-                a = ang0 + k * (2 * np.pi / n_v)
-                verts.append((s * np.cos(a), s * np.sin(a), 0.08 * np.sin(a * 2 + self.t)))
+                a = ang0 + k * (math.tau / n_v)
+                # Constant insertion: Z from MEUM_NORM · sin when seeded
+                z = 0.06 * math.sin(a * 2 + self.t)
+                if snap["seeded"]:
+                    z += MEUM_NORM * 0.04 * math.sin(a * 3 + st["ph"] * math.tau)
+                verts.append((scale * math.cos(a), scale * math.sin(a), z))
 
-            cosy, siny = np.cos(yaw), np.sin(yaw)
-            cosp, sinp = np.cos(pitch), np.sin(pitch)
-            cosr, sinr = np.cos(roll), np.sin(roll)
+            cosy, siny = math.cos(yaw), math.sin(yaw)
+            cosp, sinp = math.cos(pitch), math.sin(pitch)
+            cosr, sinr = math.cos(roll), math.sin(roll)
             projected = []
             for px, py, pz in verts:
                 xr = px * cosr - py * sinr
@@ -788,19 +935,123 @@ class VideoSynthEngine:
                 zw = xr * siny + zp * cosy + dist
                 projected.append(self._project(xw, yp, zw, w, h))
 
-            hue = (layer["hue"] + int(self._video_hue_shift) + int(self._centroid * 40)) % 360
-            col = self._hsv(hue, 0.55 + 0.3 * life, 0.35 + 0.55 * min(1.0, e + abs(local)) * life)
-            alpha = float(np.clip(0.15 + 0.75 * life * (0.5 + 0.5 * e), 0.1, 0.92))
+            hue = (layer["hue"] + int(self._video_hue_shift) + int(self._centroid * 40) + int(st["ph"] * 30)) % 360
+            col = self._hsv(hue, 0.5 + 0.25 * life, 0.32 + 0.5 * min(1.0, e + abs(local)) * life)
+            # More transparent than prior generation
+            alpha = float(np.clip(0.08 + 0.42 * life * (0.45 + 0.55 * e), 0.06, 0.55))
 
-            if life > 0.4 and len(projected) >= 3:
+            # Faces when formed
+            if life > 0.35 and len(projected) >= 3:
                 for k in range(1, len(projected) - 1):
-                    self._fill_tri(img, projected[0], projected[k], projected[k + 1], col, alpha * 0.5)
+                    self._fill_tri(img, projected[0], projected[k], projected[k + 1], col, alpha * 0.4)
+            # Segments always
             for k in range(len(projected)):
                 x0, y0, _ = projected[k]
                 x1, y1, _ = projected[(k + 1) % len(projected)]
-                self._line(img, x0, y0, x1, y1, col, alpha)
-                self._dot(img, x0, y0, col, min(1.0, alpha + 0.1), r=1 if life < 0.5 else 2)
+                self._line(img, x0, y0, x1, y1, col, alpha * 0.85)
+                self._dot(img, x0, y0, col, min(0.7, alpha + 0.08), r=1)
 
+            # Inter-layer segment bridges when playlist density high
+            if snap["struct"] > 0.25 and life > 0.35 and i + 5 < n_show:
+                other = projected[0]
+                cx, cy = self._map_xy(w * 0.5, h * 0.45)
+                self._line(img, other[0], other[1], cx, cy,
+                           self._hsv((hue + 40) % 360, 0.35, 0.4), alpha * 0.15 * snap["struct"])
+
+    def _subscene_particles(self, img, w, h, st):
+        """Seed / engine particle field from Meum residual + seed value."""
+        snap = st["snap"]
+        if abs(snap["seed"]) < 1e-9 and not snap["seeded"] and not snap["euclid"]:
+            n_part = 12 + int(16 * self._rms)
+        else:
+            n_part = 20 + int(28 * self._rms) + (10 if snap["seeded"] else 0)
+        seed_i = int(abs(snap["seed"])) & 0xFFFF
+        for p in range(n_part):
+            ang = self.t * 0.65 + p * 0.37 + seed_i * 0.01 + st["ph"] * math.tau
+            rr = 0.15 + 0.45 * abs(float(self.wave[p % 256])) * st["rho"]
+            x = rr * math.cos(ang)
+            y = rr * math.sin(ang * MEUM)
+            px, py, _ = self._project(x, y, 1.05 + 0.35 * self._rms, w, h)
+            col = self._hsv(int(110 + seed_i * 0.08 + p * 9) % 360, 0.65, 0.75)
+            self._dot(img, px, py, col, 0.35 + 0.2 * self._rms, r=1)
+
+    def _subscene_band_towers(self, img, w, h, st):
+        """Spectral band columns — bulk spectrum as vertical volume lines."""
+        for b in range(8):
+            bx = int((b + 0.5) / 8.0 * w)
+            bh = int(self._band[b] * h * 0.28 * st["rho"])
+            col = self._hsv(int(25 * b + self._video_hue_shift) % 360, 0.55, 0.35 + 0.45 * self._band[b])
+            self._line(img, bx, h - 3, bx, h - 3 - bh, col, alpha=0.2 + 0.25 * self._band[b])
+
+    def _collect_fit_points(self, w, h, st):
+        """Sample volume / face / particle screen points (identity fit) for implode."""
+        pts = []
+        snap = st["snap"]
+        n_shells = 3 + int(2 * snap["struct"]) + (1 if snap["carrier"] else 0)
+        for s in range(n_shells):
+            rad = st["vol_s"] * (0.15 + 0.12 * s) * (0.7 + 0.3 * self._band[s % 8])
+            cx, cy = w * 0.5, h * 0.45
+            for k in range(8):
+                a = self.t * MEUM_NORM + k * (math.tau / 8.0) + s * 0.4
+                pts.append((
+                    cx + rad * w * 0.35 * math.cos(a) * MEUM_INV,
+                    cy + rad * h * 0.28 * math.sin(a) * MEUM,
+                ))
+        e = self._rms
+        n_show = min(self.n, 22 if self.mode != 3 else 36)
+        for i in range(n_show):
+            layer = self.layers[i]
+            local = float(self.wave[i % 256])
+            life = max(layer.get("life", 0.3), 0.2)
+            dist = layer["distance"] * (1.0 - 0.22 * e) + 0.28 * abs(local)
+            yaw = layer["yaw"] + self.t * (0.28 + 0.55 * e + 0.18 * snap["eqr"]) + local * 0.3
+            pitch = layer["pitch"] + 0.16 * local
+            roll = layer["roll"] + 0.1 * e * math.sin(self.t * MEUM + i)
+            n_v = max(3, 3 + (i % 4))
+            scale = (0.26 + 0.32 * abs(local) + 0.14 * e) * (0.28 + 0.72 * life) * st["rho"]
+            ang0 = self.t * 0.35 + i * 0.2
+            cosy, siny = math.cos(yaw), math.sin(yaw)
+            cosp, sinp = math.cos(pitch), math.sin(pitch)
+            cosr, sinr = math.cos(roll), math.sin(roll)
+            for k in range(n_v):
+                a = ang0 + k * (math.tau / n_v)
+                px, py, pz = scale * math.cos(a), scale * math.sin(a), 0.06 * math.sin(a * 2 + self.t)
+                xr = px * cosr - py * sinr
+                yr = px * sinr + py * cosr
+                yp = yr * cosp - pz * sinp
+                zp = yr * sinp + pz * cosp
+                xw = xr * cosy - zp * siny
+                zw = xr * siny + zp * cosy + dist
+                sx, sy, _ = self._project(xw, yp, zw, w, h)
+                pts.append((sx, sy))
+        n_part = 12 + int(16 * self._rms)
+        seed_i = int(abs(snap["seed"])) & 0xFFFF
+        for p in range(min(n_part, 24)):
+            ang = self.t * 0.65 + p * 0.37 + seed_i * 0.01 + st["ph"] * math.tau
+            rr = 0.15 + 0.45 * abs(float(self.wave[p % 256])) * st["rho"]
+            sx, sy, _ = self._project(
+                rr * math.cos(ang), rr * math.sin(ang * MEUM),
+                1.05 + 0.35 * self._rms, w, h,
+            )
+            pts.append((sx, sy))
+        return pts
+
+    def render_frame(self, w=640, h=360, export=False):
+        """Composite all Meum subscenes. export=True skips any UI-only overlays."""
+        self.export_mode = bool(export)
+        w = max(int(w), 8)
+        h = max(int(h), 8)
+        img = np.zeros((h, w, 3), dtype=np.float32)
+        st = self._meum_state()
+        # Identity pass → union bbox → implode every part to fill outer bounds
+        self._reset_fit(w, h)
+        self._commit_fit(self._collect_fit_points(w, h, st), w, h)
+        self._subscene_field(img, w, h, st)
+        self._subscene_ribbon(img, w, h, st)
+        self._subscene_band_towers(img, w, h, st)
+        self._subscene_volumes(img, w, h, st)
+        self._subscene_faces_segments(img, w, h, st)
+        self._subscene_particles(img, w, h, st)
         return np.clip(img, 0, 255).astype(np.uint8)
 
 
@@ -821,21 +1072,31 @@ class VideoSynthViewer(QFrame):
         self.show_scope_overlay = False
         self.scope_wave = np.zeros(100, dtype=np.float32)
 
-    def update_from_audio(self, wave_data):
+    def update_from_audio(self, wave_data, playhead=None):
         if self.engine.app is None and self.parent() is not None:
             self.engine.bind_app(self.parent())
-        self.engine.set_waveform(wave_data)
+        self.engine.set_waveform(wave_data, playhead=playhead)
         if isinstance(wave_data, np.ndarray) and wave_data.size:
             self.scope_wave = np.resize(wave_data.astype(np.float32), 100)
-        side = max(self.width(), self.height(), 180)
-        self._frame = self.engine.render_frame(side, side)
+        ww = max(self.width(), 180)
+        hh = max(self.height(), 180)
+        # Live preview only — oscilloscope/FFT are separate widgets, not composited here
+        self._frame = self.engine.render_frame(ww, hh, export=False)
         self.update()
 
     def set_mode(self, mode_idx):
         self.engine.mode = int(mode_idx)
-        side = max(self.width(), self.height(), 180)
-        self._frame = self.engine.render_frame(side, side)
+        ww = max(self.width(), 180)
+        hh = max(self.height(), 180)
+        self._frame = self.engine.render_frame(ww, hh)
         self.update()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        ww = max(self.width(), 8)
+        hh = max(self.height(), 8)
+        if self._frame is None or self._frame.shape[1] != ww or self._frame.shape[0] != hh:
+            self._frame = self.engine.render_frame(ww, hh, export=self.engine.export_mode)
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -2295,13 +2556,15 @@ class ParametricMathBackground(QWidget):
         sf = scalars[index % len(scalars)]
         sf2 = scalars[(index * 7 + 3) % len(scalars)]
         hue = (index / self.WAVE_COUNT + 0.12 * sf + 0.08 * math.sin(phase * 0.7 + index)) % 1.0
+        # Sinewaves: MEUM× less transparent (more opaque) — alpha * M, capped
+        wave_alpha = min(1.0, (0.48 + 0.24 * sf) * MEUM)
         painter.setPen(
             QPen(
                 QColor.fromHsvF(
                     hue,
                     0.19758,
                     0.19758,
-                    0.48 + 0.24 * sf
+                    wave_alpha
                 ),
                 2.8 + 2.8 * sf
             )
@@ -2381,38 +2644,49 @@ class ParametricMathBackground(QWidget):
     )
 
     def _paint_meum_blocks(self, painter, width, height, scalars, phase):
-        """Left-hanging floating text blocks: hardcoded Meum identities.
+        """Floating Meum identity blocks — drift across the full field.
 
-        These are the same constants the DSP/domain/visual engines use.
-        They hang on the left rail, float on Meum-timed orbits, and take
-        AsymmetryCorrection so the field stays balanced.
+        Same constants the DSP/domain/visual engines use. Positions wander on
+        Meum-timed Lissajous orbits (not locked to the left rail). Opacity is
+        MEUM² more transparent than the prior left-rail styling so they stay
+        readable as ambient theorem glyphs without competing with controls.
         """
         n = len(self.MEUM_BLOCKS)
-        col_w = min(280.0, max(168.0, width * 0.22))
-        left_rail = 10.0
+        col_w = min(260.0, max(150.0, width * 0.18))
+        # MEUM² more transparent → divide prior alphas by MEUM_SQ
+        a_fill = min(1.0, 0.42 / MEUM_SQ)
+        a_edge = min(1.0, 0.55 / MEUM_SQ)
+        a_title = min(1.0, 0.92 / MEUM_SQ)
+        a_body = min(1.0, 0.78 / MEUM_SQ)
         for i, (sym, meaning, fmt, value) in enumerate(self.MEUM_BLOCKS):
             corr_x, corr_y = AsymmetryCorrection.offset(i, n, phase, scalars)
-            # Meum-phased vertical stack with independent float.
+            # Full-field Meum Lissajous drift (float all over)
             t = phase * MEUM_LOG2 + i * MEUM
-            y = height * (0.06 + (i / max(n, 1)) * 0.86)
-            y += height * 0.028 * math.sin(t * MEUM + i * 0.41)
-            y += height * corr_y
-            x = left_rail + 10.0 * math.sin(t * MEUM_NORM + i) + width * corr_x * 0.35
-            x = max(6.0, min(width * 0.34, x))
-            y = max(8.0, min(height - 46.0, y))
+            fx = MEUM_POWERS_36[min(1 + (i % 5), 35)]
+            fy = MEUM_POWERS_36[min(2 + (i % 7), 35)]
+            bx = (0.08 + 0.84 * ((i * PHI_INV + i * MEUM_NORM) % 1.0))
+            by = (0.08 + 0.84 * ((i * MEUM_INV * PHI + 0.17) % 1.0))
+            x = width * (bx + 0.22 * math.sin(t * fx * MEUM_NORM + i * 0.73)
+                         + 0.12 * math.cos(t * MEUM + i * 1.17)
+                         + corr_x * 0.5)
+            y = height * (by + 0.20 * math.cos(t * fy * MEUM_NORM + i * 0.51)
+                          + 0.14 * math.sin(t * MEUM_LOG2 + i * 0.89)
+                          + corr_y * 0.5)
+            x = max(4.0, min(width - col_w - 4.0, x))
+            y = max(6.0, min(height - 44.0, y))
             rect = QRectF(x, y, col_w, 40.0)
             hue = (0.48 + i * MEUM_NORM * 0.08 + 0.04 * math.sin(t)) % 1.0
-            fill = QColor.fromHsvF(hue, 0.35, 0.12, 0.42)
-            edge = QColor.fromHsvF(hue, 0.55, 0.95, 0.55)
+            fill = QColor.fromHsvF(hue, 0.35, 0.12, a_fill)
+            edge = QColor.fromHsvF(hue, 0.55, 0.95, a_edge)
             painter.setBrush(QBrush(fill))
             painter.setPen(QPen(edge, 1.0))
             painter.drawRoundedRect(rect, 6, 6)
-            painter.setPen(QColor.fromHsvF(hue, 0.25, 1.0, 0.92))
+            painter.setPen(QColor.fromHsvF(hue, 0.25, 1.0, a_title))
             title = QFont("Consolas", 9)
             title.setBold(True)
             painter.setFont(title)
             painter.drawText(rect.adjusted(8, 3, -8, -16), int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), sym)
-            painter.setPen(QColor.fromHsvF(hue, 0.20, 0.92, 0.78))
+            painter.setPen(QColor.fromHsvF(hue, 0.20, 0.92, a_body))
             body = QFont("Consolas", 7)
             painter.setFont(body)
             val = fmt.format(value)
@@ -9097,6 +9371,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         # Master storage mirroring the unquantized playlist rows for audio rendering
         self.master_playlist_data = []
+        self._user_composition_snapshot = None  # Canonical Overwrite undo buffer
 
         self.export_counter = 1
 
@@ -9516,7 +9791,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if getattr(self, "_composition_generation_guard", False):
             # The caller owns the transaction guard.
             pass
-
+        # NOTE: this paint runs on every regenerate — every live-engine tick,
+        # every seed/bpm/seq-length edit via _flush_live_source_update, every
+        # manual Randomize/Phase-Lock click. It must only *read* the current
+        # protect/overwrite state (via self._canonical_protect_user(), which
+        # gates locked_cols below in _paint_operator_pattern_to_playlist and
+        # is independent of the seed value) — never *enact* a wipe itself.
+        #
+        # Wiping user-composition locks is a one-time transition owned
+        # exclusively by _on_canonical_protect_toggled, which fires exactly
+        # once per Canonical Overwrite switch (protect ON: restore snapshot
+        # once; protect OFF: snapshot + wipe once). A wipe call here used to
+        # re-fire on every single paint — including ones triggered purely by
+        # editing the seed field — which meant the seed field was being
+        # treated like a structural user parameter allowed to re-trigger
+        # Canonical Overwrite. The seed is only ever the initial stochastic
+        # modifier for *this* paint; it must never itself cause a userdata
+        # wipe. Removing the wipe from here is what makes both ideal states
+        # hold regardless of seed and regardless of how many times this
+        # function re-runs: protect ON always keeps userdata in unison with
+        # the canonical fill; protect OFF always keeps canonicals having
+        # already processed userdata into unison (wiped once, at the
+        # switch) — neither state is re-derived per paint.
         table = getattr(self, "paintbrush_table", None)
         if table is None:
             table = getattr(self, "playlist_paint_table", None)
@@ -9903,16 +10199,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 'velocity_user_locked': False,
                 'active': active,
             }
-            # Preserve cells that a human actually painted.  This is more
-            # reliable than assuming every non-empty row is engine-owned.
+            # Preserve cells that a human actually painted — unless Canonical
+            # Overwrite is active (protect OFF), in which case unison rewrites all.
             locked_cols = set()
-            try:
-                locked_cols.update(int(c) for c in (e.get("user_locked_columns") or []))
-            except Exception:
-                pass
-            if table is not None:
-                touched = getattr(table, "playlist_user_touched", set()) or set()
-                locked_cols.update(c for rr, c in touched if rr == r)
+            if self._canonical_protect_user():
+                try:
+                    locked_cols.update(int(c) for c in (e.get("user_locked_columns") or []))
+                except Exception:
+                    pass
+                if table is not None:
+                    touched = getattr(table, "playlist_user_touched", set()) or set()
+                    locked_cols.update(c for rr, c in touched if rr == r)
 
             field_by_col = {
                 0: "time_marker",
@@ -10277,6 +10574,30 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.chk_user_program_only.setToolTip(
             "When ON, live randomizer/phase-lock engines are suspended — hear only what you wrote."
         )
+        # Canonical protection (default ON): seed/user data is the initial stochastic
+        # modifier for unison fill, but user-locked cells are not wiped. Uncheck to
+        # enable Canonical Overwrite — wipe userdata flags so the whole composition
+        # is unison-filled and fully rewritable by live engines.
+        self.chk_canonical_protect = QCheckBox("Canonical: skip overwrite user composition")
+        self.chk_canonical_protect.setChecked(True)
+        self.chk_canonical_protect.setStyleSheet("color: #f5d97d; font-weight: bold;")
+        self.chk_canonical_protect.setToolTip(
+            "ON (default): protect user-painted cells; seed is a one-in-one stochastic "
+            "modifier and unison mimics without wiping your locks.\n"
+            "OFF (Canonical Overwrite): snapshot userdata, then wipe locks so engines "
+            "can fill the entire composition in unison.\n"
+            "Retoggle ON — or click Restore userdata — reapplies the snapshot anytime. "
+            "The snapshot is kept until the next Overwrite cycle."
+        )
+        self.btn_restore_userdata = QPushButton("↩ Restore userdata")
+        self.btn_restore_userdata.setToolTip(
+            "Restore the last Canonical userdata snapshot anytime — playlist cells, "
+            "locks, and sequencer touches. Turns protect back ON."
+        )
+        self.btn_restore_userdata.setStyleSheet(
+            "QPushButton { background-color:#2a2418; color:#f5d97d; border:1px solid #f5d97d; "
+            "border-radius:3px; padding:4px 8px; font-weight:bold; }"
+        )
         self.btn_save_project = QPushButton("💾 Save Project")
         self.btn_load_project = QPushButton("📂 Load Project")
         self.btn_keyboard = QPushButton("🎹 Keyboard / Test")
@@ -10347,6 +10668,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_idealize_rhythm.toggled.connect(self._on_euclidean_live_toggled)
         self.btn_seeded_randomize.toggled.connect(self._on_seeded_live_toggled)
         self.chk_user_program_only.toggled.connect(self._on_user_program_only_toggled)
+        self.chk_canonical_protect.toggled.connect(self._on_canonical_protect_toggled)
+        self.btn_restore_userdata.clicked.connect(self._on_restore_userdata_clicked)
         self.btn_save_project.clicked.connect(self.save_project_dialog)
         self.btn_load_project.clicked.connect(self.load_project_dialog)
         self.btn_keyboard.clicked.connect(self.open_keyboard_test_window)
@@ -10372,6 +10695,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.transport_layout_row2.addWidget(self.btn_seeded_randomize)
         self.transport_layout_row2.addWidget(self.btn_idealize_rhythm)
         self.transport_layout_row2.addWidget(self.chk_user_program_only)
+        self.transport_layout_row2.addWidget(self.chk_canonical_protect)
+        self.transport_layout_row2.addWidget(self.btn_restore_userdata)
         self.transport_layout_row2.addStretch(1)
         self.transport_layout_row2.addWidget(self.btn_save_project)
         self.transport_layout_row2.addWidget(self.btn_load_project)
@@ -10498,6 +10823,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         global_context_layout.addWidget(self.btn_view_playlist)
         global_context_layout.addWidget(self.btn_local_randomize)
         global_context_layout.addWidget(self.btn_local_phase_lock)
+        if hasattr(self, "chk_canonical_protect"):
+            global_context_layout.addWidget(self.chk_canonical_protect)
+        if hasattr(self, "btn_restore_userdata"):
+            global_context_layout.addWidget(self.btn_restore_userdata)
         global_context_layout.addStretch(1)
         self.global_composition_group = global_context_group
 
@@ -11394,7 +11723,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             old = float(entry.get("velocity", 1.0) or 1.0)
             # Treat explicit non-default velocities as user data and preserve them.
             user_locked = bool(entry.get("velocity_user_locked", False))
-            if user_locked:
+            if user_locked and self._canonical_protect_user():
                 continue
             entry["velocity"] = float(np.clip((1.0-strength) * old + strength * target, 0.05, 1.5))
 
@@ -11485,8 +11814,226 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     btn.setStyleSheet(getattr(self, style_attr))
                 btn.setText(off_label)
             print("[User program only] Live engines suspended — carrier only")
+
+    def _canonical_protect_user(self):
+        """True when user composition locks must be respected (default)."""
+        chk = getattr(self, "chk_canonical_protect", None)
+        if chk is None:
+            return True
+        return bool(chk.isChecked())
+
+    def _snapshot_user_composition(self, replace=False):
+        """Capture userdata so Canonical Overwrite can be undone anytime.
+
+        Stores playlist rows that carry user locks/ownership, table touch sets,
+        and sequencer memories that have human-touched steps.
+
+        Engine wipes call this with replace=False (keep the existing snapshot).
+        The user turning Overwrite ON calls replace=True so the snapshot matches
+        the composition at that moment. The snapshot is kept after restore so
+        Restore userdata works anytime until the next Overwrite cycle.
+        """
+        if getattr(self, "_user_composition_snapshot", None) and not replace:
+            return self._user_composition_snapshot
+
+        playlist_rows = {}
+        rows = getattr(self, "master_playlist_data", None) or []
+        for i, entry in enumerate(rows):
+            if not isinstance(entry, dict):
+                continue
+            locked = entry.get("user_locked_columns") or []
+            if locked or entry.get("velocity_user_locked") or entry.get("user_owned"):
+                playlist_rows[i] = copy.deepcopy(entry)
+
+        table_touches = {}
+        for table_attr in ("active_paint_table", "paintbrush_table", "playlist_paint_table"):
+            table = getattr(self, table_attr, None)
+            if table is None:
+                continue
+            touched = getattr(table, "playlist_user_touched", None)
+            if touched:
+                table_touches[table_attr] = set(touched)
+
+        seq = {}
+        mems = getattr(self, "instrument_sequencer_memory", None) or {}
+        for name, mem in mems.items():
+            if not isinstance(mem, dict):
+                continue
+            touched = mem.get("touched")
+            if touched:
+                seq[name] = copy.deepcopy(mem)
+
+        snap = {
+            "playlist_rows": playlist_rows,
+            "table_touches": table_touches,
+            "sequencer": seq,
+        }
+        self._user_composition_snapshot = snap
+        print(f"[Canonical] snapshotted {len(playlist_rows)} user playlist rows, "
+              f"{len(seq)} sequencer memories")
+        return snap
+
+    def _wipe_user_composition_flags(self, take_snapshot=False):
+        """Canonical Overwrite: clear userdata locks so unison can rewrite everything.
+
+        Seed remains the initial stochastic modifier; locks/flags are wiped so
+        the composition is filled one-to-one in unison rather than branching
+        around protected cells. Pass take_snapshot=True on the user toggle so
+        restore works anytime; engine paints must not replace that snapshot.
+        """
+        if take_snapshot:
+            self._snapshot_user_composition(replace=True)
+
+        rows = getattr(self, "master_playlist_data", None) or []
+        wiped = 0
+        for entry in rows:
+            if not isinstance(entry, dict):
+                continue
+            if entry.pop("user_locked_columns", None) is not None:
+                wiped += 1
+            if entry.pop("velocity_user_locked", None) is not None:
+                wiped += 1
+            entry.pop("user_owned", None)
+        for table_attr in ("active_paint_table", "paintbrush_table", "playlist_paint_table"):
+            table = getattr(self, table_attr, None)
+            if table is None:
+                continue
+            if hasattr(table, "playlist_user_touched"):
+                table.playlist_user_touched = set()
+            if hasattr(table, "user_touched"):
+                try:
+                    table.user_touched = set()
+                except Exception:
+                    pass
+        mems = getattr(self, "instrument_sequencer_memory", None) or {}
+        for mem in mems.values():
+            if isinstance(mem, dict) and "touched" in mem:
+                try:
+                    if isinstance(mem["touched"], (list, set)):
+                        mem["touched"] = type(mem["touched"])()
+                except Exception:
+                    pass
+        print(f"[Canonical Overwrite] wiped user locks on {wiped} playlist rows — unison may rewrite all")
+        return wiped
+
+    def _restore_user_composition(self):
+        """Put snapshotted userdata back over the unison fill. Snapshot is kept."""
+        snap = getattr(self, "_user_composition_snapshot", None)
+        if not snap:
+            print("[Canonical] protect ON — no userdata snapshot to restore")
+            return 0
+
+        rows = getattr(self, "master_playlist_data", None)
+        if rows is None:
+            rows = []
+            self.master_playlist_data = rows
+        restored = 0
+        for i, entry in snap.get("playlist_rows", {}).items():
+            i = int(i)
+            while len(rows) <= i:
+                rows.append({})
+            rows[i] = copy.deepcopy(entry)
+            restored += 1
+
+        for table_attr, touched in (snap.get("table_touches") or {}).items():
+            table = getattr(self, table_attr, None)
+            if table is None:
+                continue
+            table.playlist_user_touched = set(touched)
+
+        mems = getattr(self, "instrument_sequencer_memory", None)
+        if isinstance(mems, dict):
+            for name, mem in (snap.get("sequencer") or {}).items():
+                mems[name] = copy.deepcopy(mem)
+
+        self._push_restored_playlist_to_table()
+        try:
+            if hasattr(self, "reload_active_instrument_sequencer_ui"):
+                self.reload_active_instrument_sequencer_ui()
+        except Exception:
+            pass
+
+        # Keep snapshot so Restore userdata works anytime until next Overwrite.
+        print(f"[Canonical] restored {restored} user playlist rows from snapshot")
+        return restored
+
+    def _on_restore_userdata_clicked(self):
+        """Anytime restore: reapply snapshot and turn Canonical protect back ON."""
+        n = self._restore_user_composition()
+        chk = getattr(self, "chk_canonical_protect", None)
+        if chk is not None and not chk.isChecked():
+            chk.blockSignals(True)
+            chk.setChecked(True)
+            chk.blockSignals(False)
+        if hasattr(self, "scope_status_label"):
+            if n:
+                self.scope_status_label.setText(
+                    f"📊 Restored {n} user rows from snapshot — Canonical protect ON"
+                )
+            else:
+                self.scope_status_label.setText("📊 No userdata snapshot yet — paint or overwrite first")
+
+    def _push_restored_playlist_to_table(self):
+        """Write restored master_playlist_data back onto the open playlist grid."""
+        table = getattr(self, "active_paint_table", None)
+        if table is None:
+            table = getattr(self, "paintbrush_table", None)
+        if table is None or not hasattr(table, "set_cell_item"):
+            return
+        rows = getattr(self, "master_playlist_data", None) or []
+        n = min(table.rowCount(), len(rows))
+        for r in range(n):
+            e = rows[r] if isinstance(rows[r], dict) else {}
+            def _s(key, default=""):
+                v = e.get(key, default)
+                return "" if v in (None, [], {}) else str(v)
+            vel = e.get("velocity", "")
+            try:
+                vel_txt = f"{float(vel) * 100:.1f}%" if vel not in ("", None) else ""
+            except Exception:
+                vel_txt = str(vel) if vel else ""
+            cells = [
+                _s("time_marker"),
+                _s("operators_csv") or _s("operator"),
+                _s("script_tag"),
+                _s("domain_tag"),
+                _s("synth_tag"),
+                _s("patch_tag"),
+                vel_txt,
+                _s("effect_target") or _s("modulation"),
+                _s("auto_amount"),
+                _s("direction_vector") or _s("direction"),
+                _s("multi_seq"),
+                _s("coverage"),
+                _s("blend_partner"),
+            ]
+            for c, text in enumerate(cells):
+                if c < table.columnCount():
+                    table.set_cell_item(r, c, QTableWidgetItem(text))
+
+    def _on_canonical_protect_toggled(self, checked):
+        if checked:
+            n = self._restore_user_composition()
+            print("[Canonical] skip overwrite user composition — locks protected; seed modifies unison one-in-one")
+            if hasattr(self, "scope_status_label"):
+                if n:
+                    self.scope_status_label.setText(
+                        f"📊 Canonical protect ON — restored {n} user rows from snapshot"
+                    )
+                else:
+                    self.scope_status_label.setText("📊 Canonical protect ON — user composition preserved")
         else:
-            print("[User program only] OFF — live engines may be re-armed")
+            self._wipe_user_composition_flags(take_snapshot=True)
+            if hasattr(self, "scope_status_label"):
+                self.scope_status_label.setText("📊 Canonical Overwrite — userdata snapshotted then wiped; unison rewritable")
+            try:
+                if getattr(self, "btn_seeded_randomize", None) and self.btn_seeded_randomize.isChecked():
+                    self._apply_live_engine_once("seeded", force=True)
+                if getattr(self, "btn_idealize_rhythm", None) and self.btn_idealize_rhythm.isChecked():
+                    self._apply_live_engine_once("euclidean", force=True)
+            except Exception as exc:
+                print(f"[Canonical Overwrite] refill: {exc}")
+
 
     def _live_engine_signature(self, which):
         """Stable snapshot of user-visible inputs; engines write only once per new snapshot."""
@@ -13134,7 +13681,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         overview = None
         playhead = 0.0
         if self.play_buffer is not None and len(self.play_buffer) > 0:
-            # Downsample full track for overview strip
             buf = self.play_buffer
             step = max(1, len(buf) // 512)
             overview = buf[::step]
@@ -13144,10 +13690,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.scope_status_label.setText(
                     f"📊 Meum monitors LIVE  {pct}%  ·  Vol {int(self.master_volume*100)}%"
                 )
+        # UI monitors kept (oscilloscope + FFT) — scenograph is pure geometry
         if isinstance(getattr(self, 'visual_oscilloscope', None), VisualOscilloscope):
             self.visual_oscilloscope.update_waveform(chunk, overview=overview, playhead=playhead)
         if hasattr(self, 'video_synth_viewer'):
-            self.video_synth_viewer.update_from_audio(chunk)
+            self.video_synth_viewer.update_from_audio(chunk, playhead=playhead)
         if hasattr(self, 'spectrum_analyzer') and self.spectrum_analyzer is not None:
             self.spectrum_analyzer.update_spectrum(chunk)
 
@@ -13509,8 +14056,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             for fi in range(n_frames):
                 a = fi * frame_samples
                 b = min(len(master), a + frame_samples)
-                eng.set_waveform(master[a:b])
-                frame = eng.render_frame(w, h)
+                ph = fi / max(n_frames - 1, 1)
+                eng.set_waveform(master[a:b], playhead=ph)
+                # export=True: pure scenograph — no oscilloscope / FFT UI chrome
+                frame = eng.render_frame(w, h, export=True)
                 Image.fromarray(frame, mode="RGB").save(os.path.join(frames_dir, f"frame_{fi:05d}.png"))
                 if fi % 12 == 0 and hasattr(self, 'scope_status_label'):
                     self.scope_status_label.setText(f"🎬 Frames {fi}/{n_frames}…")
