@@ -247,6 +247,22 @@ DEFAULT_INSTRUMENT_LIST = [
     "41. Spectral Centroid Dynamic Shifter", "42. Soliton Envelope Shaper", "43. Wavepacket Granulator Effect", "44. Non-Linear Diode Clipper Effect",
     "45. Plasma Ionization Gate", "46. Magnetostrictive Resonator Effect", "47. Crystalline Lattice Damper", "48. Event Horizon Limiter"
 ]
+# Canonical playlist record schema. Every engine, UI sync, and CSV/member path
+# must preserve all ten visible playlist columns in this order.
+# =============================================================================
+# EQR Groovebox Engine v3.6.8+ — stable media/convolve-fit build
+# Operator Identity time offset and playlist CSV grid integration
+# =============================================================================
+
+PLAYLIST_COLUMNS = (
+    "time_marker", "operators_csv", "script_tag", "velocity",
+    "effect_target", "auto_amount", "direction_vector", "multi_seq",
+    "coverage", "blend_partner",
+)
+
+
+PLAYLIST_COLUMN_COUNT = len(PLAYLIST_COLUMNS)
+
 class FormulaModulatorWidget(QWidget):
     def __init__(self):
         super().__init__()
@@ -6496,42 +6512,121 @@ class BottomToolboxesPane(QScrollArea):
 TRANSCENDENTAL_BASE = np.e
 class PaintbrushTable(QWidget):
     """
-    Wide unquantized playlist paint surface.
-    Paint subject modes control whether identity, steps, and/or automation are written.
-    Overlapping paints blend synth identities / automation by coverage (full=100%, half=50%).
+    Canonical 10-column Playlist paint surface.
+
+    IMPORTANT:
+        The Playlist UI and engine-generated playlist rows use the same schema:
+
+        0  Time Marker
+        1  Operator Identity
+        2  Script Tag
+        3  Velocity
+        4  Auto Target
+        5  Auto Amount
+        6  Direction Vector
+        7  Multi-Seq
+        8  Coverage
+        9  Blend Partner
+
+    CSV cells may contain multiple comma-separated members.
+
+    Time regions are carried by each token:
+        OperatorA@u:0.250s
+        OperatorB@e:1.3750s
+        OperatorC@q:12
+
+    The engine therefore does not have to collapse a row into a single
+    operator/time value.
     """
 
-    # Paint subject menu options (user-specified)
-    MODE_IDENTITY_STEPS_AUTO = "Identity + Steps + Automation (default)"
-    MODE_IDENTITY_ONLY = "Selected instrument identity only"
-    MODE_STEPS_ONLY = "Selected instrument step sequence (no automation)"
-    MODE_STEPS_AUTO = "Step sequence + Automation"
-    MODE_AUTO_ONLY = "Automation of selected instrument"
-    MODE_RANDOM_PARAMETERS = "Random Parameters (velocity + automation)"
-    MODE_CALCULATED_PARAMETERS = "Calculated Parameters (context field)"
+    MODE_IDENTITY_STEPS_AUTO = (
+        "Identity + Steps + Automation (default)"
+    )
+    MODE_IDENTITY_ONLY = (
+        "Selected instrument identity only"
+    )
+    MODE_STEPS_ONLY = (
+        "Selected instrument step sequence (no automation)"
+    )
+    MODE_STEPS_AUTO = (
+        "Step sequence + Automation"
+    )
+    MODE_AUTO_ONLY = (
+        "Automation of selected instrument"
+    )
+    MODE_RANDOM_PARAMETERS = (
+        "Random Parameters (velocity + automation)"
+    )
+    MODE_CALCULATED_PARAMETERS = (
+        "Calculated Parameters (context field)"
+    )
+
+    PLAYLIST_COLUMNS = (
+        "time_marker",
+        "operators_csv",
+        "script_tag",
+        "velocity",
+        "effect_target",
+        "auto_amount",
+        "direction_vector",
+        "multi_seq",
+        "coverage",
+        "blend_partner",
+    )
+
+    PLAYLIST_HEADERS = (
+        "Time Marker",
+        "Operator Identity",
+        "Script Tag",
+        "Velocity",
+        "Auto Target",
+        "Auto Amount",
+        "Direction Vector",
+        "Multi-Seq",
+        "Coverage",
+        "Blend Partner",
+    )
 
     def __init__(self, parent=None, rows=0, cols=0):
         super().__init__(parent)
+
         self.app = parent
         self.is_drawing_stroke = False
-        # Per-row coverage map for overlap blending: row -> {op_name: coverage 0..1}
         self.row_coverage = {}
-        self.init_ui(rows, cols)
+        self.playlist_user_touched = set()
+        self._paint_expanding = False
+        self._last_paint_mono = 0.0
+        self._last_flash_paint_cell = None
+        self._last_flash_paint_locus = None
+        self._cell_flash_until = {}
+
+        self.init_ui(rows, max(10, cols))
+
+    # ------------------------------------------------------------------
+    # UI
+    # ------------------------------------------------------------------
 
     def init_ui(self, rows, cols):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
 
         toolbar = QHBoxLayout()
-        self.chk_draw_random_synth = QPushButton("🎨 Draw Random Synth: OFF")
+
+        self.chk_draw_random_synth = QPushButton(
+            "🎨 Draw Random Synth: OFF"
+        )
         self.chk_draw_random_synth.setCheckable(True)
         self.chk_draw_random_synth.setStyleSheet(
-            "background-color: #121212; color: #ff5555; border: 1px solid #444; font-weight: bold; padding: 6px;"
+            "background-color:#121212; color:#ff5555; "
+            "border:1px solid #444; font-weight:bold; padding:6px;"
         )
-        self.chk_draw_random_synth.clicked.connect(self.toggle_draw_random_synth_style)
+        self.chk_draw_random_synth.clicked.connect(
+            self.toggle_draw_random_synth_style
+        )
         toolbar.addWidget(self.chk_draw_random_synth)
 
         toolbar.addWidget(QLabel("Paint subject:"))
+
         self.paint_mode_combo = QComboBox()
         self.paint_mode_combo.addItems([
             self.MODE_IDENTITY_STEPS_AUTO,
@@ -6546,23 +6641,33 @@ class PaintbrushTable(QWidget):
         toolbar.addWidget(self.paint_mode_combo)
 
         self.chk_snap_grid = QCheckBox("Snap to grid")
-        self.chk_snap_grid.setChecked(False)  # unquantized by default
-        self.chk_snap_grid.setToolTip("Off = fully unquantized free-time. On = snap time markers to grid.")
+        self.chk_snap_grid.setChecked(False)
+        self.chk_snap_grid.setToolTip(
+            "Off = fully unquantized free-time. "
+            "On = snap time markers to grid."
+        )
         toolbar.addWidget(self.chk_snap_grid)
 
         toolbar.addWidget(QLabel("Blend max:"))
+
         self.blend_max_combo = QComboBox()
-        self.blend_max_combo.addItems(["Half (50%)", "Quarter (25%)"])
-        self.blend_max_combo.setToolTip("Max parameter travel when two instrument paints fully overlap.")
+        self.blend_max_combo.addItems([
+            "Half (50%)",
+            "Quarter (25%)",
+        ])
         toolbar.addWidget(self.blend_max_combo)
-        self.btn_convolve_colors = QPushButton("🎨 Convolve Color Coding")
-        self.btn_convolve_colors.setToolTip("Assign distinct cross-labeled colors per instrument across the playlist.")
-        self.btn_convolve_colors.clicked.connect(self.convolve_color_coding)
+
+        self.btn_convolve_colors = QPushButton(
+            "🎨 Convolve Color Coding"
+        )
+        self.btn_convolve_colors.clicked.connect(
+            self.convolve_color_coding
+        )
         toolbar.addWidget(self.btn_convolve_colors)
+
         toolbar.addStretch(1)
         layout.addLayout(toolbar)
 
-        # Custom inner table to intercept raw mouse events for continuous drag-painting
         class PaintTableWidget(QTableWidget):
             def __init__(self, parent_table, *args, **kwargs):
                 super().__init__(*args, **kwargs)
@@ -6571,40 +6676,62 @@ class PaintbrushTable(QWidget):
 
             def mousePressEvent(self, event):
                 self.parent_table.is_drawing_stroke = True
-                item = self.itemAt(event.pos())
-                if item:
-                    self.parent_table.engage_paint(item.row(), item.column())
-                else:
-                    index = self.indexAt(event.pos())
-                    if index.isValid():
-                        self.parent_table.engage_paint(index.row(), index.column())
+
+                index = self.indexAt(event.pos())
+                if index.isValid():
+                    self.parent_table.engage_paint(
+                        index.row(),
+                        index.column(),
+                        event=event,
+                    )
+
                 super().mousePressEvent(event)
 
             def mouseMoveEvent(self, event):
                 if self.parent_table.is_drawing_stroke:
-                    item = self.itemAt(event.pos())
-                    if item:
-                        self.parent_table.engage_paint(item.row(), item.column())
-                    else:
-                        index = self.indexAt(event.pos())
-                        if index.isValid():
-                            self.parent_table.engage_paint(index.row(), index.column())
+                    index = self.indexAt(event.pos())
+                    if index.isValid():
+                        self.parent_table.engage_paint(
+                            index.row(),
+                            index.column(),
+                            event=event,
+                        )
+
                 super().mouseMoveEvent(event)
 
             def mouseReleaseEvent(self, event):
                 self.parent_table.is_drawing_stroke = False
-                # Resolve overlaps / automation after stroke
-                if hasattr(self.parent_table, 'resolve_row_overlaps'):
-                    self.parent_table.resolve_row_overlaps()
+
+                if hasattr(
+                    self.parent_table,
+                    "resolve_row_overlaps",
+                ):
+                    try:
+                        self.parent_table.resolve_row_overlaps()
+                    except Exception:
+                        pass
+
                 super().mouseReleaseEvent(event)
 
-        # Wider grid: time, operator, script, velocity, automation target, auto amount,
-        # modulation, multi-seq, coverage, blend partner
-        n_cols = max(cols, 10)
-        self.table_widget = PaintTableWidget(self, rows, n_cols)
+        self.table_widget = PaintTableWidget(
+            self,
+            rows,
+            max(10, cols),
+        )
+
         self.table_widget.setMinimumWidth(1200)
-        self.table_widget.horizontalHeader().setStretchLastSection(True)
+        self.table_widget.setHorizontalHeaderLabels(
+            list(self.PLAYLIST_HEADERS)
+        )
+        self.table_widget.horizontalHeader().setStretchLastSection(
+            True
+        )
+
         layout.addWidget(self.table_widget)
+
+    # ------------------------------------------------------------------
+    # Basic table compatibility
+    # ------------------------------------------------------------------
 
     def rowCount(self):
         return self.table_widget.rowCount()
@@ -6615,8 +6742,25 @@ class PaintbrushTable(QWidget):
     def item(self, row, col):
         return self.table_widget.item(row, col)
 
-    def set_cell_item(self, row, col, item_or_text, bg_color=None):
-        if isinstance(item_or_text, QTableWidgetItem):
+    def set_cell_item(
+        self,
+        row,
+        col,
+        item_or_text,
+        bg_color=None,
+    ):
+        if (
+            row < 0
+            or col < 0
+            or row >= self.rowCount()
+            or col >= self.columnCount()
+        ):
+            return
+
+        if isinstance(
+            item_or_text,
+            QTableWidgetItem,
+        ):
             text = item_or_text.text()
             bg = item_or_text.background()
         else:
@@ -6624,55 +6768,249 @@ class PaintbrushTable(QWidget):
             bg = bg_color
 
         item = self.table_widget.item(row, col)
+
         if item is None:
             item = QTableWidgetItem(text)
-            if bg and bg.color().isValid():
-                item.setBackground(bg)
-            self.table_widget.setItem(row, col, item)
-        else:
-            item.setText(text)
-            if bg and bg.color().isValid():
-                item.setBackground(bg)
-
-    def setHorizontalHeaderLabels(self, labels):
-        self.table_widget.setHorizontalHeaderLabels(labels)
-
-    def toggle_draw_random_synth_style(self):
-        is_active = self.chk_draw_random_synth.isChecked()
-        if is_active:
-            self.chk_draw_random_synth.setText("🎨 Draw Random Synth: ON")
-            self.chk_draw_random_synth.setStyleSheet(
-                "background-color: #00ffff; color: #060606; border: 1px solid #fff; font-weight: bold; padding: 6px;"
+            self.table_widget.setItem(
+                row,
+                col,
+                item,
             )
         else:
-            self.chk_draw_random_synth.setText("🎨 Draw Random Synth: OFF")
+            item.setText(text)
+
+        if bg is not None:
+            try:
+                if bg.color().isValid():
+                    item.setBackground(bg)
+            except Exception:
+                pass
+
+    def setHorizontalHeaderLabels(self, labels):
+        self.table_widget.setHorizontalHeaderLabels(
+            list(labels)
+        )
+
+    # ------------------------------------------------------------------
+    # Canonical CSV helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def split_csv(value):
+        """
+        Split a Playlist cell without destroying time-region suffixes.
+
+        Example:
+            "OpA@u:1.2s, OpB@e:2.4s"
+        ->
+            ["OpA@u:1.2s", "OpB@e:2.4s"]
+        """
+        if value is None:
+            return []
+
+        text = str(value).strip()
+
+        if not text:
+            return []
+
+        return [
+            p.strip()
+            for p in text.split(",")
+            if p.strip()
+        ]
+
+    @staticmethod
+    def token_base(token):
+        """
+        Return the identity/value before @time-region metadata.
+        """
+        text = str(token or "").strip()
+
+        if "@" in text:
+            return text.split("@", 1)[0].strip()
+
+        return text
+
+    @staticmethod
+    def token_region(token):
+        """
+        Return the time-region suffix after @.
+
+        Examples:
+            OpA@u:1.250s -> u:1.250s
+            OpA@e:2.0000s -> e:2.0000s
+            OpA@q:12 -> q:12
+        """
+        text = str(token or "").strip()
+
+        if "@" not in text:
+            return ""
+
+        return text.split("@", 1)[1].strip()
+
+    @classmethod
+    def make_token(cls, value, region=""):
+        value = cls.token_base(value)
+
+        if not value:
+            return ""
+
+        region = str(region or "").strip()
+
+        return (
+            f"{value}@{region}"
+            if region
+            else value
+        )
+
+    @classmethod
+    def merge_csv(cls, existing, additions):
+        """
+        Merge CSV members by base identity.
+
+        Existing time-region metadata is retained unless the same base
+        identity is being replaced.
+        """
+        parts = cls.split_csv(existing)
+
+        if isinstance(additions, str):
+            additions = cls.split_csv(additions)
+
+        additions = list(additions or [])
+
+        result = list(parts)
+
+        for addition in additions:
+            addition = str(addition or "").strip()
+
+            if not addition:
+                continue
+
+            base = cls.token_base(addition)
+
+            replaced = False
+
+            for i, old in enumerate(result):
+                if cls.token_base(old) == base:
+                    result[i] = addition
+                    replaced = True
+                    break
+
+            if not replaced:
+                result.append(addition)
+
+        return ", ".join(result)
+
+    @classmethod
+    def csv_bases(cls, value):
+        return [
+            cls.token_base(x)
+            for x in cls.split_csv(value)
+        ]
+
+    # ------------------------------------------------------------------
+    # Paint helpers
+    # ------------------------------------------------------------------
+
+    def toggle_draw_random_synth_style(self):
+        if self.chk_draw_random_synth.isChecked():
+            self.chk_draw_random_synth.setText(
+                "🎨 Draw Random Synth: ON"
+            )
             self.chk_draw_random_synth.setStyleSheet(
-                "background-color: #121212; color: #ff5555; border: 1px solid #444; font-weight: bold; padding: 6px;"
+                "background-color:#00ffff; color:#060606; "
+                "border:1px solid #fff; font-weight:bold; padding:6px;"
+            )
+        else:
+            self.chk_draw_random_synth.setText(
+                "🎨 Draw Random Synth: OFF"
+            )
+            self.chk_draw_random_synth.setStyleSheet(
+                "background-color:#121212; color:#ff5555; "
+                "border:1px solid #444; font-weight:bold; padding:6px;"
             )
 
     def _current_paint_mode(self):
-        return self.paint_mode_combo.currentText() if hasattr(self, 'paint_mode_combo') else self.MODE_IDENTITY_STEPS_AUTO
+        if hasattr(self, "paint_mode_combo"):
+            return self.paint_mode_combo.currentText()
+
+        return self.MODE_IDENTITY_STEPS_AUTO
 
     def _blend_max_fraction(self):
-        txt = self.blend_max_combo.currentText() if hasattr(self, 'blend_max_combo') else "Half"
+        txt = (
+            self.blend_max_combo.currentText()
+            if hasattr(self, "blend_max_combo")
+            else "Half"
+        )
+
         return 0.25 if "Quarter" in txt else 0.5
 
     def _selected_operator(self, rng):
-        if self.chk_draw_random_synth.isChecked():
-            return str(rng.choice(self.app.instrument_names_48))
-        if hasattr(self.app, 'instrument_selector_dropdown'):
-            return self.app.instrument_selector_dropdown.currentText()
-        return self.app.instrument_names_48[0]
+        names = list(
+            getattr(
+                self.app,
+                "instrument_names_48",
+                [],
+            )
+        )
+
+        if not names:
+            return ""
+
+        if (
+            hasattr(
+                self,
+                "chk_draw_random_synth",
+            )
+            and self.chk_draw_random_synth.isChecked()
+        ):
+            return str(rng.choice(names))
+
+        selector = getattr(
+            self.app,
+            "instrument_selector_dropdown",
+            None,
+        )
+
+        if selector is not None:
+            value = selector.currentText()
+
+            if value:
+                return value
+
+        return names[0]
 
     def _ensure_automation_store(self):
-        if not hasattr(self.app, 'playlist_automation') or self.app.playlist_automation is None:
+        rows = self.rowCount()
+
+        if (
+            not hasattr(
+                self.app,
+                "playlist_automation",
+            )
+            or self.app.playlist_automation is None
+        ):
             self.app.playlist_automation = []
-        while len(self.app.playlist_automation) <= self.table_widget.rowCount():
+
+        while len(
+            self.app.playlist_automation
+        ) < rows:
             self.app.playlist_automation.append({})
-        if not hasattr(self.app, 'instrument_param_state') or not self.app.instrument_param_state:
-            # Lightweight per-instrument synth knob snapshot (EQR/Fractalizer/PKP/tuning style)
+
+        if not hasattr(
+            self.app,
+            "instrument_param_state",
+        ):
             self.app.instrument_param_state = {}
-            for i, name in enumerate(getattr(self.app, 'instrument_names_48', [])):
+
+        if not self.app.instrument_param_state:
+            for i, name in enumerate(
+                getattr(
+                    self.app,
+                    "instrument_names_48",
+                    [],
+                )
+            ):
                 self.app.instrument_param_state[name] = {
                     "eqr": 0.5 + 0.01 * (i % 7),
                     "fractalizer": 0.3 + 0.02 * (i % 5),
@@ -6682,186 +7020,202 @@ class PaintbrushTable(QWidget):
                     "drive": 0.2,
                 }
 
-    def engage_paint(self, row, col):
-        """Apply the active paintbrush to one playlist cell.
+    def _row_region(self, row):
+        snap = (
+            bool(self.chk_snap_grid.isChecked())
+            if hasattr(
+                self,
+                "chk_snap_grid",
+            )
+            else False
+        )
 
-        PaintTableWidget converts mouse events into row/column coordinates.
-        This method therefore must NEVER depend on a local `event` variable.
+        if snap:
+            return f"q:{row}"
+
+        return f"u:{(row * MEUM):.3f}s"
+
+    def _append_cell_member(
+        self,
+        row,
+        col,
+        member,
+        region=None,
+        replace_same=True,
+    ):
+        if region is None:
+            region = self._row_region(row)
+
+        token = self.make_token(
+            member,
+            region,
+        )
+
+        existing_item = self.table_widget.item(
+            row,
+            col,
+        )
+
+        existing = (
+            existing_item.text()
+            if existing_item is not None
+            else ""
+        )
+
+        parts = self.split_csv(existing)
+
+        result = []
+        replaced = False
+
+        for old in parts:
+            if (
+                replace_same
+                and self.token_base(old)
+                == self.token_base(token)
+            ):
+                result.append(token)
+                replaced = True
+            else:
+                result.append(old)
+
+        substituted = False
+
+        if not replaced:
+            if len(result) >= PAINT_INSTANCE_LIMIT:
+                result = result[1:] + [token]
+                substituted = True
+            else:
+                result.append(token)
+
+        text = ", ".join(result)
+
+        self.set_cell_item(
+            row,
+            col,
+            text,
+        )
+
+        self._flash_paint_cell(
+            row,
+            col,
+            len(result),
+            substituted=substituted,
+            member=str(member),
+        )
+
+        return text
+
+    # ------------------------------------------------------------------
+    # Main interactive paint function
+    # ------------------------------------------------------------------
+
+    def engage_paint(
+        self,
+        row,
+        col,
+        event=None,
+    ):
         """
+        Paint one cell and, when the selected mode requires it, expand
+        the paint across the other Playlist columns.
 
-        try:
-            row = int(row)
-            col = int(col)
-        except (TypeError, ValueError):
+        event is explicitly optional. The previous implementation
+        referenced an undefined event/table pair here.
+        """
+        names = list(
+            getattr(
+                self.app,
+                "instrument_names_48",
+                [],
+            )
+        )
+
+        if not names:
             return
 
-        table = self.table_widget
+        rows = self.rowCount()
+        cols = self.columnCount()
 
-        if row < 0 or col < 0:
-            return
-
-        if row >= table.rowCount() or col >= table.columnCount():
-            return
-
-        if not hasattr(self.app, "instrument_names_48"):
+        if not (
+            0 <= row < rows
+            and 0 <= col < cols
+        ):
             return
 
         self._ensure_automation_store()
 
-        # ------------------------------------------------------------
-        # Remember user-painted cells.
-        # ------------------------------------------------------------
-        touched = getattr(self, "playlist_user_touched", None)
-        if touched is None:
-            touched = self.playlist_user_touched = set()
-        touched.add((row, col))
+        self.playlist_user_touched.add(
+            (int(row), int(col))
+        )
 
-        # ------------------------------------------------------------
-        # Paint-rate limiting.
-        # ------------------------------------------------------------
         now = time.monotonic()
 
-        if not hasattr(self, "_last_flash_paint_cell"):
-            self._last_flash_paint_cell = None
-
-        if not hasattr(self, "_last_flash_paint_locus"):
-            self._last_flash_paint_locus = None
-
-        expanding = bool(getattr(self, "_paint_expanding", False))
+        expanding = bool(
+            getattr(
+                self,
+                "_paint_expanding",
+                False,
+            )
+        )
 
         if not expanding:
-            last_time = float(
-                getattr(self, "_last_paint_mono", 0.0)
-            )
-
             if (
-                now - last_time < PAINT_PERIOD_S
-                and self._last_flash_paint_cell == (row, col)
+                now
+                - float(
+                    getattr(
+                        self,
+                        "_last_paint_mono",
+                        0.0,
+                    )
+                )
+                < PAINT_PERIOD_S
+                and self._last_flash_paint_cell
+                == (row, col)
             ):
                 return
 
             self._last_paint_mono = now
-            self._last_flash_paint_cell = (row, col)
+            self._last_flash_paint_cell = (
+                row,
+                col,
+            )
 
-            # No mouse event is available here.  Coordinates are supplied
-            # directly by PaintTableWidget, so don't calculate event.position().
-            self._last_flash_paint_locus = None
-
-        # ------------------------------------------------------------
-        # Seed / deterministic-ish local RNG.
-        # ------------------------------------------------------------
-        seed_val = 0
-
-        if hasattr(self.app, "input_seed_val"):
-            try:
-                txt = self.app._seed_text()
-
-                if txt and abs(float(txt)) != 0.0:
-                    seed_val = abs(hash(float(txt))) % (2 ** 31)
-                else:
-                    seed_val = int(time.time()) % (2 ** 31)
-
-            except (ValueError, TypeError):
-                try:
-                    seed_text = self.app._seed_text()
-                except Exception:
-                    seed_text = ""
-
-                seed_val = (
-                    abs(hash(seed_text)) % (2 ** 31)
-                    if seed_text
-                    else int(time.time()) % (2 ** 31)
+        try:
+            seed_text = (
+                self.app._seed_text()
+                if hasattr(
+                    self.app,
+                    "_seed_text",
                 )
+                else "0"
+            )
+
+            seed_val = (
+                abs(hash(seed_text))
+                % (2**31)
+            )
+
+        except Exception:
+            seed_val = int(time.time()) % (
+                2**31
+            )
 
         rng = np.random.default_rng(
-            _safe_int_seed(seed_val)
-            + row
-            + col
-            + int(time.time() * 1000) % 10000
+            seed_val
+            + row * 1009
+            + col * 9176
         )
 
         mode = self._current_paint_mode()
+        region = self._row_region(row)
+        target_operator = self._selected_operator(rng)
 
-        snap = (
-            bool(self.chk_snap_grid.isChecked())
-            if hasattr(self, "chk_snap_grid")
-            else False
-        )
-
-        # ------------------------------------------------------------
-        # Position / time base.
-        # ------------------------------------------------------------
-        if snap:
-            pos_tag = f"q:{row}"
-        else:
-            pos_tag = f"u:{(row * MEUM):.3f}s"
-
-        # ------------------------------------------------------------
-        # CSV/member writer.
-        # ------------------------------------------------------------
-        def _append_cell_member(r, c, member):
-            existing = ""
-
-            item = table.item(r, c)
-            if item is not None:
-                existing = (item.text() or "").strip()
-
-            token = f"{member}@{pos_tag}"
-
-            parts = (
-                [p.strip() for p in existing.split(",") if p.strip()]
-                if existing
-                else []
-            )
-
-            base = member.split("@")[0].strip()
-
-            out = []
-            replaced = False
-            substituted = False
-
-            for p in parts:
-                pbase = p.split("@")[0].strip()
-
-                if pbase == base:
-                    out.append(token)
-                    replaced = True
-                else:
-                    out.append(p)
-
-            if not replaced:
-                if len(out) >= PAINT_INSTANCE_LIMIT:
-                    out = out[1:] + [token]
-                    substituted = True
-                else:
-                    out.append(token)
-
-            text_val = ", ".join(out)
-
-            self.set_cell_item(r, c, text_val)
-
-            overlap_n = len(out)
-
-            self._flash_paint_cell(
-                r,
-                c,
-                overlap_n,
-                substituted=substituted,
-                member=member,
-            )
-
-            return text_val
-
-        # ------------------------------------------------------------
-        # Select instrument.
-        # ------------------------------------------------------------
-        target_operator_name = self._selected_operator(rng)
-
-        # ------------------------------------------------------------
-        # Ensure playlist row exists.
-        # ------------------------------------------------------------
         while len(
-            getattr(self.app, "master_playlist_data", [])
+            getattr(
+                self.app,
+                "master_playlist_data",
+                [],
+            )
         ) <= row:
             self.app.master_playlist_data.append({})
 
@@ -6871,239 +7225,86 @@ class PaintbrushTable(QWidget):
             entry = {}
             self.app.master_playlist_data[row] = entry
 
-        entry["position"] = pos_tag
-        entry["quantized"] = snap
+        entry["position"] = region
+        entry["time_marker"] = region
+        entry["quantized"] = (
+            region.startswith("q:")
+        )
 
-        # ------------------------------------------------------------
-        # Column 0 — time.
-        # ------------------------------------------------------------
+        # --------------------------------------------------------------
+        # TIME
+        # --------------------------------------------------------------
+
         if col == 0:
-            value = (
-                pos_tag.split(":", 1)[-1]
-                if ":" in pos_tag
-                else pos_tag
-            )
-
-            _append_cell_member(row, 0, value)
-
-            entry["time_marker"] = pos_tag
-            return
-
-        # ------------------------------------------------------------
-        # Column 1 — instrument identity.
-        # ------------------------------------------------------------
-        if col == 1:
-            name = target_operator_name
-
-            if mode == self.MODE_RANDOM_PARAMETERS:
-                name = self.app.instrument_names_48[
-                    int(
-                        rng.integers(
-                            0,
-                            len(self.app.instrument_names_48),
-                        )
-                    )
-                ]
-
-            _append_cell_member(row, 1, name)
-
-            # Additional overlapping synth identity / automation.
-            if (
-                not getattr(self, "_paint_expanding", False)
-                and float(rng.random()) < 0.55
-            ):
-                extra = self.app.instrument_names_48[
-                    int(
-                        rng.integers(
-                            0,
-                            len(self.app.instrument_names_48),
-                        )
-                    )
-                ]
-
-                if extra != name:
-                    _append_cell_member(row, 1, extra)
-
-                _append_cell_member(
-                    row,
-                    4,
-                    str(
-                        rng.choice(
-                            [
-                                "eqr",
-                                "fractalizer",
-                                "pkp_decay",
-                                "filter",
-                                "drive",
-                            ]
-                        )
-                    ),
-                )
-
-                _append_cell_member(
-                    row,
-                    5,
-                    f"{int(rng.integers(20, 90))}%",
-                )
-
-                _append_cell_member(
-                    row,
-                    8,
-                    f"Cover{float(rng.uniform(0.25, 1.0)):.0%}",
-                )
-
-            item = table.item(row, 1)
-
-            ops = []
-
-            if item is not None:
-                ops = [
-                    p.split("@")[0].strip()
-                    for p in (item.text() or "").split(",")
-                    if p.strip()
-                ]
-
-            entry["operator"] = ops[0] if ops else name
-            entry["operators"] = ops
-
-            if item is not None:
-    # Identity cells are colored by _flash_paint_cell().
-    # Leave the existing color untouched here.
-                item.setToolTip(
-                f"instrument={entry.get('operator', target_operator_name)}"
-            )
-
-            return
-
-        # ------------------------------------------------------------
-        # Column 2 — script.
-        # ------------------------------------------------------------
-        if col == 2:
-            tag = f"Script::{target_operator_name[:6].upper()}"
-
-            _append_cell_member(row, 2, tag)
-
-            entry["script_tag"] = tag
-            return
-
-        # ------------------------------------------------------------
-        # Column 3 — velocity / amp.
-        # ------------------------------------------------------------
-        if col == 3:
-            if hasattr(self.app, "_contextual_numerology"):
-                try:
-                    ctx = float(
-                        self.app._contextual_numerology(
-                            target_operator_name,
-                            row,
-                            row,
-                        )
-                    )
-                except Exception:
-                    ctx = 0.5
-            else:
-                ctx = 0.5
-
-            if mode == self.MODE_RANDOM_PARAMETERS:
-                velocity = float(rng.uniform(0.10, 1.20))
-            else:
-                velocity = float(
-                    np.clip(
-                        0.15 + 1.15 * ctx,
-                        0.05,
-                        1.5,
-                    )
-                )
-
-            _append_cell_member(
+            self.set_cell_item(
                 row,
-                3,
-                f"{velocity * 100:.1f}%",
+                0,
+                region,
             )
 
-            entry["velocity"] = velocity
+            entry["time_marker"] = region
+            entry["position"] = region
 
-            # Explicit amp state so the paint operation actually affects
-            # amplitude rather than merely displaying a velocity token.
-            entry["amp"] = velocity
+        # --------------------------------------------------------------
+        # OPERATOR IDENTITY
+        # --------------------------------------------------------------
 
-            return
+        elif col == 1:
+            name = target_operator
 
-        # ------------------------------------------------------------
-        # Column 4 — automation target / synth parameter.
-        # ------------------------------------------------------------
-        if col == 4:
-            params = list(
-                self.app.instrument_param_state.get(
-                    target_operator_name,
-                    {
-                        "eqr": 0.5,
-                        "fractalizer": 0.5,
-                        "pkp_decay": 0.5,
-                        "filter": 0.5,
-                        "drive": 0.5,
-                        "pitch": 0.0,
-                    },
-                ).keys()
-            )
-
-            if not params:
-                params = [
-                    "eqr",
-                    "fractalizer",
-                    "pkp_decay",
-                    "filter",
-                    "drive",
-                    "pitch",
-                ]
-
-            if mode == self.MODE_RANDOM_PARAMETERS:
-                k = int(
-                    rng.integers(
-                        1,
-                        min(4, len(params) + 1),
-                    )
+            if (
+                mode
+                == self.MODE_RANDOM_PARAMETERS
+            ):
+                name = str(
+                    rng.choice(names)
                 )
 
-                chosen = list(
-                    rng.choice(
-                        params,
-                        size=min(k, len(params)),
-                        replace=False,
-                    )
-                )
-            else:
-                chosen = [
-                    params[
-                        (row + col) % len(params)
-                    ]
-                ]
-
-            for p in chosen:
-                _append_cell_member(row, 4, str(p))
-
-            item = table.item(row, 4)
-
-            entry["auto_targets"] = (
-                [
-                    p.split("@")[0].strip()
-                    for p in (item.text() or "").split(",")
-                    if p.strip()
-                ]
-                if item is not None
-                else []
+            text = self._append_cell_member(
+                row,
+                1,
+                name,
+                region,
             )
 
-            return
+            ops = self.csv_bases(text)
 
-        # ------------------------------------------------------------
-        # Column 5 — automation amount.
-        # ------------------------------------------------------------
-        if col == 5:
+            entry["operator"] = (
+                ops[0]
+                if ops
+                else name
+            )
+
+            entry["operators"] = ops
+            entry["operators_csv"] = text
+
+        # --------------------------------------------------------------
+        # SCRIPT
+        # --------------------------------------------------------------
+
+        elif col == 2:
+            tag = (
+                f"Script::{target_operator[:6].upper()}"
+            )
+
+            text = self._append_cell_member(
+                row,
+                2,
+                tag,
+                region,
+            )
+
+            entry["script_tag"] = text
+
+        # --------------------------------------------------------------
+        # VELOCITY
+        # --------------------------------------------------------------
+
+        elif col == 3:
             try:
                 ctx = float(
                     self.app._contextual_numerology(
-                        target_operator_name,
+                        target_operator,
                         row,
                         row,
                     )
@@ -7112,9 +7313,136 @@ class PaintbrushTable(QWidget):
                 ctx = 0.5
 
             if mode == self.MODE_RANDOM_PARAMETERS:
-                amt = int(rng.integers(20, 90))
+                velocity = float(
+                    rng.uniform(
+                        0.10,
+                        1.20,
+                    )
+                )
             else:
-                amt = int(
+                velocity = float(
+                    np.clip(
+                        0.15
+                        + 1.15 * ctx,
+                        0.05,
+                        1.5,
+                    )
+                )
+
+            text = self._append_cell_member(
+                row,
+                3,
+                f"{velocity * 100:.1f}%",
+                region,
+            )
+
+            entry["velocity"] = velocity
+            entry["velocity_csv"] = text
+
+        # --------------------------------------------------------------
+        # AUTO TARGET
+        # --------------------------------------------------------------
+
+        elif col == 4:
+            params = list(
+                self.app.instrument_param_state.get(
+                    target_operator,
+                    {
+                        "eqr": 0.5,
+                        "fractalizer": 0.5,
+                        "pkp_decay": 0.5,
+                        "filter": 0.5,
+                        "drive": 0.5,
+                    },
+                ).keys()
+            )
+
+            if not params:
+                params = ["eqr"]
+
+            if (
+                mode
+                == self.MODE_RANDOM_PARAMETERS
+            ):
+                k = int(
+                    rng.integers(
+                        1,
+                        min(4, len(params))
+                        + 1,
+                    )
+                )
+
+                chosen = list(
+                    rng.choice(
+                        params,
+                        size=min(
+                            k,
+                            len(params),
+                        ),
+                        replace=False,
+                    )
+                )
+
+            else:
+                chosen = [
+                    params[
+                        (row + col)
+                        % len(params)
+                    ]
+                ]
+
+            for param in chosen:
+                self._append_cell_member(
+                    row,
+                    4,
+                    param,
+                    region,
+                )
+
+            text = (
+                self.table_widget.item(
+                    row,
+                    4,
+                ).text()
+            )
+
+            entry["auto_targets"] = (
+                self.csv_bases(text)
+            )
+            entry["effect_target"] = (
+                entry["auto_targets"][0]
+                if entry["auto_targets"]
+                else ""
+            )
+
+        # --------------------------------------------------------------
+        # AUTO AMOUNT
+        # --------------------------------------------------------------
+
+        elif col == 5:
+            try:
+                ctx = float(
+                    self.app._contextual_numerology(
+                        target_operator,
+                        row,
+                        row,
+                    )
+                )
+            except Exception:
+                ctx = 0.5
+
+            if (
+                mode
+                == self.MODE_RANDOM_PARAMETERS
+            ):
+                amount = int(
+                    rng.integers(
+                        20,
+                        90,
+                    )
+                )
+            else:
+                amount = int(
                     round(
                         100
                         * float(
@@ -7130,189 +7458,433 @@ class PaintbrushTable(QWidget):
                     )
                 )
 
-            _append_cell_member(
+            text = self._append_cell_member(
                 row,
                 5,
-                f"{amt}%",
+                f"{amount}%",
+                region,
             )
 
-            entry["auto_amount"] = amt / 100.0
-            return
+            entry["auto_amount"] = (
+                amount / 100.0
+            )
+            entry["auto_amount_csv"] = text
 
-        # ------------------------------------------------------------
-        # Column 6 — modulation/vector.
-        # ------------------------------------------------------------
-        if col == 6:
+        # --------------------------------------------------------------
+        # DIRECTION
+        # --------------------------------------------------------------
+
+        elif col == 6:
             direction = (
                 "+"
                 if (row + col) % 2 == 0
-                else "−"
+                else "-"
             )
 
-            _append_cell_member(
+            text = self._append_cell_member(
                 row,
                 6,
                 f"Vector{direction}",
+                region,
             )
 
+            entry["direction_vector"] = text
             entry["direction"] = (
-                1.0 if direction == "+" else -1.0
+                1.0
+                if direction == "+"
+                else -1.0
             )
 
-            return
+        # --------------------------------------------------------------
+        # MULTI SEQ
+        # --------------------------------------------------------------
 
-        # ------------------------------------------------------------
-        # Column 7 — multi sequence.
-        # ------------------------------------------------------------
-        if col == 7:
-            multi = f"Multi[{(row % 3) + 1}]"
+        elif col == 7:
+            multi = (
+                f"Multi[{(row % 3) + 1}]"
+            )
 
-            _append_cell_member(
+            text = self._append_cell_member(
                 row,
                 7,
                 multi,
+                region,
             )
 
-            entry["multi_seq"] = multi
-            return
+            entry["multi_seq"] = text
 
-        # ------------------------------------------------------------
-        # Column 8 — coverage.
-        # ------------------------------------------------------------
-        if col == 8:
-            rc = self.row_coverage.setdefault(row, {})
+        # --------------------------------------------------------------
+        # COVERAGE
+        # --------------------------------------------------------------
+
+        elif col == 8:
+            coverage = self.row_coverage.setdefault(
+                row,
+                {},
+            )
 
             previous = float(
-                rc.get(
-                    target_operator_name,
+                coverage.get(
+                    target_operator,
                     0.0,
                 )
             )
 
-            coverage = min(
+            current = min(
                 1.0,
                 previous + 0.25,
             )
 
-            rc[target_operator_name] = coverage
+            coverage[target_operator] = current
 
-            _append_cell_member(
+            text = self._append_cell_member(
                 row,
                 8,
-                f"Cover{coverage:.0%}",
+                f"Cover{current:.0%}",
+                region,
             )
 
-            entry["coverage"] = coverage
-            return
+            entry["coverage"] = current
+            entry["coverage_csv"] = text
 
-        # ------------------------------------------------------------
-        # Column 9+ — blend.
-        # ------------------------------------------------------------
-        if col >= 9:
+        # --------------------------------------------------------------
+        # BLEND
+        # --------------------------------------------------------------
+
+        elif col == 9:
             blend = float(
-                rng.uniform(0.0, 100.0)
+                rng.uniform(
+                    0.0,
+                    100.0,
+                )
             )
 
-            _append_cell_member(
+            text = self._append_cell_member(
+                row,
+                9,
+                f"Blend{blend:.1f}%",
+                region,
+            )
+
+            entry["blend_partner"] = text
+            entry["blend_percent"] = blend
+
+        # --------------------------------------------------------------
+        # EXPAND SELECTED PAINT MODE
+        # --------------------------------------------------------------
+
+        mode_cols = set()
+
+        if mode in (
+            self.MODE_IDENTITY_STEPS_AUTO,
+            self.MODE_IDENTITY_ONLY,
+        ):
+            mode_cols.add(1)
+
+        if mode in (
+            self.MODE_IDENTITY_STEPS_AUTO,
+            self.MODE_STEPS_ONLY,
+            self.MODE_STEPS_AUTO,
+        ):
+            mode_cols.update(
+                [2, 3]
+            )
+
+        if mode in (
+            self.MODE_IDENTITY_STEPS_AUTO,
+            self.MODE_STEPS_AUTO,
+            self.MODE_AUTO_ONLY,
+            self.MODE_RANDOM_PARAMETERS,
+            self.MODE_CALCULATED_PARAMETERS,
+        ):
+            mode_cols.update(
+                [4, 5, 6, 8, 9]
+            )
+
+        if not expanding:
+            self._paint_expanding = True
+
+            try:
+                for mc in sorted(mode_cols):
+                    if mc != col:
+                        self.engage_paint(
+                            row,
+                            mc,
+                            event=None,
+                        )
+            finally:
+                self._paint_expanding = False
+
+        # Keep backend synchronized immediately.
+        if hasattr(
+            self.app,
+            "_sync_playlist_row_from_table",
+        ):
+            try:
+                self.app._sync_playlist_row_from_table(
+                    row
+                )
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
+    # Engine-facing full-row painter
+    # ------------------------------------------------------------------
+
+    def paint_engine_row(
+        self,
+        row,
+        data,
+        source="randomizer",
+    ):
+        """
+        Paint ALL TEN Playlist cells from one canonical dictionary.
+
+        This is the method Randomizer / Phase-Lock should use.
+
+        It does not call engage_paint(), because engine-generated material
+        must not become user-owned merely because it appeared in the UI.
+        """
+        if not isinstance(data, dict):
+            return False
+
+        if not (
+            0 <= row < self.rowCount()
+        ):
+            return False
+
+        mapping = {
+            0: data.get(
+                "time_marker",
+                data.get(
+                    "position",
+                    "",
+                ),
+            ),
+            1: data.get(
+                "operators_csv",
+                data.get(
+                    "operator",
+                    "",
+                ),
+            ),
+            2: data.get(
+                "script_tag",
+                "",
+            ),
+            3: (
+                f"{float(data.get('velocity', 0.0)) * 100:.1f}%"
+            ),
+            4: data.get(
+                "effect_target",
+                data.get(
+                    "auto_target",
+                    "",
+                ),
+            ),
+            5: data.get(
+                "auto_amount",
+                "",
+            ),
+            6: data.get(
+                "direction_vector",
+                "",
+            ),
+            7: data.get(
+                "multi_seq",
+                "",
+            ),
+            8: data.get(
+                "coverage",
+                "",
+            ),
+            9: data.get(
+                "blend_partner",
+                "",
+            ),
+        }
+
+        for col in range(10):
+            self.set_cell_item(
                 row,
                 col,
-                f"Blend{blend:.1f}%",
+                mapping.get(
+                    col,
+                    "",
+                ),
             )
 
-            entry["blend_percent"] = blend
-            return
-    def _flash_paint_cell(self, row, col, overlap_n, substituted=False, member=""):
-        """Flash cell color; encode overlap count; convolve on substitution."""
-        item = self.table_widget.item(row, col)
-        if item is None:
-            item = QTableWidgetItem("")
-            self.table_widget.setItem(row, col, item)
-        # Base hue from member hash / row; shift by overlap and substitution
-        h = (hash(member or f"{row}:{col}") % 360)
-        if substituted:
-            # Distinct convolution: rotate hue + desaturate fill to signal replacement
-            h = (h + 137) % 360  # golden-angle step
-            color = QColor.fromHsv(h, 200, 255)
-            item.setToolTip(f"SUBSTITUTED · overlap={overlap_n} · {member}")
-        else:
-            # Brighter with more overlap instances
-            sat = min(255, 140 + overlap_n * 18)
-            val = min(255, 180 + overlap_n * 8)
-            color = QColor.fromHsv(h % 360, sat, val)
-            item.setToolTip(f"overlap={overlap_n} · {member}")
-        item.setBackground(color)
-        # Brief flash to white-ish then settle.  Lazily initialize as a
-        # defensive guard in case this method is reached before __init__
-        # completed or an older PaintbrushTable instance is reused.
-        if not hasattr(self, "_cell_flash_until"):
-            self._cell_flash_until = {}
-        self._cell_flash_until[(row, col)] = time.monotonic() + 0.18
-        flash = QColor(255, 255, 255, 210)
-        item.setBackground(flash)
-        # Restore programmed color after flash window
-        def _restore(_r=row, _c=col, _col=QColor(color), _n=overlap_n):
-            it = self.table_widget.item(_r, _c)
-            if it is None:
-                return
-            # draw overlap data-points as trailing markers in tooltip / status
-            it.setBackground(_col)
-            it.setForeground(QColor("#061018") if _col.value() > 160 else QColor("#f2f6fa"))
-        QTimer.singleShot(120, _restore)
-        # Status line data-points
-        try:
-            if hasattr(self.app, 'scope_status_label'):
-                mark = "↻SUB" if substituted else ("●" * min(overlap_n, 6))
-                self.app.scope_status_label.setText(
-                    f"🖌 cell[{row},{col}] overlap={overlap_n} {mark} {member[:24]}"
+        # Make engine rows visibly distinguishable without changing ownership.
+        item = self.table_widget.item(
+            row,
+            1,
+        )
+
+        if item is not None:
+            try:
+                item.setToolTip(
+                    f"ENGINE:{source} · "
+                    f"{item.text()}"
                 )
+            except Exception:
+                pass
+
+        return True
+
+    def paint_engine_rows(
+        self,
+        rows,
+        source="randomizer",
+    ):
+        count = 0
+
+        for row, data in rows:
+            if self.paint_engine_row(
+                int(row),
+                data,
+                source=source,
+            ):
+                count += 1
+
+        try:
+            self.table_widget.viewport().update()
         except Exception:
             pass
 
-    def _blend_instrument_params(self, op_a, op_b, amount):
-        """Move op_a params up to `amount` of the way toward op_b (amount already scaled by max blend)."""
-        a = self.app.instrument_param_state.get(op_a)
-        b = self.app.instrument_param_state.get(op_b)
-        if not a or not b:
-            return
-        for k in a:
-            if k in b:
-                a[k] = float(a[k] * (1.0 - amount) + b[k] * amount)
-    def resolve_row_overlaps(self):
-        """After a stroke, re-assert coverage labels and push automation UI state."""
-        self._ensure_automation_store()
-        for row, cov in self.row_coverage.items():
-            if not cov:
-                continue
-            parts = [f"{k[:10]}:{v:.0%}" for k, v in cov.items()]
-            self.set_cell_item(row, 8, " | ".join(parts)[:48])
-        # Reflect automation into global macros lightly (UI update)
-        if hasattr(self.app, 'apply_playlist_automation_to_ui'):
-            self.app.apply_playlist_automation_to_ui()
+        return count
 
-    def convolve_color_coding(self):
-        """Distinct hue per instrument + cross-label on operator column for blend visibility."""
-        names = list(getattr(self.app, 'instrument_names_48', []))
-        n = max(len(names), 1)
-        for row in range(self.table_widget.rowCount()):
-            item = self.table_widget.item(row, 1)
-            if not item:
-                continue
-            op = item.text().strip()
-            if op not in names:
-                continue
-            idx = names.index(op)
-            # HSV-style distinct colors spread across 48 operators
-            h = int((idx * 360 / n) % 360)
-            color = QColor.fromHsv(h, 180, 160)
-            item.setBackground(color)
-            # Cross-label: short family tag + index
-            fam = idx // 6
-            item.setText(f"{op}  ·F{fam}/#{idx+1}")
-            # Coverage multi-color note in col 8
-            cov = self.row_coverage.get(row, {})
-            if len(cov) > 1:
-                self.set_cell_item(row, 8, "BLEND " + "+".join(f"{k[:6]}" for k in cov.keys()))
-        print("[Playlist] Convolve color coding applied")
+    # ------------------------------------------------------------------
+    # Existing visual feedback
+    # ------------------------------------------------------------------
+
+    def _flash_paint_cell(
+        self,
+        row,
+        col,
+        overlap_n,
+        substituted=False,
+        member="",
+    ):
+        item = self.table_widget.item(
+            row,
+            col,
+        )
+
+        if item is None:
+            item = QTableWidgetItem("")
+            self.table_widget.setItem(
+                row,
+                col,
+                item,
+            )
+
+        h = (
+            hash(
+                member
+                or f"{row}:{col}"
+            )
+            % 360
+        )
+
+        if substituted:
+            h = (h + 137) % 360
+            color = QColor.fromHsv(
+                h,
+                200,
+                255,
+            )
+
+            item.setToolTip(
+                f"SUBSTITUTED · "
+                f"overlap={overlap_n} · "
+                f"{member}"
+            )
+
+        else:
+            sat = min(
+                255,
+                140 + overlap_n * 18,
+            )
+            val = min(
+                255,
+                180 + overlap_n * 8,
+            )
+
+            color = QColor.fromHsv(
+                h,
+                sat,
+                val,
+            )
+
+            item.setToolTip(
+                f"overlap={overlap_n} · "
+                f"{member}"
+            )
+
+        item.setBackground(color)
+
+        self._cell_flash_until[
+            (row, col)
+        ] = time.monotonic() + 0.18
+
+        flash = QColor(
+            255,
+            255,
+            255,
+            210,
+        )
+
+        item.setBackground(flash)
+
+        def restore(
+            _r=row,
+            _c=col,
+            _color=QColor(color),
+        ):
+            it = self.table_widget.item(
+                _r,
+                _c,
+            )
+
+            if it is None:
+                return
+
+            it.setBackground(_color)
+
+            it.setForeground(
+                QColor("#061018")
+                if _color.value() > 160
+                else QColor("#f2f6fa")
+            )
+
+        QTimer.singleShot(
+            120,
+            restore,
+        )
+
+        try:
+            if hasattr(
+                self.app,
+                "scope_status_label",
+            ):
+                mark = (
+                    "↻SUB"
+                    if substituted
+                    else "●"
+                    * min(
+                        overlap_n,
+                        6,
+                    )
+                )
+
+                self.app.scope_status_label.setText(
+                    f"🖌 cell[{row},{col}] "
+                    f"overlap={overlap_n} "
+                    f"{mark} "
+                    f"{str(member)[:24]}"
+                )
+        except Exception:
+            pass
 # ==========================================
 # 4. MODULAR TAB MANAGER (TOP PANE)
 # ==========================================
@@ -8640,6 +9212,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.imported_video_meta = {}
 
         self.playlist_automation = []
+        # State lock for playlist memory; Qt widgets must still be touched only on the UI thread.
+        self.playlist_state_lock = threading.RLock()
         self.instrument_param_state = {}
         # Build the initial program state before rendering the sequencer.
         # This prevents the first selection click from revealing hidden gates.
@@ -8693,34 +9267,539 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.playlist_automation = [{} for _ in range(rows)]
 
     def sync_playlist_grid_to_memory(self):
-        """Reads back current table items from the playlist window into master memory backend."""
-        if hasattr(self, 'active_paint_table') and self.active_paint_table:
-            table = self.active_paint_table
-            self.master_playlist_data = []
-            old_rows = list(getattr(self, "master_playlist_data", []) or [])
-            for r in range(table.rowCount()):
-                prior = old_rows[r] if r < len(old_rows) and isinstance(old_rows[r], dict) else {}
-                row_dict = {
-                    "time_marker": table.item(r, 0).text() if table.item(r, 0) else "",
-                    "operator": table.item(r, 1).text() if table.item(r, 1) else self.instrument_names_48[0],
-                    "script_tag": table.item(r, 2).text() if table.item(r, 2) else "",
-                    "velocity": 1.0,
-                    "modulation": table.item(r, 4).text() if table.item(r, 4) else "",
-                    "multi_seq": table.item(r, 5).text() if table.item(r, 5) else ""
-                }
-                # Keep the generated layer alongside the user-visible row.
-                for _k in ("generated_overlay", "generated_source", "generated_operator", "generated_step", "generated_velocity"):
-                    if _k in prior:
-                        row_dict[_k] = prior[_k]
-                if table.item(r, 3):
-                    try:
-                        vtxt = table.item(r, 3).text().replace("%", "").strip()
-                        v = float(vtxt)
-                        row_dict["velocity"] = (v / 100.0) if v > 1.0 else v
-                    except Exception:
-                        row_dict["velocity"] = 1.0
-                self.master_playlist_data.append(row_dict)
+        """
+        Canonical reverse synchronization for the 10-column Playlist.
 
+        The grid is authoritative for user-painted cells.
+
+        CSV/time-region strings are preserved exactly rather than collapsing
+        them to a single operator or a single time value.
+        """
+        table = getattr(
+            self,
+            "active_paint_table",
+            None,
+        )
+
+        if table is None:
+            return
+
+        tw = getattr(
+            table,
+            "table_widget",
+            table,
+        )
+
+        try:
+            row_count = int(
+                tw.rowCount()
+            )
+        except Exception:
+            return
+
+        old_rows = list(
+            getattr(
+                self,
+                "master_playlist_data",
+                [],
+            )
+            or []
+        )
+
+        new_rows = []
+
+        def cell_text(r, c):
+            try:
+                item = tw.item(r, c)
+                return (
+                    item.text()
+                    if item is not None
+                    else ""
+                )
+            except Exception:
+                return ""
+
+        def csv_tokens(value):
+            return [
+                p.strip()
+                for p in str(value or "").split(",")
+                if p.strip()
+            ]
+
+        def token_base(value):
+            text = str(value or "").strip()
+
+            return (
+                text.split("@", 1)[0].strip()
+                if "@" in text
+                else text
+            )
+
+        for r in range(row_count):
+            prior = (
+                old_rows[r]
+                if r < len(old_rows)
+                and isinstance(
+                    old_rows[r],
+                    dict,
+                )
+                else {}
+            )
+
+            time_marker = cell_text(r, 0)
+            operators_csv = cell_text(r, 1)
+            script_tag = cell_text(r, 2)
+            velocity_text = cell_text(r, 3)
+            effect_target = cell_text(r, 4)
+            auto_amount = cell_text(r, 5)
+            direction_vector = cell_text(r, 6)
+            multi_seq = cell_text(r, 7)
+            coverage = cell_text(r, 8)
+            blend_partner = cell_text(r, 9)
+
+            operator_tokens = csv_tokens(
+                operators_csv
+            )
+
+            operators = [
+                token_base(x)
+                for x in operator_tokens
+            ]
+
+            # --------------------------------------------------------------
+            # Velocity
+            # --------------------------------------------------------------
+
+            velocity = 1.0
+
+            if velocity_text:
+                try:
+                    raw = (
+                        velocity_text
+                        .replace("%", "")
+                        .strip()
+                    )
+
+                    value = float(raw)
+
+                    velocity = (
+                        value / 100.0
+                        if abs(value) > 1.0
+                        else value
+                    )
+
+                    velocity = float(
+                        np.clip(
+                            velocity,
+                            0.0,
+                            1.5,
+                        )
+                    )
+
+                except Exception:
+                    # Preserve prior valid velocity if parsing fails.
+                    try:
+                        velocity = float(
+                            prior.get(
+                                "velocity",
+                                1.0,
+                            )
+                        )
+                    except Exception:
+                        velocity = 1.0
+
+            # --------------------------------------------------------------
+            # Auto amount
+            # --------------------------------------------------------------
+
+            auto_amount_value = prior.get(
+                "auto_amount",
+                0.0,
+            )
+
+            try:
+                amount_text = (
+                    str(auto_amount)
+                    .strip()
+                    .replace("%", "")
+                )
+
+                if amount_text:
+                    av = float(
+                        amount_text
+                    )
+
+                    auto_amount_value = (
+                        av / 100.0
+                        if abs(av) > 1.0
+                        else av
+                    )
+
+                    auto_amount_value = float(
+                        np.clip(
+                            auto_amount_value,
+                            0.0,
+                            1.0,
+                        )
+                    )
+
+            except Exception:
+                pass
+
+            # --------------------------------------------------------------
+            # Direction
+            # --------------------------------------------------------------
+
+            direction = prior.get(
+                "direction",
+                0.0,
+            )
+
+            if direction_vector:
+                if (
+                    "+"
+                    in direction_vector
+                ):
+                    direction = 1.0
+                elif (
+                    "-"
+                    in direction_vector
+                    or "−"
+                    in direction_vector
+                ):
+                    direction = -1.0
+
+            # --------------------------------------------------------------
+            # Time region
+            # --------------------------------------------------------------
+
+            position = (
+                time_marker
+                or prior.get(
+                    "position",
+                    "",
+                )
+            )
+
+            row_dict = {
+                # Canonical display schema.
+                "time_marker": time_marker,
+                "position": position,
+                "quantized": str(
+                    time_marker
+                ).startswith("q:"),
+
+                "operator": (
+                    operators[0]
+                    if operators
+                    else ""
+                ),
+                "operators": operators,
+                "operators_csv": operators_csv,
+
+                "script_tag": script_tag,
+
+                "velocity": velocity,
+                "velocity_csv": velocity_text,
+
+                "effect_target": effect_target,
+                "auto_target": effect_target,
+                "auto_targets": [
+                    token_base(x)
+                    for x in csv_tokens(
+                        effect_target
+                    )
+                ],
+
+                "auto_amount": auto_amount_value,
+                "auto_amount_csv": auto_amount,
+
+                "direction": direction,
+                "direction_vector": direction_vector,
+
+                "multi_seq": multi_seq,
+
+                "coverage": coverage,
+                "blend_partner": blend_partner,
+            }
+
+            # --------------------------------------------------------------
+            # Preserve engine/user metadata that is not represented directly
+            # by the visible ten columns.
+            # --------------------------------------------------------------
+
+            for key in (
+                "user_instances",
+                "generated_overlay",
+                "generated_source",
+                "generated_operator",
+                "generated_step",
+                "generated_velocity",
+                "generated_by_engine",
+                "coverage_map",
+                "time_offset",
+                "active",
+                "velocity_user_locked",
+            ):
+                if key in prior:
+                    row_dict[key] = prior[key]
+
+            # User instances can be reconstructed from @u: CSV tokens.
+            user_instances = [
+                token
+                for token in operator_tokens
+                if "@u:" in token
+            ]
+
+            if user_instances:
+                row_dict["user_instances"] = (
+                    user_instances
+                )
+
+            # An entirely blank row remains truly blank.
+            has_visible_content = any(
+                bool(str(v).strip())
+                for v in (
+                    time_marker,
+                    operators_csv,
+                    script_tag,
+                    velocity_text,
+                    effect_target,
+                    auto_amount,
+                    direction_vector,
+                    multi_seq,
+                    coverage,
+                    blend_partner,
+                )
+            )
+
+            if not has_visible_content:
+                # Do not preserve stale visible fields from the previous row.
+                row_dict = {
+                    "time_marker": "",
+                    "position": "",
+                    "quantized": False,
+                    "operator": "",
+                    "operators": [],
+                    "operators_csv": "",
+                    "script_tag": "",
+                    "velocity": 1.0,
+                    "velocity_csv": "",
+                    "effect_target": "",
+                    "auto_target": "",
+                    "auto_targets": [],
+                    "auto_amount": 0.0,
+                    "auto_amount_csv": "",
+                    "direction": 0.0,
+                    "direction_vector": "",
+                    "multi_seq": "",
+                    "coverage": "",
+                    "blend_partner": "",
+                }
+
+            new_rows.append(row_dict)
+
+        self.master_playlist_data = new_rows
+
+        # Keep automation length synchronized with the visible grid.
+        if (
+            not hasattr(
+                self,
+                "playlist_automation",
+            )
+            or self.playlist_automation is None
+        ):
+            self.playlist_automation = []
+
+        while len(
+            self.playlist_automation
+        ) < row_count:
+            self.playlist_automation.append({})
+
+        if len(
+            self.playlist_automation
+        ) > row_count:
+            self.playlist_automation = (
+                self.playlist_automation[:row_count]
+            )
+    def _sync_playlist_row_from_table(self, row):
+        """
+        Synchronize exactly one Playlist row without rebuilding the entire grid.
+
+        Used by PaintbrushTable after interactive painting.
+        """
+        table = getattr(
+            self,
+            "active_paint_table",
+            None,
+        )
+
+        if table is None:
+            return
+
+        tw = getattr(
+            table,
+            "table_widget",
+            table,
+        )
+
+        if row < 0 or row >= tw.rowCount():
+            return
+
+        while len(
+            getattr(
+                self,
+                "master_playlist_data",
+                [],
+            )
+        ) <= row:
+            self.master_playlist_data.append({})
+
+        entry = self.master_playlist_data[row]
+
+        if not isinstance(entry, dict):
+            entry = {}
+            self.master_playlist_data[row] = entry
+
+        def text(c):
+            item = tw.item(row, c)
+            return (
+                item.text()
+                if item is not None
+                else ""
+            )
+
+        def tokens(value):
+            return [
+                p.strip()
+                for p in str(value or "").split(",")
+                if p.strip()
+            ]
+
+        def base(value):
+            return (
+                str(value).split("@", 1)[0].strip()
+                if "@" in str(value)
+                else str(value).strip()
+            )
+
+        time_marker = text(0)
+        operators_csv = text(1)
+        script_tag = text(2)
+        velocity_text = text(3)
+        effect_target = text(4)
+        auto_amount = text(5)
+        direction_vector = text(6)
+        multi_seq = text(7)
+        coverage = text(8)
+        blend_partner = text(9)
+
+        ops = [
+            base(x)
+            for x in tokens(operators_csv)
+        ]
+
+        velocity = 1.0
+
+        try:
+            v = float(
+                velocity_text.replace(
+                    "%",
+                    "",
+                ).strip()
+            )
+
+            velocity = (
+                v / 100.0
+                if abs(v) > 1.0
+                else v
+            )
+
+        except Exception:
+            pass
+
+        amount = entry.get(
+            "auto_amount",
+            0.0,
+        )
+
+        try:
+            av = float(
+                auto_amount.replace(
+                    "%",
+                    "",
+                ).strip()
+            )
+
+            amount = (
+                av / 100.0
+                if abs(av) > 1.0
+                else av
+            )
+
+        except Exception:
+            pass
+
+        direction = entry.get(
+            "direction",
+            0.0,
+        )
+
+        if "+" in direction_vector:
+            direction = 1.0
+        elif (
+            "-"
+            in direction_vector
+            or "−"
+            in direction_vector
+        ):
+            direction = -1.0
+
+        entry.update({
+            "time_marker": time_marker,
+            "position": time_marker,
+            "quantized": time_marker.startswith("q:"),
+
+            "operator": (
+                ops[0]
+                if ops
+                else ""
+            ),
+            "operators": ops,
+            "operators_csv": operators_csv,
+
+            "script_tag": script_tag,
+
+            "velocity": float(
+                np.clip(
+                    velocity,
+                    0.0,
+                    1.5,
+                )
+            ),
+
+            "effect_target": effect_target,
+            "auto_target": effect_target,
+            "auto_targets": [
+                base(x)
+                for x in tokens(effect_target)
+            ],
+
+            "auto_amount": float(
+                np.clip(
+                    amount,
+                    0.0,
+                    1.0,
+                )
+            ),
+
+            "direction": direction,
+            "direction_vector": direction_vector,
+
+            "multi_seq": multi_seq,
+            "coverage": coverage,
+            "blend_partner": blend_partner,
+        })
 
     # =====================================================================
     # LOCAL_CONTEXT_UI helpers — must live on MathematiciansGrooveboxApp
@@ -8906,9 +9985,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
             entry = self.master_playlist_data[r]
             if not isinstance(entry, dict):
                 entry = {}; self.master_playlist_data[r] = entry
-            if entry.get('velocity_user_locked'):
+            if entry.get(
+                "operators_csv",
+                entry.get("velocity_user_locked", "")
+            ):
                 continue
-            inst = entry.get('operator', self.instrument_names_48[r % len(self.instrument_names_48)] if self.instrument_names_48 else '')
+            inst = entry.get(
+                "operators_csv",
+                entry.get("operator", self.instrument_names_48[r % len(self.instrument_names_48)] if self.instrument_names_48 else '')
+            )
             f = self._contextual_feature_vector(inst, r, r)
             # Velocity is a true paintable field. The engine can generate it, but
             # once the user locks/paints it, later passes must leave it alone.
@@ -9085,20 +10170,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
         data = getattr(self, "master_playlist_data", None) or []
         if table is None:
             return
+        # Canonical 10-column playlist schema.  Keep this map in lockstep with
+        # PaintbrushTable's headers and the engine writer.
         colmap = {
             0: "time_marker",
-            1: "operator",
+            1: "operators_csv",
             2: "script_tag",
-            3: "velocity",   # show as percent string
-            4: "modulation",
-            5: "multi_seq",
-            # extend if your headers include more columns
+            3: "velocity",
+            4: "effect_target",
+            5: "auto_amount",
+            6: "direction_vector",
+            7: "multi_seq",
+            8: "coverage",
+            9: "blend_partner",
         }
         rows = min(table.rowCount(), len(data))
         for r in range(rows):
             entry = data[r] if isinstance(data[r], dict) else {}
             for c, key in colmap.items():
-                val = entry.get(key, "")
+                val = entry.get(
+                    "operators_csv",
+                    entry.get(key, "")
+                )
                 if key == "velocity" and val not in (None, ""):
                     try:
                         val = f"{float(val) * 100:.1f}%"
@@ -9226,6 +10319,66 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     w.blockSignals(False)
                 except Exception:
                     pass
+    def format_operator_identity_cell(operator_identity_list, time_offsets=None):
+        if not operator_identity_list:
+            return ""
+
+        operators = [
+            str(op).strip()
+            for op in operator_identity_list
+            if str(op).strip()
+        ]
+
+        if not operators:
+            return ""
+
+        offsets = list(time_offsets or [])
+
+        formatted = []
+        for idx, op in enumerate(operators):
+            try:
+                offset = float(offsets[idx]) if idx < len(offsets) else 0.0
+            except (TypeError, ValueError):
+                offset = 0.0
+
+            formatted.append(f"{op}@{offset:+.3f}s")
+
+        return ", ".join(formatted)
+    def format_multi_seq_cell(sequence_entries, time_offsets=None):
+        """
+        Canonical Multi-Seq CSV formatter.
+
+        Unlike Operator Identity, Multi-Seq may contain repeated operators
+        because it represents execution/sequence events rather than the
+        unique identity set.
+
+        Example:
+            ["Operator A", "Operator B", "Operator A"]
+            [0.125, 0.250, 0.375]
+
+        -> "Operator A@+0.125s, Operator B@+0.250s, Operator A@+0.375s"
+        """
+        if not sequence_entries:
+            return ""
+
+        entries = [
+            str(entry).strip()
+            for entry in sequence_entries
+            if str(entry).strip()
+        ]
+
+        offsets = list(time_offsets or [])
+
+        formatted = []
+        for idx, entry in enumerate(entries):
+            try:
+                offset = float(offsets[idx]) if idx < len(offsets) else 0.0
+            except (TypeError, ValueError):
+                offset = 0.0
+
+            formatted.append(f"{entry}@{offset:+.3f}s")
+
+        return ", ".join(formatted)
     def _paint_operator_pattern_to_playlist(self, source="randomizer", rng=None):
         """Deterministically paint the complete 10-column playlist schema.
 
@@ -9305,7 +10458,110 @@ class MathematiciansGrooveboxApp(QMainWindow):
             active = bool(rr.random() < (0.62 if source == 'midpoint' else 0.70))
             n_inst = int(rr.integers(2, min(6, len(names)) + 1)) if names else 1
             idxs = list(rr.choice(len(names), size=min(n_inst, len(names)), replace=False)) if names else [0]
-            eng_ops = [names[i] for i in idxs]
+            def _get_presequence_operators(self, row):
+                """
+                Return the user/pre-sequence operator ordering for a playlist row.
+                Returns [] when no explicit pre-sequence exists.
+                """
+                entry = {}
+
+                try:
+                    entry = self.master_playlist_data[row]
+                except (AttributeError, IndexError, TypeError):
+                    pass
+
+                if not isinstance(entry, dict):
+                    return []
+
+                candidates = (
+                    entry.get(
+                        "operators_csv",
+                        entry.get("pre_sequence", "")
+                    ),
+                    entry.get(
+                        "operators_csv",
+                        entry.get("presequence", "")
+                    ),
+                    entry.get(
+                        "operators_csv",
+                        entry.get("multi_seq", "")
+                    ),
+                    entry.get(
+                    "operators_csv",
+                    entry.get("sequence", "")
+                ),
+                )
+
+                for candidate in candidates:
+                    if not candidate:
+                        continue
+
+                    if isinstance(candidate, (list, tuple)):
+                        result = [str(x).strip() for x in candidate if str(x).strip()]
+                        if result:
+                            return result
+
+                    if isinstance(candidate, str):
+                        result = [
+                            x.strip()
+                            for x in candidate.split(",")
+                            if x.strip()
+                        ]
+                        if result:
+                            return [
+                                x.split("@", 1)[0].strip()
+                                for x in result
+                            ]
+
+                return []
+            pre_sequence_ops = self._get_presequence_operators(r)
+
+            if pre_sequence_ops:
+                # Pre-Sequence establishes ordering.
+                # Randomizer may modify the ordering, but does not erase it.
+                eng_ops = list(pre_sequence_ops)
+            else:
+                eng_ops = [names[i] for i in idxs]
+        def _get_preseed_operators(self, row):
+            """
+            Return explicitly user-defined/pre-seeded operator identities.
+            """
+            try:
+                entry = self.master_playlist_data[row]
+            except (AttributeError, IndexError, TypeError):
+                return []
+
+            if not isinstance(entry, dict):
+                return []
+
+            candidate = entry.get(
+                "operators_csv",
+                entry.get("velocity", "")
+            )
+
+            if isinstance(candidate, (list, tuple)):
+                return [
+                    str(x).strip()
+                    for x in candidate
+                    if str(x).strip()
+                ]
+
+            if isinstance(candidate, str):
+                return [
+                    x.strip().split("@", 1)[0]
+                    for x in candidate.split(",")
+                    if x.strip()
+                ]
+
+            return []
+            preseed_ops = self._get_preseed_operators(r)
+
+            if preseed_ops:
+                identity_ops = list(dict.fromkeys(
+                    preseed_ops + eng_ops
+                ))
+            else:
+                identity_ops = list(dict.fromkeys(eng_ops))
             tag = f"@e:{source[:4]}:{seed & 0xFFFFF:05x}:{r:03d}"
             t_off = (r * (0.125 + 0.031 * MEUM_NORM) + float(rr.uniform(-0.045, 0.045)))
             if not active:
@@ -9322,16 +10578,85 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 script = str((self.instrument_scripts.get(eng_ops[0]) or '').splitlines()[0]).strip()
             if not script:
                 script = f"Meum:{source}:seed={seed}:row={r}"
+            # -----------------------------------------------------------------
+            # CANONICAL OPERATOR IDENTITY / MULTI-SEQ REPRESENTATION
+            # -----------------------------------------------------------------
 
-            engine_csv = ", ".join(f"{op}{tag}" for op in eng_ops)
-            combined_csv = ", ".join(users + ([engine_csv] if engine_csv else []))
-            multi_seq = ", ".join(eng_ops)
+            # All operators participating in this generated playlist event share
+            # the generated row event time unless the pre-sequence supplies
+            # individual offsets.
+            engine_offsets = [float(t_off)] * len(eng_ops)
+
+            # Preserve user/pre-seed identities as first-class members.
+            user_ops = []
+            user_offsets = []
+
+            for token in users:
+                token = str(token).strip()
+                if not token:
+                    continue
+
+                # Existing user tokens may already contain @+0.125s / @u: metadata.
+                user_ops.append(token)
+
+                # Do not invent timing for an explicitly timed user entry.
+                # Untagged user identities inherit the row offset.
+                user_offsets.append(float(t_off))
+
+            # Operator Identity = participating identity set.
+            identity_ops = list(dict.fromkeys(
+                [u.split("@", 1)[0].strip() for u in user_ops] + eng_ops
+            ))
+
+            identity_offsets = []
+
+            for op in identity_ops:
+                matching_user = next(
+                    (i for i, u in enumerate(user_ops)
+                    if u.split("@", 1)[0].strip() == op),
+                    None
+                )
+
+                if matching_user is not None:
+                    identity_offsets.append(user_offsets[matching_user])
+                else:
+                    engine_idx = eng_ops.index(op) if op in eng_ops else 0
+                    identity_offsets.append(engine_offsets[engine_idx])
+
+            operators_csv = format_operator_identity_cell(
+                identity_ops,
+                identity_offsets,
+            )
+
+            # Multi-Seq = actual execution sequence.
+            # Preserve sequence ordering and permit repeated operators.
+            sequence_ops = list(eng_ops)
+            sequence_offsets = list(engine_offsets)
+
+            multi_seq = format_multi_seq_cell(
+                sequence_ops,
+                sequence_offsets,
+            )
             position = f"e:{t_off:.4f}s"
             fields = {
                 'time_marker': position,
-                'operator': (users[0] if users else (eng_ops[0] if eng_ops else '')),
-                'operators': list(dict.fromkeys(users + eng_ops)),
-                'operators_csv': combined_csv,
+                'operator': (
+                    identity_ops[0]
+                    if identity_ops
+                    else ''
+                ),
+
+                'operators': list(identity_ops),
+
+                'operators_csv': operators_csv,
+
+                'identity_offsets': list(identity_offsets),
+
+                'multi_seq': multi_seq,
+
+                'sequence_operators': list(sequence_ops),
+
+                'sequence_offsets': list(sequence_offsets),
                 'script_tag': script,
                 'velocity': velocity,
                 'effect_target': target,
@@ -9348,6 +10673,61 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 'velocity_user_locked': False,
                 'active': active,
             }
+            # Preserve cells that a human actually painted.  This is more
+            # reliable than assuming every non-empty row is engine-owned.
+            locked_cols = set()
+            try:
+                locked_cols.update(int(c) for c in (e.get("user_locked_columns") or []))
+            except Exception:
+                pass
+            if table is not None:
+                touched = getattr(table, "playlist_user_touched", set()) or set()
+                locked_cols.update(c for rr, c in touched if rr == r)
+
+            field_by_col = {
+                0: "time_marker",
+                1: "operators_csv",
+                2: "script_tag",
+                3: "velocity",
+                4: "effect_target",
+                5: "auto_amount",
+                6: "direction_vector",
+                7: "multi_seq",
+                8: "coverage",
+                9: "blend_partner",
+            }
+            for c in sorted(locked_cols):
+                key = field_by_col.get(c)
+                if key is None or table is None:
+                    continue
+                item = table.item(r, c)
+                if item is None:
+                    continue
+                text = (item.text() or "").strip()
+                if c == 3:
+                    try:
+                        text_v = float(text.replace("%", "").strip())
+                        fields[key] = text_v / 100.0 if text_v > 1.0 else text_v
+                    except Exception:
+                        continue
+                else:
+                    fields[key] = text
+                if c == 1:
+                    ops_locked = [p.split("@")[0].strip() for p in text.split(",") if p.strip()]
+                    fields["operator"] = ops_locked[0] if ops_locked else fields.get("operator", "")
+                    fields["operators"] = ops_locked
+                    fields["operators_csv"] = text
+                elif c == 4:
+                    fields["modulation"] = text
+                elif c == 6:
+                    fields["direction"] = (
+                        1.0 if text.startswith("+") or text.endswith("+")
+                        else -1.0 if text.startswith(("-", "−")) or text.endswith(("-", "−"))
+                        else 0.0
+                    )
+            if locked_cols:
+                fields["user_locked_columns"] = sorted(locked_cols)
+
             e.update(fields)
             if users:
                 e['user_instances'] = users
@@ -9382,6 +10762,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
             table_set(r, 8, coverage)
             table_set(r, 9, partner)
             painted += 1
+
+        # Structural postcondition: every generated row has all ten canonical fields.
+        for _entry in self.master_playlist_data:
+            if isinstance(_entry, dict):
+                _entry.setdefault("direction_vector", "")
+                _entry.setdefault("multi_seq", "")
+                _entry.setdefault("coverage", "")
+                _entry.setdefault("blend_partner", "")
 
         if table is not None:
             try:
@@ -10707,9 +12095,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
             target = 0.25 + 0.75 * field
             if randomize:
                 target = 0.75 * target + 0.25 * float(rng.uniform(0.25, 1.0))
-            old = float(entry.get("velocity", 1.0) or 1.0)
+            old = float(entry.get(
+                "operators_csv",
+                entry.get("velocity", 1.0)
+            ) or 1.0)
             # Treat explicit non-default velocities as user data and preserve them.
-            user_locked = bool(entry.get("velocity_user_locked", False))
+            user_locked = bool(entry.get(
+                "operators_csv",
+                entry.get("velocity_user_locked", False)
+            ))
             if user_locked:
                 continue
             entry["velocity"] = float(np.clip((1.0-strength) * old + strength * target, 0.05, 1.5))
@@ -10717,7 +12111,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if hasattr(self, 'active_paint_table') and self.active_paint_table:
             table = self.active_paint_table
             for r, entry in enumerate(self.master_playlist_data[:min(rows, table.rowCount())]):
-                item = QTableWidgetItem(f"{float(entry.get('velocity', 1.0))*100:.1f}%")
+                item = QTableWidgetItem(f"{float(entry.get(
+                    "operators_csv",
+                    entry.get("velocity", 1.0)
+                ))*100:.1f}%")
                 table.set_cell_item(r, 3, item)
 
     def randomize_playlist_velocity(self):
@@ -11310,17 +12707,35 @@ class MathematiciansGrooveboxApp(QMainWindow):
         for row_idx in range(rows):
             op_name = names[(row_idx + int(numeric_seed % max(len(names), 1))) % max(len(names), 1)] if names else "Operator"
             entry = self.master_playlist_data[row_idx]
-            if not entry.get("operator"):
+            if not entry.get(
+                "operators_csv",
+                entry.get("operator", "")
+            ):
                 entry["operator"] = op_name
-            if not entry.get("time_marker"):
+            if not entry.get(
+                "operators_csv",
+                entry.get("time_marker", "")
+            ):
                 entry["time_marker"] = f"T + {row_idx * 3.5:.1f}s"
-            if not entry.get("script_tag"):
+            if not entry.get(
+                "operators_csv",
+                entry.get("script_tag", "")
+            ):
                 entry["script_tag"] = f"Script::{op_name[:4].upper()}-X{row_idx}"
-            if entry.get("velocity") is None:
+            if entry.get(
+                "operators_csv",
+                entry.get("velocity", "")
+            ) is None:
                 entry["velocity"] = 1.0
-            if not entry.get("modulation"):
+            if not entry.get(
+                "operators_csv",
+                entry.get("modulation", "")
+            ):
                 entry["modulation"] = "Geometric Nullifier Lock"
-            if not entry.get("multi_seq"):
+            if not entry.get(
+                "operators_csv",
+                entry.get("multi-seq", "")
+            ):
                 entry["multi_seq"] = f"Multi-Load Active [{row_idx % 3 + 1}]"
             self.master_playlist_data[row_idx] = entry
 
@@ -11329,9 +12744,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
             for row_idx in range(min(rows, table.rowCount())):
                 entry = self.master_playlist_data[row_idx]
                 if table.item(row_idx, 1) is None or not (table.item(row_idx, 1).text() or "").strip():
-                    table.set_cell_item(row_idx, 1, entry.get("operator", ""))
+                    table.set_cell_item(row_idx, 1, entry.get(
+                        "operators_csv",
+                        entry.get("operator", "")
+                    ))
                 if table.item(row_idx, 0) is None or not (table.item(row_idx, 0).text() or "").strip():
-                    table.set_cell_item(row_idx, 0, entry.get("time_marker", ""))
+                    table.set_cell_item(row_idx, 0, entry.get(
+                        "operators_csv",
+                        entry.get("time_marker", "")
+                    ))
                 if table.item(row_idx, 3) is None or not (table.item(row_idx, 3).text() or "").strip():
                     table.set_cell_item(row_idx, 3, "100%")
 
@@ -12189,8 +13610,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
             if global_playlist_enabled and row_idx < len(getattr(self, 'master_playlist_data', [])):
                 entry = self.master_playlist_data[row_idx]
-                primary_op = entry.get("operator", self.instrument_names_48[0])
-                velocity_scale = float(entry.get("velocity", 1.0))
+                primary_op = entry.get(
+                    "operators_csv",
+                    entry.get("operator",self.instrumet_names_48[0])
+                )
+                velocity_scale = float(entry.get(
+                    "operators_csv",
+                    entry.get("velocity", 1.0)
+                ))
                 op_indices = [self.instrument_names_48.index(primary_op)] if primary_op in self.instrument_names_48 else [0]
                 remaining = [i for i in range(len(self.instrument_names_48)) if i != op_indices[0]]
                 n_comp = min(3, len(remaining))
@@ -12799,45 +14226,240 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             item.setBackground(bg_color)
 
                 def update_time_markers():
-                    selection_text = time_scale_combo.currentText()
-                    # POWER_V3_EMPTY_PLAYLIST: timing is generated only for rows that
-                    # actually contain a painted/programmed event. Opening the editor
-                    # therefore does not silently turn 96 blank rows into playlist data.
+                    selection_text = (
+                        time_scale_combo.currentText()
+                    )
+
                     for row_idx in range(rows):
-                        data_entry = self.master_playlist_data[row_idx] if row_idx < len(self.master_playlist_data) else {}
-                        has_content = isinstance(data_entry, dict) and any(
-                            v not in (None, "", [], {}) for k, v in data_entry.items()
-                            if k not in ("time_marker",)
+                        data_entry = (
+                            self.master_playlist_data[row_idx]
+                            if row_idx < len(
+                                self.master_playlist_data
+                            )
+                            else {}
                         )
+
+                        if not isinstance(
+                            data_entry,
+                            dict,
+                        ):
+                            data_entry = {}
+
+                        # An engine-painted row is considered populated if ANY of the
+                        # canonical ten Playlist fields has content.
+                        has_content = any(
+                            str(
+                                data_entry.get(
+                                    key,
+                                    "",
+                                )
+                                or ""
+                            ).strip()
+                            for key in (
+                                "operators_csv",
+                                "script_tag",
+                                "velocity",
+                                "effect_target",
+                                "auto_amount",
+                                "direction_vector",
+                                "multi_seq",
+                                "coverage",
+                                "blend_partner",
+                            )
+                        )
+
                         if not has_content:
                             continue
-                        if "Unquantized" in selection_text:
-                            time_str = f"Free-Time [{row_idx * MEUM_CONSTANT:.2f}s]"
+
+                        existing_marker = str(
+                            data_entry.get(
+                                "time_marker",
+                                "",
+                            )
+                            or ""
+                        ).strip()
+
+                        # Preserve explicit engine/user time regions.
+                        if (
+                            existing_marker.startswith("u:")
+                            or existing_marker.startswith("q:")
+                            or existing_marker.startswith("e:")
+                            or existing_marker.startswith("T +")
+                            or existing_marker.startswith("Free-Time")
+                        ):
+                            time_str = existing_marker
+
+                        elif "Unquantized" in selection_text:
+                            time_str = (
+                                f"Free-Time "
+                                f"[{row_idx * MEUM_CONSTANT:.2f}s]"
+                            )
+
                         else:
-                            step_seconds = 60.0 if "60.0s" in selection_text else (30.0 if "30.0s" in selection_text else (15.0 if "15.0s" in selection_text else (3.5 if "3.5s" in selection_text else 1.0)))
-                            total_seconds = row_idx * step_seconds
-                            time_str = f"T + {int(total_seconds // 60)}m {int(total_seconds % 60)}s" if total_seconds >= 60 else f"T + {total_seconds:.1f}s"
-                        track_table.set_cell_item(row_idx, 0, QTableWidgetItem(time_str))
+                            if "60.0s" in selection_text:
+                                step_seconds = 60.0
+                            elif "30.0s" in selection_text:
+                                step_seconds = 30.0
+                            elif "15.0s" in selection_text:
+                                step_seconds = 15.0
+                            elif "3.5s" in selection_text:
+                                step_seconds = 3.5
+                            else:
+                                step_seconds = 1.0
+
+                            total_seconds = (
+                                row_idx
+                                * step_seconds
+                            )
+
+                            if total_seconds >= 60:
+                                time_str = (
+                                    f"T + "
+                                    f"{int(total_seconds // 60)}m "
+                                    f"{int(total_seconds % 60)}s"
+                                )
+                            else:
+                                time_str = (
+                                    f"T + "
+                                    f"{total_seconds:.1f}s"
+                                )
+
+                        track_table.set_cell_item(
+                            row_idx,
+                            0,
+                            QTableWidgetItem(time_str),
+                        )
+
+                        data_entry["time_marker"] = (
+                            time_str
+                        )
+                        data_entry["position"] = (
+                            time_str
+                        )
+
                     self.sync_playlist_grid_to_memory()
 
                 time_scale_combo.currentIndexChanged.connect(update_time_markers)
 
                 for row_idx in range(rows):
-                    data_entry = self.master_playlist_data[row_idx] if row_idx < len(self.master_playlist_data) else {}
+                    data_entry = (
+                        self.master_playlist_data[row_idx]
+                        if row_idx < len(
+                            self.master_playlist_data
+                        )
+                        else {}
+                    )
 
-                    empty = not any(v not in (None, "", [], {}) for v in data_entry.values())
-                    item_inst = QTableWidgetItem("" if empty else str(data_entry.get("operator", "")))
+                    if not isinstance(
+                        data_entry,
+                        dict,
+                    ):
+                        data_entry = {}
+
+                    # Canonical 10-column values.
+                    values = [
+                        data_entry.get(
+                            "time_marker",
+                            data_entry.get(
+                                "position",
+                                "",
+                            ),
+                        ),
+
+                        data_entry.get(
+                            "operators_csv",
+                            data_entry.get(
+                                "operator",
+                                "",
+                            ),
+                        ),
+
+                        data_entry.get(
+                            "script_tag",
+                            "",
+                        ),
+
+                        (
+                            f"{float(data_entry.get('velocity', 1.0)) * 100:.1f}%"
+                            if data_entry.get(
+                                "velocity",
+                                None,
+                            ) not in (
+                                None,
+                                "",
+                            )
+                            else ""
+                        ),
+
+                        data_entry.get(
+                            "effect_target",
+                            data_entry.get(
+                                "auto_target",
+                                "",
+                            ),
+                        ),
+
+                        data_entry.get(
+                            "auto_amount",
+                            "",
+                        ),
+
+                        data_entry.get(
+                            "direction_vector",
+                            "",
+                        ),
+
+                        data_entry.get(
+                            "multi_seq",
+                            "",
+                        ),
+
+                        data_entry.get(
+                            "coverage",
+                            "",
+                        ),
+
+                        data_entry.get(
+                            "blend_partner",
+                            "",
+                        ),
+                    ]
+
+                    # Empty row test uses the actual visible schema.
+                    empty = not any(
+                        str(v).strip()
+                        for v in values
+                    )
+
+                    for col_idx, value in enumerate(
+                        values
+                    ):
+                        track_table.set_cell_item(
+                            row_idx,
+                            col_idx,
+                            QTableWidgetItem(
+                                ""
+                                if empty
+                                else str(value)
+                            ),
+                        )
+
+                    # Preserve the visual identity coloring.
                     if not empty:
-                        item_inst.setBackground(palette_colors[row_idx % len(palette_colors)])
-                    track_table.set_cell_item(row_idx, 0, QTableWidgetItem("" if empty else str(data_entry.get("time_marker", ""))))
-                    track_table.set_cell_item(row_idx, 1, item_inst)
-                    track_table.set_cell_item(row_idx, 2, QTableWidgetItem("" if empty else str(data_entry.get("script_tag", ""))))
-                    track_table.set_cell_item(row_idx, 3, QTableWidgetItem("" if empty else f"{float(data_entry.get('velocity', 1.0))*100:.1f}%"))
-                    track_table.set_cell_item(row_idx, 4, QTableWidgetItem("" if empty else str(data_entry.get("modulation", ""))))
-                    track_table.set_cell_item(row_idx, 5, QTableWidgetItem("" if empty else str(data_entry.get("multi_seq", ""))))
+                        item_inst = track_table.item(
+                            row_idx,
+                            1,
+                        )
 
-                update_time_markers()
-                main_layout.addWidget(track_table)
+                        if item_inst is not None:
+                            item_inst.setBackground(
+                                palette_colors[
+                                    row_idx
+                                    % len(
+                                        palette_colors
+                                    )
+                                ]
+                            )
 
             elif attr_name == 'patch_bay_dialog':
                 main_layout.addWidget(QLabel("🔌 Advanced Modular Patch Bay & Resonance Nullifier Visualizer"))
