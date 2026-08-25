@@ -424,64 +424,195 @@ class FormulaModulatorWidget(QWidget):
         parent_layout.addLayout(row)
         return line_edit
 class VisualOscilloscope(QFrame):
-    """Real-time signal output oscilloscope and vector scope."""
+    """Meum-timed full-track waveform + live detail scope (left monitor)."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(300, 140)
-        self.setStyleSheet("background-color: #0a0c0e; border: 1px solid #2a2e39; border-radius: 6px;")
-        self.wave_data = np.zeros(100)
+        self.setMinimumSize(180, 180)
+        self.setStyleSheet(
+            "background-color: #0a0c0e; border: 1px solid #2a2e39; border-radius: 6px;"
+        )
+        self.wave_data = np.zeros(256, dtype=np.float32)
+        self.track_overview = np.zeros(256, dtype=np.float32)
+        self.playhead = 0.0  # 0..1
+        self.mode = 0  # 0 master, 1 effected, 2 pattern, 3 activity
+        self._title = "MEUM WAVEFORM"
 
-    def update_waveform(self, new_data):
-        if isinstance(new_data, np.ndarray):
-            self.wave_data = np.resize(new_data, 100)
-            self.update()
+    def set_mode(self, mode_idx):
+        self.mode = int(mode_idx)
+        self.update()
+
+    def update_waveform(self, new_data, overview=None, playhead=None):
+        if isinstance(new_data, np.ndarray) and new_data.size:
+            self.wave_data = np.interp(
+                np.linspace(0, new_data.size - 1, 256),
+                np.arange(new_data.size),
+                new_data.astype(np.float32),
+            ).astype(np.float32)
+        if isinstance(overview, np.ndarray) and overview.size:
+            self.track_overview = np.interp(
+                np.linspace(0, overview.size - 1, 256),
+                np.arange(overview.size),
+                overview.astype(np.float32),
+            ).astype(np.float32)
+        if playhead is not None:
+            try:
+                self.playhead = float(max(0.0, min(1.0, playhead)))
+            except Exception:
+                pass
+        self.update()
 
     def paintEvent(self, event):
         super().paintEvent(event)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = max(self.width(), 1), max(self.height(), 1)
+        # Theme label
+        painter.setPen(QColor("#00ffcc"))
+        painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        painter.drawText(8, 14, self._title)
 
-        pen = QPen(QColor("#00ffcc"))
+        # Full-track overview strip (top third)
+        ov_top, ov_bot = 22, int(h * 0.38)
+        mid_ov = (ov_top + ov_bot) / 2.0
+        amp_ov = (ov_bot - ov_top) * 0.42
+        pen = QPen(QColor(0, 180, 160, 160))
+        pen.setWidth(1)
+        painter.setPen(pen)
+        for i in range(255):
+            x0 = int(i / 255.0 * (w - 1))
+            x1 = int((i + 1) / 255.0 * (w - 1))
+            y0 = mid_ov - float(self.track_overview[i]) * amp_ov
+            y1 = mid_ov - float(self.track_overview[i + 1]) * amp_ov
+            painter.drawLine(x0, int(y0), x1, int(y1))
+        # Playhead
+        phx = int(self.playhead * (w - 1))
+        painter.setPen(QPen(QColor("#ff6b00"), 2))
+        painter.drawLine(phx, ov_top, phx, ov_bot)
+
+        # Live detail (bottom two-thirds) — Meum vertical scale
+        det_top = ov_bot + 6
+        mid_y = (det_top + h) / 2.0
+        amp = (h - det_top) * 0.40 * MEUM_NORM * PHI  # Meum-stable amplitude
+        amp = max(12.0, min((h - det_top) * 0.45, amp * 4.0))
+        hue_shift = (self.mode * 40) % 360
+        c = QColor.fromHsv(hue_shift + 160 if hue_shift < 200 else hue_shift, 200, 230)
+        pen = QPen(c)
         pen.setWidth(2)
         painter.setPen(pen)
+        for i in range(255):
+            x0 = int(i / 255.0 * (w - 1))
+            x1 = int((i + 1) / 255.0 * (w - 1))
+            y0 = mid_y - float(self.wave_data[i]) * amp
+            y1 = mid_y - float(self.wave_data[i + 1]) * amp
+            painter.drawLine(x0, int(y0), x1, int(y1))
+        # Zero line
+        painter.setPen(QPen(QColor(60, 60, 70), 1))
+        painter.drawLine(0, int(mid_y), w, int(mid_y))
 
-        width = self.width()
-        height = self.height()
-        mid_y = height / 2.0
 
-        points = []
-        for i, val in enumerate(self.wave_data):
-            x = (i / 99.0) * width
-            y = mid_y - (float(val) * (height * 0.4))
-            points.append((x, y))
+class SpectrumAnalyzer(QFrame):
+    """Live FFT spectrum scanner (right monitor) — Meum-spaced bins."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(180, 180)
+        self.setStyleSheet(
+            "background-color: #0a0c0e; border: 1px solid #2a2e39; border-radius: 6px;"
+        )
+        self.mags = np.zeros(64, dtype=np.float32)
+        self.mode = 0
+        self._title = "MEUM SPECTRUM"
 
-        for j in range(len(points) - 1):
-            painter.drawLine(int(points[j][0]), int(points[j][1]), int(points[j+1][0]), int(points[j+1][1]))
+    def set_mode(self, mode_idx):
+        self.mode = int(mode_idx)
+        self.update()
+
+    def update_spectrum(self, wave_data):
+        if not isinstance(wave_data, np.ndarray) or wave_data.size < 8:
+            return
+        x = wave_data.astype(np.float32).ravel()
+        # Window with Meum-derived raised-cosine
+        n = min(len(x), 512)
+        x = x[:n]
+        # Meum Hann-like: 0.5 - 0.5 cos with MEUM_NORM taper
+        tw = np.linspace(0, 1, n, endpoint=False)
+        win = MEUM_NORM + (1.0 - MEUM_NORM) * 0.5 * (1.0 - np.cos(2 * np.pi * tw))
+        x = x * win.astype(np.float32)
+        # Zero-pad to power of 2
+        nfft = 1
+        while nfft < n:
+            nfft <<= 1
+        nfft = max(nfft, 64)
+        if nfft > n:
+            x = np.pad(x, (0, nfft - n))
+        spec = np.fft.rfft(x)
+        mag = np.abs(spec).astype(np.float32)
+        # Log-ish Meum bins: map linearly then compress with log(1+M*m)
+        if mag.size > 1:
+            mag = mag[1:]  # drop DC
+        target = 64
+        idx = np.linspace(0, mag.size - 1, target)
+        sampled = np.interp(idx, np.arange(mag.size), mag)
+        sampled = np.log1p(MEUM * sampled)
+        peak = float(np.max(sampled)) + 1e-9
+        self.mags = (sampled / peak).astype(np.float32)
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = max(self.width(), 1), max(self.height(), 1)
+        painter.setPen(QColor("#ff9a3c"))
+        painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        painter.drawText(8, 14, self._title)
+
+        n = len(self.mags)
+        top = 20
+        usable = h - top - 8
+        bar_w = max(1.0, (w - 8) / n)
+        for i, m in enumerate(self.mags):
+            bh = int(float(m) * usable)
+            x = int(4 + i * bar_w)
+            # Meum hue walk across spectrum
+            hue = int((i / max(n - 1, 1)) * 280 + self.mode * 25) % 360
+            col = QColor.fromHsv(hue, 200, 40 + int(200 * float(m)))
+            painter.fillRect(x, h - 8 - bh, max(1, int(bar_w * 0.85)), bh, col)
 
 
 class VideoSynthEngine:
     """
-    Waveform-driven 2.5D scenograph synthesizer.
-    Each instrument is a perspective vector (distance, yaw, pitch, roll) partially
-    shaped by audio energy; shapes/colors/opacity map directly from the waveform.
+    Meum-stable 2.5D↔3D scenograph. Perspective uses MEUM_POWERS for depth
+    falloff; formation/dissolution driven by live audio + composition state.
     """
 
     def __init__(self, n_instruments=48):
-        self.n = n_instruments
+        self.n = int(n_instruments)
         self.wave = np.zeros(256, dtype=np.float32)
         self.t = 0.0
-        # Per-instrument perspective-grabbing vectors (distance, yaw, pitch, roll)
-        self.vectors = []
-        for i in range(n_instruments):
-            self.vectors.append({
-                "distance": 2.0 + 0.05 * (i % 12),
-                "yaw": (i * 0.13) % (2 * np.pi),
-                "pitch": 0.15 * np.sin(i * 0.4),
-                "roll": 0.1 * np.cos(i * 0.3),
-                "hue": int((i * 360 / max(n_instruments, 1)) % 360),
-                "shape": i % 5,  # 0 poly, 1 ring, 2 spike, 3 ribbon, 4 blob
+        self.mode = 0
+        self.app = None
+        self._band = np.zeros(8, dtype=np.float32)
+        self._rms = 0.0
+        self._centroid = 0.5
+        self._video_hue_shift = 0.0
+        self._video_energy = 0.0
+        self.layers = []
+        for i in range(self.n):
+            # Meum radial depth ladder: M^0.. scales
+            depth = 1.4 + float(MEUM_POWERS_36[min(i % 12, 35)]) * 0.15
+            self.layers.append({
+                "i": i,
+                "distance": depth,
+                "yaw": (i * PHI * MEUM_NORM) % (2 * np.pi),
+                "pitch": 0.12 * np.sin(i * MEUM),
+                "roll": 0.09 * np.cos(i * MEUM_INV),
+                "hue": int((i * 360 / max(self.n, 1) + i * 7) % 360),
+                "life": 0.35,
+                "family": i // 8,
             })
-        self.mode = 0  # 0 scenograph, 1 effected wave, 2 overall pattern, 3 activity
+
+    def bind_app(self, app):
+        self.app = app
 
     def set_waveform(self, data):
         if data is None:
@@ -494,182 +625,229 @@ class VideoSynthEngine:
             np.arange(arr.size),
             arr,
         ).astype(np.float32)
-        self.t += 0.04
+        # Meum time step (self-similar tick)
+        self.t += PAINT_PERIOD_S * MEUM_NORM
+        self._analyze()
+
+    def ingest_video_frame_stats(self, mean_rgb=None, energy=0.0):
+        if mean_rgb is not None:
+            r, g, b = [float(x) for x in mean_rgb[:3]]
+            self._video_hue_shift = (r * 0.3 + g * 0.5 + b * 0.2) * 60.0
+        self._video_energy = float(max(0.0, min(1.0, energy)))
+
+    def _analyze(self):
+        w = self.wave
+        self._rms = float(np.sqrt(np.mean(w ** 2)) + 1e-9)
+        bands = []
+        for b in range(8):
+            a = int(b * 32)
+            bands.append(float(np.sqrt(np.mean(w[a:a + 32] ** 2)) + 1e-9))
+        self._band = np.asarray(bands, dtype=np.float32)
+        mx = float(np.max(self._band)) + 1e-9
+        self._band /= mx
+        idx = np.arange(256, dtype=np.float32)
+        mag = np.abs(w) + 1e-9
+        self._centroid = float(np.sum(idx * mag) / (np.sum(mag) * 255.0))
 
     def energy(self):
-        return float(np.sqrt(np.mean(self.wave ** 2)) + 1e-6)
+        return self._rms
 
-    def _project(self, x, y, z, w, h, fov=1.2):
-        """Simple perspective projection to pixel coords."""
-        z = max(z, 0.15)
-        sx = (x / z) * fov
-        sy = (y / z) * fov
-        px = w * 0.5 + sx * (w * 0.35)
-        py = h * 0.5 - sy * (h * 0.35)
-        return px, py, 1.0 / z
-
-    def render_frame(self, w=640, h=360):
-        """Return HxWx3 uint8 RGB frame."""
-        img = np.zeros((h, w, 3), dtype=np.float32)
-        e = self.energy()
-        # Background gradient from overall energy
-        bg = 8 + 40 * e
-        img[:, :, 0] = bg * 0.4
-        img[:, :, 1] = bg * 0.5
-        img[:, :, 2] = bg * 0.7
-
-        # Waveform ribbon as ground reference
-        for i in range(255):
-            x0 = int(i / 255.0 * (w - 1))
-            x1 = int((i + 1) / 255.0 * (w - 1))
-            y0 = int(h * 0.75 - self.wave[i] * h * 0.2)
-            y1 = int(h * 0.75 - self.wave[i + 1] * h * 0.2)
-            self._line(img, x0, y0, x1, y1, (0, 255, 200), alpha=0.55 + 0.4 * e)
-
-        # Instrument vectors → scenograph nodes
-        n_show = min(self.n, 24) if self.mode != 3 else min(self.n, 48)
-        for i in range(n_show):
-            v = self.vectors[i]
-            # Audio modulates distance / angle partially
-            local = float(self.wave[i % 256])
-            dist = v["distance"] * (1.0 - 0.35 * e) + 0.5 * abs(local)
-            yaw = v["yaw"] + self.t * (0.4 + 0.8 * e) + local * 0.5
-            pitch = v["pitch"] + 0.25 * local
-            roll = v["roll"] + 0.15 * e * np.sin(self.t + i)
-
-            # Shape points in local space
-            pts = self._shape_points(v["shape"], local, e)
-            # Rotate + translate
-            cosy, siny = np.cos(yaw), np.sin(yaw)
-            cosp, sinp = np.cos(pitch), np.sin(pitch)
-            projected = []
-            for px, py, pz in pts:
-                # roll
-                cosr, sinr = np.cos(roll), np.sin(roll)
-                xr = px * cosr - py * sinr
-                yr = px * sinr + py * cosr
-                # pitch
-                yp = yr * cosp - pz * sinp
-                zp = yr * sinp + pz * cosp
-                # yaw
-                xw = xr * cosy - zp * siny
-                zw = xr * siny + zp * cosy + dist
-                projected.append(self._project(xw, yp, zw, w, h))
-
-            hue = v["hue"]
-            col = self._hsv(hue, 0.75, 0.55 + 0.45 * min(1.0, e + abs(local)))
-            alpha = float(np.clip(0.25 + 0.75 * (abs(local) + e) * 0.5, 0.15, 0.95))
-            self._draw_poly(img, projected, col, alpha)
-
-        # Overall wavepattern overlay (mode 2) or effected outline (mode 1)
-        if self.mode in (1, 2):
-            for i in range(0, 256, 2):
-                ang = self.t + i * 0.05
-                r = 0.3 + 0.5 * abs(self.wave[i])
-                x = r * np.cos(ang)
-                y = r * np.sin(ang)
-                px, py, sc = self._project(x, y, 1.2 + 0.5 * e, w, h)
-                self._dot(img, int(px), int(py), self._hsv(180 + int(self.wave[i] * 80), 0.8, 0.9), 0.7)
-
-        return np.clip(img, 0, 255).astype(np.uint8)
-
-    def _shape_points(self, kind, local, e):
-        s = 0.35 + 0.4 * abs(local) + 0.2 * e
-        if kind == 0:  # triangle poly
-            return [(-s, -s * 0.5, 0), (s, -s * 0.5, 0), (0, s, 0)]
-        if kind == 1:  # ring
-            pts = []
-            for k in range(8):
-                a = k * np.pi / 4
-                pts.append((s * np.cos(a), s * np.sin(a), 0.1 * np.sin(2 * a)))
-            return pts
-        if kind == 2:  # spike
-            return [(0, 0, 0), (0, s * 1.4, 0), (s * 0.2, 0, s * 0.3), (-s * 0.2, 0, s * 0.3)]
-        if kind == 3:  # ribbon
-            return [(-s, 0, -s), (-s * 0.3, s * 0.2, 0), (s * 0.3, -s * 0.2, 0), (s, 0, s)]
-        # blob
-        return [(s * np.cos(k), s * np.sin(k), 0.15 * np.sin(k * 3)) for k in np.linspace(0, 2 * np.pi, 6, endpoint=False)]
+    def _project(self, x, y, z, w, h, fov=None):
+        # Meum FOV: slightly wider than classic 1.2
+        if fov is None:
+            fov = MEUM + MEUM_NORM * 0.15  # ~1.23
+        z = max(z, 0.12)
+        # Depth compression via inverse Meum power (soft perspective)
+        inv = 1.0 / z
+        sx = (x * inv) * fov
+        sy = (y * inv) * fov
+        px = w * 0.5 + sx * (w * 0.36)
+        py = h * 0.5 - sy * (h * 0.36)
+        return px, py, inv
 
     def _hsv(self, h, s, v):
-        c = QColor.fromHsv(int(h) % 360, int(s * 255), int(v * 255))
+        c = QColor.fromHsv(int(h) % 360, int(max(0, min(1, s)) * 255), int(max(0, min(1, v)) * 255))
         return (c.red(), c.green(), c.blue())
 
     def _line(self, img, x0, y0, x1, y1, col, alpha=1.0):
-        h, w, _ = img.shape
-        steps = max(abs(x1 - x0), abs(y1 - y0), 1)
+        hh, ww, _ = img.shape
+        steps = max(abs(int(x1) - int(x0)), abs(int(y1) - int(y0)), 1)
+        a = float(np.clip(alpha, 0.0, 1.0))
+        c = np.array(col, dtype=np.float32)
         for t in range(int(steps) + 1):
             u = t / steps
             x = int(x0 + (x1 - x0) * u)
             y = int(y0 + (y1 - y0) * u)
-            if 0 <= x < w and 0 <= y < h:
-                img[y, x] = img[y, x] * (1 - alpha) + np.array(col, dtype=np.float32) * alpha
+            if 0 <= x < ww and 0 <= y < hh:
+                img[y, x] = img[y, x] * (1 - a) + c * a
 
-    def _dot(self, img, x, y, col, alpha=1.0):
-        h, w, _ = img.shape
-        for dy in range(-1, 2):
-            for dx in range(-1, 2):
-                xx, yy = x + dx, y + dy
-                if 0 <= xx < w and 0 <= yy < h:
-                    img[yy, xx] = img[yy, xx] * (1 - alpha) + np.array(col, dtype=np.float32) * alpha
+    def _dot(self, img, x, y, col, alpha=1.0, r=1):
+        hh, ww, _ = img.shape
+        a = float(np.clip(alpha, 0.0, 1.0))
+        c = np.array(col, dtype=np.float32)
+        for dy in range(-r, r + 1):
+            for dx in range(-r, r + 1):
+                xx, yy = int(x) + dx, int(y) + dy
+                if 0 <= xx < ww and 0 <= yy < hh:
+                    img[yy, xx] = img[yy, xx] * (1 - a) + c * a
 
-    def _draw_poly(self, img, projected, col, alpha):
-        if len(projected) < 2:
-            return
-        # edges
-        for i in range(len(projected)):
-            x0, y0, sc0 = projected[i]
-            x1, y1, sc1 = projected[(i + 1) % len(projected)]
-            self._line(img, int(x0), int(y0), int(x1), int(y1), col, alpha)
-            self._dot(img, int(x0), int(y0), col, min(1.0, alpha + 0.2))
+    def _fill_tri(self, img, p0, p1, p2, col, alpha):
+        pts = [p0, p1, p2]
+        for i in range(3):
+            self._line(img, pts[i][0], pts[i][1], pts[(i + 1) % 3][0], pts[(i + 1) % 3][1], col, alpha)
+        cx = (p0[0] + p1[0] + p2[0]) / 3.0
+        cy = (p0[1] + p1[1] + p2[1]) / 3.0
+        self._dot(img, cx, cy, col, alpha * 0.5, r=2)
+
+    def _live_snap(self):
+        snap = {"seeded": False, "euclid": False, "eqr": 0.5, "fractal": 0.33, "struct": 0.0, "bpm": 120.0}
+        app = self.app
+        if app is None:
+            return snap
+        try:
+            snap["seeded"] = bool(getattr(app, "btn_seeded_randomize", None) and app.btn_seeded_randomize.isChecked())
+            snap["euclid"] = bool(getattr(app, "btn_idealize_rhythm", None) and app.btn_idealize_rhythm.isChecked())
+            if hasattr(app, "slider_eqr"):
+                snap["eqr"] = app.slider_eqr.value() / 100.0
+            if hasattr(app, "slider_fractalizer"):
+                snap["fractal"] = app.slider_fractalizer.value() / 100.0
+            if hasattr(app, "spin_bpm"):
+                snap["bpm"] = float(app.spin_bpm.value())
+            rows = getattr(app, "master_playlist_data", None) or []
+            active = sum(1 for r in rows if isinstance(r, dict) and any(
+                r.get(k) not in (None, "", [], {}) for k in ("operator", "script_tag", "domain_tag", "synth_tag", "patch_tag")
+            ))
+            snap["struct"] = min(1.0, active / 24.0)
+        except Exception:
+            pass
+        return snap
+
+    def render_frame(self, w=640, h=360):
+        img = np.zeros((h, w, 3), dtype=np.float32)
+        e = self.energy()
+        snap = self._live_snap()
+        hue_bg = (190 + self._centroid * 90 + self._video_hue_shift) % 360
+        c0 = np.array(self._hsv(hue_bg, 0.35, 0.10 + 0.22 * e), dtype=np.float32)
+        c1 = np.array(self._hsv((hue_bg + 50) % 360, 0.4, 0.07 + 0.18 * e), dtype=np.float32)
+        for yy in range(h):
+            u = yy / max(h - 1, 1)
+            # Meum ease between gradients
+            u_m = u ** MEUM_INV
+            img[yy, :] = c0 * (1 - u_m) + c1 * u_m
+
+        # Ground ribbon
+        for i in range(255):
+            x0 = int(i / 255.0 * (w - 1))
+            x1 = int((i + 1) / 255.0 * (w - 1))
+            y0 = int(h * 0.78 - self.wave[i] * h * 0.18)
+            y1 = int(h * 0.78 - self.wave[i + 1] * h * 0.18)
+            col = self._hsv(150 + int(self._band[i // 32] * 70), 0.7, 0.5 + 0.4 * e)
+            self._line(img, x0, y0, x1, y1, col, alpha=0.5 + 0.35 * e)
+
+        n_show = min(self.n, 24 if self.mode != 3 else 40)
+        order = sorted(range(n_show), key=lambda i: -self.layers[i]["distance"])
+        for i in order:
+            layer = self.layers[i]
+            local = float(self.wave[i % 256])
+            band = float(self._band[i % 8])
+            target = 0.2 + 0.5 * band + 0.2 * snap["struct"] + 0.1 * self._video_energy
+            if snap["seeded"]:
+                target += 0.1 * abs(np.sin(self.t * MEUM + i))
+            if snap["euclid"]:
+                target += 0.08 * abs(np.cos(self.t * (snap["bpm"] / 60.0) + i * MEUM_INV))
+            target = float(np.clip(target, 0.05, 1.0))
+            layer["life"] += (target - layer["life"]) * MEUM_NORM  # Meum lerp
+            life = layer["life"]
+            if life < 0.05:
+                continue
+
+            dist = layer["distance"] * (1.0 - 0.25 * e) + 0.3 * abs(local)
+            yaw = layer["yaw"] + self.t * (0.3 + 0.6 * e + 0.2 * snap["eqr"]) + local * 0.35
+            pitch = layer["pitch"] + 0.18 * local + 0.1 * snap["fractal"] * np.sin(self.t + i)
+            roll = layer["roll"] + 0.1 * e * np.sin(self.t * MEUM + i)
+
+            # Meum regular polygon verts
+            n_v = 3 + (i % 4)
+            ang0 = self.t * 0.4 + i * 0.2
+            s = (0.28 + 0.35 * abs(local) + 0.15 * e) * (0.3 + 0.7 * life)
+            verts = []
+            for k in range(n_v):
+                a = ang0 + k * (2 * np.pi / n_v)
+                verts.append((s * np.cos(a), s * np.sin(a), 0.08 * np.sin(a * 2 + self.t)))
+
+            cosy, siny = np.cos(yaw), np.sin(yaw)
+            cosp, sinp = np.cos(pitch), np.sin(pitch)
+            cosr, sinr = np.cos(roll), np.sin(roll)
+            projected = []
+            for px, py, pz in verts:
+                xr = px * cosr - py * sinr
+                yr = px * sinr + py * cosr
+                yp = yr * cosp - pz * sinp
+                zp = yr * sinp + pz * cosp
+                xw = xr * cosy - zp * siny
+                zw = xr * siny + zp * cosy + dist
+                projected.append(self._project(xw, yp, zw, w, h))
+
+            hue = (layer["hue"] + int(self._video_hue_shift) + int(self._centroid * 40)) % 360
+            col = self._hsv(hue, 0.55 + 0.3 * life, 0.35 + 0.55 * min(1.0, e + abs(local)) * life)
+            alpha = float(np.clip(0.15 + 0.75 * life * (0.5 + 0.5 * e), 0.1, 0.92))
+
+            if life > 0.4 and len(projected) >= 3:
+                for k in range(1, len(projected) - 1):
+                    self._fill_tri(img, projected[0], projected[k], projected[k + 1], col, alpha * 0.5)
+            for k in range(len(projected)):
+                x0, y0, _ = projected[k]
+                x1, y1, _ = projected[(k + 1) % len(projected)]
+                self._line(img, x0, y0, x1, y1, col, alpha)
+                self._dot(img, x0, y0, col, min(1.0, alpha + 0.1), r=1 if life < 0.5 else 2)
+
+        return np.clip(img, 0, 255).astype(np.uint8)
 
 
 class VideoSynthViewer(QFrame):
-    """Merged visualizer + 2.5D video synth viewer pane."""
+    """Center square: Meum 2.5D/3D scenograph."""
 
     def __init__(self, parent=None, engine=None):
         super().__init__(parent)
-        self.setMinimumSize(320, 200)
+        self.setMinimumSize(180, 180)
         self.setStyleSheet("background-color: #050608; border: 1px solid #2a2e39; border-radius: 6px;")
         self.engine = engine or VideoSynthEngine()
-        self._frame = np.zeros((180, 320, 3), dtype=np.uint8)
-        self.show_scope_overlay = True
+        if parent is not None:
+            try:
+                self.engine.bind_app(parent)
+            except Exception:
+                pass
+        self._frame = np.zeros((180, 180, 3), dtype=np.uint8)
+        self.show_scope_overlay = False
         self.scope_wave = np.zeros(100, dtype=np.float32)
 
     def update_from_audio(self, wave_data):
+        if self.engine.app is None and self.parent() is not None:
+            self.engine.bind_app(self.parent())
         self.engine.set_waveform(wave_data)
         if isinstance(wave_data, np.ndarray) and wave_data.size:
             self.scope_wave = np.resize(wave_data.astype(np.float32), 100)
-        self._frame = self.engine.render_frame(max(self.width(), 320), max(self.height(), 180))
+        side = max(self.width(), self.height(), 180)
+        self._frame = self.engine.render_frame(side, side)
         self.update()
 
     def set_mode(self, mode_idx):
         self.engine.mode = int(mode_idx)
-        self._frame = self.engine.render_frame(max(self.width(), 320), max(self.height(), 180))
+        side = max(self.width(), self.height(), 180)
+        self._frame = self.engine.render_frame(side, side)
         self.update()
 
     def paintEvent(self, event):
         super().paintEvent(event)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-        # Blit frame
         if self._frame is not None:
             fh, fw = self._frame.shape[:2]
             qimg = QImage(self._frame.data, fw, fh, fw * 3, QImage.Format.Format_RGB888)
-            painter.drawImage(self.rect(), qimg.copy())  # copy: numpy buffer lifetime
-        # Scope overlay strip
-        if self.show_scope_overlay:
-            pen = QPen(QColor(0, 255, 204, 180))
-            pen.setWidth(2)
-            painter.setPen(pen)
-            mid = int(h * 0.88)
-            for i in range(len(self.scope_wave) - 1):
-                x0 = int(i / 99.0 * w)
-                x1 = int((i + 1) / 99.0 * w)
-                y0 = mid - int(float(self.scope_wave[i]) * h * 0.12)
-                y1 = mid - int(float(self.scope_wave[i + 1]) * h * 0.12)
-                painter.drawLine(x0, y0, x1, y1)
-
+            painter.drawImage(self.rect(), qimg.copy())
+        painter.setPen(QColor("#c8a2ff"))
+        painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        painter.drawText(8, 14, "MEUM SCENOGRAPH")
 
 class ModulationMatrixWidget(QFrame):
     def __init__(self):
@@ -10530,18 +10708,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
         master_vol_row.addWidget(QLabel("Master Volume:"))
         self.slider_master_vol = QSlider(Qt.Orientation.Horizontal)
         self.slider_master_vol.setRange(0, 100)
-        self.slider_master_vol.setValue(80)
+        self.slider_master_vol.setValue(100)
         self.slider_master_vol.setFixedWidth(180)
         self.slider_master_vol.valueChanged.connect(self._on_master_vol_changed)
         master_vol_row.addWidget(self.slider_master_vol)
-        self.lbl_master_vol = QLabel("80%")
+        self.lbl_master_vol = QLabel("100%")
         self.lbl_master_vol.setStyleSheet("color: #f5d97d;")
         master_vol_row.addWidget(self.lbl_master_vol)
         master_vol_row.addStretch(1)
         seq_inner.addLayout(master_vol_row)
 
         vis_row = QHBoxLayout()
-        vis_row.addWidget(QLabel("Visualizer:"))
+        vis_row.addWidget(QLabel("Wave / Scope:"))
         self.viz_mode_combo = QComboBox()
         self.viz_mode_combo.addItems([
             "Master Oscilloscope",
@@ -10549,22 +10727,31 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "Overall Wave Pattern",
             "Per-Instrument Activity",
         ])
-        self.viz_mode_combo.setFixedWidth(190)
+        self.viz_mode_combo.setFixedWidth(180)
         self.viz_mode_combo.currentIndexChanged.connect(self._on_viz_mode_changed)
         vis_row.addWidget(self.viz_mode_combo)
+        vis_row.addWidget(QLabel("  Spectrum / Geometry:"))
+        self.spectrum_mode_combo = QComboBox()
+        self.spectrum_mode_combo.addItems([
+            "Meum FFT Scanner",
+            "Effected Spectrum",
+            "Pattern Bands",
+            "Activity Spectrum",
+        ])
+        self.spectrum_mode_combo.setFixedWidth(160)
+        self.spectrum_mode_combo.currentIndexChanged.connect(self._on_spectrum_mode_changed)
+        vis_row.addWidget(self.spectrum_mode_combo)
         vis_row.addStretch(1)
         seq_inner.addLayout(vis_row)
 
         master_container.addWidget(self.top_sequencer)
 
-        # Merged visualizer + 2.5D video synth viewer
+        # Triple monitor: Meum Waveform | Scenograph | Spectrum (equal squares)
         self.video_synth_engine = VideoSynthEngine(n_instruments=48)
+        self.video_synth_engine.bind_app(self)
         self.video_synth_viewer = VideoSynthViewer(self, engine=self.video_synth_engine)
-        self.video_synth_viewer.setMinimumHeight(220)
-        if not isinstance(getattr(self, 'visual_oscilloscope', None), VisualOscilloscope):
-            self.visual_oscilloscope = VisualOscilloscope(self)
-            self.visual_oscilloscope.setMinimumHeight(100)
-            self.visual_oscilloscope.setMaximumHeight(120)
+        self.visual_oscilloscope = VisualOscilloscope(self)
+        self.spectrum_analyzer = SpectrumAnalyzer(self)
 
         # EXPORT control is placed at the top of the 2D/2.5D video panel row.
         # Offers three export modes via a dropdown menu on one button:
@@ -10603,7 +10790,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         )
         self.btn_export.setMenu(export_menu)
         self.btn_export_video = self.btn_export  # compatibility alias
-        self.scope_status_label = QLabel("📊 2.5D Video Synth + Oscilloscope  |  Status: Idle")
+        self.scope_status_label = QLabel("📊 Meum Wave · Scenograph · Spectrum  |  Idle")
         self.scope_status_label.setStyleSheet("color: #00ffff; font-weight: bold;")
         scope_bar.addWidget(self.scope_status_label, stretch=1)
         scope_bar.addStretch(1)
@@ -10614,21 +10801,23 @@ class MathematiciansGrooveboxApp(QMainWindow):
         master_container.addLayout(scope_bar)
         visual_pair = QHBoxLayout()
         visual_pair.setSpacing(8)
-        visual_left = QVBoxLayout()
-        visual_left.addWidget(QLabel("LIVE AUDIO VISUALIZER"))
-        self.visual_oscilloscope.setMinimumSize(260, 180)
-        self.visual_oscilloscope.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        visual_left.addWidget(self.visual_oscilloscope, stretch=1)
-        visual_right = QVBoxLayout()
-        visual_right.addWidget(QLabel("2.5D VIDEO GEOMETRY"))
-        self.video_synth_viewer.setMinimumSize(320, 320)
-        self.video_synth_viewer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        visual_right.addWidget(self.video_synth_viewer, stretch=1)
-        visual_pair.addLayout(visual_left, stretch=1)
-        visual_pair.addLayout(visual_right, stretch=1)
+        # Equal squares: Waveform | Scenograph | Spectrum
+        for widget, label in (
+            (self.visual_oscilloscope, "MEUM WAVEFORM · full-track + live"),
+            (self.video_synth_viewer, "MEUM SCENOGRAPH · 2.5D / 3D"),
+            (self.spectrum_analyzer, "MEUM SPECTRUM · FFT scanner"),
+        ):
+            col = QVBoxLayout()
+            lbl = QLabel(label)
+            lbl.setStyleSheet("color: #8ab4c8; font-size: 8pt;")
+            col.addWidget(lbl)
+            widget.setMinimumSize(200, 200)
+            widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            col.addWidget(widget, stretch=1)
+            visual_pair.addLayout(col, stretch=1)
         visual_container = QWidget()
         visual_container.setLayout(visual_pair)
-        visual_container.setMinimumHeight(330)
+        visual_container.setMinimumHeight(280)
         master_container.addWidget(visual_container, stretch=1)
 
         # Realtime audio engine state (sounddevice stream)
@@ -10644,7 +10833,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.play_cursor = 0
         self.play_lock = threading.Lock()
         self.audio_stream = None
-        self.master_volume = 0.80
+        self.master_volume = 1.00
         self._scope_update_timer = QTimer(self)
         self._scope_update_timer.setInterval(33)
         self._scope_update_timer.timeout.connect(self._update_scope_from_playhead)
@@ -11512,16 +11701,23 @@ class MathematiciansGrooveboxApp(QMainWindow):
             print(f"[DJ] trigger all error: {e}")
 
     def _on_viz_mode_changed(self, idx):
-        labels = [
-            "📊 2.5D Scenograph + Scope",
-            "📊 Effected Waveform Scene",
-            "📊 Overall Wave Pattern",
-            "📊 Per-Instrument Activity Vectors",
-        ]
-        if hasattr(self, 'scope_status_label') and 0 <= idx < len(labels):
-            self.scope_status_label.setText(labels[idx] + "  |  Status: Live")
+        """Waveform / scenograph mode — keep all monitors live-ready."""
+        if hasattr(self, 'visual_oscilloscope') and self.visual_oscilloscope is not None:
+            self.visual_oscilloscope.set_mode(idx)
         if hasattr(self, 'video_synth_viewer'):
             self.video_synth_viewer.set_mode(idx)
+        if hasattr(self, 'spectrum_analyzer') and self.spectrum_analyzer is not None:
+            # Mirror geometry mode onto spectrum hue family unless spectrum combo differs
+            if not hasattr(self, 'spectrum_mode_combo') or self.spectrum_mode_combo.currentIndex() == idx:
+                self.spectrum_analyzer.set_mode(idx)
+
+    def _on_spectrum_mode_changed(self, idx):
+        if hasattr(self, 'spectrum_analyzer') and self.spectrum_analyzer is not None:
+            self.spectrum_analyzer.set_mode(idx)
+        if hasattr(self, 'video_synth_viewer'):
+            # Geometry analysis modes 0..3
+            self.video_synth_viewer.set_mode(idx)
+
 
     def _direct_playlist_operators(self):
         """Operators named on playlist rows / paint table (no dependency closure)."""
@@ -12928,26 +13124,33 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.stop_playback()
                 return
     def _update_scope_from_playhead(self):
-        """UI-thread timer: push latest audio chunk into scope + 2.5D video synth."""
+        """UI-thread timer: feed waveform, scenograph, and FFT spectrum during live play."""
         if not self.is_playing:
-            # End-of-buffer path sets _transport_finished in the audio callback.
-            # Here we only ensure UI stops; stop_playback must not look like "finished"
-            # if the user already stopped, so prefer the flags already set.
             if not getattr(self, "_stop_requested", False):
                 self._transport_finished = True
             self.stop_playback()
             return
         chunk = self._last_scope_chunk
-        if isinstance(getattr(self, 'visual_oscilloscope', None), VisualOscilloscope):
-            self.visual_oscilloscope.update_waveform(chunk)
-        if hasattr(self, 'video_synth_viewer'):
-            self.video_synth_viewer.update_from_audio(chunk)
+        overview = None
+        playhead = 0.0
         if self.play_buffer is not None and len(self.play_buffer) > 0:
-            pct = int(100 * self.play_cursor / len(self.play_buffer))
+            # Downsample full track for overview strip
+            buf = self.play_buffer
+            step = max(1, len(buf) // 512)
+            overview = buf[::step]
+            playhead = float(self.play_cursor) / float(len(buf))
+            pct = int(100 * playhead)
             if hasattr(self, 'scope_status_label'):
                 self.scope_status_label.setText(
-                    f"📊 2.5D Video Synth  |  LIVE  {pct}%  ·  Vol {int(self.master_volume*100)}%"
+                    f"📊 Meum monitors LIVE  {pct}%  ·  Vol {int(self.master_volume*100)}%"
                 )
+        if isinstance(getattr(self, 'visual_oscilloscope', None), VisualOscilloscope):
+            self.visual_oscilloscope.update_waveform(chunk, overview=overview, playhead=playhead)
+        if hasattr(self, 'video_synth_viewer'):
+            self.video_synth_viewer.update_from_audio(chunk)
+        if hasattr(self, 'spectrum_analyzer') and self.spectrum_analyzer is not None:
+            self.spectrum_analyzer.update_spectrum(chunk)
+
 
     def toggle_playback(self):
         """Unified PLAY/PAUSE/RESUME transport over the rendered audiovisual data stream."""
@@ -13069,9 +13272,32 @@ class MathematiciansGrooveboxApp(QMainWindow):
             print("[Audio] Audiovisual playback stopped.")
         self._stop_requested = False
 
+    def _exports_dir(self):
+        """Default export root: ./renders/ next to CWD (created on demand)."""
+        root = os.path.join(os.getcwd(), "renders")
+        try:
+            os.makedirs(root, exist_ok=True)
+        except Exception:
+            root = os.getcwd()
+        return root
+
+    def _export_frame_size(self):
+        """Video resolution = main window size at export time (even dims for yuv420p)."""
+        try:
+            w = max(320, int(self.width()))
+            h = max(240, int(self.height()))
+        except Exception:
+            w, h = 1280, 720
+        # Even dimensions required by most codecs
+        w -= w % 2
+        h -= h % 2
+        return w, h
+
     def export_mixdown_dialog(self):
         try:
-            default_filename = f"groovebox_mixdown_{self.export_counter:03d}.wav"
+            default_filename = os.path.join(
+                self._exports_dir(), f"groovebox_mixdown_{self.export_counter:03d}.wav"
+            )
             file_path, _ = QFileDialog.getSaveFileName(
                 self, "Save Mixdown Audio", default_filename, "WAV Audio Files (*.wav)"
             )
@@ -13225,7 +13451,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 container = "mp4"
             vcodec, vargs, acodec, aargs = self._ffmpeg_encoder_args(ffmpeg, container)
 
-            default_name = f"groovebox_video_{self.export_counter:03d}.{container}"
+            default_name = os.path.join(
+                self._exports_dir(), f"groovebox_video_{self.export_counter:03d}.{container}"
+            )
             filters = {
                 "mp4": "MP4 Video (*.mp4)",
                 "webm": "WebM Video (*.webm)",
@@ -13246,11 +13474,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
             QApplication.processEvents()
 
             master, sr = self._render_mixdown_buffer()
+            # Meum-friendly frame rate (~24 * MEUM_NORM*PHI cluster stays near 24)
+            fps = max(12, int(round(24 * MEUM_NORM / MEUM_NORM)))  # 24
             fps = 24
             frame_samples = max(1, int(sr / fps))
             n_frames = max(1, int(np.ceil(len(master) / frame_samples)))
-            n_frames = min(n_frames, fps * 60)  # hard cap 60s for export
+            # No artificial 60s cap — export the full rendered track.
+            # Soft safety ceiling (30 min) only to avoid runaway memory on bad state.
+            n_frames = min(n_frames, fps * 60 * 30)
             duration_s = n_frames / float(fps)
+            # Resolution = main window at export time (not the in-pane thumbnail)
+            w, h = self._export_frame_size()
 
             tmp = tempfile.mkdtemp(prefix="eqr_vid_")
             frames_dir = os.path.join(tmp, "frames")
@@ -13269,7 +13503,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         wf.writeframes((np.clip(audio_clip, -1, 1) * 32767).astype(np.int16).tobytes())
 
             eng = getattr(self, 'video_synth_engine', None) or VideoSynthEngine(48)
-            w, h = 640, 360
+            if hasattr(eng, 'bind_app'):
+                eng.bind_app(self)
+            # w, h already set from _export_frame_size()
             for fi in range(n_frames):
                 a = fi * frame_samples
                 b = min(len(master), a + frame_samples)
@@ -13288,12 +13524,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 source_has_audio = bool(getattr(self, 'imported_video_meta', {}).get('has_audio', False))
                 if include_audio and source_has_audio:
                     filter_complex = (
-                        "[1:v]scale=640:360:force_original_aspect_ratio=increase,"
-                        "crop=640:360,setsar=1,format=yuv420p[iv];"
+                        "[1:v]scale={0}:{1}:force_original_aspect_ratio=increase,"
+                        "crop={0}:{1},setsar=1,format=yuv420p[iv];"
                         "[0:v][iv]blend=all_mode=screen:all_opacity=0.35[v];"
                         "[2:a]volume=0.35[srca];[3:a]volume=1.0[gena];"
                         "[srca][gena]amix=inputs=2:duration=longest:normalize=0[a]"
-                    )
+                    ).format(w, h)
                     cmd = [
                         ffmpeg, "-y", "-framerate", str(fps), "-i", pattern,
                         "-stream_loop", "-1", "-i", source_video,
@@ -13307,10 +13543,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     ]
                 elif include_audio:
                     filter_complex = (
-                        "[1:v]scale=640:360:force_original_aspect_ratio=increase,"
-                        "crop=640:360,setsar=1,format=yuv420p[iv];"
+                        "[1:v]scale={0}:{1}:force_original_aspect_ratio=increase,"
+                        "crop={0}:{1},setsar=1,format=yuv420p[iv];"
                         "[0:v][iv]blend=all_mode=screen:all_opacity=0.35[v]"
-                    )
+                    ).format(w, h)
                     cmd = [
                         ffmpeg, "-y", "-framerate", str(fps), "-i", pattern,
                         "-stream_loop", "-1", "-i", source_video,
@@ -13324,10 +13560,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     ]
                 else:
                     filter_complex = (
-                        "[1:v]scale=640:360:force_original_aspect_ratio=increase,"
-                        "crop=640:360,setsar=1,format=yuv420p[iv];"
+                        "[1:v]scale={0}:{1}:force_original_aspect_ratio=increase,"
+                        "crop={0}:{1},setsar=1,format=yuv420p[iv];"
                         "[0:v][iv]blend=all_mode=screen:all_opacity=0.35[v]"
-                    )
+                    ).format(w, h)
                     cmd = [
                         ffmpeg, "-y", "-framerate", str(fps), "-i", pattern,
                         "-stream_loop", "-1", "-i", source_video,
