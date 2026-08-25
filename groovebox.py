@@ -2651,7 +2651,7 @@ class ParametricMathBackground(QWidget):
         MEUM² more transparent than the prior left-rail styling so they stay
         readable as ambient theorem glyphs without competing with controls.
         """
-        n = len(self.MEUM_BLOCKS)
+        n = 48
         col_w = min(260.0, max(150.0, width * 0.18))
         # MEUM² more transparent → divide prior alphas by MEUM_SQ
         a_fill = min(1.0, 0.42 / MEUM_SQ)
