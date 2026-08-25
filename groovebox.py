@@ -10577,12 +10577,30 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_export.setText("⬇ EXPORT")
         self.btn_export.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         export_menu = QMenu(self.btn_export)
-        export_video_only_action = export_menu.addAction("Video only")
-        export_audio_only_action = export_menu.addAction("Audio only (.wav)")
-        export_video_audio_action = export_menu.addAction("Video + Audio")
-        export_video_only_action.triggered.connect(lambda: self.export_video_dialog(include_audio=False))
-        export_audio_only_action.triggered.connect(self.export_mixdown_dialog)
-        export_video_audio_action.triggered.connect(lambda: self.export_video_dialog(include_audio=True))
+        # Audio-only
+        export_menu.addAction("Audio only (.wav)").triggered.connect(self.export_mixdown_dialog)
+        export_menu.addSeparator()
+        # Video + Audio
+        export_menu.addAction("Video + Audio (.mp4)").triggered.connect(
+            lambda: self.export_video_dialog(include_audio=True, container="mp4")
+        )
+        export_menu.addAction("Video + Audio (.webm)").triggered.connect(
+            lambda: self.export_video_dialog(include_audio=True, container="webm")
+        )
+        export_menu.addAction("Video + Audio (.avi)").triggered.connect(
+            lambda: self.export_video_dialog(include_audio=True, container="avi")
+        )
+        export_menu.addSeparator()
+        # Video only
+        export_menu.addAction("Video only (.mp4)").triggered.connect(
+            lambda: self.export_video_dialog(include_audio=False, container="mp4")
+        )
+        export_menu.addAction("Video only (.webm)").triggered.connect(
+            lambda: self.export_video_dialog(include_audio=False, container="webm")
+        )
+        export_menu.addAction("Video only (.avi)").triggered.connect(
+            lambda: self.export_video_dialog(include_audio=False, container="avi")
+        )
         self.btn_export.setMenu(export_menu)
         self.btn_export_video = self.btn_export  # compatibility alias
         self.scope_status_label = QLabel("📊 2.5D Video Synth + Oscilloscope  |  Status: Idle")
@@ -13094,51 +13112,168 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     # =====================================================================
     # VIDEO_EXPORT_FEATURE — 2.5D render + audio mux + optional source-video blend
-    # Revert: restore the prior export_video_dialog implementation.
+    # Supports Video+Audio / Video-only in mp4|webm|avi with encoder auto-fallback.
     # =====================================================================
-    def export_video_dialog(self, include_audio=True):
-        """Render the 2.5D geometry, optionally mux rendered audio, and optionally blend source video."""
+    def _resolve_ffmpeg_binary(self):
+        """Locate a usable ffmpeg binary (PATH, ./bin, /bin, common prefixes)."""
+        candidates = []
+        which = shutil.which("ffmpeg")
+        if which:
+            candidates.append(which)
+        try:
+            here = os.path.dirname(os.path.abspath(__file__))
+        except Exception:
+            here = os.getcwd()
+        for p in (
+            os.path.join(here, "bin", "ffmpeg"),
+            os.path.join(here, "ffmpeg"),
+            "/bin/ffmpeg",
+            "/usr/bin/ffmpeg",
+            "/usr/local/bin/ffmpeg",
+            os.path.expanduser("~/bin/ffmpeg"),
+        ):
+            if p and os.path.isfile(p) and os.access(p, os.X_OK):
+                candidates.append(p)
+        seen, ordered = set(), []
+        for c in candidates:
+            if c not in seen:
+                seen.add(c)
+                ordered.append(c)
+        return ordered[0] if ordered else None
+
+    def _ffmpeg_encoder_args(self, ffmpeg_bin, container="mp4"):
+        """Pick video/audio encoder args this ffmpeg build actually supports."""
+        try:
+            proc = subprocess.run(
+                [ffmpeg_bin, "-hide_banner", "-encoders"],
+                capture_output=True, text=True, timeout=12,
+            )
+            listing = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        except Exception:
+            listing = ""
+
+        def has(name):
+            return (" " + name + " ") in (" " + listing.replace("\n", " ") + " ")
+
+        container = (container or "mp4").lower().lstrip(".")
+        vcodec, vargs = None, []
+
+        # Container-aware preference
+        if container == "webm":
+            order = ["libvpx-vp9", "libvpx", "libx264", "mpeg4", "mjpeg"]
+        elif container == "avi":
+            order = ["mpeg4", "libxvid", "msmpeg4v2", "libx264", "mjpeg"]
+        else:  # mp4 and default
+            order = ["libx264", "libopenh264", "h264_mf", "libxvid", "mpeg4",
+                     "libvpx-vp9", "libvpx", "mjpeg"]
+
+        presets = {
+            "libx264": ["-preset", "medium", "-crf", "18"],
+            "libopenh264": ["-b:v", "2M"],
+            "h264_mf": ["-b:v", "2M"],
+            "libxvid": ["-qscale:v", "5"],
+            "mpeg4": ["-qscale:v", "5"],
+            "msmpeg4v2": ["-qscale:v", "5"],
+            "libvpx-vp9": ["-b:v", "1.5M", "-row-mt", "1"],
+            "libvpx": ["-b:v", "1.5M"],
+            "mjpeg": ["-q:v", "5"],
+        }
+        for name in order:
+            if has(name):
+                vcodec, vargs = name, list(presets.get(name, ["-b:v", "2M"]))
+                break
+        if vcodec is None:
+            vcodec, vargs = "mpeg4", ["-qscale:v", "5"]
+
+        # Audio
+        if container == "webm":
+            a_order = ["libopus", "libvorbis", "aac", "libmp3lame"]
+        elif container == "avi":
+            a_order = ["libmp3lame", "aac", "libvorbis"]
+        else:
+            a_order = ["aac", "libmp3lame", "libvorbis", "libopus"]
+        acodec, aargs = None, []
+        a_presets = {
+            "aac": ["-b:a", "192k"],
+            "libmp3lame": ["-b:a", "192k"],
+            "libvorbis": ["-b:a", "160k"],
+            "libopus": ["-b:a", "128k"],
+        }
+        for name in a_order:
+            if has(name):
+                acodec, aargs = name, list(a_presets.get(name, ["-b:a", "192k"]))
+                break
+        if acodec is None:
+            acodec, aargs = "aac", ["-b:a", "192k"]
+
+        print(f"[Video] ffmpeg={ffmpeg_bin} container={container} vcodec={vcodec} acodec={acodec}")
+        return vcodec, vargs, acodec, aargs
+
+    def export_video_dialog(self, include_audio=True, container="mp4"):
+        """Render 2.5D frames; optionally mux audio. container: mp4|webm|avi."""
         tmp = None
         try:
             from PIL import Image
-            ffmpeg = shutil.which("ffmpeg")
+            ffmpeg = self._resolve_ffmpeg_binary()
             if not ffmpeg:
-                raise RuntimeError("ffmpeg is required for video export. Install ffmpeg and try again.")
+                raise RuntimeError(
+                    "ffmpeg not found. Install a full build (see Help) or place "
+                    "ffmpeg at ./bin/ffmpeg or on PATH."
+                )
+            container = (container or "mp4").lower().lstrip(".")
+            if container not in ("mp4", "webm", "avi"):
+                container = "mp4"
+            vcodec, vargs, acodec, aargs = self._ffmpeg_encoder_args(ffmpeg, container)
 
+            default_name = f"groovebox_video_{self.export_counter:03d}.{container}"
+            filters = {
+                "mp4": "MP4 Video (*.mp4)",
+                "webm": "WebM Video (*.webm)",
+                "avi": "AVI Video (*.avi)",
+            }
+            file_filter = f"{filters[container]};;All Files (*)"
             out_path, _ = QFileDialog.getSaveFileName(
-                self, "Export Video", f"groovebox_video_{self.export_counter:03d}.mp4",
-                "MP4 Video (*.mp4);;All Files (*)"
+                self, "Export Video", default_name, file_filter
             )
             if not out_path:
                 return
+            if not out_path.lower().endswith("." + container):
+                out_path = out_path + "." + container
+
             if hasattr(self, 'scope_status_label'):
-                self.scope_status_label.setText("🎬 Rendering 2.5D video + audio…")
+                mode = "Video + Audio" if include_audio else "Video only"
+                self.scope_status_label.setText(f"🎬 Rendering {mode} ({container})…")
             QApplication.processEvents()
 
             master, sr = self._render_mixdown_buffer()
             fps = 24
             frame_samples = max(1, int(sr / fps))
             n_frames = max(1, int(np.ceil(len(master) / frame_samples)))
-            n_frames = min(n_frames, fps * 60)
+            n_frames = min(n_frames, fps * 60)  # hard cap 60s for export
+            duration_s = n_frames / float(fps)
+
             tmp = tempfile.mkdtemp(prefix="eqr_vid_")
             frames_dir = os.path.join(tmp, "frames")
             os.makedirs(frames_dir, exist_ok=True)
             audio_path = os.path.join(tmp, "groovebox_audio.wav")
+
+            # Trim audio to the video duration so mux lengths match.
             if include_audio:
+                n_audio = min(len(master), int(round(duration_s * sr)))
+                audio_clip = master[:max(1, n_audio)]
                 if wavfile is not None:
-                    wavfile.write(audio_path, sr, (np.clip(master, -1, 1) * 32767).astype(np.int16))
+                    wavfile.write(audio_path, sr, (np.clip(audio_clip, -1, 1) * 32767).astype(np.int16))
                 else:
                     with wave.open(audio_path, 'wb') as wf:
                         wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr)
-                        wf.writeframes((np.clip(master, -1, 1) * 32767).astype(np.int16).tobytes())
+                        wf.writeframes((np.clip(audio_clip, -1, 1) * 32767).astype(np.int16).tobytes())
 
             eng = getattr(self, 'video_synth_engine', None) or VideoSynthEngine(48)
             w, h = 640, 360
             for fi in range(n_frames):
                 a = fi * frame_samples
                 b = min(len(master), a + frame_samples)
-                chunk = master[a:b]
-                eng.set_waveform(chunk)
+                eng.set_waveform(master[a:b])
                 frame = eng.render_frame(w, h)
                 Image.fromarray(frame, mode="RGB").save(os.path.join(frames_dir, f"frame_{fi:05d}.png"))
                 if fi % 12 == 0 and hasattr(self, 'scope_status_label'):
@@ -13147,13 +13282,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
             pattern = os.path.join(frames_dir, "frame_%05d.png")
             source_video = self.imported_video_path if getattr(self, 'imported_video_path', '') else ''
+            pix = ["-pix_fmt", "yuv420p"] if vcodec not in ("mjpeg",) else []
+
             if source_video and os.path.abspath(source_video) != os.path.abspath(out_path):
-                # VIDEO_REEMULATION_PIPELINE: source video is the visual reference. Its
-                # decoded audio has already become the imported carrier; if it has an
-                # audio stream, a quiet direct source channel is also mixed into the final
-                # rendered audio. The 2.5D frame sequence is the visual re-emulation.
                 source_has_audio = bool(getattr(self, 'imported_video_meta', {}).get('has_audio', False))
-                if source_has_audio:
+                if include_audio and source_has_audio:
                     filter_complex = (
                         "[1:v]scale=640:360:force_original_aspect_ratio=increase,"
                         "crop=640:360,setsar=1,format=yuv420p[iv];"
@@ -13167,12 +13300,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         "-i", audio_path, "-i", source_video,
                         "-filter_complex", filter_complex,
                         "-map", "[v]", "-map", "[a]",
-                        "-t", f"{n_frames / fps:.6f}",
-                        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-                        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+                        "-t", f"{duration_s:.6f}",
+                        "-c:v", vcodec, *vargs, *pix,
+                        "-c:a", acodec, *aargs,
                         "-shortest", out_path,
                     ]
-                else:
+                elif include_audio:
                     filter_complex = (
                         "[1:v]scale=640:360:force_original_aspect_ratio=increase,"
                         "crop=640:360,setsar=1,format=yuv420p[iv];"
@@ -13184,27 +13317,68 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         "-i", audio_path,
                         "-filter_complex", filter_complex,
                         "-map", "[v]", "-map", "2:a:0",
-                        "-t", f"{n_frames / fps:.6f}",
-                        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-                        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+                        "-t", f"{duration_s:.6f}",
+                        "-c:v", vcodec, *vargs, *pix,
+                        "-c:a", acodec, *aargs,
                         "-shortest", out_path,
                     ]
+                else:
+                    filter_complex = (
+                        "[1:v]scale=640:360:force_original_aspect_ratio=increase,"
+                        "crop=640:360,setsar=1,format=yuv420p[iv];"
+                        "[0:v][iv]blend=all_mode=screen:all_opacity=0.35[v]"
+                    )
+                    cmd = [
+                        ffmpeg, "-y", "-framerate", str(fps), "-i", pattern,
+                        "-stream_loop", "-1", "-i", source_video,
+                        "-filter_complex", filter_complex,
+                        "-map", "[v]",
+                        "-t", f"{duration_s:.6f}",
+                        "-c:v", vcodec, *vargs, *pix,
+                        "-an", out_path,
+                    ]
+            elif include_audio:
+                cmd = [
+                    ffmpeg, "-y", "-framerate", str(fps), "-i", pattern,
+                    "-i", audio_path,
+                    "-map", "0:v:0", "-map", "1:a:0",
+                    "-t", f"{duration_s:.6f}",
+                    "-c:v", vcodec, *vargs, *pix,
+                    "-c:a", acodec, *aargs,
+                    "-shortest", out_path,
+                ]
             else:
                 cmd = [
                     ffmpeg, "-y", "-framerate", str(fps), "-i", pattern,
-                    "-i", audio_path, "-map", "0:v:0", "-map", "1:a:0",
-                    "-shortest", "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-                    "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", out_path,
+                    "-map", "0:v:0",
+                    "-t", f"{duration_s:.6f}",
+                    "-c:v", vcodec, *vargs, *pix,
+                    "-an", out_path,
                 ]
+
             proc = subprocess.run(cmd, capture_output=True, text=True)
             if proc.returncode != 0:
-                raise RuntimeError(proc.stderr[-1600:] if proc.stderr else "ffmpeg failed")
+                err = (proc.stderr or proc.stdout or "ffmpeg failed")[-2200:]
+                if "Unknown encoder" in err or "Encoder not found" in err:
+                    err += (
+                        f"\n\nThis ffmpeg ({ffmpeg}) lacks encoder '{vcodec}'.\n"
+                        "Install a full build, e.g. on Ubuntu/Debian:\n"
+                        "  sudo apt update && sudo apt install -y ffmpeg\n"
+                        "Or download a static binary and place it at ./bin/ffmpeg"
+                    )
+                raise RuntimeError(err)
 
             self.export_counter += 1
+            mode = "Video + Audio" if include_audio else "Video only"
             if hasattr(self, 'scope_status_label'):
-                suffix = " + source video blend" if source_video else ""
-                self.scope_status_label.setText(f"🎬 Video + rendered audio exported{suffix} → {os.path.basename(out_path)}")
-            QMessageBox.information(self, "Export complete", f"Saved:\n{out_path}")
+                self.scope_status_label.setText(
+                    f"🎬 {mode} exported → {os.path.basename(out_path)}  ({vcodec}/{acodec if include_audio else 'no-audio'})"
+                )
+            QMessageBox.information(
+                self, "Export complete",
+                f"Saved:\n{out_path}\n\nEncoder: {vcodec}"
+                + (f" + {acodec}" if include_audio else " (video only)")
+            )
         except Exception as e:
             print(f"[Video] export error: {e}")
             QMessageBox.critical(self, "Video Export Error", str(e))
