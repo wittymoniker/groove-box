@@ -190,7 +190,7 @@ def goava_get_note(number_assigned, step, numbers):
     return abs(float(total))
 
 
-def goava_frequency(number_assigned, step, numbers, base_frequency=216.0):
+def goava_frequency(number_assigned, step, numbers, base_frequency=432.0):
     """Map GOAVA's Java sequence scalar to a stable audible frequency.
 
     The Java implementation's primary arpeggio path is getNote()*16.  Its
@@ -357,23 +357,27 @@ def generate_synth_names(count, base_list=None):
 
 
 def harmonic_spacing_ratios(count):
-    """Equidistant geometric frequency ratios for `count` free voices.
-    Uses MEUM / PHI-influenced geometric progression so convolution remains ideal.
+    """Stable per-index voice ratios; ensemble size must never retune existing voices.
+
+    The previous implementation normalized the geometric mean over *count*. Adding
+    instruments therefore changed every existing ratio and produced the audible
+    downshift reported during ensemble scaling. Ratios are now anchored to an
+    absolute voice index. ``count`` only controls how many entries are returned.
     """
     count = int(max(1, count))
-    # Geometric ratio spanning ~6 octaves with Meum tilt (full continuum tiling)
-    span = 64.0  # ~6 octaves
+    import math as _m
+    # Fixed six-octave lattice centered between voice 23 and 24.  The lattice is
+    # independent of ensemble size, so adding/removing voices cannot retune the
+    # voices that already exist. MEUM is retained as a subtle monotonic warp.
+    span_octaves = 6.0
+    center = 23.5
+    denom = 47.0
     ratios = []
     for i in range(count):
-        t = i / max(count - 1, 1)
-        # Meum-warped geometric
-        r = span ** (t * MEUM_NORM + (1.0 - MEUM_NORM) * t)
-        ratios.append(float(r))
-    # Normalize geometric mean toward 1.0
-    import math as _m
-    log_mean = sum(_m.log(r) for r in ratios) / count
-    scale = _m.exp(-log_mean)
-    return [r * scale for r in ratios]
+        t = (i - center) / denom
+        warped = t * MEUM_NORM + (1.0 - MEUM_NORM) * t
+        ratios.append(float(2.0 ** (span_octaves * warped)))
+    return ratios
 
 # Canonical playlist record schema. Every engine, UI sync, and CSV/member path
 # must preserve all visible playlist columns in this order.
@@ -795,6 +799,8 @@ class VideoSynthEngine:
         self._cam_yaw = 0.0
         self._cam_pitch = 0.0
         self._cam_roll = 0.0
+        self._manual_yaw = 0.0
+        self._manual_pitch = 0.0
         self._pack_radius = 0.0
         self._pack_scale_floor = 0.28
         self.layers = []
@@ -1036,8 +1042,10 @@ class VideoSynthEngine:
         n = max(2, int(round(getattr(self, "_render_n", self.n))))
         # Low-amplitude camera motion: enough parallax to reveal depth without
         # making the composition unstable. Seed keeps exports reproducible.
-        self._cam_yaw = 0.10 * math.sin(self.t * 0.17 + seed * 0.0017) + 0.055 * ph
-        self._cam_pitch = 0.055 * math.sin(self.t * 0.11 + MEUM + seed * 0.0009)
+        self._cam_yaw = (0.10 * math.sin(self.t * 0.17 + seed * 0.0017) + 0.055 * ph
+                         + float(getattr(self, "_manual_yaw", 0.0)))
+        self._cam_pitch = (0.055 * math.sin(self.t * 0.11 + MEUM + seed * 0.0009)
+                           + float(getattr(self, "_manual_pitch", 0.0)))
         self._cam_roll = 0.035 * math.sin(self.t * 0.07 + MEUM_INV * 2.0 + ph * math.tau)
         # Golden-angle disk packing. sqrt radial law gives approximately
         # uniform area density; the logarithmic/implosive term shrinks objects
@@ -1780,6 +1788,62 @@ class VideoSynthViewer(QFrame):
         self._frame = np.zeros((180, 180, 3), dtype=np.uint8)
         self.show_scope_overlay = False
         self.scope_wave = np.zeros(100, dtype=np.float32)
+        # Manual scenograph camera: +/-180° yaw and pitch from the origin view.
+        # The animated camera remains additive, so the origin is a stable reference.
+        self._manual_yaw_deg = 0.0
+        self._manual_pitch_deg = 0.0
+        self._drag_origin = None
+        self.setMouseTracking(True)
+
+    def _apply_manual_camera(self):
+        """Apply the user camera angles in the full [-180°, +180°] range."""
+        if self.engine is None:
+            return
+        self.engine._manual_yaw = math.radians(float(self._manual_yaw_deg))
+        self.engine._manual_pitch = math.radians(float(self._manual_pitch_deg))
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_origin = event.position()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_origin is not None and (event.buttons() & Qt.MouseButton.LeftButton):
+            pos = event.position()
+            dx = float(pos.x() - self._drag_origin.x())
+            dy = float(pos.y() - self._drag_origin.y())
+            # 360° across two viewer widths/heights; clamped exactly to +/-180°.
+            self._manual_yaw_deg = float(np.clip(self._manual_yaw_deg + dx * 0.5, -180.0, 180.0))
+            self._manual_pitch_deg = float(np.clip(self._manual_pitch_deg + dy * 0.5, -180.0, 180.0))
+            self._drag_origin = pos
+            self._apply_manual_camera()
+            ww = max(self.width(), 180); hh = max(self.height(), 180)
+            self._frame = self.engine.render_frame(ww, hh, export=False)
+            self.update()
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_origin = None
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._manual_yaw_deg = 0.0
+            self._manual_pitch_deg = 0.0
+            self._apply_manual_camera()
+            ww = max(self.width(), 180); hh = max(self.height(), 180)
+            self._frame = self.engine.render_frame(ww, hh, export=False)
+            self.update()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
     def update_from_audio(self, wave_data, playhead=None):
         if self.engine.app is None and self.parent() is not None:
@@ -2098,16 +2162,18 @@ class SynthRackUnitWidget(QFrame):
             return
         if not hasattr(app, "instrument_param_state") or app.instrument_param_state is None:
             app.instrument_param_state = {}
-        prev = dict(app.instrument_param_state.get(self.synth_name, {}) or {})
-        prev.update(self._state_dict())
-        app.instrument_param_state[self.synth_name] = prev
-        # When Edit-panels-per-sequence is ON, also mirror into the active sequence slot
-        try:
-            if hasattr(app, "_panels_per_sequence_enabled") and app._panels_per_sequence_enabled():
-                panels = app._sequence_panel_slot(self.synth_name)
-                panels["synth"] = copy.deepcopy(prev)
-        except Exception:
-            pass
+        incoming = self._state_dict()
+        per_sequence = bool(hasattr(app, "_panels_per_sequence_enabled") and app._panels_per_sequence_enabled())
+        if per_sequence:
+            panels = app._sequence_panel_slot(self.synth_name)
+            current = dict(panels.get("synth") or {})
+            current.update(incoming)
+            panels["synth"] = copy.deepcopy(current)
+            app.instrument_param_state[self.synth_name] = copy.deepcopy(current)
+        else:
+            prev = dict(app.instrument_param_state.get(self.synth_name, {}) or {})
+            prev.update(incoming)
+            app.instrument_param_state[self.synth_name] = prev
 
     def _load_state(self):
         app = self.app_ref
@@ -2856,8 +2922,8 @@ class ParametricMathBackground(QWidget):
     the mathematical field feels alive without becoming a CPU-heavy visualizer.
     It is mouse-transparent and never participates in the audio path.
     """
-    WAVE_COUNT = 24
-    SHAPE_COUNT = 24
+    WAVE_COUNT = 12
+    SHAPE_COUNT = 12
 
     def __init__(self, app, host=None):
         self.app = app
@@ -3031,7 +3097,7 @@ class ParametricMathBackground(QWidget):
         MEUM² more transparent than the prior left-rail styling so they stay
         readable as ambient theorem glyphs without competing with controls.
         """
-        n = 24
+        n = 12
         col_w = min(260.0, max(150.0, width * 0.18))
         # MEUM² more transparent → divide prior alphas by MEUM_SQ
         a_fill = min(1.0, 0.42 / MEUM_SQ)
@@ -4055,14 +4121,12 @@ class ScriptPanelDialog(QDialog):
         btn_layout.addWidget(close_btn)
         layout.addLayout(btn_layout)
 class MusicFractallizer:
-    """Global Fractallizer — analog-style fractal resonator (MatrixBrute-inspired).
+    """Global frequency-domain fractal resonator.
 
-    Master / import-inclusive effect. Performs **subharmonic** (1/γ) and
-    **superharmonic** (γ, γ²) scaling of contextual waveshapes around time t
-    and harmonic interval gamma. Heavier path than per-synth Harmonic Lattice;
-    intended for the global bus and external audio carriers.
-
-    0–100% activation → 0–50% wet mix. Permanently PKP-enveloped when supplied.
+    The effect operates on spectral magnitude while preserving the input FFT
+    phase exactly.  Fractal/subharmonic detail is therefore *on-phase* with
+    the canonical source instead of being produced by time-domain wrapping,
+    interpolation and nonlinear folding (which could sound gritty/aliased).
     """
     def __init__(self, dimensions=('x', 'y', 'z'), survival_mode=True, sample_rate=44100):
         self.dimensions = dimensions
@@ -4078,68 +4142,93 @@ class MusicFractallizer:
             return {dim: np.zeros(1, dtype=np.float32) for dim in self.dimensions}
         return {dim: np.tanh(arr) for dim in self.dimensions}
 
-    def process(self, dry, activation=0.33, gamma=2.0, pkp_env=None, bpm=120.0):
-        """Apply fractal subharmonic resonance. activation in [0,1] → wet mix in [0, 0.5]."""
+    @staticmethod
+    def _spectral_on_phase_detail(signal, gamma, weights, detail_amount=0.18):
+        """Return a phase-preserving spectral fractalization of *signal*.
+
+        Magnitude is redistributed across log-frequency scale copies; the
+        original FFT phase is retained at every bin.  A deterministic
+        log-frequency residual adds fine detail without nonlinear clipping.
+        """
+        x = np.asarray(signal, dtype=np.float32).ravel()
+        n = x.size
+        if n < 8:
+            return x.copy()
+        win = np.hanning(n).astype(np.float32)
+        X = np.fft.rfft(x * win)
+        mag = np.abs(X).astype(np.float64)
+        phase = np.angle(X)
+        bins = np.arange(mag.size, dtype=np.float64)
+        # Avoid DC/near-DC singularity while retaining the original DC level.
+        safe = np.maximum(bins, 1.0)
+        g = max(1.05, float(gamma))
+        w = np.asarray(weights, dtype=np.float64)
+        w = w / max(float(np.sum(w)), 1e-12)
+        scales = np.asarray((1.0 / g, 1.0, g, g * g), dtype=np.float64)
+        warped = []
+        for sc in scales:
+            src = np.clip(safe * sc, 1.0, float(max(mag.size - 1, 1)))
+            warped.append(np.interp(src, bins, mag))
+        new_mag = sum(float(ww) * mm for ww, mm in zip(w, warped))
+
+        # Scaled detail is a smooth high-resolution spectral residual, not a
+        # waveshaper.  It follows the source envelope and cannot create hard
+        # harmonics by itself.
+        if detail_amount > 0.0 and mag.size > 16:
+            logmag = np.log1p(mag)
+            kernel = np.ones(9, dtype=np.float64) / 9.0
+            smooth = np.convolve(logmag, kernel, mode='same')
+            residual = logmag - smooth
+            # More detail in the upper spectrum, but taper before Nyquist.
+            hi = np.linspace(0.0, 1.0, mag.size, dtype=np.float64)
+            taper = np.sqrt(hi)
+            detail = np.expm1(np.clip(smooth + float(detail_amount) * residual * taper, -20.0, 20.0))
+            new_mag = 0.88 * new_mag + 0.12 * detail
+
+        # Keep the fundamental/DC magnitude anchored and preserve phase.
+        new_mag[0] = mag[0]
+        y_spec = new_mag.astype(np.float64) * np.exp(1j * phase)
+        y = np.fft.irfft(y_spec, n=n)
+        # Undo the Hann energy change with a conservative peak normalization.
+        peak_in = float(np.max(np.abs(x)) + 1e-9)
+        peak_out = float(np.max(np.abs(y)) + 1e-9)
+        if peak_out > 1e-9:
+            y *= peak_in / peak_out
+        return y.astype(np.float32)
+
+    def process(self, dry, activation=0.33, gamma=2.0, pkp_env=None, bpm=120.0, reference_buffer=None):
+        """Apply phase-coherent frequency-domain fractal detail."""
         dry = np.asarray(dry, dtype=np.float32).ravel()
         n = dry.size
         if n == 0:
             return dry
+        if reference_buffer is not None:
+            ref = np.asarray(reference_buffer, dtype=np.float32).ravel()
+            if ref.size == n:
+                dry = ref.copy()
         act = float(np.clip(activation, 0.0, 1.0))
-        wet_mix = 0.5 * act  # global rule: 100% activation → 50% max mix
+        wet_mix = 0.5 * act
         if wet_mix < 1e-6:
             return dry.copy()
-
-        # Contextual waveshape window around t (± short context)
-        # Harmonic interval gamma: fractal period scales
         g = max(1.1, float(gamma))
-        # Multi-scale fractal: subharmonic (1/g) + identity + up-scales
-        # so low and high spectrum are both reachable from one seed
-        fractal = np.zeros(n, dtype=np.float32)
-        scales = (1.0 / g, 1.0, g, g * g)
-        weights = (0.20, 0.35, 0.30, 0.15)
-        t_idx = np.arange(n, dtype=np.float32)
-        for sc, w in zip(scales, weights):
-            src_idx = np.mod(t_idx * sc, float(max(n, 1)))
-            i0 = np.floor(src_idx).astype(np.int32) % n
-            i1 = (i0 + 1) % n
-            frac = src_idx - np.floor(src_idx)
-            layer = dry[i0] * (1.0 - frac) + dry[i1] * frac
-            # Gentle drive preserves fundamental while expanding spectrum
-            layer = np.tanh(layer * (1.0 + 0.12 * abs(math.log(max(sc, 1e-9))))) * w
-            fractal += layer.astype(np.float32)
-
-        # Normalize fractal layer to dry peak
-        fp = float(np.max(np.abs(fractal)) + 1e-9)
-        dp = float(np.max(np.abs(dry)) + 1e-9)
-        fractal *= (dp / fp)
-
-        # Permanent PKP envelope follow (tempo-locked sinusoidal amplitude curve)
+        fractal = self._spectral_on_phase_detail(
+            dry, g, (0.20, 0.35, 0.30, 0.15), detail_amount=0.10 * act
+        )
         if pkp_env is None:
-            # Default tempo-locked sinusoidal envelope
             beat_hz = max(float(bpm), 1.0) / 60.0
-            t_sec = t_idx / float(self.sample_rate)
+            t_sec = np.arange(n, dtype=np.float32) / float(self.sample_rate)
             pkp_env = 0.55 + 0.45 * np.sin(2.0 * np.pi * beat_hz * t_sec)
-        pkp_env = np.asarray(pkp_env, dtype=np.float32).ravel()
-        if pkp_env.size != n:
-            pkp_env = np.resize(pkp_env, n)
-        fractal *= np.clip(pkp_env, 0.0, 1.5)
-
-        out = (1.0 - wet_mix) * dry + wet_mix * fractal
+        env = np.asarray(pkp_env, dtype=np.float32).ravel()
+        if env.size != n:
+            env = np.resize(env, n)
+        # Envelope the *detail contribution*, preserving the dry phase/source.
+        detail = (fractal - dry) * np.clip(env, 0.0, 1.5)
+        out = dry + wet_mix * detail
         return out.astype(np.float32)
 
 
-
 class HarmonicLattice:
-    """Per-synth fractal spectrum expander (efficient).
-
-    Distinct from the global Fractallizer: lighter CPU path intended for each
-    voice's seed waveshape. Performs both **subharmonic** (1/γ) and
-    **superharmonic** (γ, γ²) scaling so a single unlocked synth can reach any
-    region of the continuum. Activation 0–100% → wet mix 0–50%.
-    Permanently PKP-enveloped when an envelope is supplied.
-
-    Global Fractallizer remains the heavier, import-inclusive master effect.
-    """
+    """Per-synth phase-preserving frequency-domain spectrum expander."""
     def __init__(self, sample_rate=44100):
         self.sample_rate = int(sample_rate)
 
@@ -4153,32 +4242,18 @@ class HarmonicLattice:
         if wet_mix < 1e-6:
             return dry.copy()
         g = max(1.15, float(gamma))
-        # Efficient 3-scale lattice: subharmonic + identity-ish mid + superharmonic
-        # (skips γ³ and extra bookkeeping used by the global Fractallizer)
-        scales = (1.0 / g, g, g * g)
-        weights = (0.30, 0.45, 0.25)
-        t_idx = np.arange(n, dtype=np.float32)
-        lattice = np.zeros(n, dtype=np.float32)
-        for sc, w in zip(scales, weights):
-            src = np.mod(t_idx * sc, float(max(n, 1)))
-            i0 = np.floor(src).astype(np.int32) % n
-            i1 = (i0 + 1) % n
-            fr = src - np.floor(src)
-            layer = dry[i0] * (1.0 - fr) + dry[i1] * fr
-            # Soft drive; subharmonic branch uses gentler fold
-            drive = 1.0 + 0.10 * abs(math.log(max(sc, 1e-9)))
-            lattice += (np.tanh(layer * drive) * w).astype(np.float32)
-        peak_l = float(np.max(np.abs(lattice)) + 1e-9)
-        peak_d = float(np.max(np.abs(dry)) + 1e-9)
-        lattice *= (peak_d / peak_l)
+        fractal = MusicFractallizer._spectral_on_phase_detail(
+            dry, g, (0.30, 0.45, 0.25, 0.0), detail_amount=0.07 * act
+        )
         if pkp_env is None:
             beat_hz = max(float(bpm), 1.0) / 60.0
-            pkp_env = 0.55 + 0.45 * np.sin(2.0 * np.pi * beat_hz * t_idx / float(self.sample_rate))
-        pkp_env = np.asarray(pkp_env, dtype=np.float32).ravel()
-        if pkp_env.size != n:
-            pkp_env = np.resize(pkp_env, n)
-        lattice *= np.clip(pkp_env, 0.0, 1.5)
-        return ((1.0 - wet_mix) * dry + wet_mix * lattice).astype(np.float32)
+            t = np.arange(n, dtype=np.float32) / float(self.sample_rate)
+            pkp_env = 0.55 + 0.45 * np.sin(2.0 * np.pi * beat_hz * t)
+        env = np.asarray(pkp_env, dtype=np.float32).ravel()
+        if env.size != n:
+            env = np.resize(env, n)
+        detail = (fractal - dry) * np.clip(env, 0.0, 1.5)
+        return (dry + wet_mix * detail).astype(np.float32)
 
 
 class EQRTensorEngine:
@@ -9528,7 +9603,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.playlist_automation = [{} for _ in range(rows)]
 
     def sync_playlist_grid_to_memory(self):
-        """Atomically mirror the complete 10-column playlist table into memory."""
+        """Atomically mirror the complete 18-column playlist table into memory."""
         table = getattr(self, "active_paint_table", None)
         if not table:
             return
@@ -9550,8 +9625,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 prior = old_rows[r] if r < len(old_rows) and isinstance(old_rows[r], dict) else {}
                 values = [cell(r, c) for c in range(min(PLAYLIST_COLUMN_COUNT, table.columnCount()))]
                 values += [""] * (PLAYLIST_COLUMN_COUNT - len(values))
-                # 13-col layout: 0 time, 1 ops, 2 script, 3 domain, 4 synth, 5 patch,
-                # 6 velocity, 7 effect, 8 amount, 9 direction, 10 multi, 11 coverage, 12 blend
+                # Full 18-column layout.  The tail (13..17) is authoritative
+                # playlist state and MUST survive every table -> memory sync.
                 vel_txt = values[6]
                 effect = values[7]
                 amount = values[8]
@@ -9559,6 +9634,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 multi = values[10]
                 coverage = values[11]
                 blend = values[12]
+                goava_sequence = values[13]
+                paint_target = values[14]
+                paint_source = values[15]
+                paint_sequence = values[16]
+                paint_instrument = values[17]
 
                 row_dict = {
                     "time_marker": values[0],
@@ -9581,6 +9661,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     "multi_seq": multi,
                     "coverage": coverage,
                     "blend_partner": blend,
+                    "goava_sequence": goava_sequence,
+                    "paint_target": paint_target,
+                    "paint_source": paint_source,
+                    "paint_sequence": paint_sequence,
+                    "paint_instrument": paint_instrument,
                 }
 
                 try:
@@ -9596,10 +9681,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         row_dict[key] = value
 
                 # Recover missing canonical fields from prior state (incl. new structs).
+                # Tail columns are included explicitly; otherwise a render/export sync
+                # would erase columns 13..17 immediately after the consensus wrote them.
                 for c, key in {
                     2: "script_tag", 3: "domain_tag", 4: "synth_tag", 5: "patch_tag",
                     9: "direction_vector", 10: "multi_seq",
                     11: "coverage", 12: "blend_partner",
+                    13: "goava_sequence", 14: "paint_target", 15: "paint_source",
+                    16: "paint_sequence", 17: "paint_instrument",
                 }.items():
                     if not values[c] and prior.get(key) not in (None, ""):
                         row_dict[key] = prior[key]
@@ -9804,7 +9893,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         numbers = self._parse_goava_seed_values()
         if not numbers:
             return []
-        base = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 216.0
+        base = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
         events = []
         for i, number in enumerate(numbers):
             hz, raw = goava_frequency(number, i, numbers, base)
@@ -9853,10 +9942,50 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 ops.append("GOAVA")
                 e["operators"] = list(dict.fromkeys(ops))
                 e["operators_csv"] = ", ".join(e["operators"])
-                mseq = [x.strip() for x in str(e.get("multi_seq", "")).split(",") if x.strip() and x.strip() != "GOAVA"]
-                mseq.append("GOAVA")
-                e["multi_seq"] = ", ".join(dict.fromkeys(mseq))
-                e["goava_unison_weight"] = 1.0 / max(1, self._canonical_active_count())
+                # GOAVA participates in the same sequence/unison lattice as the
+                # other canonicals.  Do not depend on activation order or on the
+                # currently-selected sequence: distribute uniformly over every
+                # sequence actually available for this instrument.
+                inst = str(e.get("operator") or (self.instrument_names_48[r % len(self.instrument_names_48)] if self.instrument_names_48 else "Operator"))
+                bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(inst, {})
+                ids = sorted(int(k) for k, v in bank.items() if isinstance(v, dict) and str(k).isdigit()) or [1]
+                sid = ids[r % len(ids)]
+                smem = bank.get(sid, {}) if isinstance(bank, dict) else {}
+                plen = max(1, int((smem or {}).get("pattern_length", 16) or 16))
+                phase = (r * max(1, len(ids)) + sid - 1) % plen
+                refs = [f"{inst}#S{sid}"]
+                # GOAVA owns a contribution, not the shared playlist fields.  This
+                # is critical for activation-order independence: never replace the
+                # other canonicals' sequence/paint metadata here.  Store GOAVA in the
+                # same contribution lattice and let the single reconciliation pass
+                # merge all active sources uniformly.
+                goava_contrib = {
+                    "operators": ["GOAVA"],
+                    "multi_seq": list(refs),
+                    "sequence_refs": list(refs),
+                    "phase_offsets": {inst: int(phase)},
+                    "sequence_index": int(r % len(ids)) + 1,
+                    "canonical_weight": 1.0 / max(1, self._canonical_active_count()),
+                    "active": True,
+                    "paint_target": "GOAVA → Playlist",
+                    "paint_source": f"Canonical GOAVA · {inst}",
+                    "paint_sequence": refs[0],
+                    "paint_instrument": inst,
+                    "coverage_map": {inst: 1.0},
+                    "coverage": "100%",
+                    # GOAVA does not own playlist timing; preserving the existing
+                    # row timing prevents a GOAVA toggle from resetting user/canonical
+                    # time-marker constraints to zero.
+                    "direction": 0.0,
+                    "direction_vector": "+0.0000",
+                    "velocity": float(ev.get("weight", 1.0)),
+                    "effect_target": "GOAVA",
+                    "auto_amount": "0.0%",
+                    "blend_partner": "",
+                }
+                e.setdefault("engine_contributions", {})["goava"] = copy.deepcopy(goava_contrib)
+                e["goava_unison_weight"] = goava_contrib["canonical_weight"]
+                self._reconcile_engine_playlist_row(e, e.get("user_instances") or [])
         else:
             for r in range(rows):
                 e = self.master_playlist_data[r]
@@ -9908,6 +10037,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if hasattr(self, "scope_status_label"):
                 self.scope_status_label.setText("📐 GOAVA · OFF")
         self._live_engine_signatures.pop("goava", None) if hasattr(self, "_live_engine_signatures") else None
+        self._rebuild_active_canonical_playlist("goava_toggle")
 
     def _goava_mix(self, local_t, row_idx, step_duration):
         if not getattr(self, "goava_active", False):
@@ -10002,6 +10132,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _randomize_local_context(self, checked=True):
         if not checked:
             self._deactivate_engine_generated_content(source_label="Randomizer", source_key="randomizer")
+            # OFF is a full canonical transaction too: rebuild the surviving
+            # ensemble so the playlist tail and consensus cannot retain stale
+            # randomizer coverage.
+            if hasattr(self, "_rebuild_active_canonical_playlist") and not getattr(self, "_canonical_rebuild_guard", False):
+                self._rebuild_active_canonical_playlist("randomizer_toggle_off")
             return
         if getattr(self, "_composition_generation_guard", False):
             return
@@ -10037,6 +10172,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._active_engine_write_source = None
             self._restore_global_effect_sliders(snap)
             self._composition_generation_guard = False
+        if hasattr(self, "_canonical_rebuild_guard") and not self._canonical_rebuild_guard:
+            self._rebuild_active_canonical_playlist("randomizer_toggle")
     def _canonical_playlist_paint(self, rng, mode="randomize", strength=0.55):
         if getattr(self, "_composition_generation_guard", False):
             # The caller owns the transaction guard.
@@ -10107,6 +10244,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         rows = table.rowCount()
         cols = min(table.columnCount(), PLAYLIST_COLUMN_COUNT)
+
+        if self._canonical_protect_user() and hasattr(self, "_canonical_prune_stale_playlist_touches"):
+            self._canonical_prune_stale_playlist_touches()
 
         # Prevent the brush's expansion logic from recursively expanding
         # every procedural paint, and from tagging cells as user-owned.
@@ -10210,7 +10350,26 @@ class MathematiciansGrooveboxApp(QMainWindow):
             16: "paint_sequence",
             17: "paint_instrument",
         }
-        rows = min(table.rowCount(), len(data))
+        # The memory model is authoritative.  Resize the visible table to the
+        # complete playlist span before writing, so terminal rows can never be
+        # silently omitted after an ensemble/playlist resize.
+        target_rows = len(data)
+        try:
+            if table.rowCount() != target_rows:
+                table.setRowCount(target_rows)
+            if table.columnCount() < PLAYLIST_COLUMN_COUNT:
+                table.setColumnCount(PLAYLIST_COLUMN_COUNT)
+        except Exception:
+            pass
+        # Always fit every playlist column to the current viewport.
+        try:
+            hdr = table.horizontalHeader()
+            for ci in range(min(PLAYLIST_COLUMN_COUNT, table.columnCount())):
+                hdr.setSectionResizeMode(ci, QHeaderView.ResizeMode.Stretch)
+            hdr.setStretchLastSection(False)
+        except Exception:
+            pass
+        rows = target_rows
         for r in range(rows):
             entry = data[r] if isinstance(data[r], dict) else {}
             for c, key in colmap.items():
@@ -10236,6 +10395,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _phase_lock_local_context(self, checked=True):
         if not checked:
             self._deactivate_engine_generated_content(source_label="PhaseLock", source_key="phase_lock")
+            # OFF is a full canonical transaction too: rebuild the surviving
+            # ensemble so the playlist tail and consensus cannot retain stale
+            # phase-lock coverage.
+            if hasattr(self, "_rebuild_active_canonical_playlist") and not getattr(self, "_canonical_rebuild_guard", False):
+                self._rebuild_active_canonical_playlist("phase_lock_toggle_off")
             return
         if getattr(self, "_composition_generation_guard", False):
             return
@@ -10274,6 +10438,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._active_engine_write_source = None
             self._restore_global_effect_sliders(snap)
             self._composition_generation_guard = False
+        if hasattr(self, "_canonical_rebuild_guard") and not self._canonical_rebuild_guard:
+            self._rebuild_active_canonical_playlist("phase_lock_toggle")
 
     def _mark_generated_synth_context(self, source="randomizer", rng=None):
         """Generate algorithmic synth/script context in the shared state; user values remain authoritative."""
@@ -10394,10 +10560,26 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 v = str(c.get(k, "") or "").strip()
                 if v and v not in structs[k]:
                     structs[k].append(v)
-            try:
-                offsets.append(float(c.get("time_offset")))
-            except Exception:
-                pass
+            # GOAVA is a sequence/pitch contributor, not an owner of the
+            # playlist row's absolute timing constraint.  Its legacy contribution
+            # carries time_offset=0.0, which must never pull an existing row back
+            # toward zero.  If GOAVA explicitly supplies its own tempo-relative
+            # offset, keep that as an additive delta to the preserved row timing.
+            _src_key = str(src).strip().casefold()
+            if _src_key == "goava":
+                try:
+                    _goava_delta = float(c.get("goava_time_offset", c.get("tempo_offset", 0.0)) or 0.0)
+                    if math.isfinite(_goava_delta) and abs(_goava_delta) > 1e-12:
+                        entry["_goava_time_delta"] = float(_goava_delta)
+                except Exception:
+                    pass
+            else:
+                try:
+                    _off = float(c.get("time_offset"))
+                    if math.isfinite(_off):
+                        offsets.append(_off)
+                except Exception:
+                    pass
             try:
                 directions.append(float(c.get("direction")))
             except Exception:
@@ -10450,18 +10632,55 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if ops:
             entry["operators"] = ops
             entry["operators_csv"] = ", ".join(ops)
-            entry["operator"] = ops[0]
+            # Scalar Operator Identity is the immutable row identity, never the
+            # first canonical contributor.  This prevents GOAVA from becoming the
+            # sole displayed identity after a toggle/rebuild.
+            base_identity = str(entry.get("_unison_base_operator") or entry.get("operator") or "").strip()
+            if base_identity and base_identity.casefold() != "goava":
+                entry["operator"] = base_identity
+            else:
+                non_goava = [x for x in ops if str(x).casefold() != "goava"]
+                entry["operator"] = sorted(non_goava, key=str.casefold)[0] if non_goava else base_identity
             entry["multi_seq"] = ", ".join(dict.fromkeys(multi + ops))
         else:
             entry["operators"] = []
             entry["operators_csv"] = ", ".join(users)
             entry["operator"] = ops[0] if ops else (users[0].split("@",1)[0].strip() if users else "")
             entry["multi_seq"] = ", ".join(dict.fromkeys(multi))
+        _base_time = None
+        try:
+            _raw_base = entry.get("time_offset")
+            if _raw_base is not None:
+                _base_time = float(_raw_base)
+                if not math.isfinite(_base_time):
+                    _base_time = None
+        except Exception:
+            _base_time = None
+        _goava_delta = float(entry.pop("_goava_time_delta", 0.0) or 0.0)
+        if not math.isfinite(_goava_delta):
+            _goava_delta = 0.0
         if offsets:
             offsets = [round(x, 6) for x in offsets]
             entry["combined_time_offsets"] = offsets
-            entry["time_offset"] = float(np.mean(offsets))
+            # Existing row timing remains the anchor.  Canonical timing
+            # contributions refine it only when they actually own timing.
+            _canonical_time = float(np.mean(offsets))
+            _anchor = _base_time if _base_time is not None else _canonical_time
+            entry["time_offset"] = float(_anchor + _goava_delta)
             entry["time_marker"] = f"e:{entry['time_offset']:.4f}s"
+        elif _base_time is not None or abs(_goava_delta) > 1e-12:
+            # No canonical timing owner: preserve the row constraint and allow
+            # GOAVA's own tempo-relative timing only as an additive delta.
+            entry["time_offset"] = float((_base_time if _base_time is not None else 0.0) + _goava_delta)
+            entry["time_marker"] = f"e:{entry['time_offset']:.4f}s"
+        elif entry.get("time_offset") is not None:
+            # Timing is an existing row constraint, not an implicit zero from an
+            # engine that does not own timing (notably GOAVA).  Preserve it exactly.
+            try:
+                entry["time_offset"] = float(entry.get("time_offset"))
+                entry["time_marker"] = str(entry.get("time_marker") or f"e:{entry['time_offset']:.4f}s")
+            except Exception:
+                pass
         if directions:
             d = float(np.mean(directions))
             entry["direction"] = d
@@ -10556,6 +10775,24 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 e = {}
                 self.master_playlist_data[r] = e
 
+            # Canonical engines may add their own tempo-relative timing, but they
+            # never own the playlist row's absolute time constraint. Capture the
+            # current row anchor before this engine constructs replacement fields.
+            if "_playlist_time_anchor" not in e:
+                try:
+                    _anchor0 = float(e.get("time_offset"))
+                    if math.isfinite(_anchor0):
+                        e["_playlist_time_anchor"] = _anchor0
+                except Exception:
+                    _tm0 = str(e.get("time_marker") or "").strip()
+                    if _tm0:
+                        try:
+                            _anchor0 = float(_tm0.lstrip("e:").rstrip("s"))
+                            if math.isfinite(_anchor0):
+                                e["_playlist_time_anchor"] = _anchor0
+                        except Exception:
+                            pass
+
             # Preserve only explicitly user-owned instances from the previous row.
             users = list(e.get('user_instances') or [])
             old_ops = e.get('operators_csv', e.get('operator', ''))
@@ -10581,9 +10818,26 @@ class MathematiciansGrooveboxApp(QMainWindow):
             source_hash = sum((j + 1) * ord(ch) for j, ch in enumerate(str(source))) & 0x7FFFFFFF
             row_key = (seed ^ ((r + 1) * 0x9E3779B1) ^ source_hash) & 0x7FFFFFFF
             rr = np.random.default_rng(row_key)
-            active = bool(rr.random() < (0.62 if source == 'midpoint' else 0.70))
-            n_inst = 1 if names else 1
-            idxs = [int(rr.integers(0, len(names)))] if names else [0]
+            # Row presence is structural; note density belongs to the sequencer
+            # gates. Keep every canonical row materialized in the playlist.
+            active = True
+            # Every canonical row is an ensemble contribution, not a single-voice
+            # selection.  The previous n_inst=1 path made an all-active consensus
+            # audibly collapse toward one instrument and left the playlist visually
+            # sparse.  Select a deterministic, size-aware subset without replacement.
+            n_available = len(names)
+            if n_available:
+                # Scale voice participation smoothly with ensemble size, while
+                # guaranteeing a genuinely multi-instrument row for ensembles >= 2.
+                n_inst = min(n_available, max(2, int(round(math.sqrt(n_available) * 1.55))))
+                perm = rr.permutation(n_available)
+                idxs = [int(x) for x in perm[:n_inst]]
+                # Stable row rotation prevents one fixed prefix from dominating.
+                shift = (r + source_hash + (seed & 0xFFFF)) % n_available
+                idxs = [int((x + shift) % n_available) for x in idxs]
+                idxs = list(dict.fromkeys(idxs))
+            else:
+                n_inst, idxs = 1, [0]
             eng_ops = [names[i] for i in idxs]
             tag = f"@e:{source[:4]}:{seed & 0xFFFFF:05x}:{r:03d}"
             t_off = (r * (0.125 + 0.031 * MEUM_NORM) + float(rr.uniform(-0.045, 0.045)))
@@ -10747,7 +11001,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
                                  "time_offset", "active", "paint_target", "paint_source",
                                  "paint_sequence", "paint_instrument")
             e.setdefault("engine_contributions", {})[str(source)] = {k: copy.deepcopy(fields.get(k)) for k in contribution_keys}
+            # Column 0 is special: it is a row timing constraint. An engine's
+            # generated `t_off` is not allowed to replace it. If the user explicitly
+            # edited column 0, that edit becomes the new anchor; otherwise retain the
+            # anchor captured above.
+            _time_user_locked = 0 in locked_cols
+            _time_anchor_before = e.get("_playlist_time_anchor")
             e.update(fields)
+            if _time_user_locked:
+                try:
+                    _ta = float(e.get("time_offset"))
+                    if math.isfinite(_ta):
+                        e["_playlist_time_anchor"] = _ta
+                except Exception:
+                    pass
+            elif _time_anchor_before is not None:
+                try:
+                    _ta = float(_time_anchor_before)
+                    if math.isfinite(_ta):
+                        e["time_offset"] = _ta
+                        e["time_marker"] = f"e:{_ta:.4f}s"
+                except Exception:
+                    pass
             if users:
                 e['user_instances'] = users
             self._reconcile_engine_playlist_row(e, users)
@@ -10788,7 +11063,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
             table_set(r, 10, multi_seq)
             table_set(r, 11, coverage)
             table_set(r, 12, partner)
-            table_set(r, 13, e.get("goava_sequence", ""))
+            # FULL-SPAN UNISON WRITE: columns 13–17 are part of the same
+            # authoritative transaction as columns 0–12.  Previously only
+            # GOAVA (col 13) was written here; the four paint metadata columns
+            # existed in memory but never reached the live Paintbrush table.
+            # That made all-active unison appear to lose the terminal five
+            # columns depending on which later sync path ran.
+            table_set(r, 13, fields.get("goava_sequence", e.get("goava_sequence", "")))
+            table_set(r, 14, fields.get("paint_target", e.get("paint_target", "")))
+            table_set(r, 15, fields.get("paint_source", e.get("paint_source", "")))
+            table_set(r, 16, fields.get("paint_sequence", e.get("paint_sequence", "")))
+            table_set(r, 17, fields.get("paint_instrument", e.get("paint_instrument", "")))
             painted += 1
 
         # Structural postcondition: every generated row has all ten canonical fields.
@@ -10808,13 +11093,27 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 _entry["time_offset"] = float(t_off)
             # Ensure idealized structure set is present for Unison recycling.
             op_name = _entry.get("operator") or (names[_ri % len(names)] if names else "Operator")
-            try:
-                _struct = idealized_operator_struct(self, op_name, row=_ri)
-            except Exception:
-                _struct = {}
+            _ops_for_struct = _entry.get("operators") or [op_name]
+            if isinstance(_ops_for_struct, str):
+                _ops_for_struct = [x.strip() for x in _ops_for_struct.split(",") if x.strip()]
+            _structs = []
+            for _oi, _oname in enumerate(_ops_for_struct[:8]):
+                try:
+                    _structs.append(idealized_operator_struct(self, _oname, row=_ri + _oi))
+                except Exception:
+                    pass
             for _sk in PLAYLIST_STRUCT_COLUMNS:
-                if not str(_entry.get(_sk) or "").strip():
-                    _entry[_sk] = _struct.get(_sk, "")
+                _vals = []
+                for _st in _structs:
+                    _v = str(_st.get(_sk, "") or "").strip()
+                    if _v and _v not in _vals:
+                        _vals.append(_v)
+                if _vals:
+                    _entry[_sk] = " | ".join(_vals[:8])
+                elif not str(_entry.get(_sk) or "").strip():
+                    _entry[_sk] = f"{_sk.split('_')[0].title()}::{op_name}"
+            _entry["operators"] = list(dict.fromkeys([str(x).strip() for x in _ops_for_struct if str(x).strip()])) or [op_name]
+            _entry["operators_csv"] = ", ".join(_entry["operators"])
             if not str(_entry.get("direction_vector") or "").strip():
                 signed = 1.0 if (_ri % 2 == 0) else -1.0
                 _entry["direction_vector"] = f"{signed:+.4f}"
@@ -10828,6 +11127,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 _entry["coverage"] = "50%" if _entry.get("active", True) else "0%"
             if not str(_entry.get("blend_partner") or "").strip():
                 _entry["blend_partner"] = names[(_ri * 3 + 1) % len(names)] if names else ""
+            # Terminal-five invariant: every generated row has a complete
+            # canonical tail before the table sync.  Derive missing values from
+            # the same operator/sequence identity used above; never leave the
+            # tail dependent on activation order or a prior table state.
+            _op_tail = str(_entry.get("operator") or op_name)
+            _seq_tail = str(_entry.get("multi_seq") or _op_tail)
+            if getattr(self, "goava_active", False):
+                _entry["goava_sequence"] = str(_entry.get("goava_sequence") or f"GOAVA step={_ri + 1}")
+            else:
+                _entry["goava_sequence"] = str(_entry.get("goava_sequence") or "—")
+            _entry["paint_target"] = str(_entry.get("paint_target") or "Canonical → Playlist")
+            _entry["paint_source"] = str(_entry.get("paint_source") or f"Unison: {', '.join(_entry['operators'][:8])}")
+            _entry["paint_sequence"] = str(_entry.get("paint_sequence") or _seq_tail)
+            _entry["paint_instrument"] = str(_entry.get("paint_instrument") or ", ".join(_entry["operators"][:8]))
 
         if table is not None:
             try:
@@ -11256,7 +11569,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_base_frequency.setRange(0.0, 50000.0)
         self.spin_base_frequency.setDecimals(4)
         self.spin_base_frequency.setSingleStep(0.1)
-        self.spin_base_frequency.setValue(216.0)
+        self.spin_base_frequency.setValue(432.0)
         self.spin_tuning = self.spin_base_frequency  # compatibility alias
         self.top_layout.addWidget(self.spin_base_frequency)
         # Keep the primary effect sliders in their own visible row so they cannot
@@ -11859,44 +12172,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """Play a PKP NullLock playover modulation burst for 1..sequence_length steps."""
         self.pkp_pad_bank_active = False
         self._play_selected_instrument_pkp()
-        self._play_pkp_playover_modulator()
-
-    def _play_pkp_playover_modulator(self):
-        """Non-blocking playover: selected pitch, selected step count, never > one sequence."""
-        try:
-            if not HAS_SOUNDDEVICE:
-                return
-            sr = 44100
-            bpm = float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0
-            seq_len = max(1, int(self.spin_seq_length.value())) if hasattr(self, "spin_seq_length") else 1
-            steps = min(seq_len, int(self.slider_pkp_boost_steps.value()) if hasattr(self, "slider_pkp_boost_steps") else 1)
-            pitch_ratio = float(self.slider_pkp_boost_pitch.value()) / 100.0 if hasattr(self, "slider_pkp_boost_pitch") else 1.0
-            gain = float(getattr(self, "pkp_boost_amount", 1.0))
-            step_dur = 60.0 / max(bpm, 1.0) / 4.0
-            dur = max(0.02, step_dur * steps)
-            n = int(sr * dur)
-            t = np.arange(n, dtype=np.float32) / sr
-            inst_name = self.instrument_selector_dropdown.currentText()
-            try:
-                op_idx = self.instrument_names_48.index(inst_name)
-            except ValueError:
-                op_idx = 0
-            base = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 216.0
-            root = base * MEUM_POWERS_36[op_idx % 36] * pitch_ratio
-            # Deterministic stepped playover; envelope spans exactly the requested number of steps.
-            phase = 2.0 * np.pi * root * t
-            mod = 1.0 + 0.12 * np.sin(2.0 * np.pi * (1.0 / max(step_dur, 1e-4)) * t * MEUM_INV)
-            tone = (0.72 * np.sin(phase * mod) + 0.28 * np.sin(phase * 2.0))
-            env = np.minimum(1.0, t / max(0.012, step_dur * 0.08)) * np.exp(-t / max(dur * 0.72, 0.02))
-            hit = (tone * env * 0.18 * gain).astype(np.float32)
-            peak = float(np.max(np.abs(hit))) if hit.size else 0.0
-            if peak > 0.95:
-                hit *= 0.95 / peak
-            sd.play(hit, sr, blocking=False)
-            if hasattr(self, "scope_status_label"):
-                self.scope_status_label.setText(f"⚡ PKP playover · {steps}/{seq_len} steps · {pitch_ratio:.2f}×")
-        except Exception as e:
-            print(f"[PKP playover] {e}")
 
     def _play_selected_instrument_pkp(self):
         """One-shot audition of a modified PKP/Null-Lock instance of the selected instrument."""
@@ -11933,7 +12208,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         selected=self.instrument_selector_dropdown.currentText()
         total=0.0
         t=np.linspace(0.0, step_duration, n_samples, endpoint=False)
-        base=float(self.spin_base_frequency.value()) if hasattr(self,'spin_base_frequency') else 216.0
+        base=float(self.spin_base_frequency.value()) if hasattr(self,'spin_base_frequency') else 432.0
         for idx,name in enumerate(getattr(self,'instrument_names_48',[])):
             if name==selected: continue
             mem=self.instrument_sequencer_memory.get(name,{})
@@ -11962,7 +12237,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 op_idx = self.instrument_names_48.index(inst_name)
             except ValueError:
                 op_idx = step_idx
-            base_freq = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 216.0
+            base_freq = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
             base_freq *= MEUM_POWERS_36[op_idx % 36]
             # Slight pitch offset per step so the sequence is musical
             freq = base_freq * (1.0 + (step_idx % 12) * 0.03)
@@ -12529,49 +12804,39 @@ class MathematiciansGrooveboxApp(QMainWindow):
             ]
 
     def _engine_write_sequence_panels(self, source="randomizer", instrument_names=None):
-        """Canonical engines call this when Edit-panels-per-sequence is ON.
-
-        Writes generated synth/script/domain/patch into each instrument's
-        *current* sequence panel slot without touching user_owned sequences.
-        """
-        if not self._panels_per_sequence_enabled():
-            return 0
-        names = list(instrument_names or getattr(self, "instrument_names_48", []) or [])
-        written = 0
-        for i, name in enumerate(names):
-            try:
-                mem = self._current_sequence_mem(name)
-                if mem.get("user_owned"):
-                    continue  # never overwrite user sequence panels
-                panels = self._sequence_panel_slot(name)
-                # Synth snapshot from live/generated param state
-                params = dict((getattr(self, "instrument_param_state", {}) or {}).get(name, {}) or {})
-                gen = dict((getattr(self, "instrument_param_generated", {}) or {}).get(name, {}) or {})
-                for k, v in gen.items():
-                    params.setdefault(k, v)
-                panels["synth"] = copy.deepcopy(params)
-                # Script body
-                panels["script"] = str((getattr(self, "instrument_scripts", {}) or {}).get(name, "") or "")
-                # Domain tag blob for this instrument
-                engine = getattr(self, "domain_eq_engine", None)
-                if engine is not None:
-                    relevant = [
-                        copy.deepcopy(d) for d in (engine.domains or [])
-                        if isinstance(d, dict) and (
-                            name[:6].lower() in str(d.get("name", "")).lower()
-                            or str(d.get("source", "")) == source
-                        )
-                    ]
-                    panels["domain"] = {"domains": relevant[:4], "source": source}
-                # Patch edges involving this op
-                panels["patch"] = [
-                    copy.deepcopy(c) for c in (getattr(self, "patch_connections", []) or [])
-                    if isinstance(c, dict) and (c.get("source") == name or c.get("target") == name)
-                ][:6]
-                panels["engine_source"] = source
-                written += 1
-            except Exception as exc:
-                print(f"[Panels] engine write {name}: {exc}")
+        """Write engine panel candidates per sequence, with deterministic consensus."""
+        if not self._panels_per_sequence_enabled(): return 0
+        names=list(instrument_names or getattr(self,"instrument_names_48",[]) or [])
+        written=0
+        for name in names:
+            bank=(getattr(self,"instrument_sequence_banks",{}) or {}).setdefault(name,{})
+            ids=sorted(int(k) for k in bank if str(k).isdigit()) or [1]
+            for sid in ids:
+                mem=bank.setdefault(sid,{})
+                if mem.get("user_owned"): continue
+                panels=self._sequence_panel_slot(name,sid)
+                ec=panels.setdefault("engine_contributions",{})
+                if not isinstance(ec,dict): ec=panels["engine_contributions"]={}
+                params=dict((getattr(self,"instrument_param_state",{}) or {}).get(name,{}) or {})
+                gen=dict((getattr(self,"instrument_param_generated",{}) or {}).get(name,{}) or {})
+                for k,v in gen.items(): params.setdefault(k,v)
+                engine=getattr(self,"domain_eq_engine",None)
+                domains=[copy.deepcopy(d) for d in (engine.domains or []) if isinstance(d,dict) and (name[:6].lower() in str(d.get("name","")).lower() or str(d.get("source",""))==source)][:4] if engine is not None else []
+                patch=[copy.deepcopy(c) for c in (getattr(self,"patch_connections",[]) or []) if isinstance(c,dict) and (c.get("source")==name or c.get("target")==name)][:6]
+                ec[str(source)]={"synth":copy.deepcopy(params),"script":str((getattr(self,"instrument_scripts",{}) or {}).get(name,"") or ""),"domain":{"domains":domains,"source":str(source)},"patch":patch}
+                merged_synth={}; merged_script=""; merged_domains=[]; merged_patch=[]; sources=[]
+                for src in sorted(ec):
+                    cp=ec[src] or {}
+                    if cp.get("synth"): merged_synth.update(copy.deepcopy(cp["synth"]))
+                    if cp.get("script") and not merged_script: merged_script=str(cp["script"])
+                    dom=cp.get("domain") or {}
+                    for d in dom.get("domains",[]) if isinstance(dom,dict) else []:
+                        if d not in merged_domains: merged_domains.append(copy.deepcopy(d))
+                    for edge in cp.get("patch",[]) or []:
+                        if edge not in merged_patch: merged_patch.append(copy.deepcopy(edge))
+                    sources.append(src)
+                panels.update({"synth":merged_synth,"script":merged_script,"domain":{"domains":merged_domains[:8],"sources":sources},"patch":merged_patch[:12],"engine_source":"+".join(sources)})
+                written+=1
         return written
 
     def _on_sequence_selector_changed(self, combo_index):
@@ -12652,71 +12917,96 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._on_sequence_length_changed(value)
 
     def _canonical_sequence_reconcile(self, trigger_source=None):
-        """Create/remove only engine-owned numbered sequences; never delete user sequences."""
+        """Reconcile canonical sequence entries as a pure function of active set.
+
+        Canonical sequence IDs are reserved by *canonical source rank*, never by
+        max(existing_id)+1.  This prevents toggle history from becoming encoded in
+        the sequence bank.  User-owned sequences keep their IDs; canonical slots are
+        rebuilt deterministically after those user IDs.
+        """
         banks = getattr(self, "instrument_sequence_banks", {}) or {}
         names = list(getattr(self, "instrument_names_48", []) or [])
         active = set(self._active_engine_sources()) if hasattr(self, "_active_engine_sources") else set()
         if getattr(self, "goava_active", False):
             active.add("goava")
+        canonical_order = ["euclidean", "goava", "phase_lock", "randomizer", "seeded"]
+        active_order = [x for x in canonical_order if x in active]
         if not names:
             return
-        # One deterministic sequence per active canonical per instrument.
+        seed = _safe_int_seed(self.get_numeric_seed())
+
         for name in names:
             bank = banks.setdefault(name, {})
             if not bank:
-                bank[1] = self.instrument_sequencer_memory.get(name, {"steps": [], "pattern_length": 16})
-            for source in sorted(active):
-                owner = f"canonical:{source}"
-                existing = [idx for idx, mem in bank.items() if isinstance(mem, dict) and mem.get("canonical_owner") == owner]
-                if not existing:
-                    idx = max(bank.keys(), default=0) + 1
-                    n = int(bank.get(1, {}).get("pattern_length", 16) or 16)
-                    n = max(1, min(1024, n))
-                    mem = {
-                        "sequence_id": idx, "pattern_length": n, "canonical_owner": owner, "user_owned": False,
-                        "steps": [False] * n, "gates": [True] * n, "amplitudes": [1.0] * n,
-                        "pitches": [1.0] * n, "probabilities": [100] * n, "offsets": [0.0] * n,
-                        "engine_step_sources": {},
-                    }
-                    bank[idx] = mem
-                idx = min(existing + [max(bank.keys())]) if existing else max(k for k,v in bank.items() if isinstance(v,dict) and v.get("canonical_owner")==owner)
-                mem = bank[idx]
-                # Deterministic canonical sequence content; never touch user-owned slots.
-                seed = _safe_int_seed(self.get_numeric_seed())
-                channel = sum(ord(c) for c in owner) & 0xFFFF
-                rng = np.random.default_rng((seed ^ channel ^ (int.from_bytes(hashlib.sha256(name.encode("utf-8")).digest()[:4], "big"))) & 0x7fffffff)
-                n = int(mem.get("pattern_length", 16) or 16)
-                self._ensure_seq_mem_length(mem, n)
+                bank[1] = copy.deepcopy(self.instrument_sequencer_memory.get(name, {}) or
+                                        {"pattern_length": 16, "steps": [False]*16,
+                                         "gates": [True]*16, "amplitudes": [1.0]*16,
+                                         "pitches": [1.0]*16, "probabilities": [100]*16,
+                                         "offsets": [0.0]*16})
+
+            # Preserve user-owned/non-canonical IDs exactly.  Canonical IDs occupy a
+            # deterministic contiguous range after the highest user sequence ID.
+            user_ids = sorted(int(k) for k,v in bank.items()
+                              if str(k).isdigit() and isinstance(v, dict)
+                              and not str(v.get("canonical_owner", "")).startswith("canonical:"))
+            if not user_ids:
+                user_ids = [1]
+                bank.setdefault(1, {"sequence_id": 1, "pattern_length": 16,
+                                     "steps": [False]*16, "gates": [True]*16,
+                                     "amplitudes": [1.0]*16, "pitches": [1.0]*16,
+                                     "probabilities": [100]*16, "offsets": [0.0]*16,
+                                     "user_owned": True})
+            # Remove every old canonical entry first. This is intentional: generated
+            # canonical state is reproducible from (seed, source, instrument), while
+            # user sequence entries are the only persistent sequence memory.
+            for idx in list(bank.keys()):
+                mem = bank.get(idx)
+                if isinstance(mem, dict) and str(mem.get("canonical_owner", "")).startswith("canonical:"):
+                    bank.pop(idx, None)
+
+            base_max = max(user_ids)
+            for rank, source in enumerate(active_order, start=1):
+                idx = base_max + rank
+                n = int(bank.get(user_ids[0], {}).get("pattern_length", 16) or 16)
+                n = max(1, min(1024, n))
+                mem = {
+                    "sequence_id": idx, "pattern_length": n,
+                    "canonical_owner": f"canonical:{source}", "user_owned": False,
+                    "steps": [False] * n, "gates": [True] * n,
+                    "amplitudes": [1.0] * n, "pitches": [1.0] * n,
+                    "probabilities": [100] * n, "offsets": [0.0] * n,
+                    "engine_step_sources": {}, "touched": set(),
+                }
+                channel = sum(ord(c) for c in source) & 0xFFFF
+                name_hash = int.from_bytes(hashlib.sha256(name.encode("utf-8")).digest()[:4], "big")
+                rng = np.random.default_rng((seed ^ channel ^ name_hash) & 0x7fffffff)
                 for j in range(n):
-                    if mem.get("touched") and j in mem["touched"]:
-                        continue
                     if source == "goava":
                         mem["steps"][j] = True
                         mem["pitches"][j] = float(np.clip(0.86 + 0.28 * ((j + seed) % 7) / 6.0, 0.5, 1.5))
+                    elif source == "euclidean":
+                        pulses = max(2, n // 4)
+                        stride = max(2, int(2 + (channel % 5)))
+                        mem["steps"][j] = bool(((j * stride + channel) % n) < pulses)
                     else:
                         threshold = 0.34 + 0.18 * math.sin((j + 1) * MEUM_INV + channel * 1e-4)
-                        if source == "euclidean":
-                            mem["steps"][j] = bool(((j * max(2, int(2 + (channel % 5))) + channel) % n) < max(2, n // 4))
-                        else:
-                            mem["steps"][j] = bool(rng.random() > threshold)
+                        mem["steps"][j] = bool(rng.random() > threshold)
                     mem["amplitudes"][j] = float(0.35 + 0.6 * ((math.sin((j + 1) * MEUM + channel * 0.001) + 1.0) * 0.5))
                     mem["offsets"][j] = float(np.clip(0.22 * math.sin((j + 1) * MEUM_INV + seed * 1e-5), -0.5, 0.5))
-                    mem.setdefault("engine_step_sources", {}).setdefault(int(j), set()).add(owner)
-            # Remove only this engine's orphaned sequence when the canonical turns off.
-            for idx in list(bank.keys()):
-                mem = bank.get(idx)
-                if not isinstance(mem, dict):
-                    continue
-                owner = mem.get("canonical_owner")
-                if owner and owner.startswith("canonical:") and owner.split(":", 1)[1] not in active:
-                    bank.pop(idx, None)
-            if not bank:
-                bank[1] = self.instrument_sequencer_memory.get(name, {"pattern_length": 16})
-            selected = int(getattr(self, "instrument_selected_sequence", {}).get(name, min(bank)))
-            if selected not in bank:
-                selected = min(bank)
+                    mem["engine_step_sources"][int(j)] = {f"canonical:{source}"}
+                bank[idx] = mem
+
+            # Selected sequence is preserved if it points to a user sequence;
+            # otherwise it is assigned deterministically to the first canonical slot.
+            selected_map = getattr(self, "instrument_selected_sequence", {})
+            selected = int(selected_map.get(name, user_ids[0]))
+            if selected not in bank or (isinstance(bank.get(selected), dict) and
+                                        str(bank[selected].get("canonical_owner", "")).startswith("canonical:")):
+                selected = user_ids[0]
+            selected_map[name] = selected
             self.instrument_selected_sequence[name] = selected
             self.instrument_sequencer_memory[name] = bank[selected]
+
         self._refresh_sequence_dependent_panels()
 
     def _ensure_sequence_banks_after_resize(self):
@@ -12728,6 +13018,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.instrument_selected_sequence[name] = min(banks[name])
             idx = self.instrument_selected_sequence[name]
             self.instrument_sequencer_memory[name] = banks[name].get(idx, next(iter(banks[name].values())))
+        # Resize/recomposition is an authoritative boundary: re-expand GOAVA
+        # after sequence banks exist so no activation order can leave a tail of
+        # playlist rows unfilled.
+        if getattr(self, "goava_active", False) and getattr(self, "goava_note_events", None):
+            try:
+                self._apply_goava_to_canonical_playlist()
+            except Exception:
+                pass
 
     def _ensure_seq_mem_length(self, mem, count):
         """Grow sequencer arrays to `count` without shrinking or wiping existing entries."""
@@ -12927,6 +13225,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.btn_idealize_rhythm.setText("✨ Euclidean Live Lock")
             self._deactivate_engine_generated_content(source_label="EuclideanLiveLock", source_key="euclidean")
             self._canonical_sequence_reconcile("euclidean")
+        self._rebuild_active_canonical_playlist("euclidean_toggle")
 
     def _on_seeded_live_toggled(self, checked):
         if hasattr(self, "_style_toggle_randomizer"):
@@ -12948,6 +13247,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.btn_seeded_randomize.setText("🎲 Seeded Live Randomizer")
             self._deactivate_engine_generated_content(source_label="SeededLiveRandomizer", source_key="seeded")
             self._canonical_sequence_reconcile("seeded")
+        self._rebuild_active_canonical_playlist("seeded_toggle")
 
     def _on_user_program_only_toggled(self, checked):
         if checked:
@@ -12965,6 +13265,42 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 btn.setText(off_label)
             self._deactivate_engine_generated_content(source_label="UserProgramOnly")
             print("[User program only] Live engines suspended — carrier only")
+
+    def _canonical_prune_stale_playlist_touches(self):
+        """Remove resize-stale UI touches while retaining explicit user ownership.
+
+        Canonical Protect is meant to protect real user edits, not coordinates
+        inherited by newly created ensemble rows. Engine/UI writes are performed
+        with _paint_expanding, but older touched coordinates can survive a resize.
+        Those stale coordinates were the reason turning Protect OFF temporarily
+        made the ensemble suddenly become polyphonic again.
+        """
+        table = getattr(self, "active_paint_table", None)
+        if table is None:
+            return
+        touched = getattr(table, "playlist_user_touched", None)
+        if not touched:
+            return
+        data = getattr(self, "master_playlist_data", None) or []
+        valid = set()
+        for pair in list(touched):
+            try:
+                r, c = int(pair[0]), int(pair[1])
+            except Exception:
+                continue
+            if r < 0 or c < 0 or r >= len(data):
+                continue
+            e = data[r] if isinstance(data[r], dict) else {}
+            locks = set()
+            try:
+                locks = {int(x) for x in (e.get("user_locked_columns") or [])}
+            except Exception:
+                pass
+            # A persistent lock/user instance is proof of ownership. A bare old
+            # touch after resize is not.
+            if e.get("user_owned") or e.get("user_instances") or c in locks:
+                valid.add((r, c))
+        table.playlist_user_touched = valid
 
     def _canonical_protect_user(self):
         """True when user composition locks must be respected (default)."""
@@ -13140,43 +13476,43 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.scope_status_label.setText("📊 No userdata snapshot yet — paint or overwrite first")
 
     def _push_restored_playlist_to_table(self):
-        """Write restored master_playlist_data back onto the open playlist grid."""
-        table = getattr(self, "active_paint_table", None)
+        """Write the complete authoritative playlist row, including all 18 columns."""
+        table = getattr(self, "active_paint_table", None) or getattr(self, "paintbrush_table", None)
         if table is None:
-            table = getattr(self, "paintbrush_table", None)
-        if table is None or not hasattr(table, "set_cell_item"):
             return
         rows = getattr(self, "master_playlist_data", None) or []
-        n = min(table.rowCount(), len(rows))
-        for r in range(n):
-            e = rows[r] if isinstance(rows[r], dict) else {}
-            def _s(key, default=""):
-                v = e.get(key, default)
-                return "" if v in (None, [], {}) else str(v)
-            vel = e.get("velocity", "")
+        try:
+            if hasattr(table, "setRowCount") and table.rowCount() != len(rows):
+                table.setRowCount(len(rows))
+            if hasattr(table, "setColumnCount") and table.columnCount() < PLAYLIST_COLUMN_COUNT:
+                table.setColumnCount(PLAYLIST_COLUMN_COUNT)
+        except Exception:
+            pass
+
+        def put(r, c, text):
+            if c >= PLAYLIST_COLUMN_COUNT or r >= len(rows):
+                return
             try:
-                vel_txt = f"{float(vel) * 100:.1f}%" if vel not in ("", None) else ""
+                if hasattr(table, "set_cell_item"):
+                    table.set_cell_item(r, c, QTableWidgetItem(str(text)))
+                else:
+                    table.setItem(r, c, QTableWidgetItem(str(text)))
             except Exception:
-                vel_txt = str(vel) if vel else ""
-            cells = [
-                _s("time_marker"),
-                _s("operators_csv") or _s("operator"),
-                _s("script_tag"),
-                _s("domain_tag"),
-                _s("synth_tag"),
-                _s("patch_tag"),
-                vel_txt,
-                _s("effect_target") or _s("modulation"),
-                _s("auto_amount"),
-                _s("direction_vector") or _s("direction"),
-                _s("multi_seq"),
-                _s("coverage"),
-                _s("blend_partner"),
-                _s("goava_sequence"),
-            ]
-            for c, text in enumerate(cells):
-                if c < table.columnCount():
-                    table.set_cell_item(r, c, QTableWidgetItem(text))
+                pass
+
+        keys = PLAYLIST_COLUMNS
+        for r, e in enumerate(rows):
+            e = e if isinstance(e, dict) else {}
+            for c, key in enumerate(keys):
+                val = e.get(key, "")
+                if key == "operators_csv" and not val:
+                    val = e.get("operator", "")
+                if key == "velocity" and val not in (None, ""):
+                    try:
+                        val = f"{float(val) * 100:.1f}%"
+                    except Exception:
+                        pass
+                put(r, c, "" if val in (None, [], {}) else val)
 
     def _record_engine_step_ownership(self, source):
         """Remember which non-user steps an engine currently contributes."""
@@ -13329,27 +13665,33 @@ class MathematiciansGrooveboxApp(QMainWindow):
         return cleared_steps, cleared_rows
 
     def _on_canonical_protect_toggled(self, checked):
-        if checked:
-            n = self._restore_user_composition()
-            print("[Canonical] skip overwrite user composition — locks protected; seed modifies unison one-in-one")
-            if hasattr(self, "scope_status_label"):
-                if n:
-                    self.scope_status_label.setText(
-                        f"📊 Canonical protect ON — restored {n} user rows from snapshot"
-                    )
-                else:
-                    self.scope_status_label.setText("📊 Canonical protect ON — user composition preserved")
-        else:
-            self._wipe_user_composition_flags(take_snapshot=True)
-            if hasattr(self, "scope_status_label"):
-                self.scope_status_label.setText("📊 Canonical Overwrite — userdata snapshotted then wiped; unison rewritable")
-            try:
-                if getattr(self, "btn_seeded_randomize", None) and self.btn_seeded_randomize.isChecked():
-                    self._apply_live_engine_once("seeded", force=True)
-                if getattr(self, "btn_idealize_rhythm", None) and self.btn_idealize_rhythm.isChecked():
-                    self._apply_live_engine_once("euclidean", force=True)
-            except Exception as exc:
-                print(f"[Canonical Overwrite] refill: {exc}")
+        """Canonical-protect is a state boundary, followed by exactly one rebuild.
+
+        Do not invoke individual engines here: doing so creates a partially rebuilt
+        playlist which is then used as the next baseline.  Both directions therefore
+        enter the same history-free canonical transaction.
+        """
+        if getattr(self, "_canonical_protect_toggle_guard", False):
+            return
+        self._canonical_protect_toggle_guard = True
+        try:
+            if checked:
+                self._restore_user_composition()
+                # Restore is user-state recovery only.  Recompose surviving active
+                # canonicals from that recovered baseline so OFF->ON cannot retain
+                # the overwritten playlist tail or a single GOAVA identity.
+                if hasattr(self, "scope_status_label"):
+                    self.scope_status_label.setText("📊 Canonical protect ON — rebuilding from restored user baseline")
+                if hasattr(self, "_canonical_rebuild_guard") and not self._canonical_rebuild_guard:
+                    self._rebuild_active_canonical_playlist("canonical_protect_on")
+            else:
+                self._wipe_user_composition_flags(take_snapshot=True)
+                if hasattr(self, "scope_status_label"):
+                    self.scope_status_label.setText("📊 Canonical Overwrite — rebuilding complete unison")
+                if hasattr(self, "_canonical_rebuild_guard") and not self._canonical_rebuild_guard:
+                    self._rebuild_active_canonical_playlist("canonical_overwrite_on")
+        finally:
+            self._canonical_protect_toggle_guard = False
 
 
     def _live_engine_signature(self, which):
@@ -13459,7 +13801,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "bpm": self.spin_bpm.value() if hasattr(self, 'spin_bpm') else 120,
             "seq_length": int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16,
             "playlist_rows": int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else 64,
-            "base_frequency": float(self.spin_base_frequency.value()) if hasattr(self, 'spin_base_frequency') else 216.0,
+            "base_frequency": float(self.spin_base_frequency.value()) if hasattr(self, 'spin_base_frequency') else 432.0,
             "global_convolve": float(self.spin_global_convolve.value()) if hasattr(self, 'spin_global_convolve') else 0.0,
             # USER_TOUCHED_TRACKING: 'touched' is stored as a set() in memory
             # (for fast membership checks) but JSON has no set type, so it is
@@ -13508,7 +13850,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if hasattr(self, 'spin_playlist_length'):
                 self.spin_playlist_length.setValue(int(data.get("playlist_rows", 64)))
             if hasattr(self, 'spin_base_frequency'):
-                self.spin_base_frequency.setValue(float(data.get("base_frequency", 216.0)))
+                self.spin_base_frequency.setValue(float(data.get("base_frequency", 432.0)))
             if hasattr(self, 'slider_global_convolve'):
                 self.slider_global_convolve.setValue(int(round(float(data.get("global_convolve", 0.0)) * 100.0)))
             mem = data.get("instrument_sequencer_memory", {})
@@ -14759,16 +15101,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         smooth = max(3, min(63, int(nfft / 2048) * 2 + 3))
         kernel = np.ones(smooth, dtype=np.float32) / float(smooth)
         t_mag = np.convolve(t_mag, kernel, mode="same")
-        ratio = np.clip(t_mag / (v_mag + 1e-4), 0.15, 6.0)
+        ratio = np.clip(t_mag / (v_mag + 1e-4), 0.65, 1.8)
 
-        # Phase-lock is deliberately bounded: at 100% fit the target guides phase,
-        # while the oscillator's own phase remains the carrier at lower settings.
+        # ON-PHASE invariant: never blend target phase into the carrier.  Only
+        # magnitude is fitted, so the carrier's instantaneous phase/frequency
+        # remains untouched.  This avoids the gritty phase cancellation produced
+        # by repeated target-phase mixing.
         fit_amt = float(np.clip(amount, 0.0, 1.0))
-        v_unit = v_spec / (np.abs(v_spec) + 1e-7)
-        t_unit = t_spec / (np.abs(t_spec) + 1e-7)
-        phase_unit = (1.0 - 0.35 * fit_amt) * v_unit + (0.35 * fit_amt) * t_unit
-        phase_unit /= (np.abs(phase_unit) + 1e-7)
-        fitted_spec = (v_mag * (1.0 + fit_amt * (ratio - 1.0))) * phase_unit
+        fitted_mag = v_mag * (1.0 + fit_amt * (ratio - 1.0))
+        fitted_spec = fitted_mag * (v_spec / (np.abs(v_spec) + 1e-7))
         fitted = np.fft.irfft(fitted_spec, nfft)[:n].astype(np.float32)
         peak = max(float(np.max(np.abs(fitted))), 1e-9)
         original_peak = max(float(np.max(np.abs(v))), 1e-9)
@@ -14795,28 +15136,61 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     locked.add(name)
             except Exception:
                 pass
-        # Generate new name list reflecting the count
-        new_names = generate_synth_names(new_count, DEFAULT_INSTRUMENT_LIST)
-        # Preserve locked names when possible; map free slots to new spectrum names
-        preserved = [n for n in old_names if n in locked]
-        free_slots = new_count - len(preserved)
-        free_names = [n for n in new_names if n not in preserved]
-        if free_slots > 0:
-            # Ensure enough free names
-            while len(free_names) < free_slots:
-                free_names.append(f"Voice {len(free_names)+1}")
-            free_names = free_names[:free_slots]
-        else:
-            free_names = []
-            preserved = preserved[:new_count]
-        final_names = preserved + free_names
-        # Pad/trim
+        # Resize by stable identity, never by lock status. Existing identities keep
+        # their ordinal position; only genuinely new voices are appended. This is
+        # essential for resize invariance: adding/removing voices must not remap an
+        # existing oscillator onto another instrument's tuning or sequence state.
+        generated_names = list(generate_synth_names(new_count, DEFAULT_INSTRUMENT_LIST) or [])
+        final_names = list(old_names[:new_count])
+        used = set(final_names)
+        for candidate in generated_names:
+            if len(final_names) >= new_count:
+                break
+            if candidate not in used:
+                final_names.append(candidate)
+                used.add(candidate)
         while len(final_names) < new_count:
-            final_names.append(f"Operator_{len(final_names)+1}")
-        final_names = final_names[:new_count]
+            candidate = f"Operator_{len(final_names)+1}"
+            if candidate in used:
+                candidate = f"Operator_{len(final_names)+1}_{len(used)}"
+            final_names.append(candidate)
+            used.add(candidate)
 
-        # Harmonic geometric ratios for free voices
-        ratios = harmonic_spacing_ratios(new_count)
+        # RESIZE_FREQUENCY_IDENTITY: snapshot the *effective* carrier frequency
+        # before changing ensemble cardinality.  A ratio can be stable while the
+        # product harmonic_freq*tuning_ratio is not; that was the source of the
+        # remaining selected-voice pitch drop.  Surviving identities therefore carry
+        # an explicit absolute frequency anchor through resize.
+        old_param_state = getattr(self, "instrument_param_state", {}) or {}
+        ratios = harmonic_spacing_ratios(max(2, new_count))
+        stable_ratios = {}
+        stable_freq_hz = {}
+        old_names_set = set(old_names)
+        base_before = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
+        for i, name in enumerate(final_names):
+            prior = old_param_state.get(name, {}) if isinstance(old_param_state, dict) else {}
+            prior = prior if isinstance(prior, dict) else {}
+            if name in old_names_set:
+                try:
+                    tr = float(prior.get("tuning_ratio", prior.get("tuning", 1.0)))
+                except Exception:
+                    tr = 1.0
+                tr = max(tr, 1e-6)
+                try:
+                    # harmonic_freq is the actual oscillator carrier before the
+                    # tuning ratio is applied in the renderer.
+                    hf = float(prior.get("harmonic_freq", base_before * MEUM_POWERS_36[old_names.index(name) % 36]))
+                except Exception:
+                    hf = base_before * MEUM_POWERS_36[old_names.index(name) % 36]
+                stable_ratios[name] = tr
+                stable_freq_hz[name] = max(20.0, hf * tr)
+            else:
+                # New identities are assigned once, deterministically from identity.
+                h = int(hashlib.sha256(str(name).encode("utf-8")).hexdigest()[:8], 16)
+                tr = float(ratios[h % len(ratios)])
+                stable_ratios[name] = tr
+                idx = i % len(MEUM_POWERS_36)
+                stable_freq_hz[name] = max(20.0, base_before * float(MEUM_POWERS_36[idx]) * tr)
 
         # Rebuild sequencer memory: keep locked state, init free
         old_mem = dict(getattr(self, "instrument_sequencer_memory", {}) or {})
@@ -14850,13 +15224,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 new_banks[name] = {1: new_mem[name]}
                 new_selected[name] = 1
 
-            # Apply harmonic spacing to free (unlocked) pitch base via param state
-            if name not in locked:
-                params = dict((getattr(self, "instrument_param_state", {}) or {}).get(name, {}) or {})
-                params["tuning_ratio"] = ratios[i % len(ratios)]
-                if not hasattr(self, "instrument_param_state"):
-                    self.instrument_param_state = {}
-                self.instrument_param_state[name] = params
+            # Preserve the exact effective carrier for every surviving identity.
+            # We deliberately rewrite harmonic_freq from the preserved product so
+            # later canonical/effect passes cannot reintroduce an ensemble-count
+            # dependent pitch shift.  New identities receive their deterministic
+            # first anchor.
+            params = dict((getattr(self, "instrument_param_state", {}) or {}).get(name, {}) or {})
+            params["tuning_ratio"] = stable_ratios[name]
+            params["frequency_identity_hz"] = stable_freq_hz[name]
+            params["harmonic_freq"] = stable_freq_hz[name] / max(stable_ratios[name], 1e-6)
+            if not hasattr(self, "instrument_param_state"):
+                self.instrument_param_state = {}
+            self.instrument_param_state[name] = params
 
         self.instrument_names_48 = final_names
         self.instrument_sequence_banks = new_banks
@@ -14898,6 +15277,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # this, playlist rows/automation kept pointing at operators that no
         # longer exist in instrument_names_48 after the resize.
         self._refactor_playlist_for_instrument_rescale(old_names, final_names)
+        if hasattr(self, "_canonical_prune_stale_playlist_touches"):
+            self._canonical_prune_stale_playlist_touches()
         self._reconvolve_free_synths_for_ensemble_resize(old_names, final_names, locked)
         self._canonical_sequence_reconcile("ensemble_resize")
         self._recompose_active_canonicals_after_resize()
@@ -14916,14 +15297,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
         carrier = self._resample_carrier(512, 44100) if hasattr(self, "_resample_carrier") else None
         if carrier is None:
             t = np.arange(512, dtype=np.float64) / 44100.0
-            base = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 216.0
+            base = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
             carrier = (np.sin(2*np.pi*base*t) + 0.5*np.sin(2*np.pi*base*MEUM*t)).astype(np.float32)
         spec = np.abs(np.fft.rfft(carrier * np.hanning(carrier.size)))
         norm = float(np.max(spec) + 1e-9)
         for i, name in enumerate(final_names):
             if name in locked:
                 continue
-            ratio = float(harmonic_spacing_ratios(max(2, len(final_names)))[i % len(harmonic_spacing_ratios(max(2, len(final_names))))])
+            # Preserve an existing voice's absolute tuning across ensemble resize.
+            # Only a genuinely new identity gets its deterministic first assignment.
+            prior = dict((getattr(self, "instrument_param_state", {}) or {}).get(name, {}) or {})
+            ratio = float(prior.get("tuning_ratio", 1.0))
             params = getattr(self, "instrument_param_state", {}).setdefault(name, {})
             params["tuning_ratio"] = ratio
             params["reconvolve_seed"] = int(seed)
@@ -14933,31 +15317,23 @@ class MathematiciansGrooveboxApp(QMainWindow):
             state[name] = {"seed": int(seed), "generation": params["reconvolve_generation"], "carrier_norm": norm, "fresh": True}
 
     def _recompose_active_canonicals_after_resize(self):
-        """Force a fresh canonical rewrite after ensemble expansion or contraction."""
+        """Re-enter the single authoritative canonical transaction after resize.
+
+        Resize must never replay engines one-at-a-time: doing so lets an intermediate
+        candidate become visible state and can make the playlist look sparse or make
+        the result depend on engine activation history.  The normal rebuild evaluates
+        the complete active SET against one clean baseline and performs one final UI
+        write.
+        """
         if getattr(self, "_composition_generation_guard", False):
             return
-        active = []
-        if getattr(self, "btn_local_randomize", None) and self.btn_local_randomize.isChecked():
-            active.append(("randomize", "randomize"))
-        if getattr(self, "btn_local_phase_lock", None) and self.btn_local_phase_lock.isChecked():
-            active.append(("phase_lock", "phase_lock"))
-        if getattr(self, "btn_idealize_rhythm", None) and self.btn_idealize_rhythm.isChecked():
-            active.append(("euclidean", "phase-lock"))
-        if getattr(self, "btn_seeded_randomize", None) and self.btn_seeded_randomize.isChecked():
-            active.append(("seeded", "seeded"))
-        if getattr(self, "goava_active", False):
-            active.append(("goava", "goava"))
-        if not active:
+        if not self._active_engine_sources():
             return
         self._composition_generation_guard = True
         try:
-            for key, mode in active:
-                rng = np.random.default_rng((_safe_int_seed(self.get_numeric_seed()) ^ sum(map(ord, key)) ^ (len(self.instrument_names_48) * 7919)) & 0x7fffffff)
-                if key == "goava":
-                    self.goava_note_events = self._build_goava_composition()
-                    self._apply_goava_to_canonical_playlist()
-                elif hasattr(self, "_canonical_playlist_paint"):
-                    self._canonical_playlist_paint(rng=rng, mode=mode, strength=0.55)
+            if getattr(self, "goava_active", False) and not getattr(self, "goava_note_events", None):
+                self.goava_note_events = self._build_goava_composition()
+            self._rebuild_active_canonical_playlist("ensemble_resize")
         finally:
             self._composition_generation_guard = False
 
@@ -15033,6 +15409,557 @@ class MathematiciansGrooveboxApp(QMainWindow):
               f"{len(removed)} removed instrument(s)")
         return touched_rows
 
+    def _canonical_finalize_playlist_field_lattice(self, rows):
+        if self._canonical_protect_user() and hasattr(self, "_canonical_prune_stale_playlist_touches"):
+            self._canonical_prune_stale_playlist_touches()
+        """Final authoritative fill for the five lattice columns.
+
+        These fields are derived *after* all canonical contributions exist.  They
+        must never depend on which canonical was toggled first or on a UI table's
+        current row/column count.  Sequence IDs are distributed round-robin over
+        the complete available bank, while the row keeps exactly one primary
+        operator identity.
+        """
+        rows = max(1, min(1024, int(rows)))
+        names = list(getattr(self, "instrument_names_48", []) or ["Operator"])
+        banks = getattr(self, "instrument_sequence_banks", {}) or {}
+        active = []
+        for attr, source in (("btn_local_randomize", "randomizer"),
+                             ("btn_local_phase_lock", "phase_lock"),
+                             ("btn_idealize_rhythm", "euclidean"),
+                             ("btn_seeded_randomize", "seeded")):
+            btn = getattr(self, attr, None)
+            if btn is not None and btn.isChecked():
+                active.append(source)
+        if getattr(self, "goava_active", False):
+            active.append("goava")
+        if not active:
+            return
+
+        for r in range(rows):
+            e = self.master_playlist_data[r]
+            if not isinstance(e, dict):
+                e = {}; self.master_playlist_data[r] = e
+            op = str(e.get("_unison_base_operator") or e.get("operator") or "").strip()
+            if not op or op.casefold() == "goava":
+                op = names[r % len(names)] if names else "Operator"
+            # Preserve the audio/composition identity exactly as the canonical
+            # consensus selected it.  Do not synthesize an ensemble-sized operator
+            # list here: the display repair must not alter renderer voice selection.
+            e["operator"] = op
+            existing_ops = e.get("operators") or []
+            if isinstance(existing_ops, str):
+                existing_ops = [x.strip() for x in existing_ops.split(",") if x.strip()]
+            if not existing_ops:
+                existing_ops = [op]
+            e["operators"] = list(dict.fromkeys([op] + [str(x).strip() for x in existing_ops if str(x).strip()]))
+            e["operators_csv"] = ", ".join(e["operators"])
+
+            # The five-column lattice must not collapse to one operator's bank.
+            # Read the already-reconciled sequence_refs first; only fall back to the
+            # primary operator bank when consensus produced no reference.
+            reconciled_refs = [str(x).strip() for x in (e.get("sequence_refs") or []) if str(x).strip()]
+            if reconciled_refs:
+                ref0 = reconciled_refs[r % len(reconciled_refs)]
+                try:
+                    ref_op, ref_sid_text = ref0.rsplit(":", 1)
+                    sid = int(ref_sid_text)
+                    bank = banks.get(ref_op, {}) if isinstance(banks, dict) else {}
+                except Exception:
+                    ref_op, sid, bank = op, 1, (banks.get(op, {}) if isinstance(banks, dict) else {})
+            else:
+                bank = banks.get(op, {}) if isinstance(banks, dict) else {}
+                ids = sorted(int(k) for k,v in bank.items()
+                             if str(k).isdigit() and isinstance(v, dict))
+                sid = ids[r % len(ids)] if ids else 1
+            # The phase lattice reads the exact sequence it just selected.  Do not
+            # consult an ambient ``mem`` variable: that was undefined on the
+            # reconciled-ref path and caused toggle-time crashes.
+            selected_mem = bank.get(sid, {}) if isinstance(bank, dict) else {}
+            plen = max(1, int((selected_mem or {}).get("pattern_length", 16) or 16))
+            phase = (r + (sid - 1)) % plen
+            ref = f"{op}#S{sid}"
+
+            # Complete, uniformly modal five-column lattice.
+            _all_ids = sorted(int(k) for k, v in (bank.items() if isinstance(bank, dict) else [])
+                              if str(k).isdigit() and isinstance(v, dict)) or [sid]
+            e["direction"] = float(1.0 if ((r // max(1, len(_all_ids))) % 2 == 0) else -1.0)
+            e["direction_vector"] = f"{e['direction']:+.4f}"
+            refs = [ref]
+            # Preserve all reconciled refs, but make the primary ref deterministic.
+            for x in e.get("sequence_refs") or []:
+                x = str(x).strip()
+                if x and x not in refs:
+                    refs.append(x)
+            e["sequence_refs"] = refs
+            e["phase_offsets"] = {op: int(phase)}
+            e["multi_seq"] = ", ".join(refs)
+            e["coverage"] = e.get("coverage") or f"{op}:100%"
+            e["blend_partner"] = e.get("blend_partner") or refs[1] if len(refs) > 1 else ref
+            # DISPLAY COMPLETENESS: these fields are UI metadata only.  Populate
+            # them from the final row identity without changing sequencer/audio state.
+            primary = str(e.get("operator") or op).strip() or "Operator"
+            src_label = "+".join(active) if active else "canonical"
+            if not str(e.get("script_tag") or "").strip():
+                e["script_tag"] = f"Canonical Script · {primary}"
+            if not str(e.get("domain_tag") or "").strip():
+                e["domain_tag"] = f"Canonical Domain · {src_label}"
+            if not str(e.get("synth_tag") or "").strip():
+                e["synth_tag"] = f"Synth · {primary}"
+            if not str(e.get("patch_tag") or "").strip():
+                e["patch_tag"] = f"Patch · {primary}"
+            if not str(e.get("effect_target") or "").strip():
+                e["effect_target"] = primary
+            if not str(e.get("direction_vector") or "").strip():
+                e["direction_vector"] = f"{1.0 if (r % 2 == 0) else -1.0:+.4f}"
+            if not str(e.get("multi_seq") or "").strip():
+                e["multi_seq"] = ref
+            if not str(e.get("coverage") or "").strip():
+                e["coverage"] = f"{primary}:100%"
+
+            # FINAL TAIL GUARANTEE: these five columns are authoritative outputs of
+            # the canonical transaction.  Never use ``setdefault``/``or`` here: a
+            # shorter earlier canonical pass is precisely what caused the final
+            # columns to remain blank when GOAVA was activated first.
+            if getattr(self, "goava_active", False):
+                evs = list(getattr(self, "goava_note_events", []) or [])
+                if evs:
+                    ev = evs[r % len(evs)]
+                    e["goava_sequence"] = (f"GOAVA step={r+1} seed={ev['seed']:.9g} "
+                                            f"raw={ev['raw']:.9g} hz={ev['frequency']:.6f} "
+                                            f"pitch={ev['pitch']:.6f} on={int(ev['enabled'])}")
+                else:
+                    e["goava_sequence"] = f"GOAVA step={r+1} · pending"
+            else:
+                e.pop("goava_sequence", None)
+
+            # Materialize a complete row before exposing the final tail.  Some
+            # canonical candidates intentionally omit optional UI fields; the final
+            # unison result must nevertheless be visibly complete when every engine
+            # is active.  Never invent a second pattern: use the already-selected
+            # operator/sequence/step as the sole source of truth.
+            e["active"] = True
+            e["generated_by_engine"] = True
+            e["generated_source"] = "canonical_unison"
+            # Never replace an established playlist timing constraint with the row
+            # index. Older finalization did exactly that, causing Euclidean,
+            # Randomizer, GOAVA, and mixed toggle paths to reset markers.
+            try:
+                _ta = float(e.get("_playlist_time_anchor", e.get("time_offset")))
+                if math.isfinite(_ta):
+                    e["time_offset"] = _ta
+                    e["time_marker"] = f"e:{_ta:.4f}s"
+            except Exception:
+                pass
+            if e.get("velocity") in (None, ""):
+                e["velocity"] = 1.0
+            if e.get("probability") in (None, ""):
+                e["probability"] = 100
+            if e.get("coverage") in (None, ""):
+                e["coverage"] = f"{op}:100%"
+            # Project the COMPLETE unison identity from the final sequence refs.
+            # This is display metadata only: it never feeds the renderer.  Each
+            # canonical sequence ref is name:id, so the refs themselves are the
+            # authoritative ensemble membership rather than the last canonical's
+            # single operator.
+            ensemble_ops = []
+            for _sr in e.get("sequence_refs") or []:
+                _sr = str(_sr).strip()
+                if ":" in _sr:
+                    _nm = _sr.rsplit(":", 1)[0].strip()
+                    if _nm and _nm not in ensemble_ops:
+                        ensemble_ops.append(_nm)
+            if op and op not in ensemble_ops:
+                ensemble_ops.insert(0, op)
+            if not ensemble_ops:
+                ensemble_ops = [op or "Operator"]
+            e["operators"] = list(dict.fromkeys(ensemble_ops))
+            e["operators_csv"] = ", ".join(e["operators"])
+
+            # These four fields are filled on EVERY row from the SAME final
+            # unison lattice.  Never source them from a single canonical writer.
+            e["paint_target"] = "Unison Consensus → Playlist"
+            e["paint_source"] = "Unison · " + ", ".join(e["operators"])
+            e["paint_sequence"] = ", ".join(str(x) for x in (e.get("sequence_refs") or [ref]))
+            e["paint_instrument"] = ", ".join(e["operators"])
+            # GOAVA is a fifth-column contribution, but its presence must not
+            # suppress the other four tail fields.  Always materialize a visible
+            # value so the complete 13..17 projection cannot appear blank.
+            if getattr(self, "goava_active", False) and not str(e.get("goava_sequence") or "").strip():
+                e["goava_sequence"] = f"GOAVA · step {r + 1}"
+            elif not getattr(self, "goava_active", False):
+                e["goava_sequence"] = e.get("goava_sequence") or "—"
+
+            # If the PaintbrushTable is already open, write the authoritative tail
+            # immediately as well.  The later global sync remains idempotent.
+            table = getattr(self, "active_paint_table", None)
+            if table is not None and hasattr(table, "rowCount") and r < table.rowCount():
+                for c, key in ((13, "goava_sequence"), (14, "paint_target"),
+                               (15, "paint_source"), (16, "paint_sequence"),
+                               (17, "paint_instrument")):
+                    if c >= table.columnCount():
+                        continue
+                    text = str(e.get(key, "") or "")
+                    try:
+                        if hasattr(table, "set_cell_item"):
+                            table.set_cell_item(r, c, text)
+                        else:
+                            item = table.item(r, c)
+                            if item is not None:
+                                item.setText(text)
+                            else:
+                                from PyQt6.QtWidgets import QTableWidgetItem
+                                table.setItem(r, c, QTableWidgetItem(text))
+                    except Exception:
+                        pass
+
+    def _canonical_unity_consensus(self, baseline, candidates, rows):
+        """Build one order-independent consensus from every active canonical method.
+
+        Each active method is evaluated against the same baseline.  Its complete
+        playlist write is captured, then all candidates are merged field-by-field
+        using a deterministic modal/tie-break rule.  No method is allowed to win
+        merely because it happened to execute last.
+        """
+        import copy, json
+        self.master_playlist_data = copy.deepcopy(baseline)
+        if not candidates:
+            return
+
+        def norm(v):
+            if isinstance(v, dict):
+                return json.dumps(v, sort_keys=True, separators=(",", ":"), default=str)
+            if isinstance(v, (list, tuple)):
+                return json.dumps(list(v), sort_keys=True, separators=(",", ":"), default=str)
+            return str(v if v is not None else "")
+
+        # Canonical fields form the unity lattice. User instances are retained
+        # from baseline; canonical candidates decide only their generated state.
+        fields = (
+            "operator", "operators", "operators_csv", "sequence_refs", "phase_offsets",
+            "multi_seq", "direction", "direction_vector", "coverage", "blend_partner",
+            "goava_sequence", "paint_target", "paint_source", "paint_sequence",
+            "paint_instrument", "time_marker", "time_offset", "velocity", "pitch",
+            "probability"
+        )
+        for r in range(rows):
+            base = baseline[r] if r < len(baseline) and isinstance(baseline[r], dict) else {}
+            e = self.master_playlist_data[r] if r < len(self.master_playlist_data) else {}
+            if not isinstance(e, dict):
+                e = {}
+                self.master_playlist_data[r] = e
+            # Start from user/base state, then decide each canonical field from ALL
+            # active methods. Missing values never beat an actual candidate.
+            for field in fields:
+                vals=[]
+                for _, data in candidates:
+                    if r >= len(data) or not isinstance(data[r], dict):
+                        continue
+                    v=data[r].get(field, None)
+                    if v is not None and norm(v) != "":
+                        vals.append(v)
+                if not vals:
+                    continue
+                groups={norm(v): [] for v in vals}
+                for v in vals: groups[norm(v)].append(v)
+                # Modal consensus; ties resolved by stable canonical key, not
+                # activation order. Candidate ordering is fixed by caller.
+                best=max(groups.items(), key=lambda kv: (len(kv[1]), kv[0]))
+                e[field]=best[1][0]
+
+            # Operator Identity is a consensus SET, not a modal scalar.  In
+            # particular GOAVA contributes an operator without being allowed to
+            # replace the instrument identity chosen by the other canonicals.
+            # Build the union in fixed lexical order so activation order cannot
+            # change the result.
+            all_ops = []
+            for source_name, data in candidates:
+                if r < len(data) and isinstance(data[r], dict):
+                    cv = data[r].get("operators", [])
+                    if isinstance(cv, str):
+                        cv = [x.strip() for x in cv.split(",") if x.strip()]
+                    for x in cv or []:
+                        x = str(x).strip()
+                        if x and x not in all_ops:
+                            all_ops.append(x)
+            base_ops = base.get("operators", []) if isinstance(base, dict) else []
+            if isinstance(base_ops, str):
+                base_ops = [x.strip() for x in base_ops.split(",") if x.strip()]
+            for x in base_ops or []:
+                x = str(x).strip()
+                if x and x not in all_ops:
+                    all_ops.append(x)
+            all_ops = sorted(set(all_ops), key=lambda x: (x == "GOAVA", x.casefold()))
+            # Scalar Operator Identity is NOT a canonical winner.  It is a stable
+            # row identity: preserve a user/base identity, otherwise derive it from
+            # the fixed instrument lattice. Canonicals (including GOAVA) live in the
+            # operators set and can never replace that scalar merely by being active.
+            base_op = str(base.get("operator") or "").strip() if isinstance(base, dict) else ""
+            if base_op and base_op.casefold() != "goava":
+                op = base_op
+            else:
+                names = list(getattr(self, "instrument_names_48", []) or ["Operator"])
+                op = names[r % len(names)] if names else "Operator"
+            e["operator"] = op
+            if op not in all_ops:
+                all_ops.append(op)
+            all_ops = sorted(set(all_ops), key=lambda x: (x.casefold() == "goava", x.casefold()))
+            e["operators"] = all_ops
+            e["operators_csv"] = ", ".join(all_ops)
+
+    def _canonical_unison_step_lattice(self, rows, sequence_banks):
+        """Normalize final playlist sequence/offset state on the exact same step lattice.
+
+        Read and write use the same row/step coordinate: row ``r`` reads the
+        canonical sequence assignment for ``r % N`` and writes its phase offset
+        back at that exact coordinate. This removes implicit shifts caused by
+        candidate-local sequence lengths or dictionary insertion order.
+        """
+        names = list(getattr(self, "instrument_names_48", []) or [])
+        if not names:
+            return
+        # Stable canonical sequence ordering; never depend on toggle order.
+        canonical_sources = ["euclidean", "goava", "phase_lock", "randomizer", "seeded"]
+        for r in range(max(0, int(rows))):
+            e = self.master_playlist_data[r] if r < len(self.master_playlist_data) else None
+            if not isinstance(e, dict):
+                continue
+            refs = []
+            phases = {}
+            for name in names:
+                bank = (sequence_banks or {}).get(name, {})
+                canonical = []
+                for idx, mem in sorted(bank.items(), key=lambda kv: int(kv[0])):
+                    if isinstance(mem, dict) and str(mem.get("canonical_owner", "")).startswith("canonical:"):
+                        owner = str(mem.get("canonical_owner")).split(":", 1)[1]
+                        if owner in canonical_sources:
+                            canonical.append((canonical_sources.index(owner), int(idx), owner))
+                canonical.sort()
+                if canonical:
+                    pos = r % len(canonical)
+                    _, idx, owner = canonical[pos]
+                    refs.append(f"{name}:{idx}")
+                    # Step offset is derived from the same row/step coordinate
+                    # used to choose the sequence, not from a later candidate.
+                    phases[f"{name}:{idx}"] = int(r % max(1, int((bank[idx] or {}).get("pattern_length", 1))))
+            if refs:
+                e["sequence_refs"] = refs
+                e["phase_offsets"] = phases
+                e["multi_seq"] = ", ".join(dict.fromkeys(refs))
+
+    def _rebuild_active_canonical_playlist(self, reason="toggle"):
+        """Authoritative, order-independent canonical rebuild with decisive unity feedback.
+
+        Every active canonical method writes against the identical baseline.  The
+        resulting candidate states are then combined by one deterministic consensus
+        pass.  Consequently activation order cannot decide playlist content.
+        """
+        if getattr(self, "_canonical_rebuild_guard", False):
+            return
+        self._canonical_rebuild_guard = True
+        try:
+            import copy
+            rows = max(1, min(1024, int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else 96))
+            if not hasattr(self, "master_playlist_data") or self.master_playlist_data is None:
+                self.master_playlist_data = []
+            while len(self.master_playlist_data) < rows:
+                self.master_playlist_data.append({})
+            if not hasattr(self, "playlist_automation") or self.playlist_automation is None:
+                self.playlist_automation = []
+            while len(self.playlist_automation) < rows:
+                self.playlist_automation.append({})
+
+            # Build a HISTORY-FREE baseline.  The live playlist may still contain
+            # canonical output from the preceding toggle transaction; using that as
+            # the next baseline is the subtle source of the recurring GOAVA-only and
+            # terminal-column regressions.  Only explicit user state is allowed to
+            # cross a canonical transaction boundary.
+            raw_baseline = copy.deepcopy(self.master_playlist_data[:rows])
+            generated_fields = {
+                "operator", "operators", "operators_csv", "sequence_refs",
+                "phase_offsets", "multi_seq", "direction", "direction_vector",
+                "coverage", "blend_partner", "goava_sequence", "paint_target",
+                "paint_source", "paint_sequence", "paint_instrument",
+                "time_marker", "time_offset", "velocity", "pitch", "probability",
+                "generated_by_engine", "generated_source", "canonical_weight",
+            }
+            baseline = []
+            names_for_baseline = list(getattr(self, "instrument_names_48", []) or ["Operator"])
+            for r, src in enumerate(raw_baseline):
+                e = copy.deepcopy(src) if isinstance(src, dict) else {}
+                users = e.get("user_instances") or []
+                # Strip all previous canonical output.  User-owned panel/instance
+                # state is retained separately and reintroduced by reconciliation.
+                for k in generated_fields:
+                    e.pop(k, None)
+                e.pop("engine_contributions", None)
+                e["user_instances"] = copy.deepcopy(users)
+                # A scalar operator is user state only when it is explicitly attached
+                # to a user instance.  Never inherit GOAVA (or another engine) here.
+                user_ops = []
+                for u in users:
+                    if isinstance(u, dict):
+                        uop = str(u.get("operator") or u.get("name") or "").strip()
+                        if uop and uop.casefold() != "goava":
+                            user_ops.append(uop)
+                if user_ops:
+                    e["operator"] = sorted(set(user_ops), key=str.casefold)[0]
+                    e["operators"] = sorted(set(user_ops), key=str.casefold)
+                    e["operators_csv"] = ", ".join(e["operators"])
+                else:
+                    e["operator"] = names_for_baseline[r % len(names_for_baseline)]
+                    e["operators"] = [e["operator"]]
+                    e["operators_csv"] = e["operator"]
+                # Explicit immutable row identity.  It is not a generated canonical
+                # field and therefore survives every candidate/toggle transaction.
+                e["_unison_base_operator"] = str(e.get("operator") or names_for_baseline[r % len(names_for_baseline)])
+                baseline.append(e)
+
+            # Sequencer state is part of the canonical transaction, not ambient mutable
+            # state.  Reconcile once only after the history-free baseline is established.
+            self.master_playlist_data = copy.deepcopy(baseline)
+            self._canonical_sequence_reconcile(reason)
+            baseline = copy.deepcopy(self.master_playlist_data[:rows])
+            baseline_sequence_banks = copy.deepcopy(getattr(self, "instrument_sequence_banks", {}) or {})
+            baseline_sequencer_memory = copy.deepcopy(getattr(self, "instrument_sequencer_memory", {}) or {})
+            baseline_selected_sequences = copy.deepcopy(getattr(self, "instrument_selected_sequence", {}) or {})
+            active=[]
+            pairs=(("randomizer","btn_local_randomize"),("phase_lock","btn_local_phase_lock"),
+                   ("euclidean","btn_idealize_rhythm"),("seeded","btn_seeded_randomize"))
+            for source, attr in pairs:
+                btn=getattr(self, attr, None)
+                if btn is not None and btn.isChecked():
+                    active.append(source)
+            if getattr(self, "goava_active", False):
+                if not getattr(self, "goava_note_events", None):
+                    self.goava_note_events=self._build_goava_composition()
+                active.append("goava")
+
+            candidates=[]
+            for source in active:
+                # Hard-reset all mutable sequencer views before EACH candidate.  This is
+                # the critical order-independence boundary: candidate A cannot leave a
+                # sequence entry, selected pattern, or step mutation for candidate B.
+                self.master_playlist_data=copy.deepcopy(baseline)
+                self.instrument_sequence_banks=copy.deepcopy(baseline_sequence_banks)
+                self.instrument_sequencer_memory=copy.deepcopy(baseline_sequencer_memory)
+                self.instrument_selected_sequence=copy.deepcopy(baseline_selected_sequences)
+                if source == "goava":
+                    self._apply_goava_to_canonical_playlist()
+                else:
+                    rng=np.random.default_rng((_safe_int_seed(self.get_numeric_seed()) ^ sum(map(ord, source)) ^ rows) & 0x7fffffff)
+                    self._canonical_playlist_paint(rng=rng, mode=source, strength=0.55)
+                candidates.append((source, copy.deepcopy(self.master_playlist_data[:rows])))
+
+            self._canonical_unity_consensus(baseline, candidates, rows)
+            # Playlist consensus is now authoritative. Rebuild the sequencer bank from
+            # the active canonical SET (not candidate execution order), restoring the
+            # same deterministic sequence topology for the final rendered state.
+            self.instrument_sequence_banks=copy.deepcopy(baseline_sequence_banks)
+            self.instrument_sequencer_memory=copy.deepcopy(baseline_sequencer_memory)
+            self.instrument_selected_sequence=copy.deepcopy(baseline_selected_sequences)
+            self._canonical_sequence_reconcile("unity_consensus")
+            # Final single-path unison agreement: sequence selection and phase reads
+            # are normalized and written on the same row/step coordinates.
+            self._canonical_unison_step_lattice(rows, self.instrument_sequence_banks)
+            # Consensus is already the authoritative merged row. Do not run the
+            # legacy contribution reducer here: the history-free baseline has no
+            # engine_contributions, so that reducer would erase the freshly agreed
+            # canonical fields and make an all-active result look empty.
+            self._canonical_finalize_playlist_field_lattice(rows)
+            # Final authoritative tail completion: never leave the visible or
+            # in-memory terminal five fields dependent on a prior writer.
+            for _r, _e in enumerate(self.master_playlist_data[:rows]):
+                if not isinstance(_e, dict):
+                    continue
+                _op = str(_e.get("operator") or "Operator").strip()
+                _seq = str(_e.get("paint_sequence") or _e.get("multi_seq") or f"{_op}#S1")
+                _e["paint_target"] = str(_e.get("paint_target") or "Canonical → Playlist")
+                _e["paint_source"] = str(_e.get("paint_source") or f"Canonical unison · {_op}")
+                _e["paint_sequence"] = _seq
+                _e["paint_instrument"] = str(_e.get("paint_instrument") or _op)
+                if getattr(self, "goava_active", False) and not str(_e.get("goava_sequence") or "").strip():
+                    _evs = list(getattr(self, "goava_note_events", []) or [])
+                    if _evs:
+                        _ev = _evs[_r % len(_evs)]
+                        _e["goava_sequence"] = f"GOAVA step={_r+1} seed={_ev['seed']:.9g} raw={_ev['raw']:.9g} hz={_ev['frequency']:.6f} pitch={_ev['pitch']:.6f} on={int(_ev['enabled'])}"
+            # FINAL DISPLAY PROJECTION (no synthesis/sequencer mutation): derive
+            # the six historically missing identity/tail columns from the already
+            # finalized unison row. This is deliberately after consensus and after
+            # all user-lock decisions, so it cannot change the composition.
+            for _r, _e in enumerate(self.master_playlist_data[:rows]):
+                if not isinstance(_e, dict):
+                    continue
+                refs = _e.get("sequence_refs") or []
+                if isinstance(refs, str):
+                    refs = [x.strip() for x in refs.split(",") if x.strip()]
+                ops = _e.get("operators") or []
+                if isinstance(ops, str):
+                    ops = [x.strip() for x in ops.split(",") if x.strip()]
+                ops = list(dict.fromkeys([str(x).strip() for x in ops if str(x).strip()]))
+                ref_ops = []
+                for _ref in refs:
+                    _name = str(_ref).split("#S", 1)[0].strip()
+                    if _name and _name not in ref_ops:
+                        ref_ops.append(_name)
+                # DISPLAY-ONLY ensemble identity: sequence refs are authoritative when
+                # available, but a canonical row must still expose the complete surviving
+                # instrument roster even when a particular canonical sequence bank has only
+                # one materialized ref.  This never changes `operator`, sequencer memory, or
+                # synthesis voice selection.
+                roster = [str(x).strip() for x in (getattr(self, "instrument_names_48", []) or []) if str(x).strip()]
+                final_ops = list(dict.fromkeys(ref_ops + ops + roster))
+                if final_ops:
+                    _e["operators"] = final_ops
+                    _e["operators_csv"] = ", ".join(final_ops)
+                _op = str(_e.get("operator") or (final_ops[0] if final_ops else "Operator")).strip()
+                _seq = ", ".join(str(x) for x in refs if str(x).strip()) or str(_e.get("multi_seq") or f"{_op}#S1")
+                _e["multi_seq"] = _seq
+                _e["blend_partner"] = str(_e.get("blend_partner") or (final_ops[1] if len(final_ops) > 1 else (final_ops[0] if final_ops else _op)))
+                _e["goava_sequence"] = str(_e.get("goava_sequence") or (
+                    f"GOAVA step={_r+1}" if getattr(self, "goava_active", False) else "—"))
+                _e["paint_target"] = str(_e.get("paint_target") or "Canonical → Playlist")
+                _e["paint_source"] = str(_e.get("paint_source") or ("Canonical unison · " + ", ".join(final_ops or [_op])))
+                _e["paint_sequence"] = str(_e.get("paint_sequence") or _seq)
+                _e["paint_instrument"] = str(_e.get("paint_instrument") or ", ".join(final_ops or [_op]))
+                # Every playlist column has an explicit deterministic value. These
+                # are metadata projections and never feed back into synthesis.
+                _defaults = {
+                    "script_tag": f"Script::{_op[:8].upper()}-X{_r}",
+                    "domain_tag": "Canonical Unity",
+                    "synth_tag": f"Synth::{_op[:8]}",
+                    "patch_tag": f"Patch::{_op[:8]}",
+                    "effect_target": "Canonical Unison",
+                    "auto_amount": "0.000",
+                    "time_marker": _e.get("time_marker") or f"T + {_r * 3.5:.1f}s",
+                    "time_offset": _e.get("time_offset", _r),
+                    "velocity": _e.get("velocity", 1.0),
+                    "coverage": _e.get("coverage") or "100%",
+                    "direction_vector": _e.get("direction_vector") or "+1.0000",
+                }
+                for _k, _v in _defaults.items():
+                    if _e.get(_k) in (None, "", []):
+                        _e[_k] = _v
+                # Tail fields are canonical projection fields.  A stale blank UI cell
+                # must never be allowed to suppress a newly composed value.  Preserve
+                # explicit non-empty user edits, but materialize every generated tail
+                # field whenever the consensus has a value.
+                _tail_defaults = {
+                    "blend_partner": _e.get("blend_partner") or (final_ops[1] if len(final_ops) > 1 else (_op or "Operator")),
+                    "goava_sequence": _e.get("goava_sequence") or (f"GOAVA step={_r+1}" if getattr(self, "goava_active", False) else "—"),
+                    "paint_target": _e.get("paint_target") or "Canonical → Playlist",
+                    "paint_source": _e.get("paint_source") or ("Canonical unison · " + ", ".join(final_ops or [_op])),
+                    "paint_sequence": _e.get("paint_sequence") or _seq,
+                    "paint_instrument": _e.get("paint_instrument") or ", ".join(final_ops or [_op]),
+                }
+                for _k, _v in _tail_defaults.items():
+                    if _e.get(_k) in (None, "", []):
+                        _e[_k] = str(_v)
+            # The memory model is authoritative at this boundary.
+            self._sync_playlist_paint_table_from_memory()
+        finally:
+            self._canonical_rebuild_guard=False
+
     def _resize_playlist_memory(self, rows):
         """Resize playlist capacity without discarding user rows; canonicals repaint the new span."""
         rows = max(1, min(1024, int(rows)))
@@ -15057,25 +15984,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.master_playlist_data = data
         self.playlist_automation = auto
         self._playlist_overflow_rows = overflow
-        # Every active canonical gets a deterministic repaint across the resized span.
-        if hasattr(self, "_canonical_playlist_paint"):
-            active = []
-            if getattr(self, "goava_active", False):
-                self.goava_note_events = self._build_goava_composition()
-                active.append(("goava", "goava"))
-            for key, attr in (("randomizer","btn_local_randomize"),("phase_lock","btn_local_phase_lock"),
-                              ("euclidean","btn_idealize_rhythm"),("seeded","btn_seeded_randomize")):
-                if getattr(self, attr, None) and getattr(self, attr).isChecked():
-                    active.append((key, key))
-            for key, mode in active:
-                if key != "goava":
-                    self._canonical_playlist_paint(
-                        rng=np.random.default_rng((_safe_int_seed(self.get_numeric_seed()) ^ sum(map(ord, key))) & 0x7fffffff),
-                        mode=mode, strength=0.55
-                    )
-            if getattr(self, "goava_active", False):
-                self._apply_goava_to_canonical_playlist()
-            self._canonical_sequence_reconcile("playlist_resize")
+        if hasattr(self, "_canonical_prune_stale_playlist_touches"):
+            self._canonical_prune_stale_playlist_touches()
+        table = getattr(self, "active_paint_table", None)
+        if table is not None:
+            try:
+                table.setRowCount(rows)
+                table.setColumnCount(max(PLAYLIST_COLUMN_COUNT, table.columnCount()))
+                hdr = table.horizontalHeader()
+                for _ci in range(PLAYLIST_COLUMN_COUNT):
+                    hdr.setSectionResizeMode(_ci, QHeaderView.ResizeMode.Stretch)
+                hdr.setStretchLastSection(False)
+                table.viewport().update()
+            except Exception:
+                pass
+        # Resize is a pure capacity mutation.  Do not pre-paint canonicals here:
+        # doing so mutates the would-be baseline and then the authoritative rebuild
+        # paints again, making resize dependent on the route that reached it.
+        if hasattr(self, "_rebuild_active_canonical_playlist"):
+            self._rebuild_active_canonical_playlist("playlist_resize")
         return rows
 
     def _canonical_active_count(self):
@@ -15099,6 +16026,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         is_user = any(self._step_has_net_effect(mem, i) for i in range(count)) if hasattr(self, "_step_has_net_effect") else False
         if is_user:
             return 0.5 / max(user_count, 1)
+        # Canonical gain is independent of ensemble size so resizing does not
+        # renormalize the established carrier; additional voices add detail rather
+        # than forcing the existing voice to match a new full-scale target.
         return 0.5 / max(canonical_count, 1)
 
     def _render_mixdown_buffer(self, max_rows=None):
@@ -15116,11 +16046,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         )
         global_playlist_enabled = self.chk_global_playlist.isChecked() if hasattr(self, 'chk_global_playlist') else True
 
-        if hasattr(self, 'sync_playlist_grid_to_memory'):
-            try:
-                self.sync_playlist_grid_to_memory()
-            except Exception:
-                pass
+        # IMPORTANT: render is read-only with respect to playlist composition.
+        # A prior version performed table→memory synchronization here, allowing a
+        # stale UI table to erase the freshly reconciled canonical identity/tail.
+        # User edits synchronize explicitly from their edit handlers instead.
 
         seconds_per_beat = 60.0 / max(float(bpm), 0.001)
         step_duration = seconds_per_beat / 4.0
@@ -15180,8 +16109,27 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 entry = self.master_playlist_data[row_idx]
                 primary_op = entry.get("operator", self.instrument_names_48[0])
                 velocity_scale = float(entry.get("velocity", 1.0))
-                op_indices = [self.instrument_names_48.index(primary_op)] if primary_op in self.instrument_names_48 else [0]
-                active_cluster = op_indices
+                # The playlist's scalar operator is only the primary identity.
+                # Render the complete final unison roster from operators/sequence_refs;
+                # otherwise the UI can correctly show consensus while the renderer
+                # silently plays only one instrument.
+                render_names = []
+                raw_ops = entry.get("operators", [])
+                if isinstance(raw_ops, str):
+                    raw_ops = [x.strip() for x in raw_ops.split(",") if x.strip()]
+                render_names.extend(str(x).strip() for x in (raw_ops or []) if str(x).strip())
+                raw_refs = entry.get("sequence_refs", [])
+                if isinstance(raw_refs, str):
+                    raw_refs = [x.strip() for x in raw_refs.split(",") if x.strip()]
+                for ref in raw_refs or []:
+                    nm = str(ref).split(":", 1)[0].strip()
+                    if nm:
+                        render_names.append(nm)
+                render_names.append(str(primary_op).strip())
+                render_names = list(dict.fromkeys(n for n in render_names if n in self.instrument_names_48))
+                active_cluster = [self.instrument_names_48.index(n) for n in render_names]
+                if not active_cluster:
+                    active_cluster = [0]
             else:
                 active_cluster = np.random.choice(len(self.instrument_names_48), size=4, replace=False).tolist()
 
@@ -15200,8 +16148,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 mem = self.instrument_sequencer_memory.get(
                     op_name, {"steps": [False] * 48, "amplitudes": [1.0] * 48, "pitches": [1.0] * 48}
                 )
-                base_freq = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 216.0
+                base_freq = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
                 base_freq *= MEUM_POWERS_36[op_idx % 36]
+                # Absolute identity anchor survives ensemble resizing.  It is only
+                # established by the resize transaction (or for new identities), so
+                # ordinary synthesis remains compatible with the global base control.
+                _st_pre = dict((getattr(self, "instrument_param_state", {}) or {}).get(op_name, {}) or {})
+                if _st_pre.get("frequency_identity_hz") not in (None, ""):
+                    try:
+                        base_freq = float(_st_pre["frequency_identity_hz"])
+                    except Exception:
+                        pass
                 dynamic_eqr = base_eqr * (1.0 + 0.3 * np.sin(2.0 * np.pi * 0.2 * local_t + op_idx))
 
                 step_env = np.zeros_like(local_t)
@@ -15236,9 +16193,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 synth_lattice = float(st.get("harmonic_lattice", st.get("fractalizer", 0.33)))
                 preset_idx = int(st.get("preset_idx", op_idx % 4))
                 tuning_ratio = float(st.get("tuning_ratio", st.get("tuning", 1.0)))
+                identity_hz = st.get("frequency_identity_hz")
 
-                # Seed frequency: panel harmonic_freq × geometric ratio × step pitch
-                seed_freq = harm_hz * max(tuning_ratio, 1e-6) * pitch_track
+                # Seed frequency: an identity anchor is already the effective carrier;
+                # otherwise use the legacy harmonic_freq × tuning_ratio path.
+                if identity_hz not in (None, ""):
+                    try:
+                        seed_freq = float(identity_hz) * pitch_track
+                    except Exception:
+                        seed_freq = harm_hz * max(tuning_ratio, 1e-6) * pitch_track
+                else:
+                    seed_freq = harm_hz * max(tuning_ratio, 1e-6) * pitch_track
                 # Prefer panel harmonic when set; fall back to bank spacing
                 if harm_hz <= 1.0:
                     seed_freq = base_freq * tuning_ratio * pitch_track
@@ -15326,37 +16291,59 @@ class MathematiciansGrooveboxApp(QMainWindow):
                                 fit_target = imported_carrier[global_start:global_end]
                         if fit_target is None or fit_target.size < 32:
                             fit_target = row_mix.copy() if np.max(np.abs(row_mix)) > 1e-6 else carrier
+                        # Keep ensemble resizes close to the pre-resize sound.  Spectral
+                        # fitting is detail, not a new carrier: as the surviving ensemble
+                        # grows, do not force every added voice independently toward the
+                        # full convolution target.  This preserves the established voice
+                        # while letting the larger ensemble add smooth detail.
+                        _ensemble_n = max(1, len(active_cluster))
+                        _fit_detail = float(convolve_fit_amount) / float(np.sqrt(_ensemble_n))
+                        _fit_detail = float(np.clip(_fit_detail, 0.0, 1.0))
                         voice = self._spectral_fit_voice(
-                            voice, fit_target, max(0.15, convolve_fit_amount)
+                            voice, fit_target, _fit_detail
                         )
                 voice_gain = self._canonical_voice_gain(
                     op_name, user_voice_count, canonical_count, len(active_cluster)
                 )
                 row_mix += voice * voice_gain
 
-            # PKP NullLock is global and is never a separate timeline event.
-            # It is triggered only by notes in the currently selected instrument, at the global base frequency.
-            try:
-                selected = self.instrument_selector_dropdown.currentText()
-                smem = self.instrument_sequencer_memory.get(selected, {})
-                ssteps = smem.get("steps", [])
-                global_pkp = np.zeros_like(local_t, dtype=np.float32)
-                gbase = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 216.0
-                for ss in range(min(int(seq_len), len(ssteps))):
-                    if ssteps[ss]:
-                        ss_start = ss * step_duration
-                        ss_end = ss_start + step_duration
-                        mm = (local_t >= ss_start) & (local_t < ss_end)
-                        if np.any(mm):
-                            sl = local_t[mm] - ss_start
-                            env = np.exp(-sl / max(step_duration * 0.35, 0.01))
-                            global_pkp[mm] += env * np.sin(2.0 * np.pi * gbase * sl)
-                # Normal PKP layer is always base-level; BOOST is realtime one-shot only.
-                row_mix += global_pkp * 0.35
-            except Exception:
-                pass
+            # PKP NullLock / BOOST is an explicit one-shot audition action only.
+            # Do NOT derive a sound source from every active step of the selected
+            # instrument during the normal timeline render.  The selected
+            # instrument's sequencer steps already produce their programmed voice
+            # above; adding a second PKP oscillator here caused BOOST-like hits on
+            # every selected step.  The BOOST button remains responsible for its
+            # explicit one-shot playover via _play_selected_instrument_pkp() and
+            # _play_pkp_playover_modulator().
 
             master[mask] += row_mix
+
+        # CANONICAL UNISON EFFECT BOUNDARY
+        # Snapshot the fully reconciled playlist/unison render before any global
+        # effect can transform it. Every downstream global effect reads this
+        # transaction snapshot, so effect buffering cannot depend on activation
+        # order or on a partially composed playlist.
+        unison_buffer = master.copy().astype(np.float32)
+        self._canonical_unison_effect_buffer = unison_buffer.copy()
+        self._canonical_unison_effect_length = int(unison_buffer.size)
+        self._canonical_unison_effect_seed = _safe_int_seed(seed_val)
+
+        # Ensemble-size invariant headroom: adding surviving voices must not make
+        # the master bus progressively louder.  Normalize by sqrt(active voices) only
+        # when the canonical playlist is driving a multi-voice cluster; this preserves
+        # the composition while preventing resize/toggle accumulation from sounding
+        # like repeated gain.
+        if global_playlist_enabled:
+            try:
+                ensemble_voice_count = max(1, len(set(
+                    n for e in self.master_playlist_data[:rows] if isinstance(e, dict)
+                    for n in (e.get("operators", []) if isinstance(e.get("operators", []), list) else str(e.get("operators", "")).split(","))
+                    if str(n).strip() in self.instrument_names_48
+                )))
+                if ensemble_voice_count > 1:
+                    master /= float(np.sqrt(ensemble_voice_count))
+            except Exception:
+                pass
 
         # Global Convolve: deterministic geometric cross-convolution of the rendered carrier.
         # User-edited controls remain upstream; this stage only mixes the structural wave result.
@@ -15372,7 +16359,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     if kernel.size < klen:
                         kernel = np.pad(kernel, (0, klen - kernel.size), mode="wrap")
                 else:
-                    gf = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 216.0
+                    gf = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
                     kernel = (np.sin(2*np.pi*(gf/ max(sample_rate,1))*np.arange(klen)) +
                               0.5*np.sin(2*np.pi*(gf*MEUM_CONSTANT/max(sample_rate,1))*np.arange(klen)))
                     kernel = kernel.astype(np.float32)
@@ -15446,9 +16433,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     gamma=1.5 + MEUM_NORM * 2.0,
                     pkp_env=pkp_master,
                     bpm=float(bpm),
+                    reference_buffer=unison_buffer,
                 )
         except Exception as _gf_exc:
             print(f"[Global Fractallizer] master pass skipped: {_gf_exc}")
+
+        # Final effect-buffer integrity: effects may transform their working
+        # copy, but the canonical unison snapshot remains available for the next
+        # deterministic render transaction.
+        if getattr(self, "_canonical_unison_effect_length", 0) != len(unison_buffer):
+            self._canonical_unison_effect_buffer = unison_buffer.copy()
+            self._canonical_unison_effect_length = int(unison_buffer.size)
 
         peak = np.max(np.abs(master))
         if peak > 0:
@@ -16099,6 +17094,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     "Direction Vector", "Multi-Seq", "Coverage", "Blend Partner", "GOAVA Sequence",
                     "Paint Target", "Paint Source", "Paint Sequence", "Paint Instrument"
                 ])
+                # Always fit the complete playlist to the available window.
+                # Stretching every section prevents the terminal canonical columns
+                # from disappearing off-screen and keeps all 18 fields visible.
+                try:
+                    _hdr = track_table.horizontalHeader()
+                    for _ci in range(PLAYLIST_COLUMN_COUNT):
+                        _hdr.setSectionResizeMode(_ci, QHeaderView.ResizeMode.Stretch)
+                    _hdr.setStretchLastSection(False)
+                except Exception:
+                    pass
 
                 palette_colors = [
                     QColor(20, 90, 100), QColor(70, 30, 90), QColor(20, 90, 40),
