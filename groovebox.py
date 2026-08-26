@@ -2922,8 +2922,8 @@ class ParametricMathBackground(QWidget):
     the mathematical field feels alive without becoming a CPU-heavy visualizer.
     It is mouse-transparent and never participates in the audio path.
     """
-    WAVE_COUNT = 12
-    SHAPE_COUNT = 12
+    WAVE_COUNT = 24
+    SHAPE_COUNT = 24
 
     def __init__(self, app, host=None):
         self.app = app
@@ -3097,7 +3097,7 @@ class ParametricMathBackground(QWidget):
         MEUM² more transparent than the prior left-rail styling so they stay
         readable as ambient theorem glyphs without competing with controls.
         """
-        n = 12
+        n = 24
         col_w = min(260.0, max(150.0, width * 0.18))
         # MEUM² more transparent → divide prior alphas by MEUM_SQ
         a_fill = min(1.0, 0.42 / MEUM_SQ)
@@ -15282,6 +15282,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._reconvolve_free_synths_for_ensemble_resize(old_names, final_names, locked)
         self._canonical_sequence_reconcile("ensemble_resize")
         self._recompose_active_canonicals_after_resize()
+        # Mark the canonical sequence bank as the completed resize transaction.
+        # Playback uses the row's canonical refs directly, so no retoggle is required.
+        self._canonical_resize_sequence_generation = int(
+            getattr(self, "_composition_generation_counter", 0)
+        )
         if hasattr(self, "reload_active_instrument_sequencer_ui"):
             try:
                 self.reload_active_instrument_sequencer_ui()
@@ -16145,9 +16150,38 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
             for op_idx in active_cluster:
                 op_name = self.instrument_names_48[op_idx]
-                mem = self.instrument_sequencer_memory.get(
-                    op_name, {"steps": [False] * 48, "amplitudes": [1.0] * 48, "pitches": [1.0] * 48}
-                )
+                # Resize invariance: canonical playlist rows must render from their
+                # authoritative canonical sequence bank entry, not from the ambient
+                # selected-sequence pointer. Resize rebuilds canonical banks before the
+                # UI pointer is refreshed; using the pointer here caused the post-resize
+                # sound to differ until every engine was retoggled.
+                mem = None
+                try:
+                    _row_refs = entry.get("sequence_refs", []) if isinstance(entry, dict) else []
+                    if isinstance(_row_refs, str):
+                        _row_refs = [x.strip() for x in _row_refs.split(",") if x.strip()]
+                    for _ref_txt in (_row_refs or []):
+                        _rt = str(_ref_txt).strip()
+                        if "#S" in _rt:
+                            _ref_op, _sid_txt = _rt.rsplit("#S", 1)
+                        elif ":" in _rt:
+                            _ref_op, _sid_txt = _rt.rsplit(":", 1)
+                        else:
+                            continue
+                        if _ref_op.strip() != op_name:
+                            continue
+                        _sid = int(_sid_txt)
+                        _bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(op_name, {})
+                        _candidate_mem = _bank.get(_sid) if isinstance(_bank, dict) else None
+                        if isinstance(_candidate_mem, dict) and str(_candidate_mem.get("canonical_owner", "")).startswith("canonical:"):
+                            mem = _candidate_mem
+                            break
+                except Exception:
+                    mem = None
+                if not isinstance(mem, dict):
+                    mem = self.instrument_sequencer_memory.get(
+                        op_name, {"steps": [False] * 48, "amplitudes": [1.0] * 48, "pitches": [1.0] * 48}
+                    )
                 base_freq = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
                 base_freq *= MEUM_POWERS_36[op_idx % 36]
                 # Absolute identity anchor survives ensemble resizing.  It is only
