@@ -10007,12 +10007,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Tempo-locked sinusoidal amplitude envelope always drives Fractallizer.
         self.chk_pkp_automod = None  # removed; use self.pkp_envelope_always_on
         self.pkp_envelope_always_on = True
-        self.lbl_pkp_always = QLabel("PKP Envelope Follower: ALWAYS ON")
-        self.lbl_pkp_always.setStyleSheet("color: #00ffcc; font-weight: bold;")
-        self.lbl_pkp_always.setToolTip(
-            "Permanently enabled. Tempo-locked sinusoidal amplitude envelope "
-            "always modulates the Fractallizer. Toggle removed by design."
-        )
+
 
         self.top_layout.addWidget(self.mode_combo)
         self.top_layout.addWidget(self.chk_global_playlist)
@@ -10037,7 +10032,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         global_fx_layout.addWidget(self.slider_fractalizer, 1)
         global_fx_layout.addWidget(QLabel("PKP Decay:"))
         global_fx_layout.addWidget(self.slider_pkp_decay, 1)
-        global_fx_layout.addWidget(self.lbl_pkp_always)
         # Global synth count (2–64): harmonic re-spacing of free voices
         global_fx_layout.addWidget(QLabel("Synths:"))
         self.spin_synth_count = QSpinBox()
