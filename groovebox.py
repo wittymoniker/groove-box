@@ -206,7 +206,7 @@ def goava_frequency(number_assigned, step, numbers, base_frequency=432.0):
     freq = float(base_frequency) * ratio
     return float(np.clip(freq, 20.0, 18000.0)), float(raw)
 
-def evaluate_seed_expression_at_time(seed_text, t_value):
+def evaluate_seed_expression_at_time(seed_text, t_value, canonical_context=None):
     """Time-domain (T-axis) evaluation of a seed/script expression, for use
     INSIDE the audio/DSP render loop — the counterpart to get_numeric_seed(),
     which is composition-state evaluation and is documented to never be
@@ -241,6 +241,14 @@ def evaluate_seed_expression_at_time(seed_text, t_value):
         "PHI": PHI, "MEUM": MEUM, "MEUM_NORM": MEUM_NORM, "MEUM_INV": MEUM_INV,
         "t": t_scalar, "x": t_scalar, "y": 0.0, "z": 0.0,
     }
+    # Canonical-unison conditions are immutable for a render transaction.
+    # They are deliberately exposed as simple numeric/bool values so seed
+    # if(...)/elif shorthand can branch on the NET active canonical set.
+    if isinstance(canonical_context, dict):
+        for _k, _v in canonical_context.items():
+            if isinstance(_k, str) and _k.isidentifier() and isinstance(_v, (int, float, bool)):
+                env[_k] = _v
+
     try:
         tree = ast.parse(text, mode="eval")
         value = float(eval(compile(tree, "<groovebox-seed-t>", "eval"), env))
@@ -9910,6 +9918,80 @@ class MathematiciansGrooveboxApp(QMainWindow):
             })
         return events
 
+    def _remove_goava_canonical_writes(self):
+        """Reverse only GOAVA-owned writes, using identity rather than current row/ensemble scale.
+
+        The reverse path deliberately consults the GOAVA write ledger captured at
+        activation time.  Ensemble resize can change row/instrument cardinality
+        after GOAVA wrote its material, so reversing by current ordinal would
+        delete the wrong pattern.  User-owned and other canonical contributions
+        are left intact.
+        """
+        ledger = list(getattr(self, "_goava_write_ledger", []) or [])
+        banks = getattr(self, "instrument_sequence_banks", {}) or {}
+        # Remove exact GOAVA-owned sequence objects by owner, regardless of the
+        # ensemble generation in which they were created.
+        for _name, bank in list(banks.items()):
+            if not isinstance(bank, dict):
+                continue
+            for _sid in list(bank.keys()):
+                _mem = bank.get(_sid)
+                if isinstance(_mem, dict) and str(_mem.get("canonical_owner", "")) == "canonical:goava":
+                    bank.pop(_sid, None)
+            if not bank:
+                bank[1] = {"sequence_id": 1, "pattern_length": 16,
+                           "steps": [False]*16, "gates": [True]*16,
+                           "amplitudes": [1.0]*16, "pitches": [1.0]*16,
+                           "probabilities": [100]*16, "offsets": [0.0]*16,
+                           "user_owned": True}
+
+        for _r, e in enumerate(getattr(self, "master_playlist_data", []) or []):
+            if not isinstance(e, dict):
+                continue
+            # Remove the exact GOAVA contribution, not an entire row.
+            contribs = e.get("engine_contributions")
+            if isinstance(contribs, dict):
+                contribs.pop("goava", None)
+            # Remove only refs that belong to GOAVA's canonical sequence owner.
+            refs = []
+            for _ref in e.get("sequence_refs") or []:
+                txt = str(_ref).strip()
+                if not txt:
+                    continue
+                if "#S" in txt:
+                    _nm, _sid_txt = txt.rsplit("#S", 1)
+                    try:
+                        _sid = int(_sid_txt)
+                    except Exception:
+                        _sid = None
+                    _mem = (banks.get(_nm, {}) or {}).get(_sid) if _sid is not None else None
+                    if isinstance(_mem, dict) and str(_mem.get("canonical_owner", "")) == "canonical:goava":
+                        continue
+                refs.append(txt)
+            e["sequence_refs"] = refs
+            e["multi_seq"] = ", ".join(refs)
+            # Remove GOAVA-only scalar metadata.  Do not erase other canonical/user fields.
+            for _k in ("goava_sequence", "goava_frequency", "goava_pitch", "goava_seed",
+                       "goava_unison_weight", "goava_active", "goava_generated_by_engine"):
+                e.pop(_k, None)
+            ops = e.get("operators") or []
+            if isinstance(ops, str):
+                ops = [x.strip() for x in ops.split(",")]
+            e["operators"] = [x for x in ops if str(x).strip() and str(x).strip().casefold() != "goava"]
+            e["operators_csv"] = ", ".join(e["operators"])
+            if str(e.get("paint_source", "")).startswith("Canonical GOAVA"):
+                e.pop("paint_source", None)
+            if str(e.get("paint_target", "")).startswith("GOAVA"):
+                e.pop("paint_target", None)
+            if str(e.get("paint_instrument", "")).strip().casefold() == "goava":
+                e.pop("paint_instrument", None)
+
+        self._goava_write_ledger = []
+        try:
+            self._sync_playlist_paint_table_from_memory()
+        except Exception:
+            pass
+
     def _apply_goava_to_canonical_playlist(self):
         """Fill GOAVA across the entire current ensemble playlist span.
 
@@ -9924,6 +10006,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.playlist_automation.append({})
         events = list(self.goava_note_events or [])
         if self.goava_active and events:
+            # New activation owns a fresh ledger. Each entry records the exact
+            # identity written at that ensemble scale so a later reverse-write
+            # remains correct even after resize.
+            self._goava_write_ledger = []
+            _resize_generation = int(getattr(self, "_canonical_resize_sequence_generation", 0) or 0)
             for r in range(rows):
                 e = self.master_playlist_data[r]
                 if not isinstance(e, dict):
@@ -9954,6 +10041,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 plen = max(1, int((smem or {}).get("pattern_length", 16) or 16))
                 phase = (r * max(1, len(ids)) + sid - 1) % plen
                 refs = [f"{inst}#S{sid}"]
+                self._goava_write_ledger.append({
+                    "row": int(r), "instrument": inst, "sequence_id": int(sid),
+                    "ref": refs[0], "ensemble_generation": _resize_generation,
+                    "ensemble_size": int(len(getattr(self, "instrument_names_48", []) or [])),
+                })
                 # GOAVA owns a contribution, not the shared playlist fields.  This
                 # is critical for activation-order independence: never replace the
                 # other canonicals' sequence/paint metadata here.  Store GOAVA in the
@@ -9987,15 +10079,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 e["goava_unison_weight"] = goava_contrib["canonical_weight"]
                 self._reconcile_engine_playlist_row(e, e.get("user_instances") or [])
         else:
-            for r in range(rows):
-                e = self.master_playlist_data[r]
-                if not isinstance(e, dict):
-                    continue
-                for k in ("goava_sequence","goava_frequency","goava_pitch","goava_seed","goava_unison_weight","goava_active","goava_generated_by_engine"):
-                    e.pop(k, None)
-                e["operators"] = [x for x in (e.get("operators") or []) if str(x).strip() != "GOAVA"]
-                e["operators_csv"] = ", ".join(e["operators"])
-                e["multi_seq"] = ", ".join(x for x in str(e.get("multi_seq", "")).split(",") if x.strip() and x.strip() != "GOAVA")
+            # Reverse-write GOAVA by its recorded identity, not by the current
+            # ensemble ordinal. This is the critical resize-safe unwrite path.
+            self._remove_goava_canonical_writes()
         try:
             self._sync_playlist_paint_table_from_memory()
         except Exception:
@@ -12324,6 +12410,55 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.steps_inner_layout.addWidget(step_btn)
             self.seq_step_buttons.append(step_btn)
 
+    def _canonical_input_context(self):
+        """Return a stable input + net-canonical context for one render transaction."""
+        import hashlib
+        import numpy as _np
+        active = []
+        pairs = (("randomizer", "btn_local_randomize"), ("phase_lock", "btn_local_phase_lock"),
+                 ("euclidean", "btn_idealize_rhythm"), ("seeded", "btn_seeded_randomize"))
+        for _name, _attr in pairs:
+            _btn = getattr(self, _attr, None)
+            if _btn is not None and _btn.isChecked():
+                active.append(_name)
+        if getattr(self, "goava_active", False):
+            active.append("goava")
+        active = sorted(set(active))
+        roster = [str(x).strip() for x in (getattr(self, "instrument_names_48", []) or []) if str(x).strip()]
+        wf = getattr(self, "imported_waveform", None)
+        if wf is None:
+            carrier_hash = "none"
+            carrier_rms = 0.0
+            carrier_peak = 0.0
+        else:
+            a = _np.asarray(wf, dtype=_np.float32).ravel()
+            if a.size:
+                # Fixed-size normalized descriptor: independent of render length.
+                idx = _np.linspace(0, a.size - 1, min(2048, a.size)).astype(_np.int64)
+                desc = _np.nan_to_num(a[idx], nan=0.0, posinf=0.0, neginf=0.0).astype(_np.float32)
+                carrier_hash = hashlib.sha256(desc.tobytes()).hexdigest()[:24]
+                carrier_rms = float(_np.sqrt(_np.mean(desc * desc)))
+                carrier_peak = float(_np.max(_np.abs(desc)))
+            else:
+                carrier_hash, carrier_rms, carrier_peak = "empty", 0.0, 0.0
+        active_key = "|".join(active)
+        canonical_hash = hashlib.sha256(active_key.encode("utf-8")).hexdigest()[:16] if active_key else "none"
+        # Numeric projections make the context safe for the seed expression evaluator.
+        return {
+            "canonical_unison": 1 if active else 0,
+            "canonical_count": len(active),
+            "canonical_mask": int(canonical_hash, 16) % 1000000007 if canonical_hash != "none" else 0,
+            "canonical_randomizer": int("randomizer" in active),
+            "canonical_phase_lock": int("phase_lock" in active),
+            "canonical_euclidean": int("euclidean" in active),
+            "canonical_seeded": int("seeded" in active),
+            "canonical_goava": int("goava" in active),
+            "canonical_roster_size": len(roster),
+            "carrier_present": int(wf is not None),
+            "carrier_rms": carrier_rms,
+            "carrier_peak": carrier_peak,
+        }
+
     def _seed_text(self):
         """Return the complete scrollable seed/script field as plain text."""
         if not hasattr(self, 'input_seed_val'):
@@ -12399,6 +12534,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "y": 0.0,
             "z": 0.0,
         }
+        try:
+            _ctx = getattr(self, "_canonical_render_input_context", None) or self._canonical_input_context()
+            for _k, _v in _ctx.items():
+                if isinstance(_k, str) and _k.isidentifier() and isinstance(_v, (int, float, bool)):
+                    env[_k] = _v
+        except Exception:
+            pass
 
         def evaluate(expr):
             expr = expr.strip()
@@ -12917,12 +13059,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._on_sequence_length_changed(value)
 
     def _canonical_sequence_reconcile(self, trigger_source=None):
-        """Reconcile canonical sequence entries as a pure function of active set.
+        """Reconcile canonical sequences deterministically, preserving resize identity.
 
-        Canonical sequence IDs are reserved by *canonical source rank*, never by
-        max(existing_id)+1.  This prevents toggle history from becoming encoded in
-        the sequence bank.  User-owned sequences keep their IDs; canonical slots are
-        rebuilt deterministically after those user IDs.
+        Normal canonical transactions regenerate canonical material from the active set.
+        An ensemble resize is different: surviving instruments must retain the exact
+        canonical sequence objects they were already playing, while only newly-created
+        instruments receive newly generated canonical sequences.  This prevents the
+        post-resize sound from changing until the user retoggles the engines.
         """
         banks = getattr(self, "instrument_sequence_banks", {}) or {}
         names = list(getattr(self, "instrument_names_48", []) or [])
@@ -12956,17 +13099,38 @@ class MathematiciansGrooveboxApp(QMainWindow):
                                      "amplitudes": [1.0]*16, "pitches": [1.0]*16,
                                      "probabilities": [100]*16, "offsets": [0.0]*16,
                                      "user_owned": True})
-            # Remove every old canonical entry first. This is intentional: generated
-            # canonical state is reproducible from (seed, source, instrument), while
-            # user sequence entries are the only persistent sequence memory.
-            for idx in list(bank.keys()):
-                mem = bank.get(idx)
-                if isinstance(mem, dict) and str(mem.get("canonical_owner", "")).startswith("canonical:"):
-                    bank.pop(idx, None)
+            # During ensemble resize, preserve canonical sequence objects for every
+            # surviving instrument/source pair.  Their exact steps, offsets, amplitudes
+            # and pitches are part of the established sound identity.  New instruments
+            # are the only ones that need fresh canonical sequence material.
+            preserve_resize = bool(getattr(self, "_canonical_resize_preserve_sequences", False))
+            existing_canonical = {}
+            for idx, mem0 in bank.items():
+                if not isinstance(mem0, dict):
+                    continue
+                owner = str(mem0.get("canonical_owner", ""))
+                if owner.startswith("canonical:"):
+                    existing_canonical[owner] = (int(idx), mem0)
+            if not preserve_resize:
+                for idx in list(bank.keys()):
+                    mem0 = bank.get(idx)
+                    if isinstance(mem0, dict) and str(mem0.get("canonical_owner", "")).startswith("canonical:"):
+                        bank.pop(idx, None)
+                existing_canonical = {}
 
             base_max = max(user_ids)
             for rank, source in enumerate(active_order, start=1):
+                owner = f"canonical:{source}"
+                if preserve_resize and owner in existing_canonical:
+                    # Exact object is copied so later candidate evaluation cannot mutate
+                    # the preserved resize state through an alias.
+                    idx, prior_mem = existing_canonical[owner]
+                    bank[idx] = copy.deepcopy(prior_mem)
+                    continue
                 idx = base_max + rank
+                # Avoid collisions if a preserved canonical ID already occupies this slot.
+                while idx in bank:
+                    idx += 1
                 n = int(bank.get(user_ids[0], {}).get("pattern_length", 16) or 16)
                 n = max(1, min(1024, n))
                 mem = {
@@ -15280,8 +15444,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if hasattr(self, "_canonical_prune_stale_playlist_touches"):
             self._canonical_prune_stale_playlist_touches()
         self._reconvolve_free_synths_for_ensemble_resize(old_names, final_names, locked)
-        self._canonical_sequence_reconcile("ensemble_resize")
-        self._recompose_active_canonicals_after_resize()
+        # Resize is an identity-preserving transaction: keep the exact canonical
+        # sequence objects for surviving instruments.  The normal toggle transaction
+        # remains free to regenerate canonical material deterministically.
+        self._canonical_resize_preserve_sequences = True
+        try:
+            self._canonical_sequence_reconcile("ensemble_resize")
+            self._recompose_active_canonicals_after_resize()
+        finally:
+            self._canonical_resize_preserve_sequences = False
         # Mark the canonical sequence bank as the completed resize transaction.
         # Playback uses the row's canonical refs directly, so no retoggle is required.
         self._canonical_resize_sequence_generation = int(
@@ -15840,6 +16011,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     self.goava_note_events=self._build_goava_composition()
                 active.append("goava")
 
+            # Freeze the same imported-input + net-canonical context for every candidate.
+            # This makes the carrier a first-class canonical input without letting mutable
+            # render buffers or toggle order influence candidate generation.
+            canonical_input_ctx = self._canonical_input_context()
+            self._canonical_render_input_context = dict(canonical_input_ctx)
+            _carrier_salt = int(canonical_input_ctx.get("carrier_rms", 0.0) * 1000003) ^ int(canonical_input_ctx.get("carrier_peak", 0.0) * 1000033)
+            _unison_salt = int(canonical_input_ctx.get("canonical_mask", 0))
             candidates=[]
             for source in active:
                 # Hard-reset all mutable sequencer views before EACH candidate.  This is
@@ -15852,7 +16030,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if source == "goava":
                     self._apply_goava_to_canonical_playlist()
                 else:
-                    rng=np.random.default_rng((_safe_int_seed(self.get_numeric_seed()) ^ sum(map(ord, source)) ^ rows) & 0x7fffffff)
+                    rng=np.random.default_rng((_safe_int_seed(self.get_numeric_seed()) ^ sum(map(ord, source)) ^ rows ^ _carrier_salt ^ _unison_salt) & 0x7fffffff)
                     self._canonical_playlist_paint(rng=rng, mode=source, strength=0.55)
                 candidates.append((source, copy.deepcopy(self.master_playlist_data[:rows])))
 
@@ -16437,10 +16615,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 token in seed_script_text for token in ("t", "if(", "if (", "elif", "sin", "cos")
             )
             if seed_script_text.strip() and _looks_time_varying:
+                # Freeze the net active canonical set + imported carrier descriptor once
+                # per render. Every t/elif evaluation sees exactly the same context.
+                _seed_canonical_context = dict(getattr(self, "_canonical_render_input_context", None) or self._canonical_input_context())
                 control_n = min(256, max(8, len(master) // 512))
                 control_t = np.linspace(0.0, total_duration, control_n, endpoint=False)
                 control_vals = np.array([
-                    evaluate_seed_expression_at_time(seed_script_text, ct) for ct in control_t
+                    evaluate_seed_expression_at_time(seed_script_text, ct, _seed_canonical_context) for ct in control_t
                 ], dtype=np.float64)
                 seed_time_curve = np.interp(t, control_t, control_vals)
                 # Keep on self so per-voice code elsewhere can sample the same
