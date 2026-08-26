@@ -31,6 +31,7 @@ import subprocess
 import tempfile
 import shutil
 import colorsys
+import re
 import numpy as np
 from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer
 from PyQt6.QtGui import (
@@ -159,6 +160,51 @@ def _safe_int_seed(value):
     digest = hashlib.sha256(packed).digest()
     return int.from_bytes(digest[:4], 'big') & 0x7FFFFFFF
 
+
+
+# GOAVA_NATIVE_PORT — faithful Python port of Composer.getNote() from the
+# supplied GOAVA Java source.  GOAVA remains engine-owned/non-user data.
+def goava_get_note(number_assigned, step, numbers):
+    """Return the scalar note value produced by GOAVA Composer.getNote()."""
+    nums = [float(x) for x in numbers if math.isfinite(float(x))]
+    if not nums:
+        return 0.0
+    num = float(number_assigned)
+    total = 0.0
+    for value in nums:
+        if value != 0.0:
+            total += (
+                1.0 + math.cos(
+                    1.0 + abs((math.pi / 2.0) * num)
+                    + (math.pi / 2.0) * ((abs(value) + abs(num)) * step)
+                )
+            ) / (len(nums) + abs(num - value))
+        else:
+            total += (
+                1.0 + math.cos(
+                    1.0 + step
+                    + abs((math.pi / 2.0) * num)
+                    + (math.pi / 2.0) * ((abs(value) + abs(num)) * step)
+                )
+            ) / (len(nums) + abs(num - value))
+    return abs(float(total))
+
+
+def goava_frequency(number_assigned, step, numbers, base_frequency=216.0):
+    """Map GOAVA's Java sequence scalar to a stable audible frequency.
+
+    The Java implementation's primary arpeggio path is getNote()*16.  Its
+    original runtime also contains a safety fallback for values outside the
+    practical range.  We preserve that behavior, then constrain the final
+    oscillator frequency to a safe audio range.
+    """
+    raw = goava_get_note(number_assigned, step, numbers)
+    # GOAVA musical output is intentionally a single sine at a base-frequency
+    # ratio.  Positive/negative raw values select above/below the base; the
+    # raw Java-derived scalar remains available as metadata.
+    ratio = 2.0 ** float(np.clip(raw, -2.0, 2.0))
+    freq = float(base_frequency) * ratio
+    return float(np.clip(freq, 20.0, 18000.0)), float(raw)
 
 def evaluate_seed_expression_at_time(seed_text, t_value):
     """Time-domain (T-axis) evaluation of a seed/script expression, for use
@@ -338,7 +384,8 @@ PLAYLIST_COLUMNS = (
     "time_marker", "operators_csv",
     "script_tag", "domain_tag", "synth_tag", "patch_tag",
     "velocity", "effect_target", "auto_amount",
-    "direction_vector", "multi_seq", "coverage", "blend_partner",
+    "direction_vector", "multi_seq", "coverage", "blend_partner", "goava_sequence",
+    "paint_target", "paint_source", "paint_sequence", "paint_instrument",
 )
 PLAYLIST_COLUMN_COUNT = len(PLAYLIST_COLUMNS)
 # Semantic groups used by cross-cell blend (any of these can blend under coverage).
@@ -360,12 +407,24 @@ def idealized_operator_struct(app, op_name, row=0, seed=0):
     labels that point at the live instrument_scripts / domain_eq_engine /
     instrument_param_state / patch_connections stores so Unison composition
     only needs time_offset + coverage/blend to recycle patterns.
+
+    When Edit-panels-per-sequence is ON, prefers the active sequence's panel
+    overrides (synth / script / domain / patch) over master instrument state.
     """
     op = str(op_name or "Operator")
     short = op.split(".")[-1].strip()[:18] if op else "Op"
+    # Optional sequence-local panel overrides
+    seq_panels = None
+    if app is not None and hasattr(app, "_panels_per_sequence_enabled") and app._panels_per_sequence_enabled():
+        try:
+            seq_panels = app._sequence_panel_slot(op)
+        except Exception:
+            seq_panels = None
     # Script
     script_body = ""
-    if app is not None and hasattr(app, "instrument_scripts"):
+    if seq_panels and seq_panels.get("script"):
+        script_body = str(seq_panels.get("script") or "")
+    elif app is not None and hasattr(app, "instrument_scripts"):
         script_body = str((app.instrument_scripts or {}).get(op, "") or "")
     script_line = ""
     for line in script_body.splitlines():
@@ -396,10 +455,12 @@ def idealized_operator_struct(app, op_name, row=0, seed=0):
                 d0 = engine.domains[min(row % max(len(engine.domains), 1), len(engine.domains) - 1)]
                 domain_tag = f"{str(d0.get('name', 'Dom'))[:14]}@r{row}"
 
-    # Synth snapshot from instrument_param_state
+    # Synth snapshot from instrument_param_state (or sequence panel when enabled)
     synth_tag = f"Synth::{short[:10]}"
     params = {}
-    if app is not None:
+    if seq_panels and seq_panels.get("synth"):
+        params = dict(seq_panels.get("synth") or {})
+    elif app is not None:
         params = dict((getattr(app, "instrument_param_state", {}) or {}).get(op, {}) or {})
         gen = dict((getattr(app, "instrument_param_generated", {}) or {}).get(op, {}) or {})
         for k, v in gen.items():
@@ -417,32 +478,34 @@ def idealized_operator_struct(app, op_name, row=0, seed=0):
         if parts:
             synth_tag = "|".join(parts[:5])
 
-    # Modular patch — incident edges for this operator
+    # Modular patch — incident edges for this operator (sequence panel when enabled)
     patch_tag = f"Patch::{short[:8]}"
     edges = []
-    if app is not None:
-        for c in getattr(app, "patch_connections", []) or []:
-            if not isinstance(c, dict):
-                continue
-            src, tgt = c.get("source"), c.get("target")
-            if src == op or tgt == op:
-                w = c.get("weight", c.get("gain", 0.5))
-                try:
-                    w = float(w)
-                except Exception:
-                    w = 0.5
-                other = tgt if src == op else src
-                arrow = "→" if src == op else "←"
-                edges.append(f"{arrow}{str(other).split('.')[-1].strip()[:10]}@{w:.2f}")
-        if not edges:
+    patch_src = (seq_panels.get("patch") if seq_panels else None) or (
+        getattr(app, "patch_connections", []) if app is not None else []
+    ) or []
+    for c in patch_src:
+        if not isinstance(c, dict):
+            continue
+        src, tgt = c.get("source"), c.get("target")
+        if src == op or tgt == op:
+            w = c.get("weight", c.get("gain", 0.5))
             try:
-                for c in getattr(globals().get("GLOBAL_BUS", None), "global_cables", []) or []:
-                    src, tgt = c.get("src_module"), c.get("tgt_module")
-                    if src == op or tgt == op:
-                        other = tgt if src == op else src
-                        edges.append(f"{'→' if src == op else '←'}{str(other)[:10]}")
+                w = float(w)
             except Exception:
-                pass
+                w = 0.5
+            other = tgt if src == op else src
+            arrow = "→" if src == op else "←"
+            edges.append(f"{arrow}{str(other).split('.')[-1].strip()[:10]}@{w:.2f}")
+    if not edges and app is not None:
+        try:
+            for c in getattr(globals().get("GLOBAL_BUS", None), "global_cables", []) or []:
+                src, tgt = c.get("src_module"), c.get("tgt_module")
+                if src == op or tgt == op:
+                    other = tgt if src == op else src
+                    edges.append(f"{'→' if src == op else '←'}{str(other)[:10]}")
+        except Exception:
+            pass
     if edges:
         patch_tag = ",".join(edges[:3])
 
@@ -686,7 +749,14 @@ class VideoSynthEngine:
     SUBSCENE_COUNT = 6  # field, ribbon, volumes, faces, segments, particles
 
     def __init__(self, n_instruments=48):
-        self.n = int(n_instruments)
+        # Instrument count is a live engine input.  Keep a target count and a
+        # render count so the scenograph can follow ensemble resizes without
+        # popping, while the rest of the audio/UI engine can use the exact
+        # target count immediately.
+        self.n = int(max(2, min(64, n_instruments)))
+        self._render_n = float(self.n)
+        self._target_n = self.n
+        self._n_resize_alpha = 1.0
         self.wave = np.zeros(256, dtype=np.float32)
         self.t = 0.0
         self.playhead = 0.0  # 0..1 composition progress
@@ -699,7 +769,19 @@ class VideoSynthEngine:
         self._peak = 0.0
         self._video_hue_shift = 0.0
         self._video_energy = 0.0
+        self._module_fade = {
+            "field": 0.62, "ribbon": 0.0, "volumes": 0.52,
+            "faces": 1.0, "particles": 1.0, "bands": 0.0, "goava": 0.0,
+            "filaments": 0.72, "roses": 0.55, "orbitals": 0.62,
+            "constellations": 0.48, "lattice": 0.36,
+            "bursts": 0.0, "spectral_comets": 0.0,
+            "rhythm_mandala": 0.40, "pulse_grid": 0.35, "goava_field": 0.0,
+        }
+        self._module_target = dict(self._module_fade)
+        self._scenograph_modules = {}
         self._rng = np.random.RandomState(7)
+        self._visual_frame = 0
+        self._visual_entropy = 0.5
         # Implode-to-fit: map scene bbox onto the full frame
         self._fit_cx = 0.0
         self._fit_cy = 0.0
@@ -707,6 +789,14 @@ class VideoSynthEngine:
         self._fit_sy = 1.0
         self._fit_ox = 0.0
         self._fit_oy = 0.0
+        # Camera + packing: deterministic golden-angle placement with an
+        # implosive scale law keeps instrument objects separated while the
+        # camera gently rotates the whole 3D field.
+        self._cam_yaw = 0.0
+        self._cam_pitch = 0.0
+        self._cam_roll = 0.0
+        self._pack_radius = 0.0
+        self._pack_scale_floor = 0.28
         self.layers = []
         for i in range(self.n):
             depth = 1.35 + float(MEUM_POWERS_36[min(i % 12, 35)]) * 0.18
@@ -724,6 +814,90 @@ class VideoSynthEngine:
 
     def bind_app(self, app):
         self.app = app
+        # Pull the current ensemble size when binding/rebinding so the visual
+        # engine cannot remain stranded at its construction-time default.
+        try:
+            names = getattr(app, "instrument_names_48", None)
+            if names:
+                self.set_instrument_count(len(names), smooth=False)
+        except Exception:
+            pass
+
+    def set_instrument_count(self, count, smooth=True):
+        """Synchronize the scenograph to the live synth count (2–64).
+
+        Existing layers retain their phase/depth/life state. New layers are
+        seeded deterministically from their index, and removed layers fade out
+        through the render-count transition instead of disappearing abruptly.
+        ``self.n`` is updated immediately so all engine calculations see the
+        new ensemble size; only visual layer admission is smoothed.
+        """
+        try:
+            target = int(max(2, min(64, int(count))))
+        except Exception:
+            return
+        old_n = int(getattr(self, "n", target))
+        old_layers = list(getattr(self, "layers", []) or [])
+        self.n = target
+        self._target_n = target
+
+        # Reuse existing layer state by index wherever possible.  This avoids
+        # geometry jumps when the user adds/removes instruments.
+        layers = []
+        # Retain the old tail during a shrink so it can visually ease out.
+        # During growth, the newly appended layers start at life=0 and ease in.
+        layer_capacity = max(target, len(old_layers))
+        for i in range(layer_capacity):
+            if i < len(old_layers):
+                layer = dict(old_layers[i])
+                layer["i"] = i
+                layer["family"] = i // 8
+                layer["hue"] = int((i * 360 / max(target, 1) + i * 7) % 360)
+                if i >= target:
+                    layer["life"] = float(layer.get("life", 0.3))
+            else:
+                depth = 1.35 + float(MEUM_POWERS_36[min(i % 12, 35)]) * 0.18
+                layer = {
+                    "i": i,
+                    "distance": depth,
+                    "yaw": (i * PHI * MEUM_NORM) % (2 * np.pi),
+                    "pitch": 0.12 * np.sin(i * MEUM),
+                    "roll": 0.09 * np.cos(i * MEUM_INV),
+                    "hue": int((i * 360 / max(target, 1) + i * 7) % 360),
+                    "life": 0.0,
+                    "family": i // 8,
+                    "active_verts": 4 + (i % 5),
+                }
+            layers.append(layer)
+        self.layers = layers
+
+        if smooth and old_n != target:
+            self._n_resize_alpha = 0.0
+            self._resize_start_n = float(old_n)
+            # Keep the previous visual population as the starting point; the
+            # render loop eases _render_n toward _target_n below.
+            if not hasattr(self, "_render_n"):
+                self._render_n = float(old_n)
+        else:
+            self._render_n = float(target)
+            self._n_resize_alpha = 1.0
+
+    def _advance_instrument_resize(self):
+        """Ease the visible layer population toward the live synth count.
+
+        Shrinks therefore stop admitting the removed tail immediately; the
+        stale tail remains drawable until _render_n crosses it, then vanishes.
+        """
+        current = float(getattr(self, "_render_n", self.n))
+        target = float(getattr(self, "_target_n", self.n))
+        # PAINT_PERIOD_S is the engine's normal update cadence; this factor
+        # gives a short, frame-rate-independent-feeling visual settling time.
+        step = float(np.clip(PAINT_PERIOD_S * 8.0, 0.08, 0.24))
+        current += (target - current) * step
+        if abs(target - current) < 0.03:
+            current = target
+        self._render_n = current
+        self._n_resize_alpha = float(np.clip(1.0 - abs(target - current) / max(abs(target - getattr(self, "_resize_start_n", target)), 1.0), 0.0, 1.0))
 
     def set_waveform(self, data, playhead=None):
         if data is None:
@@ -754,9 +928,21 @@ class VideoSynthEngine:
         w = self.wave
         self._rms = float(np.sqrt(np.mean(w ** 2)) + 1e-9)
         self._peak = float(np.max(np.abs(w)) + 1e-9)
-        bands = [float(np.sqrt(np.mean(w[b * 32:(b + 1) * 32] ** 2)) + 1e-9) for b in range(8)]
+        # Harmonic/octave-ish bands: use the spectral domain rather than
+        # eight arbitrary waveform slices.  This makes visual population follow
+        # actual doubling boundaries (and keeps the response stable as FFT
+        # content changes).
+        spec = np.abs(np.fft.rfft(w * np.hanning(len(w)))) + 1e-9
+        freqs = np.fft.rfftfreq(len(w), d=1.0 / 256.0)
+        edges = np.geomspace(1.0, max(2.0, float(freqs[-1])), 9)
+        bands = []
+        for b in range(8):
+            mask = (freqs >= edges[b]) & (freqs < edges[b + 1])
+            bands.append(float(np.sqrt(np.mean(spec[mask] ** 2))) if np.any(mask) else 1e-9)
         self._band = np.asarray(bands, dtype=np.float32)
         self._band /= (float(np.max(self._band)) + 1e-9)
+        self._harmonic_activity = float(np.clip(np.mean(self._band), 0.0, 1.0))
+        self._octave_boundary = float(np.clip(max(self._band[1:]) / max(self._band[0], 1e-6), 0.0, 2.0) / 2.0)
         idx = np.arange(256, dtype=np.float32)
         mag = np.abs(w) + 1e-9
         self._centroid = float(np.sum(idx * mag) / (np.sum(mag) * 255.0))
@@ -783,6 +969,9 @@ class VideoSynthEngine:
         rho = float(MEUM_POWERS_36[min(k_pow, 35)]) * (0.4 + 0.6 * self._rms)
         # Variable substitution: ε from residual + live randomizer pulse
         eps = abs(MEUM_IDENTITY_RESIDUAL) * 10.0 + (0.08 if snap["seeded"] else 0.0)
+        # 50%-floor stochastic perturbation: enough entropy to keep the
+        # scenograph evolving without changing canonical audio determinism.
+        eps += 0.035 * (self._visual_entropy - 0.5)
         form = float(np.clip(0.25 + 0.45 * abs(u) + 0.2 * rho + eps * self._band[int(ph * 7) % 8], 0.05, 1.0))
         # Volume shell scale from 2^M / M^2 partner
         vol_s = float(MEUM_TWO_POW_OVER_SQ) * (0.5 + 0.5 * self._peak) * (0.6 + 0.4 * snap["eqr"])
@@ -797,12 +986,14 @@ class VideoSynthEngine:
         snap = {
             "seeded": False, "euclid": False, "eqr": 0.5, "fractal": 0.33,
             "struct": 0.0, "bpm": 120.0, "carrier": 0.0, "pkp": 0.5, "seed": 0.0,
+            "goava": False,
         }
         app = self.app
         if app is None:
             return snap
         try:
             snap["seeded"] = bool(getattr(app, "btn_seeded_randomize", None) and app.btn_seeded_randomize.isChecked())
+            snap["goava"] = bool(getattr(app, "btn_goava", None) and app.btn_goava.isChecked())
             snap["euclid"] = bool(getattr(app, "btn_idealize_rhythm", None) and app.btn_idealize_rhythm.isChecked())
             if hasattr(app, "slider_eqr"):
                 snap["eqr"] = app.slider_eqr.value() / 100.0
@@ -837,11 +1028,72 @@ class VideoSynthEngine:
         self._fit_ox = w * 0.5
         self._fit_oy = h * 0.5
 
+    def _update_camera_and_packing(self, st):
+        """Compute a deterministic rotating camera and collision-avoiding field layout."""
+        ph = float(st.get("ph", 0.0))
+        e = float(self._rms)
+        seed = float(st.get("snap", {}).get("seed", 0.0))
+        n = max(2, int(round(getattr(self, "_render_n", self.n))))
+        # Low-amplitude camera motion: enough parallax to reveal depth without
+        # making the composition unstable. Seed keeps exports reproducible.
+        self._cam_yaw = 0.10 * math.sin(self.t * 0.17 + seed * 0.0017) + 0.055 * ph
+        self._cam_pitch = 0.055 * math.sin(self.t * 0.11 + MEUM + seed * 0.0009)
+        self._cam_roll = 0.035 * math.sin(self.t * 0.07 + MEUM_INV * 2.0 + ph * math.tau)
+        # Golden-angle disk packing. sqrt radial law gives approximately
+        # uniform area density; the logarithmic/implosive term shrinks objects
+        # as the ensemble gets denser.
+        golden = math.tau * (1.0 - 1.0 / ((1.0 + math.sqrt(5.0)) * 0.5))
+        self._pack_radius = 0.54 + 0.08 * min(1.0, e + 0.35 * float(st.get("form", 0.5)))
+        for i, layer in enumerate(self.layers[:n]):
+            q = (i + 0.5) / n
+            a = i * golden + self.t * (0.035 + 0.025 * e) + ph * math.tau * 0.08
+            rr = self._pack_radius * math.sqrt(q)
+            # Local neighborhood spacing estimate for a disk packing.
+            spacing = self._pack_radius * math.sqrt(2.0 * math.pi / n) * (0.90 + 0.10 * q)
+            base = 0.26 + 0.32 * abs(float(self.wave[i % 256])) + 0.14 * e
+            life = max(float(layer.get("life", 0.3)), 0.2)
+            crowd = base * (0.28 + 0.72 * life) * max(float(st.get("rho", 1.0)), 0.2)
+            implode = float(np.clip(spacing / max(2.15 * crowd, 1e-4), self._pack_scale_floor, 1.0))
+            # Preserve the instrument's individual phase, but place its center
+            # on the packed field. The slight depth staggering reduces projected
+            # collisions after perspective.
+            layer["field_x"] = rr * math.cos(a)
+            layer["field_y"] = rr * math.sin(a) * 0.72
+            layer["implode"] = implode
+            layer["field_z"] = 0.08 * math.sin(a * MEUM + i * MEUM_INV)
+
+    def _camera_transform(self, x, y, z):
+        """Apply global yaw -> pitch -> roll camera transform."""
+        cy, sy = math.cos(self._cam_yaw), math.sin(self._cam_yaw)
+        cp, sp = math.cos(self._cam_pitch), math.sin(self._cam_pitch)
+        cr, sr = math.cos(self._cam_roll), math.sin(self._cam_roll)
+        x1 = x * cy - z * sy
+        z1 = x * sy + z * cy
+        y1 = y * cp - z1 * sp
+        z2 = y * sp + z1 * cp
+        x2 = x1 * cr - y1 * sr
+        y2 = x1 * sr + y1 * cr
+        return x2, y2, z2
+
     def _map_xy(self, x, y):
-        """Implode a screen point into the fitted outer bounds."""
+        """Implode a screen point into the fitted bounds and clamp each element."""
+        px = self._fit_ox + (x - self._fit_cx) * self._fit_sx
+        py = self._fit_oy + (y - self._fit_cy) * self._fit_sy
+        # Small seeded frame-local displacement supplies visual entropy while
+        # remaining far inside the global fit box.
+        try:
+            j = (min(self._fit_ox, self._fit_oy) * 0.012 *
+                 float(self._visual_entropy) * 0.5)
+            px += float(self._rng.uniform(-j, j))
+            py += float(self._rng.uniform(-j, j))
+        except Exception:
+            pass
+        # Per-element safety clamp: stochastic geometry may evolve freely,
+        # but no individual projected element is allowed to escape the frame.
+        margin = 2.0
         return (
-            self._fit_ox + (x - self._fit_cx) * self._fit_sx,
-            self._fit_oy + (y - self._fit_cy) * self._fit_sy,
+            float(np.clip(px, margin, max(margin, self._fit_ox * 2.0 - margin))),
+            float(np.clip(py, margin, max(margin, self._fit_oy * 2.0 - margin))),
         )
 
     def _commit_fit(self, pts, w, h):
@@ -869,6 +1121,7 @@ class VideoSynthEngine:
     def _project(self, x, y, z, w, h, fov=None):
         if fov is None:
             fov = MEUM + MEUM_NORM * 0.15
+        x, y, z = self._camera_transform(float(x), float(y), float(z))
         z = max(z, 0.12)
         inv = 1.0 / z
         sx = (x * inv) * fov
@@ -884,6 +1137,8 @@ class VideoSynthEngine:
         return (c.red(), c.green(), c.blue())
 
     def _line(self, img, x0, y0, x1, y1, col, alpha=1.0):
+        # VISUAL_DENSITY_V50: raise scenograph presence without making it fully opaque.
+        alpha = float(alpha) * 1.65
         hh, ww, _ = img.shape
         steps = max(abs(int(x1) - int(x0)), abs(int(y1) - int(y0)), 1)
         a = float(np.clip(alpha, 0.0, 1.0))
@@ -896,6 +1151,8 @@ class VideoSynthEngine:
                 img[y, x] = img[y, x] * (1 - a) + c * a
 
     def _dot(self, img, x, y, col, alpha=1.0, r=1):
+        # VISUAL_DENSITY_V50: moderate 50%-entropy presentation; retain fade behavior.
+        alpha = float(alpha) * 1.65
         hh, ww, _ = img.shape
         a = float(np.clip(alpha, 0.0, 1.0))
         c = np.array(col, dtype=np.float32)
@@ -906,20 +1163,28 @@ class VideoSynthEngine:
                     img[yy, xx] = img[yy, xx] * (1 - a) + c * a
 
     def _fill_tri(self, img, p0, p1, p2, col, alpha):
-        pts = [p0, p1, p2]
+        """Real rasterized face fill, followed by a crisp mathematical edge."""
+        a = float(np.clip(alpha, 0.0, 1.0))
+        pts = np.asarray([[p0[0], p0[1]], [p1[0], p1[1]], [p2[0], p2[1]]], dtype=np.float32)
+        xmin = max(0, int(np.floor(np.min(pts[:, 0])))); xmax = min(img.shape[1]-1, int(np.ceil(np.max(pts[:, 0]))))
+        ymin = max(0, int(np.floor(np.min(pts[:, 1])))); ymax = min(img.shape[0]-1, int(np.ceil(np.max(pts[:, 1]))))
+        if xmin <= xmax and ymin <= ymax:
+            yy, xx = np.mgrid[ymin:ymax+1, xmin:xmax+1]
+            x0,y0=pts[0]; x1,y1=pts[1]; x2,y2=pts[2]
+            den=((y1-y2)*(x0-x2)+(x2-x1)*(y0-y2))
+            if abs(float(den)) > 1e-6:
+                w0=((y1-y2)*(xx-x2)+(x2-x1)*(yy-y2))/den
+                w1=((y2-y0)*(xx-x2)+(x0-x2)*(yy-y2))/den
+                w2=1.0-w0-w1
+                mask=(w0>=0)&(w1>=0)&(w2>=0)
+                region=img[ymin:ymax+1,xmin:xmax+1]
+                c=np.asarray(col,dtype=np.float32)
+                region[mask]=region[mask]*(1-a)+c*a
         for i in range(3):
-            self._line(img, pts[i][0], pts[i][1], pts[(i + 1) % 3][0], pts[(i + 1) % 3][1], col, alpha)
-        cx = (p0[0] + p1[0] + p2[0]) / 3.0
-        cy = (p0[1] + p1[1] + p2[1]) / 3.0
-        self._dot(img, cx, cy, col, alpha * 0.45, r=2)
-        for t in (0.3, 0.6):
-            for i in range(3):
-                ax = pts[i][0] * (1 - t) + cx * t
-                ay = pts[i][1] * (1 - t) + cy * t
-                self._dot(img, ax, ay, col, alpha * 0.25, r=1)
+            self._line(img, pts[i,0], pts[i,1], pts[(i+1)%3,0], pts[(i+1)%3,1], col, min(1.0, a*1.15))
 
     def _subscene_field(self, img, w, h, st):
-        """Background Meum gradient field + playhead vertical."""
+        """Background Meum gradient field; no playhead chrome."""
         e = self._rms
         hue_bg = (185 + self._centroid * 90 + self._video_hue_shift + st["ph"] * 40) % 360
         c0 = np.array(self._hsv(hue_bg, 0.32, 0.08 + 0.18 * e), dtype=np.float32)
@@ -927,10 +1192,6 @@ class VideoSynthEngine:
         for yy in range(h):
             u = (yy / max(h - 1, 1)) ** MEUM_INV
             img[yy, :] = c0 * (1 - u) + c1 * u
-        # Playhead tracker line (thin, translucent)
-        phx = int(st["ph"] * (w - 1))
-        col = self._hsv(30, 0.7, 0.7)
-        self._line(img, phx, 0, phx, h - 1, col, alpha=0.18)
 
     def _subscene_ribbon(self, img, w, h, st):
         """Waveform ribbon — audio bulk as ground reference (not an oscilloscope chrome)."""
@@ -941,7 +1202,7 @@ class VideoSynthEngine:
             y0 = int(h * 0.80 - self.wave[i] * h * 0.16 * st["rho"])
             y1 = int(h * 0.80 - self.wave[i + 1] * h * 0.16 * st["rho"])
             col = self._hsv(145 + int(self._band[i // 32] * 60), 0.65, 0.45 + 0.35 * e)
-            self._line(img, x0, y0, x1, y1, col, alpha=0.22 + 0.25 * e)
+            self._line(img, x0, y0, x1, y1, col, alpha=0.46 + 0.38 * e)
 
     def _subscene_volumes(self, img, w, h, st):
         """Partly transparent volume shells from Meum 2^M/M² scale."""
@@ -959,7 +1220,7 @@ class VideoSynthEngine:
                 py = cy + rad * h * 0.28 * math.sin(a) * MEUM
                 pts.append(self._map_xy(px, py))
             col = self._hsv(int(200 + s * 25 + self._video_hue_shift) % 360, 0.4, 0.5)
-            alpha = 0.08 + 0.06 * st["form"]  # more transparent volumes
+            alpha = 0.025 + 0.045 * st["form"]
             for k in range(len(pts)):
                 self._line(img, pts[k][0], pts[k][1], pts[(k + 1) % len(pts)][0], pts[(k + 1) % len(pts)][1], col, alpha)
 
@@ -967,7 +1228,10 @@ class VideoSynthEngine:
         """Instrument layers: expanded/contracted faces + segments from Meum verts."""
         e = self._rms
         snap = st["snap"]
-        n_show = min(self.n, 22 if self.mode != 3 else 36)
+        n_visible = int(round(getattr(self, "_render_n", self.n)))
+        harmonic_mult = 0.72 + 0.85 * getattr(self, "_harmonic_activity", 0.5) + 0.45 * getattr(self, "_octave_boundary", 0.0)
+        n_cap = 34 if self.mode != 3 else 52
+        n_show = min(int(round(n_visible * harmonic_mult)), n_cap, len(self.layers))
         order = sorted(range(n_show), key=lambda i: -self.layers[i]["distance"])
         for i in order:
             layer = self.layers[i]
@@ -1002,7 +1266,7 @@ class VideoSynthEngine:
             roll = layer["roll"] + 0.1 * e * math.sin(self.t * MEUM + i)
 
             ang0 = self.t * 0.35 + i * 0.2
-            scale = (0.26 + 0.32 * abs(local) + 0.14 * e) * (0.28 + 0.72 * life) * st["rho"]
+            scale = (0.26 + 0.32 * abs(local) + 0.14 * e) * (0.28 + 0.72 * life) * st["rho"] * float(layer.get("implode", 1.0))
             verts = []
             for k in range(n_v):
                 a = ang0 + k * (math.tau / n_v)
@@ -1010,7 +1274,9 @@ class VideoSynthEngine:
                 z = 0.06 * math.sin(a * 2 + self.t)
                 if snap["seeded"]:
                     z += MEUM_NORM * 0.04 * math.sin(a * 3 + st["ph"] * math.tau)
-                verts.append((scale * math.cos(a), scale * math.sin(a), z))
+                verts.append((layer.get("field_x", 0.0) + scale * math.cos(a),
+                              layer.get("field_y", 0.0) + scale * math.sin(a),
+                              layer.get("field_z", 0.0) + z))
 
             cosy, siny = math.cos(yaw), math.sin(yaw)
             cosp, sinp = math.cos(pitch), math.sin(pitch)
@@ -1027,13 +1293,16 @@ class VideoSynthEngine:
 
             hue = (layer["hue"] + int(self._video_hue_shift) + int(self._centroid * 40) + int(st["ph"] * 30)) % 360
             col = self._hsv(hue, 0.5 + 0.25 * life, 0.32 + 0.5 * min(1.0, e + abs(local)) * life)
-            # More transparent than prior generation
-            alpha = float(np.clip(0.08 + 0.42 * life * (0.45 + 0.55 * e), 0.06, 0.55))
+            # VISUAL_DENSITY_V50: stronger formed-shape presence while retaining entropy/fades.
+            # Faces are deliberately highly transparent so the full ensemble
+            # remains legible when many instruments converge. Edges carry the
+            # identity; faces only provide a faint spatial volume cue.
+            alpha = float(np.clip((0.10 + 0.42 * life * (0.45 + 0.35 * e)) * 0.72, 0.045, 0.32))
 
             # Faces when formed
             if life > 0.35 and len(projected) >= 3:
                 for k in range(1, len(projected) - 1):
-                    self._fill_tri(img, projected[0], projected[k], projected[k + 1], col, alpha * 0.4)
+                    self._fill_tri(img, projected[0], projected[k], projected[k + 1], col, alpha * 0.34)
             # Segments always
             for k in range(len(projected)):
                 x0, y0, _ = projected[k]
@@ -1063,15 +1332,308 @@ class VideoSynthEngine:
             y = rr * math.sin(ang * MEUM)
             px, py, _ = self._project(x, y, 1.05 + 0.35 * self._rms, w, h)
             col = self._hsv(int(110 + seed_i * 0.08 + p * 9) % 360, 0.65, 0.75)
-            self._dot(img, px, py, col, 0.35 + 0.2 * self._rms, r=1)
+            self._dot(img, px, py, col, 0.58 + 0.25 * self._rms, r=1)
 
     def _subscene_band_towers(self, img, w, h, st):
         """Spectral band columns — bulk spectrum as vertical volume lines."""
+        n_vis = max(2, int(round(getattr(self, "_render_n", self.n))))
+        reps = max(1, min(4, int(round(n_vis / 16.0))))
         for b in range(8):
             bx = int((b + 0.5) / 8.0 * w)
-            bh = int(self._band[b] * h * 0.28 * st["rho"])
+            boundary = 1.0 + 0.65 * getattr(self, "_octave_boundary", 0.0)
+            bh = int(self._band[b] * h * 0.24 * st["rho"] * boundary)
             col = self._hsv(int(25 * b + self._video_hue_shift) % 360, 0.55, 0.35 + 0.45 * self._band[b])
-            self._line(img, bx, h - 3, bx, h - 3 - bh, col, alpha=0.2 + 0.25 * self._band[b])
+            self._line(img, bx, h - 3, bx, h - 3 - bh, col, alpha=0.34 + 0.28 * self._band[b])
+            if reps > 1:
+                for q in range(1, reps):
+                    yq = h - 3 - int(bh * q / reps)
+                    self._line(img, bx - 2, yq, bx + 2, yq, col, alpha=0.16 * self._band[b])
+
+
+    def _update_scenograph_module_schedule(self, st):
+        """Compute relevance and smooth fade for every visual module.
+
+        Presence is deterministic from audio energy, centroid, playhead,
+        composition density, and GOAVA state.  Fades are shared so removal and
+        re-addition never pop between modules.
+        """
+        snap = st["snap"]
+        e = float(np.clip(self._rms, 0.0, 1.0))
+        c = float(np.clip(self._centroid, 0.0, 1.0))
+        ph = float(st["ph"])
+        relevance = {
+            "field": 0.72 + 0.28 * e,
+            "ribbon": 0.0,  # disabled: waveform/scope chrome not drawn in scenograph
+            "volumes": 0.30 + 0.70 * (0.5 + 0.5 * abs(math.sin(ph * math.tau * MEUM))),
+            "faces": 0.22 + 0.78 * max(e, float(snap["struct"])),
+            "particles": 0.20 + 0.80 * (0.55 * e + 0.45 * abs(c - 0.5) * 2.0),
+            "bands": 0.0,  # disabled: spectrum bars not drawn in scenograph
+            "goava": 0.95 if snap.get("goava") else 0.0,
+            "filaments": 0.18 + 0.82 * abs(math.sin((ph + c) * math.tau * MEUM_INV)),
+            "roses": 0.15 + 0.85 * abs(math.cos((ph * 0.5 + e) * math.tau)),
+            "orbitals": 0.18 + 0.82 * max(e, 1.0 - c),
+            # Silence/context modules: slow, structural, and deliberately independent of loudness.
+            "constellations": 0.48 + 0.40 * (1.0 - e) * (0.55 + 0.45 * snap["struct"]),
+            "lattice": 0.34 + 0.46 * (1.0 - min(1.0, e * 1.8)) * (0.5 + 0.5 * snap["fractal"]),
+            # Loudness/instantaneous modules.
+            "bursts": min(1.0, e * 2.8) ** 1.7,
+            "spectral_comets": min(1.0, max(0.0, c) * 1.6) * min(1.0, e * 2.0),
+            # Stable rhythm modules: suppress on chaotic/high residual motion.
+            "rhythm_mandala": max(0.0, snap["struct"] * (1.0 - abs(c - 0.5) * 1.4)) * (0.55 + 0.45 * snap["eqr"]),
+            "pulse_grid": max(0.0, (1.0 - abs(snap["bpm"] - 120.0) / 120.0)) * (0.35 + 0.65 * snap["struct"]),
+            "goava_field": 0.92 if snap.get("goava") else 0.0,
+        }
+        for name, target in relevance.items():
+            # Exciting regions can suppress a module briefly; this is a
+            # deterministic compositional scheduling decision, not randomness.
+            # Chaotic moments attenuate delicate/minor modules; loud transients favor instantaneous ones.
+            chaos = float(np.clip(abs(self._peak - e) * 2.4 + abs(c - 0.5) * 0.7, 0.0, 1.0))
+            stable = float(np.clip(snap["struct"] * (1.0 - chaos) + snap["eqr"] * 0.25, 0.0, 1.0))
+            if name in {"constellations", "lattice", "filaments", "roses"}:
+                gate = 0.25 + 0.75 * (1.0 - chaos)
+            elif name in {"bursts", "spectral_comets"}:
+                gate = 0.25 + 0.75 * min(1.0, e * 2.2)
+            elif name in {"rhythm_mandala", "pulse_grid", "faces"}:
+                gate = 0.20 + 0.80 * stable
+            else:
+                gate = 1.0 if ((ph * 17.0 + c * 11.0 + e * 7.0 + len(name)) % 9.0) > 1.1 else 0.18
+            if name in {"goava", "goava_field"}:
+                gate = 1.0
+            self._module_target[name] = float(np.clip(target * gate, 0.0, 1.0))
+            old = float(self._module_fade.get(name, 0.0))
+            self._module_fade[name] = old + (self._module_target[name] - old) * 0.20
+            self._scenograph_modules[name] = {
+                "target": self._module_target[name],
+                "fade": self._module_fade[name],
+                "active": self._module_fade[name] > 0.035,
+                "playhead": ph,
+            }
+
+    def get_scenograph_module_state(self):
+        return copy.deepcopy(self._scenograph_modules)
+
+    def _subscene_goava(self, img, w, h, st):
+        """GOAVA-native shape engine: Java-derived values + live Meum calculus keys.
+
+        Each GOAVA number is retained as the numerical driver.  The live Meum state
+        supplies audio-derived u/rho/form/line-density keys, so the same seed can
+        produce different geometry as the music changes without changing GOAVA's
+        underlying note calculation.
+        """
+        if not st["snap"].get("goava"):
+            return
+        fade = self._module_fade.get("goava", 0.0) * self._module_fade.get("goava_field", 0.0) ** 0.5
+        events = getattr(self.app, "goava_note_events", []) if self.app is not None else []
+        if not events or fade <= 0.02:
+            return
+        cx, cy = w * 0.5, h * 0.43
+        n = len(events)
+        n_inst = max(2, int(round(getattr(self, "_render_n", self.n))))
+        harmonic_mult = 0.65 + 0.95 * getattr(self, "_harmonic_activity", 0.5) + 0.55 * getattr(self, "_octave_boundary", 0.0)
+        goava_count = min(n, max(2, int(round(n_inst * 0.42 * harmonic_mult))))
+        # GOAVA is intentionally a minor unison operator: it follows the
+        # ensemble rather than dominating it.
+        minor = 0.28
+        # Meum calculus analysis becomes the visual control vector.
+        u = float(st.get("u", 0.0))
+        rho = float(st.get("rho", 1.0))
+        form = float(st.get("form", 0.5))
+        line_d = float(st.get("line_d", 0.5))
+        seed_key = abs(float(st["snap"].get("seed", 0.0)))
+        for j, ev in enumerate(events[:goava_count]):
+            hz = max(20.0, float(ev.get("frequency", 432.0)))
+            raw = float(ev.get("raw", 0.0))
+            seed = float(ev.get("seed", 0.0))
+            uidx = j / max(n - 1, 1)
+            # Numerical key: GOAVA raw/seed, then Meum calculus state.
+            key = raw + seed * MEUM_INV + seed_key * 0.00017 + u * MEUM + rho * 0.31
+            ang = self.t * (0.12 + 0.0008 * (hz % 31.0)) + uidx * math.tau + key * 0.017
+            depth = 0.72 + 0.28 * math.sin(key * 0.013 + self.t * MEUM)
+            radius = (0.10 + 0.34 * (0.5 + 0.5 * math.sin(key * MEUM_INV + form * 3.0))) * rho * depth
+            hue = (255 + j * 19 + hz * 0.035 + seed * 0.11 + self._video_hue_shift) % 360
+            col = self._hsv(hue, 0.72 + 0.18 * form, 0.82 + 0.18 * min(1.0, self._rms + form))
+
+            # 1D: a GOAVA numerical filament whose length responds to calculus line density.
+            x1 = cx + math.cos(ang) * radius * w * (0.25 + 0.30 * line_d)
+            y1 = cy + math.sin(ang) * radius * h * (0.20 + 0.25 * line_d)
+            x2 = cx + math.cos(ang + 0.10 + form * 0.12) * radius * w * (0.42 + 0.35 * line_d)
+            y2 = cy + math.sin(ang + 0.10 + form * 0.12) * radius * h * (0.28 + 0.28 * line_d)
+            x1, y1 = self._map_xy(x1, y1); x2, y2 = self._map_xy(x2, y2)
+            self._line(img, x1, y1, x2, y2, col, minor * 0.72 * fade)
+
+            # 2D: polar/rose geometry keyed directly to GOAVA's numerical scalar.
+            pts = []
+            petals = 4 + (j % 5)
+            for k in range(24):
+                a = ang + k * math.tau / 24.0
+                rr = radius * (0.50 + 0.34 * math.sin(petals * a + key * 0.021 + u))
+                pts.append(self._map_xy(cx + math.cos(a) * rr * w * 0.33,
+                            cy + math.sin(a * MEUM_INV) * rr * h * 0.25))
+            # Filled 2D GOAVA petal sectors: visible surfaces, not merely outlines.
+            face_col = self._hsv((hue + 18) % 360, 0.58 + 0.25 * form, 0.72 + 0.20 * form)
+            for k in range(1, len(pts) - 1):
+                self._fill_tri(img, pts[0], pts[k], pts[k + 1], face_col, minor * 0.12 * (0.48 + 0.34 * form) * fade)
+            for k in range(len(pts)):
+                self._line(img, pts[k][0], pts[k][1], pts[(k + 1) % len(pts)][0], pts[(k + 1) % len(pts)][1],
+                           col, minor * (0.28 + 0.22 * form) * fade)
+
+            # 3D: depth ring projected with Meum-controlled z and a seed-derived tilt.
+            ring = []
+            tilt = 0.15 + 0.45 * math.sin(key * 0.007 + u)
+            for k in range(18):
+                a = ang + k * math.tau / 18.0
+                rr = radius * (0.62 + 0.12 * math.sin(a * 3.0 + key))
+                xx = rr * math.cos(a)
+                yy = rr * math.sin(a) * 0.68
+                zz = 1.0 + 0.34 * math.sin(a * 2.0 + key * 0.011) * (0.6 + 0.4 * form)
+                xr = xx * math.cos(tilt) - zz * math.sin(tilt)
+                zr = xx * math.sin(tilt) + zz * math.cos(tilt)
+                px, py, _ = self._project(xr, yy, zr, w, h)
+                ring.append(self._map_xy(px, py))
+            # 3D depth object: triangulated surface fan plus silhouette.
+            center = (sum(p[0] for p in ring)/len(ring), sum(p[1] for p in ring)/len(ring))
+            face_col3 = self._hsv((hue + 42) % 360, 0.62, 0.76)
+            for k in range(len(ring)):
+                self._fill_tri(img, center, ring[k], ring[(k + 1) % len(ring)], face_col3, minor * 0.10 * fade)
+                self._line(img, ring[k][0], ring[k][1], ring[(k + 1) % len(ring)][0], ring[(k + 1) % len(ring)][1],
+                           col, minor * 0.24 * fade)
+            self._dot(img, x2, y2, col, minor * 0.60 * fade, r=1 + int(2 * depth))
+
+    def _subscene_math_filaments(self, img, w, h, st):
+        fade = self._module_fade.get("filaments", 0.0)
+        if fade <= 0.02:
+            return
+        cx, cy = w * 0.5, h * 0.47
+        pts = []
+        for k in range(96):
+            u = k / 95.0
+            a = self.t * MEUM_INV + u * math.tau * (1.0 + MEUM_NORM)
+            r = (0.05 + 0.42 * u) * (0.65 + 0.35 * self._rms)
+            pts.append((cx + math.cos(a) * r * w * 0.46,
+                        cy + math.sin(a * MEUM) * r * h * 0.34))
+        for k in range(len(pts) - 1):
+            col = self._hsv((120 + k * 2 + self._video_hue_shift) % 360, 0.55, 0.72)
+            self._line(img, *pts[k], *pts[k + 1], col, alpha=0.42 * fade)
+
+    def _subscene_math_roses(self, img, w, h, st):
+        fade = self._module_fade.get("roses", 0.0)
+        if fade <= 0.02:
+            return
+        cx, cy = w * 0.5, h * 0.46
+        arms = int(np.clip(round(2 + getattr(self, "_render_n", self.n) / 12.0 + 3.0 * getattr(self, "_harmonic_activity", 0.5)), 3, 12))
+        for arm in range(arms):
+            pts = []
+            for k in range(72):
+                u = k / 71.0
+                a = u * math.tau * 3.0 + self.t * 0.3 + arm * math.pi / 2.0
+                r = (0.06 + 0.58 * u) * (0.58 + 0.42 * self._centroid)
+                pts.append((cx + math.cos(a) * r * w * 0.47,
+                            cy + math.sin(a * MEUM_INV) * r * h * 0.40))
+            col = self._hsv((35 + arm * 70 + self._centroid * 100) % 360, 0.68, 0.82)
+            for k in range(len(pts) - 1):
+                self._line(img, *pts[k], *pts[k + 1], col, alpha=0.09 * fade)
+
+    def _subscene_orbitals(self, img, w, h, st):
+        fade = self._module_fade.get("orbitals", 0.0)
+        if fade <= 0.02:
+            return
+        cx, cy = w * 0.5, h * 0.44
+        ring_count = int(np.clip(round(2 + getattr(self, "_render_n", self.n) / 24.0 + 2.0 * getattr(self, "_octave_boundary", 0.0)), 2, 6))
+        for ring in range(ring_count):
+            pts = []
+            rad = (0.18 + ring * 0.10) * st["rho"]
+            ring_points = int(np.clip(round(24 + 0.75 * getattr(self, "_render_n", self.n)), 24, 72))
+            for k in range(ring_points):
+                a = k * math.tau / ring_points + self.t * (0.12 + ring * 0.05)
+                z = 1.0 + 0.15 * math.sin(a * 3.0 + self.t * MEUM)
+                pts.append((cx + math.cos(a) * rad * w * 0.35 * z,
+                            cy + math.sin(a) * rad * h * 0.18))
+            col = self._hsv((205 + ring * 40 + self._video_hue_shift) % 360, 0.62, 0.78)
+            for k in range(len(pts) - 1):
+                self._line(img, *pts[k], *pts[k + 1], col, alpha=0.15 * fade)
+
+    def _subscene_constellations(self, img, w, h, st):
+        fade = self._module_fade.get("constellations", 0.0)
+        if fade <= 0.02: return
+        seed = abs(float(st["snap"].get("seed", 0.0)))
+        pts = []
+        for i in range(34):
+            a = i * MEUM_INV + self.t * 0.035 + seed * 0.0007
+            r = 0.12 + 0.34 * ((i * MEUM_NORM) % 1.0)
+            x, y, _ = self._project(r * math.cos(a), r * math.sin(a * MEUM), 1.0 + 0.18 * math.sin(a * 2), w, h)
+            pts.append((x, y))
+        col = self._hsv((215 + self._video_hue_shift) % 360, 0.35, 0.95)
+        for i, p in enumerate(pts):
+            self._dot(img, p[0], p[1], col, 0.65 * fade, r=1)
+            if i and i % 2 == 0:
+                self._line(img, p[0], p[1], pts[i-1][0], pts[i-1][1], col, 0.22 * fade)
+
+    def _subscene_lattice(self, img, w, h, st):
+        fade = self._module_fade.get("lattice", 0.0)
+        if fade <= 0.02: return
+        step = max(24, int(34 - 10 * self._centroid))
+        col = self._hsv((170 + self._video_hue_shift) % 360, 0.55, 0.48)
+        for x in range(-h, w + h, step):
+            self._line(img, x, 0, x + h, h, col, 0.075 * fade)
+            self._line(img, x, h, x + h, 0, col, 0.055 * fade)
+
+    def _subscene_bursts(self, img, w, h, st):
+        fade = self._module_fade.get("bursts", 0.0)
+        if fade <= 0.02: return
+        cx, cy = w * 0.5, h * 0.45
+        rings = 2 + int(5 * min(1.0, self._rms * 2.0))
+        for r in range(rings):
+            rad = (0.08 + 0.055 * r) * (1.0 + self._peak * 2.0)
+            pts = []
+            for k in range(28):
+                a = k * math.tau / 28 + self.t * (0.9 + r * 0.2)
+                rr = rad * (1.0 + 0.18 * math.sin(a * (5 + r) + self.t * 4))
+                pts.append((cx + math.cos(a) * rr * w, cy + math.sin(a) * rr * h * 0.55))
+            col = self._hsv((320 + r * 28 + self._centroid * 100) % 360, 0.85, 0.95)
+            for k in range(len(pts)-1): self._line(img, *pts[k], *pts[k+1], col, 0.34 * fade)
+
+    def _subscene_spectral_comets(self, img, w, h, st):
+        fade = self._module_fade.get("spectral_comets", 0.0)
+        if fade <= 0.02: return
+        for b in range(8):
+            amp = float(self._band[b])
+            if amp < 0.12: continue
+            a = self.t * (0.4 + amp * 1.7) + b * MEUM_INV
+            r = 0.15 + amp * 0.38
+            cx, cy = w * 0.5, h * 0.45
+            x = cx + math.cos(a) * r * w
+            y = cy + math.sin(a * MEUM) * r * h * 0.48
+            tx = cx + math.cos(a - 0.28) * r * w * 0.72
+            ty = cy + math.sin((a - 0.28) * MEUM) * r * h * 0.36
+            col = self._hsv((25 + b * 42 + self._video_hue_shift) % 360, 0.9, 0.98)
+            self._line(img, tx, ty, x, y, col, (0.35 + 0.55 * amp) * fade)
+            self._dot(img, x, y, col, 0.8 * fade, r=1 + int(amp * 3))
+
+    def _subscene_rhythm_mandala(self, img, w, h, st):
+        fade = self._module_fade.get("rhythm_mandala", 0.0)
+        if fade <= 0.02: return
+        cx, cy = w * 0.5, h * 0.45
+        spokes = 12 + int(12 * st["snap"].get("struct", 0.0))
+        for i in range(spokes):
+            a = self.t * 0.12 + i * math.tau / spokes
+            amp = 0.35 + 0.65 * float(self._band[i % 8])
+            r = (0.12 + 0.25 * amp) * st["rho"]
+            x = cx + math.cos(a) * r * w
+            y = cy + math.sin(a) * r * h * 0.55
+            col = self._hsv((70 + i * 13 + self._video_hue_shift) % 360, 0.72, 0.9)
+            self._line(img, cx, cy, x, y, col, 0.18 * fade + 0.25 * fade * amp)
+
+    def _subscene_pulse_grid(self, img, w, h, st):
+        fade = self._module_fade.get("pulse_grid", 0.0)
+        if fade <= 0.02: return
+        n = 8 + int(8 * st["snap"].get("struct", 0.0))
+        pulse = abs(math.sin(self.t * math.pi * max(1.0, st["snap"].get("bpm", 120.0)) / 60.0))
+        col = self._hsv((45 + self._video_hue_shift) % 360, 0.8, 0.9)
+        for i in range(n):
+            u = i / max(n - 1, 1)
+            x = u * w
+            y = h * 0.5 + math.sin(self.t * 0.4 + i * MEUM) * h * 0.16 * (0.3 + 0.7 * pulse)
+            self._dot(img, x, y, col, (0.12 + 0.45 * pulse) * fade, r=1 + int(2 * pulse))
 
     def _collect_fit_points(self, w, h, st):
         """Sample volume / face / particle screen points (identity fit) for implode."""
@@ -1088,7 +1650,10 @@ class VideoSynthEngine:
                     cy + rad * h * 0.28 * math.sin(a) * MEUM,
                 ))
         e = self._rms
-        n_show = min(self.n, 22 if self.mode != 3 else 36)
+        n_visible = int(round(getattr(self, "_render_n", self.n)))
+        harmonic_mult = 0.72 + 0.85 * getattr(self, "_harmonic_activity", 0.5) + 0.45 * getattr(self, "_octave_boundary", 0.0)
+        n_cap = 34 if self.mode != 3 else 52
+        n_show = min(int(round(n_visible * harmonic_mult)), n_cap, len(self.layers))
         for i in range(n_show):
             layer = self.layers[i]
             local = float(self.wave[i % 256])
@@ -1098,14 +1663,16 @@ class VideoSynthEngine:
             pitch = layer["pitch"] + 0.16 * local
             roll = layer["roll"] + 0.1 * e * math.sin(self.t * MEUM + i)
             n_v = max(3, 3 + (i % 4))
-            scale = (0.26 + 0.32 * abs(local) + 0.14 * e) * (0.28 + 0.72 * life) * st["rho"]
+            scale = (0.26 + 0.32 * abs(local) + 0.14 * e) * (0.28 + 0.72 * life) * st["rho"] * float(layer.get("implode", 1.0))
             ang0 = self.t * 0.35 + i * 0.2
             cosy, siny = math.cos(yaw), math.sin(yaw)
             cosp, sinp = math.cos(pitch), math.sin(pitch)
             cosr, sinr = math.cos(roll), math.sin(roll)
             for k in range(n_v):
                 a = ang0 + k * (math.tau / n_v)
-                px, py, pz = scale * math.cos(a), scale * math.sin(a), 0.06 * math.sin(a * 2 + self.t)
+                px = layer.get("field_x", 0.0) + scale * math.cos(a)
+                py = layer.get("field_y", 0.0) + scale * math.sin(a)
+                pz = layer.get("field_z", 0.0) + 0.06 * math.sin(a * 2 + self.t)
                 xr = px * cosr - py * sinr
                 yr = px * sinr + py * cosr
                 yp = yr * cosp - pz * sinp
@@ -1114,6 +1681,17 @@ class VideoSynthEngine:
                 zw = xr * siny + zp * cosy + dist
                 sx, sy, _ = self._project(xw, yp, zw, w, h)
                 pts.append((sx, sy))
+        # Include GOAVA geometry in the fit box so its shapes implode with the
+        # rest of the scenograph instead of floating outside the fitted frame.
+        if snap.get("goava"):
+            events = getattr(self.app, "goava_note_events", []) if self.app is not None else []
+            n_inst = max(2, int(round(getattr(self, "_render_n", self.n))))
+            gcount = min(len(events), max(2, int(round(n_inst * (0.40 + 0.35 * getattr(self, "_harmonic_activity", 0.5))))))
+            for j, ev in enumerate(events[:gcount]):
+                key = float(ev.get("raw", 0.0)) + float(ev.get("seed", 0.0)) * MEUM_INV
+                a = self.t * 0.12 + j * math.tau / max(gcount, 1) + key * 0.017
+                rad = (0.10 + 0.34 * (0.5 + 0.5 * math.sin(key * MEUM_INV + st["form"] * 3.0))) * st["rho"]
+                pts.append((w * 0.5 + math.cos(a) * rad * w * 0.45, h * 0.43 + math.sin(a) * rad * h * 0.34))
         n_part = 12 + int(16 * self._rms)
         seed_i = int(abs(snap["seed"])) & 0xFFFF
         for p in range(min(n_part, 24)):
@@ -1132,16 +1710,57 @@ class VideoSynthEngine:
         w = max(int(w), 8)
         h = max(int(h), 8)
         img = np.zeros((h, w, 3), dtype=np.float32)
+        self._advance_instrument_resize()
+        self._visual_frame += 1
+        # Seeded stochastic evolution: identical seed + frame is reproducible,
+        # while successive frames decorrelate.  A SHA-derived stream gives
+        # strong behavior for rational, irrational, integer, and textual seeds.
+        try:
+            seed_text = str((self.app._seed_text() if self.app is not None and hasattr(self.app, "_seed_text")
+                             else getattr(self, "t", 0.0)))
+            payload = f"{seed_text}|{self._visual_frame}|{self.n}".encode("utf-8", "replace")
+            digest = hashlib.sha256(payload).digest()
+            self._rng = np.random.RandomState(int.from_bytes(digest[:4], "big"))
+            self._visual_entropy = 0.5 + 0.5 * float(self._rng.random_sample())
+        except Exception:
+            pass
         st = self._meum_state()
+        self._update_camera_and_packing(st)
+        self._update_scenograph_module_schedule(st)
         # Identity pass → union bbox → implode every part to fill outer bounds
         self._reset_fit(w, h)
         self._commit_fit(self._collect_fit_points(w, h, st), w, h)
-        self._subscene_field(img, w, h, st)
-        self._subscene_ribbon(img, w, h, st)
-        self._subscene_band_towers(img, w, h, st)
-        self._subscene_volumes(img, w, h, st)
-        self._subscene_faces_segments(img, w, h, st)
-        self._subscene_particles(img, w, h, st)
+        if self._module_fade.get("field", 0.0) > 0.02:
+            self._subscene_field(img, w, h, st)
+        # SCENOGRAPH_CLEAN: ribbon (waveform/scope) and band towers (FFT spectrum)
+        # are intentionally omitted from the scenograph — pure geometry only.
+        # Oscilloscope / SpectrumAnalyzer remain as separate UI monitors.
+        if self._module_fade.get("volumes", 0.0) > 0.02:
+            self._subscene_volumes(img, w, h, st)
+        if self._module_fade.get("faces", 0.0) > 0.02:
+            self._subscene_faces_segments(img, w, h, st)
+        if self._module_fade.get("particles", 0.0) > 0.02:
+            self._subscene_particles(img, w, h, st)
+        self._subscene_math_filaments(img, w, h, st)
+        self._subscene_math_roses(img, w, h, st)
+        self._subscene_orbitals(img, w, h, st)
+        self._subscene_constellations(img, w, h, st)
+        self._subscene_lattice(img, w, h, st)
+        self._subscene_bursts(img, w, h, st)
+        self._subscene_spectral_comets(img, w, h, st)
+        self._subscene_rhythm_mandala(img, w, h, st)
+        self._subscene_pulse_grid(img, w, h, st)
+        # Subtle Meum golden-angle mesh: always present, contextual, and frame-clamped.
+        cx, cy = w * 0.5, h * 0.47
+        mesh_r = min(w, h) * (0.24 + 0.16 * st["rho"])
+        for q in range(13):
+            aa = (q * MEUM * math.tau + self.t * 0.07 + st["ph"] * math.tau)
+            rr = mesh_r * (0.45 + 0.55 * q / 12.0)
+            x = float(np.clip(cx + math.cos(aa) * rr, 2, w - 3))
+            y = float(np.clip(cy + math.sin(aa * MEUM_INV) * rr * 0.72, 2, h - 3))
+            col = self._hsv((155 + q * 11 + self._video_hue_shift) % 360, 0.28, 0.42)
+            self._dot(img, x, y, col, 0.11 + 0.08 * float(self._band[q % 8]), r=1)
+        self._subscene_goava(img, w, h, st)
         return np.clip(img, 0, 255).astype(np.uint8)
 
 
@@ -1423,15 +2042,7 @@ class SynthRackUnitWidget(QFrame):
         header_layout.addWidget(title_lbl)
         header_layout.addStretch()
 
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItems([
-            "Mode A: Vector Space Warp",
-            "Mode B: Non-Linear Resonance",
-            "Mode C: Recursive Chaos Fold",
-            "Mode D: EQR Singularity Lock"
-        ])
-        self.mode_combo.setStyleSheet("background-color: #1c1c28; color: #fff; border: 1px solid #3d3d5c; padding: 3px; border-radius: 4px;")
-        header_layout.addWidget(self.mode_combo)
+        # Synth panel modes dropdown deprecated: the panel is now parameter-driven.
         layout.addLayout(header_layout)
 
         # Seed waveshape (4 panel sliders) + dedicated per-synth Fractallizer
@@ -1462,7 +2073,6 @@ class SynthRackUnitWidget(QFrame):
                 w.spinbox.valueChanged.connect(self._push_state)
             except Exception:
                 pass
-        self.mode_combo.currentIndexChanged.connect(self._push_state)
         self._load_state()
 
     def _state_dict(self):
@@ -1473,7 +2083,6 @@ class SynthRackUnitWidget(QFrame):
             "fold_depth": float(self.param4.spinbox.value()),
             "harmonic_lattice": float(self.param_fractal.spinbox.value()),
             "fractalizer": float(self.param_fractal.spinbox.value()),  # alias for older projects
-            "preset_idx": int(self.mode_combo.currentIndex()),
             # legacy aliases used by AdvancedDSPEngine
             "internal_p1": float(self.param1.spinbox.value()) / 10.0,
             "internal_p2": float(self.param2.spinbox.value()) / 20000.0,
@@ -1492,6 +2101,13 @@ class SynthRackUnitWidget(QFrame):
         prev = dict(app.instrument_param_state.get(self.synth_name, {}) or {})
         prev.update(self._state_dict())
         app.instrument_param_state[self.synth_name] = prev
+        # When Edit-panels-per-sequence is ON, also mirror into the active sequence slot
+        try:
+            if hasattr(app, "_panels_per_sequence_enabled") and app._panels_per_sequence_enabled():
+                panels = app._sequence_panel_slot(self.synth_name)
+                panels["synth"] = copy.deepcopy(prev)
+        except Exception:
+            pass
 
     def _load_state(self):
         app = self.app_ref
@@ -1511,8 +2127,6 @@ class SynthRackUnitWidget(QFrame):
                 self.param_fractal.spinbox.setValue(float(st["harmonic_lattice"]))
             elif "fractalizer" in st:
                 self.param_fractal.spinbox.setValue(float(st["fractalizer"]))
-            if "preset_idx" in st:
-                self.mode_combo.setCurrentIndex(int(st["preset_idx"]) % 4)
         except Exception:
             pass
 class WaveformVisualizer(QWidget):
@@ -2323,7 +2937,7 @@ class ParametricMathBackground(QWidget):
         sf2 = scalars[(index * 7 + 3) % len(scalars)]
         hue = (index / self.WAVE_COUNT + 0.12 * sf + 0.08 * math.sin(phase * 0.7 + index)) % 1.0
         # Sinewaves: MEUM× less transparent (more opaque) — alpha * M, capped
-        wave_alpha = min(1.0, (0.48 + 0.24 * sf) * MEUM)
+        wave_alpha = min(0.92, (0.58 + 0.28 * sf) * MEUM)
         painter.setPen(
             QPen(
                 QColor.fromHsvF(
@@ -2374,8 +2988,8 @@ class ParametricMathBackground(QWidget):
             r = radius * wobble
             points.append(QPointF(x + math.cos(a) * r, y + math.sin(a) * r))
         hue = (0.56 + 0.42 * sf + 0.19 * sf2 + index * 0.027) % 1.0
-        painter.setBrush(QBrush(QColor.fromHsvF(hue, 0.19758, 0.19758, 0.18 + 0.12 * sf)))
-        painter.setPen(QPen(QColor.fromHsvF((hue + 0.08 * sf2) % 0.19758, 0.19758, 0.19758, 0.55 + 0.20 * sf), 1.4))
+        painter.setBrush(QBrush(QColor.fromHsvF(hue, 0.19758, 0.19758, 0.34 + 0.18 * sf)))
+        painter.setPen(QPen(QColor.fromHsvF((hue + 0.08 * sf2) % 0.19758, 0.19758, 0.19758, 0.72 + 0.18 * sf), 1.4))
         painter.drawPolygon(QPolygonF(points))
         if self._param_cache[1]:
             label = self._param_cache[1][index % len(self._param_cache[1])]
@@ -2383,7 +2997,7 @@ class ParametricMathBackground(QWidget):
             # Text follows a larger independent vertical orbit than the glyph.
             text_y = y + radius + 8 + height * 0.09 * math.sin(phase * (0.28 + sf2) + index * 1.63)
             text_y = max(12.0, min(height - 3.0, text_y))
-            painter.setPen(QPen(QColor.fromHsvF(hue, 0.19758, 0.19758, 0.19758), 1.0))
+            painter.setPen(QPen(QColor.fromHsvF(hue, 0.19758, 0.19758, 0.19758), 0.72))
             painter.setFont(QFont("Consolas", 7))
             painter.drawText(QPointF(max(2.0, x - radius), text_y), text)
 
@@ -3214,7 +3828,7 @@ are replaced during seeded fill.
 
   Columns:
     Time Marker | Operator Identity | Script Tag | Velocity |
-    Auto Target | Auto Amount | Direction Vector | Multi-Seq | Coverage | Blend Partner
+    Auto Target | Auto Amount | Direction Vector | Multi-Seq | Coverage | Blend Partner | GOAVA Sequence
 
   Paint subject menu:
     1. Identity + Steps + Automation (default)
@@ -3264,7 +3878,30 @@ Windows
   ❓ Help / Readme (this document)
 
 --------------------------------------------------------------------------------
-13. AUDIO
+13. GOAVA NUMERICAL MATH
+--------------------------------------------------------------------------------
+  GOAVA is the engine-owned numerical composition layer ported from the supplied
+  Java Composer.getNote() implementation. For each assigned number n, step k,
+  and seed-number list N, the scalar note value is accumulated over every value v
+  in N using a cosine phase term. In simplified form:
+
+      G(n,k,N) = | Σ_v F(n,k,v) / (|N| + |n-v|) |
+
+  where the cosine phase is based on π/2, |n|, |v|, and the step k; the original
+  GOAVA zero-value branch adds the step directly to that phase. The audible path
+  uses the Java arpeggio scaling G × 16, with a safety fallback for pathological
+  values and a final realtime-safe frequency clamp.
+
+  GOAVA remains non-user engine data. Its numerical seed list creates one GOAVA
+  event per supplied seed number, retaining the raw scalar, frequency, pitch ratio,
+  and enabled state. In the playlist it occupies the dedicated GOAVA Sequence
+  column and is appended after canonical Euclidean/Seeded composition so the normal
+  comma-separated operator/member lists remain authoritative. The GOAVA visual
+  engine uses these same numerical values as geometry seeds, while Meum calculus
+  values modulate scale, rotation, density, depth, and temporal activation.
+
+--------------------------------------------------------------------------------
+14. AUDIO
 --------------------------------------------------------------------------------
   Realtime: sounddevice OutputStream callback; master volume live
   Export: shared _render_mixdown_buffer → WAV; 2.5D MP4 includes rendered audio
@@ -6392,9 +7029,56 @@ class PaintbrushTable(QWidget):
         self.paint_mode_combo.setMinimumWidth(280)
         toolbar.addWidget(self.paint_mode_combo)
 
+        toolbar.addWidget(QLabel("Paint target:"))
+        self.paint_target_combo = QComboBox()
+        self.paint_target_combo.addItems([
+            "Sequence → Playlist",
+            "Master Synth → Playlist",
+            "Instrument → Playlist",
+            "Instrument → Sequence → Playlist",
+            "Selected Sequence → Playlist",
+            "All Sequences → Playlist",
+        ])
+        self.paint_target_combo.setMinimumWidth(190)
+        self.paint_target_combo.setToolTip(
+            "Choose which layer the painted playlist cell represents. "
+            "The selection is stored with the playlist row."
+        )
+        toolbar.addWidget(self.paint_target_combo)
+
+        toolbar.addWidget(QLabel("Paint source:"))
+        self.paint_source_combo = QComboBox()
+        self.paint_source_combo.addItems([
+            "Current Instrument (live)",
+            "Selected Instrument (dropdown)",
+            "Master Synth Settings",
+            "Current Sequence Panels",
+            "Selected Sequence Panels",
+            "Instrument + Sequence",
+            "Existing Playlist Cell",
+        ])
+        self.paint_source_combo.setMinimumWidth(170)
+        self.paint_source_combo.setToolTip(
+            "Source settings captured when a playlist cell is painted."
+        )
+        toolbar.addWidget(self.paint_source_combo)
+
+        toolbar.addWidget(QLabel("Paint sequence:"))
+        self.paint_sequence_combo = QComboBox()
+        self.paint_sequence_combo.addItem("Active Sequence", -1)
+        self.paint_sequence_combo.setMinimumWidth(135)
+        toolbar.addWidget(self.paint_sequence_combo)
+
+        toolbar.addWidget(QLabel("Paint instrument:"))
+        self.paint_instrument_combo = QComboBox()
+        self.paint_instrument_combo.addItem("Active Instrument", "__active__")
+        self.paint_instrument_combo.addItems(list(getattr(self.app, "instrument_names_48", []) or []))
+        self.paint_instrument_combo.setMinimumWidth(155)
+        toolbar.addWidget(self.paint_instrument_combo)
+
         self.chk_snap_grid = QCheckBox("Snap to grid")
-        self.chk_snap_grid.setChecked(False)  # unquantized by default
-        self.chk_snap_grid.setToolTip("Off = fully unquantized free-time. On = snap time markers to grid.")
+        self.chk_snap_grid.setChecked(False)  # unquantized free-time default
+        self.chk_snap_grid.setToolTip("Off = Unquantized Free-Time (default). On = Snap to Grid.")
         toolbar.addWidget(self.chk_snap_grid)
 
         toolbar.addWidget(QLabel("Blend max:"))
@@ -6503,6 +7187,91 @@ class PaintbrushTable(QWidget):
     def _blend_max_fraction(self):
         txt = self.blend_max_combo.currentText() if hasattr(self, 'blend_max_combo') else "Half"
         return 0.25 if "Quarter" in txt else 0.5
+
+    def _refresh_paint_sequence_choices(self):
+        if not hasattr(self, "paint_sequence_combo"):
+            return
+        self.paint_sequence_combo.blockSignals(True)
+        current = self.paint_sequence_combo.currentData()
+        self.paint_sequence_combo.clear()
+        self.paint_sequence_combo.addItem("Active Sequence", -1)
+        name = self._selected_operator(np.random.default_rng(0)) if hasattr(self.app, "instrument_names_48") else ""
+        try:
+            bank = (getattr(self.app, "instrument_sequence_banks", {}) or {}).get(name, {})
+            for idx in sorted(bank):
+                mem = bank[idx]
+                length = int(mem.get("pattern_length", len(mem.get("steps", [])) or 1))
+                self.paint_sequence_combo.addItem(f"Sequence {idx} · {length} steps", int(idx))
+        except Exception:
+            pass
+        pos = self.paint_sequence_combo.findData(current)
+        self.paint_sequence_combo.setCurrentIndex(pos if pos >= 0 else 0)
+        self.paint_sequence_combo.blockSignals(False)
+
+    def _paint_instrument_name(self, rng):
+        if hasattr(self, "paint_instrument_combo"):
+            val = self.paint_instrument_combo.currentData()
+            if val == "__active__" or not val:
+                return self._selected_operator(rng)
+            return str(val)
+        return self._selected_operator(rng)
+
+    def _paint_sequence_id(self, instrument_name):
+        requested = self.paint_sequence_combo.currentData() if hasattr(self, "paint_sequence_combo") else -1
+        if requested not in (None, -1):
+            try:
+                return int(requested)
+            except Exception:
+                pass
+        try:
+            return int((getattr(self.app, "instrument_selected_sequence", {}) or {}).get(instrument_name, 1))
+        except Exception:
+            return 1
+
+    def _paint_context_snapshot(self, instrument_name, sequence_id):
+        """Capture the exact source context that a manual playlist paint represents."""
+        source = self.paint_source_combo.currentText() if hasattr(self, "paint_source_combo") else "Current Instrument (live)"
+        target = self.paint_target_combo.currentText() if hasattr(self, "paint_target_combo") else "Sequence → Playlist"
+        seq = {}
+        try:
+            bank = (getattr(self.app, "instrument_sequence_banks", {}) or {}).get(instrument_name, {})
+            seq = copy.deepcopy(bank.get(sequence_id, {}))
+        except Exception:
+            seq = {}
+        if not seq:
+            try:
+                seq = copy.deepcopy((getattr(self.app, "instrument_sequencer_memory", {}) or {}).get(instrument_name, {}))
+            except Exception:
+                seq = {}
+        # Attach sequence panel overrides (synth/script/domain/patch) when present
+        try:
+            if hasattr(self.app, "_sequence_panel_slot"):
+                panels = copy.deepcopy(self.app._sequence_panel_slot(instrument_name, sequence_id))
+                if isinstance(seq, dict):
+                    seq = dict(seq)
+                    seq["panels"] = panels
+        except Exception:
+            pass
+        global_keys = ("slider_eqr", "slider_fractalizer", "slider_pkp_decay", "slider_pkp_boost", "slider_pkp_boost_pitch", "slider_pkp_boost_steps", "spin_base_frequency", "slider_master_vol")
+        master = {}
+        for key in global_keys:
+            obj = getattr(self.app, key, None)
+            if obj is not None and hasattr(obj, "value"):
+                try:
+                    master[key] = obj.value()
+                except Exception:
+                    pass
+        # Instrument params: prefer sequence panel synth when source mentions Sequence
+        inst = copy.deepcopy((getattr(self.app, "instrument_param_state", {}) or {}).get(instrument_name, {}) or {})
+        src_l = (source or "").lower()
+        if "sequence" in src_l and isinstance(seq, dict):
+            panels = seq.get("panels") or {}
+            if panels.get("synth"):
+                inst = copy.deepcopy(panels["synth"])
+        elif "master synth" in src_l:
+            # Explicit master — keep global master snapshot only in `master`
+            pass
+        return target, source, seq, inst, master
 
     def _selected_operator(self, rng):
         if self.chk_draw_random_synth.isChecked():
@@ -6719,7 +7488,9 @@ class PaintbrushTable(QWidget):
         # ------------------------------------------------------------
         # Select instrument.
         # ------------------------------------------------------------
-        target_operator_name = self._selected_operator(rng)
+        target_operator_name = self._paint_instrument_name(rng)
+        paint_sequence_id = self._paint_sequence_id(target_operator_name)
+        paint_target, paint_source, paint_seq_snapshot, paint_inst_snapshot, paint_master_snapshot = self._paint_context_snapshot(target_operator_name, paint_sequence_id)
 
         # ------------------------------------------------------------
         # Ensure playlist row exists.
@@ -6737,6 +7508,17 @@ class PaintbrushTable(QWidget):
 
         entry["position"] = pos_tag
         entry["quantized"] = snap
+
+        # Manual paint context is first-class playlist data.  This makes it
+        # possible to distinguish a sequence paint from a master-synth paint
+        # or an instrument snapshot when the playlist is later reloaded.
+        entry["paint_target"] = paint_target
+        entry["paint_source"] = paint_source
+        entry["paint_sequence"] = int(paint_sequence_id)
+        entry["paint_instrument"] = target_operator_name
+        entry["paint_sequence_snapshot"] = copy.deepcopy(paint_seq_snapshot)
+        entry["paint_instrument_snapshot"] = copy.deepcopy(paint_inst_snapshot)
+        entry["paint_master_synth_snapshot"] = copy.deepcopy(paint_master_snapshot)
 
         # Manual paint is user-owned.  Record ownership per visible column so
         # Randomizer/Phase-Lock can regenerate only engine-owned material.
@@ -7139,7 +7921,24 @@ class PaintbrushTable(QWidget):
             return
 
         # ------------------------------------------------------------
-        # Column 12+ — blend.
+        # Columns 12/13 retain the legacy blend/GOAVA behavior.
+        # Columns 14–17 expose the new paint provenance directly in the playlist.
+        # ------------------------------------------------------------
+        if col == 14:
+            _append_cell_member(row, 14, paint_target)
+            return
+        if col == 15:
+            _append_cell_member(row, 15, paint_source)
+            return
+        if col == 16:
+            _append_cell_member(row, 16, f"Seq {paint_sequence_id}")
+            return
+        if col == 17:
+            _append_cell_member(row, 17, target_operator_name)
+            return
+
+        # ------------------------------------------------------------
+        # Column 12/13 — legacy blend / GOAVA.
         # ------------------------------------------------------------
         if col >= 12:
             blend = float(
@@ -8585,7 +9384,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.ui_manager.btn_seeded_randomizer.clicked.connect(self.apply_seeded_harmonic_randomization)
         self.instrument_names_48 = [f"Operator_{i+1}" for i in range(48)]
         self.instrument_sequencer_memory = {}
-        default_seq_len = 48
+        default_seq_len = 16
 
         for name in self.instrument_names_48:
             self.instrument_sequencer_memory[name] = {
@@ -8612,14 +9411,29 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         self.instrument_sequencer_memory = {
             name: {
-                "steps": [False] * 48,
-                "gates": [True] * 48,
-                "amplitudes": [1.0] * 48,
-                "pitches": [1.0] * 48,
-                "probabilities": [100] * 48
+                "steps": [False] * 16,
+                "gates": [True] * 16,
+                "amplitudes": [1.0] * 16,
+                "pitches": [1.0] * 16,
+                "probabilities": [100] * 16,
+                "offsets": [0.0] * 16
             }
             for name in self.instrument_names_48
         }
+
+        # SEQUENCE_BANK_V6: every instrument owns independently addressable,
+        # numbered patterns.  A pattern carries its own length and can be
+        # reused by playlist rows with a deterministic phase/offset.
+        self.instrument_sequence_banks = {}
+        for _name, _mem in self.instrument_sequencer_memory.items():
+            _mem["pattern_length"] = 16
+            _mem["sequence_id"] = 1
+            _mem["user_owned"] = False
+            _mem["canonical_owner"] = None
+            self.instrument_sequence_banks[_name] = {
+                1: _mem
+            }
+        self.instrument_selected_sequence = {name: 1 for name in self.instrument_names_48}
 
         self.instrument_scripts = {
             name: f"# Script workspace for {name} based on operator rules\ndef evaluate_wave(x, y, z):\n    return np.sin(x * {((i)%12)+1}.0) * np.cos(y) - z"
@@ -8633,6 +9447,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         # Master storage mirroring the unquantized playlist rows for audio rendering
         self.master_playlist_data = []
+        self.goava_active = False
+        self.goava_seed_values = []
+        self.goava_note_events = []
+        self.goava_steps = []
+        self.goava_pitches = []
+        self.goava_frequencies = []
+        self.goava_raw_values = []
         self._user_composition_snapshot = None  # Canonical Overwrite undo buffer
 
         self.export_counter = 1
@@ -8665,6 +9486,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._stop_requested = False
         self.init_ui_components()
         self.initialize_default_playlist_memory()
+        self._ensure_sequence_banks_after_resize()
         self._composition_generation_guard = False
         self._live_source_update_pending = False
         self._composition_generation_counter = 0
@@ -8700,7 +9522,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def initialize_default_playlist_memory(self):
         # Playlist capacity is present, but the musical program is empty on boot.
-        rows = 96
+        rows = 64
         # POWER_V3_EMPTY_BOOT: capacity exists, but there is no musical program.
         self.master_playlist_data = [{} for _ in range(rows)]
         self.playlist_automation = [{} for _ in range(rows)]
@@ -8953,6 +9775,158 @@ class MathematiciansGrooveboxApp(QMainWindow):
         tie_break = int.from_bytes(digest[:8], 'big') / float(2**64)
         return float(np.clip(0.78*f['score'] + 0.22*tie_break, 0.0, 1.0))
 
+
+    # =====================================================================
+    # GOAVA_ENGINE — engine-owned canonical numerical composition layer.
+    # It is intentionally separate from user data, Randomizer, and Phase-Lock.
+    # Toggling the button rebuilds/removes only GOAVA-owned state.
+    # =====================================================================
+    def _parse_goava_seed_values(self):
+        text = self._seed_text() if hasattr(self, "_seed_text") else ""
+        parts = [p.strip() for p in re.split(r"[,\\n]+", str(text or "")) if p.strip()]
+        vals = []
+        for p in parts:
+            try:
+                v = float(p)
+                if math.isfinite(v):
+                    vals.append(v)
+            except Exception:
+                continue
+        if not vals:
+            try:
+                v = float(self.get_numeric_seed())
+                vals = [v] if math.isfinite(v) else []
+            except Exception:
+                vals = []
+        return vals
+
+    def _build_goava_composition(self):
+        numbers = self._parse_goava_seed_values()
+        if not numbers:
+            return []
+        base = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 216.0
+        events = []
+        for i, number in enumerate(numbers):
+            hz, raw = goava_frequency(number, i, numbers, base)
+            pitch = float(np.clip(hz / max(base, 1e-6), 0.125, 16.0))
+            events.append({
+                "step": i,
+                "seed": float(number),
+                "raw": float(raw),
+                "frequency": float(hz),
+                "pitch": pitch,
+                "enabled": True,
+                "source": "GOAVA",
+                "weight": 1.0,
+            })
+        return events
+
+    def _apply_goava_to_canonical_playlist(self):
+        """Fill GOAVA across the entire current ensemble playlist span.
+
+        A short seed list is treated as a repeating numerical field, not as a
+        reason to truncate the playlist. Thus GOAVA always reaches every row in
+        the current ensemble-resized playlist.
+        """
+        rows = max(1, min(1024, int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else len(self.master_playlist_data) or 1))
+        while len(self.master_playlist_data) < rows:
+            self.master_playlist_data.append({})
+        while len(getattr(self, "playlist_automation", []) or []) < rows:
+            self.playlist_automation.append({})
+        events = list(self.goava_note_events or [])
+        if self.goava_active and events:
+            for r in range(rows):
+                e = self.master_playlist_data[r]
+                if not isinstance(e, dict):
+                    e = {}; self.master_playlist_data[r] = e
+                ev = events[r % len(events)]
+                e["goava_sequence"] = (
+                    f"GOAVA step={r+1} seed={ev['seed']:.9g} raw={ev['raw']:.9g} "
+                    f"hz={ev['frequency']:.6f} pitch={ev['pitch']:.6f} on={int(ev['enabled'])}"
+                )
+                e["goava_frequency"] = ev["frequency"]
+                e["goava_pitch"] = ev["pitch"]
+                e["goava_seed"] = ev["seed"]
+                e["goava_active"] = True
+                e["goava_generated_by_engine"] = True
+                ops = [str(x).strip() for x in (e.get("operators") or []) if str(x).strip() and str(x).strip() != "GOAVA"]
+                ops.append("GOAVA")
+                e["operators"] = list(dict.fromkeys(ops))
+                e["operators_csv"] = ", ".join(e["operators"])
+                mseq = [x.strip() for x in str(e.get("multi_seq", "")).split(",") if x.strip() and x.strip() != "GOAVA"]
+                mseq.append("GOAVA")
+                e["multi_seq"] = ", ".join(dict.fromkeys(mseq))
+                e["goava_unison_weight"] = 1.0 / max(1, self._canonical_active_count())
+        else:
+            for r in range(rows):
+                e = self.master_playlist_data[r]
+                if not isinstance(e, dict):
+                    continue
+                for k in ("goava_sequence","goava_frequency","goava_pitch","goava_seed","goava_unison_weight","goava_active","goava_generated_by_engine"):
+                    e.pop(k, None)
+                e["operators"] = [x for x in (e.get("operators") or []) if str(x).strip() != "GOAVA"]
+                e["operators_csv"] = ", ".join(e["operators"])
+                e["multi_seq"] = ", ".join(x for x in str(e.get("multi_seq", "")).split(",") if x.strip() and x.strip() != "GOAVA")
+        try:
+            self._sync_playlist_paint_table_from_memory()
+        except Exception:
+            pass
+
+    def _on_goava_toggled(self, checked):
+        self.goava_active = bool(checked)
+        self._canonical_sequence_reconcile("goava")
+        if self.goava_active:
+            self.goava_note_events = self._build_goava_composition()
+            self.goava_seed_values = [ev["seed"] for ev in self.goava_note_events]
+            self.goava_steps = [bool(ev["enabled"]) for ev in self.goava_note_events]
+            self.goava_pitches = [float(ev["pitch"]) for ev in self.goava_note_events]
+            self.goava_frequencies = [float(ev["frequency"]) for ev in self.goava_note_events]
+            self.goava_raw_values = [float(ev["raw"]) for ev in self.goava_note_events]
+            self._apply_goava_to_canonical_playlist()
+            if hasattr(self, "btn_goava"):
+                self.btn_goava.setText("GOAVA · ON")
+            if hasattr(self, "scope_status_label"):
+                self.scope_status_label.setText(
+                    f"📐 GOAVA · {len(self.goava_note_events)} notes · canonical-unison"
+                )
+        else:
+            # GOAVA deactivation is a hard teardown: release its canonical
+            # contribution and GOAVA-owned unison state before rebuilding.
+            try:
+                self._deactivate_engine_generated_content(source_label="GOAVA", source_key="goava")
+            except Exception:
+                pass
+            self.goava_note_events = []
+            self.goava_seed_values = []
+            self.goava_steps = []
+            self.goava_pitches = []
+            self.goava_frequencies = []
+            self.goava_raw_values = []
+            self._apply_goava_to_canonical_playlist()
+            if hasattr(self, "btn_goava"):
+                self.btn_goava.setText("GOAVA")
+            if hasattr(self, "scope_status_label"):
+                self.scope_status_label.setText("📐 GOAVA · OFF")
+        self._live_engine_signatures.pop("goava", None) if hasattr(self, "_live_engine_signatures") else None
+
+    def _goava_mix(self, local_t, row_idx, step_duration):
+        if not getattr(self, "goava_active", False):
+            return np.zeros_like(local_t, dtype=np.float32)
+        if row_idx >= len(getattr(self, "goava_note_events", [])):
+            return np.zeros_like(local_t, dtype=np.float32)
+        ev = self.goava_note_events[row_idx]
+        if not ev.get("enabled", True):
+            return np.zeros_like(local_t, dtype=np.float32)
+        freq = float(ev.get("frequency", 432.0))
+        env = np.exp(-local_t / max(step_duration * 0.32, 0.01))
+        # GOAVA is deliberately singular: one sinewave per numeric entry,
+        # moving only above/below the base frequency.  No companion harmonic is
+        # introduced here; the other canonical engines own all other structure.
+        ph = 2.0 * np.pi * freq * local_t
+        tone = np.sin(ph)
+        n = max(1, self._canonical_active_count())
+        return (tone * env * 0.32 * float(ev.get("weight", 1.0)) * (0.5 / n)).astype(np.float32)
+
     def _paint_generated_parameters(self, rng=None, rows=None, source='context'):
         """Paint calculated/random playlist parameters, including velocity.
 
@@ -9006,26 +9980,37 @@ class MathematiciansGrooveboxApp(QMainWindow):
             target_amp = float(np.clip(0.18 + 0.78*ctx + jitter, 0.05, 1.0))
             target_pitch = float(np.clip(0.82 + 0.36*ctx + (rng.uniform(-0.05,0.05) if randomize else 0.0), 0.5, 1.5))
             target_prob = int(np.clip(round(55 + 45*ctx + (rng.uniform(-8,8) if randomize else 0)), 1, 100))
+            target_offset = float(np.clip(
+                0.5 * math.sin((i + 1) * MEUM + ctx * math.tau)
+                + (rng.uniform(-0.12, 0.12) if randomize else 0.0),
+                -0.5, 0.5
+            ))
             if include_velocity:
                 mem['amplitudes'][i] = float(np.clip((1-strength)*float(mem['amplitudes'][i]) + strength*target_amp, 0.0, 1.0))
             if include_pitch:
                 mem['pitches'][i] = float(np.clip((1-strength)*float(mem['pitches'][i]) + strength*target_pitch, 0.5, 1.5))
             if include_probability:
                 mem['probabilities'][i] = int(round((1-strength)*float(mem['probabilities'][i]) + strength*target_prob))
+            mem['offsets'][i] = float(np.clip(
+                (1-strength) * float(mem['offsets'][i]) + strength * target_offset,
+                -0.5, 0.5
+            ))
             changed += 1
         self.reload_active_instrument_sequencer_ui()
         return changed
 
     def _randomize_local_context(self, checked=True):
         if not checked:
-            self._deactivate_engine_generated_content(source_label="Randomizer")
+            self._deactivate_engine_generated_content(source_label="Randomizer", source_key="randomizer")
             return
         if getattr(self, "_composition_generation_guard", False):
             return
 
         self._composition_generation_guard = True
         snap = self._snapshot_global_effect_sliders()
+        self._active_engine_write_source = "randomizer"
         try:
+            self._canonical_sequence_reconcile("randomizer")
             seed = _safe_int_seed(self.get_numeric_seed())
             rng = np.random.default_rng(seed)
             self._composition_generation_counter = (
@@ -9043,11 +10028,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         rng=rng, strength=0.35, randomize=True
                     )
 
+            self._canonical_sequence_reconcile("randomizer")
             if hasattr(self, "reload_active_instrument_sequencer_ui"):
                 self.reload_active_instrument_sequencer_ui()
         except Exception as exc:
             print(f"[Randomizer] {type(exc).__name__}: {exc}")
         finally:
+            self._active_engine_write_source = None
             self._restore_global_effect_sliders(snap)
             self._composition_generation_guard = False
     def _canonical_playlist_paint(self, rng, mode="randomize", strength=0.55):
@@ -9114,6 +10101,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     source=mode,
                     rng=rng,
                 )
+            if getattr(self, "goava_active", False):
+                self._apply_goava_to_canonical_playlist()
             return
 
         rows = table.rowCount()
@@ -9140,6 +10129,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     self._write_generated_domain_context(source=mode)
                 if hasattr(self, "_write_generated_patch_context"):
                     self._write_generated_patch_context(source=mode)
+                # Sequence-local panel write (only when Edit-panels-per-sequence is ON)
+                if hasattr(self, "_engine_write_sequence_panels"):
+                    try:
+                        n_panels = self._engine_write_sequence_panels(source=mode)
+                        if n_panels:
+                            print(f"[{mode}] wrote sequence panels for {n_panels} instrument(s)")
+                    except Exception as _pe:
+                        print(f"[{mode}] sequence panel write skipped: {_pe}")
 
             # Authoritative 10-column writer (time offsets + last four columns).
             # This is the same path used when the playlist window is still closed,
@@ -9181,6 +10178,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
             if hasattr(self, "_sync_playlist_paint_table_from_memory"):
                 self._sync_playlist_paint_table_from_memory()
+            if getattr(self, "goava_active", False):
+                self._apply_goava_to_canonical_playlist()
 
         finally:
             table._paint_expanding = old_expanding
@@ -9205,6 +10204,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             10: "multi_seq",
             11: "coverage",
             12: "blend_partner",
+            13: "goava_sequence",
+            14: "paint_target",
+            15: "paint_source",
+            16: "paint_sequence",
+            17: "paint_instrument",
         }
         rows = min(table.rowCount(), len(data))
         for r in range(rows):
@@ -9231,14 +10235,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         item.setText(text)
     def _phase_lock_local_context(self, checked=True):
         if not checked:
-            self._deactivate_engine_generated_content(source_label="PhaseLock")
+            self._deactivate_engine_generated_content(source_label="PhaseLock", source_key="phase_lock")
             return
         if getattr(self, "_composition_generation_guard", False):
             return
 
         self._composition_generation_guard = True
         snap = self._snapshot_global_effect_sliders()
+        self._active_engine_write_source = "phase_lock"
         try:
+            self._canonical_sequence_reconcile("phase_lock")
             seed = _safe_int_seed(self.get_numeric_seed())
             rng = np.random.default_rng(seed)
             self._composition_generation_counter = (
@@ -9259,11 +10265,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         rng=rng, strength=0.45, randomize=False
                     )
 
+            self._canonical_sequence_reconcile("phase_lock")
             if hasattr(self, "reload_active_instrument_sequencer_ui"):
                 self.reload_active_instrument_sequencer_ui()
         except Exception as exc:
             print(f"[PhaseLock] {type(exc).__name__}: {exc}")
         finally:
+            self._active_engine_write_source = None
             self._restore_global_effect_sliders(snap)
             self._composition_generation_guard = False
 
@@ -9339,6 +10347,154 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     w.blockSignals(False)
                 except Exception:
                     pass
+    def _reconcile_engine_playlist_row(self, entry, user_instances=None):
+        """Merge all active engine contributions into one canonical row.
+
+        Each engine owns only its contribution.  The final row is a deterministic
+        consensus: operator identities are the union, structural labels are blended,
+        offsets are combined (and a mean is used as the final playback offset), and
+        multi-sequence/coverage retain every active participant.  User instances
+        always remain strongest and are never discarded by engine toggles.
+        """
+        if not isinstance(entry, dict):
+            return
+        contribs = entry.get("engine_contributions") or {}
+        if not isinstance(contribs, dict):
+            contribs = {}
+        users = list(user_instances if user_instances is not None else (entry.get("user_instances") or []))
+        ops = []
+        for u in users:
+            base = str(u).split("@", 1)[0].strip()
+            if base and base not in ops:
+                ops.append(base)
+        offsets = []
+        directions = []
+        multi = []
+        coverage_map = {}
+        structs = {k: [] for k in PLAYLIST_STRUCT_COLUMNS}
+        partners = []
+        velocities = []
+        sequence_refs = []
+        phase_offsets = {}
+        active_any = False
+        canonical_weights = {}
+        paint_meta = {"paint_target": [], "paint_source": [], "paint_sequence": [], "paint_instrument": []}
+        for src, c in sorted(contribs.items()):
+            if not isinstance(c, dict):
+                continue
+            for _pk in paint_meta:
+                _pv = str(c.get(_pk, "") or "").strip()
+                if _pv and _pv not in paint_meta[_pk]:
+                    paint_meta[_pk].append(_pv)
+            for op in c.get("operators") or []:
+                base = str(op).split("@", 1)[0].strip()
+                if base and base not in ops:
+                    ops.append(base)
+            for k in PLAYLIST_STRUCT_COLUMNS:
+                v = str(c.get(k, "") or "").strip()
+                if v and v not in structs[k]:
+                    structs[k].append(v)
+            try:
+                offsets.append(float(c.get("time_offset")))
+            except Exception:
+                pass
+            try:
+                directions.append(float(c.get("direction")))
+            except Exception:
+                try:
+                    directions.append(float(c.get("direction_vector", 0.0)))
+                except Exception:
+                    pass
+            mseq = c.get("multi_seq") or []
+            if isinstance(mseq, str):
+                mseq = [x.strip() for x in mseq.split(",") if x.strip()]
+            multi.extend([str(x).strip() for x in mseq if str(x).strip()])
+            for ref in c.get("sequence_refs") or []:
+                if str(ref) not in sequence_refs:
+                    sequence_refs.append(str(ref))
+            if isinstance(c.get("phase_offsets"), dict):
+                phase_offsets.update({str(k): int(v) for k, v in c["phase_offsets"].items()})
+            cm = c.get("coverage_map") or {}
+            if isinstance(cm, dict):
+                for op, val in cm.items():
+                    coverage_map[str(op)] = max(float(val), float(coverage_map.get(str(op), 0.0)))
+            if c.get("blend_partner"):
+                partners.append(str(c["blend_partner"]))
+            try:
+                velocities.append(float(c.get("velocity", 0.0)))
+            except Exception:
+                pass
+            active_any = active_any or bool(c.get("active"))
+            if c.get("canonical_weight") is not None:
+                try:
+                    canonical_weights[str(src)] = float(c.get("canonical_weight"))
+                except Exception:
+                    pass
+        # Normalize every surviving canonical contribution against the same
+        # active-engine denominator, independent of activation order.
+        active_sources = set(self._active_engine_sources()) if hasattr(self, "_active_engine_sources") else set(contribs)
+        denom = max(1, len(active_sources))
+        for _src, _c in contribs.items():
+            if isinstance(_c, dict) and _src in active_sources:
+                _c["canonical_weight"] = 1.0 / denom
+                canonical_weights[str(_src)] = 1.0 / denom
+        for k in PLAYLIST_STRUCT_COLUMNS:
+            vals = structs[k]
+            if vals:
+                v = vals[0]
+                for nxt in vals[1:]:
+                    v = blend_struct_labels(v, nxt, 0.25)
+                entry[k] = v
+            else:
+                entry[k] = ""
+        if ops:
+            entry["operators"] = ops
+            entry["operators_csv"] = ", ".join(ops)
+            entry["operator"] = ops[0]
+            entry["multi_seq"] = ", ".join(dict.fromkeys(multi + ops))
+        else:
+            entry["operators"] = []
+            entry["operators_csv"] = ", ".join(users)
+            entry["operator"] = ops[0] if ops else (users[0].split("@",1)[0].strip() if users else "")
+            entry["multi_seq"] = ", ".join(dict.fromkeys(multi))
+        if offsets:
+            offsets = [round(x, 6) for x in offsets]
+            entry["combined_time_offsets"] = offsets
+            entry["time_offset"] = float(np.mean(offsets))
+            entry["time_marker"] = f"e:{entry['time_offset']:.4f}s"
+        if directions:
+            d = float(np.mean(directions))
+            entry["direction"] = d
+            entry["direction_vector"] = f"{d:+.4f}"
+        if canonical_weights:
+            entry["canonical_weights"] = canonical_weights
+        if sequence_refs:
+            entry["sequence_refs"] = sequence_refs
+            entry["phase_offsets"] = phase_offsets
+        if coverage_map:
+            entry["coverage_map"] = coverage_map
+            entry["coverage"] = "|".join(f"{k}:{v:.0%}" for k, v in sorted(coverage_map.items()))
+        else:
+            entry["coverage_map"] = {}
+            entry["coverage"] = "0%"
+        for _pk, _vals in paint_meta.items():
+            entry[_pk] = " | ".join(dict.fromkeys(_vals)) if _vals else entry.get(_pk, "")
+        entry["blend_partner"] = next((p for p in partners if p), "")
+        entry["velocity"] = float(np.mean(velocities)) if velocities else 0.0
+        entry["active"] = bool(active_any)
+        entry["generated_by_engine"] = bool(contribs)
+        entry["generated_sources"] = sorted(contribs.keys())
+        if contribs:
+            entry["generated_source"] = "+".join(sorted(contribs.keys()))
+        else:
+            entry.pop("generated_source", None)
+            entry.pop("generated_by_engine", None)
+            entry.pop("generated_sources", None)
+            entry.pop("combined_time_offsets", None)
+            for k in ("time_marker","time_offset","script_tag","domain_tag","synth_tag","patch_tag","velocity","effect_target","auto_amount","direction_vector","direction","multi_seq","coverage","coverage_map","blend_partner","active"):
+                if not users:
+                    entry.pop(k, None)
+
     def _paint_operator_pattern_to_playlist(self, source="randomizer", rng=None):
         """Deterministically paint the complete playlist schema (Script/Domain/Synth/Patch + timeline).
 
@@ -9348,6 +10504,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         Every generated row receives a value for every playlist column; inactive
         rows are explicit ``none``/zero values rather than undefined cells.
         """
+        source = "phase_lock" if str(source) == "phase-lock" else str(source)
         seed = int(self.get_numeric_seed() or 1)
         if rng is None:
             channel = 0x51 if "random" in source else (0xA7 if "phase" in source else 0xD3)
@@ -9372,6 +10529,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._engine_generated_playlist_rows = set()
 
         names = list(getattr(self, 'instrument_names_48', []) or ["Operator"])
+        if hasattr(self, "_ensure_sequence_banks_after_resize"):
+            self._ensure_sequence_banks_after_resize()
         table = getattr(self, 'active_paint_table', None)
         painted = 0
         source_code = {"randomizer":"R", "phase-lock":"P", "midpoint":"M", "euclidean":"E", "seeded":"S"}.get(source, "G")
@@ -9403,11 +10562,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if not users:
                 users = user_tokens(old_ops)
 
-            # Remove previous engine automation/identity before regeneration.
-            if e.get('generated_by_engine'):
-                for k in list(e.keys()):
-                    if k not in ('user_instances',):
-                        e.pop(k, None)
+            # Preserve other engine contributions.  A new pass replaces only
+            # its own contribution, so activation order cannot erase earlier
+            # engine state.
+            contribs = e.setdefault("engine_contributions", {})
+            if not isinstance(contribs, dict):
+                contribs = {}
+                e["engine_contributions"] = contribs
+            # Each canonical owns an independent contribution.  Never infer
+            # ownership from the already-reconciled row: doing so makes activation
+            # order lossy.  Replacing one source therefore cannot overwrite the
+            # other active sources' contributions.
+            contribs.pop(str(source), None)
             if isinstance(self.playlist_automation[r], dict) and self.playlist_automation[r].get('generated_by_engine'):
                 self.playlist_automation[r] = {}
 
@@ -9416,8 +10582,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             row_key = (seed ^ ((r + 1) * 0x9E3779B1) ^ source_hash) & 0x7FFFFFFF
             rr = np.random.default_rng(row_key)
             active = bool(rr.random() < (0.62 if source == 'midpoint' else 0.70))
-            n_inst = int(rr.integers(2, min(6, len(names)) + 1)) if names else 1
-            idxs = list(rr.choice(len(names), size=min(n_inst, len(names)), replace=False)) if names else [0]
+            n_inst = 1 if names else 1
+            idxs = [int(rr.integers(0, len(names)))] if names else [0]
             eng_ops = [names[i] for i in idxs]
             tag = f"@e:{source[:4]}:{seed & 0xFFFFF:05x}:{r:03d}"
             t_off = (r * (0.125 + 0.031 * MEUM_NORM) + float(rr.uniform(-0.045, 0.045)))
@@ -9451,9 +10617,27 @@ class MathematiciansGrooveboxApp(QMainWindow):
             synth_tag = struct.get("synth_tag") or f"Synth::{str(primary_op)[:10]}"
             patch_tag = struct.get("patch_tag") or f"Patch::{str(primary_op)[:8]}"
 
-            engine_csv = ", ".join(f"{op}{tag}" for op in eng_ops)
-            combined_csv = ", ".join(users + ([engine_csv] if engine_csv else []))
-            multi_seq = ", ".join(eng_ops)
+            engine_csv = ", ".join(eng_ops)
+            combined_csv = ", ".join(dict.fromkeys(users + eng_ops))
+            # Sequence composition: every playlist row gets a deterministic,
+            # reusable per-instrument sequence reference and a phase offset.
+            sequence_refs = []
+            phase_offsets = {}
+            for _op in eng_ops:
+                _bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(_op, {})
+                _ids = sorted(_bank) or [1]
+                # Prefer this canonical's own numbered sequence so canonical
+                # creation is actually reflected in the playlist. User sequences
+                # remain eligible as deterministic fallbacks/reuse.
+                _owner = f"canonical:{source}"
+                _owned = [sid for sid in _ids if isinstance(_bank.get(sid), dict) and _bank[sid].get("canonical_owner") == _owner]
+                pool = _owned or _ids
+                _sid = pool[(r + int(seed) + source_hash) % len(pool)]
+                _plen = int((_bank.get(_sid, {}) or {}).get("pattern_length", 16))
+                _phase = int((r * (1 + (_sid % 5)) + (seed & 0xFFFF)) % max(_plen, 1))
+                sequence_refs.append(f"{_op}#S{_sid}")
+                phase_offsets[_op] = _phase
+            multi_seq = ", ".join(sequence_refs or eng_ops)
             position = f"e:{t_off:.4f}s"
             fields = {
                 'time_marker': position,
@@ -9469,6 +10653,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 'auto_amount': f"{amount * 100:.1f}%",
                 'direction_vector': f"{direction:+.4f}",
                 'multi_seq': multi_seq,
+                'sequence_refs': sequence_refs,
+                'phase_offsets': phase_offsets,
+                'sequence_index': int((r + int(seed)) % max(1, len(sequence_refs))) if sequence_refs else 1,
                 'coverage_map': coverage_map,
                 'coverage': coverage,
                 'blend_partner': partner,
@@ -9476,8 +10663,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 'position': position,
                 'generated_source': source,
                 'generated_by_engine': True,
+                'canonical_weight': 1.0 / max(1, self._canonical_active_count()),
                 'velocity_user_locked': False,
                 'active': active,
+                # Canonical engines own these four paint metadata columns too;
+                # they are derived from the actual canonical source/instrument/sequence.
+                'paint_target': f"{source} → Playlist",
+                'paint_source': f"Canonical {source} · {primary_op}",
+                'paint_sequence': ", ".join(sequence_refs or [f"{primary_op}#S1"]),
+                'paint_instrument': ", ".join(dict.fromkeys(eng_ops or users)),
             }
             # Preserve cells that a human actually painted — unless Canonical
             # Overwrite is active (protect OFF), in which case unison rewrites all.
@@ -9505,6 +10699,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 10: "multi_seq",
                 11: "coverage",
                 12: "blend_partner",
+                13: "goava_sequence",
+                14: "paint_target",
+                15: "paint_source",
+                16: "paint_sequence",
+                17: "paint_instrument",
             }
             for c in sorted(locked_cols):
                 key = field_by_col.get(c)
@@ -9539,12 +10738,26 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if locked_cols:
                 fields["user_locked_columns"] = sorted(locked_cols)
 
+            # Store this source independently, then form the canonical consensus
+            # from every currently active engine plus userdata.
+            contribution_keys = ("operators", "script_tag", "domain_tag", "synth_tag", "patch_tag",
+                                 "velocity", "effect_target", "auto_amount", "direction_vector",
+                                 "direction", "multi_seq", "sequence_refs", "phase_offsets",
+                                 "sequence_index", "canonical_weight", "coverage_map", "coverage", "blend_partner",
+                                 "time_offset", "active", "paint_target", "paint_source",
+                                 "paint_sequence", "paint_instrument")
+            e.setdefault("engine_contributions", {})[str(source)] = {k: copy.deepcopy(fields.get(k)) for k in contribution_keys}
             e.update(fields)
             if users:
                 e['user_instances'] = users
+            self._reconcile_engine_playlist_row(e, users)
             self._engine_generated_playlist_rows.add(r)
 
-            self.playlist_automation[r] = {
+            # Preserve userdata automation.  Canonical engines own only their
+            # generated lane; an existing user lane is never replaced.
+            if not (isinstance(self.playlist_automation[r], dict) and
+                    self.playlist_automation[r].get("user_owned")):
+                self.playlist_automation[r] = {
                 'generated_by_engine': True,
                 'operator': eng_ops[0] if eng_ops else '',
                 'operators': list(eng_ops),
@@ -9575,6 +10788,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             table_set(r, 10, multi_seq)
             table_set(r, 11, coverage)
             table_set(r, 12, partner)
+            table_set(r, 13, e.get("goava_sequence", ""))
             painted += 1
 
         # Structural postcondition: every generated row has all ten canonical fields.
@@ -10042,7 +11256,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_base_frequency.setRange(0.0, 50000.0)
         self.spin_base_frequency.setDecimals(4)
         self.spin_base_frequency.setSingleStep(0.1)
-        self.spin_base_frequency.setValue(432.0)
+        self.spin_base_frequency.setValue(216.0)
         self.spin_tuning = self.spin_base_frequency  # compatibility alias
         self.top_layout.addWidget(self.spin_base_frequency)
         # Keep the primary effect sliders in their own visible row so they cannot
@@ -10108,6 +11322,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "Toggle global phase-lock; ON paints the phase-locked pattern into Playlist.",
             checkable=True, active_color="#00bfff"
         )
+        self.btn_goava = _make_global_operator_button(
+            "GOAVA",
+            "Toggle GOAVA numerical-seed composition. Uses the supplied GOAVA Composer.getNote algorithm to create engine-owned notes, frequencies, and a canonical-unison playlist column.",
+            checkable=True, active_color="#c77dff"
+        )
 
         global_context_group = QGroupBox("GLOBAL COMPOSITION")
         global_context_group.setToolTip("Global playlist, randomization, and Euclidean phase-lock controls.")
@@ -10117,6 +11336,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         global_context_layout.addWidget(self.btn_view_playlist)
         global_context_layout.addWidget(self.btn_local_randomize)
         global_context_layout.addWidget(self.btn_local_phase_lock)
+        global_context_layout.addWidget(self.btn_goava)
         if hasattr(self, "chk_canonical_protect"):
             global_context_layout.addWidget(self.chk_canonical_protect)
         if hasattr(self, "btn_restore_userdata"):
@@ -10147,6 +11367,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_script_inst = self._make_local_context_button("WRITE\nSCRIPT", "Edit the script attached to the active instrument")
         self.btn_view_patchbay = self._make_local_context_button("PATCH\nMODULAR", "Open modular routing for the active instrument context")
         self.btn_domain_eq = self._make_local_context_button("CALC\nDOMAIN", "Edit time/space equations used as contextual modulation")
+        # EDIT_PANELS_PER_SEQUENCE: when checked, the four panel editors (synth /
+        # script / modular patch / domain) read+write the *current sequence's*
+        # panel overrides, and canonical engines may generate per-sequence panel
+        # content. Default OFF preserves master/instrument-level panel behaviour.
+        self.btn_edit_panels_per_sequence = QCheckBox("Edit panels\nper sequence")
+        self.btn_edit_panels_per_sequence.setChecked(False)
+        self.btn_edit_panels_per_sequence.setToolTip(
+            "OFF (default): Synth / Script / Patch / Domain editors always affect "
+            "master instrument-level settings.\n"
+            "ON: those four panels become sequence-local — each numbered sequence "
+            "stores its own synth snapshot, script, modular patch edges, and domain "
+            "tags. Canonical engines (Randomizer / Phase-Lock / Euclidean / Seeded / "
+            "GOAVA) write into the active sequence's panel slots when this is ON."
+        )
+        self.btn_edit_panels_per_sequence.setStyleSheet(
+            "QCheckBox { color: #00ffcc; font-weight: bold; font-size: 8pt; }"
+            "QCheckBox::indicator { width: 14px; height: 14px; }"
+        )
+        self.btn_edit_panels_per_sequence.toggled.connect(self._on_edit_panels_per_sequence_toggled)
 
         # POWER_V3_GLOBAL_CONTROLS: buttons were constructed above so the Global
         # panel can safely reference them before the Local panel is assembled.
@@ -10158,17 +11397,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_view_playlist.clicked.connect(lambda: self.spawn_floating_window('playlist_window', "Unquantized Playlist & Paintbrush Window"))
         self.btn_local_randomize.toggled.connect(self._randomize_local_context)
         self.btn_local_phase_lock.toggled.connect(self._phase_lock_local_context)
+        self.btn_goava.toggled.connect(self._on_goava_toggled)
         self.btn_help.clicked.connect(self.open_help_readme)
-
-        for b in (self.btn_edit_synth, self.btn_script_inst, self.btn_view_patchbay, self.btn_domain_eq):
-            local_context_layout.addWidget(b)
-        local_context_layout.addStretch(1)
-        master_container.addWidget(local_context_group)
 
         # Global playlist capacity belongs with global variables, not the pattern editor.
         self.spin_playlist_length = QSpinBox()
         self.spin_playlist_length.setRange(1, 1024)
-        self.spin_playlist_length.setValue(96)
+        self.spin_playlist_length.setValue(64)
         self.top_layout_row2.addWidget(QLabel("Playlist Rows:"))
         self.top_layout_row2.addWidget(self.spin_playlist_length)
         self.top_layout_row2.addWidget(QLabel("Global Convolve:"))
@@ -10212,17 +11447,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.top_layout_row2.addWidget(self.btn_load_media)
         self.top_layout_row2.addStretch(1)
 
+        # Per-sequence length is the single sequencer length control.
+        # `spin_pattern_length` remains a compatibility alias but is no longer
+        # rendered as a second redundant control.
         sizing_layout = QHBoxLayout()
-        sizing_layout.addWidget(QLabel("Pattern / STEP Length:"))
+        sizing_layout.setContentsMargins(0, 0, 0, 0)
+        sizing_layout.addWidget(QLabel("Sequence length:"))
         self.spin_seq_length = QSpinBox()
         self.spin_seq_length.setRange(1, 1024)
-        self.spin_seq_length.setValue(48)
+        self.spin_seq_length.setValue(16)
         sizing_layout.addWidget(self.spin_seq_length)
-
-
-
         sizing_layout.addStretch(1)
-
         sizing_container = QWidget()
         sizing_container.setLayout(sizing_layout)
         master_container.addWidget(sizing_container)
@@ -10236,33 +11471,100 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         # The instrument selector chooses WHICH instrument the PKP NullLock play button auditions.
 
-        # PKP NullLock BOOST — arm global note-triggered NullLock layer + one-shot audition.
-        # Boost amount scales the global PKP layer in the mixdown (0.5× … 2.0×).
+        # PKP / sequence controls live directly above the sequencer tray.
+        # The boost control is square; the three PKP handles are vertical.
         self.pkp_boost_amount = 1.0
-        self.btn_pkp_nullock_boost = QPushButton("⚡ PKP NullLock BOOST")
-        self.btn_pkp_nullock_boost.setCheckable(False)
-        self.btn_pkp_nullock_boost.setToolTip("Momentary one-shot PKP remix burst; never arms a sustained layer.")
+        self.btn_pkp_nullock_boost = QPushButton("⚡")
+        self.btn_pkp_nullock_boost.setToolTip("PKP NullLock BOOST — one-shot playover modulator")
+        self.btn_pkp_nullock_boost.setFixedSize(42, 42)
         self.btn_pkp_nullock_boost.setStyleSheet(
-            "QPushButton { background-color:#1a1020; color:#ff66cc; font-weight:bold; border:2px solid #ff66cc; border-radius:4px; padding:4px 10px; }"
+            "QPushButton { background-color:#1a1020; color:#ff66cc; font-weight:bold; "
+            "border:2px solid #ff66cc; border-radius:4px; }"
             "QPushButton:hover { background-color:#2a1830; }"
             "QPushButton:pressed { background-color:#ff66cc; color:#120818; border-color:#ffffff; }"
         )
         self.btn_pkp_nullock_boost.clicked.connect(self._on_pkp_nullock_boost_clicked)
-        seq_header_layout.addWidget(self.btn_pkp_nullock_boost)
 
         self.slider_pkp_boost = QSlider(Qt.Orientation.Horizontal)
-        self.slider_pkp_boost.setRange(50, 200)  # 0.5× … 2.0×
-        self.slider_pkp_boost.setValue(100)
-        self.slider_pkp_boost.setFixedWidth(100)
-        self.slider_pkp_boost.setToolTip("NullLock boost amount (50%–200%) applied to the global PKP layer.")
+        self.slider_pkp_boost.setRange(50, 200); self.slider_pkp_boost.setValue(100)
         self.slider_pkp_boost.valueChanged.connect(self._on_pkp_boost_amount_changed)
-        seq_header_layout.addWidget(QLabel("Boost:"))
-        seq_header_layout.addWidget(self.slider_pkp_boost)
+        self.slider_pkp_boost_pitch = QSlider(Qt.Orientation.Horizontal)
+        self.slider_pkp_boost_pitch.setRange(25, 400); self.slider_pkp_boost_pitch.setValue(100)
+        self.slider_pkp_boost_pitch.valueChanged.connect(self._on_pkp_boost_pitch_changed)
+        self.slider_pkp_boost_steps = QSlider(Qt.Orientation.Horizontal)
+        self.slider_pkp_boost_steps.setRange(1, max(1, int(self.spin_seq_length.value())))
+        self.slider_pkp_boost_steps.setValue(min(4, max(1, int(self.spin_seq_length.value()))))
+        self.slider_pkp_boost_steps.valueChanged.connect(self._on_pkp_boost_steps_changed)
         self.lbl_pkp_boost = QLabel("100%")
-        self.lbl_pkp_boost.setStyleSheet("color: #ff66cc; font-weight: bold; min-width: 40px;")
-        seq_header_layout.addWidget(self.lbl_pkp_boost)
+        self.lbl_pkp_boost_pitch = QLabel("1.00×")
+        self.lbl_pkp_boost_steps = QLabel(str(self.slider_pkp_boost_steps.value()))
 
-        seq_inner.addLayout(seq_header_layout)
+        self.spin_pattern_length = QSpinBox()
+        self.spin_pattern_length.setRange(1, 1024)
+        self.spin_pattern_length.setValue(16)
+        self.spin_pattern_length.setToolTip("Compatibility alias for the selected sequence length.")
+        self.spin_pattern_length.setVisible(False)
+        self.spin_pattern_length.valueChanged.connect(self._on_pattern_length_changed)
+
+        # Numbered per-instrument sequence bank controls.
+        self.sequence_selector = QComboBox()
+        self.sequence_selector.setMinimumWidth(150)
+        self.sequence_selector.currentIndexChanged.connect(self._on_sequence_selector_changed)
+        self.btn_add_sequence = QPushButton("＋ Add sequence")
+        self.btn_remove_sequence = QPushButton("− Remove sequence")
+        self.btn_add_sequence.clicked.connect(self.add_sequence)
+        self.btn_remove_sequence.clicked.connect(self.remove_sequence)
+
+        # PKP lives beside the synth → script → patch → domain buttons.
+        # The sequencer options below intentionally occupy their own full-width row.
+        pkp_button_col = QVBoxLayout()
+        pkp_button_col.setContentsMargins(0, 0, 0, 0)
+        self.btn_pkp_nullock_boost.setText("⚡ PKP NullLock\nBOOST")
+        self.btn_pkp_nullock_boost.setFixedSize(104, 54)
+        pkp_button_col.addWidget(self.btn_pkp_nullock_boost)
+        pkp_button_col.addStretch(1)
+
+        pkp_sliders = QVBoxLayout()
+        pkp_sliders.setContentsMargins(0, 0, 0, 0)
+        pkp_sliders.setSpacing(2)
+        for _label, _slider, _value in (
+            ("Boost", self.slider_pkp_boost, self.lbl_pkp_boost),
+            ("Pitch", self.slider_pkp_boost_pitch, self.lbl_pkp_boost_pitch),
+            ("Steps", self.slider_pkp_boost_steps, self.lbl_pkp_boost_steps),
+        ):
+            _row = QHBoxLayout()
+            _row.setContentsMargins(0, 0, 0, 0)
+            _row.addWidget(QLabel(_label + ":"))
+            _row.addWidget(_slider, 1)
+            _row.addWidget(_value)
+            pkp_sliders.addLayout(_row)
+
+        self.pkp_ui_group = QGroupBox("PKP")
+        pkp_ui_group_layout = QHBoxLayout(self.pkp_ui_group)
+        pkp_ui_group_layout.setContentsMargins(5, 3, 5, 3)
+        pkp_ui_group_layout.addLayout(pkp_button_col)
+        pkp_ui_group_layout.addLayout(pkp_sliders, 1)
+        self.pkp_ui_group.setMinimumWidth(290)
+        self.pkp_ui_group.setMaximumWidth(430)
+
+        # Attach PKP to the local-context strip, immediately after the domain button.
+        # Edit-panels-per-sequence toggle sits with the four panel editors.
+        for b in (self.btn_edit_synth, self.btn_script_inst, self.btn_view_patchbay, self.btn_domain_eq):
+            local_context_layout.addWidget(b)
+        local_context_layout.addWidget(self.btn_edit_panels_per_sequence)
+        local_context_layout.addWidget(self.pkp_ui_group, 1)
+        local_context_layout.addStretch(1)
+        master_container.addWidget(local_context_group)
+
+        seq_controls = QHBoxLayout()
+        seq_controls.setContentsMargins(0, 0, 0, 0)
+        seq_controls.addSpacing(12)
+        seq_controls.addWidget(QLabel("Sequence:"))
+        seq_controls.addWidget(self.sequence_selector, 1)
+        seq_controls.addWidget(self.btn_add_sequence)
+        seq_controls.addWidget(self.btn_remove_sequence)
+        seq_controls.addStretch(1)
+        seq_inner.addLayout(seq_controls)
 
         # PKP NullLock is an audition/play action, not a dropdown, timeline event, or independent clock.
         self.pkp_pad_bank_active = False
@@ -10273,9 +11575,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.steps_inner_layout.setContentsMargins(0, 0, 0, 0)
         self.seq_step_buttons = []
 
-        self.rebuild_sequencer_steps(self.spin_seq_length.value())
-        self.spin_seq_length.valueChanged.connect(lambda val: self.rebuild_sequencer_steps(val))
+        self._refresh_sequence_selector()
+        try:
+            self.active_paint_table and self.active_paint_table._refresh_paint_sequence_choices()
+        except Exception:
+            pass
+        self.spin_seq_length.blockSignals(True)
+        self.spin_seq_length.setValue(int(self._current_sequence_mem().get('pattern_length', 16)))
+        self.spin_seq_length.blockSignals(False)
+        self.rebuild_sequencer_steps(self._current_sequence_mem().get('pattern_length', self.spin_seq_length.value()))
+        self.spin_seq_length.valueChanged.connect(self._on_sequence_length_changed)
         self.spin_seq_length.valueChanged.connect(self._on_live_source_changed)
+        self.spin_playlist_length.valueChanged.connect(self._resize_playlist_memory)
         self.spin_playlist_length.valueChanged.connect(self._on_live_source_changed)
         self.spin_bpm.valueChanged.connect(self._on_live_source_changed)
         self.input_seed_val.textChanged.connect(self._on_live_source_changed)
@@ -10322,6 +11633,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
         step_edit.addWidget(self.slider_step_pitch)
         self.lbl_step_pitch = QLabel("1.00×")
         step_edit.addWidget(self.lbl_step_pitch)
+        step_edit.addWidget(QLabel("Offset:"))
+        self.spin_step_offset = QDoubleSpinBox()
+        self.spin_step_offset.setRange(-0.5, 0.5)
+        self.spin_step_offset.setDecimals(2)
+        self.spin_step_offset.setSingleStep(0.01)
+        self.spin_step_offset.setSuffix(" step")
+        self.spin_step_offset.setFixedWidth(92)
+        self.spin_step_offset.setToolTip(
+            "Timing offset in step units. Range −0.50 … +0.50. "
+            "Randomizer and Phase-Locker may optimize engine-owned offsets."
+        )
+        self.spin_step_offset.valueChanged.connect(self._on_step_offset_changed)
+        step_edit.addWidget(self.spin_step_offset)
         self.step_editor_popup.hide()
         self.selected_step_idx = None
 
@@ -10463,22 +11787,31 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._last_scope_chunk = np.zeros(100, dtype=np.float32)
 
     def on_instrument_switched(self, idx):
+        if not (0 <= idx < len(self.instrument_names_48)):
+            return
         inst_name = self.instrument_names_48[idx]
-        if hasattr(self, 'top_sequencer') and self.instrument_selector_dropdown.currentIndex() != idx:
-            self.instrument_selector_dropdown.setCurrentIndex(idx)
+        self._ensure_sequence_banks_after_resize()
+        self.instrument_sequencer_memory[inst_name] = self._current_sequence_mem(inst_name)
+        if hasattr(self, 'top_sequencer'):
+            self._refresh_sequence_selector()
         self.reload_active_instrument_sequencer_ui()
 
     def reload_active_instrument_sequencer_ui(self):
         if not hasattr(self, 'top_sequencer'):
             return
         curr_inst = self.instrument_selector_dropdown.currentText()
-        mem = self.instrument_sequencer_memory[curr_inst]
-        self._ensure_seq_mem_length(mem, len(self.seq_step_buttons) or 16)
+        mem = self._current_sequence_mem(curr_inst) if hasattr(self, '_current_sequence_mem') else self.instrument_sequencer_memory[curr_inst]
+        count = int(mem.get('pattern_length', len(self.seq_step_buttons) or 16))
+        self._ensure_seq_mem_length(mem, count)
+        if len(self.seq_step_buttons) != count:
+            self.rebuild_sequencer_steps(count)
+            return
         for s_idx, btn in enumerate(self.seq_step_buttons):
             if s_idx < len(mem["steps"]):
                 amp = mem["amplitudes"][s_idx]
                 pitch = mem["pitches"][s_idx] if s_idx < len(mem.get("pitches", [])) else 1.0
-                btn.setText(f"STEP {s_idx+1}\nV:{amp:.2f} P:{pitch:.2f}×")
+                offset = float(mem.get("offsets", [0.0] * len(mem.get("steps", [])))[s_idx]) if s_idx < len(mem.get("offsets", [])) else 0.0
+                btn.setText(f"STEP {s_idx+1}\nV:{amp:.2f} P:{pitch:.2f}×\nO:{offset:+.2f} step")
                 self._style_pad_button(btn, s_idx, mem["steps"][s_idx])
                 if self.selected_step_idx == s_idx:
                     btn.setStyleSheet(btn.styleSheet() + " border: 3px solid #f5d97d;")
@@ -10504,13 +11837,66 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if hasattr(self, "lbl_pkp_boost"):
             self.lbl_pkp_boost.setText(f"{val}%")
 
+    def _sync_pkp_boost_step_range(self, val):
+        if not hasattr(self, "slider_pkp_boost_steps"):
+            return
+        n = max(1, int(val))
+        self.slider_pkp_boost_steps.blockSignals(True)
+        self.slider_pkp_boost_steps.setRange(1, n)
+        self.slider_pkp_boost_steps.setValue(min(self.slider_pkp_boost_steps.value(), n))
+        self.slider_pkp_boost_steps.blockSignals(False)
+        self._on_pkp_boost_steps_changed(self.slider_pkp_boost_steps.value())
+
+    def _on_pkp_boost_pitch_changed(self, val):
+        if hasattr(self, "lbl_pkp_boost_pitch"):
+            self.lbl_pkp_boost_pitch.setText(f"{float(val)/100.0:.2f}×")
+
+    def _on_pkp_boost_steps_changed(self, val):
+        if hasattr(self, "lbl_pkp_boost_steps"):
+            self.lbl_pkp_boost_steps.setText(str(int(val)))
+
     def _on_pkp_nullock_boost_clicked(self, checked=False):
-        """Momentary PKP remix burst; never arm a persistent envelope."""
+        """Play a PKP NullLock playover modulation burst for 1..sequence_length steps."""
         self.pkp_pad_bank_active = False
         self._play_selected_instrument_pkp()
-        if hasattr(self, "scope_status_label"):
-            boost=int(getattr(self,"pkp_boost_amount",1.0)*100)
-            self.scope_status_label.setText(f"⚡Visualizers")
+        self._play_pkp_playover_modulator()
+
+    def _play_pkp_playover_modulator(self):
+        """Non-blocking playover: selected pitch, selected step count, never > one sequence."""
+        try:
+            if not HAS_SOUNDDEVICE:
+                return
+            sr = 44100
+            bpm = float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0
+            seq_len = max(1, int(self.spin_seq_length.value())) if hasattr(self, "spin_seq_length") else 1
+            steps = min(seq_len, int(self.slider_pkp_boost_steps.value()) if hasattr(self, "slider_pkp_boost_steps") else 1)
+            pitch_ratio = float(self.slider_pkp_boost_pitch.value()) / 100.0 if hasattr(self, "slider_pkp_boost_pitch") else 1.0
+            gain = float(getattr(self, "pkp_boost_amount", 1.0))
+            step_dur = 60.0 / max(bpm, 1.0) / 4.0
+            dur = max(0.02, step_dur * steps)
+            n = int(sr * dur)
+            t = np.arange(n, dtype=np.float32) / sr
+            inst_name = self.instrument_selector_dropdown.currentText()
+            try:
+                op_idx = self.instrument_names_48.index(inst_name)
+            except ValueError:
+                op_idx = 0
+            base = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 216.0
+            root = base * MEUM_POWERS_36[op_idx % 36] * pitch_ratio
+            # Deterministic stepped playover; envelope spans exactly the requested number of steps.
+            phase = 2.0 * np.pi * root * t
+            mod = 1.0 + 0.12 * np.sin(2.0 * np.pi * (1.0 / max(step_dur, 1e-4)) * t * MEUM_INV)
+            tone = (0.72 * np.sin(phase * mod) + 0.28 * np.sin(phase * 2.0))
+            env = np.minimum(1.0, t / max(0.012, step_dur * 0.08)) * np.exp(-t / max(dur * 0.72, 0.02))
+            hit = (tone * env * 0.18 * gain).astype(np.float32)
+            peak = float(np.max(np.abs(hit))) if hit.size else 0.0
+            if peak > 0.95:
+                hit *= 0.95 / peak
+            sd.play(hit, sr, blocking=False)
+            if hasattr(self, "scope_status_label"):
+                self.scope_status_label.setText(f"⚡ PKP playover · {steps}/{seq_len} steps · {pitch_ratio:.2f}×")
+        except Exception as e:
+            print(f"[PKP playover] {e}")
 
     def _play_selected_instrument_pkp(self):
         """One-shot audition of a modified PKP/Null-Lock instance of the selected instrument."""
@@ -10547,7 +11933,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         selected=self.instrument_selector_dropdown.currentText()
         total=0.0
         t=np.linspace(0.0, step_duration, n_samples, endpoint=False)
-        base=float(self.spin_base_frequency.value()) if hasattr(self,'spin_base_frequency') else 432.0
+        base=float(self.spin_base_frequency.value()) if hasattr(self,'spin_base_frequency') else 216.0
         for idx,name in enumerate(getattr(self,'instrument_names_48',[])):
             if name==selected: continue
             mem=self.instrument_sequencer_memory.get(name,{})
@@ -10576,17 +11962,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 op_idx = self.instrument_names_48.index(inst_name)
             except ValueError:
                 op_idx = step_idx
-            base_freq = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
+            base_freq = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 216.0
             base_freq *= MEUM_POWERS_36[op_idx % 36]
             # Slight pitch offset per step so the sequence is musical
             freq = base_freq * (1.0 + (step_idx % 12) * 0.03)
 
             # PKP-style: fast decay sine + soft click transient
             env = np.exp(-t / max(hit_dur * 0.35, 0.01))
-            click = np.exp(-t / 0.004) * np.sin(2 * np.pi * freq * 4.0 * t)
             body = np.sin(2 * np.pi * freq * t)
-            # BOOST is independent of global PKP Decay.
-            hit = (body * 0.7 + click * 0.3) * env * float(amp)
+            # Keep PKP hits strictly pitched; omit the click/transient component.
+            hit = body * env * float(amp)
             hit_rms = float(np.sqrt(np.mean(hit * hit))) if hit.size else 0.0
             target_rms = 0.0
             try:
@@ -10637,7 +12022,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.selected_step_idx = None
 
         curr_inst = self.instrument_selector_dropdown.currentText() if hasattr(self, 'top_sequencer') else self.instrument_names_48[0]
-        mem = self.instrument_sequencer_memory[curr_inst]
+        mem = self._current_sequence_mem(curr_inst) if hasattr(self, '_current_sequence_mem') else self.instrument_sequencer_memory[curr_inst]
+        count = int(mem.get('pattern_length', count))
         self._ensure_seq_mem_length(mem, count)
         if "pitches" not in mem:
             mem["pitches"] = [1.0] * count
@@ -10647,7 +12033,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         for s in range(count):
             amp = mem["amplitudes"][s]
             pitch = mem["pitches"][s] if s < len(mem["pitches"]) else 1.0
-            step_btn = QPushButton(f"STEP {s+1}\nV:{amp:.2f} P:{pitch:.2f}×")
+            offset = float(mem.get("offsets", [0.0] * count)[s]) if s < len(mem.get("offsets", [])) else 0.0
+            step_btn = QPushButton(f"STEP {s+1}\nV:{amp:.2f} P:{pitch:.2f}×\nO:{offset:+.2f} step")
             step_btn.setCheckable(False)  # selection vs toggle handled in click
             step_btn.setMinimumSize(86, 70)
             step_btn.setMaximumWidth(110)
@@ -10845,6 +12232,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Keep a reference on self BEFORE showing — a non-modal dialog with
         # no surviving Python reference gets garbage-collected and vanishes.
         self.domain_eq_dialog = dlg
+        def _persist_domain_panels(*_args):
+            if self._panels_per_sequence_enabled():
+                try:
+                    name = self._current_instrument_name()
+                    panels = self._sequence_panel_slot(name)
+                    panels["domain"] = {
+                        "domains": copy.deepcopy(getattr(self.domain_eq_engine, "domains", []) or [])
+                    }
+                    print(f"[Domain] Saved domains to sequence {self._current_sequence_index(name)} panels")
+                except Exception as _exc:
+                    print(f"[Domain] sequence panel save: {_exc}")
+        try:
+            dlg.finished.connect(_persist_domain_panels)
+        except Exception:
+            pass
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
@@ -10909,6 +12311,424 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
 
+    # =====================================================================
+    # SEQUENCE_BANK_V6
+    # =====================================================================
+    def _current_instrument_name(self):
+        return (self.instrument_selector_dropdown.currentText()
+                if hasattr(self, "instrument_selector_dropdown")
+                else (self.instrument_names_48[0] if self.instrument_names_48 else "Operator"))
+
+    def _current_sequence_index(self, instrument_name=None):
+        name = instrument_name or self._current_instrument_name()
+        return int((getattr(self, "instrument_selected_sequence", {}) or {}).get(name, 1))
+
+    def _current_sequence_mem(self, instrument_name=None):
+        name = instrument_name or self._current_instrument_name()
+        banks = getattr(self, "instrument_sequence_banks", {}) or {}
+        bank = banks.setdefault(name, {})
+        if not bank:
+            mem = self.instrument_sequencer_memory.setdefault(name, {
+                "steps": [], "gates": [], "amplitudes": [], "pitches": [],
+                "probabilities": [], "offsets": [], "pattern_length": 16
+            })
+            bank[1] = mem
+        idx = self._current_sequence_index(name)
+        if idx not in bank:
+            idx = sorted(bank)[0]
+            self.instrument_selected_sequence[name] = idx
+        mem = bank[idx]
+        self.instrument_sequencer_memory[name] = mem
+        return mem
+
+    def _refresh_sequence_selector(self):
+        if not hasattr(self, "sequence_selector"):
+            return
+        name = self._current_instrument_name()
+        bank = (getattr(self, "instrument_sequence_banks", {}) or {}).setdefault(name, {})
+        if not bank:
+            bank[1] = self.instrument_sequencer_memory.get(name, {})
+        selected = self._current_sequence_index(name)
+        self.sequence_selector.blockSignals(True)
+        self.sequence_selector.clear()
+        for idx in sorted(bank):
+            mem = bank[idx]
+            length = int(mem.get("pattern_length", len(mem.get("steps", [])) or 1))
+            self.sequence_selector.addItem(f"Sequence {idx}  ·  {length} steps", idx)
+        pos = max(0, sorted(bank).index(selected)) if selected in bank else 0
+        self.sequence_selector.setCurrentIndex(pos)
+        self.sequence_selector.blockSignals(False)
+        seq_len = int(bank[selected].get("pattern_length", 16)) if selected in bank else 16
+        self.spin_seq_length.blockSignals(True)
+        self.spin_seq_length.setValue(seq_len)
+        self.spin_seq_length.blockSignals(False)
+        self.spin_pattern_length.blockSignals(True)
+        self.spin_pattern_length.setValue(seq_len)
+        self.spin_pattern_length.blockSignals(False)
+        self.btn_remove_sequence.setEnabled(len(bank) > 1)
+
+    def add_sequence(self):
+        name = self._current_instrument_name()
+        bank = getattr(self, "instrument_sequence_banks", {}).setdefault(name, {})
+        src_idx = self._current_sequence_index(name)
+        src = copy.deepcopy(bank.get(src_idx, self.instrument_sequencer_memory[name]))
+        src["sequence_id"] = max(bank.keys(), default=0) + 1
+        src["user_owned"] = True
+        src["canonical_owner"] = None
+        new_idx = max(bank.keys(), default=0) + 1
+        src["pattern_length"] = int(src.get("pattern_length", len(src.get("steps", [])) or 16))
+        bank[new_idx] = src
+        self.instrument_selected_sequence[name] = new_idx
+        self.instrument_sequencer_memory[name] = src
+        self._refresh_sequence_selector()
+        self.reload_active_instrument_sequencer_ui()
+        self._on_live_source_changed()
+
+    def remove_sequence(self):
+        name = self._current_instrument_name()
+        bank = getattr(self, "instrument_sequence_banks", {}).setdefault(name, {})
+        if len(bank) <= 1:
+            return
+        idx = self._current_sequence_index(name)
+        bank.pop(idx, None)
+        new_idx = sorted(bank)[max(0, sorted(bank).index(idx) - 1)] if bank else 1
+        self.instrument_selected_sequence[name] = new_idx
+        self.instrument_sequencer_memory[name] = bank[new_idx]
+        self._refresh_sequence_selector()
+        self.reload_active_instrument_sequencer_ui()
+        self._on_live_source_changed()
+
+    # =====================================================================
+    # EDIT_PANELS_PER_SEQUENCE — sequence-local synth/script/patch/domain
+    # =====================================================================
+    def _panels_per_sequence_enabled(self):
+        btn = getattr(self, "btn_edit_panels_per_sequence", None)
+        return bool(btn is not None and btn.isChecked())
+
+    def _on_edit_panels_per_sequence_toggled(self, checked):
+        """Switch live panel editors between master and sequence-local storage."""
+        try:
+            name = self._current_instrument_name()
+            if checked:
+                # Leaving master mode: snapshot current live panels into the
+                # active sequence so the first ON session is not empty.
+                self._save_live_panels_to_sequence(name)
+            else:
+                # Returning to master: keep sequence overrides stored, but
+                # restore master instrument-level state into the live editors.
+                self._apply_master_panels_to_live(name)
+            self._refresh_sequence_dependent_panels()
+            print(f"[Panels] Edit panels per sequence = {'ON' if checked else 'OFF'}")
+        except Exception as exc:
+            print(f"[Panels] toggle failed: {exc}")
+
+    def _sequence_panel_slot(self, instrument_name=None, sequence_id=None):
+        """Return (and create) the panels dict for one instrument sequence."""
+        name = instrument_name or self._current_instrument_name()
+        bank = (getattr(self, "instrument_sequence_banks", {}) or {}).setdefault(name, {})
+        if sequence_id is None:
+            sequence_id = self._current_sequence_index(name)
+        mem = bank.setdefault(int(sequence_id), {})
+        panels = mem.setdefault("panels", {})
+        panels.setdefault("synth", {})
+        panels.setdefault("script", "")
+        panels.setdefault("domain", {})
+        panels.setdefault("patch", [])
+        return panels
+
+    def _capture_live_panels(self, instrument_name=None):
+        """Snapshot live master panel state for the given instrument."""
+        name = instrument_name or self._current_instrument_name()
+        synth = copy.deepcopy((getattr(self, "instrument_param_state", {}) or {}).get(name, {}) or {})
+        script = str((getattr(self, "instrument_scripts", {}) or {}).get(name, "") or "")
+        # Domain: store instrument-relevant domain tags / equations
+        domain = {}
+        engine = getattr(self, "domain_eq_engine", None)
+        if engine is not None:
+            relevant = []
+            for dom in getattr(engine, "domains", []) or []:
+                if not isinstance(dom, dict):
+                    continue
+                dname = str(dom.get("name", ""))
+                if name[:8].lower() in dname.lower() or dname.startswith("Dom::"):
+                    relevant.append(copy.deepcopy(dom))
+            domain = {"domains": relevant}
+        # Patch: incident edges for this operator
+        patch = []
+        for c in getattr(self, "patch_connections", []) or []:
+            if not isinstance(c, dict):
+                continue
+            if c.get("source") == name or c.get("target") == name:
+                patch.append(copy.deepcopy(c))
+        return {"synth": synth, "script": script, "domain": domain, "patch": patch}
+
+    def _save_live_panels_to_sequence(self, instrument_name=None, sequence_id=None):
+        if not self._panels_per_sequence_enabled() and sequence_id is None:
+            # Explicit saves from engine paths still allowed when forced via sequence_id
+            pass
+        name = instrument_name or self._current_instrument_name()
+        panels = self._sequence_panel_slot(name, sequence_id)
+        live = self._capture_live_panels(name)
+        panels["synth"] = live["synth"]
+        panels["script"] = live["script"]
+        panels["domain"] = live["domain"]
+        panels["patch"] = live["patch"]
+        return panels
+
+    def _apply_sequence_panels_to_live(self, instrument_name=None, sequence_id=None):
+        """Push sequence panel overrides into the live instrument stores / UI."""
+        name = instrument_name or self._current_instrument_name()
+        panels = self._sequence_panel_slot(name, sequence_id)
+        # Synth params
+        if not hasattr(self, "instrument_param_state") or self.instrument_param_state is None:
+            self.instrument_param_state = {}
+        if panels.get("synth"):
+            self.instrument_param_state[name] = copy.deepcopy(panels["synth"])
+        # Script
+        if not hasattr(self, "instrument_scripts") or self.instrument_scripts is None:
+            self.instrument_scripts = {}
+        if panels.get("script") is not None:
+            self.instrument_scripts[name] = str(panels.get("script") or "")
+        # Domain: merge sequence-local domains under a namespaced marker
+        engine = getattr(self, "domain_eq_engine", None)
+        seq_domains = (panels.get("domain") or {}).get("domains") or []
+        if engine is not None and seq_domains:
+            kept = [d for d in (engine.domains or []) if not (
+                isinstance(d, dict) and str(d.get("name", "")).startswith(f"seq::{name}::")
+            )]
+            for d in seq_domains:
+                dd = copy.deepcopy(d)
+                dd["name"] = f"seq::{name}::{dd.get('name', 'Dom')}"
+                dd["sequence_local"] = True
+                kept.append(dd)
+            engine.domains = kept
+        # Patch: replace only this instrument's non-user edges with sequence ones
+        if not hasattr(self, "patch_connections") or self.patch_connections is None:
+            self.patch_connections = []
+        kept_cables = [
+            c for c in self.patch_connections
+            if not isinstance(c, dict) or (
+                c.get("source") != name and c.get("target") != name
+            ) or c.get("user_defined", True)
+        ]
+        for c in panels.get("patch") or []:
+            if isinstance(c, dict):
+                kept_cables.append(copy.deepcopy(c))
+        self.patch_connections = kept_cables
+
+    def _apply_master_panels_to_live(self, instrument_name=None):
+        """No-op for data: master state is already in instrument_param_state etc.
+        Sequence overrides remain stored in banks but are not injected."""
+        name = instrument_name or self._current_instrument_name()
+        # Strip sequence-local domain overlays when returning to master mode
+        engine = getattr(self, "domain_eq_engine", None)
+        if engine is not None:
+            engine.domains = [
+                d for d in (engine.domains or [])
+                if not (isinstance(d, dict) and d.get("sequence_local"))
+            ]
+
+    def _engine_write_sequence_panels(self, source="randomizer", instrument_names=None):
+        """Canonical engines call this when Edit-panels-per-sequence is ON.
+
+        Writes generated synth/script/domain/patch into each instrument's
+        *current* sequence panel slot without touching user_owned sequences.
+        """
+        if not self._panels_per_sequence_enabled():
+            return 0
+        names = list(instrument_names or getattr(self, "instrument_names_48", []) or [])
+        written = 0
+        for i, name in enumerate(names):
+            try:
+                mem = self._current_sequence_mem(name)
+                if mem.get("user_owned"):
+                    continue  # never overwrite user sequence panels
+                panels = self._sequence_panel_slot(name)
+                # Synth snapshot from live/generated param state
+                params = dict((getattr(self, "instrument_param_state", {}) or {}).get(name, {}) or {})
+                gen = dict((getattr(self, "instrument_param_generated", {}) or {}).get(name, {}) or {})
+                for k, v in gen.items():
+                    params.setdefault(k, v)
+                panels["synth"] = copy.deepcopy(params)
+                # Script body
+                panels["script"] = str((getattr(self, "instrument_scripts", {}) or {}).get(name, "") or "")
+                # Domain tag blob for this instrument
+                engine = getattr(self, "domain_eq_engine", None)
+                if engine is not None:
+                    relevant = [
+                        copy.deepcopy(d) for d in (engine.domains or [])
+                        if isinstance(d, dict) and (
+                            name[:6].lower() in str(d.get("name", "")).lower()
+                            or str(d.get("source", "")) == source
+                        )
+                    ]
+                    panels["domain"] = {"domains": relevant[:4], "source": source}
+                # Patch edges involving this op
+                panels["patch"] = [
+                    copy.deepcopy(c) for c in (getattr(self, "patch_connections", []) or [])
+                    if isinstance(c, dict) and (c.get("source") == name or c.get("target") == name)
+                ][:6]
+                panels["engine_source"] = source
+                written += 1
+            except Exception as exc:
+                print(f"[Panels] engine write {name}: {exc}")
+        return written
+
+    def _on_sequence_selector_changed(self, combo_index):
+        if combo_index < 0 or not hasattr(self, "sequence_selector"):
+            return
+        name = self._current_instrument_name()
+        # Persist outgoing sequence panels when per-sequence editing is active.
+        prev_idx = self._current_sequence_index(name)
+        if self._panels_per_sequence_enabled():
+            try:
+                self._save_live_panels_to_sequence(name, prev_idx)
+            except Exception as _exc:
+                print(f"[Panels] save on sequence switch: {_exc}")
+        idx = int(self.sequence_selector.itemData(combo_index) or 1)
+        bank = getattr(self, "instrument_sequence_banks", {}).setdefault(name, {})
+        if idx not in bank:
+            return
+        self.instrument_selected_sequence[name] = idx
+        self.instrument_sequencer_memory[name] = bank[idx]
+        seq_len = int(bank[idx].get("pattern_length", 16))
+        self.spin_seq_length.blockSignals(True)
+        self.spin_seq_length.setValue(seq_len)
+        self.spin_seq_length.blockSignals(False)
+        self.spin_pattern_length.blockSignals(True)
+        self.spin_pattern_length.setValue(seq_len)
+        self.spin_pattern_length.blockSignals(False)
+        if self._panels_per_sequence_enabled():
+            try:
+                self._apply_sequence_panels_to_live(name, idx)
+            except Exception as _exc:
+                print(f"[Panels] load on sequence switch: {_exc}")
+        self._refresh_sequence_dependent_panels()
+
+    def _on_sequence_length_changed(self, value):
+        """Resize only the selected sequence, then refresh every dependent panel."""
+        mem = self._current_sequence_mem()
+        n = max(1, min(1024, int(value)))
+        mem["pattern_length"] = n
+        self._ensure_seq_mem_length(mem, n)
+        # Keep the hidden compatibility alias synchronized without a second UI concept.
+        if hasattr(self, "spin_pattern_length"):
+            self.spin_pattern_length.blockSignals(True)
+            self.spin_pattern_length.setValue(n)
+            self.spin_pattern_length.blockSignals(False)
+        if hasattr(self, "slider_pkp_boost_steps"):
+            self.slider_pkp_boost_steps.blockSignals(True)
+            self.slider_pkp_boost_steps.setRange(1, n)
+            self.slider_pkp_boost_steps.setValue(min(self.slider_pkp_boost_steps.value(), n))
+            self.slider_pkp_boost_steps.blockSignals(False)
+            self._on_pkp_boost_steps_changed(self.slider_pkp_boost_steps.value())
+        self.rebuild_sequencer_steps(n)
+        self._refresh_sequence_selector()
+        self._refresh_sequence_dependent_panels()
+        self._on_live_source_changed()
+
+    def _refresh_sequence_dependent_panels(self):
+        """One authoritative refresh path for sequence selection/resize."""
+        try:
+            self._refresh_sequence_selector()
+        except Exception:
+            pass
+        try:
+            self.reload_active_instrument_sequencer_ui()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "step_editor_popup") and self.step_editor_popup.isVisible():
+                self._position_step_editor_popup()
+        except Exception:
+            pass
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def _on_pattern_length_changed(self, value):
+        # Compatibility entry point for saved projects/legacy callers.
+        self._on_sequence_length_changed(value)
+
+    def _canonical_sequence_reconcile(self, trigger_source=None):
+        """Create/remove only engine-owned numbered sequences; never delete user sequences."""
+        banks = getattr(self, "instrument_sequence_banks", {}) or {}
+        names = list(getattr(self, "instrument_names_48", []) or [])
+        active = set(self._active_engine_sources()) if hasattr(self, "_active_engine_sources") else set()
+        if getattr(self, "goava_active", False):
+            active.add("goava")
+        if not names:
+            return
+        # One deterministic sequence per active canonical per instrument.
+        for name in names:
+            bank = banks.setdefault(name, {})
+            if not bank:
+                bank[1] = self.instrument_sequencer_memory.get(name, {"steps": [], "pattern_length": 16})
+            for source in sorted(active):
+                owner = f"canonical:{source}"
+                existing = [idx for idx, mem in bank.items() if isinstance(mem, dict) and mem.get("canonical_owner") == owner]
+                if not existing:
+                    idx = max(bank.keys(), default=0) + 1
+                    n = int(bank.get(1, {}).get("pattern_length", 16) or 16)
+                    n = max(1, min(1024, n))
+                    mem = {
+                        "sequence_id": idx, "pattern_length": n, "canonical_owner": owner, "user_owned": False,
+                        "steps": [False] * n, "gates": [True] * n, "amplitudes": [1.0] * n,
+                        "pitches": [1.0] * n, "probabilities": [100] * n, "offsets": [0.0] * n,
+                        "engine_step_sources": {},
+                    }
+                    bank[idx] = mem
+                idx = min(existing + [max(bank.keys())]) if existing else max(k for k,v in bank.items() if isinstance(v,dict) and v.get("canonical_owner")==owner)
+                mem = bank[idx]
+                # Deterministic canonical sequence content; never touch user-owned slots.
+                seed = _safe_int_seed(self.get_numeric_seed())
+                channel = sum(ord(c) for c in owner) & 0xFFFF
+                rng = np.random.default_rng((seed ^ channel ^ (int.from_bytes(hashlib.sha256(name.encode("utf-8")).digest()[:4], "big"))) & 0x7fffffff)
+                n = int(mem.get("pattern_length", 16) or 16)
+                self._ensure_seq_mem_length(mem, n)
+                for j in range(n):
+                    if mem.get("touched") and j in mem["touched"]:
+                        continue
+                    if source == "goava":
+                        mem["steps"][j] = True
+                        mem["pitches"][j] = float(np.clip(0.86 + 0.28 * ((j + seed) % 7) / 6.0, 0.5, 1.5))
+                    else:
+                        threshold = 0.34 + 0.18 * math.sin((j + 1) * MEUM_INV + channel * 1e-4)
+                        if source == "euclidean":
+                            mem["steps"][j] = bool(((j * max(2, int(2 + (channel % 5))) + channel) % n) < max(2, n // 4))
+                        else:
+                            mem["steps"][j] = bool(rng.random() > threshold)
+                    mem["amplitudes"][j] = float(0.35 + 0.6 * ((math.sin((j + 1) * MEUM + channel * 0.001) + 1.0) * 0.5))
+                    mem["offsets"][j] = float(np.clip(0.22 * math.sin((j + 1) * MEUM_INV + seed * 1e-5), -0.5, 0.5))
+                    mem.setdefault("engine_step_sources", {}).setdefault(int(j), set()).add(owner)
+            # Remove only this engine's orphaned sequence when the canonical turns off.
+            for idx in list(bank.keys()):
+                mem = bank.get(idx)
+                if not isinstance(mem, dict):
+                    continue
+                owner = mem.get("canonical_owner")
+                if owner and owner.startswith("canonical:") and owner.split(":", 1)[1] not in active:
+                    bank.pop(idx, None)
+            if not bank:
+                bank[1] = self.instrument_sequencer_memory.get(name, {"pattern_length": 16})
+            selected = int(getattr(self, "instrument_selected_sequence", {}).get(name, min(bank)))
+            if selected not in bank:
+                selected = min(bank)
+            self.instrument_selected_sequence[name] = selected
+            self.instrument_sequencer_memory[name] = bank[selected]
+        self._refresh_sequence_dependent_panels()
+
+    def _ensure_sequence_banks_after_resize(self):
+        banks = getattr(self, "instrument_sequence_banks", {}) or {}
+        for name in getattr(self, "instrument_names_48", []):
+            if name not in banks:
+                banks[name] = {1: self.instrument_sequencer_memory.get(name, {})}
+            if name not in self.instrument_selected_sequence:
+                self.instrument_selected_sequence[name] = min(banks[name])
+            idx = self.instrument_selected_sequence[name]
+            self.instrument_sequencer_memory[name] = banks[name].get(idx, next(iter(banks[name].values())))
+
     def _ensure_seq_mem_length(self, mem, count):
         """Grow sequencer arrays to `count` without shrinking or wiping existing entries."""
         for key, default in (
@@ -10917,6 +12737,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             ("pitches", 1.0),
             ("gates", True),
             ("probabilities", 100),
+            ("offsets", 0.0),
         ):
             if key not in mem:
                 mem[key] = [default] * count
@@ -10989,6 +12810,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.slider_step_pitch.setValue(int(round(pitch * 100)))
             self.slider_step_pitch.blockSignals(False)
             self.lbl_step_pitch.setText(f"{pitch:.2f}×")
+        offset = float(mem.get("offsets", [0.0] * len(mem.get("steps", [])))[s_idx]) if s_idx < len(mem.get("offsets", [])) else 0.0
+        if hasattr(self, 'spin_step_offset'):
+            self.spin_step_offset.blockSignals(True)
+            self.spin_step_offset.setValue(float(np.clip(offset, -0.5, 0.5)))
+            self.spin_step_offset.blockSignals(False)
 
         # A normal click never invokes Randomizer/Phase-Locker or changes other pads.
         self.reload_active_instrument_sequencer_ui()
@@ -11045,7 +12871,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Amp is velocity / step-trigger blend amount into painted together steps
         if mem["steps"][s] and s < len(self.seq_step_buttons):
             pitch = mem["pitches"][s] if s < len(mem.get("pitches", [])) else 1.0
-            self.seq_step_buttons[s].setText(f"Pad {s+1}\nA:{val/100:.2f} P:{pitch:.2f}×")
+            offset = float(mem.get("offsets", [0.0] * len(mem.get("steps", [])))[s]) if s < len(mem.get("offsets", [])) else 0.0
+            self.seq_step_buttons[s].setText(f"Pad {s+1}\nA:{val/100:.2f} P:{pitch:.2f}×\nO:{offset:+.2f} step")
 
     def _on_step_pitch_slider(self, val):
         ratio = val / 100.0
@@ -11060,7 +12887,24 @@ class MathematiciansGrooveboxApp(QMainWindow):
         mem["pitches"][s] = ratio
         if s < len(self.seq_step_buttons):
             amp = mem["amplitudes"][s] if s < len(mem["amplitudes"]) else 1.0
-            self.seq_step_buttons[s].setText(f"Pad {s+1}\nA:{amp:.2f} P:{ratio:.2f}×")
+            offset = float(mem.get("offsets", [0.0] * len(mem.get("steps", [])))[s]) if s < len(mem.get("offsets", [])) else 0.0
+            self.seq_step_buttons[s].setText(f"Pad {s+1}\nA:{amp:.2f} P:{ratio:.2f}×\nO:{offset:+.2f} step")
+
+    def _on_step_offset_changed(self, val):
+        if self.selected_step_idx is None:
+            return
+        curr_i = self.instrument_selector_dropdown.currentText()
+        mem = self.instrument_sequencer_memory[curr_i]
+        s = self.selected_step_idx
+        self._ensure_seq_mem_length(mem, s + 1)
+        mem["offsets"][s] = float(np.clip(val, -0.5, 0.5))
+        if s < len(self.seq_step_buttons):
+            amp = mem["amplitudes"][s] if s < len(mem["amplitudes"]) else 1.0
+            pitch = mem["pitches"][s] if s < len(mem["pitches"]) else 1.0
+            self.seq_step_buttons[s].setText(
+                f"Pad {s+1}\nA:{amp:.2f} P:{pitch:.2f}×\nO:{mem['offsets'][s]:+.2f} step"
+            )
+        self._mark_step_touched(mem, s)
 
     def _on_euclidean_live_toggled(self, checked):
         # Keep persistent :checked stylesheet — never clear to "" (would lose OFF look).
@@ -11072,12 +12916,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.btn_idealize_rhythm.blockSignals(False)
             return
         if checked:
+            self._canonical_sequence_reconcile("euclidean")
             self._apply_live_engine_once("euclidean")
+            if getattr(self, "goava_active", False):
+                self._apply_goava_to_canonical_playlist()
             self.btn_idealize_rhythm.setText("✨ Euclidean Live Lock · ON")
+            self._canonical_sequence_reconcile("euclidean")
         else:
             self._live_euclid_timer.stop()
             self.btn_idealize_rhythm.setText("✨ Euclidean Live Lock")
-            self._deactivate_engine_generated_content(source_label="EuclideanLiveLock")
+            self._deactivate_engine_generated_content(source_label="EuclideanLiveLock", source_key="euclidean")
+            self._canonical_sequence_reconcile("euclidean")
 
     def _on_seeded_live_toggled(self, checked):
         if hasattr(self, "_style_toggle_randomizer"):
@@ -11088,12 +12937,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.btn_seeded_randomize.blockSignals(False)
             return
         if checked:
+            self._canonical_sequence_reconcile("seeded")
             self._apply_live_engine_once("seeded")
+            if getattr(self, "goava_active", False):
+                self._apply_goava_to_canonical_playlist()
             self.btn_seeded_randomize.setText("🎲 Seeded Live Randomizer · ON")
+            self._canonical_sequence_reconcile("seeded")
         else:
             self._live_seeded_timer.stop()
             self.btn_seeded_randomize.setText("🎲 Seeded Live Randomizer")
-            self._deactivate_engine_generated_content(source_label="SeededLiveRandomizer")
+            self._deactivate_engine_generated_content(source_label="SeededLiveRandomizer", source_key="seeded")
+            self._canonical_sequence_reconcile("seeded")
 
     def _on_user_program_only_toggled(self, checked):
         if checked:
@@ -11152,13 +13006,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 table_touches[table_attr] = set(touched)
 
         seq = {}
-        mems = getattr(self, "instrument_sequencer_memory", None) or {}
-        for name, mem in mems.items():
-            if not isinstance(mem, dict):
-                continue
-            touched = mem.get("touched")
-            if touched:
-                seq[name] = copy.deepcopy(mem)
+        banks = getattr(self, "instrument_sequence_banks", {}) or {}
+        for name, bank in banks.items():
+            for idx, mem in (bank or {}).items():
+                if isinstance(mem, dict) and mem.get("touched"):
+                    seq[f"{name}::{int(idx)}"] = copy.deepcopy(mem)
+        if not seq:
+            mems = getattr(self, "instrument_sequencer_memory", None) or {}
+            for name, mem in mems.items():
+                if isinstance(mem, dict) and mem.get("touched"):
+                    seq[name] = copy.deepcopy(mem)
 
         snap = {
             "playlist_rows": playlist_rows,
@@ -11239,9 +13096,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
             table.playlist_user_touched = set(touched)
 
         mems = getattr(self, "instrument_sequencer_memory", None)
+        banks = getattr(self, "instrument_sequence_banks", {}) or {}
         if isinstance(mems, dict):
-            for name, mem in (snap.get("sequencer") or {}).items():
-                mems[name] = copy.deepcopy(mem)
+            for key, mem in (snap.get("sequencer") or {}).items():
+                if "::" in str(key):
+                    name, idx_txt = str(key).rsplit("::", 1)
+                    try:
+                        idx = int(idx_txt)
+                    except Exception:
+                        continue
+                    banks.setdefault(name, {})[idx] = copy.deepcopy(mem)
+                    if int((getattr(self, "instrument_selected_sequence", {}) or {}).get(name, 1)) == idx:
+                        mems[name] = banks[name][idx]
+                else:
+                    mems[key] = copy.deepcopy(mem)
+        self.instrument_sequence_banks = banks
 
         self._push_restored_playlist_to_table()
         try:
@@ -11303,12 +13172,41 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 _s("multi_seq"),
                 _s("coverage"),
                 _s("blend_partner"),
+                _s("goava_sequence"),
             ]
             for c, text in enumerate(cells):
                 if c < table.columnCount():
                     table.set_cell_item(r, c, QTableWidgetItem(text))
 
-    def _deactivate_engine_generated_content(self, source_label="engine"):
+    def _record_engine_step_ownership(self, source):
+        """Remember which non-user steps an engine currently contributes."""
+        store = getattr(self, "_engine_step_ownership", None)
+        if store is None:
+            store = self._engine_step_ownership = {}
+        owned = set()
+        for name, mem in (getattr(self, "instrument_sequencer_memory", {}) or {}).items():
+            if not isinstance(mem, dict):
+                continue
+            touched = set(mem.get("touched", ()) or ())
+            steps = mem.get("steps", []) or []
+            for idx, on in enumerate(steps):
+                if on and idx not in touched:
+                    owned.add((str(name), int(idx)))
+        store[str(source)] = owned
+
+    def _active_engine_sources(self):
+        active = set()
+        pairs = (("randomizer", "btn_local_randomize"), ("phase_lock", "btn_local_phase_lock"),
+                 ("euclidean", "btn_idealize_rhythm"), ("seeded", "btn_seeded_randomize"))
+        for key, attr in pairs:
+            btn = getattr(self, attr, None)
+            if btn is not None and btn.isChecked():
+                active.add(key)
+        if bool(getattr(self, "goava_active", False)):
+            active.add("goava")
+        return active
+
+    def _deactivate_engine_generated_content(self, source_label="engine", source_key=None):
         """
         Reverse the non-destructive material an additive engine (Randomizer,
         Phase-Locker, Euclidean Live Lock, Seeded Live Randomizer) painted
@@ -11335,46 +13233,82 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """
         cleared_steps = 0
         mems = getattr(self, "instrument_sequencer_memory", None) or {}
-        for mem in mems.values():
+        ownership = getattr(self, "_engine_step_ownership", {}) or {}
+        key_map = {"Randomizer":"randomizer", "PhaseLock":"phase_lock", "EuclideanLiveLock":"euclidean", "SeededLiveRandomizer":"seeded"}
+        remove_key = source_key or key_map.get(source_label)
+        owned = ownership.get(remove_key, set()) if remove_key else set().union(*ownership.values()) if ownership else set()
+        active_sources = self._active_engine_sources()
+        for name, idx in list(owned):
+            mem = mems.get(name)
             if not isinstance(mem, dict):
                 continue
-            steps = mem.get("steps")
-            if not steps:
+            touched = set(mem.get("touched", ()) or ())
+            if idx in touched:
                 continue
-            touched = mem.get("touched", ())
-            amps = mem.get("amplitudes", [])
-            pitches = mem.get("pitches", [])
-            probs = mem.get("probabilities", [])
-            for s in range(len(steps)):
-                if s in touched:
+            owners = mem.get("engine_step_sources", {}).get(int(idx), set())
+            if owners and remove_key:
+                owners = set(owners)
+                owners.discard(remove_key)
+                mem.setdefault("engine_step_sources", {})[int(idx)] = owners
+                if owners:
                     continue
-                if steps[s]:
-                    cleared_steps += 1
-                steps[s] = False
-                if s < len(amps):
-                    amps[s] = 1.0
-                if s < len(pitches):
-                    pitches[s] = 1.0
-                if s < len(probs):
-                    probs[s] = 100
+            elif any((name, idx) in ownership.get(src, set()) for src in active_sources if src != remove_key):
+                continue
+            steps = mem.get("steps", [])
+            if idx >= len(steps):
+                continue
+            if steps[idx]:
+                cleared_steps += 1
+            steps[idx] = False
+            for key in ("amplitudes", "pitches"):
+                arr = mem.get(key, [])
+                if idx < len(arr):
+                    arr[idx] = 1.0
+            probs = mem.get("probabilities", [])
+            if idx < len(probs):
+                probs[idx] = 100
+        if remove_key:
+            ownership.pop(remove_key, None)
+
+        # GOAVA has a dedicated contribution field and must disappear cleanly
+        # without touching userdata or other canonical contributions.
+        if remove_key == "goava":
+            for entry in getattr(self, "master_playlist_data", []) or []:
+                if isinstance(entry, dict):
+                    for key in ("goava_sequence","goava_frequency","goava_pitch","goava_seed",
+                                "goava_unison_weight","goava_active","goava_generated_by_engine"):
+                        entry.pop(key, None)
+                    ops = [x for x in (entry.get("operators") or []) if str(x).strip() != "GOAVA"]
+                    entry["operators"] = ops
+                    entry["operators_csv"] = ", ".join(ops or entry.get("user_instances", []))
+                    entry["multi_seq"] = ", ".join(
+                        x for x in str(entry.get("multi_seq","")).split(",") if x.strip() and x.strip() != "GOAVA"
+                    )
 
         cleared_rows = 0
         rows = getattr(self, "master_playlist_data", None) or []
         for entry in rows:
-            if not isinstance(entry, dict) or not entry.get("generated_by_engine"):
+            if not isinstance(entry, dict):
                 continue
+            contribs = entry.get("engine_contributions")
+            if not isinstance(contribs, dict):
+                continue
+            if remove_key:
+                contribs.pop(remove_key, None)
+            else:
+                contribs.clear()
             users = list(entry.get("user_instances") or [])
-            entry.clear()
-            if users:
-                entry["user_instances"] = users
-                entry["operators_csv"] = ", ".join(users)
-                entry["operator"] = users[0]
-                entry["operators"] = users
+            self._reconcile_engine_playlist_row(entry, users)
+            if not contribs:
+                entry.pop("engine_contributions", None)
             cleared_rows += 1
 
         automation = getattr(self, "playlist_automation", None) or []
         for i, auto in enumerate(automation):
-            if isinstance(auto, dict) and auto.get("generated_by_engine"):
+            if not (isinstance(auto, dict) and auto.get("generated_by_engine")):
+                continue
+            mode = str(auto.get("mode", ""))
+            if remove_key is None or f"engine:{remove_key}" in mode or mode.endswith(str(remove_key)):
                 automation[i] = {}
 
         self._engine_generated_playlist_rows = set()
@@ -11446,6 +13380,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._live_engine_update_guard = True
         self._composition_generation_guard = True
         try:
+            self._active_engine_write_source = str(which)
             if which == "euclidean":
                 self.apply_euclidean_and_idealized_rhythms()
             else:
@@ -11453,6 +13388,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception as exc:
             print(f"[LiveEngine:{which}] {type(exc).__name__}: {exc}")
         finally:
+            self._active_engine_write_source = None
             self._live_engine_update_guard = False
             self._composition_generation_guard = False
             self._restore_global_effect_sliders(snap)
@@ -11472,6 +13408,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # _apply_live_engine_once(force=True) owns the transaction guard so that
         # nested playlist paint can still run and fill all 10 columns.
         try:
+            if getattr(self, "goava_active", False):
+                self.goava_note_events = self._build_goava_composition()
+                self.goava_seed_values = [ev["seed"] for ev in self.goava_note_events]
+                self.goava_steps = [bool(ev["enabled"]) for ev in self.goava_note_events]
+                self.goava_pitches = [float(ev["pitch"]) for ev in self.goava_note_events]
+                self.goava_frequencies = [float(ev["frequency"]) for ev in self.goava_note_events]
+                self.goava_raw_values = [float(ev["raw"]) for ev in self.goava_note_events]
+                self._apply_goava_to_canonical_playlist()
             if (
                 getattr(self, "btn_idealize_rhythm", None)
                 and self.btn_idealize_rhythm.isChecked()
@@ -11493,6 +13437,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
         elif which == "seeded" and self.btn_seeded_randomize.isChecked():
             self.apply_seeded_harmonic_randomization()
 
+    def _serialize_sequence_memory(self, mem):
+        out = copy.deepcopy(mem if isinstance(mem, dict) else {})
+        if isinstance(out.get("touched"), set):
+            out["touched"] = sorted(out["touched"])
+        srcs = out.get("engine_step_sources")
+        if isinstance(srcs, dict):
+            out["engine_step_sources"] = {
+                str(k): sorted(v) if isinstance(v, (set, list, tuple)) else []
+                for k, v in srcs.items()
+            }
+        return out
+
     def save_project_dialog(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save EQR Project", "", "EQR Project (*.json)")
         if not path:
@@ -11502,15 +13458,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "seed": self._seed_text() if hasattr(self, 'input_seed_val') else "",
             "bpm": self.spin_bpm.value() if hasattr(self, 'spin_bpm') else 120,
             "seq_length": int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16,
-            "playlist_rows": int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else 32,
-            "base_frequency": float(self.spin_base_frequency.value()) if hasattr(self, 'spin_base_frequency') else 432.0,
+            "playlist_rows": int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else 64,
+            "base_frequency": float(self.spin_base_frequency.value()) if hasattr(self, 'spin_base_frequency') else 216.0,
             "global_convolve": float(self.spin_global_convolve.value()) if hasattr(self, 'spin_global_convolve') else 0.0,
             # USER_TOUCHED_TRACKING: 'touched' is stored as a set() in memory
             # (for fast membership checks) but JSON has no set type, so it is
             # serialized as a sorted list here and restored as a set on load.
             "instrument_sequencer_memory": {
-                name: {**m, "touched": sorted(m.get("touched", set()))}
+                name: self._serialize_sequence_memory(m)
                 for name, m in self.instrument_sequencer_memory.items()
+            },
+            "instrument_sequence_banks": {
+                name: {
+                    str(idx): self._serialize_sequence_memory(mem)
+                    for idx, mem in bank.items()
+                }
+                for name, bank in (getattr(self, "instrument_sequence_banks", {}) or {}).items()
+            },
+            "instrument_selected_sequence": {
+                name: int(idx) for name, idx in (getattr(self, "instrument_selected_sequence", {}) or {}).items()
             },
             "master_playlist_data": getattr(self, 'master_playlist_data', []),
             "playlist_automation": getattr(self, 'playlist_automation', []),
@@ -11540,9 +13506,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if hasattr(self, 'spin_seq_length'):
                 self.spin_seq_length.setValue(int(data.get("seq_length", 16)))
             if hasattr(self, 'spin_playlist_length'):
-                self.spin_playlist_length.setValue(int(data.get("playlist_rows", 32)))
+                self.spin_playlist_length.setValue(int(data.get("playlist_rows", 64)))
             if hasattr(self, 'spin_base_frequency'):
-                self.spin_base_frequency.setValue(float(data.get("base_frequency", 432.0)))
+                self.spin_base_frequency.setValue(float(data.get("base_frequency", 216.0)))
             if hasattr(self, 'slider_global_convolve'):
                 self.slider_global_convolve.setValue(int(round(float(data.get("global_convolve", 0.0)) * 100.0)))
             mem = data.get("instrument_sequencer_memory", {})
@@ -11555,7 +13521,26 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 for m in mem.values():
                     if "touched" in m:
                         m["touched"] = set(m["touched"])
+                    if "engine_step_sources" in m:
+                        m["engine_step_sources"] = {
+                            int(k): set(v) for k, v in (m.get("engine_step_sources") or {}).items()
+                        }
                 self.instrument_sequencer_memory.update(mem)
+            saved_banks = data.get("instrument_sequence_banks", {})
+            if saved_banks:
+                self.instrument_sequence_banks = {}
+                for name, bank in saved_banks.items():
+                    self.instrument_sequence_banks[name] = {}
+                    for idx, smem in bank.items():
+                        smem["touched"] = set(smem.get("touched", []))
+                        smem["engine_step_sources"] = {
+                            int(k): set(v) for k, v in (smem.get("engine_step_sources") or {}).items()
+                        }
+                        self.instrument_sequence_banks[name][int(idx)] = smem
+                self.instrument_selected_sequence = {
+                    name: int(idx) for name, idx in data.get("instrument_selected_sequence", {}).items()
+                }
+                self._ensure_sequence_banks_after_resize()
             self.master_playlist_data = data.get("master_playlist_data", [])
             self.playlist_automation = data.get("playlist_automation", [])
             if hasattr(self, 'instrument_scripts'):
@@ -11861,7 +13846,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if self._step_has_net_effect(mem, s):
                     amp = float(mem.get("amplitudes", [1.0])[s]) if s < len(mem.get("amplitudes", [])) else 1.0
                     parts.append(f"{name}:{s}:{amp:.2f}")
-        return abs(hash("|".join(parts) or "empty")) % (10**12)
+        return int.from_bytes(hashlib.sha256(("|".join(parts) or "empty").encode("utf-8")).digest()[:8], "big") % (10**12)
 
     def _program_has_net_effect(self):
         """True only if some instrument both appears on the playlist and has audible steps."""
@@ -12129,19 +14114,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
         preserved = 0
 
         for i, name in enumerate(self.instrument_names_48):
-            mem = self.instrument_sequencer_memory[name]
-            self._ensure_seq_mem_length(mem, count)
-            user_mask = self._user_pattern_mask(mem, count, instrument_name=name)
+            mem = self._current_sequence_mem(name) if hasattr(self, "_current_sequence_mem") else self.instrument_sequencer_memory[name]
+            pcount = int(mem.get("pattern_length", count))
+            self._ensure_seq_mem_length(mem, pcount)
+            user_mask = self._user_pattern_mask(mem, pcount, instrument_name=name)
 
             # Per-instrument Euclidean pulse count (golden-ish, seed-stable)
             pulses = max(2, int((i * MEUM_CONSTANT + (seed % 5) + 3) % 7) + 2)
-            pulses = min(pulses, count)
-            euclidean = [((s * pulses) % count) < pulses for s in range(count)]
+            pulses = min(pulses, pcount)
+            euclidean = [((s * pulses) % pcount) < pulses for s in range(pcount)]
 
             # Spectral opposite of user density: prefer filling where user is sparse
-            user_density = sum(user_mask) / max(count, 1)
+            user_density = sum(user_mask) / max(pcount, 1)
 
-            for s in range(count):
+            for s in range(pcount):
                 if user_mask[s]:
                     # Preserve user step; may only gently raise amp toward phase-lock envelope
                     preserved += 1
@@ -12158,12 +14144,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
                 if is_eucl or complement:
                     mem["steps"][s] = True
+                    mem.setdefault("engine_step_sources", {}).setdefault(int(s), set()).add(getattr(self, "_active_engine_write_source", "euclidean"))
                     base_amp = 0.55 + 0.35 * abs(np.sin(s * np.pi / count + i * 0.1))
                     if complement:
                         base_amp *= 0.45  # softer opposite
                     mem["amplitudes"][s] = float(np.clip(base_amp, 0.15, 1.0))
                     # Sporadic spectrum commutation: slightly lower probability on complements
                     mem["probabilities"][s] = 100 if is_eucl else int(rng.integers(55, 85))
+                    mem["offsets"][s] = float(np.clip(
+                        0.18 * math.sin((s + 1) * MEUM_INV + i * MEUM_NORM)
+                        + (float(rng.uniform(-0.08, 0.08)) if complement else 0.0),
+                        -0.5, 0.5
+                    ))
                     filled += 1
                 # else leave False / untouched
 
@@ -12184,6 +14176,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self._sync_playlist_paint_table_from_memory()
             except Exception:
                 pass
+        self._record_engine_step_ownership("euclidean")
         self.reload_active_instrument_sequencer_ui()
         print(
             f"[Euclidean Phase-Lock] Additive fill complete. "
@@ -12273,22 +14266,23 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 wf_engine.compute_wavefield()
 
         for i, name in enumerate(self.instrument_names_48):
-            mem = self.instrument_sequencer_memory[name]
-            self._ensure_seq_mem_length(mem, count)
-            user_mask = self._user_pattern_mask(mem, count, instrument_name=name)
+            mem = self._current_sequence_mem(name) if hasattr(self, "_current_sequence_mem") else self.instrument_sequencer_memory[name]
+            pcount = int(mem.get("pattern_length", count))
+            self._ensure_seq_mem_length(mem, pcount)
+            user_mask = self._user_pattern_mask(mem, pcount, instrument_name=name)
 
             # Extract user carrier pattern (list of active indices)
-            user_hits = [s for s in range(count) if user_mask[s] and mem["steps"][s]]
+            user_hits = [s for s in range(pcount) if user_mask[s] and mem["steps"][s]]
             user_amps = [mem["amplitudes"][s] for s in user_hits] if user_hits else [0.7]
 
             # Fractal scale factors from seed (self-similar echoes of the carrier)
             scales = [1]
             for k in range(1, 4):
                 seed_bits = _safe_int_seed(numeric_seed)
-                sc = int(round(count / (2 ** k) * (1.0 + ((seed_bits >> k) % 5) * 0.05))) or 1
-                if sc not in scales and sc < count:
+                sc = int(round(pcount / (2 ** k) * (1.0 + ((seed_bits >> k) % 5) * 0.05))) or 1
+                if sc not in scales and sc < pcount:
                     scales.append(sc)
-            for s in range(count):
+            for s in range(pcount):
                 if user_mask[s]:
                     preserved_steps += 1
                     continue  # hard preserve
@@ -12299,7 +14293,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if user_hits:
                     for sc in scales:
                         # fold s into a carrier-relative index
-                        src = user_hits[(s * sc + (numeric_seed % count)) % len(user_hits)]
+                        src = user_hits[(s * sc + (numeric_seed % max(pcount, 1))) % len(user_hits)]
                         # stochastic gate — denser when seed modulus is high, but still sparse
                         gate_p = 0.22 + 0.15 * ((numeric_seed + i + sc) % 5) / 5.0
                         # Wavefield communication: bias gate toward Euclidean + seed-harmonic slots
@@ -12340,11 +14334,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
                 if echo_on:
                     mem["steps"][s] = True
+                    mem.setdefault("engine_step_sources", {}).setdefault(int(s), set()).add(getattr(self, "_active_engine_write_source", "seeded"))
                     mem["amplitudes"][s] = float(np.clip(echo_amp, 0.12, 1.0))
                     mem["probabilities"][s] = int(rng.integers(70, 100))
                     if s < len(mem.get("pitches", [])):
                         ctx = self._contextual_numerology(name, s, s) if hasattr(self, "_contextual_numerology") else 0.5
                         mem["pitches"][s] = float(np.clip(0.85 + 0.35 * ctx + rng.uniform(-0.06, 0.06), 0.5, 1.5))
+                    mem["offsets"][s] = float(np.clip(
+                        0.24 * math.sin((s + 1) * MEUM + i * PHI)
+                        + rng.uniform(-0.12, 0.12),
+                        -0.5, 0.5
+                    ))
                     filled_steps += 1
 
             # Scripts: only write if missing or still the stock auto-template
@@ -12383,7 +14383,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self._sync_playlist_paint_table_from_memory()
         except Exception as _pl_exc:
             print(f"[Seeded Harmonic Randomizer] playlist paint skipped: {_pl_exc}")
+        self._record_engine_step_ownership("seeded")
         self.reload_active_instrument_sequencer_ui()
+        if hasattr(self, "_engine_write_sequence_panels"):
+            try:
+                self._engine_write_sequence_panels(source="seeded")
+            except Exception as _pe:
+                print(f"[Seeded] sequence panel write skipped: {_pe}")
         print(
             f"[Seeded Harmonic Randomizer] Additive fractal fill. "
             f"Preserved≈{preserved_steps}, filled={filled_steps}, scripts_updated={scripts_written}. "
@@ -12814,8 +14820,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         # Rebuild sequencer memory: keep locked state, init free
         old_mem = dict(getattr(self, "instrument_sequencer_memory", {}) or {})
+        old_banks = copy.deepcopy(getattr(self, "instrument_sequence_banks", {}) or {})
+        old_selected = dict(getattr(self, "instrument_selected_sequence", {}) or {})
         seq_len = int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else 48
         new_mem = {}
+        new_banks = {}
+        new_selected = {}
         for i, name in enumerate(final_names):
             if name in old_mem and name in locked:
                 new_mem[name] = old_mem[name]
@@ -12829,7 +14839,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     "amplitudes": [1.0] * seq_len,
                     "pitches": [1.0] * seq_len,
                     "probabilities": [100] * seq_len,
+                    "offsets": [0.0] * seq_len,
                 }
+            # Preserve every numbered sequence for surviving instruments.
+            if name in old_banks and old_banks[name]:
+                new_banks[name] = old_banks[name]
+                new_selected[name] = int(old_selected.get(name, min(old_banks[name])))
+            else:
+                new_mem[name].setdefault("pattern_length", seq_len)
+                new_banks[name] = {1: new_mem[name]}
+                new_selected[name] = 1
+
             # Apply harmonic spacing to free (unlocked) pitch base via param state
             if name not in locked:
                 params = dict((getattr(self, "instrument_param_state", {}) or {}).get(name, {}) or {})
@@ -12839,7 +14859,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.instrument_param_state[name] = params
 
         self.instrument_names_48 = final_names
-        self.instrument_sequencer_memory = new_mem
+        self.instrument_sequence_banks = new_banks
+        self.instrument_selected_sequence = new_selected
+        self.instrument_sequencer_memory = {
+            name: new_banks[name].get(new_selected.get(name, 1), next(iter(new_banks[name].values())))
+            for name in final_names
+        }
         # Refresh scripts for new names
         if not hasattr(self, "instrument_scripts") or self.instrument_scripts is None:
             self.instrument_scripts = {}
@@ -12864,7 +14889,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Video synth engine layer count
         if hasattr(self, "video_synth_engine") and self.video_synth_engine is not None:
             try:
-                self.video_synth_engine.n = new_count
+                self.video_synth_engine.set_instrument_count(new_count, smooth=True)
             except Exception:
                 pass
         # ENSEMBLE_RESCALE_PLAYLIST_REFACTOR: a resize can drop instrument
@@ -12873,12 +14898,68 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # this, playlist rows/automation kept pointing at operators that no
         # longer exist in instrument_names_48 after the resize.
         self._refactor_playlist_for_instrument_rescale(old_names, final_names)
+        self._reconvolve_free_synths_for_ensemble_resize(old_names, final_names, locked)
+        self._canonical_sequence_reconcile("ensemble_resize")
+        self._recompose_active_canonicals_after_resize()
         if hasattr(self, "reload_active_instrument_sequencer_ui"):
             try:
                 self.reload_active_instrument_sequencer_ui()
             except Exception:
                 pass
         print(f"[Synths] Resized to {new_count}: {final_names[:6]}{'…' if new_count > 6 else ''}")
+
+    def _reconvolve_free_synths_for_ensemble_resize(self, old_names, final_names, locked):
+        """Freshly reconvolve/rewrite every non-user voice before a resize recompose."""
+        state = getattr(self, "instrument_reconvolve_state", {}) or {}
+        self.instrument_reconvolve_state = state
+        seed = _safe_int_seed(self.get_numeric_seed()) if hasattr(self, "get_numeric_seed") else 1
+        carrier = self._resample_carrier(512, 44100) if hasattr(self, "_resample_carrier") else None
+        if carrier is None:
+            t = np.arange(512, dtype=np.float64) / 44100.0
+            base = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 216.0
+            carrier = (np.sin(2*np.pi*base*t) + 0.5*np.sin(2*np.pi*base*MEUM*t)).astype(np.float32)
+        spec = np.abs(np.fft.rfft(carrier * np.hanning(carrier.size)))
+        norm = float(np.max(spec) + 1e-9)
+        for i, name in enumerate(final_names):
+            if name in locked:
+                continue
+            ratio = float(harmonic_spacing_ratios(max(2, len(final_names)))[i % len(harmonic_spacing_ratios(max(2, len(final_names))))])
+            params = getattr(self, "instrument_param_state", {}).setdefault(name, {})
+            params["tuning_ratio"] = ratio
+            params["reconvolve_seed"] = int(seed)
+            params["reconvolve_generation"] = int(getattr(self, "_composition_generation_counter", 0) + 1)
+            params["reconvolve_spectral_centroid"] = float(np.sum(np.arange(spec.size) * spec) / (np.sum(spec) * max(spec.size - 1, 1)))
+            params["reconvolve_meum"] = float(MEUM)
+            state[name] = {"seed": int(seed), "generation": params["reconvolve_generation"], "carrier_norm": norm, "fresh": True}
+
+    def _recompose_active_canonicals_after_resize(self):
+        """Force a fresh canonical rewrite after ensemble expansion or contraction."""
+        if getattr(self, "_composition_generation_guard", False):
+            return
+        active = []
+        if getattr(self, "btn_local_randomize", None) and self.btn_local_randomize.isChecked():
+            active.append(("randomize", "randomize"))
+        if getattr(self, "btn_local_phase_lock", None) and self.btn_local_phase_lock.isChecked():
+            active.append(("phase_lock", "phase_lock"))
+        if getattr(self, "btn_idealize_rhythm", None) and self.btn_idealize_rhythm.isChecked():
+            active.append(("euclidean", "phase-lock"))
+        if getattr(self, "btn_seeded_randomize", None) and self.btn_seeded_randomize.isChecked():
+            active.append(("seeded", "seeded"))
+        if getattr(self, "goava_active", False):
+            active.append(("goava", "goava"))
+        if not active:
+            return
+        self._composition_generation_guard = True
+        try:
+            for key, mode in active:
+                rng = np.random.default_rng((_safe_int_seed(self.get_numeric_seed()) ^ sum(map(ord, key)) ^ (len(self.instrument_names_48) * 7919)) & 0x7fffffff)
+                if key == "goava":
+                    self.goava_note_events = self._build_goava_composition()
+                    self._apply_goava_to_canonical_playlist()
+                elif hasattr(self, "_canonical_playlist_paint"):
+                    self._canonical_playlist_paint(rng=rng, mode=mode, strength=0.55)
+        finally:
+            self._composition_generation_guard = False
 
     def _refactor_playlist_for_instrument_rescale(self, old_names, final_names):
         """
@@ -12952,6 +15033,74 @@ class MathematiciansGrooveboxApp(QMainWindow):
               f"{len(removed)} removed instrument(s)")
         return touched_rows
 
+    def _resize_playlist_memory(self, rows):
+        """Resize playlist capacity without discarding user rows; canonicals repaint the new span."""
+        rows = max(1, min(1024, int(rows)))
+        data = getattr(self, "master_playlist_data", []) or []
+        auto = getattr(self, "playlist_automation", []) or []
+        overflow = getattr(self, "_playlist_overflow_rows", {})
+        if rows < len(data):
+            for i in range(rows, len(data)):
+                if isinstance(data[i], dict) and data[i].get("user_instances"):
+                    overflow[i] = (copy.deepcopy(data[i]), copy.deepcopy(auto[i] if i < len(auto) else {}))
+            data = data[:rows]
+            auto = auto[:rows]
+        else:
+            for i in range(len(data), rows):
+                if i in overflow:
+                    data.append(copy.deepcopy(overflow[i][0]))
+                    auto.append(copy.deepcopy(overflow[i][1]))
+                    overflow.pop(i, None)
+                else:
+                    data.append({})
+                    auto.append({})
+        self.master_playlist_data = data
+        self.playlist_automation = auto
+        self._playlist_overflow_rows = overflow
+        # Every active canonical gets a deterministic repaint across the resized span.
+        if hasattr(self, "_canonical_playlist_paint"):
+            active = []
+            if getattr(self, "goava_active", False):
+                self.goava_note_events = self._build_goava_composition()
+                active.append(("goava", "goava"))
+            for key, attr in (("randomizer","btn_local_randomize"),("phase_lock","btn_local_phase_lock"),
+                              ("euclidean","btn_idealize_rhythm"),("seeded","btn_seeded_randomize")):
+                if getattr(self, attr, None) and getattr(self, attr).isChecked():
+                    active.append((key, key))
+            for key, mode in active:
+                if key != "goava":
+                    self._canonical_playlist_paint(
+                        rng=np.random.default_rng((_safe_int_seed(self.get_numeric_seed()) ^ sum(map(ord, key))) & 0x7fffffff),
+                        mode=mode, strength=0.55
+                    )
+            if getattr(self, "goava_active", False):
+                self._apply_goava_to_canonical_playlist()
+            self._canonical_sequence_reconcile("playlist_resize")
+        return rows
+
+    def _canonical_active_count(self):
+        """Number of active canonical composition engines, including GOAVA."""
+        count = 0
+        for attr in ("btn_local_randomize", "btn_local_phase_lock",
+                     "btn_idealize_rhythm", "btn_seeded_randomize"):
+            btn = getattr(self, attr, None)
+            if btn is not None and btn.isChecked():
+                count += 1
+        if bool(getattr(self, "goava_active", False)):
+            count += 1
+        return count
+
+    def _canonical_voice_gain(self, instrument_name, user_count, canonical_count, cluster_count):
+        """Allocate 50% of the mix to userdata and 50% across active canonicals."""
+        if canonical_count <= 0:
+            return 1.0 / max(cluster_count, 1)
+        mem = self.instrument_sequencer_memory.get(instrument_name, {})
+        count = int(mem.get("pattern_length", len(mem.get("steps", [])) or 1))
+        is_user = any(self._step_has_net_effect(mem, i) for i in range(count)) if hasattr(self, "_step_has_net_effect") else False
+        if is_user:
+            return 0.5 / max(user_count, 1)
+        return 0.5 / max(canonical_count, 1)
+
     def _render_mixdown_buffer(self, max_rows=None):
 
         """Shared float32 mono render used by both realtime Play and WAV Export."""
@@ -12960,7 +15109,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         rows = self.spin_playlist_length.value() if hasattr(self, 'spin_playlist_length') else 32
         if max_rows is not None:
             rows = min(rows, int(max_rows))
-        seq_len = self.spin_seq_length.value() if hasattr(self, 'spin_seq_length') else 16
+        seq_len = max(
+            [int((m or {}).get("pattern_length", len((m or {}).get("steps", [])) or 1))
+             for m in (getattr(self, "instrument_sequencer_memory", {}) or {}).values()] or
+            [int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else 16]
+        )
         global_playlist_enabled = self.chk_global_playlist.isChecked() if hasattr(self, 'chk_global_playlist') else True
 
         if hasattr(self, 'sync_playlist_grid_to_memory'):
@@ -13020,25 +15173,34 @@ class MathematiciansGrooveboxApp(QMainWindow):
             local_t = t[mask] - start_time
             row_mix = np.zeros_like(local_t, dtype=np.float32)
             velocity_scale = 1.0
+            if getattr(self, "goava_active", False):
+                row_mix += self._goava_mix(local_t, row_idx, step_duration)
 
             if global_playlist_enabled and row_idx < len(getattr(self, 'master_playlist_data', [])):
                 entry = self.master_playlist_data[row_idx]
                 primary_op = entry.get("operator", self.instrument_names_48[0])
                 velocity_scale = float(entry.get("velocity", 1.0))
                 op_indices = [self.instrument_names_48.index(primary_op)] if primary_op in self.instrument_names_48 else [0]
-                remaining = [i for i in range(len(self.instrument_names_48)) if i != op_indices[0]]
-                n_comp = min(3, len(remaining))
-                companions = np.random.choice(remaining, size=n_comp, replace=False).tolist() if n_comp else []
-                active_cluster = op_indices + companions
+                active_cluster = op_indices
             else:
                 active_cluster = np.random.choice(len(self.instrument_names_48), size=4, replace=False).tolist()
+
+            canonical_count = self._canonical_active_count()
+            user_voice_count = 0
+            if canonical_count:
+                for _oi in active_cluster:
+                    _nm = self.instrument_names_48[_oi]
+                    _mm = self.instrument_sequencer_memory.get(_nm, {})
+                    _pc = int(_mm.get("pattern_length", len(_mm.get("steps", [])) or 1))
+                    if any(self._step_has_net_effect(_mm, _si) for _si in range(_pc)):
+                        user_voice_count += 1
 
             for op_idx in active_cluster:
                 op_name = self.instrument_names_48[op_idx]
                 mem = self.instrument_sequencer_memory.get(
                     op_name, {"steps": [False] * 48, "amplitudes": [1.0] * 48, "pitches": [1.0] * 48}
                 )
-                base_freq = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
+                base_freq = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 216.0
                 base_freq *= MEUM_POWERS_36[op_idx % 36]
                 dynamic_eqr = base_eqr * (1.0 + 0.3 * np.sin(2.0 * np.pi * 0.2 * local_t + op_idx))
 
@@ -13047,9 +15209,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 steps = mem.get("steps", [])
                 amps = mem.get("amplitudes", [1.0] * 16)
                 pitches = mem.get("pitches", [1.0] * 16)
-                for s_idx in range(min(seq_len, len(steps))):
+                offsets = mem.get("offsets", [0.0] * 16)
+                pattern_len = int(mem.get("pattern_length", len(steps) or seq_len))
+                # Each instrument's pattern is independent; longer/shorter
+                # patterns recycle deterministically against the row clock.
+                for s_idx in range(min(pattern_len, len(steps))):
                     if steps[s_idx]:
-                        s_start = s_idx * step_duration
+                        step_offset = float(np.clip(offsets[s_idx] if s_idx < len(offsets) else 0.0, -0.5, 0.5))
+                        s_start = (s_idx + step_offset) * step_duration
+                        s_start = float(np.clip(s_start, 0.0, max(0.0, row_duration - step_duration)))
                         s_end = s_start + step_duration
                         s_mask = (local_t >= s_start) & (local_t < s_end)
                         if np.any(s_mask):
@@ -13106,11 +15274,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 peak = float(np.max(np.abs(seed)) + 1e-9)
                 seed = (seed / peak).astype(np.float32)
 
-                # Permanent PKP: tempo-locked sinusoidal envelope (always on)
+                # PKP is an envelope applied to programmed steps; it must never
+                # become an independent sound source.  In particular, a blank
+                # composition (no sequencer steps) must render as true digital
+                # silence even when a seed is present and every engine is OFF.
                 beat_hz = float(bpm) / 60.0
                 pkp_sin = 0.55 + 0.45 * np.sin(2.0 * np.pi * beat_hz * local_t)
                 env_f = np.exp(-local_t / max(pkp_decay * MEUM_CONSTANT, 0.015)) * pkp_sin
-                gate = np.maximum(step_env, 0.1)
+                # Do not floor the gate at 0.1: that old floor made every
+                # selected/companion synth audible even when it had zero steps.
+                gate = step_env
+                if not np.any(gate > 1e-9):
+                    continue
                 voice = seed.astype(np.float32) * gate * velocity_scale
 
                 # Per-synth Harmonic Lattice (efficient sub+superharmonic expand).
@@ -13154,7 +15329,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         voice = self._spectral_fit_voice(
                             voice, fit_target, max(0.15, convolve_fit_amount)
                         )
-                row_mix += voice
+                voice_gain = self._canonical_voice_gain(
+                    op_name, user_voice_count, canonical_count, len(active_cluster)
+                )
+                row_mix += voice * voice_gain
 
             # PKP NullLock is global and is never a separate timeline event.
             # It is triggered only by notes in the currently selected instrument, at the global base frequency.
@@ -13163,7 +15341,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 smem = self.instrument_sequencer_memory.get(selected, {})
                 ssteps = smem.get("steps", [])
                 global_pkp = np.zeros_like(local_t, dtype=np.float32)
-                gbase = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
+                gbase = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 216.0
                 for ss in range(min(int(seq_len), len(ssteps))):
                     if ssteps[ss]:
                         ss_start = ss * step_duration
@@ -13178,7 +15356,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             except Exception:
                 pass
 
-            master[mask] += row_mix / max(len(active_cluster), 1)
+            master[mask] += row_mix
 
         # Global Convolve: deterministic geometric cross-convolution of the rendered carrier.
         # User-edited controls remain upstream; this stage only mixes the structural wave result.
@@ -13194,7 +15372,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     if kernel.size < klen:
                         kernel = np.pad(kernel, (0, klen - kernel.size), mode="wrap")
                 else:
-                    gf = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
+                    gf = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 216.0
                     kernel = (np.sin(2*np.pi*(gf/ max(sample_rate,1))*np.arange(klen)) +
                               0.5*np.sin(2*np.pi*(gf*MEUM_CONSTANT/max(sample_rate,1))*np.arange(klen)))
                     kernel = kernel.astype(np.float32)
@@ -13303,6 +15481,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 and self.btn_seeded_randomize.isChecked()
             ):
                 self._apply_live_engine_once("seeded", force=True)
+            # GOAVA is deliberately last: canonical engines retain ownership of
+            # comma-separated operator/member cells, while GOAVA appends only its
+            # dedicated numerical sequence column.
+            if getattr(self, "goava_active", False):
+                self.goava_note_events = self._build_goava_composition()
+                self.goava_seed_values = [ev["seed"] for ev in self.goava_note_events]
+                self.goava_steps = [bool(ev["enabled"]) for ev in self.goava_note_events]
+                self.goava_pitches = [float(ev["pitch"]) for ev in self.goava_note_events]
+                self.goava_frequencies = [float(ev["frequency"]) for ev in self.goava_note_events]
+                self.goava_raw_values = [float(ev["raw"]) for ev in self.goava_note_events]
+                self._apply_goava_to_canonical_playlist()
         except Exception as exc:
             print(f"[LiveSourceUpdate] {type(exc).__name__}: {exc}")
     def _audio_callback(self, outdata, frames, time_info, status):
@@ -13865,6 +16054,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
             current_instrument = self.instrument_selector_dropdown.currentText() if hasattr(self, 'instrument_selector_dropdown') else "Z-Pinch Resonator"
             inst_index = self.instrument_names_48.index(current_instrument) + 1 if current_instrument in self.instrument_names_48 else 1
+            # When Edit-panels-per-sequence is ON, load the active sequence's
+            # panel overrides into live stores before opening any of the four
+            # panel editors so the floating UI shows sequence-local state.
+            if attr_name in ('synth_editor_window', 'script_editor_window', 'patch_bay_dialog') or attr_name == 'domain_eq':
+                if self._panels_per_sequence_enabled():
+                    try:
+                        self._apply_sequence_panels_to_live(current_instrument)
+                    except Exception as _exc:
+                        print(f"[Panels] pre-open apply: {_exc}")
 
             if attr_name == 'playlist_window':
                 main_layout.addWidget(QLabel(
@@ -13873,10 +16071,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 ))
 
                 time_scale_layout = QHBoxLayout()
-                time_scale_layout.addWidget(QLabel("Row time base (unquantized unless Snap):"))
+                time_scale_layout.addWidget(QLabel("Row time base:"))
                 time_scale_combo = QComboBox()
-                time_scale_combo.addItems(["Unquantized Free-Time", "1.0s", "3.5s (Standard)", "15.0s", "30.0s", "60.0s (1 Minute)"])
-                time_scale_combo.setCurrentIndex(0)  # unquantized default
+                time_scale_combo.addItems(["Unquantized Free-Time", "Snap to Grid"])
+                time_scale_combo.setCurrentIndex(0)  # default = unquantized free time
+                self.playlist_row_time_base = "free"
+                time_scale_combo.currentIndexChanged.connect(
+                    lambda idx: setattr(self, "playlist_row_time_base", "grid" if idx == 1 else "free")
+                )
                 time_scale_layout.addWidget(time_scale_combo)
                 time_scale_layout.addStretch(1)
                 main_layout.addLayout(time_scale_layout)
@@ -13894,7 +16096,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     "Time Marker", "Operator Identity",
                     "Script Tag", "Domain Tag", "Synth Snapshot", "Modular Patch",
                     "Velocity", "Auto Target", "Auto Amount",
-                    "Direction Vector", "Multi-Seq", "Coverage", "Blend Partner"
+                    "Direction Vector", "Multi-Seq", "Coverage", "Blend Partner", "GOAVA Sequence",
+                    "Paint Target", "Paint Source", "Paint Sequence", "Paint Instrument"
                 ])
 
                 palette_colors = [
@@ -14053,7 +16256,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
                 def save_current_script():
                     self.instrument_scripts[current_instrument] = script_text_area.toPlainText()
-                    print(f"[Script] Saved custom code script for operator '{current_instrument}'")
+                    if self._panels_per_sequence_enabled():
+                        try:
+                            panels = self._sequence_panel_slot(current_instrument)
+                            panels["script"] = script_text_area.toPlainText()
+                            print(f"[Script] Saved to sequence {self._current_sequence_index(current_instrument)} panels for '{current_instrument}'")
+                        except Exception as _exc:
+                            print(f"[Script] sequence panel save: {_exc}")
+                    else:
+                        print(f"[Script] Saved custom code script for operator '{current_instrument}'")
 
                 btn_save_script.clicked.connect(save_current_script)
                 btn_layout.addWidget(QPushButton("▶ Execute Script Patch"))
