@@ -343,6 +343,14 @@ PLAYLIST_COLUMNS = (
 PLAYLIST_COLUMN_COUNT = len(PLAYLIST_COLUMNS)
 # Semantic groups used by cross-cell blend (any of these can blend under coverage).
 PLAYLIST_STRUCT_COLUMNS = ("script_tag", "domain_tag", "synth_tag", "patch_tag")
+# _EXPLICIT_ENGINE_SOURCES — sources that count as an explicit additive-engine
+# pass (Randomizer/Phase-Lock/etc), as opposed to plain Play/Export. Includes
+# both "phase-lock" and "phase_lock" spellings since callers use each
+# inconsistently (_phase_lock_local_context paints with mode="phase_lock",
+# while _run_composition_context_engine historically only recognized
+# "phase-lock" — silently skipping generated synth/domain/patch context on
+# every Phase-Lock pass).
+_EXPLICIT_ENGINE_SOURCES = ("randomizer", "phase-lock", "phase_lock", "midpoint", "euclidean", "seeded")
 PLAYLIST_STRUCT_COL_INDICES = (2, 3, 4, 5)  # indices into PLAYLIST_COLUMNS
 
 def idealized_operator_struct(app, op_name, row=0, seed=0):
@@ -9010,6 +9018,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _randomize_local_context(self, checked=True):
         if not checked:
+            self._deactivate_engine_generated_content(source_label="Randomizer")
             return
         if getattr(self, "_composition_generation_guard", False):
             return
@@ -9116,6 +9125,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
         table._paint_expanding = True
 
         try:
+            # UNISON_SYNTH_CONTEXT_FIX: generated synth/domain/patch context
+            # (_mark_generated_synth_context et al) must be (re)marked before
+            # the playlist paint below, or freshly generated synth patterns
+            # never reach the unison playlist fill. Previously this only ran
+            # via the `elif` on _run_composition_context_engine, which never
+            # fired once _paint_operator_pattern_to_playlist existed (i.e.
+            # every time the playlist window had already been opened) — so
+            # new synth context was silently skipped in the common case.
+            if mode in _EXPLICIT_ENGINE_SOURCES:
+                if hasattr(self, "_mark_generated_synth_context"):
+                    self._mark_generated_synth_context(source=mode, rng=rng)
+                if hasattr(self, "_write_generated_domain_context"):
+                    self._write_generated_domain_context(source=mode)
+                if hasattr(self, "_write_generated_patch_context"):
+                    self._write_generated_patch_context(source=mode)
+
             # Authoritative 10-column writer (time offsets + last four columns).
             # This is the same path used when the playlist window is still closed,
             # so memory and UI stay in lockstep on a fresh boot.
@@ -9206,6 +9231,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         item.setText(text)
     def _phase_lock_local_context(self, checked=True):
         if not checked:
+            self._deactivate_engine_generated_content(source_label="PhaseLock")
             return
         if getattr(self, "_composition_generation_guard", False):
             return
@@ -9599,7 +9625,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _run_composition_context_engine(self, source="randomizer", rng=None):
         # Generated wave/effect topology exists only as an explicit engine output.
         # Plain Play/Export never inserts hidden synth effects, domains, or patches.
-        explicit_engine = source in ("randomizer", "phase-lock", "midpoint", "euclidean", "seeded")
+        explicit_engine = source in _EXPLICIT_ENGINE_SOURCES
         if explicit_engine:
             self._mark_generated_synth_context(source=source, rng=rng)
             self._write_generated_domain_context(source=source)
@@ -11051,6 +11077,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         else:
             self._live_euclid_timer.stop()
             self.btn_idealize_rhythm.setText("✨ Euclidean Live Lock")
+            self._deactivate_engine_generated_content(source_label="EuclideanLiveLock")
 
     def _on_seeded_live_toggled(self, checked):
         if hasattr(self, "_style_toggle_randomizer"):
@@ -11066,6 +11093,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         else:
             self._live_seeded_timer.stop()
             self.btn_seeded_randomize.setText("🎲 Seeded Live Randomizer")
+            self._deactivate_engine_generated_content(source_label="SeededLiveRandomizer")
 
     def _on_user_program_only_toggled(self, checked):
         if checked:
@@ -11081,6 +11109,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if hasattr(self, style_attr):
                     btn.setStyleSheet(getattr(self, style_attr))
                 btn.setText(off_label)
+            self._deactivate_engine_generated_content(source_label="UserProgramOnly")
             print("[User program only] Live engines suspended — carrier only")
 
     def _canonical_protect_user(self):
@@ -11278,6 +11307,92 @@ class MathematiciansGrooveboxApp(QMainWindow):
             for c, text in enumerate(cells):
                 if c < table.columnCount():
                     table.set_cell_item(r, c, QTableWidgetItem(text))
+
+    def _deactivate_engine_generated_content(self, source_label="engine"):
+        """
+        Reverse the non-destructive material an additive engine (Randomizer,
+        Phase-Locker, Euclidean Live Lock, Seeded Live Randomizer) painted
+        in, without touching anything a human actually programmed.
+
+        _paint_operator_pattern_to_playlist's docstring is explicit that
+        engine-owned material must be "regenerated from the seed + source
+        and ... fully tagged, so Randomizer / Phase-Lock can be removed
+        without leaving stale cells or automation" — but nothing previously
+        called that removal when an engine was switched OFF, so step cells
+        and playlist rows the engine had painted stayed lit/populated
+        forever. This is that removal:
+
+          - Step-grid cells: any step that is ON but was never actually
+            clicked / slider-edited by a human (not in mem["touched"],
+            per USER_TOUCHED_TRACKING) is switched back OFF and its
+            amp/pitch/probability reset to defaults. Touched steps are a
+            human's own programming and are left exactly as they are.
+          - Playlist rows: any row tagged 'generated_by_engine' has its
+            engine-authored fields stripped back out, leaving only whatever
+            '@u:' user instances were on that row (or a blank row if none).
+          - Playlist automation: rows tagged 'generated_by_engine' are
+            cleared the same way.
+        """
+        cleared_steps = 0
+        mems = getattr(self, "instrument_sequencer_memory", None) or {}
+        for mem in mems.values():
+            if not isinstance(mem, dict):
+                continue
+            steps = mem.get("steps")
+            if not steps:
+                continue
+            touched = mem.get("touched", ())
+            amps = mem.get("amplitudes", [])
+            pitches = mem.get("pitches", [])
+            probs = mem.get("probabilities", [])
+            for s in range(len(steps)):
+                if s in touched:
+                    continue
+                if steps[s]:
+                    cleared_steps += 1
+                steps[s] = False
+                if s < len(amps):
+                    amps[s] = 1.0
+                if s < len(pitches):
+                    pitches[s] = 1.0
+                if s < len(probs):
+                    probs[s] = 100
+
+        cleared_rows = 0
+        rows = getattr(self, "master_playlist_data", None) or []
+        for entry in rows:
+            if not isinstance(entry, dict) or not entry.get("generated_by_engine"):
+                continue
+            users = list(entry.get("user_instances") or [])
+            entry.clear()
+            if users:
+                entry["user_instances"] = users
+                entry["operators_csv"] = ", ".join(users)
+                entry["operator"] = users[0]
+                entry["operators"] = users
+            cleared_rows += 1
+
+        automation = getattr(self, "playlist_automation", None) or []
+        for i, auto in enumerate(automation):
+            if isinstance(auto, dict) and auto.get("generated_by_engine"):
+                automation[i] = {}
+
+        self._engine_generated_playlist_rows = set()
+
+        # Redraw whatever playlist grid is currently open, and the step grid.
+        try:
+            self._push_restored_playlist_to_table()
+        except Exception:
+            pass
+        if hasattr(self, "reload_active_instrument_sequencer_ui"):
+            try:
+                self.reload_active_instrument_sequencer_ui()
+            except Exception:
+                pass
+
+        print(f"[{source_label}] deactivated — cleared {cleared_steps} engine step "
+              f"cell(s), {cleared_rows} generated playlist row(s)")
+        return cleared_steps, cleared_rows
 
     def _on_canonical_protect_toggled(self, checked):
         if checked:
@@ -12752,12 +12867,90 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.video_synth_engine.n = new_count
             except Exception:
                 pass
+        # ENSEMBLE_RESCALE_PLAYLIST_REFACTOR: a resize can drop instrument
+        # names that unlocked/free voices used to carry (see `locked` above),
+        # or introduce entirely new ones via generate_synth_names(). Without
+        # this, playlist rows/automation kept pointing at operators that no
+        # longer exist in instrument_names_48 after the resize.
+        self._refactor_playlist_for_instrument_rescale(old_names, final_names)
         if hasattr(self, "reload_active_instrument_sequencer_ui"):
             try:
                 self.reload_active_instrument_sequencer_ui()
             except Exception:
                 pass
         print(f"[Synths] Resized to {new_count}: {final_names[:6]}{'…' if new_count > 6 else ''}")
+
+    def _refactor_playlist_for_instrument_rescale(self, old_names, final_names):
+        """
+        Strip playlist/automation references to instrument names that a synth
+        ensemble resize (_on_synth_count_changed) dropped. Locked (net-effect)
+        instruments are preserved by name across a resize, so any row that
+        genuinely still refers only to surviving instruments is left alone.
+
+          - Engine-owned rows referencing a removed name are stale identity;
+            they are cleared back to just their '@u:' user instances (if any)
+            the same way engine deactivation clears a row, so the next engine
+            pass repaints them fresh against the post-resize roster.
+          - Pure user rows referencing a removed name have only the dangling
+            reference dropped; the rest of the user's row is preserved.
+        """
+        valid = set(final_names)
+        removed = set(old_names) - valid
+        if not removed:
+            return 0
+
+        touched_rows = 0
+        rows = getattr(self, "master_playlist_data", None) or []
+        for entry in rows:
+            if not isinstance(entry, dict):
+                continue
+            row_hit = False
+            users = entry.get("user_instances")
+            kept_users = users
+            if users:
+                kept_users = [u for u in users if u.split("@")[0].strip() not in removed]
+                if len(kept_users) != len(users):
+                    row_hit = True
+            ops = entry.get("operators")
+            if isinstance(ops, list) and any(o in removed for o in ops):
+                row_hit = True
+            if entry.get("operator") in removed:
+                row_hit = True
+            if not row_hit:
+                continue
+            if entry.get("generated_by_engine"):
+                entry.clear()
+                if kept_users:
+                    entry["user_instances"] = kept_users
+                    entry["operators_csv"] = ", ".join(kept_users)
+                    entry["operator"] = kept_users[0]
+                    entry["operators"] = kept_users
+            else:
+                entry["user_instances"] = kept_users or []
+                entry["operators_csv"] = ", ".join(kept_users or [])
+                entry["operator"] = (kept_users or [""])[0]
+                entry["operators"] = list(kept_users or [])
+            touched_rows += 1
+
+        automation = getattr(self, "playlist_automation", None) or []
+        for i, auto in enumerate(automation):
+            if not isinstance(auto, dict):
+                continue
+            ops = auto.get("operators") or ([auto.get("operator")] if auto.get("operator") else [])
+            if any(o in removed for o in ops) and auto.get("generated_by_engine"):
+                automation[i] = {}
+
+        self._engine_generated_playlist_rows = {
+            r for r in getattr(self, "_engine_generated_playlist_rows", set())
+            if r < len(rows) and isinstance(rows[r], dict) and rows[r].get("generated_by_engine")
+        }
+        try:
+            self._push_restored_playlist_to_table()
+        except Exception:
+            pass
+        print(f"[Ensemble Rescale] refactored {touched_rows} playlist row(s) referencing "
+              f"{len(removed)} removed instrument(s)")
+        return touched_rows
 
     def _render_mixdown_buffer(self, max_rows=None):
 
