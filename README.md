@@ -2,7 +2,7 @@
 
 Mathematical specification for maximum initial harmonic diversity. Simple pads-and-play projects and complex multi-engine compositions use the same model.
 
-**Credits:** core EQR design — project author; implementation assistance — Grok (xAI), Gemini (Google), Claude (Anthropic), and ChatGPT (OpenAI).
+**Credits:** core EQR design — project author; implementation assistance — Grok (xAI), Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI), [Mistral.ai](https://mistral.ai), and Cursor Grok 4.6 (this session: masterized playlist polyphony, untouched-sequence resize, master+addon synth mix, visualizer).
 
 ---
 
