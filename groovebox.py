@@ -107,38 +107,100 @@ PAINT_INSTANCE_LIMIT = 8
 # if handed a float directly — that's the render/export popup. Every call
 # site that seeds NumPy from a user/composition seed value goes through this
 # instead of relying on an implicit/unsafe cast.
-def _parse_if_elif_shorthand(text):
-    """Parse "if(<condition>) <yes> elif <no>" into (condition, yes, no).
 
-    Uses balanced-parenthesis scanning rather than a lazy regex, because a
-    naive r"\\((.*?)\\)" stops at the FIRST ")" it finds — which breaks the
-    moment the condition itself contains a call like sin(t), e.g.
-    "if(sin(t)>=-0.5) 1 elif 2" would wrongly split the condition as
-    "sin(t" instead of "sin(t)>=-0.5". Returns None if the text doesn't
-    match the "if (...) ... elif ..." shape at all.
+def _parse_if_elif_shorthand(text):
+    """Parse if/elif[/elif...] chains into a Python ternary expression string.
+
+    Supports nested parentheses in conditions and values:
+      if(cond) a elif b
+      if(cond1) a elif(cond2) b elif c
+      if(cond) (432 * 2) elif (216 + 10)
+
+    Returns the ternary string, or None if not an if/elif form.
     """
     import re as _re
-    m = _re.match(r"\s*if\s*\(", text, flags=_re.I)
+    text = str(text or "").strip()
+    if not text:
+        return None
+
+    def _read_paren_expr(s, start_idx):
+        if start_idx >= len(s) or s[start_idx] != "(":
+            return None, start_idx
+        depth = 0
+        i = start_idx
+        while i < len(s):
+            ch = s[i]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    return s[start_idx + 1:i], i + 1
+            i += 1
+        return None, start_idx
+
+    m = _re.match(r"\s*if\s*", text, flags=_re.I)
     if not m:
         return None
-    depth = 0
-    i = m.end() - 1  # index of the opening '('
-    start = m.end()
-    for j in range(i, len(text)):
-        if text[j] == "(":
-            depth += 1
-        elif text[j] == ")":
-            depth -= 1
-            if depth == 0:
-                condition = text[start:j]
-                rest = text[j + 1:]
-                em = _re.search(r"\belif\b", rest, flags=_re.I)
-                if not em:
-                    return None
-                yes_expr = rest[:em.start()].strip()
-                no_expr = rest[em.end():].strip()
-                return condition, yes_expr, no_expr
-    return None
+    pos = m.end()
+    while pos < len(text) and text[pos].isspace():
+        pos += 1
+    if pos >= len(text) or text[pos] != "(":
+        return None
+
+    branches = []
+    cond, pos = _read_paren_expr(text, pos)
+    if cond is None:
+        return None
+    em = _re.search(r"\belif\b", text[pos:], flags=_re.I)
+    if not em:
+        return None
+    yes = text[pos:pos + em.start()].strip()
+    pos = pos + em.end()
+    branches.append((cond.strip(), yes))
+
+    while True:
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+        if pos >= len(text):
+            break
+        if text[pos] == "(":
+            group, after = _read_paren_expr(text, pos)
+            if group is None:
+                return None
+            rest_after = text[after:].strip()
+            em2 = _re.search(r"\belif\b", text[after:], flags=_re.I)
+            if em2:
+                expr = text[after:after + em2.start()].strip()
+                pos = after + em2.end()
+                branches.append((group.strip(), expr if expr else "0"))
+                continue
+            if rest_after:
+                branches.append((group.strip(), rest_after))
+                break
+            branches.append((None, f"({group.strip()})"))
+            break
+        else:
+            em2 = _re.search(r"\belif\b", text[pos:], flags=_re.I)
+            if em2:
+                return None
+            expr = text[pos:].strip()
+            branches.append((None, expr))
+            break
+
+    if not branches:
+        return None
+    if branches[-1][0] is not None:
+        branches.append((None, "0"))
+
+    def _wrap(e):
+        e = (e or "0").strip() or "0"
+        return f"({e})"
+
+    acc = _wrap(branches[-1][1])
+    for cond_i, expr_i in reversed(branches[:-1]):
+        acc = f"({_wrap(expr_i)} if ({cond_i}) else {acc})"
+    return acc
 
 
 def _safe_int_seed(value):
@@ -161,9 +223,422 @@ def _safe_int_seed(value):
     return int.from_bytes(digest[:4], 'big') & 0x7FFFFFFF
 
 
+def _coerce_numeric_values(obj):
+    """Rip only attributable finite numeric values out of an arbitrary Python result.
 
-# GOAVA_NATIVE_PORT — faithful Python port of Composer.getNote() from the
-# supplied GOAVA Java source.  GOAVA remains engine-owned/non-user data.
+    Lists/tuples/sets → list of floats; bool → 0/1; int/float → float;
+    everything non-numeric is ignored. Nested sequences are flattened one level.
+    """
+    out = []
+    def _walk(x, depth=0):
+        if x is None:
+            return
+        if isinstance(x, bool):
+            out.append(1.0 if x else 0.0)
+            return
+        if isinstance(x, (int, float)):
+            try:
+                v = float(x)
+                if math.isfinite(v):
+                    out.append(v)
+            except Exception:
+                pass
+            return
+        if isinstance(x, complex):
+            if math.isfinite(x.real):
+                out.append(float(x.real))
+            return
+        if isinstance(x, (list, tuple, set)) and depth < 4:
+            for item in x:
+                _walk(item, depth + 1)
+            return
+        # numpy scalar / 0-d array
+        try:
+            import numpy as _np
+            if isinstance(x, _np.generic):
+                v = float(x)
+                if math.isfinite(v):
+                    out.append(v)
+                return
+            if isinstance(x, _np.ndarray) and x.size <= 64:
+                for item in x.ravel().tolist():
+                    _walk(item, depth + 1)
+                return
+        except Exception:
+            pass
+        # last: try float()
+        try:
+            v = float(x)
+            if math.isfinite(v):
+                out.append(v)
+        except Exception:
+            pass
+    _walk(obj)
+    return out
+
+
+def _seed_script_env(t_scalar=0.0, canonical_context=None):
+    """Shared safe eval environment for composition-state and T-axis seed scripts.
+
+    Includes standard math, Meum constants, isn/ics family (and inverses),
+    arcisn/arcics, and Equation-of-Reality tensor handles P/E/D.
+    Numeric-Python subset: no builtins except safe math helpers.
+    """
+    def _clamp(v, lo=-1e9, hi=1e9):
+        try:
+            return max(float(lo), min(float(hi), float(v)))
+        except Exception:
+            return 0.0
+
+    def _lerp(a, b, u):
+        return float(a) + (float(b) - float(a)) * float(u)
+
+    def _choose(*args):
+        """Pick element i from args where i is the last arg (int index)."""
+        if not args:
+            return 0.0
+        if len(args) == 1:
+            return float(args[0])
+        idx = int(args[-1]) % max(1, len(args) - 1)
+        return float(args[idx])
+
+    def isn(x):
+        x = float(x)
+        return math.sin(x) * MEUM_NORM + math.sin(x * MEUM) * (1.0 - MEUM_NORM)
+
+    def ics(x):
+        x = float(x)
+        return math.cos(x) * MEUM_NORM + math.cos(x * MEUM) * (1.0 - MEUM_NORM)
+
+    def _invert_odd(f, y, guess=0.0, lo=-math.pi, hi=math.pi, iters=24):
+        y = float(y)
+        a, b = float(lo), float(hi)
+        fa, fb = f(a) - y, f(b) - y
+        if fa * fb > 0:
+            for _ in range(8):
+                a *= 1.5
+                b *= 1.5
+                fa, fb = f(a) - y, f(b) - y
+                if fa * fb <= 0:
+                    break
+        x = float(guess)
+        for _ in range(iters):
+            fx = f(x) - y
+            h = 1e-6 + 1e-6 * abs(x)
+            df = (f(x + h) - f(x - h)) / (2.0 * h)
+            if abs(df) < 1e-12:
+                if fa * (f(x) - y) <= 0:
+                    b, fb = x, f(x) - y
+                else:
+                    a, fa = x, f(x) - y
+                x = 0.5 * (a + b)
+            else:
+                x_new = x - fx / df
+                x_new = _clamp(x_new, a, b)
+                if abs(x_new - x) < 1e-12:
+                    return float(x_new)
+                x = x_new
+        return float(x)
+
+    def isn_inv(y):
+        return _invert_odd(isn, y, guess=float(y), lo=-math.pi, hi=math.pi)
+
+    def ics_inv(y):
+        y = float(y)
+        return abs(_invert_odd(ics, y, guess=0.5, lo=0.0, hi=math.pi))
+
+    def arcisn(y):
+        return isn_inv(y)
+
+    def arcics(y):
+        return ics_inv(y)
+
+    def isn_pow_neg1(y):
+        return isn_inv(y)
+
+    def ics_pow_neg1(y):
+        return ics_inv(y)
+
+    def P(s, c=0.0, *rest):
+        s = float(s)
+        c = float(c)
+        if rest:
+            for r in rest:
+                c += float(r)
+        return s * (1.0 + MEUM_NORM * abs(c)) * PHI_INV
+
+    def E(s, c=0.0, *rest):
+        s = float(s)
+        c = float(c)
+        if rest:
+            for r in rest:
+                c += float(r)
+        return abs(s) * (1.0 + MEUM_NORM * abs(c)) * PHI_INV
+
+    def D(s, c=0.0, *rest):
+        s = float(s)
+        c = float(c)
+        if rest:
+            for r in rest:
+                c += float(r)
+        return abs(MEUM_IDENTITY_RESIDUAL) * 0.1 * math.sin(s * MEUM + c)
+
+    def tensor_z(s, c=0.0):
+        s = float(s)
+        c = float(c)
+        z = E(s, c) + D(s, c)
+        z = z * 1.5 / max(abs(s) + 0.15, 1e-6) * 0.35 + 0.5
+        return float(_clamp(z, 0.05, 3.0))
+
+    def tensor_rel(s, c=0.0, z_ref=1.5):
+        return tensor_z(s, c) / max(float(z_ref), 1e-9)
+
+    env = {
+        "__builtins__": {},
+        "sin": math.sin, "cos": math.cos, "tan": math.tan, "sqrt": math.sqrt,
+        "log": math.log, "log2": math.log2, "log10": math.log10, "exp": math.exp,
+        "abs": abs, "min": min, "max": max, "floor": math.floor, "ceil": math.ceil,
+        "round": round, "pow": pow, "fabs": math.fabs, "hypot": math.hypot,
+        "atan2": math.atan2, "asin": math.asin, "acos": math.acos, "atan": math.atan,
+        "sinh": math.sinh, "cosh": math.cosh, "tanh": math.tanh,
+        "degrees": math.degrees, "radians": math.radians,
+        "pi": math.pi, "e": math.e, "tau": math.tau,
+        "PHI": PHI, "MEUM": MEUM, "MEUM_NORM": MEUM_NORM, "MEUM_INV": MEUM_INV,
+        "MEUM_SQ": MEUM_SQ, "MEUM_LOG2": MEUM_LOG2, "SILVER": SILVER,
+        "SQRT2": SQRT2, "SQRT3": SQRT3,
+        "clamp": _clamp, "lerp": _lerp, "choose": _choose,
+        "isn": isn, "ics": ics,
+        "isn_inv": isn_inv, "ics_inv": ics_inv,
+        "arcisn": arcisn, "arcics": arcics,
+        "isn_inverse": isn_inv, "ics_inverse": ics_inv,
+        "P": P, "E": E, "D": D,
+        "tensor_z": tensor_z, "tensor_rel": tensor_rel,
+        "t": float(t_scalar), "x": float(t_scalar), "y": 0.0, "z": 0.0,
+        "True": True, "False": False, "None": None,
+        "carrier_present": 0,
+        "carrier_rms": 0.0,
+        "carrier_peak": 0.0,
+        "canonical_unison": 0,
+        "canonical_count": 0,
+        "canonical_mask": 0,
+        "canonical_randomizer": 0,
+        "canonical_phase_lock": 0,
+        "canonical_euclidean": 0,
+        "canonical_seeded": 0,
+        "canonical_goava": 0,
+        "canonical_roster_size": 0,
+        # list helpers for numeric-Python scripts
+        "list": list, "tuple": tuple, "float": float, "int": int, "bool": bool,
+        "len": len, "sum": sum, "range": range, "enumerate": enumerate,
+        "zip": zip, "sorted": sorted, "reversed": reversed,
+    }
+    if isinstance(canonical_context, dict):
+        for _k, _v in canonical_context.items():
+            if isinstance(_k, str) and _k.isidentifier() and isinstance(_v, (int, float, bool)):
+                env[_k] = _v
+    return env
+
+
+def _normalize_seed_script_text(seed_text):
+    """Normalize multiline seed scripts into a single evaluable expression.
+
+    Supports plain numbers, math, return, if/elif shorthand, last non-comment line.
+    """
+    import re as _re
+    text = str(seed_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return ""
+
+    returns = list(_re.finditer(r"(?im)^\s*return\s+(.+?)\s*$", text))
+    if returns:
+        text = returns[-1].group(1).strip()
+    else:
+        lines = []
+        for ln in text.splitlines():
+            s = ln.strip()
+            if not s or s.startswith("#"):
+                continue
+            lines.append(s)
+        if lines:
+            text = lines[-1]
+
+    text = _re.sub(r"^\s*return\s+", "", text, count=1, flags=_re.I)
+    shorthand = _parse_if_elif_shorthand(text)
+    if shorthand:
+        text = shorthand
+    return text.strip()
+
+
+def _eval_seed_python(seed_text, t_value=0.0, canonical_context=None, allow_scrape=True):
+    """Evaluate seed text as a numeric-Python subset; return list of finite floats.
+
+    Strategy (first success wins):
+      1. Normalized single expression (if/elif → ternary, return stripped)
+      2. Parenthesis-aware comma/newline list of expressions
+      3. Multi-line exec: assignments + final expression / return
+      4. Scrape plain numeric tokens from the text (only if allow_scrape)
+
+    Non-numeric results are ignored; only attributable finite numbers remain.
+
+    SCRAPE_IS_LAST_RESORT_ONLY: step 4 is a blunt regex pull of bare digits
+    sitting in the raw text — it does not evaluate the script at all. A
+    script that is well-formed but hits a domain error at one exact instant
+    (e.g. "sqrt(t - 1) * 100" at t=0.0, "100/tan(t)" at t=0.0) throws in
+    steps 1-3, and step 4 would then silently return whichever literal
+    numbers happen to appear in the source ("1", "100", ...) — values that
+    have nothing to do with what the formula actually computes and that
+    ignore the real time-varying/conditional behavior entirely. Callers
+    that can retry at a nearby, non-degenerate `t` (get_seed_values,
+    evaluate_seed_expression_at_time) should do that FIRST with
+    allow_scrape=False, so a genuinely evaluable script always wins over a
+    blind digit-scrape. The scrape stays available as a true last resort
+    for text that truly has no evaluable structure at any t.
+    """
+    import re as _re
+
+    raw = str(seed_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not raw:
+        return []
+
+    try:
+        t_scalar = float(np.asarray(t_value).reshape(-1)[0]) if hasattr(t_value, "__len__") else float(t_value)
+    except Exception:
+        t_scalar = 0.0
+    if not math.isfinite(t_scalar):
+        t_scalar = 0.0
+
+    env = _seed_script_env(t_scalar=t_scalar, canonical_context=canonical_context)
+
+    def _try_expr(expr):
+        expr = str(expr or "").strip()
+        if not expr or expr.startswith("#"):
+            return None
+        # strip leading return
+        expr = _re.sub(r"^\s*return\s+", "", expr, count=1, flags=_re.I)
+        sh = _parse_if_elif_shorthand(expr)
+        if sh:
+            expr = sh
+        try:
+            v = float(expr)
+            if math.isfinite(v):
+                return [v]
+        except Exception:
+            pass
+        try:
+            tree = ast.parse(expr, mode="eval")
+            val = eval(compile(tree, "<groovebox-seed>", "eval"), env)
+            nums = _coerce_numeric_values(val)
+            return nums if nums else None
+        except Exception:
+            return None
+
+    # 1) Whole normalized field as one expression
+    text = _normalize_seed_script_text(raw)
+    if text:
+        nums = _try_expr(text)
+        if nums:
+            return nums
+
+    # 2) Parenthesis-aware list split
+    parts = _split_seed_list_parts(raw)
+    if len(parts) > 1:
+        vals = []
+        for part in parts:
+            nums = _try_expr(part)
+            if nums:
+                vals.extend(nums)
+        if vals:
+            return vals
+    elif len(parts) == 1:
+        nums = _try_expr(parts[0])
+        if nums:
+            return nums
+
+    # 3) Multi-line / statement form via exec
+    #    Allow: assignments, if/elif/else blocks, final expression or return
+    try:
+        # Transform bare final expression into _result = <expr>
+        lines = []
+        for ln in raw.splitlines():
+            s = ln.strip()
+            if not s or s.startswith("#"):
+                continue
+            lines.append(ln)
+        if lines:
+            body = "\n".join(lines)
+            # If last line is an expression (not assignment / if / return), capture it
+            last = lines[-1].strip()
+            if not _re.match(r"^(return|if|elif|else|for|while|def|class|with)\b", last) and "=" not in last.split("#")[0]:
+                # expression statement → bind
+                body = "\n".join(lines[:-1] + [f"_result = ({last})"])
+            elif last.lower().startswith("return "):
+                body = "\n".join(lines[:-1] + [f"_result = ({last[7:].strip()})"])
+            local = dict(env)
+            local["_result"] = None
+            # allow limited statement forms
+            tree = ast.parse(body, mode="exec")
+            exec(compile(tree, "<groovebox-seed-exec>", "exec"), local, local)
+            if local.get("_result") is not None:
+                nums = _coerce_numeric_values(local["_result"])
+                if nums:
+                    return nums
+            # also collect any numeric names assigned
+            for k, v in local.items():
+                if k.startswith("_") or k in env:
+                    continue
+                nums = _coerce_numeric_values(v)
+                if nums:
+                    return nums
+    except Exception:
+        pass
+
+    # 4) Token scrape — last resort for typed numbers in otherwise junk text.
+    # Gated behind allow_scrape so callers can retry a real evaluation at a
+    # nearby, non-degenerate t before ever falling back to raw digit-scraping.
+    if not allow_scrape:
+        return []
+    vals = []
+    for m in _re.finditer(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?", raw):
+        try:
+            v = float(m.group(0))
+            if math.isfinite(v):
+                vals.append(v)
+        except Exception:
+            pass
+    return vals
+
+
+def evaluate_seed_expression_at_time(seed_text, t_value, canonical_context=None):
+    """Time-domain (T-axis) evaluation → single float for DSP/render.
+
+    Uses the numeric-Python seed protocol. List scripts are sampled by t phase.
+    Never returns a SHA/byte-derived float.
+    """
+    vals = _eval_seed_python(seed_text, t_value=t_value, canonical_context=canonical_context, allow_scrape=False)
+    if not vals:
+        # Degenerate-t retry — try a REAL evaluation at nearby t before ever
+        # falling back to digit-scraping (see SCRAPE_IS_LAST_RESORT_ONLY).
+        try:
+            base = float(np.asarray(t_value).reshape(-1)[0]) if hasattr(t_value, "__len__") else float(t_value)
+        except Exception:
+            base = 0.0
+        for probe in (base + 1e-6, base - 1e-6, base + 1e-3, base + 0.5, base + 1.0, 0.25, 1.0):
+            vals = _eval_seed_python(seed_text, t_value=probe, canonical_context=canonical_context, allow_scrape=False)
+            if vals:
+                break
+    if not vals:
+        # True last resort: no evaluable form at any probed t — scrape.
+        vals = _eval_seed_python(seed_text, t_value=t_value, canonical_context=canonical_context, allow_scrape=True)
+    if not vals:
+        return 0.0
+    if len(vals) == 1:
+        return float(vals[0])
+    try:
+        t_scalar = float(np.asarray(t_value).reshape(-1)[0]) if hasattr(t_value, "__len__") else float(t_value)
+    except Exception:
+        t_scalar = 0.0
+    idx = int(math.floor(abs(t_scalar) * max(1.0, len(vals)))) % len(vals)
+    return float(vals[idx])
 def goava_get_note(number_assigned, step, numbers):
     """Return the scalar note value produced by GOAVA Composer.getNote()."""
     nums = [float(x) for x in numbers if math.isfinite(float(x))]
@@ -189,7 +664,6 @@ def goava_get_note(number_assigned, step, numbers):
             ) / (len(nums) + abs(num - value))
     return abs(float(total))
 
-
 def goava_frequency(number_assigned, step, numbers, base_frequency=432.0):
     """Map GOAVA's Java sequence scalar to a stable audible frequency.
 
@@ -206,57 +680,198 @@ def goava_frequency(number_assigned, step, numbers, base_frequency=432.0):
     freq = float(base_frequency) * ratio
     return float(np.clip(freq, 20.0, 18000.0)), float(raw)
 
-def evaluate_seed_expression_at_time(seed_text, t_value, canonical_context=None):
-    """Time-domain (T-axis) evaluation of a seed/script expression, for use
-    INSIDE the audio/DSP render loop — the counterpart to get_numeric_seed(),
-    which is composition-state evaluation and is documented to never be
-    called per-sample. Scripts that reference `t`, or use if/elif shorthand
-    keyed on `t` (e.g. "if(sin(t)>=-0.5) 1 elif 2"), resolve against the
-    real render-time `t` here instead of the static t=0.0 used at the
-    composition-state boundary. Returns a float; callers that need an
-    integer NumPy seed should pass the result through _safe_int_seed().
+def generate_random_seed_script(rng=None):
+    """Produce a random, fully scriptable seed field value.
+
+    Output is one of: pure number, math expression in t, if/elif time branch,
+    return-style script, or a comma list of values (parsed over time).
     """
-    import re as _re
+    if rng is None:
+        rng = random
+    choice = rng.randrange(0, 14)
+    consts = ["pi", "e", "PHI", "MEUM", "MEUM_NORM", "SILVER", "SQRT2"]
+    funcs = ["sin", "cos", "tan", "tanh", "exp", "sqrt", "abs", "floor"]
+    c1 = rng.choice(consts)
+    c2 = rng.choice(consts)
+    f1 = rng.choice(funcs)
+    f2 = rng.choice(funcs)
+    a = round(rng.uniform(0.25, 8.0), 3)
+    b = round(rng.uniform(0.1, 4.0), 3)
+    n1 = rng.randint(1, 512)
+    n2 = rng.randint(1, 512)
+    n3 = rng.randint(1, 256)
 
-    text = str(seed_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-    if not text:
-        return 0.0
+    templates = [
+        f"{n1}",
+        f"{round(rng.uniform(-1000, 1000), 6)}",
+        f"{f1}(t * {a}) * {b} + {c1}",
+        f"return {f1}(t * {c1}) * {n1} + {f2}(t * {b})",
+        f"if({f1}(t * {a}) >= 0) {n1} elif {n2}",
+        f"if({f1}(t) * {f2}(t * {b}) > {round(rng.uniform(-0.5, 0.5), 3)}) {n1} elif {n2}",
+        f"if(sin(t * MEUM) >= -0.5) {n1} elif {n2}",
+        f"{n1}, {n2}, {n3}, {rng.randint(1, 128)}, {rng.randint(1, 64)}",
+        f"lerp({n1}, {n2}, 0.5 + 0.5 * sin(t * {a}))",
+        f"clamp({f1}(t * {a}) * {n1} + {c2}, -{n2}, {n2})",
+        f"choose({n1}, {n2}, {n3}, {rng.randint(1, 99)}, floor(abs(t * {a})) )",
+        f"# time-conditional seed\nreturn ({n1} if sin(t * {a}) >= 0 else {n2})",
+        f"({n1} + {n2} * sin(t * {c1})) * (0.5 + 0.5 * cos(t * {b}))",
+        f"if(t % {max(1, int(a))} < {b}) {n1} elif {n2}",
+    ]
+    return templates[choice % len(templates)]
 
-    text = _re.sub(r"^\s*return\s+", "", text, count=1, flags=_re.I)
-    shorthand = _parse_if_elif_shorthand(text)
-    if shorthand:
-        condition, yes_expr, no_expr = shorthand
-        text = f"({yes_expr}) if ({condition}) else ({no_expr})"
 
+def evaluate_seed_component(expr, t_value=0.0, canonical_context=None):
+    """Evaluate one seed component expression to a finite float, or None."""
+    nums = _eval_seed_python(expr, t_value=t_value, canonical_context=canonical_context)
+    if not nums:
+        return None
+    return float(nums[0])
+
+
+def _split_seed_list_parts(raw):
+    """Split seed text on commas/newlines while respecting parentheses and strings.
+
+    Critical for lerp(a, b, u), clamp(v, lo, hi), choose(...): naive comma split
+    would shred function arguments.
+    """
+    text = str(raw or "").replace("\r\n", "\n").replace("\r", "\n")
+    parts = []
+    buf = []
+    depth = 0
+    in_str = None
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if in_str:
+            buf.append(ch)
+            if ch == in_str and (i == 0 or text[i - 1] != "\\"):
+                in_str = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            in_str = ch
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "(":
+            depth += 1
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == ")":
+            depth = max(0, depth - 1)
+            buf.append(ch)
+            i += 1
+            continue
+        if depth == 0 and (ch == "," or ch == "\n"):
+            piece = "".join(buf).strip()
+            if piece and not piece.startswith("#"):
+                parts.append(piece)
+            buf = []
+            i += 1
+            continue
+        if depth == 0 and ch == "#":
+            while i < len(text) and text[i] != "\n":
+                i += 1
+            continue
+        buf.append(ch)
+        i += 1
+    piece = "".join(buf).strip()
+    if piece and not piece.startswith("#"):
+        parts.append(piece)
+    return parts
+
+
+def parse_seed_numeric_list(seed_text, t_value=0.0, canonical_context=None, allow_scrape=True):
+    """Split a seed field into evaluated numeric components (finite floats only).
+
+    Failed / non-numeric parts are skipped — never replaced with hash tokens.
+    Pass allow_scrape=False to require a real evaluation (see _eval_seed_python).
+    """
+    return list(_eval_seed_python(seed_text, t_value=t_value, canonical_context=canonical_context,
+                                   allow_scrape=allow_scrape))
+
+
+def seed_script_is_viable(seed_text, n_instruments=8):
+    """Return True if seed_text evaluates to finite numbers for composition + time + instruments."""
     try:
-        t_scalar = float(np.asarray(t_value).reshape(-1)[0]) if hasattr(t_value, "__len__") else float(t_value)
+        vals = parse_seed_numeric_list(seed_text, t_value=0.0)
+        if not vals or not all(math.isfinite(v) for v in vals):
+            return False
+        for t in (0.0, 0.5, 1.25, 2.0, math.pi):
+            v = evaluate_seed_expression_at_time(seed_text, t)
+            if not math.isfinite(v):
+                return False
+        for i in range(max(2, int(n_instruments))):
+            v = vals[i % len(vals)]
+            if not math.isfinite(v):
+                return False
+        return True
     except Exception:
-        t_scalar = 0.0
+        return False
 
-    env = {
-        "__builtins__": {},
-        "sin": math.sin, "cos": math.cos, "tan": math.tan, "sqrt": math.sqrt,
-        "log": math.log, "log2": math.log2, "exp": math.exp, "abs": abs,
-        "min": min, "max": max, "pi": math.pi, "e": math.e,
-        "PHI": PHI, "MEUM": MEUM, "MEUM_NORM": MEUM_NORM, "MEUM_INV": MEUM_INV,
-        "t": t_scalar, "x": t_scalar, "y": 0.0, "z": 0.0,
-    }
-    # Canonical-unison conditions are immutable for a render transaction.
-    # They are deliberately exposed as simple numeric/bool values so seed
-    # if(...)/elif shorthand can branch on the NET active canonical set.
-    if isinstance(canonical_context, dict):
-        for _k, _v in canonical_context.items():
-            if isinstance(_k, str) and _k.isidentifier() and isinstance(_v, (int, float, bool)):
-                env[_k] = _v
 
-    try:
-        tree = ast.parse(text, mode="eval")
-        value = float(eval(compile(tree, "<groovebox-seed-t>", "eval"), env))
-        return value if math.isfinite(value) else 0.0
-    except Exception:
-        digest = hashlib.sha256(text.encode("utf-8", "replace")).digest()
-        integer = int.from_bytes(digest[:8], "big")
-        return (integer / float(2**64 - 1)) * 2.0 - 1.0
+def generate_random_seed_script(rng=None):
+    """Produce a random seed script that is guaranteed to evaluate on all instruments.
+
+    Templates are restricted to forms the evaluator accepts. Each candidate is
+    validated with seed_script_is_viable(); failures are retried (not emitted).
+    """
+    if rng is None:
+        rng = random
+
+    def _one(rng):
+        consts = ["pi", "e", "PHI", "MEUM", "MEUM_NORM", "SILVER", "SQRT2"]
+        funcs = ["sin", "cos", "tanh", "abs", "floor"]  # avoid tan/exp blow-ups
+        c1 = rng.choice(consts)
+        c2 = rng.choice(consts)
+        f1 = rng.choice(funcs)
+        f2 = rng.choice(funcs)
+        a = round(rng.uniform(0.25, 4.0), 3)
+        b = round(rng.uniform(0.1, 2.5), 3)
+        n1 = rng.randint(16, 512)
+        n2 = rng.randint(16, 512)
+        n3 = rng.randint(16, 256)
+        n4 = rng.randint(16, 128)
+        n5 = rng.randint(8, 64)
+        templates = [
+            # pure numbers
+            f"{n1}",
+            f"{round(rng.uniform(20.0, 900.0), 4)}",
+            # single math expressions (no argument commas)
+            f"{f1}(t * {a}) * {b} + {c1}",
+            f"({n1} + {n2} * {f1}(t * {c1})) * (0.5 + 0.5 * {f2}(t * {b}))",
+            f"return {f1}(t * {c1}) * {b} + {n1}",
+            # time-conditional if/elif (no inner commas)
+            f"if({f1}(t * {a}) >= 0) {n1} elif {n2}",
+            f"if(sin(t * MEUM) >= -0.5) {n1} elif {n2}",
+            f"if({f1}(t) * {f2}(t * {b}) > 0) {n1} elif {n2}",
+            f"1 if {f1}(t * {a}) >= 0 else 2",
+            f"{n1} if sin(t) >= 0 else {n2}",
+            # plain numeric lists (safe commas — no function args)
+            f"{n1}, {n2}, {n3}, {n4}, {n5}",
+            f"{n1}, {n2}, {n3}",
+            # function calls WITH commas — must survive paren-aware split
+            f"lerp({n1}, {n2}, 0.5 + 0.5 * sin(t * {a}))",
+            f"clamp({f1}(t * {a}) * {n1}, 20, {max(n1, n2)})",
+            f"choose({n1}, {n2}, {n3}, {n4}, floor(abs(t * {a})))",
+            f"({n1} if sin(t * {a}) >= 0 else {n2})",
+            f"MEUM * {n1}",
+            f"floor(abs(t * {a})) + {n1}",
+            f"isn(t * {a}) * {n1} + {n2}",
+            f"ics(t * {b}) * {n1} + {c1}",
+            f"P(isn(t), ics(t)) * {n1}",
+            f"tensor_z(sin(t), MEUM) * {n1}",
+            f"if(isn(t) >= 0) {n1} elif {n2}",
+        ]
+        return templates[rng.randrange(0, len(templates))]
+
+    # Retry until viable (or fall back to a plain integer).
+    for _ in range(24):
+        candidate = _one(rng)
+        if seed_script_is_viable(candidate, n_instruments=16):
+            return candidate
+    return str(rng.randint(16, 999))
 
 
 # FONT_READABILITY_FIX: buttons/labels were clipping their own text at 11pt
@@ -2385,7 +3000,11 @@ class DomainPartitionEquationEngine:
         try:
             self.seed = float(seed)
         except (TypeError, ValueError):
-            self.seed = float(abs(hash(str(seed))) % (10**8)) / 1e8
+            # Prefer deterministic fold of evaluated numeric seed, not Python hash()
+            try:
+                self.seed = float(_safe_int_seed(seed) % (10**8)) / 1e8
+            except Exception:
+                self.seed = 0.0
 
     def add_domain(self, domain_dict):
         self.domains.append(dict(domain_dict))
@@ -3193,19 +3812,30 @@ class PhaseLockedWavefieldEngine:
         self.goal_coherence = 0.92
 
     def get_numeric_seed(self):
-        return int(self.app.get_numeric_seed()) if hasattr(self.app, 'get_numeric_seed') else 0
+        """NumPy-safe int fold — never bare int() truncation of floats."""
+        if hasattr(self.app, "get_numeric_seed"):
+            try:
+                return _safe_int_seed(self.app.get_numeric_seed())
+            except Exception:
+                return 0
+        return 0
 
     def compute_wavefield(self):
         app = self.app
         count = int(app.spin_seq_length.value()) if hasattr(app, 'spin_seq_length') else 16
         seed = self.get_numeric_seed()
-        rng = np.random.default_rng(_safe_int_seed(seed if seed else 1))
         names = list(getattr(app, 'instrument_names_48', []) or [])
         self.wavefield = {}
         for i, name in enumerate(names):
+            # Per-instrument evaluated seed (not a name hash)
+            if hasattr(app, "_instrument_seed_int"):
+                inst_seed = int(app._instrument_seed_int(i, name=name))
+            else:
+                inst_seed = _safe_int_seed(seed if seed else 1)
+            rng = np.random.default_rng(inst_seed & 0x7fffffff)
             # Meum-spaced Euclidean hits
-            period = 2 + int((i * MEUM + seed * 0.01) % 5)
-            offset = int((i * 3 + seed) % max(period, 1))
+            period = 2 + int((i * MEUM + inst_seed * 0.01) % 5)
+            offset = int((i * 3 + inst_seed) % max(period, 1))
             euc = [((s + offset) % period) == 0 for s in range(count)]
             t = np.linspace(0, 1, count, endpoint=False)
             env = 0.45 + 0.45 * np.sin(2 * np.pi * t * MEUM + i * 0.17)
@@ -3783,11 +4413,86 @@ generative structure, and mathematically guided composition.
      to additive-fill empty structure around your carrier.
 
 --------------------------------------------------------------------------------
-4. SEED RULES
+4. SEED RULES & FULL SCRIPTING
 --------------------------------------------------------------------------------
   • Empty field, 0, and 0.0 all mean **no seed** (same treatment).
   • Any non-zero number is a real geometric anchor.
-  • Non-numeric text is hashed into a seed token.
+  • Non-numeric text that cannot be evaluated is hashed into a seed token.
+  • The seed field is a **full script panel** (scrollable QTextEdit).
+
+  RANDOM SEED BUTTON
+  ------------------
+  "🎲 Random Seed Script" (directly above the seed field) inserts a new random
+  script each click: pure numbers, time-conditional if/elif branches, math in t,
+  return-style scripts, or comma-lists of values. Only scripts that evaluate
+  cleanly for composition state, several time samples, and all instrument
+  indices are inserted (invalid candidates are retried, never emitted).
+  Edits remain fully user-owned. See also README.md in the project root.
+
+  COMPOSITION vs TIME-AXIS EVALUATION
+  -----------------------------------
+  • get_numeric_seed()  — composition-state (t = 0.0). Used for RNG seeding,
+    playlist paint, domain bias, and UI fingerprinting. Never call per-sample.
+  • evaluate_seed_expression_at_time(script, t, ctx) — render-time T-axis.
+    Time-varying scripts (sin(t), if(sin(t)...) elif ..., lists indexed by t)
+    modulate the master bus and visual engines during Play / Export.
+
+  ACCEPTED FORMS
+  --------------
+  Plain number:
+      432
+      123.45
+      (7)
+
+  Math expression (constants + functions; t available):
+      sin(t) * 100 + 50
+      MEUM * 432
+      clamp(sin(t * MEUM) * 200, -100, 100)
+      lerp(100, 800, 0.5 + 0.5 * sin(t))
+
+  Python-style ternary:
+      1 if sin(t) >= -0.5 else 2
+
+  Shorthand if / elif (balanced parentheses):
+      if(sin(t)>=-0.5) 1 elif 2
+      if(sin(t * MEUM) * cos(t) > 0) 432 elif 216
+
+  Script-style return (last return wins on multiline):
+      return sin(t * MEUM) * 100 + 50
+      # comment
+      return 1 if t < 1 else 2
+
+  Comma / newline lists — each component is evaluated as a full expression.
+  Instruments receive list[i % n] via get_seed_value_for_index(i) (never a
+  hash/byte token). Time-axis evaluation still walks the list with t:
+      1, 2, 3, 5, 8
+      100, 200, MEUM*100, 50+sin(0)
+      100
+      200
+      300
+
+  choose(a, b, c, ..., index_expr):
+      choose(100, 200, 300, 400, floor(abs(t * 2)))
+
+  AVAILABLE NAMES
+  ---------------
+  Functions: sin cos tan sqrt log log2 log10 exp abs min max floor ceil round
+             pow hypot atan2 asin acos atan sinh cosh tanh degrees radians
+             clamp(v,lo,hi)  lerp(a,b,u)  choose(...)
+             isn(x) ics(x)  isn_inv/arcisn  ics_inv/arcics
+             P(s,c) E(s,c) D(s,c)  tensor_z(s,c) tensor_rel(s,c)
+  Constants: pi e tau PHI MEUM MEUM_NORM MEUM_INV MEUM_SQ MEUM_LOG2
+             SILVER SQRT2 SQRT3
+  Variables: t (time), x (=t), y, z
+  Canonical context flags (when a render transaction is active) may also
+  appear as simple numeric/bool names for if/elif branching.
+
+  EXAMPLES
+  --------
+  if(sin(t * MEUM) >= 0) 432 elif 216
+  return lerp(110, 880, 0.5 + 0.5 * sin(t * 0.25))
+  64, 96, 128, 160, 192
+  clamp(exp(sin(t)) * MEUM * 100, 20, 2000)
 
 --------------------------------------------------------------------------------
 5. BOOTSTRAP (missing seed and/or program)
@@ -7466,27 +8171,18 @@ class PaintbrushTable(QWidget):
         # Seed / deterministic-ish local RNG.
         # ------------------------------------------------------------
         seed_val = 0
-
-        if hasattr(self.app, "input_seed_val"):
+        if hasattr(self.app, "get_seed_value_for_index"):
             try:
-                txt = self.app._seed_text()
-
-                if txt and abs(float(txt)) != 0.0:
-                    seed_val = abs(hash(float(txt))) % (2 ** 31)
-                else:
-                    seed_val = int(time.time()) % (2 ** 31)
-
-            except (ValueError, TypeError):
-                try:
-                    seed_text = self.app._seed_text()
-                except Exception:
-                    seed_text = ""
-
-                seed_val = (
-                    abs(hash(seed_text)) % (2 ** 31)
-                    if seed_text
-                    else int(time.time()) % (2 ** 31)
-                )
+                # Per-cell evaluated seed (list scripts assign different values
+                # per row/col); never hash the script text into a byte token.
+                seed_val = float(self.app.get_seed_value_for_index(row + col * 17, t_value=0.0))
+            except Exception:
+                seed_val = 0.0
+        elif hasattr(self.app, "get_numeric_seed"):
+            try:
+                seed_val = float(self.app.get_numeric_seed() or 0.0)
+            except Exception:
+                seed_val = 0.0
 
         rng = np.random.default_rng(
             _safe_int_seed(seed_val)
@@ -9879,23 +10575,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
     # Toggling the button rebuilds/removes only GOAVA-owned state.
     # =====================================================================
     def _parse_goava_seed_values(self):
-        text = self._seed_text() if hasattr(self, "_seed_text") else ""
-        parts = [p.strip() for p in re.split(r"[,\\n]+", str(text or "")) if p.strip()]
-        vals = []
-        for p in parts:
-            try:
-                v = float(p)
-                if math.isfinite(v):
-                    vals.append(v)
-            except Exception:
-                continue
-        if not vals:
-            try:
-                v = float(self.get_numeric_seed())
-                vals = [v] if math.isfinite(v) else []
-            except Exception:
-                vals = []
-        return vals
+        """Parse seed field into evaluated numeric list for GOAVA events.
+
+        Every comma/newline component is evaluated as a seed expression (math,
+        if/elif, constants). Instruments/events then consume these real numbers
+        rather than hash/byte tokens.
+        """
+        return list(self.get_seed_values(t_value=0.0))
 
     def _build_goava_composition(self):
         numbers = self._parse_goava_seed_values()
@@ -11525,8 +12211,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # USER-CONTROLLED FIELD: never assign a random/default seed here.
         self.input_seed_val.setPlainText("")
         self.input_seed_val.setToolTip(
-            "Global parametric/script seed. Enter expressions, multiline scripts, "
-            "irrational constants, or symbolic geometry. The field scrolls."
+            "Fully scriptable global seed. Numbers, math (sin/cos/MEUM/…), "
+            "if(cond) a elif b over t, return scripts, or comma-lists. "
+            "Composition uses t=0; Play/Export evaluates over time. "
+            "Use 🎲 Random Seed Script above for examples. Field scrolls."
         )
         self.input_seed_val.setAcceptRichText(False)
         self.input_seed_val.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
@@ -11544,6 +12232,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.global_geometry_layout = QHBoxLayout()
         seed_panel = QVBoxLayout()
         seed_panel.addWidget(QLabel("GLOBAL SEED / PARAMETRIC SCRIPT (USER CONTROLLED):"))
+        # RANDOM_SEED_BUTTON — generates time-conditional / math / list scripts.
+        seed_btn_row = QHBoxLayout()
+        self.btn_random_seed = QPushButton("🎲 Random Seed Script")
+        self.btn_random_seed.setToolTip(
+            "Generate a random scriptable seed: pure number, time-conditional "
+            "if/elif over t, math expressions, return-scripts, or value lists."
+        )
+        self.btn_random_seed.setStyleSheet(
+            "QPushButton { background-color:#1a2a22; color:#7dffa0; border:1px solid #3a7a55; "
+            "border-radius:3px; padding:4px 10px; font-weight:bold; }"
+            "QPushButton:hover { background-color:#243a30; }"
+        )
+        self.btn_random_seed.clicked.connect(self._on_random_seed_clicked)
+        seed_btn_row.addWidget(self.btn_random_seed)
+        seed_btn_row.addStretch(1)
+        seed_panel.addLayout(seed_btn_row)
         seed_panel.addWidget(self.input_seed_val, 1)
         seed_panel.addWidget(self.btn_help)
         self.global_geometry_layout.addLayout(seed_panel, 2)
@@ -12468,151 +13172,259 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except AttributeError:
             return self.input_seed_val.text().strip()
 
+    def _on_random_seed_clicked(self):
+        """Fill the seed field with a random time-conditional / math / list script."""
+        try:
+            script = generate_random_seed_script()
+        except Exception as exc:
+            print(f"[Seed] random script failed: {exc}")
+            script = str(random.randint(1, 999999))
+        if hasattr(self, "input_seed_val"):
+            try:
+                self.input_seed_val.blockSignals(True)
+                self.input_seed_val.setPlainText(script)
+                self.input_seed_val.blockSignals(False)
+            except Exception:
+                try:
+                    self.input_seed_val.setText(script)
+                except Exception:
+                    pass
+        # Trigger the same live-source path a manual edit would.
+        try:
+            self._on_live_source_changed()
+        except Exception:
+            pass
+        if hasattr(self, "scope_status_label"):
+            preview = script.replace("\n", " ")[:72]
+            self.scope_status_label.setText(f"🎲 Random seed script → {preview}")
+
     def get_numeric_seed(self):
         """
         Resolve the Seed field exactly once into a deterministic numeric value.
 
-        Accepted:
-            123
-            123.45
-            (123)
-            1, 2, 3
-            1
-            2
-            3
-            sin(t)
-            1 if sin(t) >= -0.5 else 2
+        Accepted: numbers, math, if/elif, return scripts, comma/newline lists.
+        Multi-value lists return the first evaluable component (not a hash).
+        Use get_seed_values() / get_seed_value_for_index(i) for per-instrument lists.
 
-        Also accepts shorthand:
-            if(sin(t)>=-0.5) 1 elif 2
+        Composition-state evaluation uses t=0.0. Time-varying scripts are
+        fully resolved during render via evaluate_seed_expression_at_time().
 
-        'return expr' is accepted for script-style seed input.
-
-        IMPORTANT:
-            This method is composition-state evaluation.
-            It must never be called from an audio-note/unison/sample loop.
+        IMPORTANT: composition-state only — never call from a per-sample loop.
         """
-        import hashlib
-        import re
-
+        vals = self.get_seed_values(t_value=0.0)
+        if vals:
+            return float(vals[0])
         raw = self._seed_text() if hasattr(self, "_seed_text") else ""
-        text = str(raw or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-
-        if not text:
+        if not str(raw or "").strip():
             return 0.0
-
-        # Accept script-style "return expression".
-        text = re.sub(r"^\s*return\s+", "", text, count=1, flags=re.I)
-
-        # Accept:
-        #   if(condition) true elif false
-        shorthand = _parse_if_elif_shorthand(text)
-        if shorthand:
-            condition, yes_expr, no_expr = shorthand
-            text = f"({yes_expr}) if ({condition}) else ({no_expr})"
-
-        env = {
-            "__builtins__": {},
-            "sin": math.sin,
-            "cos": math.cos,
-            "tan": math.tan,
-            "sqrt": math.sqrt,
-            "log": math.log,
-            "log2": math.log2,
-            "exp": math.exp,
-            "abs": abs,
-            "min": min,
-            "max": max,
-            "pi": math.pi,
-            "e": math.e,
-            "PHI": PHI,
-            "MEUM": MEUM,
-            "MEUM_NORM": MEUM_NORM,
-            "MEUM_INV": MEUM_INV,
-            "t": 0.0,
-            "x": 0.0,
-            "y": 0.0,
-            "z": 0.0,
-        }
         try:
             _ctx = getattr(self, "_canonical_render_input_context", None) or self._canonical_input_context()
-            for _k, _v in _ctx.items():
-                if isinstance(_k, str) and _k.isidentifier() and isinstance(_v, (int, float, bool)):
-                    env[_k] = _v
+        except Exception:
+            _ctx = None
+        try:
+            return float(evaluate_seed_expression_at_time(raw, 0.0, _ctx))
+        except Exception:
+            return 0.0
+
+    def get_seed_values(self, t_value=0.0):
+        """Return every evaluable numeric component of the seed field as floats.
+
+        Scripts, lists, and conditionals are fully evaluated. Failed parts are
+        skipped (never replaced with hash/byte tokens). Empty field → [].
+
+        DEGENERATE_T_GUARD: a script can be perfectly valid and still be
+        undefined at one exact instant — e.g. "1/t", "log(t)", "sqrt(t-1)",
+        "100/tan(t)" all blow up (ZeroDivisionError / domain error / NaN) at
+        t=0.0, which is precisely the fixed t that composition-state
+        evaluation (get_numeric_seed, per-instrument assignment before
+        render, etc.) always uses. Without this guard, that single
+        degenerate instant made the whole script look unevaluable, so
+        callers fell through to the text-hash last resort — a static,
+        script-unrelated number that also never varies with time. Real user
+        data (their number/conditional script) was being silently discarded
+        for scripts that were entirely correct. Before giving up, retry at a
+        few nearby time offsets so a script that degenerates only at the one
+        requested instant still resolves to a real evaluated value.
+        """
+        raw = self._seed_text() if hasattr(self, "_seed_text") else ""
+        if not str(raw or "").strip():
+            return []
+        try:
+            _ctx = getattr(self, "_canonical_render_input_context", None) or self._canonical_input_context()
+        except Exception:
+            _ctx = None
+        # Require a REAL evaluation (allow_scrape=False) at the requested t and,
+        # failing that, at nearby t before ever falling back to digit-scraping —
+        # otherwise a script with embedded numbers (e.g. "sqrt(t - 1) * 100")
+        # would get those literals scraped out of the text instead of the
+        # correctly retried, mathematically real evaluated value.
+        vals = parse_seed_numeric_list(raw, t_value=t_value, canonical_context=_ctx, allow_scrape=False)
+        if vals:
+            return vals
+        try:
+            base_t = float(t_value)
+        except Exception:
+            base_t = 0.0
+        for probe_t in (base_t + 1e-6, base_t - 1e-6, base_t + 1e-3, base_t + 0.5, base_t + 1.0):
+            vals = parse_seed_numeric_list(raw, t_value=probe_t, canonical_context=_ctx, allow_scrape=False)
+            if vals:
+                return vals
+        # True last resort: no evaluable form exists at any probed t — only
+        # now fall back to scraping bare numeric tokens out of the raw text.
+        vals = parse_seed_numeric_list(raw, t_value=t_value, canonical_context=_ctx, allow_scrape=True)
+        return vals
+
+    def get_seed_value_for_index(self, index, t_value=0.0):
+        """Per-instrument / per-row seed: list[i % n], or single evaluated script.
+
+        Every instrument receives a real evaluated number from the script field.
+        Hash/byte tokens are never used here.
+        """
+        vals = self.get_seed_values(t_value=t_value)
+        if not vals:
+            return 0.0
+        try:
+            i = int(index)
+        except Exception:
+            i = 0
+        return float(vals[i % len(vals)])
+
+    def _instrument_seed_float(self, index, t_value=0.0, sequence_id=None):
+        """Evaluated seed float for instrument/row index (list-aware).
+
+        When the seed field is a list, instrument `index` picks list[i % n].
+        Optional sequence_id rotates further through the list so every sequence
+        bank slot receives distinct evaluated data (not only the selected one).
+        """
+        try:
+            vals = list(self.get_seed_values(t_value=t_value) or [])
+        except Exception:
+            vals = []
+        if not vals:
+            try:
+                return float(self.get_numeric_seed() or 0.0)
+            except Exception:
+                return 0.0
+        try:
+            i = int(index)
+        except Exception:
+            i = 0
+        if sequence_id is not None:
+            try:
+                # Offset into the list by sequence number so seq 1,2,3… differ.
+                i = i + (int(sequence_id) - 1)
+            except Exception:
+                pass
+        return float(vals[i % len(vals)])
+
+    def _instrument_seed_int(self, index, name="", t_value=0.0, sequence_id=None):
+        """NumPy-safe int seed for instrument (+ optional sequence) from scripts.
+
+        Primary entropy is the evaluated seed list/script (never sha256 of the
+        instrument name). Sequence_id further selects list components so all
+        sequence bank slots are seeded, not only the currently selected one.
+        """
+        val = self._instrument_seed_float(index, t_value=t_value, sequence_id=sequence_id)
+        base = _safe_int_seed(val)
+        vals = []
+        try:
+            vals = list(self.get_seed_values(t_value=t_value) or [])
+        except Exception:
+            vals = []
+        if sequence_id is not None:
+            try:
+                base = (base ^ (int(sequence_id) * 0x9E3779B1)) & 0x7FFFFFFF
+            except Exception:
+                pass
+        if len(vals) <= 1 and name:
+            # Light non-destructive salt — does not replace the evaluated seed.
+            salt = (sum(ord(c) for c in str(name)) * 131) & 0xFFFF
+            base = (base ^ salt) & 0x7FFFFFFF
+        return int(base) & 0x7FFFFFFF
+
+    def _iter_sequence_mems(self, instrument_name=None):
+        """Yield (sequence_id, mem) for every sequence in an instrument bank.
+
+        Ensures seed/engine writes reach the full bank, not only the selected
+        sequence mirrored into instrument_sequencer_memory.
+        """
+        name = instrument_name or self._current_instrument_name()
+        banks = getattr(self, "instrument_sequence_banks", {}) or {}
+        bank = banks.setdefault(name, {})
+        if not bank:
+            mem = self.instrument_sequencer_memory.setdefault(name, {
+                "steps": [], "gates": [], "amplitudes": [], "pitches": [],
+                "probabilities": [], "offsets": [], "pattern_length": 16
+            })
+            bank[1] = mem
+        for sid in sorted(int(k) for k in bank.keys() if str(k).isdigit()):
+            mem = bank.get(sid)
+            if isinstance(mem, dict):
+                yield sid, mem
+
+    def _sync_selected_sequence_mirrors(self):
+        """Point instrument_sequencer_memory at each instrument's selected bank slot."""
+        banks = getattr(self, "instrument_sequence_banks", {}) or {}
+        selected = getattr(self, "instrument_selected_sequence", {}) or {}
+        for name, bank in banks.items():
+            if not isinstance(bank, dict) or not bank:
+                continue
+            sid = int(selected.get(name, next(iter(sorted(int(k) for k in bank if str(k).isdigit())), 1)))
+            if sid not in bank:
+                sid = sorted(int(k) for k in bank if str(k).isdigit())[0]
+            self.instrument_sequencer_memory[name] = bank[sid]
+            self.instrument_selected_sequence[name] = sid
+
+    def _refresh_after_file_input(self, reason="file_input"):
+        """Re-bind seed scripts to every instrument after WAV/video/project load.
+
+        File carriers change `carrier_present` / `carrier_rms` / `carrier_peak` in
+        the seed expression environment. Without this refresh, scripts that
+        branch on those names (and list seeds assigned per instrument) stay
+        frozen until the next manual engine toggle.
+        """
+        try:
+            self._canonical_render_input_context = dict(self._canonical_input_context())
+        except Exception:
+            self._canonical_render_input_context = {}
+        # Domain engine longitudinal seed weight tracks the evaluated seed field.
+        try:
+            if hasattr(self, "domain_eq_engine") and self.domain_eq_engine is not None:
+                self.domain_eq_engine.set_seed(float(self.get_numeric_seed() or 0.0))
         except Exception:
             pass
-
-        def evaluate(expr):
-            expr = expr.strip()
-
-            # Remove harmless outer parentheses.
-            while len(expr) >= 2 and expr[0] == "(" and expr[-1] == ")":
+        # Force live engines / GOAVA / playlist paint to re-read the seed list
+        # for every instrument index.
+        try:
+            if hasattr(self, "_on_live_source_changed"):
+                self._on_live_source_changed()
+        except Exception as exc:
+            print(f"[FileInput] live source refresh ({reason}): {exc}")
+        try:
+            if hasattr(self, "_rebuild_active_canonical_playlist"):
+                # Only rebuild when at least one canonical engine is active.
+                if hasattr(self, "_canonical_active_count") and self._canonical_active_count() > 0:
+                    self._rebuild_active_canonical_playlist(reason=reason)
+        except Exception as exc:
+            print(f"[FileInput] canonical rebuild ({reason}): {exc}")
+        # Clear any one-shot render cache so the next Play uses the new carrier
+        # and per-instrument seed mapping.
+        for attr in ("play_buffer", "_canonical_unison_effect_buffer", "_seed_time_curve"):
+            if hasattr(self, attr):
                 try:
-                    ast.parse(expr, mode="eval")
+                    setattr(self, attr, None)
                 except Exception:
-                    break
-                expr = expr[1:-1].strip()
-
+                    pass
+        if hasattr(self, "scope_status_label"):
             try:
-                value = float(expr)
-                return value if math.isfinite(value) else None
+                nvals = len(self.get_seed_values(t_value=0.0) or [])
+                carrier = "yes" if getattr(self, "imported_waveform", None) is not None else "no"
+                self.scope_status_label.setText(
+                    f"📂 {reason}: carrier={carrier} · seed components={nvals} · instruments refreshed"
+                )
             except Exception:
                 pass
 
-            try:
-                tree = ast.parse(expr, mode="eval")
-                value = eval(
-                    compile(tree, "<groovebox-seed>", "eval"),
-                    env,
-                )
-                value = float(value)
-                return value if math.isfinite(value) else None
-            except Exception:
-                return None
-
-        # Whole expression first.
-        value = evaluate(text)
-        if value is not None:
-            return value
-
-        # Commas and line returns are composite seed components.
-        parts = [
-            p.strip()
-            for p in re.split(r"[,\n]+", text)
-            if p.strip()
-        ]
-
-        values = []
-        for part in parts:
-            # Permit "return ..." on individual lines too.
-            part = re.sub(r"^\s*return\s+", "", part, count=1, flags=re.I)
-            value = evaluate(part)
-            if value is not None:
-                values.append(value)
-
-        if values:
-            payload = "|".join(
-                f"{v:.17g}" for v in values
-            ).encode("utf-8")
-
-            digest = hashlib.sha256(payload).digest()
-            integer = int.from_bytes(digest[:8], "big")
-
-            return (
-                integer / float(2**64 - 1)
-            ) * 2.0 - 1.0
-
-        # Unsupported text gets a deterministic token.
-        # It does NOT get Python's randomized hash().
-        digest = hashlib.sha256(
-            text.encode("utf-8", "replace")
-        ).digest()
-
-        integer = int.from_bytes(digest[:8], "big")
-
-        return (
-            integer / float(2**64 - 1)
-        ) * 2.0 - 1.0
 
     def open_domain_equation_editor(self):
         """Open the partitionable time/space domain equation editor dialog."""
@@ -12620,10 +13432,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.domain_eq_engine = DomainPartitionEquationEngine(seed=0.0)
         # Sync seed from UI into the engine (longitudinal weighting)
         try:
-            seed_txt = self._seed_text() if hasattr(self, 'input_seed_val') else "0"
-            self.domain_eq_engine.set_seed(float(seed_txt) if seed_txt not in ("",) else 0.0)
-        except ValueError:
-            self.domain_eq_engine.set_seed(self.get_numeric_seed() / 1e9)
+            self.domain_eq_engine.set_seed(float(self.get_numeric_seed() or 0.0))
+        except Exception:
+            self.domain_eq_engine.set_seed(0.0)
         dlg = DomainEquationEditorDialog(self.domain_eq_engine, parent=self)
         # Non-modal: it should run alongside the main window instead of
         # blocking it, and it gets the same animated math field as other
@@ -13142,21 +13953,32 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     "engine_step_sources": {}, "touched": set(),
                 }
                 channel = sum(ord(c) for c in source) & 0xFFFF
-                name_hash = int.from_bytes(hashlib.sha256(name.encode("utf-8")).digest()[:4], "big")
-                rng = np.random.default_rng((seed ^ channel ^ name_hash) & 0x7fffffff)
+                # Per-instrument evaluated seed (list scripts → distinct numbers).
+                # Do NOT primary-seed from sha256(name) — that overwrote list data.
+                try:
+                    name_idx = list(names).index(name)
+                except Exception:
+                    name_idx = 0
+                # Fold sequence slot id into seed so each bank sequence differs.
+                inst_seed_i = (
+                    self._instrument_seed_int(name_idx, name=name, sequence_id=idx)
+                    if hasattr(self, "_instrument_seed_int")
+                    else (seed ^ channel ^ int(idx)) & 0x7fffffff
+                )
+                rng = np.random.default_rng((inst_seed_i ^ channel) & 0x7fffffff)
                 for j in range(n):
                     if source == "goava":
                         mem["steps"][j] = True
-                        mem["pitches"][j] = float(np.clip(0.86 + 0.28 * ((j + seed) % 7) / 6.0, 0.5, 1.5))
+                        mem["pitches"][j] = float(np.clip(0.86 + 0.28 * ((j + inst_seed_i) % 7) / 6.0, 0.5, 1.5))
                     elif source == "euclidean":
                         pulses = max(2, n // 4)
-                        stride = max(2, int(2 + (channel % 5)))
-                        mem["steps"][j] = bool(((j * stride + channel) % n) < pulses)
+                        stride = max(2, int(2 + (inst_seed_i % 5)))
+                        mem["steps"][j] = bool(((j * stride + inst_seed_i) % n) < pulses)
                     else:
-                        threshold = 0.34 + 0.18 * math.sin((j + 1) * MEUM_INV + channel * 1e-4)
+                        threshold = 0.34 + 0.18 * math.sin((j + 1) * MEUM_INV + inst_seed_i * 1e-4)
                         mem["steps"][j] = bool(rng.random() > threshold)
-                    mem["amplitudes"][j] = float(0.35 + 0.6 * ((math.sin((j + 1) * MEUM + channel * 0.001) + 1.0) * 0.5))
-                    mem["offsets"][j] = float(np.clip(0.22 * math.sin((j + 1) * MEUM_INV + seed * 1e-5), -0.5, 0.5))
+                    mem["amplitudes"][j] = float(0.35 + 0.6 * ((math.sin((j + 1) * MEUM + inst_seed_i * 0.001) + 1.0) * 0.5))
+                    mem["offsets"][j] = float(np.clip(0.22 * math.sin((j + 1) * MEUM_INV + inst_seed_i * 1e-5), -0.5, 0.5))
                     mem["engine_step_sources"][int(j)] = {f"canonical:{source}"}
                 bank[idx] = mem
 
@@ -13291,13 +14113,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
         rows = int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else len(getattr(self, 'master_playlist_data', []))
         if not getattr(self, 'master_playlist_data', None):
             return
-        numeric_seed = self.get_numeric_seed()
         if rng is None:
-            rng = np.random.default_rng(_safe_int_seed(numeric_seed))
+            rng = np.random.default_rng(_safe_int_seed(self.get_numeric_seed()))
         for i, entry in enumerate(self.master_playlist_data[:rows]):
+            # Per-row evaluated seed (list scripts → distinct phase per row/instrument)
+            try:
+                row_seed = float(self._instrument_seed_float(i))
+            except Exception:
+                row_seed = float(self.get_numeric_seed() or 0.0)
             # Seed/phase field: smooth, deterministic, with optional random perturbation.
-            phase = (i / max(rows, 1)) * 2.0 * np.pi + (numeric_seed % 100000) * 0.000013
-            field = 0.5 + 0.5 * np.sin(phase * MEUM_CONSTANT + numeric_seed * 0.0000017)
+            phase = (i / max(rows, 1)) * 2.0 * np.pi + (abs(row_seed) % 100000) * 0.000013
+            field = 0.5 + 0.5 * np.sin(phase * MEUM_CONSTANT + row_seed * 0.0000017)
             field = 0.5 * field + 0.5 * self._contextual_numerology(step=i, row=i) if hasattr(self, "_contextual_numerology") else field
             target = 0.25 + 0.75 * field
             if randomize:
@@ -14056,6 +14882,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if hasattr(self, 'domain_eq_engine') and data.get("domain_eq"):
                 self.domain_eq_engine.from_json(data["domain_eq"])
             self.reload_active_instrument_sequencer_ui()
+            # Re-bind seed scripts + carrier context to every instrument after restore.
+            self._refresh_after_file_input(reason="project_load")
             QMessageBox.information(self, "Loaded", f"Project loaded:\n{path}")
         except Exception as e:
             QMessageBox.warning(self, "Load failed", str(e))
@@ -14391,27 +15219,44 @@ class MathematiciansGrooveboxApp(QMainWindow):
         Kit-provided program parameters from seed — sparse Euclidean-ish carriers
         so the playlist editor has structure to write against. Only fills empty fields.
         """
-        rng = np.random.default_rng(int(numeric_seed) % (2**31))
         count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16
         names = list(getattr(self, 'instrument_names_48', []))
 
         for i, name in enumerate(names):
-            mem = self.instrument_sequencer_memory.setdefault(name, {
-                "steps": [False] * count,
-                "amplitudes": [1.0] * count,
-                "gates": [True] * count,
-                "probabilities": [100] * count,
-            })
-            self._ensure_seq_mem_length(mem, count)
-            pulses = max(1, int((i * MEUM_CONSTANT + (numeric_seed % 5) + 2) % 5) + 1)
-            pulses = min(pulses, max(1, count // 2))
-            for s in range(count):
-                on = ((s * pulses) % count) < pulses and (rng.random() < 0.85)
-                mem["steps"][s] = bool(on)
-                if on:
-                    ladder = [0.5, 0.75, 1.0]
-                    mem["amplitudes"][s] = float(ladder[(i + s + int(numeric_seed)) % len(ladder)])
-                    mem["probabilities"][s] = 100
+            seq_iter = (
+                list(self._iter_sequence_mems(name))
+                if hasattr(self, "_iter_sequence_mems")
+                else [(1, self.instrument_sequencer_memory.setdefault(name, {
+                    "steps": [False] * count,
+                    "amplitudes": [1.0] * count,
+                    "gates": [True] * count,
+                    "probabilities": [100] * count,
+                }))]
+            )
+            for sid, mem in seq_iter:
+                try:
+                    inst_i = int(self._instrument_seed_int(i, name=name, sequence_id=sid))
+                except Exception:
+                    inst_i = int(numeric_seed) % (2**31)
+                rng = np.random.default_rng(inst_i & 0x7fffffff)
+                self._ensure_seq_mem_length(mem, count)
+                pulses = max(1, int((i * MEUM_CONSTANT + (inst_i % 5) + 2 + int(sid)) % 5) + 1)
+                pulses = min(pulses, max(1, count // 2))
+                for s in range(count):
+                    on = ((s * pulses) % count) < pulses and (rng.random() < 0.85)
+                    mem["steps"][s] = bool(on)
+                    if on:
+                        ladder = [0.5, 0.75, 1.0]
+                        mem["amplitudes"][s] = float(ladder[(i + s + int(inst_i)) % len(ladder)])
+                        mem["probabilities"][s] = 100
+            # Keep selected sequence mirror in instrument_sequencer_memory
+            try:
+                sel = int((getattr(self, "instrument_selected_sequence", {}) or {}).get(name, 1))
+                bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(name, {})
+                if sel in bank:
+                    self.instrument_sequencer_memory[name] = bank[sel]
+            except Exception:
+                pass
 
         rows = int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else 32
         if not hasattr(self, 'master_playlist_data') or self.master_playlist_data is None:
@@ -14419,7 +15264,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         while len(self.master_playlist_data) < rows:
             self.master_playlist_data.append({})
         for row_idx in range(rows):
-            op_name = names[(row_idx + int(numeric_seed % max(len(names), 1))) % max(len(names), 1)] if names else "Operator"
+            op_name = names[(row_idx + int(self._instrument_seed_int(row_idx) % max(len(names), 1))) % max(len(names), 1)] if names else "Operator"
             entry = self.master_playlist_data[row_idx]
             if not entry.get("operator"):
                 entry["operator"] = op_name
@@ -14502,21 +15347,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     else:
                         mem["amplitudes"][s] = nearest  # exact ladder snap
 
-            # Fingerprint pattern for cross-instrument linking
-            fp = tuple(
-                (bool(mem["steps"][s]), round(float(mem["amplitudes"][s]), 2))
-                for s in range(count)
-            )
-            if any(mem["steps"][s] for s in range(count)):
-                if fp in pattern_index:
-                    # Snap this instrument's amps exactly to the canonical instrument's ladder values
-                    canon = self.instrument_sequencer_memory[pattern_index[fp]]
-                    for s in range(count):
-                        mem["steps"][s] = bool(canon["steps"][s])
-                        mem["amplitudes"][s] = float(canon["amplitudes"][s])
-                    stats["patterns_linked"] += 1
-                else:
-                    pattern_index[fp] = name
+            # Fingerprint pattern for cross-instrument linking.
+            # SKIP when seed field yields multiple evaluated components — linking
+            # would overwrite per-instrument list/script differentiation.
+            try:
+                _seed_vals = list(self.get_seed_values(t_value=0.0) or [])
+            except Exception:
+                _seed_vals = []
+            if len(_seed_vals) <= 1:
+                fp = tuple(
+                    (bool(mem["steps"][s]), round(float(mem["amplitudes"][s]), 2))
+                    for s in range(count)
+                )
+                if any(mem["steps"][s] for s in range(count)):
+                    if fp in pattern_index:
+                        # Snap this instrument's amps exactly to the canonical instrument's ladder values
+                        canon = self.instrument_sequencer_memory[pattern_index[fp]]
+                        for s in range(count):
+                            mem["steps"][s] = bool(canon["steps"][s])
+                            mem["amplitudes"][s] = float(canon["amplitudes"][s])
+                        stats["patterns_linked"] += 1
+                    else:
+                        pattern_index[fp] = name
 
         # --- 4 Patch connections dedupe ---
         if hasattr(self, 'patch_connections') and self.patch_connections:
@@ -14620,50 +15472,60 @@ class MathematiciansGrooveboxApp(QMainWindow):
         preserved = 0
 
         for i, name in enumerate(self.instrument_names_48):
-            mem = self._current_sequence_mem(name) if hasattr(self, "_current_sequence_mem") else self.instrument_sequencer_memory[name]
-            pcount = int(mem.get("pattern_length", count))
-            self._ensure_seq_mem_length(mem, pcount)
-            user_mask = self._user_pattern_mask(mem, pcount, instrument_name=name)
+            seq_iter = (
+                list(self._iter_sequence_mems(name))
+                if hasattr(self, "_iter_sequence_mems")
+                else [(1, self._current_sequence_mem(name) if hasattr(self, "_current_sequence_mem") else self.instrument_sequencer_memory[name])]
+            )
+            for sid, mem in seq_iter:
+                pcount = int(mem.get("pattern_length", count))
+                self._ensure_seq_mem_length(mem, pcount)
+                user_mask = self._user_pattern_mask(mem, pcount, instrument_name=name)
 
-            # Per-instrument Euclidean pulse count (golden-ish, seed-stable)
-            pulses = max(2, int((i * MEUM_CONSTANT + (seed % 5) + 3) % 7) + 2)
-            pulses = min(pulses, pcount)
-            euclidean = [((s * pulses) % pcount) < pulses for s in range(pcount)]
+                # Per-instrument + per-sequence evaluated seed
+                try:
+                    inst_seed = float(self._instrument_seed_float(i, sequence_id=sid))
+                except Exception:
+                    inst_seed = float(seed)
+                # Per-instrument Euclidean pulse count (golden-ish, seed-stable)
+                pulses = max(2, int((i * MEUM_CONSTANT + (abs(inst_seed) % 5) + 3 + int(sid)) % 7) + 2)
+                pulses = min(pulses, pcount)
+                euclidean = [((s * pulses) % pcount) < pulses for s in range(pcount)]
 
-            # Spectral opposite of user density: prefer filling where user is sparse
-            user_density = sum(user_mask) / max(pcount, 1)
+                # Spectral opposite of user density: prefer filling where user is sparse
+                user_density = sum(user_mask) / max(pcount, 1)
 
-            for s in range(pcount):
-                if user_mask[s]:
-                    # Preserve user step; may only gently raise amp toward phase-lock envelope
-                    preserved += 1
-                    lock_env = 0.5 + 0.5 * abs(np.sin(s * np.pi / count))
-                    mem["amplitudes"][s] = float(max(mem["amplitudes"][s], lock_env * 0.85))
-                    mem["probabilities"][s] = max(int(mem["probabilities"][s]), 100)
-                    continue
+                for s in range(pcount):
+                    if user_mask[s]:
+                        # Preserve user step; may only gently raise amp toward phase-lock envelope
+                        preserved += 1
+                        lock_env = 0.5 + 0.5 * abs(np.sin(s * np.pi / count))
+                        mem["amplitudes"][s] = float(max(mem["amplitudes"][s], lock_env * 0.85))
+                        mem["probabilities"][s] = max(int(mem["probabilities"][s]), 100)
+                        continue
 
-                # Empty / unspecified slot — additive fill only
-                is_eucl = euclidean[s]
-                # Opposite / complement: occasionally place a soft hit where Euclidean is OFF
-                # when user density is high (fill the sparse complement)
-                complement = (not is_eucl) and (user_density > 0.35) and (rng.random() < 0.18)
+                    # Empty / unspecified slot — additive fill only
+                    is_eucl = euclidean[s]
+                    # Opposite / complement: occasionally place a soft hit where Euclidean is OFF
+                    # when user density is high (fill the sparse complement)
+                    complement = (not is_eucl) and (user_density > 0.35) and (rng.random() < 0.18)
 
-                if is_eucl or complement:
-                    mem["steps"][s] = True
-                    mem.setdefault("engine_step_sources", {}).setdefault(int(s), set()).add(getattr(self, "_active_engine_write_source", "euclidean"))
-                    base_amp = 0.55 + 0.35 * abs(np.sin(s * np.pi / count + i * 0.1))
-                    if complement:
-                        base_amp *= 0.45  # softer opposite
-                    mem["amplitudes"][s] = float(np.clip(base_amp, 0.15, 1.0))
-                    # Sporadic spectrum commutation: slightly lower probability on complements
-                    mem["probabilities"][s] = 100 if is_eucl else int(rng.integers(55, 85))
-                    mem["offsets"][s] = float(np.clip(
-                        0.18 * math.sin((s + 1) * MEUM_INV + i * MEUM_NORM)
-                        + (float(rng.uniform(-0.08, 0.08)) if complement else 0.0),
-                        -0.5, 0.5
-                    ))
-                    filled += 1
-                # else leave False / untouched
+                    if is_eucl or complement:
+                        mem["steps"][s] = True
+                        mem.setdefault("engine_step_sources", {}).setdefault(int(s), set()).add(getattr(self, "_active_engine_write_source", "euclidean"))
+                        base_amp = 0.55 + 0.35 * abs(np.sin(s * np.pi / count + i * 0.1))
+                        if complement:
+                            base_amp *= 0.45  # softer opposite
+                        mem["amplitudes"][s] = float(np.clip(base_amp, 0.15, 1.0))
+                        # Sporadic spectrum commutation: slightly lower probability on complements
+                        mem["probabilities"][s] = 100 if is_eucl else int(rng.integers(55, 85))
+                        mem["offsets"][s] = float(np.clip(
+                            0.18 * math.sin((s + 1) * MEUM_INV + i * MEUM_NORM)
+                            + (float(rng.uniform(-0.08, 0.08)) if complement else 0.0),
+                            -0.5, 0.5
+                        ))
+                        filled += 1
+                    # else leave False / untouched
 
         self._engines_write_automation_lanes(source="euclidean")
         if hasattr(self, "_canonical_playlist_paint"):
@@ -14683,6 +15545,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             except Exception:
                 pass
         self._record_engine_step_ownership("euclidean")
+        if hasattr(self, "_sync_selected_sequence_mirrors"):
+            self._sync_selected_sequence_mirrors()
         self.reload_active_instrument_sequencer_ui()
         print(
             f"[Euclidean Phase-Lock] Additive fill complete. "
@@ -14772,105 +15636,117 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 wf_engine.compute_wavefield()
 
         for i, name in enumerate(self.instrument_names_48):
-            mem = self._current_sequence_mem(name) if hasattr(self, "_current_sequence_mem") else self.instrument_sequencer_memory[name]
-            pcount = int(mem.get("pattern_length", count))
-            self._ensure_seq_mem_length(mem, pcount)
-            user_mask = self._user_pattern_mask(mem, pcount, instrument_name=name)
+            seq_iter = (
+                list(self._iter_sequence_mems(name))
+                if hasattr(self, "_iter_sequence_mems")
+                else [(1, self._current_sequence_mem(name) if hasattr(self, "_current_sequence_mem") else self.instrument_sequencer_memory[name])]
+            )
+            for sid, mem in seq_iter:
+                pcount = int(mem.get("pattern_length", count))
+                self._ensure_seq_mem_length(mem, pcount)
+                user_mask = self._user_pattern_mask(mem, pcount, instrument_name=name)
 
-            # Extract user carrier pattern (list of active indices)
-            user_hits = [s for s in range(pcount) if user_mask[s] and mem["steps"][s]]
-            user_amps = [mem["amplitudes"][s] for s in user_hits] if user_hits else [0.7]
+                # Per-instrument + per-sequence evaluated seed
+                try:
+                    inst_seed = float(self._instrument_seed_float(i, sequence_id=sid))
+                    seed_bits = int(self._instrument_seed_int(i, name=name, sequence_id=sid))
+                except Exception:
+                    inst_seed = float(numeric_seed)
+                    seed_bits = _safe_int_seed(numeric_seed)
 
-            # Fractal scale factors from seed (self-similar echoes of the carrier)
-            scales = [1]
-            for k in range(1, 4):
-                seed_bits = _safe_int_seed(numeric_seed)
-                sc = int(round(pcount / (2 ** k) * (1.0 + ((seed_bits >> k) % 5) * 0.05))) or 1
-                if sc not in scales and sc < pcount:
-                    scales.append(sc)
-            for s in range(pcount):
-                if user_mask[s]:
-                    preserved_steps += 1
-                    continue  # hard preserve
+                # Extract user carrier pattern (list of active indices)
+                user_hits = [s for s in range(pcount) if user_mask[s] and mem["steps"][s]]
+                user_amps = [mem["amplitudes"][s] for s in user_hits] if user_hits else [0.7]
 
-                # Fractal echo: map step s back onto the user carrier at each scale
-                echo_on = False
-                echo_amp = 0.0
-                if user_hits:
-                    for sc in scales:
-                        # fold s into a carrier-relative index
-                        src = user_hits[(s * sc + (numeric_seed % max(pcount, 1))) % len(user_hits)]
-                        # stochastic gate — denser when seed modulus is high, but still sparse
-                        gate_p = 0.22 + 0.15 * ((numeric_seed + i + sc) % 5) / 5.0
-                        # Wavefield communication: bias gate toward Euclidean + seed-harmonic slots
-                        if wf_engine is not None:
-                            hints = wf_engine.get_hints(name, s)
-                            if hints:
-                                context = self._contextual_numerology(name, s, s) if hasattr(self, "_contextual_numerology") else 0.5
-                                gate_p *= (0.75 + 0.5 * context)
-                                if hints["euclidean"]:
-                                    gate_p = min(0.85, gate_p + 0.2 * hints["seed_harmonic"])
-                                else:
-                                    gate_p *= 0.55
-                        if rng.random() < gate_p:
-                            echo_on = True
-                            # amplitude inherits fractally from source user amp, attenuated by scale
-                            src_amp = mem["amplitudes"][src] if src < len(mem["amplitudes"]) else 0.7
-                            echo_amp = max(echo_amp, float(src_amp) * (0.55 / sc))
+                # Fractal scale factors from THIS instrument+sequence seed
+                scales = [1]
+                for k in range(1, 4):
+                    sc = int(round(pcount / (2 ** k) * (1.0 + ((seed_bits >> k) % 5) * 0.05))) or 1
+                    if sc not in scales and sc < pcount:
+                        scales.append(sc)
+                for s in range(pcount):
+                    if user_mask[s]:
+                        preserved_steps += 1
+                        continue  # hard preserve
+
+                    # Fractal echo: map step s back onto the user carrier at each scale
+                    echo_on = False
+                    echo_amp = 0.0
+                    if user_hits:
+                        for sc in scales:
+                            # fold s into a carrier-relative index
+                            src = user_hits[(s * sc + (int(abs(inst_seed)) % max(pcount, 1))) % len(user_hits)]
+                            # stochastic gate — denser when seed modulus is high, but still sparse
+                            gate_p = 0.22 + 0.15 * ((int(abs(inst_seed)) + i + sc) % 5) / 5.0
+                            # Wavefield communication: bias gate toward Euclidean + seed-harmonic slots
                             if wf_engine is not None:
                                 hints = wf_engine.get_hints(name, s)
                                 if hints:
-                                    echo_amp = max(echo_amp, float(hints["envelope"]) * 0.5)
-                else:
-                    # No user carrier — light seed texture, prefer wavefield Euclidean slots
-                    base_p = 0.12
-                    context = self._contextual_numerology(name, s, s) if hasattr(self, "_contextual_numerology") else 0.5
-                    base_p *= (0.65 + 0.7 * context)
-                    if wf_engine is not None:
-                        hints = wf_engine.get_hints(name, s)
-                        if hints and hints["euclidean"]:
-                            base_p = 0.28 * hints["seed_harmonic"]
-                    if rng.random() < base_p:
-                        echo_on = True
-                        echo_amp = 0.35 + 0.25 * rng.random()
+                                    context = self._contextual_numerology(name, s, s) if hasattr(self, "_contextual_numerology") else 0.5
+                                    gate_p *= (0.75 + 0.5 * context)
+                                    if hints["euclidean"]:
+                                        gate_p = min(0.85, gate_p + 0.2 * hints["seed_harmonic"])
+                                    else:
+                                        gate_p *= 0.55
+                            if rng.random() < gate_p:
+                                echo_on = True
+                                # amplitude inherits fractally from source user amp, attenuated by scale
+                                src_amp = mem["amplitudes"][src] if src < len(mem["amplitudes"]) else 0.7
+                                echo_amp = max(echo_amp, float(src_amp) * (0.55 / sc))
+                                if wf_engine is not None:
+                                    hints = wf_engine.get_hints(name, s)
+                                    if hints:
+                                        echo_amp = max(echo_amp, float(hints["envelope"]) * 0.5)
+                    else:
+                        # No user carrier — light seed texture, prefer wavefield Euclidean slots
+                        base_p = 0.12
+                        context = self._contextual_numerology(name, s, s) if hasattr(self, "_contextual_numerology") else 0.5
+                        base_p *= (0.65 + 0.7 * context)
                         if wf_engine is not None:
                             hints = wf_engine.get_hints(name, s)
-                            if hints:
-                                echo_amp = max(echo_amp, float(hints["envelope"]) * 0.55)
+                            if hints and hints["euclidean"]:
+                                base_p = 0.28 * hints["seed_harmonic"]
+                        if rng.random() < base_p:
+                            echo_on = True
+                            echo_amp = 0.35 + 0.25 * rng.random()
+                            if wf_engine is not None:
+                                hints = wf_engine.get_hints(name, s)
+                                if hints:
+                                    echo_amp = max(echo_amp, float(hints["envelope"]) * 0.55)
 
-                if echo_on:
-                    mem["steps"][s] = True
-                    mem.setdefault("engine_step_sources", {}).setdefault(int(s), set()).add(getattr(self, "_active_engine_write_source", "seeded"))
-                    mem["amplitudes"][s] = float(np.clip(echo_amp, 0.12, 1.0))
-                    mem["probabilities"][s] = int(rng.integers(70, 100))
-                    if s < len(mem.get("pitches", [])):
-                        ctx = self._contextual_numerology(name, s, s) if hasattr(self, "_contextual_numerology") else 0.5
-                        mem["pitches"][s] = float(np.clip(0.85 + 0.35 * ctx + rng.uniform(-0.06, 0.06), 0.5, 1.5))
-                    mem["offsets"][s] = float(np.clip(
-                        0.24 * math.sin((s + 1) * MEUM + i * PHI)
-                        + rng.uniform(-0.12, 0.12),
-                        -0.5, 0.5
-                    ))
-                    filled_steps += 1
+                    if echo_on:
+                        mem["steps"][s] = True
+                        mem.setdefault("engine_step_sources", {}).setdefault(int(s), set()).add(getattr(self, "_active_engine_write_source", "seeded"))
+                        mem["amplitudes"][s] = float(np.clip(echo_amp, 0.12, 1.0))
+                        mem["probabilities"][s] = int(rng.integers(70, 100))
+                        if s < len(mem.get("pitches", [])):
+                            ctx = self._contextual_numerology(name, s, s) if hasattr(self, "_contextual_numerology") else 0.5
+                            mem["pitches"][s] = float(np.clip(0.85 + 0.35 * ctx + rng.uniform(-0.06, 0.06), 0.5, 1.5))
+                        mem["offsets"][s] = float(np.clip(
+                            0.24 * math.sin((s + 1) * MEUM + i * PHI)
+                            + rng.uniform(-0.12, 0.12),
+                            -0.5, 0.5
+                        ))
+                        filled_steps += 1
 
-            # Scripts: only write if missing or still the stock auto-template
-            if hasattr(self, 'instrument_scripts'):
-                existing = self.instrument_scripts.get(name, "")
-                is_stock = (
-                    not existing
-                    or existing.strip().startswith("# Script workspace for")
-                    or "Seeded Geometric Resonance Script" in existing
-                )
-                if is_stock:
-                    harmonic_multiplier = float((i % 7) + 1) * MEUM_OVER_1_5
-                    self.instrument_scripts[name] = (
-                        f"# Seeded Geometric Resonance Script [{self._seed_text()}] for {name}\n"
-                        f"# (additive — user carrier preserved; fractal fill only)\n"
-                        f"def evaluate_wave(x, y, z):\n"
-                        f"    m = {harmonic_multiplier}\n"
-                        f"    return np.sin(x * m) * np.cos(y / m) - np.tanh(z * 0.5)"
+                # Scripts: only write if missing or still the stock auto-template
+                if hasattr(self, 'instrument_scripts'):
+                    existing = self.instrument_scripts.get(name, "")
+                    is_stock = (
+                        not existing
+                        or existing.strip().startswith("# Script workspace for")
+                        or "Seeded Geometric Resonance Script" in existing
                     )
-                    scripts_written += 1
+                    if is_stock:
+                        harmonic_multiplier = float((i % 7) + 1) * MEUM_OVER_1_5
+                        self.instrument_scripts[name] = (
+                            f"# Seeded Geometric Resonance Script [{self._seed_text()}] for {name}\n"
+                            f"# (additive — user carrier preserved; fractal fill only)\n"
+                            f"def evaluate_wave(x, y, z):\n"
+                            f"    m = {harmonic_multiplier}\n"
+                            f"    return np.sin(x * m) * np.cos(y / m) - np.tanh(z * 0.5)"
+                        )
+                        scripts_written += 1
 
         # Patch bay: rebuild routing graph only (does not touch sequencer/user pads)
         self.generate_ideal_patch_bay_routing()
@@ -14890,6 +15766,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception as _pl_exc:
             print(f"[Seeded Harmonic Randomizer] playlist paint skipped: {_pl_exc}")
         self._record_engine_step_ownership("seeded")
+        if hasattr(self, "_sync_selected_sequence_mirrors"):
+            self._sync_selected_sequence_mirrors()
         self.reload_active_instrument_sequencer_ui()
         if hasattr(self, "_engine_write_sequence_panels"):
             try:
@@ -15144,6 +16022,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.imported_video_meta = {}
         self._update_imported_media_ui(file_path, sample_rate, arr.size, is_video=False)
         print(f"[WAV Carrier] Loaded {file_path} ({sample_rate} Hz, {arr.size} samples)")
+        self._refresh_after_file_input(reason="wav_carrier")
 
     def _load_video_path(self, file_path):
         """Parse a video file: probe video metadata and extract mono PCM audio as carrier."""
@@ -15203,6 +16082,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.imported_video_meta = meta
         self._update_imported_media_ui(file_path, 44100, arr.size, is_video=True)
         print(f"[Video Carrier] Parsed {file_path}: {meta}; audio samples={arr.size}")
+        self._refresh_after_file_input(reason="video_carrier")
 
     def _update_imported_media_ui(self, file_path, sample_rate, sample_count, is_video=False):
         name = os.path.basename(file_path)
@@ -15227,27 +16107,44 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     self.video_synth_viewer.update_from_audio(preview[idx])
 
     def _resample_carrier(self, target_len, target_rate):
-        """Return the loaded carrier resampled/looped to the render duration."""
+        """Return the loaded carrier resampled/looped to the render duration.
+
+        When a seed script is present, a mild deterministic gain scale derived
+        from the evaluated seed field is applied so file carriers respond to
+        the same per-composition seed as the instruments (list seeds use the
+        mean of evaluated components; scripts use get_numeric_seed()).
+        """
         if self.imported_waveform is None or target_len <= 0:
             return None
         src = np.asarray(self.imported_waveform, dtype=np.float32).ravel()
         if src.size == 0:
             return None
-        src_duration = src.size / max(float(self.imported_sample_rate), 1.0)
+        src_duration = src.size / max(float(getattr(self, "imported_sample_rate", 44100) or 44100), 1.0)
         target_duration = target_len / max(float(target_rate), 1.0)
-        desired = max(2, int(round(target_duration * self.imported_sample_rate)))
+        src_rate = float(getattr(self, "imported_sample_rate", 44100) or 44100)
+        desired = max(2, int(round(target_duration * src_rate)))
         if src_duration < target_duration:
             src = np.tile(src, int(np.ceil(target_duration / max(src_duration, 1e-9))))
-        src = src[:desired] if src.size >= desired else np.pad(src, (0, desired - src.size))
-        x_old = np.linspace(0.0, 1.0, src.size, endpoint=False)
-        x_new = np.linspace(0.0, 1.0, target_len, endpoint=False)
-        return np.interp(x_new, x_old, src).astype(np.float32)
+        src = src[:desired]
+        # Resample to target length
+        if src.size != target_len:
+            x_old = np.linspace(0.0, 1.0, src.size, endpoint=False)
+            x_new = np.linspace(0.0, 1.0, target_len, endpoint=False)
+            src = np.interp(x_new, x_old, src).astype(np.float32)
+        else:
+            src = src.astype(np.float32, copy=False)
+        # Seed-responsive carrier gain (composition-state evaluation)
+        try:
+            vals = list(self.get_seed_values(t_value=0.0) or [])
+            if vals:
+                mean_s = float(sum(abs(v) for v in vals) / len(vals))
+                # Map into a gentle [0.55, 1.0] range — never silences the carrier.
+                scale = float(np.clip(0.55 + 0.45 * ((mean_s % 1000.0) / 1000.0), 0.55, 1.0))
+                src = (src * scale).astype(np.float32)
+        except Exception:
+            pass
+        return src
 
-    # =====================================================================
-    # CONVOLVE_FIT_PHASELOCK_EXTENSION — conservative spectral + phase fitting
-    # Revert: replace this helper with the prior _spectral_fit_voice body.
-    # This block is intentionally isolated so the core oscillator remains unchanged.
-    # =====================================================================
     def _spectral_fit_voice(self, voice, target, amount=1.0):
         """Fit broad target spectrum and gently phase-lock the generated voice to it."""
         voice = np.asarray(voice, dtype=np.float32)
@@ -15349,8 +16246,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 stable_ratios[name] = tr
                 stable_freq_hz[name] = max(20.0, hf * tr)
             else:
-                # New identities are assigned once, deterministically from identity.
-                h = int(hashlib.sha256(str(name).encode("utf-8")).hexdigest()[:8], 16)
+                # New identities: use evaluated per-index seed, not sha256(name).
+                try:
+                    h = int(self._instrument_seed_int(i, name=name))
+                except Exception:
+                    h = i * 9973
                 tr = float(ratios[h % len(ratios)])
                 stable_ratios[name] = tr
                 idx = i % len(MEUM_POWERS_36)
@@ -16217,6 +17117,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _render_mixdown_buffer(self, max_rows=None):
 
         """Shared float32 mono render used by both realtime Play and WAV Export."""
+        # Freeze imported-carrier + canonical flags into the seed environment so
+        # file-input pathways and seed scripts stay coherent for every instrument.
+        try:
+            self._canonical_render_input_context = dict(self._canonical_input_context())
+        except Exception:
+            pass
         sample_rate = 44100
         bpm = self.spin_bpm.value() if hasattr(self, 'spin_bpm') else 120
         rows = self.spin_playlist_length.value() if hasattr(self, 'spin_playlist_length') else 32
@@ -16311,10 +17217,51 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 render_names.append(str(primary_op).strip())
                 render_names = list(dict.fromkeys(n for n in render_names if n in self.instrument_names_48))
                 active_cluster = [self.instrument_names_48.index(n) for n in render_names]
+                try:
+                    _seed_vals = list(self.get_seed_values(t_value=0.0) or [])
+                except Exception:
+                    _seed_vals = []
+                if len(_seed_vals) > 1 and len(active_cluster) < len(_seed_vals):
+                    names = list(getattr(self, "instrument_names_48", []) or [])
+                    for _i in range(min(len(names), len(_seed_vals))):
+                        if _i not in active_cluster:
+                            active_cluster.append(_i)
+                    active_cluster = sorted(set(active_cluster))
                 if not active_cluster:
                     active_cluster = [0]
             else:
-                active_cluster = np.random.choice(len(self.instrument_names_48), size=4, replace=False).tolist()
+                # No playlist row: instruments with steps, plus seed-list width
+                # so multi-value scripts are not collapsed to a single voice.
+                active_cluster = []
+                names = list(getattr(self, "instrument_names_48", []) or [])
+                for _i, _nm in enumerate(names):
+                    _mm = self.instrument_sequencer_memory.get(_nm, {})
+                    _pc = int(_mm.get("pattern_length", len(_mm.get("steps", [])) or 1))
+                    has_steps = False
+                    try:
+                        has_steps = any(self._step_has_net_effect(_mm, _si) for _si in range(_pc))
+                    except Exception:
+                        has_steps = any(bool(x) for x in (_mm.get("steps") or []))
+                    if has_steps:
+                        active_cluster.append(_i)
+                try:
+                    _seed_vals = list(self.get_seed_values(t_value=0.0) or [])
+                except Exception:
+                    _seed_vals = []
+                _seed_txt = ""
+                try:
+                    _seed_txt = (self._seed_text() or "").strip()
+                except Exception:
+                    _seed_txt = ""
+                if _seed_vals or _seed_txt:
+                    n_need = max(len(_seed_vals), 1)
+                    n_need = min(len(names), max(n_need, min(8, len(names))))
+                    for _i in range(n_need):
+                        if _i not in active_cluster:
+                            active_cluster.append(_i)
+                    active_cluster = sorted(set(active_cluster))
+                if not active_cluster:
+                    active_cluster = list(range(len(names)))
 
             canonical_count = self._canonical_active_count()
             user_voice_count = 0
@@ -16362,6 +17309,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     )
                 base_freq = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
                 base_freq *= MEUM_POWERS_36[op_idx % 36]
+                # Per-voice evaluated seed (list scripts assign distinct numerics
+                # to each instrument instead of a shared hash/byte token).
+                try:
+                    _voice_seed = float(self.get_seed_value_for_index(op_idx, t_value=float(local_t[0]) if len(local_t) else 0.0))
+                except Exception:
+                    _voice_seed = float(self.get_numeric_seed() or 0.0)
+                # Map evaluated seed into a gentle, finite detune ratio so every
+                # instrument receives a real scripted numeric (not a hash token).
+                _seed_ratio = 1.0 + 0.002 * math.sin(float(_voice_seed) * MEUM_NORM + op_idx * MEUM_INV)
                 # Absolute identity anchor survives ensemble resizing.  It is only
                 # established by the resize transaction (or for new identities), so
                 # ordinary synthesis remains compatible with the global base control.
@@ -16411,11 +17367,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # otherwise use the legacy harmonic_freq × tuning_ratio path.
                 if identity_hz not in (None, ""):
                     try:
-                        seed_freq = float(identity_hz) * pitch_track
+                        seed_freq = float(identity_hz) * pitch_track * _seed_ratio
                     except Exception:
-                        seed_freq = harm_hz * max(tuning_ratio, 1e-6) * pitch_track
+                        seed_freq = harm_hz * max(tuning_ratio, 1e-6) * pitch_track * _seed_ratio
                 else:
-                    seed_freq = harm_hz * max(tuning_ratio, 1e-6) * pitch_track
+                    seed_freq = harm_hz * max(tuning_ratio, 1e-6) * pitch_track * _seed_ratio
                 # Prefer panel harmonic when set; fall back to bank spacing
                 if harm_hz <= 1.0:
                     seed_freq = base_freq * tuning_ratio * pitch_track
@@ -16510,7 +17466,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         # while letting the larger ensemble add smooth detail.
                         _ensemble_n = max(1, len(active_cluster))
                         _fit_detail = float(convolve_fit_amount) / float(np.sqrt(_ensemble_n))
-                        _fit_detail = float(np.clip(_fit_detail, 0.0, 1.0))
+                        # Per-instrument evaluated seed modulates convolve-fit depth
+                        # so list/scripts affect every voice, not only the first.
+                        try:
+                            _sv = abs(float(self._instrument_seed_float(op_idx)))
+                            _seed_mod = float(np.clip(0.25 + 0.75 * ((_sv % 1000.0) / 1000.0), 0.25, 1.0))
+                        except Exception:
+                            _seed_mod = 1.0
+                        _fit_detail = float(np.clip(_fit_detail * _seed_mod, 0.0, 1.0))
                         voice = self._spectral_fit_voice(
                             voice, fit_target, _fit_detail
                         )
