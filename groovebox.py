@@ -2496,7 +2496,7 @@ class VideoSynthEngine:
         # MeumScenographController and recomputing the same mesh every
         # render_frame() call (its result was previously discarded unused).
         _scenograph = MeumScenographController(width=800, height=600)
-        _sx, _sy, _sz = _scenograph.generate_field_mesh(resolution=64, ctx=0.4579)
+        _sx, _sy, _sz = _scenograph.generate_field_mesh(resolution=64, ctx=0.4759)
         self._scenograph_points = _scenograph.project_coordinates(_sx, _sy, _sz, scale=512.0)
         self._module_fade = {
             "field": 0.62, "ribbon": 0.0, "volumes": 0.52,
