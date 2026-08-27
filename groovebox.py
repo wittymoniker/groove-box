@@ -19286,6 +19286,90 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # than forcing the existing voice to match a new full-scale target.
         return 0.5 / max(canonical_count, 1)
 
+    def _hdcd_node_field(self, op_idx, row_idx, seed_value, mem=None):
+        """Hierarchical deterministic / correlated-divergent node field.
+
+        Identity hierarchy: master seed -> node -> row -> event.  Each canonical
+        keeps its focus: randomizer=stochastic density, phase-lock=relationships,
+        euclidean=rhythm topology, seeded=repeatable seed coloration, GOAVA=macro
+        transformation.  Contributions are orthogonal until the final node resolve.
+        User data remains authoritative.
+        """
+        import hashlib
+        active = self._active_engine_sources() if hasattr(self, "_active_engine_sources") else set()
+        seed_bits = _safe_int_seed(seed_value)
+        op_name = self.instrument_names_48[op_idx] if 0 <= op_idx < len(self.instrument_names_48) else str(op_idx)
+        def u01(label):
+            d = hashlib.sha256(label.encode("utf-8", "replace")).digest()
+            return int.from_bytes(d[:8], "big") / 2**64
+        root = f"hdcd|{seed_bits}"
+        node = f"{root}|node|{op_idx}|{op_name}"
+        row = f"{node}|row|{row_idx}"
+        u = u01(node + "|u"); v = u01(node + "|v"); w = u01(row + "|w")
+        field = {
+            "enabled": True, "phase": (u-.5)*math.tau*.30,
+            "detune": (v-.5)*.0035, "mod_rate": .78+.48*w,
+            "trigger_probability": 0.0, "canonical": tuple(sorted(active)),
+            "goava_phase": 0.0, "node_seed": _safe_int_seed(u01(node+"|seed")*2**32),
+            "phase_lock_target": None,
+        }
+        # Focus-preserving canonical contributions.
+        if "randomizer" in active:
+            # stochastic density only
+            field["trigger_probability"] += .18 + .24*u01(row+"|randomizer")
+        if "seeded" in active:
+            # seeded randomizer: repeatable coloration/phase, not global trigger authority
+            field["phase"] += (u01(row+"|seeded-phase")-.5)*math.tau*.16
+            field["detune"] += (u01(row+"|seeded-detune")-.5)*.0018
+        if "euclidean" in active:
+            # rhythm topology contributes probability bias only
+            field["trigger_probability"] += .10
+            field["euclid_weight"] = .72 + .28*u01(row+"|euclid")
+        else:
+            field["euclid_weight"] = 0.0
+        if "phase_lock" in active or "phase-lock" in active:
+            roster = max(1, len(getattr(self, "instrument_names_48", []) or []))
+            target = (roster - 1 - op_idx) % roster
+            field["phase_lock_target"] = target
+            lo, hi = sorted((op_idx, target))
+            pu = u01(f"{root}|pair|{lo}|{hi}|row|{row_idx}")
+            # Lock relationship, not identical phase.
+            field["phase"] = field["phase"]*.38 + (pu-.5)*math.tau*.20
+            field["detune"] *= .62
+        if "goava" in active:
+            # GOAVA remains a macro/transform coordinate, not a generic randomizer.
+            events = getattr(self, "goava_note_events", []) or []
+            if events:
+                ev = events[row_idx % len(events)]
+                raw = float(ev.get("raw", ev.get("seed", 0.0)) or 0.0)
+                weight = float(np.clip(ev.get("weight", 1.0), 0.0, 1.0))
+                field["goava_phase"] = (raw*MEUM_NORM + (op_idx+1)*MEUM_INV) % math.tau
+                field["phase"] += .10*math.sin(field["goava_phase"])
+                field["mod_rate"] *= .84 + .30*weight
+        # Final deterministic resolution: bounded, correlated, node-specific.
+        field["trigger_probability"] = float(np.clip(field["trigger_probability"], 0.0, .92))
+        return field
+
+    def _multinode_voice_field(self, op_idx, row_idx, seed_value, mem=None):
+        return self._hdcd_node_field(op_idx, row_idx, seed_value, mem)
+
+    def _multinode_step_trigger(self, field, op_idx, row_idx, step_idx, user_active):
+        """Deterministic event decision: node/row/step addressed, user hits win."""
+        if user_active:
+            return True
+        p = float(field.get("trigger_probability", 0.0))
+        if p <= 0.0:
+            return False
+        import hashlib
+        seed_bits = _safe_int_seed(self.get_numeric_seed())
+        canon = ",".join(field.get("canonical", ()))
+        # Event-addressed hash means identical probability fields do not collapse
+        # into identical decisions across nodes or steps.
+        blob = f"hdcd-event|{seed_bits}|node:{op_idx}|row:{row_idx}|step:{step_idx}|canon:{canon}"
+        d = hashlib.sha256(blob.encode("utf-8", "replace")).digest()
+        x = int.from_bytes(d[:8], "big") / 2**64
+        return x < p
+
     def _render_mixdown_buffer(self, max_rows=None):
 
         """Shared float32 mono render used by both realtime Play and WAV Export."""
@@ -19508,6 +19592,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         base_freq = float(_st_pre["frequency_identity_hz"])
                     except Exception:
                         pass
+                _node_field = self._multinode_voice_field(op_idx, row_idx, _voice_seed, mem)
+                _node_phase_bias = float(_node_field.get("phase", 0.0))
+                _node_detune = float(_node_field.get("detune", 0.0))
+                _node_mod_rate = float(_node_field.get("mod_rate", 1.0))
                 step_env = np.zeros_like(local_t)
                 pitch_track = np.ones_like(local_t)
                 steps = mem.get("steps", [])
@@ -19517,9 +19605,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 pattern_len = int(mem.get("pattern_length", len(steps) or seq_len))
                 # Each instrument's pattern is independent; longer/shorter
                 # patterns recycle deterministically against the row clock.
+                _user_mask = (self._user_pattern_mask(mem, pattern_len, instrument_name=op_name)
+                              if hasattr(self, "_user_pattern_mask") else [False] * pattern_len)
                 for s_idx in range(min(pattern_len, len(steps))):
-                    if steps[s_idx]:
+                    _user_active = bool(_user_mask[s_idx]) if s_idx < len(_user_mask) else False
+                    _canonical_on = self._multinode_step_trigger(_node_field, op_idx, row_idx, s_idx, _user_active)
+                    if steps[s_idx] or _canonical_on:
                         step_offset = float(np.clip(offsets[s_idx] if s_idx < len(offsets) else 0.0, -0.5, 0.5))
+                        # Phase-lock is a node coordinate, not a timing rewrite.
+                        # Keep user timing intact and use the phase field in DSP below.
                         s_start = (s_idx + step_offset) * step_duration
                         s_start = float(np.clip(s_start, 0.0, max(0.0, row_duration - step_duration)))
                         s_end = s_start + step_duration
@@ -19528,6 +19622,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             s_local = local_t[s_mask] - s_start
                             amp = amps[s_idx] if s_idx < len(amps) else 1.0
                             pr = pitches[s_idx] if s_idx < len(pitches) else 1.0
+                            if not steps[s_idx] and _canonical_on:
+                                amp *= 0.38 + 0.30 * float(_node_field.get("trigger_probability", 0.0))
                             step_env[s_mask] += amp * np.exp(-s_local / max(step_duration * 0.5, 0.01))
                             pitch_track[s_mask] = pr
 
@@ -19540,11 +19636,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 _voice_mix_key = (int(_s_int) ^ (int(op_idx) * 0x9E3779B1) ^
                                   (int(row_idx) * 0x85EBCA6B) ^ (int(pattern_len) * 0xC2B2AE35)) & 0x7FFFFFFF
                 _voice_rng = np.random.RandomState(_voice_mix_key or 1)
-                _voice_detune = float(_voice_rng.uniform(-0.0035, 0.0035))
-                _voice_phase0 = float(_voice_rng.uniform(-math.pi, math.pi))
+                _voice_detune = float(_voice_rng.uniform(-0.0035, 0.0035)) + _node_detune
+                _voice_phase0 = float(_voice_rng.uniform(-math.pi, math.pi)) + _node_phase_bias
                 _voice_timbre = float(_voice_rng.uniform(0.78, 1.22))
                 _voice_decay = float(_voice_rng.uniform(0.82, 1.18))
-                _voice_mod_rate = float(_voice_rng.uniform(0.71, 1.37))
+                _voice_mod_rate = float(_voice_rng.uniform(0.71, 1.37)) * _node_mod_rate
                 # Derived modulation must be computed after the per-voice identity
                 # fields above are initialized. This also keeps every voice's
                 # modulation field independent and deterministic.
