@@ -1128,13 +1128,34 @@ def idealized_operator_struct(app, op_name, row=0, seed=0):
     # Synth snapshot from instrument_param_state (or sequence panel when enabled)
     synth_tag = f"Synth::{short[:10]}"
     params = {}
+
     if seq_panels and seq_panels.get("synth"):
-        params = dict(seq_panels.get("synth") or {})
+        raw_params = seq_panels.get("synth")
+        if isinstance(raw_params, dict):
+            params = dict(raw_params)
+        else:
+            # Legacy/corrupt sequence-panel payload: ignore it rather than
+            # allowing dict(<non-pair iterable>) to crash canonical painting.
+            params = {}
+
     elif app is not None:
-        params = dict((getattr(app, "instrument_param_state", {}) or {}).get(op, {}) or {})
-        gen = dict((getattr(app, "instrument_param_generated", {}) or {}).get(op, {}) or {})
-        for k, v in gen.items():
-            params.setdefault(k, v)
+        state = getattr(app, "instrument_param_state", {}) or {}
+        raw_params = state.get(op, {}) if isinstance(state, dict) else {}
+
+        if isinstance(raw_params, dict):
+            params = dict(raw_params)
+        else:
+            # Bootstrap compatibility: older projects/engines may have stored
+            # a list/tuple/string under an instrument key. Canonical playlist
+            # generation must never die because of that stale representation.
+            params = {}
+
+        generated = getattr(app, "instrument_param_generated", {}) or {}
+        raw_gen = generated.get(op, {}) if isinstance(generated, dict) else {}
+
+        if isinstance(raw_gen, dict):
+            for k, v in raw_gen.items():
+                params.setdefault(k, v)
     if params:
         # Compact key=val list of primary macros
         keys = ("eqr", "harmonic_lattice", "fractalizer", "pkp_decay", "tuning", "filter", "drive", "amplitude")
@@ -1186,7 +1207,24 @@ def idealized_operator_struct(app, op_name, row=0, seed=0):
         "patch_tag": patch_tag,
         "operator": op,
     }
+def _coerce_instrument_param_state(state):
+    """Return a safe {instrument_name: {param: value}} mapping.
 
+    Legacy projects can contain malformed per-instrument values such as lists,
+    tuples, strings, or other iterables. Preserve valid dictionaries and discard
+    only malformed instrument payloads so UI/bootstrap/canonical painting remain
+    recoverable.
+    """
+    if not isinstance(state, dict):
+        return {}
+
+    clean = {}
+
+    for name, raw in state.items():
+        if isinstance(raw, dict):
+            clean[str(name)] = dict(raw)
+
+    return clean
 
 def blend_struct_labels(a, b, amount):
     """Blend two structure cell labels under coverage amount in [0,1].
@@ -7784,7 +7822,16 @@ class MasterControlPatchbayPage(QWidget):
             self.patch_canvas.update()
             self.infinite_playlist_canvas.canvas_inner.update()
             QMessageBox.information(self, "Project Loaded", f"Project successfully loaded from:\n{path}")
+            loaded_state = data.get("instrument_param_state", {})
 
+            if isinstance(loaded_state, dict):
+                self.instrument_param_state = {
+                    str(name): dict(params)
+                    for name, params in loaded_state.items()
+                    if isinstance(params, dict)
+                }
+            else:
+                self.instrument_param_state = {}
     def _export_audio(self):
         path, _ = QFileDialog.getSaveFileName(self, "Export Master WAV Audio", "", "WAV Audio Files (*.wav)")
         if path:
@@ -11465,23 +11512,89 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._composition_generation_guard = False
         if hasattr(self, "_canonical_rebuild_guard") and not self._canonical_rebuild_guard:
             self._rebuild_active_canonical_playlist("phase_lock_toggle")
+    def _ensure_instrument_param_state(self):
+        """Ensure instrument parameter stores retain their dictionary contract."""
+        if not isinstance(getattr(self, "instrument_param_state", None), dict):
+            self.instrument_param_state = {}
 
+        if not isinstance(getattr(self, "instrument_param_generated", None), dict):
+            self.instrument_param_generated = {}
+
+        if not isinstance(getattr(self, "instrument_scripts", None), dict):
+            self.instrument_scripts = {}
+
+            return self.instrument_param_state
     def _mark_generated_synth_context(self, source="randomizer", rng=None):
-        """Generate algorithmic synth/script context in the shared state; user values remain authoritative."""
-        rng = rng or np.random.default_rng(_safe_int_seed(self.get_numeric_seed()))
-        self.instrument_param_generated = getattr(self, "instrument_param_generated", {})
-        if not hasattr(self, "instrument_scripts") or self.instrument_scripts is None: self.instrument_scripts = {}
-        for i,name in enumerate(getattr(self,"instrument_names_48",[])):
-            user=self.instrument_param_state.setdefault(name,{})
-            ctx=float(self._contextual_numerology(name,i,i))
-            gen={"tuning":float(np.clip(.9+.2*ctx,.75,1.15)),"filter":float(np.clip(.2+.7*ctx,.02,.98)),"drive":float(np.clip(.05+.55*ctx,0,.9)),"amplitude":float(np.clip(.3+.65*ctx,.05,1.0)),"duration":float(np.clip(.15+.8*(1-ctx),.03,1.0))}
-            self.instrument_param_generated[name]=gen
-            for k,v in gen.items(): user.setdefault(k,v)
-            marker=f"# --- GENERATED {source.upper()} CONTEXT: {name} ---"
-            old=str(self.instrument_scripts.get(name,"") or "")
-            if marker not in old:
-                self.instrument_scripts[name]=old.rstrip()+"\n\n"+marker+f"\ngenerated_ctx={ctx:.8f}\ngenerated_tuning={gen['tuning']:.8f}\ngenerated_filter={gen['filter']:.8f}\ngenerated_drive={gen['drive']:.8f}\ngenerated_amplitude={gen['amplitude']:.8f}\ngenerated_duration={gen['duration']:.8f}\n"
-        return len(getattr(self,"instrument_names_48",[]))
+        self._ensure_instrument_param_state()
+        for i, name in enumerate(getattr(self, "instrument_names_48", [])):
+            user = self.instrument_param_state.setdefault(name, {})
+            """Generate algorithmic synth/script context in the shared state; user values remain authoritative."""
+            rng = rng or np.random.default_rng(_safe_int_seed(self.get_numeric_seed()))
+            # HARD STATE BOOTSTRAP
+            # These stores are dictionaries by contract. Legacy/project/engine data
+            # must never be allowed to replace the root containers with lists/tuples.
+            raw_state = getattr(self, "instrument_param_state", None)
+            if not isinstance(raw_state, dict):
+                raw_state = {}
+
+            for i, name in enumerate(getattr(self, "instrument_names_48", [])):
+                user = self.instrument_param_state.get(name)
+
+            if not isinstance(user, dict):
+                user = {}
+                self.instrument_param_state[name] = raw_state
+
+            ctx = float(self._contextual_numerology(name, i, i))
+
+            gen = {
+                "tuning": float(np.clip(.9 + .2 * ctx, .75, 1.15)),
+                "filter": float(np.clip(.2 + .7 * ctx, .02, .98)),
+                "drive": float(np.clip(.05 + .55 * ctx, 0, .9)),
+                "amplitude": float(np.clip(.3 + .65 * ctx, .05, 1.0)),
+                "duration": float(np.clip(.15 + .8 * (1 - ctx), .03, 1.0)),
+            }
+
+            if isinstance(user, dict):
+                self.instrument_param_generated = gen
+            else:
+                self.instrument_param_generated = {}
+
+            for k, v in gen.items():
+                user.setdefault(k, v)
+
+            for k, v in gen.items():
+                user.setdefault(k, v)
+                raw_generated = getattr(self, "instrument_param_generated", None)
+                if not isinstance(raw_generated, dict):
+                    raw_generated = {}
+
+                if isinstance(user, dict):
+                    self.instrument_param_generated = raw_generated
+                else:
+                    self.instrument_param_generated = {}
+                raw_scripts = getattr(self, "instrument_scripts", None)
+                if not isinstance(raw_scripts, dict):
+                    raw_scripts = {}
+
+                self.instrument_scripts = raw_scripts
+                for i, name in enumerate(getattr(self, "instrument_names_48", [])):
+                    user = self.instrument_param_state.get(name)
+
+                    # Legacy/corrupt state protection:
+                    # every instrument entry must be a dictionary.
+                    if not isinstance(user, dict):
+                        user = {}
+                        self.instrument_param_state[name] = user
+
+                    ctx = float(self._contextual_numerology(name, i, i))
+                    gen={"tuning":float(np.clip(.9+.2*ctx,.75,1.15)),"filter":float(np.clip(.2+.7*ctx,.02,.98)),"drive":float(np.clip(.05+.55*ctx,0,.9)),"amplitude":float(np.clip(.3+.65*ctx,.05,1.0)),"duration":float(np.clip(.15+.8*(1-ctx),.03,1.0))}
+                    self.instrument_param_generated[name]=gen
+                    for k,v in gen.items(): user.setdefault(k,v)
+                    marker=f"# --- GENERATED {source.upper()} CONTEXT: {name} ---"
+                    old=str(self.instrument_scripts.get(name,"") or "")
+                    if marker not in old:
+                        self.instrument_scripts[name]=old.rstrip()+"\n\n"+marker+f"\ngenerated_ctx={ctx:.8f}\ngenerated_tuning={gen['tuning']:.8f}\ngenerated_filter={gen['filter']:.8f}\ngenerated_drive={gen['drive']:.8f}\ngenerated_amplitude={gen['amplitude']:.8f}\ngenerated_duration={gen['duration']:.8f}\n"
+                return len(getattr(self,"instrument_names_48",[]))
 
     def _write_generated_domain_context(self, source="randomizer"):
         engine=getattr(self,"domain_eq_engine",None)
@@ -14091,7 +14204,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 panels=self._sequence_panel_slot(name,sid)
                 ec=panels.setdefault("engine_contributions",{})
                 if not isinstance(ec,dict): ec=panels["engine_contributions"]={}
-                params=dict((getattr(self,"instrument_param_state",{}) or {}).get(name,{}) or {})
+                state = getattr(self, "instrument_param_state", {}) or {}
+                raw_params = state.get(name, {}) if isinstance(state, dict) else {}
+
+                params = dict(raw_params) if isinstance(raw_params, dict) else {}
+
+                generated = getattr(
+                    self, "instrument_param_generated", {}
+                ) or {}
+
+                raw_gen = generated.get(name, {}) if isinstance(generated, dict) else {}
+
+                if isinstance(raw_gen, dict):
+                    for k, v in raw_gen.items():
+                        params.setdefault(k, v)
                 gen=dict((getattr(self,"instrument_param_generated",{}) or {}).get(name,{}) or {})
                 for k,v in gen.items(): params.setdefault(k,v)
                 engine=getattr(self,"domain_eq_engine",None)
@@ -15246,8 +15372,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.playlist_automation = data.get("playlist_automation", [])
             if hasattr(self, 'instrument_scripts'):
                 self.instrument_scripts.update(data.get("instrument_scripts", {}))
-            self.instrument_param_state = data.get("instrument_param_state", {})
-            self.patch_connections = data.get("patch_connections", [])
+            loaded_state = data.get("instrument_param_state", {})
+
+            if isinstance(loaded_state, dict):
+                self.instrument_param_state = {
+                    str(name): dict(params)
+                    for name, params in loaded_state.items()
+                    if isinstance(params, dict)
+                }
+            else:
+                self.instrument_param_state = {}
+                loaded_connections = data.get("patch_connections", [])
+
+                if isinstance(loaded_connections, list):
+                    self.patch_connections = loaded_connections
+                else:
+                    self.patch_connections = []
             if hasattr(self, 'domain_eq_engine') and data.get("domain_eq"):
                 self.domain_eq_engine.from_json(data["domain_eq"])
             self.reload_active_instrument_sequencer_ui()
@@ -15944,6 +16084,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """
         # Explicit engine action may use a transient seed, but never writes the user field.
         numeric_seed = self.bootstrap_seed_and_program_parameters()
+        self.instrument_param_state = _coerce_instrument_param_state(
+            getattr(self, "instrument_param_state", {})
+        )
         seed_bits = _safe_int_seed(numeric_seed)
         self.simplify_redundant_user_definitions()
         rng = np.random.default_rng(_safe_int_seed(numeric_seed))
