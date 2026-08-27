@@ -13146,8 +13146,32 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if not (0 <= idx < len(self.instrument_names_48)):
             return
         inst_name = self.instrument_names_48[idx]
+        # PER_INSTRUMENT_SEQUENCE_PANELS: save/apply were only ever wired to
+        # _on_sequence_selector_changed and _on_edit_panels_per_sequence_toggled,
+        # both of which act on "the current instrument" at that moment. Switching
+        # *instruments* never ran either path, so per-sequence synth/script/domain
+        # panels were only ever captured for whichever single instrument happened
+        # to be selected when the user changed sequence or toggled per-sequence
+        # editing — every other instrument's bank entries silently kept stale
+        # (or default) panel data instead of what was actually live-edited for
+        # them. Mirror the same save-outgoing / apply-incoming pair here so every
+        # instrument gets its own sequence's panels written and read correctly.
+        if self._panels_per_sequence_enabled():
+            prev_name = getattr(self, "_last_switched_instrument_name", None)
+            if prev_name and prev_name != inst_name:
+                try:
+                    prev_idx = self._current_sequence_index(prev_name)
+                    self._save_live_panels_to_sequence(prev_name, prev_idx)
+                except Exception as exc:
+                    print(f"[Panels] save on instrument switch ({prev_name}): {exc}")
         self._ensure_sequence_banks_after_resize()
         self.instrument_sequencer_memory[inst_name] = self._current_sequence_mem(inst_name)
+        if self._panels_per_sequence_enabled():
+            try:
+                self._apply_sequence_panels_to_live(inst_name, self._current_sequence_index(inst_name))
+            except Exception as exc:
+                print(f"[Panels] load on instrument switch ({inst_name}): {exc}")
+        self._last_switched_instrument_name = inst_name
         if hasattr(self, 'top_sequencer'):
             self._refresh_sequence_selector()
         self.reload_active_instrument_sequencer_ui()
@@ -14239,16 +14263,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # Avoid collisions if a preserved canonical ID already occupies this slot.
                 while idx in bank:
                     idx += 1
-                n = int(bank.get(user_ids[0], {}).get("pattern_length", 16) or 16)
-                n = max(1, min(1024, n))
-                mem = {
-                    "sequence_id": idx, "pattern_length": n,
-                    "canonical_owner": f"canonical:{source}", "user_owned": False,
-                    "steps": [False] * n, "gates": [True] * n,
-                    "amplitudes": [1.0] * n, "pitches": [1.0] * n,
-                    "probabilities": [100] * n, "offsets": [0.0] * n,
-                    "engine_step_sources": {}, "touched": set(),
-                }
                 channel = sum(ord(c) for c in source) & 0xFFFF
                 # Per-instrument evaluated seed (list scripts → distinct numbers).
                 # Do NOT primary-seed from sha256(name) — that overwrote list data.
@@ -14267,6 +14281,43 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     inst_seed_f = float(self._instrument_seed_float(name_idx, sequence_id=idx))
                 except Exception:
                     inst_seed_f = float(inst_seed_i)
+
+                # CANONICAL_LENGTH_FROM_SEED: length used to be pinned to the user
+                # sequence's pattern_length no matter what the engine was writing,
+                # so Euclidean pulse geometry, GOAVA's numeric-event count, and
+                # per-instrument seed rotation could only change *which* steps were
+                # on, never the length they actually implied. Each source now
+                # derives its own length from the same seed/instrument factors it
+                # uses to place steps and pitches; phase_lock still tracks the
+                # established user grid on purpose (it is meant to lock to it).
+                base_len = int(bank.get(user_ids[0], {}).get("pattern_length", 16) or 16)
+                if source == "euclidean":
+                    stride = max(2, int(2 + (inst_seed_i % 5)))
+                    reps = max(1, 2 + (inst_seed_i // 5) % 6)
+                    n = stride * reps
+                elif source == "goava":
+                    try:
+                        n_vals = max(1, len(list(self.get_seed_values(t_value=0.0) or [])))
+                    except Exception:
+                        n_vals = 1
+                    # Round up to a whole number of seed-list rotations so every
+                    # evaluated value is actually used at least once per pass.
+                    n = int(math.ceil(max(base_len, n_vals) / n_vals) * n_vals)
+                elif source == "phase_lock":
+                    n = base_len
+                else:
+                    jitter = int(round(4 * math.sin(inst_seed_i * MEUM_INV)))
+                    n = base_len + jitter
+                n = max(1, min(1024, n))
+
+                mem = {
+                    "sequence_id": idx, "pattern_length": n,
+                    "canonical_owner": f"canonical:{source}", "user_owned": False,
+                    "steps": [False] * n, "gates": [True] * n,
+                    "amplitudes": [1.0] * n, "pitches": [1.0] * n,
+                    "probabilities": [100] * n, "offsets": [0.0] * n,
+                    "engine_step_sources": {}, "touched": set(),
+                }
                 rng = np.random.default_rng((inst_seed_i ^ channel) & 0x7fffffff)
                 phase_on = "phase_lock" in active
                 for j in range(n):
@@ -17749,10 +17800,44 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     except Exception:
                         pass
 
-                # NO per-voice convolve/spectral-fit here.
-                # Engines + seed already set the voice; fitting toward carrier/row_mix
-                # was erasing that identity (everything → same saw-like shape).
-                # Global bus convolve (below) remains available as a mild mix effect.
+                # CANONICAL_TIME_FIT: engine-authored (canonical) voices blend toward
+                # the carrier's own waveform at their exact trigger time, so the
+                # canonical engines actually converge on the desired signal instead
+                # of just triggering an unmodified oscillator and leaving all fitting
+                # to the global (whole-buffer) bus convolve stage below. This is
+                # deliberately restricted to canonical voices only (mem carries a
+                # "canonical:" owner) and gated on the same "convolve fit" checkbox
+                # the user already uses for the global stage, at a capped wet amount,
+                # so user-owned material is never touched and canonical identity is
+                # blended toward the target rather than replaced by it (the earlier
+                # attempt applied this to every voice unconditionally and washed out
+                # per-voice harmonic/entropy identity into one shared shape).
+                is_canonical_voice = str(mem.get("canonical_owner", "")).startswith("canonical:")
+                if (
+                    is_canonical_voice
+                    and convolve_fit_enabled
+                    and imported_carrier is not None
+                    and convolve_fit_amount > 1e-6
+                ):
+                    try:
+                        target = imported_carrier[mask]
+                        if target.shape == voice.shape and np.any(np.abs(target) > 1e-9):
+                            tpk = float(np.max(np.abs(target)) + 1e-9)
+                            target_n = (target / tpk).astype(np.float32)
+                            # Cap wet at 50% so the canonical voice's own seed-derived
+                            # harmonic/entropy identity always remains in the mix.
+                            fit_wet = float(np.clip(convolve_fit_amount, 0.0, 1.0)) * 0.5
+                            # Only blend at this voice's own gated (triggered) samples
+                            # so the fit tracks its specific step/trigger time and
+                            # never bleeds into the silence between its own hits.
+                            voice = np.where(
+                                gate > 1e-9,
+                                (1.0 - fit_wet) * voice + fit_wet * target_n * gate,
+                                voice,
+                            ).astype(np.float32)
+                    except Exception:
+                        pass
+
                 voice_gain = self._canonical_voice_gain(
                     op_name, user_voice_count, canonical_count, len(active_cluster)
                 )
