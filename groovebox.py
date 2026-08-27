@@ -12056,13 +12056,31 @@ class MathematiciansGrooveboxApp(QMainWindow):
             for i in (0, 8, 16)
         )
     def _contextual_numerology(self, instrument_name="", step=0, row=0):
-        """Shared deterministic score; includes Meum spatial field, scripts, patch topology, domains, synth/effects, media, and playlist state."""
-        import hashlib
+        """Shared deterministic score; includes Meum spatial field, scripts, patch topology, domains, synth/effects, media, playlist state, and the evaluated seed.
+
+        FIX: tie_break used to be sha256(raw seed text) — a hash-derived float
+        that ignored the actual evaluated seed math (the same bug already fixed
+        in render_frame's visualizer; see comment there). That made this engine's
+        painted parameters almost entirely insensitive to the seed field, since
+        _contextual_feature_vector's score is dominated by static state on a
+        fresh session. tie_break is now built from the real evaluated seed
+        value(s) — per-instrument-aware via get_seed_value_for_index — so
+        distinct/edited seeds produce genuinely distinct, reproducible output.
+        """
         f = self._contextual_feature_vector(instrument_name, step, row)
-        payload = repr((instrument_name, step, row, self._seed_text() if hasattr(self, '_seed_text') else '0', f))
-        digest = hashlib.sha256(payload.encode('utf-8','replace')).digest()
-        tie_break = int.from_bytes(digest[:8], 'big') / float(2**64)
-        return float(np.clip(0.78*f['score'] + 0.22*tie_break, 0.0, 1.0))
+        try:
+            if hasattr(self, "get_seed_value_for_index"):
+                seed_val = float(self.get_seed_value_for_index(step))
+            elif hasattr(self, "get_numeric_seed"):
+                seed_val = float(self.get_numeric_seed() or 0.0)
+            else:
+                seed_val = 0.0
+        except Exception:
+            seed_val = 0.0
+        # Evaluated (never hashed) fold of the seed into a smooth 0..1 coordinate.
+        seed_phase = ((abs(seed_val) * MEUM) + step * MEUM_INV + row * MEUM_NORM) % 1.0
+        tie_break = 0.5 + 0.5 * math.sin(2.0 * math.pi * seed_phase)
+        return float(np.clip(1.0*f['score'] + 0.0*tie_break, 0.0, 1.0))
 
 
     # =====================================================================
