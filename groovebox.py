@@ -79,7 +79,13 @@ MEUM_TWO_POW = 2.0 ** MEUM
 MEUM_TWO_POW_OVER_SQ = MEUM_TWO_POW / MEUM_SQ
 MEUM_LOG2 = math.log2(MEUM)
 # Frequently used integer powers: M^0 ... M^35.
-MEUM_POWERS_36 = tuple(MEUM ** i for i in range(36))
+# Folded so instrument-index-driven frequency scaling stays bounded instead of
+# compounding without limit: MEUM ** i grew from 1x at index 0 to ~560x by
+# index 35 (see conversation notes), pushing every higher-indexed instrument
+# further and further up in pitch. Wrapping the exponent into a symmetric
+# 12-slot window (-6..+5, one "octave" of Meum-steps) keeps the same per-index
+# color/identity but centers it around the base frequency instead of climbing.
+MEUM_POWERS_36 = tuple(MEUM ** ((i % 12) - 6) for i in range(36))
 MEUM_IDENTITY_LHS = (MEUM_MINUS_1 * MEUM) + (MEUM_MINUS_1 * MEUM_INV)
 MEUM_IDENTITY_RHS = MEUM_TWO_POW_OVER_SQ - MEUM
 MEUM_IDENTITY_RESIDUAL = MEUM_IDENTITY_LHS - MEUM_IDENTITY_RHS
