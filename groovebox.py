@@ -97,6 +97,99 @@ UI_DRIFT = MEUM_NORM * PHI_INV                                  # caption micro-
 PAINT_RATE_HZ = 2.395                                           # max single-cell stack rate
 PAINT_PERIOD_S = 1.0 / PAINT_RATE_HZ                            # ~0.418 s between stacks
 PAINT_INSTANCE_LIMIT = 8
+import numpy as np
+import math
+class MeumScenographController:
+    """
+    Manages scene composition, coordinate mapping, and frame buffers
+    for the Meum scenograph and background canvas widgets.
+    """
+    def __init__(self, width: int = 800, height: int = 600) -> None:
+        self.width = width
+        self.height = height
+        self.center_x = width / 2.0
+        self.center_y = height / 2.0
+        self.MEUM_INV = 1.0 / 1.19758073433
+        self.PHI = 1.61803398875
+
+    def project_coordinates(self, x_vals: np.ndarray, y_vals: np.ndarray, z_vals: np.ndarray, scale: float = 100.0) -> list[tuple[float, float]]:
+        """Projects 3D spatial coordinate arrays (x, y, z) directly onto a 2D canvas space."""
+        # Orthographic/perspective projection mapped strictly to x, y, z variables
+        projected = []
+        for x, y, z in zip(x_vals, y_vals, z_vals):
+            # Apply field rotation and scaling based on structural invariants
+            depth_factor = 1.0 / (1.0 + z * 0.1 * self.MEUM_INV)
+            px = self.center_x + (x * scale * depth_factor)
+            py = self.center_y + (y * scale * depth_factor)
+            projected.append((float(px), float(py)))
+        return projected
+
+    def generate_field_mesh(self, resolution: int = 50, ctx: float = 0.0) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Generates raw x, y, z field arrays for real-time scenograph rendering."""
+        t = np.linspace(0, math.tau, resolution)
+        x = np.sin(t * self.PHI + ctx) * np.cos(t * self.MEUM_INV)
+        y = np.cos(t * self.PHI + ctx) * np.sin(t * self.MEUM_INV)
+        z = np.sin(t * self.MEUM_INV * 2.0)
+        return x, y, z
+class DeterministicPanelManager:
+    """
+    Manages deterministic parameter overrides across multi-sequence channels
+    using invariant Meum constants and golden ratios.
+    """
+    def __init__(self, channels: int = 4) -> None:
+        self.channels = channels
+        self.MEUM_NORM = 1.19758073433
+        self.MEUM_INV = 1.0 / self.MEUM_NORM
+        self.PHI = 1.61803398875
+
+    def get_channel_overrides(self, channel_id: int, ctx: float) -> dict:
+        """Computes invariant-mapped parameter overrides for a given channel."""
+        return {
+            "gain": float(np.clip(self.MEUM_NORM * 0.5 + (self.PHI - 1.0) * ctx * channel_id, 0.0, 1.0)),
+            "modulation_skew": float(math.fmod(channel_id * self.PHI, 1.0)),
+            "phase_offset": float(math.tau * ((channel_id * self.MEUM_NORM * (self.PHI - 1.0)) % 1.0))
+        }
+
+
+class DeterministicVisualizerEngine:
+    """
+    Generates deterministic visualizer frame matrices bound directly to
+    the foundational audio field parameters.
+    """
+    def __init__(self, resolution: int = 64) -> None:
+        self.resolution = resolution
+        self.MEUM_INV = 1.0 / 1.19758073433
+        self.PHI = 1.61803398875
+
+    def generate_frame(self, ctx: float) -> list[float]:
+        """Produces a deterministic vertex or color intensity array."""
+        return [
+            float(np.sin(i * self.MEUM_INV * self.PHI + ctx) * 0.5 + 0.5)
+            for i in range(self.resolution)
+        ]
+class DeterministicPanelOverride:
+    def __init__(self, channels=4):
+        self.channels = channels
+        self.MEUM_NORM = 1.19758073433
+        self.PHI = 1.61803398875
+
+    def compute_override(self, channel_id, ctx):
+        return {
+            "gain": float(np.clip(self.MEUM_NORM * 0.5 + (self.PHI - 1.0) * ctx * channel_id, 0.0, 1.0)),
+            "modulation_skew": float(math.fmod(channel_id * self.PHI, 1.0))
+        }
+
+class DeterministicVisualizer:
+    def __init__(self, resolution=64):
+        self.resolution = resolution
+        self.MEUM_INV = 1.0 / 1.19758073433
+        self.PHI = 1.61803398875
+
+    def generate_frame_matrix(self, ctx):
+        return [
+            float(np.sin(i * self.MEUM_INV * self.PHI + ctx) * 0.5 + 0.5)
+            for i in range(self.resolution)
+        ]
 
 def _meum_params(params):
     """Normalize Meum phase/AM/FM/PM parameters safely."""
@@ -389,6 +482,58 @@ def _meum_panel_context(params=None, canonical_context=None):
         ctx["unison_phase_spread"] = 0.0
 
     return ctx
+def meum_modulation_vectors(t, params=None):
+    """
+    Vectorized (numpy) canonical Meum AM/FM/PM contribution for a whole
+    time-array buffer. Mirrors the per-sample math in MeumModulatedOscillator
+    so the additive/live-wavefield engine and the discrete-voice engine share
+    one canonical modulation definition.
+
+    Returns (freq_ratio, phase_offset, am_gain), each shaped like `t`:
+      freq_ratio  - multiplies the carrier frequency before phase integration (FM)
+      phase_offset - added directly to the integrated phase, radians (PM + phase_shift)
+      am_gain     - multiplies the finished waveform's amplitude (AM)
+    """
+    p = params if isinstance(params, dict) else {}
+    t = np.asarray(t, dtype=np.float64)
+
+    phase_shift = float(p.get("phase_shift", 0.0))
+    am_depth = float(np.clip(p.get("am_depth", 0.0), 0.0, 1.0))
+    am_rate = max(0.0, float(p.get("am_rate", 1.0)))
+    fm_depth = float(np.clip(p.get("fm_depth", 0.0), -0.95, 0.95))
+    fm_rate = max(0.0, float(p.get("fm_rate", 1.0)))
+    pm_depth = float(np.clip(p.get("pm_depth", 0.0), -math.pi, math.pi))
+    pm_rate = max(0.0, float(p.get("pm_rate", 1.0)))
+    pm_feedback = float(np.clip(p.get("pm_feedback", 0.0), -1.0, 1.0))
+    meum_depth = float(np.clip(p.get("meum_depth", 0.0), 0.0, 1.0))
+
+    def field(rate):
+        a = np.sin(math.tau * t * rate)
+        b = np.sin(math.tau * t * rate * MEUM_INV)
+        return 0.5 * (a + MEUM_NORM * b)
+
+    # FM: instantaneous-frequency ratio (integrated into phase by the caller).
+    fm_lfo = np.sin(math.tau * t * fm_rate + phase_shift)
+    freq_ratio = 1.0 + fm_depth * (fm_lfo + meum_depth * field(fm_rate))
+    freq_ratio = np.clip(freq_ratio, 0.0, None)
+
+    # PM: direct phase displacement, radians (includes the static phase_shift).
+    pm_lfo = np.sin(math.tau * t * pm_rate + phase_shift)
+    phase_offset = (
+        phase_shift
+        + pm_depth * pm_lfo
+        + pm_feedback * meum_depth * field(pm_rate)
+    )
+
+    # AM: post-waveform amplitude gain, never negative.
+    am_lfo = np.sin(math.tau * t * am_rate + phase_shift)
+    am_gain = np.clip(1.0 + am_depth * (am_lfo + meum_depth * field(am_rate)), 0.0, None)
+
+    return (
+        freq_ratio.astype(np.float32),
+        phase_offset.astype(np.float32),
+        am_gain.astype(np.float32),
+    )
 def meum_modulated_phase(
     phase,
     t,
@@ -2340,6 +2485,19 @@ class VideoSynthEngine:
         self._peak = 0.0
         self._video_hue_shift = 0.0
         self._video_energy = 0.0
+        self.width = 0.0
+        self.height = 0.0
+        self.center_x = self.width / 2.0
+        self.center_y = self.height / 2.0
+        self.MEUM_INV = 1.0 / 1.19758073433
+        self.PHI = 1.61803398875
+        # Fixed-input scenograph mesh: width/height/resolution/ctx never vary
+        # frame-to-frame, so compute it once here instead of re-instantiating
+        # MeumScenographController and recomputing the same mesh every
+        # render_frame() call (its result was previously discarded unused).
+        _scenograph = MeumScenographController(width=800, height=600)
+        _sx, _sy, _sz = _scenograph.generate_field_mesh(resolution=64, ctx=0.4579)
+        self._scenograph_points = _scenograph.project_coordinates(_sx, _sy, _sz, scale=512.0)
         self._module_fade = {
             "field": 0.62, "ribbon": 0.0, "volumes": 0.52,
             "faces": 1.0, "particles": 1.0, "bands": 0.0, "goava": 0.0,
@@ -2883,13 +3041,14 @@ class VideoSynthEngine:
             cosy, siny = math.cos(yaw), math.sin(yaw)
             cosp, sinp = math.cos(pitch), math.sin(pitch)
             cosr, sinr = math.cos(roll), math.sin(roll)
+            depth_factor = 1.0 / (1.0 + z * 0.1 * self.MEUM_INV)
             projected = []
             for px, py, pz in verts:
-                xr = px * cosr - py * sinr
+                xr = px * cosr - py * sinr * self.center_x + (px * scale * depth_factor)
                 yr = px * sinr + py * cosr
-                yp = yr * cosp - pz * sinp
+                yp = yr * cosp - pz * sinp * self.center_y + (yr * scale * depth_factor)
                 zp = yr * sinp + pz * cosp
-                xw = xr * cosy - zp * siny
+                xw = xr * cosy - zp * siny * self.center_y + (yr * scale * depth_factor)
                 zw = xr * siny + zp * cosy + dist
                 projected.append(self._project(xw, yp, zw, w, h))
 
@@ -3314,6 +3473,7 @@ class VideoSynthEngine:
         img = np.zeros((h, w, 3), dtype=np.float32)
         self._advance_instrument_resize()
         self._visual_frame += 1
+
         # Seeded stochastic evolution from *evaluated* numeric seeds (not
         # SHA of the raw script text — that made visuals drift away from the
         # numbers the user typed). Same seed list + frame is reproducible.
@@ -3368,10 +3528,10 @@ class VideoSynthEngine:
         cx, cy = w * 0.5, h * 0.47
         mesh_r = min(w, h) * (0.24 + 0.16 * st["rho"])
         for q in range(13):
-            aa = (q * MEUM * math.tau + self.t * 0.07 + st["ph"] * math.tau)
-            rr = mesh_r * (0.45 + 0.55 * q / 12.0)
+            aa = (q * MEUM * math.tau + self.t * 0.07 + st["ph"] * math.tau)*np.sin(self.t * self.MEUM_INV * 2.0)
+            rr = mesh_r * (0.45 + 0.55 * q / 12.0)*(np.sin(self.t * self.PHI + st["form"]) * np.cos(self.t * self.MEUM_INV))
             x = float(np.clip(cx + math.cos(aa) * rr, 2, w - 3))
-            y = float(np.clip(cy + math.sin(aa * MEUM_INV) * rr * 0.72, 2, h - 3))
+            y = float(np.clip(cy + math.sin(aa * MEUM_INV) * rr * 0.72, 2, h - 3))*(np.cos(self.t * self.PHI + st["form"]) * np.sin(self.t * self.MEUM_INV))
             col = self._hsv((155 + q * 11 + self._video_hue_shift) % 360, 0.28, 0.42)
             self._dot(img, x, y, col, 0.11 + 0.08 * float(self._band[q % 8]), r=1)
         self._subscene_goava(img, w, h, st)
@@ -11362,7 +11522,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.wavefield_engine = PhaseLockedWavefieldEngine(self)
         self.domain_eq_engine = DomainPartitionEquationEngine(seed=0.0)
         self.domain_eq_dialog = None
-
         # Initialize the UI Manager as an independent floating control panel
         # that stays attached to your main app window
         self.ui_manager = UIComponentManager(self)
@@ -12478,30 +12637,58 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
             return self.instrument_param_state
     def _mark_generated_synth_context(self, source="randomizer", rng=None):
+        """Generate algorithmic synth/script context in the shared state; user values remain authoritative."""
         self._ensure_instrument_param_state()
-        for i, name in enumerate(getattr(self, "instrument_names_48", [])):
-            user = self.instrument_param_state.setdefault(name, {})
-            """Generate algorithmic synth/script context in the shared state; user values remain authoritative."""
-            rng = rng or np.random.default_rng(_safe_int_seed(self.get_numeric_seed()))
-            # HARD STATE BOOTSTRAP
-            # These stores are dictionaries by contract. Legacy/project/engine data
-            # must never be allowed to replace the root containers with lists/tuples.
-            raw_state = getattr(self, "instrument_param_state", None)
-            if not isinstance(raw_state, dict):
-                raw_state = {}
-            meum = {
-            "phase_shift": float(gen.get("phase_shift", 0.0)),
-            "am_depth": float(gen.get("am_depth", 0.0)),
-            "am_rate": float(gen.get("am_rate", 1.0)),
-            "fm_depth": float(gen.get("fm_depth", 0.0)),
-            "fm_rate": float(gen.get("fm_rate", 1.0)),
-            "pm_depth": float(gen.get("pm_depth", 0.0)),
-            "pm_rate": float(gen.get("pm_rate", 1.0)),
-            "pm_feedback": float(gen.get("pm_feedback", 0.0)),
-            "meum_depth": float(gen.get("meum_depth", 0.0)),
+        rng = rng or np.random.default_rng(_safe_int_seed(self.get_numeric_seed()))
+
+        # HARD STATE BOOTSTRAP
+        # These stores are dictionaries by contract. Legacy/project/engine data
+        # must never be allowed to replace the root containers with lists/tuples.
+        raw_state = getattr(self, "instrument_param_state", None)
+        if not isinstance(raw_state, dict):
+            raw_state = {}
+            self.instrument_param_state = raw_state
+
+        raw_generated = getattr(self, "instrument_param_generated", None)
+        if not isinstance(raw_generated, dict):
+            raw_generated = {}
+        self.instrument_param_generated = raw_generated
+
+        raw_scripts = getattr(self, "instrument_scripts", None)
+        if not isinstance(raw_scripts, dict):
+            raw_scripts = {}
+        self.instrument_scripts = raw_scripts
+
+        names = list(getattr(self, "instrument_names_48", []))
+        for i, name in enumerate(names):
+            user = self.instrument_param_state.get(name)
+            if not isinstance(user, dict):
+                user = {}
+                self.instrument_param_state[name] = user
+
+            ctx = float(self._contextual_numerology(name, i, i))
+
+            gen = {
+                "tuning": float(np.clip(MEUM_INV + (PHI - 1.0) * ctx, 0.75, 1.15)),
+                "filter": float(np.clip(MEUM_NORM + MEUM_INV * ctx, 0.02, 0.98)),
+                "drive": float(np.clip(MEUM_NORM * 0.5 + MEUM_NORM * ctx, 0.0, 0.9)),
+                "amplitude": float(np.clip(MEUM_INV * 0.5 + MEUM_NORM * ctx, 0.05, 1.0)),
+                "duration": float(np.clip(MEUM_NORM + MEUM_INV * (1.0 - ctx), 0.03, 1.0)),
+                "phase_shift": float(math.tau * ((i * MEUM_NORM * PHI_INV) % 1.0)),
+                "am_depth": float(np.clip(MEUM_NORM * 0.2 + MEUM_NORM * ctx * 0.5, 0.0, 0.40)),
+                "am_rate": float(MEUM_NORM + MEUM * ctx),
+                "fm_depth": float(np.clip(MEUM_NORM * 0.1 + MEUM_NORM * ctx * 0.1, 0.0, 0.18)),
+                "fm_rate": float(MEUM_SQ * ctx + MEUM_INV),
+                "pm_depth": float(np.clip(MEUM_NORM * 0.2 + MEUM_NORM * ctx * 0.2, 0.0, 0.35)),
+                "pm_rate": float(MEUM_SQ * ctx + MEUM_INV),
+                "pm_feedback": float(np.clip(MEUM_NORM * 0.1 + MEUM_NORM * ctx * 0.1, 0.0, 0.25)),
+                "meum_depth": float(np.clip(MEUM_NORM * 0.5 + MEUM_NORM * ctx * 0.5, 0.0, 0.45)),
             }
-            for k, v in meum.items():
+
+            self.instrument_param_generated[name] = gen
+            for k, v in gen.items():
                 user.setdefault(k, v)
+
             meum_context = {
                 "phase_shift": float(
                     user.get(
@@ -12596,171 +12783,29 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 ),
                         }
 
-            user["meum_modulation"] = (
-                    meum_context
+            user["meum_modulation"] = meum_context
+
+            marker = f"# --- GENERATED {source.upper()} CONTEXT: {name} ---"
+            old = str(self.instrument_scripts.get(name, "") or "")
+            if marker not in old:
+                self.instrument_scripts[name] = (
+                    old.rstrip() + "\n\n" + marker
+                    + f"\ngenerated_ctx={ctx:.8f}"
+                    + f"\ngenerated_tuning={gen['tuning']:.8f}"
+                    + f"\ngenerated_filter={gen['filter']:.8f}"
+                    + f"\ngenerated_drive={gen['drive']:.8f}"
+                    + f"\ngenerated_amplitude={gen['amplitude']:.8f}"
+                    + f"\ngenerated_duration={gen['duration']:.8f}"
+                    + f"\ngenerated_am_depth={meum_context['am_depth']:.8f}"
+                    + f"\ngenerated_am_rate={meum_context['am_rate']:.8f}"
+                    + f"\ngenerated_fm_depth={meum_context['fm_depth']:.8f}"
+                    + f"\ngenerated_fm_rate={meum_context['fm_rate']:.8f}"
+                    + f"\ngenerated_pm_depth={meum_context['pm_depth']:.8f}"
+                    + f"\ngenerated_pm_rate={meum_context['pm_rate']:.8f}"
+                    + f"\ngenerated_pm_feedback={meum_context['pm_feedback']:.8f}\n"
                 )
-            for i, name in enumerate(getattr(self, "instrument_names_48", [])):
-                user = self.instrument_param_state.get(name)
 
-            if not isinstance(user, dict):
-                user = {}
-                self.instrument_param_state[name] = raw_state
-            ctx = float(self._contextual_numerology(name, i, i))
-
-            gen = {
-                "tuning": float(np.clip(.9 + .2 * ctx, .75, 1.15)),
-                "filter": float(np.clip(.2 + .7 * ctx, .02, .98)),
-                "drive": float(np.clip(.05 + .55 * ctx, 0, .9)),
-                "amplitude": float(np.clip(.3 + .65 * ctx, .05, 1.0)),
-                "duration": float(np.clip(.15 + .8 * (1 - ctx), .03, 1.0)),
-                "phase_shift": float(
-                    2.0 * math.pi * ((i * MEUM_NORM) % 1.0)
-                ),
-
-                "am_depth": float(
-                    np.clip(0.08 + 0.28 * ctx, 0.0, 0.40)
-                ),
-
-                "am_rate": float(
-                    0.25 + 0.75 * ctx
-                ),
-
-                "fm_depth": float(
-                    np.clip(0.01 + 0.12 * ctx, 0.0, 0.18)
-                ),
-
-                "fm_rate": float(
-                    0.50 + 1.50 * ctx
-                ),
-
-                "pm_depth": float(
-                    np.clip(0.04 + 0.24 * ctx, 0.0, 0.35)
-                ),
-
-                "pm_rate": float(
-                    0.50 + 1.50 * ctx
-                ),
-
-                "pm_feedback": float(
-                    np.clip(0.02 + 0.20 * ctx, 0.0, 0.25)
-                ),
-                }
-            gen.update({
-                    "phase_shift": float(
-                        math.tau
-                        * ((i * MEUM_NORM)% 1.0)),
-
-                    "am_depth": float(
-                        np.clip(
-                        0.08
-                        + 0.28 * ctx,
-                        0.0,
-                        0.40,
-                    )
-                ),
-
-                "am_rate": float(
-                    0.25
-                    + 0.75 * ctx
-                ),
-
-                "fm_depth": float(
-                    np.clip(
-                        0.015
-                        + 0.12 * ctx,
-                        0.0,
-                        0.18,
-                    )
-                ),
-
-                "fm_rate": float(
-                    0.50
-                    + 1.50 * ctx
-                ),
-
-                "pm_depth": float(
-                    np.clip(
-                        0.04
-                        + 0.24 * ctx,
-                        0.0,
-                        0.35,
-                    )
-                ),
-
-                "pm_rate": float(
-                    0.50
-                    + 1.50 * ctx
-                ),
-
-                "pm_feedback": float(
-                    np.clip(
-                        0.02
-                        + 0.18 * ctx,
-                        0.0,
-                        0.25,
-                    )
-                ),
-
-                "meum_depth": float(
-                    np.clip(
-                        0.10
-                        + 0.35 * ctx,
-                        0.0,
-                        0.45,
-                    )
-                ),})
-
-
-            if isinstance(user, dict):
-                self.instrument_param_generated = gen
-            else:
-                self.instrument_param_generated = {}
-
-            if not isinstance(user, dict):
-                if isinstance(user, list):
-                    # Don't try to use a list as instrument parameter state.
-                    user = {}
-
-                else:
-                    user = {}
-
-                self.instrument_param_state[op] = user
-
-            if isinstance(gen, dict):
-                for k, v in gen.items():
-                    user.setdefault(k, v)
-
-                raw_generated = getattr(self, "instrument_param_generated", None)
-                if not isinstance(raw_generated, dict):
-                    raw_generated = {}
-
-                if isinstance(user, dict):
-                    self.instrument_param_generated = raw_generated
-                else:
-                    self.instrument_param_generated = {}
-                raw_scripts = getattr(self, "instrument_scripts", None)
-                if not isinstance(raw_scripts, dict):
-                    raw_scripts = {}
-
-                self.instrument_scripts = raw_scripts
-                for i, name in enumerate(getattr(self, "instrument_names_48", [])):
-                    user = self.instrument_param_state.get(name)
-
-                    # Legacy/corrupt state protection:
-                    # every instrument entry must be a dictionary.
-                    if not isinstance(user, dict):
-                        user = {}
-                        self.instrument_param_state[name] = user
-
-                    ctx = float(self._contextual_numerology(name, i, i))
-                    gen={"tuning":float(np.clip(.9+.2*ctx,.75,1.15)),"filter":float(np.clip(.2+.7*ctx,.02,.98)),"drive":float(np.clip(.05+.55*ctx,0,.9)),"amplitude":float(np.clip(.3+.65*ctx,.05,1.0)),"duration":float(np.clip(.15+.8*(1-ctx),.03,1.0))}
-                    self.instrument_param_generated[name]=gen
-                    for k,v in gen.items(): user.setdefault(k,v)
-                    marker=f"# --- GENERATED {source.upper()} CONTEXT: {name} ---"
-                    old=str(self.instrument_scripts.get(name,"") or "")
-                    if marker not in old:
-                        self.instrument_scripts[name]=old.rstrip()+"\n\n"+marker+f"\ngenerated_ctx={ctx:.8f}\ngenerated_tuning={gen['tuning']:.8f}\ngenerated_filter={gen['filter']:.8f}\ngenerated_drive={gen['drive']:.8f}\ngenerated_amplitude={gen['amplitude']:.8f}\ngenerated_duration={gen['duration']:.8f}\n"
-                return len(getattr(self,"instrument_names_48",[]))
+        return len(names)
 
     def _write_generated_domain_context(self, source="randomizer"):
         engine=getattr(self,"domain_eq_engine",None)
@@ -13713,6 +13758,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_load_project = QPushButton("📂 Load Project")
         self.btn_keyboard = QPushButton("🎹 Keyboard / Test")
         self.btn_trigger_all = QPushButton("⚡ Trigger All")
+        self.btn_clear_memory = QPushButton("🗑 Clear Memory")
+        self.btn_clear_memory.setToolTip(
+            "Resets the entire project: playlist, all instrument sequences/scripts/"
+            "generated params, patch connections, domain equations, GOAVA state, "
+            "and the global seed script. Cannot be undone."
+        )
+        self.btn_clear_memory.setStyleSheet(
+            "QPushButton { background-color:#4a1414; color:#ffb3b3; border:1px solid #ff6b6b; "
+            "border-radius:3px; padding:4px 8px; font-weight:bold; }"
+            "QPushButton:hover { background-color:#6a1c1c; }"
+        )
 
         # =====================================================================
         # SEED_SCRIPT_EDITOR_FEATURE
@@ -13803,6 +13859,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_load_project.clicked.connect(self.load_project_dialog)
         self.btn_keyboard.clicked.connect(self.open_keyboard_test_window)
         self.btn_trigger_all.clicked.connect(self.trigger_all_instruments_hit)
+        self.btn_clear_memory.clicked.connect(self._on_clear_memory_clicked)
 
         self.transport_layout.addWidget(self.btn_play)
         self.transport_layout.addWidget(self.btn_stop)
@@ -13829,6 +13886,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.transport_layout_row2.addStretch(1)
         self.transport_layout_row2.addWidget(self.btn_save_project)
         self.transport_layout_row2.addWidget(self.btn_load_project)
+        self.transport_layout_row2.addWidget(self.btn_clear_memory)
 
         # Live engine timers
         self._live_euclid_timer = QTimer(self)
@@ -14417,6 +14475,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.audio_stream = None
         self.master_volume = 1.00
         self._scope_update_timer = QTimer(self)
+        self.update()  # Trigger repaint
         self._scope_update_timer.setInterval(33)
         self._scope_update_timer.timeout.connect(self._update_scope_from_playhead)
         self._last_scope_chunk = np.zeros(100, dtype=np.float32)
@@ -15662,88 +15721,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         pst.setdefault("tuning_ratio", 1.0)
                         gen = getattr(self, "instrument_param_generated", None)
                         if isinstance(gen, dict):
-                            if not isinstance(gen, dict):
-                                gen = {}
-
-                            # Keep the normalized object attached to the canonical record
-                            # when the surrounding code has a writable generated-state field.
-                            try:
-                                canonical_row["generated"] = gen
-                            except (NameError, TypeError):
-                                pass
-                            if not isinstance(gen, dict):
-                                gen = {}
                             gen.setdefault(name, {})["harmonic_freq"] = pst["harmonic_freq"]
                 except Exception:
                     pass
-            if not isinstance(gen, dict):
-                    gen = {}
-
-                # Keep the normalized object attached to the canonical record
-                # when the surrounding code has a writable generated-state field.
-                    try:
-                        canonical_row["generated"] = gen
-                    except (NameError, TypeError):
-                        pass
-                    if not isinstance(gen, dict):
-                        gen = {}
-
-            gen.setdefault(
-                "phase_shift",
-                math.tau
-                * (
-                    (i * MEUM_NORM)
-                    % 1.0
-                )
-            )
-
-            gen.setdefault(
-                "am_depth",
-                0.15
-                + 0.20 * ctx
-            )
-
-            gen.setdefault(
-                "am_rate",
-                0.5
-                + ctx
-            )
-
-            gen.setdefault(
-                "fm_depth",
-                0.03
-                + 0.10 * ctx
-            )
-
-            gen.setdefault(
-                "fm_rate",
-                0.5
-                + 1.5 * ctx
-            )
-
-            gen.setdefault(
-                "pm_depth",
-                0.05
-                + 0.20 * ctx
-            )
-
-            gen.setdefault(
-                "pm_rate",
-                0.5
-                + 1.5 * ctx
-            )
-
-            gen.setdefault(
-                "pm_feedback",
-                0.05
-                + 0.15 * ctx
-            )
-
-            gen.setdefault(
-                "meum_depth",
-                0.10
-                + 0.30 * ctx
-            )
             # Selected sequence is preserved if it points to a user sequence;
             # otherwise it is assigned deterministically to the first canonical slot.
             selected_map = getattr(self, "instrument_selected_sequence", {})
@@ -16519,6 +16499,115 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 for k, v in srcs.items()
             }
         return out
+
+    def _on_clear_memory_clicked(self):
+        """Confirm, then hard-reset the entire project and the global seed."""
+        reply = QMessageBox.question(
+            self,
+            "Clear Memory",
+            "This resets the ENTIRE project: playlist, every instrument's "
+            "sequences/scripts/generated synth params, patch connections, "
+            "domain equations, GOAVA state, and the global seed script.\n\n"
+            "This cannot be undone. Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._clear_project_memory()
+
+    def _clear_project_memory(self):
+        """Reset all project/composition state and the global seed to a fresh boot."""
+        # Stop any active transport first so nothing writes into state mid-reset.
+        try:
+            self.stop_playback()
+        except Exception:
+            pass
+        for _flag_attr in ("btn_local_phase_lock", "btn_local_randomize",
+                           "btn_seeded_randomize", "btn_idealize_rhythm", "btn_goava"):
+            _w = getattr(self, _flag_attr, None)
+            if _w is not None:
+                try:
+                    _w.blockSignals(True)
+                    _w.setChecked(False)
+                finally:
+                    _w.blockSignals(False)
+
+        default_seq_len = 16
+        self.instrument_sequencer_memory = {
+            name: {
+                "steps": [False] * default_seq_len,
+                "gates": [True] * default_seq_len,
+                "amplitudes": [1.0] * default_seq_len,
+                "pitches": [1.0] * default_seq_len,
+                "probabilities": [100] * default_seq_len,
+                "offsets": [0.0] * default_seq_len,
+                "pattern_length": default_seq_len,
+                "sequence_id": 1,
+                "user_owned": False,
+                "canonical_owner": None,
+            }
+            for name in self.instrument_names_48
+        }
+        self.instrument_sequence_banks = {
+            name: {1: mem} for name, mem in self.instrument_sequencer_memory.items()
+        }
+        self.instrument_selected_sequence = {name: 1 for name in self.instrument_names_48}
+        self.instrument_scripts = {
+            name: f"# Script workspace for {name} based on operator rules\ndef evaluate_wave(x, y, z):\n    return np.sin(x * {(i % 12) + 1}.0) * np.cos(y) - z"
+            for i, name in enumerate(self.instrument_names_48)
+        }
+        self.instrument_param_state = {}
+        self.instrument_param_generated = {}
+        self.patch_connections = []
+        if hasattr(self, "domain_eq_engine") and self.domain_eq_engine is not None:
+            self.domain_eq_engine.domains = []
+            self.domain_eq_engine.set_seed(0.0)
+
+        self.master_playlist_data = []
+        self.goava_active = False
+        self.goava_seed_values = []
+        self.goava_note_events = []
+        self.goava_steps = []
+        self.goava_pitches = []
+        self.goava_frequencies = []
+        self.goava_raw_values = []
+        self._user_composition_snapshot = None
+        self.playlist_automation = []
+
+        self.imported_waveform = None
+        self.imported_sample_rate = 44100
+        self.imported_wav_path = ""
+        self.imported_video_path = ""
+        self.imported_video_meta = {}
+
+        # Global seed script: user-controlled field, reset to empty (no seed).
+        if hasattr(self, "input_seed_val"):
+            self.input_seed_val.blockSignals(True)
+            self.input_seed_val.setPlainText("")
+            self.input_seed_val.blockSignals(False)
+
+        self._composition_generation_guard = False
+        self._live_source_update_pending = False
+        self._composition_generation_counter = 0
+        self._transport_finished = False
+        self._stop_requested = False
+
+        try:
+            self.initialize_default_playlist_memory()
+        except Exception as exc:
+            print(f"[ClearMemory] playlist reinit skipped: {exc}")
+        try:
+            self._ensure_sequence_banks_after_resize()
+        except Exception as exc:
+            print(f"[ClearMemory] sequence bank reinit skipped: {exc}")
+        try:
+            self._refresh_sequence_dependent_panels()
+        except Exception:
+            pass
+        if hasattr(self, "scope_status_label"):
+            self.scope_status_label.setText("📊 Memory cleared — fresh project.")
+        print("[ClearMemory] Project and seed reset to a fresh boot state.")
 
     def save_project_dialog(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save EQR Project", "", "EQR Project (*.json)")
@@ -17865,25 +17954,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _spectral_fit_voice(self, voice, target, amount=1.0):
         """Fit broad target spectrum and gently phase-lock the generated voice to it."""
         voice = np.asarray(voice, dtype=np.float32)
-        meum_context = dict(
-            params.get(
-                "meum_modulation",
-                {}
-            )
-            if isinstance(
-                params.get(
-                    "meum_modulation",
-                    {}
-                ),
-                dict
-            )
-            else {}
-        )
-
-        if hasattr(voice, "configure_meum_modulation"):
-            voice.configure_meum_modulation(
-                meum_context
-            )
         target = np.asarray(target, dtype=np.float32)
         n = min(voice.size, target.size)
         if n < 32:
@@ -19128,7 +19198,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # Engines / seed scripts define character HERE. Later stages must
                 # not spectral-fit or convolute these voices back into one shape.
                 f0 = np.maximum(seed_freq, 20.0)
-                phase = 2.0 * np.pi * f0 * local_t
+
+                # Canonical AM/FM/PM: driven by whatever the randomizers /
+                # phase-lockers / seeded engines last wrote into this
+                # instrument's meum_modulation context (see
+                # _mark_generated_synth_context), falling back to the raw
+                # per-instrument state if no nested context exists yet.
+                _meum_ctx_raw = st.get("meum_modulation", st)
+                _meum_ctx = _meum_ctx_raw if isinstance(_meum_ctx_raw, dict) else st
+                _fm_ratio, _pm_offset, _am_gain = meum_modulation_vectors(local_t, _meum_ctx)
+
+                # FM: integrate the modulated instantaneous frequency into phase
+                # (canonical order is FM -> phase accumulator -> PM -> waveform).
+                _dt = float(local_t[1] - local_t[0]) if local_t.size > 1 else 0.0
+                _inst_freq = f0 * _fm_ratio
+                phase = 2.0 * np.pi * np.cumsum(_inst_freq) * _dt
+
+                # PM: direct phase displacement, applied after the FM integration.
+                phase = phase + _pm_offset
+
                 _sv = float(_voice_seed)
                 _s_abs = abs(_sv) + 1e-9
                 _s_frac = _s_abs - math.floor(_s_abs)
@@ -19180,26 +19268,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 gate = step_env
                 if not np.any(gate > 1e-9):
                     continue
-                voice = seed.astype(np.float32) * gate * velocity_scale
-                meum_context = dict(
-                    params.get(
-                        "meum_modulation",
-                        {}
-                    )
-                    if isinstance(
-                        params.get(
-                            "meum_modulation",
-                            {}
-                        ),
-                        dict
-                    )
-                    else {}
-                )
-
-        if hasattr(voice, "configure_meum_modulation"):
-            voice.configure_meum_modulation(
-                meum_context
-            )
+                # AM: post-waveform amplitude gain, applied once here for the
+                # canonical voice (feeds the same meum_modulation context as
+                # the FM/PM applied above to `phase`).
+                voice = seed.astype(np.float32) * gate * velocity_scale * _am_gain.astype(np.float32)
                 # Harmonic Lattice is detail only. Cap wet so it cannot overwrite
                 # seed-defined harmonic/entropy identity (was homogenizing voices).
             if synth_lattice > 1e-6:
@@ -19213,25 +19285,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         pkp_env=env_f,
                         bpm=float(bpm),
                     )
-                    meum_context = dict(
-                        params.get(
-                            "meum_modulation",
-                            {}
-                        )
-                        if isinstance(
-                            params.get(
-                                "meum_modulation",
-                                {}
-                            ),
-                            dict
-                        )
-                        else {}
-                    )
-
-                    if hasattr(voice, "configure_meum_modulation"):
-                        voice.configure_meum_modulation(
-                            meum_context
-                        )
                 except Exception:
                     pass
                 # EQR tensor: light color only
@@ -19240,25 +19293,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if eqr_amt > 1e-6:
                     try:
                         voice = self._eqr_tensor.process(voice, activation=eqr_amt)
-                        meum_context = dict(
-                        params.get(
-                            "meum_modulation",
-                            {}
-                        )
-                        if isinstance(
-                            params.get(
-                                "meum_modulation",
-                                {}
-                            ),
-                            dict
-                        )
-                        else {}
-                        )
-
-                        if hasattr(voice, "configure_meum_modulation"):
-                            voice.configure_meum_modulation(
-                                meum_context
-                            )
                     except Exception:
                         pass
 
@@ -19297,25 +19331,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                                 (1.0 - fit_wet) * voice + fit_wet * target_n * gate,
                                 voice,
                             ).astype(np.float32)
-                            meum_context = dict(
-                            params.get(
-                                "meum_modulation",
-                                {}
-                            )
-                            if isinstance(
-                                params.get(
-                                    "meum_modulation",
-                                    {}
-                                ),
-                                dict
-                            )
-                            else {}
-                        )
-
-                        if hasattr(voice, "configure_meum_modulation"):
-                            voice.configure_meum_modulation(
-                                meum_context
-                            )
                     except Exception:
                         pass
 
@@ -19573,11 +19588,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.play_cursor += n
             if n < frames:
                 outdata[n:, 0] = 0
-            if not self.is_playing:
-                self._transport_finished = True
+            if remaining <= n:
+                # Buffer exhausted: flip plain state flags only. This
+                # callback runs on the sounddevice audio thread, not the Qt
+                # UI thread — calling stop_playback() directly from here
+                # touches QPushButton/style-sheet state from a non-UI thread,
+                # which PyQt does not guarantee is safe and was leaving
+                # btn_play stuck reading "⏸ PAUSE" instead of resetting to
+                # "▶ PLAY" like a real Stop. The UI-thread scope timer
+                # (_update_scope_from_playhead) already polls is_playing and
+                # performs the actual stop_playback() on the correct thread.
                 self.is_playing = False
+                self._transport_finished = True
                 self._composition_generation_guard = False
-                self.stop_playback()
                 return
     def _update_scope_from_playhead(self):
         """UI-thread timer: feed waveform, scenograph, and FFT spectrum during live play."""
@@ -19962,7 +19985,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr)
                         wf.writeframes((np.clip(audio_clip, -1, 1) * 32767).astype(np.int16).tobytes())
 
-            eng = getattr(self, 'video_synth_engine', None) or VideoSynthEngine(48)
+            eng = getattr(self, 'video_synth_engine', None) or VideoSynthEngine(len(active_instrument_memory))
             if hasattr(eng, 'bind_app'):
                 eng.bind_app(self)
             # w, h already set from _export_frame_size()
