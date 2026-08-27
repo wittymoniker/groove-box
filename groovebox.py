@@ -14574,6 +14574,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.play_cursor = 0
         self.play_lock = threading.Lock()
         self.audio_stream = None
+        # Dedicated polyphonic audition mixer: up to 64 simultaneous note voices.
+        # This is separate from the transport stream so live note hits never
+        # replace/steal the main audiovisual playback stream.
+        self._pkp_poly_lock = threading.Lock()
+        self._pkp_poly_voices = []  # [(buffer, cursor, gain)] oldest first
+        self._pkp_poly_max_voices = 64
+        self._pkp_poly_mix = np.zeros(1024, dtype=np.float32)
+        self._pkp_poly_generation = 0
+        self._pkp_poly_stream = None
+        self._pkp_poly_sr = 44100
         self.master_volume = 1.00
         self._scope_update_timer = QTimer(self)
         self.update()  # Trigger repaint
@@ -14728,6 +14738,96 @@ class MathematiciansGrooveboxApp(QMainWindow):
             total += float(np.mean(v*v))
         return float(np.sqrt(total))
 
+    def _pkp_poly_callback(self, outdata, frames, time_info, status):
+        """Low-allocation 64-voice realtime audition mixer.
+
+        The callback never performs stream creation, GUI work, or unbounded
+        allocations.  Voice state is copied under a short lock, audio is mixed
+        outside the lock, then the compact voice list is published once.
+        """
+        try:
+            frames = int(frames)
+            if frames > self._pkp_poly_mix.size:
+                self._pkp_poly_mix = np.zeros(frames, dtype=np.float32)
+            mix = self._pkp_poly_mix[:frames]
+            mix.fill(0.0)
+
+            with self._pkp_poly_lock:
+                voices = self._pkp_poly_voices
+                self._pkp_poly_voices = []
+
+            alive = []
+            active_count = 0
+            for buf, pos, gain in voices:
+                remaining = len(buf) - pos
+                if remaining <= 0:
+                    continue
+                take = frames if remaining >= frames else remaining
+                mix[:take] += buf[pos:pos + take] * gain
+                pos += take
+                if pos < len(buf):
+                    alive.append((buf, pos, gain))
+                    active_count += 1
+
+            if alive:
+                with self._pkp_poly_lock:
+                    # A note may have arrived while we were mixing. Preserve it.
+                    pending = self._pkp_poly_voices
+                    self._pkp_poly_voices = alive + pending
+
+            # Constant-power-ish bus compensation.  Use active voices rather
+            # than the raw snapshot so expired notes do not attenuate a chord.
+            total = max(1, len(voices))
+            if total > 1:
+                mix *= np.float32(1.0 / np.sqrt(float(total)))
+
+            peak = float(np.max(np.abs(mix))) if frames else 0.0
+            if peak > 0.98:
+                mix *= np.float32(0.98 / peak)
+
+            outdata.fill(0.0)
+            outdata[:, 0] = mix
+        except Exception:
+            outdata.fill(0.0)
+
+    def _pkp_poly_submit(self, hit, sr):
+        """Submit one audition note to the persistent 64-voice mixer."""
+        if not HAS_SOUNDDEVICE:
+            return
+        arr = np.asarray(hit, dtype=np.float32).ravel()
+        if arr.size == 0:
+            return
+        # Copy once so the caller can safely reuse its temporary array.
+        buf = np.ascontiguousarray(arr)
+        try:
+            with self._pkp_poly_lock:
+                self._pkp_poly_sr = int(sr)
+                voices = self._pkp_poly_voices
+                if len(voices) >= self._pkp_poly_max_voices:
+                    # Deterministic oldest-voice stealing; O(1) list slice.
+                    del voices[0]
+                voices.append((buf, 0, 1.0))
+                stream = self._pkp_poly_stream
+
+            if stream is None:
+                stream = sd.OutputStream(
+                    samplerate=int(sr), channels=1, dtype='float32',
+                    callback=self._pkp_poly_callback, blocksize=256,
+                    latency='low', prime_output_buffers_using_stream_callback=True
+                )
+                stream.start()
+                with self._pkp_poly_lock:
+                    # If another submit created the stream first, close ours.
+                    if self._pkp_poly_stream is None:
+                        self._pkp_poly_stream = stream
+                    else:
+                        try:
+                            stream.stop(); stream.close()
+                        except Exception:
+                            pass
+        except Exception as e:
+            print(f"[PKP Poly64] stream error: {e}")
+
     def _pkp_fire_step_hit(self, inst_name, step_idx, amp=1.0):
         """Generate a short percussive hit for the active pad and push it to scope (+ optional audio)."""
         try:
@@ -14775,12 +14875,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         f"📊 PKP Hit  ·  {inst_name[:18]}  STEP {step_idx+1}  ·  {freq:.1f} Hz"
                     )
 
-            # Non-blocking one-shot audio (does not interfere with main stream)
+            # Dedicated polyphonic audition stream: never replace an existing note.
             if HAS_SOUNDDEVICE:
-                try:
-                    sd.play(hit.astype(np.float32), sr, blocking=False)
-                except Exception:
-                    pass
+                self._pkp_poly_submit(hit.astype(np.float32), sr)
         except Exception as e:
             print(f"[PKP] step hit error: {e}")
 
@@ -19398,6 +19495,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # Seed → real scale degree (~2 octaves). Tiny detunes were inaudible
                 # so every seed still "hit the same notes".
                 _seed_ratio = float(_seed_to_pitch_ratio(_voice_seed, op_idx, 0))
+                # Stable integer seed must exist before any per-voice identity
+                # fields use it.  Keep this local and deterministic.
+                _s_int = int(_safe_int_seed(_voice_seed))
                 # <<< GROK_EDIT_END: render_seed_pitch
                 # Absolute identity anchor survives ensemble resizing.  It is only
                 # established by the resize transaction (or for new identities), so
@@ -19408,8 +19508,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         base_freq = float(_st_pre["frequency_identity_hz"])
                     except Exception:
                         pass
-                dynamic_eqr = base_eqr * (1.0 + 0.3 * np.sin(2.0 * np.pi * 0.2 * local_t + op_idx))
-
                 step_env = np.zeros_like(local_t)
                 pitch_track = np.ones_like(local_t)
                 steps = mem.get("steps", [])
@@ -19435,6 +19533,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
                 # --- Per-synth panel seed (4 knobs) + per-synth Fractallizer ---
                 st = dict((getattr(self, "instrument_param_state", {}) or {}).get(op_name, {}) or {})
+                # SUPER-VARIABLE VOICE FIELD: only internal synthesis variation.
+                # User-authored steps, pitches, gates, patterns, playlist data and
+                # engine goals are untouched. Each voice/row gets independent
+                # phase, detune, timbre and envelope character.
+                _voice_mix_key = (int(_s_int) ^ (int(op_idx) * 0x9E3779B1) ^
+                                  (int(row_idx) * 0x85EBCA6B) ^ (int(pattern_len) * 0xC2B2AE35)) & 0x7FFFFFFF
+                _voice_rng = np.random.RandomState(_voice_mix_key or 1)
+                _voice_detune = float(_voice_rng.uniform(-0.0035, 0.0035))
+                _voice_phase0 = float(_voice_rng.uniform(-math.pi, math.pi))
+                _voice_timbre = float(_voice_rng.uniform(0.78, 1.22))
+                _voice_decay = float(_voice_rng.uniform(0.82, 1.18))
+                _voice_mod_rate = float(_voice_rng.uniform(0.71, 1.37))
+                # Derived modulation must be computed after the per-voice identity
+                # fields above are initialized. This also keeps every voice's
+                # modulation field independent and deterministic.
+                dynamic_eqr = base_eqr * (1.0 + 0.3 * np.sin(
+                    2.0 * np.pi * 0.2 * _voice_mod_rate * local_t
+                    + op_idx + _voice_phase0
+                ))
                 morph = float(st.get("morph", st.get("internal_p1", 0.5) * 10.0 if "internal_p1" in st else 1.2))
                 harm_hz = float(st.get("harmonic_freq", base_freq))
                 chaos = float(st.get("chaos", st.get("internal_p3", 0.5)))
@@ -19480,24 +19597,24 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # FM: integrate the modulated instantaneous frequency into phase
                 # (canonical order is FM -> phase accumulator -> PM -> waveform).
                 _dt = float(local_t[1] - local_t[0]) if local_t.size > 1 else 0.0
-                _inst_freq = f0 * _fm_ratio
+                _inst_freq = f0 * _fm_ratio * (1.0 + _voice_detune)
                 phase = 2.0 * np.pi * np.cumsum(_inst_freq) * _dt
 
-                # PM: direct phase displacement, applied after the FM integration.
-                phase = phase + _pm_offset
+                # PM: direct phase displacement plus voice-specific initial phase.
+                phase = phase + _pm_offset + _voice_phase0
 
                 _sv = float(_voice_seed)
                 _s_abs = abs(_sv) + 1e-9
                 _s_frac = _s_abs - math.floor(_s_abs)
-                _s_int = int(_safe_int_seed(_sv))
+                # _s_int was established from _voice_seed before the voice field.
                 # entropy 0 = pure harmonic, 1 = full entropy; seed-unique centre ~0.5
                 entropy = float(np.clip(
                     0.5 + 0.5 * math.sin(_s_abs * MEUM_NORM + op_idx * MEUM_INV + _s_frac * math.tau),
                     0.0, 1.0
                 ))
-                k1 = morph / 10.0
-                k3 = float(np.clip(chaos, 0.0, 1.0))
-                k4 = fold_depth / 16.0
+                k1 = (morph / 10.0) * _voice_timbre
+                k3 = float(np.clip(chaos * (0.82 + 0.36 * _voice_timbre), 0.0, 1.0))
+                k4 = float(np.clip((fold_depth / 16.0) * (0.78 + 0.44 * _voice_timbre), 0.0, 2.0))
                 entropy = float(np.clip(entropy * 0.75 + 0.25 * k3, 0.0, 1.0))
                 n_harm = max(2, int(3 + (1.0 - entropy) * 8 + k4 * 4))
                 harm = np.sin(phase)
@@ -19533,7 +19650,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
                 beat_hz = float(bpm) / 60.0
                 pkp_sin = 0.55 + 0.45 * np.sin(2.0 * np.pi * beat_hz * local_t)
-                env_f = np.exp(-local_t / max(pkp_decay * MEUM_CONSTANT, 0.015)) * pkp_sin
+                env_f = np.exp(-local_t / max(pkp_decay * MEUM_CONSTANT * _voice_decay, 0.015)) * pkp_sin
                 gate = step_env
                 if not np.any(gate > 1e-9):
                     continue
