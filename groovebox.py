@@ -98,15 +98,47 @@ PAINT_RATE_HZ = 2.395                                           # max single-cel
 PAINT_PERIOD_S = 1.0 / PAINT_RATE_HZ                            # ~0.418 s between stacks
 PAINT_INSTANCE_LIMIT = 8
 
-# SAFE_SEED_CAST — get_numeric_seed() intentionally returns a float (it's a
-# script/expression evaluator: sin(t), fractional values, hashed floats for
-# non-numeric text). NumPy's RNG APIs (np.random.seed, np.random.default_rng)
-# require a true integer and raise:
-#   "Cannot cast scalar from dtype('float64') to dtype('int64')
-#    according to the rule 'safe'"
-# if handed a float directly — that's the render/export popup. Every call
-# site that seeds NumPy from a user/composition seed value goes through this
-# instead of relying on an implicit/unsafe cast.
+
+def meum_phase_field(t, rate=1.0, phase=0.0):
+    """Bounded nonlinear Meum modulation field."""
+    t = float(t)
+    rate = float(rate)
+    phase = float(phase)
+
+    a = math.sin(2.0 * math.pi * t * rate + phase)
+    b = math.sin(
+        2.0 * math.pi * t * rate * MEUM_INV + phase * MEUM_NORM
+    )
+
+    return 0.5 * (a + MEUM_NORM * b)
+
+
+def meum_modulated_phase(
+    phase,
+    t,
+    *,
+    phase_shift=0.0,
+    fm_depth=0.0,
+    fm_rate=1.0,
+    pm_depth=0.0,
+    pm_rate=1.0,
+    pm_feedback=0.0,
+):
+ field = meum_phase_field(t, rate=fm_rate, phase=phase_shift)
+
+    # PM = direct phase displacement.
+    pm = (
+        float(pm_depth)
+        * math.sin(
+            2.0 * math.pi * float(t) * float(pm_rate)
+            + float(phase_shift)
+        )
+    )
+
+    # Optional Meum phase feedback.
+    pm += float(pm_feedback) * field
+
+    return float(phase) + float(phase_shift) + pm, field
 
 def _parse_if_elif_shorthand(text):
     """Parse if/elif[/elif...] chains into a Python ternary expression string.
@@ -5595,8 +5627,9 @@ class StandardSynthInstance:
         self.freq = freq
         self.sr = sr
         self.phase = 0.0
+        self._meum_phase = 0.0
+        self._meum_sample_index = 0
         self.life = 100
-
     def is_finished(self):
         return self.life <= 0
 
@@ -5610,7 +5643,119 @@ class StandardSynthInstance:
             buf.append(val)
         self.life -= 1
         return buf
+    def _meum_oscillator_block(
+        self,
+        num_samples,
+        sample_rate,
+        frequency,
+        waveform_fn,
+        amplitude=1.0,
+        phase_shift=0.0,
+        am_depth=0.0,
+        am_rate=1.0,
+        fm_depth=0.0,
+        fm_rate=1.0,
+        pm_depth=0.0,
+        pm_rate=1.0,
+        pm_feedback=0.0,
+    ):
+        sr = max(float(sample_rate), 1.0)
+        freq = max(float(frequency), 0.0)
 
+        out = np.zeros(int(num_samples), dtype=np.float32)
+
+        phase = float(self._meum_phase)
+        sample_index = int(self._meum_sample_index)
+
+        for i in range(len(out)):
+            t = sample_index / sr
+
+            # ---------------------------------------------------------------
+            # MEUM FIELD
+            # ---------------------------------------------------------------
+            field = meum_phase_field(
+                t,
+                rate=fm_rate,
+                phase=phase_shift,
+            )
+
+            # ---------------------------------------------------------------
+            # AM
+            # ---------------------------------------------------------------
+            am_lfo = math.sin(
+                2.0 * math.pi * t * float(am_rate)
+                + float(phase_shift)
+            )
+
+            gain = 1.0 + float(am_depth) * am_lfo
+
+            # Keep AM from accidentally producing negative amplitude.
+            gain = max(0.0, gain)
+
+            # ---------------------------------------------------------------
+            # FM
+            # ---------------------------------------------------------------
+            fm_lfo = math.sin(
+                2.0 * math.pi * t * float(fm_rate)
+                + float(phase_shift)
+            )
+
+            fm_signal = fm_lfo + float(pm_feedback) * field
+
+            instantaneous_frequency = freq * (
+                1.0 + float(fm_depth) * fm_signal
+            )
+
+            instantaneous_frequency = max(
+                0.0,
+                min(0.45 * sr, instantaneous_frequency),
+            )
+
+            # ---------------------------------------------------------------
+            # PM
+            # ---------------------------------------------------------------
+            pm_lfo = math.sin(
+                2.0 * math.pi * t * float(pm_rate)
+                + float(phase_shift)
+            )
+
+            pm = float(pm_depth) * pm_lfo
+
+            # Meum phase field can feed PM without replacing PM itself.
+            pm += float(pm_feedback) * field
+
+            # ---------------------------------------------------------------
+            # FINAL OSCILLATOR PHASE
+            # ---------------------------------------------------------------
+            render_phase = phase + float(phase_shift) + pm
+
+            # waveform_fn should accept radians.
+            sample = waveform_fn(render_phase)
+
+            out[i] = np.float32(
+                float(amplitude) * gain * sample
+            )
+
+            # ---------------------------------------------------------------
+            # FM IS INTEGRATED HERE
+            # ---------------------------------------------------------------
+            phase += (
+                2.0
+                * math.pi
+                * instantaneous_frequency
+                / sr
+            )
+
+            sample_index += 1
+
+            # Keep numbers bounded during long sessions.
+            if phase > 1.0e6:
+                phase %= 2.0 * math.pi
+
+        self._meum_phase = phase
+        self._meum_sample_index = sample_index
+
+        return out
 class AdditiveSynthInstance(StandardSynthInstance):
     def render_block(self, num_samples, x, y, z):
         buf = []
@@ -5632,6 +5777,8 @@ class FormantSynthInstance(StandardSynthInstance):
         formant_step = (2.0 * math.pi * (self.freq * abs(x * 3.0))) / self.sr
         for _ in range(num_samples):
             self.phase += carrier_step
+            self._meum_phase = 0.0
+            self._meum_sample_index = 0
             c = math.sin(self.phase)
             m = math.cos(self.phase * 1.5) * math.sin(formant_step)
             val = c * m * 0.2 * abs(z)
@@ -5647,6 +5794,8 @@ class StochasticNoiseInstance(StandardSynthInstance):
             val = noise * 0.1 * abs(x) * max(0.0, y)
             buf.append(val)
         self.life -= 1
+        self._meum_phase = 0.0
+        self._meum_sample_index = 0
         return buf
 # ==========================================
 # 3. INTERACTIVE SEQUENCER, SERIALIZATION & VISUAL LAYERS
@@ -5656,6 +5805,8 @@ class StandardWaveSynthNode:
         self.freq = freq
         self.sr = sr
         self.phase = 0.0
+        self._meum_phase = 0.0
+        self._meum_sample_index = 0
         self.amp = 0.5
 
     def generate_block(self, num_samples, x, y, z):
@@ -5678,6 +5829,8 @@ class AdditiveSynthNode(StandardWaveSynthNode):
 
         for i in range(num_samples):
             self.phase += step
+            self._meum_phase = 0.0
+            self._meum_sample_index = 0
             sample = 0.0
             for h, w in zip(harmonics, weights):
                 sample += math.sin(self.phase * h * (1.0 + z * 0.1)) * w
@@ -5694,6 +5847,8 @@ class FormantSynthNode(StandardWaveSynthNode):
 
         for _ in range(num_samples):
             self.phase += step
+            self._meum_phase = 0.0
+            self._meum_sample_index = 0
             carrier = math.sin(self.phase)
             modulator = math.sin(self.phase * 1.414) * math.cos(f_step)
             val = carrier * modulator * self.amp * z
@@ -11552,6 +11707,37 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "drive": float(np.clip(.05 + .55 * ctx, 0, .9)),
                 "amplitude": float(np.clip(.3 + .65 * ctx, .05, 1.0)),
                 "duration": float(np.clip(.15 + .8 * (1 - ctx), .03, 1.0)),
+                "phase_shift": float(
+                    2.0 * math.pi * ((i * MEUM_NORM) % 1.0)
+                ),
+
+                "am_depth": float(
+                    np.clip(0.08 + 0.28 * ctx, 0.0, 0.40)
+                ),
+
+                "am_rate": float(
+                    0.25 + 0.75 * ctx
+                ),
+
+                "fm_depth": float(
+                    np.clip(0.01 + 0.12 * ctx, 0.0, 0.18)
+                ),
+
+                "fm_rate": float(
+                    0.50 + 1.50 * ctx
+                ),
+
+                "pm_depth": float(
+                    np.clip(0.04 + 0.24 * ctx, 0.0, 0.35)
+                ),
+
+                "pm_rate": float(
+                    0.50 + 1.50 * ctx
+                ),
+
+                "pm_feedback": float(
+                    np.clip(0.02 + 0.20 * ctx, 0.0, 0.25)
+                ),
             }
 
             if isinstance(user, dict):
