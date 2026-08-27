@@ -14777,7 +14777,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
             # Constant-power-ish bus compensation.  Use active voices rather
             # than the raw snapshot so expired notes do not attenuate a chord.
-            total = max(1, len(voices))
+            total = max(1, active_count)
             if total > 1:
                 mix *= np.float32(1.0 / np.sqrt(float(total)))
 
@@ -19756,88 +19756,88 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 voice = seed.astype(np.float32) * gate * velocity_scale * _am_gain.astype(np.float32)
                 # Harmonic Lattice is detail only. Cap wet so it cannot overwrite
                 # seed-defined harmonic/entropy identity (was homogenizing voices).
-            if synth_lattice > 1e-6:
-                try:
-                    _lat_act = float(np.clip(synth_lattice, 0.0, 1.0)) * 0.35  # was up to 50% wet
-                    gamma = 1.25 + MEUM_NORM * 2.0 + 0.35 * chaos + 0.08 * fold_depth
-                    voice = self._harmonic_lattice.process(
-                        voice,
-                        activation=_lat_act,
-                        gamma=gamma,
-                        pkp_env=env_f,
-                        bpm=float(bpm),
-                    )
-                except Exception:
-                    pass
-                # EQR tensor: light color only
-                eqr_amt = float(st.get("eqr", base_eqr))
-                eqr_amt = float(np.clip(eqr_amt * max(base_eqr, 0.05) if base_eqr > 0 else eqr_amt, 0.0, 1.0)) * 0.5
-                if eqr_amt > 1e-6:
+                if synth_lattice > 1e-6:
                     try:
-                        voice = self._eqr_tensor.process(voice, activation=eqr_amt)
-                    except Exception:
-                        pass
-
-                # CANONICAL_TIME_FIT: engine-authored (canonical) voices blend toward
-                # the carrier's own waveform at their exact trigger time, so the
-                # canonical engines actually converge on the desired signal instead
-                # of just triggering an unmodified oscillator and leaving all fitting
-                # to the global (whole-buffer) bus convolve stage below. This is
-                # deliberately restricted to canonical voices only (mem carries a
-                # "canonical:" owner) and gated on the same "convolve fit" checkbox
-                # the user already uses for the global stage, at a capped wet amount,
-                # so user-owned material is never touched and canonical identity is
-                # blended toward the target rather than replaced by it (the earlier
-                # attempt applied this to every voice unconditionally and washed out
-                # per-voice harmonic/entropy identity into one shared shape).
-                is_canonical_voice = str(mem.get("canonical_owner", "")).startswith("canonical:")
-                if (
-                    is_canonical_voice
-                    and convolve_fit_enabled
-                    and imported_carrier is not None
-                    and convolve_fit_amount > 1e-6
-                ):
-                    try:
-                        target = imported_carrier[mask]
-                        if target.shape == voice.shape and np.any(np.abs(target) > 1e-9):
-                            tpk = float(np.max(np.abs(target)) + 1e-9)
-                            target_n = (target / tpk).astype(np.float32)
-                            # Cap wet at 50% so the canonical voice's own seed-derived
-                            # harmonic/entropy identity always remains in the mix.
-                            fit_wet = float(np.clip(convolve_fit_amount, 0.0, 1.0)) * 0.5
-                            # Only blend at this voice's own gated (triggered) samples
-                            # so the fit tracks its specific step/trigger time and
-                            # never bleeds into the silence between its own hits.
-                            voice = np.where(
-                                gate > 1e-9,
-                                (1.0 - fit_wet) * voice + fit_wet * target_n * gate,
-                                voice,
-                            ).astype(np.float32)
-                    except Exception:
-                        pass
-
-                voice_gain = self._canonical_voice_gain(
-                    op_name, user_voice_count, canonical_count, len(active_cluster)
-                )
-                op_offset_sec = float(op_time_offsets.get(op_name, 0.0) or 0.0)
-                if abs(op_offset_sec) < 1e-9:
-                    # Default: unchanged behavior, shares the row's timing.
-                    row_mix += voice * voice_gain
-                else:
-                    # Multi-Seq voice with its own free/unquantized offset —
-                    # deposit it directly into the master buffer shifted by
-                    # its own time, instead of forcing it onto the row grid
-                    # every other operator in this row shares.
-                    shift_samples = int(round(op_offset_sec * sample_rate))
-                    base_idx = np.nonzero(mask)[0]
-                    dest_idx = base_idx + shift_samples
-                    valid = (dest_idx >= 0) & (dest_idx < n_samples)
-                    if np.any(valid):
-                        np.add.at(
-                            master,
-                            dest_idx[valid],
-                            (voice * voice_gain)[valid],
+                        _lat_act = float(np.clip(synth_lattice, 0.0, 1.0)) * 0.35  # was up to 50% wet
+                        gamma = 1.25 + MEUM_NORM * 2.0 + 0.35 * chaos + 0.08 * fold_depth
+                        voice = self._harmonic_lattice.process(
+                            voice,
+                            activation=_lat_act,
+                            gamma=gamma,
+                            pkp_env=env_f,
+                            bpm=float(bpm),
                         )
+                    except Exception:
+                        pass
+                    # EQR tensor: light color only
+                    eqr_amt = float(st.get("eqr", base_eqr))
+                    eqr_amt = float(np.clip(eqr_amt * max(base_eqr, 0.05) if base_eqr > 0 else eqr_amt, 0.0, 1.0)) * 0.5
+                    if eqr_amt > 1e-6:
+                        try:
+                            voice = self._eqr_tensor.process(voice, activation=eqr_amt)
+                        except Exception:
+                            pass
+
+                    # CANONICAL_TIME_FIT: engine-authored (canonical) voices blend toward
+                    # the carrier's own waveform at their exact trigger time, so the
+                    # canonical engines actually converge on the desired signal instead
+                    # of just triggering an unmodified oscillator and leaving all fitting
+                    # to the global (whole-buffer) bus convolve stage below. This is
+                    # deliberately restricted to canonical voices only (mem carries a
+                    # "canonical:" owner) and gated on the same "convolve fit" checkbox
+                    # the user already uses for the global stage, at a capped wet amount,
+                    # so user-owned material is never touched and canonical identity is
+                    # blended toward the target rather than replaced by it (the earlier
+                    # attempt applied this to every voice unconditionally and washed out
+                    # per-voice harmonic/entropy identity into one shared shape).
+                    is_canonical_voice = str(mem.get("canonical_owner", "")).startswith("canonical:")
+                    if (
+                        is_canonical_voice
+                        and convolve_fit_enabled
+                        and imported_carrier is not None
+                        and convolve_fit_amount > 1e-6
+                    ):
+                        try:
+                            target = imported_carrier[mask]
+                            if target.shape == voice.shape and np.any(np.abs(target) > 1e-9):
+                                tpk = float(np.max(np.abs(target)) + 1e-9)
+                                target_n = (target / tpk).astype(np.float32)
+                                # Cap wet at 50% so the canonical voice's own seed-derived
+                                # harmonic/entropy identity always remains in the mix.
+                                fit_wet = float(np.clip(convolve_fit_amount, 0.0, 1.0)) * 0.5
+                                # Only blend at this voice's own gated (triggered) samples
+                                # so the fit tracks its specific step/trigger time and
+                                # never bleeds into the silence between its own hits.
+                                voice = np.where(
+                                    gate > 1e-9,
+                                    (1.0 - fit_wet) * voice + fit_wet * target_n * gate,
+                                    voice,
+                                ).astype(np.float32)
+                        except Exception:
+                            pass
+
+                    voice_gain = self._canonical_voice_gain(
+                        op_name, user_voice_count, canonical_count, len(active_cluster)
+                    )
+                    op_offset_sec = float(op_time_offsets.get(op_name, 0.0) or 0.0)
+                    if abs(op_offset_sec) < 1e-9:
+                        # Default: unchanged behavior, shares the row's timing.
+                        row_mix += voice * voice_gain
+                    else:
+                        # Multi-Seq voice with its own free/unquantized offset —
+                        # deposit it directly into the master buffer shifted by
+                        # its own time, instead of forcing it onto the row grid
+                        # every other operator in this row shares.
+                        shift_samples = int(round(op_offset_sec * sample_rate))
+                        base_idx = np.nonzero(mask)[0]
+                        dest_idx = base_idx + shift_samples
+                        valid = (dest_idx >= 0) & (dest_idx < n_samples)
+                        if np.any(valid):
+                            np.add.at(
+                                master,
+                                dest_idx[valid],
+                                (voice * voice_gain)[valid],
+                            )
 
             # PKP NullLock / BOOST is an explicit one-shot audition action only.
             # Do NOT derive a sound source from every active step of the selected
