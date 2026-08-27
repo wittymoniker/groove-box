@@ -6281,35 +6281,145 @@ class StandardSynthInstance:
 
         return self
 class AdditiveSynthInstance(StandardSynthInstance):
+
     def render_block(self, num_samples, x, y, z):
-        buf = []
-        harmonics = [1.0, 2.0, 3.5, 4.0, 6.0]
-        step = (2.0 * math.pi * self.freq) / self.sr
-        for i in range(num_samples):
-            self.phase += step
-            sample = 0.0
-            for h in harmonics:
-                sample += math.sin(self.phase * h * (1.0 + z * 0.05)) / h
-            buf.append(sample * 0.15 * max(0.0, y))
+        if not hasattr(self, "meum"):
+            self.meum = MeumModulatedOscillator(
+                sample_rate=self.sr,
+                frequency=self.freq,
+            )
+
+        self.meum.sample_rate = self.sr
+        self.meum.frequency = self.freq
+
+        if hasattr(self, "meum_params"):
+            self.meum.set_params(
+                self.meum_params
+            )
+
+        n = int(num_samples)
+        out = np.zeros(
+            n,
+            dtype=np.float32,
+        )
+
+        harmonics = (
+            1.0,
+            2.0,
+            3.5,
+            4.0,
+            6.0,
+        )
+
+        # Render each partial through its own
+        # continuously phase-modulated oscillator.
+        for harmonic in harmonics:
+
+            original_frequency = self.meum.frequency
+
+            self.meum.frequency = (
+                original_frequency
+                * harmonic
+            )
+
+            partial = self.meum.render(
+                n,
+                amplitude=(
+                    0.15
+                    * max(0.0, float(y))
+                    / max(1.0, math.sqrt(harmonic))
+                ),
+            )
+
+            out += partial
+
+            self.meum.frequency = (
+                original_frequency
+            )
+
+        self.phase = self.meum.phase
+
         self.life -= 1
-        return buf
+
+        return out.tolist()
 
 class FormantSynthInstance(StandardSynthInstance):
-    def render_block(self, num_samples, x, y, z):
-        buf = []
-        carrier_step = (2.0 * math.pi * self.freq) / self.sr
-        formant_step = (2.0 * math.pi * (self.freq * abs(x * 3.0))) / self.sr
-        for _ in range(num_samples):
-            self.phase += carrier_step
-            self._meum_phase = 0.0
-            self._meum_sample_index = 0
-            c = math.sin(self.phase)
-            m = math.cos(self.phase * 1.5) * math.sin(formant_step)
-            val = c * m * 0.2 * abs(z)
-            buf.append(val)
-        self.life -= 1
-        return buf
 
+    def render_block(self, num_samples, x, y, z):
+
+        if not hasattr(self, "meum"):
+            self.meum = MeumModulatedOscillator(
+                sample_rate=self.sr,
+                frequency=self.freq,
+            )
+
+        self.meum.sample_rate = self.sr
+
+        if hasattr(self, "meum_params"):
+            self.meum.set_params(
+                self.meum_params
+            )
+
+        n = int(num_samples)
+
+        carrier_frequency = max(
+            1.0,
+            self.freq
+            * (
+                0.75
+                + abs(float(x)) * 0.5
+            ),
+        )
+
+        self.meum.frequency = (
+            carrier_frequency
+        )
+
+        carrier = self.meum.render(
+            n,
+            amplitude=(
+                0.25
+                * max(0.0, float(y))
+            ),
+        )
+
+        # Second resonant/formant component.
+        formant = MeumModulatedOscillator(
+            sample_rate=self.sr,
+            frequency=max(
+                1.0,
+                carrier_frequency
+                * max(0.5, abs(float(x)) * 3.0),
+            ),
+        )
+
+        formant.set_params(
+            getattr(
+                self,
+                "meum_params",
+                {},
+            )
+        )
+
+        formant_audio = formant.render(
+            n,
+            amplitude=(
+                0.12
+                * max(0.0, float(y))
+            ),
+        )
+
+        out = (
+            np.asarray(carrier)
+            + np.asarray(formant_audio)
+        )
+
+        self.phase = self.meum.phase
+
+        self.life -= 1
+
+        return out.tolist()
+    
 class StochasticNoiseInstance(StandardSynthInstance):
     def render_block(self, num_samples, x, y, z):
         buf = []
@@ -12228,7 +12338,103 @@ class MathematiciansGrooveboxApp(QMainWindow):
             }
             for k, v in meum.items():
                 user.setdefault(k, v)
+            meum_context = {
+                    "phase_shift": float(
+                        user.get(
+                            "phase_shift",
+                            0.0,
+                        )
+                    ),
 
+                    "am_depth": float(
+                        np.clip(
+                            user.get(
+                                "am_depth",
+                                0.0,
+                            ),
+                            0.0,
+                            1.0,
+                        )
+                    ),
+
+                    "am_rate": float(
+                        max(
+                            0.0,
+                            user.get(
+                                "am_rate",
+                                1.0,
+                            ),
+                        )
+                    ),
+
+                    "fm_depth": float(
+                        np.clip(
+                            user.get(
+                                "fm_depth",
+                                0.0,
+                            ),
+                            -0.95,
+                            0.95,
+                        )
+                    ),
+
+                    "fm_rate": float(
+                        max(
+                            0.0,
+                            user.get(
+                                "fm_rate",
+                                1.0,
+                            ),
+                        )
+                    ),
+
+                    "pm_depth": float(
+                        np.clip(
+                            user.get(
+                                "pm_depth",
+                                0.0,
+                            ),
+                            -math.pi,
+                            math.pi,
+                        )
+                    ),
+
+                    "pm_rate": float(
+                        max(
+                            0.0,
+                            user.get(
+                                "pm_rate",
+                                1.0,
+                            ),
+                        )
+                    ),
+
+                    "pm_feedback": float(
+                        np.clip(
+                            user.get(
+                                "pm_feedback",
+                                0.0,
+                            ),
+                            -1.0,
+                            1.0,
+                        )
+                    ),
+
+                    "meum_depth": float(
+                        np.clip(
+                            user.get(
+                                "meum_depth",
+                                0.0,
+                            ),
+                            0.0,
+                            1.0,
+                        )
+                    ),
+                }
+
+                user["meum_modulation"] = (
+                    meum_context
+                )
             for i, name in enumerate(getattr(self, "instrument_names_48", [])):
                 user = self.instrument_param_state.get(name)
 
@@ -15299,7 +15505,62 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             gen.setdefault(name, {})["harmonic_freq"] = pst["harmonic_freq"]
                 except Exception:
                     pass
+            gen.setdefault(
+                "phase_shift",
+                math.tau
+                * (
+                    (i * MEUM_NORM)
+                    % 1.0
+                )
+            )
 
+            gen.setdefault(
+                "am_depth",
+                0.15
+                + 0.20 * ctx
+            )
+
+            gen.setdefault(
+                "am_rate",
+                0.5
+                + ctx
+            )
+
+            gen.setdefault(
+                "fm_depth",
+                0.03
+                + 0.10 * ctx
+            )
+
+            gen.setdefault(
+                "fm_rate",
+                0.5
+                + 1.5 * ctx
+            )
+
+            gen.setdefault(
+                "pm_depth",
+                0.05
+                + 0.20 * ctx
+            )
+
+            gen.setdefault(
+                "pm_rate",
+                0.5
+                + 1.5 * ctx
+            )
+
+            gen.setdefault(
+                "pm_feedback",
+                0.05
+                + 0.15 * ctx
+            )
+
+            gen.setdefault(
+                "meum_depth",
+                0.10
+                + 0.30 * ctx
+            )
             # Selected sequence is preserved if it points to a user sequence;
             # otherwise it is assigned deterministically to the first canonical slot.
             selected_map = getattr(self, "instrument_selected_sequence", {})
@@ -17421,6 +17682,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _spectral_fit_voice(self, voice, target, amount=1.0):
         """Fit broad target spectrum and gently phase-lock the generated voice to it."""
         voice = np.asarray(voice, dtype=np.float32)
+        meum_context = dict(
+            params.get(
+                "meum_modulation",
+                {}
+            )
+            if isinstance(
+                params.get(
+                    "meum_modulation",
+                    {}
+                ),
+                dict
+            )
+            else {}
+        )
+
+        if hasattr(voice, "configure_meum_modulation"):
+            voice.configure_meum_modulation(
+                meum_context
+            )
         target = np.asarray(target, dtype=np.float32)
         n = min(voice.size, target.size)
         if n < 32:
@@ -18718,7 +18998,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if not np.any(gate > 1e-9):
                     continue
                 voice = seed.astype(np.float32) * gate * velocity_scale
+                meum_context = dict(
+                    params.get(
+                        "meum_modulation",
+                        {}
+                    )
+                    if isinstance(
+                        params.get(
+                            "meum_modulation",
+                            {}
+                        ),
+                        dict
+                    )
+                    else {}
+                )
 
+        if hasattr(voice, "configure_meum_modulation"):
+            voice.configure_meum_modulation(
+                meum_context
+            )
                 # Harmonic Lattice is detail only. Cap wet so it cannot overwrite
                 # seed-defined harmonic/entropy identity (was homogenizing voices).
                 if synth_lattice > 1e-6:
@@ -18732,6 +19030,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             pkp_env=env_f,
                             bpm=float(bpm),
                         )
+                        meum_context = dict(
+                            params.get(
+                                "meum_modulation",
+                                {}
+                            )
+                            if isinstance(
+                                params.get(
+                                    "meum_modulation",
+                                    {}
+                                ),
+                                dict
+                            )
+                            else {}
+                        )
+
+                        if hasattr(voice, "configure_meum_modulation"):
+                            voice.configure_meum_modulation(
+                                meum_context
+                            )
                     except Exception:
                         pass
                 # EQR tensor: light color only
@@ -18740,6 +19057,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if eqr_amt > 1e-6:
                     try:
                         voice = self._eqr_tensor.process(voice, activation=eqr_amt)
+                        meum_context = dict(
+                        params.get(
+                            "meum_modulation",
+                            {}
+                        )
+                        if isinstance(
+                            params.get(
+                                "meum_modulation",
+                                {}
+                            ),
+                            dict
+                        )
+                        else {}
+                        )
+
+                        if hasattr(voice, "configure_meum_modulation"):
+                            voice.configure_meum_modulation(
+                                meum_context
+                            )
                     except Exception:
                         pass
 
@@ -18778,6 +19114,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
                                 (1.0 - fit_wet) * voice + fit_wet * target_n * gate,
                                 voice,
                             ).astype(np.float32)
+                            meum_context = dict(
+                            params.get(
+                                "meum_modulation",
+                                {}
+                            )
+                            if isinstance(
+                                params.get(
+                                    "meum_modulation",
+                                    {}
+                                ),
+                                dict
+                            )
+                            else {}
+                        )
+
+                        if hasattr(voice, "configure_meum_modulation"):
+                            voice.configure_meum_modulation(
+                                meum_context
+                            )
                     except Exception:
                         pass
 
