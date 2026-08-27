@@ -8900,9 +8900,43 @@ class PaintbrushTable(QWidget):
 
         # ------------------------------------------------------------
         # Column 10 — multi sequence.
+        # Multi-Seq now does what it should: it promotes the paint target
+        # into the row's real operator roster (entry["operators"], the same
+        # list the renderer already iterates for the row) instead of only
+        # writing a decorative label, and gives that instrument its own
+        # free/unquantized time offset — so multiple operators sharing a
+        # row are no longer forced onto the same rigid row-start instant.
         # ------------------------------------------------------------
         if col == 10:
-            multi = f"Multi[{(row % 3) + 1}]"
+            try:
+                bpm_val = float(self.app.spin_bpm.value()) if hasattr(self.app, "spin_bpm") else 120.0
+            except Exception:
+                bpm_val = 120.0
+            try:
+                seq_len_val = int(self.app.spin_seq_length.value()) if hasattr(self.app, "spin_seq_length") else 16
+            except Exception:
+                seq_len_val = 16
+            step_dur_est = (60.0 / max(bpm_val, 1e-3)) / 4.0
+            row_dur_est = step_dur_est * max(seq_len_val, 1)
+            # Continuous, non-gridded offset (rng already carries per-click
+            # entropy from time.time() above) — never snapped to row*MEUM.
+            offset_seconds = float(rng.uniform(-0.5, 0.5) * row_dur_est)
+
+            ops = entry.get("operators")
+            if not isinstance(ops, list):
+                ops = [x.strip() for x in str(ops or "").split(",") if x.strip()]
+            if target_operator_name and target_operator_name not in ops:
+                ops.append(target_operator_name)
+            entry["operators"] = ops
+            entry["operators_csv"] = ", ".join(ops)
+
+            offsets_map = entry.get("operator_time_offsets")
+            if not isinstance(offsets_map, dict):
+                offsets_map = {}
+            offsets_map[target_operator_name] = offset_seconds
+            entry["operator_time_offsets"] = offsets_map
+
+            multi = f"Multi[{target_operator_name}@{offset_seconds:+.3f}s]"
 
             _append_cell_member(
                 row,
@@ -17441,6 +17475,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
             if global_playlist_enabled and row_idx < len(getattr(self, 'master_playlist_data', [])):
                 entry = self.master_playlist_data[row_idx]
+                op_time_offsets = entry.get("operator_time_offsets") if isinstance(entry, dict) else None
+                if not isinstance(op_time_offsets, dict):
+                    op_time_offsets = {}
                 primary_op = entry.get("operator", self.instrument_names_48[0])
                 velocity_scale = float(entry.get("velocity", 1.0))
                 # The playlist's scalar operator is only the primary identity.
@@ -17477,6 +17514,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             else:
                 # No playlist row: instruments with steps, plus seed-list width
                 # so multi-value scripts are not collapsed to a single voice.
+                op_time_offsets = {}
                 active_cluster = []
                 names = list(getattr(self, "instrument_names_48", []) or [])
                 for _i, _nm in enumerate(names):
@@ -17718,7 +17756,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 voice_gain = self._canonical_voice_gain(
                     op_name, user_voice_count, canonical_count, len(active_cluster)
                 )
-                row_mix += voice * voice_gain
+                op_offset_sec = float(op_time_offsets.get(op_name, 0.0) or 0.0)
+                if abs(op_offset_sec) < 1e-9:
+                    # Default: unchanged behavior, shares the row's timing.
+                    row_mix += voice * voice_gain
+                else:
+                    # Multi-Seq voice with its own free/unquantized offset —
+                    # deposit it directly into the master buffer shifted by
+                    # its own time, instead of forcing it onto the row grid
+                    # every other operator in this row shares.
+                    shift_samples = int(round(op_offset_sec * sample_rate))
+                    base_idx = np.nonzero(mask)[0]
+                    dest_idx = base_idx + shift_samples
+                    valid = (dest_idx >= 0) & (dest_idx < n_samples)
+                    if np.any(valid):
+                        np.add.at(
+                            master,
+                            dest_idx[valid],
+                            (voice * voice_gain)[valid],
+                        )
 
             # PKP NullLock / BOOST is an explicit one-shot audition action only.
             # Do NOT derive a sound source from every active step of the selected
