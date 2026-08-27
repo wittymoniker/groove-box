@@ -98,7 +98,119 @@ PAINT_RATE_HZ = 2.395                                           # max single-cel
 PAINT_PERIOD_S = 1.0 / PAINT_RATE_HZ                            # ~0.418 s between stacks
 PAINT_INSTANCE_LIMIT = 8
 
+def _meum_params(params):
+    """Normalize Meum phase/AM/FM/PM parameters safely."""
+    p = params if isinstance(params, dict) else {}
 
+    return {
+        "phase_shift": float(p.get("phase_shift", 0.0)),
+        "am_depth": float(np.clip(p.get("am_depth", 0.0), 0.0, 1.0)),
+        "am_rate": float(max(0.0, p.get("am_rate", 1.0))),
+        "fm_depth": float(np.clip(p.get("fm_depth", 0.0), -0.95, 0.95)),
+        "fm_rate": float(max(0.0, p.get("fm_rate", 1.0))),
+        "pm_depth": float(np.clip(p.get("pm_depth", 0.0), -math.pi, math.pi)),
+        "pm_rate": float(max(0.0, p.get("pm_rate", 1.0))),
+        "pm_feedback": float(np.clip(
+            p.get("pm_feedback", 0.0), -1.0, 1.0
+        )),
+        "meum_depth": float(np.clip(
+            p.get("meum_depth", 0.0), 0.0, 1.0
+        )),
+    }
+def _meum_phase_modulation(
+    t,
+    *,
+    phase_shift=0.0,
+    pm_depth=0.0,
+    pm_rate=1.0,
+    pm_feedback=0.0,
+    meum_depth=0.0,
+):
+    """Direct phase modulation in radians."""
+
+    field = meum_phase_field(
+        t,
+        rate=pm_rate,
+        phase=phase_shift,
+    )
+
+    pm = math.sin(
+        2.0 * math.pi * t * float(pm_rate)
+        + float(phase_shift)
+    )
+
+    return (
+        float(pm_depth) * pm
+        + float(pm_feedback) * float(meum_depth) * field
+    )
+def _meum_amplitude_modulation(
+    t,
+    *,
+    am_depth=0.0,
+    am_rate=1.0,
+    phase_shift=0.0,
+    meum_depth=0.0,
+):
+    """Amplitude modulation with bounded Meum contribution."""
+
+    field = meum_phase_field(
+        t,
+        rate=am_rate,
+        phase=phase_shift,
+    )
+
+    lfo = math.sin(
+        2.0 * math.pi * t * float(am_rate)
+        + float(phase_shift)
+    )
+
+    gain = 1.0 + float(am_depth) * (
+        lfo + float(meum_depth) * field
+    )
+
+    return max(0.0, gain)
+def _meum_advance_phase(
+    phase,
+    frequency,
+    sample_rate,
+    t,
+    *,
+    fm_depth=0.0,
+    fm_rate=1.0,
+    phase_shift=0.0,
+    meum_depth=0.0,
+):
+    """Advance oscillator phase using instantaneous FM frequency."""
+
+    sr = max(float(sample_rate), 1.0)
+    frequency = max(float(frequency), 0.0)
+
+    field = meum_phase_field(
+        t,
+        rate=fm_rate,
+        phase=phase_shift,
+    )
+
+    fm = math.sin(
+        2.0 * math.pi * t * float(fm_rate)
+        + float(phase_shift)
+    )
+
+    modulation = fm + float(meum_depth) * field
+
+    instantaneous_frequency = frequency * (
+        1.0 + float(fm_depth) * modulation
+    )
+
+    instantaneous_frequency = max(
+        0.0,
+        min(sr * 0.45, instantaneous_frequency),
+    )
+
+    return (
+        phase
+        + (2.0 * math.pi * instantaneous_frequency / sr)
+    )
 def meum_phase_field(t, rate=1.0, phase=0.0):
     """Bounded nonlinear Meum modulation field."""
     t = float(t)
@@ -139,7 +251,448 @@ def meum_modulated_phase(
     pm += float(pm_feedback) * field
 
     return float(phase) + float(phase_shift) + pm, field
+class MeumModulatedOscillator:
+    """
+    Stateful Meum oscillator.
 
+    Signal order:
+
+        FM
+         ↓
+    instantaneous frequency
+         ↓
+    phase accumulator
+         ↓
+    phase shift + PM
+         ↓
+      waveform
+         ↓
+        AM
+         ↓
+       output
+
+    All phase quantities are radians.
+    """
+
+    def __init__(self, sample_rate=44100.0, frequency=440.0):
+        self.sample_rate = float(sample_rate)
+        self.frequency = float(frequency)
+
+        # Persistent oscillator state.
+        self.phase = 0.0
+        self.sample_index = 0
+
+        # Modulation defaults.
+        self.phase_shift = 0.0
+
+        self.am_depth = 0.0
+        self.am_rate = 1.0
+
+        self.fm_depth = 0.0
+        self.fm_rate = 1.0
+
+        self.pm_depth = 0.0
+        self.pm_rate = 1.0
+
+        self.pm_feedback = 0.0
+        self.meum_depth = 0.0
+
+        self.waveform = "sine"
+
+    # ------------------------------------------------------------------
+    # PARAMETERS
+    # ------------------------------------------------------------------
+
+    def set_params(self, params=None):
+        if not isinstance(params, dict):
+            return self
+
+        self.phase_shift = float(
+            params.get("phase_shift", self.phase_shift)
+        )
+
+        self.am_depth = float(
+            np.clip(
+                params.get("am_depth", self.am_depth),
+                0.0,
+                1.0,
+            )
+        )
+
+        self.am_rate = max(
+            0.0,
+            float(params.get("am_rate", self.am_rate)),
+        )
+
+        self.fm_depth = float(
+            np.clip(
+                params.get("fm_depth", self.fm_depth),
+                -0.95,
+                0.95,
+            )
+        )
+
+        self.fm_rate = max(
+            0.0,
+            float(params.get("fm_rate", self.fm_rate)),
+        )
+
+        self.pm_depth = float(
+            np.clip(
+                params.get("pm_depth", self.pm_depth),
+                -math.pi,
+                math.pi,
+            )
+        )
+
+        self.pm_rate = max(
+            0.0,
+            float(params.get("pm_rate", self.pm_rate)),
+        )
+
+        self.pm_feedback = float(
+            np.clip(
+                params.get("pm_feedback", self.pm_feedback),
+                -1.0,
+                1.0,
+            )
+        )
+
+        self.meum_depth = float(
+            np.clip(
+                params.get("meum_depth", self.meum_depth),
+                0.0,
+                1.0,
+            )
+        )
+
+        if "waveform" in params:
+            self.waveform = str(params["waveform"])
+
+        return self
+
+    # ------------------------------------------------------------------
+    # MEUM FIELD
+    # ------------------------------------------------------------------
+
+    def meum_field(self, t, rate=1.0):
+        """
+        Bounded nonlinear modulation field.
+
+        This intentionally remains dimensionless.
+        It modifies modulation rather than replacing Hz or radians.
+        """
+
+        t = float(t)
+        rate = float(rate)
+
+        a = math.sin(
+            math.tau * t * rate
+        )
+
+        b = math.sin(
+            math.tau
+            * t
+            * rate
+            * MEUM_INV
+        )
+
+        field = 0.5 * (
+            a
+            + MEUM_NORM * b
+        )
+
+        return float(
+            np.clip(field, -1.0, 1.0)
+        )
+
+    # ------------------------------------------------------------------
+    # AM
+    # ------------------------------------------------------------------
+
+    def amplitude_modulation(self, t):
+        """
+        AM changes amplitude only.
+        """
+
+        lfo = math.sin(
+            math.tau
+            * t
+            * self.am_rate
+            + self.phase_shift
+        )
+
+        field = self.meum_field(
+            t,
+            self.am_rate,
+        )
+
+        gain = 1.0 + (
+            self.am_depth
+            * (
+                lfo
+                + self.meum_depth * field
+            )
+        )
+
+        return max(0.0, gain)
+
+    # ------------------------------------------------------------------
+    # FM
+    # ------------------------------------------------------------------
+
+    def instantaneous_frequency(self, t):
+        """
+        FM changes instantaneous frequency.
+
+        IMPORTANT:
+        The returned frequency is subsequently integrated into phase.
+        """
+
+        lfo = math.sin(
+            math.tau
+            * t
+            * self.fm_rate
+            + self.phase_shift
+        )
+
+        field = self.meum_field(
+            t,
+            self.fm_rate,
+        )
+
+        modulation = (
+            lfo
+            + self.meum_depth * field
+        )
+
+        frequency = self.frequency * (
+            1.0
+            + self.fm_depth * modulation
+        )
+
+        return float(
+            np.clip(
+                frequency,
+                0.0,
+                self.sample_rate * 0.45,
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # PM
+    # ------------------------------------------------------------------
+
+    def phase_modulation(self, t):
+        """
+        PM directly displaces oscillator phase.
+        """
+
+        lfo = math.sin(
+            math.tau
+            * t
+            * self.pm_rate
+            + self.phase_shift
+        )
+
+        field = self.meum_field(
+            t,
+            self.pm_rate,
+        )
+
+        return (
+            self.pm_depth * lfo
+            +
+            self.pm_feedback
+            * self.meum_depth
+            * field
+        )
+
+    # ------------------------------------------------------------------
+    # WAVEFORMS
+    # ------------------------------------------------------------------
+
+    def waveform_sample(self, phase):
+        """
+        Evaluate waveform from radians.
+
+        Existing waveform selection is respected.
+        """
+
+        u = (
+            phase / math.tau
+        ) % 1.0
+
+        waveform = (
+            self.waveform
+            .strip()
+            .lower()
+        )
+
+        if waveform in (
+            "saw",
+            "sawtooth",
+        ):
+            return (
+                2.0 * u
+                - 1.0
+            )
+
+        if waveform in (
+            "square",
+            "pulse",
+        ):
+            return (
+                1.0
+                if u < 0.5
+                else -1.0
+            )
+
+        if waveform in (
+            "triangle",
+            "tri",
+        ):
+            return (
+                4.0
+                * abs(u - 0.5)
+                - 1.0
+            )
+
+        if waveform in (
+            "cos",
+            "cosine",
+        ):
+            return math.cos(phase)
+
+        # Default.
+        return math.sin(phase)
+
+    # ------------------------------------------------------------------
+    # RENDER
+    # ------------------------------------------------------------------
+
+    def render(
+        self,
+        num_samples,
+        amplitude=1.0,
+        frequency=None,
+    ):
+        """
+        Render a continuous block.
+
+        Phase is persistent across calls.
+        """
+
+        n = int(num_samples)
+
+        if n <= 0:
+            return np.zeros(
+                0,
+                dtype=np.float32,
+            )
+
+        if frequency is not None:
+            self.frequency = max(
+                0.0,
+                float(frequency),
+            )
+
+        sr = max(
+            1.0,
+            self.sample_rate,
+        )
+
+        out = np.zeros(
+            n,
+            dtype=np.float32,
+        )
+
+        phase = float(self.phase)
+        sample_index = int(
+            self.sample_index
+        )
+
+        for i in range(n):
+
+            t = (
+                sample_index
+                / sr
+            )
+
+            # ==========================================================
+            # FM
+            #
+            # FM changes instantaneous frequency.
+            # ==========================================================
+
+            inst_freq = (
+                self.instantaneous_frequency(t)
+            )
+
+            # Integrate frequency into phase.
+            phase += (
+                math.tau
+                * inst_freq
+                / sr
+            )
+
+            # ==========================================================
+            # PM
+            #
+            # PM is a direct phase displacement.
+            # ==========================================================
+
+            pm = self.phase_modulation(t)
+
+            render_phase = (
+                phase
+                + self.phase_shift
+                + pm
+            )
+
+            # ==========================================================
+            # WAVEFORM
+            # ==========================================================
+
+            sample = self.waveform_sample(
+                render_phase
+            )
+
+            # ==========================================================
+            # AM
+            #
+            # AM happens after waveform generation.
+            # ==========================================================
+
+            gain = (
+                self.amplitude_modulation(t)
+            )
+
+            out[i] = np.float32(
+                amplitude
+                * gain
+                * sample
+            )
+
+            sample_index += 1
+
+            # Prevent enormous phase values.
+            if abs(phase) > 1.0e9:
+                phase %= math.tau
+
+        self.phase = phase
+        self.sample_index = sample_index
+
+        return out
+
+    # ------------------------------------------------------------------
+    # RESET
+    # ------------------------------------------------------------------
+
+    def reset_phase(self, phase=0.0):
+        self.phase = float(phase)
+        self.sample_index = 0
+        return self
 def _parse_if_elif_shorthand(text):
     """Parse if/elif[/elif...] chains into a Python ternary expression string.
 
@@ -5623,139 +6176,110 @@ class PatchbayCanvas(QWidget):
 # -------------------------------------------------------------------------
 FREQUENCY_432HZ = 432.0
 class StandardSynthInstance:
-    def __init__(self, freq, sr):
-        self.freq = freq
-        self.sr = sr
-        self.phase = 0.0
-        self._meum_phase = 0.0
-        self._meum_sample_index = 0
-        self.life = 100
-    def is_finished(self):
-        return self.life <= 0
+    """
+    Standard synth voice with Meum Phase/AM/FM/PM modulation.
+    """
 
-    def render_block(self, num_samples, x, y, z):
-        buf = []
-        modulated_freq = self.freq * (0.8 + abs(x) * 0.4)
-        step = (2.0 * math.pi * modulated_freq) / self.sr
-        for _ in range(num_samples):
-            self.phase += step
-            val = math.sin(self.phase) * 0.3 * max(0.0, y)
-            buf.append(val)
-        self.life -= 1
-        return buf
-    def _meum_oscillator_block(
+    def __init__(self, freq, sr):
+        self.freq = float(freq)
+        self.sr = float(sr)
+
+        self.phase = 0.0
+        self.life = 100
+
+        self.meum = MeumModulatedOscillator(
+            sample_rate=self.sr,
+            frequency=self.freq,
+        )
+
+        self.meum_params = {}
+
+    # ------------------------------------------------------------------
+    # MODULATION CONFIGURATION
+    # ------------------------------------------------------------------
+
+    def configure_meum_modulation(
+        self,
+        params=None,
+    ):
+        if not isinstance(params, dict):
+            self.meum_params = {}
+        else:
+            self.meum_params = dict(params)
+
+        self.meum.set_params(
+            self.meum_params
+        )
+
+        return self
+
+    # ------------------------------------------------------------------
+    # RENDER
+    # ------------------------------------------------------------------
+
+    def render_block(
         self,
         num_samples,
-        sample_rate,
-        frequency,
-        waveform_fn,
-        amplitude=1.0,
-        phase_shift=0.0,
-        am_depth=0.0,
-        am_rate=1.0,
-        fm_depth=0.0,
-        fm_rate=1.0,
-        pm_depth=0.0,
-        pm_rate=1.0,
-        pm_feedback=0.0,
+        x,
+        y,
+        z,
     ):
-        sr = max(float(sample_rate), 1.0)
-        freq = max(float(frequency), 0.0)
+        """
+        Preserve the original x/y behavior while routing synthesis
+        through the Meum oscillator.
+        """
 
-        out = np.zeros(int(num_samples), dtype=np.float32)
+        x = float(x)
+        y = float(y)
 
-        phase = float(self._meum_phase)
-        sample_index = int(self._meum_sample_index)
-
-        for i in range(len(out)):
-            t = sample_index / sr
-
-            # ---------------------------------------------------------------
-            # MEUM FIELD
-            # ---------------------------------------------------------------
-            field = meum_phase_field(
-                t,
-                rate=fm_rate,
-                phase=phase_shift,
+        # Preserve existing frequency mapping.
+        carrier_frequency = (
+            self.freq
+            * (
+                0.8
+                + abs(x) * 0.4
             )
+        )
 
-            # ---------------------------------------------------------------
-            # AM
-            # ---------------------------------------------------------------
-            am_lfo = math.sin(
-                2.0 * math.pi * t * float(am_rate)
-                + float(phase_shift)
-            )
+        amplitude = (
+            0.3
+            * max(0.0, y)
+        )
 
-            gain = 1.0 + float(am_depth) * am_lfo
+        self.meum.frequency = (
+            carrier_frequency
+        )
 
-            # Keep AM from accidentally producing negative amplitude.
-            gain = max(0.0, gain)
+        self.meum.sample_rate = (
+            self.sr
+        )
 
-            # ---------------------------------------------------------------
-            # FM
-            # ---------------------------------------------------------------
-            fm_lfo = math.sin(
-                2.0 * math.pi * t * float(fm_rate)
-                + float(phase_shift)
-            )
+        buffer = self.meum.render(
+            num_samples,
+            amplitude=amplitude,
+        )
 
-            fm_signal = fm_lfo + float(pm_feedback) * field
+        # Maintain compatibility with code
+        # that reads self.phase.
+        self.phase = (
+            self.meum.phase
+        )
 
-            instantaneous_frequency = freq * (
-                1.0 + float(fm_depth) * fm_signal
-            )
+        self.life -= 1
 
-            instantaneous_frequency = max(
-                0.0,
-                min(0.45 * sr, instantaneous_frequency),
-            )
+        return buffer.tolist()
 
-            # ---------------------------------------------------------------
-            # PM
-            # ---------------------------------------------------------------
-            pm_lfo = math.sin(
-                2.0 * math.pi * t * float(pm_rate)
-                + float(phase_shift)
-            )
+    # ------------------------------------------------------------------
+    # RESET
+    # ------------------------------------------------------------------
 
-            pm = float(pm_depth) * pm_lfo
+    def reset(self):
+        self.phase = 0.0
+        self.life = 100
 
-            # Meum phase field can feed PM without replacing PM itself.
-            pm += float(pm_feedback) * field
+        self.meum.reset_phase()
 
-            # ---------------------------------------------------------------
-            # FINAL OSCILLATOR PHASE
-            # ---------------------------------------------------------------
-            render_phase = phase + float(phase_shift) + pm
-
-            # waveform_fn should accept radians.
-            sample = waveform_fn(render_phase)
-
-            out[i] = np.float32(
-                float(amplitude) * gain * sample
-            )
-
-            # ---------------------------------------------------------------
-            # FM IS INTEGRATED HERE
-            # ---------------------------------------------------------------
-            phase += (
-                2.0
-                * math.pi
-                * instantaneous_frequency
-                / sr
-            )
-
-            sample_index += 1
-
-            # Keep numbers bounded during long sessions.
-            if phase > 1.0e6:
-                phase %= 2.0 * math.pi
-
-        self._meum_phase = phase
-        self._meum_sample_index = sample_index
-
-        return out
+        return self
 class AdditiveSynthInstance(StandardSynthInstance):
     def render_block(self, num_samples, x, y, z):
         buf = []
@@ -11691,6 +12215,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
             raw_state = getattr(self, "instrument_param_state", None)
             if not isinstance(raw_state, dict):
                 raw_state = {}
+            meum = {
+            "phase_shift": float(gen.get("phase_shift", 0.0)),
+            "am_depth": float(gen.get("am_depth", 0.0)),
+            "am_rate": float(gen.get("am_rate", 1.0)),
+            "fm_depth": float(gen.get("fm_depth", 0.0)),
+            "fm_rate": float(gen.get("fm_rate", 1.0)),
+            "pm_depth": float(gen.get("pm_depth", 0.0)),
+            "pm_rate": float(gen.get("pm_rate", 1.0)),
+            "pm_feedback": float(gen.get("pm_feedback", 0.0)),
+            "meum_depth": float(gen.get("meum_depth", 0.0)),
+            }
+            for k, v in meum.items():
+                user.setdefault(k, v)
 
             for i, name in enumerate(getattr(self, "instrument_names_48", [])):
                 user = self.instrument_param_state.get(name)
@@ -11698,7 +12235,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if not isinstance(user, dict):
                 user = {}
                 self.instrument_param_state[name] = raw_state
-
             ctx = float(self._contextual_numerology(name, i, i))
 
             gen = {
@@ -11738,6 +12274,75 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "pm_feedback": float(
                     np.clip(0.02 + 0.20 * ctx, 0.0, 0.25)
                 ),
+                gen.update({
+                "phase_shift": float(
+                    math.tau
+                    * (
+                        (i * MEUM_NORM)
+                        % 1.0
+                    )
+                ),
+
+                "am_depth": float(
+                    np.clip(
+                        0.08
+                        + 0.28 * ctx,
+                        0.0,
+                        0.40,
+                    )
+                ),
+
+                "am_rate": float(
+                    0.25
+                    + 0.75 * ctx
+                ),
+
+                "fm_depth": float(
+                    np.clip(
+                        0.015
+                        + 0.12 * ctx,
+                        0.0,
+                        0.18,
+                    )
+                ),
+
+                "fm_rate": float(
+                    0.50
+                    + 1.50 * ctx
+                ),
+
+                "pm_depth": float(
+                    np.clip(
+                        0.04
+                        + 0.24 * ctx,
+                        0.0,
+                        0.35,
+                    )
+                ),
+
+                "pm_rate": float(
+                    0.50
+                    + 1.50 * ctx
+                ),
+
+                "pm_feedback": float(
+                    np.clip(
+                        0.02
+                        + 0.18 * ctx,
+                        0.0,
+                        0.25,
+                    )
+                ),
+
+                "meum_depth": float(
+                    np.clip(
+                        0.10
+                        + 0.35 * ctx,
+                        0.0,
+                        0.45,
+                    )
+                ),
+            })
             }
 
             if isinstance(user, dict):
@@ -11745,11 +12350,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
             else:
                 self.instrument_param_generated = {}
 
-            for k, v in gen.items():
-                user.setdefault(k, v)
+            if not isinstance(user, dict):
+            if isinstance(user, list):
+                # Don't try to use a list as instrument parameter state.
+                user = {}
 
-            for k, v in gen.items():
-                user.setdefault(k, v)
+            else:
+                user = {}
+
+            self.instrument_param_state[op] = user
+
+            if isinstance(gen, dict):
+                for k, v in gen.items():
+                    user.setdefault(k, v)
+
                 raw_generated = getattr(self, "instrument_param_generated", None)
                 if not isinstance(raw_generated, dict):
                     raw_generated = {}
