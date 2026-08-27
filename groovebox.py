@@ -103,19 +103,27 @@ def _meum_params(params):
     p = params if isinstance(params, dict) else {}
 
     return {
-        "phase_shift": float(p.get("phase_shift", 0.0)),
-        "am_depth": float(np.clip(p.get("am_depth", 0.0), 0.0, 1.0)),
-        "am_rate": float(max(0.0, p.get("am_rate", 1.0))),
-        "fm_depth": float(np.clip(p.get("fm_depth", 0.0), -0.95, 0.95)),
-        "fm_rate": float(max(0.0, p.get("fm_rate", 1.0))),
-        "pm_depth": float(np.clip(p.get("pm_depth", 0.0), -math.pi, math.pi)),
-        "pm_rate": float(max(0.0, p.get("pm_rate", 1.0))),
-        "pm_feedback": float(np.clip(
-            p.get("pm_feedback", 0.0), -1.0, 1.0
-        )),
-        "meum_depth": float(np.clip(
-            p.get("meum_depth", 0.0), 0.0, 1.0
-        )),
+    "phase_shift": meum["phase_shift"],
+
+    "am_depth": meum["am_depth"],
+    "am_rate": meum["am_rate"],
+
+    "fm_depth": meum["fm_depth"],
+    "fm_rate": meum["fm_rate"],
+
+    "pm_depth": meum["pm_depth"],
+    "pm_rate": meum["pm_rate"],
+    "pm_feedback": meum["pm_feedback"],
+
+    "meum_depth": meum["meum_depth"],
+
+    "canonical_unison": meum["canonical_unison"],
+    "canonical_count": meum["canonical_count"],
+    "canonical_phase_lock": meum["canonical_phase_lock"],
+
+    "unison_phase_spread": meum[
+        "unison_phase_spread"
+        ],
     }
 def _meum_phase_modulation(
     t,
@@ -224,7 +232,163 @@ def meum_phase_field(t, rate=1.0, phase=0.0):
 
     return 0.5 * (a + MEUM_NORM * b)
 
+def _meum_panel_context(params=None, canonical_context=None):
+    """
+    Normalize synth-panel + canonical/unison modulation parameters.
 
+    Synth panels remain user-facing/authoritative.
+    Canonical context supplies modulation defaults/variation.
+    """
+
+    params = params if isinstance(params, dict) else {}
+    canonical_context = (
+        canonical_context
+        if isinstance(canonical_context, dict)
+        else {}
+    )
+
+    # Existing nested Meum state, if present.
+    existing = params.get("meum_modulation", {})
+    if not isinstance(existing, dict):
+        existing = {}
+
+    ctx = dict(existing)
+
+    # --------------------------------------------------------------
+    # Canonical/unison context
+    # --------------------------------------------------------------
+
+    canonical_unison = bool(
+        canonical_context.get(
+            "canonical_unison",
+            params.get("canonical_unison", False),
+        )
+    )
+
+    canonical_count = int(
+        max(
+            1,
+            canonical_context.get(
+                "canonical_count",
+                params.get("canonical_count", 1),
+            ),
+        )
+    )
+
+    canonical_phase_lock = bool(
+        canonical_context.get(
+            "canonical_phase_lock",
+            params.get("canonical_phase_lock", False),
+        )
+    )
+
+    # --------------------------------------------------------------
+    # Synth-panel parameters
+    #
+    # User panel values win if explicitly present.
+    # --------------------------------------------------------------
+
+    def panel(name, default):
+        if name in params:
+            return params[name]
+        if name in ctx:
+            return ctx[name]
+        return default
+
+    ctx["phase_shift"] = float(
+        panel("phase_shift", 0.0)
+    )
+
+    ctx["am_depth"] = float(
+        np.clip(
+            panel("am_depth", 0.0),
+            0.0,
+            1.0,
+        )
+    )
+
+    ctx["am_rate"] = float(
+        max(
+            0.0,
+            panel("am_rate", 1.0),
+        )
+    )
+
+    ctx["fm_depth"] = float(
+        np.clip(
+            panel("fm_depth", 0.0),
+            -0.95,
+            0.95,
+        )
+    )
+
+    ctx["fm_rate"] = float(
+        max(
+            0.0,
+            panel("fm_rate", 1.0),
+        )
+    )
+
+    ctx["pm_depth"] = float(
+        np.clip(
+            panel("pm_depth", 0.0),
+            -math.pi,
+            math.pi,
+        )
+    )
+
+    ctx["pm_rate"] = float(
+        max(
+            0.0,
+            panel("pm_rate", 1.0),
+        )
+    )
+
+    ctx["pm_feedback"] = float(
+        np.clip(
+            panel("pm_feedback", 0.0),
+            -1.0,
+            1.0,
+        )
+    )
+
+    ctx["meum_depth"] = float(
+        np.clip(
+            panel("meum_depth", 0.0),
+            0.0,
+            1.0,
+        )
+    )
+
+    # Preserve canonical state alongside the synth-panel controls.
+    ctx["canonical_unison"] = canonical_unison
+    ctx["canonical_count"] = canonical_count
+    ctx["canonical_phase_lock"] = canonical_phase_lock
+
+    # --------------------------------------------------------------
+    # Canonical unison phase distribution
+    # --------------------------------------------------------------
+
+    if canonical_unison and canonical_count > 1:
+        ctx["unison_phase_spread"] = float(
+            params.get(
+                "unison_phase_spread",
+                math.tau,
+            )
+        )
+    else:
+        ctx["unison_phase_spread"] = float(
+            params.get(
+                "unison_phase_spread",
+                0.0,
+            )
+        )
+
+    # Phase lock deliberately suppresses independent spread.
+    if canonical_phase_lock:
+        ctx["unison_phase_spread"] = 0.0
+
+    return ctx
 def meum_modulated_phase(
     phase,
     t,
@@ -236,7 +400,7 @@ def meum_modulated_phase(
     pm_rate=1.0,
     pm_feedback=0.0,
 ):
- field = meum_phase_field(t, rate=fm_rate, phase=phase_shift)
+    field = meum_phase_field(t, rate=fm_rate, phase=phase_shift)
 
     # PM = direct phase displacement.
     pm = (
@@ -6419,7 +6583,7 @@ class FormantSynthInstance(StandardSynthInstance):
         self.life -= 1
 
         return out.tolist()
-    
+
 class StochasticNoiseInstance(StandardSynthInstance):
     def render_block(self, num_samples, x, y, z):
         buf = []
@@ -12339,100 +12503,100 @@ class MathematiciansGrooveboxApp(QMainWindow):
             for k, v in meum.items():
                 user.setdefault(k, v)
             meum_context = {
-                    "phase_shift": float(
+                "phase_shift": float(
+                    user.get(
+                        "phase_shift",
+                        0.0,
+                    )
+                ),
+
+                "am_depth": float(
+                    np.clip(
                         user.get(
-                            "phase_shift",
+                            "am_depth",
                             0.0,
-                        )
-                    ),
+                        ),
+                        0.0,
+                        1.0,
+                    )
+                ),
 
-                    "am_depth": float(
-                        np.clip(
-                            user.get(
-                                "am_depth",
-                                0.0,
-                            ),
-                            0.0,
+                "am_rate": float(
+                    max(
+                        0.0,
+                        user.get(
+                            "am_rate",
                             1.0,
-                        )
-                    ),
+                        ),
+                    )
+                ),
 
-                    "am_rate": float(
-                        max(
+                "fm_depth": float(
+                    np.clip(
+                        user.get(
+                            "fm_depth",
                             0.0,
-                            user.get(
-                                "am_rate",
-                                1.0,
-                            ),
-                        )
-                    ),
+                        ),
+                        -0.95,
+                        0.95,
+                    )
+                ),
 
-                    "fm_depth": float(
-                        np.clip(
-                            user.get(
-                                "fm_depth",
-                                0.0,
-                            ),
-                            -0.95,
-                            0.95,
-                        )
-                    ),
-
-                    "fm_rate": float(
-                        max(
-                            0.0,
-                            user.get(
-                                "fm_rate",
-                                1.0,
-                            ),
-                        )
-                    ),
-
-                    "pm_depth": float(
-                        np.clip(
-                            user.get(
-                                "pm_depth",
-                                0.0,
-                            ),
-                            -math.pi,
-                            math.pi,
-                        )
-                    ),
-
-                    "pm_rate": float(
-                        max(
-                            0.0,
-                            user.get(
-                                "pm_rate",
-                                1.0,
-                            ),
-                        )
-                    ),
-
-                    "pm_feedback": float(
-                        np.clip(
-                            user.get(
-                                "pm_feedback",
-                                0.0,
-                            ),
-                            -1.0,
+                "fm_rate": float(
+                    max(
+                        0.0,
+                        user.get(
+                            "fm_rate",
                             1.0,
-                        )
-                    ),
+                        ),
+                    )
+                ),
 
-                    "meum_depth": float(
-                        np.clip(
-                            user.get(
-                                "meum_depth",
-                                0.0,
-                            ),
+                "pm_depth": float(
+                    np.clip(
+                        user.get(
+                            "pm_depth",
                             0.0,
-                            1.0,
-                        )
-                    ),
-                }
+                        ),
+                        -math.pi,
+                        math.pi,
+                    )
+                ),
 
-                user["meum_modulation"] = (
+                "pm_rate": float(
+                    max(
+                        0.0,
+                        user.get(
+                            "pm_rate",
+                            1.0,
+                        ),
+                    )
+                ),
+
+                "pm_feedback": float(
+                    np.clip(
+                        user.get(
+                            "pm_feedback",
+                            0.0,
+                        ),
+                        -1.0,
+                        1.0,
+                    )
+                ),
+
+                "meum_depth": float(
+                    np.clip(
+                        user.get(
+                            "meum_depth",
+                            0.0,
+                        ),
+                        0.0,
+                        1.0,
+                    )
+                ),
+                        }
+
+            user["meum_modulation"] = (
                     meum_context
                 )
             for i, name in enumerate(getattr(self, "instrument_names_48", [])):
@@ -12480,17 +12644,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "pm_feedback": float(
                     np.clip(0.02 + 0.20 * ctx, 0.0, 0.25)
                 ),
-                gen.update({
-                "phase_shift": float(
-                    math.tau
-                    * (
-                        (i * MEUM_NORM)
-                        % 1.0
-                    )
-                ),
+                }
+            gen.update({
+                    "phase_shift": float(
+                        math.tau
+                        * ((i * MEUM_NORM)% 1.0)),
 
-                "am_depth": float(
-                    np.clip(
+                    "am_depth": float(
+                        np.clip(
                         0.08
                         + 0.28 * ctx,
                         0.0,
@@ -12547,9 +12708,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         0.0,
                         0.45,
                     )
-                ),
-            })
-            }
+                ),})
+
 
             if isinstance(user, dict):
                 self.instrument_param_generated = gen
@@ -12557,14 +12717,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.instrument_param_generated = {}
 
             if not isinstance(user, dict):
-            if isinstance(user, list):
-                # Don't try to use a list as instrument parameter state.
-                user = {}
+                if isinstance(user, list):
+                    # Don't try to use a list as instrument parameter state.
+                    user = {}
 
-            else:
-                user = {}
+                else:
+                    user = {}
 
-            self.instrument_param_state[op] = user
+                self.instrument_param_state[op] = user
 
             if isinstance(gen, dict):
                 for k, v in gen.items():
@@ -15502,9 +15662,32 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         pst.setdefault("tuning_ratio", 1.0)
                         gen = getattr(self, "instrument_param_generated", None)
                         if isinstance(gen, dict):
+                            if not isinstance(gen, dict):
+                                gen = {}
+
+                            # Keep the normalized object attached to the canonical record
+                            # when the surrounding code has a writable generated-state field.
+                            try:
+                                canonical_row["generated"] = gen
+                            except (NameError, TypeError):
+                                pass
+                            if not isinstance(gen, dict):
+                                gen = {}
                             gen.setdefault(name, {})["harmonic_freq"] = pst["harmonic_freq"]
                 except Exception:
                     pass
+            if not isinstance(gen, dict):
+                    gen = {}
+
+                # Keep the normalized object attached to the canonical record
+                # when the surrounding code has a writable generated-state field.
+                    try:
+                        canonical_row["generated"] = gen
+                    except (NameError, TypeError):
+                        pass
+                    if not isinstance(gen, dict):
+                        gen = {}
+
             gen.setdefault(
                 "phase_shift",
                 math.tau
@@ -19019,38 +19202,38 @@ class MathematiciansGrooveboxApp(QMainWindow):
             )
                 # Harmonic Lattice is detail only. Cap wet so it cannot overwrite
                 # seed-defined harmonic/entropy identity (was homogenizing voices).
-                if synth_lattice > 1e-6:
-                    try:
-                        _lat_act = float(np.clip(synth_lattice, 0.0, 1.0)) * 0.35  # was up to 50% wet
-                        gamma = 1.25 + MEUM_NORM * 2.0 + 0.35 * chaos + 0.08 * fold_depth
-                        voice = self._harmonic_lattice.process(
-                            voice,
-                            activation=_lat_act,
-                            gamma=gamma,
-                            pkp_env=env_f,
-                            bpm=float(bpm),
+            if synth_lattice > 1e-6:
+                try:
+                    _lat_act = float(np.clip(synth_lattice, 0.0, 1.0)) * 0.35  # was up to 50% wet
+                    gamma = 1.25 + MEUM_NORM * 2.0 + 0.35 * chaos + 0.08 * fold_depth
+                    voice = self._harmonic_lattice.process(
+                        voice,
+                        activation=_lat_act,
+                        gamma=gamma,
+                        pkp_env=env_f,
+                        bpm=float(bpm),
+                    )
+                    meum_context = dict(
+                        params.get(
+                            "meum_modulation",
+                            {}
                         )
-                        meum_context = dict(
+                        if isinstance(
                             params.get(
                                 "meum_modulation",
                                 {}
-                            )
-                            if isinstance(
-                                params.get(
-                                    "meum_modulation",
-                                    {}
-                                ),
-                                dict
-                            )
-                            else {}
+                            ),
+                            dict
                         )
+                        else {}
+                    )
 
-                        if hasattr(voice, "configure_meum_modulation"):
-                            voice.configure_meum_modulation(
-                                meum_context
-                            )
-                    except Exception:
-                        pass
+                    if hasattr(voice, "configure_meum_modulation"):
+                        voice.configure_meum_modulation(
+                            meum_context
+                        )
+                except Exception:
+                    pass
                 # EQR tensor: light color only
                 eqr_amt = float(st.get("eqr", base_eqr))
                 eqr_amt = float(np.clip(eqr_amt * max(base_eqr, 0.05) if base_eqr > 0 else eqr_amt, 0.0, 1.0)) * 0.5
