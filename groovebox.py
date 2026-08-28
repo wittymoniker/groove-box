@@ -100,6 +100,21 @@ MEUM = 1.1975807343385265188
 MEUM_CONSTANT = MEUM  # backwards-compatible alias used throughout the codebase
 MEUM_MINUS_1 = MEUM - 1.0
 MEUM_INV = 1.0 / MEUM
+
+
+def identity_unit(*key_parts) -> float:
+    """Deterministic fraction in [0,1) from arbitrary identity parts (name,
+    field, index, ...). Same canonical-hash approach as CommutativePairSpace's
+    signature: given identity in, one full-entropy scalar out, with no RNG
+    and no small-period modulus wrap. Use this instead of `i % small_int`
+    anywhere a per-instrument/per-item default needs to be unique-looking
+    without literally repeating every N items.
+    """
+    key = "|".join(str(p) for p in key_parts).encode("utf-8")
+    h = hashlib.blake2b(key, digest_size=8).digest()
+    return int.from_bytes(h, "big") / 18446744073709551616.0
+
+
 MEUM_SQ = MEUM * MEUM
 MEUM_CUBE = MEUM_SQ * MEUM
 MEUM_FOURTH = MEUM_SQ * MEUM_SQ
@@ -3074,7 +3089,17 @@ class VideoSynthEngine:
         self._pack_scale_floor = 0.28
         self.layers = []
         for i in range(self.n):
-            depth = 1.35 + float(MEUM_POWERS_36[min(i % 12, 35)]) * 0.18
+            # `MEUM_POWERS_36[i % 12]` and `4 + (i % 5)` repeated every 12 / 5
+            # instruments (instrument 0 and 12 got the identical depth; 0 and
+            # 5 the identical poly count). MEUM is irrational, so indexing the
+            # same 36-entry table by the fractional position of `i * MEUM`
+            # instead of `i % 12` never repeats for any i, while still
+            # drawing from the same canonical power table used elsewhere.
+            _tpos = (i * MEUM * 3.0) % 36.0
+            _tlo = int(_tpos) % 36
+            _thi = (_tlo + 1) % 36
+            _tfrac = _tpos - int(_tpos)
+            depth = 1.35 + 0.18 * (MEUM_POWERS_36[_tlo] * (1.0 - _tfrac) + MEUM_POWERS_36[_thi] * _tfrac)
             self.layers.append({
                 "i": i,
                 "distance": depth,
@@ -3084,7 +3109,7 @@ class VideoSynthEngine:
                 "hue": int((i * 360 / max(self.n, 1) + i * 7) % 360),
                 "life": 0.3,
                 "family": i // 8,
-                "active_verts": 4 + (i % 5),  # expanded/contracted poly size
+                "active_verts": 4 + int(((i * MEUM * 5.0) % 1.0) * 8),  # expanded/contracted poly size
             })
 
     def bind_app(self, app):
@@ -3131,7 +3156,11 @@ class VideoSynthEngine:
                 if i >= target:
                     layer["life"] = float(layer.get("life", 0.3))
             else:
-                depth = 1.35 + float(MEUM_POWERS_36[min(i % 12, 35)]) * 0.18
+                _tpos = (i * MEUM * 3.0) % 36.0
+                _tlo = int(_tpos) % 36
+                _thi = (_tlo + 1) % 36
+                _tfrac = _tpos - int(_tpos)
+                depth = 1.35 + 0.18 * (MEUM_POWERS_36[_tlo] * (1.0 - _tfrac) + MEUM_POWERS_36[_thi] * _tfrac)
                 layer = {
                     "i": i,
                     "distance": depth,
@@ -3141,7 +3170,7 @@ class VideoSynthEngine:
                     "hue": int((i * 360 / max(target, 1) + i * 7) % 360),
                     "life": 0.0,
                     "family": i // 8,
-                    "active_verts": 4 + (i % 5),
+                    "active_verts": 4 + int(((i * MEUM * 5.0) % 1.0) * 8),
                 }
             layers.append(layer)
         self.layers = layers
@@ -3576,8 +3605,11 @@ class VideoSynthEngine:
             if life < 0.04:
                 continue
 
-            # Vertex count expand/contract from k_pow + selective removal
-            base_v = 3 + (i % 4)
+            # Vertex count expand/contract from k_pow + selective removal.
+            # `3 + (i % 4)` gave every 4th instrument the identical base
+            # vertex count; fold `i * MEUM` fractionally instead so the base
+            # count doesn't repeat on a short period across many instruments.
+            base_v = 3 + int(((i * MEUM * 5.0) % 1.0) * 4)
             if st["k_pow"] >= 2:
                 base_v += 2  # expand
             if st["k_pow"] == 0:
@@ -4006,7 +4038,7 @@ class VideoSynthEngine:
             yaw = layer["yaw"] + self.t * (0.28 + 0.55 * e + 0.18 * snap["eqr"]) + local * 0.3
             pitch = layer["pitch"] + 0.16 * local
             roll = layer["roll"] + 0.1 * e * math.sin(self.t * MEUM + i)
-            n_v = max(3, 3 + (i % 4))
+            n_v = max(3, 3 + int(((i * MEUM * 5.0) % 1.0) * 4))
             scale = (0.26 + 0.32 * abs(local) + 0.14 * e) * (0.28 + 0.72 * life) * st["rho"] * float(layer.get("implode", 1.0))
             ang0 = self.t * 0.35 + i * 0.2
             cosy, siny = math.cos(yaw), math.sin(yaw)
@@ -4048,6 +4080,23 @@ class VideoSynthEngine:
             pts.append((sx, sy))
         return pts
 
+
+    
+    def reset_camera(self):
+        """Return scenograph camera to origin view (shared by double-click + Quick Edit)."""
+        for attr, val in (("_cam_yaw", 0.0), ("_cam_pitch", 0.0), ("_cam_distance", None),
+                          ("_yaw", 0.0), ("_pitch", 0.0), ("view_yaw", 0.0), ("view_pitch", 0.0)):
+            if hasattr(self, attr):
+                try:
+                    if val is None:
+                        continue
+                    setattr(self, attr, float(val))
+                except Exception:
+                    pass
+        try:
+            self.update()
+        except Exception:
+            pass
 
     def set_scenograph_item_count(self, n):
         """How many of the 64 catalog items may be active (1..64).
@@ -4222,7 +4271,19 @@ class VideoSynthEngine:
 
 
 class VideoSynthViewer(QFrame):
-    """Center square: Meum 2.5D/3D scenograph."""
+    """Center square: Meum 2.5D/3D scenograph.
+
+    The viewer participates in Qt's height-for-width negotiation so its live
+    canvas is always a square.  This keeps the scenograph inside the square
+    monitor footprint below the sequencer instead of expanding vertically to
+    the bottom edge of the window.
+    """
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return max(180, int(width))
 
     def __init__(self, parent=None, engine=None):
         super().__init__(parent)
@@ -10299,25 +10360,26 @@ class PaintbrushTable(QWidget):
         if not hasattr(self.app, 'instrument_param_state') or not self.app.instrument_param_state:
             # Lightweight per-instrument synth knob snapshot (EQR/Fractalizer/PKP/tuning style)
             self.app.instrument_param_state = {}
+            _inst_u = identity_unit  # shared canonical-hash helper (module-level)
             for i, name in enumerate(getattr(self.app, 'instrument_names_48', [])):
                 self.app.instrument_param_state[name] = {
-                    "eqr": 0.5 + 0.01 * (i % 7),
-                    "harmonic_lattice": 0.3 + 0.02 * (i % 5),  # per-synth Harmonic Lattice
-                    "fractalizer": 0.3 + 0.02 * (i % 5),  # alias
-                    "pkp_decay": 0.25 + 0.01 * (i % 9),
+                    "eqr": 0.5 + 0.07 * _inst_u(name, "eqr"),
+                    "harmonic_lattice": 0.3 + 0.08 * _inst_u(name, "harmonic_lattice"),  # per-synth Harmonic Lattice
+                    "fractalizer": 0.3 + 0.08 * _inst_u(name, "fractalizer"),  # alias
+                    "pkp_decay": 0.25 + 0.08 * _inst_u(name, "pkp_decay"),
                     "tuning": 1.0,
                     "filter": 0.5,
                     "drive": 0.2,
                     # 4 panel seed knobs (single synth can spectrum-fill when fractaled)
-                    "morph": 1.0 + 0.15 * (i % 6),
-                    "harmonic_freq": 220.0 * (1.0 + (i % 12) * 0.08),
-                    "chaos": 0.4 + 0.05 * (i % 5),
-                    "fold_depth": 2.0 + 0.25 * (i % 8),
-                    "preset_idx": i % 4,
-                    "internal_p1": 0.4 + 0.05 * (i % 7),
-                    "internal_p2": 0.4 + 0.04 * (i % 5),
-                    "internal_p3": 0.5 + 0.03 * (i % 6),
-                    "internal_p4": 0.4 + 0.05 * (i % 4),
+                    "morph": 1.0 + 0.75 * _inst_u(name, "morph"),
+                    "harmonic_freq": 220.0 * (1.0 + _inst_u(name, "harmonic_freq") * 0.88),
+                    "chaos": 0.4 + 0.25 * _inst_u(name, "chaos"),
+                    "fold_depth": 2.0 + 2.0 * _inst_u(name, "fold_depth"),
+                    "preset_idx": int(_inst_u(name, "preset_idx") * 4) % 4,
+                    "internal_p1": 0.4 + 0.35 * _inst_u(name, "internal_p1"),
+                    "internal_p2": 0.4 + 0.20 * _inst_u(name, "internal_p2"),
+                    "internal_p3": 0.5 + 0.18 * _inst_u(name, "internal_p3"),
+                    "internal_p4": 0.4 + 0.20 * _inst_u(name, "internal_p4"),
                 }
 
     def engage_paint(self, row, col):
@@ -12324,6 +12386,53 @@ from PyQt6.QtCore import Qt
 
 
 
+
+# =============================================================================
+# LAYERED PANEL HOST — nested QGroupBox stack for machines with tight layouts
+# Each sub-panel is a titled box inside a scroll area so nothing is obscured
+# when the main window is smaller than the design size.
+# =============================================================================
+class LayeredPanelHost(QWidget):
+    """Scrollable stack of titled sub-panels (synth-style 4-panel pattern)."""
+    def __init__(self, title="Panel", parent=None):
+        super().__init__(parent)
+        self.setObjectName("LayeredPanelHost")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(2, 2, 2, 2)
+        outer.setSpacing(4)
+        self._title = QLabel(title)
+        self._title.setStyleSheet("color: #ffb6d9; font-weight: bold; font-size: 9pt;")
+        outer.addWidget(self._title)
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._body = QWidget()
+        self._body_layout = QVBoxLayout(self._body)
+        self._body_layout.setContentsMargins(4, 4, 4, 4)
+        self._body_layout.setSpacing(6)
+        self._scroll.setWidget(self._body)
+        outer.addWidget(self._scroll, 1)
+        self._panels = {}
+
+    def add_subpanel(self, key, title):
+        box = QGroupBox(title)
+        box.setStyleSheet(
+            "QGroupBox { color: #d0e8ff; border: 1px solid #3a5068; border-radius: 4px; "
+            "margin-top: 6px; font-size: 8pt; }"
+            "QGroupBox::title { subcontrol-origin: margin; left: 6px; padding: 0 3px; }"
+        )
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(6, 10, 6, 6)
+        lay.setSpacing(3)
+        self._body_layout.addWidget(box)
+        self._panels[key] = (box, lay)
+        return lay
+
+    def finish(self):
+        self._body_layout.addStretch(1)
+
+
 class MathematiciansGrooveboxApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -12454,7 +12563,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.instrument_selected_sequence = {name: 1 for name in self.instrument_names_48}
 
         self.instrument_scripts = {
-            name: f"# Script workspace for {name} based on operator rules\ndef evaluate_wave(x, y, z):\n    return np.sin(x * {((i)%12)+1}.0) * np.cos(y) - z"
+            name: f"# Script workspace for {name} based on operator rules\ndef evaluate_wave(x, y, z):\n    return np.sin(x * {1 + int(identity_unit(name, 'default_script_k') * 12)}.0) * np.cos(y) - z"
             for i, name in enumerate(self.instrument_names_48)
         }
 
@@ -12465,6 +12574,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         # Master storage mirroring the unquantized playlist rows for audio rendering
         self.master_playlist_data = []
+        self.global_algo_state = {
+            "script": "# Global script algo\ndef global_script(t, name, i):\n    return 0.0\n",
+            "domain": "equation = \"sin(t * MEUM)\"\n",
+            "wire": [],
+            "params": {"mix": 0.35, "enable_script": True, "enable_domain": True, "enable_wire": True},
+        }
+        try:
+            if getattr(self, "qe_notes", None) is not None:
+                self.qe_notes.clear()
+        except Exception:
+            pass
         self.goava_active = False
         self.goava_seed_values = []
         self.goava_note_events = []
@@ -15029,11 +15149,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "Build & test a live game .py from the current composition seed (splash → start → play).",
             checkable=False, active_color="#ff69b4"
         )
-        self.btn_export_videogame = _make_global_operator_button(
-            "📦 EXPORT GAME SCRIPT",
-            "Export deterministic game script + identity JSON classified from the live composition.",
-            checkable=False, active_color="#ff69b4"
-        )
 
         global_context_group = QGroupBox("GLOBAL COMPOSITION")
         global_context_group.setToolTip("Global playlist, randomization, and Euclidean phase-lock controls.")
@@ -15110,7 +15225,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_live_dj_random.toggled.connect(self._on_live_dj_random_toggled)
         try:
             self.btn_play_videogame.clicked.connect(self._on_play_videogame)
-            self.btn_export_videogame.clicked.connect(self._on_export_videogame_scripts)
         except Exception:
             pass
         self.btn_help.clicked.connect(self.open_help_readme)
@@ -15259,30 +15373,90 @@ class MathematiciansGrooveboxApp(QMainWindow):
         pkp_ui_group_layout.setContentsMargins(5, 3, 5, 3)
         pkp_ui_group_layout.addLayout(pkp_button_col)
         # Slider layout is attached to the consolidated LIVE DJ PANEL below.
-        self.pkp_ui_group.setMinimumWidth(290)
-        self.pkp_ui_group.setMaximumWidth(430)
+        # Widened so the three macro buttons + sliders are never clipped —
+        # the previous 290–430px cap was sized for content this panel no
+        # longer needs to share with the video-game controls (moved out).
+        self.pkp_ui_group.setMinimumWidth(560)
+        self.pkp_ui_group.setMaximumWidth(16777215)  # Qt "no cap" sentinel
 
-        # The LIVE DJ PANEL owns the performance macros and the generated-game
-        # controls. Keeping these handles together makes the live bus, NullLock
-        # audition and audiovisual game operate from one visible control surface.
-                # LIVE DJ PANEL: performance macros, NullLock and generated-game controls
-        # share one panel so the audiovisual bus and game transducer are visibly
-        # part of the same live composition surface.
+        # The LIVE DJ PANEL owns only the live performance macros (GOAVA DJ
+        # morph, PKP NullLock BOOST, random parametric DJ). The video-game
+        # PLAY button sits in its own row directly above this panel; EXPORT
+        # GAME SCRIPT lives in the main ⬇ EXPORT dropdown alongside the other
+        # export formats instead of as a separate button here.
         live_dj_macro_row = QHBoxLayout()
         live_dj_macro_row.addWidget(self.btn_live_dj_goava)
         live_dj_macro_row.addWidget(self.btn_pkp_nullock_boost)
         live_dj_macro_row.addWidget(self.btn_live_dj_random)
-        pkp_ui_group_layout.addLayout(live_dj_macro_row)
+        pkp_ui_group_layout.addLayout(live_dj_macro_row, 1)
+        pkp_ui_group_layout.addLayout(pkp_sliders, 1)
+
         live_game_row = QHBoxLayout()
-        live_game_row.addWidget(self.btn_play_videogame)
-        live_game_row.addWidget(self.btn_export_videogame)
-        pkp_ui_group_layout.addLayout(live_game_row)
-        pkp_ui_group_layout.addLayout(pkp_sliders)
+        live_game_row.addWidget(self.btn_play_videogame, 1)
 
         for b in (self.btn_edit_synth, self.btn_script_inst, self.btn_view_patchbay, self.btn_domain_eq):
             local_context_layout.addWidget(b)
         local_context_layout.addWidget(self.btn_edit_panels_per_sequence)
-        local_context_layout.addWidget(self.pkp_ui_group, 1)
+        # Project notes are deliberately adjacent to (left of) LIVE DJ.
+        local_context_layout.addWidget(self.quick_edit_group, 0)
+        pkp_and_game_col = QVBoxLayout()
+        pkp_and_game_col.setContentsMargins(0, 0, 0, 0)
+        pkp_and_game_col.addLayout(live_game_row)
+        pkp_and_game_col.addWidget(self.pkp_ui_group)
+        local_context_layout.addLayout(pkp_and_game_col, 1)
+
+        # ------------------------------------------------------------------
+        # GLOBAL PLAYER — four buttons (mirror of local EDIT SYNTH / SCRIPT /
+        # PATCH / DOMAIN). Each opens a floating panel with synth-style chrome
+        # and math background. Algorithms apply to EVERY instrument in parallel
+        # and MUST NOT write or mutate the seed field.
+        # ------------------------------------------------------------------
+        global_player_group = QGroupBox("🌐 GLOBAL PLAYER")
+        global_player_group.setToolTip(
+            "Global-only algorithm editors. Same layout as the four local instrument "
+            "panels, but writes affect the full ensemble in parallel without touching seeds."
+        )
+        gp_lay = QHBoxLayout(global_player_group)
+        gp_lay.setSpacing(8)
+        self.btn_gp_script_algo = self._make_local_context_button(
+            "SCRIPT\nALGO", "Global script algorithm applied to every instrument in parallel"
+        )
+        self.btn_gp_domain_algo = self._make_local_context_button(
+            "DOMAIN\nALGO", "Global domain/time-space algorithm for the full ensemble"
+        )
+        self.btn_gp_wire_algo = self._make_local_context_button(
+            "WIRE\nALGO", "Global modular wire/routing algorithm across all instruments"
+        )
+        self.btn_gp_algo_params = self._make_local_context_button(
+            "ALGO\nPARAMS", "Global algorithm parameters (does not modify seed)"
+        )
+        for b in (self.btn_gp_script_algo, self.btn_gp_domain_algo, self.btn_gp_wire_algo, self.btn_gp_algo_params):
+            gp_lay.addWidget(b)
+        self.btn_gp_script_algo.clicked.connect(lambda: self._open_global_algo_panel("script"))
+        self.btn_gp_domain_algo.clicked.connect(lambda: self._open_global_algo_panel("domain"))
+        self.btn_gp_wire_algo.clicked.connect(lambda: self._open_global_algo_panel("wire"))
+        self.btn_gp_algo_params.clicked.connect(lambda: self._open_global_algo_panel("params"))
+        local_context_layout.addWidget(global_player_group, 0)
+
+        # Quick Edit = project notes only
+        self.quick_edit_group = QGroupBox("📝 PROJECT NOTES")
+        self.quick_edit_group.setStyleSheet(
+            "QGroupBox { color: #ffe0a0; border: 1px solid #8a7040; border-radius: 4px; "
+            "margin-top: 6px; font-weight: bold; }"
+            "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
+        )
+        qe = QVBoxLayout(self.quick_edit_group)
+        qe.setContentsMargins(6, 10, 6, 6)
+        self.qe_notes = QTextEdit()
+        self.qe_notes.setPlaceholderText("Project notes…")
+        self.qe_notes.setMaximumHeight(90)
+        self.qe_notes.setToolTip("Free-form project notes; stored in save/load. No transport or camera actions.")
+        qe.addWidget(self.qe_notes)
+        self.quick_edit_group.setMinimumWidth(140)
+        self.quick_edit_group.setMaximumWidth(240)
+        # PROJECT_NOTES_POSITION: notes sit immediately to the left of the
+        # consolidated LIVE DJ panel, not at the far-right end of Local Context.
+        # This makes the notes field a stable companion to the performance panel.
         local_context_layout.addStretch(1)
         master_container.addWidget(local_context_group)
 
@@ -15430,6 +15604,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.visual_oscilloscope = VisualOscilloscope(self)
         self.spectrum_analyzer = SpectrumAnalyzer(self)
 
+        # SQUARE_MONITOR_GEOMETRY: keep the three visual surfaces on one
+        # deterministic square footprint. The container resize hook below
+        # computes the largest square that fits both the available width and
+        # the vertical monitor band, then applies it uniformly.
+        self._visual_monitor_widgets = (
+            self.visual_oscilloscope, self.video_synth_viewer, self.spectrum_analyzer
+        )
+
         # EXPORT control is placed at the top of the 2D/2.5D video panel row.
         # Offers three export modes via a dropdown menu on one button:
         #   - Video only (no audio track muxed in)
@@ -15465,8 +15647,23 @@ class MathematiciansGrooveboxApp(QMainWindow):
         export_menu.addAction("Video only (.avi)").triggered.connect(
             lambda: self.export_video_dialog(include_audio=False, container="avi")
         )
+        export_menu.addSeparator()
+        # Video game — deterministic script + identity JSON, same seed/pair
+        # provenance as the audio/video exports above.
+        export_menu.addAction("📦 Video Game Script (.py + .json)").triggered.connect(
+            self._on_export_videogame_scripts
+        )
         self.btn_export.setMenu(export_menu)
         self.btn_export_video = self.btn_export  # compatibility alias
+        # 500% scale-up (5x each dimension) over the previous auto-sized
+        # ~90x30 toolbutton, so EXPORT reads as the primary action on this bar.
+        self.btn_export.setMinimumSize(450, 150)
+        self.btn_export.setStyleSheet(
+            "QToolButton { font-size: 28px; font-weight: bold; padding: 20px 40px; "
+            "background-color:#102018; color:#00ffcc; border:3px solid #00ffcc; border-radius:10px; } "
+            "QToolButton:hover { background-color:#183828; } "
+            "QToolButton:pressed { background-color:#00ffcc; color:#101010; }"
+        )
         self.scope_status_label = QLabel("📊 Meum Wave · Scenograph · Spectrum  |  Idle")
         self.scope_status_label.setStyleSheet("color: #00ffff; font-weight: bold;")
         scope_bar.addWidget(self.scope_status_label, stretch=1)
@@ -15478,23 +15675,33 @@ class MathematiciansGrooveboxApp(QMainWindow):
         master_container.addLayout(scope_bar)
         visual_pair = QHBoxLayout()
         visual_pair.setSpacing(8)
-        # Equal squares: Waveform | Scenograph | Spectrum
+        visual_pair.setContentsMargins(0, 0, 0, 0)
+        visual_pair.setAlignment(Qt.AlignmentFlag.AlignTop)
+        # Three equal monitor columns. Every monitor is negotiated as a square;
+        # the scenograph therefore scales into the same square footprint as the
+        # waveform/spectrum instead of taking the remaining vertical space.
         for widget, label in (
             (self.visual_oscilloscope, "MEUM WAVEFORM · full-track + live"),
             (self.video_synth_viewer, "MEUM SCENOGRAPH · 2.5D / 3D"),
             (self.spectrum_analyzer, "MEUM SPECTRUM · FFT scanner"),
         ):
             col = QVBoxLayout()
+            col.setContentsMargins(0, 0, 0, 0)
             lbl = QLabel(label)
             lbl.setStyleSheet("color: #8ab4c8; font-size: 8pt;")
             col.addWidget(lbl)
-            widget.setMinimumSize(200, 200)
-            widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-            col.addWidget(widget, stretch=1)
+            widget.setMinimumSize(180, 180)
+            widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            # VisualOscilloscope/SpectrumAnalyzer inherit QWidget; give the
+            # layout a square height hint through a fixed-height-for-width
+            # wrapper so all three panels share one canonical monitor geometry.
+            col.addWidget(widget, stretch=0, alignment=Qt.AlignmentFlag.AlignTop)
+            col.addStretch(1)
             visual_pair.addLayout(col, stretch=1)
         visual_container = QWidget()
         visual_container.setLayout(visual_pair)
-        visual_container.setMinimumHeight(280)
+        visual_container.setMinimumHeight(220)
+        self._visual_monitor_container = visual_container
         master_container.addWidget(visual_container, stretch=1)
 
         # Realtime audio engine state (sounddevice stream)
@@ -15526,6 +15733,30 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._scope_update_timer.setInterval(33)
         self._scope_update_timer.timeout.connect(self._update_scope_from_playhead)
         self._last_scope_chunk = np.zeros(100, dtype=np.float32)
+
+    def _resize_visual_monitor_band(self):
+        """Fit waveform/scenograph/spectrum into equal square monitor cells."""
+        try:
+            container = getattr(self, "_visual_monitor_container", None)
+            widgets = tuple(getattr(self, "_visual_monitor_widgets", ()) or ())
+            if container is None or len(widgets) != 3:
+                return
+            available_w = max(0, container.width() - 16)
+            cell_w = max(180, available_w // 3)
+            available_h = max(180, container.height() - 22)
+            side = max(180, min(cell_w, available_h))
+            for w in widgets:
+                w.setMinimumSize(side, side)
+                w.setMaximumSize(side, side)
+        except Exception:
+            pass
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        try:
+            QTimer.singleShot(0, self._resize_visual_monitor_band)
+        except Exception:
+            pass
 
     def on_instrument_switched(self, idx):
         if not (0 <= idx < len(self.instrument_names_48)):
@@ -17887,6 +18118,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
             }
         return out
 
+    def _deserialize_sequence_memory(self, mem):
+        out = copy.deepcopy(mem if isinstance(mem, dict) else {})
+        if isinstance(out.get("touched"), list):
+            out["touched"] = set(out["touched"])
+        srcs = out.get("engine_step_sources")
+        if isinstance(srcs, dict):
+            restored = {}
+            for k, v in srcs.items():
+                key = int(k) if str(k).lstrip("-").isdigit() else k
+                restored[key] = set(v) if isinstance(v, list) else (v if isinstance(v, set) else set())
+            out["engine_step_sources"] = restored
+        return out
+
     def _on_clear_memory_clicked(self):
         """Confirm, then hard-reset the entire project and the global seed."""
         reply = QMessageBox.question(
@@ -17941,7 +18185,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         }
         self.instrument_selected_sequence = {name: 1 for name in self.instrument_names_48}
         self.instrument_scripts = {
-            name: f"# Script workspace for {name} based on operator rules\ndef evaluate_wave(x, y, z):\n    return np.sin(x * {(i % 12) + 1}.0) * np.cos(y) - z"
+            name: f"# Script workspace for {name} based on operator rules\ndef evaluate_wave(x, y, z):\n    return np.sin(x * {1 + int(identity_unit(name, 'default_script_k') * 12)}.0) * np.cos(y) - z"
             for i, name in enumerate(self.instrument_names_48)
         }
         self.instrument_param_state = {}
@@ -18031,6 +18275,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         state["game_last_identity"] = getattr(self, "_last_videogame_identity", None)
         state["game_last_path"] = getattr(self, "_last_videogame_path", None)
         state["goava_active"] = bool(getattr(self, "goava_active", False))
+        # Project notes + global algo stores (never includes seed)
+        if getattr(self, "qe_notes", None) is not None:
+            try:
+                state["qe_notes"] = self.qe_notes.toPlainText()
+            except Exception:
+                pass
+        state["global_algo"] = copy.deepcopy(getattr(self, "global_algo_state", {}) or {})
         return state
 
     def _restore_project_ui_state(self, state):
@@ -18053,25 +18304,63 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if state.get("game_last_identity") is not None:
             self._last_videogame_identity = state["game_last_identity"]
         self._last_videogame_path = state.get("game_last_path", getattr(self, "_last_videogame_path", None))
+        if "qe_notes" in state and getattr(self, "qe_notes", None) is not None:
+            try:
+                self.qe_notes.setPlainText(str(state.get("qe_notes") or ""))
+            except Exception:
+                pass
+        if isinstance(state.get("global_algo"), dict):
+            self.global_algo_state = copy.deepcopy(state["global_algo"])
 
-    def save_project_dialog(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Save EQR Project", "", "EQR Project (*.json)")
-        if not path:
-            return
+
+
+    def _project_snapshot(self):
+        """Single canonical project document for save / export / game interpreter.
+
+        Goal: unique deterministic non-redundant state. One map from
+        (seed, engines, global_algo, panels, playlist, notes) → document.
+        Modules share this document so music, scenograph, DJ, and video-game
+        classification all see the same residue lattice without inventing
+        parallel stores.
+        """
+        def _safe_json(obj):
+            try:
+                return copy.deepcopy(obj)
+            except Exception:
+                try:
+                    return json.loads(json.dumps(obj, default=str))
+                except Exception:
+                    return None
+
+        gas = getattr(self, "global_algo_state", None)
+        if not isinstance(gas, dict):
+            gas = {}
+        notes = ""
+        try:
+            if getattr(self, "qe_notes", None) is not None:
+                notes = self.qe_notes.toPlainText()
+        except Exception:
+            notes = ""
+
+        # Compact global-algo fingerprint (for games / exports — not the seed)
+        try:
+            algo_fp = hashlib.sha256(
+                json.dumps(gas, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest()[:16]
+        except Exception:
+            algo_fp = "0" * 16
+
         data = {
-            "version": "3.6.8+",
-            "seed": self._seed_text() if hasattr(self, 'input_seed_val') else "",
-            "bpm": self.spin_bpm.value() if hasattr(self, 'spin_bpm') else 120,
-            "seq_length": int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16,
-            "playlist_rows": int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else 64,
-            "base_frequency": float(self.spin_base_frequency.value()) if hasattr(self, 'spin_base_frequency') else 432.0,
-            "global_convolve": float(self.spin_global_convolve.value()) if hasattr(self, 'spin_global_convolve') else 0.0,
-            # USER_TOUCHED_TRACKING: 'touched' is stored as a set() in memory
-            # (for fast membership checks) but JSON has no set type, so it is
-            # serialized as a sorted list here and restored as a set on load.
+            "version": "3.7.2-canonical-unified",
+            "seed": self._seed_text() if hasattr(self, "input_seed_val") else "",
+            "bpm": float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0,
+            "seq_length": int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else 16,
+            "playlist_rows": int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else 64,
+            "base_frequency": float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0,
+            "global_convolve": float(self.spin_global_convolve.value()) if hasattr(self, "spin_global_convolve") else 0.0,
             "instrument_sequencer_memory": {
                 name: self._serialize_sequence_memory(m)
-                for name, m in self.instrument_sequencer_memory.items()
+                for name, m in (getattr(self, "instrument_sequencer_memory", {}) or {}).items()
             },
             "instrument_sequence_banks": {
                 name: {
@@ -18083,32 +18372,155 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "instrument_selected_sequence": {
                 name: int(idx) for name, idx in (getattr(self, "instrument_selected_sequence", {}) or {}).items()
             },
-            "master_playlist_data": getattr(self, 'master_playlist_data', []),
-            "playlist_automation": getattr(self, 'playlist_automation', []),
-            "instrument_scripts": getattr(self, 'instrument_scripts', {}),
-            "instrument_param_state": getattr(self, 'instrument_param_state', {}),
-            "patch_connections": getattr(self, 'patch_connections', []),
-            "domain_eq": self.domain_eq_engine.to_json() if hasattr(self, 'domain_eq_engine') and self.domain_eq_engine else {},
+            "master_playlist_data": _safe_json(getattr(self, "master_playlist_data", [])),
+            "playlist_automation": _safe_json(getattr(self, "playlist_automation", [])),
+            "instrument_scripts": _safe_json(getattr(self, "instrument_scripts", {})),
+            "instrument_param_state": _safe_json(getattr(self, "instrument_param_state", {})),
+            "patch_connections": _safe_json(getattr(self, "patch_connections", [])),
+            "domain_eq": (
+                self.domain_eq_engine.to_json()
+                if hasattr(self, "domain_eq_engine") and self.domain_eq_engine else {}
+            ),
             "goava_active": bool(getattr(self, "goava_active", False)),
             "live_dj_goava": bool(getattr(self, "live_dj_goava", False)),
             "live_dj_random": bool(getattr(self, "live_dj_random", False)),
-            "last_videogame_identity": getattr(self, "_last_videogame_identity", None),
-            "last_videogame_path": getattr(self, "_last_videogame_path", None),
             "convolve_fit": bool(getattr(self, "chk_convolve_fit", None) and self.chk_convolve_fit.isChecked()),
-            "version_handles": "3.7.0-deterministic-game",
-            "ui_state": self._collect_project_ui_state(),
-            "deterministic_kernel": {
-                "background_instance_limit": 24,
-                "scenograph_group_action": "affine_Z_n",
-                "goava_commutes": True,
-            },
+            "global_algo": _safe_json(gas),
+            "global_algo_fingerprint": algo_fp,
+            "project_notes": notes,
+            "last_videogame_identity": _safe_json(getattr(self, "_last_videogame_identity", None)),
+            "last_videogame_path": getattr(self, "_last_videogame_path", None),
+            "ui_state": self._collect_project_ui_state() if hasattr(self, "_collect_project_ui_state") else {},
         }
+        return data
+
+    def _apply_project_snapshot(self, data):
+        """Restore a full project document (inverse of _project_snapshot)."""
+        data = data if isinstance(data, dict) else {}
+        # Seed field — only place the seed is restored (global algos never write it)
+        if hasattr(self, "input_seed_val") and "seed" in data:
+            try:
+                self.input_seed_val.blockSignals(True)
+                self.input_seed_val.setPlainText(str(data.get("seed") or ""))
+                self.input_seed_val.blockSignals(False)
+            except Exception:
+                pass
+        for spin, key in (
+            ("spin_bpm", "bpm"),
+            ("spin_seq_length", "seq_length"),
+            ("spin_playlist_length", "playlist_rows"),
+            ("spin_base_frequency", "base_frequency"),
+            ("spin_global_convolve", "global_convolve"),
+        ):
+            w = getattr(self, spin, None)
+            if w is not None and key in data:
+                try:
+                    w.setValue(data[key])
+                except Exception:
+                    pass
+        # Sequencer / panels
+        if "instrument_sequencer_memory" in data and hasattr(self, "_deserialize_sequence_memory"):
+            try:
+                self.instrument_sequencer_memory = {
+                    name: self._deserialize_sequence_memory(m)
+                    for name, m in (data.get("instrument_sequencer_memory") or {}).items()
+                    if isinstance(m, dict)
+                }
+            except Exception as e:
+                print(f"[Load] sequencer memory: {e}")
+        if "instrument_sequence_banks" in data:
+            try:
+                banks = {}
+                for name, bank in (data.get("instrument_sequence_banks") or {}).items():
+                    if not isinstance(bank, dict):
+                        continue
+                    banks[name] = {
+                        int(k): self._deserialize_sequence_memory(v)
+                        for k, v in bank.items() if isinstance(v, dict)
+                    }
+                self.instrument_sequence_banks = banks
+            except Exception as e:
+                print(f"[Load] sequence banks: {e}")
+        if "instrument_selected_sequence" in data:
+            try:
+                self.instrument_selected_sequence = {
+                    str(k): int(v) for k, v in (data.get("instrument_selected_sequence") or {}).items()
+                }
+            except Exception:
+                pass
+        for key, attr in (
+            ("master_playlist_data", "master_playlist_data"),
+            ("playlist_automation", "playlist_automation"),
+            ("instrument_scripts", "instrument_scripts"),
+            ("instrument_param_state", "instrument_param_state"),
+            ("patch_connections", "patch_connections"),
+        ):
+            if key in data:
+                try:
+                    setattr(self, attr, data[key] if data[key] is not None else getattr(self, attr, None))
+                except Exception:
+                    pass
+        if "domain_eq" in data and hasattr(self, "domain_eq_engine") and self.domain_eq_engine:
+            try:
+                self.domain_eq_engine.from_json(data["domain_eq"])
+            except Exception as e:
+                print(f"[Load] domain_eq: {e}")
+        if isinstance(data.get("global_algo"), dict):
+            self.global_algo_state = copy.deepcopy(data["global_algo"])
+        if "project_notes" in data and getattr(self, "qe_notes", None) is not None:
+            try:
+                self.qe_notes.setPlainText(str(data.get("project_notes") or ""))
+            except Exception:
+                pass
+        self.goava_active = bool(data.get("goava_active", False))
+        self.live_dj_goava = bool(data.get("live_dj_goava", False))
+        self.live_dj_random = bool(data.get("live_dj_random", False))
+        self._last_videogame_identity = data.get("last_videogame_identity")
+        self._last_videogame_path = data.get("last_videogame_path")
+        if hasattr(self, "_restore_project_ui_state") and isinstance(data.get("ui_state"), dict):
+            try:
+                self._restore_project_ui_state(data["ui_state"])
+            except Exception as e:
+                print(f"[Load] ui_state: {e}")
+        # Re-apply global algos to ensemble so modules agree after load
+        try:
+            gas = getattr(self, "global_algo_state", {}) or {}
+            p = gas.get("params") if isinstance(gas.get("params"), dict) else {}
+            if p.get("enable_script", True) and gas.get("script"):
+                self._apply_global_algo_to_ensemble("script")
+            if p.get("enable_domain", True) and gas.get("domain"):
+                self._apply_global_algo_to_ensemble("domain")
+            if p.get("enable_wire", True) and gas.get("wire"):
+                self._apply_global_algo_to_ensemble("wire")
+        except Exception as e:
+            print(f"[Load] global algo re-apply: {e}")
+
+
+    def export_project_json(self):
+        """Export the unified project snapshot (same document as Save)."""
+        path, _ = QFileDialog.getSaveFileName(self, "Export Project JSON", "", "EQR Project (*.json)")
+        if not path:
+            return
+        try:
+            data = self._project_snapshot()
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, default=str)
+            QMessageBox.information(self, "Exported", f"Project document exported:\n{path}")
+        except Exception as e:
+            QMessageBox.warning(self, "Export failed", str(e))
+
+    def save_project_dialog(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Save EQR Project", "", "EQR Project (*.json)")
+        if not path:
+            return
+        data = self._project_snapshot()
         try:
             with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
+                json.dump(data, f, indent=2, default=str)
             QMessageBox.information(self, "Saved", f"Project saved:\n{path}")
         except Exception as e:
             QMessageBox.warning(self, "Save failed", str(e))
+
 
     def load_project_dialog(self):
         path, _ = QFileDialog.getOpenFileName(self, "Load EQR Project", "", "EQR Project (*.json)")
@@ -18117,93 +18529,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            if hasattr(self, 'input_seed_val'):
-                self.input_seed_val.setPlainText(str(data.get("seed", "")))
-            if hasattr(self, 'spin_bpm'):
-                self.spin_bpm.setValue(float(data.get("bpm", 120.0)))
-            if hasattr(self, 'spin_seq_length'):
-                self.spin_seq_length.setValue(int(data.get("seq_length", 16)))
-            if hasattr(self, 'spin_playlist_length'):
-                self.spin_playlist_length.setValue(int(data.get("playlist_rows", 64)))
-            if hasattr(self, 'spin_base_frequency'):
-                self.spin_base_frequency.setValue(float(data.get("base_frequency", 432.0)))
-            if hasattr(self, 'slider_global_convolve'):
-                self.slider_global_convolve.setValue(int(round(float(data.get("global_convolve", 0.0)) * 100.0)))
-            mem = data.get("instrument_sequencer_memory", {})
-            if mem:
-                # USER_TOUCHED_TRACKING: convert the saved 'touched' list back
-                # into a set. Older project files won't have this key at all —
-                # treat those as untouched (nothing loses net-effect status
-                # that a step's own ON/amplitude already implies elsewhere;
-                # this only restores which steps were user-programmed).
-                for m in mem.values():
-                    if "touched" in m:
-                        m["touched"] = set(m["touched"])
-                    if "engine_step_sources" in m:
-                        m["engine_step_sources"] = {
-                            int(k): set(v) for k, v in (m.get("engine_step_sources") or {}).items()
-                        }
-                self.instrument_sequencer_memory.update(mem)
-            saved_banks = data.get("instrument_sequence_banks", {})
-            if saved_banks:
-                self.instrument_sequence_banks = {}
-                for name, bank in saved_banks.items():
-                    self.instrument_sequence_banks[name] = {}
-                    for idx, smem in bank.items():
-                        smem["touched"] = set(smem.get("touched", []))
-                        smem["engine_step_sources"] = {
-                            int(k): set(v) for k, v in (smem.get("engine_step_sources") or {}).items()
-                        }
-                        self.instrument_sequence_banks[name][int(idx)] = smem
-                self.instrument_selected_sequence = {
-                    name: int(idx) for name, idx in data.get("instrument_selected_sequence", {}).items()
-                }
-                self._ensure_sequence_banks_after_resize()
-            self.master_playlist_data = data.get("master_playlist_data", [])
-            self.playlist_automation = data.get("playlist_automation", [])
-            if hasattr(self, 'instrument_scripts'):
-                self.instrument_scripts.update(data.get("instrument_scripts", {}))
-            loaded_state = data.get("instrument_param_state", {})
-
-            if isinstance(loaded_state, dict):
-                self.instrument_param_state = {
-                    str(name): dict(params)
-                    for name, params in loaded_state.items()
-                    if isinstance(params, dict)
-                }
-            else:
-                self.instrument_param_state = {}
-                loaded_connections = data.get("patch_connections", [])
-
-                if isinstance(loaded_connections, list):
-                    self.patch_connections = loaded_connections
-                else:
-                    self.patch_connections = []
-            if hasattr(self, 'domain_eq_engine') and data.get("domain_eq"):
-                self.domain_eq_engine.from_json(data["domain_eq"])
-            self.reload_active_instrument_sequencer_ui()
-            # Re-bind seed scripts + carrier context to every instrument after restore.
-            self._refresh_after_file_input(reason="project_load")
-            # Restore video-game / DJ composition handles
-            self._last_videogame_identity = data.get("last_videogame_identity")
-            self._last_videogame_path = data.get("last_videogame_path")
-            self._restore_project_ui_state(data.get("ui_state", {}))
-            if data.get("goava_active") and hasattr(self, "btn_goava"):
-                try:
-                    self.btn_goava.blockSignals(True)
-                    self.btn_goava.setChecked(True)
-                    self.goava_active = True
-                    self.btn_goava.blockSignals(False)
-                except Exception:
-                    pass
-            if data.get("convolve_fit") and hasattr(self, "chk_convolve_fit"):
-                try:
-                    self.chk_convolve_fit.setChecked(True)
-                except Exception:
-                    pass
+            self._apply_project_snapshot(data)
+            try:
+                self.reload_active_instrument_sequencer_ui()
+            except Exception:
+                pass
+            try:
+                self._refresh_after_file_input(reason="project_load")
+            except Exception:
+                pass
             QMessageBox.information(self, "Loaded", f"Project loaded:\n{path}")
         except Exception as e:
             QMessageBox.warning(self, "Load failed", str(e))
+
 
     def open_keyboard_test_window(self):
         """One-shot keyboard / pad test for selected or global instruments."""
@@ -22275,8 +22613,42 @@ class MathematiciansGrooveboxApp(QMainWindow):
         return vcodec, vargs, acodec, aargs
 
 
+    def _canonical_document(self):
+        """Return the live canonical project document without serialization.
+
+        Runtime modules consume this object directly; JSON is only a persistence
+        boundary. This prevents prototype/play/export paths from inventing a
+        second representation whose parse/format round-trip could alter results.
+        """
+        return self._project_snapshot()
+
     def _composition_meta_for_game(self):
-        """Snapshot live composition handles for game classification."""
+        """Snapshot for game classification — same lattice as save/export.
+
+        Global Player algo fingerprint is included so the video-game interpreter
+        responds to Script/Domain/Wire/Params without ever mutating the seed.
+        """
+        canonical = self._canonical_document() if hasattr(self, "_project_snapshot") else {}
+        gas = canonical.get("global_algo", getattr(self, "global_algo_state", {})) or {}
+        try:
+            algo_fp = hashlib.sha256(
+                json.dumps(gas, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest()[:16]
+        except Exception:
+            algo_fp = "0" * 16
+        live_p = ""
+        try:
+            pl = getattr(self, "master_playlist_data", None) or []
+            if pl and isinstance(pl[0], dict) and pl[0].get("live_parametrics"):
+                live_p = str(pl[0].get("live_parametrics"))[:240]
+        except Exception:
+            pass
+        notes = ""
+        try:
+            if getattr(self, "qe_notes", None) is not None:
+                notes = self.qe_notes.toPlainText()[:200]
+        except Exception:
+            pass
         return {
             "bpm": float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0,
             "seq_length": int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else 16,
@@ -22284,8 +22656,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "n_instruments": len(getattr(self, "instrument_names_48", []) or []),
             "goava_active": bool(getattr(self, "goava_active", False)),
             "seed": float(self.get_numeric_seed()) if hasattr(self, "get_numeric_seed") else 0.0,
-            "live_parametrics": "",
+            "live_parametrics": live_p,
             "goava_group_phase": bool(getattr(self, "goava_active", False)),
+            "global_algo": gas,
+            "global_algo_fingerprint": algo_fp,
+            "live_dj_goava": bool(getattr(self, "live_dj_goava", False)),
+            "live_dj_random": bool(getattr(self, "live_dj_random", False)),
+            "project_notes": notes,
         }
 
     def _classify_live_game(self):
@@ -22312,6 +22689,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             n_instruments=meta["n_instruments"],
             goava_active=meta["goava_active"],
             live_parametrics=meta.get("live_parametrics"),
+            global_algo_fingerprint=meta.get("global_algo_fingerprint"),
+            global_algo=meta.get("global_algo"),
+            live_dj_goava=meta.get("live_dj_goava"),
+            live_dj_random=meta.get("live_dj_random"),
         ), meta
 
     def _on_export_videogame_scripts(self):
@@ -22609,6 +22990,299 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
         super().closeEvent(event)
+
+
+    def _open_global_algo_panel(self, which):
+        """Open one of the four Global Player panels (script / domain / wire / params).
+
+        Windows use the same translucent + math-decor chrome as the local synth
+        editor. Edits write into self.global_algo_state only — never into the
+        seed field or per-instrument seed scripts. Apply broadcasts to every
+        instrument in parallel.
+        """
+        which = str(which or "script").lower()
+        titles = {
+            "script": "Global Script Algo",
+            "domain": "Global Domain Algo",
+            "wire": "Global Wire Algo",
+            "params": "Global Algo Params",
+        }
+        title = titles.get(which, "Global Algo")
+        attr = f"_gp_window_{which}"
+        existing = getattr(self, attr, None)
+        if existing is not None:
+            try:
+                if existing.isVisible():
+                    existing.raise_()
+                    existing.activateWindow()
+                    return
+            except Exception:
+                pass
+
+        if not hasattr(self, "global_algo_state") or not isinstance(self.global_algo_state, dict):
+            self.global_algo_state = {
+                "script": "# Global script algo\ndef global_script(t, name, i):\n    return 0.0\n",
+                "domain": 'equation = "sin(t * MEUM)"\n',
+                "wire": [],
+                "params": {"mix": 0.35, "enable_script": True, "enable_domain": True, "enable_wire": True},
+            }
+
+        window = QWidget(None, Qt.WindowType.Window)
+        window.setWindowTitle(title)
+        window.resize(720, 560)
+        window.setStyleSheet("""
+            QWidget { background-color: rgba(28, 28, 32, 180); color: #e0e0e0; }
+            QLabel { color: #cccccc; }
+            QSlider::groove:horizontal { height: 4px; background: #333333; border-radius: 2px; }
+            QSlider::handle:horizontal { background: #ff6b00; width: 12px; margin: -4px 0; border-radius: 6px; }
+            QPushButton { background-color: #2a3038; color: #e0e0e0; border: 1px solid #4a5560; padding: 6px; }
+            QPushButton:hover { background-color: #3a4550; }
+        """)
+        try:
+            window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            attach_math_decor(window, app=self, light=True)
+        except Exception:
+            pass
+        main = QVBoxLayout(window)
+        banner = QLabel(
+            f"<b>{title}</b> — global-only · applies to <b>every instrument in parallel</b><br>"
+            "<i>Does not read or write the composition seed.</i>"
+        )
+        banner.setWordWrap(True)
+        main.addWidget(banner)
+
+        if which == "script":
+            editor = QTextEdit()
+            editor.setPlainText(str(self.global_algo_state.get("script") or ""))
+            main.addWidget(editor, 1)
+            row = QHBoxLayout()
+            btn_save = QPushButton("💾 Save Script Algo")
+            btn_apply = QPushButton("▶ Apply to All Instruments")
+            def _save_script():
+                self.global_algo_state["script"] = editor.toPlainText()
+                if hasattr(self, "scope_status_label"):
+                    self.scope_status_label.setText("🌐 Global Script Algo saved (seed untouched)")
+            def _apply_script():
+                self.global_algo_state["script"] = editor.toPlainText()
+                self._apply_global_algo_to_ensemble("script")
+            btn_save.clicked.connect(_save_script)
+            btn_apply.clicked.connect(_apply_script)
+            row.addWidget(btn_save)
+            row.addWidget(btn_apply)
+            main.addLayout(row)
+
+        elif which == "domain":
+            editor = QTextEdit()
+            editor.setPlainText(str(self.global_algo_state.get("domain") or ""))
+            main.addWidget(QLabel("Global domain equation / logic (ensemble-wide context)"))
+            main.addWidget(editor, 1)
+            row = QHBoxLayout()
+            btn_save = QPushButton("💾 Save Domain Algo")
+            btn_apply = QPushButton("▶ Apply to All Instruments")
+            def _save_dom():
+                self.global_algo_state["domain"] = editor.toPlainText()
+                if hasattr(self, "scope_status_label"):
+                    self.scope_status_label.setText("🌐 Global Domain Algo saved (seed untouched)")
+            def _apply_dom():
+                self.global_algo_state["domain"] = editor.toPlainText()
+                self._apply_global_algo_to_ensemble("domain")
+            btn_save.clicked.connect(_save_dom)
+            btn_apply.clicked.connect(_apply_dom)
+            row.addWidget(btn_save)
+            row.addWidget(btn_apply)
+            main.addLayout(row)
+
+        elif which == "wire":
+            main.addWidget(QLabel("Global modular wires — routes applied across the full roster in parallel."))
+            src_box = QComboBox()
+            tgt_box = QComboBox()
+            names = list(getattr(self, "instrument_names_48", []) or [])
+            src_box.addItems(names)
+            tgt_box.addItems(names)
+            weight = QDoubleSpinBox()
+            weight.setRange(0.0, 2.0)
+            weight.setSingleStep(0.05)
+            weight.setValue(0.5)
+            weight.setDecimals(3)
+            form = QHBoxLayout()
+            form.addWidget(QLabel("Source"))
+            form.addWidget(src_box, 1)
+            form.addWidget(QLabel("→ Target"))
+            form.addWidget(tgt_box, 1)
+            form.addWidget(QLabel("Weight"))
+            form.addWidget(weight)
+            main.addLayout(form)
+            log = QTextEdit()
+            log.setReadOnly(True)
+            wires = self.global_algo_state.get("wire") or []
+            if not isinstance(wires, list):
+                wires = []
+                self.global_algo_state["wire"] = wires
+            def _refresh_log():
+                lines = ["# Global Wire Algo (ensemble)"]
+                for w in self.global_algo_state.get("wire") or []:
+                    if isinstance(w, dict):
+                        lines.append(f"- {w.get('source')} ====> {w.get('target')}  w={float(w.get('weight', 0.5)):.3f}")
+                log.setPlainText("\n".join(lines))
+            _refresh_log()
+            main.addWidget(log, 1)
+            row = QHBoxLayout()
+            btn_add = QPushButton("＋ Add Wire")
+            btn_clear = QPushButton("Clear Wires")
+            btn_apply = QPushButton("▶ Apply Wires to Ensemble")
+            def _add():
+                self.global_algo_state.setdefault("wire", []).append({
+                    "source": src_box.currentText(),
+                    "target": tgt_box.currentText(),
+                    "weight": float(weight.value()),
+                    "origin": "global_player",
+                    "user_defined": True,
+                })
+                _refresh_log()
+            def _clear():
+                self.global_algo_state["wire"] = []
+                _refresh_log()
+            def _apply_w():
+                self._apply_global_algo_to_ensemble("wire")
+            btn_add.clicked.connect(_add)
+            btn_clear.clicked.connect(_clear)
+            btn_apply.clicked.connect(_apply_w)
+            row.addWidget(btn_add)
+            row.addWidget(btn_clear)
+            row.addWidget(btn_apply)
+            main.addLayout(row)
+
+        else:  # params
+            params = dict(self.global_algo_state.get("params") or {})
+            mix = QDoubleSpinBox()
+            mix.setRange(0.0, 1.0)
+            mix.setSingleStep(0.05)
+            mix.setDecimals(3)
+            mix.setValue(float(params.get("mix", 0.35)))
+            mix.setToolTip("Blend of global algo into each instrument panel (0=off, 1=full). Seed is never touched.")
+            chk_s = QCheckBox("Enable Script Algo")
+            chk_d = QCheckBox("Enable Domain Algo")
+            chk_w = QCheckBox("Enable Wire Algo")
+            chk_s.setChecked(bool(params.get("enable_script", True)))
+            chk_d.setChecked(bool(params.get("enable_domain", True)))
+            chk_w.setChecked(bool(params.get("enable_wire", True)))
+            main.addWidget(QLabel("Global algo mix into ensemble panels"))
+            main.addWidget(mix)
+            main.addWidget(chk_s)
+            main.addWidget(chk_d)
+            main.addWidget(chk_w)
+            main.addStretch(1)
+            row = QHBoxLayout()
+            btn_save = QPushButton("💾 Save Params")
+            btn_apply = QPushButton("▶ Apply All Enabled Algos")
+            def _save_p():
+                self.global_algo_state["params"] = {
+                    "mix": float(mix.value()),
+                    "enable_script": bool(chk_s.isChecked()),
+                    "enable_domain": bool(chk_d.isChecked()),
+                    "enable_wire": bool(chk_w.isChecked()),
+                }
+                if hasattr(self, "scope_status_label"):
+                    self.scope_status_label.setText("🌐 Global Algo Params saved (seed untouched)")
+            def _apply_p():
+                _save_p()
+                p = self.global_algo_state["params"]
+                if p.get("enable_script"):
+                    self._apply_global_algo_to_ensemble("script")
+                if p.get("enable_domain"):
+                    self._apply_global_algo_to_ensemble("domain")
+                if p.get("enable_wire"):
+                    self._apply_global_algo_to_ensemble("wire")
+            btn_save.clicked.connect(_save_p)
+            btn_apply.clicked.connect(_apply_p)
+            row.addWidget(btn_save)
+            row.addWidget(btn_apply)
+            main.addLayout(row)
+
+        setattr(self, attr, window)
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
+    def _apply_global_algo_to_ensemble(self, which):
+        """Broadcast a Global Player algo to every instrument in parallel.
+
+        Never mutates input_seed_val / get_numeric_seed / seed scripts.
+        Script → instrument_scripts (appended marker, global_algo store is source of truth)
+        Domain → domain_eq_engine domains with source=global_player
+        Wire → patch_connections with origin=global_player
+        """
+        which = str(which or "").lower()
+        names = list(getattr(self, "instrument_names_48", []) or [])
+        gas = getattr(self, "global_algo_state", {}) or {}
+        params = gas.get("params") if isinstance(gas.get("params"), dict) else {}
+        mix = float(params.get("mix", 0.35))
+        n_touched = 0
+
+        if which == "script":
+            body = str(gas.get("script") or "")
+            if not hasattr(self, "instrument_scripts") or self.instrument_scripts is None:
+                self.instrument_scripts = {}
+            # Store parallel global overlay; do not clobber user local scripts blindly —
+            # keep local script and attach a global_algo pointer in param state.
+            for name in names:
+                st = (getattr(self, "instrument_param_state", {}) or {}).setdefault(name, {})
+                if not isinstance(st, dict):
+                    continue
+                st["global_script_algo"] = body
+                st["global_algo_mix"] = mix
+                n_touched += 1
+
+        elif which == "domain":
+            body = str(gas.get("domain") or "")
+            engine = getattr(self, "domain_eq_engine", None)
+            if engine is not None:
+                # Replace previous global_player domains only; keep user_defined
+                existing = [d for d in (getattr(engine, "domains", None) or [])
+                            if isinstance(d, dict) and d.get("source") != "global_player"]
+                generated = []
+                for i, name in enumerate(names):
+                    generated.append({
+                        "name": f"global_player::{name}",
+                        "axis": "time",
+                        "t0": 0.0, "t1": 1.0,
+                        "x0": -1.0, "x1": 1.0, "y0": -1.0, "y1": 1.0,
+                        "logic": "True",
+                        "equation": body.split("equation =")[-1].strip().strip('"').strip("'") if "equation" in body else "sin(t * MEUM)",
+                        "limit_lo": -1.0, "limit_hi": 1.0,
+                        "weight": mix,
+                        "user_defined": False,
+                        "source": "global_player",
+                    })
+                    n_touched += 1
+                engine.domains = existing + generated
+
+        elif which == "wire":
+            wires = gas.get("wire") or []
+            if not hasattr(self, "patch_connections") or self.patch_connections is None:
+                self.patch_connections = []
+            # Drop previous global_player wires, keep others
+            self.patch_connections = [
+                c for c in self.patch_connections
+                if not (isinstance(c, dict) and c.get("origin") == "global_player")
+            ]
+            for w in wires:
+                if not isinstance(w, dict):
+                    continue
+                self.patch_connections.append({
+                    "source": w.get("source"),
+                    "target": w.get("target"),
+                    "weight": float(w.get("weight", 0.5)) * mix,
+                    "origin": "global_player",
+                    "user_defined": True,
+                })
+                n_touched += 1
+
+        if hasattr(self, "scope_status_label"):
+            self.scope_status_label.setText(
+                f"🌐 Global {which} algo → {n_touched} ensemble writes · seed untouched"
+            )
+        return n_touched
 
     def spawn_floating_window(self, attr_name, window_title):
         window = getattr(self, attr_name, None)

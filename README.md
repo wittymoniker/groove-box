@@ -1,62 +1,35 @@
-# Groovebox 3.7.0 — deterministic audiovisual composition engine
+# Groovebox — Complete V1
 
 ## Run
-
 ```bash
 pip install PyQt6 numpy sounddevice scipy
-./launch_desktop.sh
-# or:
-./launch_mobile.sh
-# or:
-python3 groovebox.py
+./launch_desktop.sh    # 96 kHz desktop
+# or: ./launch_mobile.sh  # 48 kHz mobile
+# or: python3 groovebox.py
 ```
 
-`dj_effects.py` is the deterministic live-DJ dependency. `videogame_engine.py`
-is the composition-to-game compiler used by **PLAY VIDEO GAME** and **EXPORT
-GAME SCRIPT**.
+## Packages
+- `groovebox.zip` — full source (default)
+- `desktop.zip` — desktop profile (96 kHz launch)
+- `mobile.zip` — mobile profile (48 kHz launch)
 
-## Deterministic design
+## Live Parametrics column
+Playlist column **Live Parametrics** stores a scriptable predicted-phase blob
+(`live_params = {...}`) unifying pattern + panel + playlist state for the
+master parametric engine. Live composition updates the same field.
 
-The canonical path is:
+## Notes
+- Sequence amplitudes/pitches/offsets use continuous floats (any decimal).
+- Engine retoggles are seed-deterministic.
+- Convolve-fit blends carrier toward reference without killing per-voice identity.
 
-`seed + composition state → labelled digest → cyclic-group residue → signal / scene / game`
 
-The finite visual background has a **process-wide budget of 24 wave objects,
-24 shape objects and 24 Meum blocks**, shared across decorated windows. Repeated
-Qt decoration calls reuse the existing background instead of stacking another
-field.
+## 3.7.2 canonical-unified pass
 
-The scenograph uses affine permutations of `Z/n` for instrument placement. A
-valid multiplier satisfies `gcd(a,n)=1`, so each finite orbit is a permutation
-with no repeated index before closure. GOAVA is included in the state and
-therefore changes audio, scenograph and generated-game identity together.
-
-Noise processors use a stable hash of parameters and a persistent sample index
-instead of process-global random state. Interactive randomize controls remain
-explicit user actions and are not part of canonical replay.
-
-## Live DJ / game panel
-
-The **LIVE DJ PANEL** contains:
-
-- GOAVA DJ MORPH
-- PKP NullLock BOOST
-- RANDOM PARAMETRIC DJ
-- PLAY VIDEO GAME
-- EXPORT GAME SCRIPT
-- PKP boost/pitch/step controls
-
-The generated game derives genre, camera, topology, social mode, mood, 1D/2D/3D
-model sets, gameplay hooks and long-form variation from the live composition.
-If classification selects online multiplayer, the generated start screen offers
-host mode and the deterministic host port.
-
-The game begins with a composition splash, then a start screen, then a playable
-PyQt6 scene. WASD movement, deterministic music, scene motion and gameplay score
-share the same composition kernel.
-
-## Project persistence
-
-Project JSON now stores the existing composition state plus UI handles, sequence
-selection, GOAVA/DJ state, game identity/path, the deterministic-kernel contract,
-and compatibility version information. Unknown newer keys are ignored on load.
+- Runtime modules consume the same live canonical project document; JSON is a persistence/export boundary, not an internal prototype interchange format.
+- Project save/load and Project JSON export use the same snapshot contract.
+- Video-game classification is derived from that same canonical document, including Global Player state.
+- Live DJ remains a deterministic, unordered-pair transform over canonical seed/pair identity.
+- The three visual monitors below the sequencer are constrained to one equal square footprint; the scenograph no longer stretches down to the window bottom.
+- Project Notes is positioned immediately to the left of the consolidated LIVE DJ panel.
+- Existing export menu remains unified across WAV, MP4, WebM, AVI, and deterministic video-game script/JSON output.
