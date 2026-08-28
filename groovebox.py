@@ -15166,8 +15166,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         global_context_layout.addStretch(1)
         self.global_composition_group = global_context_group
 
+        # Keep processor/effect controls in the narrow right column.  The
+        # composition canonicals get their own full-width strip below the
+        # sequencer so RANDOMIZE / PHASE-LOCK / GOAVA can never be squeezed
+        # off-screen by the seed editor or global-player controls.
         self.global_controls_side.addWidget(self.global_effects_group, 0, Qt.AlignmentFlag.AlignTop)
-        self.global_controls_side.addWidget(self.global_composition_group, 0, Qt.AlignmentFlag.AlignTop)
         self.global_controls_side.addLayout(self.top_layout)
         self.global_controls_side.addLayout(self.top_layout_row2)
 
@@ -15394,6 +15397,23 @@ class MathematiciansGrooveboxApp(QMainWindow):
         live_game_row = QHBoxLayout()
         live_game_row.addWidget(self.btn_play_videogame, 1)
 
+        # Quick Edit = project notes only
+        self.quick_edit_group = QGroupBox("📝 PROJECT NOTES")
+        self.quick_edit_group.setStyleSheet(
+            "QGroupBox { color: #ffe0a0; border: 1px solid #8a7040; border-radius: 4px; "
+            "margin-top: 6px; font-weight: bold; }"
+            "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
+        )
+        qe = QVBoxLayout(self.quick_edit_group)
+        qe.setContentsMargins(6, 10, 6, 6)
+        self.qe_notes = QTextEdit()
+        self.qe_notes.setPlaceholderText("Project notes…")
+        self.qe_notes.setMaximumHeight(90)
+        self.qe_notes.setToolTip("Free-form project notes; stored in save/load. No transport or camera actions.")
+        qe.addWidget(self.qe_notes)
+        self.quick_edit_group.setMinimumWidth(140)
+        self.quick_edit_group.setMaximumWidth(240)
+
         for b in (self.btn_edit_synth, self.btn_script_inst, self.btn_view_patchbay, self.btn_domain_eq):
             local_context_layout.addWidget(b)
         local_context_layout.addWidget(self.btn_edit_panels_per_sequence)
@@ -15438,22 +15458,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_gp_algo_params.clicked.connect(lambda: self._open_global_algo_panel("params"))
         local_context_layout.addWidget(global_player_group, 0)
 
-        # Quick Edit = project notes only
-        self.quick_edit_group = QGroupBox("📝 PROJECT NOTES")
-        self.quick_edit_group.setStyleSheet(
-            "QGroupBox { color: #ffe0a0; border: 1px solid #8a7040; border-radius: 4px; "
-            "margin-top: 6px; font-weight: bold; }"
-            "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
-        )
-        qe = QVBoxLayout(self.quick_edit_group)
-        qe.setContentsMargins(6, 10, 6, 6)
-        self.qe_notes = QTextEdit()
-        self.qe_notes.setPlaceholderText("Project notes…")
-        self.qe_notes.setMaximumHeight(90)
-        self.qe_notes.setToolTip("Free-form project notes; stored in save/load. No transport or camera actions.")
-        qe.addWidget(self.qe_notes)
-        self.quick_edit_group.setMinimumWidth(140)
-        self.quick_edit_group.setMaximumWidth(240)
         # PROJECT_NOTES_POSITION: notes sit immediately to the left of the
         # consolidated LIVE DJ panel, not at the far-right end of Local Context.
         # This makes the notes field a stable companion to the performance panel.
@@ -15597,6 +15601,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         master_container.addWidget(self.top_sequencer)
 
+        # GLOBAL_CANONICAL_STRIP: the composition operators are global state
+        # controls, not local instrument controls.  Give them a dedicated
+        # full-width row directly under the sequencer so all canonical engines
+        # remain visible and mutually discoverable at normal window widths.
+        global_canonical_strip = QGroupBox("GLOBAL COMPOSITION CANONICALS")
+        global_canonical_strip.setToolTip(
+            "One canonical composition plane: Playlist, Randomizer, Phase-Lock, and GOAVA."
+        )
+        canonical_lay = QHBoxLayout(global_canonical_strip)
+        canonical_lay.setContentsMargins(8, 4, 8, 4)
+        canonical_lay.setSpacing(10)
+        canonical_lay.addWidget(self.btn_view_playlist, 1)
+        canonical_lay.addWidget(self.btn_local_randomize, 1)
+        canonical_lay.addWidget(self.btn_local_phase_lock, 1)
+        canonical_lay.addWidget(self.btn_goava, 1)
+        if hasattr(self, "chk_canonical_protect"):
+            canonical_lay.addWidget(self.chk_canonical_protect)
+        if hasattr(self, "btn_restore_userdata"):
+            canonical_lay.addWidget(self.btn_restore_userdata)
+        self.global_composition_group = global_canonical_strip
+        master_container.addWidget(global_canonical_strip, stretch=0)
+
         # Triple monitor: Meum Waveform | Scenograph | Spectrum (equal squares)
         self.video_synth_engine = VideoSynthEngine(n_instruments=48)
         self.video_synth_engine.bind_app(self)
@@ -15700,7 +15726,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             visual_pair.addLayout(col, stretch=1)
         visual_container = QWidget()
         visual_container.setLayout(visual_pair)
-        visual_container.setMinimumHeight(220)
+        # Reserve a genuinely useful square-monitor band.  The old 220px
+        # container could collapse to the 180px widget minimum after the
+        # surrounding control rows negotiated their heights, making the
+        # scenograph look like a thumbnail.
+        visual_container.setMinimumHeight(260)
         self._visual_monitor_container = visual_container
         master_container.addWidget(visual_container, stretch=1)
 
@@ -15743,8 +15773,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 return
             available_w = max(0, container.width() - 16)
             cell_w = max(180, available_w // 3)
-            available_h = max(180, container.height() - 22)
-            side = max(180, min(cell_w, available_h))
+            available_h = max(220, container.height() - 22)
+            # Prefer a 240px square monitor when the window permits it; below
+            # that, keep all three surfaces equal rather than letting one
+            # widget consume the remaining vertical space.
+            side = max(220, min(cell_w, available_h))
             for w in widgets:
                 w.setMinimumSize(side, side)
                 w.setMaximumSize(side, side)
