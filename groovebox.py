@@ -1,5 +1,5 @@
 # =============================================================================
-# EQR Groovebox Engine v3.6.8+ — stable media/convolve-fit build
+# Groovebox Engine v3.6.8+ — stable media/convolve-fit build
 # Mathematician's / Scientist's Groovebox — mathematical specification for
 # maximum initial harmonic diversity; simple and complex projects with equal ease.
 #
@@ -34,6 +34,8 @@ import shutil
 import colorsys
 import re
 import numpy as np
+
+from dj_effects import CommutativePairSpace, LiveDJEffects
 from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer
 from PyQt6.QtGui import (
     QPainter, QPen, QColor, QPainterPath, QLinearGradient, QRadialGradient, QBrush, QFont, QPolygonF,
@@ -1394,32 +1396,6 @@ def _seed_script_env(t_scalar=0.0, canonical_context=None):
         "list": list, "tuple": tuple, "float": float, "int": int, "bool": bool,
         "len": len, "sum": sum, "range": range, "enumerate": enumerate,
         "zip": zip, "sorted": sorted, "reversed": reversed,
-        # --- Versatility layer: pure numeric composition primitives ---
-        "gcd": math.gcd,
-        "mod": (lambda a, m: float(a) % float(m) if float(m) else 0.0),
-        "frac": (lambda x: float(x) - math.floor(float(x))),
-        "step": (lambda x, edge=0.0: 1.0 if float(x) >= float(edge) else 0.0),
-        "smoothstep": (lambda e0, e1, x: (
-            (lambda t: t * t * (3.0 - 2.0 * t))(
-                max(0.0, min(1.0, (float(x) - float(e0)) / max(1e-12, float(e1) - float(e0))))
-            )
-        )),
-        "quantize": (lambda x, steps=12.0: round(float(x) * float(steps)) / float(steps) if float(steps) else float(x)),
-        "scale_deg": (lambda deg, n=12.0, root=1.0: float(root) * (2.0 ** (float(deg) / float(n)))),
-        "ratio": (lambda a, b: float(a) / float(b) if float(b) else 0.0),
-        "wrap": (lambda x, lo=0.0, hi=1.0: (
-            (lambda a, b, v: a + ((v - a) % (b - a)) if b != a else a)(float(lo), float(hi), float(x))
-        )),
-        "mix": _lerp,
-        "gate": (lambda x, thresh=0.5: 1.0 if float(x) >= float(thresh) else 0.0),
-        "prob": (lambda p, salt=0.0: 1.0 if ((math.sin(float(salt) * 12.9898 + float(p) * 78.233) * 43758.5453) % 1.0) < float(p) else 0.0),
-        "harm": (lambda k, base=1.0: float(base) * max(1.0, float(k))),
-        "db": (lambda x: 20.0 * math.log10(max(1e-12, abs(float(x))))),
-        "from_db": (lambda d: 10.0 ** (float(d) / 20.0)),
-        # voice / time context defaults (overwritten by canonical_context)
-        "i": 0, "n": 1, "step_i": 0, "n_steps": 16, "voice": 0, "density": 1.0,
-        "timewarp": 1.0, "detune": 0.0, "morph": 0.0,
-        "AUDIBLE_LO": AUDIBLE_LO_HZ, "AUDIBLE_HI": AUDIBLE_HI_HZ,
     }
     if isinstance(canonical_context, dict):
         for _k, _v in canonical_context.items():
@@ -1595,90 +1571,6 @@ def _eval_seed_python(seed_text, t_value=0.0, canonical_context=None, allow_scra
         except Exception:
             pass
     return vals
-
-
-
-# ---------------------------------------------------------------------------
-# Multi-channel seed fields — non-redundant coverage of audio + pixels
-# Channels (any subset; unnamed body = "pitch" default):
-#   pitch: | hz: | amp: | gate: | visual: | hue: | dens: | pan: | mod:
-# Example:
-#   pitch: scale_deg(i%12,12,220)*(0.5+0.5*density)
-#   amp: gate(isn(t),0.2)*morph+0.3
-#   gate: step(sin(t*timewarp))
-#   visual: 0.4+0.6*abs(isn(t))
-#   hue: (i*37+t*40)%360
-# ---------------------------------------------------------------------------
-_SEED_CHANNEL_NAMES = (
-    "pitch", "hz", "freq", "amp", "amplitude", "gate", "trig",
-    "visual", "vis", "hue", "color", "dens", "density_ch", "pan", "mod", "fx",
-)
-
-def parse_seed_channels(seed_text):
-    """Split seed text into {channel_name: expression_string}.
-
-    Unlabeled text becomes channel "pitch". Multiple labeled blocks allowed.
-    """
-    import re as _re
-    raw = str(seed_text or "").replace('\r\n', '\n').replace('\r', '\n')
-    if not raw.strip():
-        return {}
-    label_re = _re.compile(
-        r"(?im)^[ \t]*(pitch|hz|freq|amp|amplitude|gate|trig|visual|vis|hue|color|dens|density_ch|pan|mod|fx)[ \t]*:(.*)$"
-    )
-    lines = raw.split('\n')
-    channels = {}
-    current = "pitch"
-    buf = []
-    labeled = False
-    for ln in lines:
-        m = label_re.match(ln)
-        if m:
-            labeled = True
-            if buf:
-                channels[current] = '\n'.join(buf).strip()
-                buf = []
-            current = m.group(1).lower()
-            rest = m.group(2).strip()
-            if rest:
-                buf.append(rest)
-        else:
-            buf.append(ln)
-    if buf:
-        text = '\n'.join(buf).strip()
-        if text:
-            channels[current] = text
-    if not labeled and not channels:
-        body = raw.strip()
-        if body:
-            channels["pitch"] = body
-    alias = {
-        "freq": "hz", "amplitude": "amp", "trig": "gate",
-        "vis": "visual", "color": "hue", "density_ch": "dens",
-    }
-    out = {}
-    for k, v in channels.items():
-        k2 = alias.get(k, k)
-        if v and str(v).strip():
-            out[k2] = str(v).strip()
-    return out
-
-
-def evaluate_seed_channels(seed_text, t_value=0.0, canonical_context=None):
-    """Evaluate all labeled channels → dict of finite floats (missing = omitted)."""
-    ch = parse_seed_channels(seed_text)
-    if not ch:
-        return {}
-    out = {}
-    for name, expr in ch.items():
-        try:
-            v = evaluate_seed_expression_at_time(expr, t_value, canonical_context)
-            fv = float(v)
-            if math.isfinite(fv):
-                out[name] = fv
-        except Exception:
-            continue
-    return out
 
 
 def evaluate_seed_expression_at_time(seed_text, t_value, canonical_context=None):
@@ -1971,15 +1863,6 @@ def generate_random_seed_script(rng=None):
                 return cand
         except Exception:
             pass
-    if rng.random() < 0.45:
-        n1, n2 = rng.randint(32, 400), rng.randint(16, 200)
-        return (
-            f"pitch: scale_deg(i % 12, 12, {n1}) * (0.5 + 0.5 * density)\n"
-            f"amp: gate(isn(t * timewarp), 0.15 + 0.3 * morph)\n"
-            f"gate: step(sin(t * MEUM))\n"
-            f"visual: 0.35 + 0.65 * abs(ics(t))\n"
-            f"hue: (i * 29 + t * 50) % 360"
-        )
     return f"P(isn(t), ics(t)) * {rng.randint(32, 400)} + E(sin(t), MEUM) * {rng.randint(16, 200)}"
 
 
@@ -3154,6 +3037,8 @@ class VideoSynthEngine:
             "struct": 0.0, "bpm": 120.0, "carrier": 0.0, "pkp": 0.5, "seed": 0.0,
             "goava": False, "phase_lock": False, "randomizer": False,
             "seed_list": [], "ensemble": 1, "canonical_count": 0,
+            "live_dj_goava": False, "live_dj_random": False, "live_dj_pair_index": 0,
+            "live_dj_pair_signature": 0,
         }
         app = self.app
         if app is None:
@@ -3164,6 +3049,10 @@ class VideoSynthEngine:
             snap["euclid"] = bool(getattr(app, "btn_idealize_rhythm", None) and app.btn_idealize_rhythm.isChecked())
             snap["phase_lock"] = bool(getattr(app, "btn_local_phase_lock", None) and app.btn_local_phase_lock.isChecked())
             snap["randomizer"] = bool(getattr(app, "btn_local_randomize", None) and app.btn_local_randomize.isChecked())
+            snap["live_dj_goava"] = bool(getattr(app, "btn_live_dj_goava", None) and app.btn_live_dj_goava.isChecked())
+            snap["live_dj_random"] = bool(getattr(app, "btn_live_dj_random", None) and app.btn_live_dj_random.isChecked())
+            snap["live_dj_pair_index"] = int(getattr(app, "_live_dj_pair_index", 0))
+            snap["live_dj_pair_signature"] = int(getattr(app, "_live_dj_pair_signature", 0))
             snap["canonical_count"] = sum(
                 1 for k in ("seeded", "goava", "euclid", "phase_lock", "randomizer") if snap.get(k)
             )
@@ -3653,7 +3542,13 @@ class VideoSynthEngine:
 
             # 2D: polar/rose geometry keyed directly to GOAVA's numerical scalar.
             pts = []
-            petals = 4 + (j % 5)
+            # Petal count keyed off each note's own identity (raw+seed+context,
+            # folded into `key`) rather than its position in the event list —
+            # `j % 5` gave every 5th-in-frame note the same petal count
+            # regardless of pitch/seed, which is the same collision pattern the
+            # DJ-pair orbit had. A hash-like fractional fold of `key` spreads
+            # petal counts by what the note actually is, not where it sits.
+            petals = 4 + int(abs(math.sin(key * 12.9898)) * 100 % 5)
             for k in range(24):
                 a = ang + k * math.tau / 24.0
                 rr = radius * (0.50 + 0.34 * math.sin(petals * a + key * 0.021 + u))
@@ -3993,6 +3888,43 @@ class VideoSynthEngine:
             col = self._hsv((155 + q * 11 + self._video_hue_shift) % 360, 0.28, 0.42)
             self._dot(img, x, y, col, 0.11 + 0.08 * float(self._band[q % 8]), r=1)
         self._subscene_goava(img, w, h, st)
+        # LIVE_DJ_PAIR_VISUAL: the same unique unordered sound pair drives a
+        # distinct visual orbit. This keeps audio/visual identity coupled without
+        # duplicating (A,B) and (B,A).
+        try:
+            ls = st.get("snap", {})
+            dj_on = bool(ls.get("live_dj_goava") or ls.get("live_dj_random"))
+            if dj_on:
+                pidx = int(ls.get("live_dj_pair_index", 0))
+                psig = int(ls.get("live_dj_pair_signature", 0))
+                # Draw every shape parameter from independent 16-bit slices of the
+                # pair's own canonical hash (CommutativePairSpace.signature) rather
+                # than small-modulus wraps of the sequential index. pidx % 97 / % 31
+                # / % 10 / % 5 collide heavily across 1128 pairs (many distinct
+                # pairs land on the same bucket); full-width hash slices don't, so
+                # each unordered (A,B) keeps a visually distinct orbit without any
+                # hardcoded exception or epsilon nudge.
+                slice0 = (psig >> 0) & 0xFFFF
+                slice1 = (psig >> 16) & 0xFFFF
+                slice2 = (psig >> 32) & 0xFFFF
+                slice3 = (psig >> 48) & 0xFFFF
+                u = ((psig & 0xFFFFFFFF) / 4294967296.0)
+                cx, cy = w * 0.5, h * 0.47
+                radius = min(w, h) * (0.12 + 0.28 * (slice0 / 65535.0))
+                turns = 2.0 + 7.0 * (slice1 / 65535.0)
+                phase = self.t * (0.35 + 0.25 * u) + u * math.tau
+                count = 6 + int((slice2 / 65535.0) * 9.999)
+                shape_freq = 1.0 + (slice3 / 65535.0) * 0.85
+                for j in range(count):
+                    a = phase + math.tau * j / count + turns * self.t * 0.02
+                    rr = radius * (0.68 + 0.32 * math.sin(phase * shape_freq + j))
+                    x = cx + math.cos(a) * rr
+                    y = cy + math.sin(a * MEUM_INV) * rr * 0.68
+                    hue = int((u * 360.0 + j * 360.0 / count + (55 if ls.get("live_dj_random") else 285)) % 360)
+                    col = self._hsv(hue, 0.78, 0.55 + 0.35 * self._rms)
+                    self._dot(img, x, y, col, 0.22 + 0.18 * self._rms, r=1 + (j % 3))
+        except Exception:
+            pass
         
         # Generic catalog items (up to 64): soft dots / arcs when dedicated drawers absent
         try:
@@ -4160,6 +4092,15 @@ class VideoSynthViewer(QFrame):
         if ens:
             painter.setPen(QColor(160, 200, 255, 200))
             painter.drawText(8, hud_y, f"ensemble {ens} · RMS {getattr(self.engine, '_rms', 0):.3f}")
+            hud_y += 11
+        if snap.get("live_dj_goava") or snap.get("live_dj_random"):
+            dj_labels = []
+            if snap.get("live_dj_goava"):
+                dj_labels.append("GOAVA DJ")
+            if snap.get("live_dj_random"):
+                dj_labels.append("PARAM DJ")
+            painter.setPen(QColor(255, 220, 150, 230))
+            painter.drawText(8, hud_y, f"DJ {' + '.join(dj_labels)} · pair #{int(snap.get('live_dj_pair_index', 0)) + 1}/1128")
         # Seed-list radial ticks around the origin (visual analogue of list[i])
         if seed_list and self.width() > 40 and self.height() > 40:
             cx, cy = self.width() * 0.5, self.height() * 0.47
@@ -6059,7 +6000,7 @@ class ReadmeGuideDialog(QDialog):
 --------------------------------------------------------------------------------
 1. GOAL OF THE SOFTWARE
 --------------------------------------------------------------------------------
-EQR Groovebox uses *mathematical specification* to maximize initial harmonic
+Groovebox uses *mathematical specification* to maximize initial harmonic
 diversity while letting you program simple or complicated music with the same
 ease:
 
@@ -6425,7 +6366,7 @@ Each has sequencer memory (steps, amplitudes, gates, probabilities) and optional
   never replace the master bus. Engines may resize the selected sequence
   (and other bank slots) when the user has not touched any of its steps.
 
-  End of Help — EQR Groovebox
+  End of Help — Groovebox
   Assisted by Grok (xAI), Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI),
   Mistral.ai, and Cursor Grok 4.6
 ================================================================================
@@ -6433,13 +6374,13 @@ Each has sequencer memory (steps, amplitudes, gates, probabilities) and optional
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("EQR Groovebox — Help, Readme & Scripting Guide")
+        self.setWindowTitle("Groovebox — Help, Readme & Scripting Guide")
         self.resize(900, 680)
         self.setStyleSheet(DAW_STYLE)
         layout = QVBoxLayout(self)
 
         layout.addWidget(QLabel(
-            "<h3>📖 EQR Groovebox — Full Documentation</h3>"
+            "<h3>📖 Groovebox — Full Documentation</h3>"
             "<p style='color:#aaa;'>Mathematician's / Scientist's groovebox · "
             "maximize harmonic diversity · same ease for simple or complex projects</p>"
         ))
@@ -12171,6 +12112,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.goava_pitches = []
         self.goava_frequencies = []
         self.goava_raw_values = []
+        # LIVE_DJ_PAIR_ENGINE: two realtime performance macros share the
+        # canonical unordered pair space.  (A,B) and (B,A) are the same pair,
+        # so pair identities never duplicate.
+        self.live_dj_goava = False
+        self.live_dj_random = False
+        self.live_dj_goava_amount = 0.0
+        self.live_dj_random_amount = 0.0
+        self._live_dj_pair_space = CommutativePairSpace(len(self.instrument_names_48))
+        self._live_dj_pair_ids = (0, 1)
+        self._live_dj_pair_index = 0
+        self._live_dj_pair_signature = 0
+        self._live_dj_engine = LiveDJEffects(sample_rate=TARGET_SAMPLE_RATE)
         self._user_composition_snapshot = None  # Canonical Overwrite undo buffer
 
         self.export_counter = 1
@@ -14343,11 +14296,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # USER-CONTROLLED FIELD: never assign a random/default seed here.
         self.input_seed_val.setPlainText("")
         self.input_seed_val.setToolTip(
-            "Multi-channel seeds:\n"
-            "pitch: / hz: / amp: / gate: / visual: / hue: / dens: / mod:\n"
-            "Unlabeled body = pitch. Uses t,i,density,timewarp,detune,morph,P,E,D.\n"
-            "Fully scriptable: numbers, math, if/elif over t, return, comma-lists.\n"
-            "Composition uses t=0; Play/Export evaluates over time. Random Seed for examples."
+            "Fully scriptable global seed. Numbers, math (sin/cos/MEUM/…), "
+            "if(cond) a elif b over t, return scripts, or comma-lists. "
+            "Composition uses t=0; Play/Export evaluates over time. "
+            "Use 🎲 Random Seed Script above for examples. Field scrolls."
         )
         self.input_seed_val.setAcceptRichText(False)
         self.input_seed_val.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
@@ -14423,45 +14375,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         nt_row.addWidget(self.btn_nt_seed)
         nt_row.addStretch(1)
         seed_panel.addLayout(nt_row)
-
-        # Numeric possibility map — continuous controls exposed into seed scripts
-        poss_row = QHBoxLayout()
-        poss_row.addWidget(QLabel("Numeric map:"))
-        self.spin_seed_density = QDoubleSpinBox()
-        self.spin_seed_density.setRange(0.0, 2.0)
-        self.spin_seed_density.setSingleStep(0.05)
-        self.spin_seed_density.setValue(1.0)
-        self.spin_seed_density.setToolTip("Exposed to seeds as `density`.")
-        self.spin_seed_timewarp = QDoubleSpinBox()
-        self.spin_seed_timewarp.setRange(0.25, 4.0)
-        self.spin_seed_timewarp.setSingleStep(0.05)
-        self.spin_seed_timewarp.setValue(1.0)
-        self.spin_seed_timewarp.setToolTip("Exposed to seeds as `timewarp`; also scales render t.")
-        self.spin_seed_detune = QDoubleSpinBox()
-        self.spin_seed_detune.setRange(0.0, 1.0)
-        self.spin_seed_detune.setSingleStep(0.01)
-        self.spin_seed_detune.setValue(0.0)
-        self.spin_seed_detune.setToolTip("Exposed to seeds as `detune`.")
-        self.spin_seed_morph = QDoubleSpinBox()
-        self.spin_seed_morph.setRange(0.0, 1.0)
-        self.spin_seed_morph.setSingleStep(0.01)
-        self.spin_seed_morph.setValue(0.0)
-        self.spin_seed_morph.setToolTip("Exposed to seeds as `morph` (A/B blend variable).")
-        for lab, w in (
-            ("density", self.spin_seed_density),
-            ("timewarp", self.spin_seed_timewarp),
-            ("detune", self.spin_seed_detune),
-            ("morph", self.spin_seed_morph),
-        ):
-            poss_row.addWidget(QLabel(lab))
-            poss_row.addWidget(w)
-            try:
-                w.valueChanged.connect(self._on_live_source_changed)
-            except Exception:
-                pass
-        poss_row.addStretch(1)
-        seed_panel.addLayout(poss_row)
-
 
         eng_row = QHBoxLayout()
         eng_row.addWidget(QLabel("Engine path:"))
@@ -14687,6 +14600,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "Toggle GOAVA numerical-seed composition. Uses the supplied GOAVA Composer.getNote algorithm to create engine-owned notes, frequencies, and a canonical-unison playlist column.",
             checkable=True, active_color="#c77dff"
         )
+        # LIVE_DJ_CONTROLS: performance macros do not rewrite canonical
+        # composition. They are safe, reversible bus transforms applied to the
+        # live audio callback and mirrored by the scenograph.
+        self.btn_live_dj_goava = _make_global_operator_button(
+            "🌀 GOAVA DJ MORPH",
+            "Live GOAVA-derived ring/drive morph. Uses the current canonical GOAVA scalar plus the unique unordered sound-pair identity.",
+            checkable=True, active_color="#b36cff"
+        )
+        self.btn_live_dj_random = _make_global_operator_button(
+            "🎛 RANDOM PARAMETRIC DJ",
+            "Live deterministic parametric macro. It sounds random but is seed/pair/BPM stable and never calls RNG from the audio thread.",
+            checkable=True, active_color="#00d4aa"
+        )
 
         global_context_group = QGroupBox("GLOBAL COMPOSITION")
         global_context_group.setToolTip("Global playlist, randomization, and Euclidean phase-lock controls.")
@@ -14718,7 +14644,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         local_context_group = QGroupBox("LOCAL CONTEXT — ACTIVE INSTRUMENT")
         local_context_group.setToolTip(
             "Controls in this panel address the selected instrument/context. "
-            "They do not belong to the global transport plane."
+            "They do not belong to the global transport plane. The two Live DJ "
+            "performance macros flank PKP NullLock BOOST here for quick access "
+            "during a set; they still act as global, reversible bus transforms."
         )
         local_context_layout = QHBoxLayout(local_context_group)
         local_context_layout.setSpacing(8)
@@ -14757,6 +14685,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_local_randomize.toggled.connect(self._randomize_local_context)
         self.btn_local_phase_lock.toggled.connect(self._phase_lock_local_context)
         self.btn_goava.toggled.connect(self._on_goava_toggled)
+        self.btn_live_dj_goava.toggled.connect(self._on_live_dj_goava_toggled)
+        self.btn_live_dj_random.toggled.connect(self._on_live_dj_random_toggled)
         self.btn_help.clicked.connect(self.open_help_readme)
 
         # Global playlist capacity belongs with global variables, not the pattern editor.
@@ -14908,10 +14838,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         # Attach PKP to the local-context strip, immediately after the domain button.
         # Edit-panels-per-sequence toggle sits with the four panel editors.
+        # The two Live DJ performance-macro buttons flank PKP NullLock BOOST
+        # directly (left = GOAVA DJ morph, right = random parametric DJ) so the
+        # pair reads as "macro / boost / macro" at a glance.
         for b in (self.btn_edit_synth, self.btn_script_inst, self.btn_view_patchbay, self.btn_domain_eq):
             local_context_layout.addWidget(b)
         local_context_layout.addWidget(self.btn_edit_panels_per_sequence)
+        local_context_layout.addWidget(self.btn_live_dj_goava)
         local_context_layout.addWidget(self.pkp_ui_group, 1)
+        local_context_layout.addWidget(self.btn_live_dj_random)
         local_context_layout.addStretch(1)
         master_container.addWidget(local_context_group)
 
@@ -15710,13 +15645,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 params["Vol"] = float(self.master_volume)
             params["engines"] = len(flags)
             params["PED"] = params.get("EQR", 0.0)
-            try:
-                _chv = self.get_seed_channels_for_index(0, t_value=0.0)
-                for _ck in ("pitch", "hz", "amp", "gate", "visual", "hue"):
-                    if _ck in _chv:
-                        params["ch_"+_ck] = float(_chv[_ck])
-            except Exception:
-                pass
         except Exception:
             pass
         for attr in ("visual_oscilloscope", "spectrum_analyzer"):
@@ -15743,6 +15671,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if hasattr(self, "spin_sceno_items") and hasattr(eng, "set_scenograph_item_count"):
                     eng.set_scenograph_item_count(int(self.spin_sceno_items.value()))
                 if hasattr(eng, "_module_target"):
+                    # Boost fades for active engine names
                     for name, key in (
                         ("euclidean", "euclidean_spokes"),
                         ("seeded", "seeded_constellation"),
@@ -15755,87 +15684,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
                                 eng._module_target[key] = max(
                                     float(eng._module_target.get(key, 0.0)), 0.55
                                 )
-                    try:
-                        _cv = self.get_seed_channels_for_index(0, t_value=0.0)
-                        if "visual" in _cv and "field" in eng._module_target:
-                            eng._module_target["field"] = float(np.clip(abs(_cv["visual"]), 0.05, 1.0))
-                        if "hue" in _cv:
-                            eng._video_hue_shift = float(_cv["hue"]) % 360.0
-                        if "dens" in _cv and hasattr(eng, "scenograph_item_count"):
-                            eng.scenograph_item_count = max(1, min(64, int(8 + 56 * abs(_cv["dens"]))))
-                    except Exception:
-                        pass
         except Exception:
             pass
-
-    def _seed_voice_context(self, index):
-        try:
-            i = int(index)
-        except Exception:
-            i = 0
-        n_voices = 1
-        try:
-            names = getattr(self, "instrument_names_48", None) or []
-            n_voices = max(1, len(names))
-        except Exception:
-            n_voices = 1
-        ctx = {
-            "i": i, "voice": i, "n": n_voices, "n_voices": n_voices, "step_i": i,
-        }
-        for attr, key in (
-            ("spin_seed_density", "density"),
-            ("spin_seed_timewarp", "timewarp"),
-            ("spin_seed_detune", "detune"),
-            ("spin_seed_morph", "morph"),
-        ):
-            w = getattr(self, attr, None)
-            if w is not None:
-                try:
-                    ctx[key] = float(w.value())
-                except Exception:
-                    pass
-        return ctx
-
-    def get_seed_channels_for_index(self, index, t_value=0.0):
-        """Multi-channel seed evaluation for one voice at time t."""
-        ctx = self._seed_voice_context(index)
-        try:
-            text = self._seed_text() if hasattr(self, "_seed_text") else ""
-        except Exception:
-            text = ""
-        if not text or not str(text).strip():
-            return {}
-        try:
-            return evaluate_seed_channels(text, t_value, canonical_context=ctx)
-        except Exception:
-            return {}
 
     def get_seed_value_for_index(self, index, t_value=0.0):
-        """Per-instrument seed number: pitch/hz channel, else default expression, else list.
+        """Per-instrument / per-row seed: list[i % n], or single evaluated script.
 
-        Multi-channel scripts use pitch: or hz: when present so one field can
-        specify independent amp/gate/visual without redundancy.
+        Every instrument receives a real evaluated number from the script field.
+        Hash/byte tokens are never used here.
         """
-        ch = self.get_seed_channels_for_index(index, t_value=t_value)
-        for key in ("hz", "pitch"):
-            if key in ch and math.isfinite(float(ch[key])):
-                return float(ch[key])
-        ctx = self._seed_voice_context(index)
-        try:
-            text = self._seed_text() if hasattr(self, "_seed_text") else ""
-        except Exception:
-            text = ""
-        if text and text.strip() and ":" not in text.split("\n")[0][:24]:
-            # single-expression legacy field
-            try:
-                v = evaluate_seed_expression_at_time(text, t_value, canonical_context=ctx)
-                if math.isfinite(float(v)):
-                    return float(v)
-            except Exception:
-                pass
-        elif text and text.strip():
-            # multi-channel without pitch — fall through to list scrape of pitch channel only
-            pass
         vals = self.get_seed_values(t_value=t_value)
         if not vals:
             return 0.0
@@ -17607,6 +17464,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.goava_pitches = []
         self.goava_frequencies = []
         self.goava_raw_values = []
+        self.live_dj_goava = False
+        self.live_dj_random = False
+        self.live_dj_goava_amount = 0.0
+        self.live_dj_random_amount = 0.0
+        self._live_dj_pair_ids = (0, 1)
+        self._live_dj_pair_index = 0
+        self._live_dj_pair_signature = 0
         self._user_composition_snapshot = None
         self.playlist_automation = []
 
@@ -20272,14 +20136,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # Per-voice evaluated seed (list scripts assign distinct numerics
                 # to each instrument instead of a shared hash/byte token).
                 try:
-                    _tw = 1.0
-                    if hasattr(self, "spin_seed_timewarp"):
-                        try:
-                            _tw = float(self.spin_seed_timewarp.value())
-                        except Exception:
-                            _tw = 1.0
-                    _t0 = float(local_t[0]) if len(local_t) else 0.0
-                    _voice_seed = float(self.get_seed_value_for_index(op_idx, t_value=_t0 * _tw))
+                    _voice_seed = float(self.get_seed_value_for_index(op_idx, t_value=float(local_t[0]) if len(local_t) else 0.0))
                 except Exception:
                     _voice_seed = float(self.get_numeric_seed() or 0.0)
                 # >>> GROK_EDIT_BEGIN: render_seed_pitch
@@ -20305,17 +20162,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 _node_mod_rate = float(_node_field.get("mod_rate", 1.0))
                 step_env = np.zeros_like(local_t)
                 pitch_track = np.ones_like(local_t)
-                # Multi-channel seed (amp/gate/hz) — non-redundant with sequencer masks
-                try:
-                    _ch0 = self.get_seed_channels_for_index(op_idx, t_value=(_t0 * _tw) if "_tw" in locals() else _t0)
-                except Exception:
-                    _ch0 = {}
-                _ch_amp = float(_ch0["amp"]) if "amp" in _ch0 else None
-                _ch_gate = float(_ch0["gate"]) if "gate" in _ch0 else None
-                _ch_hz = float(_ch0["hz"]) if "hz" in _ch0 else None
-                _ch_mod = float(_ch0["mod"]) if "mod" in _ch0 else None
-                if _ch_hz is not None and math.isfinite(_ch_hz) and _ch_hz > 0:
-                    base_freq = float(audible_hz(_ch_hz, sample_rate))
                 steps = mem.get("steps", [])
                 amps = mem.get("amplitudes", [1.0] * 16)
                 pitches = mem.get("pitches", [1.0] * 16)
@@ -20389,11 +20235,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # Seed is the note identity; panel harmonic_freq is a refinement
                 # only when it was explicitly set away from the shared default.
                 _seed_hz = float(_seed_to_fundamental_hz(_voice_seed, base_freq, op_idx, 0))
-                if _ch_hz is not None and math.isfinite(_ch_hz) and _ch_hz > 0:
-                    _seed_hz = float(audible_hz(_ch_hz, sample_rate))
-                # stash channel amp/gate for later voice scale (set defaults if inject failed)
-                if "_ch_amp" not in dir():
-                    _ch_amp = _ch_gate = _ch_mod = None
                 if identity_hz not in (None, ""):
                     try:
                         # Identity anchor still respected, but scaled by seed ratio
@@ -20566,20 +20407,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         dest_idx = base_idx + shift_samples
                         valid = (dest_idx >= 0) & (dest_idx < n_samples)
                         if np.any(valid):
-                            _vg = voice * voice_gain
-                            try:
-                                if _ch_amp is not None and math.isfinite(_ch_amp):
-                                    _vg = _vg * float(max(0.0, _ch_amp))
-                                if _ch_gate is not None and math.isfinite(_ch_gate):
-                                    _vg = _vg * float(np.clip(_ch_gate, 0.0, 1.0))
-                                if _ch_mod is not None and math.isfinite(_ch_mod):
-                                    _vg = _vg * float(0.5 + 0.5 * math.tanh(_ch_mod))
-                            except Exception:
-                                pass
                             np.add.at(
                                 master,
                                 dest_idx[valid],
-                                _vg[valid],
+                                (voice * voice_gain)[valid],
                             )
 
             # PKP NullLock / BOOST is an explicit one-shot audition action only.
@@ -20591,6 +20422,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # explicit one-shot playover via _play_selected_instrument_pkp() and
             # _play_pkp_playover_modulator().
 
+            master[mask] += row_mix
 
         # CANONICAL UNISON EFFECT BOUNDARY
         # Snapshot the fully reconciled playlist/unison render before any global
@@ -21116,6 +20948,79 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if hasattr(self, "_live_seeded_timer"):
                 self._live_seeded_timer.start()
 
+    def _refresh_live_dj_pair(self):
+        """Choose one canonical unordered sound pair and expose its stable ID."""
+        names = list(getattr(self, "instrument_names_48", []) or [])
+        active = []
+        for name in names:
+            mem = (getattr(self, "instrument_sequencer_memory", {}) or {}).get(name, {})
+            steps = mem.get("steps", []) if isinstance(mem, dict) else []
+            if any(bool(x) for x in steps):
+                active.append(names.index(name))
+            if len(active) >= 2:
+                break
+        if len(active) < 2:
+            active = [0, 1]
+        self._live_dj_pair_space = CommutativePairSpace(len(names) if len(names) >= 2 else 2)
+        desc = self._live_dj_pair_space.descriptor(active[0], active[1])
+        self._live_dj_pair_ids = (desc.a, desc.b)
+        self._live_dj_pair_index = int(desc.index)
+        self._live_dj_pair_signature = int(desc.signature)
+        if not hasattr(self, "_live_dj_engine") or self._live_dj_engine is None:
+            self._live_dj_engine = LiveDJEffects(sample_rate=int(getattr(self, "play_sample_rate", TARGET_SAMPLE_RATE) or TARGET_SAMPLE_RATE))
+        self._live_dj_engine.pair_space = self._live_dj_pair_space
+        self._live_dj_engine.set_context(seed=self.get_numeric_seed(), pair=self._live_dj_pair_ids, sample_rate=int(getattr(self, "play_sample_rate", TARGET_SAMPLE_RATE) or TARGET_SAMPLE_RATE))
+
+    def _live_dj_status(self):
+        labels = []
+        if getattr(self, "live_dj_goava", False):
+            labels.append("GOAVA DJ")
+        if getattr(self, "live_dj_random", False):
+            labels.append("PARAM DJ")
+        return " + ".join(labels) if labels else "OFF"
+
+    def _on_live_dj_goava_toggled(self, checked):
+        self.live_dj_goava = bool(checked)
+        self.live_dj_goava_amount = 0.72 if checked else 0.0
+        self._refresh_live_dj_pair()
+        if hasattr(self, "scope_status_label"):
+            self.scope_status_label.setText(f"🎛 LIVE DJ · {self._live_dj_status()} · pair #{self._live_dj_pair_index + 1}")
+
+    def _on_live_dj_random_toggled(self, checked):
+        self.live_dj_random = bool(checked)
+        self.live_dj_random_amount = 0.68 if checked else 0.0
+        self._refresh_live_dj_pair()
+        if hasattr(self, "scope_status_label"):
+            self.scope_status_label.setText(f"🎛 LIVE DJ · {self._live_dj_status()} · pair #{self._live_dj_pair_index + 1}")
+
+    def _live_dj_goava_scalar(self, cursor):
+        events = getattr(self, "goava_note_events", []) or []
+        if not events:
+            return float(getattr(self, "get_numeric_seed", lambda: 0.0)())
+        try:
+            bpm = float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0
+            sr = float(getattr(self, "play_sample_rate", TARGET_SAMPLE_RATE) or TARGET_SAMPLE_RATE)
+            row_samples = max(1, int(sr * (60.0 / max(bpm, 1e-6)) / 4.0 * max(1, int(getattr(self, "spin_seq_length", None).value()) if hasattr(self, "spin_seq_length") else 16)))
+            ev = events[min(len(events) - 1, max(0, int(cursor) // row_samples))]
+            return float(ev.get("raw", ev.get("seed", 0.0)) or 0.0)
+        except Exception:
+            return float(events[0].get("raw", events[0].get("seed", 0.0)) or 0.0)
+
+    def _apply_live_dj_chunk(self, chunk, start_sample):
+        """Realtime-only DJ transform; composition/export remains canonical."""
+        if not (getattr(self, "live_dj_goava", False) or getattr(self, "live_dj_random", False)):
+            return chunk
+        try:
+            self._live_dj_engine.amount_goava = float(getattr(self, "live_dj_goava_amount", 0.0))
+            self._live_dj_engine.amount_random = float(getattr(self, "live_dj_random_amount", 0.0))
+            self._live_dj_engine.set_context(seed=self.get_numeric_seed(), pair=getattr(self, "_live_dj_pair_ids", (0, 1)), sample_rate=int(getattr(self, "play_sample_rate", TARGET_SAMPLE_RATE) or TARGET_SAMPLE_RATE))
+            bpm = float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0
+            scalar = self._live_dj_goava_scalar(start_sample)
+            return self._live_dj_engine.process(np.asarray(chunk, dtype=np.float32), start_sample=int(start_sample), goava_scalar=scalar, bpm=bpm)
+        except Exception as exc:
+            print(f"[LiveDJ] chunk skipped: {exc}")
+            return chunk
+
     def _audio_callback(self, outdata, frames, time_info, status):
         """sounddevice stream callback — pulls from play_buffer under lock."""
         if status:
@@ -21127,7 +21032,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             remaining = len(self.play_buffer) - self.play_cursor
             n = min(frames, remaining)
             if n > 0:
-                chunk = self.play_buffer[self.play_cursor:self.play_cursor + n] * self.master_volume
+                start_sample = int(self.play_cursor)
+                chunk = self.play_buffer[start_sample:start_sample + n] * self.master_volume
+                chunk = self._apply_live_dj_chunk(chunk, start_sample)
                 outdata[:n, 0] = chunk
                 # stash a short window for the UI scope
                 if n >= 100:
