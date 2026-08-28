@@ -1,5 +1,5 @@
 # =============================================================================
-# Groovebox Engine v3.6.8+ — stable media/convolve-fit build
+# Groovebox Engine v3.7.0 — deterministic audiovisual/game build
 # Mathematician's / Scientist's Groovebox — mathematical specification for
 # maximum initial harmonic diversity; simple and complex projects with equal ease.
 #
@@ -33,6 +33,7 @@ import tempfile
 import shutil
 import colorsys
 import re
+import weakref
 import numpy as np
 
 from dj_effects import CommutativePairSpace, LiveDJEffects
@@ -51,6 +52,28 @@ from PyQt6.QtWidgets import (
 )  # QToolButton is required by the global EXPORT menu control.
 
 
+# =============================================================================
+# PROCESSOR SYNTAX / DESIGN CONTRACT
+# =============================================================================
+# Every identity-bearing processor follows the same English-readable form:
+#   INPUTS -> deterministic mathematical transform -> bounded state -> OUTPUT.
+# Oscillator: phase += 2π*f_inst/SR; this is the minimal discrete-time carrier.
+# AM: gain = 1 + depth*LFO; it changes energy without changing identity.
+# FM: f_inst = f*(1 + depth*LFO); it creates deterministic sideband families.
+# PM: phase += depth*sin(modulator); it changes timing while preserving carrier.
+# Meum field: sin(M*t + phase) is shared by audio/visual state so both domains
+# respond to the same invariant instead of inventing independent randomness.
+# Cyclic orbit: p(i)=(a*i+b) mod n, gcd(a,n)=1; this is a finite bijection and
+# therefore cannot repeat an index before the orbit closes.
+# Hash-noise: H(parameters,index) is used where texture is needed; it is
+# deterministic noise, so replaying the same state reproduces the same samples.
+# GOAVA: a state bit is included in audio, scenograph and game fingerprints,
+# so GOAVA ON/OFF is a genuine audiovisual state transition.
+# UI-only randomize buttons may still request fresh user variation; that action
+# is deliberately outside the canonical replay kernel.
+# =============================================================================
+
+
 try:
     import scipy.io.wavfile as wavfile
 except ImportError:
@@ -62,6 +85,11 @@ try:
 except ImportError:
     sd = None
     HAS_SOUNDDEVICE = False
+
+try:
+    import videogame_engine as _vge
+except Exception:
+    _vge = None  # optional companion — video-game generator
 
 # POWER_V3_MEUM_CORE — canonical Meum spatial-dynamic constant.
 # M = 1.19758073433... is treated as an invariant mathematical constant,
@@ -131,6 +159,41 @@ PI_IRR = math.pi
 SQRT2 = math.sqrt(2.0)
 SQRT3 = math.sqrt(3.0)
 SILVER = 1.0 + SQRT2                          # silver ratio δ_s
+
+# ---------------------------------------------------------------------------
+# DETERMINISTIC COMPOSITION KERNEL
+# ---------------------------------------------------------------------------
+# Processor syntax is intentionally uniform:
+#   canonical_input -> labelled hash/residue -> bounded transform -> consumer.
+# A processor never uses process-global random state for identity-bearing data.
+# The cyclic residue is a group-theoretic index; the affine permutation below
+# is a bijection on Z/n whenever gcd(a,n)=1, which prevents duplicate indices
+# inside a finite orbit while still allowing every seed to choose a new orbit.
+def deterministic_u64(*parts):
+    """Return a platform-stable 64-bit digest for identity-bearing state."""
+    payload = "|".join(str(p) for p in parts).encode("utf-8")
+    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
+
+def cyclic_permutation(length, key):
+    """Return a non-repeating orbit of Z/n using p(i)=a*i+b (mod n)."""
+    n = max(1, int(length))
+    if n == 1:
+        return [0]
+    a = 1 + int(key) % (n - 1)
+    while math.gcd(a, n) != 1:
+        a = (a + 1) % n or 1
+    b = (int(key) >> 16) % n
+    return [(a * i + b) % n for i in range(n)]
+
+def group_orbit_index(index, order, seed, goava=False):
+    """Map an ordinal to a seed-stable cyclic-group residue."""
+    n = max(1, int(order))
+    if n == 1:
+        return 0
+    key = deterministic_u64("group-orbit", _safe_int_seed(seed), n, int(bool(goava)))
+    perm = cyclic_permutation(n, key)
+    return perm[int(index) % n]
+
 # UI design tokens derived from M (self-similar spacing / translucency)
 UI_OPACITY = max(0.12, min(0.42, MEUM_NORM * PHI))          # pane glass
 UI_RADIUS = max(4, int(round(3.0 * MEUM)))                    # corner radius
@@ -270,7 +333,11 @@ def _meum_phase_modulation(
     pm_feedback=0.0,
     meum_depth=0.0,
 ):
-    """Direct phase modulation in radians."""
+    """Direct phase modulation in radians.
+    Syntax: carrier_phase + PM(t) + feedback*MeumField(t).  Phase is used rather
+    than amplitude because PM preserves the canonical oscillator identity while
+    producing a deterministic sideband family from the same seed.
+    """
 
     field = meum_phase_field(
         t,
@@ -295,7 +362,11 @@ def _meum_amplitude_modulation(
     phase_shift=0.0,
     meum_depth=0.0,
 ):
-    """Amplitude modulation with bounded Meum contribution."""
+    """Amplitude modulation with bounded Meum contribution.
+    Syntax: gain = 1 + depth * (LFO + MeumDepth*field), clipped at zero.
+    This keeps the signal physically usable while retaining a reversible,
+    seed-derived envelope transformation.
+    """
 
     field = meum_phase_field(
         t,
@@ -324,7 +395,11 @@ def _meum_advance_phase(
     phase_shift=0.0,
     meum_depth=0.0,
 ):
-    """Advance oscillator phase using instantaneous FM frequency."""
+    """Advance oscillator phase using instantaneous FM frequency.
+    Syntax: f_inst = f*(1 + depth*(LFO + MeumField)); phase += 2π*f_inst/SR.
+    Frequency is clamped below Nyquist so the deterministic transform cannot
+    create an invalid sample-rate-dependent identity.
+    """
 
     sr = max(float(sample_rate), 1.0)
     frequency = max(float(frequency), 0.0)
@@ -3172,6 +3247,13 @@ class VideoSynthEngine:
         # 50%-floor stochastic perturbation: enough entropy to keep the
         # scenograph evolving without changing canonical audio determinism.
         eps += 0.035 * (self._visual_entropy - 0.5)
+        # Group-theory reduction: instrument indices live in Z/n and are
+        # permuted by a seed-stable affine orbit. GOAVA changes the action.
+        ensemble_n = max(2, min(64, int(snap.get("ensemble", self.n) or self.n)))
+        orbit_step = max(1, group_orbit_index(1, ensemble_n, snap.get("seed", 0.0), snap.get("goava", False)))
+        if ensemble_n > 2 and math.gcd(max(1, orbit_step), ensemble_n) != 1:
+            orbit_step = next((q for q in range(1, ensemble_n) if math.gcd(q, ensemble_n) == 1), 1)
+        group_phase = (orbit_step / ensemble_n) if ensemble_n else 0.0
         form = float(np.clip(0.25 + 0.45 * abs(u) + 0.2 * rho + eps * self._band[int(ph * 7) % 8], 0.05, 1.0))
         # Seed-list modulates form so multi-value scripts reshape the scenograph.
         seed_list = snap.get("seed_list") or []
@@ -3189,6 +3271,7 @@ class VideoSynthEngine:
         return {
             "u": u, "rho": rho, "form": form, "vol_s": vol_s, "line_d": line_d,
             "eps": eps, "k_pow": k_pow, "snap": snap, "ph": ph,
+            "group_order": ensemble_n, "group_step": orbit_step, "group_phase": group_phase,
         }
 
     def _live_snap(self):
@@ -3273,7 +3356,12 @@ class VideoSynthEngine:
                          + float(getattr(self, "_manual_yaw", 0.0)))
         self._cam_pitch = (0.055 * math.sin(self.t * 0.11 + MEUM + seed * 0.0009)
                            + float(getattr(self, "_manual_pitch", 0.0)))
-        self._cam_roll = 0.035 * math.sin(self.t * 0.07 + MEUM_INV * 2.0 + ph * math.tau)
+        # GOAVA commutes into the visual transform: enabling it changes the
+        # camera phase and packing action, not merely the audio mix.
+        goava = bool(st.get("snap", {}).get("goava", False))
+        goava_phase = MEUM_NORM if goava else 0.0
+        self._cam_roll = 0.035 * math.sin(self.t * 0.07 + MEUM_INV * 2.0 + ph * math.tau + goava_phase)
+        self._cam_yaw += 0.018 * goava_phase * math.sin(self.t * MEUM_INV + seed * 0.0003)
         # Golden-angle disk packing. sqrt radial law gives approximately
         # uniform area density; the logarithmic/implosive term shrinks objects
         # as the ensemble gets denser.
@@ -3281,7 +3369,11 @@ class VideoSynthEngine:
         self._pack_radius = 0.54 + 0.08 * min(1.0, e + 0.35 * float(st.get("form", 0.5)))
         for i, layer in enumerate(self.layers[:n]):
             q = (i + 0.5) / n
-            a = i * golden + self.t * (0.035 + 0.025 * e) + ph * math.tau * 0.08
+            go = max(2, int(st.get("group_order", n)))
+            gs = max(1, int(st.get("group_step", 1)))
+            residue = (i * gs) % go
+            a = residue * (math.tau / go) + i * golden * MEUM_INV
+            a += self.t * (0.035 + 0.025 * e + 0.008 * goava_phase) + ph * math.tau * 0.08
             rr = self._pack_radius * math.sqrt(q)
             # Local neighborhood spacing estimate for a disk packing.
             spacing = self._pack_radius * math.sqrt(2.0 * math.pi / n) * (0.90 + 0.10 * q)
@@ -3500,7 +3592,14 @@ class VideoSynthEngine:
             pitch = layer["pitch"] + 0.16 * local + 0.1 * snap["fractal"] * math.sin(self.t + i)
             roll = layer["roll"] + 0.1 * e * math.sin(self.t * MEUM + i)
 
-            ang0 = self.t * 0.35 + i * 0.2
+            # Z/n orbit placement gives every visible layer a distinct
+            # residue before geometry is projected into 2D.
+            go = int(st.get("group_order", max(2, self.n)))
+            gs = max(1, int(st.get("group_step", 1)))
+            residue = (i * gs) % go
+            ang0 = self.t * (0.35 + 0.03 * st.get("group_phase", 0.0)) + residue * (math.tau / go)
+            if snap.get("goava"):
+                ang0 += MEUM_NORM * math.sin(self.t * MEUM_INV + residue)
             scale = (0.26 + 0.32 * abs(local) + 0.14 * e) * (0.28 + 0.72 * life) * st["rho"] * float(layer.get("implode", 1.0))
             verts = []
             for k in range(n_v):
@@ -3951,7 +4050,15 @@ class VideoSynthEngine:
 
 
     def set_scenograph_item_count(self, n):
-        """How many of the 64 catalog items may be active (1..64)."""
+        """How many of the 64 catalog items may be active (1..64).
+
+        Group-theory note: active items form a finite subset of the instrument
+        catalogue acted on by the cyclic group Z/n. Raising n extends the orbit
+        without duplicating residues — each index i is a unique coset representative
+        of the Meum-scaled rotation on the sphere. Hard ceiling 64 matches the
+        ensemble maximum so the scenograph stays a bijection with voice identity
+        (deterministic unique non-redundant geometry for each seed).
+        """
         try:
             n = int(n)
         except Exception:
@@ -5071,7 +5178,7 @@ def attach_math_decor(host_window, app=None, light=False):
     except Exception:
         pass
     try:
-        bg = ParametricMathBackground(app if app is not None else host_window, host_window)
+        bg = _ensure_single_math_background(app, host_window)
         if light:
             try:
                 bg._timer.setInterval(max(int(UI_TICK_MS) * 2, 80))
@@ -5326,15 +5433,60 @@ class MathEngine:
     def eskitable(x, y, z):
         return np.clip((x + y) * 0.5, -1.0, 1.0) * MathEngine.ics(z)
 
+def _ensure_single_math_background(app, host):
+    """Reuse exactly one mathematical background per host.
+
+    The previous implementation deleted/recreated the widget on every attach.
+    Qt's deferred delete could leave old paint objects alive for a frame, so
+    repeated decoration calls could visually stack 24+24 wave/block families.
+    This version reuses the first existing instance and schedules every extra
+    instance for deletion. The paint loop itself also has a hard 24-item cap.
+    """
+    try:
+        existing = list(host.findChildren(ParametricMathBackground))
+    except Exception:
+        existing = []
+    bg = existing[0] if existing else getattr(host, "_math_decor", None)
+    if bg is None or not isinstance(bg, ParametricMathBackground):
+        bg = ParametricMathBackground(app if app is not None else host, host)
+    # Remove duplicate children deterministically; the first child is canonical.
+    for extra in existing[1:]:
+        try:
+            extra._timer.stop()
+            extra.hide()
+            extra.setParent(None)
+            extra.deleteLater()
+        except Exception:
+            pass
+    try:
+        bg.setParent(host)
+        bg.setGeometry(0, 0, max(host.width(), 320), max(host.height(), 200))
+        bg.lower()
+        bg.show()
+        host._math_decor = bg
+    except Exception:
+        pass
+    if app is not None:
+        try:
+            app.parametric_background = bg
+        except Exception:
+            pass
+    return bg
+
+
 class ParametricMathBackground(QWidget):
     """Lightweight animated mathematical background behind the global controls.
 
-    Text/glyph labels intentionally travel vertically as well as horizontally so
-    the mathematical field feels alive without becoming a CPU-heavy visualizer.
-    It is mouse-transparent and never participates in the audio path.
+    Deterministic unique non-redundant field: at most MAX_INSTANCES of each
+    glyph family (waves, shapes, Meum blocks). Counts never grow with ensemble
+    size — the visual field mirrors the Meum identity lattice, not a 1:1
+    instrument sprite list (which caused replication above 24).
+    Mouse-transparent; never participates in the audio path.
     """
+    MAX_INSTANCES = 24  # global per-family hard ceiling across all live instances
     WAVE_COUNT = 24
     SHAPE_COUNT = 24
+    _instances = weakref.WeakSet()
 
     def __init__(self, app, host=None):
         self.app = app
@@ -5356,6 +5508,10 @@ class ParametricMathBackground(QWidget):
         self._timer.start()
         self._param_cache = ("", (), 0)
         self._rng = random.Random(0)
+        # A WeakSet gives a process-wide family budget without retaining closed
+        # windows. Multiple floating panels therefore share the same 24-object
+        # wave/shape/Meum budget instead of each panel adding another 24.
+        self._instances.add(self)
 
     def _advance(self):
         elapsed = time.monotonic() - self._started
@@ -5399,9 +5555,16 @@ class ParametricMathBackground(QWidget):
                     numeric.append((key, float(obj.value()) / scale))
                 except Exception:
                     pass
+        # GOAVA is a visual input too: it changes the field's group phase, but
+        # never its bounded instance count.
+        if bool(getattr(self.app, "goava_active", False)):
+            numeric.append(("GOAVA", 1.0))
         numeric.sort(key=lambda x: x[0])
         self._param_cache = (name, tuple(numeric), self._cycle)
-        self._rng.seed(hash((name, tuple((k, round(v, 6)) for k, v in numeric), self._cycle)) & 0xffffffff)
+        # Python's built-in hash is intentionally salted between processes.
+        # Use SHA-256 so the same composition paints the same field on every run.
+        seed_key = deterministic_u64("background", name, self._cycle, tuple((k, round(v, 6)) for k, v in numeric))
+        self._rng.seed(seed_key & 0xffffffff)
 
     def _scalars(self):
         if self._param_cache[2] != self._cycle:
@@ -5500,7 +5663,7 @@ class ParametricMathBackground(QWidget):
         ("√2", "diagonal unit", "{:.8f}", SQRT2),
     )
 
-    def _paint_meum_blocks(self, painter, width, height, scalars, phase):
+    def _paint_meum_blocks(self, painter, width, height, scalars, phase, max_blocks=24):
         """Floating Meum identity blocks — drift across the full field.
 
         Same constants the DSP/domain/visual engines use. Positions wander on
@@ -5508,14 +5671,14 @@ class ParametricMathBackground(QWidget):
         MEUM² more transparent than the prior left-rail styling so they stay
         readable as ambient theorem glyphs without competing with controls.
         """
-        n = 24
+        # Cap at MAX_INSTANCES — Meum block set is finite; never replicate past 24
+        n = min(24, int(getattr(self, "MAX_INSTANCES", 24)), int(max_blocks), len(self.MEUM_BLOCKS))
         col_w = min(260.0, max(150.0, width * 0.18))
-        # MEUM² more transparent → divide prior alphas by MEUM_SQ
         a_fill = min(1.0, 0.42 / MEUM_SQ)
         a_edge = min(1.0, 0.55 / MEUM_SQ)
         a_title = min(1.0, 0.92 / MEUM_SQ)
         a_body = min(1.0, 0.78 / MEUM_SQ)
-        for i, (sym, meaning, fmt, value) in enumerate(self.MEUM_BLOCKS):
+        for i, (sym, meaning, fmt, value) in enumerate(self.MEUM_BLOCKS[:n]):
             corr_x, corr_y = AsymmetryCorrection.offset(i, n, phase, scalars)
             # Full-field Meum Lissajous drift (float all over)
             t = phase * MEUM_LOG2 + i * MEUM
@@ -5561,11 +5724,18 @@ class ParametricMathBackground(QWidget):
             scalars = self._scalars()
             phase = time.monotonic() - self._started
             w, h = self.width(), self.height()
-            for i in range(self.WAVE_COUNT):
+            # Strict process-wide family budget. If several decorated windows
+            # exist, their local caps divide the same 24 slots; total visual
+            # instances can never grow as 24 per window.
+            _live = max(1, len(self._instances))
+            _cap = max(1, int(getattr(self, "MAX_INSTANCES", 24)) // _live)
+            _wave_cap = min(int(self.WAVE_COUNT), _cap)
+            _shape_cap = min(int(self.SHAPE_COUNT), _cap)
+            for i in range(_wave_cap):
                 self._paint_wave(painter, i, w, h, scalars, phase)
-            for i in range(self.SHAPE_COUNT):
+            for i in range(_shape_cap):
                 self._paint_shape(painter, i, w, h, scalars, phase)
-            self._paint_meum_blocks(painter, w, h, scalars, phase)
+            self._paint_meum_blocks(painter, w, h, scalars, phase, max_blocks=_cap)
         finally:
             if painter.isActive():
                 painter.end()
@@ -7381,11 +7551,16 @@ class FormantSynthInstance(StandardSynthInstance):
 
         return out.tolist()
 
-class StochasticNoiseInstance(StandardSynthInstance):
+class DeterministicNoiseInstance(StandardSynthInstance):
+    """Hash-derived noise processor; deterministic for the same seed/state."""
     def render_block(self, num_samples, x, y, z):
         buf = []
         for _ in range(num_samples):
-            noise = (random.random() * 2.0 - 1.0)
+            # Deterministic noise is a hash-derived value, not process RNG.
+            # The persistent sample index prevents block-boundary repetition.
+            key = deterministic_u64("noise", self.freq, self.sr, x, y, z, self._noise_index)
+            noise = ((key / 18446744073709551615.0) * 2.0) - 1.0
+            self._noise_index += 1
             val = noise * 0.1 * abs(x) * max(0.0, y)
             buf.append(val)
         self.life -= 1
@@ -7402,6 +7577,7 @@ class StandardWaveSynthNode:
         self.phase = 0.0
         self._meum_phase = 0.0
         self._meum_sample_index = 0
+        self._noise_index = 0
         self.amp = 0.5
 
     def generate_block(self, num_samples, x, y, z):
@@ -7449,12 +7625,19 @@ class FormantSynthNode(StandardWaveSynthNode):
             val = carrier * modulator * self.amp * z
             buf.append(val)
         return buf
+StochasticNoiseInstance = DeterministicNoiseInstance
+
 class NoiseBurstNode(StandardWaveSynthNode):
-    """Stochastic rhythmic noise burst generator for percussion/texture tabs."""
+    """Deterministic rhythmic noise burst for percussion/texture tabs."""
     def generate_block(self, num_samples, x, y, z):
         buf = []
         for _ in range(num_samples):
-            noise = (random.random() * 2.0 - 1.0)
+            # Same syntax as the noise synth: H(parameters, sample_index)
+            # creates repeatable texture while remaining non-periodic within
+            # the finite playback interval.
+            key = deterministic_u64("burst-noise", self.freq, self.sr, x, y, z, self._noise_index)
+            noise = ((key / 18446744073709551615.0) * 2.0) - 1.0
+            self._noise_index += 1
             envelope = max(0.0, 1.0 - (self.phase % 1.0))
             val = noise * envelope * self.amp * x * y
             buf.append(val)
@@ -12186,11 +12369,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             cw = self.centralWidget()
             if cw is not None:
                 cw.setObjectName("GrooveboxCentral")
-                self.parametric_background = ParametricMathBackground(self, cw)
+                # Single instance only — prevents wave/Meum block replication >24
+                self.parametric_background = _ensure_single_math_background(self, cw)
                 self.parametric_background.setObjectName("ParametricMathBackground")
-                # Size to the window's real target size, not cw.rect() — at this
-                # point in __init__ no layout pass has happened yet, so cw.rect()
-                # is still Qt's tiny default and the field never grows from there.
                 self.parametric_background.setGeometry(0, 0, self.width(), self.height())
                 self.parametric_background.lower()
                 self.parametric_background.show()
@@ -14831,15 +15012,27 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # LIVE_DJ_CONTROLS: performance macros do not rewrite canonical
         # composition. They are safe, reversible bus transforms applied to the
         # live audio callback and mirrored by the scenograph.
+        # DJ macros styled pink — live bus transforms, never rewrite composition
         self.btn_live_dj_goava = _make_global_operator_button(
             "🌀 GOAVA DJ MORPH",
             "Live GOAVA-derived ring/drive morph. Uses the current canonical GOAVA scalar plus the unique unordered sound-pair identity.",
-            checkable=True, active_color="#b36cff"
+            checkable=True, active_color="#ff69b4"
         )
         self.btn_live_dj_random = _make_global_operator_button(
             "🎛 RANDOM PARAMETRIC DJ",
             "Live deterministic parametric macro. It sounds random but is seed/pair/BPM stable and never calls RNG from the audio thread.",
-            checkable=True, active_color="#00d4aa"
+            checkable=True, active_color="#ff1493"
+        )
+        # Video-game generator — deterministic unique worlds from the live composition
+        self.btn_play_videogame = _make_global_operator_button(
+            "🎮 PLAY VIDEO GAME",
+            "Build & test a live game .py from the current composition seed (splash → start → play).",
+            checkable=False, active_color="#ff69b4"
+        )
+        self.btn_export_videogame = _make_global_operator_button(
+            "📦 EXPORT GAME SCRIPT",
+            "Export deterministic game script + identity JSON classified from the live composition.",
+            checkable=False, active_color="#ff69b4"
         )
 
         global_context_group = QGroupBox("GLOBAL COMPOSITION")
@@ -14915,6 +15108,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_goava.toggled.connect(self._on_goava_toggled)
         self.btn_live_dj_goava.toggled.connect(self._on_live_dj_goava_toggled)
         self.btn_live_dj_random.toggled.connect(self._on_live_dj_random_toggled)
+        try:
+            self.btn_play_videogame.clicked.connect(self._on_play_videogame)
+            self.btn_export_videogame.clicked.connect(self._on_export_videogame_scripts)
+        except Exception:
+            pass
         self.btn_help.clicked.connect(self.open_help_readme)
 
         # Global playlist capacity belongs with global variables, not the pattern editor.
@@ -15056,25 +15254,35 @@ class MathematiciansGrooveboxApp(QMainWindow):
             _row.addWidget(_value)
             pkp_sliders.addLayout(_row)
 
-        self.pkp_ui_group = QGroupBox("PKP")
+        self.pkp_ui_group = QGroupBox("LIVE DJ PANEL")
         pkp_ui_group_layout = QHBoxLayout(self.pkp_ui_group)
         pkp_ui_group_layout.setContentsMargins(5, 3, 5, 3)
         pkp_ui_group_layout.addLayout(pkp_button_col)
-        pkp_ui_group_layout.addLayout(pkp_sliders, 1)
+        # Slider layout is attached to the consolidated LIVE DJ PANEL below.
         self.pkp_ui_group.setMinimumWidth(290)
         self.pkp_ui_group.setMaximumWidth(430)
 
-        # Attach PKP to the local-context strip, immediately after the domain button.
-        # Edit-panels-per-sequence toggle sits with the four panel editors.
-        # The two Live DJ performance-macro buttons flank PKP NullLock BOOST
-        # directly (left = GOAVA DJ morph, right = random parametric DJ) so the
-        # pair reads as "macro / boost / macro" at a glance.
+        # The LIVE DJ PANEL owns the performance macros and the generated-game
+        # controls. Keeping these handles together makes the live bus, NullLock
+        # audition and audiovisual game operate from one visible control surface.
+                # LIVE DJ PANEL: performance macros, NullLock and generated-game controls
+        # share one panel so the audiovisual bus and game transducer are visibly
+        # part of the same live composition surface.
+        live_dj_macro_row = QHBoxLayout()
+        live_dj_macro_row.addWidget(self.btn_live_dj_goava)
+        live_dj_macro_row.addWidget(self.btn_pkp_nullock_boost)
+        live_dj_macro_row.addWidget(self.btn_live_dj_random)
+        pkp_ui_group_layout.addLayout(live_dj_macro_row)
+        live_game_row = QHBoxLayout()
+        live_game_row.addWidget(self.btn_play_videogame)
+        live_game_row.addWidget(self.btn_export_videogame)
+        pkp_ui_group_layout.addLayout(live_game_row)
+        pkp_ui_group_layout.addLayout(pkp_sliders)
+
         for b in (self.btn_edit_synth, self.btn_script_inst, self.btn_view_patchbay, self.btn_domain_eq):
             local_context_layout.addWidget(b)
         local_context_layout.addWidget(self.btn_edit_panels_per_sequence)
-        local_context_layout.addWidget(self.btn_live_dj_goava)
         local_context_layout.addWidget(self.pkp_ui_group, 1)
-        local_context_layout.addWidget(self.btn_live_dj_random)
         local_context_layout.addStretch(1)
         master_container.addWidget(local_context_group)
 
@@ -16088,7 +16296,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             cw = self.centralWidget()
             bg = ParametricMathBackground(self, cw)
             cw = self.centralWidget()
-            bg = ParametricMathBackground(self, cw)
+            # Reuse single field; do not stack another 24+24+Meum layer
+            bg = _ensure_single_math_background(self, cw)
             bg.setGeometry(cw.rect())
             bg.lower()
             bg.show()
@@ -17794,6 +18003,57 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.scope_status_label.setText("📊 Memory cleared — fresh project.")
         print("[ClearMemory] Project and seed reset to a fresh boot state.")
 
+    def _collect_project_ui_state(self):
+        """Serialize named UI handles so save/load restores the complete live surface."""
+        state = {}
+        for name in (
+            "spin_bpm", "spin_seq_length", "spin_playlist_length", "spin_base_frequency",
+            "spin_global_convolve", "spin_synth_count", "slider_eqr", "slider_fractalizer",
+            "slider_pkp_decay", "slider_pkp_boost", "slider_pkp_boost_pitch",
+            "slider_pkp_boost_steps", "spin_sceno_items",
+        ):
+            obj = getattr(self, name, None)
+            if obj is not None and hasattr(obj, "value"):
+                try: state[name] = obj.value()
+                except Exception: pass
+        for name in (
+            "btn_goava", "btn_local_randomize", "btn_local_phase_lock",
+            "btn_live_dj_goava", "btn_live_dj_random", "chk_convolve_fit",
+            "chk_global_playlist", "chk_canonical_protect",
+        ):
+            obj = getattr(self, name, None)
+            if obj is not None and hasattr(obj, "isChecked"):
+                try: state[name] = bool(obj.isChecked())
+                except Exception: pass
+        state["instrument_selected_sequence"] = {
+            str(k): int(v) for k, v in (getattr(self, "instrument_selected_sequence", {}) or {}).items()
+        }
+        state["game_last_identity"] = getattr(self, "_last_videogame_identity", None)
+        state["game_last_path"] = getattr(self, "_last_videogame_path", None)
+        state["goava_active"] = bool(getattr(self, "goava_active", False))
+        return state
+
+    def _restore_project_ui_state(self, state):
+        """Restore known UI handles while ignoring keys introduced by newer builds."""
+        state = state if isinstance(state, dict) else {}
+        for name, value in state.items():
+            obj = getattr(self, name, None)
+            if obj is None: continue
+            if hasattr(obj, "setValue"):
+                try: obj.setValue(value)
+                except Exception: pass
+            elif hasattr(obj, "setChecked"):
+                try:
+                    obj.blockSignals(True); obj.setChecked(bool(value)); obj.blockSignals(False)
+                except Exception: pass
+        if "instrument_selected_sequence" in state:
+            self.instrument_selected_sequence = {
+                str(k): int(v) for k, v in (state["instrument_selected_sequence"] or {}).items()
+            }
+        if state.get("game_last_identity") is not None:
+            self._last_videogame_identity = state["game_last_identity"]
+        self._last_videogame_path = state.get("game_last_path", getattr(self, "_last_videogame_path", None))
+
     def save_project_dialog(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save EQR Project", "", "EQR Project (*.json)")
         if not path:
@@ -17829,6 +18089,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "instrument_param_state": getattr(self, 'instrument_param_state', {}),
             "patch_connections": getattr(self, 'patch_connections', []),
             "domain_eq": self.domain_eq_engine.to_json() if hasattr(self, 'domain_eq_engine') and self.domain_eq_engine else {},
+            "goava_active": bool(getattr(self, "goava_active", False)),
+            "live_dj_goava": bool(getattr(self, "live_dj_goava", False)),
+            "live_dj_random": bool(getattr(self, "live_dj_random", False)),
+            "last_videogame_identity": getattr(self, "_last_videogame_identity", None),
+            "last_videogame_path": getattr(self, "_last_videogame_path", None),
+            "convolve_fit": bool(getattr(self, "chk_convolve_fit", None) and self.chk_convolve_fit.isChecked()),
+            "version_handles": "3.7.0-deterministic-game",
+            "ui_state": self._collect_project_ui_state(),
+            "deterministic_kernel": {
+                "background_instance_limit": 24,
+                "scenograph_group_action": "affine_Z_n",
+                "goava_commutes": True,
+            },
         }
         try:
             with open(path, "w", encoding="utf-8") as f:
@@ -17911,6 +18184,23 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.reload_active_instrument_sequencer_ui()
             # Re-bind seed scripts + carrier context to every instrument after restore.
             self._refresh_after_file_input(reason="project_load")
+            # Restore video-game / DJ composition handles
+            self._last_videogame_identity = data.get("last_videogame_identity")
+            self._last_videogame_path = data.get("last_videogame_path")
+            self._restore_project_ui_state(data.get("ui_state", {}))
+            if data.get("goava_active") and hasattr(self, "btn_goava"):
+                try:
+                    self.btn_goava.blockSignals(True)
+                    self.btn_goava.setChecked(True)
+                    self.goava_active = True
+                    self.btn_goava.blockSignals(False)
+                except Exception:
+                    pass
+            if data.get("convolve_fit") and hasattr(self, "chk_convolve_fit"):
+                try:
+                    self.chk_convolve_fit.setChecked(True)
+                except Exception:
+                    pass
             QMessageBox.information(self, "Loaded", f"Project loaded:\n{path}")
         except Exception as e:
             QMessageBox.warning(self, "Load failed", str(e))
@@ -21984,6 +22274,141 @@ class MathematiciansGrooveboxApp(QMainWindow):
         print(f"[Video] ffmpeg={ffmpeg_bin} container={container} vcodec={vcodec} acodec={acodec}")
         return vcodec, vargs, acodec, aargs
 
+
+    def _composition_meta_for_game(self):
+        """Snapshot live composition handles for game classification."""
+        return {
+            "bpm": float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0,
+            "seq_length": int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else 16,
+            "playlist_rows": int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else 32,
+            "n_instruments": len(getattr(self, "instrument_names_48", []) or []),
+            "goava_active": bool(getattr(self, "goava_active", False)),
+            "seed": float(self.get_numeric_seed()) if hasattr(self, "get_numeric_seed") else 0.0,
+            "live_parametrics": "",
+            "goava_group_phase": bool(getattr(self, "goava_active", False)),
+        }
+
+    def _classify_live_game(self):
+        """Deterministic unique non-redundant game identity from the live seed."""
+        global _vge
+        if _vge is None:
+            try:
+                import videogame_engine as _vge
+            except Exception as e:
+                raise RuntimeError(f"videogame_engine not available: {e}")
+        meta = self._composition_meta_for_game()
+        # Prefer first playlist row live_parametrics if present
+        try:
+            pl = getattr(self, "master_playlist_data", None) or []
+            if pl and isinstance(pl[0], dict) and pl[0].get("live_parametrics"):
+                meta["live_parametrics"] = str(pl[0].get("live_parametrics"))[:240]
+        except Exception:
+            pass
+        return _vge.classify_from_composition(
+            meta["seed"],
+            bpm=meta["bpm"],
+            seq_length=meta["seq_length"],
+            playlist_rows=meta["playlist_rows"],
+            n_instruments=meta["n_instruments"],
+            goava_active=meta["goava_active"],
+            live_parametrics=meta.get("live_parametrics"),
+        ), meta
+
+    def _on_export_videogame_scripts(self):
+        """Export video-game scripts classified from the live composition."""
+        try:
+            identity, meta = self._classify_live_game()
+        except Exception as e:
+            QMessageBox.warning(self, "Video Game", str(e))
+            return
+        path = QFileDialog.getExistingDirectory(self, "Export Game Script — choose folder")
+        if not path:
+            return
+        try:
+            global _vge
+            out = _vge.export_game_files(identity, path, meta)
+            self._last_videogame_path = out
+            self._last_videogame_identity = identity.to_dict()
+            QMessageBox.information(
+                self, "Video Game Exported",
+                f"{identity.title}\n\nScript:\n{out}\n\n"
+                f"genre={identity.genre} camera={identity.camera}\n"
+                f"social={identity.social} online={identity.online} port={identity.host_port}"
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "Export failed", str(e))
+
+    def _on_play_videogame(self):
+        """Build a live game .py from the composition and open the start UI (splash + options)."""
+        try:
+            identity, meta = self._classify_live_game()
+        except Exception as e:
+            QMessageBox.warning(self, "Video Game", str(e))
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Play Video Game — {identity.title[:48]}")
+        dlg.resize(520, 420)
+        dlg.setStyleSheet(DAW_STYLE if "DAW_STYLE" in dir() else "")
+        lay = QVBoxLayout(dlg)
+        # Splash / identity
+        lay.addWidget(QLabel(f"<b>{identity.title}</b>"))
+        lay.addWidget(QLabel(
+            f"genre=<b>{identity.genre}</b> · camera=<b>{identity.camera}</b> · "
+            f"topology=<b>{identity.topology}</b><br>"
+            f"social=<b>{identity.social}</b> · mood=<b>{identity.mood}</b> · "
+            f"fingerprint=<code>{identity.composition_fingerprint}</code>"
+        ))
+        # Splash length = sequence bars of composition
+        lay.addWidget(QLabel(
+            f"Splash will play the composition bed for <b>{identity.splash_bars}</b> sequence steps "
+            f"@ {meta['bpm']:.0f} BPM before the start screen."
+        ))
+        host_chk = QCheckBox("Host mode (online)")
+        host_chk.setEnabled(bool(identity.online))
+        host_chk.setChecked(False)
+        lay.addWidget(host_chk)
+        port_row = QHBoxLayout()
+        port_row.addWidget(QLabel("Server port:"))
+        port_spin = QSpinBox()
+        port_spin.setRange(1024, 65535)
+        port_spin.setValue(int(identity.host_port))
+        port_spin.setEnabled(bool(identity.online))
+        port_row.addWidget(port_spin)
+        port_row.addStretch(1)
+        lay.addLayout(port_row)
+        status = QLabel("Ready to build live test copy.")
+        lay.addWidget(status)
+        btn_row = QHBoxLayout()
+        btn_build = QPushButton("▶ Build & Run Live Test")
+        btn_export = QPushButton("📦 Export Scripts…")
+        btn_close = QPushButton("Close")
+        btn_row.addWidget(btn_build)
+        btn_row.addWidget(btn_export)
+        btn_row.addWidget(btn_close)
+        lay.addLayout(btn_row)
+
+        def _build_and_run():
+            import tempfile, subprocess, sys as _sys
+            global _vge
+            try:
+                td = tempfile.mkdtemp(prefix="groovebox_game_")
+                script = _vge.export_game_files(identity, td, meta)
+                self._last_videogame_path = script
+                args = [_sys.executable, script]
+                if host_chk.isChecked() and identity.online:
+                    args.append("--host")
+                    args.append(f"--port={int(port_spin.value())}")
+                status.setText(f"Launching:\n{script}")
+                subprocess.Popen(args, cwd=td)
+            except Exception as e:
+                status.setText(f"Error: {e}")
+                QMessageBox.warning(dlg, "Run failed", str(e))
+
+        btn_build.clicked.connect(_build_and_run)
+        btn_export.clicked.connect(lambda: (dlg.accept(), self._on_export_videogame_scripts()))
+        btn_close.clicked.connect(dlg.accept)
+        dlg.exec()
+
     def export_video_dialog(self, include_audio=True, container="mp4"):
         """Render 2.5D frames; optionally mux audio. container: mp4|webm|avi."""
         tmp = None
@@ -22427,7 +22852,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             attach_math_decor(window, app=self)
             cw = self.centralWidget()
-            bg = ParametricMathBackground(self, cw)
+            # Reuse single field; do not stack another 24+24+Meum layer
+            bg = _ensure_single_math_background(self, cw)
             bg.setGeometry(cw.rect())
             bg.lower()
             bg.show()

@@ -1,0 +1,15 @@
+{
+  "version": "3.7.0-deterministic-game",
+  "compile_errors": [],
+  "files": {
+    "README.md": "b3d38ac42c652554bf644a924f8463fa005d7042f882ad5ef9c1e37e50a6bf66",
+    "videogame_engine.py": "602e5ebfeee584f16b2eda6e21b1cd9d2cff93a506fa1ae795ce9e52c742ac1d",
+    "launch_mobile.sh": "c9b0cd99db6cfb901c20526a16102b8bd88a94691fed167f3b3fa0bca60f7e66",
+    "run_groovebox.py": "9f84a9989d4088e640db483121a68dc619bac4f17e97869b4945127321e41fc7",
+    "groovebox.py": "ddf9537bac1f8f032d467da62c3f9a8fa2d60a4f7199b4bf81e7d3a4fd9e4357",
+    "launch groovebox.sh": "f2098d670669b62854fc401bcd89322b981d4efb0545614e80b4d535cae4ae0a",
+    "dj_effects.py": "b229f6a8e146f7d29601aab7e5715e8caa48cb71d258e5836b7257c7c54d8d0c",
+    "launch_desktop.sh": "977ebea3000e52a621e3184259712d9b2fb8e4f83cea7acc3234da2dba24afe6",
+    "launcher groovebox.py": "458efc5c4cb0dcbdde9602a258e11b51bf4f4f1591fc81256f1cc3521e1d0804"
+  }
+}
