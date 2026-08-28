@@ -78,6 +78,31 @@ MEUM_OVER_1_5 = MEUM / 1.5
 MEUM_TWO_POW = 2.0 ** MEUM
 MEUM_TWO_POW_OVER_SQ = MEUM_TWO_POW / MEUM_SQ
 MEUM_LOG2 = math.log2(MEUM)
+# Full target hearing / synthesis window (user V1). Content above Nyquist is
+# clamped per sample-rate; prefer SR >= 96000 for true 27.5 kHz headroom.
+AUDIBLE_LO_HZ = 5.2
+AUDIBLE_HI_HZ = 27500.0
+TARGET_SAMPLE_RATE = 96000
+DEFAULT_SAMPLE_RATE = 48000  # practical default; export/render may lift to TARGET
+
+def audible_hz(freq, sample_rate=None):
+    """Clamp frequency into the audible design window and below ~0.45·Nyquist."""
+    try:
+        f = float(freq)
+    except Exception:
+        f = AUDIBLE_LO_HZ
+    if not math.isfinite(f):
+        f = AUDIBLE_LO_HZ
+    hi = AUDIBLE_HI_HZ
+    if sample_rate is not None:
+        try:
+            sr = float(sample_rate)
+            if sr > 1.0:
+                hi = min(hi, sr * 0.45)
+        except Exception:
+            pass
+    return float(max(AUDIBLE_LO_HZ, min(hi, f)))
+
 # Frequently used integer powers: M^0 ... M^35.
 # Folded so instrument-index-driven frequency scaling stays bounded instead of
 # compounding without limit: MEUM ** i grew from 1x at index 0 to ~560x by
@@ -791,7 +816,7 @@ class MeumModulatedOscillator:
             np.clip(
                 frequency,
                 0.0,
-                self.sample_rate * 0.45,
+                min(self.sample_rate * 0.45, AUDIBLE_HI_HZ),
             )
         )
 
@@ -1157,7 +1182,7 @@ def _seed_to_fundamental_hz(seed_val, base_hz=432.0, op_idx=0, step=0):
         base = 432.0
     if not math.isfinite(base) or base <= 0:
         base = 432.0
-    return float(np.clip(base * _seed_to_pitch_ratio(seed_val, op_idx, step), 20.0, 12000.0))
+    return float(audible_hz(base * _seed_to_pitch_ratio(seed_val, op_idx, step)))
 # <<< GROK_EDIT_END: seed_pitch_identity
 
 
@@ -1369,6 +1394,32 @@ def _seed_script_env(t_scalar=0.0, canonical_context=None):
         "list": list, "tuple": tuple, "float": float, "int": int, "bool": bool,
         "len": len, "sum": sum, "range": range, "enumerate": enumerate,
         "zip": zip, "sorted": sorted, "reversed": reversed,
+        # --- Versatility layer: pure numeric composition primitives ---
+        "gcd": math.gcd,
+        "mod": (lambda a, m: float(a) % float(m) if float(m) else 0.0),
+        "frac": (lambda x: float(x) - math.floor(float(x))),
+        "step": (lambda x, edge=0.0: 1.0 if float(x) >= float(edge) else 0.0),
+        "smoothstep": (lambda e0, e1, x: (
+            (lambda t: t * t * (3.0 - 2.0 * t))(
+                max(0.0, min(1.0, (float(x) - float(e0)) / max(1e-12, float(e1) - float(e0))))
+            )
+        )),
+        "quantize": (lambda x, steps=12.0: round(float(x) * float(steps)) / float(steps) if float(steps) else float(x)),
+        "scale_deg": (lambda deg, n=12.0, root=1.0: float(root) * (2.0 ** (float(deg) / float(n)))),
+        "ratio": (lambda a, b: float(a) / float(b) if float(b) else 0.0),
+        "wrap": (lambda x, lo=0.0, hi=1.0: (
+            (lambda a, b, v: a + ((v - a) % (b - a)) if b != a else a)(float(lo), float(hi), float(x))
+        )),
+        "mix": _lerp,
+        "gate": (lambda x, thresh=0.5: 1.0 if float(x) >= float(thresh) else 0.0),
+        "prob": (lambda p, salt=0.0: 1.0 if ((math.sin(float(salt) * 12.9898 + float(p) * 78.233) * 43758.5453) % 1.0) < float(p) else 0.0),
+        "harm": (lambda k, base=1.0: float(base) * max(1.0, float(k))),
+        "db": (lambda x: 20.0 * math.log10(max(1e-12, abs(float(x))))),
+        "from_db": (lambda d: 10.0 ** (float(d) / 20.0)),
+        # voice / time context defaults (overwritten by canonical_context)
+        "i": 0, "n": 1, "step_i": 0, "n_steps": 16, "voice": 0, "density": 1.0,
+        "timewarp": 1.0, "detune": 0.0, "morph": 0.0,
+        "AUDIBLE_LO": AUDIBLE_LO_HZ, "AUDIBLE_HI": AUDIBLE_HI_HZ,
     }
     if isinstance(canonical_context, dict):
         for _k, _v in canonical_context.items():
@@ -1546,6 +1597,90 @@ def _eval_seed_python(seed_text, t_value=0.0, canonical_context=None, allow_scra
     return vals
 
 
+
+# ---------------------------------------------------------------------------
+# Multi-channel seed fields — non-redundant coverage of audio + pixels
+# Channels (any subset; unnamed body = "pitch" default):
+#   pitch: | hz: | amp: | gate: | visual: | hue: | dens: | pan: | mod:
+# Example:
+#   pitch: scale_deg(i%12,12,220)*(0.5+0.5*density)
+#   amp: gate(isn(t),0.2)*morph+0.3
+#   gate: step(sin(t*timewarp))
+#   visual: 0.4+0.6*abs(isn(t))
+#   hue: (i*37+t*40)%360
+# ---------------------------------------------------------------------------
+_SEED_CHANNEL_NAMES = (
+    "pitch", "hz", "freq", "amp", "amplitude", "gate", "trig",
+    "visual", "vis", "hue", "color", "dens", "density_ch", "pan", "mod", "fx",
+)
+
+def parse_seed_channels(seed_text):
+    """Split seed text into {channel_name: expression_string}.
+
+    Unlabeled text becomes channel "pitch". Multiple labeled blocks allowed.
+    """
+    import re as _re
+    raw = str(seed_text or "").replace('\r\n', '\n').replace('\r', '\n')
+    if not raw.strip():
+        return {}
+    label_re = _re.compile(
+        r"(?im)^[ \t]*(pitch|hz|freq|amp|amplitude|gate|trig|visual|vis|hue|color|dens|density_ch|pan|mod|fx)[ \t]*:(.*)$"
+    )
+    lines = raw.split('\n')
+    channels = {}
+    current = "pitch"
+    buf = []
+    labeled = False
+    for ln in lines:
+        m = label_re.match(ln)
+        if m:
+            labeled = True
+            if buf:
+                channels[current] = '\n'.join(buf).strip()
+                buf = []
+            current = m.group(1).lower()
+            rest = m.group(2).strip()
+            if rest:
+                buf.append(rest)
+        else:
+            buf.append(ln)
+    if buf:
+        text = '\n'.join(buf).strip()
+        if text:
+            channels[current] = text
+    if not labeled and not channels:
+        body = raw.strip()
+        if body:
+            channels["pitch"] = body
+    alias = {
+        "freq": "hz", "amplitude": "amp", "trig": "gate",
+        "vis": "visual", "color": "hue", "density_ch": "dens",
+    }
+    out = {}
+    for k, v in channels.items():
+        k2 = alias.get(k, k)
+        if v and str(v).strip():
+            out[k2] = str(v).strip()
+    return out
+
+
+def evaluate_seed_channels(seed_text, t_value=0.0, canonical_context=None):
+    """Evaluate all labeled channels → dict of finite floats (missing = omitted)."""
+    ch = parse_seed_channels(seed_text)
+    if not ch:
+        return {}
+    out = {}
+    for name, expr in ch.items():
+        try:
+            v = evaluate_seed_expression_at_time(expr, t_value, canonical_context)
+            fv = float(v)
+            if math.isfinite(fv):
+                out[name] = fv
+        except Exception:
+            continue
+    return out
+
+
 def evaluate_seed_expression_at_time(seed_text, t_value, canonical_context=None):
     """Time-domain (T-axis) evaluation → single float for DSP/render.
 
@@ -1616,46 +1751,236 @@ def goava_frequency(number_assigned, step, numbers, base_frequency=432.0):
     # raw Java-derived scalar remains available as metadata.
     ratio = 2.0 ** float(np.clip(raw, -2.0, 2.0))
     freq = float(base_frequency) * ratio
-    return float(np.clip(freq, 20.0, 18000.0)), float(raw)
+    return float(audible_hz(freq)), float(raw)
+
+
+# ---------------------------------------------------------------------------
+# Number-theoretic lattices for the master composer (canonical-friendly)
+# ---------------------------------------------------------------------------
+def _nt_is_prime(n: int) -> bool:
+    n = int(n)
+    if n < 2:
+        return False
+    if n < 4:
+        return True
+    if n % 2 == 0 or n % 3 == 0:
+        return False
+    i = 5
+    while i * i <= n:
+        if n % i == 0 or n % (i + 2) == 0:
+            return False
+        i += 6
+    return True
+
+
+def _nt_primes(limit: int):
+    limit = max(2, int(limit))
+    sieve = [True] * (limit + 1)
+    sieve[0] = sieve[1] = False
+    for i in range(2, int(limit ** 0.5) + 1):
+        if sieve[i]:
+            sieve[i * i :: i] = [False] * len(sieve[i * i :: i])
+    return [i for i, v in enumerate(sieve) if v]
+
+
+def _nt_quadratic_residues(mod: int):
+    mod = max(2, int(mod))
+    return sorted({(i * i) % mod for i in range(mod)})
+
+
+def _nt_euler_totient(n: int) -> int:
+    n = int(n)
+    if n <= 0:
+        return 0
+    result, i = n, 2
+    while i * i <= n:
+        if n % i == 0:
+            while n % i == 0:
+                n //= i
+            result -= result // i
+        i += 1
+    if n > 1:
+        result -= result // n
+    return int(result)
+
+
+def _nt_mobius(n: int) -> int:
+    n = int(n)
+    if n <= 0:
+        return 0
+    if n == 1:
+        return 1
+    primes, x, sign = 0, n, 1
+    i = 2
+    while i * i <= x:
+        if x % i == 0:
+            cnt = 0
+            while x % i == 0:
+                x //= i
+                cnt += 1
+            if cnt > 1:
+                return 0
+            primes += 1
+            sign = -sign
+        i += 1
+    if x > 1:
+        primes += 1
+        sign = -sign
+    return sign
+
+
+def _nt_farey_neighbors(n: int):
+    """Farey sequence of order n as fractions a/b in (0,1]."""
+    n = max(1, min(64, int(n)))
+    seq = [(0, 1), (1, n)]
+    # standard adjacent mediants generation
+    a, b, c, d = 0, 1, 1, n
+    out = [(0, 1)]
+    while c <= n:
+        k = (n + b) // d
+        a, b, c, d = c, d, k * c - a, k * d - b
+        out.append((a, b))
+    return out
+
+
+def _nt_stern_brocot_depth(depth: int):
+    """Left-to-right Stern–Brocot levels as ratio list (depth small)."""
+    depth = max(1, min(8, int(depth)))
+    layer = [(0, 1), (1, 1)]
+    for _ in range(depth - 1):
+        nxt = []
+        for i in range(len(layer) - 1):
+            a, b = layer[i]
+            c, d = layer[i + 1]
+            nxt.append((a, b))
+            nxt.append((a + c, b + d))
+        nxt.append(layer[-1])
+        layer = nxt
+    return layer
+
+
+def _nt_step_mask(length: int, mode: str, modulus: int, depth: int = 4):
+    """Boolean step mask of `length` from a number-theoretic rule."""
+    length = max(1, int(length))
+    mod = max(2, int(modulus))
+    mode = (mode or "primes").strip().lower()
+    mask = [False] * length
+    if mode in ("primes", "prime"):
+        primes = set(_nt_primes(max(mod * 4, length * 2)))
+        for i in range(length):
+            mask[i] = ((i % mod) in primes) or _nt_is_prime((i % mod) + 2)
+    elif mode in ("quadratic", "qr", "residues"):
+        qr = set(_nt_quadratic_residues(mod))
+        for i in range(length):
+            mask[i] = (i % mod) in qr
+    elif mode in ("totient", "phi"):
+        # fire when gcd(i, mod) == 1 (units group)
+        for i in range(length):
+            mask[i] = math.gcd(i % mod, mod) == 1
+    elif mode in ("mobius", "mu"):
+        for i in range(length):
+            mask[i] = _nt_mobius((i % mod) + 1) != 0
+    elif mode in ("farey",):
+        farey = _nt_farey_neighbors(max(2, depth))
+        idxs = {int(round((a / b) * (length - 1))) for a, b in farey if b}
+        for i in idxs:
+            if 0 <= i < length:
+                mask[i] = True
+    elif mode in ("stern", "brocot", "stern-brocot"):
+        sb = _nt_stern_brocot_depth(depth)
+        idxs = {int(round((a / b) * (length - 1))) for a, b in sb if b}
+        for i in idxs:
+            if 0 <= i < length:
+                mask[i] = True
+    else:
+        for i in range(length):
+            mask[i] = (i % mod) == 0
+    if not any(mask):
+        mask[0] = True
+    return mask
+
+
 
 def generate_random_seed_script(rng=None):
-    """Produce a random, fully scriptable seed field value.
-
-    Output is one of: pure number, math expression in t, if/elif time branch,
-    return-style script, or a comma list of values (parsed over time).
-    """
+    """Complex seed scripts biased toward P/E/D, isn/ics, logic, multi-value lists."""
     if rng is None:
         rng = random
-    choice = rng.randrange(0, 14)
-    consts = ["pi", "e", "PHI", "MEUM", "MEUM_NORM", "SILVER", "SQRT2"]
-    funcs = ["sin", "cos", "tan", "tanh", "exp", "sqrt", "abs", "floor"]
-    c1 = rng.choice(consts)
-    c2 = rng.choice(consts)
-    f1 = rng.choice(funcs)
-    f2 = rng.choice(funcs)
-    a = round(rng.uniform(0, 16.0), 3)
-    b = round(rng.uniform(0.0, 8.0), 3)
-    n1 = rng.randint(1, 512)
-    n2 = rng.randint(1, 512)
-    n3 = rng.randint(1, 256)
-
-    templates = [
-        f"{n1}",
-        f"{round(rng.uniform(-1000, 1000), 6)}",
-        f"{f1}(t * {a}) * {b} + {c1}",
-        f"return {f1}(t * {c1}) * {n1} + {f2}(t * {b})",
-        f"if({f1}(t * {a}) >= 0) {n1} elif {n2}",
-        f"if({f1}(t) * {f2}(t * {b}) > {round(rng.uniform(-1, 1), 3)}) {n1} elif {n2}",
-        f"if(sin(t * MEUM) >= -0.5) {n1} elif {n2}",
-        f"{n1}, {n2}, {n3}, {rng.randint(1, 256)}, {rng.randint(1, 128)}",
-        f"lerp({n1}, {n2}, 0.5 + 0.5 * sin(t * {a}))",
-        f"clamp({f1}(t * {a}) * {n1} + {c2}, -{n2}, {n2})",
-        f"choose({n1}, {n2}, {n3}, {rng.randint(1, 99)}, floor(abs(t * {a})) )",
-        f"# time-conditional seed\nreturn ({n1} if sin(t * {a}) >= 0 else {n2})",
-        f"({n1} + {n2} * sin(t * {c1})) * (0.5 + 0.5 * cos(t * {b}))",
-        f"if(t % {max(1, int(a))} < {b}) {n1} elif {n2}",
-    ]
-    return templates[choice % len(templates)]
+    funcs = (
+        "sin", "cos", "tanh", "abs", "floor", "ceil", "sqrt", "isn",
+        "ics", "log2", "atan", "sinh", "cosh", "round", "exp", "log",
+    )
+    safe = [f for f in funcs if f not in ("exp", "log", "log2")]
+    vars_ = (
+        "t", "pi", "e", "tau", "PHI", "MEUM", "MEUM_NORM", "MEUM_INV",
+        "MEUM_SQ", "MEUM_LOG2", "SILVER", "SQRT2", "SQRT3", "x", "y", "z",
+    )
+    def _nums():
+        return [
+            rng.randint(8, 64), rng.randint(16, 128), rng.randint(24, 256),
+            rng.randint(32, 384), rng.randint(48, 512), rng.randint(64, 640),
+            rng.randint(80, 768), rng.randint(96, 900),
+            round(rng.uniform(20.0, 220.0), 3), round(rng.uniform(110.0, 440.0), 3),
+            round(rng.uniform(220.0, 880.0), 3), round(rng.uniform(0.15, 4.0), 3),
+            round(rng.uniform(0.5, 8.0), 3), round(rng.uniform(1.0, 12.0), 3),
+            round(rng.uniform(-2.0, 2.0), 3), round(rng.uniform(MEUM, MEUM * 8.0), 4),
+        ]
+    for _attempt in range(40):
+        N = _nums()
+        n1, n2, n3, n4, n5 = N[4], N[5], N[2], N[1], N[0]
+        a, b, c = N[12], N[13], N[14]
+        f1, f2, f3 = rng.choice(safe), rng.choice(safe), rng.choice(safe)
+        v2 = rng.choice([v for v in vars_ if v != "t"])
+        m = max(1, int(abs(a)) or 1)
+        logic = [
+            f"{f1}(t * {a}) >= 0",
+            f"isn(t * {a}) > ics(t * {b})",
+            f"sin(t * MEUM) >= -0.5",
+            f"P(isn(t), ics(t)) >= 0",
+            f"tensor_z(sin(t), MEUM) > 1.0",
+            f"floor(abs(t * {a})) % 2 == 0",
+            f"t % {m} < {b}",
+            f"E(isn(t), ics(t)) > D(t, MEUM)",
+        ]
+        cond = rng.choice(logic)
+        cond2 = rng.choice(logic)
+        # ~90% complex
+        roll = rng.random()
+        if roll < 0.08:
+            cand = f"{n1}"
+        elif roll < 0.18:
+            cand = f"{f1}(t * {a}) * {b} + {v2}"
+        else:
+            pool = [
+                f"if({cond}) {n1} elif {n2}",
+                f"if({cond}) {n1} elif({cond2}) {n2} elif {n3}",
+                f"P(isn(t * {a}), ics(t * {b})) * {n1}",
+                f"E(isn(t), ics(t)) * {n1} + D(t, MEUM) * {n2}",
+                f"tensor_z({f1}(t), MEUM) * {n1} + {n2}",
+                f"tensor_rel({f1}(t), {v2}) * {n1}",
+                f"clamp(lerp({n1}, {n2}, 0.5 + 0.5 * isn(t * {a})), {n5}, {max(n1, n2)})",
+                f"({n1} + {n2} * isn(t * MEUM)) * (0.5 + 0.5 * ics(t * PHI))",
+                f"return {f1}(t * MEUM) * {n1} + {f2}(t * PHI) * {n2} + {f3}(t * {b}) * {n3}",
+                f"# PED path\nP(isn(t), ics(t)) * {n1} + E(sin(t), MEUM) * {n2} + D(t, PHI) * {n3}",
+                f"choose({n1}, {n2}, {n3}, {n4}, {n5}, floor(abs(t * {a})))",
+                f"{n1}, {n2}, {n3}, {n4}, {n5}, {N[6]}, {N[7]}",
+                f"({phi} if False else {n1})" if False else f"(MEUM_NORM * {n1} + (1 - MEUM_NORM) * {n2}) * (0.5 + 0.5 * sin(t * {a}))",
+            ]
+            cand = pool[rng.randrange(0, len(pool))]
+        try:
+            if seed_script_is_viable(cand, n_instruments=16):
+                return cand
+        except Exception:
+            pass
+    if rng.random() < 0.45:
+        n1, n2 = rng.randint(32, 400), rng.randint(16, 200)
+        return (
+            f"pitch: scale_deg(i % 12, 12, {n1}) * (0.5 + 0.5 * density)\n"
+            f"amp: gate(isn(t * timewarp), 0.15 + 0.3 * morph)\n"
+            f"gate: step(sin(t * MEUM))\n"
+            f"visual: 0.35 + 0.65 * abs(ics(t))\n"
+            f"hue: (i * 29 + t * 50) % 360"
+        )
+    return f"P(isn(t), ics(t)) * {rng.randint(32, 400)} + E(sin(t), MEUM) * {rng.randint(16, 200)}"
 
 
 def evaluate_seed_component(expr, t_value=0.0, canonical_context=None):
@@ -1747,69 +2072,6 @@ def seed_script_is_viable(seed_text, n_instruments=8):
         return True
     except Exception:
         return False
-
-
-def generate_random_seed_script(rng=None):
-    """Produce a random seed script that is guaranteed to evaluate on all instruments.
-
-    Templates are restricted to forms the evaluator accepts. Each candidate is
-    validated with seed_script_is_viable(); failures are retried (not emitted).
-    """
-    if rng is None:
-        rng = random
-
-    def _one(rng):
-        consts = ["pi", "e", "PHI", "MEUM", "MEUM_NORM", "SILVER", "SQRT2"]
-        funcs = ["sin", "cos", "tanh", "abs", "floor"]  # avoid tan/exp blow-ups
-        c1 = rng.choice(consts)
-        c2 = rng.choice(consts)
-        f1 = rng.choice(funcs)
-        f2 = rng.choice(funcs)
-        a = round(rng.uniform(0, 8.0), 3)
-        b = round(rng.uniform(0, 4.0), 3)
-        n1 = rng.randint(16, 512)
-        n2 = rng.randint(16, 512)
-        n3 = rng.randint(16, 256)
-        n4 = rng.randint(16, 128)
-        n5 = rng.randint(8, 64)
-        templates = [
-            # pure numbers
-            f"{n1}",
-            f"{round(rng.uniform(20.0, 900.0), 4)}",
-            # single math expressions (no argument commas)
-            f"{f1}(t * {a}) * {b} + {c1}",
-            f"({n1} + {n2} * {f1}(t * {c1})) * (0.5 + 0.5 * {f2}(t * {b}))",
-            f"return {f1}(t * {c1}) * {b} + {n1}",
-            # time-conditional if/elif (no inner commas)
-            f"if({f1}(t * {a}) >= 0) {n1} elif {n2}",
-            f"if(sin(t * MEUM) >= -0.5) {n1} elif {n2}",
-            f"if({f1}(t) * {f2}(t * {b}) > 0) {n1} elif {n2}",
-            f"1 if {f1}(t * {a}) >= 0 else 2",
-            f"{n1} if sin(t) >= 0 else {n2}",
-            # plain numeric lists (safe commas — no function args)
-            f"{n1}, {n2}, {n3}, {n4}, {n5}",
-            f"{n1}, {n2}, {n3}",
-            # function calls WITH commas — must survive paren-aware split
-            f"lerp({n1}, {n2}, 0.5 + 0.5 * sin(t * {a}))",
-            f"clamp({f1}(t * {a}) * {n1}, 20, {max(n1, n2)})",
-            f"choose({n1}, {n2}, {n3}, {n4}, floor(abs(t * {a})))",
-            f"({n1} if sin(t * {a}) >= 0 else {n2})",
-            f"MEUM * {n1}",
-            f"floor(abs(t * {a})) + {n1}",
-            f"isn(t * {a}) * {n1} + {n2}",
-            f"ics(t * {b}) * {n1} + {c1}",
-            f"P(isn(t), ics(t)) * {n1}",
-            f"tensor_z(sin(t), MEUM) * {n1}",
-            f"if(isn(t) >= 0) {n1} elif {n2}",
-        ]
-        return templates[rng.randrange(0, len(templates))]
-
-    # Retry until viable (or fall back to a plain integer).
-    for _ in range(24):
-        candidate = _one(rng)
-        if seed_script_is_viable(candidate, n_instruments=16):
-            return candidate
-    return str(rng.randint(16, 999))
 
 
 # FONT_READABILITY_FIX: buttons/labels were clipping their own text at 11pt
@@ -2108,6 +2370,40 @@ def idealized_operator_struct(app, op_name, row=0, seed=0):
         "patch_tag": patch_tag,
         "operator": op,
     }
+
+def blend_master_sequence_params(master, sequence, amount=0.5):
+    """50/50 nominal mix of master instrument panel vs sequence-local panel.
+
+    Used by the four non-GOAVA canonical engines so sequence-specific synth
+    panels contribute without erasing master macros. Non-numeric keys prefer
+    sequence when amount>=0.5 else master.
+    """
+    master = dict(master or {}) if isinstance(master, dict) else {}
+    sequence = dict(sequence or {}) if isinstance(sequence, dict) else {}
+    try:
+        amt = float(amount)
+    except Exception:
+        amt = 0.5
+    amt = max(0.0, min(1.0, amt))
+    out = dict(master)
+    keys = set(master) | set(sequence)
+    for k in keys:
+        a, b = master.get(k), sequence.get(k)
+        if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+            try:
+                if math.isfinite(float(a)) and math.isfinite(float(b)):
+                    out[k] = (1.0 - amt) * float(a) + amt * float(b)
+                    continue
+            except Exception:
+                pass
+        if amt >= 0.5 and k in sequence:
+            out[k] = b
+        elif k in master:
+            out[k] = a
+        else:
+            out[k] = b
+    return out
+
 def _coerce_instrument_param_state(state):
     """Return a safe {instrument_name: {param: value}} mapping.
 
@@ -2214,8 +2510,8 @@ class VisualOscilloscope(QFrame):
         self.mode = int(mode_idx)
         self.update()
 
-    def set_seed_hud(self, seed_values=None, ensemble_voices=0, canonical_flags=None):
-        """Optional HUD feed from the app (seed list + ensemble + active engines)."""
+    def set_seed_hud(self, seed_values=None, ensemble_voices=0, canonical_flags=None, engine_params=None):
+        """HUD: seed list, ensemble, active engines, and live engine/macro parameters."""
         try:
             self.seed_values = [float(v) for v in (seed_values or []) if math.isfinite(float(v))][:12]
         except Exception:
@@ -2224,7 +2520,21 @@ class VisualOscilloscope(QFrame):
             self.ensemble_voices = int(max(0, ensemble_voices or 0))
         except Exception:
             self.ensemble_voices = 0
-        self.canonical_flags = list(canonical_flags or [])[:6]
+        self.canonical_flags = list(canonical_flags or [])[:8]
+        # engine_params: ordered list of "key=val" short strings or dict
+        lines = []
+        if isinstance(engine_params, dict):
+            for k, v in list(engine_params.items())[:16]:
+                try:
+                    if isinstance(v, float):
+                        lines.append(f"{k}={v:.3g}")
+                    else:
+                        lines.append(f"{k}={v}")
+                except Exception:
+                    lines.append(f"{k}=?")
+        elif isinstance(engine_params, (list, tuple)):
+            lines = [str(x)[:28] for x in engine_params[:16]]
+        self.engine_param_lines = lines
         self.update()
 
     def update_waveform(self, new_data, overview=None, playhead=None):
@@ -2387,9 +2697,37 @@ class VisualOscilloscope(QFrame):
                 preview += "…"
             hud_parts.append(f"seed [{preview}]")
         if self.canonical_flags:
-            hud_parts.append("+".join(self.canonical_flags))
+            hud_parts.append("ENG:" + "+".join(self.canonical_flags))
         if hud_parts:
-            painter.drawText(8, h - 6, " · ".join(hud_parts)[: max(8, w // 6)])
+            painter.drawText(8, h - 6, " · ".join(hud_parts)[: max(12, w // 5)])
+        # Engine / macro parameter strip (right column)
+        epl = getattr(self, "engine_param_lines", None) or []
+        if epl:
+            painter.setPen(QColor(180, 255, 200, 200))
+            painter.setFont(QFont("Segoe UI", 6))
+            x0 = max(8, w - 118)
+            y0 = 22
+            for i, line in enumerate(epl[:12]):
+                painter.drawText(x0, y0 + i * 11, str(line)[:22])
+            # Mini bar meters for numeric-looking params
+            painter.setFont(QFont("Segoe UI", 6))
+            for i, line in enumerate(epl[:8]):
+                if "=" not in line:
+                    continue
+                try:
+                    val = float(line.split("=", 1)[1])
+                except Exception:
+                    continue
+                # normalize heuristically
+                nv = abs(val)
+                if nv > 1.5:
+                    nv = min(1.0, nv / 100.0)
+                nv = max(0.0, min(1.0, nv))
+                by = y0 + i * 11 - 8
+                painter.fillRect(x0 - 42, by, int(36 * nv), 6, QColor(80, 220, 160, 160))
+                painter.setPen(QColor(60, 90, 80, 180))
+                painter.drawRect(x0 - 42, by, 36, 6)
+                painter.setPen(QColor(180, 255, 200, 200))
 
 
 class SpectrumAnalyzer(QFrame):
@@ -2558,15 +2896,43 @@ class VideoSynthEngine:
         _scenograph = MeumScenographController(width=800, height=600)
         _sx, _sy, _sz = _scenograph.generate_field_mesh(resolution=64, ctx=0.4759)
         self._scenograph_points = _scenograph.project_coordinates(_sx, _sy, _sz, scale=512.0)
-        self._module_fade = {
-            "field": 0.62, "ribbon": 0.0, "volumes": 0.52,
-            "faces": 1.0, "particles": 1.0, "bands": 0.0, "goava": 0.0,
+        # Up to 64 scenograph render items (name -> base weight). Active count
+        # is gated by self.scenograph_item_count (1..64) from the UI slider.
+        self.SCENOGRAPH_ITEM_CATALOG = [
+            "field", "ribbon", "volumes", "faces", "particles", "bands", "goava",
+            "filaments", "roses", "orbitals", "constellations", "lattice",
+            "bursts", "spectral_comets", "rhythm_mandala", "pulse_grid",
+            "goava_field", "meum_spiral", "phi_web", "silver_arcs", "harmonic_rings",
+            "seed_sparks", "euclidean_spokes", "phase_ribbons", "tensor_sheets",
+            "soliton_beads", "entropy_mist", "carrier_wake", "playlist_bars",
+            "voice_orbs", "depth_fog", "polar_grid", "hex_lattice", "voronoi_cracks",
+            "aurora_bands", "comet_trails", "pulse_halos", "node_links", "chord_fans",
+            "sub_bass_bloom", "air_glitter", "mid_ribbons", "hi_spray", "fold_caustics",
+            "lock_rings", "rand_static", "seeded_constellation", "goava_glyphs",
+            "scan_lines", "radial_ticks", "soft_blobs", "crystal_shards", "wave_fronts",
+            "orbit_dust", "magnet_lines", "plasma_wisps", "gravity_wells", "time_ticks",
+            "identity_pins", "mix_meters", "nyquist_edge", "meum_residue", "silence_veil",
+            "ensemble_cloud",
+        ]
+        while len(self.SCENOGRAPH_ITEM_CATALOG) < 64:
+            self.SCENOGRAPH_ITEM_CATALOG.append(f"item_{len(self.SCENOGRAPH_ITEM_CATALOG)}")
+        self.SCENOGRAPH_ITEM_CATALOG = self.SCENOGRAPH_ITEM_CATALOG[:64]
+        self.scenograph_item_count = 24  # default active items
+        self._module_fade = {name: 0.0 for name in self.SCENOGRAPH_ITEM_CATALOG}
+        # Core defaults (legacy weights)
+        _defaults = {
+            "field": 0.62, "volumes": 0.52, "faces": 1.0, "particles": 1.0,
             "filaments": 0.72, "roses": 0.55, "orbitals": 0.62,
             "constellations": 0.48, "lattice": 0.36,
-            "bursts": 0.0, "spectral_comets": 0.0,
-            "rhythm_mandala": 0.40, "pulse_grid": 0.35, "goava_field": 0.0,
+            "rhythm_mandala": 0.40, "pulse_grid": 0.35,
+            "meum_spiral": 0.45, "phi_web": 0.38, "harmonic_rings": 0.42,
+            "voice_orbs": 0.50, "ensemble_cloud": 0.40,
         }
+        for k, v in _defaults.items():
+            if k in self._module_fade:
+                self._module_fade[k] = v
         self._module_target = dict(self._module_fade)
+        self._item_phase = {name: (i * PHI * MEUM_NORM) % 1.0 for i, name in enumerate(self.SCENOGRAPH_ITEM_CATALOG)}
         self._scenograph_modules = {}
         self._rng = np.random.RandomState(7)
         self._visual_frame = 0
@@ -3222,7 +3588,10 @@ class VideoSynthEngine:
                 gate = 1.0
             self._module_target[name] = float(np.clip(target * gate, 0.0, 1.0))
             old = float(self._module_fade.get(name, 0.0))
-            self._module_fade[name] = old + (self._module_target[name] - old) * 0.20
+            # Smarter ease: faster attack, slower release (asymmetric fade)
+            delta = self._module_target[name] - old
+            rate = 0.28 if delta > 0 else 0.12
+            self._module_fade[name] = old + delta * rate
             self._scenograph_modules[name] = {
                 "target": self._module_target[name],
                 "fade": self._module_fade[name],
@@ -3525,6 +3894,35 @@ class VideoSynthEngine:
             pts.append((sx, sy))
         return pts
 
+
+    def set_scenograph_item_count(self, n):
+        """How many of the 64 catalog items may be active (1..64)."""
+        try:
+            n = int(n)
+        except Exception:
+            n = 24
+        self.scenograph_item_count = max(1, min(64, n))
+
+    def _active_scenograph_names(self):
+        cat = list(getattr(self, "SCENOGRAPH_ITEM_CATALOG", []) or [])
+        n = int(getattr(self, "scenograph_item_count", len(cat)) or 1)
+        n = max(1, min(64, n, len(cat) or 1))
+        # Prefer high-fade items first, then catalog order for stability
+        ranked = sorted(
+            cat,
+            key=lambda nm: (-float(self._module_fade.get(nm, 0.0)), cat.index(nm)),
+        )
+        return set(ranked[:n])
+
+    def _item_opacity(self, name, base=1.0):
+        """Per-item opacity with smart breathe (phase-offset sine) and count gate."""
+        if name not in self._active_scenograph_names():
+            return 0.0
+        fade = float(self._module_fade.get(name, 0.0))
+        ph = float(self._item_phase.get(name, 0.0))
+        breathe = 0.82 + 0.18 * math.sin(self.t * (0.7 + ph) + ph * math.tau)
+        return float(max(0.0, min(1.0, fade * breathe * float(base))))
+
     def render_frame(self, w=640, h=360, export=False):
         """Composite all Meum subscenes. export=True skips any UI-only overlays."""
         self.export_mode = bool(export)
@@ -3595,6 +3993,32 @@ class VideoSynthEngine:
             col = self._hsv((155 + q * 11 + self._video_hue_shift) % 360, 0.28, 0.42)
             self._dot(img, x, y, col, 0.11 + 0.08 * float(self._band[q % 8]), r=1)
         self._subscene_goava(img, w, h, st)
+        
+        # Generic catalog items (up to 64): soft dots / arcs when dedicated drawers absent
+        try:
+            active = self._active_scenograph_names()
+            dedicated = {
+                "field", "volumes", "faces", "particles", "bands", "goava",
+                "filaments", "roses", "orbitals", "constellations", "lattice",
+                "bursts", "spectral_comets", "rhythm_mandala", "pulse_grid", "goava_field",
+            }
+            for name in active:
+                if name in dedicated:
+                    continue
+                op = self._item_opacity(name)
+                if op < 0.04:
+                    continue
+                i = self.SCENOGRAPH_ITEM_CATALOG.index(name) if name in self.SCENOGRAPH_ITEM_CATALOG else 0
+                ang = self.t * (0.15 + 0.02 * i) + i * PHI
+                rad = 0.12 + 0.35 * ((i % 8) / 8.0) * (0.5 + 0.5 * self._rms)
+                x = w * 0.5 + math.cos(ang) * rad * w * 0.42
+                y = h * 0.48 + math.sin(ang * MEUM_INV) * rad * h * 0.36
+                hue = int((i * 360 / 64 + self._video_hue_shift) % 360)
+                col = self._hsv(hue, 0.55 + 0.2 * op, 0.35 + 0.45 * op)
+                self._dot(img, x, y, col, 0.08 + 0.35 * op, r=1 + (i % 4))
+        except Exception:
+            pass
+
         return np.clip(img, 0, 255).astype(np.uint8)
 
 
@@ -13791,6 +14215,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_bpm.setDecimals(3)
         self.spin_bpm.setSingleStep(0.1)
         self.spin_bpm.setValue(120.0)
+        self.preferred_sample_rate = TARGET_SAMPLE_RATE
+
+        # Scenograph density: 1..64 render items (catalog forms fade in/out)
+        self.lbl_sceno_items = QLabel("Sceno items:")
+        self.spin_sceno_items = QSpinBox()
+        self.spin_sceno_items.setRange(1, 64)
+        self.spin_sceno_items.setValue(24)
+        self.spin_sceno_items.setToolTip(
+            "How many of the 64 scenograph render items may be active. "
+            "Items fade in/out smoothly; higher counts enrich the field."
+        )
+        self.spin_sceno_items.valueChanged.connect(self._on_sceno_items_changed)
 
         self.instrument_selector_dropdown = QComboBox()
         self.instrument_selector_dropdown.addItems(self.instrument_names_48)
@@ -13907,10 +14343,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # USER-CONTROLLED FIELD: never assign a random/default seed here.
         self.input_seed_val.setPlainText("")
         self.input_seed_val.setToolTip(
-            "Fully scriptable global seed. Numbers, math (sin/cos/MEUM/…), "
-            "if(cond) a elif b over t, return scripts, or comma-lists. "
-            "Composition uses t=0; Play/Export evaluates over time. "
-            "Use 🎲 Random Seed Script above for examples. Field scrolls."
+            "Multi-channel seeds:\n"
+            "pitch: / hz: / amp: / gate: / visual: / hue: / dens: / mod:\n"
+            "Unlabeled body = pitch. Uses t,i,density,timewarp,detune,morph,P,E,D.\n"
+            "Fully scriptable: numbers, math, if/elif over t, return, comma-lists.\n"
+            "Composition uses t=0; Play/Export evaluates over time. Random Seed for examples."
         )
         self.input_seed_val.setAcceptRichText(False)
         self.input_seed_val.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
@@ -13942,6 +14379,110 @@ class MathematiciansGrooveboxApp(QMainWindow):
         )
         self.btn_random_seed.clicked.connect(self._on_random_seed_clicked)
         seed_btn_row.addWidget(self.btn_random_seed)
+
+        # Number-theoretic master composer helpers
+        nt_row = QHBoxLayout()
+        nt_row.addWidget(QLabel("ℤ-Lattice:"))
+        self.combo_nt_mode = QComboBox()
+        self.combo_nt_mode.addItems([
+            "Prime steps", "Square steps", "Coprime steps",
+            "Square-free steps", "Fraction steps", "Tree-ratio steps",
+        ])
+        self.combo_nt_mode.setToolTip(
+            "Logical step algorithm for the active instrument.\n"
+            "Prime / square-class / coprime / square-free / fraction / tree-ratio masks.\n"
+            "(Number-theory detail is in Help / README.)"
+        )
+        nt_row.addWidget(self.combo_nt_mode)
+        nt_row.addWidget(QLabel("mod n:"))
+        self.spin_nt_modulus = QSpinBox()
+        self.spin_nt_modulus.setRange(2, 360)
+        self.spin_nt_modulus.setValue(12)
+        self.spin_nt_modulus.setToolTip("Modulus n for residue / unit / Möbius rules.")
+        nt_row.addWidget(self.spin_nt_modulus)
+        nt_row.addWidget(QLabel("depth:"))
+        self.spin_nt_depth = QSpinBox()
+        self.spin_nt_depth.setRange(1, 16)
+        self.spin_nt_depth.setValue(5)
+        self.spin_nt_depth.setToolTip("Farey order / Stern–Brocot depth.")
+        nt_row.addWidget(self.spin_nt_depth)
+        self.btn_nt_apply = QPushButton("Apply step algorithm")
+        self.btn_nt_apply.setToolTip(
+            "Write the selected number-theoretic mask into the active instrument steps."
+        )
+        self.btn_nt_apply.setStyleSheet(
+            "QPushButton { background-color: #102030; color: #9fd4ff; font-weight: bold; }"
+        )
+        self.btn_nt_apply.clicked.connect(self._on_nt_lattice_apply)
+        nt_row.addWidget(self.btn_nt_apply)
+        self.btn_nt_seed = QPushButton("Algorithm → Seed")
+        self.btn_nt_seed.setToolTip(
+            "Fill seed field with a script derived from modulus, φ(n), and Meum."
+        )
+        self.btn_nt_seed.clicked.connect(self._on_nt_to_seed)
+        nt_row.addWidget(self.btn_nt_seed)
+        nt_row.addStretch(1)
+        seed_panel.addLayout(nt_row)
+
+        # Numeric possibility map — continuous controls exposed into seed scripts
+        poss_row = QHBoxLayout()
+        poss_row.addWidget(QLabel("Numeric map:"))
+        self.spin_seed_density = QDoubleSpinBox()
+        self.spin_seed_density.setRange(0.0, 2.0)
+        self.spin_seed_density.setSingleStep(0.05)
+        self.spin_seed_density.setValue(1.0)
+        self.spin_seed_density.setToolTip("Exposed to seeds as `density`.")
+        self.spin_seed_timewarp = QDoubleSpinBox()
+        self.spin_seed_timewarp.setRange(0.25, 4.0)
+        self.spin_seed_timewarp.setSingleStep(0.05)
+        self.spin_seed_timewarp.setValue(1.0)
+        self.spin_seed_timewarp.setToolTip("Exposed to seeds as `timewarp`; also scales render t.")
+        self.spin_seed_detune = QDoubleSpinBox()
+        self.spin_seed_detune.setRange(0.0, 1.0)
+        self.spin_seed_detune.setSingleStep(0.01)
+        self.spin_seed_detune.setValue(0.0)
+        self.spin_seed_detune.setToolTip("Exposed to seeds as `detune`.")
+        self.spin_seed_morph = QDoubleSpinBox()
+        self.spin_seed_morph.setRange(0.0, 1.0)
+        self.spin_seed_morph.setSingleStep(0.01)
+        self.spin_seed_morph.setValue(0.0)
+        self.spin_seed_morph.setToolTip("Exposed to seeds as `morph` (A/B blend variable).")
+        for lab, w in (
+            ("density", self.spin_seed_density),
+            ("timewarp", self.spin_seed_timewarp),
+            ("detune", self.spin_seed_detune),
+            ("morph", self.spin_seed_morph),
+        ):
+            poss_row.addWidget(QLabel(lab))
+            poss_row.addWidget(w)
+            try:
+                w.valueChanged.connect(self._on_live_source_changed)
+            except Exception:
+                pass
+        poss_row.addStretch(1)
+        seed_panel.addLayout(poss_row)
+
+
+        eng_row = QHBoxLayout()
+        eng_row.addWidget(QLabel("Engine path:"))
+        self.spin_engine_strength = QDoubleSpinBox()
+        self.spin_engine_strength.setRange(0.15, 1.0)
+        self.spin_engine_strength.setSingleStep(0.05)
+        self.spin_engine_strength.setValue(0.72)
+        self.spin_engine_strength.setToolTip(
+            "Canonical engine write strength (0.15–1.0). Higher = denser deterministic path."
+        )
+        eng_row.addWidget(self.spin_engine_strength)
+        eng_row.addWidget(QLabel("Unison blend:"))
+        self.spin_unison_blend = QDoubleSpinBox()
+        self.spin_unison_blend.setRange(0.25, 1.0)
+        self.spin_unison_blend.setSingleStep(0.05)
+        self.spin_unison_blend.setValue(0.55)
+        self.spin_unison_blend.setToolTip("How strongly concurrent engines blend into one path.")
+        eng_row.addWidget(self.spin_unison_blend)
+        eng_row.addStretch(1)
+        seed_panel.addLayout(eng_row)
+
         seed_btn_row.addStretch(1)
         seed_panel.addLayout(seed_btn_row)
         seed_panel.addWidget(self.input_seed_val, 1)
@@ -13973,6 +14514,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.transport_layout.addWidget(self.btn_stop)
         self.transport_layout.addWidget(self.lbl_bpm)
         self.transport_layout.addWidget(self.spin_bpm)
+        self.transport_layout.addWidget(self.lbl_sceno_items)
+        self.transport_layout.addWidget(self.spin_sceno_items)
         self.transport_layout.addWidget(QLabel("Active Operator:"))
         self.transport_layout.addWidget(self.instrument_selector_dropdown)
         self.transport_layout.addWidget(self.btn_keyboard)
@@ -14014,6 +14557,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # consuming the width needed by the large script editor.
         self.global_controls_side.addLayout(self.transport_layout)
         self.global_controls_side.addLayout(self.transport_layout_row2)
+        # Dedicated high-visibility visual-object count (was easy to miss on crowded transport row)
+        self.sceno_row = QHBoxLayout()
+        self.lbl_sceno_items = QLabel("Visual objects:")
+        self.lbl_sceno_items.setStyleSheet("font-weight: bold; color: #9fd4ff;")
+        if not hasattr(self, "spin_sceno_items") or self.spin_sceno_items is None:
+            self.spin_sceno_items = QSpinBox()
+            self.spin_sceno_items.setRange(1, 64)
+            self.spin_sceno_items.setValue(24)
+            self.spin_sceno_items.valueChanged.connect(self._on_sceno_items_changed)
+        self.spin_sceno_items.setMinimumWidth(72)
+        self.spin_sceno_items.setStyleSheet("color: #00ffcc; font-weight: bold; min-height: 26px;")
+        self.sceno_row.addWidget(self.lbl_sceno_items)
+        self.sceno_row.addWidget(self.spin_sceno_items)
+        self.sceno_row.addWidget(QLabel("/ 64 scenograph items (fade in/out)"))
+        self.sceno_row.addStretch(1)
+        self.global_controls_side.addLayout(self.sceno_row)
         master_container.addLayout(self.global_geometry_layout)
 
         self.top_layout = QHBoxLayout()
@@ -14036,7 +14595,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         self.slider_eqr = QSlider(Qt.Orientation.Horizontal)
         self.slider_eqr.setRange(0, 100)
-        self.slider_eqr.setValue(0)
+        self.slider_eqr.setValue(42)
         self.slider_fractalizer = QSlider(Qt.Orientation.Horizontal)
         self.slider_fractalizer.setRange(0, 100)
         self.slider_fractalizer.setValue(33)
@@ -15095,7 +15654,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
 
     def _push_visualizer_seed_hud(self):
-        """Feed evaluated seed list + ensemble/canonical state into monitors."""
+        """Feed seed list, ensemble, engines, and live macro/engine params into monitors."""
         try:
             vals = list(self.get_seed_values(t_value=0.0) or [])
         except Exception:
@@ -15113,7 +15672,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 flags.append(label)
         if getattr(self, "goava_active", False):
             flags.append("goava")
-        # Ensemble estimate: seed width or non-empty playlist operators
         ensemble = max(len(vals), 1)
         try:
             rows = getattr(self, "master_playlist_data", None) or []
@@ -15129,20 +15687,155 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 ensemble = max(ensemble, len(ops))
         except Exception:
             pass
+        # Live parameters for HUD (engines + macros + visual + path)
+        params = {}
+        try:
+            if hasattr(self, "slider_eqr"):
+                params["EQR"] = float(self.slider_eqr.value()) / 100.0
+            if hasattr(self, "slider_fractalizer"):
+                params["Frac"] = float(self.slider_fractalizer.value()) / 100.0
+            if hasattr(self, "spin_bpm"):
+                params["BPM"] = float(self.spin_bpm.value())
+            if hasattr(self, "spin_base_frequency"):
+                params["BaseHz"] = float(self.spin_base_frequency.value())
+            if hasattr(self, "spin_sceno_items"):
+                params["VisN"] = int(self.spin_sceno_items.value())
+            if hasattr(self, "spin_engine_strength"):
+                params["EngStr"] = float(self.spin_engine_strength.value())
+            if hasattr(self, "spin_unison_blend"):
+                params["Unison"] = float(self.spin_unison_blend.value())
+            if hasattr(self, "slider_master_vol"):
+                params["Vol"] = float(self.slider_master_vol.value()) / 100.0
+            elif hasattr(self, "master_volume"):
+                params["Vol"] = float(self.master_volume)
+            params["engines"] = len(flags)
+            params["PED"] = params.get("EQR", 0.0)
+            try:
+                _chv = self.get_seed_channels_for_index(0, t_value=0.0)
+                for _ck in ("pitch", "hz", "amp", "gate", "visual", "hue"):
+                    if _ck in _chv:
+                        params["ch_"+_ck] = float(_chv[_ck])
+            except Exception:
+                pass
+        except Exception:
+            pass
         for attr in ("visual_oscilloscope", "spectrum_analyzer"):
             wid = getattr(self, attr, None)
             if wid is not None and hasattr(wid, "set_seed_hud"):
                 try:
-                    wid.set_seed_hud(vals, ensemble_voices=ensemble, canonical_flags=flags)
+                    wid.set_seed_hud(
+                        vals,
+                        ensemble_voices=ensemble,
+                        canonical_flags=flags,
+                        engine_params=params,
+                    )
+                except TypeError:
+                    try:
+                        wid.set_seed_hud(vals, ensemble_voices=ensemble, canonical_flags=flags)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
+        # Scenograph engine also sees activity for module schedule
+        try:
+            eng = getattr(self, "video_synth_engine", None)
+            if eng is not None:
+                if hasattr(self, "spin_sceno_items") and hasattr(eng, "set_scenograph_item_count"):
+                    eng.set_scenograph_item_count(int(self.spin_sceno_items.value()))
+                if hasattr(eng, "_module_target"):
+                    for name, key in (
+                        ("euclidean", "euclidean_spokes"),
+                        ("seeded", "seeded_constellation"),
+                        ("phase", "phase_ribbons"),
+                        ("rand", "rand_static"),
+                        ("goava", "goava_glyphs"),
+                    ):
+                        if name in flags or (name == "goava" and "goava" in flags):
+                            if key in eng._module_target:
+                                eng._module_target[key] = max(
+                                    float(eng._module_target.get(key, 0.0)), 0.55
+                                )
+                    try:
+                        _cv = self.get_seed_channels_for_index(0, t_value=0.0)
+                        if "visual" in _cv and "field" in eng._module_target:
+                            eng._module_target["field"] = float(np.clip(abs(_cv["visual"]), 0.05, 1.0))
+                        if "hue" in _cv:
+                            eng._video_hue_shift = float(_cv["hue"]) % 360.0
+                        if "dens" in _cv and hasattr(eng, "scenograph_item_count"):
+                            eng.scenograph_item_count = max(1, min(64, int(8 + 56 * abs(_cv["dens"]))))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def _seed_voice_context(self, index):
+        try:
+            i = int(index)
+        except Exception:
+            i = 0
+        n_voices = 1
+        try:
+            names = getattr(self, "instrument_names_48", None) or []
+            n_voices = max(1, len(names))
+        except Exception:
+            n_voices = 1
+        ctx = {
+            "i": i, "voice": i, "n": n_voices, "n_voices": n_voices, "step_i": i,
+        }
+        for attr, key in (
+            ("spin_seed_density", "density"),
+            ("spin_seed_timewarp", "timewarp"),
+            ("spin_seed_detune", "detune"),
+            ("spin_seed_morph", "morph"),
+        ):
+            w = getattr(self, attr, None)
+            if w is not None:
+                try:
+                    ctx[key] = float(w.value())
+                except Exception:
+                    pass
+        return ctx
+
+    def get_seed_channels_for_index(self, index, t_value=0.0):
+        """Multi-channel seed evaluation for one voice at time t."""
+        ctx = self._seed_voice_context(index)
+        try:
+            text = self._seed_text() if hasattr(self, "_seed_text") else ""
+        except Exception:
+            text = ""
+        if not text or not str(text).strip():
+            return {}
+        try:
+            return evaluate_seed_channels(text, t_value, canonical_context=ctx)
+        except Exception:
+            return {}
 
     def get_seed_value_for_index(self, index, t_value=0.0):
-        """Per-instrument / per-row seed: list[i % n], or single evaluated script.
+        """Per-instrument seed number: pitch/hz channel, else default expression, else list.
 
-        Every instrument receives a real evaluated number from the script field.
-        Hash/byte tokens are never used here.
+        Multi-channel scripts use pitch: or hz: when present so one field can
+        specify independent amp/gate/visual without redundancy.
         """
+        ch = self.get_seed_channels_for_index(index, t_value=t_value)
+        for key in ("hz", "pitch"):
+            if key in ch and math.isfinite(float(ch[key])):
+                return float(ch[key])
+        ctx = self._seed_voice_context(index)
+        try:
+            text = self._seed_text() if hasattr(self, "_seed_text") else ""
+        except Exception:
+            text = ""
+        if text and text.strip() and ":" not in text.split("\n")[0][:24]:
+            # single-expression legacy field
+            try:
+                v = evaluate_seed_expression_at_time(text, t_value, canonical_context=ctx)
+                if math.isfinite(float(v)):
+                    return float(v)
+            except Exception:
+                pass
+        elif text and text.strip():
+            # multi-channel without pitch — fall through to list scrape of pitch channel only
+            pass
         vals = self.get_seed_values(t_value=t_value)
         if not vals:
             return 0.0
@@ -19385,7 +20078,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._canonical_render_input_context = dict(self._canonical_input_context())
         except Exception:
             pass
-        sample_rate = 44100
+        sample_rate = int(getattr(self, 'preferred_sample_rate', TARGET_SAMPLE_RATE) or TARGET_SAMPLE_RATE)
+        sample_rate = max(44100, min(192000, sample_rate))
         bpm = self.spin_bpm.value() if hasattr(self, 'spin_bpm') else 120
         rows = self.spin_playlist_length.value() if hasattr(self, 'spin_playlist_length') else 32
         if max_rows is not None:
@@ -19578,7 +20272,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # Per-voice evaluated seed (list scripts assign distinct numerics
                 # to each instrument instead of a shared hash/byte token).
                 try:
-                    _voice_seed = float(self.get_seed_value_for_index(op_idx, t_value=float(local_t[0]) if len(local_t) else 0.0))
+                    _tw = 1.0
+                    if hasattr(self, "spin_seed_timewarp"):
+                        try:
+                            _tw = float(self.spin_seed_timewarp.value())
+                        except Exception:
+                            _tw = 1.0
+                    _t0 = float(local_t[0]) if len(local_t) else 0.0
+                    _voice_seed = float(self.get_seed_value_for_index(op_idx, t_value=_t0 * _tw))
                 except Exception:
                     _voice_seed = float(self.get_numeric_seed() or 0.0)
                 # >>> GROK_EDIT_BEGIN: render_seed_pitch
@@ -19604,6 +20305,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 _node_mod_rate = float(_node_field.get("mod_rate", 1.0))
                 step_env = np.zeros_like(local_t)
                 pitch_track = np.ones_like(local_t)
+                # Multi-channel seed (amp/gate/hz) — non-redundant with sequencer masks
+                try:
+                    _ch0 = self.get_seed_channels_for_index(op_idx, t_value=(_t0 * _tw) if "_tw" in locals() else _t0)
+                except Exception:
+                    _ch0 = {}
+                _ch_amp = float(_ch0["amp"]) if "amp" in _ch0 else None
+                _ch_gate = float(_ch0["gate"]) if "gate" in _ch0 else None
+                _ch_hz = float(_ch0["hz"]) if "hz" in _ch0 else None
+                _ch_mod = float(_ch0["mod"]) if "mod" in _ch0 else None
+                if _ch_hz is not None and math.isfinite(_ch_hz) and _ch_hz > 0:
+                    base_freq = float(audible_hz(_ch_hz, sample_rate))
                 steps = mem.get("steps", [])
                 amps = mem.get("amplitudes", [1.0] * 16)
                 pitches = mem.get("pitches", [1.0] * 16)
@@ -19635,6 +20347,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
                 # --- Per-synth panel seed (4 knobs) + per-synth Fractallizer ---
                 st = dict((getattr(self, "instrument_param_state", {}) or {}).get(op_name, {}) or {})
+                # Sequence panel mixdown (50%): four non-GOAVA engines + general render
+                # hear master macros blended with sequence-local synth panel state.
+                try:
+                    if hasattr(self, "_panels_per_sequence_enabled") and self._panels_per_sequence_enabled():
+                        _seq_p = self._sequence_panel_slot(op_name)
+                        _seq_synth = (_seq_p or {}).get("synth") if isinstance(_seq_p, dict) else None
+                        if isinstance(_seq_synth, dict) and _seq_synth:
+                            st = blend_master_sequence_params(st, _seq_synth, amount=0.5)
+                except Exception:
+                    pass
                 # SUPER-VARIABLE VOICE FIELD: only internal synthesis variation.
                 # User-authored steps, pitches, gates, patterns, playlist data and
                 # engine goals are untouched. Each voice/row gets independent
@@ -19667,6 +20389,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # Seed is the note identity; panel harmonic_freq is a refinement
                 # only when it was explicitly set away from the shared default.
                 _seed_hz = float(_seed_to_fundamental_hz(_voice_seed, base_freq, op_idx, 0))
+                if _ch_hz is not None and math.isfinite(_ch_hz) and _ch_hz > 0:
+                    _seed_hz = float(audible_hz(_ch_hz, sample_rate))
+                # stash channel amp/gate for later voice scale (set defaults if inject failed)
+                if "_ch_amp" not in dir():
+                    _ch_amp = _ch_gate = _ch_mod = None
                 if identity_hz not in (None, ""):
                     try:
                         # Identity anchor still respected, but scaled by seed ratio
@@ -19685,7 +20412,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # Seed-driven harmonic ↔ entropy continuum (authoritative voice).
                 # Engines / seed scripts define character HERE. Later stages must
                 # not spectral-fit or convolute these voices back into one shape.
-                f0 = np.maximum(seed_freq, 20.0)
+                f0 = np.maximum(seed_freq, AUDIBLE_LO_HZ)
 
                 # Canonical AM/FM/PM: driven by whatever the randomizers /
                 # phase-lockers / seeded engines last wrote into this
@@ -19839,10 +20566,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         dest_idx = base_idx + shift_samples
                         valid = (dest_idx >= 0) & (dest_idx < n_samples)
                         if np.any(valid):
+                            _vg = voice * voice_gain
+                            try:
+                                if _ch_amp is not None and math.isfinite(_ch_amp):
+                                    _vg = _vg * float(max(0.0, _ch_amp))
+                                if _ch_gate is not None and math.isfinite(_ch_gate):
+                                    _vg = _vg * float(np.clip(_ch_gate, 0.0, 1.0))
+                                if _ch_mod is not None and math.isfinite(_ch_mod):
+                                    _vg = _vg * float(0.5 + 0.5 * math.tanh(_ch_mod))
+                            except Exception:
+                                pass
                             np.add.at(
                                 master,
                                 dest_idx[valid],
-                                (voice * voice_gain)[valid],
+                                _vg[valid],
                             )
 
             # PKP NullLock / BOOST is an explicit one-shot audition action only.
@@ -19854,7 +20591,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # explicit one-shot playover via _play_selected_instrument_pkp() and
             # _play_pkp_playover_modulator().
 
-            master[mask] += row_mix
 
         # CANONICAL UNISON EFFECT BOUNDARY
         # Snapshot the fully reconciled playlist/unison render before any global
@@ -19994,6 +20730,35 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._canonical_unison_effect_buffer = unison_buffer.copy()
             self._canonical_unison_effect_length = int(unison_buffer.size)
 
+        # EQR tensor + explicit P/E/D path (always when slider > 0; default 42%)
+        try:
+            act = 0.42
+            if hasattr(self, "slider_eqr"):
+                act = float(self.slider_eqr.value()) / 100.0
+            if act > 0.01:
+                if not hasattr(self, "_eqr_tensor") or self._eqr_tensor is None:
+                    self._eqr_tensor = EQRTensorEngine()
+                master = self._eqr_tensor.process(master, activation=act)
+        except Exception as _eqr_exc:
+            print(f"[EQR] mixdown: {_eqr_exc}")
+        try:
+            n = int(getattr(master, "size", 0) or 0)
+            if n > 0:
+                t_axis = np.linspace(0.0, 1.0, n, dtype=np.float64)
+                ctrl = min(128, max(8, n // 512))
+                idx = np.linspace(0, n - 1, ctrl).astype(np.int32)
+                ped = np.empty(ctrl, dtype=np.float64)
+                for j, ix in enumerate(idx):
+                    s = float(master[ix])
+                    p = abs(s) * (1.0 + MEUM_NORM * 0.25) * PHI_INV
+                    e = abs(s) * (1.0 + MEUM_NORM * 0.15) * PHI_INV
+                    d = abs(MEUM_IDENTITY_RESIDUAL) * 0.1 * math.sin(s * MEUM + float(t_axis[ix]))
+                    ped[j] = 1.0 + 0.14 * math.tanh((e + d) * 0.8 - p * 0.15)
+                ped_full = np.interp(np.arange(n), idx.astype(float), ped).astype(np.float32)
+                master = (master * ped_full).astype(np.float32)
+        except Exception as _ped_exc:
+            print(f"[PED] mixdown: {_ped_exc}")
+
         peak = np.max(np.abs(master))
         if peak > 0:
             master = (master / peak) * 0.98
@@ -20007,19 +20772,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._live_source_update_pending = True
         QTimer.singleShot(0, self._flush_live_source_update)
 
-    def _():
-        def __init__(self):
-            # [Existing initialization...]
-
-            # PERFECT UNISON SYSTEM INITIALIZATION
-            self._unison_composition_guard = False
-            self._unison_engine_signatures = {}
-            self._baseline_user_state = None
-
-            # [Rest of existing initialization...]
-
-        # =========================================================================
-        # PERFECT UNISON CORE METHODS
         # =========================================================================
 
     def _ensure_perfect_unison(self):
@@ -20523,6 +21275,117 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.is_paused = False
             print(f"[Audio] Playback start failed: {e}")
             QMessageBox.critical(self, "Playback Error", str(e))
+
+
+    def _on_nt_lattice_apply(self):
+        """Apply number-theoretic step mask to the active instrument sequence."""
+        mode_map = {
+            "Prime steps": "primes",
+            "Square steps": "quadratic",
+            "Coprime steps": "totient",
+            "Square-free steps": "mobius",
+            "Fraction steps": "farey",
+            "Tree-ratio steps": "stern",
+            # legacy labels
+            "Primes": "primes",
+            "Quadratic residues": "quadratic",
+            "Totient units": "totient",
+            "Möbius support": "mobius",
+            "Farey": "farey",
+            "Stern–Brocot": "stern",
+        }
+        mode_ui = self.combo_nt_mode.currentText() if hasattr(self, "combo_nt_mode") else "Primes"
+        mode = mode_map.get(mode_ui, "primes")
+        mod = int(self.spin_nt_modulus.value()) if hasattr(self, "spin_nt_modulus") else 12
+        depth = int(self.spin_nt_depth.value()) if hasattr(self, "spin_nt_depth") else 5
+        name = None
+        if hasattr(self, "instrument_selector_dropdown"):
+            name = self.instrument_selector_dropdown.currentText()
+        if not name:
+            names = list(getattr(self, "instrument_names_48", []) or [])
+            name = names[0] if names else None
+        if not name:
+            return
+        mem = (getattr(self, "instrument_sequencer_memory", {}) or {}).get(name)
+        if not isinstance(mem, dict):
+            mem = {"steps": [False] * 16, "amplitudes": [1.0] * 16, "pitches": [1.0] * 16}
+            self.instrument_sequencer_memory[name] = mem
+        length = int(mem.get("pattern_length", len(mem.get("steps") or []) or 16))
+        length = max(1, min(128, length))
+        mask = _nt_step_mask(length, mode, mod, depth)
+        steps = list(mem.get("steps") or [False] * length)
+        amps = list(mem.get("amplitudes") or [1.0] * length)
+        pitches = list(mem.get("pitches") or [1.0] * length)
+        while len(steps) < length:
+            steps.append(False)
+            amps.append(1.0)
+            pitches.append(1.0)
+        for i in range(length):
+            steps[i] = bool(mask[i])
+            if steps[i]:
+                # Pitch from residue class — musically mild ratios
+                r = (i % mod) / float(mod)
+                pitches[i] = float(0.5 + r)  # 0.5x .. 1.5x
+                amps[i] = float(0.55 + 0.45 * abs(_nt_mobius((i % mod) + 1)) / 1.0)
+        mem["steps"] = steps[:length]
+        mem["amplitudes"] = amps[:length]
+        mem["pitches"] = pitches[:length]
+        mem["pattern_length"] = length
+        # Optional: mark as user-visible pattern
+        if hasattr(self, "_refresh_step_ui"):
+            try:
+                self._refresh_step_ui()
+            except Exception:
+                pass
+        if hasattr(self, "scope_status_label"):
+            on = sum(1 for x in steps[:length] if x)
+            self.scope_status_label.setText(
+                f"ℤ-Lattice {mode_ui} mod {mod} → {name}: {on}/{length} steps"
+            )
+        try:
+            self._on_live_source_changed()
+        except Exception:
+            pass
+
+    def _on_nt_to_seed(self):
+        """Emit a seed script that number-theorists will recognize as structured."""
+        mod = int(self.spin_nt_modulus.value()) if hasattr(self, "spin_nt_modulus") else 12
+        depth = int(self.spin_nt_depth.value()) if hasattr(self, "spin_nt_depth") else 5
+        phi = _nt_euler_totient(mod)
+        mu = _nt_mobius(mod)
+        qr = _nt_quadratic_residues(mod)
+        qr_s = ", ".join(str(x) for x in qr[:12])
+        # Time-varying script using φ(n), μ(n), and Meum
+        script = (
+            f"# NT seed · n={mod} φ={phi} μ={mu}\\n"
+            f"# QR mod n: {qr_s}\\n"
+            f"return (φ if False else {phi}) * (0.5 + 0.5 * isn(t * MEUM)) "
+            f"+ {mod} * MEUM_NORM * cos(t * PHI) + ({mu}) * ics(t)"
+        )
+        # φ is not in env — use numeric phi only
+        script = (
+            f"# NT seed · n={mod} · φ(n)={phi} · μ(n)={mu}\\n"
+            f"# quadratic residues mod n: {qr_s}\\n"
+            f"({phi} * (0.5 + 0.5 * isn(t * MEUM)) + {mod} * MEUM_NORM * cos(t * PHI) "
+            f"+ ({mu}) * ics(t))"
+        )
+        if hasattr(self, "_push_seed_history"):
+            self._push_seed_history(script)
+        if hasattr(self, "_apply_seed_script_text"):
+            self._apply_seed_script_text(script, status_prefix=f"ℤ→Seed n={mod}")
+        elif hasattr(self, "input_seed_val"):
+            self.input_seed_val.setPlainText(script)
+            try:
+                self._on_live_source_changed()
+            except Exception:
+                pass
+
+    def _on_sceno_items_changed(self, n):
+        eng = getattr(self, "video_synth_engine", None)
+        if eng is not None and hasattr(eng, "set_scenograph_item_count"):
+            eng.set_scenograph_item_count(n)
+        if hasattr(self, "scope_status_label"):
+            self.scope_status_label.setText(f"🎨 Scenograph items → {int(n)}/64")
 
     def stop_playback(self):
         """Hard stop: reset the audiovisual transport to the beginning."""
