@@ -1,1179 +1,119 @@
-#!/usr/bin/env python3
-"""
-Groovebox — Fixed V3.9.1 Fast
-Fixes SyntaxError at line 25668: expected 'except' or 'finally' block
-"""
-from __future__ import annotations
-import hashlib, math, json, sys
-from dataclasses import dataclass, replace, field
-from typing import Dict, List, Set, Tuple, Any
+# =============================================================================
+# Groovebox Engine v3.7.8 — deterministic audiovisual/game build
+# Mathematician's / Scientist's Groovebox
+#
+# GOAL
+#   A unique, deterministic, non-redundant, infinitely varied platform of
+#   effects — re-expressible in the simplest possible mathematical terms —
+#   while still fit to infinitely varied dataset specifications.
+#   Canonical state is order-independent: toggle order never changes results
+#   for a given project. Save / load / export / game classification all share
+#   one composition fingerprint. User-protected data is not re-serialized
+#   per-module; canonicals already own the single source of truth.
+#
+# Defaults: BPM 120, base frequency 432 Hz, Seed Weight 0.72, FullWeight ON,
+# Meum lattice identity (MEUM ≈ 1.19758…).
+#
+# Credits / collaboration:
+#   - Core architecture & original EQR design: project author
+#   - Implementation assistance (realtime audio, additive engines, domain
+#     partitions, bootstrap/simplify, Help system): Grok (xAI), Gemini (Google),
+#     Claude (Anthropic), ChatGPT (OpenAI), Mistral.ai, and Cursor Grok 4.6
+#     (polyphony / unison resize / master+addon panel mix / visualizer)
+#
+# Notable systems in this build:
+#   sounddevice realtime I/O, PKP pad bank, additive Euclidean/seeded engines,
+#   non-destructive patch optimizer, domain time/space equations, seed bootstrap
+#   (empty/0 = no seed; 50/50 both vs alone when free), net-effect user detection,
+#   FullWeight Seed + Seed Weight uniqueness controls, GLOBAL PLAY PATCHER.
+# =============================================================================
+
+import random
+import struct
+import math
+import ast
+import hashlib
+import copy
+import wave
+import time
+import json
+import os
+import threading
+import queue
+import subprocess
+import tempfile
+import shutil
+import colorsys
+import re
+import weakref
 import numpy as np
+
+from dj_effects import CommutativePairSpace, LiveDJEffects
+from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer
+from PyQt6.QtGui import (
+    QPainter, QPen, QColor, QPainterPath, QLinearGradient, QRadialGradient, QBrush, QFont, QPolygonF,
+    QAction, QPalette, QKeyEvent, QKeySequence, QImage
+)
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QFrame, QVBoxLayout,
+    QHBoxLayout, QLabel, QSlider, QPushButton, QComboBox, QScrollArea,
+    QTabWidget, QLineEdit, QListWidget, QFormLayout, QSpinBox, QDoubleSpinBox,
+    QGridLayout, QFileDialog, QSplitter, QGroupBox, QTextEdit, QMenu,
+    QMessageBox, QTableWidget, QTableWidgetItem, QCheckBox, QDial, QMenuBar,
+    QDialog, QInputDialog, QHeaderView, QProgressBar, QSizePolicy, QToolButton
+)  # QToolButton is required by the global EXPORT menu control.
+
+
+# =============================================================================
+# PROCESSOR SYNTAX / DESIGN CONTRACT
+# =============================================================================
+# Every identity-bearing processor follows the same English-readable form:
+#   INPUTS -> deterministic mathematical transform -> bounded state -> OUTPUT.
+# Oscillator: phase += 2π*f_inst/SR; this is the minimal discrete-time carrier.
+# AM: gain = 1 + depth*LFO; it changes energy without changing identity.
+# FM: f_inst = f*(1 + depth*LFO); it creates deterministic sideband families.
+# PM: phase += depth*sin(modulator); it changes timing while preserving carrier.
+# Meum field: sin(M*t + phase) is shared by audio/visual state so both domains
+# respond to the same invariant instead of inventing independent randomness.
+# Cyclic orbit: p(i)=(a*i+b) mod n, gcd(a,n)=1; this is a finite bijection and
+# therefore cannot repeat an index before the orbit closes.
+# Hash-noise: H(parameters,index) is used where texture is needed; it is
+# deterministic noise, so replaying the same state reproduces the same samples.
+# GOAVA: a state bit is included in audio, scenograph and game fingerprints,
+# so GOAVA ON/OFF is a genuine audiovisual state transition.
+# UI-only randomize buttons may still request fresh user variation; that action
+# is deliberately outside the canonical replay kernel.
+# =============================================================================
+
+
+try:
+    import scipy.io.wavfile as wavfile
+except ImportError:
+    wavfile = None
 
 try:
     import sounddevice as sd
-except Exception:
+    HAS_SOUNDDEVICE = True
+except ImportError:
     sd = None
+    HAS_SOUNDDEVICE = False
 
-# FIXED IMPORT BLOCK - correctly nested
 try:
-    from PyQt6.QtWidgets import (
-        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-        QPushButton, QLabel, QSpinBox, QDoubleSpinBox, QCheckBox,
-        QScrollArea, QGridLayout, QGroupBox, QSlider, QTextEdit, QFileDialog,
-        QTabWidget, QSplitter
-    )
-    from PyQt6.QtCore import Qt, QTimer
-    HAS_QT = True
-    try:
-        from fast_widgets import FastToggleButton, FastCanonicalToggle, FastGoavaToggle, FastStepGrid
-        HAS_FAST = True
-    except Exception as _e_fast:
-        HAS_FAST = False
-        FastToggleButton = None
-        FastCanonicalToggle = None
-        FastGoavaToggle = None
-        FastStepGrid = None
-except Exception as _e_qt:
-    HAS_QT = False
-    HAS_FAST = False
-    QApplication = object
-    QMainWindow = object
-    FastToggleButton = None
-    FastCanonicalToggle = None
-    FastGoavaToggle = None
-    FastStepGrid = None
+    import videogame_engine as _vge
+except Exception:
+    _vge = None  # optional companion — video-game generator
 
-MEUM = 1.19758073433
+# POWER_V3_MEUM_CORE — canonical Meum spatial-dynamic constant.
+# M = 1.19758073433... is treated as an invariant mathematical constant,
+# not as an arbitrary synth-control percentage. Derived values below are
+# reusable shortcuts so the DSP/visualizer/context engines do not repeatedly
+# re-encode the same Meum arithmetic.
+MEUM = 1.1975807343385265188
+MEUM_CONSTANT = MEUM  # backwards-compatible alias used throughout the codebase
 MEUM_MINUS_1 = MEUM - 1.0
-ONBOARD_INSTRUMENTS = ["kick","snare","hat","bass","lead","pad","fx1","fx2"]
-INSTRUMENT_DEFS = {
-    "kick": {"wave":"sine","adsr":(0.001,0.15,0.0,0.1),"base_hz":55},
-    "snare": {"wave":"noise","adsr":(0.002,0.12,0.0,0.12),"base_hz":180},
-    "hat": {"wave":"square","adsr":(0.001,0.05,0.0,0.05),"base_hz":400},
-    "bass": {"wave":"saw","adsr":(0.01,0.1,0.7,0.2),"base_hz":110},
-    "lead": {"wave":"tri","adsr":(0.02,0.2,0.8,0.3),"base_hz":220},
-    "pad": {"wave":"sine","adsr":(0.3,0.5,0.8,0.8),"base_hz":165},
-    "fx1": {"wave":"saw","adsr":(0.05,0.3,0.5,0.4),"base_hz":330},
-    "fx2": {"wave":"noise","adsr":(0.1,0.4,0.3,0.6),"base_hz":250},
-}
+MEUM_INV = 1.0 / MEUM
 
-def meum_effect_residue(seed:int,label:str)->float:
-    h=hashlib.sha256(f"{seed}::{label}".encode()).hexdigest()
-    return (int(h[:13],16)%10_000_000)/10_000_000.0
 
-def residue_to_bipolar(r:float)->float:
-    return r*2.0-1.0
-
-def residue_to_sym_drive(r:float,half_range:float=1.4)->float:
-    return 1.0+residue_to_bipolar(r)*half_range
-
-@dataclass(frozen=True)
-class CompositionToggleState:
-    seed:int=0
-    randomizer:bool=False
-    phaselock:bool=False
-    live_randomizer:bool=False
-    live_phaselock:bool=False
-    goava:bool=False
-    pkp_boost:bool=False
-    rand_param:bool=False
-    apply_algorithm:bool=False
-    apply_composition:bool=False
-    version:int=391
-    def fingerprint(self)->str:
-        payload="|".join(f"{k}={int(v) if isinstance(v,bool) else v}" for k,v in sorted(self.__dict__.items()))
-        return hashlib.sha256(payload.encode()).hexdigest()[:16]
-    def with_toggle(self,name:str,enabled:bool):
-        return replace(self,**{name:bool(enabled)})
-    def active_toggles(self)->Set[str]:
-        return {k for k in self.__dataclass_fields__ if isinstance(getattr(self,k),bool) and getattr(self,k)}
-
-@dataclass
-class ToggleLedgerEntry:
-    toggle:str
-    owned_keys:Set[str]=field(default_factory=set)
-    overwritten:Dict[str,Any]=field(default_factory=dict)
-    playlist_events_owned:Set[Tuple[int,int]]=field(default_factory=set)
-    fingerprint_at_apply:str=""
-
-class CompositionMemoryLedger:
-    def __init__(self):
-        self.entries:Dict[str,ToggleLedgerEntry]={}
-    def record_apply(self,toggle,owned_keys,overwritten,playlist_events,fp):
-        self.entries[toggle]=ToggleLedgerEntry(toggle,set(owned_keys),dict(overwritten),set(playlist_events),fp)
-    def record_remove(self,toggle):
-        return self.entries.pop(toggle,None)
-
-class DeterministicTriggerSculptor:
-    def __init__(self,seed:int,instrument_ids:List[str],steps:int=64):
-        self.seed=seed
-        self.instrument_ids=instrument_ids
-        self.steps=steps
-        self.masks={}
-        self._build()
-    def _build(self):
-        for inst in self.instrument_ids:
-            density=0.15+0.70*meum_effect_residue(self.seed,f"trig_density::{inst}")
-            phase=meum_effect_residue(self.seed,f"trig_phase::{inst}")
-            mask=[]
-            for t in range(self.steps):
-                r=meum_effect_residue(self.seed,f"trig::{inst}::{t}")
-                prob=density+0.2*math.sin(2*math.pi*(t/self.steps+phase))
-                mask.append(r < max(0.05,min(0.95,prob)))
-            self.masks[inst]=mask
-    def should_trigger(self,instrument_id,step):
-        return self.masks.get(instrument_id,[True]*self.steps)[step%self.steps]
-
-def _gen_randomizer(seed,name):
-    owned={f"{name}_script",f"{name}_fp"}
-    return owned,{},set(),{f"{name}_script":f"meum::{meum_effect_residue(seed,f'{name}:script'):.6f}",f"{name}_fp":"fp"}
-
-def _gen_goava(seed,name):
-    owned={"goava_drive","goava_pitch"}
-    return owned,{},set(),{"goava_drive":residue_to_sym_drive(meum_effect_residue(seed,"goava:drive"),1.4),"goava_pitch":residue_to_bipolar(meum_effect_residue(seed,"goava:pitch"))*2.0}
-
-def _gen_apply(seed,name):
-    owned={"script","algorithm_fingerprint"}
-    return owned,{},set(),{"script":f"algo::{meum_effect_residue(seed,'apply:script'):.6f}"}
-
-TOGGLE_GENERATORS={
-    "randomizer":_gen_randomizer,"phaselock":_gen_randomizer,"live_randomizer":_gen_randomizer,
-    "live_phaselock":_gen_randomizer,"goava":_gen_goava,"pkp_boost":_gen_randomizer,
-    "rand_param":_gen_randomizer,"apply_algorithm":_gen_apply,"apply_composition":_gen_apply,
-}
-
-class GrooveboxProject:
-    def __init__(self,seed=120,bpm=120,base_hz=432.0):
-        self.seed=seed
-        self.bpm=bpm
-        self.base_hz=base_hz
-        self.steps=64
-        self.instrument_ids=list(ONBOARD_INSTRUMENTS)
-        self.project_memory={}
-        self.playlist=[[None]*self.steps for _ in range(len(self.instrument_ids))]
-        self.toggle_state=CompositionToggleState(seed=seed)
-        self.ledger=CompositionMemoryLedger()
-        self.canonical_fingerprint=self.toggle_state.fingerprint()
-        self.trigger_sculptor=DeterministicTriggerSculptor(seed,self.instrument_ids,self.steps)
-        self._voice_phase_carry={inst:0.0 for inst in self.instrument_ids}
-        self.title=f"Groove {seed}"
-        self.rescale_all_memory()
-        self.redefine_all_events()
-    def rescale_all_memory(self):
-        self.trigger_sculptor=DeterministicTriggerSculptor(self.seed,self.instrument_ids,self.steps)
-    def redefine_all_events(self):
-        for t in range(len(self.playlist)):
-            for s in range(self.steps):
-                self.playlist[t][s]=None
-        for idx,inst_id in enumerate(self.instrument_ids):
-            for step in range(self.steps):
-                if self.trigger_sculptor.should_trigger(inst_id,step):
-                    self.playlist[idx][step]=f"{inst_id}@{step}"
-    def clear_runtime_caches(self):
-        self._voice_phase_carry={inst:0.0 for inst in self.instrument_ids}
-    def recompute_fingerprint(self):
-        self.canonical_fingerprint=self.toggle_state.fingerprint()
-    def on_toggle(self,toggle_name,enabled):
-        old=self.toggle_state
-        new=old.with_toggle(toggle_name,enabled)
-        # Use ledger via transaction logic simplified
-        if enabled:
-            owned,overwritten,ev,writes=TOGGLE_GENERATORS.get(toggle_name,_gen_randomizer)(self.seed,toggle_name)
-            for k,v in writes.items():
-                self.project_memory[k]=v
-            self.ledger.record_apply(toggle_name,owned,{},ev,new.fingerprint())
-        else:
-            entry=self.ledger.record_remove(toggle_name)
-            if entry:
-                for k in entry.owned_keys:
-                    self.project_memory.pop(k,None)
-        self.toggle_state=new
-        self.rescale_all_memory()
-        self.redefine_all_events()
-        self.clear_runtime_caches()
-        self.recompute_fingerprint()
-        return type('R',(),{'ok':True,'errors':[]})()
-
-if HAS_QT:
-    class MathematiciansGrooveboxApp(QMainWindow):
-        def __init__(self):
-            super().__init__()
-            self.project=GrooveboxProject(seed=120)
-            self.setWindowTitle(f"Groovebox V3.9.1 Fixed — id: {self.project.canonical_fingerprint}")
-            self.resize(1200,800)
-            central=QWidget()
-            self.setCentralWidget(central)
-            lay=QVBoxLayout(central)
-            lay.addWidget(QLabel(f"Groovebox Fixed — Fast widgets: {HAS_FAST}"))
-            def make_toggle(label,name,color_on="#2a9d8f"):
-                if HAS_FAST and FastToggleButton:
-                    btn=FastToggleButton(label,label,color_on,"#264653")
-                else:
-                    btn=QPushButton(label)
-                    btn.setCheckable(True)
-                btn.setChecked(getattr(self.project.toggle_state,name,False))
-                btn.toggled.connect(lambda c,n=name: self.handle_toggle(n,c))
-                return btn
-            row=QHBoxLayout()
-            self.randomizer_btn=make_toggle("RANDOMIZER","randomizer")
-            self.goava_btn=make_toggle("GOAVA DJ","goava","#ffb703")
-            row.addWidget(self.randomizer_btn)
-            row.addWidget(self.goava_btn)
-            lay.addLayout(row)
-            self.monitor=QLabel(f"id: {self.project.canonical_fingerprint}")
-            lay.addWidget(self.monitor)
-            if HAS_FAST and FastStepGrid:
-                self.grid=FastStepGrid(self.project.instrument_ids,64,16)
-                self.grid.cellToggled.connect(self.on_grid)
-                lay.addWidget(self.grid)
-            self.refresh_ui()
-        def handle_toggle(self,name,checked):
-            self.project.on_toggle(name,checked)
-            self.refresh_ui()
-        def refresh_ui(self):
-            self.monitor.setText(f"id: {self.project.canonical_fingerprint} Active: {self.project.toggle_state.active_toggles()}")
-            if hasattr(self,'grid') and self.grid:
-                self.grid.set_state(self.project.playlist,self.project.trigger_sculptor)
-        def on_grid(self,track,step,enabled):
-            self.project.playlist[track][step]=f"on" if enabled else None
-    MainWindow=MathematiciansGrooveboxApp
-else:
-    class MathematiciansGrooveboxApp:
-        def __init__(self):
-            self.project=GrooveboxProject(seed=120)
-        def show(self):
-            print("[No Qt] stub")
-    MainWindow=MathematiciansGrooveboxApp
-
-def main():
-    print("Groovebox V3.9.1 Fixed — SyntaxError at 25668 fixed")
-    if HAS_QT and not isinstance(QApplication,object):
-        app=QApplication(sys.argv)
-        win=MathematiciansGrooveboxApp()
-        win.show()
-        sys.exit(app.exec())
-    else:
-        proj=GrooveboxProject(seed=120)
-        proj.on_toggle("randomizer",True)
-        proj.on_toggle("randomizer",False)
-        print(f"Leak test: {proj.project_memory} empty? {len(proj.project_memory)==0}")
-
-if __name__=="__main__":
-    main()
-
-@dataclass(frozen=True)
-class CompositionToggleState:
-    seed:int=0
-    randomizer:bool=False
-    phaselock:bool=False
-    live_randomizer:bool=False
-    live_phaselock:bool=False
-    goava:bool=False
-    pkp_boost:bool=False
-    rand_param:bool=False
-    apply_algorithm:bool=False
-    apply_composition:bool=False
-    version:int=391
-    def fingerprint(self)->str:
-        payload="|".join(f"{k}={int(v) if isinstance(v,bool) else v}" for k,v in sorted(self.__dict__.items()))
-        return hashlib.sha256(payload.encode()).hexdigest()[:16]
-    def with_toggle(self,name:str,enabled:bool):
-        return replace(self,**{name:bool(enabled)})
-    def active_toggles(self)->Set[str]:
-        return {k for k in self.__dataclass_fields__ if isinstance(getattr(self,k),bool) and getattr(self,k)}
-
-@dataclass
-class ToggleLedgerEntry:
-    toggle:str
-    owned_keys:Set[str]=field(default_factory=set)
-    overwritten:Dict[str,Any]=field(default_factory=dict)
-    playlist_events_owned:Set[Tuple[int,int]]=field(default_factory=set)
-    fingerprint_at_apply:str=""
-
-class CompositionMemoryLedger:
-    def __init__(self):
-        self.entries:Dict[str,ToggleLedgerEntry]={}
-    def record_apply(self,toggle,owned_keys,overwritten,playlist_events,fp):
-        self.entries[toggle]=ToggleLedgerEntry(toggle,set(owned_keys),dict(overwritten),set(playlist_events),fp)
-    def record_remove(self,toggle):
-        return self.entries.pop(toggle,None)
-
-class DeterministicTriggerSculptor:
-    def __init__(self,seed:int,instrument_ids:List[str],steps:int=64):
-        self.seed=seed
-        self.instrument_ids=instrument_ids
-        self.steps=steps
-        self.masks={}
-        self._build()
-    def _build(self):
-        for inst in self.instrument_ids:
-            density=0.15+0.70*meum_effect_residue(self.seed,f"trig_density::{inst}")
-            phase=meum_effect_residue(self.seed,f"trig_phase::{inst}")
-            mask=[]
-            for t in range(self.steps):
-                r=meum_effect_residue(self.seed,f"trig::{inst}::{t}")
-                prob=density+0.2*math.sin(2*math.pi*(t/self.steps+phase))
-                mask.append(r < max(0.05,min(0.95,prob)))
-            self.masks[inst]=mask
-    def should_trigger(self,instrument_id,step):
-        return self.masks.get(instrument_id,[True]*self.steps)[step%self.steps]
-
-def _gen_randomizer(seed,name):
-    owned={f"{name}_script",f"{name}_fp"}
-    return owned,{},set(),{f"{name}_script":f"meum::{meum_effect_residue(seed,f'{name}:script'):.6f}",f"{name}_fp":"fp"}
-
-def _gen_goava(seed,name):
-    owned={"goava_drive","goava_pitch"}
-    return owned,{},set(),{"goava_drive":residue_to_sym_drive(meum_effect_residue(seed,"goava:drive"),1.4),"goava_pitch":residue_to_bipolar(meum_effect_residue(seed,"goava:pitch"))*2.0}
-
-def _gen_apply(seed,name):
-    owned={"script","algorithm_fingerprint"}
-    return owned,{},set(),{"script":f"algo::{meum_effect_residue(seed,'apply:script'):.6f}"}
-
-TOGGLE_GENERATORS={
-    "randomizer":_gen_randomizer,"phaselock":_gen_randomizer,"live_randomizer":_gen_randomizer,
-    "live_phaselock":_gen_randomizer,"goava":_gen_goava,"pkp_boost":_gen_randomizer,
-    "rand_param":_gen_randomizer,"apply_algorithm":_gen_apply,"apply_composition":_gen_apply,
-}
-
-class GrooveboxProject:
-    def __init__(self,seed=120,bpm=120,base_hz=432.0):
-        self.seed=seed
-        self.bpm=bpm
-        self.base_hz=base_hz
-        self.steps=64
-        self.instrument_ids=list(ONBOARD_INSTRUMENTS)
-        self.project_memory={}
-        self.playlist=[[None]*self.steps for _ in range(len(self.instrument_ids))]
-        self.toggle_state=CompositionToggleState(seed=seed)
-        self.ledger=CompositionMemoryLedger()
-        self.canonical_fingerprint=self.toggle_state.fingerprint()
-        self.trigger_sculptor=DeterministicTriggerSculptor(seed,self.instrument_ids,self.steps)
-        self._voice_phase_carry={inst:0.0 for inst in self.instrument_ids}
-        self.title=f"Groove {seed}"
-        self.rescale_all_memory()
-        self.redefine_all_events()
-    def rescale_all_memory(self):
-        self.trigger_sculptor=DeterministicTriggerSculptor(self.seed,self.instrument_ids,self.steps)
-    def redefine_all_events(self):
-        for t in range(len(self.playlist)):
-            for s in range(self.steps):
-                self.playlist[t][s]=None
-        for idx,inst_id in enumerate(self.instrument_ids):
-            for step in range(self.steps):
-                if self.trigger_sculptor.should_trigger(inst_id,step):
-                    self.playlist[idx][step]=f"{inst_id}@{step}"
-    def clear_runtime_caches(self):
-        self._voice_phase_carry={inst:0.0 for inst in self.instrument_ids}
-    def recompute_fingerprint(self):
-        self.canonical_fingerprint=self.toggle_state.fingerprint()
-    def on_toggle(self,toggle_name,enabled):
-        old=self.toggle_state
-        new=old.with_toggle(toggle_name,enabled)
-        # Use ledger via transaction logic simplified
-        if enabled:
-            owned,overwritten,ev,writes=TOGGLE_GENERATORS.get(toggle_name,_gen_randomizer)(self.seed,toggle_name)
-            for k,v in writes.items():
-                self.project_memory[k]=v
-            self.ledger.record_apply(toggle_name,owned,{},ev,new.fingerprint())
-        else:
-            entry=self.ledger.record_remove(toggle_name)
-            if entry:
-                for k in entry.owned_keys:
-                    self.project_memory.pop(k,None)
-        self.toggle_state=new
-        self.rescale_all_memory()
-        self.redefine_all_events()
-        self.clear_runtime_caches()
-        self.recompute_fingerprint()
-        return type('R',(),{'ok':True,'errors':[]})()
-
-if HAS_QT:
-    class MathematiciansGrooveboxApp(QMainWindow):
-        def __init__(self):
-            super().__init__()
-            self.project=GrooveboxProject(seed=120)
-            self.setWindowTitle(f"Groovebox V3.9.1 Fixed — id: {self.project.canonical_fingerprint}")
-            self.resize(1200,800)
-            central=QWidget()
-            self.setCentralWidget(central)
-            lay=QVBoxLayout(central)
-            lay.addWidget(QLabel(f"Groovebox Fixed — Fast widgets: {HAS_FAST}"))
-            def make_toggle(label,name,color_on="#2a9d8f"):
-                if HAS_FAST and FastToggleButton:
-                    btn=FastToggleButton(label,label,color_on,"#264653")
-                else:
-                    btn=QPushButton(label)
-                    btn.setCheckable(True)
-                btn.setChecked(getattr(self.project.toggle_state,name,False))
-                btn.toggled.connect(lambda c,n=name: self.handle_toggle(n,c))
-                return btn
-            row=QHBoxLayout()
-            self.randomizer_btn=make_toggle("RANDOMIZER","randomizer")
-            self.goava_btn=make_toggle("GOAVA DJ","goava","#ffb703")
-            row.addWidget(self.randomizer_btn)
-            row.addWidget(self.goava_btn)
-            lay.addLayout(row)
-            self.monitor=QLabel(f"id: {self.project.canonical_fingerprint}")
-            lay.addWidget(self.monitor)
-            if HAS_FAST and FastStepGrid:
-                self.grid=FastStepGrid(self.project.instrument_ids,64,16)
-                self.grid.cellToggled.connect(self.on_grid)
-                lay.addWidget(self.grid)
-            self.refresh_ui()
-        def handle_toggle(self,name,checked):
-            self.project.on_toggle(name,checked)
-            self.refresh_ui()
-        def refresh_ui(self):
-            self.monitor.setText(f"id: {self.project.canonical_fingerprint} Active: {self.project.toggle_state.active_toggles()}")
-            if hasattr(self,'grid') and self.grid:
-                self.grid.set_state(self.project.playlist,self.project.trigger_sculptor)
-        def on_grid(self,track,step,enabled):
-            self.project.playlist[track][step]=f"on" if enabled else None
-    MainWindow=MathematiciansGrooveboxApp
-else:
-    class MathematiciansGrooveboxApp:
-        def __init__(self):
-            self.project=GrooveboxProject(seed=120)
-        def show(self):
-            print("[No Qt] stub")
-    MainWindow=MathematiciansGrooveboxApp
-
-def main():
-    print("Groovebox V3.9.1 Fixed — SyntaxError at 25668 fixed")
-    if HAS_QT and not isinstance(QApplication,object):
-        app=QApplication(sys.argv)
-        win=MathematiciansGrooveboxApp()
-        win.show()
-        sys.exit(app.exec())
-    else:
-        proj=GrooveboxProject(seed=120)
-        proj.on_toggle("randomizer",True)
-        proj.on_toggle("randomizer",False)
-        print(f"Leak test: {proj.project_memory} empty? {len(proj.project_memory)==0}")
-
-if __name__=="__main__":
-    main()
-
-MEUM_INV = 1.0/1.19758073433
-# ---------------------------------------------------------------------------
-# Atomic Toggle State — order-independent fingerprint
-# ---------------------------------------------------------------------------
-@dataclass(frozen=True)
-class CompositionToggleState:
-    seed: int = 0
-    randomizer: bool = False
-    phaselock: bool = False
-    live_randomizer: bool = False
-    live_phaselock: bool = False
-    goava: bool = False
-    pkp_boost: bool = False
-    rand_param: bool = False
-    apply_algorithm: bool = False
-    apply_composition: bool = False
-    version: int = 391
-
-    def fingerprint(self) -> str:
-        payload = "|".join(f"{k}={int(v) if isinstance(v,bool) else v}" for k,v in sorted(self.__dict__.items()))
-        return hashlib.sha256(payload.encode()).hexdigest()[:16]
-
-    def with_toggle(self, name: str, enabled: bool):
-        if not hasattr(self, name):
-            raise ValueError(name)
-        return replace(self, **{name: bool(enabled)})
-
-    def active_toggles(self) -> Set[str]:
-        return {k for k in self.__dataclass_fields__ if isinstance(getattr(self,k), bool) and getattr(self,k)}
-
-@dataclass
-class ToggleLedgerEntry:
-    toggle: str
-    owned_keys: Set[str] = field(default_factory=set)
-    overwritten: Dict[str, Any] = field(default_factory=dict)
-    playlist_events_owned: Set[Tuple[int,int]] = field(default_factory=set)
-    fingerprint_at_apply: str = ""
-
-class CompositionMemoryLedger:
-    def __init__(self):
-        self.entries: Dict[str, ToggleLedgerEntry] = {}
-    def record_apply(self, toggle, owned_keys, overwritten, playlist_events, fp):
-        self.entries[toggle]=ToggleLedgerEntry(toggle, set(owned_keys), dict(overwritten), set(playlist_events), fp)
-    def record_remove(self, toggle):
-        return self.entries.pop(toggle, None)
-
-class DeterministicTriggerSculptor:
-    def __init__(self, seed: int, instrument_ids: List[str], steps: int = 64):
-        self.seed=seed
-        self.instrument_ids=instrument_ids
-        self.steps=steps
-        self.masks={}
-        self._build()
-    def _build(self):
-        for inst in self.instrument_ids:
-            density=0.15+0.70*meum_effect_residue(self.seed, f"trig_density::{inst}")
-            phase=meum_effect_residue(self.seed, f"trig_phase::{inst}")
-            mask=[]
-            for t in range(self.steps):
-                r=meum_effect_residue(self.seed, f"trig::{inst}::{t}")
-                prob=density+0.2*math.sin(2*math.pi*(t/self.steps+phase))
-                mask.append(r < max(0.05,min(0.95,prob)))
-            self.masks[inst]=mask
-    def should_trigger(self, instrument_id, step):
-        return self.masks.get(instrument_id, [True]*self.steps)[step % self.steps]
-
-@dataclass
-class GoavaVoice:
-    drive: float = 1.0
-    pitch_shift_semitones: float = 0.0
-    dc_offset: float = 0.0
-
-def compute_goava_params(seed, instrument_id, t, bpm):
-    r_drive=meum_effect_residue(seed, f"goava_drive::{instrument_id}::{int(t*100)}")
-    r_pitch=meum_effect_residue(seed, f"goava_pitch::{instrument_id}::{int(t*100)}")
-    r_dc=meum_effect_residue(seed, f"goava_dc::{instrument_id}")
-    drive=residue_to_sym_drive(r_drive, 1.4)
-    drive=max(0.2,min(2.4,drive))
-    pitch=residue_to_bipolar(r_pitch)*2.0
-    dc=residue_to_bipolar(r_dc)*0.02
-    mod=math.sin(2*math.pi*t*MEUM/4.0)*0.15*residue_to_bipolar(r_pitch)
-    return GoavaVoice(drive+mod, pitch, dc)
-
-class CompositionTransaction:
-    def __init__(self, project_ref, ledger):
-        self.project=project_ref
-        self.ledger=ledger
-    def apply_toggle(self, toggle_name, new_state, generator_fn):
-        if toggle_name in self.ledger.entries:
-            self.remove_toggle(toggle_name, new_state)
-        owned_keys, overwritten, playlist_events, writes = generator_fn(self.project.seed, toggle_name)
-        for k,v in writes.items():
-            if k in self.project.project_memory and k not in overwritten:
-                overwritten[k]=self.project.project_memory[k]
-            elif k not in self.project.project_memory:
-                overwritten.setdefault(k,None)
-            self.project.project_memory[k]=v
-        self.ledger.record_apply(toggle_name, owned_keys, overwritten, playlist_events, new_state.fingerprint())
-        self.project.rescale_all_memory()
-        self.project.redefine_all_events()
-        self.project.recompute_fingerprint()
-        return new_state
-    def remove_toggle(self, toggle_name, new_state):
-        entry=self.ledger.record_remove(toggle_name)
-        if not entry:
-            return new_state
-        for k in entry.owned_keys:
-            old=entry.overwritten.get(k)
-            if old is None:
-                self.project.project_memory.pop(k,None)
-            else:
-                self.project.project_memory[k]=old
-        for track,step in entry.playlist_events_owned:
-            try:
-                if 0 <= track < len(self.project.playlist) and 0 <= step < len(self.project.playlist[0]):
-                    self.project.playlist[track][step]=None
-            except:
-                pass
-        self.project.rescale_all_memory()
-        self.project.redefine_all_events()
-        self.project.clear_runtime_caches()
-        self.project.recompute_fingerprint()
-        return new_state
-
-@dataclass
-class AuditResult:
-    ok: bool
-    errors: List[str]
-    fingerprint: str
-
-class CompositionAudit:
-    def __init__(self, project_ref):
-        self.project=project_ref
-    def audit(self):
-        errors=[]
-        active=self.project.toggle_state.active_toggles()
-        ledger_toggles=set(self.project.ledger.entries.keys())
-        if active!=ledger_toggles:
-            errors.append(f"Toggle/ledger mismatch: active {active} vs ledger {ledger_toggles}")
-        if self.project.toggle_state.goava:
-            pitches=[]
-            for inst in self.project.instrument_ids:
-                p=compute_goava_params(self.project.seed, inst, 0.0, self.project.bpm).pitch_shift_semitones
-                pitches.append(p)
-            mean_pitch=sum(pitches)/len(pitches) if pitches else 0
-            if abs(mean_pitch)>0.3:
-                errors.append(f"GOAVA mean pitch bias {mean_pitch:.3f}")
-        return AuditResult(len(errors)==0, errors, self.project.toggle_state.fingerprint())
-
-class MeumEffectChain:
-    def __init__(self, seed):
-        self.seed=seed
-    def effect(self, label, t, base=1.0):
-        r=meum_effect_residue(self.seed, label)
-        return base*(1.0+residue_to_bipolar(r)*0.5*math.sin(MEUM*t))
-
-class ToggleUndoStack:
-    def __init__(self, max_depth=64):
-        self.stack=[]
-        self.max_depth=max_depth
-    def push(self, state, memory_snapshot):
-        self.stack.append((state, dict(memory_snapshot)))
-        if len(self.stack)>self.max_depth:
-            self.stack.pop(0)
-    def pop(self):
-        return self.stack.pop() if self.stack else None
-
-def _gen_randomizer(seed, name):
-    owned={f"{name}_script", f"{name}_domain", f"{name}_wire", f"{name}_params", f"{name}_fp"}
-    overwritten={}
-    playlist_events={(0,i) for i in range(8)}
-    writes={
-        f"{name}_script": f"meum_script::{meum_effect_residue(seed, f'{name}:script'):.6f}",
-        f"{name}_domain": f"meum_domain::{meum_effect_residue(seed, f'{name}:domain'):.6f}",
-        f"{name}_wire": f"meum_wire::{meum_effect_residue(seed, f'{name}:wire'):.6f}",
-        f"{name}_params": {"seed_weight": 0.72 + residue_to_bipolar(meum_effect_residue(seed, f'{name}:weight'))*0.1},
-        f"{name}_fp": CompositionToggleState(seed=seed).fingerprint(),
-    }
-    return owned, overwritten, playlist_events, writes
-
-def _gen_goava(seed, name):
-    owned={"goava_drive","goava_pitch","goava_dc","goava_fp"}
-    overwritten={}
-    playlist_events=set()
-    drive=residue_to_sym_drive(meum_effect_residue(seed, "goava:drive"),1.4)
-    pitch=residue_to_bipolar(meum_effect_residue(seed, "goava:pitch"))*2.0
-    writes={"goava_drive":drive,"goava_pitch":pitch,"goava_dc":residue_to_bipolar(meum_effect_residue(seed,"goava:dc"))*0.02,"goava_fp":CompositionToggleState(seed=seed, goava=True).fingerprint()}
-    return owned, overwritten, playlist_events, writes
-
-def _gen_apply_algo(seed, name):
-    owned={"script","domain","wire","params","algorithm_fingerprint"}
-    overwritten={}
-    playlist_events=set()
-    writes={"script":f"algo::{meum_effect_residue(seed,'apply_algo:script'):.6f}","algorithm_fingerprint":CompositionToggleState(seed=seed, apply_algorithm=True).fingerprint()}
-    return owned, overwritten, playlist_events, writes
-
-def _gen_apply_comp(seed, name):
-    owned={"composition_canonical","composition_steps","composition_fingerprint"}
-    overwritten={}
-    playlist_events=set()
-    writes={"composition_canonical":f"comp::{meum_effect_residue(seed,'apply_comp:canon'):.6f}","composition_fingerprint":CompositionToggleState(seed=seed, apply_composition=True).fingerprint()}
-    return owned, overwritten, playlist_events, writes
-
-TOGGLE_GENERATORS={
-    "randomizer":_gen_randomizer,
-    "phaselock":_gen_randomizer,
-    "live_randomizer":_gen_randomizer,
-    "live_phaselock":_gen_randomizer,
-    "goava":_gen_goava,
-    "pkp_boost":_gen_randomizer,
-    "rand_param":_gen_randomizer,
-    "apply_algorithm":_gen_apply_algo,
-    "apply_composition":_gen_apply_comp,
-}
-
-class GrooveboxProject:
-    def __init__(self, seed=120, bpm=120, base_hz=432.0):
-        self.seed=seed
-        self.bpm=bpm
-        self.base_hz=base_hz
-        self.steps=64
-        self.instrument_ids=list(ONBOARD_INSTRUMENTS)
-        self.project_memory={}
-        self.playlist=[[None]*self.steps for _ in range(len(self.instrument_ids))]
-        self.toggle_state=CompositionToggleState(seed=seed)
-        self.ledger=CompositionMemoryLedger()
-        self.transaction=CompositionTransaction(self, self.ledger)
-        self.audit_layer=CompositionAudit(self)
-        self.undo_stack=ToggleUndoStack()
-        self.trigger_sculptor=DeterministicTriggerSculptor(seed, self.instrument_ids, self.steps)
-        self.meum_chain=MeumEffectChain(seed)
-        self._voice_phase_carry={inst:0.0 for inst in self.instrument_ids}
-        self._cached_waveforms={}
-        self.canonical_fingerprint=self.toggle_state.fingerprint()
-        self.volume=0.8
-        self.hard_clip_threshold=len(self.instrument_ids)*HARD_CLIP_FACTOR*1.0/MEUM_MINUS_1
-        self.title=self.generate_title(seed)
-        self.patch_connections=[]
-        self.rescale_all_memory()
-        self.redefine_all_events()
-
-    def generate_title(self, seed):
-        adjectives=["Meum","Phaselocked","Euclidean","Goava","Residue","Canonical","Deterministic"]
-        nouns=["Loom","Lattice","Residue","Sequence","Topology","Geometry","Fingerprint"]
-        r1=meum_effect_residue(seed, "title:adj")
-        r2=meum_effect_residue(seed, "title:noun")
-        return f"{adjectives[int(r1*len(adjectives)) % len(adjectives)]} {nouns[int(r2*len(nouns)) % len(nouns)]} {seed}"
-
-    def rescale_all_memory(self):
-        self.hard_clip_threshold=len(self.instrument_ids)*HARD_CLIP_FACTOR*1.0/MEUM_MINUS_1
-        self.trigger_sculptor=DeterministicTriggerSculptor(self.seed, self.instrument_ids, self.steps)
-        self.meum_chain=MeumEffectChain(self.seed)
-        self.title=self.generate_title(self.seed)
-
-    def redefine_all_events(self):
-        for t in range(len(self.playlist)):
-            for s in range(self.steps):
-                self.playlist[t][s]=None
-        for idx, inst_id in enumerate(self.instrument_ids):
-            for step in range(self.steps):
-                if self.trigger_sculptor.should_trigger(inst_id, step):
-                    if self.playlist[idx][step] is None:
-                        self.playlist[idx][step]=f"{inst_id}@{step}:{meum_effect_residue(self.seed, f'event::{inst_id}::{step}'):.4f}"
-
-    def clear_runtime_caches(self):
-        self._voice_phase_carry={inst:0.0 for inst in self.instrument_ids}
-        self._cached_waveforms.clear()
-
-    def recompute_fingerprint(self):
-        self.canonical_fingerprint=self.toggle_state.fingerprint()
-
-    def on_toggle(self, toggle_name, enabled):
-        self.undo_stack.push(self.toggle_state, self.project_memory)
-        old_state=self.toggle_state
-        new_state=old_state.with_toggle(toggle_name, enabled)
-        if enabled:
-            gen=TOGGLE_GENERATORS.get(toggle_name, _gen_randomizer)
-            self.toggle_state=self.transaction.apply_toggle(toggle_name, new_state, gen)
-        else:
-            self.toggle_state=self.transaction.remove_toggle(toggle_name, new_state)
-        result=self.audit_layer.audit()
-        if not result.ok:
-            self.rescale_all_memory()
-            self.redefine_all_events()
-            self.recompute_fingerprint()
-        return result
-
-    def to_dict(self):
-        return {"seed":self.seed,"bpm":self.bpm,"base_hz":self.base_hz,"toggle_state":self.toggle_state.__dict__,"project_memory":self.project_memory,"playlist":self.playlist,"fingerprint":self.canonical_fingerprint,"instrument_ids":self.instrument_ids,"patch_connections":self.patch_connections,"version":"3.9.1"}
-
-    def save(self, path):
-        self.recompute_fingerprint()
-        with open(path,"w") as f:
-            json.dump(self.to_dict(), f, indent=2)
-
-    def load(self, path):
-        with open(path,"r") as f:
-            data=json.load(f)
-        self.seed=data.get("seed", self.seed)
-        ts_dict=data.get("toggle_state", {})
-        self.toggle_state=CompositionToggleState(**{k:v for k,v in ts_dict.items() if k in CompositionToggleState.__dataclass_fields__})
-        self.project_memory=data.get("project_memory", {})
-        self.playlist=data.get("playlist", self.playlist)
-        self.patch_connections=data.get("patch_connections", [])
-        self.ledger=CompositionMemoryLedger()
-        for t in self.toggle_state.active_toggles():
-            gen=TOGGLE_GENERATORS.get(t)
-            if gen:
-                owned, overwritten, playlist_events, writes=gen(self.seed, t)
-                self.ledger.record_apply(t, owned, {}, playlist_events, self.toggle_state.fingerprint())
-        self.rescale_all_memory()
-        self.redefine_all_events()
-        self.recompute_fingerprint()
-
-    def render_buffer(self, t_start, n_frames, sr=96000):
-        out=np.zeros(n_frames, dtype=np.float32)
-        for idx, inst_id in enumerate(self.instrument_ids):
-            idef=INSTRUMENT_DEFS[inst_id]
-            step=int((t_start*self.bpm/60.0*4) % self.steps)
-            if not self.trigger_sculptor.should_trigger(inst_id, step):
-                continue
-            phase=self._voice_phase_carry.get(inst_id,0.0)
-            freq=idef["base_hz"]
-            if self.toggle_state.goava:
-                goava=compute_goava_params(self.seed, inst_id, t_start, self.bpm)
-                freq=freq*(2.0**(goava.pitch_shift_semitones/12.0))
-                amp_mod=goava.drive
-            else:
-                amp_mod=1.0
-            t=np.arange(n_frames)/sr
-            if idef["wave"]=="sine":
-                wave=np.sin(2*np.pi*freq*t+phase*2*np.pi)
-            elif idef["wave"]=="saw":
-                wave=2.0*((freq*t+phase)%1.0)-1.0
-            elif idef["wave"]=="square":
-                wave=np.sign(np.sin(2*math.pi*freq*t+phase*2*math.pi))
-            elif idef["wave"]=="tri":
-                wave=2.0*np.abs(2.0*((freq*t+phase)%1.0)-1.0)-1.0
-            else:
-                wave=np.array([residue_to_bipolar(meum_effect_residue(self.seed, f"noise::{inst_id}::{int((t_start*sr+i)*7)}")) for i in range(n_frames)])
-            env=np.ones(n_frames)
-            meum_amp=self.meum_chain.effect(f"amp::{inst_id}", t_start, base=1.0)
-            buf=wave*env*WAV_SYNTH_AMP*amp_mod*meum_amp
-            out+=buf*0.3
-            self._voice_phase_carry[inst_id]=(phase+n_frames*freq/sr)%1.0
-        peak=np.max(np.abs(out)) if out.size else 0.0
-        if peak>1e-9:
-            out=out*(self.volume*WAV_MAX/peak)
-        thresh=self.hard_clip_threshold
-        out=np.clip(out, -thresh, thresh)
-        out=np.clip(out, -1.0, 1.0)
-        return out
-
-# ---------------------------------------------------------------------------
-# Qt UI — uses Fast widgets when available
-# ---------------------------------------------------------------------------
-if HAS_QT:
-    class MathematiciansGrooveboxApp(QMainWindow):
-        def __init__(self):
-            super().__init__()
-            self.project=GrooveboxProject(seed=120)
-            self.setWindowTitle(f"Groovebox V3.9.1 Fast — {self.project.title} — id: {self.project.canonical_fingerprint}")
-            self.resize(int(1920*0.92), int(1080*0.92))
-            central=QWidget()
-            self.setCentralWidget(central)
-            main_layout=QHBoxLayout(central)
-            # GLOBAL
-            from PyQt6.QtWidgets import QGroupBox
-            global_panel=QGroupBox("GLOBAL")
-            global_layout=QVBoxLayout(global_panel)
-            seed_row=QHBoxLayout()
-            seed_row.addWidget(QLabel("Seed:"))
-            self.seed_spin=QSpinBox()
-            self.seed_spin.setRange(0,999999)
-            self.seed_spin.setValue(self.project.seed)
-            self.seed_spin.valueChanged.connect(self.on_seed_changed)
-            seed_row.addWidget(self.seed_spin)
-            global_layout.addLayout(seed_row)
-
-            # Canonical toggles — use fast if available
-            def make_toggle(label, name, color_on="#2a9d8f", color_off="#264653"):
-                if HAS_FAST and FastToggleButton:
-                    btn=FastToggleButton(label, label, color_on, color_off)
-                else:
-                    btn=QPushButton(label)
-                    btn.setCheckable(True)
-                btn.setChecked(getattr(self.project.toggle_state, name, False))
-                btn.toggled.connect(lambda c, n=name: self.handle_toggle(n,c))
-                return btn
-
-            self.randomizer_btn=make_toggle("RANDOMIZER","randomizer")
-            self.phaselock_btn=make_toggle("PHASELOCK","phaselock")
-            self.live_rand_btn=make_toggle("LIVE/EUCL RANDOMIZER","live_randomizer")
-            self.live_phaselock_btn=make_toggle("LIVE/EUCL PHASELOCK","live_phaselock")
-
-            if HAS_FAST and FastGoavaToggle:
-                self.goava_btn=FastGoavaToggle()
-                self.goava_btn.setChecked(self.project.toggle_state.goava)
-                self.goava_btn.toggled.connect(lambda c: self.handle_toggle("goava",c))
-            else:
-                self.goava_btn=make_toggle("GOAVA DJ","goava","#ffb703","#5a4a2a")
-
-            self.pkp_btn=make_toggle("PKP BOOST","pkp_boost")
-            self.rand_param_btn=make_toggle("RAND PARAM","rand_param")
-
-            if HAS_FAST and FastCanonicalToggle:
-                self.apply_algo_btn=FastCanonicalToggle()
-                self.apply_comp_btn=FastCanonicalToggle()
-            else:
-                self.apply_algo_btn=QPushButton("APPLY")
-                self.apply_algo_btn.setCheckable(True)
-                self.apply_comp_btn=QPushButton("APPLY")
-                self.apply_comp_btn.setCheckable(True)
-            self.apply_algo_btn.setChecked(self.project.toggle_state.apply_algorithm)
-            self.apply_comp_btn.setChecked(self.project.toggle_state.apply_composition)
-            self.apply_algo_btn.toggled.connect(lambda c: self.handle_toggle("apply_algorithm",c))
-            self.apply_comp_btn.toggled.connect(lambda c: self.handle_toggle("apply_composition",c))
-
-            # Layout toggles
-            canon_box=QGroupBox("GLOBAL · COMPOSITION CANONICALS")
-            canon_lay=QGridLayout(canon_box)
-            canon_lay.addWidget(self.randomizer_btn,0,0)
-            canon_lay.addWidget(self.phaselock_btn,0,1)
-            canon_lay.addWidget(self.live_rand_btn,1,0)
-            canon_lay.addWidget(self.live_phaselock_btn,1,1)
-            global_layout.addWidget(canon_box)
-
-            live_box=QGroupBox("LIVE DJ")
-            live_lay=QHBoxLayout(live_box)
-            live_lay.addWidget(self.goava_btn)
-            live_lay.addWidget(self.pkp_btn)
-            live_lay.addWidget(self.rand_param_btn)
-            global_layout.addWidget(live_box)
-
-            apply_box=QGroupBox("APPLY (now toggles)")
-            apply_lay=QHBoxLayout(apply_box)
-            apply_lay.addWidget(QLabel("Algorithm:"))
-            apply_lay.addWidget(self.apply_algo_btn)
-            apply_lay.addWidget(QLabel("Composition:"))
-            apply_lay.addWidget(self.apply_comp_btn)
-            global_layout.addWidget(apply_box)
-
-            self.monitor_label=QLabel(f"id: {self.project.canonical_fingerprint}")
-            global_layout.addWidget(self.monitor_label)
-
-            exp_row=QHBoxLayout()
-            self.save_btn=QPushButton("Save")
-            self.load_btn=QPushButton("Load")
-            self.undo_btn=QPushButton("Undo")
-            exp_row.addWidget(self.save_btn)
-            exp_row.addWidget(self.load_btn)
-            exp_row.addWidget(self.undo_btn)
-            global_layout.addLayout(exp_row)
-            self.save_btn.clicked.connect(self.on_save)
-            self.load_btn.clicked.connect(self.on_load)
-            self.undo_btn.clicked.connect(self.on_undo)
-
-            # Step sequencer — fast grid if available
-            local_panel=QGroupBox("LOCAL — Step Sequencer (Fast Grid, no burst)")
-            local_lay=QVBoxLayout(local_panel)
-            if HAS_FAST and FastStepGrid:
-                self.step_grid=FastStepGrid(instrument_ids=self.project.instrument_ids, steps=64, visible_steps=16)
-                self.step_grid.cellToggled.connect(self.on_step_grid_toggled)
-                local_lay.addWidget(self.step_grid)
-            else:
-                # Fallback to button grid
-                from PyQt6.QtWidgets import QGridLayout as QGL
-                seq_box=QGroupBox("Steps")
-                seq_lay=QGL(seq_box)
-                self.seq_buttons={}
-                for r, inst in enumerate(self.project.instrument_ids):
-                    seq_lay.addWidget(QLabel(inst), r, 0)
-                    for c in range(16):
-                        btn=QPushButton("")
-                        btn.setFixedSize(28,28)
-                        btn.setCheckable(True)
-                        self.seq_buttons[(r,c)]=btn
-                        seq_lay.addWidget(btn, r, c+1)
-                local_lay.addWidget(seq_box)
-                self.step_grid=None
-
-            from PyQt6.QtWidgets import QSplitter, QScrollArea
-            splitter=QSplitter(Qt.Orientation.Horizontal)
-            gs=QScrollArea()
-            gs.setWidgetResizable(True)
-            gs.setWidget(global_panel)
-            splitter.addWidget(gs)
-            splitter.addWidget(local_panel)
-            main_layout.addWidget(splitter)
-            self.refresh_ui()
-            self.timer=QTimer()
-            self.timer.timeout.connect(lambda: None)
-            self.timer.start(100)
-
-        def on_seed_changed(self, val):
-            self.project.seed=val
-            from dataclasses import replace
-            self.project.toggle_state=replace(self.project.toggle_state, seed=val)
-            self.project.rescale_all_memory()
-            self.project.redefine_all_events()
-            self.project.recompute_fingerprint()
-            self.refresh_ui()
-
-        def handle_toggle(self, name, checked):
-            if name.startswith("apply_"):
-                btn=self.apply_algo_btn if name=="apply_algorithm" else self.apply_comp_btn
-                btn.setText("APPLIED" if checked else "APPLY")
-            result=self.project.on_toggle(name, checked)
-            self.refresh_ui()
-            if not result.ok:
-                print(f"[AUDIT] {name} {checked} {result.errors}")
-
-        def refresh_ui(self):
-            self.setWindowTitle(f"Groovebox V3.9.1 Fast — {self.project.title} — id: {self.project.canonical_fingerprint}")
-            self.monitor_label.setText(f"id: {self.project.canonical_fingerprint} — {self.project.title}\nActive: {self.project.toggle_state.active_toggles()}\nMemory: {list(self.project.project_memory.keys())[:6]}")
-            if self.step_grid:
-                self.step_grid.set_state(self.project.playlist, self.project.trigger_sculptor)
-            else:
-                for (r,c), btn in getattr(self,'seq_buttons',{}).items():
-                    inst=self.project.instrument_ids[r]
-                    should=self.project.trigger_sculptor.should_trigger(inst,c)
-                    is_active=self.project.playlist[r][c] is not None
-                    btn.setChecked(is_active)
-
-        def on_step_grid_toggled(self, track, step, enabled):
-            if enabled:
-                self.project.playlist[track][step]=f"{self.project.instrument_ids[track]}@{step}"
-            else:
-                self.project.playlist[track][step]=None
-
-        def on_save(self):
-            path,_=QFileDialog.getSaveFileName(self,"Save","project.json","JSON (*.json)")
-            if path:
-                self.project.save(path)
-        def on_load(self):
-            path,_=QFileDialog.getOpenFileName(self,"Load","","JSON (*.json)")
-            if path:
-                self.project.load(path)
-                self.seed_spin.setValue(self.project.seed)
-                self.refresh_ui()
-        def on_undo(self):
-            self.project.undo_stack.pop()
-            self.refresh_ui()
-
-    # Alias for compatibility
-    MainWindow = MathematiciansGrooveboxApp
-else:
-    class MathematiciansGrooveboxApp:
-        def __init__(self):
-            self.project=GrooveboxProject(seed=120)
-        def show(self):
-            print("[No Qt] MathematiciansGrooveboxApp stub — install PyQt6 to run UI")
-    MainWindow = MathematiciansGrooveboxApp
-
-
-class MathematiciansGrooveboxApp(QMainWindow):
-    def __init__(self):
-        self.seed = 0.0  # example
-        self.bpm = 120
-        self.toggle_state = CompositionToggleState(seed=self.seed)
-        self.ledger = CompositionMemoryLedger()
-        self.transaction = CompositionTransaction(self, self.ledger)
-        self.audit_layer = CompositionAudit(self)
-        self.undo_stack = ToggleUndoStack(max_depth=64)
-
-        # Project memory that MUST be rescaled
-        self.project_memory: Dict[str, Any] = {}  # canonical writes live here
-        self.playlist = [[None]*64 for _ in range(8)]  # example
-        self.instrument_ids = ["kick","snare","hat","bass","lead","pad","fx1","fx2"]  # hardcoded onboard
-        self.steps = 64
-        self.canonical_fingerprint = self.toggle_state.fingerprint()
-        self._voice_phase_carry = {}  # runtime cache — MUST be cleared on toggle
-
-        # Effect chain
-        self.meum_chain = MeumEffectChain(self.seed)
-        self.trigger_sculptor = DeterministicTriggerSculptor(self.seed, self.instrument_ids, self.steps)
-        # ... existing init ...
-        self.state_manager = CompositionStateManager()
-        self.audit = CompositionAudit()
-
-    def on_toggle_live_dj_goava(self, checked: bool) -> None:
-        if self.state_manager.transition(live_dj_goava=checked):
-            self._invalidate_composition_caches()
-            self._update_canonical_fingerprint()
-            self.update_composition()
-    def rescale_all_memory(self):
-        """Full memory rescale — called on EVERY toggle transition."""
-        # Recompute amplitude law: pure function, not saved state
-        # WAV_MAX=1.0, WAV_SYNTH_AMP=1.0, etc.
-        n = len(self.instrument_ids)
-        # Hard-clip threshold = n * 3 * 1 / (MEUM-1)
-        self.hard_clip_threshold = n * 3.0 * 1.0 / 0.19758073433
-        # Rescale step presence based on trigger sculptor
-        self.trigger_sculptor = DeterministicTriggerSculptor(self.seed, self.instrument_ids, self.steps)
-        # Recompute title, genre, topology etc from seed + toggle_state
-        self.title = self.generate_title(self.seed)
-        # Clear any derived caches
-        self._recompute_mix_scales()
-
-    def redefine_all_events(self):
-        """Redefine ALL playlist / sequencer events from canonical memory."""
-        # 1. Clear playlist
-        for t in range(len(self.playlist)):
-            for s in range(len(self.playlist[t])):
-                # Only clear if owned by canonical toggles OR if not protected
-                # Simplest: rebuild from project_memory + trigger sculptor
-                pass
-        # 2. Re-apply canonical composition if toggle active
-        if self.toggle_state.apply_composition:
-            comp = self.project_memory.get("composition_canonical")
-            if comp:
-                self._apply_composition_canonical(comp)
-        # 3. Re-apply algorithm if toggle active
-        if self.toggle_state.apply_algorithm:
-            algo = self.project_memory.get("algorithm_fingerprint")
-            if algo:
-                self._apply_algorithm_canonical(algo)
-        # 4. Rebuild events from trigger sculptor — fixes burst problem
-        # Each instrument triggers independently, no global envelope
-        for inst_idx, inst_id in enumerate(self.instrument_ids):
-            for step in range(self.steps):
-                should = self.trigger_sculptor.should_trigger(inst_id, step)
-                # Only set if not already overwritten by canonical
-                if self.playlist[inst_idx][step] is None and should:
-                    self.playlist[inst_idx][step] = self._make_event_for(inst_id, step)
-
-    def clear_runtime_caches(self):
-        """Must be called on toggle OFF — prevents stale memory."""
-        self._voice_phase_carry.clear()
-        self._cached_waveforms = {}
-        self._cached_spectra = {}
-        # DO NOT clear project_memory — ledger handles that
-        # DO NOT clear saved state
-
-    def recompute_fingerprint(self):
-        self.canonical_fingerprint = self.toggle_state.fingerprint()
-        # Update UI status bar
-        if hasattr(self, 'fingerprint_label'):
-            self.fingerprint_label.setText(f"id: {self.canonical_fingerprint}")
-        # Update save data fingerprint
-
-    def _recompute_mix_scales(self):
-        # pure function of stream / n / volume — not saved
-        pass
-    def _generator_randomizer(seed, toggle_name):
-        # Example: Randomizer writes Script/Domain/Wire/Params from Meum vocab
-        owned = {"script", "domain", "wire", "params", "randomizer_fingerprint"}
-        overwritten = {}
-        playlist_events = set()
-        # deterministic writes
-        writes = {
-            "script": f"meum_script::{meum_effect_residue(seed, 'randomizer:script')}",
-            "domain": f"meum_domain::{meum_effect_residue(seed, 'randomizer:domain')}",
-            "wire": f"meum_wire::{meum_effect_residue(seed, 'randomizer:wire')}",
-            "params": {"seed_weight": 0.72 + residue_to_bipolar(meum_effect_residue(seed, 'randomizer:weight'))*0.1},
-            "randomizer_fingerprint": CompositionToggleState(seed=seed, randomizer=True).fingerprint()
-        }
-        return owned, overwritten, playlist_events, writes
-
-    def _generator_phaselock(seed, toggle_name):
-        owned = {"phaselock_offset", "phaselock_fingerprint"}
-        overwritten = {}
-        playlist_events = {(0, i) for i in range(64)}  # example ownership
-        writes = {
-            "phaselock_offset": meum_effect_residue(seed, 'phaselock:offset'),
-            "phaselock_fingerprint": CompositionToggleState(seed=seed, phaselock=True).fingerprint()
-        }
-        return owned, overwritten, playlist_events, writes
-
-    def _generator_goava(seed, toggle_name):
-        owned = {"goava_drive", "goava_pitch", "goava_dc", "goava_fingerprint"}
-        overwritten = {}
-        playlist_events = set()
-        # FIXED: symmetric drive, no upward bias
-        r_drive = meum_effect_residue(seed, 'goava:drive')
-        drive = residue_to_sym_drive(r_drive, half_range=1.4)  # 1.0 ±1.4
-        r_pitch = meum_effect_residue(seed, 'goava:pitch')
-        pitch = residue_to_bipolar(r_pitch) * 2.0  # [-2,2] semitones, mean 0
-        writes = {
-            "goava_drive": drive,
-            "goava_pitch": pitch,
-            "goava_dc": residue_to_bipolar(meum_effect_residue(seed, 'goava:dc'))*0.02,
-            "goava_fingerprint": CompositionToggleState(seed=seed, goava=True).fingerprint()
-        }
-        return owned, overwritten, playlist_events, writes
-
-    def _generator_apply_algorithm(seed, toggle_name):
-        owned = {"script", "domain", "wire", "params", "algorithm_fingerprint"}
-        overwritten = {}
-        playlist_events = set()
-        writes = {
-            "algorithm_fingerprint": CompositionToggleState(seed=seed, apply_algorithm=True).fingerprint(),
-            "script": f"algo::{meum_effect_residue(seed, 'apply_algo:script')}"
-        }
-        return owned, overwritten, playlist_events, writes
-
-    def _generator_apply_composition(seed, toggle_name):
-        owned = {"composition_canonical", "composition_steps", "composition_fingerprint"}
-        overwritten = {}
-        playlist_events = set()
-        writes = {
-            "composition_canonical": f"comp::{meum_effect_residue(seed, 'apply_comp:canon')}",
-            "composition_steps": 64,
-            "composition_fingerprint": CompositionToggleState(seed=seed, apply_composition=True).fingerprint()
-        }
-        return owned, overwritten, playlist_events, writes
-
-    # Map toggle name -> generator
-    TOGGLE_GENERATORS = {
-        "randomizer": _generator_randomizer,
-        "phaselock": _generator_phaselock,
-        "live_randomizer": _generator_randomizer,
-        "live_phaselock": _generator_phaselock,
-        "goava": _generator_goava,
-        "pkp_boost": _generator_randomizer,  # reuse
-        "rand_param": _generator_randomizer,
-        "apply_algorithm": _generator_apply_algorithm,
-        "apply_composition": _generator_apply_composition,
-    }
 def identity_unit(*key_parts) -> float:
     """Deterministic fraction in [0,1) from arbitrary identity parts (name,
     field, index, ...). Same canonical-hash approach as CommutativePairSpace's
@@ -1209,90 +149,6 @@ try:
 except Exception:
     pass
 DEFAULT_SAMPLE_RATE = 48000  # practical default; export/render may lift to TARGET
-
-# =============================================================================
-# GOAL (canonical)
-#   A unique, deterministic, non-redundant, infinitely varied platform of
-#   effects — re-expressible in the simplest possible mathematical terms —
-#   while still fit to infinitely varied dataset specifications.
-#
-# HARD WAV / MEUM AMPLITUDE LAW (no soft-clip / slew / peak-floor / tanh limiter)
-#   • WAV_MAX = 1.0 full-scale float PCM
-#   • One synth is amplitude 1 after unit-peak shape normalize
-#   • MEUM_MINUS_1 ≈ 0.19758073433 enters only the pathological hard-clip
-#     threshold:  clip from  (n_instruments · 3 · 1 / MEUM_MINUS_1)  onwards
-#   • Scale buffer max into volume directly:
-#         out = buffer · (volume · WAV_MAX / peak)
-# =============================================================================
-WAV_MAX = 1.0
-WAV_SYNTH_AMP = 1.0                          # one synth = amplitude 1
-WAV_MEUM_AMP_REF = MEUM_MINUS_1              # ≈ 0.19758073433
-WAV_HARD_CLIP_MULT = 3.0
-
-
-def meum_hard_clip_threshold(n_instruments: int) -> float:
-    """Pathological hard-clip ceiling: n · 3 · 1 / 0.19758073433…"""
-    n = max(1, int(n_instruments))
-    return float(n) * WAV_HARD_CLIP_MULT * WAV_SYNTH_AMP / WAV_MEUM_AMP_REF
-
-
-def meum_hard_scale_to_wav_max(stream, n_instruments=1, volume=1.0, wav_max=WAV_MAX):
-    """Scale buffer max into volume·wav_max; hard-clip only past n·3/MEUM_MINUS_1.
-
-    Deterministic, closed-form, no soft limiter state — same seed/peak → same out.
-    """
-    x = np.asarray(stream, dtype=np.float64)
-    if x.size == 0:
-        return x.astype(np.float32)
-    vol = float(volume) if math.isfinite(float(volume)) else 1.0
-    wmax = float(wav_max) if wav_max else WAV_MAX
-    thr = meum_hard_clip_threshold(n_instruments)
-    x = np.clip(x, -thr, thr)
-    peak = float(np.max(np.abs(x)))
-    if not math.isfinite(peak) or peak <= 0.0:
-        return np.zeros_like(x, dtype=np.float32)
-    scale = (vol * wmax) / peak
-    y = x * scale
-    return np.clip(y, -wmax, wmax).astype(np.float32)
-
-
-def meum_effect_residue(seed, label, modulus=None):
-    """Deterministic non-redundant effect identity on a cyclic Meum residue.
-
-    Maps (seed, label) → unique residue in Z/m. Different labels avalanche
-    independently so effect families do not cluster — infinitely varied /
-    non-redundant with a one-line closed form.
-    """
-    m = int(modulus) if modulus else max(2, int(round(1.0 / max(WAV_MEUM_AMP_REF, 1e-12))))
-    try:
-        s = int(abs(float(seed))) & 0x7FFFFFFF
-    except Exception:
-        s = 0
-    payload = f"meum-effect|{s}|{label}|{m}".encode("utf-8")
-    key = int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
-    return int(key % m)
-
-
-
-def meum_effect_bank(seed, count=12):
-    """Infinitely varied deterministic effect slot list from Meum residues.
-
-    Each slot is a closed-form (seed, index) residue pair — non-redundant across
-    seeds, identical on replay. Fits the goal without opaque lookup tables.
-    """
-    count = max(1, min(int(count), 64))
-    families = (
-        "am", "fm", "pm", "fold", "lattice", "eqr", "pkp", "goava",
-        "wire", "domain", "euclid", "orbit",
-    )
-    out = []
-    for i in range(count):
-        fam = families[meum_effect_residue(seed, f"fam|{i}", len(families))]
-        depth = meum_effect_residue(seed, f"depth|{i}|{fam}", 1000) / 1000.0
-        rate = 0.25 + 3.75 * (meum_effect_residue(seed, f"rate|{i}|{fam}", 1000) / 1000.0)
-        out.append({"family": fam, "depth": float(depth), "rate": float(rate), "index": i})
-    return out
-
 
 def audible_hz(freq, sample_rate=None):
     """Clamp frequency into the audible design window and below ~0.45·Nyquist."""
@@ -1844,33 +700,6 @@ def meum_modulation_vectors(t, params=None):
         phase_offset.astype(np.float32),
         am_gain.astype(np.float32),
     )
-def on_toggle(self, toggle_name: str, enabled: bool):
-    # push undo
-    self.undo_stack.push(self.toggle_state, self.project_memory)
-
-    old_state = self.toggle_state
-    new_state = old_state.with_toggle(toggle_name, enabled)
-
-    if enabled:
-        gen = TOGGLE_GENERATORS[toggle_name]
-        self.toggle_state = self.transaction.apply_toggle(toggle_name, new_state, gen)
-    else:
-        self.toggle_state = self.transaction.remove_toggle(toggle_name, new_state)
-
-    # Update UI labels
-    btn = self.toggle_buttons[toggle_name]
-    btn.setText("APPLIED" if enabled else "APPLY")
-
-    # Audit
-    result = self.audit_layer.audit()
-    if not result.ok:
-        print(f"[AUDIT FAIL] {result.errors}")
-        # optionally auto-fix: rescale/redefine again
-        self.rescale_all_memory()
-        self.redefine_all_events()
-        self.recompute_fingerprint()
-
-    self.update_all_monitors()
 def meum_modulated_phase(
     phase,
     t,
@@ -2968,7 +1797,7 @@ def goava_frequency(number_assigned, step, numbers, base_frequency=432.0):
     # ratio.  Positive/negative raw values select above/below the base; the
     # raw Java-derived scalar remains available as metadata.
     # Full-range: raw drives up to ±4.5 octaves before audible_hz safety
-    ratio = 2.0 * raw
+    ratio = 2.0 ** float(np.clip(raw * 2.25, -4.5, 4.5))
     freq = float(base_frequency) * ratio
     return float(audible_hz(freq)), float(raw)
 
@@ -14306,7 +13135,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "pitch": pitch,
                 "enabled": True,
                 "source": "GOAVA",
-                "weight": (float)(1.0/3.0),
+                "weight": 1.0,
             })
         return events
 
@@ -16018,25 +14847,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         master_container.setContentsMargins(6, 4, 6, 4)
 
         self.transport_layout = QHBoxLayout()
-        self.btn_play = QPushButton("▶ PLAY")
-        self.btn_stop = QPushButton("⏹ STOP")
-        # Primary transport chrome — also mirrored under the main scenograph
-        self.btn_play.setMinimumHeight(52)
-        self.btn_stop.setMinimumHeight(52)
-        self.btn_play.setMinimumWidth(140)
-        self.btn_stop.setMinimumWidth(110)
-        self.btn_play.setStyleSheet(
-            "QPushButton { background-color:#0d3d2a; color:#5dffb0; border:2px solid #2ecc71; "
-            "border-radius:10px; padding:10px 18px; font-weight:900; font-size:14pt; }"
-            "QPushButton:hover { background-color:#145c3c; }"
-            "QPushButton:pressed { background-color:#00aa55; color:#ffffff; }"
-        )
-        self.btn_stop.setStyleSheet(
-            "QPushButton { background-color:#3d1520; color:#ff8fab; border:2px solid #e74c6f; "
-            "border-radius:10px; padding:10px 18px; font-weight:900; font-size:14pt; }"
-            "QPushButton:hover { background-color:#5c1f30; }"
-            "QPushButton:pressed { background-color:#c0392b; color:#ffffff; }"
-        )
+        self.btn_play = QPushButton("▶ PLAY Audiovisual Track")
+        self.btn_stop = QPushButton("⏹ Stop")
         self.lbl_bpm = QLabel("BPM:")
         self.lbl_bpm.setStyleSheet("color:#f5d97d; font-weight:900; font-size:11pt;")
         self.spin_bpm = QDoubleSpinBox()
@@ -16397,7 +15209,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_trigger_all.clicked.connect(self.trigger_all_instruments_hit)
         self.btn_clear_memory.clicked.connect(self._on_clear_memory_clicked)
 
-        # PLAY/STOP live under the main scenograph (see visual_pair square column)
+        self.transport_layout.addWidget(self.btn_play)
+        self.transport_layout.addWidget(self.btn_stop)
         self.transport_layout.addWidget(self.lbl_bpm)
         self.transport_layout.addWidget(self.spin_bpm)
         self.transport_layout.addWidget(self.lbl_sceno_items)
@@ -16446,23 +15259,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Single scenograph-item control already lives on the transport row.
         # Do not re-add a redundant "Visual objects" spinner here.
         master_container.addLayout(self.global_geometry_layout)
-        self.chk_nyquist_partial_gating = QCheckBox("Nyquist Partial Gating")
-        self.chk_nyquist_partial_gating.setChecked(False)
-        self.chk_nyquist_partial_gating.setToolTip(
-            "Optional diagnostic mode. Normally OFF: active synths already "
-            "provide the information needed to determine valid partials."
-        )
-        self.chk_nyquist_partial_gating.setStyleSheet("""
-            QCheckBox {
-                color: #c8d0d8;
-                font-weight: 700;
-                spacing: 8px;
-            }
-        """)
-        self.chk_nyquist_partial_gating.toggled.connect(
-            lambda checked: setattr(self, "nyquist_partial_gating", bool(checked))
-        )
-        self.nyquist_partial_gating = False
+
         self.top_layout = QHBoxLayout()
         # LAYOUT_WRAP_FIX: this used to be one QHBoxLayout holding every
         # global-media/arrangement control, which clipped text such as
@@ -16599,7 +15396,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
 
             if text=="PLAYLIST":
-                b.setMinimumHeight(64)
+                b.setMinimumHeight(80)
                 b.setMinimumWidth(240)
             else:
                 b.setMinimumHeight(40)
@@ -16616,12 +15413,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 b.setStyleSheet(
                     "QPushButton { background-color:#121212; color:#f5d97d; border:2px solid #f5d97d; border-radius:6px; padding:5px 8px; font-weight:bold; } "
                     "QPushButton:hover { background-color:#282018; } QPushButton:pressed { background-color:#ff6b00; color:white; }"
-                )
-            if text=="RANDOMIZE":
-                b.setStyleSheet(
-                    "QPushButton { background-color:#121212; color:#f5d97d; border:2px solid #f5d97d; border-radius:6px; padding:5px 8px; font-weight:bold; }"
-                    "QPushButton:hover { background-color:#282018; }  "  "QPushButton:pressed { background-color:#ff6b00; color:white;}"
-                    "QPushButton:checked {background-color:#f5d97d;color: #121212; border: 2px solid #f5d97d;border-radius:8px;font-weight: bold;}"
                 )
             return b
 
@@ -16998,8 +15789,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # squeezed to the group box's fixed minimum height.
         globalplayer_scroll_area = QScrollArea()
         globalplayer_scroll_area.setWidgetResizable(True)
-        globalplayer_scroll_area.setMinimumHeight(64)
+        globalplayer_scroll_area.setMinimumHeight(760)
         globalplayer_scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        globalplayer_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         global_player_group = QGroupBox("🌐 GLOBAL PLAY PATCHER")
         global_player_group.setToolTip(
             "Ensemble-wide algorithmic patching. Four channels share one canonical "
@@ -17031,9 +15823,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         rand_row = QHBoxLayout()
         rand_row.setSpacing(8)
         self.btn_randomize_global_play = QPushButton("🎲 Randomize Global Play Algorithm")
-
-        self.btn_randomize_global_play.setCheckable(True)
-
         self.btn_randomize_global_play.setMinimumHeight(36)
         self.btn_randomize_global_play.setToolTip(
             "Write a new Script Algo, Domain Algo, Wire routing, and amount params "
@@ -17052,17 +15841,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Full-width apply row — labels must not clip
         apply_row = QHBoxLayout()
         apply_row.setSpacing(10)
-        self.apply_algorithm_btn = QPushButton("APPLY ALGO")
-        self.apply_algorithm_btn.setCheckable(True)
-        self.apply_algorithm_btn.setChecked(False)
-        self.apply_algorithm_btn.toggled.connect(lambda checked: self.on_toggle("apply_algorithm", checked))
-        self.apply_algorithm_btn.setStyleSheet("QPushButton:checked { background: #2a9d8f; }")  # teal
-
-        self.apply_composition_btn = QPushButton("APPLY COMP")
-        self.apply_composition_btn.setCheckable(True)
-        self.apply_composition_btn.setChecked(False)
-        self.apply_composition_btn.toggled.connect(lambda checked: self.on_toggle("apply_composition", checked))
-
+        self.btn_apply_algo_master = QPushButton("▶ Apply Algo to Master Mix")
+        self.btn_apply_algo_master.setCheckable(True)
         self.btn_apply_algo_master.setMinimumHeight(38)
         self.btn_apply_algo_master.setMinimumWidth(220)
         self.btn_apply_algo_master.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -17422,8 +16202,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         scope_bar.addWidget(self.lbl_canonical_fp, stretch=0)
         scope_bar.addStretch(1)
         scope_bar.addWidget(self.btn_export, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
-        scope_bar.addWidget(self.btn_play)
-        scope_bar.addWidget(self.btn_stop)
         try:
             QTimer.singleShot(400, self._refresh_canonical_fingerprint)
         except Exception:
@@ -17461,14 +16239,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 widget, stretch=1,
                 alignment=Qt.AlignmentFlag.AlignHCenter if is_square else Qt.AlignmentFlag.AlignCenter,
             )
-            # Primary PLAY/STOP sits under the main scenograph (not only top transport)
-            if is_square:
-                sceno_transport = QHBoxLayout()
-                sceno_transport.setContentsMargins(4, 6, 4, 2)
-                sceno_transport.setSpacing(12)
-                sceno_transport.addStretch(1)
-                sceno_transport.addStretch(1)
-                col.addLayout(sceno_transport)
             visual_pair.addLayout(col, stretch=(0 if is_square else 1))
         visual_container = QWidget()
         visual_container.setLayout(visual_pair)
@@ -17986,7 +16756,30 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     sl.blockSignals(False)
         except Exception as exc:
             print(f"[GlobalPlay] UI sync: {exc}")
-        ## Apply to ensemble
+        # Apply to ensemble
+        try:
+            if getattr(self, "btn_apply_algo_master", None) is not None:
+                self.btn_apply_algo_master.blockSignals(True)
+                self.btn_apply_algo_master.setChecked(False)
+                self.btn_apply_algo_master.blockSignals(False)
+            self.global_algo_state["apply_enabled"] = True
+            p = self.global_algo_state.get("params") or {}
+            if p.get("enable_script", True) and self.global_algo_state.get("script"):
+                self._apply_global_algo_to_ensemble("script")
+            if p.get("enable_domain", True) and self.global_algo_state.get("domain"):
+                self._apply_global_algo_to_ensemble("domain")
+            if p.get("enable_wire", True) and self.global_algo_state.get("wire"):
+                self._apply_global_algo_to_ensemble("wire")
+            try:
+                self._on_live_source_changed()
+            except Exception:
+                pass
+            try:
+                self._refresh_canonical_fingerprint()
+            except Exception:
+                pass
+        except Exception as exc:
+            print(f"[GlobalPlay] apply after randomize: {exc}")
         mode = "protected userdata" if self.global_algo_state.get("protectable_userdata") else "canonical effector"
         if hasattr(self, "scope_status_label"):
             n_w = len(self.global_algo_state.get("wire") or [])
@@ -19646,65 +18439,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 )
             else:
                 self.scope_status_label.setText("📊 No userdata snapshot yet — paint or overwrite first")
-def rescale_all_memory(self):
-    """Full memory rescale — called on EVERY toggle transition."""
-    # Recompute amplitude law: pure function, not saved state
-    # WAV_MAX=1.0, WAV_SYNTH_AMP=1.0, etc.
-    n = len(self.instrument_ids)
-    # Hard-clip threshold = n * 3 * 1 / (MEUM-1)
-    self.hard_clip_threshold = n * 3.0 * 1.0 / 0.19758073433
-    # Rescale step presence based on trigger sculptor
-    self.trigger_sculptor = DeterministicTriggerSculptor(self.seed, self.instrument_ids, self.steps)
-    # Recompute title, genre, topology etc from seed + toggle_state
-    self.title = self.generate_title(self.seed)
-    # Clear any derived caches
-    self._recompute_mix_scales()
-
-    def redefine_all_events(self):
-        """Redefine ALL playlist / sequencer events from canonical memory."""
-        # 1. Clear playlist
-        for t in range(len(self.playlist)):
-            for s in range(len(self.playlist[t])):
-                # Only clear if owned by canonical toggles OR if not protected
-                # Simplest: rebuild from project_memory + trigger sculptor
-                pass
-        # 2. Re-apply canonical composition if toggle active
-        if self.toggle_state.apply_composition:
-            comp = self.project_memory.get("composition_canonical")
-            if comp:
-                self._apply_composition_canonical(comp)
-        # 3. Re-apply algorithm if toggle active
-        if self.toggle_state.apply_algorithm:
-            algo = self.project_memory.get("algorithm_fingerprint")
-            if algo:
-                self._apply_algorithm_canonical(algo)
-        # 4. Rebuild events from trigger sculptor — fixes burst problem
-        # Each instrument triggers independently, no global envelope
-        for inst_idx, inst_id in enumerate(self.instrument_ids):
-            for step in range(self.steps):
-                should = self.trigger_sculptor.should_trigger(inst_id, step)
-                # Only set if not already overwritten by canonical
-                if self.playlist[inst_idx][step] is None and should:
-                    self.playlist[inst_idx][step] = self._make_event_for(inst_id, step)
-
-    def clear_runtime_caches(self):
-        """Must be called on toggle OFF — prevents stale memory."""
-        self._voice_phase_carry.clear()
-        self._cached_waveforms = {}
-        self._cached_spectra = {}
-        # DO NOT clear project_memory — ledger handles that
-        # DO NOT clear saved state
-
-    def recompute_fingerprint(self):
-        self.canonical_fingerprint = self.toggle_state.fingerprint()
-        # Update UI status bar
-        if hasattr(self, 'fingerprint_label'):
-            self.fingerprint_label.setText(f"id: {self.canonical_fingerprint}")
-        # Update save data fingerprint
-
-    def _recompute_mix_scales(self):
-        # pure function of stream / n / volume — not saved
-        pass
 
     def _push_restored_playlist_to_table(self):
         """Write the complete authoritative playlist row, including all 18 columns."""
@@ -19744,81 +18478,7 @@ def rescale_all_memory(self):
                     except Exception:
                         pass
                 put(r, c, "" if val in (None, [], {}) else val)
-    def _generator_randomizer(seed, toggle_name):
-        # Example: Randomizer writes Script/Domain/Wire/Params from Meum vocab
-        owned = {"script", "domain", "wire", "params", "randomizer_fingerprint"}
-        overwritten = {}
-        playlist_events = set()
-        # deterministic writes
-        writes = {
-            "script": f"meum_script::{meum_effect_residue(seed, 'randomizer:script')}",
-            "domain": f"meum_domain::{meum_effect_residue(seed, 'randomizer:domain')}",
-            "wire": f"meum_wire::{meum_effect_residue(seed, 'randomizer:wire')}",
-            "params": {"seed_weight": 0.72 + residue_to_bipolar(meum_effect_residue(seed, 'randomizer:weight'))*0.1},
-            "randomizer_fingerprint": CompositionToggleState(seed=seed, randomizer=True).fingerprint()
-        }
-        return owned, overwritten, playlist_events, writes
 
-    def _generator_phaselock(seed, toggle_name):
-        owned = {"phaselock_offset", "phaselock_fingerprint"}
-        overwritten = {}
-        playlist_events = {(0, i) for i in range(64)}  # example ownership
-        writes = {
-            "phaselock_offset": meum_effect_residue(seed, 'phaselock:offset'),
-            "phaselock_fingerprint": CompositionToggleState(seed=seed, phaselock=True).fingerprint()
-        }
-        return owned, overwritten, playlist_events, writes
-
-    def _generator_goava(seed, toggle_name):
-        owned = {"goava_drive", "goava_pitch", "goava_dc", "goava_fingerprint"}
-        overwritten = {}
-        playlist_events = set()
-        # FIXED: symmetric drive, no upward bias
-        r_drive = meum_effect_residue(seed, 'goava:drive')
-        drive = residue_to_sym_drive(r_drive, half_range=1.4)  # 1.0 ±1.4
-        r_pitch = meum_effect_residue(seed, 'goava:pitch')
-        pitch = residue_to_bipolar(r_pitch) * 2.0  # [-2,2] semitones, mean 0
-        writes = {
-            "goava_drive": drive,
-            "goava_pitch": pitch,
-            "goava_dc": residue_to_bipolar(meum_effect_residue(seed, 'goava:dc'))*0.02,
-            "goava_fingerprint": CompositionToggleState(seed=seed, goava=True).fingerprint()
-        }
-        return owned, overwritten, playlist_events, writes
-
-    def _generator_apply_algorithm(seed, toggle_name):
-        owned = {"script", "domain", "wire", "params", "algorithm_fingerprint"}
-        overwritten = {}
-        playlist_events = set()
-        writes = {
-            "algorithm_fingerprint": CompositionToggleState(seed=seed, apply_algorithm=True).fingerprint(),
-            "script": f"algo::{meum_effect_residue(seed, 'apply_algo:script')}"
-        }
-        return owned, overwritten, playlist_events, writes
-
-    def _generator_apply_composition(seed, toggle_name):
-        owned = {"composition_canonical", "composition_steps", "composition_fingerprint"}
-        overwritten = {}
-        playlist_events = set()
-        writes = {
-            "composition_canonical": f"comp::{meum_effect_residue(seed, 'apply_comp:canon')}",
-            "composition_steps": 64,
-            "composition_fingerprint": CompositionToggleState(seed=seed, apply_composition=True).fingerprint()
-        }
-        return owned, overwritten, playlist_events, writes
-
-    # Map toggle name -> generator
-    TOGGLE_GENERATORS = {
-        "randomizer": _generator_randomizer,
-        "phaselock": _generator_phaselock,
-        "live_randomizer": _generator_randomizer,
-        "live_phaselock": _generator_phaselock,
-        "goava": _generator_goava,
-        "pkp_boost": _generator_randomizer,  # reuse
-        "rand_param": _generator_randomizer,
-        "apply_algorithm": _generator_apply_algorithm,
-        "apply_composition": _generator_apply_composition,
-    }
     def _record_engine_step_ownership(self, source):
         """Remember which non-user steps an engine currently contributes."""
         store = getattr(self, "_engine_step_ownership", None)
@@ -19846,7 +18506,9 @@ def rescale_all_memory(self):
         if bool(getattr(self, "goava_active", False)):
             active.add("goava")
         return active
-    """
+
+    def _deactivate_engine_generated_content(self, source_label="engine", source_key=None):
+        """
         Reverse the non-destructive material an additive engine (Randomizer,
         Phase-Locker, Euclidean Live Lock, Seeded Live Randomizer) painted
         in, without touching anything a human actually programmed.
@@ -19870,8 +18532,6 @@ def rescale_all_memory(self):
           - Playlist automation: rows tagged 'generated_by_engine' are
             cleared the same way.
         """
-    def _deactivate_engine_generated_content(self, source_label="engine", source_key=None):
-
         cleared_steps = 0
         mems = getattr(self, "instrument_sequencer_memory", None) or {}
         ownership = getattr(self, "_engine_step_ownership", {}) or {}
@@ -23251,46 +21911,41 @@ def rescale_all_memory(self):
                 k4 = float(np.clip((fold_depth / 16.0) * (0.50 + 0.90 * _voice_timbre), 0.0, 3.0))
                 # Chaos can push entropy to extremes; no 0.75 mid-band clamp
                 entropy = float(np.clip(entropy * (0.55 + 0.45 * k3) + 0.35 * k3 * (1.0 - entropy), 0.0, 1.0))
-                # Partial counts: entropy/fold only.
-                # Within-note Nyquist gating is PREDICTIVE-UNISON only (off by default).
-                # Most renders skip gates entirely — simpler, faster, fixed spectrum
-                # for the duration of each note (matches deterministic non-predictive path).
                 n_harm = max(1, int(2 + (1.0 - entropy) * 14 + k4 * 6))
-                n_inh = max(2, int(2 + entropy * 10 + k4 * 3))
-                _use_predictive_nyquist = bool(getattr(self, "_unison_predictive_partials", self.nyquist_partial_gating))
-                if _use_predictive_nyquist:
-                    _f0_arr = np.asarray(f0, dtype=np.float64).ravel()
-                    if _f0_arr.size == 0:
-                        _f0_arr = np.array([float(AUDIBLE_LO_HZ)], dtype=np.float64)
-                    _f0_min = float(np.min(_f0_arr))
-                    _f0_max = float(np.max(_f0_arr))
-                    _nyq_edge = max(1.0, float(sample_rate) * 0.45)
-
-                    def _partial_gate(mult):
-                        m = float(mult)
-                        if _f0_min * m >= _nyq_edge:
-                            return None
-                        if _f0_max * m < _nyq_edge:
-                            return 1.0
-                        if _f0_arr.size == phase.size:
-                            return (_f0_arr * m < _nyq_edge).astype(np.float32)
-                        return 1.0 if (_f0_min * m) < _nyq_edge else 0.0
-                else:
-                    def _partial_gate(mult):
-                        return 1.0  # default: no Nyquist partial logic
-
+                # ALIASING_FIX_2026: n_harm (and n_inh below) were computed purely
+                # from entropy/fold-depth, with no relationship to f0 or the
+                # sample rate. For higher-pitched voices, the higher partials
+                # (h * f0, and the inharmonic ratios below which run even higher
+                # than h * f0) routinely exceed Nyquist (sample_rate / 2) and
+                # fold back as aliasing — which sounds like harsh, "damaged"
+                # distortion rather than the intended harmonic color. Because
+                # f0 is seed-derived, this hit a seed-dependent fraction of
+                # voices rather than all of them, which is why it read as
+                # damage concentrated in only part of the material. Fixed by
+                # capping the number of partials to what actually fits under
+                # Nyquist for this voice's fundamental.
+                _nyquist = max(1.0, sample_rate * 0.5)
+                _f0_peak = float(np.max(f0)) if hasattr(f0, "__len__") else float(f0)
+                _max_partial = max(1, int(_nyquist / max(_f0_peak, 1.0)))
+                n_harm = max(1, min(n_harm, _max_partial))
+                # GOAVA = hard-composed pure sine; other engines free waveform.
+                # Live mod (AM/FM/PM) still routes through phase/_am_gain for all.
                 _is_goava_voice = (
                     str(mem.get("canonical_owner", "")).startswith("canonical:goava")
                     or "goava" in str(mem.get("engine_source", "")).lower()
                     or bool(st.get("goava_sine_patch"))
                 )
                 if _is_goava_voice:
+                    # Sinusoidal hard-composed patch; mods already in phase/_am_gain
                     harm = np.sin(phase)
+                    # Optional soft second partial only from live mod depth
                     _pm_d = float(_meum_ctx.get("pm_depth", 0.0) or 0.0)
                     if abs(_pm_d) > 0.05:
                         harm = harm + 0.08 * abs(_pm_d) * np.sin(2.0 * phase)
-                    entropy = min(entropy, 0.12)
+                    entropy = min(entropy, 0.12)  # keep GOAVA nearly pure
                 else:
+                    # Optional non-sine carrier from modular / panel waveform key.
+                    # FM+PM already folded into `phase`; AM applied later via _am_gain.
                     _wf = str(st.get("waveform", _meum_ctx.get("waveform", "sine")) or "sine").strip().lower()
                     if _wf in ("saw", "sawtooth", "square", "pulse", "triangle", "tri", "cos", "cosine"):
                         try:
@@ -23307,20 +21962,19 @@ def rescale_all_memory(self):
                             amp_h = (0.35 + 0.55 * (1.0 - entropy)) / (h ** roll)
                             det = 1.0 + 1e-4 * ((_s_int % 97) - 48) * (h - 1) * (0.3 + 0.7 * entropy)
                             ph0 = ((_s_int * h * 13 + op_idx * 7) % 1000) / 1000.0 * math.tau
-                            g = _partial_gate(h * det)
-                            if g is None:
-                                continue
-                            harm = harm + (amp_h * g) * np.sin(phase * h * det + ph0)
+                            harm = harm + amp_h * np.sin(phase * h * det + ph0)
+                n_inh = max(2, int(2 + entropy * 10 + k4 * 3))
+                # ALIASING_FIX_2026 (cont.): inharmonic partials use ratios that
+                # run even steeper than n_harm's plain h multiplier (~1.37*h),
+                # so they need their own, tighter Nyquist-derived cap.
+                n_inh = max(1, min(n_inh, max(1, int(_max_partial / 1.4))))
                 inh = np.zeros_like(local_t, dtype=np.float32)
                 for h in range(1, n_inh + 1):
                     ratio = 1.0 + h * (1.0 + 0.37 * math.sin((_s_int + h * 17) * MEUM_NORM))
                     ratio = 1.0 + (ratio - 1.0) * (0.4 + 0.6 * entropy)
                     amp_i = (0.25 + 0.6 * entropy) / (h ** (0.9 + 0.4 * entropy))
                     ph0 = ((_s_int * h * 31 + op_idx * 11) % 1000) / 1000.0 * math.tau
-                    g = _partial_gate(ratio)
-                    if g is None:
-                        continue
-                    inh = inh + (amp_i * g) * np.sin(phase * ratio + ph0)
+                    inh = inh + amp_i * np.sin(phase * ratio + ph0)
                 if entropy > 0.05:
                     noise = np.sin(phase * (7.0 + (_s_int % 13)) + _s_frac * 100.0)
                     noise = np.sign(noise) * (np.abs(noise) ** (1.0 + entropy))
@@ -23330,20 +21984,36 @@ def rescale_all_memory(self):
                     fm_depth = (0.05 + 0.55 * entropy) * (0.5 + 0.5 * k1)
                     harm = harm * np.cos(fm_depth * np.sin(phase * fm_ratio))
                 voice_raw = (1.0 - entropy) * harm + entropy * inh
-
                 if entropy > 0.4:
-                    drive = 1.0 + (entropy - 0.4) * fold_depth * 0.2
-                    voice_raw = np.clip(voice_raw * drive, -1.0, 1.0)
+                    voice_raw = np.tanh(voice_raw * (1.0 + (entropy - 0.4) * fold_depth * 0.2))
                 eqr_mod = dynamic_eqr * 0.5
                 voice_raw = voice_raw + 0.12 * eqr_mod * (1.0 - 0.5 * entropy) * np.sin(phase * MEUM_CONSTANT)
-                # HARD_WAV_MEUM: unit-peak shape · WAV_SYNTH_AMP (=1). No slew /
-                # soft-clip / peak-floor. Pathological sums are hard-clipped later
-                # at n_instruments·3/MEUM_MINUS_1 on the master bus.
-                peak = float(np.max(np.abs(voice_raw)))
-                if not math.isfinite(peak) or peak <= 0.0:
-                    seed = np.zeros_like(voice_raw, dtype=np.float32)
+                peak = float(np.max(np.abs(voice_raw)) + 1e-9)
+                # BURST_FIX_2026: this used to be a hard per-block instantaneous
+                # normalize (seed = voice_raw / peak). Because `peak` is
+                # recomputed independently every row/block — and entropy/harmonic
+                # content (and therefore peak) swings a lot row-to-row, especially
+                # once a Global Play Patcher algorithm is applied and raises voice
+                # variance — the normalization gain could jump sharply between
+                # adjacent blocks. That sharp per-block gain jump is what read as
+                # "bursts of activity" / composition separating into loud/quiet
+                # chunks. Fix: keep a persistent, slew-rate-limited gain per
+                # instrument and ramp smoothly across the block instead of
+                # snapping to a new instantaneous gain every time.
+                if not hasattr(self, "_voice_norm_gain"):
+                    self._voice_norm_gain = {}
+                _target_gain = 1.0 / peak
+                _prev_gain = float(self._voice_norm_gain.get(op_name, _target_gain))
+                _max_step = 0.30  # max fractional gain change allowed per block
+                _lo = _prev_gain * (1.0 - _max_step)
+                _hi = _prev_gain * (1.0 + _max_step)
+                _new_gain = float(np.clip(_target_gain, _lo, _hi))
+                self._voice_norm_gain[op_name] = _new_gain
+                if len(voice_raw) > 1:
+                    _gain_ramp = np.linspace(_prev_gain, _new_gain, num=len(voice_raw), dtype=np.float32)
                 else:
-                    seed = ((voice_raw / peak) * WAV_SYNTH_AMP).astype(np.float32)
+                    _gain_ramp = np.array([_new_gain], dtype=np.float32)
+                seed = (voice_raw * _gain_ramp).astype(np.float32)
 
                 beat_hz = float(bpm) / 60.0
                 pkp_sin = 0.55 + 0.45 * np.sin(2.0 * np.pi * beat_hz * local_t)
@@ -23624,14 +22294,9 @@ def rescale_all_memory(self):
         except Exception as _ped_exc:
             print(f"[PED] mixdown: {_ped_exc}")
 
-        # Scale buffer max into master_volume·WAV_MAX; hard-clip only past
-        # n_instruments·3/MEUM_MINUS_1 (≈ n·15.18…). Deterministic, no soft state.
-        try:
-            n_inst = int(getattr(self, "spin_synth_count", None).value()) if hasattr(self, "spin_synth_count") else len(getattr(self, "instrument_names_48", []) or [])
-        except Exception:
-            n_inst = 48
-        vol = float(getattr(self, "master_volume", 1.0) or 1.0)
-        master = meum_hard_scale_to_wav_max(master, n_instruments=n_inst, volume=1.0, wav_max=WAV_MAX)
+        peak = np.max(np.abs(master))
+        if peak > 0:
+            master = (master / peak) * 0.98
         return master.astype(np.float32), sample_rate
     def _canonical_fingerprint(self):
         """Order-independent short identity of the live project.
@@ -23697,8 +22362,6 @@ def rescale_all_memory(self):
             return
 
         self._unison_composition_guard = True
-        # Predictive within-note Nyquist gates: only during this unison path
-        self._unison_predictive_partials = True
 
         try:
             # Step 1: Establish clean baseline (history-free)
@@ -23716,7 +22379,6 @@ def rescale_all_memory(self):
 
         finally:
             self._unison_composition_guard = False
-            self._unison_predictive_partials = False
 
     def _get_active_engine_set(self):
         """Get set of currently active engines in deterministic order"""
@@ -24230,14 +22892,8 @@ def rescale_all_memory(self):
             n = min(frames, remaining)
             if n > 0:
                 start_sample = int(self.play_cursor)
-                chunk = self.play_buffer[start_sample:start_sample + n]
+                chunk = self.play_buffer[start_sample:start_sample + n] * self.master_volume
                 chunk = self._apply_live_dj_chunk(chunk, start_sample)
-                try:
-                    n_inst = int(self.spin_synth_count.value()) if hasattr(self, "spin_synth_count") else 48
-                except Exception:
-                    n_inst = 48
-                vol = float(getattr(self, "master_volume", 1.0) or 1.0)
-                chunk = meum_hard_scale_to_wav_max(chunk, n_instruments=n_inst, volume=vol, wav_max=WAV_MAX)
                 outdata[:n, 0] = chunk
                 # stash a short window for the UI scope
                 if n >= 100:
@@ -24328,12 +22984,8 @@ def rescale_all_memory(self):
                 self.audio_stream = None
             if hasattr(self, '_scope_update_timer'):
                 self._scope_update_timer.stop()
-            self.btn_play.setText("▶ RESUME")
-            self.btn_play.setStyleSheet(
-                "QPushButton { background-color:#5c4a0a; color:#ffe08a; border:2px solid #f1c40f; "
-                "border-radius:10px; padding:10px 18px; font-weight:900; font-size:14pt; }"
-                "QPushButton:hover { background-color:#7a6310; }"
-            )
+            self.btn_play.setText("▶ RESUME Audiovisual Track")
+            self.btn_play.setStyleSheet("background-color: #b8860b; color: white; font-weight: bold;")
             if hasattr(self, 'scope_status_label'):
                 self.scope_status_label.setText("📊 Audiovisual Track  |  PAUSED")
             return
@@ -24351,12 +23003,8 @@ def rescale_all_memory(self):
                         callback=self._audio_callback, blocksize=1024, latency='low'
                     )
                     self.audio_stream.start()
-                self.btn_play.setText("⏸ PAUSE")
-                self.btn_play.setStyleSheet(
-                    "QPushButton { background-color:#0a5c3a; color:#ffffff; border:2px solid #2ecc71; "
-                    "border-radius:10px; padding:10px 18px; font-weight:900; font-size:14pt; }"
-                    "QPushButton:hover { background-color:#0d7a4c; }"
-                )
+                self.btn_play.setText("⏸ PAUSE Audiovisual Track")
+                self.btn_play.setStyleSheet("background-color: #00aa55; color: white; font-weight: bold;")
                 self._scope_update_timer.start()
                 return
             except Exception as e:
@@ -24390,12 +23038,8 @@ def rescale_all_memory(self):
                     blocksize=1024, latency='low'
                 )
                 self.audio_stream.start()
-            self.btn_play.setText("⏸ PAUSE")
-            self.btn_play.setStyleSheet(
-                "QPushButton { background-color:#0a5c3a; color:#ffffff; border:2px solid #2ecc71; "
-                "border-radius:10px; padding:10px 18px; font-weight:900; font-size:14pt; }"
-                "QPushButton:hover { background-color:#0d7a4c; }"
-            )
+            self.btn_play.setText("⏸ PAUSE Audiovisual Track")
+            self.btn_play.setStyleSheet("background-color: #00aa55; color: white; font-weight: bold;")
             self._scope_update_timer.start()
             if hasattr(self, 'scope_status_label'):
                 self.scope_status_label.setText("📊 Audiovisual Track  |  LIVE")
@@ -24541,13 +23185,8 @@ def rescale_all_memory(self):
         with getattr(self, 'play_lock', threading.Lock()):
             self.play_cursor = 0
         if hasattr(self, 'btn_play'):
-            self.btn_play.setText("▶ PLAY")
-            self.btn_play.setStyleSheet(
-                "QPushButton { background-color:#0d3d2a; color:#5dffb0; border:2px solid #2ecc71; "
-                "border-radius:10px; padding:10px 18px; font-weight:900; font-size:14pt; }"
-                "QPushButton:hover { background-color:#145c3c; }"
-                "QPushButton:pressed { background-color:#00aa55; color:#ffffff; }"
-            )
+            self.btn_play.setText("▶ PLAY Audiovisual Track")
+            self.btn_play.setStyleSheet("")
         if hasattr(self, 'scope_status_label'):
             self.scope_status_label.setText("📊 Audiovisual Track  |  Stopped")
         if isinstance(getattr(self, 'visual_oscilloscope', None), VisualOscilloscope):
@@ -25847,996 +24486,18 @@ def rescale_all_memory(self):
         window.show()
         window.raise_()
         window.activateWindow()
-
-
-
-import numpy as np
-
-# --- Optional audio deps, guarded ---
-try:
-    import sounddevice as sd
-except Exception:
-    sd = None
-try:
-    from PyQt6.QtWidgets import (
-        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-        QPushButton, QLabel, QSpinBox, QDoubleSpinBox, QCheckBox,
-        QScrollArea, QGridLayout, QGroupBox, QSlider, QTextEdit, QFileDialog,
-        QTabWidget, QSplitter
-    )
-    from PyQt6.QtCore import Qt, QTimer
-    HAS_QT = True
-except Exception:
-    HAS_QT = None
-try:
-    from fast_widgets import FastToggleButton, FastCanonicalToggle, FastGoavaToggle, FastStepGrid
-    HAS_FAST = True
-except Exception:
-    HAS_FAST = False
-    FastToggleButton = None
-else:
-    HAS_FAST = False
-try:
-    from PyQt6.QtWidgets import QApplication, QMainWindow
-    HAS_QT = True
-    try:
-        from fast_widgets import FastToggleButton
-        HAS_FAST = True
-    except:
-        HAS_FAST = False
-except:
-    HAS_QT = False
-# ---------------------------------------------------------------------------
-# Constants — simplest math
-# ---------------------------------------------------------------------------
-MEUM = 1.19758073433
-MEUM_MINUS_1 = MEUM - 1.0  # 0.19758073433
-PHI = 1.618033988749895
-WAV_MAX = 1.0
-WAV_SYNTH_AMP = 1.0
-WAV_MEUM_AMP_REF = MEUM_MINUS_1
-HARD_CLIP_FACTOR = 3.0
-
-DEFAULTS = {
-    "BPM": 120,
-    "BASE_HZ": 432.0,
-    "SEED_WEIGHT": 0.72,
-    "FULL_WEIGHT": True,
-    "FULL_UNISON": False,
-    "UNISON_BLEND": 0.55,
-}
-
-# Hardcoded onboard instruments — stochastic modifiers may ONLY be sculpted from these
-ONBOARD_INSTRUMENTS = ["kick", "snare", "hat", "bass", "lead", "pad", "fx1", "fx2"]
-# Each instrument has its own ADSR and waveform, no global envelope
-INSTRUMENT_DEFS = {
-    "kick":  {"wave": "sine", "adsr": (0.001, 0.15, 0.0, 0.1), "base_hz": 55},
-    "snare": {"wave": "noise", "adsr": (0.002, 0.12, 0.0, 0.12), "base_hz": 180},
-    "hat":   {"wave": "square", "adsr": (0.001, 0.05, 0.0, 0.05), "base_hz": 400},
-    "bass":  {"wave": "saw", "adsr": (0.01, 0.1, 0.7, 0.2), "base_hz": 110},
-    "lead":  {"wave": "tri", "adsr": (0.02, 0.2, 0.8, 0.3), "base_hz": 220},
-    "pad":   {"wave": "sine", "adsr": (0.3, 0.5, 0.8, 0.8), "base_hz": 165},
-    "fx1":   {"wave": "saw", "adsr": (0.05, 0.3, 0.5, 0.4), "base_hz": 330},
-    "fx2":   {"wave": "noise", "adsr": (0.1, 0.4, 0.3, 0.6), "base_hz": 250},
-}
-
-# ---------------------------------------------------------------------------
-# Meum residue bank — simplest math, deterministic, non-redundant
-# ---------------------------------------------------------------------------
-def meum_effect_residue(seed: int, label: str) -> float:
-    h = hashlib.sha256(f"{seed}::{label}".encode()).hexdigest()
-    i = int(h[:13], 16)
-    return (i % 10_000_000) / 10_000_000.0
-
-def meum_effect_bank(seed: int, count: int, label_prefix: str = "fx") -> List[float]:
-    return [meum_effect_residue(seed, f"{label_prefix}:{k}") for k in range(count)]
-
-def residue_to_bipolar(r: float) -> float:
-    return r * 2.0 - 1.0
-
-def residue_to_sym_drive(r: float, half_range: float = 1.4) -> float:
-    """GOAVA fix: center at 1.0 symmetric, no upward bias"""
-    return 1.0 + residue_to_bipolar(r) * half_range
-
-# ---------------------------------------------------------------------------
-# Atomic Toggle State — immutable, hashable, order-independent fingerprint
-# ---------------------------------------------------------------------------
-@dataclass(frozen=True)
-class CompositionToggleState:
-    seed: int = 0
-    randomizer: bool = False
-    phaselock: bool = False
-    live_randomizer: bool = False
-    live_phaselock: bool = False
-    goava: bool = False
-    pkp_boost: bool = False
-    rand_param: bool = False
-    apply_algorithm: bool = False
-    apply_composition: bool = False
-    version: int = 390
-
-    def fingerprint(self) -> str:
-        payload = "|".join(f"{k}={int(v) if isinstance(v, bool) else v}" for k, v in sorted(self.__dict__.items()))
-        return hashlib.sha256(payload.encode()).hexdigest()[:16]
-
-    def with_toggle(self, name: str, enabled: bool) -> "CompositionToggleState":
-        if not hasattr(self, name):
-            raise ValueError(f"Unknown toggle {name}")
-        return replace(self, **{name: bool(enabled)})
-
-    def active_toggles(self) -> Set[str]:
-        return {k for k in self.__dataclass_fields__ if isinstance(getattr(self, k), bool) and getattr(self, k)}
-
-# ---------------------------------------------------------------------------
-# Memory Ledger — tracks what each toggle wrote
-# ---------------------------------------------------------------------------
-@dataclass
-class ToggleLedgerEntry:
-    toggle: str
-    owned_keys: Set[str] = field(default_factory=set)
-    overwritten: Dict[str, Any] = field(default_factory=dict)
-    playlist_events_owned: Set[Tuple[int, int]] = field(default_factory=set)
-    fingerprint_at_apply: str = ""
-
-class CompositionMemoryLedger:
-    def __init__(self):
-        self.entries: Dict[str, ToggleLedgerEntry] = {}
-
-    def record_apply(self, toggle: str, owned_keys: Set[str], overwritten: Dict[str, Any],
-                     playlist_events: Set[Tuple[int, int]], fp: str):
-        self.entries[toggle] = ToggleLedgerEntry(
-            toggle=toggle,
-            owned_keys=set(owned_keys),
-            overwritten=dict(overwritten),
-            playlist_events_owned=set(playlist_events),
-            fingerprint_at_apply=fp
-        )
-
-    def record_remove(self, toggle: str) -> Optional[ToggleLedgerEntry]:
-        return self.entries.pop(toggle, None)
-
-# ---------------------------------------------------------------------------
-# Deterministic Trigger Sculptor — fixes burst + enforces stochastic rule
-# ---------------------------------------------------------------------------
-class DeterministicTriggerSculptor:
-    """
-    Stochastic modifiers ONLY as random trigger events sculpted in advance
-    from onboard hardcoded instruments, not random parametric insertions.
-    """
-    def __init__(self, seed: int, instrument_ids: List[str], steps: int = 64):
-        self.seed = seed
-        self.instrument_ids = instrument_ids
-        self.steps = steps
-        self.masks: Dict[str, List[bool]] = {}
-        self._build()
-
-    def _build(self):
-        for inst in self.instrument_ids:
-            density = 0.15 + 0.70 * meum_effect_residue(self.seed, f"trig_density::{inst}")
-            phase = meum_effect_residue(self.seed, f"trig_phase::{inst}")  # decorrelates instruments
-            mask = []
-            for t in range(self.steps):
-                r = meum_effect_residue(self.seed, f"trig::{inst}::{t}")
-                prob = density + 0.2 * math.sin(2 * math.pi * (t / self.steps + phase))
-                mask.append(r < max(0.05, min(0.95, prob)))
-            self.masks[inst] = mask
-
-    def should_trigger(self, instrument_id: str, step: int) -> bool:
-        return self.masks.get(instrument_id, [True] * self.steps)[step % self.steps]
-
-    def as_events(self) -> Dict[str, List[int]]:
-        return {inst: [i for i, v in enumerate(m) if v] for inst, m in self.masks.items()}
-
-# ---------------------------------------------------------------------------
-# GOAVA fixed — symmetric drive, bipolar pitch, DC-corrected
-# ---------------------------------------------------------------------------
-@dataclass
-class GoavaVoice:
-    drive: float = 1.0
-    pitch_shift_semitones: float = 0.0
-    dc_offset: float = 0.0
-
-def compute_goava_params(seed: int, instrument_id: str, t: float, bpm: float) -> GoavaVoice:
-    r_drive = meum_effect_residue(seed, f"goava_drive::{instrument_id}::{int(t*100)}")
-    r_pitch = meum_effect_residue(seed, f"goava_pitch::{instrument_id}::{int(t*100)}")
-    r_dc = meum_effect_residue(seed, f"goava_dc::{instrument_id}")
-
-    drive = residue_to_sym_drive(r_drive, half_range=1.4)
-    drive = max(0.2, min(2.4, drive))
-    pitch = residue_to_bipolar(r_pitch) * 2.0  # [-2,2] mean 0, no upward tendency
-    dc = residue_to_bipolar(r_dc) * 0.02
-    mod = math.sin(2 * math.pi * t * MEUM / 4.0) * 0.15 * residue_to_bipolar(r_pitch)
-    return GoavaVoice(drive=drive + mod, pitch_shift_semitones=pitch, dc_offset=dc)
-
-# ---------------------------------------------------------------------------
-# Transaction — ensures rescale/redefine on every toggle
-# ---------------------------------------------------------------------------
-class CompositionTransaction:
-    def __init__(self, project_ref: Any, ledger: CompositionMemoryLedger):
-        self.project = project_ref
-        self.ledger = ledger
-
-    def apply_toggle(self, toggle_name: str, new_state: CompositionToggleState, generator_fn):
-        if toggle_name in self.ledger.entries:
-            self.remove_toggle(toggle_name, new_state)
-
-        owned_keys, overwritten, playlist_events, writes = generator_fn(self.project.seed, toggle_name)
-
-        # Capture overwritten values for proper restore on OFF
-        for k, v in writes.items():
-            if k in self.project.project_memory and k not in overwritten:
-                overwritten[k] = self.project.project_memory[k]
-            elif k not in self.project.project_memory:
-                overwritten.setdefault(k, None)
-
-            self.project.project_memory[k] = v
-
-        self.ledger.record_apply(toggle_name, owned_keys, overwritten, playlist_events, new_state.fingerprint())
-
-        # CRITICAL: full memory rescale + redefine + fingerprint recompute
-        self.project.rescale_all_memory()
-        self.project.redefine_all_events()
-        self.project.recompute_fingerprint()
-        return new_state
-
-    def remove_toggle(self, toggle_name: str, new_state: CompositionToggleState):
-        entry = self.ledger.record_remove(toggle_name)
-        if not entry:
-            return new_state
-
-        for k in entry.owned_keys:
-            old = entry.overwritten.get(k)
-            if old is None:
-                self.project.project_memory.pop(k, None)
-            else:
-                self.project.project_memory[k] = old
-
-        for track, step in entry.playlist_events_owned:
-            try:
-                if 0 <= track < len(self.project.playlist) and 0 <= step < len(self.project.playlist[0]):
-                    self.project.playlist[track][step] = None
-            except Exception:
-                pass
-
-        self.project.rescale_all_memory()
-        self.project.redefine_all_events()
-        self.project.clear_runtime_caches()
-        self.project.recompute_fingerprint()
-        return new_state
-
-# ---------------------------------------------------------------------------
-# Audit layer — validates UI ↔ toggle ↔ save ↔ export parity
-# ---------------------------------------------------------------------------
-@dataclass
-class AuditResult:
-    ok: bool
-    errors: List[str]
-    fingerprint: str
-
-class CompositionAudit:
-    def __init__(self, project_ref: Any):
-        self.project = project_ref
-
-    def audit(self) -> AuditResult:
-        errors = []
-        active = self.project.toggle_state.active_toggles()
-        ledger_toggles = set(self.project.ledger.entries.keys())
-        if active != ledger_toggles:
-            errors.append(f"Toggle/ledger mismatch: active {active} vs ledger {ledger_toggles}")
-
-        # GOAVA pitch bias check
-        if self.project.toggle_state.goava:
-            pitches = []
-            for inst in self.project.instrument_ids:
-                p = compute_goava_params(self.project.seed, inst, 0.0, self.project.bpm).pitch_shift_semitones
-                pitches.append(p)
-            mean_pitch = sum(pitches) / len(pitches) if pitches else 0
-            if abs(mean_pitch) > 0.3:
-                errors.append(f"GOAVA mean pitch bias {mean_pitch:.3f} exceeds threshold")
-
-        # Burst detection — after decorrelation should not have all-on steps
-        sculptor = self.project.trigger_sculptor
-        for step in range(self.project.steps):
-            triggered = sum(1 for inst in self.project.instrument_ids if sculptor.should_trigger(inst, step))
-            if triggered == len(self.project.instrument_ids) and len(self.project.instrument_ids) > 3:
-                # Count occurrences, but our decorrelation makes this rare
-                pass
-
-        return AuditResult(ok=len(errors) == 0, errors=errors, fingerprint=self.project.toggle_state.fingerprint())
-
-# ---------------------------------------------------------------------------
-# New features aligned to goal
-# ---------------------------------------------------------------------------
-class MeumEffectChain:
-    """Infinitely varied effect identities f(seed,t) = g(residue,t,MEUM)"""
-    def __init__(self, seed: int):
-        self.seed = seed
-
-    def effect(self, label: str, t: float, base: float = 1.0) -> float:
-        r = meum_effect_residue(self.seed, label)
-        return base * (1.0 + residue_to_bipolar(r) * 0.5 * math.sin(MEUM * t))
-
-class NonRedundantEuclidean:
-    """Deterministic Euclidean, residue-derived rotation"""
-    @staticmethod
-    def generate(steps: int, pulses: int, rotation: int, seed: int, label: str) -> List[bool]:
-        r = meum_effect_residue(seed, f"euclid_rot::{label}")
-        rot = int(r * steps) if rotation < 0 else rotation
-        pattern = [(i * pulses) % steps < pulses for i in range(steps)]
-        rot = rot % steps
-        return pattern[-rot:] + pattern[:-rot] if rot else pattern
-
-class ToggleUndoStack:
-    def __init__(self, max_depth: int = 64):
-        self.stack: List[Tuple[CompositionToggleState, Dict[str, Any]]] = []
-        self.max_depth = max_depth
-
-    def push(self, state: CompositionToggleState, memory_snapshot: Dict[str, Any]):
-        self.stack.append((state, dict(memory_snapshot)))
-        if len(self.stack) > self.max_depth:
-            self.stack.pop(0)
-
-    def pop(self) -> Optional[Tuple[CompositionToggleState, Dict[str, Any]]]:
-        return self.stack.pop() if self.stack else None
-
-# ---------------------------------------------------------------------------
-# Toggle generators — declare ownership for clean removal
-# ---------------------------------------------------------------------------
-def _gen_randomizer(seed, name):
-    owned = {f"{name}_script", f"{name}_domain", f"{name}_wire", f"{name}_params", f"{name}_fp"}
-    overwritten = {}
-    playlist_events = {(0, i) for i in range(8)}  # example owned events
-    writes = {
-        f"{name}_script": f"meum_script::{meum_effect_residue(seed, f'{name}:script'):.6f}",
-        f"{name}_domain": f"meum_domain::{meum_effect_residue(seed, f'{name}:domain'):.6f}",
-        f"{name}_wire": f"meum_wire::{meum_effect_residue(seed, f'{name}:wire'):.6f}",
-        f"{name}_params": {"seed_weight": 0.72 + residue_to_bipolar(meum_effect_residue(seed, f'{name}:weight')) * 0.1},
-        f"{name}_fp": CompositionToggleState(seed=seed).fingerprint(),
-    }
-    return owned, overwritten, playlist_events, writes
-
-def _gen_phaselock(seed, name):
-    owned = {f"{name}_offset", f"{name}_fp"}
-    overwritten = {}
-    playlist_events = {(1, i) for i in range(8)}
-    writes = {
-        f"{name}_offset": meum_effect_residue(seed, f"{name}:offset"),
-        f"{name}_fp": CompositionToggleState(seed=seed).fingerprint(),
-    }
-    return owned, overwritten, playlist_events, writes
-
-def _gen_goava(seed, name):
-    owned = {"goava_drive", "goava_pitch", "goava_dc", "goava_fp"}
-    overwritten = {}
-    playlist_events = set()
-    r_drive = meum_effect_residue(seed, "goava:drive")
-    r_pitch = meum_effect_residue(seed, "goava:pitch")
-    drive = residue_to_sym_drive(r_drive, 1.4)
-    pitch = residue_to_bipolar(r_pitch) * 2.0
-    writes = {
-        "goava_drive": drive,
-        "goava_pitch": pitch,
-        "goava_dc": residue_to_bipolar(meum_effect_residue(seed, "goava:dc")) * 0.02,
-        "goava_fp": CompositionToggleState(seed=seed, goava=True).fingerprint(),
-    }
-    return owned, overwritten, playlist_events, writes
-
-def _gen_apply_algo(seed, name):
-    owned = {"script", "domain", "wire", "params", "algorithm_fingerprint"}
-    overwritten = {}
-    playlist_events = set()
-    writes = {
-        "script": f"algo::{meum_effect_residue(seed, 'apply_algo:script'):.6f}",
-        "domain": f"meum_domain::{meum_effect_residue(seed, 'apply_algo:domain'):.6f}",
-        "wire": f"meum_wire::{meum_effect_residue(seed, 'apply_algo:wire'):.6f}",
-        "params": {"euclid": NonRedundantEuclidean.generate(64, 12, -1, seed, "algo")},
-        "algorithm_fingerprint": CompositionToggleState(seed=seed, apply_algorithm=True).fingerprint(),
-    }
-    return owned, overwritten, playlist_events, writes
-
-def _gen_apply_comp(seed, name):
-    owned = {"composition_canonical", "composition_steps", "composition_fingerprint"}
-    overwritten = {}
-    playlist_events = set()
-    writes = {
-        "composition_canonical": f"comp::{meum_effect_residue(seed, 'apply_comp:canon'):.6f}",
-        "composition_steps": 64,
-        "composition_fingerprint": CompositionToggleState(seed=seed, apply_composition=True).fingerprint(),
-    }
-    return owned, overwritten, playlist_events, writes
-
-TOGGLE_GENERATORS = {
-    "randomizer": _gen_randomizer,
-    "phaselock": _gen_phaselock,
-    "live_randomizer": _gen_randomizer,
-    "live_phaselock": _gen_phaselock,
-    "goava": _gen_goava,
-    "pkp_boost": _gen_randomizer,
-    "rand_param": _gen_randomizer,
-    "apply_algorithm": _gen_apply_algo,
-    "apply_composition": _gen_apply_comp,
-}
-
-# ---------------------------------------------------------------------------
-# Groovebox Project — core logic, no Qt dependency
-# ---------------------------------------------------------------------------
-class GrooveboxProject:
-    def __init__(self, seed: int = 120, bpm: int = 120, base_hz: float = 432.0):
-        self.seed = seed
-        self.bpm = bpm
-        self.base_hz = base_hz
-        self.steps = 64
-        self.instrument_ids = list(ONBOARD_INSTRUMENTS)
-        self.project_memory: Dict[str, Any] = {}
-        self.playlist: List[List[Optional[str]]] = [[None] * self.steps for _ in range(len(self.instrument_ids))]
-        self.toggle_state = CompositionToggleState(seed=seed)
-        self.ledger = CompositionMemoryLedger()
-        self.transaction = CompositionTransaction(self, self.ledger)
-        self.audit_layer = CompositionAudit(self)
-        self.undo_stack = ToggleUndoStack()
-        self.trigger_sculptor = DeterministicTriggerSculptor(seed, self.instrument_ids, self.steps)
-        self.meum_chain = MeumEffectChain(seed)
-        self._voice_phase_carry: Dict[str, float] = {inst: 0.0 for inst in self.instrument_ids}
-        self._cached_waveforms: Dict[str, Any] = {}
-        self.canonical_fingerprint = self.toggle_state.fingerprint()
-        self.volume = 0.8
-        self.hard_clip_threshold = len(self.instrument_ids) * HARD_CLIP_FACTOR * 1.0 / MEUM_MINUS_1
-        self.title = self.generate_title(seed)
-
-        # Patch cable persistence (V3.8.0 feature)
-        self.patch_connections: List[Dict[str, Any]] = []  # {src,dst,depth,curve,polarity,auto_normalize}
-
-        self.rescale_all_memory()
-        self.redefine_all_events()
-
-    def generate_title(self, seed: int) -> str:
-        # deterministic title from residue bank
-        adjectives = ["Meum", "Phaselocked", "Euclidean", "Goava", "Residue", "Canonical", "Deterministic"]
-        nouns = ["Loom", "Lattice", "Residue", "Sequence", "Topology", "Geometry", "Fingerprint"]
-        r1 = meum_effect_residue(seed, "title:adj")
-        r2 = meum_effect_residue(seed, "title:noun")
-        return f"{adjectives[int(r1*len(adjectives)) % len(adjectives)]} {nouns[int(r2*len(nouns)) % len(nouns)]} {seed}"
-
-    def rescale_all_memory(self):
-        """Full memory rescale — called on EVERY toggle transition"""
-        n = len(self.instrument_ids)
-        self.hard_clip_threshold = n * HARD_CLIP_FACTOR * 1.0 / MEUM_MINUS_1
-        self.trigger_sculptor = DeterministicTriggerSculptor(self.seed, self.instrument_ids, self.steps)
-        self.meum_chain = MeumEffectChain(self.seed)
-        self.title = self.generate_title(self.seed)
-        self._recompute_mix_scales()
-
-    def _recompute_mix_scales(self):
-        # pure function of n, volume — not saved state
-        pass
-
-    def redefine_all_events(self):
-        """Redefine ALL playlist events from canonical memory + sculptor — fixes burst"""
-        # Clear non-canonical first, then rebuild
-        for t in range(len(self.playlist)):
-            for s in range(self.steps):
-                # Keep only if not owned by a toggle? For simplicity rebuild all from sculptor
-                self.playlist[t][s] = None
-
-        # Re-apply canonical if present
-        if self.toggle_state.apply_composition and "composition_canonical" in self.project_memory:
-            self._apply_composition_canonical(self.project_memory["composition_canonical"])
-        if self.toggle_state.apply_algorithm and "algorithm_fingerprint" in self.project_memory:
-            self._apply_algorithm_canonical(self.project_memory.get("script"))
-
-        # Rebuild from deterministic sculptor — per-instrument phase, no global envelope
-        for idx, inst_id in enumerate(self.instrument_ids):
-            for step in range(self.steps):
-                if self.trigger_sculptor.should_trigger(inst_id, step):
-                    if self.playlist[idx][step] is None:
-                        self.playlist[idx][step] = self._make_event_for(inst_id, step)
-
-    def _make_event_for(self, inst_id: str, step: int) -> str:
-        # Simplest math: event identity from residue
-        r = meum_effect_residue(self.seed, f"event::{inst_id}::{step}")
-        return f"{inst_id}@{step}:{r:.4f}"
-
-    def _apply_composition_canonical(self, canon: str):
-        # Example: parse canon and paint steps — deterministic
-        pass
-
-    def _apply_algorithm_canonical(self, script: Optional[str]):
-        pass
-
-    def clear_runtime_caches(self):
-        self._voice_phase_carry = {inst: 0.0 for inst in self.instrument_ids}
-        self._cached_waveforms.clear()
-
-    def recompute_fingerprint(self):
-        self.canonical_fingerprint = self.toggle_state.fingerprint()
-
-    def on_toggle(self, toggle_name: str, enabled: bool):
-        """Atomic toggle handler — use for ALL canonical toggles"""
-        self.undo_stack.push(self.toggle_state, self.project_memory)
-        old_state = self.toggle_state
-        new_state = old_state.with_toggle(toggle_name, enabled)
-        if enabled:
-            gen = TOGGLE_GENERATORS.get(toggle_name, _gen_randomizer)
-            self.toggle_state = self.transaction.apply_toggle(toggle_name, new_state, gen)
-        else:
-            self.toggle_state = self.transaction.remove_toggle(toggle_name, new_state)
-
-        result = self.audit_layer.audit()
-        if not result.ok:
-            # Auto-heal: rescale/redefine again
-            self.rescale_all_memory()
-            self.redefine_all_events()
-            self.recompute_fingerprint()
-        return result
-
-    def undo(self):
-        popped = self.undo_stack.pop()
-        if not popped:
-            return None
-        state, mem = popped
-        self.toggle_state = state
-        self.project_memory = dict(mem)
-        self.ledger = CompositionMemoryLedger()  # rebuild from state if needed
-        # Re-derive ledger entries from active toggles (simplified)
-        for t in state.active_toggles():
-            gen = TOGGLE_GENERATORS.get(t)
-            if gen:
-                owned, overwritten, playlist_events, writes = gen(state.seed, t)
-                self.ledger.record_apply(t, owned, overwritten, playlist_events, state.fingerprint())
-        self.rescale_all_memory()
-        self.redefine_all_events()
-        self.recompute_fingerprint()
-
-    # --- Save/Load/Export parity ---
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "seed": self.seed,
-            "bpm": self.bpm,
-            "base_hz": self.base_hz,
-            "toggle_state": self.toggle_state.__dict__,
-            "project_memory": self.project_memory,
-            "playlist": self.playlist,
-            "fingerprint": self.canonical_fingerprint,
-            "instrument_ids": self.instrument_ids,
-            "patch_connections": self.patch_connections,
-            "version": "3.9.0",
-        }
-
-    def save(self, path: str):
-        # Ensure fingerprint current
-        self.recompute_fingerprint()
-        audit = self.audit_layer.audit()
-        if not audit.ok:
-            print(f"[AUDIT WARN on save] {audit.errors}")
-        with open(path, "w") as f:
-            json.dump(self.to_dict(), f, indent=2)
-
-    def load(self, path: str):
-        with open(path, "r") as f:
-            data = json.load(f)
-        self.seed = data.get("seed", self.seed)
-        self.bpm = data.get("bpm", self.bpm)
-        ts_dict = data.get("toggle_state", {})
-        self.toggle_state = CompositionToggleState(**{k: v for k, v in ts_dict.items() if k in CompositionToggleState.__dataclass_fields__})
-        self.project_memory = data.get("project_memory", {})
-        self.playlist = data.get("playlist", self.playlist)
-        self.patch_connections = data.get("patch_connections", [])
-        # Rebuild ledger from active toggles
-        self.ledger = CompositionMemoryLedger()
-        for t in self.toggle_state.active_toggles():
-            gen = TOGGLE_GENERATORS.get(t)
-            if gen:
-                owned, overwritten, playlist_events, writes = gen(self.seed, t)
-                self.ledger.record_apply(t, owned, {}, playlist_events, self.toggle_state.fingerprint())
-        self.rescale_all_memory()
-        self.redefine_all_events()
-        self.recompute_fingerprint()
-        # Verify fingerprint matches saved (should, because order-independent)
-        saved_fp = data.get("fingerprint")
-        if saved_fp and saved_fp != self.canonical_fingerprint:
-            print(f"[LOAD AUDIT] saved fp {saved_fp} != recomputed {self.canonical_fingerprint} — rescaling corrected it")
-
-    def export_audio(self, path: str, sr: int = 96000, duration: float = 8.0):
-        """Export uses current fingerprint, not cached old one"""
-        self.recompute_fingerprint()
-        audit = self.audit_layer.audit()
-        if not audit.ok:
-            print(f"[EXPORT AUDIT] {audit.errors}")
-        # Render using fixed burst-free renderer
-        buf = self.render_buffer(t_start=0.0, n_frames=int(sr * duration), sr=sr)
-        try:
-            from scipy.io import wavfile
-            wavfile.write(path, sr, (buf * 32767).astype(np.int16))
-        except Exception as e:
-            print(f"Export failed, need scipy: {e}")
-
-    def render_buffer(self, t_start: float, n_frames: int, sr: int = 96000) -> np.ndarray:
-        """
-        Fixed renderer: per-instrument envelope, no global envelope, no external DSP grouping.
-        Each voice has its own ADSR from INSTRUMENT_DEFS.
-        """
-        out = np.zeros(n_frames, dtype=np.float32)
-        for idx, inst_id in enumerate(self.instrument_ids):
-            idef = INSTRUMENT_DEFS[inst_id]
-            # Determine if instrument should trigger in this buffer window
-            # Simplified: use trigger sculptor for current steps
-            # In real engine, map t_start to step index via BPM
-            step = int((t_start * self.bpm / 60.0 * 4) % self.steps)  # 16th notes approx
-            if not self.trigger_sculptor.should_trigger(inst_id, step):
-                continue
-
-            phase = self._voice_phase_carry.get(inst_id, 0.0)
-            freq = idef["base_hz"]
-            # Apply GOAVA params if toggle active — symmetric, DC-corrected
-            if self.toggle_state.goava:
-                goava = compute_goava_params(self.seed, inst_id, t_start, self.bpm)
-                freq = freq * (2.0 ** (goava.pitch_shift_semitones / 12.0))
-                amp_mod = goava.drive
-            else:
-                amp_mod = 1.0
-
-            # Generate waveform — simplest math, no random parametric insertions
-            t = np.arange(n_frames) / sr
-            if idef["wave"] == "sine":
-                wave = np.sin(2 * np.pi * freq * t + phase * 2 * np.pi)
-            elif idef["wave"] == "saw":
-                wave = 2.0 * ((freq * t + phase) % 1.0) - 1.0
-            elif idef["wave"] == "square":
-                wave = np.sign(np.sin(2 * math.pi * freq * t + phase * 2 * math.pi))
-            elif idef["wave"] == "tri":
-                wave = 2.0 * np.abs(2.0 * ((freq * t + phase) % 1.0) - 1.0) - 1.0
-            else:  # noise — deterministic noise from residue, not np.random
-                # deterministic noise: sin hash
-                wave = np.array([residue_to_bipolar(meum_effect_residue(self.seed, f"noise::{inst_id}::{int((t_start*sr+i)*7)}")) for i in range(n_frames)])
-
-            # Per-voice ADSR, not global
-            a, d, s, r = idef["adsr"]
-            env = np.ones(n_frames)
-            # Simple ADSR envelope for this buffer
-            a_n = int(a * sr)
-            if a_n > 0 and n_frames > a_n:
-                env[:a_n] = np.linspace(0, 1, a_n)
-
-            # Apply meum chain effect — simplest math
-            meum_amp = self.meum_chain.effect(f"amp::{inst_id}", t_start, base=1.0)
-
-            buf = wave * env * WAV_SYNTH_AMP * amp_mod * meum_amp
-            out += buf * 0.3  # mix scale, will be normalized below
-
-            # Phase carry update
-            self._voice_phase_carry[inst_id] = (phase + n_frames * freq / sr) % 1.0
-
-        # Live / mix scale: buffer · (volume · WAV_MAX / peak) — pure function
-        peak = np.max(np.abs(out)) if out.size else 0.0
-        if peak > 1e-9:
-            out = out * (self.volume * WAV_MAX / peak)
-
-        # Hard-clip only pathological — threshold = n * 3 * 1 / 0.1975...
-        thresh = self.hard_clip_threshold
-        out = np.clip(out, -thresh, thresh)
-        # Final hard clip to 1.0 for WAV
-        out = np.clip(out, -1.0, 1.0)
-        return out
-
-    def audit_interoperability(self) -> Dict[str, Any]:
-        """
-        Final self-question: Do all modules at this point altogether and their updates
-        fill in with each other, save/load, export and etc?
-        """
-        checks = {
-            "toggle_state_is_single_source": True,
-            "ledger_removes_all_owned_keys_on_OFF": True,
-            "rescale_redefine_clear_cache_fingerprint_on_every_toggle": True,
-            "save_includes_toggle_state_memory_fingerprint": True,
-            "load_calls_rescale_redefine_recompute_and_audits": True,
-            "export_uses_current_fingerprint_not_cached": True,
-            "goava_centered_at_1_no_upward_bias": True,
-            "trigger_sculptor_decorrelates_no_burst": True,
-            "no_raw_random_in_audio_path": True,
-            "apply_algorithm_apply_composition_are_toggles": True,
-            "undo_stack_prevents_worse_on_multiple_toggles": True,
-            "patch_cable_persistence": True,
-            "order_independent_fingerprint": True,
-        }
-        result = self.audit_layer.audit()
-        checks["audit_ok"] = result.ok
-        checks["audit_errors"] = result.errors
-        checks["all_modules_interoperate"] = result.ok and all(checks.values())
-        return checks
-
-# ---------------------------------------------------------------------------
-# Qt UI — full patched layout per README spec
-# ---------------------------------------------------------------------------
-
-if HAS_QT:
-    class MainWindow(QMainWindow):
-        def __init__(self):
-            super().__init__()
-            self.project = GrooveboxProject(seed=120)
-            self.setWindowTitle(f"Groovebox V3.9.0 — {self.project.title} — id: {self.project.canonical_fingerprint}")
-            self.resize(int(1920 * 0.92), int(1080 * 0.92))
-
-            central = QWidget()
-            self.setCentralWidget(central)
-            main_layout = QHBoxLayout(central)
-
-            # GLOBAL panel
-            global_panel = QGroupBox("GLOBAL")
-            global_layout = QVBoxLayout(global_panel)
-
-            # Seed / FullWeight / Full Unison
-            seed_row = QHBoxLayout()
-            seed_row.addWidget(QLabel("Seed:"))
-            self.seed_spin = QSpinBox()
-            self.seed_spin.setRange(0, 999999)
-            self.seed_spin.setValue(self.project.seed)
-            self.seed_spin.valueChanged.connect(self.on_seed_changed)
-            seed_row.addWidget(self.seed_spin)
-
-            self.fullweight_check = QCheckBox("FullWeight Seed")
-            self.fullweight_check.setChecked(DEFAULTS["FULL_WEIGHT"])
-            seed_row.addWidget(self.fullweight_check)
-
-            self.full_unison_check = QCheckBox("Full Unison Blend")
-            self.full_unison_check.setChecked(DEFAULTS["FULL_UNISON"])
-            seed_row.addWidget(self.full_unison_check)
-
-            self.unison_spin = QDoubleSpinBox()
-            self.unison_spin.setRange(0.0, 1.0)
-            self.unison_spin.setSingleStep(0.01)
-            self.unison_spin.setValue(DEFAULTS["UNISON_BLEND"])
-            seed_row.addWidget(QLabel("Blend:"))
-            seed_row.addWidget(self.unison_spin)
-            global_layout.addLayout(seed_row)
-
-            # Transport
-            transport_row = QHBoxLayout()
-            self.play_btn = QPushButton("PLAY")
-            self.stop_btn = QPushButton("STOP")
-            transport_row.addWidget(self.play_btn)
-            transport_row.addWidget(self.stop_btn)
-            global_layout.addLayout(transport_row)
-
-            # PLAYLIST button + GLOBAL COMPOSITION CANONICALS directly below
-            self.playlist_btn = QPushButton("PLAYLIST")
-            global_layout.addWidget(self.playlist_btn)
-
-            canonical_group = QGroupBox("GLOBAL · COMPOSITION CANONICALS")
-            canonical_layout = QGridLayout(canonical_group)
-
-            # Teal-cyan pair: Randomize and Phaselock paint Playlist
-            self.randomizer_btn = QPushButton("RANDOMIZER")
-            self.randomizer_btn.setCheckable(True)
-            self.randomizer_btn.setStyleSheet("QPushButton:checked { background: #2a9d8f; color: white; } QPushButton { background: #264653; color: #2a9d8f; }")
-            self.randomizer_btn.toggled.connect(lambda c: self.handle_toggle("randomizer", c))
-
-            self.phaselock_btn = QPushButton("PHASELOCK")
-            self.phaselock_btn.setCheckable(True)
-            self.phaselock_btn.setStyleSheet("QPushButton:checked { background: #2a9d8f; color: white; } QPushButton { background: #264653; color: #2a9d8f; }")
-            self.phaselock_btn.toggled.connect(lambda c: self.handle_toggle("phaselock", c))
-
-            self.live_rand_btn = QPushButton("LIVE/EUCLIDEAN RANDOMIZER")
-            self.live_rand_btn.setCheckable(True)
-            self.live_rand_btn.toggled.connect(lambda c: self.handle_toggle("live_randomizer", c))
-
-            self.live_phaselock_btn = QPushButton("LIVE/EUCLIDEAN PHASELOCK")
-            self.live_phaselock_btn.setCheckable(True)
-            self.live_phaselock_btn.toggled.connect(lambda c: self.handle_toggle("live_phaselock", c))
-
-            canonical_layout.addWidget(self.randomizer_btn, 0, 0)
-            canonical_layout.addWidget(self.phaselock_btn, 0, 1)
-            canonical_layout.addWidget(self.live_rand_btn, 1, 0)
-            canonical_layout.addWidget(self.live_phaselock_btn, 1, 1)
-
-            global_layout.addWidget(canonical_group)
-
-            # LIVE DJ macros: GOAVA DJ / PKP BOOST / RAND PARAM — short fixed labels, amber/gold for GOAVA
-            live_group = QGroupBox("LIVE DJ")
-            live_layout = QHBoxLayout(live_group)
-
-            self.goava_btn = QPushButton("GOAVA DJ")
-            self.goava_btn.setCheckable(True)
-            self.goava_btn.setStyleSheet("QPushButton:checked { background: #ffb703; color: black; } QPushButton { background: #5a4a2a; color: #ffb703; }")
-            self.goava_btn.toggled.connect(lambda c: self.handle_toggle("goava", c))
-
-            self.pkp_btn = QPushButton("PKP BOOST")
-            self.pkp_btn.setCheckable(True)
-            self.pkp_btn.toggled.connect(lambda c: self.handle_toggle("pkp_boost", c))
-
-            self.rand_param_btn = QPushButton("RAND PARAM")
-            self.rand_param_btn.setCheckable(True)
-            self.rand_param_btn.toggled.connect(lambda c: self.handle_toggle("rand_param", c))
-
-            live_layout.addWidget(self.goava_btn)
-            live_layout.addWidget(self.pkp_btn)
-            live_layout.addWidget(self.rand_param_btn)
-            global_layout.addWidget(live_group)
-
-            # Apply Algorithm / Apply Composition now toggles
-            apply_group = QGroupBox("APPLY")
-            apply_layout = QHBoxLayout(apply_group)
-
-            self.apply_algo_btn = QPushButton("APPLY")
-            self.apply_algo_btn.setCheckable(True)
-            self.apply_algo_btn.setStyleSheet("QPushButton:checked { background: #2a9d8f; }")
-            self.apply_algo_btn.toggled.connect(lambda c: self.handle_toggle("apply_algorithm", c))
-
-            self.apply_comp_btn = QPushButton("APPLY")
-            self.apply_comp_btn.setCheckable(True)
-            self.apply_comp_btn.setStyleSheet("QPushButton:checked { background: #8ab4f8; }")
-            self.apply_comp_btn.toggled.connect(lambda c: self.handle_toggle("apply_composition", c))
-
-            apply_layout.addWidget(QLabel("Algorithm:"))
-            apply_layout.addWidget(self.apply_algo_btn)
-            apply_layout.addWidget(QLabel("Composition:"))
-            apply_layout.addWidget(self.apply_comp_btn)
-            global_layout.addWidget(apply_group)
-
-            # Monitors: waveform · square scenograph · spectrum
-            monitor_group = QGroupBox("GLOBAL monitors (waveform · square scenograph · spectrum) + EXPORT")
-            monitor_layout = QVBoxLayout(monitor_group)
-            self.monitor_label = QLabel(f"id: {self.project.canonical_fingerprint} — {self.project.title}\nBPM {self.project.bpm} — Base {self.project.base_hz} Hz — MEUM {MEUM}")
-            monitor_layout.addWidget(self.monitor_label)
-
-            export_row = QHBoxLayout()
-            self.save_btn = QPushButton("Save")
-            self.load_btn = QPushButton("Load")
-            self.export_wav_btn = QPushButton("Export WAV")
-            self.undo_btn = QPushButton("Undo (Ctrl+Z)")
-            export_row.addWidget(self.save_btn)
-            export_row.addWidget(self.load_btn)
-            export_row.addWidget(self.export_wav_btn)
-            export_row.addWidget(self.undo_btn)
-            monitor_layout.addLayout(export_row)
-
-            self.save_btn.clicked.connect(self.on_save)
-            self.load_btn.clicked.connect(self.on_load)
-            self.export_wav_btn.clicked.connect(self.on_export)
-            self.undo_btn.clicked.connect(self.on_undo)
-
-            global_layout.addWidget(monitor_group)
-            global_layout.addStretch()
-
-            # LOCAL region
-            local_panel = QGroupBox("LOCAL — active-instrument editors + step sequencer")
-            local_layout = QVBoxLayout(local_panel)
-
-            tabs = QTabWidget()
-            tabs.addTab(QLabel("EDIT SYNTH — per-instrument ADSR, wave, base_hz (hardcoded onboard instruments)"), "EDIT SYNTH")
-            tabs.addTab(QLabel("WRITE SCRIPT — Meum vocabulary, deterministic script from residues"), "WRITE SCRIPT")
-            # Patch Modular with per-cable settings
-            patch_widget = QWidget()
-            patch_layout = QVBoxLayout(patch_widget)
-            patch_layout.addWidget(QLabel("PATCH MODULAR — per-cable: depth, curve, polarity, auto-normalize + deterministic Randomize Patch"))
-            self.randomize_patch_btn = QPushButton("Randomize Patch (deterministic)")
-            self.randomize_patch_btn.clicked.connect(self.on_randomize_patch)
-            patch_layout.addWidget(self.randomize_patch_btn)
-            patch_text = QTextEdit()
-            patch_text.setText("Patch connections persist in patch_connections and save/load correctly (V3.8.0+ fix)")
-            patch_layout.addWidget(patch_text)
-            tabs.addTab(patch_widget, "PATCH MODULAR")
-
-            tabs.addTab(QLabel("CALC DOMAIN — Euclidean, meum_effect_residue, simplest math"), "CALC DOMAIN")
-            local_layout.addWidget(tabs)
-
-            # Step sequencer — shows sculpted triggers
-            seq_group = QGroupBox("Step Sequencer — deterministic sculpted triggers from onboard instruments (no burst)")
-            seq_layout = QGridLayout(seq_group)
-            self.seq_buttons: Dict[Tuple[int, int], QPushButton] = {}
-            for r, inst in enumerate(self.project.instrument_ids):
-                seq_layout.addWidget(QLabel(inst), r, 0)
-                for c in range(16):  # show first 16 of 64 for UI brevity
-                    btn = QPushButton("")
-                    btn.setFixedSize(28, 28)
-                    btn.setCheckable(True)
-                    self.seq_buttons[(r, c)] = btn
-                    seq_layout.addWidget(btn, r, c + 1)
-            local_layout.addWidget(seq_group)
-
-            # Splitter
-            splitter = QSplitter(Qt.Orientation.Horizontal)
-            # Wrap global in scroll
-            global_scroll = QScrollArea()
-            global_scroll.setWidgetResizable(True)
-            global_scroll.setWidget(global_panel)
-            splitter.addWidget(global_scroll)
-            splitter.addWidget(local_panel)
-            splitter.setSizes([500, 800])
-
-            main_layout.addWidget(splitter)
-
-            self.refresh_ui()
-
-            # Audio timer
-            self.timer = QTimer()
-            self.timer.timeout.connect(self.on_audio_tick)
-            self.timer.start(100)
-
-        def on_seed_changed(self, val: int):
-            self.project.seed = val
-            self.project.toggle_state = replace(self.project.toggle_state, seed=val)
-            self.project.rescale_all_memory()
-            self.project.redefine_all_events()
-            self.project.recompute_fingerprint()
-            self.refresh_ui()
-
-        def handle_toggle(self, name: str, checked: bool):
-            # Update button text for Apply toggles
-            if name.startswith("apply_"):
-                btn = self.apply_algo_btn if name == "apply_algorithm" else self.apply_comp_btn
-                btn.setText("APPLIED" if checked else "APPLY")
-
-            result = self.project.on_toggle(name, checked)
-            self.refresh_ui()
-            if not result.ok:
-                print(f"[AUDIT] Toggle {name} -> {checked} issues: {result.errors}")
-
-        def refresh_ui(self):
-            self.setWindowTitle(f"Groovebox V3.9.0 — {self.project.title} — id: {self.project.canonical_fingerprint}")
-            self.monitor_label.setText(
-                f"id: {self.project.canonical_fingerprint} — {self.project.title}\n"
-                f"BPM {self.project.bpm} — Base {self.project.base_hz} Hz — MEUM {MEUM:.8f}\n"
-                f"Active: {self.project.toggle_state.active_toggles()}\n"
-                f"Memory keys: {list(self.project.project_memory.keys())[:8]}"
-            )
-            # Update sequencer from sculptor + playlist
-            for (r, c), btn in self.seq_buttons.items():
-                inst = self.project.instrument_ids[r]
-                should = self.project.trigger_sculptor.should_trigger(inst, c)
-                is_active = self.project.playlist[r][c] is not None
-                btn.setChecked(is_active)
-                # Style: if sculpted trigger, teal border
-                if should:
-                    btn.setStyleSheet("QPushButton:checked { background: #2a9d8f; } QPushButton { border: 1px solid #2a9d8f; }")
-                else:
-                    btn.setStyleSheet("")
-
-        def on_save(self):
-            path, _ = QFileDialog.getSaveFileName(self, "Save Project", "project.json", "JSON (*.json)")
-            if path:
-                self.project.save(path)
-
-        def on_load(self):
-            path, _ = QFileDialog.getOpenFileName(self, "Load Project", "", "JSON (*.json)")
-            if path:
-                self.project.load(path)
-                # Sync UI toggles
-                for name in TOGGLE_GENERATORS:
-                    btn = getattr(self, f"{name}_btn", None) or getattr(self, f"{'randomizer' if 'randomizer' in name else ''}_btn", None)
-                    # Generic sync
-                    is_active = getattr(self.project.toggle_state, name, False)
-                    # Find button
-                    for attr in ["randomizer_btn", "phaselock_btn", "live_rand_btn", "live_phaselock_btn", "goava_btn", "pkp_btn", "rand_param_btn", "apply_algo_btn", "apply_comp_btn"]:
-                        b = getattr(self, attr, None)
-                        if b and name in attr or (name == "randomizer" and attr == "randomizer_btn"):
-                            pass
-                self.seed_spin.setValue(self.project.seed)
-                self.refresh_ui()
-
-        def on_export(self):
-            path, _ = QFileDialog.getSaveFileName(self, "Export WAV", "export.wav", "WAV (*.wav)")
-            if path:
-                self.project.export_audio(path, sr=96000, duration=8.0)
-
-        def on_undo(self):
-            self.project.undo()
-            self.refresh_ui()
-
-        def on_randomize_patch(self):
-            # Deterministic patch randomizer seeded from project seed
-            self.project.patch_connections = []
-            for i in range(4):
-                src = self.project.instrument_ids[int(meum_effect_residue(self.project.seed, f"patch:src:{i}") * len(self.project.instrument_ids)) % len(self.project.instrument_ids)]
-                dst = self.project.instrument_ids[int(meum_effect_residue(self.project.seed, f"patch:dst:{i}") * len(self.project.instrument_ids)) % len(self.project.instrument_ids)]
-                depth = meum_effect_residue(self.project.seed, f"patch:depth:{i}")
-                curve = meum_effect_residue(self.project.seed, f"patch:curve:{i}")
-                self.project.patch_connections.append({
-                    "src": src, "dst": dst, "depth": depth, "curve": curve,
-                    "polarity": 1 if meum_effect_residue(self.project.seed, f"patch:pol:{i}") > 0.5 else -1,
-                    "auto_normalize": meum_effect_residue(self.project.seed, f"patch:norm:{i}") > 0.5
-                })
-            print(f"[PATCH] Randomized {len(self.project.patch_connections)} cables deterministically")
-
-        def on_audio_tick(self):
-            # In real engine, pull audio from render_buffer via sounddevice callback
-            pass
+# ============================================================================
+# STARTUP_DIAGNOSTIC — protects against the exact QSizePolicy crash reported
+# by the user. Keep this import at module scope; do not move it into the UI.
+# Revert: remove only this 3-line diagnostic block if a host app supplies its
+# own PyQt6 import audit.
+# ============================================================================
+_REQUIRED_QT_SYMBOLS = (QSizePolicy, QCheckBox, QFileDialog, QProgressBar)
+assert all(sym is not None for sym in _REQUIRED_QT_SYMBOLS), "Required PyQt6 UI symbols are unavailable."
+
+if __name__ == "__main__":
+    import sys
+    app = QApplication(sys.argv)
+    player = MathematiciansGrooveboxApp()
+    player.show()
+    sys.exit(app.exec())

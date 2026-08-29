@@ -100,10 +100,7 @@ class LiveDJEffects:
         raw = float(goava_scalar)
         mod_hz = 0.25 + 0.35 * (abs(raw) % 11.0) + (float(bpm) / 60.0) * (0.5 + d.spread)
         mod = np.sin(math.tau * mod_hz * t + d.phase).astype(np.float32)
-        # FIXED: symmetric drive centered at 1.0, no upward bias (was 1.0 + 2.8*(0.25+0.75*ratio))
-        bipolar_ratio = (d.ratio - 1.25) / 0.75  # ratio 0.5..2.0 -> -1..+1
-        drive = 1.0 + bipolar_ratio * 1.4 * amt
-        drive = max(0.2, min(2.4, drive))
+        drive = 1.0 + 2.8 * (0.25 + 0.75 * d.ratio) * amt
         wet = np.tanh(x * drive) * (0.78 + 0.22 * mod)
         # Preserve polarity while giving the GOAVA scalar a musically obvious sideband.
         wet += x * (0.16 * amt) * mod
