@@ -22,14 +22,17 @@
 # =============================================================================
 from __future__ import annotations
 
+import gzip
 import hashlib
+import io
 import json
 import math
 import os
 import shutil
 import stat
+import struct
 import tempfile
-import textwrap
+import wave
 import zipfile
 from dataclasses import dataclass, asdict, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -351,7 +354,7 @@ __TITLE__
   social=__SOCIAL__  mood=__MOOD__  online=__ONLINE__
 """
 from __future__ import annotations
-import hashlib, json, math, os, queue, socket, sys, threading, time
+import csv, gzip, hashlib, io, json, math, os, queue, socket, struct, sys, threading, time, wave, zlib
 
 MEUM = __MEUM__
 PHI = __PHI__
@@ -408,6 +411,185 @@ def meum_angle(k):
 def residue_to_bipolar(r):
     return r * 2.0 - 1.0
 
+# ---------------------------------------------------------------------------
+# GAME_FILE_TASKS_2026 — import/export codec jobs + gameplay recording.
+# The game finds its own file work: a format registry (json/gz/csv/txt/wav/png),
+# a router that turns a file/format into concrete jobs (import replay/identity,
+# export recording/music bed, inspect), and a GameplayRecorder that writes the
+# deterministic gameplay INTO files and reads it back OUT for identical replay.
+# ---------------------------------------------------------------------------
+GAME_CODECS = {
+    "json": {"kind": "both", "mime": "application/json", "label": "World / replay metadata",
+             "decode": "decode_json", "encode": "encode_json"},
+    "gz":   {"kind": "both", "mime": "application/gzip", "label": "Compressed NDJSON replay (default)",
+             "decode": "decode_json_gz", "encode": "encode_json_gz"},
+    "csv":  {"kind": "both", "mime": "text/csv", "label": "Flat telemetry table",
+             "decode": "decode_csv", "encode": "encode_csv"},
+    "txt":  {"kind": "both", "mime": "text/plain", "label": "Human-readable session log",
+             "decode": "decode_txt", "encode": "encode_txt"},
+    "wav":  {"kind": "export", "mime": "audio/wav", "label": "Music-bed audio export",
+             "decode": None, "encode": "encode_wav"},
+    "png":  {"kind": "export", "mime": "image/png", "label": "Scene snapshot",
+             "decode": None, "encode": "encode_png"},
+}
+
+def resolve_codec(token):
+    token = str(token or "")
+    ext = token.lstrip(".").lower()
+    if ext in GAME_CODECS:
+        return ext, GAME_CODECS[ext]
+    base = os.path.splitext(token)[1].lstrip(".").lower()
+    if base in GAME_CODECS:
+        return base, GAME_CODECS[base]
+    return None, None
+
+def list_file_tasks():
+    print("== Groovebox game file tasks ==")
+    for ext, c in sorted(GAME_CODECS.items()):
+        print(f"  .{ext:<4} [{c['kind']:<4}] {c['label']}  ({c['mime']})")
+    print("  example import:   --replay=gameplay.gz")
+    print("  example export:   --record=gameplay.gz   --record=music.wav   --record=snap.png")
+
+class GameplayRecorder:
+    """Deterministic gameplay IN/OUT files. Because the world is f(seed,t),
+    replay = feed recorded inputs back and re-simulate; identical on all OS."""
+    def __init__(self, seed, meta=None, max_rows=200000):
+        self.seed = float(seed)
+        self.meta = dict(meta or {})
+        self.meta.setdefault("seed", self.seed)
+        self.meta.setdefault("engine", "groovebox-videogame")
+        self.meta.setdefault("format", "gz")
+        self.rows = []
+        self.max_rows = max(1000, int(max_rows))
+    def record(self, **state):
+        if len(self.rows) < self.max_rows:
+            self.rows.append(dict(state))
+    @staticmethod
+    def _norm(r):
+        out = {}
+        for k, v in r.items():
+            if k in ("collected", "sigils"):
+                try:
+                    out[k] = sorted(int(x) for x in (v or ()))
+                except Exception:
+                    out[k] = []
+            elif isinstance(v, (dict, list, tuple)):
+                try:
+                    out[k] = json.loads(json.dumps(v))
+                except Exception:
+                    out[k] = str(v)
+            else:
+                out[k] = v
+        return out
+    def _encode(self, ext):
+        rows = [self._norm(r) for r in self.rows]
+        meta = dict(self.meta); meta["format"] = ext
+        if ext == "json":
+            return json.dumps({"meta": meta, "rows": rows}, indent=1, sort_keys=True)
+        if ext == "gz":
+            return gzip.compress(json.dumps({"meta": meta, "rows": rows}, indent=1, sort_keys=True).encode("utf-8"), mtime=0)
+        if ext == "csv":
+            cols = list(rows[0].keys()) if rows else []
+            buf = io.StringIO()
+            w = csv.writer(buf)
+            w.writerow(["meta", json.dumps(meta, sort_keys=True)])
+            w.writerow(cols)
+            for r in rows:
+                w.writerow([r.get(c, "") for c in cols])
+            return buf.getvalue()
+        if ext == "txt":
+            lines = ["# Groovebox gameplay recording", "# meta: " + json.dumps(meta, sort_keys=True), ""]
+            for r in rows:
+                fields = "  ".join(f"{k}={r.get(k,'')}" for k in ("t","steer","score","level","combo","sigils","dj","authoritative"))
+                lines.append(f"{r.get('t',0.0):8.3f}  {fields}")
+            return "\n".join(lines) + "\n"
+        if ext == "wav":
+            raise ValueError("wav recorder needs explicit mono samples; see --record=music.wav")
+        if ext == "png":
+            raise ValueError("png recorder needs a scene snapshot callback; see --snap-dir")
+        raise ValueError(f"no encoder for .{ext}")
+    def save(self, path, samples=None, sample_rate=44100, snapshot=None):
+        ext, codec = resolve_codec(path)
+        ext = ext or self.meta.get("format", "gz")
+        if ext == "wav":
+            if not samples:
+                raise ValueError("wav export needs `samples`")
+            raw = bytearray()
+            for s in samples:
+                raw += struct.pack("<h", int(max(-1.0, min(1.0, float(s))) * 32767))
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as wf:
+                wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(int(sample_rate))
+                wf.writeframes(bytes(raw))
+            payload = buf.getvalue()
+        elif ext == "png":
+            if not snapshot:
+                raise ValueError("png export needs snapshot (width, height, pixels)")
+            w, h, px = snapshot
+            def _chunk(tag, data):
+                return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+            raw = bytearray()
+            for y in range(int(h)):
+                raw.append(0)
+                for x in range(int(w)):
+                    px_ = px[y * int(w) + x]
+                    raw += bytes((int(px_[0]) & 0xFF, int(px_[1]) & 0xFF, int(px_[2]) & 0xFF))
+            ihdr = struct.pack(">IIBBBBB", int(w), int(h), 8, 2, 0, 0, 0)
+            payload = (b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr)
+                       + _chunk(b"IDAT", zlib.compress(bytes(raw), 9)) + _chunk(b"IEND", b""))
+        else:
+            payload = self._encode(ext)
+        mode = "wb" if isinstance(payload, (bytes, bytearray)) else "w"
+        with open(path, "wb") if mode == "wb" else open(path, "w", encoding="utf-8") as f:
+            f.write(payload)
+        return os.path.abspath(path)
+    @classmethod
+    def load(cls, path):
+        ext, codec = resolve_codec(path)
+        if ext not in ("json", "gz", "csv", "txt"):
+            raise ValueError(f"no reading codec for {path!r}")
+        with open(path, "rb") as f:
+            blob = f.read()
+        if ext == "json":
+            data = json.loads(blob.decode("utf-8", errors="replace"))
+            return data.get("meta", {}), list(data.get("rows", []))
+        if ext == "gz":
+            data = json.loads(gzip.decompress(blob).decode("utf-8", errors="replace"))
+            return data.get("meta", {}), list(data.get("rows", []))
+        if ext == "csv":
+            text = blob.decode("utf-8", errors="replace")
+            meta, cols, rows = {}, [], []
+            for i, ln in enumerate(text.splitlines()):
+                if not ln.strip():
+                    continue
+                parts = next(csv.reader([ln]))
+                if i == 0:
+                    try: meta = json.loads(parts[1])
+                    except Exception: meta = {}
+                elif i == 1:
+                    cols = parts
+                elif cols:
+                    rows.append({cols[j]: parts[j] if j < len(parts) else "" for j in range(len(cols))})
+            return meta, rows
+        text = blob.decode("utf-8", errors="replace")
+        meta, rows = {}, []
+        for ln in text.splitlines():
+            s = ln.strip()
+            if s.startswith("# meta:"):
+                try: meta = json.loads(s[len("# meta:"):])
+                except Exception: pass
+            elif s and s[0].isdigit():
+                parts = s.split(None, 1)
+                try: t = float(parts[0])
+                except Exception: continue
+                row = {"t": t}
+                for f in (parts[1].split("  ") if len(parts) > 1 else []):
+                    if "=" in f:
+                        k, _, v = f.partition("=")
+                        row[k.strip()] = v.strip()
+                rows.append(row)
+        return meta, rows
+
 
 class TriggerSculptor:
     """Programmed instrument triggers — mirrors the app's DeterministicTriggerSculptor.
@@ -432,16 +614,43 @@ class TriggerSculptor:
 
 
 class ScenographLite:
-    """Deterministic 3D-scene analogue: appearance and fire timing are pure
-    f(seed, i, beat) residues; layers only animate in the beat/frame they fire."""
-    def __init__(self, seed, n=12):
+    """Canonical instrument->frame scheme, folded from the Groovebox visual
+    engine: every layer is ONE 2.5D frame (base_freq lattice, ratio, entropy,
+    conson, depth, shade, life, radius) — the same parameter count and MEUM
+    lattice as the canonical visual instrument. Translucency and depth follow
+    conson, the harmonic-cancel factor: goava-aligned (union-minor) -> conson=1
+    and every layer collapses to the identity entropy point, exactly mirroring
+    the audio union. Appearance and fire timing stay pure f(seed, i, beat)."""
+    def __init__(self, seed, n=12, goava=False):
         self.seed = int(seed) & 0x7FFFFFFF
         self.n = max(3, min(24, n))
+        self.goava = bool(goava)
         self.sculptor = TriggerSculptor(self.seed, self.n)
         self.beat = 0.0
         self.layers = []
+        base = 220.0 * 2.0 ** ((round(36.0 * _residue(self.seed, "base")) - 18) / 12.0)
         for i in range(self.n):
+            phase0 = _residue(self.seed, f"phase0:{i}")
+            ax = (phase0 * MEUM_NORM + i * MEUM_INV) % 1.0
+            ent = (_residue(self.seed, "identity_entropy")
+                   if self.goava else _residue(self.seed, f"entropy:{i}"))
+            conson = 1.0 if self.goava else 0.5 + 0.5 * math.cos(ax * math.tau)
+            pow_ = 2.0 + 8.0 * _residue(self.seed, f"pow:{i}")
+            depth = 0.96 + 0.72 * (1.0 - conson) + 0.18 * pow_
+            shade = 0.32 + 0.68 * (0.5 + 0.5 * math.sin(ax * math.tau * PHI))
+            life = 0.30 + 0.70 * conson * (0.25 + 0.75 * ent)
+            pack = _residue(self.seed, f"pack:{i}")
+            ratio = residue_to_bipolar(_residue(self.seed, f"ratio:{i}"))
+            radius = (2.0 - depth) * (0.30 + 0.45 * pack)
             self.layers.append({
+                "base_freq": base if self.goava else base * (1.0 + 0.75 * abs(ratio)),
+                "ratio": ratio,
+                "entropy": ent,
+                "conson": conson,
+                "depth": depth,
+                "shade": shade,
+                "life": life,
+                "radius": radius,
                 "yaw": meum_angle(self.seed + i * 31),
                 "pitch": residue_to_bipolar(_residue(self.seed, f"pitch:{i}")) * 0.4,
                 "dist": 0.6 + 0.8 * _residue(self.seed, f"dist:{i}"),
@@ -693,7 +902,7 @@ class Game:
         self.connect = connect
         self.net = NetTransport(self.host_mode, self.port, self.connect)
         self.net.start()
-        self.scene = ScenographLite(self.id["seed"], n=8 + int(_residue(_safe_int_seed(self.id["seed"]), "scene_inst") * 8))
+        self.scene = ScenographLite(self.id["seed"], n=8 + int(_residue(_safe_int_seed(self.id["seed"]), "scene_inst") * 8), goava=self.id.get("goava_active") or ("hook_live_dj_goava" in (self.id.get("gameplay_hooks") or [])))
         self.music = MusicBed(self.id["seed"], algo_fp=self.id.get("composition_fingerprint", "0"), dj_goava="hook_live_dj_goava" in (self.id.get("gameplay_hooks") or []), dj_random="hook_live_dj_parametric" in (self.id.get("gameplay_hooks") or []), mix=0.35)
         self.objective = self.id.get("objective", "survey")
         self.difficulty = self.id.get("difficulty", "standard")
@@ -717,6 +926,19 @@ class Game:
         self.authoritative = self.net.host_mode or not self.online
         self.chat_log = []
         self.player_name = "Player"
+
+        # GAME_FILE_TASKS_2026: gameplay recorder (deterministic, IN/OUT files).
+        self.rec = GameplayRecorder(self.id["seed"], meta={
+            "title": self.id.get("title", ""),
+            "composition_fingerprint": self.id.get("composition_fingerprint"),
+            "world_fingerprint": self.id.get("world_fingerprint"),
+        })
+        self.record_path = None
+        self.replay_rows = []
+        self.replay_idx = 0
+        self._last_record_t = -1000.0
+        self._audio_samples = []
+        self.sample_rate = 22050
 
     # --- networking ---------------------------------------------------------
     def toggle_host_mode(self):
@@ -838,8 +1060,48 @@ class Game:
             if self.net.sock is not None:
                 self.net.send({"type": "hello", "name": self.player_name, "seed": self.id["seed"]})
                 self.net.send({"type": "steer", "name": self.player_name, "t": round(self.t, 2), "angle": round(self.angle, 6), "steer": round(self.steer, 4)})
+        # GAME_FILE_TASKS_2026: replay feeds recorded inputs back in — the world
+        # is f(seed, t), so re-simulating the recorded steer reproduces the
+        # session exactly on any machine.
+        if self.replay_rows and self.replay_idx < len(self.replay_rows):
+            row = self.replay_rows[self.replay_idx]
+            try:
+                if float(row.get("t", 0.0)) <= self.t:
+                    try:
+                        self.steer = max(-1.0, min(1.0, float(row.get("steer", self.steer))))
+                    except Exception:
+                        pass
+                    self.replay_idx += 1
+            except Exception:
+                pass
+        # Record deterministic gameplay (inputs + world telemetry) into files.
+        if self.t - self._last_record_t >= dt * 0.5:
+            self._last_record_t = self.t
+            self.rec.record(
+                t=round(self.t, 3), steer=round(self.steer, 4),
+                angle=round(self.angle, 6), score=round(self.score, 3),
+                level=self.level, combo=self.combo,
+                sigils=self.sigils.remaining(),
+                dj=round(self.music.dj, 3),
+                authoritative=bool(self.authoritative),
+                player=self.player_name,
+            )
+            self._audio_samples.append(float(sample))
         self.t += dt
         return sample, layers
+
+    def save_recording(self, path, make_wav=False):
+        """Write the recorded gameplay to `path` via the matching codec.
+        wav targets get the synthesized music bed; all others the telemetry."""
+        samples = self._audio_samples if (make_wav or resolve_codec(path)[0] == "wav") else None
+        return self.rec.save(path, samples=samples, sample_rate=self.sample_rate)
+
+    def load_replay(self, path):
+        """Read gameplay back OUT of a recording file and arm deterministic replay."""
+        meta, rows = GameplayRecorder.load(path)
+        self.replay_rows = rows or []
+        self.replay_idx = 0
+        return meta, len(rows)
 
     def _drain_net(self):
         """Pull transport messages (chat, sys, remote steers) into game state."""
@@ -1001,12 +1263,20 @@ if HAS_UI:
             # Scene beams: only layers whose instrument fired this beat.
             on_layers = [L for L in g.scene.layers if L.get("on")]
             for i, L in enumerate(on_layers):
-                col = QColor(ac)
-                col.setAlpha(max(40, min(235, 120 + int(115 * L.get("hue", 0.5)))))
-                p.setPen(QPen(col, max(1, round(1 + 3 * L.get("dist", 1.0)))))
+                shade = L.get("shade", 0.6)
+                life = L.get("life", 0.5)
+                depth = L.get("depth", 1.2)
+                hsv = QColor(ac).toHsv()
+                hsv.setHsv(round(200.0 + 150.0 * L.get("hue", 0.5)) % 360,
+                           int(70 + 160 * shade),
+                           int(90 + 160 * shade))
+                col = hsv
+                col.setAlpha(max(30, min(250, int(40 + 210 * life * shade))))
+                p.setPen(QPen(col, max(1, round(1 + 2.5 * depth))))
                 rad = meum_angle(i * 31)
-                x2 = cx + L.get("dist", 1.0) * R * math.cos(rad)
-                y2 = cy + L.get("dist", 1.0) * R * math.sin(rad)
+                rpos = L.get("dist", 1.0) + 0.15 * L.get("radius", 0.0)
+                x2 = cx + rpos * R * math.cos(rad)
+                y2 = cy + rpos * R * math.sin(rad)
                 p.drawLine(QPointF(cx, cy), QPointF(x2, y2))
             # Orbital ring
             p.setPen(QPen(QColor(tx), 2))
@@ -1325,61 +1595,115 @@ if HAS_UI:
 
         def closeEvent(self, e):
             self.timer.stop()
+            if getattr(self.game, "record_path", None):
+                try:
+                    path = self.game.save_recording(
+                        self.game.record_path,
+                        make_wav=resolve_codec(self.game.record_path)[0] in ("wav",))
+                    print(f"[EXPORT] recording -> {path} ({len(self.game.rec.rows)} rows)")
+                except Exception as err:
+                    print(f"[EXPORT] recording failed: {err}")
             self.game.net.shutdown()
             super().closeEvent(e)
 
 
 def parse_args(argv):
-    host = "--host" in argv
-    port = None
-    connect = None
-    cli = ("--cli" in argv) or ("--headless" in argv)
-    report = "--report" in argv
-    seconds = 20.0
+    args = {
+        "host": ("--host" in argv), "port": None, "connect": None,
+        "cli": ("--cli" in argv) or ("--headless" in argv),
+        "report": "--report" in argv, "seconds": 20.0,
+        "list_formats": "--list-formats" in argv,
+        "record": None, "record_format": None, "replay": None,
+        "probe": None, "write_identity": None,
+    }
     for a in argv:
-        if a.startswith("--port="):
+        k, _, v = a.partition("=")
+        if k == "--port":
             try:
-                port = int(a.split("=", 1)[1])
+                args["port"] = int(v)
             except Exception:
-                port = None
-        elif a.startswith("--connect="):
-            connect = a.split("=", 1)[1].strip()
-        elif a.startswith("--name="):
-            pass  # handled by UI dialog / CLI default
-        elif a.startswith("--seconds="):
+                args["port"] = None
+        elif k == "--connect":
+            args["connect"] = v.strip()
+        elif k == "--seconds":
             try:
-                seconds = max(0.5, float(a.split("=", 1)[1]))
+                args["seconds"] = max(0.5, float(v))
             except Exception:
-                seconds = 20.0
-    return host, port, connect, report, cli, seconds
+                args["seconds"] = 20.0
+        elif k == "--record":
+            args["record"] = (v.strip() or "gameplay.gz")
+        elif k == "--record-format":
+            args["record_format"] = v.strip().lstrip(".")
+        elif k == "--replay":
+            args["replay"] = v.strip()
+        elif k == "--probe":
+            args["probe"] = v.strip()
+        elif k == "--write-identity":
+            args["write_identity"] = v.strip()
+    return args
 
 
 def main(argv=None):
     argv = list(argv or sys.argv[1:])
-    host, port, connect, report, cli, seconds = parse_args(argv)
-    if "--report" in argv or report:
-        g = Game(host_mode=host, port=port, connect=connect)
+    A = parse_args(argv)
+
+    # GAME_FILE_TASKS_2026: engine-side file tasks first (no session needed).
+    if A["list_formats"]:
+        list_file_tasks()
+        return
+
+    g = Game(host_mode=A["host"], port=A["port"], connect=A["connect"])
+
+    if A["report"]:
         print(json.dumps(g.report(), indent=2, sort_keys=True))
         g.net.shutdown()
         return
-    if cli or not HAS_UI:
-        if not cli and not HAS_UI:
+
+    if A["probe"]:
+        meta, rows = GameplayRecorder.load(A["probe"])
+        print(json.dumps({"file": A["probe"], "meta": meta, "rows": len(rows)},
+                         indent=2, sort_keys=True))
+        g.net.shutdown()
+        return
+
+    if A["write_identity"]:
+        with open(A["write_identity"], "w", encoding="utf-8") as f:
+            json.dump(g.id, f, indent=2, sort_keys=True)
+        print(f"[EXPORT] identity -> {A['write_identity']}")
+        g.net.shutdown()
+        return
+
+    if A["replay"]:
+        meta, nrows = g.load_replay(A["replay"])
+        print(f"[REPLAY] {A['replay']}: {nrows} input rows "
+              f"(seed={meta.get('seed')} fmt={meta.get('format')})")
+
+    if A["record_format"] and not A["record"]:
+        A["record"] = "gameplay." + (A["record_format"] or "gz")
+    g.record_path = A["record"]
+
+    if A["cli"] or not HAS_UI:
+        if not A["cli"] and not HAS_UI:
             print("[UI] PyQt6 not found in this Python — falling back to the "
                   "deterministic CLI loop. Install PyQt6 for the control panel.")
-        Game(host_mode=host, port=port, connect=connect).run(seconds=seconds)
+        g.run(seconds=A["seconds"])
+        if g.record_path:
+            path = g.save_recording(g.record_path,
+                                    make_wav=resolve_codec(g.record_path)[0] in ("wav",))
+            print(f"[EXPORT] recording -> {path} ({len(g.rec.rows)} rows)")
+        if A["replay"]:
+            print(f"[REPLAY-LOG] end parity: score={g.score:.3f} "
+                  f"consumed={g.replay_idx}/{len(g.replay_rows)}")
         return
     # LOADING_SCREEN_2026: create QApplication + the loading screen FIRST,
     # before Game(...) does any of its heavier construction (network
-    # transport bind/connect, scenograph mesh, sigil ring, music bed). That
-    # ordering is the actual point — the loading screen has to exist before
-    # the slow work starts, not just before the main window is shown, or
-    # there is nothing for the user to see during exactly the part that can
-    # take a moment (e.g. --host binding a socket).
+    # transport bind/connect, scenograph mesh, sigil ring, music bed).
     app = QApplication.instance() or QApplication(sys.argv[:1])
     loading = LoadingScreen(title_hint="Preparing session…")
     loading.show()
     loading.set_status("Starting network + world…")
-    game = Game(host_mode=host, port=port, connect=connect)
+    game = Game(host_mode=A["host"], port=A["port"], connect=A["connect"])
+    game.record_path = A["record"]
     loading.set_status("Building main window…")
     win = GameWindow(game)
     loading.set_status("Ready.")
@@ -1448,6 +1772,11 @@ def export_game_files(identity: GameIdentity, out_dir: str, composition_meta: Op
         json.dump(identity.to_dict(), f, indent=2)
     _write_launchers(out_dir, identity.composition_fingerprint)
     _write_package_readme(out_dir, identity)
+    # The package carries its own provisioning: identical dependency-install
+    # scripts (also kept in the project root) + the codec/job task manifest, so
+    # an unpacked export can install deps + codecs without files outside the zip.
+    write_dependency_scripts(out_dir)
+    write_formats_manifest(out_dir)
     return script_path
 
 
@@ -1459,6 +1788,8 @@ _GAME_FILENAME = "game_{fingerprint}.py"
 # script imports at runtime is the Python standard library plus exactly two
 # system-level dependencies shared with the Groovebox host app: Python itself
 # and PyQt6 (UI only — the game auto-falls-back to the CLI loop without it).
+# GAME_FILE_TASKS_2026: the package README grows a provisioning + recording +
+# codec-task section (above) and the export gains install_deps_* + formats.json.
 PACKAGE_README = """Groovebox Video-Game Package
 ===========================
 Title:  {title}
@@ -1474,6 +1805,27 @@ Windows:  double-click launch_windows.bat
 macOS:    double-click launch_macos.command  (or: bash launch_macos.command)
 Linux:    run  ./launch_linux.sh             (or: bash launch_linux.sh)
 All three launchers pass extra arguments through to the game.
+
+INSTALLING DEPENDENCIES + CODECS
+--------------------------------
+This package carries its own installers (identical copies of the ones in the
+Groovebox project root) so a fresh machine can provision itself from the zip:
+    Windows:  Powershell -ExecutionPolicy Bypass -File install_deps_windows.ps1
+    macOS:    bash ./install_deps_macos.sh
+    Linux:    ./install_deps_linux.sh --fedora   or   ./install_deps_linux.sh --ubuntu
+Each installs python + the shared pip deps and puts the ffmpeg codec binaries
+(on Linux/macOS, into /bin; on Windows, a bin folder on your user PATH) so the
+Groovebox host app and this game both find encoders for video/audio export.
+
+FILE I/O TASKS (formats.json lists every codec + job)
+-----------------------------------------------------
+The game records deterministic gameplay INTO files and replays it OUT:
+    ./launch_linux.sh --cli --record=gameplay.gz --seconds=10      # save
+    ./launch_linux.sh --cli --replay=gameplay.gz --seconds=10      # re-simulate
+    ./launch_linux.sh --list-formats        # show all codec jobs
+    ./launch_linux.sh --probe=gameplay.gz   # inspect a recording
+Formats: .json (metadata), .gz (compressed replay, default), .csv (table),
+.txt (log), .wav (music-bed export), .png (scene snapshot).
 
 REQUIREMENTS
 ------------
@@ -1583,12 +1935,632 @@ def _write_launchers(out_dir: str, fingerprint: str) -> None:
                 pass
 
 
+# =============================================================================
+# GAME_FILE_TASKS_2026 — import/export codec jobs + gameplay recording system
+# =============================================================================
+# VideoGameEngine finds its own file work: a format registry (several codecs),
+# an import/export router that turns "what can this file/format do here?" into
+# concrete encode/decode jobs, and a GameplayRecorder that writes gameplay
+# (deterministic input telemetry) INTO files and reads it back OUT to replay the
+# exact same session on any machine. The emitted game carries the same registry
+# and recorder (stdlib-only); this module exposes the reference implementation
+# plus the router API so the host app / engine can enumerate tasks too.
+GAME_CODECS: Dict[str, Dict[str, Any]] = {
+    "json": {
+        "kind": "both", "mime": "application/json",
+        "label": "World / replay metadata (identity + full telemetry)",
+        "decode": "decode_json", "encode": "encode_json",
+    },
+    "gz": {
+        "kind": "both", "mime": "application/gzip",
+        "label": "Compressed NDJSON replay (default recording format)",
+        "decode": "decode_json_gz", "encode": "encode_json_gz",
+    },
+    "csv": {
+        "kind": "both", "mime": "text/csv",
+        "label": "Flat telemetry table (spreadsheets)",
+        "decode": "decode_csv", "encode": "encode_csv",
+    },
+    "txt": {
+        "kind": "both", "mime": "text/plain",
+        "label": "Human-readable session log",
+        "decode": "decode_txt", "encode": "encode_txt",
+    },
+    "wav": {
+        "kind": "export", "mime": "audio/wav",
+        "label": "Music-bed audio export",
+        "decode": None, "encode": "encode_wav",
+    },
+    "png": {
+        "kind": "export", "mime": "image/png",
+        "label": "Scene snapshot",
+        "decode": None, "encode": "encode_png",
+    },
+}
+
+
+def resolve_codec(format_token: Any) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Map a format name or a file path to (extension, codec).  Returns
+    (None, None) when the token is not one of the registered codecs."""
+    if format_token is None:
+        return None, None
+    token = str(format_token)
+    ext = token.lstrip(".").lower()
+    codec = GAME_CODECS.get(ext)
+    if codec is not None:
+        return ext, codec
+    base = os.path.splitext(token)[1].lstrip(".").lower()
+    codec = GAME_CODECS.get(base)
+    if codec is not None:
+        return base, codec
+    return None, None
+
+
+def game_import_jobs(path_or_format: Any = ".gz") -> List[Dict[str, Any]]:
+    """Task list for bringing a file INTO the game (replay / identity)."""
+    ext, codec = resolve_codec(path_or_format)
+    if ext is None:
+        return []
+    jobs: List[Dict[str, Any]] = []
+    if codec.get("decode"):
+        jobs.append({
+            "op": "import", "format": ext, "codec": codec["decode"],
+            "mime": codec.get("mime"),
+            "target": "gameplay replay (inputs + telemetry)",
+            "usage": f"--replay=gameplay.{ext}",
+        })
+    if ext in ("json", "gz"):
+        jobs.append({
+            "op": "import", "format": ext, "codec": "decode_identity",
+            "mime": codec.get("mime"), "target": "game identity snapshot",
+            "usage": f"--identity=identity.{ext}",
+        })
+    jobs.append({
+        "op": "inspect", "format": ext, "codec": "probe",
+        "target": "file probe (format / rows / duration)",
+        "usage": f"--probe=gameplay.{ext}",
+    })
+    return jobs
+
+
+def game_export_jobs(path_or_format: Any = "-") -> List[Dict[str, Any]]:
+    """Task list for writing game state / gameplay OUT to a file."""
+    ext, codec = resolve_codec(path_or_format)
+    if ext is None:
+        # No target yet — task is: pick a registered codec.
+        return [{
+            "op": "list", "formats": sorted(GAME_CODECS.keys()),
+            "target": "codec registry",
+        }]
+    jobs: List[Dict[str, Any]] = []
+    if codec.get("encode"):
+        jobs.append({
+            "op": "export", "format": ext, "codec": codec["encode"],
+            "mime": codec.get("mime"),
+            "target": "gameplay recording / music bed",
+            "usage": f"--record=gameplay.{ext}",
+        })
+    if ext in ("json", "gz"):
+        jobs.append({
+            "op": "export", "format": ext, "codec": "encode_identity",
+            "target": "identity snapshot", "usage": f"--write-identity=identity.{ext}",
+        })
+    return jobs
+
+
+def game_file_tasks(format_token: Any = "-") -> Dict[str, List[Dict[str, Any]]]:
+    """One-stop task router: what the engine can do with this file/format."""
+    return {
+        "export": game_export_jobs(format_token),
+        "import": game_import_jobs(format_token),
+    }
+
+
+class GameplayRecorder:
+    """Deterministic gameplay IN/OUT file system (stdlib only).
+
+    Records player-authored INPUTS (steer, role switches, chat) plus world
+    telemetry.  Because the world is f(seed, t), replay = read the inputs back
+    and re-simulate — the identical session reproduces on any machine.  save()
+    and load() route through the codec registry by extension.
+    """
+
+    DEFAULT_FORMAT = "gz"
+    IDENTITY_TOKENS = ("seed", "title", "composition_fingerprint", "world_fingerprint")
+
+    def __init__(self, seed: float, meta: Optional[Dict[str, Any]] = None,
+                 max_rows: int = 100000):
+        self.seed = float(seed)
+        self.meta: Dict[str, Any] = dict(meta or {})
+        self.meta.setdefault("seed", self.seed)
+        self.meta.setdefault("engine", "groovebox-videogame")
+        self.meta.setdefault("format", self.DEFAULT_FORMAT)
+        self.rows: List[Dict[str, Any]] = []
+        self.max_rows = max(1, int(max_rows))
+
+    # -- capture -------------------------------------------------------------
+    def record(self, **state) -> None:
+        if len(self.rows) >= self.max_rows:
+            return
+        self.rows.append(dict(state))
+
+    def clear(self) -> None:
+        self.rows = []
+
+    # -- encoders ------------------------------------------------------------
+    @staticmethod
+    def _normalise(row: Dict[str, Any]) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        for k, v in row.items():
+            if k in ("collected", "sigils"):
+                try:
+                    out[k] = sorted(int(x) for x in (v or ()))
+                except Exception:
+                    out[k] = []
+            elif isinstance(v, (dict, list, tuple)):
+                try:
+                    out[k] = json.loads(json.dumps(v))
+                except Exception:
+                    out[k] = str(v)
+            else:
+                out[k] = v
+        return out
+
+    @staticmethod
+    def encode_json(rows, meta):
+        return json.dumps({"meta": meta, "rows": rows}, indent=1, sort_keys=True)
+
+    @staticmethod
+    def encode_json_gz(rows, meta):
+        return gzip.compress(
+            json.dumps({"meta": meta, "rows": rows}, indent=1, sort_keys=True).encode("utf-8"),
+            mtime=0)
+
+    @staticmethod
+    def encode_csv(rows, meta):
+        if not rows:
+            return "meta," + ",".join(f"{k}={v}" for k, v in meta.items()) + "\n"
+        cols = list(rows[0].keys())
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["meta", json.dumps(meta, sort_keys=True)])
+        w.writerow(cols)
+        for r in rows:
+            w.writerow([r.get(c, "") for c in cols])
+        return buf.getvalue()
+
+    @staticmethod
+    def encode_txt(rows, meta):
+        lines = ["# Groovebox gameplay recording", "# meta: " + json.dumps(meta, sort_keys=True), ""]
+        for r in rows:
+            fields = "  ".join(f"{k}={r.get(k, '')}" for k in ("t", "steer", "score", "level", "combo", "sigils", "dj", "authoritative"))
+            lines.append(f"{r.get('t', 0.0):8.3f}  {fields}")
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def encode_wav(samples, sample_rate=44100):
+        """Pure-stdlib WAV encoder for a music-bed export (float samples in [-1, 1])."""
+        raw = bytearray()
+        for s in samples:
+            val = max(-1.0, min(1.0, float(s)))
+            raw += struct.pack("<h", int(val * 32767))
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(int(sample_rate))
+            wf.writeframes(bytes(raw))
+        return buf.getvalue()
+
+    @staticmethod
+    def encode_png(pixels, width, height):
+        """Pure-stdlib PNG encoder for a scene snapshot (RGB rows of 0..255)."""
+        import zlib
+
+        def chunk(tag, data):
+            return (struct.pack(">I", len(data)) + tag + data
+                    + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+        rows_bytes = bytearray()
+        for y in range(int(height)):
+            rows_bytes.append(0)  # filter: none
+            start = y * int(width)
+            for x in range(int(width)):
+                px = pixels[start + x]
+                rows_bytes += bytes((int(px[0]) & 0xFF, int(px[1]) & 0xFF, int(px[2]) & 0xFF))
+        raw = bytes(rows_bytes)
+        ihdr = struct.pack(">IIBBBBB", int(width), int(height), 8, 2, 0, 0, 0)
+        return (b"\x89PNG\r\n\x1a\n"
+                + chunk(b"IHDR", ihdr)
+                + chunk(b"IDAT", zlib.compress(raw, 9))
+                + chunk(b"IEND", b""))
+
+    # -- decode --------------------------------------------------------------
+    @classmethod
+    def decode_json(cls, blob):
+        data = json.loads(blob.decode("utf-8", errors="replace") if isinstance(blob, (bytes, bytearray)) else blob)
+        return data.get("meta", {}), list(data.get("rows", []))
+
+    @classmethod
+    def decode_json_gz(cls, blob):
+        return cls.decode_json(gzip.decompress(blob))
+
+    @classmethod
+    def decode_csv(cls, blob):
+        text = blob.decode("utf-8", errors="replace") if isinstance(blob, (bytes, bytearray)) else blob
+        lines = [ln for ln in text.splitlines() if ln.strip()]
+        meta = {}
+        rows = []
+        cols = []
+        for i, ln in enumerate(lines):
+            parts = next(csv.reader([ln]))
+            if not parts:
+                continue
+            if i == 0:
+                if parts[0] == "meta" and len(parts) > 1:
+                    try:
+                        meta = json.loads(parts[1])
+                    except Exception:
+                        meta = {}
+                continue
+            if i == 1:  # header row
+                cols = parts
+            else:
+                if cols:
+                    rows.append({cols[j]: parts[j] if j < len(parts) else ""
+                                 for j in range(len(cols))})
+        return meta, rows
+
+    @classmethod
+    def decode_txt(cls, blob):
+        text = blob.decode("utf-8", errors="replace") if isinstance(blob, (bytes, bytearray)) else blob
+        meta = {}
+        rows = []
+        for ln in text.splitlines():
+            s = ln.strip()
+            if s.startswith("# meta:"):
+                try:
+                    meta = json.loads(s[len("# meta:"):])
+                except Exception:
+                    pass
+            elif s and not s.startswith("#") and s[0].isdigit():
+                parts = s.split(None, 1)
+                try:
+                    t = float(parts[0])
+                except Exception:
+                    continue
+                row = {"t": t}
+                for f in (parts[1].split("  ") if len(parts) > 1 else []):
+                    if "=" in f:
+                        k, _, v = f.partition("=")
+                        row[k.strip()] = v.strip()
+                rows.append(row)
+        return meta, rows
+
+    # -- file API ------------------------------------------------------------
+    def save(self, path: str, samples=None, sample_rate=44100,
+             snapshot=None) -> str:
+        """Write the recording to `path`, routed by extension codec.
+
+        samples:   list of floats (for `wav` — the music bed, supplied by the
+                   caller so the recorder stays framework- and engine-agnostic).
+        snapshot:  (width, height, pixels) RGB tuple layout (for `png` scenes).
+        """
+        ext, codec = resolve_codec(path)
+        ext = ext or self.DEFAULT_FORMAT
+        if not ext:
+            raise ValueError(f"no codec for {path!r}")
+        rows = [self._normalise(r) for r in self.rows]
+        meta = dict(self.meta)
+        meta["format"] = ext
+        if ext == "wav":
+            if not samples:
+                raise ValueError("wav export needs `samples`")
+            payload = self.encode_wav(samples, sample_rate)
+        elif ext == "png":
+            if not snapshot:
+                raise ValueError("png export needs `snapshot` (width, height, pixels)")
+            w, h, px = snapshot
+            payload = self.encode_png(px, w, h)
+        else:
+            fn = getattr(self, codec.get("encode") or ("encode_" + ext), None)
+            if fn is None:
+                raise ValueError(f"{ext!r} has no encoder")
+            payload = fn(rows, meta)
+        mode = "wb" if isinstance(payload, (bytes, bytearray)) else "w"
+        with (open(path, "wb") if mode == "wb" else open(path, "w", encoding="utf-8")) as f:
+            f.write(payload)
+        return os.path.abspath(path)
+
+    @classmethod
+    def load(cls, path: str):
+        ext, codec = resolve_codec(path)
+        if ext is None or not codec.get("decode"):
+            raise ValueError(f"no reading codec for {path!r}")
+        with open(path, "rb") as f:
+            blob = f.read()
+        decoder = getattr(cls, codec["decode"])
+        meta, rows = decoder(blob)
+        return meta, rows
+
+
+def write_dependency_scripts(directory: str) -> List[str]:
+    """Write the three dependency-install scripts (single source of truth from
+    DEPENDENCY_SCRIPTS below) into `directory`. Used both for the project dir
+    and for every exported game package, so project and zips stay identical."""
+    os.makedirs(directory, exist_ok=True)
+    written = []
+    for name, text in DEPENDENCY_SCRIPTS.items():
+        path = os.path.join(directory, name)
+        with open(path, "w", encoding="utf-8", newline="\r\n" if name.endswith(".ps1") else "\n") as f:
+            f.write(text)
+        if name.endswith((".sh", ".command")):
+            try:
+                os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            except OSError:
+                pass
+        written.append(path)
+    return written
+
+
+def write_formats_manifest(directory: str) -> str:
+    """formats.json — the exportable description of every codec + its jobs."""
+    manifest = {
+        "engine": "groovebox-videogame",
+        "version": 1,
+        "codecs": GAME_CODECS,
+        "tasks": {
+            "_example_import": game_import_jobs("gameplay.gz"),
+            "_example_export": game_export_jobs("gameplay.gz"),
+        },
+    }
+    path = os.path.join(directory, "formats.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2, sort_keys=True)
+    return path
+
+
+# ---------------------------------------------------------------------------
+# DEPENDENCY_SCRIPTS — single source of truth for installing every host-app AND
+# exported-game dependency plus the ffmpeg codec suite.  write_dependency_scripts()
+# drops identical copies into the project directory and into every packaged game
+# zip, so an unpacked export can provision its own machine without hunting for
+# files that are not inside the archive.
+# ---------------------------------------------------------------------------
+DEPENDENCY_SCRIPTS: Dict[str, str] = {
+    "install_deps_linux.sh": r'''#!/usr/bin/env bash
+# =============================================================================
+# Groovebox dependency installer - Linux
+# -----------------------------------------------------------------------------
+# Installs every host-app / exported-game dependency onto this machine and puts
+# the ffmpeg codec binaries into /bin (the directory VideoSynthEngine's codec
+# resolver checks first), so audio+video export work with real encoders.
+#
+# Usage:
+#   ./install_deps_linux.sh            auto-detect Fedora vs Ubuntu-family
+#   ./install_deps_linux.sh --fedora   force the DNF/Fedora path
+#   ./install_deps_linux.sh --ubuntu   force the apt/Ubuntu-family path
+#   ./install_deps_linux.sh --distro=<name>  force any supported family
+# =============================================================================
+set -u
+
+DISTRO="auto"
+for arg in "$@"; do
+  case "$arg" in
+    --fedora)  DISTRO="fedora";;
+    --ubuntu)  DISTRO="ubuntu";;
+    --distro=*) DISTRO="${arg#--distro=}";;
+    -h|--help)
+      sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0;;
+    *) echo "Unknown argument: $arg"; exit 2;;
+  esac
+done
+
+if [ "$DISTRO" = "auto" ]; then
+  if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    case "${ID:-} ${ID_LIKE:-}" in
+      *fedora*|*centos*|*rhel*) DISTRO="fedora";;
+      *ubuntu*|*debian*)        DISTRO="ubuntu";;
+    esac
+  fi
+fi
+
+case "$DISTRO" in
+  fedora|ubuntu) : ;;
+  *)
+    echo "Unsupported or undetectable distribution '$DISTRO'."
+    echo "Use the toggle:  $0 --fedora   |   $0 --ubuntu"
+    exit 3;;
+esac
+
+echo "==> Groovebox installer: Linux/$DISTRO"
+
+# This script needs root for system packages and the /bin codec drop.
+if [ "$(id -u)" -ne 0 ]; then
+  echo "Re-running with sudo..."
+  exec sudo "$0" "$@"
+fi
+
+set -e
+
+PIP_DEPS="numpy scipy PyQt6 sounddevice Pillow"
+
+if [ "$DISTRO" = "fedora" ]; then
+  echo "==> Enabling RPM Fusion (free + nonfree) for full ffmpeg codecs..."
+  dnf install -y \
+    "https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm" \
+    "https://download1.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm"
+  dnf install -y \
+    python3 python3-pip python3-devel gcc gcc-c++ \
+    ffmpeg ffmpeg-libs alsa-lib-devel portaudio-devel openssl-devel libffi-devel
+else
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y
+  apt-get install -y \
+    python3 python3-pip python3-venv python3-dev build-essential \
+    ffmpeg libasound2-dev portaudio19-dev libssl-dev libffi-dev
+  # Broad codec pack (mp3 / mp4 / aac / av1 / h264 …). Best effort: this is a
+  # multiverse package; if it fails, core ffmpeg above already covers WAV/PNG
+  # frame muxing and the common containers.
+  apt-get install -y ubuntu-restricted-extras || true
+fi
+
+echo "==> Installing Python packages: $PIP_DEPS"
+python3 -m pip install --upgrade pip wheel
+python3 -m pip install $PIP_DEPS
+
+echo "==> Placing codec binaries into /bin ..."
+FF=$(command -v ffmpeg || true)
+FP=$(command -v ffprobe || true)
+if [ -n "$FF" ]; then cp -f "$FF" /bin/ffmpeg || ln -sf "$FF" /bin/ffmpeg; fi
+if [ -n "$FP" ]; then cp -f "$FP" /bin/ffprobe || ln -sf "$FP" /bin/ffprobe; fi
+
+echo "==> Verify:"
+python3 -c "import numpy, scipy, PyQt6.QtCore, sounddevice, PIL; print('python deps OK')"
+command -v ffmpeg; command -v ffprobe
+ffmpeg -hide_banner -encoders 2>/dev/null | grep -E "libx264|aac|libvpx|libvorbis" | sed 's/^/  encoder: /' | head -6
+echo "==> Done."
+echo "    Run the app:   python3 groovebox.py"
+''',
+    "install_deps_macos.sh": r'''#!/usr/bin/env bash
+# =============================================================================
+# Groovebox dependency installer - macOS
+# -----------------------------------------------------------------------------
+# Installs every host-app / exported-game dependency (Homebrew + pip) and the
+# ffmpeg codec suite, then symlinks ffmpeg/ffprobe into the codec lookup paths
+# VideoSynthEngine checks (/bin when writable, else /usr/local/bin).
+# =============================================================================
+set -u
+
+if [ "$(id -u)" -eq 0 ]; then
+  echo "Do not run this installer as root; macOS python/brew are user-managed." >&2
+  exit 4
+fi
+
+echo "==> Groovebox installer: macOS"
+if ! command -v brew >/dev/null 2>&1; then
+  echo "==> Homebrew missing — installing the official one-liner..."
+  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+fi
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+echo "==> brew python + ffmpeg (full codec suite)..."
+brew install python ffmpeg || brew upgrade python ffmpeg
+
+echo "==> pip dependencies (shared: host app + exported games)..."
+PIP_DEPS="numpy scipy PyQt6 sounddevice Pillow"
+python3 -m pip install --upgrade pip wheel
+python3 -m pip install $PIP_DEPS
+
+echo "==> Codec binaries into the resolver's lookup path ..."
+FF=$(command -v ffmpeg || true)
+FP=$(command -v ffprobe || true)
+for pair in "ffmpeg|$FF" "ffprobe|$FP"; do
+  name="${pair%%|*}"; path="${pair#*|}"
+  if [ -n "$path" ]; then
+    ln -sf "$path" "/bin/$name" 2>/dev/null || ln -sf "$path" "/usr/local/bin/$name" 2>/dev/null || true
+  fi
+done
+
+echo "==> Verify:"
+python3 -c "import numpy, scipy, PyQt6.QtCore, sounddevice, PIL; print('python deps OK')"
+command -v ffmpeg; command -v ffprobe
+ffmpeg -hide_banner -encoders >/dev/null 2>&1 && echo "ffmpeg OK"
+echo "==> Done."
+echo "    Run the app:   python3 groovebox.py"
+''',
+    "install_deps_windows.ps1": r'''# =============================================================================
+# Groovebox dependency installer - Windows
+# -----------------------------------------------------------------------------
+# Installs every host-app / exported-game dependency and the ffmpeg codec suite
+# into a local bin folder on your user PATH (Windows has no /bin; this is the
+# Windows equivalent the codec resolver also searches by PATH).
+#
+#   Powershell -ExecutionPolicy Bypass -File install_deps_windows.ps1
+# =============================================================================
+param(
+    [switch]$SkipWinget,
+    [switch]$SkipChoco
+)
+$ErrorActionPreference = "Continue"
+
+Write-Host "==> Groovebox installer: Windows"
+
+$BIN = Join-Path $env:LOCALAPPDATA "Groovebox\bin"
+New-Item -ItemType Directory -Force -Path $BIN | Out-Null
+
+function Add-ToUserPath([string]$dir) {
+    $cur = [Environment]::GetEnvironmentVariable("Path", "User")
+    if (($cur -split ";" ) -notcontains $dir) {
+        $new = if ([string]::IsNullOrEmpty($cur)) { $dir } else { "$cur;$dir" }
+        [Environment]::SetEnvironmentVariable("Path", $new, "User")
+        Write-Host "  added to user PATH: $dir"
+    }
+}
+Add-ToUserPath $BIN
+
+# --- Python -------------------------------------------------------------
+if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+    Write-Host "==> Installing Python 3.12 via winget..."
+    if (-not $SkipWinget) {
+        winget install --id Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements
+    } else {
+        throw "Python not found and --SkipWinget given."
+    }
+    $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
+}
+$py = (Get-Command python -ErrorAction SilentlyContinue).Source
+if (-not $py) {
+    $wpy = Get-ChildItem "$env:LOCALAPPDATA\Programs\Python" -Recurse -Filter python.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($wpy) { $env:Path = $wpy.DirectoryName + ";" + $env:Path; $py = $wpy.FullName }
+}
+if (-not $py) { throw "Python is required — re-run after installing Python 3.9+." }
+
+# --- ffmpeg codec suite --------------------------------------------------
+Write-Host "==> Installing ffmpeg codec suite..."
+if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+    if (-not $SkipWinget) {
+        winget install --id Gyan.FFmpeg --silent --accept-package-agreements --accept-source-agreements
+    } elseif (-not $SkipChoco -and (Get-Command choco -ErrorAction SilentlyContinue)) {
+        choco install ffmpeg -y
+    }
+    $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
+}
+foreach ($tool in @("ffmpeg.exe", "ffprobe.exe", "ffplay.exe")) {
+    $src = (Get-Command $tool.Replace(".exe","") -ErrorAction SilentlyContinue).Source
+    if (-not $src) {
+        $src = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages" -Recurse -Filter $tool -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+    }
+    if ($src) {
+        Copy-Item -Force $src (Join-Path $BIN $tool)
+        Write-Host "  codec -> $BIN\$tool"
+    }
+}
+
+# --- pip dependencies ----------------------------------------------------
+Write-Host "==> Installing Python packages..."
+& $py -m pip install --upgrade pip wheel
+& $py -m pip install numpy scipy PyQt6 sounddevice Pillow
+
+Write-Host "==> Verify:"
+& $py -c "import numpy, scipy, PyQt6.QtCore, sounddevice, PIL; print('python deps OK')"
+& (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source -hide_banner -version | Select-Object -First 1
+Write-Host "==> Done."
+Write-Host "    Restart your terminal (PATH was updated), then run:   python groovebox.py"
+'''
+}
+
+
 def package_game_zip(identity: GameIdentity, out_zip: str, composition_meta: Optional[Dict[str, Any]] = None) -> str:
     """Package a videogame export as a single .zip: deterministic game script +
-    identity JSON + README + Windows/macOS/Linux launchers. Unix executables keep
-    their mode attribute inside the archive so they are runnable after extraction.
-    The script's only runtime imports are stdlib + PyQt6 (UI), so the package
-    itself is complete — unpack any one folder and launch."""
+    identity JSON + README + Windows/macOS/Linux launchers + the dependency
+    install scripts (copy of the project-root ones) + a formats.json codec/job
+    manifest. Unix executables keep their mode attribute inside the archive so
+    they are runnable after extraction.  The script's only runtime imports are
+    stdlib + PyQt6 (UI), so the package itself is complete — unpack any one
+    folder and launch; install_deps_* provisions a fresh machine."""
     tmpdir = tempfile.mkdtemp(prefix="groovebox_game_pkg_")
     try:
         export_game_files(identity, tmpdir, composition_meta)
