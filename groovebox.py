@@ -1,7 +1,18 @@
 # =============================================================================
-# Groovebox Engine v3.7.0 — deterministic audiovisual/game build
-# Mathematician's / Scientist's Groovebox — mathematical specification for
-# maximum initial harmonic diversity; simple and complex projects with equal ease.
+# Groovebox Engine v3.7.8 — deterministic audiovisual/game build
+# Mathematician's / Scientist's Groovebox
+#
+# GOAL
+#   A unique, deterministic, non-redundant, infinitely varied platform of
+#   effects — re-expressible in the simplest possible mathematical terms —
+#   while still fit to infinitely varied dataset specifications.
+#   Canonical state is order-independent: toggle order never changes results
+#   for a given project. Save / load / export / game classification all share
+#   one composition fingerprint. User-protected data is not re-serialized
+#   per-module; canonicals already own the single source of truth.
+#
+# Defaults: BPM 120, base frequency 432 Hz, Seed Weight 0.72, FullWeight ON,
+# Meum lattice identity (MEUM ≈ 1.19758…).
 #
 # Credits / collaboration:
 #   - Core architecture & original EQR design: project author
@@ -13,7 +24,8 @@
 # Notable systems in this build:
 #   sounddevice realtime I/O, PKP pad bank, additive Euclidean/seeded engines,
 #   non-destructive patch optimizer, domain time/space equations, seed bootstrap
-#   (empty/0 = no seed; 50/50 both vs alone when free), net-effect user detection.
+#   (empty/0 = no seed; 50/50 both vs alone when free), net-effect user detection,
+#   FullWeight Seed + Seed Weight uniqueness controls, GLOBAL PLAY PATCHER.
 # =============================================================================
 
 import random
@@ -137,6 +149,90 @@ try:
 except Exception:
     pass
 DEFAULT_SAMPLE_RATE = 48000  # practical default; export/render may lift to TARGET
+
+# =============================================================================
+# GOAL (canonical)
+#   A unique, deterministic, non-redundant, infinitely varied platform of
+#   effects — re-expressible in the simplest possible mathematical terms —
+#   while still fit to infinitely varied dataset specifications.
+#
+# HARD WAV / MEUM AMPLITUDE LAW (no soft-clip / slew / peak-floor / tanh limiter)
+#   • WAV_MAX = 1.0 full-scale float PCM
+#   • One synth is amplitude 1 after unit-peak shape normalize
+#   • MEUM_MINUS_1 ≈ 0.19758073433 enters only the pathological hard-clip
+#     threshold:  clip from  (n_instruments · 3 · 1 / MEUM_MINUS_1)  onwards
+#   • Scale buffer max into volume directly:
+#         out = buffer · (volume · WAV_MAX / peak)
+# =============================================================================
+WAV_MAX = 1.0
+WAV_SYNTH_AMP = 1.0                          # one synth = amplitude 1
+WAV_MEUM_AMP_REF = MEUM_MINUS_1              # ≈ 0.19758073433
+WAV_HARD_CLIP_MULT = 3.0
+
+
+def meum_hard_clip_threshold(n_instruments: int) -> float:
+    """Pathological hard-clip ceiling: n · 3 · 1 / 0.19758073433…"""
+    n = max(1, int(n_instruments))
+    return float(n) * WAV_HARD_CLIP_MULT * WAV_SYNTH_AMP / WAV_MEUM_AMP_REF
+
+
+def meum_hard_scale_to_wav_max(stream, n_instruments=1, volume=1.0, wav_max=WAV_MAX):
+    """Scale buffer max into volume·wav_max; hard-clip only past n·3/MEUM_MINUS_1.
+
+    Deterministic, closed-form, no soft limiter state — same seed/peak → same out.
+    """
+    x = np.asarray(stream, dtype=np.float64)
+    if x.size == 0:
+        return x.astype(np.float32)
+    vol = float(volume) if math.isfinite(float(volume)) else 1.0
+    wmax = float(wav_max) if wav_max else WAV_MAX
+    thr = meum_hard_clip_threshold(n_instruments)
+    x = np.clip(x, -thr, thr)
+    peak = float(np.max(np.abs(x)))
+    if not math.isfinite(peak) or peak <= 0.0:
+        return np.zeros_like(x, dtype=np.float32)
+    scale = (vol * wmax) / peak
+    y = x * scale
+    return np.clip(y, -wmax, wmax).astype(np.float32)
+
+
+def meum_effect_residue(seed, label, modulus=None):
+    """Deterministic non-redundant effect identity on a cyclic Meum residue.
+
+    Maps (seed, label) → unique residue in Z/m. Different labels avalanche
+    independently so effect families do not cluster — infinitely varied /
+    non-redundant with a one-line closed form.
+    """
+    m = int(modulus) if modulus else max(2, int(round(1.0 / max(WAV_MEUM_AMP_REF, 1e-12))))
+    try:
+        s = int(abs(float(seed))) & 0x7FFFFFFF
+    except Exception:
+        s = 0
+    payload = f"meum-effect|{s}|{label}|{m}".encode("utf-8")
+    key = int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
+    return int(key % m)
+
+
+
+def meum_effect_bank(seed, count=12):
+    """Infinitely varied deterministic effect slot list from Meum residues.
+
+    Each slot is a closed-form (seed, index) residue pair — non-redundant across
+    seeds, identical on replay. Fits the goal without opaque lookup tables.
+    """
+    count = max(1, min(int(count), 64))
+    families = (
+        "am", "fm", "pm", "fold", "lattice", "eqr", "pkp", "goava",
+        "wire", "domain", "euclid", "orbit",
+    )
+    out = []
+    for i in range(count):
+        fam = families[meum_effect_residue(seed, f"fam|{i}", len(families))]
+        depth = meum_effect_residue(seed, f"depth|{i}|{fam}", 1000) / 1000.0
+        rate = 0.25 + 3.75 * (meum_effect_residue(seed, f"rate|{i}|{fam}", 1000) / 1000.0)
+        out.append({"family": fam, "depth": float(depth), "rate": float(rate), "index": i})
+    return out
+
 
 def audible_hz(freq, sample_rate=None):
     """Clamp frequency into the audible design window and below ~0.45·Nyquist."""
@@ -1139,9 +1235,16 @@ class MeumModulatedOscillator:
 
             sample_index += 1
 
-            # Prevent enormous phase values.
-            if abs(phase) > 1.0e9:
-                phase %= math.tau
+            # DRIFT_FIX_2026: phase used to only wrap once abs(phase) exceeded
+            # 1e9 radians. A float64 keeps ~15-17 significant digits, so by the
+            # time phase reaches the high end of that range, the increment
+            # added each sample (a few hundredths of a radian) starts falling
+            # below the representable precision at that magnitude — the phase
+            # accumulator effectively "rounds off" tiny per-sample increments,
+            # which is exactly what reads as slow harmonic/pitch drift over a
+            # long session. Wrapping every sample keeps phase always small
+            # (0..2π) so its precision never degrades, at negligible cost.
+            phase %= math.tau
 
         self.phase = phase
         self.sample_index = sample_index
@@ -1931,7 +2034,13 @@ def _nt_step_mask(length: int, mode: str, modulus: int, depth: int = 4):
 
 
 def generate_random_seed_script(rng=None):
-    """Complex seed scripts biased toward P/E/D, isn/ics, logic, multi-value lists."""
+    """Complex seed scripts biased toward P/E/D, isn/ics, logic, multi-value lists.
+
+    Also covers scriptable seed parameters shared with GLOBAL PLAY PATCHER:
+    domain-style equations, mix/amount scalars, MEUM lattice weights, and
+    time-conditional algorithmic pathways so the seed randomizer and the
+    global-play randomizer speak the same mathematical vocabulary.
+    """
     if rng is None:
         rng = random
     funcs = (
@@ -1960,6 +2069,7 @@ def generate_random_seed_script(rng=None):
         f1, f2, f3 = rng.choice(safe), rng.choice(safe), rng.choice(safe)
         v2 = rng.choice([v for v in vars_ if v != "t"])
         m = max(1, int(abs(a)) or 1)
+        mix_w = round(rng.uniform(0.15, 0.95), 3)
         logic = [
             f"{f1}(t * {a}) >= 0",
             f"isn(t * {a}) > ics(t * {b})",
@@ -1972,7 +2082,7 @@ def generate_random_seed_script(rng=None):
         ]
         cond = rng.choice(logic)
         cond2 = rng.choice(logic)
-        # ~90% complex
+        # ~90% complex — includes global-play scriptable parameter families
         roll = rng.random()
         if roll < 0.08:
             cand = f"{n1}"
@@ -1992,7 +2102,13 @@ def generate_random_seed_script(rng=None):
                 f"# PED path\nP(isn(t), ics(t)) * {n1} + E(sin(t), MEUM) * {n2} + D(t, PHI) * {n3}",
                 f"choose({n1}, {n2}, {n3}, {n4}, {n5}, floor(abs(t * {a})))",
                 f"{n1}, {n2}, {n3}, {n4}, {n5}, {N[6]}, {N[7]}",
-                f"({phi} if False else {n1})" if False else f"(MEUM_NORM * {n1} + (1 - MEUM_NORM) * {n2}) * (0.5 + 0.5 * sin(t * {a}))",
+                f"(MEUM_NORM * {n1} + (1 - MEUM_NORM) * {n2}) * (0.5 + 0.5 * sin(t * {a}))",
+                # Scriptable seed parameters shared with GLOBAL PLAY PATCHER
+                f"# domain-path\n{f1}(t * MEUM) * {mix_w} + {f2}(t * PHI) * {round(1.0 - mix_w, 3)}",
+                f"# algo-mix {mix_w}\nclamp(MEUM_NORM * {n1} + sin(t * {a}) * {n2}, {n5}, {max(n1, n2)})",
+                f"# seed-weight path\n({n1} * MEUM_NORM + {n2} * (1 - MEUM_NORM)) * (0.5 + 0.5 * {f1}(t))",
+                f"if({cond}) {n1} * MEUM elif {n2} * MEUM_INV",
+                f"# transmutor\nlog2(abs({f1}(t * MEUM)) + 1) * {n1} + sqrt(abs({f2}(t))) * {n2}",
             ]
             cand = pool[rng.randrange(0, len(pool))]
         try:
@@ -2001,6 +2117,72 @@ def generate_random_seed_script(rng=None):
         except Exception:
             pass
     return f"P(isn(t), ics(t)) * {rng.randint(32, 400)} + E(sin(t), MEUM) * {rng.randint(16, 200)}"
+
+
+def generate_random_global_play_algo(rng=None):
+    """Deterministic-vocabulary random state for GLOBAL PLAY PATCHER.
+
+    Returns a dict with script, domain, wire list, and params suitable for
+    writing into global_algo_state and applying to the project. Uses the same
+    Meum / PED / domain families as generate_random_seed_script so seed and
+    global-play randomization stay non-redundant but mathematically aligned.
+    """
+    if rng is None:
+        rng = random
+    a = round(rng.uniform(0.5, 8.0), 3)
+    b = round(rng.uniform(0.25, 4.0), 3)
+    mix = round(rng.uniform(0.20, 0.85), 3)
+    sa = round(rng.uniform(0.40, 1.0), 3)
+    da = round(rng.uniform(0.40, 1.0), 3)
+    wa = round(rng.uniform(0.25, 1.0), 3)
+    script_pool = [
+        f"# Global script algo\ndef global_script(t, name, i):\n    return sin(t * MEUM * {a}) * {mix} + cos(t * PHI) * {round(1 - mix, 3)}\n",
+        f"# Global script algo\ndef global_script(t, name, i):\n    return (MEUM_NORM * sin(t * {a}) + (1 - MEUM_NORM) * cos(t * {b})) * {mix}\n",
+        f"# Global script algo\ndef global_script(t, name, i):\n    v = isn(t * MEUM) * {a} + ics(t * PHI) * {b}\n    return clamp(v, -1.0, 1.0) * {mix}\n",
+        f"# Global script algo\ndef global_script(t, name, i):\n    if sin(t * MEUM) >= 0:\n        return {mix} * cos(t * {a})\n    return {round(1 - mix, 3)} * sin(t * {b})\n",
+        f"# Global script algo\ndef global_script(t, name, i):\n    return tanh(sin(t * MEUM * {a}) * cos(t * PHI * {b})) * {mix}\n",
+    ]
+    domain_pool = [
+        f"sin(t * MEUM) * {mix} + cos(t * PHI) * {round(1 - mix, 3)}",
+        f"MEUM_NORM * sin(t * {a}) + (1 - MEUM_NORM) * cos(t * {b})",
+        f"tanh(sin(t * MEUM * {a})) * cos(t * PHI)",
+        f"log2(abs(sin(t * MEUM)) + 1) * {a} + sqrt(abs(cos(t))) * {b}",
+        f"sin(t * MEUM * {a}) * cos(t * {b}) + MEUM_INV * sin(t * PHI)",
+        f"clamp(sin(t * MEUM) * {a}, -1, 1) * cos(t * PHI * {b})",
+    ]
+    detectors = ("phase", "energy", "spectrum", "goava", "euclidean", "seed", "bpm", "pair")
+    targets = ("master_mix", "fractallizer", "eqr", "pkp", "ensemble", "scenograph", "domain", "unison")
+    n_wires = rng.randint(1, 4)
+    wires = []
+    used = set()
+    for _ in range(n_wires):
+        src = rng.choice(detectors)
+        dst = rng.choice(targets)
+        key = (src, dst)
+        if key in used:
+            continue
+        used.add(key)
+        wires.append({
+            "source": src,
+            "target": dst,
+            "amount": round(rng.uniform(0.15, 0.95), 3),
+        })
+    return {
+        "script": rng.choice(script_pool),
+        "domain": rng.choice(domain_pool),
+        "wire": wires,
+        "params": {
+            "mix": mix,
+            "enable_script": True,
+            "enable_domain": True,
+            "enable_wire": bool(wires),
+            "script_amount": sa,
+            "domain_amount": da,
+            "wire_amount": wa,
+        },
+        "apply_enabled": True,
+        "protectable_userdata": True,
+    }
 
 
 def evaluate_seed_component(expr, t_value=0.0, canonical_context=None):
@@ -3026,7 +3208,7 @@ class VideoSynthEngine:
         # frame-to-frame, so compute it once here instead of re-instantiating
         # MeumScenographController and recomputing the same mesh every
         # render_frame() call (its result was previously discarded unused).
-        _scenograph = MeumScenographController(width=800, height=600)
+        _scenograph = MeumScenographController(width=800, height=800)
         _sx, _sy, _sz = _scenograph.generate_field_mesh(resolution=64, ctx=0.4759)
         self._scenograph_points = _scenograph.project_coordinates(_sx, _sy, _sz, scale=512.0)
         # Up to 64 scenograph render items (name -> base weight). Active count
@@ -4271,19 +4453,7 @@ class VideoSynthEngine:
 
 
 class VideoSynthViewer(QFrame):
-    """Center square: Meum 2.5D/3D scenograph.
-
-    The viewer participates in Qt's height-for-width negotiation so its live
-    canvas is always a square.  This keeps the scenograph inside the square
-    monitor footprint below the sequencer instead of expanding vertically to
-    the bottom edge of the window.
-    """
-
-    def hasHeightForWidth(self):
-        return True
-
-    def heightForWidth(self, width):
-        return max(180, int(width))
+    """Center square: Meum 2.5D/3D scenograph."""
 
     def __init__(self, parent=None, engine=None):
         super().__init__(parent)
@@ -5732,13 +5902,14 @@ class ParametricMathBackground(QWidget):
         MEUM² more transparent than the prior left-rail styling so they stay
         readable as ambient theorem glyphs without competing with controls.
         """
-        # Cap at MAX_INSTANCES — Meum block set is finite; never replicate past 24
-        n = min(24, int(getattr(self, "MAX_INSTANCES", 24)), int(max_blocks), len(self.MEUM_BLOCKS))
-        col_w = min(260.0, max(150.0, width * 0.18))
-        a_fill = min(1.0, 0.42 / MEUM_SQ)
-        a_edge = min(1.0, 0.55 / MEUM_SQ)
-        a_title = min(1.0, 0.92 / MEUM_SQ)
-        a_body = min(1.0, 0.78 / MEUM_SQ)
+        # Fewer, quieter blocks so they stay ambient theorem glyphs — not dead labels
+        # competing with GLOBAL / LOCAL controls.
+        n = min(10, int(getattr(self, "MAX_INSTANCES", 24)), int(max_blocks), len(self.MEUM_BLOCKS))
+        col_w = min(220.0, max(140.0, width * 0.14))
+        a_fill = min(1.0, 0.22 / MEUM_SQ)
+        a_edge = min(1.0, 0.32 / MEUM_SQ)
+        a_title = min(1.0, 0.55 / MEUM_SQ)
+        a_body = min(1.0, 0.42 / MEUM_SQ)
         for i, (sym, meaning, fmt, value) in enumerate(self.MEUM_BLOCKS[:n]):
             corr_x, corr_y = AsymmetryCorrection.offset(i, n, phase, scalars)
             # Full-field Meum Lissajous drift (float all over)
@@ -12439,7 +12610,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.setWindowTitle("Groovebox")
         self.setMinimumSize(0, 0)
         self.setMaximumSize(16777215, 16777215)
-        self.resize(1300, 950)
+        # UI_LAYOUT_2026: scale to fit the available screen natively on launch
+        # instead of a fixed 1300x950, while remaining freely resizable
+        # afterward (no min/max lock — user can still shrink/grow the window).
+        try:
+            screen = self.screen() or QApplication.primaryScreen()
+            avail = screen.availableGeometry() if screen else None
+        except Exception:
+            avail = None
+        if avail is not None and avail.width() > 0 and avail.height() > 0:
+            target_w = min(1600, int(avail.width() * 0.92))
+            target_h = min(1100, int(avail.height() * 0.92))
+            self.resize(max(1000, target_w), max(700, target_h))
+            self.move(avail.center().x() - self.width() // 2, avail.center().y() - self.height() // 2)
+        else:
+            self.resize(1300, 950)
         self.playlist_window = None
         self.patch_bay_dialog = None
         self.synth_editor_window = None
@@ -12578,7 +12763,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "script": "# Global script algo\ndef global_script(t, name, i):\n    return 0.0\n",
             "domain": "equation = \"sin(t * MEUM)\"\n",
             "wire": [],
-            "params": {"mix": 0.35, "enable_script": True, "enable_domain": True, "enable_wire": True},
+            "params": {"mix": 0.35, "enable_script": True, "enable_domain": True, "enable_wire": True, "script_amount": 1.0, "domain_amount": 1.0, "wire_amount": 1.0},
+            "apply_enabled": False,
+            "protectable_userdata": True,
         }
         try:
             if getattr(self, "qe_notes", None) is not None:
@@ -12642,6 +12829,57 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._composition_generation_counter = 0
         self._transport_finished = False
         self._stop_requested = False
+    def _sync_square_visuals(self):
+        """Layout: large square scenograph (center, ~2×) + rectangular side meters.
+
+        Scenograph is forced square and given roughly double the previous linear
+        size so the video synth dominates the global monitor row. Waveform and
+        spectrum stay rectangles at the same height.
+        """
+        try:
+            container = getattr(self, "_visual_container", None)
+            if container is None:
+                for w in (self.video_synth_viewer, self.visual_oscilloscope, self.spectrum_analyzer):
+                    if w is not None and w.parentWidget() is not None:
+                        p = w.parentWidget()
+                        container = p.parentWidget() if p is not None else p
+                        break
+            if container is None:
+                return
+            avail_w = max(480, int(container.width()) - 16)
+            avail_h = max(280, int(container.height()) - 16)
+            # ~2× previous linear size: take up to ~55% of width as the square side,
+            # still clamped to available height.
+            side = max(360, min(avail_h, int(avail_w * 0.55)))
+            remaining = max(160, avail_w - side - 20)
+            side_w = max(140, remaining // 2)
+            # Center: large square scenograph
+            if self.video_synth_viewer is not None:
+                self.video_synth_viewer.setMinimumSize(side, side)
+                self.video_synth_viewer.setMaximumSize(side + 8, side + 8)
+                self.video_synth_viewer.resize(side, side)
+                self.video_synth_viewer.setSizePolicy(
+                    QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+                )
+                try:
+                    if hasattr(self.video_synth_viewer, "engine") and self.video_synth_viewer.engine:
+                        self.video_synth_viewer._frame = self.video_synth_viewer.engine.render_frame(
+                            side, side, export=False
+                        )
+                        self.video_synth_viewer.update()
+                except Exception:
+                    pass
+            # Sides: rectangular meters (same height as square)
+            for widget in (self.visual_oscilloscope, self.spectrum_analyzer):
+                if widget is None:
+                    continue
+                widget.setMinimumSize(side_w, side)
+                widget.setMaximumSize(16777215, side + 8)
+                widget.resize(side_w, side)
+                widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        except Exception:
+            pass
+
     def _sync_parametric_background_geometry(self):
         """Keep the full-window math field sized to the central widget.
 
@@ -12663,6 +12901,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._sync_parametric_background_geometry()
+        try:
+            self._sync_square_visuals()
+        except Exception:
+            pass
 
     def apply_hardcoded_compositions(self):
         # POWER_V3_EMPTY_BOOT: compatibility hook intentionally does nothing.
@@ -14685,22 +14927,29 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if item.widget():
                     item.widget().deleteLater()
 
-        master_container.setSpacing(6)
-        master_container.setContentsMargins(8, 8, 8, 8)
+        master_container.setSpacing(4)
+        master_container.setContentsMargins(6, 4, 6, 4)
 
         self.transport_layout = QHBoxLayout()
         self.btn_play = QPushButton("▶ PLAY Audiovisual Track")
         self.btn_stop = QPushButton("⏹ Stop")
         self.lbl_bpm = QLabel("BPM:")
+        self.lbl_bpm.setStyleSheet("color:#f5d97d; font-weight:900; font-size:11pt;")
         self.spin_bpm = QDoubleSpinBox()
         self.spin_bpm.setRange(0.0, 512.0)
         self.spin_bpm.setDecimals(3)
         self.spin_bpm.setSingleStep(0.1)
-        self.spin_bpm.setValue(120.0)
+        self.spin_bpm.setValue(120.0)  # ordinary baseline
+        self.spin_bpm.setMinimumHeight(32)
+        self.spin_bpm.setStyleSheet(
+            "QDoubleSpinBox { background-color:#1a1608; color:#f5d97d; border:2px solid #c9a030; "
+            "border-radius:4px; padding:3px 6px; font-weight:900; font-size:12pt; min-width:88px; }"
+        )
         self.preferred_sample_rate = TARGET_SAMPLE_RATE
 
-        # Scenograph density: 1..64 render items (catalog forms fade in/out)
-        self.lbl_sceno_items = QLabel("Sceno items:")
+        # Scenograph density: 1..64 render items (catalog forms fade in/out).
+        # Single control — do not duplicate as "Visual objects" elsewhere.
+        self.lbl_sceno_items = QLabel("Scenograph items:")
         self.spin_sceno_items = QSpinBox()
         self.spin_sceno_items.setRange(1, 64)
         self.spin_sceno_items.setValue(24)
@@ -14832,7 +15081,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         )
         self.input_seed_val.setAcceptRichText(False)
         self.input_seed_val.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
-        self.input_seed_val.setMinimumSize(360, 110)
+        self.input_seed_val.setMinimumSize(300, 78)
 
         self.input_seed_val.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
@@ -14859,7 +15108,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "QPushButton:hover { background-color:#243a30; }"
         )
         self.btn_random_seed.clicked.connect(self._on_random_seed_clicked)
-        seed_btn_row.addWidget(self.btn_random_seed)
+
 
         # Number-theoretic master composer helpers
         nt_row = QHBoxLayout()
@@ -14905,22 +15154,114 @@ class MathematiciansGrooveboxApp(QMainWindow):
         nt_row.addStretch(1)
         seed_panel.addLayout(nt_row)
 
+        # SEED WEIGHT + FULLWEIGHT — core uniqueness controls.
+        # FullWeight ON (default): seed drives the full deterministic path so
+        # every unique seed yields a non-redundant composition fingerprint.
+        # FullWeight OFF: seed influence is attenuated (still deterministic).
         eng_row = QHBoxLayout()
-        eng_row.addWidget(QLabel("Engine path:"))
+        eng_row.setSpacing(8)
+        self.chk_fullweight_seed = QPushButton("Toggle FullWeight Seed: ON")
+        self.chk_fullweight_seed.setCheckable(True)
+        self.chk_fullweight_seed.setChecked(True)
+        self.chk_fullweight_seed.setMinimumHeight(30)
+        self.chk_fullweight_seed.setMinimumWidth(200)
+        self.chk_fullweight_seed.setStyleSheet(
+            "QPushButton { background-color:#0a2a18; color:#7dffa0; border:2px solid #3a9a55; "
+            "border-radius:5px; padding:4px 10px; font-weight:900; font-size:8pt; }"
+            "QPushButton:checked { background-color:#00aa55; color:#ffffff; border-color:#ffffff; }"
+            "QPushButton:hover { background-color:#1a3a28; }"
+        )
+        self.chk_fullweight_seed.setToolTip(
+            "ON (default): seed is applied at full mathematical weight — unique seeds "
+            "produce unique non-redundant compositions.\n"
+            "OFF: seed influence is attenuated (still deterministic, softer path)."
+        )
+        def _on_fullweight_toggled(checked):
+            self.chk_fullweight_seed.setText(
+                "Toggle FullWeight Seed: ON" if checked else "Toggle FullWeight Seed: OFF"
+            )
+            try:
+                self._on_live_source_changed()
+            except Exception:
+                pass
+        self.chk_fullweight_seed.toggled.connect(_on_fullweight_toggled)
+        eng_row.addWidget(self.chk_fullweight_seed)
+
+        seed_w_lbl = QLabel("Seed Weight:")
+        seed_w_lbl.setStyleSheet("color:#7dffa0; font-weight:900; font-size:11pt;")
+        eng_row.addWidget(seed_w_lbl)
         self.spin_engine_strength = QDoubleSpinBox()
         self.spin_engine_strength.setRange(0.15, 1.0)
         self.spin_engine_strength.setSingleStep(0.05)
+        self.spin_engine_strength.setDecimals(2)
         self.spin_engine_strength.setValue(0.72)
+        self.spin_engine_strength.setMinimumHeight(34)
+        self.spin_engine_strength.setMinimumWidth(90)
+        self.spin_engine_strength.setStyleSheet(
+            "QDoubleSpinBox { background-color:#0a1a12; color:#7dffa0; border:2px solid #3a9a55; "
+            "border-radius:4px; padding:4px 6px; font-weight:900; font-size:12pt; }"
+        )
         self.spin_engine_strength.setToolTip(
-            "Canonical engine write strength (0.15–1.0). Higher = denser deterministic path."
+            "Canonical seed weight (0.15–1.0). Default 0.72 ≈ MEUM-scaled path strength. "
+            "Higher = denser deterministic write. Combined with FullWeight Seed toggle."
         )
         eng_row.addWidget(self.spin_engine_strength)
-        eng_row.addWidget(QLabel("Unison blend:"))
+
+        # Full Unison Blend — ON (default) forces ideal blend 1.0; OFF uses the spin.
+        self.chk_full_unison = QPushButton("Full Unison Blend: ON")
+        self.chk_full_unison.setCheckable(True)
+        self.chk_full_unison.setChecked(True)
+        self.chk_full_unison.setMinimumHeight(30)
+        self.chk_full_unison.setMinimumWidth(180)
+        self.chk_full_unison.setStyleSheet(
+            "QPushButton { background-color:#0a1a2a; color:#9fd4ff; border:2px solid #3a7aaa; "
+            "border-radius:5px; padding:4px 10px; font-weight:900; font-size:8pt; }"
+            "QPushButton:checked { background-color:#1a6aaa; color:#ffffff; border-color:#ffffff; }"
+            "QPushButton:hover { background-color:#122a3a; }"
+        )
+        self.chk_full_unison.setToolTip(
+            "ON (default): ideal unison blend = 1.0 — all concurrent engines fully unify.\n"
+            "OFF: use the Unison blend spin value (0.25–1.0)."
+        )
+        self._unison_blend_user = 0.55
+        def _on_full_unison_toggled(checked):
+            self.chk_full_unison.setText(
+                "Full Unison Blend: ON" if checked else "Full Unison Blend: OFF"
+            )
+            if hasattr(self, "spin_unison_blend") and self.spin_unison_blend is not None:
+                self.spin_unison_blend.blockSignals(True)
+                if checked:
+                    self._unison_blend_user = float(self.spin_unison_blend.value())
+                    self.spin_unison_blend.setValue(1.0)
+                    self.spin_unison_blend.setEnabled(False)
+                else:
+                    self.spin_unison_blend.setEnabled(True)
+                    self.spin_unison_blend.setValue(float(getattr(self, "_unison_blend_user", 0.55)))
+                self.spin_unison_blend.blockSignals(False)
+            try:
+                self._on_live_source_changed()
+            except Exception:
+                pass
+        self.chk_full_unison.toggled.connect(_on_full_unison_toggled)
+        eng_row.addWidget(self.chk_full_unison)
+
+        uni_lbl = QLabel("Unison blend:")
+        uni_lbl.setStyleSheet("color:#9fd4ff; font-weight:700;")
+        eng_row.addWidget(uni_lbl)
         self.spin_unison_blend = QDoubleSpinBox()
         self.spin_unison_blend.setRange(0.25, 1.0)
         self.spin_unison_blend.setSingleStep(0.05)
-        self.spin_unison_blend.setValue(0.55)
-        self.spin_unison_blend.setToolTip("How strongly concurrent engines blend into one path.")
+        self.spin_unison_blend.setDecimals(2)
+        self.spin_unison_blend.setValue(0.55)  # default blend when Full Unison is OFF
+        self.spin_unison_blend.setEnabled(False)
+        self.spin_unison_blend.setMinimumHeight(30)
+        self.spin_unison_blend.setStyleSheet(
+            "QDoubleSpinBox { background-color:#0a121a; color:#9fd4ff; border:1px solid #3a5a7a; "
+            "border-radius:3px; padding:3px 5px; font-weight:700; }"
+        )
+        self.spin_unison_blend.setToolTip(
+            "How strongly concurrent engines blend into one path. Locked at 1.0 when Full Unison is ON."
+        )
         eng_row.addWidget(self.spin_unison_blend)
         eng_row.addStretch(1)
         seed_panel.addLayout(eng_row)
@@ -14929,8 +15270,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         seed_panel.addLayout(seed_btn_row)
         seed_panel.addWidget(self.input_seed_val, 1)
         seed_panel.addWidget(self.btn_help)
+        seed_panel.addWidget(self.btn_random_seed)
         self.global_geometry_layout.addLayout(seed_panel, 2)
-
         self.global_controls_side = QVBoxLayout()
         self.global_controls_side.setSpacing(6)
         self.global_controls_side.setContentsMargins(0, 0, 0, 0)
@@ -14999,22 +15340,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # consuming the width needed by the large script editor.
         self.global_controls_side.addLayout(self.transport_layout)
         self.global_controls_side.addLayout(self.transport_layout_row2)
-        # Dedicated high-visibility visual-object count (was easy to miss on crowded transport row)
-        self.sceno_row = QHBoxLayout()
-        self.lbl_sceno_items = QLabel("Visual objects:")
-        self.lbl_sceno_items.setStyleSheet("font-weight: bold; color: #9fd4ff;")
-        if not hasattr(self, "spin_sceno_items") or self.spin_sceno_items is None:
-            self.spin_sceno_items = QSpinBox()
-            self.spin_sceno_items.setRange(1, 64)
-            self.spin_sceno_items.setValue(24)
-            self.spin_sceno_items.valueChanged.connect(self._on_sceno_items_changed)
-        self.spin_sceno_items.setMinimumWidth(72)
-        self.spin_sceno_items.setStyleSheet("color: #00ffcc; font-weight: bold; min-height: 26px;")
-        self.sceno_row.addWidget(self.lbl_sceno_items)
-        self.sceno_row.addWidget(self.spin_sceno_items)
-        self.sceno_row.addWidget(QLabel("/ 64 scenograph items (fade in/out)"))
-        self.sceno_row.addStretch(1)
-        self.global_controls_side.addLayout(self.sceno_row)
+        # Single scenograph-item control already lives on the transport row.
+        # Do not re-add a redundant "Visual objects" spinner here.
         master_container.addLayout(self.global_geometry_layout)
 
         self.top_layout = QHBoxLayout()
@@ -15053,30 +15380,84 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         self.top_layout.addWidget(self.mode_combo)
         self.top_layout.addWidget(self.chk_global_playlist)
-        self.top_layout.addWidget(QLabel("Base Global Frequency:"))
+
+        hz_lbl = QLabel("Base Global Frequency:")
+        hz_lbl.setStyleSheet("color:#9fd4ff; font-weight:900; font-size:11pt;")
+        self.top_layout.addWidget(hz_lbl)
         self.spin_base_frequency = QDoubleSpinBox()
         self.spin_base_frequency.setRange(0.0, 50000.0)
         self.spin_base_frequency.setDecimals(4)
         self.spin_base_frequency.setSingleStep(0.1)
-        self.spin_base_frequency.setValue(432.0)
+        self.spin_base_frequency.setValue(432.0)  # ordinary baseline tuning
+        self.spin_base_frequency.setMinimumHeight(32)
+        self.spin_base_frequency.setStyleSheet(
+            "QDoubleSpinBox { background-color:#0a121a; color:#9fd4ff; border:2px solid #3a7aaa; "
+            "border-radius:4px; padding:3px 6px; font-weight:900; font-size:12pt; min-width:100px; }"
+        )
         self.spin_tuning = self.spin_base_frequency  # compatibility alias
         self.top_layout.addWidget(self.spin_base_frequency)
         # Keep the primary effect sliders in their own visible row so they cannot
         # be squeezed out by the long global transport/media controls.
-        global_fx_group = QGroupBox("GLOBAL EFFECTS")
+        global_fx_group = QGroupBox("GLOBAL · EFFECTS")
         global_fx_group.setToolTip("Global EQR, Fractallizer, and PKP effect controls.")
         global_fx_layout = QHBoxLayout(global_fx_group)
         global_fx_layout.setContentsMargins(8, 4, 8, 4)
-        global_fx_layout.setSpacing(8)
+        global_fx_layout.setSpacing(6)
+        global_fx_group.setMinimumHeight(48)
         global_fx_layout.addWidget(QLabel("EQR:"))
+        self.slider_eqr.setMinimumWidth(190)
         global_fx_layout.addWidget(self.slider_eqr, 1)
         global_fx_layout.addWidget(QLabel("Fractallizer:"))
+        self.slider_fractalizer.setMinimumWidth(190)
         global_fx_layout.addWidget(self.slider_fractalizer, 1)
         global_fx_layout.addWidget(QLabel("PKP Decay:"))
+        self.slider_pkp_decay.setMinimumWidth(190)
         global_fx_layout.addWidget(self.slider_pkp_decay, 1)
         # Global synth count (2–64): harmonic re-spacing of free voices
-        global_fx_layout.addWidget(QLabel("Synths:"))
+        self.labelsynths = QLabel("Synths:")
+        self.labelsynths.setStyleSheet("""
+            background-color: #262626;
+            color: #FFFFFF;
+            font-family: 'Arial';
+            font-size: 16px;
+            font-weight: bold;
+            border: 2px solid red;
+            padding: 5px;
+        """)
+        self.top_layout.addWidget(self.labelsynths)
+
         self.spin_synth_count = QSpinBox()
+        self.spin_synth_count.setStyleSheet("""
+            QSpinBox {
+                padding-right: 15px; /* Leave room for the arrows */
+                border: 2px solid #B0B0B0;
+                border-radius: 4px;
+                background-color: #FFFFFF;
+                color: #333333;
+                font-size: 14px;
+            }
+
+            /* Style the upward and downward arrow container */
+            QSpinBox::up-button, QSpinBox::down-button {
+                subcontrol-origin: border;
+                width: 16px;
+                border: 1px solid #B0B0B0;
+                background: #F0F0F0;
+            }
+
+            QSpinBox::up-button {
+                subcontrol-position: top right;
+            }
+
+            QSpinBox::down-button {
+                subcontrol-position: bottom right;
+            }
+
+            /* Visual feedback on hover */
+            QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+                background: #E0E0E0;
+            }
+        """)
         self.spin_synth_count.setRange(2, 64)
         self.spin_synth_count.setValue(48)
         self.spin_synth_count.setToolTip(
@@ -15085,7 +15466,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "parameters are preserved. Names scale with count (Ice/Fire …)."
         )
         self.spin_synth_count.valueChanged.connect(self._on_synth_count_changed)
-        global_fx_layout.addWidget(self.spin_synth_count)
+        self.top_layout.addWidget(self.spin_synth_count)
         self.global_effects_group = global_fx_group
 
         # POWER_V3_GLOBAL_CONTROLS: construct global composition controls BEFORE
@@ -15094,52 +15475,71 @@ class MathematiciansGrooveboxApp(QMainWindow):
         def _make_global_operator_button(text, tooltip, checkable=False, active_color="#00ffcc"):
             b = QPushButton(text)
             b.setToolTip(tooltip)
-            b.setMinimumHeight(38)
-            b.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            # Slightly compact so the bottom canonical row + FX row stay visible
+            # while still reading as primary controls.
+
+
+            if text=="PLAYLIST":
+                b.setMinimumHeight(80)
+                b.setMinimumWidth(240)
+            else:
+                b.setMinimumHeight(40)
+                b.setMinimumWidth(120)
+            b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             b.setCheckable(bool(checkable))
             if checkable:
                 b.setStyleSheet(
-                    "QPushButton { background-color:#121212; color:#f5d97d; border:2px solid #f5d97d; border-radius:6px; padding:6px 10px; font-weight:bold; } "
+                    "QPushButton { background-color:#121212; color:#f5d97d; border:2px solid #f5d97d; border-radius:6px; padding:5px 8px; font-weight:bold; } "
                     f"QPushButton:checked {{ background-color:{active_color}; color:#101010; border:2px solid {active_color}; }} "
                     "QPushButton:hover { background-color:#282018; } QPushButton:pressed { background-color:#ff6b00; color:white; }"
                 )
             else:
                 b.setStyleSheet(
-                    "QPushButton { background-color:#121212; color:#f5d97d; border:2px solid #f5d97d; border-radius:6px; padding:6px 10px; font-weight:bold; } "
+                    "QPushButton { background-color:#121212; color:#f5d97d; border:2px solid #f5d97d; border-radius:6px; padding:5px 8px; font-weight:bold; } "
                     "QPushButton:hover { background-color:#282018; } QPushButton:pressed { background-color:#ff6b00; color:white; }"
                 )
             return b
 
         self.btn_view_playlist = _make_global_operator_button(
-            "📜 PLAYLIST",
-            "Open the global arrangement, velocity, automation, and paint context"
+            "PLAYLIST",
+            "Open the global arrangement, velocity, automation, and paint context", active_color="#00ceee"
         )
+        # UI_LAYOUT_2026: RANDOMIZE and PHASE-LOCK are recolored as one matched
+        # pair (shared teal-cyan family) since they are both "engine paints
+        # Playlist" operators; GOAVA gets its own distinct amber/gold identity
+        # since it is a different kind of composition source (numerical-seed).
+        _pair_color = "#12e0c4"
         self.btn_local_randomize = _make_global_operator_button(
-            "🎲 RANDOMIZE",
+            "RANDOMIZE",
             "Toggle global randomization; ON paints the generated pattern into Playlist.",
-            checkable=True, active_color="#00d084"
+            checkable=True, active_color=_pair_color
         )
         self.btn_local_phase_lock = _make_global_operator_button(
-            "🔒 PHASE-LOCK",
+            "PHASE-LOCK",
             "Toggle global phase-lock; ON paints the phase-locked pattern into Playlist.",
-            checkable=True, active_color="#00bfff"
+            checkable=True, active_color=_pair_color
         )
         self.btn_goava = _make_global_operator_button(
             "GOAVA",
             "Toggle GOAVA numerical-seed composition. Uses the supplied GOAVA Composer.getNote algorithm to create engine-owned notes, frequencies, and a canonical-unison playlist column.",
-            checkable=True, active_color="#c77dff"
+            checkable=True, active_color="#ffb200"
+        )
+        self.btn_goava.setStyleSheet(
+            "QPushButton { background-color:#1c1508; color:#ffb200; border:2px solid #ffb200; border-radius:6px; padding:5px 8px; font-weight:bold; } "
+            "QPushButton:checked { background-color:#ffb200; color:#101010; border:2px solid #ffb200; } "
+            "QPushButton:hover { background-color:#2a2010; } QPushButton:pressed { background-color:#ff6b00; color:white; }"
         )
         # LIVE_DJ_CONTROLS: performance macros do not rewrite canonical
         # composition. They are safe, reversible bus transforms applied to the
         # live audio callback and mirrored by the scenograph.
         # DJ macros styled pink — live bus transforms, never rewrite composition
         self.btn_live_dj_goava = _make_global_operator_button(
-            "🌀 GOAVA DJ MORPH",
+            "GOAVA DJ",
             "Live GOAVA-derived ring/drive morph. Uses the current canonical GOAVA scalar plus the unique unordered sound-pair identity.",
             checkable=True, active_color="#ff69b4"
         )
         self.btn_live_dj_random = _make_global_operator_button(
-            "🎛 RANDOM PARAMETRIC DJ",
+            "RAND PARAM",
             "Live deterministic parametric macro. It sounds random but is seed/pair/BPM stable and never calls RNG from the audio thread.",
             checkable=True, active_color="#ff1493"
         )
@@ -15150,12 +15550,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
             checkable=False, active_color="#ff69b4"
         )
 
-        global_context_group = QGroupBox("GLOBAL COMPOSITION")
+        global_context_group = QGroupBox("GLOBAL · COMPOSITION CANONICALS")
         global_context_group.setToolTip("Global playlist, randomization, and Euclidean phase-lock controls.")
         global_context_layout = QHBoxLayout(global_context_group)
         global_context_layout.setContentsMargins(8, 4, 8, 4)
-        global_context_layout.setSpacing(8)
-        global_context_layout.addWidget(self.btn_view_playlist)
+        global_context_layout.setSpacing(10)
+        global_context_group.setMinimumHeight(52)
+
+        self.top_layout_row2.addWidget(self.btn_view_playlist,2)
+
         global_context_layout.addWidget(self.btn_local_randomize)
         global_context_layout.addWidget(self.btn_local_phase_lock)
         global_context_layout.addWidget(self.btn_goava)
@@ -15166,13 +15569,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         global_context_layout.addStretch(1)
         self.global_composition_group = global_context_group
 
-        # Keep processor/effect controls in the narrow right column.  The
-        # composition canonicals get their own full-width strip below the
-        # sequencer so RANDOMIZE / PHASE-LOCK / GOAVA can never be squeezed
-        # off-screen by the seed editor or global-player controls.
-        self.global_controls_side.addWidget(self.global_effects_group, 0, Qt.AlignmentFlag.AlignTop)
+        # Keep GLOBAL EFFECTS / GLOBAL COMPOSITION in the lower control deck so
+        # they remain visible beside the large visual monitors instead of being
+        # squeezed into the top global transport plane.
         self.global_controls_side.addLayout(self.top_layout)
         self.global_controls_side.addLayout(self.top_layout_row2)
+        # UI_LAYOUT_2026: GLOBAL · COMPOSITION CANONICALS now sits immediately
+        # below the row containing the PLAYLIST button (top_layout_row2),
+        # rather than further down beside the visual monitors.
+        self.global_controls_side.addWidget(self.global_composition_group)
 
         # =====================================================================
         # LOCAL_CONTEXT_UI — only instrument-local controls remain here.
@@ -15180,15 +15585,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Domain equations live here too because they are most useful as a
         # contextual modulation layer; their engine remains global-capable.
         # =====================================================================
-        local_context_group = QGroupBox("LOCAL CONTEXT — ACTIVE INSTRUMENT")
+        local_context_group = QGroupBox("USER CONTEXT — ACTIVE INSTRUMENT - GLOBAL MIX")
         local_context_group.setToolTip(
             "Controls in this panel address the selected instrument/context. "
             "They do not belong to the global transport plane. The two Live DJ "
             "performance macros flank PKP NullLock BOOST here for quick access "
-            "during a set; they still act as global, reversible bus transforms."
+            "during a set; they still act as global, reversible bus transforms " "as well as the global Play Patcher."
         )
         local_context_layout = QHBoxLayout(local_context_group)
-        local_context_layout.setSpacing(8)
+        local_context_layout.setSpacing(10)
 
         self.btn_edit_synth = self._make_local_context_button("EDIT\nSYNTH", "Edit synth settings and wavetable for the active instrument")
         self.btn_script_inst = self._make_local_context_button("WRITE\nSCRIPT", "Edit the script attached to the active instrument")
@@ -15233,10 +15638,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_help.clicked.connect(self.open_help_readme)
 
         # Global playlist capacity belongs with global variables, not the pattern editor.
+        # UI_LAYOUT_2026: WAV/video carrier import controls were moved out of this
+        # row (they now float just above the left-hand oscilloscope pane, built
+        # further down as `media_import_row`) so Playlist Length gets the freed
+        # space and can be rendered larger/more readably.
+        self.lbl_playlist_length_caption = QLabel("Playlist Rows:")
+        self.lbl_playlist_length_caption.setStyleSheet("font-size: 11pt; font-weight: 700;")
+        self.top_layout_row2.addWidget(self.lbl_playlist_length_caption)
         self.spin_playlist_length = QSpinBox()
         self.spin_playlist_length.setRange(1, 1024)
         self.spin_playlist_length.setValue(64)
-        self.top_layout_row2.addWidget(QLabel("Playlist Rows:"))
+        self.spin_playlist_length.setMinimumHeight(38)
+        self.spin_playlist_length.setMinimumWidth(96)
+        self.spin_playlist_length.setStyleSheet("font-size: 12pt; font-weight: 700; padding: 4px 6px;")
         self.top_layout_row2.addWidget(self.spin_playlist_length)
         self.top_layout_row2.addWidget(QLabel("Global Convolve:"))
         self.spin_global_convolve = QDoubleSpinBox()
@@ -15259,36 +15673,43 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "carrier/reference. User-defined voices remain protected."
         )
         self.top_layout_row2.addWidget(self.chk_convolve_fit)
+        self.top_layout_row2.addStretch(1)
 
+        # MEDIA_IMPORT_FEATURE — WAV/video carrier import row, relocated so it
+        # floats directly above the left-hand oscilloscope pane (see
+        # `media_import_row` insertion beside visual_pair below).
         self.btn_load_wav = QPushButton("📂 Load WAV Carrier")
         self.btn_load_wav.setToolTip("Load a WAV file as the global carrier/reference waveform.")
         self.btn_load_wav.clicked.connect(self.load_wav_carrier_dialog)
-        self.top_layout_row2.addWidget(self.btn_load_wav)
 
         self.lbl_wav_carrier = QLabel("WAV: none")
         self.lbl_wav_carrier.setMinimumWidth(130)
-        self.top_layout_row2.addWidget(self.lbl_wav_carrier)
 
-        # MEDIA_IMPORT_FEATURE — one global entry point for WAV or video carriers.
         self.btn_load_media = QPushButton("🎞 Load WAV / Video")
         self.btn_load_media.setToolTip(
             "Load WAV audio or a video file. Video audio becomes the spectral carrier; "
             "the video stream can be blended back into the final MP4 export."
         )
         self.btn_load_media.clicked.connect(self.load_media_dialog)
-        self.top_layout_row2.addWidget(self.btn_load_media)
-        self.top_layout_row2.addStretch(1)
+
+        media_import_row = QHBoxLayout()
+        media_import_row.setContentsMargins(0, 0, 0, 4)
+        media_import_row.addWidget(self.btn_load_wav)
+        media_import_row.addWidget(self.lbl_wav_carrier)
+        media_import_row.addWidget(self.btn_load_media)
+        media_import_row.addStretch(1)
+        self._media_import_row = media_import_row  # consumed just above visual_pair, left column
 
         # Per-sequence length is the single sequencer length control.
         # `spin_pattern_length` remains a compatibility alias but is no longer
         # rendered as a second redundant control.
         sizing_layout = QHBoxLayout()
         sizing_layout.setContentsMargins(0, 0, 0, 0)
-        sizing_layout.addWidget(QLabel("Sequence length:"))
+
         self.spin_seq_length = QSpinBox()
         self.spin_seq_length.setRange(1, 1024)
         self.spin_seq_length.setValue(16)
-        sizing_layout.addWidget(self.spin_seq_length)
+
         sizing_layout.addStretch(1)
         sizing_container = QWidget()
         sizing_container.setLayout(sizing_layout)
@@ -15379,91 +15800,264 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Widened so the three macro buttons + sliders are never clipped —
         # the previous 290–430px cap was sized for content this panel no
         # longer needs to share with the video-game controls (moved out).
-        self.pkp_ui_group.setMinimumWidth(560)
-        self.pkp_ui_group.setMaximumWidth(16777215)  # Qt "no cap" sentinel
+        self.pkp_ui_group.setMinimumWidth(400)
+        self.pkp_ui_group.setMaximumWidth(620)
 
-        # The LIVE DJ PANEL owns only the live performance macros (GOAVA DJ
-        # morph, PKP NullLock BOOST, random parametric DJ). The video-game
-        # PLAY button sits in its own row directly above this panel; EXPORT
-        # GAME SCRIPT lives in the main ⬇ EXPORT dropdown alongside the other
-        # export formats instead of as a separate button here.
+        # LIVE DJ macros — short, fixed-readable labels (no clip).
+        self.btn_live_dj_goava.setText("GOAVA DJ")
+        self.btn_live_dj_random.setText("RAND PARAM")
+        self.btn_pkp_nullock_boost.setText("PKP BOOST")
+        for _b in (self.btn_live_dj_goava, self.btn_live_dj_random, self.btn_pkp_nullock_boost):
+            _b.setMinimumHeight(42)
+            _b.setMinimumWidth(110)
+            _b.setMaximumHeight(48)
+            _b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         live_dj_macro_row = QHBoxLayout()
-        live_dj_macro_row.addWidget(self.btn_live_dj_goava)
-        live_dj_macro_row.addWidget(self.btn_pkp_nullock_boost)
-        live_dj_macro_row.addWidget(self.btn_live_dj_random)
+        live_dj_macro_row.setSpacing(8)
+        live_dj_macro_row.addWidget(self.btn_live_dj_goava, 1)
+        live_dj_macro_row.addWidget(self.btn_pkp_nullock_boost, 1)
+        live_dj_macro_row.addWidget(self.btn_live_dj_random, 1)
         pkp_ui_group_layout.addLayout(live_dj_macro_row, 1)
         pkp_ui_group_layout.addLayout(pkp_sliders, 1)
 
         live_game_row = QHBoxLayout()
         live_game_row.addWidget(self.btn_play_videogame, 1)
 
-        # Quick Edit = project notes only
-        self.quick_edit_group = QGroupBox("📝 PROJECT NOTES")
-        self.quick_edit_group.setStyleSheet(
-            "QGroupBox { color: #ffe0a0; border: 1px solid #8a7040; border-radius: 4px; "
-            "margin-top: 6px; font-weight: bold; }"
-            "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
-        )
-        qe = QVBoxLayout(self.quick_edit_group)
-        qe.setContentsMargins(6, 10, 6, 6)
-        self.qe_notes = QTextEdit()
-        self.qe_notes.setPlaceholderText("Project notes…")
-        self.qe_notes.setMaximumHeight(90)
-        self.qe_notes.setToolTip("Free-form project notes; stored in save/load. No transport or camera actions.")
-        qe.addWidget(self.qe_notes)
-        self.quick_edit_group.setMinimumWidth(140)
-        self.quick_edit_group.setMaximumWidth(240)
-
         for b in (self.btn_edit_synth, self.btn_script_inst, self.btn_view_patchbay, self.btn_domain_eq):
             local_context_layout.addWidget(b)
         local_context_layout.addWidget(self.btn_edit_panels_per_sequence)
-        # Project notes are deliberately adjacent to (left of) LIVE DJ.
-        local_context_layout.addWidget(self.quick_edit_group, 0)
         pkp_and_game_col = QVBoxLayout()
         pkp_and_game_col.setContentsMargins(0, 0, 0, 0)
         pkp_and_game_col.addLayout(live_game_row)
         pkp_and_game_col.addWidget(self.pkp_ui_group)
+
+        # ------------------------------------------------------------------
+        # PROJECT NOTES → LIVE DJ → GLOBAL PLAY PATCHER
+        # Ordered left-to-right. Opaque panels so white text stays readable.
+        # ------------------------------------------------------------------
+        self.quick_edit_group = QGroupBox("📝 PROJECT NOTES")
+        self.quick_edit_group.setStyleSheet(
+            "QGroupBox { color:#ffe0a0; background-color:#1a1610; border:1px solid #8a7040; "
+            "border-radius:6px; margin-top:6px; font-weight:bold; }"
+            "QGroupBox::title { subcontrol-origin:margin; left:8px; padding:0 3px; background-color:#1a1610; }"
+            "QTextEdit { background-color:#0e0c08; color:#ffffff; border:1px solid #5a4a30; }"
+        )
+        qe = QVBoxLayout(self.quick_edit_group)
+        qe.setContentsMargins(6, 12, 6, 6)
+        self.qe_notes = QTextEdit()
+        self.qe_notes.setPlaceholderText("Project notes…")
+        self.qe_notes.setMinimumHeight(90)
+        self.qe_notes.setMaximumHeight(140)
+        self.qe_notes.setToolTip("Free-form project notes; stored in the canonical project document.")
+        qe.addWidget(self.qe_notes)
+        self.quick_edit_group.setMinimumWidth(200)
+        self.quick_edit_group.setMaximumWidth(280)
+        self.quick_edit_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        local_context_layout.addWidget(self.quick_edit_group, 0)
+
+        # LIVE DJ panel sits immediately after notes (global/reversible macros).
+        self.pkp_ui_group.setStyleSheet(
+            "QGroupBox { color:#ff9fd4; background-color:#1a1020; border:1px solid #6a3a5a; "
+            "border-radius:6px; margin-top:6px; font-weight:bold; }"
+            "QGroupBox::title { subcontrol-origin:margin; left:8px; padding:0 3px; background-color:#1a1020; }"
+            "QLabel { color:#f0d0e8; }"
+        )
         local_context_layout.addLayout(pkp_and_game_col, 1)
 
-        # ------------------------------------------------------------------
-        # GLOBAL PLAYER — four buttons (mirror of local EDIT SYNTH / SCRIPT /
-        # PATCH / DOMAIN). Each opens a floating panel with synth-style chrome
-        # and math background. Algorithms apply to EVERY instrument in parallel
-        # and MUST NOT write or mutate the seed field.
-        # ------------------------------------------------------------------
-        global_player_group = QGroupBox("🌐 GLOBAL PLAYER")
+        # GLOBAL PLAY PATCHER — readable layout: Script / Domain text fields,
+        # Wire + Params buttons, Mix/Script/Domain/Wire amount sliders,
+        # full-width Apply toggle + Protectable Userdata checkbox.
+        # UI_LAYOUT_2026: Global Play Patcher keeps its position in the local-context
+        # row, but the scroll area itself is now resizable/expanding with a larger
+        # viewport floor so its contents have real room to scroll instead of being
+        # squeezed to the group box's fixed minimum height.
+        globalplayer_scroll_area = QScrollArea()
+        globalplayer_scroll_area.setWidgetResizable(True)
+        globalplayer_scroll_area.setMinimumHeight(760)
+        globalplayer_scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        globalplayer_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        global_player_group = QGroupBox("🌐 GLOBAL PLAY PATCHER")
         global_player_group.setToolTip(
-            "Global-only algorithm editors. Same layout as the four local instrument "
-            "panels, but writes affect the full ensemble in parallel without touching seeds."
+            "Ensemble-wide algorithmic patching. Four channels share one canonical "
+            "global-algo state and never modify the source seed."
         )
-        gp_lay = QHBoxLayout(global_player_group)
-        gp_lay.setSpacing(8)
-        self.btn_gp_script_algo = self._make_local_context_button(
-            "SCRIPT\nALGO", "Global script algorithm applied to every instrument in parallel"
+        global_player_group.setStyleSheet(
+            "QGroupBox { color:#8fe8ff; background-color:#12161c; border:1px solid #3d5264; "
+            "border-radius:7px; margin-top:6px; padding-top:14px; font-weight:bold; font-size:8pt; }"
+            "QGroupBox::title { subcontrol-origin:margin; left:10px; padding:0 6px; background-color:#12161c; }"
+            "QLabel { color:#d0e0f0; background: transparent; font-size:9pt; font-weight:700; }"
+            "QLineEdit, QTextEdit { background-color:#0a0d12; color:#ffffff; border:1px solid #46566a; "
+            "border-radius:4px; padding:5px; font-size:9pt; }"
+            "QSlider::groove:horizontal { background:#313a45; height:8px; border-radius:4px; }"
+            "QSlider::handle:horizontal { background:#00e6c3; width:16px; margin:-4px 0; border-radius:8px; }"
+            "QPushButton { background-color:#111820; color:#00f0d0; border:1px solid #00cdb5; "
+            "border-radius:5px; padding:6px 10px; font-weight:bold; font-size:9pt; }"
+            "QPushButton:hover { background-color:#1b2830; }"
+            "QPushButton:checked { background-color:#00cdb5; color:#0a1014; }"
+            "QCheckBox { color:#f5d97d; font-weight:bold; font-size:9pt; background: transparent; }"
         )
-        self.btn_gp_domain_algo = self._make_local_context_button(
-            "DOMAIN\nALGO", "Global domain/time-space algorithm for the full ensemble"
+        global_player_group.setMinimumWidth(520)
+        global_player_group.setMinimumHeight(600)
+        global_player_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        gp_outer = QVBoxLayout(global_player_group)
+        gp_outer.setContentsMargins(10, 16, 10, 10)
+        gp_outer.setSpacing(6)
+
+        # Randomize Global Play Algorithm — writes script/domain/wire/params and applies
+        rand_row = QHBoxLayout()
+        rand_row.setSpacing(8)
+        self.btn_randomize_global_play = QPushButton("🎲 Randomize Global Play Algorithm")
+        self.btn_randomize_global_play.setMinimumHeight(36)
+        self.btn_randomize_global_play.setToolTip(
+            "Write a new Script Algo, Domain Algo, Wire routing, and amount params "
+            "from the same Meum/PED vocabulary as the seed randomizer, then apply "
+            "to the project (respecting As Protectable Userdata)."
         )
-        self.btn_gp_wire_algo = self._make_local_context_button(
-            "WIRE\nALGO", "Global modular wire/routing algorithm across all instruments"
+        self.btn_randomize_global_play.setStyleSheet(
+            "QPushButton { background-color:#1a2a22; color:#7dffa0; border:2px solid #3a7a55; "
+            "border-radius:5px; padding:6px 12px; font-weight:900; font-size:10pt; }"
+            "QPushButton:hover { background-color:#243a30; }"
         )
-        self.btn_gp_algo_params = self._make_local_context_button(
-            "ALGO\nPARAMS", "Global algorithm parameters (does not modify seed)"
-        )
-        for b in (self.btn_gp_script_algo, self.btn_gp_domain_algo, self.btn_gp_wire_algo, self.btn_gp_algo_params):
-            gp_lay.addWidget(b)
-        self.btn_gp_script_algo.clicked.connect(lambda: self._open_global_algo_panel("script"))
-        self.btn_gp_domain_algo.clicked.connect(lambda: self._open_global_algo_panel("domain"))
+        self.btn_randomize_global_play.clicked.connect(self._on_randomize_global_play_algo)
+        rand_row.addWidget(self.btn_randomize_global_play, 1)
+        gp_outer.addLayout(rand_row)
+
+        # Full-width apply row — labels must not clip
+        apply_row = QHBoxLayout()
+        apply_row.setSpacing(10)
+        self.btn_apply_algo_master = QPushButton("▶ Apply Algo to Master Mix")
+        self.btn_apply_algo_master.setCheckable(True)
+        self.btn_apply_algo_master.setMinimumHeight(38)
+        self.btn_apply_algo_master.setMinimumWidth(220)
+        self.btn_apply_algo_master.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.chk_algo_protect_userdata = QCheckBox("As Protectable Userdata")
+        self.chk_algo_protect_userdata.setChecked(True)
+        self.chk_algo_protect_userdata.setMinimumWidth(180)
+        apply_row.addWidget(self.btn_apply_algo_master, 3)
+        apply_row.addWidget(self.chk_algo_protect_userdata, 1)
+        gp_outer.addLayout(apply_row)
+
+        # Script Algo — multi-line text
+        gp_outer.addWidget(QLabel("Script Algo"))
+        self.gp_script_field = QTextEdit()
+        self.gp_script_field.setPlainText(str(self.global_algo_state.get("script") or ""))
+        self.gp_script_field.setMinimumHeight(48)
+        self.gp_script_field.setMaximumHeight(72)
+        self.gp_script_field.setAcceptRichText(False)
+        self.gp_script_field.setPlaceholderText("scriptable algo over t · MEUM · seed …")
+        gp_outer.addWidget(self.gp_script_field)
+
+        # Domain Algo — equation line + hints
+        gp_outer.addWidget(QLabel("Domain Algo"))
+        self.gp_domain_field = QLineEdit()
+        domain_text = str(self.global_algo_state.get("domain") or "")
+        self.gp_domain_field.setText(domain_text.replace("\n", " "))
+        self.gp_domain_field.setPlaceholderText("equation = sin(t * MEUM) + …")
+        self.gp_domain_field.setMinimumHeight(28)
+        gp_outer.addWidget(self.gp_domain_field)
+        self.lbl_gp_domain_hints = QLabel("hints: sin/cos → phase · log/exp → scale · domain → transmutor")
+        self.lbl_gp_domain_hints.setStyleSheet("color:#8da5b8; font-size:8pt; font-weight:500;")
+        self.lbl_gp_domain_hints.setWordWrap(True)
+        gp_outer.addWidget(self.lbl_gp_domain_hints)
+
+        # Wire + open-params row
+        wire_row = QHBoxLayout()
+        wire_row.setSpacing(8)
+        self.btn_gp_wire_algo = QPushButton("Wire Algo")
+        self.btn_gp_wire_algo.setMinimumHeight(34)
+        self.btn_gp_wire_algo.setToolTip("Open modular routing matrix — wire detectors to algorithmic targets.")
         self.btn_gp_wire_algo.clicked.connect(lambda: self._open_global_algo_panel("wire"))
+        self.btn_gp_algo_params = QPushButton("Algo Params")
+        self.btn_gp_algo_params.setMinimumHeight(34)
+        self.btn_gp_algo_params.setToolTip("Open extended parameter editor for global algo convolution.")
         self.btn_gp_algo_params.clicked.connect(lambda: self._open_global_algo_panel("params"))
-        local_context_layout.addWidget(global_player_group, 0)
+        wire_row.addWidget(self.btn_gp_wire_algo, 1)
+        wire_row.addWidget(self.btn_gp_algo_params, 1)
+        gp_outer.addLayout(wire_row)
+        self.lbl_gp_wire = QLabel("routing matrix / modular targets")
+        self.lbl_gp_wire.setStyleSheet("color:#8da5b8; font-size:8pt; font-weight:500;")
+        gp_outer.addWidget(self.lbl_gp_wire)
 
-        # PROJECT_NOTES_POSITION: notes sit immediately to the left of the
-        # consolidated LIVE DJ panel, not at the far-right end of Local Context.
-        # This makes the notes field a stable companion to the performance panel.
-        local_context_layout.addStretch(1)
+        # Amount sliders — Mix / Script / Domain / Wire
+        self.gp_mix_slider = QSlider(Qt.Orientation.Horizontal)
+        self.gp_mix_slider.setRange(0, 100)
+        self.gp_mix_slider.setValue(int(float((self.global_algo_state.get("params") or {}).get("mix", 0.35)) * 100))
+        self.gp_script_slider = QSlider(Qt.Orientation.Horizontal)
+        self.gp_script_slider.setRange(0, 100)
+        self.gp_script_slider.setValue(100)
+        self.gp_domain_slider = QSlider(Qt.Orientation.Horizontal)
+        self.gp_domain_slider.setRange(0, 100)
+        self.gp_domain_slider.setValue(100)
+        self.gp_wire_slider = QSlider(Qt.Orientation.Horizontal)
+        self.gp_wire_slider.setRange(0, 100)
+        self.gp_wire_slider.setValue(100)
+        for _name, _sl in (
+            ("Mix amount", self.gp_mix_slider),
+            ("Script amount", self.gp_script_slider),
+            ("Domain amount", self.gp_domain_slider),
+            ("Wire amount", self.gp_wire_slider),
+        ):
+            _r = QHBoxLayout()
+            _r.setContentsMargins(0, 0, 0, 0)
+            _lbl = QLabel(_name)
+            _lbl.setMinimumWidth(100)
+            _r.addWidget(_lbl)
+            _r.addWidget(_sl, 1)
+            gp_outer.addLayout(_r)
+
+        # Keep a dummy algo_grid reference for any code that still expects it
+        algo_grid = QGridLayout()
+
+        def _sync_inline_algo():
+            params = self.global_algo_state.setdefault("params", {})
+            params["mix"] = self.gp_mix_slider.value() / 100.0
+            params["script_amount"] = self.gp_script_slider.value() / 100.0
+            params["domain_amount"] = self.gp_domain_slider.value() / 100.0
+            params["wire_amount"] = self.gp_wire_slider.value() / 100.0
+            self.global_algo_state["script"] = self.gp_script_field.toPlainText()
+            self.global_algo_state["domain"] = self.gp_domain_field.text()
+            hint_text = self._global_domain_hints(self.gp_domain_field.text())
+            self.global_algo_state["domain_hints"] = hint_text
+            if hasattr(self, "lbl_gp_domain_hints"):
+                self.lbl_gp_domain_hints.setText("hints: " + " · ".join(hint_text[:5]))
+            self.global_algo_state["apply_enabled"] = bool(self.btn_apply_algo_master.isChecked())
+            self.global_algo_state["protectable_userdata"] = bool(self.chk_algo_protect_userdata.isChecked())
+
+        def _apply_master_algo(checked=True):
+            _sync_inline_algo()
+            self.global_algo_state["apply_enabled"] = bool(checked)
+            self.global_algo_state["protectable_userdata"] = bool(self.chk_algo_protect_userdata.isChecked())
+            if checked:
+                for kind, enabled in (("script", self.gp_script_slider.value()>0), ("domain", self.gp_domain_slider.value()>0), ("wire", self.gp_wire_slider.value()>0)):
+                    if enabled:
+                        self._apply_global_algo_to_ensemble(kind)
+                try:
+                    self._on_live_source_changed()
+                except Exception:
+                    pass
+                mode = "protected userdata" if self.chk_algo_protect_userdata.isChecked() else "canonical effector"
+                self.btn_apply_algo_master.setText("■ Unapply Algo from Master Mix")
+                if hasattr(self, "scope_status_label"):
+                    self.scope_status_label.setText(f"🌐 Algo applied to Master Mix · {mode}")
+            else:
+                self._unapply_global_algo_from_ensemble()
+                self.btn_apply_algo_master.setText("▶ Apply Algo to Master Mix")
+                if hasattr(self, "scope_status_label"):
+                    self.scope_status_label.setText("🌐 Master Mix Algo unapplied · canonical state restored")
+
+        self.btn_apply_algo_master.toggled.connect(_apply_master_algo)
+        self.chk_algo_protect_userdata.toggled.connect(lambda v: self.global_algo_state.__setitem__("protectable_userdata", bool(v)))
+        for sl in (self.gp_mix_slider, self.gp_script_slider, self.gp_domain_slider, self.gp_wire_slider):
+            sl.valueChanged.connect(_sync_inline_algo)
+        self.gp_script_field.textChanged.connect(_sync_inline_algo)
+        self.gp_domain_field.textChanged.connect(_sync_inline_algo)
+
+
+        self.global_player_group = global_player_group
         master_container.addWidget(local_context_group)
-
+        globalplayer_scroll_area.setWidget(global_player_group)
+        local_context_layout.addWidget(globalplayer_scroll_area,1)
+        self.global_player_group = global_player_group
         seq_controls = QHBoxLayout()
         seq_controls.setContentsMargins(0, 0, 0, 0)
         seq_controls.addSpacing(12)
@@ -15471,6 +16065,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         seq_controls.addWidget(self.sequence_selector, 1)
         seq_controls.addWidget(self.btn_add_sequence)
         seq_controls.addWidget(self.btn_remove_sequence)
+        seq_controls.addWidget(QLabel("Sequence length:"))
+        seq_controls.addWidget(self.spin_seq_length)
         seq_controls.addStretch(1)
         seq_inner.addLayout(seq_controls)
 
@@ -15573,6 +16169,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         master_vol_row.addStretch(1)
         seq_inner.addLayout(master_vol_row)
 
+        # UI_LAYOUT_2026: Wave/Scope + Spectrum/Geometry dropdowns are built here
+        # but deliberately NOT added to seq_inner — they are laid into
+        # master_container immediately above the visualizer row (visual_pair)
+        # further down, so the selectors sit directly on top of the monitors
+        # they control instead of being separated from them by the whole
+        # sequencer + global composition/FX block.
         vis_row = QHBoxLayout()
         vis_row.addWidget(QLabel("Wave / Scope:"))
         self.viz_mode_combo = QComboBox()
@@ -15597,60 +16199,42 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spectrum_mode_combo.currentIndexChanged.connect(self._on_spectrum_mode_changed)
         vis_row.addWidget(self.spectrum_mode_combo)
         vis_row.addStretch(1)
-        seq_inner.addLayout(vis_row)
 
         master_container.addWidget(self.top_sequencer)
 
-        # GLOBAL_CANONICAL_STRIP: the composition operators are global state
-        # controls, not local instrument controls.  Give them a dedicated
-        # full-width row directly under the sequencer so all canonical engines
-        # remain visible and mutually discoverable at normal window widths.
-        global_canonical_strip = QGroupBox("GLOBAL COMPOSITION CANONICALS")
-        global_canonical_strip.setToolTip(
-            "One canonical composition plane: Playlist, Randomizer, Phase-Lock, and GOAVA."
-        )
-        canonical_lay = QHBoxLayout(global_canonical_strip)
-        canonical_lay.setContentsMargins(8, 4, 8, 4)
-        canonical_lay.setSpacing(10)
-        canonical_lay.addWidget(self.btn_view_playlist, 1)
-        canonical_lay.addWidget(self.btn_local_randomize, 1)
-        canonical_lay.addWidget(self.btn_local_phase_lock, 1)
-        canonical_lay.addWidget(self.btn_goava, 1)
-        if hasattr(self, "chk_canonical_protect"):
-            canonical_lay.addWidget(self.chk_canonical_protect)
-        if hasattr(self, "btn_restore_userdata"):
-            canonical_lay.addWidget(self.btn_restore_userdata)
-        self.global_composition_group = global_canonical_strip
-        master_container.addWidget(global_canonical_strip, stretch=0)
+        # BOTTOM_CANONICAL_DECK: the three global FX sliders live immediately
+        # below the sequencer, where they cannot be hidden by the top
+        # transport/global script plane. GLOBAL COMPOSITION CANONICALS was
+        # relocated (see global_controls_side, above) to sit directly below
+        # the PLAYLIST button instead of here — only the FX group remains.
+        for _g in (self.global_composition_group, self.global_effects_group):
+            _g.setMinimumHeight(72 if _g is self.global_composition_group else 48)
+            _g.setMaximumHeight(72)
+            _g.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        master_container.addWidget(self.global_effects_group, 1)
 
-        # Triple monitor: Meum Waveform | Scenograph | Spectrum (equal squares)
+        # Triple monitor: Meum Waveform | Scenograph | Spectrum — large equal columns
+        # that expand into residual vertical space (no hard square cap).
         self.video_synth_engine = VideoSynthEngine(n_instruments=48)
         self.video_synth_engine.bind_app(self)
         self.video_synth_viewer = VideoSynthViewer(self, engine=self.video_synth_engine)
         self.visual_oscilloscope = VisualOscilloscope(self)
         self.spectrum_analyzer = SpectrumAnalyzer(self)
 
-        # SQUARE_MONITOR_GEOMETRY: keep the three visual surfaces on one
-        # deterministic square footprint. The container resize hook below
-        # computes the largest square that fits both the available width and
-        # the vertical monitor band, then applies it uniformly.
-        self._visual_monitor_widgets = (
-            self.visual_oscilloscope, self.video_synth_viewer, self.spectrum_analyzer
-        )
-
-        # EXPORT control is placed at the top of the 2D/2.5D video panel row.
-        # Offers three export modes via a dropdown menu on one button:
-        #   - Video only (no audio track muxed in)
-        #   - Audio only (.wav mixdown, reuses export_mixdown_dialog)
-        #   - Video + Audio (video with the rendered mixdown muxed in)
         scope_bar = QHBoxLayout()
 
         self.btn_export = QToolButton()
         self.btn_export.setText("⬇ EXPORT")
         self.btn_export.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         export_menu = QMenu(self.btn_export)
-        # Audio-only
-        export_menu.addAction("Audio only (.wav)").triggered.connect(self.export_mixdown_dialog)
+        # Audio-only — canonical mixdown + six interoperable formats.
+        export_menu.addAction("Audio only (.wav)").triggered.connect(lambda: self.export_mixdown_dialog("wav"))
+        export_menu.addAction("Audio only (.flac)").triggered.connect(lambda: self.export_mixdown_dialog("flac"))
+        export_menu.addAction("Audio only (.ogg)").triggered.connect(lambda: self.export_mixdown_dialog("ogg"))
+        export_menu.addAction("Audio only (.aiff)").triggered.connect(lambda: self.export_mixdown_dialog("aiff"))
+        export_menu.addAction("Audio only (.mp3)").triggered.connect(lambda: self.export_mixdown_dialog("mp3"))
+        export_menu.addAction("Audio only (.opus)").triggered.connect(lambda: self.export_mixdown_dialog("opus"))
+        export_menu.addAction("Audio only (.caf)").triggered.connect(lambda: self.export_mixdown_dialog("caf"))
         export_menu.addSeparator()
         # Video + Audio
         export_menu.addAction("Video + Audio (.mp4)").triggered.connect(
@@ -15674,65 +16258,78 @@ class MathematiciansGrooveboxApp(QMainWindow):
             lambda: self.export_video_dialog(include_audio=False, container="avi")
         )
         export_menu.addSeparator()
-        # Video game — deterministic script + identity JSON, same seed/pair
-        # provenance as the audio/video exports above.
-        export_menu.addAction("📦 Video Game Script (.py + .json)").triggered.connect(
+        # Video game — deterministic script + identity JSON
+        export_menu.addAction("📦 VIDEOGAME GENERATOR Script (.py + .json)").triggered.connect(
             self._on_export_videogame_scripts
         )
         self.btn_export.setMenu(export_menu)
         self.btn_export_video = self.btn_export  # compatibility alias
-        # 500% scale-up (5x each dimension) over the previous auto-sized
-        # ~90x30 toolbutton, so EXPORT reads as the primary action on this bar.
-        self.btn_export.setMinimumSize(450, 150)
+        self.btn_export.setMinimumSize(260, 56)
         self.btn_export.setStyleSheet(
-            "QToolButton { font-size: 28px; font-weight: bold; padding: 20px 40px; "
-            "background-color:#102018; color:#00ffcc; border:3px solid #00ffcc; border-radius:10px; } "
+            "QToolButton { font-size: 16px; font-weight: bold; padding: 8px 18px; "
+            "background-color:#102018; color:#00ffcc; border:2px solid #00ffcc; border-radius:8px; } "
             "QToolButton:hover { background-color:#183828; } "
             "QToolButton:pressed { background-color:#00ffcc; color:#101010; }"
         )
-        self.scope_status_label = QLabel("📊 Meum Wave · Scenograph · Spectrum  |  Idle")
+        self.scope_status_label = QLabel("📊 GLOBAL monitors · Wave · Scenograph · Spectrum  |  Idle")
         self.scope_status_label.setStyleSheet("color: #00ffff; font-weight: bold;")
         scope_bar.addWidget(self.scope_status_label, stretch=1)
+        # Canonical fingerprint — order-independent identity of the live project.
+        self.lbl_canonical_fp = QLabel("UNIQUE patch id (changes with your program)-")
+        self.lbl_canonical_fp.setStyleSheet(
+            "color:#f5d97d; font-weight:700; font-size:9pt; font-family: Consolas, monospace;"
+        )
+        self.lbl_canonical_fp.setToolTip(
+            "Canonical composition fingerprint (order-independent). "
+            "Same project + seed + toggles → same id regardless of toggle order."
+        )
+        scope_bar.addWidget(self.lbl_canonical_fp, stretch=0)
         scope_bar.addStretch(1)
         scope_bar.addWidget(self.btn_export, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
-
-        # POWER_V3_VISUAL_LAYOUT: master volume lives above Visualizer settings.
+        try:
+            QTimer.singleShot(400, self._refresh_canonical_fingerprint)
+        except Exception:
+            pass
 
         master_container.addLayout(scope_bar)
+        master_container.addLayout(vis_row)  # Wave/Scope + Spectrum/Geometry, directly above the monitors
         visual_pair = QHBoxLayout()
         visual_pair.setSpacing(8)
         visual_pair.setContentsMargins(0, 0, 0, 0)
-        visual_pair.setAlignment(Qt.AlignmentFlag.AlignTop)
-        # Three equal monitor columns. Every monitor is negotiated as a square;
-        # the scenograph therefore scales into the same square footprint as the
-        # waveform/spectrum instead of taking the remaining vertical space.
-        for widget, label in (
-            (self.visual_oscilloscope, "MEUM WAVEFORM · full-track + live"),
-            (self.video_synth_viewer, "MEUM SCENOGRAPH · 2.5D / 3D"),
-            (self.spectrum_analyzer, "MEUM SPECTRUM · FFT scanner"),
+        # GLOBAL monitors: rectangular waveform | large square scenograph | rectangular spectrum
+        for widget, label, is_square in (
+            (self.visual_oscilloscope, "GLOBAL · MEUM WAVEFORM", False),
+            (self.video_synth_viewer, "GLOBAL · MEUM SCENOGRAPH", True),
+            (self.spectrum_analyzer, "GLOBAL · MEUM SPECTRUM", False),
         ):
             col = QVBoxLayout()
             col.setContentsMargins(0, 0, 0, 0)
-            lbl = QLabel(label)
-            lbl.setStyleSheet("color: #8ab4c8; font-size: 8pt;")
-            col.addWidget(lbl)
-            widget.setMinimumSize(180, 180)
-            widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-            # VisualOscilloscope/SpectrumAnalyzer inherit QWidget; give the
-            # layout a square height hint through a fixed-height-for-width
-            # wrapper so all three panels share one canonical monitor geometry.
-            col.addWidget(widget, stretch=0, alignment=Qt.AlignmentFlag.AlignTop)
-            col.addStretch(1)
-            visual_pair.addLayout(col, stretch=1)
+            col.setSpacing(2)
+            #lbl = QLabel(label)
+            #lbl.setStyleSheet("color: #8ab4c8; font-size: 8pt; font-weight: 800;")
+            #col.addWidget(lbl)
+            # UI_LAYOUT_2026: the WAV/video carrier import controls float
+            # directly above the left-hand oscilloscope pane specifically.
+            if widget is self.visual_oscilloscope and getattr(self, "_media_import_row", None) is not None:
+                col.addLayout(self._media_import_row)
+            if is_square:
+                widget.setMinimumSize(420, 420)
+                widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            else:
+                widget.setMinimumSize(180, 360)
+                widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            widget.setMaximumSize(16777215, 16777215)
+            col.addWidget(
+                widget, stretch=1,
+                alignment=Qt.AlignmentFlag.AlignHCenter if is_square else Qt.AlignmentFlag.AlignCenter,
+            )
+            visual_pair.addLayout(col, stretch=(0 if is_square else 1))
         visual_container = QWidget()
         visual_container.setLayout(visual_pair)
-        # Reserve a genuinely useful square-monitor band.  The old 220px
-        # container could collapse to the 180px widget minimum after the
-        # surrounding control rows negotiated their heights, making the
-        # scenograph look like a thumbnail.
-        visual_container.setMinimumHeight(260)
-        self._visual_monitor_container = visual_container
-        master_container.addWidget(visual_container, stretch=1)
+        visual_container.setMinimumHeight(440)
+        visual_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._visual_container = visual_container
+        master_container.addWidget(visual_container, stretch=12)
 
         # Realtime audio engine state (sounddevice stream)
         self.is_playing = False
@@ -15762,34 +16359,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.update()  # Trigger repaint
         self._scope_update_timer.setInterval(33)
         self._scope_update_timer.timeout.connect(self._update_scope_from_playhead)
+        QTimer.singleShot(0, self._sync_square_visuals)
+        QTimer.singleShot(120, self._sync_square_visuals)
         self._last_scope_chunk = np.zeros(100, dtype=np.float32)
-
-    def _resize_visual_monitor_band(self):
-        """Fit waveform/scenograph/spectrum into equal square monitor cells."""
-        try:
-            container = getattr(self, "_visual_monitor_container", None)
-            widgets = tuple(getattr(self, "_visual_monitor_widgets", ()) or ())
-            if container is None or len(widgets) != 3:
-                return
-            available_w = max(0, container.width() - 16)
-            cell_w = max(180, available_w // 3)
-            available_h = max(220, container.height() - 22)
-            # Prefer a 240px square monitor when the window permits it; below
-            # that, keep all three surfaces equal rather than letting one
-            # widget consume the remaining vertical space.
-            side = max(220, min(cell_w, available_h))
-            for w in widgets:
-                w.setMinimumSize(side, side)
-                w.setMaximumSize(side, side)
-        except Exception:
-            pass
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        try:
-            QTimer.singleShot(0, self._resize_visual_monitor_band)
-        except Exception:
-            pass
 
     def on_instrument_switched(self, idx):
         if not (0 <= idx < len(self.instrument_names_48)):
@@ -16187,7 +16759,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return self.input_seed_val.text().strip()
 
     def _on_random_seed_clicked(self):
-        """Fill the seed field with a random time-conditional / math / list script."""
+        """Fill the seed field with a random time-conditional / math / list script.
+
+        Uses the expanded generator that also covers scriptable seed parameters
+        shared with GLOBAL PLAY PATCHER (domain-path, algo-mix, transmutor, etc.).
+        """
         try:
             script = generate_random_seed_script()
         except Exception as exc:
@@ -16203,7 +16779,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     self.input_seed_val.setText(script)
                 except Exception:
                     pass
-        # Trigger the same live-source path a manual edit would.
         try:
             self._on_live_source_changed()
         except Exception:
@@ -16211,6 +16786,90 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if hasattr(self, "scope_status_label"):
             preview = script.replace("\n", " ")[:72]
             self.scope_status_label.setText(f"🎲 Random seed script → {preview}")
+
+    def _on_randomize_global_play_algo(self):
+        """Write a random Global Play Algorithm and apply it to the project.
+
+        Fills Script Algo, Domain Algo, Wire routing, and amount params from
+        generate_random_global_play_algo(), syncs the UI, and applies to the
+        ensemble (respecting As Protectable Userdata). Does not overwrite the
+        user-controlled seed field.
+        """
+        try:
+            state = generate_random_global_play_algo()
+        except Exception as exc:
+            print(f"[GlobalPlay] randomize failed: {exc}")
+            if hasattr(self, "scope_status_label"):
+                self.scope_status_label.setText(f"🌐 Randomize Global Play failed: {exc}")
+            return
+        # Preserve protectable flag from the checkbox if present
+        if getattr(self, "chk_algo_protect_userdata", None) is not None:
+            state["protectable_userdata"] = bool(self.chk_algo_protect_userdata.isChecked())
+        self.global_algo_state = dict(state)
+        # Sync UI fields
+        try:
+            if getattr(self, "gp_script_field", None) is not None:
+                self.gp_script_field.blockSignals(True)
+                self.gp_script_field.setPlainText(str(state.get("script") or ""))
+                self.gp_script_field.blockSignals(False)
+            if getattr(self, "gp_domain_field", None) is not None:
+                self.gp_domain_field.blockSignals(True)
+                self.gp_domain_field.setText(str(state.get("domain") or "").replace("\n", " "))
+                self.gp_domain_field.blockSignals(False)
+            hints = self._global_domain_hints(state.get("domain") or "")
+            self.global_algo_state["domain_hints"] = hints
+            if getattr(self, "lbl_gp_domain_hints", None) is not None:
+                self.lbl_gp_domain_hints.setText("hints: " + " · ".join(hints[:5]))
+            wires = state.get("wire") or []
+            if getattr(self, "lbl_gp_wire", None) is not None:
+                if wires:
+                    summary = ", ".join(f"{w.get('source')}→{w.get('target')}" for w in wires[:4])
+                    self.lbl_gp_wire.setText(f"routing: {summary}")
+                else:
+                    self.lbl_gp_wire.setText("routing matrix / modular targets")
+            params = state.get("params") or {}
+            for sl, key, default in (
+                (getattr(self, "gp_mix_slider", None), "mix", 0.35),
+                (getattr(self, "gp_script_slider", None), "script_amount", 1.0),
+                (getattr(self, "gp_domain_slider", None), "domain_amount", 1.0),
+                (getattr(self, "gp_wire_slider", None), "wire_amount", 1.0),
+            ):
+                if sl is not None:
+                    sl.blockSignals(True)
+                    sl.setValue(int(float(params.get(key, default)) * 100))
+                    sl.blockSignals(False)
+        except Exception as exc:
+            print(f"[GlobalPlay] UI sync: {exc}")
+        # Apply to ensemble
+        try:
+            if getattr(self, "btn_apply_algo_master", None) is not None:
+                self.btn_apply_algo_master.blockSignals(True)
+                self.btn_apply_algo_master.setChecked(False)
+                self.btn_apply_algo_master.blockSignals(False)
+            self.global_algo_state["apply_enabled"] = True
+            p = self.global_algo_state.get("params") or {}
+            if p.get("enable_script", True) and self.global_algo_state.get("script"):
+                self._apply_global_algo_to_ensemble("script")
+            if p.get("enable_domain", True) and self.global_algo_state.get("domain"):
+                self._apply_global_algo_to_ensemble("domain")
+            if p.get("enable_wire", True) and self.global_algo_state.get("wire"):
+                self._apply_global_algo_to_ensemble("wire")
+            try:
+                self._on_live_source_changed()
+            except Exception:
+                pass
+            try:
+                self._refresh_canonical_fingerprint()
+            except Exception:
+                pass
+        except Exception as exc:
+            print(f"[GlobalPlay] apply after randomize: {exc}")
+        mode = "protected userdata" if self.global_algo_state.get("protectable_userdata") else "canonical effector"
+        if hasattr(self, "scope_status_label"):
+            n_w = len(self.global_algo_state.get("wire") or [])
+            self.scope_status_label.setText(
+                f"🎲 Global Play Algorithm randomized · {n_w} wires · {mode}"
+            )
 
     def get_numeric_seed(self):
         """
@@ -16337,9 +16996,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if hasattr(self, "spin_sceno_items"):
                 params["VisN"] = int(self.spin_sceno_items.value())
             if hasattr(self, "spin_engine_strength"):
-                params["EngStr"] = float(self.spin_engine_strength.value())
+                # Effective seed weight: FullWeight ON → spin value; OFF → attenuated.
+                raw = float(self.spin_engine_strength.value())
+                full = bool(getattr(self, "chk_fullweight_seed", None) and self.chk_fullweight_seed.isChecked())
+                params["EngStr"] = raw if full else raw * float(MEUM_NORM)
+                params["FullWeight"] = 1.0 if full else 0.0
+                params["SeedWeight"] = raw
             if hasattr(self, "spin_unison_blend"):
-                params["Unison"] = float(self.spin_unison_blend.value())
+                full_u = bool(getattr(self, "chk_full_unison", None) and self.chk_full_unison.isChecked())
+                params["Unison"] = 1.0 if full_u else float(self.spin_unison_blend.value())
+                params["FullUnison"] = 1.0 if full_u else 0.0
             if hasattr(self, "slider_master_vol"):
                 params["Vol"] = float(self.slider_master_vol.value()) / 100.0
             elif hasattr(self, "master_volume"):
@@ -18288,6 +18954,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "spin_global_convolve", "spin_synth_count", "slider_eqr", "slider_fractalizer",
             "slider_pkp_decay", "slider_pkp_boost", "slider_pkp_boost_pitch",
             "slider_pkp_boost_steps", "spin_sceno_items",
+            "spin_engine_strength", "spin_unison_blend",
+            "gp_mix_slider", "gp_script_slider", "gp_domain_slider", "gp_wire_slider",
         ):
             obj = getattr(self, name, None)
             if obj is not None and hasattr(obj, "value"):
@@ -18296,7 +18964,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         for name in (
             "btn_goava", "btn_local_randomize", "btn_local_phase_lock",
             "btn_live_dj_goava", "btn_live_dj_random", "chk_convolve_fit",
-            "chk_global_playlist", "chk_canonical_protect",
+            "chk_global_playlist", "chk_canonical_protect", "btn_apply_algo_master",
+            "chk_algo_protect_userdata", "chk_fullweight_seed", "chk_full_unison",
         ):
             obj = getattr(self, name, None)
             if obj is not None and hasattr(obj, "isChecked"):
@@ -18330,6 +18999,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 try:
                     obj.blockSignals(True); obj.setChecked(bool(value)); obj.blockSignals(False)
                 except Exception: pass
+        # Keep FullWeight Seed / Full Unison labels in sync after restore.
+        if getattr(self, "chk_fullweight_seed", None) is not None:
+            on = bool(self.chk_fullweight_seed.isChecked())
+            self.chk_fullweight_seed.setText(
+                "Toggle FullWeight Seed: ON" if on else "Toggle FullWeight Seed: OFF"
+            )
+        if getattr(self, "chk_full_unison", None) is not None:
+            on = bool(self.chk_full_unison.isChecked())
+            self.chk_full_unison.setText(
+                "Full Unison Blend: ON" if on else "Full Unison Blend: OFF"
+            )
+            if getattr(self, "spin_unison_blend", None) is not None:
+                self.spin_unison_blend.setEnabled(not on)
+                if on:
+                    self.spin_unison_blend.setValue(1.0)
         if "instrument_selected_sequence" in state:
             self.instrument_selected_sequence = {
                 str(k): int(v) for k, v in (state["instrument_selected_sequence"] or {}).items()
@@ -18344,6 +19028,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 pass
         if isinstance(state.get("global_algo"), dict):
             self.global_algo_state = copy.deepcopy(state["global_algo"])
+        gas = getattr(self, "global_algo_state", {}) or {}
+        try:
+            if getattr(self, "gp_script_field", None) is not None:
+                self.gp_script_field.setPlainText(str(gas.get("script") or ""))
+            if getattr(self, "gp_domain_field", None) is not None:
+                self.gp_domain_field.setText(str(gas.get("domain") or "").replace("\n", " "))
+            p = gas.get("params") if isinstance(gas.get("params"), dict) else {}
+            for obj, key, default in ((getattr(self,"gp_mix_slider",None),"mix",.35),(getattr(self,"gp_script_slider",None),"script_amount",1.0),(getattr(self,"gp_domain_slider",None),"domain_amount",1.0),(getattr(self,"gp_wire_slider",None),"wire_amount",1.0)):
+                if obj is not None: obj.setValue(int(float(p.get(key, default))*100))
+            if getattr(self, "chk_algo_protect_userdata", None) is not None:
+                self.chk_algo_protect_userdata.setChecked(bool(gas.get("protectable_userdata", True)))
+            if getattr(self, "btn_apply_algo_master", None) is not None:
+                self.btn_apply_algo_master.setChecked(bool(gas.get("apply_enabled", False)))
+        except Exception as e:
+            print(f"[UI] global algo controls restore: {e}")
 
 
 
@@ -18384,7 +19083,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             algo_fp = "0" * 16
 
         data = {
-            "version": "3.7.2-canonical-unified",
+            "version": "3.7.6-canonical-unified",
             "seed": self._seed_text() if hasattr(self, "input_seed_val") else "",
             "bpm": float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0,
             "seq_length": int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else 16,
@@ -21253,7 +21952,27 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # (canonical order is FM -> phase accumulator -> PM -> waveform).
                 _dt = float(local_t[1] - local_t[0]) if local_t.size > 1 else 0.0
                 _inst_freq = f0 * _fm_ratio * (1.0 + _voice_detune)
-                phase = 2.0 * np.pi * np.cumsum(_inst_freq) * _dt
+                # ROW_PHASE_CONTINUITY_FIX_2026: this cumsum used to start fresh
+                # at 0 for every row/block, for every voice, with no memory of
+                # where the previous row's phase ended. That is a hard phase
+                # discontinuity at *every* row boundary — an audible click/pop
+                # per row, completely independent of whether a Global Play
+                # Patcher algorithm is applied. That is almost certainly the
+                # "burst happens without Apply Algorithm, often" symptom: it
+                # fires on every single row for every voice, algorithm or not.
+                # Fixed by carrying each instrument's ending phase forward into
+                # the next row's starting phase.
+                if not hasattr(self, "_voice_phase_carry"):
+                    self._voice_phase_carry = {}
+                _phase_carry_in = float(self._voice_phase_carry.get(op_name, 0.0))
+                _phase_unwrapped = 2.0 * np.pi * np.cumsum(_inst_freq) * _dt
+                phase = _phase_unwrapped + _phase_carry_in
+                if phase.size > 0:
+                    # Store only the fractional carry (mod 2π) — keeps the
+                    # stored value bounded, same reasoning as the oscillator
+                    # phase-wrap fix above (avoids precision loss over a long
+                    # session of many rows).
+                    self._voice_phase_carry[op_name] = float(phase[-1] % math.tau)
 
                 # PM: direct phase displacement plus voice-specific initial phase.
                 phase = phase + _pm_offset + _voice_phase0
@@ -21277,6 +21996,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # Chaos can push entropy to extremes; no 0.75 mid-band clamp
                 entropy = float(np.clip(entropy * (0.55 + 0.45 * k3) + 0.35 * k3 * (1.0 - entropy), 0.0, 1.0))
                 n_harm = max(1, int(2 + (1.0 - entropy) * 14 + k4 * 6))
+                # ALIASING_FIX_2026: n_harm (and n_inh below) were computed purely
+                # from entropy/fold-depth, with no relationship to f0 or the
+                # sample rate. For higher-pitched voices, the higher partials
+                # (h * f0, and the inharmonic ratios below which run even higher
+                # than h * f0) routinely exceed Nyquist (sample_rate / 2) and
+                # fold back as aliasing — which sounds like harsh, "damaged"
+                # distortion rather than the intended harmonic color. Because
+                # f0 is seed-derived, this hit a seed-dependent fraction of
+                # voices rather than all of them, which is why it read as
+                # damage concentrated in only part of the material. Fixed by
+                # capping the number of partials to what actually fits under
+                # Nyquist for this voice's fundamental.
+                _nyquist = max(1.0, sample_rate * 0.5)
+                _f0_peak = float(np.max(f0)) if hasattr(f0, "__len__") else float(f0)
+                _max_partial = max(1, int(_nyquist / max(_f0_peak, 1.0)))
+                n_harm = max(1, min(n_harm, _max_partial))
                 # GOAVA = hard-composed pure sine; other engines free waveform.
                 # Live mod (AM/FM/PM) still routes through phase/_am_gain for all.
                 _is_goava_voice = (
@@ -21313,6 +22048,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             ph0 = ((_s_int * h * 13 + op_idx * 7) % 1000) / 1000.0 * math.tau
                             harm = harm + amp_h * np.sin(phase * h * det + ph0)
                 n_inh = max(2, int(2 + entropy * 10 + k4 * 3))
+                # ALIASING_FIX_2026 (cont.): inharmonic partials use ratios that
+                # run even steeper than n_harm's plain h multiplier (~1.37*h),
+                # so they need their own, tighter Nyquist-derived cap.
+                n_inh = max(1, min(n_inh, max(1, int(_max_partial / 1.4))))
                 inh = np.zeros_like(local_t, dtype=np.float32)
                 for h in range(1, n_inh + 1):
                     ratio = 1.0 + h * (1.0 + 0.37 * math.sin((_s_int + h * 17) * MEUM_NORM))
@@ -21330,11 +22069,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     harm = harm * np.cos(fm_depth * np.sin(phase * fm_ratio))
                 voice_raw = (1.0 - entropy) * harm + entropy * inh
                 if entropy > 0.4:
-                    voice_raw = np.tanh(voice_raw * (1.0 + (entropy - 0.4) * fold_depth * 0.2))
+                    drive = 1.0 + (entropy - 0.4) * fold_depth * 0.2
+                    voice_raw = np.clip(voice_raw * drive, -1.0, 1.0)
                 eqr_mod = dynamic_eqr * 0.5
                 voice_raw = voice_raw + 0.12 * eqr_mod * (1.0 - 0.5 * entropy) * np.sin(phase * MEUM_CONSTANT)
-                peak = float(np.max(np.abs(voice_raw)) + 1e-9)
-                seed = (voice_raw / peak).astype(np.float32)
+                # HARD_WAV_MEUM: unit-peak shape · WAV_SYNTH_AMP (=1). No slew /
+                # soft-clip / peak-floor. Pathological sums are hard-clipped later
+                # at n_instruments·3/MEUM_MINUS_1 on the master bus.
+                peak = float(np.max(np.abs(voice_raw)))
+                if not math.isfinite(peak) or peak <= 0.0:
+                    seed = np.zeros_like(voice_raw, dtype=np.float32)
+                else:
+                    seed = ((voice_raw / peak) * WAV_SYNTH_AMP).astype(np.float32)
 
                 beat_hz = float(bpm) / 60.0
                 pkp_sin = 0.55 + 0.45 * np.sin(2.0 * np.pi * beat_hz * local_t)
@@ -21615,10 +22361,47 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception as _ped_exc:
             print(f"[PED] mixdown: {_ped_exc}")
 
-        peak = np.max(np.abs(master))
-        if peak > 0:
-            master = (master / peak) * 0.98
+        # Scale buffer max into master_volume·WAV_MAX; hard-clip only past
+        # n_instruments·3/MEUM_MINUS_1 (≈ n·15.18…). Deterministic, no soft state.
+        try:
+            n_inst = int(getattr(self, "spin_synth_count", None).value()) if hasattr(self, "spin_synth_count") else len(getattr(self, "instrument_names_48", []) or [])
+        except Exception:
+            n_inst = 48
+        vol = float(getattr(self, "master_volume", 1.0) or 1.0)
+        master = meum_hard_scale_to_wav_max(master, n_instruments=n_inst, volume=1.0, wav_max=WAV_MAX)
         return master.astype(np.float32), sample_rate
+    def _canonical_fingerprint(self):
+        """Order-independent short identity of the live project.
+
+        Hash is over seed text, effective seed weight, FullWeight flag, BPM,
+        base frequency, active canonical toggles, and a stable digest of
+        sequencer step presence — never over UI layout or toggle chronology.
+        """
+        try:
+            seed = ""
+            if hasattr(self, "input_seed_val") and self.input_seed_val is not None:
+                seed = self.input_seed_val.toPlainText() if hasattr(self.input_seed_val, "toPlainText") else str(self.input_seed_val.text() if hasattr(self.input_seed_val, "text") else "")
+            parts = [
+                seed.strip(),
+                f"{float(self.spin_engine_strength.value()) if hasattr(self, 'spin_engine_strength') else 0.72:.4f}",
+                "1" if (getattr(self, "chk_fullweight_seed", None) and self.chk_fullweight_seed.isChecked()) else "0",
+                f"{float(self.spin_bpm.value()) if hasattr(self, 'spin_bpm') else 120:.3f}",
+                f"{float(self.spin_base_frequency.value()) if hasattr(self, 'spin_base_frequency') else 432:.4f}",
+                "G" if (getattr(self, "btn_goava", None) and self.btn_goava.isChecked()) else "-",
+                "R" if (getattr(self, "btn_local_randomize", None) and self.btn_local_randomize.isChecked()) else "-",
+                "P" if (getattr(self, "btn_local_phase_lock", None) and self.btn_local_phase_lock.isChecked()) else "-",
+                f"n{int(self.spin_synth_count.value()) if hasattr(self, 'spin_synth_count') else 48}",
+            ]
+            raw = "|".join(parts).encode("utf-8")
+            return hashlib.sha256(raw).hexdigest()[:10]
+        except Exception:
+            return "----------"
+
+    def _refresh_canonical_fingerprint(self):
+        fp = self._canonical_fingerprint()
+        if getattr(self, "lbl_canonical_fp", None) is not None:
+            self.lbl_canonical_fp.setText(f"UNIQUE patch id (changes with your program) - {fp}")
+
     def _on_live_source_changed(self, *args):
         """Coalesce seed/seq-length changes into one deferred composition transaction."""
         if getattr(self, "_composition_generation_guard", False):
@@ -21627,6 +22410,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return
         self._live_source_update_pending = True
         QTimer.singleShot(0, self._flush_live_source_update)
+        try:
+            self._refresh_canonical_fingerprint()
+        except Exception:
+            pass
 
         # =========================================================================
 
@@ -22177,8 +22964,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
             n = min(frames, remaining)
             if n > 0:
                 start_sample = int(self.play_cursor)
-                chunk = self.play_buffer[start_sample:start_sample + n] * self.master_volume
+                chunk = self.play_buffer[start_sample:start_sample + n]
                 chunk = self._apply_live_dj_chunk(chunk, start_sample)
+                try:
+                    n_inst = int(self.spin_synth_count.value()) if hasattr(self, "spin_synth_count") else 48
+                except Exception:
+                    n_inst = 48
+                vol = float(getattr(self, "master_volume", 1.0) or 1.0)
+                chunk = meum_hard_scale_to_wav_max(chunk, n_instruments=n_inst, volume=vol, wav_max=WAV_MAX)
                 outdata[:n, 0] = chunk
                 # stash a short window for the UI scope
                 if n >= 100:
@@ -22503,40 +23296,74 @@ class MathematiciansGrooveboxApp(QMainWindow):
         h -= h % 2
         return w, h
 
-    def export_mixdown_dialog(self):
+    def export_mixdown_dialog(self, audio_format="wav"):
+        """Export the same canonical master mix in WAV/FLAC/OGG/AIFF/MP3/OPUS/CAF.
+
+        WAV uses the native writer; all other formats use the same ffmpeg
+        binary already used by video export, so every output is derived from one
+        canonical render rather than a second serialization model.
+        """
+        audio_format = str(audio_format or "wav").lower().lstrip(".")
+        if audio_format not in {"wav", "flac", "ogg", "aiff", "mp3", "opus", "caf"}:
+            audio_format = "wav"
+        filters = {
+            "wav": "WAV Audio (*.wav)", "flac": "FLAC Audio (*.flac)",
+            "ogg": "Ogg Vorbis Audio (*.ogg)", "aiff": "AIFF Audio (*.aiff *.aif)",
+            "mp3": "MP3 Audio (*.mp3)", "opus": "Opus Audio (*.opus)",
+            "caf": "Core Audio Format (*.caf)",
+        }
+        ext = ".aiff" if audio_format == "aiff" else "." + audio_format
         try:
-            default_filename = os.path.join(
-                self._exports_dir(), f"groovebox_mixdown_{self.export_counter:03d}.wav"
-            )
-            file_path, _ = QFileDialog.getSaveFileName(
-                self, "Save Mixdown Audio", default_filename, "WAV Audio Files (*.wav)"
-            )
+            default_filename = os.path.join(self._exports_dir(), f"groovebox_mixdown_{self.export_counter:03d}{ext}")
+            file_path, _ = QFileDialog.getSaveFileName(self, "Save Mixdown Audio", default_filename, filters[audio_format])
             if not file_path:
                 return
-
+            if not file_path.lower().endswith(ext):
+                file_path += ext
             if hasattr(self, 'scope_status_label'):
-                self.scope_status_label.setText("📊 Rendering full mixdown for export…")
+                self.scope_status_label.setText(f"📊 Rendering canonical master mix → {audio_format.upper()}…")
             QApplication.processEvents()
-
             master, sample_rate = self._render_mixdown_buffer()
-            pcm = (master * 32767.0).astype(np.int16)
-
-            if wavfile is not None:
-                wavfile.write(file_path, sample_rate, pcm)
+            pcm = (np.clip(master, -1.0, 1.0) * 32767.0).astype(np.int16)
+            if audio_format == "wav":
+                if wavfile is not None:
+                    wavfile.write(file_path, sample_rate, pcm)
+                else:
+                    with wave.open(file_path, 'w') as wf:
+                        wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sample_rate); wf.writeframes(pcm.tobytes())
             else:
-                with wave.open(file_path, 'w') as wf:
-                    wf.setnchannels(1)
-                    wf.setsampwidth(2)
-                    wf.setframerate(sample_rate)
-                    wf.writeframes(pcm.tobytes())
-
-            # Preview into scope
+                ffmpeg = self._resolve_ffmpeg_binary()
+                if not ffmpeg:
+                    raise RuntimeError(f"FFmpeg is required for {audio_format.upper()} audio export.")
+                tmp = os.path.join(self._exports_dir(), f".groovebox_audio_tmp_{os.getpid()}_{self.export_counter}.wav")
+                if wavfile is not None:
+                    wavfile.write(tmp, sample_rate, pcm)
+                else:
+                    with wave.open(tmp, 'w') as wf:
+                        wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sample_rate); wf.writeframes(pcm.tobytes())
+                codec_args = {
+                    "flac": ["-c:a", "flac"],
+                    "ogg": ["-c:a", "libvorbis", "-q:a", "6"],
+                    "aiff": ["-c:a", "pcm_s16be"],
+                    "mp3": ["-c:a", "libmp3lame", "-q:a", "2"],
+                    "opus": ["-c:a", "libopus", "-b:a", "192k"],
+                    "caf": ["-c:a", "pcm_s16le"],
+                }[audio_format]
+                proc = subprocess.run(
+                    [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", tmp, *codec_args, file_path],
+                    capture_output=True, text=True, timeout=120,
+                )
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                if proc.returncode != 0:
+                    raise RuntimeError(proc.stderr or f"FFmpeg failed for {audio_format.upper()}")
             if isinstance(getattr(self, 'visual_oscilloscope', None), VisualOscilloscope):
-                prev = master[: min(len(master), sample_rate // 2)]
-                idx = np.linspace(0, len(prev) - 1, 100).astype(int)
-                self.visual_oscilloscope.update_waveform(prev[idx])
-
-            print(f"[System] Success: exported → {file_path}")
+                prev = master[:min(len(master), sample_rate // 2)]
+                if len(prev):
+                    idx = np.linspace(0, len(prev)-1, 100).astype(int)
+                    self.visual_oscilloscope.update_waveform(prev[idx])
             self.export_counter += 1
             if hasattr(self, 'scope_status_label'):
                 self.scope_status_label.setText(f"📊 Export complete → {os.path.basename(file_path)}")
@@ -22646,23 +23473,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         return vcodec, vargs, acodec, aargs
 
 
-    def _canonical_document(self):
-        """Return the live canonical project document without serialization.
-
-        Runtime modules consume this object directly; JSON is only a persistence
-        boundary. This prevents prototype/play/export paths from inventing a
-        second representation whose parse/format round-trip could alter results.
-        """
-        return self._project_snapshot()
-
     def _composition_meta_for_game(self):
         """Snapshot for game classification — same lattice as save/export.
 
         Global Player algo fingerprint is included so the video-game interpreter
         responds to Script/Domain/Wire/Params without ever mutating the seed.
         """
-        canonical = self._canonical_document() if hasattr(self, "_project_snapshot") else {}
-        gas = canonical.get("global_algo", getattr(self, "global_algo_state", {})) or {}
+        gas = getattr(self, "global_algo_state", {}) or {}
         try:
             algo_fp = hashlib.sha256(
                 json.dumps(gas, sort_keys=True, default=str).encode("utf-8")
@@ -23057,7 +23874,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "script": "# Global script algo\ndef global_script(t, name, i):\n    return 0.0\n",
                 "domain": 'equation = "sin(t * MEUM)"\n',
                 "wire": [],
-                "params": {"mix": 0.35, "enable_script": True, "enable_domain": True, "enable_wire": True},
+                "params": {"mix": 0.35, "enable_script": True, "enable_domain": True, "enable_wire": True, "script_amount": 1.0, "domain_amount": 1.0, "wire_amount": 1.0},
+            "apply_enabled": False,
+            "protectable_userdata": True,
             }
 
         window = QWidget(None, Qt.WindowType.Window)
@@ -23072,8 +23891,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             QPushButton:hover { background-color: #3a4550; }
         """)
         try:
-            window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-            attach_math_decor(window, app=self, light=True)
+            window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+            attach_math_decor(window, app=self, light=False)
         except Exception:
             pass
         main = QVBoxLayout(window)
@@ -23132,6 +23951,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
             names = list(getattr(self, "instrument_names_48", []) or [])
             src_box.addItems(names)
             tgt_box.addItems(names)
+            detector_box = QComboBox()
+            detector_box.addItems(["phase", "energy", "spectrum", "rms", "onset", "harmonic", "seed", "domain", "pair"])
+            question_edit = QLineEdit()
+            question_edit.setPlaceholderText("algorithmic question / target")
+            subject_edit = QLineEdit()
+            subject_edit.setPlaceholderText("algorithmic subject")
             weight = QDoubleSpinBox()
             weight.setRange(0.0, 2.0)
             weight.setSingleStep(0.05)
@@ -23145,6 +23970,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             form.addWidget(QLabel("Weight"))
             form.addWidget(weight)
             main.addLayout(form)
+            sem = QHBoxLayout()
+            sem.addWidget(QLabel("Detector")); sem.addWidget(detector_box, 1)
+            sem.addWidget(QLabel("Question")); sem.addWidget(question_edit, 2)
+            sem.addWidget(QLabel("Subject")); sem.addWidget(subject_edit, 2)
+            main.addLayout(sem)
             log = QTextEdit()
             log.setReadOnly(True)
             wires = self.global_algo_state.get("wire") or []
@@ -23155,7 +23985,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 lines = ["# Global Wire Algo (ensemble)"]
                 for w in self.global_algo_state.get("wire") or []:
                     if isinstance(w, dict):
-                        lines.append(f"- {w.get('source')} ====> {w.get('target')}  w={float(w.get('weight', 0.5)):.3f}")
+                        lines.append(f"- {w.get('source')} ====> {w.get('target')}  w={float(w.get('weight', 0.5)):.3f}  detector={w.get('detector','phase')}  q={w.get('question','')}  subject={w.get('subject','')}")
                 log.setPlainText("\n".join(lines))
             _refresh_log()
             main.addWidget(log, 1)
@@ -23168,8 +23998,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     "source": src_box.currentText(),
                     "target": tgt_box.currentText(),
                     "weight": float(weight.value()),
+                    "detector": detector_box.currentText(),
+                    "question": question_edit.text(),
+                    "subject": subject_edit.text(),
                     "origin": "global_player",
-                    "user_defined": True,
+                    "user_defined": bool(gas.get("protectable_userdata", True)),
+                    "protectable_userdata": bool(gas.get("protectable_userdata", True)),
+                    "apply_enabled": bool(gas.get("apply_enabled", False)),
                 })
                 _refresh_log()
             def _clear():
@@ -23237,6 +24072,46 @@ class MathematiciansGrooveboxApp(QMainWindow):
         window.raise_()
         window.activateWindow()
 
+    def _global_domain_hints(self, expression):
+        """Deterministically derive compact algorithmic hints/transmutor pathways from a domain expression."""
+        text = str(expression or "").lower()
+        hints = []
+        families = (("sin", "phase oscillator"), ("cos", "quadrature / phase pair"),
+                    ("tan", "nonlinear phase fold"), ("log", "logarithmic scale transmutor"),
+                    ("exp", "exponential growth/decay transmutor"), ("sqrt", "root geometry"),
+                    ("abs", "fold / symmetry detector"), ("mod", "residue-class detector"),
+                    ("^", "power-law transmutor"), ("*", "gain/convolution pathway"))
+        for token, desc in families:
+            if token in text:
+                hints.append(desc)
+        if not hints:
+            hints.append("identity / direct-domain pathway")
+        if "t" in text:
+            hints.append("time-domain detector")
+        if "x" in text or "y" in text or "z" in text:
+            hints.append("coordinate transmutor")
+        return hints
+
+    def _unapply_global_algo_from_ensemble(self):
+        """Remove only the global-algo overlay, leaving user/canonical material intact."""
+        try:
+            for name, st in (getattr(self, "instrument_param_state", {}) or {}).items():
+                if isinstance(st, dict):
+                    st.pop("global_script_algo", None)
+                    st.pop("global_algo_mix", None)
+                    st.pop("global_algo_user_data", None)
+                    st.pop("global_algo_apply_enabled", None)
+            engine = getattr(self, "domain_eq_engine", None)
+            if engine is not None:
+                engine.domains = [d for d in (getattr(engine, "domains", []) or [])
+                                  if not (isinstance(d, dict) and d.get("source") == "global_player")]
+            self.patch_connections = [c for c in (getattr(self, "patch_connections", []) or [])
+                                      if not (isinstance(c, dict) and c.get("origin") == "global_player")]
+            if hasattr(self, "_on_live_source_changed"):
+                self._on_live_source_changed()
+        except Exception as e:
+            print(f"[GlobalAlgo] unapply: {e}")
+
     def _apply_global_algo_to_ensemble(self, which):
         """Broadcast a Global Player algo to every instrument in parallel.
 
@@ -23250,6 +24125,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         gas = getattr(self, "global_algo_state", {}) or {}
         params = gas.get("params") if isinstance(gas.get("params"), dict) else {}
         mix = float(params.get("mix", 0.35))
+        amount_key = {"script":"script_amount", "domain":"domain_amount", "wire":"wire_amount"}.get(which)
+        amount = float(params.get(amount_key, 1.0)) if amount_key else 1.0
+        mix = max(0.0, min(1.0, mix * max(0.0, min(1.0, amount))))
         n_touched = 0
 
         if which == "script":
@@ -23264,6 +24142,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     continue
                 st["global_script_algo"] = body
                 st["global_algo_mix"] = mix
+                st["global_algo_user_data"] = bool(gas.get("protectable_userdata", True))
+                st["global_algo_apply_enabled"] = bool(gas.get("apply_enabled", False))
                 n_touched += 1
 
         elif which == "domain":
@@ -23286,6 +24166,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         "weight": mix,
                         "user_defined": False,
                         "source": "global_player",
+                        "protectable_userdata": bool(gas.get("protectable_userdata", True)),
+                        "apply_enabled": bool(gas.get("apply_enabled", False)),
                     })
                     n_touched += 1
                 engine.domains = existing + generated
@@ -23307,7 +24189,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     "target": w.get("target"),
                     "weight": float(w.get("weight", 0.5)) * mix,
                     "origin": "global_player",
-                    "user_defined": True,
+                    "user_defined": bool(gas.get("protectable_userdata", True)),
+                    "protectable_userdata": bool(gas.get("protectable_userdata", True)),
+                    "apply_enabled": bool(gas.get("apply_enabled", False)),
                 })
                 n_touched += 1
 
@@ -23324,12 +24208,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
             window = QWidget(None, Qt.WindowType.Window)
             window.setWindowTitle(window_title)
 
+            # UI_LAYOUT_2026: floating windows that scroll (Synth Editor / EDIT SYNTH,
+            # Patch Modular) open sized to fit their contents but stay freely
+            # resizable — a fixed cramped resize() no longer fights the scroll area.
             if attr_name == 'playlist_window':
                 window.resize(1300, 875)
             elif attr_name == 'patch_bay_dialog':
-                window.resize(950, 700)
+                window.resize(1000, 780)
+                window.setMinimumSize(640, 480)
+            elif attr_name == 'synth_editor_window':
+                window.resize(820, 640)
+                window.setMinimumSize(520, 420)
             else:
                 window.resize(750, 550)
+            window.setSizeGripEnabled(True) if hasattr(window, "setSizeGripEnabled") else None
 
             main_layout = QVBoxLayout(window)
 
@@ -23453,6 +24345,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
             elif attr_name == 'patch_bay_dialog':
                 main_layout.addWidget(QLabel("🔌 Advanced Modular Patch Bay & Resonance Nullifier Visualizer"))
+
+                # UI_LAYOUT_2026: Patch Modular now scrolls, and gained real
+                # per-cable settings instead of a bare source→dest→log strip.
+                pm_scroll = QScrollArea()
+                pm_scroll.setWidgetResizable(True)
+                pm_content = QWidget()
+                pm_layout = QVBoxLayout(pm_content)
+
                 patch_container = QWidget()
                 patch_layout = QHBoxLayout(patch_container)
 
@@ -23466,14 +24366,108 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 target_list = QComboBox()
                 target_list.addItems([f"{name} In" for name in self.instrument_names_48] + ["PKP Envelope Follower Bus", "Geometric Resonance Nullifier Core"])
                 patch_layout.addWidget(target_list)
-                main_layout.addWidget(patch_container)
+                pm_layout.addWidget(patch_container)
+
+                # New: per-cable settings row — cable curve/depth/polarity/mode.
+                cable_settings_group = QGroupBox("Cable Settings")
+                cs_layout = QHBoxLayout(cable_settings_group)
+
+                cs_layout.addWidget(QLabel("Depth:"))
+                spin_cable_depth = QDoubleSpinBox()
+                spin_cable_depth.setRange(0.0, 1.0)
+                spin_cable_depth.setSingleStep(0.05)
+                spin_cable_depth.setValue(1.0)
+                spin_cable_depth.setToolTip("How strongly this cable's source modulates its destination.")
+                cs_layout.addWidget(spin_cable_depth)
+
+                cs_layout.addWidget(QLabel("Curve:"))
+                cable_curve_combo = QComboBox()
+                cable_curve_combo.addItems(["Linear", "Exponential", "Logarithmic", "S-Curve", "Step-Quantized"])
+                cable_curve_combo.setToolTip("Response curve applied between source and destination.")
+                cs_layout.addWidget(cable_curve_combo)
+
+                cs_layout.addWidget(QLabel("Polarity:"))
+                cable_polarity_combo = QComboBox()
+                cable_polarity_combo.addItems(["Unipolar +", "Bipolar ±", "Inverted −"])
+                cs_layout.addWidget(cable_polarity_combo)
+
+                chk_cable_normalize = QCheckBox("Normalize (auto-gain-compensate)")
+                chk_cable_normalize.setChecked(True)
+                chk_cable_normalize.setToolTip(
+                    "Keeps output level stable as more cables sum into the same destination — "
+                    "part of the deterministic, nonredundant re-expression goal (see README)."
+                )
+                cs_layout.addWidget(chk_cable_normalize)
+                pm_layout.addWidget(cable_settings_group)
+
+                # New: cable list — multiple simultaneous routes, each independently editable.
+                cable_list = QListWidget()
+                cable_list.setToolTip("Active cables in this patch. Select one to edit its settings above.")
+                pm_layout.addWidget(QLabel("Active Cables"))
+                pm_layout.addWidget(cable_list, 1)
+
+                cable_row_btns = QHBoxLayout()
+                btn_remove_cable = QPushButton("✕ Remove Selected Cable")
+                btn_clear_cables = QPushButton("🗑 Clear All Cables")
+                btn_randomize_patch = QPushButton("🎲 Randomize Patch (deterministic seed)")
+                btn_randomize_patch.setToolTip(
+                    "Generates a new cable set from the current project seed — same seed always "
+                    "reproduces the same patch (deterministic, nonredundant)."
+                )
+                cable_row_btns.addWidget(btn_remove_cable)
+                cable_row_btns.addWidget(btn_clear_cables)
+                cable_row_btns.addWidget(btn_randomize_patch)
+                pm_layout.addLayout(cable_row_btns)
 
                 patch_log = QTextEdit()
                 patch_log.setReadOnly(True)
                 patch_log.setPlainText("# Resonance Nullifier Matrix:\n- Z-Pinch Resonator Out ---> Topological Fold In (Phase-Locked)\n- Stochastic Noise Matrix Out ---> Geometric Resonance Nullifier Core (Engaged)")
-                main_layout.addWidget(patch_log)
+                pm_layout.addWidget(patch_log)
 
-                btn_patch.clicked.connect(lambda: patch_log.append(f"- {source_list.currentText()} ====> {target_list.currentText()} (Geometric Link Established)"))
+                def _cable_label():
+                    return (
+                        f"{source_list.currentText()} ==[{cable_curve_combo.currentText()}, "
+                        f"{cable_polarity_combo.currentText()}, depth {spin_cable_depth.value():.2f}"
+                        f"{', norm' if chk_cable_normalize.isChecked() else ''}]==> {target_list.currentText()}"
+                    )
+
+                def _connect_cable():
+                    label = _cable_label()
+                    cable_list.addItem(label)
+                    patch_log.append(f"- {label} (Geometric Link Established)")
+
+                def _remove_selected_cable():
+                    row = cable_list.currentRow()
+                    if row >= 0:
+                        item = cable_list.takeItem(row)
+                        if item is not None:
+                            patch_log.append(f"- REMOVED: {item.text()}")
+
+                def _clear_cables():
+                    cable_list.clear()
+                    patch_log.append("# Patch cleared — all cables removed.")
+
+                def _randomize_patch():
+                    rng_seed = getattr(self, "global_algo_state", {}).get("seed", 0.0) if hasattr(self, "global_algo_state") else 0.0
+                    rnd = random.Random(f"patchmodular::{rng_seed}::{cable_list.count()}")
+                    curves = ["Linear", "Exponential", "Logarithmic", "S-Curve", "Step-Quantized"]
+                    src = rnd.choice(self.instrument_names_48)
+                    dst = rnd.choice(self.instrument_names_48)
+                    source_list.setCurrentText(f"{src} Out")
+                    target_list.setCurrentText(f"{dst} In")
+                    cable_curve_combo.setCurrentText(rnd.choice(curves))
+                    spin_cable_depth.setValue(round(rnd.uniform(0.2, 1.0), 2))
+                    _connect_cable()
+
+                btn_patch.clicked.connect(_connect_cable)
+                btn_remove_cable.clicked.connect(_remove_selected_cable)
+                btn_clear_cables.clicked.connect(_clear_cables)
+                btn_randomize_patch.clicked.connect(_randomize_patch)
+
+                pm_layout.addStretch(1)
+                pm_content.setLayout(pm_layout)
+                pm_scroll.setWidget(pm_content)
+                main_layout.addWidget(pm_scroll)
 
             elif attr_name == 'synth_editor_window':
                 window.setStyleSheet("""

@@ -37,6 +37,60 @@ TOPOLOGIES = ("linear", "open_world", "hub_spoke", "arena_loop", "roguelike_deck
 SOCIAL = ("singleplayer", "local_coop", "online_multiplayer", "asynchronous")
 MOODS = ("neon_noir", "pastoral", "cosmic", "industrial", "mythic", "glitch")
 
+# TITLE_WORDBANK_2026: title generation used to be a fixed template
+# ("{Mood} {Genre} [{fp}]"), which meant only len(MOODS) * len(GENRES) = 72
+# distinct title shapes existed. To keep titles fitting the same "infinitely
+# varied, deterministic, nonredundant" lattice as the rest of the generator,
+# titles are now built from four independent word banks, each indexed by its
+# own seed-mixed residue. Same seed -> same title every time (deterministic);
+# different seeds spread across banks_a*banks_b*banks_c*banks_d*|GENRES|
+# combinations (currently 32*32*24*20*12 = 5,898,240) instead of 72.
+_TITLE_BANK_A = (  # opening epithet
+    "Hollow", "Radiant", "Silent", "Feral", "Ashen", "Gilded", "Errant",
+    "Fractured", "Luminous", "Withered", "Untethered", "Crowned", "Drowned",
+    "Static", "Recursive", "Nameless", "Borrowed", "Unmoored", "Spiral",
+    "Threadbare", "Ossified", "Flickering", "Molten", "Quiet", "Errant",
+    "Tessellated", "Unwritten", "Marrow", "Glass", "Ember", "Paper", "Salt",
+)
+_TITLE_BANK_B = (  # core noun
+    "Engine", "Choir", "Garden", "Reactor", "Ledger", "Orbit", "Threshold",
+    "Cartography", "Lattice", "Season", "Harvest", "Skyline", "Vault",
+    "Wager", "Ritual", "Migration", "Signal", "Cathedral", "Frontier",
+    "Undertow", "Compass", "Archive", "Pilgrimage", "Static", "Refrain",
+    "Foundry", "Meridian", "Aperture", "Reckoning", "Bloom", "Circuit", "Tide",
+)
+_TITLE_BANK_C = (  # connective / genre-flavor descriptor
+    "of Glass", "of Iron", "of Echoes", "of Dust", "of Tomorrow",
+    "of the Deep", "of Rust", "of Salt", "of the Fold", "of the Interval",
+    "of Static", "of the Long Night", "of Thread", "of the Nine",
+    "of the Hollow", "of Amber", "of the Loop", "of the Tide",
+    "of the Unwritten", "of the Meridian", "Reborn", "Unbound", "Interrupted",
+    "Recompiled",
+)
+_TITLE_BANK_D = (  # short closing flourish (kept small/punchy)
+    "//", "—", "::", "∞", "◦", "○", "·", "‡", "†", "*", "~", "^", "»", "◊",
+    "△", "▽", "◆", "☍", "❖", "✦",
+)
+
+
+def _generate_title(seed: int, genre: str, camera: str, topology: str, mood: str, fingerprint: str) -> str:
+    """Deterministic word-bank title: same seed -> same title, and the
+    seed lattice fans out across a much larger, still-nonredundant title
+    space than the old fixed "{mood} {genre}" template. Genre/camera/topology
+    still flavor word selection so titles read as belonging to their game.
+    """
+    a = _TITLE_BANK_A[_mix(seed, f"title_a|{genre}") % len(_TITLE_BANK_A)]
+    b = _TITLE_BANK_B[_mix(seed, f"title_b|{topology}") % len(_TITLE_BANK_B)]
+    c = _TITLE_BANK_C[_mix(seed, f"title_c|{camera}") % len(_TITLE_BANK_C)]
+    # Flourish appears only ~1 in 3 titles (keeps most titles clean text,
+    # a minority get a distinctive glyph) — another seed-mixed residue.
+    use_flourish = (_mix(seed, "title_flourish") % 3) == 0
+    d = _TITLE_BANK_D[_mix(seed, f"title_d|{mood}") % len(_TITLE_BANK_D)]
+    base = f"{a} {b} {c}".strip()
+    if use_flourish:
+        base = f"{d} {base} {d}"
+    return f"{base} [{fingerprint[:6]}]"
+
 
 def _safe_int_seed(value) -> int:
     try:
@@ -168,7 +222,7 @@ def classify_from_composition(
             hooks.append("hook_gp_domain")
         if p.get("enable_wire"):
             hooks.append("hook_gp_wire")
-    title = f"{mood.replace('_',' ').title()} {g.replace('_',' ').title()} [{fingerprint[:6]}]"
+    title = _generate_title(s, g, cam, top, mood, fingerprint)
     music_var = (
         "longform_dj_remix" if online else "seed_loop_with_parametric_drift"
     )
@@ -301,6 +355,32 @@ class Game:
         self.score = 0.0
         self.t = 0.0
         self.running = True
+        # MULTIPLAYER_CHAT_AND_MODE_SWITCH: chat log + host/client role are
+        # switchable at any point in the session (not just at launch), so a
+        # local session can flip from client to host (e.g. if the host drops)
+        # without restarting the game.
+        self.chat_log = []
+        self.player_name = self.id.get("player_name", "Player")
+
+    def toggle_host_mode(self):
+        """Flip host/client role at any time. Safe to call mid-session."""
+        if not self.id.get("online"):
+            print("[NET] host/client switch has no effect — social mode is not online_multiplayer.")
+            return self.host_mode
+        self.host_mode = not self.host_mode
+        role = "HOST" if self.host_mode else "CLIENT"
+        print(f"[NET] Role switched -> {{role}} (port {{self.port}})")
+        self.send_chat("system", f"{{self.player_name}} is now {{role}}")
+        return self.host_mode
+
+    def send_chat(self, sender, text):
+        """Append a chat line. Works in any social mode; only broadcasts to
+        other peers when social is online_multiplayer or local_coop (stub —
+        integrate real transport as needed, mirroring the host/client stub)."""
+        entry = {{"t": round(self.t, 2), "sender": sender, "text": text}}
+        self.chat_log.append(entry)
+        print(f"[CHAT] {{sender}}: {{text}}")
+        return entry
     def splash(self, duration=None):
         """Splash plays composition for SEQ bars before start screen."""
         bars = duration if duration is not None else self.id.get("splash_bars", SEQ)
@@ -335,8 +415,10 @@ class Game:
     def run(self, seconds=20.0):
         self.splash()
         self.start_screen()
-        if self.host_mode:
-            print(f"[HOST] Listening on 0.0.0.0:{{self.port}} (stub — integrate real net stack as needed)")
+        if self.id.get("online"):
+            role = "HOST" if self.host_mode else "CLIENT"
+            print(f"[NET] Starting as {{role}} on 0.0.0.0:{{self.port}} (stub — integrate real net stack as needed)")
+            print("[NET] Console commands during play: /host  /client  /chat <message>")
         print("--- PLAY ---")
         t0 = time.time()
         frames = 0
@@ -346,6 +428,23 @@ class Game:
             if frames % 60 == 0:
                 print(f"t={{self.t:.1f}}s score={{self.score:.2f}} dj={{self.music.dj:.3f}} layers={{len(self.scene.layers)}}")
         print(f"Session end. Final score={{self.score:.2f}} fingerprint={{self.id['composition_fingerprint']}}")
+
+    def handle_console_command(self, line):
+        """Route a console line to chat or a host/client role switch — callable
+        anywhere in the session, not just at startup."""
+        line = (line or "").strip()
+        if not line:
+            return
+        if line in ("/host", "/client"):
+            wants_host = line == "/host"
+            if wants_host != self.host_mode:
+                self.toggle_host_mode()
+            else:
+                print(f"[NET] Already {{'HOST' if self.host_mode else 'CLIENT'}}.")
+        elif line.startswith("/chat "):
+            self.send_chat(self.player_name, line[len("/chat "):])
+        else:
+            self.send_chat(self.player_name, line)
 
 def main(argv=None):
     argv = list(argv or sys.argv[1:])
