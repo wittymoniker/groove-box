@@ -15359,7 +15359,23 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Single scenograph-item control already lives on the transport row.
         # Do not re-add a redundant "Visual objects" spinner here.
         master_container.addLayout(self.global_geometry_layout)
-
+        self.chk_nyquist_partial_gating = QCheckBox("Nyquist Partial Gating")
+        self.chk_nyquist_partial_gating.setChecked(False)
+        self.chk_nyquist_partial_gating.setToolTip(
+            "Optional diagnostic mode. Normally OFF: active synths already "
+            "provide the information needed to determine valid partials."
+        )
+        self.chk_nyquist_partial_gating.setStyleSheet("""
+            QCheckBox {
+                color: #c8d0d8;
+                font-weight: 700;
+                spacing: 8px;
+            }
+        """)
+        self.chk_nyquist_partial_gating.toggled.connect(
+            lambda checked: setattr(self, "nyquist_partial_gating", bool(checked))
+        )
+        self.nyquist_partial_gating = False
         self.top_layout = QHBoxLayout()
         # LAYOUT_WRAP_FIX: this used to be one QHBoxLayout holding every
         # global-media/arrangement control, which clipped text such as
@@ -15496,7 +15512,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
 
             if text=="PLAYLIST":
-                b.setMinimumHeight(80)
+                b.setMinimumHeight(64)
                 b.setMinimumWidth(240)
             else:
                 b.setMinimumHeight(40)
@@ -15513,6 +15529,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 b.setStyleSheet(
                     "QPushButton { background-color:#121212; color:#f5d97d; border:2px solid #f5d97d; border-radius:6px; padding:5px 8px; font-weight:bold; } "
                     "QPushButton:hover { background-color:#282018; } QPushButton:pressed { background-color:#ff6b00; color:white; }"
+                )
+            if text=="RANDOMIZE":
+                b.setStyleSheet(
+                    "QPushButton { background-color:#121212; color:#f5d97d; border:2px solid #f5d97d; border-radius:6px; padding:5px 8px; font-weight:bold; }"
+                    "QPushButton:hover { background-color:#282018; }  "  "QPushButton:pressed { background-color:#ff6b00; color:white;}"
+                    "QPushButton:checked {background-color:#f5d97d;color: #121212; border: 2px solid #f5d97d;border-radius:8px;font-weight: bold;}"
                 )
             return b
 
@@ -15889,9 +15911,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # squeezed to the group box's fixed minimum height.
         globalplayer_scroll_area = QScrollArea()
         globalplayer_scroll_area.setWidgetResizable(True)
-        globalplayer_scroll_area.setMinimumHeight(760)
+        globalplayer_scroll_area.setMinimumHeight(64)
         globalplayer_scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        globalplayer_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         global_player_group = QGroupBox("🌐 GLOBAL PLAY PATCHER")
         global_player_group.setToolTip(
             "Ensemble-wide algorithmic patching. Four channels share one canonical "
@@ -16302,6 +16323,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         scope_bar.addWidget(self.lbl_canonical_fp, stretch=0)
         scope_bar.addStretch(1)
         scope_bar.addWidget(self.btn_export, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
+        scope_bar.addWidget(self.btn_play)
+        scope_bar.addWidget(self.btn_stop)
         try:
             QTimer.singleShot(400, self._refresh_canonical_fingerprint)
         except Exception:
@@ -16345,8 +16368,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 sceno_transport.setContentsMargins(4, 6, 4, 2)
                 sceno_transport.setSpacing(12)
                 sceno_transport.addStretch(1)
-                sceno_transport.addWidget(self.btn_play)
-                sceno_transport.addWidget(self.btn_stop)
                 sceno_transport.addStretch(1)
                 col.addLayout(sceno_transport)
             visual_pair.addLayout(col, stretch=(0 if is_square else 1))
@@ -16870,7 +16891,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             if getattr(self, "btn_apply_algo_master", None) is not None:
                 self.btn_apply_algo_master.blockSignals(True)
-                self.btn_apply_algo_master.setChecked(False)
+                self.btn_apply_algo_master.setChecked(True)
                 self.btn_apply_algo_master.blockSignals(False)
             self.global_algo_state["apply_enabled"] = True
             p = self.global_algo_state.get("params") or {}
@@ -22027,7 +22048,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # for the duration of each note (matches deterministic non-predictive path).
                 n_harm = max(1, int(2 + (1.0 - entropy) * 14 + k4 * 6))
                 n_inh = max(2, int(2 + entropy * 10 + k4 * 3))
-                _use_predictive_nyquist = bool(getattr(self, "_unison_predictive_partials", False))
+                _use_predictive_nyquist = bool(getattr(self, "_unison_predictive_partials", self.nyquist_partial_gating))
                 if _use_predictive_nyquist:
                     _f0_arr = np.asarray(f0, dtype=np.float64).ravel()
                     if _f0_arr.size == 0:
