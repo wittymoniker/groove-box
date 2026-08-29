@@ -90,12 +90,7 @@ class LiveDJEffects:
         return (dry * (1.0 - a) + wet * a).astype(np.float32, copy=False)
 
     def goava_pair_morph(self, x: np.ndarray, *, start_sample: int, goava_scalar: float = 0.0, bpm: float = 120.0, amount: float | None = None) -> np.ndarray:
-        """GOAVA-derived ring/drive morph; the unordered pair selects its timbre.
-        
-        FIX (V3.8.0+): Symmetrized drive around unity, bipolar modulation,
-        no upward pitch bias. Drive is centered at 1.0 with ±depth modulation,
-        and the sideband component removes DC to preserve polarity.
-        """
+        """GOAVA-derived ring/drive morph; the unordered pair selects its timbre."""
         amt = self.amount_goava if amount is None else float(amount)
         if amt <= 1e-6 or x.size == 0:
             return x.astype(np.float32, copy=False)
@@ -103,24 +98,15 @@ class LiveDJEffects:
         t = (float(start_sample) + np.arange(n, dtype=np.float32)) / float(self.sample_rate)
         d = self.pair
         raw = float(goava_scalar)
-        
-        # Frequency modulation for character (unchanged)
         mod_hz = 0.25 + 0.35 * (abs(raw) % 11.0) + (float(bpm) / 60.0) * (0.5 + d.spread)
         mod = np.sin(math.tau * mod_hz * t + d.phase).astype(np.float32)
-        
-        # FIXED: Bipolar drive centered at 1.0 (symmetrized, no pitch bias).
-        # d.ratio is in [0.5, 2.0], so scaled_ratio is in [-0.5, 0.5].
-        scaled_ratio = (d.ratio - 1.25) / 1.25  # centered
-        drive_mod = 1.0 + 1.4 * scaled_ratio * amt  # ±1.4x modulation depth
-        drive = drive_mod * (1.0 + 0.5 * mod)  # Modulate symmetrically
-        
-        # Apply waveshaper symmetrically (tanh preserves zero-crossing)
-        wet = np.tanh(x * drive) / (np.tanh(drive) + 1e-8)
-        
-        # Preserve polarity with bipolar sideband (remove DC to avoid pitch bias)
-        mod_centered = mod - np.mean(mod)  # Remove DC component
-        wet += x * (0.16 * amt) * mod_centered
-        
+        # FIXED: symmetric drive centered at 1.0, no upward bias (was 1.0 + 2.8*(0.25+0.75*ratio))
+        bipolar_ratio = (d.ratio - 1.25) / 0.75  # ratio 0.5..2.0 -> -1..+1
+        drive = 1.0 + bipolar_ratio * 1.4 * amt
+        drive = max(0.2, min(2.4, drive))
+        wet = np.tanh(x * drive) * (0.78 + 0.22 * mod)
+        # Preserve polarity while giving the GOAVA scalar a musically obvious sideband.
+        wet += x * (0.16 * amt) * mod
         return self._mix(x, wet, min(0.75, 0.55 * amt))
 
     def random_parametric(self, x: np.ndarray, *, start_sample: int, bpm: float = 120.0, amount: float | None = None) -> np.ndarray:
