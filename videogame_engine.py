@@ -1219,6 +1219,51 @@ if HAS_UI:
         def append_status(self, text):
             self.chat_view.appendPlainText(text)
 
+    class LoadingScreen(QWidget):
+        """Minimal, dependency-free loading/processing screen shown the instant
+        the app starts — before Game() does any of its (network transport,
+        scenograph, sigil ring, music bed) construction work, and before the
+        real GameWindow exists at all. Exported games previously went straight
+        from a blank process to Game(...) construction with nothing on screen,
+        so a slower machine (or --host waiting on a socket bind) could sit at
+        an empty window for a moment with no feedback that anything was
+        happening. This is deliberately simple: no game state, no palette
+        lookup into an identity dict that doesn't exist yet — just a label and
+        an indeterminate progress bar, self-contained and framed with a plain
+        Qt.WindowType.FramelessWindowHint so it never gets confused for a
+        second real window.
+        """
+        def __init__(self, title_hint=""):
+            super().__init__()
+            self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+            self.setFixedSize(360, 130)
+            self.setStyleSheet(
+                "background-color: #0b1020; border: 1px solid #3fa7ff; border-radius: 8px;"
+            )
+            lay = QVBoxLayout(self)
+            lay.setContentsMargins(20, 18, 20, 18)
+            label = QLabel(title_hint or "Loading world…")
+            label.setStyleSheet("color: #e8f0ff; font-weight: bold; font-size: 13px;")
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.status_label = QLabel("Initializing…")
+            self.status_label.setStyleSheet("color: #9fb3d0; font-size: 11px;")
+            self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            bar = QProgressBar()
+            bar.setRange(0, 0)  # indeterminate — total init time isn't known up front
+            bar.setTextVisible(False)
+            bar.setFixedHeight(10)
+            lay.addWidget(label)
+            lay.addWidget(bar)
+            lay.addWidget(self.status_label)
+
+        def set_status(self, text):
+            self.status_label.setText(str(text))
+            # Force a repaint + event flush now, so the message is actually
+            # visible before the next (potentially blocking) init step runs.
+            self.repaint()
+            QApplication.processEvents()
+
+
     class GameWindow(QMainWindow):
         def __init__(self, game):
             super().__init__()
@@ -1323,10 +1368,23 @@ def main(argv=None):
                   "deterministic CLI loop. Install PyQt6 for the control panel.")
         Game(host_mode=host, port=port, connect=connect).run(seconds=seconds)
         return
-    game = Game(host_mode=host, port=port, connect=connect)
+    # LOADING_SCREEN_2026: create QApplication + the loading screen FIRST,
+    # before Game(...) does any of its heavier construction (network
+    # transport bind/connect, scenograph mesh, sigil ring, music bed). That
+    # ordering is the actual point — the loading screen has to exist before
+    # the slow work starts, not just before the main window is shown, or
+    # there is nothing for the user to see during exactly the part that can
+    # take a moment (e.g. --host binding a socket).
     app = QApplication.instance() or QApplication(sys.argv[:1])
+    loading = LoadingScreen(title_hint="Preparing session…")
+    loading.show()
+    loading.set_status("Starting network + world…")
+    game = Game(host_mode=host, port=port, connect=connect)
+    loading.set_status("Building main window…")
     win = GameWindow(game)
+    loading.set_status("Ready.")
     win.show()
+    loading.close()
     sys.exit(app.exec())
 
 

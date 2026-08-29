@@ -181,6 +181,18 @@ def audible_hz(freq, sample_rate=None):
 # 12-slot window (-6..+5, one "octave" of Meum-steps) keeps the same per-index
 # color/identity but centers it around the base frequency instead of climbing.
 MEUM_POWERS_36 = tuple(MEUM ** ((i % 12) - 6) for i in range(36))
+# HARDCODE_UNISON_2026: fixed, instrument-index-derived tables that replace
+# the old runtime Nyquist/frequency-based partial cap and the random-per-voice
+# phase offset. Both are pure functions of the instrument's slot in the
+# roster (like MEUM_POWERS_36 above) — never of sample_rate or the live
+# fundamental — so every voice's harmonic budget and phase anchor are fixed,
+# reproducible, and, most importantly, chosen so adjacent instrument slots
+# share compatible partial counts and evenly-spaced phase anchors instead of
+# landing at independent random points. That's what makes the ensemble blend
+# into one continuous mass instead of reading as N separate oscillators.
+INSTRUMENT_PARTIAL_CAP_48 = tuple(7 + (i % 6) for i in range(48))
+INSTRUMENT_PHASE_LOCK_48 = tuple((2.0 * math.pi * i) / 48.0 for i in range(48))
+
 MEUM_IDENTITY_LHS = (MEUM_MINUS_1 * MEUM) + (MEUM_MINUS_1 * MEUM_INV)
 MEUM_IDENTITY_RHS = MEUM_TWO_POW_OVER_SQ - MEUM
 MEUM_IDENTITY_RESIDUAL = MEUM_IDENTITY_LHS - MEUM_IDENTITY_RHS
@@ -2894,40 +2906,88 @@ class VisualOscilloscope(QFrame):
             path.closeSubpath()
             return path
 
-        painter.fillPath(_wave_path(phos, 1.15), QColor(c.red(), c.green(), min(255, c.blue() + 40), 28))
-        painter.fillPath(_wave_path(self.wave_data, 1.0), QColor(c.red(), c.green(), c.blue(), 55))
-        glow_pen = QPen(QColor(c.red(), c.green(), c.blue(), 55))
-        glow_pen.setWidth(6)
-        painter.setPen(glow_pen)
-        for i in range(255):
-            x0 = int(i / 255.0 * (w - 1))
-            x1 = int((i + 1) / 255.0 * (w - 1))
-            y0 = mid_y - float(self.wave_data[i]) * amp
-            y1 = mid_y - float(self.wave_data[i + 1]) * amp
-            painter.drawLine(x0, int(y0), x1, int(y1))
-        pen = QPen(c)
-        pen.setWidth(2)
-        painter.setPen(pen)
-        for i in range(255):
-            x0 = int(i / 255.0 * (w - 1))
-            x1 = int((i + 1) / 255.0 * (w - 1))
-            y0 = mid_y - float(self.wave_data[i]) * amp
-            y1 = mid_y - float(self.wave_data[i + 1]) * amp
-            painter.drawLine(x0, int(y0), x1, int(y1))
-        # Cubic harmonic ribbon (shows stacked notes as extra motion)
-        ribbon = QPen(QColor.fromHsv((hue_shift + 40) % 360, 180, 255, 140), 1)
-        painter.setPen(ribbon)
-        for i in range(255):
-            a = float(self.wave_data[i])
-            b = float(self.wave_data[i + 1])
-            x0 = int(i / 255.0 * (w - 1))
-            x1 = int((i + 1) / 255.0 * (w - 1))
-            painter.drawLine(
-                x0, int(mid_y - (a * a * a) * amp * 0.85),
-                x1, int(mid_y - (b * b * b) * amp * 0.85),
-            )
-        painter.setPen(QPen(QColor(80, 90, 110, 120), 1))
-        painter.drawLine(0, int(mid_y), w, int(mid_y))
+        if self.mode == 4:
+            # LISSAJOUS / XY VECTOR SCOPE: a genuinely different geometry, not
+            # a hue-shifted copy of the amplitude-vs-time plot above. Plots
+            # the live sample against a short-delayed copy of itself
+            # (classic vector-scope self-delay trick), so harmonic content
+            # and phase relationships show up as loop shapes instead of a
+            # left-to-right trace.
+            cx, cy = w / 2.0, (det_top + h - 16) / 2.0
+            side = max(20.0, min(w, h - det_top - 16) * 0.46)
+            painter.setPen(QPen(QColor(80, 90, 110, 100), 1))
+            painter.drawEllipse(QPointF(cx, cy), side, side)
+            delay = max(1, len(self.wave_data) // 9)
+            pen = QPen(c)
+            pen.setWidth(2)
+            painter.setPen(pen)
+            pts = []
+            for i in range(len(self.wave_data)):
+                x_v = float(self.wave_data[i])
+                y_v = float(self.wave_data[(i + delay) % len(self.wave_data)])
+                pts.append(QPointF(cx + x_v * side, cy - y_v * side))
+            for i in range(len(pts) - 1):
+                painter.drawLine(pts[i], pts[i + 1])
+            painter.setPen(QPen(QColor(255, 255, 230, 200), 1))
+            if pts:
+                painter.drawEllipse(pts[-1], 3.0, 3.0)
+        elif self.mode == 5:
+            # PHOSPHOR PERSISTENCE SCOPE: stacks several recent decaying
+            # phosphor layers (instead of the single 1.15x ghost used by the
+            # other modes) so sustained/repeating material visibly builds up
+            # brightness like a real analog scope's phosphor trail.
+            if not hasattr(self, "_persist_layers") or len(self._persist_layers) != 6:
+                self._persist_layers = [self.wave_data.copy() for _ in range(6)]
+            self._persist_layers.pop()
+            self._persist_layers.insert(0, self.wave_data.copy())
+            for li, layer in enumerate(self._persist_layers):
+                fade = int(180 * (1.0 - li / len(self._persist_layers)) ** 1.6)
+                if fade <= 2:
+                    continue
+                painter.setPen(QPen(QColor(c.red(), c.green(), c.blue(), fade), 2 if li == 0 else 1))
+                for i in range(255):
+                    x0 = int(i / 255.0 * (w - 1))
+                    x1 = int((i + 1) / 255.0 * (w - 1))
+                    y0 = mid_y - float(layer[i]) * amp
+                    y1 = mid_y - float(layer[i + 1]) * amp
+                    painter.drawLine(x0, int(y0), x1, int(y1))
+            painter.setPen(QPen(QColor(80, 90, 110, 120), 1))
+            painter.drawLine(0, int(mid_y), w, int(mid_y))
+        else:
+            painter.fillPath(_wave_path(phos, 1.15), QColor(c.red(), c.green(), min(255, c.blue() + 40), 28))
+            painter.fillPath(_wave_path(self.wave_data, 1.0), QColor(c.red(), c.green(), c.blue(), 55))
+            glow_pen = QPen(QColor(c.red(), c.green(), c.blue(), 55))
+            glow_pen.setWidth(6)
+            painter.setPen(glow_pen)
+            for i in range(255):
+                x0 = int(i / 255.0 * (w - 1))
+                x1 = int((i + 1) / 255.0 * (w - 1))
+                y0 = mid_y - float(self.wave_data[i]) * amp
+                y1 = mid_y - float(self.wave_data[i + 1]) * amp
+                painter.drawLine(x0, int(y0), x1, int(y1))
+            pen = QPen(c)
+            pen.setWidth(2)
+            painter.setPen(pen)
+            for i in range(255):
+                x0 = int(i / 255.0 * (w - 1))
+                x1 = int((i + 1) / 255.0 * (w - 1))
+                y0 = mid_y - float(self.wave_data[i]) * amp
+                y1 = mid_y - float(self.wave_data[i + 1]) * amp
+                painter.drawLine(x0, int(y0), x1, int(y1))
+            # Cubic harmonic ribbon (shows stacked notes as extra motion)
+            ribbon = QPen(QColor.fromHsv((hue_shift + 40) % 360, 180, 255, 140), 1)
+            painter.setPen(ribbon)
+            for i in range(255):
+                a = float(self.wave_data[i])
+                b = float(self.wave_data[i + 1])
+                x0 = int(i / 255.0 * (w - 1))
+                x1 = int((i + 1) / 255.0 * (w - 1))
+                painter.drawLine(
+                    x0, int(mid_y - (a * a * a) * amp * 0.85),
+                    x1, int(mid_y - (b * b * b) * amp * 0.85),
+                )
+            painter.setPen(QPen(QColor(80, 90, 110, 120), 1))
+            painter.drawLine(0, int(mid_y), w, int(mid_y))
 
         spark = getattr(self, "_spark_phase", 0.0)
         peak_i = int(np.argmax(np.abs(self.wave_data))) if self.wave_data.size else 0
@@ -3072,22 +3132,67 @@ class SpectrumAnalyzer(QFrame):
         bar_w = max(1.0, (w - 8) / max(n, 1))
         peak_i = int(np.argmax(self.mags)) if n else 0
         floor = h - 16
-        for i, m in enumerate(self.mags):
-            mag = float(m)
-            bh = int(mag * usable)
-            x = int(4 + i * bar_w)
-            hue = int((i / max(n - 1, 1)) * 280 + self.mode * 25 + self.seed_hue) % 360
-            bright = 40 + int(200 * mag)
-            col = QColor.fromHsv(hue, 210, bright)
-            bw = max(1, int(bar_w * 0.78))
-            glow_h = min(usable, int(bh * 1.18) + 4)
-            painter.fillRect(x - 1, floor - glow_h, bw + 2, glow_h, QColor(col.red(), col.green(), col.blue(), 40))
-            painter.fillRect(x, floor - bh, bw, bh, col)
-            # Mirror reflection
-            painter.fillRect(x, floor, bw, max(1, bh // 5), QColor(col.red(), col.green(), col.blue(), 50))
-            if i == peak_i and mag > 0.05:
-                painter.setPen(QPen(QColor(255, 255, 255, 210), 1))
-                painter.drawLine(x, floor - bh - 3, x + bw, floor - bh - 3)
+
+        if self.mode == 4:
+            # SPECTROGRAM WATERFALL: history of magnitude frames scrolling
+            # downward, brightness = magnitude. A genuinely different
+            # (time x frequency) view rather than a re-tinted bar chart.
+            if not hasattr(self, "_waterfall_rows") or self._waterfall_rows is None:
+                self._waterfall_rows = []
+            self._waterfall_rows.insert(0, self.mags.copy())
+            max_rows_hist = max(8, h - top - 4)
+            del self._waterfall_rows[max_rows_hist:]
+            row_h = max(1.0, (h - top - 4) / max_rows_hist)
+            cell_w = max(1.0, (w - 8) / max(n, 1))
+            for ri, row in enumerate(self._waterfall_rows):
+                y = int(top + ri * row_h)
+                for i, m in enumerate(row):
+                    mag = float(m)
+                    if mag < 0.02:
+                        continue
+                    hue = int((i / max(n - 1, 1)) * 280 + self.seed_hue) % 360
+                    bright = 30 + int(220 * mag)
+                    col = QColor.fromHsv(hue, 220, bright)
+                    x = int(4 + i * cell_w)
+                    painter.fillRect(x, y, max(1, int(cell_w) + 1), max(1, int(row_h) + 1), col)
+        elif self.mode == 5:
+            # RADIAL SPECTRUM: bins arranged around a circle instead of a
+            # left-to-right bar chart — reads the same magnitude data as a
+            # rotational shape, useful at a glance for overall energy/balance.
+            cx, cy = w / 2.0, top + (h - top - 18) / 2.0
+            r0 = min(w, h - top - 18) * 0.18
+            r_span = min(w, h - top - 18) * 0.36
+            for i, m in enumerate(self.mags):
+                mag = float(m)
+                ang = (i / max(n, 1)) * 2.0 * math.pi - math.pi / 2.0
+                r1 = r0 + mag * r_span
+                hue = int((i / max(n - 1, 1)) * 280 + self.mode * 25 + self.seed_hue) % 360
+                col = QColor.fromHsv(hue, 210, 40 + int(200 * mag))
+                x0 = cx + r0 * math.cos(ang)
+                y0 = cy + r0 * math.sin(ang)
+                x1 = cx + r1 * math.cos(ang)
+                y1 = cy + r1 * math.sin(ang)
+                painter.setPen(QPen(col, max(2, int(bar_w * 0.6))))
+                painter.drawLine(QPointF(x0, y0), QPointF(x1, y1))
+            painter.setPen(QPen(QColor(80, 90, 110, 120), 1))
+            painter.drawEllipse(QPointF(cx, cy), r0, r0)
+        else:
+            for i, m in enumerate(self.mags):
+                mag = float(m)
+                bh = int(mag * usable)
+                x = int(4 + i * bar_w)
+                hue = int((i / max(n - 1, 1)) * 280 + self.mode * 25 + self.seed_hue) % 360
+                bright = 40 + int(200 * mag)
+                col = QColor.fromHsv(hue, 210, bright)
+                bw = max(1, int(bar_w * 0.78))
+                glow_h = min(usable, int(bh * 1.18) + 4)
+                painter.fillRect(x - 1, floor - glow_h, bw + 2, glow_h, QColor(col.red(), col.green(), col.blue(), 40))
+                painter.fillRect(x, floor - bh, bw, bh, col)
+                # Mirror reflection
+                painter.fillRect(x, floor, bw, max(1, bh // 5), QColor(col.red(), col.green(), col.blue(), 50))
+                if i == peak_i and mag > 0.05:
+                    painter.setPen(QPen(QColor(255, 255, 255, 210), 1))
+                    painter.drawLine(x, floor - bh - 3, x + bw, floor - bh - 3)
 
         if self.seed_values:
             mx = max(abs(v) for v in self.seed_values) or 1.0
@@ -3163,7 +3268,7 @@ class VideoSynthEngine:
             "lock_rings", "rand_static", "seeded_constellation", "goava_glyphs",
             "scan_lines", "radial_ticks", "soft_blobs", "crystal_shards", "wave_fronts",
             "orbit_dust", "magnet_lines", "plasma_wisps", "gravity_wells", "time_ticks",
-            "identity_pins", "mix_meters", "nyquist_edge", "meum_residue", "silence_veil",
+            "identity_pins", "mix_meters", "wave_integration", "meum_residue", "silence_veil",
             "ensemble_cloud",
         ]
         while len(self.SCENOGRAPH_ITEM_CATALOG) < 64:
@@ -3836,6 +3941,158 @@ class VideoSynthEngine:
                     self._line(img, bx - 2, yq, bx + 2, yq, col, alpha=0.16 * self._band[b])
 
 
+    def _colorize_wave_sample(self, algo_idx, i, n, amp, band_val, angle_val):
+        """Colorization algorithm bank for wave-derived geometry.
+
+        Every mapping here is a pure function of the sample's own data
+        (its index, its amplitude, its band energy, the viewing angle it's
+        being drawn at) plus the shared video hue shift — never a lookup
+        table and never state carried between samples — so color always
+        stays tied to the actual waveform driving the shape, whatever
+        conformity (1D/2D/3D) it's feeding.
+        """
+        hue_shift = self._video_hue_shift
+        algo_idx = int(algo_idx) % 4
+        if algo_idx == 0:
+            # Spectral: band energy drives hue directly.
+            hue = (140.0 + band_val * 140.0 + hue_shift) % 360.0
+        elif algo_idx == 1:
+            # Positional: hue sweeps across the sample index (rainbow ribbon).
+            hue = ((i / max(n - 1, 1)) * 360.0 + hue_shift) % 360.0
+        elif algo_idx == 2:
+            # Amplitude + angle: louder samples and wider viewing angles shift hue.
+            hue = (200.0 + 160.0 * amp + math.degrees(angle_val) * 0.25 + hue_shift) % 360.0
+        else:
+            # Golden-angle scatter: irrational step keeps neighboring samples
+            # visually distinct instead of banding.
+            hue = (60.0 + 300.0 * ((i * PHI) % 1.0) + hue_shift) % 360.0
+        sat = 0.45 + 0.35 * min(1.0, abs(amp))
+        val = 0.30 + 0.55 * (0.5 + 0.5 * band_val)
+        return self._hsv(hue, sat, val)
+
+    def _distort_wave_point(self, distort_idx, x, y, z, i, n, t, amp):
+        """Parametric distortion bank applied to a wave-derived point before
+        projection. Each entry is a closed-form function of (position, the
+        sample's own amplitude, time) — deterministic and reproducible for
+        the same audio + time, with no random draw and no lookup table.
+        """
+        distort_idx = int(distort_idx) % 4
+        u = i / max(n - 1, 1)
+        if distort_idx == 0:
+            # Radial swirl: bends the point around the origin over time.
+            ang = u * math.tau * 2.0 + t * 0.4
+            r = math.hypot(x, y)
+            x, y = r * math.cos(ang), r * math.sin(ang)
+        elif distort_idx == 1:
+            # Ripple: sinusoidal depth push, scaled by the sample's own amplitude.
+            z = z + 0.25 * math.sin(u * math.tau * 5.0 + t * 1.3) * (0.3 + abs(amp))
+        elif distort_idx == 2:
+            # Meum fractal fold: independent Meum/Meum-inverse breathing per axis.
+            x = x * (1.0 + 0.15 * math.sin(u * MEUM * math.tau + t))
+            y = y * (1.0 + 0.15 * math.cos(u * MEUM_INV * math.tau + t))
+        else:
+            # Spiral pinch: whole shape breathes in/out around the frame center.
+            pinch = 0.85 + 0.15 * math.sin(t * 0.7 + u * math.tau)
+            x, y = x * pinch, y * pinch
+        return x, y, z
+
+    def _subscene_wave_integration(self, img, w, h, st):
+        """Integrates the waveform + spectrum data into the main scenograph
+        render itself, instead of leaving it to the separate oscilloscope /
+        spectrum-analyzer UI monitors.
+
+        Draws the same underlying wave/band data through the parametric
+        distortion + colorization banks above, at several rotation angles,
+        across three geometric conformities so it reads consistently no
+        matter how it's being viewed:
+          - 1D: a radial point sweep (one value per sample, no connecting
+            geometry — the "purest" reduction of the waveform).
+          - 2D: a planar ribbon (amplitude-vs-time), rotated to each angle
+            and camera-projected like every other scenograph element
+            instead of sitting as a flat overlay.
+          - 3D: a meshed, textured surface — two concentric rings (a dry
+            inner ring and an outer ring extruded by each sample's own
+            amplitude/band energy) stitched into a triangle-strip mesh,
+            with the same colorization bank acting as its texture.
+        """
+        op = self._item_opacity("wave_integration") if "wave_integration" in getattr(self, "SCENOGRAPH_ITEM_CATALOG", []) else 0.0
+        if op < 0.03:
+            return
+        wave = self.wave
+        n = len(wave)
+        if n < 8:
+            return
+        band = self._band
+        t = self.t
+        # Deterministic cycling through the distortion/colorization banks —
+        # a function of elapsed time only, so it's reproducible run to run
+        # for the same playback, never a per-frame random choice.
+        distort_idx = int(t * 0.13) % 4
+        colorize_idx = int(t * 0.09 + 1.0) % 4
+        angles = (0.0, math.tau / 3.0, 2.0 * math.tau / 3.0)
+        base_r = min(w, h) * (0.16 + 0.10 * st.get("rho", 1.0))
+
+        # --- 1D conformity: radial point sweep --------------------------
+        for ang_i, base_ang in enumerate(angles):
+            for i in range(0, n, 4):
+                amp = float(wave[i])
+                b = float(band[i % 8])
+                u = i / max(n - 1, 1)
+                r = base_r * (0.4 + 0.6 * abs(amp))
+                ang = base_ang + u * 0.6 + t * 0.05
+                x, y, z = r * math.cos(ang), r * math.sin(ang) * 0.6, 0.0
+                x, y, z = self._distort_wave_point(distort_idx, x, y, z, i, n, t, amp)
+                px, py, _ = self._project(x, y, 1.1 + 0.4 * ang_i, w, h)
+                col = self._colorize_wave_sample(colorize_idx, i, n, amp, b, base_ang)
+                self._dot(img, px, py, col, op * (0.10 + 0.22 * abs(amp)), r=1)
+
+        # --- 2D conformity: planar ribbon at each angle ------------------
+        for ang_i, base_ang in enumerate(angles):
+            prev = None
+            for i in range(0, n, 2):
+                amp = float(wave[i])
+                b = float(band[i % 8])
+                u = i / max(n - 1, 1)
+                lx = (u - 0.5) * base_r * 2.4
+                ly = amp * base_r * 0.9
+                rx = lx * math.cos(base_ang)
+                rz = lx * math.sin(base_ang)
+                x, y, z = self._distort_wave_point(distort_idx, rx, ly, rz, i, n, t, amp)
+                px, py, _ = self._project(x, y, 1.4 + 0.5 * ang_i, w, h)
+                col = self._colorize_wave_sample(colorize_idx, i, n, amp, b, base_ang)
+                if prev is not None:
+                    self._line(img, prev[0], prev[1], px, py, col, op * (0.14 + 0.30 * abs(amp)))
+                prev = (px, py)
+
+        # --- 3D conformity: meshed + textured extruded surface -----------
+        ring_n = 32
+        for ang_i, base_ang in enumerate(angles[:2]):  # 2 shells keeps per-frame cost bounded
+            inner, outer = [], []
+            for k in range(ring_n):
+                u = k / ring_n
+                i = int(u * (n - 1))
+                amp = float(wave[i])
+                b = float(band[i % 8])
+                ang = base_ang + u * math.tau
+                r_in = base_r * (0.55 + 0.10 * ang_i)
+                r_out = r_in * (1.0 + 0.35 * abs(amp) + 0.15 * b)
+                xi, yi, zi = r_in * math.cos(ang), r_in * math.sin(ang) * 0.7, 0.0
+                xo, yo, zo = r_out * math.cos(ang), r_out * math.sin(ang) * 0.7, 0.18 * amp
+                xi, yi, zi = self._distort_wave_point(distort_idx, xi, yi, zi, i, n, t, amp)
+                xo, yo, zo = self._distort_wave_point(distort_idx, xo, yo, zo, i, n, t, amp)
+                inner.append(self._project(xi, yi, 1.6 + 0.3 * ang_i, w, h))
+                outer.append(self._project(xo, yo, 1.6 + 0.3 * ang_i, w, h))
+            for k in range(ring_n):
+                k2 = (k + 1) % ring_n
+                u = k / ring_n
+                i = int(u * (n - 1))
+                amp = float(wave[i])
+                b = float(band[i % 8])
+                col = self._colorize_wave_sample(colorize_idx, i, n, amp, b, base_ang)
+                alpha = op * (0.05 + 0.16 * (0.4 + 0.6 * abs(amp)))
+                self._fill_tri(img, inner[k], outer[k], outer[k2], col, alpha)
+                self._fill_tri(img, inner[k], outer[k2], inner[k2], col, alpha * 0.85)
+
     def _update_scenograph_module_schedule(self, st):
         """Compute relevance and smooth fade for every visual module.
 
@@ -4312,6 +4569,7 @@ class VideoSynthEngine:
         self._subscene_spectral_comets(img, w, h, st)
         self._subscene_rhythm_mandala(img, w, h, st)
         self._subscene_pulse_grid(img, w, h, st)
+        self._subscene_wave_integration(img, w, h, st)
         # Subtle Meum golden-angle mesh: always present, contextual, and frame-clamped.
         cx, cy = w * 0.5, h * 0.47
         mesh_r = min(w, h) * (0.24 + 0.16 * st["rho"])
@@ -4368,6 +4626,7 @@ class VideoSynthEngine:
                 "field", "volumes", "faces", "particles", "bands", "goava",
                 "filaments", "roses", "orbitals", "constellations", "lattice",
                 "bursts", "spectral_comets", "rhythm_mandala", "pulse_grid", "goava_field",
+                "wave_integration",
             }
             for name in active:
                 if name in dedicated:
@@ -7164,12 +7423,25 @@ class EQRTensorEngine:
         # z ≈ |s| * (1 + MEUM_NORM * |c|) * PHI_INV + residual coupling
         z = abs(s) * (1.0 + MEUM_NORM * abs(c)) * PHI_INV
         z += abs(MEUM_IDENTITY_RESIDUAL) * 0.1 * math.sin(s * MEUM + c)
-        z = float(np.clip(z * self.Z_REF / max(abs(s) + 0.15, 1e-6) * 0.35 + 0.5, 0.05, 3.0))
+        # EQR_MODULATION_FIX_2026: this used to re-divide z by (|s| + 0.15)
+        # right after building z from |s| — i.e. it built a signal-dependent
+        # value and then immediately canceled the signal dependence back out
+        # (z/|s| saturates to a near-constant ~1.5 for anything but very quiet
+        # samples). That is exactly why EQR read as "not modulating" — its
+        # output barely tracked the actual waveform. Clipping the raw
+        # (still signal-dependent) z directly keeps EQR's shaping tied to the
+        # real amplitude/context it was computed from.
+        z = float(np.clip(z, 0.05, 3.0))
         self._last_z = z
         return z
 
-    def process(self, dry, activation=0.0):
-        """Scale dry by relative z-volume vs 1.5; max 50% mix at 100% activation."""
+    def process(self, dry, activation=0.0, pkp_env=None):
+        """Scale dry by relative z-volume vs 1.5; max 50% mix at 100% activation.
+
+        pkp_env (optional): the same tempo-locked PKP envelope driving the
+        Fractallizer/PKP master stages, so EQR's shaping breathes with the
+        rest of the master-FX chain instead of evolving independently.
+        """
         dry = np.asarray(dry, dtype=np.float32).ravel()
         n = dry.size
         if n == 0:
@@ -7190,8 +7462,16 @@ class EQRTensorEngine:
         z_full = np.interp(np.arange(n), idxs.astype(float), z_ctrl).astype(np.float32)
         # Relative volume vs 1.5 reference
         rel = z_full / self.Z_REF
-        # Soft shaping so EQR modulates amplitude/color without replacing dry
-        shaped = dry * (0.65 + 0.35 * np.tanh(rel))
+        env_gain = np.ones(n, dtype=np.float32)
+        if pkp_env is not None:
+            env = np.asarray(pkp_env, dtype=np.float32).ravel()
+            if env.size != n:
+                env = np.resize(env, n)
+            env_gain = np.clip(env, 0.0, 1.5)
+        # Soft shaping so EQR modulates amplitude/color without replacing dry,
+        # tied to the shared PKP envelope so all three master effects move
+        # together instead of drifting independently.
+        shaped = dry * (0.65 + 0.35 * np.tanh(rel) * env_gain)
         out = (1.0 - wet_mix) * dry + wet_mix * shaped
         return out.astype(np.float32)
 
@@ -16126,6 +16406,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "Current Effected Waveform",
             "Overall Wave Pattern",
             "Per-Instrument Activity",
+            "Lissajous / XY Vector Scope",
+            "Phosphor Persistence Scope",
         ])
         self.viz_mode_combo.setFixedWidth(180)
         self.viz_mode_combo.currentIndexChanged.connect(self._on_viz_mode_changed)
@@ -16137,6 +16419,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "Effected Spectrum",
             "Pattern Bands",
             "Activity Spectrum",
+            "Spectrogram Waterfall",
+            "Radial Spectrum",
         ])
         self.spectrum_mode_combo.setFixedWidth(160)
         self.spectrum_mode_combo.currentIndexChanged.connect(self._on_spectrum_mode_changed)
@@ -22057,7 +22341,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
                                   (int(row_idx) * 0x85EBCA6B) ^ (int(pattern_len) * 0xC2B2AE35)) & 0x7FFFFFFF
                 _voice_rng = np.random.RandomState(_voice_mix_key or 1)
                 _voice_detune = float(_voice_rng.uniform(-0.0035, 0.0035)) + _node_detune
-                _voice_phase0 = float(_voice_rng.uniform(-math.pi, math.pi)) + _node_phase_bias
+                # HARDCODE_UNISON_2026: phase0 anchors to the fixed, evenly-spaced
+                # per-instrument slot (INSTRUMENT_PHASE_LOCK_48) instead of an
+                # independent random draw per voice. Random-per-voice phase used
+                # to let each synth beat against its neighbors at its own
+                # arbitrary offset, which is exactly what makes an ensemble
+                # sound like "N separate synths." Anchoring every voice's phase
+                # to its fixed roster slot (plus only a small node-level nudge)
+                # keeps the relationships between voices constant and
+                # complementary, so they interlock instead of drifting apart.
+                _voice_phase0 = INSTRUMENT_PHASE_LOCK_48[op_idx % 48] + 0.15 * _node_phase_bias
                 _voice_timbre = float(_voice_rng.uniform(0.78, 1.22))
                 _voice_decay = float(_voice_rng.uniform(0.82, 1.18))
                 _voice_mod_rate = float(_voice_rng.uniform(0.71, 1.37)) * _node_mod_rate
@@ -22157,21 +22450,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # Chaos can push entropy to extremes; no 0.75 mid-band clamp
                 entropy = float(np.clip(entropy * (0.55 + 0.45 * k3) + 0.35 * k3 * (1.0 - entropy), 0.0, 1.0))
                 n_harm = max(1, int(2 + (1.0 - entropy) * 14 + k4 * 6))
-                # ALIASING_FIX_2026: n_harm (and n_inh below) were computed purely
-                # from entropy/fold-depth, with no relationship to f0 or the
-                # sample rate. For higher-pitched voices, the higher partials
-                # (h * f0, and the inharmonic ratios below which run even higher
-                # than h * f0) routinely exceed Nyquist (sample_rate / 2) and
-                # fold back as aliasing — which sounds like harsh, "damaged"
-                # distortion rather than the intended harmonic color. Because
-                # f0 is seed-derived, this hit a seed-dependent fraction of
-                # voices rather than all of them, which is why it read as
-                # damage concentrated in only part of the material. Fixed by
-                # capping the number of partials to what actually fits under
-                # Nyquist for this voice's fundamental.
-                _nyquist = max(1.0, sample_rate * 0.5)
-                _f0_peak = float(np.max(f0)) if hasattr(f0, "__len__") else float(f0)
-                _max_partial = max(1, int(_nyquist / max(_f0_peak, 1.0)))
+                # HARDCODE_UNISON_2026: partial-count ceiling used to be derived
+                # at render time from Nyquist / this voice's live fundamental
+                # (sample_rate * 0.5 divided by f0). That runtime division is
+                # exactly the kind of per-sample-rate, per-frequency "soft"
+                # dependency the ensemble should not rely on — replaced with a
+                # fixed, instrument-slot-indexed cap (INSTRUMENT_PARTIAL_CAP_48,
+                # same family as MEUM_POWERS_36) so every voice's harmonic
+                # budget is a hardcoded property of its roster position, not a
+                # runtime computation. It also keeps neighboring instrument
+                # slots' partial counts close together, which is part of what
+                # makes them blend into one mass instead of standing apart.
+                _max_partial = INSTRUMENT_PARTIAL_CAP_48[op_idx % 48]
                 n_harm = max(1, min(n_harm, _max_partial))
                 # GOAVA = hard-composed pure sine; other engines free waveform.
                 # Live mod (AM/FM/PM) still routes through phase/_am_gain for all.
@@ -22209,9 +22499,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             ph0 = ((_s_int * h * 13 + op_idx * 7) % 1000) / 1000.0 * math.tau
                             harm = harm + amp_h * np.sin(phase * h * det + ph0)
                 n_inh = max(2, int(2 + entropy * 10 + k4 * 3))
-                # ALIASING_FIX_2026 (cont.): inharmonic partials use ratios that
-                # run even steeper than n_harm's plain h multiplier (~1.37*h),
-                # so they need their own, tighter Nyquist-derived cap.
+                # HARDCODE_UNISON_2026: same fixed, instrument-indexed cap as
+                # n_harm above (scaled down, since inharmonic ratios climb
+                # steeper) instead of a second Nyquist/f0 runtime division.
                 n_inh = max(1, min(n_inh, max(1, int(_max_partial / 1.4))))
                 inh = np.zeros_like(local_t, dtype=np.float32)
                 for h in range(1, n_inh + 1):
@@ -22220,17 +22510,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     amp_i = (0.25 + 0.6 * entropy) / (h ** (0.9 + 0.4 * entropy))
                     ph0 = ((_s_int * h * 31 + op_idx * 11) % 1000) / 1000.0 * math.tau
                     inh = inh + amp_i * np.sin(phase * ratio + ph0)
-                if entropy > 0.05:
-                    noise = np.sin(phase * (7.0 + (_s_int % 13)) + _s_frac * 100.0)
-                    noise = np.sign(noise) * (np.abs(noise) ** (1.0 + entropy))
-                    inh = inh + (0.08 + 0.35 * entropy) * noise.astype(np.float32)
                 if entropy > 0.1:
                     fm_ratio = 1.0 + ((_s_int % 19) / 19.0) * 3.0 * entropy
                     fm_depth = (0.05 + 0.55 * entropy) * (0.5 + 0.5 * k1)
                     harm = harm * np.cos(fm_depth * np.sin(phase * fm_ratio))
                 voice_raw = (1.0 - entropy) * harm + entropy * inh
-                if entropy > 0.4:
-                    voice_raw = np.tanh(voice_raw * (1.0 + (entropy - 0.4) * fold_depth * 0.2))
+                # HARDCODE_UNISON_2026 / SMOOTH_OUTPUT_2026: the old high-entropy
+                # branch ran a soft tanh saturation whose knee shifted with
+                # entropy and fold_depth (a "soft" nonlinear function whose
+                # behavior depends on live signal state) plus a separate
+                # sign()*|x|**(1+entropy) soft noise waveshaper. Both are
+                # removed: no soft-clip, no soft waveshaping. Voices pass
+                # through their closed-form sum and only ever meet a fixed,
+                # hardcoded amplitude ceiling (never signal- or
+                # entropy-dependent), which is enough to keep any accidental
+                # overshoot in check without adding its own coloration.
+                voice_raw = np.clip(voice_raw, -1.5, 1.5)
                 # MASTER_FX_FIX_2026: per-voice EQR additive coloring removed —
                 # the only EQR application is the master-bus tail stage below.
                 # NO_NORMALIZE / NO_SLEW: the previous stage peak-normalized
@@ -22347,6 +22642,46 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # _play_pkp_playover_modulator().
 
             master[mask] += row_mix
+
+        # ROW_BOUNDARY_SMOOTH_FIX_2026: the phase-carry fix above keeps each
+        # voice's oscillator phase continuous across row boundaries, but the
+        # per-note PKP envelope (_fo above) is still built from a row-local
+        # `local_t` array. A note whose release tail (_hi = _note_end + step)
+        # would extend past the current row's end is simply truncated by the
+        # row `mask`, instead of continuing to fade into the next row. That
+        # truncation is an amplitude discontinuity at the row boundary —
+        # audible as a click/pop "burst" on every row, independent of the
+        # phase fix, and independent of whether an algorithm is applied. It
+        # is why bursts persisted (now spread across every row boundary,
+        # i.e. "distributed") even after phase continuity was fixed.
+        # Rather than re-deriving every voice's envelope on a global timeline
+        # (a much larger change touching the whole per-row model), apply a
+        # short equal-power crossfade of the master bus across every row
+        # boundary: blend the last few ms before the boundary with the first
+        # few ms after it, so any leftover step/edge discontinuity is folded
+        # into a smooth transition instead of a hard edge.
+        if rows > 1 and n_samples > 8:
+            _fade_ms = 6.0
+            _fade_n = max(2, min(int(sample_rate * _fade_ms / 1000.0), n_samples // 4))
+            _fade_curve = 0.5 - 0.5 * np.cos(np.linspace(0.0, np.pi, _fade_n, dtype=np.float64))
+            _fade_curve = _fade_curve.astype(np.float32)
+            for row_idx in range(1, rows):
+                boundary = int(round(row_idx * row_duration * sample_rate))
+                lo = boundary - _fade_n
+                hi = boundary + _fade_n
+                if lo < 0 or hi > n_samples:
+                    continue
+                pre = master[lo:boundary]
+                post = master[boundary:hi]
+                # Equal-power-ish crossfade centered on the boundary sample:
+                # the pre-boundary tail fades out, the post-boundary head
+                # fades in, and the two are summed back in place so the net
+                # signal energy through the transition stays smooth instead
+                # of snapping between two independently-rendered rows.
+                pre_faded = pre * (1.0 - 0.5 * _fade_curve)
+                post_faded = post * (0.5 + 0.5 * _fade_curve[::-1])
+                master[lo:boundary] = pre_faded
+                master[boundary:hi] = post_faded
 
         # CANONICAL UNISON EFFECT BOUNDARY
         # Snapshot the fully reconciled playlist/unison render before any global
@@ -22501,7 +22836,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if act > 0.01:
                 if not hasattr(self, "_eqr_tensor") or self._eqr_tensor is None:
                     self._eqr_tensor = EQRTensorEngine()
-                master = self._eqr_tensor.process(master, activation=act)
+                try:
+                    _pkp_d_for_eqr = max(0.0, float(self.slider_pkp_decay.value()) / 1000.0) if hasattr(self, "slider_pkp_decay") else 0.5
+                except Exception:
+                    _pkp_d_for_eqr = 0.5
+                _pkp_swing_for_eqr = float(np.clip(0.45 * (1.0 - 0.7 * _pkp_d_for_eqr), 0.045, 0.45))
+                _beat_hz_for_eqr = float(bpm) / 60.0
+                _t_for_eqr = np.arange(len(master), dtype=np.float32) / float(sample_rate)
+                _eqr_pkp_env = 0.55 + _pkp_swing_for_eqr * np.sin(2.0 * np.pi * _beat_hz_for_eqr * _t_for_eqr)
+                master = self._eqr_tensor.process(master, activation=act, pkp_env=_eqr_pkp_env)
         except Exception as _eqr_exc:
             print(f"[EQR] mixdown: {_eqr_exc}")
         # PKP master effect (tail-only): tempo-locked amplitude envelope, with the
@@ -22537,6 +22880,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 master = (master * ped_full).astype(np.float32)
         except Exception as _ped_exc:
             print(f"[PED] mixdown: {_ped_exc}")
+
+        # SMOOTH_OUTPUT_2026: a fixed, hardcoded 3-tap moving-average pass
+        # over the finished master bus. This is deliberately not an adaptive
+        # or signal-dependent filter (no soft-knee, no entropy/level-driven
+        # coefficients) — just a small, constant convolution kernel that
+        # rounds off any residual sharp edges/steps left after all the
+        # additive voice and effect stages, without touching overall level
+        # or introducing its own nonlinearity.
+        if len(master) > 4:
+            _smooth_kernel = np.array([0.25, 0.5, 0.25], dtype=np.float32)
+            master = np.convolve(master, _smooth_kernel, mode="same").astype(np.float32)
 
         # FINAL MASTER BUS CONTRACT — self-authored, no library DSP, no normalize,
         # no soft limiting, no slew. The canonical amplitude is authoritative;
