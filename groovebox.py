@@ -1881,7 +1881,7 @@ def goava_frequency(number_assigned, step, numbers, base_frequency=432.0):
     # ratio.  Positive/negative raw values select above/below the base; the
     # raw Java-derived scalar remains available as metadata.
     # Full-range: raw drives up to ±4.5 octaves before audible_hz safety
-    ratio = 2.0 ** float(np.clip(raw * 2.25, -4.5, 4.5))
+    ratio = 2.0 * raw
     freq = float(base_frequency) * ratio
     return float(audible_hz(freq)), float(raw)
 
@@ -13219,7 +13219,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "pitch": pitch,
                 "enabled": True,
                 "source": "GOAVA",
-                "weight": 1.0,
+                "weight": (float)(1.0/3.0),
             })
         return events
 
@@ -16887,30 +16887,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     sl.blockSignals(False)
         except Exception as exc:
             print(f"[GlobalPlay] UI sync: {exc}")
-        # Apply to ensemble
-        try:
-            if getattr(self, "btn_apply_algo_master", None) is not None:
-                self.btn_apply_algo_master.blockSignals(True)
-                self.btn_apply_algo_master.setChecked(True)
-                self.btn_apply_algo_master.blockSignals(False)
-            self.global_algo_state["apply_enabled"] = True
-            p = self.global_algo_state.get("params") or {}
-            if p.get("enable_script", True) and self.global_algo_state.get("script"):
-                self._apply_global_algo_to_ensemble("script")
-            if p.get("enable_domain", True) and self.global_algo_state.get("domain"):
-                self._apply_global_algo_to_ensemble("domain")
-            if p.get("enable_wire", True) and self.global_algo_state.get("wire"):
-                self._apply_global_algo_to_ensemble("wire")
-            try:
-                self._on_live_source_changed()
-            except Exception:
-                pass
-            try:
-                self._refresh_canonical_fingerprint()
-            except Exception:
-                pass
-        except Exception as exc:
-            print(f"[GlobalPlay] apply after randomize: {exc}")
+        ## Apply to ensemble
         mode = "protected userdata" if self.global_algo_state.get("protectable_userdata") else "canonical effector"
         if hasattr(self, "scope_status_label"):
             n_w = len(self.global_algo_state.get("wire") or [])
@@ -18637,9 +18614,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if bool(getattr(self, "goava_active", False)):
             active.add("goava")
         return active
-
-    def _deactivate_engine_generated_content(self, source_label="engine", source_key=None):
-        """
+    """
         Reverse the non-destructive material an additive engine (Randomizer,
         Phase-Locker, Euclidean Live Lock, Seeded Live Randomizer) painted
         in, without touching anything a human actually programmed.
@@ -18663,6 +18638,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
           - Playlist automation: rows tagged 'generated_by_engine' are
             cleared the same way.
         """
+    def _deactivate_engine_generated_content(self, source_label="engine", source_key=None):
+
         cleared_steps = 0
         mems = getattr(self, "instrument_sequencer_memory", None) or {}
         ownership = getattr(self, "_engine_step_ownership", {}) or {}
