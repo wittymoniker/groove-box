@@ -140,6 +140,56 @@ pip install PyQt6 numpy sounddevice scipy
   more cables into one destination doesn't silently change its level — plus
   a deterministic "Randomize Patch" button seeded from the current project
   seed (same seed → same random patch, consistent with the project goal).
+- **Master-FX separation — exactly three effects, applied on the master
+  tail only.** Fractallizer (spectral fractal resonator), EQR (tensor), and
+  PKP (tempo-locked amplitude envelope) are the only audio effects, and they
+  are applied on the master bus after the unison canonical engines. All
+  per-voice EQR and PKP coloring was removed from the canonical voice stage
+  (voice stage keeps only the neutral decay floor the per-synth Harmonic
+  Lattice needs), so the effect sliders can never factor into the canonical
+  fingerprint or the unison engines. PKP Decay now actually damps the master
+  PKP envelope swing (default 0.5 → 0.2925 swing). No additional
+  Nyquist-domain processors were added — frequency-domain work is confined
+  to the one sanctioned spectral effect above.
+- **Export menu is now exactly 3 × 3.** Audio only (WAV / FLAC / MP3),
+  video+audio (MP4 / WebM / AVI), video only (MP4 / WebM / AVI).
+- **Video-game export is a single dropdown option that packages a .zip** —
+  deterministic game script + identity JSON + `launch_windows.bat` /
+  `launch_macos.command` / `launch_linux.sh`, with unix executable bits
+  preserved inside the archive. The Play dialog now also shows the full
+  world coordinates: objective, difficulty, level type, sigil count, and
+  world fingerprint.
+- **Exported game scenes are instrument-trigger driven (zero RNG).** The
+  generated script's LCG `SeedRNG` stream was removed entirely. Scene layers
+  are now `TriggerSculptor` instruments mirroring the app's
+  DeterministicTriggerSculptor closed-form: per-instrument density/phase
+  residues plus a `sin`-thresholded step mask decide when each object fires,
+  and every appearance/orbit/collectible is closed-form f(seed, i, beat)
+  MEUM-residue calculus. `grep random` in a generated game finds nothing
+  but a comment.
+- **Semantic role theme.** Every control is painted BY FUNCTION via shared
+  object-name rules in the app stylesheet, with one consistent decoration
+  pattern: green = transport/play, red/pink = stop/danger/clear, cyan =
+  export/playlist, blue = canonical engines, violet = deterministic
+  randomizers, magenta = video game, amber = media/import/protect, teal =
+  save/load + local instrument editors. Group boxes get matching accent
+  borders and tinted titles.
+- **Save/Load unison pass-through (project v3.7.7).** Save and load are the
+  two halves of one round-trip over the exact inputs the unison engine reads.
+  This pass closed every asymmetry: the euclidean live-lock and seeded
+  randomizer toggles now ride the save doc (previously they silently reset
+  to OFF, changing the canonical fingerprint), `mode_combo`/`viz_mode_combo`
+  are saved as {index, text} and restored by text, the per-sequence editing
+  checkbox is persisted, the WAV/video carrier is re-loaded from its saved
+  path (so audio and video exports see identical reference material after
+  load), and all UI-state restoration blocks signals so BPM/synth-count
+  spins can't double-process during load. Round-trip verified: canonical
+  fingerprint and engine mask are bit-identical before save and after load.
+- **Code comments now trace the unison contract.** `_project_snapshot`,
+  `load_project_dialog`, `_ensure_perfect_unison`, `_render_mixdown_buffer`,
+  and the save/load/export suite carry comments explaining exactly how each
+  piece passes state along — and where the three master effects deliberately
+  sit outside the canonical engines.
 
 ## Module interoperability check (asked after every pass)
 Do all modules fill in with each other, and does save/load/export still
@@ -191,4 +241,45 @@ agree across all of them, after this pass's changes?
   from the shared Meum vocabulary and applies to the project.
 - Seed randomizer includes the same scriptable parameter families.
 - Canonical fingerprint (`id: …`) on the monitor status bar.
-- Export audio: WAV, FLAC, OGG, AIFF, MP3, Opus, CAF + video + game script.
+- Export audio: WAV / FLAC / MP3, video+audio and video-only each in MP4 /
+  WebM / AVI, plus video-game `.zip` package (script + JSON + 3 OS launchers).
+
+## Credits
+Core architecture & original EQR design by the project author. Implementation
+assistance from Grok (xAI), Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI),
+Mistral.ai (Mistral), Meta AI (Meta), GitHub Copilot (GitHub), and Cursor Grok 4.6
+(polyphony, unison memory, visualizer). Maintenance + level-up fixes by
+opencode (anomalyco).
+
+## Maintenance pass (dedup + wiring)
+- **Duplicate toggle handlers removed** — `MathematiciansGrooveboxApp` carried two
+  copies each of `_on_goava_toggled`, `_randomize_local_context`,
+  `_phase_lock_local_context`, `_on_euclidean_live_toggled`,
+  `_on_seeded_live_toggled` (~200 lines). The earlier copies were dead code
+  silently clobbered by the later "perfect unison" versions; the dead copies
+  are now gone so the active toggle behavior is unambiguous.
+- **composition_state.py is now importable and correct** — the "new
+  unimplemented module" actually failed at import (`NameError` on module scope,
+  duplicate `CompositionToggleState`, missing `math`/`field`/`List` imports).
+  It imports cleanly now, exposes a single immutable `CompositionToggleState`,
+  and the loose module-level pseudo-methods are a proper
+  `CompositionToggleMixin` (attach and call `set_composition_toggle`).
+- **composition_state.py wired into groovebox.py** — the app maintains an
+  order-independent `CompositionToggleState` summary
+  (`_sync_composition_toggle_state`) and folds its digest into the canonical
+  fingerprint together with the full engine vector (now including euclidean /
+  seeded live engines). Same active set → same id regardless of toggle order.
+- **GOAVA upward pitch bias fixed** — `goava_get_note()` is non-negative by
+  construction, so every GOAVA note sat above the base frequency (measured
+  +14…+28 semitone mean across seeds). `goava_frequency` now DC-centers the
+  scalar against the set mean, so pitch lands symmetrically above/below base
+  (mean ≈ 0 semitones, verified) while staying fully seed-deterministic.
+- **UI layout stability while playing** — the Play button previously changed
+  width with its PLAY/PAUSE/RESUME text, reflowing the whole transport row and
+  visibly shifting widget sizes when a track started. The button now has a
+  fixed width, and the monitor row (square scenograph + side meters) no longer
+  recomputes its square side from window bounds during playback, so widget
+  relative sizes stay put while a track plays.
+- **Global Composition Randomizer engaged color** — once clicked, the
+  "🎲 Randomize Global Play Algorithm" button takes a persistent green
+  engaged style so a rewritten global play algorithm is visible at a glance.

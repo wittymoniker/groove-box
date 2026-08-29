@@ -16,7 +16,11 @@ import hashlib
 import json
 import math
 import os
+import shutil
+import stat
+import tempfile
 import textwrap
+import zipfile
 from dataclasses import dataclass, asdict, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -36,6 +40,15 @@ CAMERAS = ("first_person", "second_person", "third_person", "top_down", "isometr
 TOPOLOGIES = ("linear", "open_world", "hub_spoke", "arena_loop", "roguelike_deck")
 SOCIAL = ("singleplayer", "local_coop", "online_multiplayer", "asynchronous")
 MOODS = ("neon_noir", "pastoral", "cosmic", "industrial", "mythic", "glitch")
+# WORLD_FACTORS_2026: the world/level coordinates are a second product group
+# (objective × difficulty × level_type) acting on the composition fingerprint.
+# They reuse the same residue calculus as composition_state.meum_effect_residue
+# so the game world fan-outs from the same deterministic non-redundant lattice
+# as the music: same seed+composition -> same world; anything different -> a
+# different residue tuple with overwhelming probability.
+OBJECTIVES = ("harvest", "escort", "survey", "siege", "nexus", "pilgrimage")
+DIFFICULTIES = ("tutorial", "standard", "master", "meum_insane")
+LEVEL_TYPES = ("heightfield", "boss_rush", "dungeon", "sky_islands", "coral_grid")
 
 # TITLE_WORDBANK_2026: title generation used to be a fixed template
 # ("{Mood} {Genre} [{fp}]"), which meant only len(MOODS) * len(GENRES) = 72
@@ -112,6 +125,40 @@ def _mix(seed: int, label: str) -> int:
     return int.from_bytes(d[:8], "big")
 
 
+def meum_game_residue(seed: int, label: str) -> float:
+    """One deterministic unit in [0,1) from the Meum residue calculus.
+
+    This mirrors composition_state.meum_effect_residue(): a single hash of
+    (seed, label, MEUM) reduced onto the unit interval. Every label minted
+    from the same seed gives an independent residue, so world coordinates,
+    difficulty, sigil rings, and level packs are all closed-form
+    f(seed, label) with no shared state and no redundancy.
+    """
+    blob = f"{seed}|{label}|{MEUM:.12f}".encode("utf-8")
+    i = int.from_bytes(hashlib.sha256(blob).digest()[:8], "big")
+    return (i % 10_000_000) / 10_000_000.0
+
+
+def residue_to_bipolar(r: float) -> float:
+    return r * 2.0 - 1.0
+
+
+def meum_angle(k: float) -> float:
+    """Collision-free angle packing on the circle.
+
+    k·MEUM mod 1 is a dense cyclic order (a golden-angle analogue). Consecutive
+    integers land on distinct circle points, so MEUM-packed sigils/beats never
+    overlap and the ordering stays deterministic — a repeated-divergence
+    primitive for scene placement and collection timing.
+    """
+    return math.tau * ((float(k) * MEUM) % 1.0)
+
+
+def _res_idx(seed: int, label: str, mod: int) -> int:
+    """Non-redundant index in [0, mod) from a Meum residue."""
+    return int(meum_game_residue(seed, label) * mod) % max(1, mod)
+
+
 @dataclass
 class GameIdentity:
     """Complete game classification derived from the live composition seed."""
@@ -132,6 +179,11 @@ class GameIdentity:
     music_variation: str
     composition_fingerprint: str
     splash_bars: int = 16
+    objective: str = "survey"
+    difficulty: str = "standard"
+    level_type: str = "heightfield"
+    sigil_count: int = 8
+    world_fingerprint: str = "0" * 16
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -228,6 +280,19 @@ def classify_from_composition(
     )
     splash_bars = max(4, int(seq_length))
 
+    # WORLD_FACTORS_2026: world coordinates ride the composition fingerprint,
+    # so even the same seed yields a different objective/difficulty/level pack
+    # whenever the composition changes — highest divergence, still deterministic.
+    world_fp = hashlib.sha256(fp_src.encode("utf-8")).hexdigest()[:16]
+    objective = OBJECTIVES[_res_idx(s, f"objective|{world_fp}", len(OBJECTIVES))]
+    difficulty = DIFFICULTIES[_res_idx(s, f"difficulty|{world_fp}", len(DIFFICULTIES))]
+    level_type = LEVEL_TYPES[_res_idx(s, f"level|{world_fp}", len(LEVEL_TYPES))]
+    sigil_count = 5 + _res_idx(s, f"sigils|{world_fp}", 8)  # 5..12
+    world_fp = hashlib.sha256(
+        f"{world_fp}|ob={objective}|df={difficulty}|lv={level_type}|s={sigil_count}"
+        .encode("utf-8")
+    ).hexdigest()[:16]
+
     return GameIdentity(
         seed=float(seed),
         title=title,
@@ -246,6 +311,11 @@ def classify_from_composition(
         music_variation=music_var,
         composition_fingerprint=fingerprint,
         splash_bars=splash_bars,
+        objective=objective,
+        difficulty=difficulty,
+        level_type=level_type,
+        sigil_count=sigil_count,
+        world_fingerprint=world_fp,
     )
 
 
@@ -277,6 +347,8 @@ import hashlib, json, math, os, sys, time
 
 MEUM = {MEUM}
 PHI = {PHI}
+MEUM_INV = 1.0 / MEUM
+MEUM_NORM = (MEUM - 1.0) / MEUM
 BPM = {bpm}
 SEQ = {seq}
 IDENTITY = json.loads({id_json!r})
@@ -285,55 +357,102 @@ def _mix(seed, label):
     d = hashlib.sha256(f"{{seed}}|{{label}}|{{MEUM:.12f}}".encode()).digest()
     return int.from_bytes(d[:8], "big")
 
-class SeedRNG:
-    """Deterministic stream — same seed ⇒ same events across sessions."""
-    def __init__(self, seed):
-        self.s = int(seed) & 0x7FFFFFFF or 1
-    def u01(self, label=""):
-        self.s = (self.s * 1103515245 + 12345 + (_mix(self.s, label) & 0xFFFF)) & 0x7FFFFFFF
-        return self.s / 0x7FFFFFFF
-    def choice(self, seq, label=""):
-        return seq[int(self.u01(label) * max(1, len(seq))) % len(seq)]
+def _safe_int_seed(value):
+    try:
+        v = float(value)
+    except Exception:
+        v = 0.0
+    if not math.isfinite(v):
+        v = 0.0
+    if v == int(v) and abs(v) < 2**31:
+        return int(v) & 0x7FFFFFFF
+    return int.from_bytes(hashlib.sha256(repr(v).encode()).digest()[:4], "big") & 0x7FFFFFFF
+
+def _residue(seed, label):
+    blob = f"{{seed}}|{{label}}|{{MEUM:.12f}}".encode("utf-8")
+    i = int.from_bytes(hashlib.sha256(blob).digest()[:8], "big")
+    return (i % 10_000_000) / 10_000_000.0
+
+def meum_angle(k):
+    """MEUM-packed circle angle: k·MEUM mod 1 collides with nothing."""
+    return math.tau * ((float(k) * MEUM) % 1.0)
+
+def residue_to_bipolar(r):
+    """[0,1) residue -> [-1,1) bipolar — same transform as the main engine."""
+    return r * 2.0 - 1.0
+
+class TriggerSculptor:
+    """Programmed instrument triggers — mirrors the app's DeterministicTriggerSculptor.
+
+    Every scene object/video element is an *instrument*: it owns a density and a
+    phase, both closed-form f(seed, i) residues, and fires on a looped step grid
+        prob(t) = density[i] + 0.2·sin(2π(t/steps + phase[i]))
+        on(t)   = residue(seed, "trig:{{i}}:{{t}}") < prob(t)
+    Nothing is drawn or audible unless its instrument fires — no inserted waves,
+    no raw random(), no free-running LCG. Objects are the same programmed
+    triggers the music engine uses, modified only by these basic transforms.
+    """
+    def __init__(self, seed, count, steps=64):
+        self.seed = int(seed) & 0x7FFFFFFF
+        self.n = max(1, int(count))
+        self.steps = max(16, int(steps))
+        self.density = [0.15 + 0.70 * _residue(self.seed, f"trig_density:{{i}}") for i in range(self.n)]
+        self.phase = [_residue(self.seed, f"trig_phase:{{i}}") for i in range(self.n)]
+    def active(self, i, t):
+        t = int(t) % self.steps
+        prob = self.density[i] + 0.2 * math.sin(math.tau * (t / self.steps + self.phase[i]))
+        return _residue(self.seed, f"trig:{{i}}:{{t}}") < prob
 
 class ScenographLite:
-    """Simplified 3D scenograph analogue driven by Meum group orbits."""
+    """3D scene analogue where each object *is* an instrument trigger.
+
+    Appearance (yaw/pitch/dist/hue) and fire timing are pure f(seed, i, beat)
+    residues + the instrument mask; layers only animate in the beat/frame their
+    instrument fires.
+    """
     def __init__(self, seed, n=12):
-        self.rng = SeedRNG(seed)
+        self.seed = int(seed) & 0x7FFFFFFF
         self.n = max(3, min(24, n))  # hard cap — never replicate past 24
-        self.t = 0.0
+        self.sculptor = TriggerSculptor(self.seed, self.n)
+        self.beat = 0.0
         self.layers = []
         for i in range(self.n):
             self.layers.append({{
-                "yaw": self.rng.u01(f"y{{i}}") * math.tau,
-                "pitch": (self.rng.u01(f"p{{i}}") - 0.5) * 0.8,
-                "dist": 0.6 + 0.8 * self.rng.u01(f"d{{i}}"),
-                "hue": self.rng.u01(f"h{{i}}"),
+                "yaw": meum_angle(self.seed + i * 31),
+                "pitch": residue_to_bipolar(_residue(self.seed, f"pitch:{{i}}")) * 0.4,
+                "dist": 0.6 + 0.8 * _residue(self.seed, f"dist:{{i}}"),
+                "hue": _residue(self.seed, f"hue:{{i}}"),
+                "on": True,
             }})
     def tick(self, dt, audio_rms=0.2):
-        self.t += dt
-        # Cyclic group action: each layer advances on a Meum-scaled orbit
+        self.beat += dt * (BPM / 60.0)
+        step = int(self.beat)
         for i, L in enumerate(self.layers):
-            L["yaw"] = (L["yaw"] + dt * (0.3 + 0.5 * MEUM * (i + 1) / self.n) * (0.7 + audio_rms)) % math.tau
-            L["pitch"] = 0.4 * math.sin(self.t * MEUM + i * PHI)
+            L["on"] = bool(self.sculptor.active(i, step))
+            if L["on"]:
+                # Cyclic group action: fired layers advance on a Meum-scaled orbit
+                L["yaw"] = (L["yaw"] + dt * (0.3 + 0.5 * MEUM * (i + 1) / self.n) * (0.7 + audio_rms)) % math.tau
+            L["pitch"] = 0.4 * math.sin(self.beat * MEUM + i * PHI)
         return self.layers
 
 class MusicBed:
     """Compositional dynamics simplified from Groovebox — seed loop + DJ drift."""
     def __init__(self, seed, bpm=BPM, bars=SEQ, algo_fp="0", dj_goava=False, dj_random=False, mix=0.35):
-        self.rng = SeedRNG(seed)
+        self.seed = int(seed) & 0x7FFFFFFF
         self.bpm = bpm
         self.bars = bars
         self.phase = 0.0
         self.dj = 0.0
-        self.algo_fp = str(algo_fp or "0")
         self.dj_goava = bool(dj_goava)
         self.dj_random = bool(dj_random)
         self.mix = float(mix)
-        self._algo_spin = (_mix(_safe_int_seed(seed), self.algo_fp) % 10007) / 10007.0
+        # One-time residue "instrument" values — no per-frame randomness.
+        self._dj_residue = _residue(self.seed, "dj_phase")
+        self._algo_spin = (_mix(_safe_int_seed(seed), algo_fp or "0") % 10007) / 10007.0
     def step(self, dt):
         beat = self.bpm / 60.0
         self.phase = (self.phase + dt * beat * math.tau) % math.tau
-        self.dj = 0.5 + 0.5 * math.sin(self.phase * MEUM + self.rng.u01("dj") * 0.01)
+        self.dj = 0.5 + 0.5 * math.sin(self.phase * MEUM + self._dj_residue * 0.01)
         if self.dj_goava:
             self.dj = 0.5 * self.dj + 0.5 * (0.5 + 0.5 * math.sin(self.phase * MEUM_INV))
         if self.dj_random:
@@ -344,14 +463,70 @@ class MusicBed:
         sample += 0.15 * g
         return sample
 
+class SigilRing:
+    """Deterministic collectible world — MEUM-packed angles, residue radii.
+
+    The ring is a closed-form f(seed, k): sigil k sits at
+        angle = meum_angle(seed_offset + k)
+        radius = residue(seed, "sigil:{{k}}")
+    No two sigils share an angle (MEUM mod 1 is collision-free), so the world
+    is maximally divergent per seed and never redundant.
+    """
+    def __init__(self, seed, count=8, radius=0.9):
+        self.seed = int(seed) & 0x7FFFFFFF
+        self.count = max(3, min(24, int(count)))
+        self.radius = float(radius)
+        self.pos = [
+            (meum_angle(_safe_int_seed(seed) + k * 31),
+             0.3 + 0.6 * _residue(self.seed, f"sr{{k}}"))
+            for k in range(self.count)
+        ]
+        self.collected = set()
+
+    def proximity(self, angle, bias=0.0):
+        """Closest uncollected sigil angular gap, MEUM-residue scaled."""
+        best = math.tau
+        for k, (a, r) in enumerate(self.pos):
+            if k in self.collected:
+                continue
+            d = abs((a - angle + math.pi) % math.tau - math.pi)
+            if d < best:
+                best = d
+        return best + bias
+
+    def collect(self, angle, reach=0.31):
+        """Collect every sigil within `reach` radians of the player orbit."""
+        got = []
+        for k, (a, r) in enumerate(self.pos):
+            if k in self.collected:
+                continue
+            d = abs((a - angle + math.pi) % math.tau - math.pi)
+            if d <= reach * max(0.25, r):
+                self.collected.add(k)
+                got.append((k, r))
+        return got
+
+    def remaining(self):
+        return self.count - len(self.collected)
+
 class Game:
     def __init__(self, host_mode=False, port=None):
         self.id = IDENTITY
         self.host_mode = bool(host_mode) and bool(self.id.get("online"))
         self.port = int(port or self.id.get("host_port") or 27015)
-        self.rng = SeedRNG(self.id["seed"])
-        self.scene = ScenographLite(self.id["seed"], n=8 + int(self.rng.u01("n") * 8))
+        self.scene = ScenographLite(self.id["seed"], n=8 + int(_residue(_safe_int_seed(self.id["seed"]), "scene_inst") * 8))
         self.music = MusicBed(self.id["seed"], algo_fp=self.id.get("composition_fingerprint", "0"), dj_goava="hook_live_dj_goava" in (self.id.get("gameplay_hooks") or []), dj_random="hook_live_dj_parametric" in (self.id.get("gameplay_hooks") or []), mix=0.35)
+        # WORLD_FACTORS_2026: objective/difficulty/level pack from the identity
+        self.objective = self.id.get("objective", "survey")
+        self.difficulty = self.id.get("difficulty", "standard")
+        self.level_type = self.id.get("level_type", "heightfield")
+        self.difficulty_mult = {{
+            "tutorial": 0.5, "standard": 1.0, "master": 1.7, "meum_insane": 2.4,
+        }}.get(self.difficulty, 1.0)
+        self.sigils = SigilRing(self.id["seed"], count=self.id.get("sigil_count", 8))
+        self.combo = 0
+        self.level = 1
+        self.sigil_angle = meum_angle(_safe_int_seed(self.id["seed"]) * MEUM_INV)
         self.score = 0.0
         self.t = 0.0
         self.running = True
@@ -396,6 +571,9 @@ class Game:
         print("--- START SCREEN ---")
         print(f"Genre: {{self.id['genre']}} | Camera: {{self.id['camera']}} | Topology: {{self.id['topology']}}")
         print(f"Social: {{self.id['social']}} | Mood: {{self.id['mood']}}")
+        print(f"Objective: {{self.objective}} | Difficulty: {{self.difficulty}} (x{{self.difficulty_mult:.2f}})")
+        print(f"Level pack: {{self.level_type}} | Sigil ring: {{self.sigils.count}} placed")
+        print(f"World fingerprint: {{self.id.get('world_fingerprint', '-')}}")
         if self.id.get("online"):
             print(f"Online host port: {{self.port}}  (host_mode={{self.host_mode}})")
         print("Models 1D/2D/3D:", self.id["model_sets_1d"], self.id["model_sets_2d"], self.id["model_sets_3d"])
@@ -407,9 +585,23 @@ class Game:
     def tick(self, dt=1/30):
         sample = self.music.step(dt)
         layers = self.scene.tick(dt, audio_rms=abs(sample))
+        # Player orbit advances on the MEUM-packed angle (closed-form, no rng)
+        self.sigil_angle = (self.sigil_angle + dt * MEUM * math.tau) % math.tau
         # Gameplay hook driven by music phase — long-term variation stays on-lattice
         if abs(sample) > 0.7:
-            self.score += MEUM * abs(sample)
+            self.score += MEUM * abs(sample) * self.difficulty_mult
+        # Sigil collection: MEUM-packed angles, deterministic per frame
+        got = self.sigils.collect(self.sigil_angle)
+        for _k, r in got:
+            self.combo += 1
+            self.score += MEUM * r * self.difficulty_mult * self.combo
+        # Level progression: threshold grows MEUM-linearly, never stalls a world
+        threshold = 5 + self.level + int(MEUM * self.level)
+        if self.combo >= threshold:
+            self.level += 1
+            self.difficulty_mult = min(3.0, self.difficulty_mult * (1.0 + MEUM_NORM * 0.4))
+            self.send_chat("system", f"level {{self.level}} — difficulty x{{self.difficulty_mult:.2f}}")
+            self.combo = 0
         self.t += dt
         return sample, layers
     def run(self, seconds=20.0):
@@ -418,7 +610,7 @@ class Game:
         if self.id.get("online"):
             role = "HOST" if self.host_mode else "CLIENT"
             print(f"[NET] Starting as {{role}} on 0.0.0.0:{{self.port}} (stub — integrate real net stack as needed)")
-            print("[NET] Console commands during play: /host  /client  /chat <message>")
+            print("[NET] Console commands during play: /host  /client  /chat <message>  /report")
         print("--- PLAY ---")
         t0 = time.time()
         frames = 0
@@ -426,8 +618,32 @@ class Game:
             self.tick()
             frames += 1
             if frames % 60 == 0:
-                print(f"t={{self.t:.1f}}s score={{self.score:.2f}} dj={{self.music.dj:.3f}} layers={{len(self.scene.layers)}}")
-        print(f"Session end. Final score={{self.score:.2f}} fingerprint={{self.id['composition_fingerprint']}}")
+                print(f"t={{self.t:.1f}}s score={{self.score:.2f}} dj={{self.music.dj:.3f}} layers={{len(self.scene.layers)}} sigils={{self.sigils.remaining()}} lv={{self.level}}")
+        print(f"Session end. Final score={{self.score:.2f}} level={{self.level}} "
+              f"sigils={{self.sigils.count - self.sigils.remaining()}}/{{self.sigils.count}} "
+              f"fingerprint={{self.id['composition_fingerprint']}} world={{self.id.get('world_fingerprint', '-')}}")
+
+    def report(self):
+        """Deterministic world report (also available as --report at launch)."""
+        return {{
+            "title": self.id["title"],
+            "genre": self.id["genre"],
+            "camera": self.id["camera"],
+            "topology": self.id["topology"],
+            "social": self.id["social"],
+            "mood": self.id["mood"],
+            "objective": self.objective,
+            "difficulty": self.difficulty,
+            "level_type": self.level_type,
+            "sigil_count": self.sigils.count,
+            "host_port": self.port,
+            "online": bool(self.host_mode or self.id.get("online")),
+            "composition_fingerprint": self.id["composition_fingerprint"],
+            "world_fingerprint": self.id.get("world_fingerprint", "-"),
+            "score": round(self.score, 3),
+            "level": self.level,
+            "t": round(self.t, 2),
+        }}
 
     def handle_console_command(self, line):
         """Route a console line to chat or a host/client role switch — callable
@@ -443,6 +659,8 @@ class Game:
                 print(f"[NET] Already {{'HOST' if self.host_mode else 'CLIENT'}}.")
         elif line.startswith("/chat "):
             self.send_chat(self.player_name, line[len("/chat "):])
+        elif line in ("/report", "/world"):
+            print(json.dumps(self.report(), indent=2))
         else:
             self.send_chat(self.player_name, line)
 
@@ -456,6 +674,12 @@ def main(argv=None):
                 port = int(a.split("=", 1)[1])
             except Exception:
                 port = None
+    if "--report" in argv:
+        # Headless deterministic world report — same seed + identity always
+        # prints the same JSON. Useful for CI/parity checks of the lattice.
+        g = Game(host_mode=host, port=port)
+        print(json.dumps(g.report(), indent=2, sort_keys=True))
+        return
     Game(host_mode=host, port=port).run()
 
 if __name__ == "__main__":
@@ -471,4 +695,77 @@ def export_game_files(identity: GameIdentity, out_dir: str, composition_meta: Op
     meta_path = os.path.join(out_dir, f"game_{identity.composition_fingerprint}.json")
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(identity.to_dict(), f, indent=2)
+    _write_launchers(out_dir, identity.composition_fingerprint)
     return script_path
+
+
+_GAME_FILENAME = "game_{fingerprint}.py"
+
+LAUNCH_SCRIPTS = {
+    "launch_windows.bat": (
+        "@echo off\r\n"
+        "rem Launcher for the Groovebox video-game package (Windows).\r\n"
+        "rem Determinstic f(seed) world — the same script gives the same world.\r\n"
+        "cd /d \"%~dp0\"\r\n"
+        "set GAME={script}\r\n"
+        "where pythonw >nul 2>nul && (start \"\" pythonw \"%GAME%\" & exit /b 0)\r\n"
+        "where py >nul 2>nul && (start \"\" py \"%GAME%\" & exit /b 0)\r\n"
+        "python \"%GAME%\"\r\n"
+        "pause\r\n"
+    ),
+    "launch_macos.command": (
+        "#!/bin/bash\n"
+        "# Launcher for the Groovebox video-game package (macOS).\n"
+        "# Deterministic f(seed) world — the same script gives the same world.\n"
+        "cd \"$(dirname \"$0\")\"\n"
+        "GAME={script}\n"
+        "python3 \"$GAME\" || python \"$GAME\"\n"
+    ),
+    "launch_linux.sh": (
+        "#!/usr/bin/env bash\n"
+        "# Launcher for the Groovebox video-game package (Linux).\n"
+        "# Deterministic f(seed) world — the same script gives the same world.\n"
+        "cd \"$(dirname \"$0\")\"\n"
+        "GAME={script}\n"
+        "python3 \"$GAME\" || python \"$GAME\"\n"
+    ),
+}
+
+
+def _write_launchers(out_dir: str, fingerprint: str) -> None:
+    """Write the three OS launchers beside the exported game. Unix launchers get
+    their executable bit set so they run straight out of the unpacked package."""
+    script = _GAME_FILENAME.format(fingerprint=fingerprint)
+    for name, template in LAUNCH_SCRIPTS.items():
+        path = os.path.join(out_dir, name)
+        with open(path, "w", encoding="utf-8", newline="\r\n" if name.endswith(".bat") else "\n") as f:
+            f.write(template.format(script=script))
+        if name.endswith((".sh", ".command")):
+            try:
+                os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            except OSError:
+                pass
+
+
+def package_game_zip(identity: GameIdentity, out_zip: str, composition_meta: Optional[Dict[str, Any]] = None) -> str:
+    """Package a videogame export as a single .zip: deterministic game script +
+    identity JSON + Windows/macOS/Linux launchers. Unix executables keep their
+    mode attribute inside the archive so they are runnable after extraction."""
+    tmpdir = tempfile.mkdtemp(prefix="groovebox_game_pkg_")
+    try:
+        export_game_files(identity, tmpdir, composition_meta)
+        os.makedirs(os.path.dirname(os.path.abspath(out_zip)) or ".", exist_ok=True)
+        with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name in sorted(os.listdir(tmpdir)):
+                src = os.path.join(tmpdir, name)
+                st = os.stat(src)
+                info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
+                mode = (st.st_mode & 0o777)
+                if name.endswith((".sh", ".command")):
+                    mode |= stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+                info.external_attr = (mode & 0xFFFF) << 16
+                with open(src, "rb") as fh:
+                    zf.writestr(info, fh.read())
+        return os.path.abspath(out_zip)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)

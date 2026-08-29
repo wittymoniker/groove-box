@@ -18,7 +18,11 @@
 #   - Core architecture & original EQR design: project author
 #   - Implementation assistance (realtime audio, additive engines, domain
 #     partitions, bootstrap/simplify, Help system): Grok (xAI), Gemini (Google),
-#     Claude (Anthropic), ChatGPT (OpenAI), Mistral.ai, and Cursor Grok 4.6
+#     Claude (Anthropic), ChatGPT (OpenAI), Mistral.ai, Meta AI (Meta),
+#     Github Copilot, and Cursor Grok 4.6 (polyphony / unison resize /
+#     master+addon panel mix / visualizer). Maintenance + level-up fixes
+#     (GOAVA pitch DC-centering, dedup, canonical-state fingerprint, UI
+#     layout stability): opencode (anomalyco).
 #     (polyphony / unison resize / master+addon panel mix / visualizer)
 #
 # Notable systems in this build:
@@ -50,6 +54,7 @@ import numpy as np
 
 from dj_effects import CommutativePairSpace, LiveDJEffects
 from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer
+import composition_state as _composition_state
 from PyQt6.QtGui import (
     QPainter, QPen, QColor, QPainterPath, QLinearGradient, QRadialGradient, QBrush, QFont, QPolygonF,
     QAction, QPalette, QKeyEvent, QKeySequence, QImage
@@ -1791,15 +1796,31 @@ def goava_frequency(number_assigned, step, numbers, base_frequency=432.0):
     original runtime also contains a safety fallback for values outside the
     practical range.  We preserve that behavior, then constrain the final
     oscillator frequency to a safe audio range.
+
+    Upward-tendency fix: getNote() is non-negative by construction (every
+    term is (1+cos)/positive), which forced every GOAVA pitch above the base
+    (~+14..+28 semitones mean across seeds, measured).  The scalar is now
+    DC-centered against the set mean, so pitches land symmetrically above and
+    below the base — same seed still maps to the same centered trajectory
+    (deterministic), the projection (per-note delta) is unchanged, only the
+    constant offset that created the bias is removed.
     """
     raw = goava_get_note(number_assigned, step, numbers)
     # GOAVA musical output is intentionally a single sine at a base-frequency
     # ratio.  Positive/negative raw values select above/below the base; the
     # raw Java-derived scalar remains available as metadata.
-    # Full-range: raw drives up to ±4.5 octaves before audible_hz safety
-    ratio = 2.0 ** float(np.clip(raw * 2.25, -4.5, 4.5))
+    center = 0.0
+    try:
+        _scale = [goava_get_note(n, i, numbers) for i, n in enumerate(numbers)]
+        if _scale:
+            center = sum(_scale) / len(_scale)
+    except Exception:
+        center = 0.0
+    raw_c = raw - center
+    # Full-range: centered raw drives up to ±4.5 octaves before audible_hz safety
+    ratio = 2.0 ** float(np.clip(raw_c * 2.25, -4.5, 4.5))
     freq = float(base_frequency) * ratio
-    return float(audible_hz(freq)), float(raw)
+    return float(audible_hz(freq)), float(raw_c)
 
 
 # ---------------------------------------------------------------------------
@@ -6492,7 +6513,11 @@ class ReadmeGuideDialog(QDialog):
 ================================================================================
   Credits: core EQR design — project author; implementation assistance —
   Grok (xAI), Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI),
-  Mistral.ai, and Cursor Grok 4.6 (polyphony, unison memory, visualizer).
+  Mistral.ai (Mistral), Meta AI (Meta), GitHub Copilot (GitHub),
+  and Cursor Grok 4.6 (polyphony, unison memory, visualizer).
+  Maintenance + level-up fixes (GOAVA pitch DC-centering, dead-code dedup,
+  canonical-state fingerprint, UI layout stability, engaged randomizer
+  colors): opencode (anomalyco).
 
 --------------------------------------------------------------------------------
 1. GOAL OF THE SOFTWARE
@@ -6865,7 +6890,11 @@ Each has sequencer memory (steps, amplitudes, gates, probabilities) and optional
 
   End of Help — Groovebox
   Assisted by Grok (xAI), Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI),
-  Mistral.ai, and Cursor Grok 4.6
+  Mistral.ai (Mistral), Meta AI (Meta), Github Copilot (GitHub),
+  and Cursor Grok 4.6 (polyphony, unison memory, visualizer).
+  Maintenance + level-up fixes (GOAVA pitch DC-centering, dead-code dedup,
+  canonical-state fingerprint, UI layout stability, engaged randomizer
+  colors): opencode (anomalyco).
 ================================================================================
 """
 
@@ -12817,6 +12846,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._sync_parametric_background_geometry()
+        # LAYOUT_STABILITY_FIX: while a track is playing, keep the three
+        # monitor widgets (square scenograph + side meters) at their current
+        # relative sizes instead of recomputing the square side from window
+        # bounds on every resize. Otherwise any window geometry change during
+        # playback visibly rescales the UI widgets.
+        if getattr(self, "is_playing", False):
+            return
         try:
             self._sync_square_visuals()
         except Exception:
@@ -13308,74 +13344,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
 
-    def _on_goava_toggled(self, checked):
-        self.goava_active = bool(checked)
-        self._canonical_sequence_reconcile("goava")
-        if self.goava_active:
-            self.goava_note_events = self._build_goava_composition()
-            self.goava_seed_values = [ev["seed"] for ev in self.goava_note_events]
-            self.goava_steps = [bool(ev["enabled"]) for ev in self.goava_note_events]
-            self.goava_pitches = [float(ev["pitch"]) for ev in self.goava_note_events]
-            self.goava_frequencies = [float(ev["frequency"]) for ev in self.goava_note_events]
-            self.goava_raw_values = [float(ev["raw"]) for ev in self.goava_note_events]
-            # Hard-composed sinusoidal patch + live mod destination routing.
-            # Mix weight is always 1/n of active engines (see _goava_mix / voice gain).
-            try:
-                n_eng = max(1, self._canonical_active_count())
-                for i, name in enumerate(list(getattr(self, "instrument_names_48", []) or [])):
-                    pst = (getattr(self, "instrument_param_state", {}) or {}).setdefault(name, {})
-                    pst["goava_sine_patch"] = True
-                    pst["waveform"] = "sine"
-                    # Live mod destinations: AM/FM/PM rates/depths remain writable
-                    # so live engines / patch jacks can route into GOAVA sines.
-                    pst.setdefault("am_depth", 0.12 / n_eng)
-                    pst.setdefault("fm_depth", 0.08 / n_eng)
-                    pst.setdefault("pm_depth", 0.15 / n_eng)
-                    pst.setdefault("meum_depth", 0.20 / n_eng)
-                    pst["goava_mix_weight"] = 1.0 / n_eng
-                    gen = getattr(self, "instrument_param_generated", None)
-                    if isinstance(gen, dict):
-                        g = gen.setdefault(name, {})
-                        g["goava_sine_patch"] = True
-                        g["waveform"] = "sine"
-                        g["goava_mix_weight"] = 1.0 / n_eng
-            except Exception as _ge:
-                print(f"[GOAVA] sine-patch setup: {_ge}")
-            self._apply_goava_to_canonical_playlist()
-            if hasattr(self, "btn_goava"):
-                self.btn_goava.setText("GOAVA · ON")
-            if hasattr(self, "scope_status_label"):
-                self.scope_status_label.setText(
-                    f"📐 GOAVA · {len(self.goava_note_events)} notes · canonical-unison"
-                )
-        else:
-            # GOAVA deactivation is a hard teardown: release its canonical
-            # contribution and GOAVA-owned unison state before rebuilding.
-            try:
-                self._deactivate_engine_generated_content(source_label="GOAVA", source_key="goava")
-            except Exception:
-                pass
-            self.goava_note_events = []
-            self.goava_seed_values = []
-            self.goava_steps = []
-            self.goava_pitches = []
-            self.goava_frequencies = []
-            self.goava_raw_values = []
-            try:
-                for name in list(getattr(self, "instrument_names_48", []) or []):
-                    pst = (getattr(self, "instrument_param_state", {}) or {}).get(name)
-                    if isinstance(pst, dict):
-                        pst.pop("goava_sine_patch", None)
-                        pst.pop("goava_mix_weight", None)
-            except Exception:
-                pass
-            self._apply_goava_to_canonical_playlist()
-            if hasattr(self, "btn_goava"):
-                self.btn_goava.setText("GOAVA")
-            if hasattr(self, "scope_status_label"):
-                self.scope_status_label.setText("📐 GOAVA · OFF")
-        self._live_engine_signatures.pop("goava", None) if hasattr(self, "_live_engine_signatures") else None
-        self._rebuild_active_canonical_playlist("goava_toggle")
+    # deduped: shadowed by later _on_goava_toggled() definition (perfect-unison system).
 
     def _goava_mix(self, local_t, row_idx, step_duration):
         if not getattr(self, "goava_active", False):
@@ -13482,50 +13451,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.reload_active_instrument_sequencer_ui()
         return changed
 
-    def _randomize_local_context(self, checked=True):
-        if not checked:
-            self._deactivate_engine_generated_content(source_label="Randomizer", source_key="randomizer")
-            # OFF is a full canonical transaction too: rebuild the surviving
-            # ensemble so the playlist tail and consensus cannot retain stale
-            # randomizer coverage.
-            if hasattr(self, "_rebuild_active_canonical_playlist") and not getattr(self, "_canonical_rebuild_guard", False):
-                self._rebuild_active_canonical_playlist("randomizer_toggle_off")
-            return
-        if getattr(self, "_composition_generation_guard", False):
-            return
-
-        self._composition_generation_guard = True
-        snap = self._snapshot_global_effect_sliders()
-        self._active_engine_write_source = "randomizer"
-        try:
-            self._canonical_sequence_reconcile("randomizer")
-            seed = _safe_int_seed(self.get_numeric_seed())
-            rng = np.random.default_rng(seed)
-            # Content identity is seed-only; counter is diagnostic, not a salt.
-            self._composition_generation_counter = 0
-
-            self.apply_seeded_harmonic_randomization()
-
-            if hasattr(self, "_canonical_playlist_paint"):
-                self._canonical_playlist_paint(rng=rng, mode="randomize", strength=0.55)
-            elif hasattr(self, "_paint_generated_parameters"):
-                self._paint_generated_parameters(rng=rng, source="randomizer")
-                if hasattr(self, "_phase_lock_playlist_velocity"):
-                    self._phase_lock_playlist_velocity(
-                        rng=rng, strength=0.35, randomize=True
-                    )
-
-            self._canonical_sequence_reconcile("randomizer")
-            if hasattr(self, "reload_active_instrument_sequencer_ui"):
-                self.reload_active_instrument_sequencer_ui()
-        except Exception as exc:
-            print(f"[Randomizer] {type(exc).__name__}: {exc}")
-        finally:
-            self._active_engine_write_source = None
-            self._restore_global_effect_sliders(snap)
-            self._composition_generation_guard = False
-        if hasattr(self, "_canonical_rebuild_guard") and not self._canonical_rebuild_guard:
-            self._rebuild_active_canonical_playlist("randomizer_toggle")
+    # deduped: shadowed by later _randomize_local_context() definition (perfect-unison system).
     def _canonical_playlist_paint(self, rng, mode="randomize", strength=0.55):
         if getattr(self, "_composition_generation_guard", False):
             # The caller owns the transaction guard.
@@ -13744,53 +13670,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     # otherwise always refresh engine-owned empties:
                     if not (item.text() or "").strip() or True:
                         item.setText(text)
-    def _phase_lock_local_context(self, checked=True):
-        if not checked:
-            self._deactivate_engine_generated_content(source_label="PhaseLock", source_key="phase_lock")
-            # OFF is a full canonical transaction too: rebuild the surviving
-            # ensemble so the playlist tail and consensus cannot retain stale
-            # phase-lock coverage.
-            if hasattr(self, "_rebuild_active_canonical_playlist") and not getattr(self, "_canonical_rebuild_guard", False):
-                self._rebuild_active_canonical_playlist("phase_lock_toggle_off")
-            return
-        if getattr(self, "_composition_generation_guard", False):
-            return
-
-        self._composition_generation_guard = True
-        snap = self._snapshot_global_effect_sliders()
-        self._active_engine_write_source = "phase_lock"
-        try:
-            self._canonical_sequence_reconcile("phase_lock")
-            seed = _safe_int_seed(self.get_numeric_seed())
-            rng = np.random.default_rng(seed)
-            # Content identity is seed-only; counter is diagnostic, not a salt.
-            self._composition_generation_counter = 0
-
-            if hasattr(self, "wavefield_engine") and self.wavefield_engine:
-                self.wavefield_engine.apply_phase_locked_randomization()
-            else:
-                self.apply_euclidean_and_idealized_rhythms()
-
-            if hasattr(self, "_canonical_playlist_paint"):
-                self._canonical_playlist_paint(rng=rng, mode="phase_lock", strength=0.55)
-            elif hasattr(self, "_paint_generated_parameters"):
-                self._paint_generated_parameters(rng=rng, source="phase_lock")
-                if hasattr(self, "_phase_lock_playlist_velocity"):
-                    self._phase_lock_playlist_velocity(
-                        rng=rng, strength=0.45, randomize=False
-                    )
-
-            self._canonical_sequence_reconcile("phase_lock")
-            if hasattr(self, "reload_active_instrument_sequencer_ui"):
-                self.reload_active_instrument_sequencer_ui()
-        except Exception as exc:
-            print(f"[PhaseLock] {type(exc).__name__}: {exc}")
-        finally:
-            self._active_engine_write_source = None
-            self._restore_global_effect_sliders(snap)
-            self._composition_generation_guard = False
-        if hasattr(self, "_canonical_rebuild_guard") and not self._canonical_rebuild_guard:
-            self._rebuild_active_canonical_playlist("phase_lock_toggle")
+    # deduped: shadowed by later _phase_lock_local_context() definition (perfect-unison system).
     def _ensure_instrument_param_state(self):
         """Ensure instrument parameter stores retain their dictionary contract."""
         if not isinstance(getattr(self, "instrument_param_state", None), dict):
@@ -14824,6 +14704,91 @@ class MathematiciansGrooveboxApp(QMainWindow):
             QProgressBar::chunk {
                 background: #f5f5f5;
             }
+
+            /* ================= SEMANTIC ROLE THEME ==========================
+               Colors are assigned by FUNCTION so the eyes can jump to a control:
+                 green  = transport/play        red/pink   = stop danger clear
+                 cyan   = export/playlist/media carrier preview
+                 blue   = canonical engines & unison algebra
+                 violet = deterministic randomization (seeded, never RNG)
+                 magenta= video game world      amber = media import / protect
+                 teal   = save/load & local instrument context editors
+               Every role reuses the same decoration pattern (transparent dark
+               fill, soft 1px border, 6px radius, tinted hover/checked) so the
+               app stays one consistent theme while each control telegraphs its
+               job. Widget-level stylesheets (transport, GOAVA amber, DJ pink,
+               global operator amber) still win where they were intentional.
+            ================================================================== */
+            QGroupBox#engineGroup, QGroupBox#contextGroup, QGroupBox#fxGroup {
+                border: 1px solid rgba(90, 168, 255, 110);
+                border-top: 2px solid #5aa8ff;
+                border-radius: 6px;
+            }
+            QGroupBox#fxGroup { border-top-color: #3ed5f0; }
+            QGroupBox#contextGroup { border-top-color: #57d9c0; }
+            QGroupBox#engineGroup::title, QGroupBox#contextGroup::title,
+            QGroupBox#fxGroup::title { color: #9fd4ff; padding: 0 4px; }
+            QGroupBox#fxGroup::title { color: #7ce7ff; }
+            QGroupBox#contextGroup::title { color: #8ff2dd; }
+
+            QLabel#panelTitle { color: #ffc857; font-size: 12pt; font-weight: 900; }
+            QLabel#canonicalFp { color: #b3c6ff; font-weight: 900; font-size: 10pt; }
+
+            QPushButton#transportPlay {
+                background: #14301c; color: #9dffb0;
+                border: 2px solid #46d158; border-radius: 8px; padding: 10px 16px;
+                font-weight: 900; font-size: 13pt;
+            }
+            QPushButton#transportPlay:hover { background: #1f4228; }
+            QPushButton#transportPlay:pressed { background: #0c1f10; }
+            QPushButton#transportStop {
+                background: #33171b; color: #ff8fa0;
+                border: 2px solid #ff5b70; border-radius: 8px; padding: 10px 16px;
+                font-weight: 900; font-size: 13pt;
+            }
+            QPushButton#transportStop:hover { background: #45202a; }
+            QPushButton#transportStop:pressed { background: #1c0b0f; }
+
+            QPushButton#exportMenu, QPushButton#saveLoadBtn, QPushButton#randomBtn,
+            QPushButton#applyBtn, QPushButton#gameBtn, QPushButton#mediaBtn,
+            QPushButton#helpBtn, QPushButton#restoreBtn, QPushButton#dangerBtn,
+            QPushButton#engineBtn, QPushButton#contextBtn {
+                background: rgba(255,255,255,0.06);
+                border: 1px solid rgba(255,255,255,0.22);
+                border-radius: 6px;
+                padding: 5px 10px;
+            }
+            QPushButton#exportMenu { color: #7ce7ff; }
+            QPushButton#saveLoadBtn { color: #8ff2dd; }
+            QPushButton#randomBtn { color: #c4b5fd; }
+            QPushButton#applyBtn { color: #b3c6ff; }
+            QPushButton#gameBtn { color: #ffa8e6; }
+            QPushButton#mediaBtn { color: #ffc857; }
+            QPushButton#restoreBtn { color: #ffd75e; }
+            QPushButton#helpBtn { color: #ffd75e; }
+            QPushButton#dangerBtn { color: #ff6b7a; }
+            QPushButton#engineBtn { color: #9fd4ff; }
+            QPushButton#contextBtn { color: #8ff2dd; }
+
+            QPushButton#exportMenu:hover, QPushButton#saveLoadBtn:hover,
+            QPushButton#randomBtn:hover, QPushButton#applyBtn:hover,
+            QPushButton#gameBtn:hover, QPushButton#mediaBtn:hover,
+            QPushButton#helpBtn:hover, QPushButton#restoreBtn:hover,
+            QPushButton#dangerBtn:hover, QPushButton#engineBtn:hover,
+            QPushButton#contextBtn:hover { background: rgba(255,255,255,0.16); }
+
+            QPushButton#engineBtn:checked { background: #5aa8ff; color: #101010; border-color: #5aa8ff; }
+            QPushButton#randomBtn:checked { background: #a78bfa; color: #101010; border-color: #a78bfa; }
+            QPushButton#applyBtn:checked { background: #6f8bff; color: #101010; border-color: #6f8bff; }
+            QPushButton#gameBtn:checked { background: #f878d0; color: #101010; border-color: #f878d0; }
+            QPushButton#mediaBtn:checked { background: #ffc857; color: #101010; border-color: #ffc857; }
+            QPushButton#saveLoadBtn:checked { background: #2fd6b4; color: #101010; border-color: #2fd6b4; }
+
+            QCheckBox#playlistCk { color: #7ce7ff; font-weight: bold; }
+            QCheckBox#canonicalCk { color: #ffd75e; font-weight: bold; }
+            QCheckBox#unisonCk { color: #9fd4ff; font-weight: bold; }
+            QCheckBox#weightCk { color: #8ff2dd; font-weight: bold; }
+            QCheckBox#mediaCk { color: #ffc857; font-weight: bold; }
         """
         if QApplication.instance():
             QApplication.instance().setStyleSheet(high_contrast_stylesheet)
@@ -14848,7 +14813,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         self.transport_layout = QHBoxLayout()
         self.btn_play = QPushButton("▶ PLAY Audiovisual Track")
+        # LAYOUT_STABILITY_FIX: the PLAY/PAUSE/RESUME/STOP texts have different
+        # widths; letting the button track its sizeHint each state change reflows
+        # the whole row while playing (widgets visibly shift size).
+        # Fix the button width to the longest label so geometry never changes
+        # during playback regardless of which state text is shown.
+        # TRANSPORT_RELOCATE_FIX: Play/Stop moved out of the top transport row
+        # to sit next to EXPORT directly above the scenograph monitors, and
+        # enlarged to ~180% height (56px vs the old ~30px) so transport is
+        # prominent and constant-size in all state texts.
+        self.btn_play.setMinimumWidth(260)
+        self.btn_play.setMinimumHeight(56)
+        self.btn_play.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.btn_stop = QPushButton("⏹ Stop")
+        self.btn_stop.setMinimumWidth(96)
+        self.btn_stop.setMinimumHeight(56)
+        self.btn_stop.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.lbl_bpm = QLabel("BPM:")
         self.lbl_bpm.setStyleSheet("color:#f5d97d; font-weight:900; font-size:11pt;")
         self.spin_bpm = QDoubleSpinBox()
@@ -15192,7 +15172,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.global_controls_side.setSpacing(6)
         self.global_controls_side.setContentsMargins(0, 0, 0, 0)
         self.global_controls_side.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.global_controls_side.addWidget(QLabel("GLOBAL PROCESSOR CONTROLS"), 0, Qt.AlignmentFlag.AlignTop)
+        _proc_title = QLabel("GLOBAL PROCESSOR CONTROLS")
+        _proc_title.setObjectName("panelTitle")
+        self.global_controls_side.addWidget(_proc_title, 0, Qt.AlignmentFlag.AlignTop)
         self.global_geometry_layout.addLayout(self.global_controls_side, 1)
         self.global_geometry_layout.setAlignment(self.global_controls_side, Qt.AlignmentFlag.AlignTop)
 
@@ -15209,8 +15191,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_trigger_all.clicked.connect(self.trigger_all_instruments_hit)
         self.btn_clear_memory.clicked.connect(self._on_clear_memory_clicked)
 
-        self.transport_layout.addWidget(self.btn_play)
-        self.transport_layout.addWidget(self.btn_stop)
         self.transport_layout.addWidget(self.lbl_bpm)
         self.transport_layout.addWidget(self.spin_bpm)
         self.transport_layout.addWidget(self.lbl_sceno_items)
@@ -15315,6 +15295,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Keep the primary effect sliders in their own visible row so they cannot
         # be squeezed out by the long global transport/media controls.
         global_fx_group = QGroupBox("GLOBAL · EFFECTS")
+        global_fx_group.setObjectName("fxGroup")
         global_fx_group.setToolTip("Global EQR, Fractallizer, and PKP effect controls.")
         global_fx_layout = QHBoxLayout(global_fx_group)
         global_fx_layout.setContentsMargins(8, 4, 8, 4)
@@ -15396,7 +15377,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
 
             if text=="PLAYLIST":
-                b.setMinimumHeight(80)
+                b.setMinimumHeight(64)
                 b.setMinimumWidth(240)
             else:
                 b.setMinimumHeight(40)
@@ -15465,8 +15446,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "Build & test a live game .py from the current composition seed (splash → start → play).",
             checkable=False, active_color="#ff69b4"
         )
+        # GAME_ROLE_THEME: magenta = video-game world, matching the exported
+        # package identity color. Overrides the generic amber operator paint.
+        self.btn_play_videogame.setStyleSheet(
+            "QPushButton { background-color:#1c0f1c; color:#ffa8e6; border:2px solid #f878d0; border-radius:6px; padding:5px 8px; font-weight:bold; } "
+            "QPushButton:hover { background-color:#2a1428; } QPushButton:pressed { background-color:#ff6b00; color:white; }"
+        )
 
         global_context_group = QGroupBox("GLOBAL · COMPOSITION CANONICALS")
+        global_context_group.setObjectName("engineGroup")
         global_context_group.setToolTip("Global playlist, randomization, and Euclidean phase-lock controls.")
         global_context_layout = QHBoxLayout(global_context_group)
         global_context_layout.setContentsMargins(8, 4, 8, 4)
@@ -15502,6 +15490,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # contextual modulation layer; their engine remains global-capable.
         # =====================================================================
         local_context_group = QGroupBox("USER CONTEXT — ACTIVE INSTRUMENT - GLOBAL MIX")
+        local_context_group.setObjectName("contextGroup")
+        self.local_context_group = local_context_group
         local_context_group.setToolTip(
             "Controls in this panel address the selected instrument/context. "
             "They do not belong to the global transport plane. The two Live DJ "
@@ -16143,14 +16133,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_export.setText("⬇ EXPORT")
         self.btn_export.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         export_menu = QMenu(self.btn_export)
-        # Audio-only — canonical mixdown + six interoperable formats.
+        # Audio-only — canonical mixdown, three core formats (WAV reference,
+        # FLAC lossless-RFC, MP3 universal). Exactly 3 audio options.
         export_menu.addAction("Audio only (.wav)").triggered.connect(lambda: self.export_mixdown_dialog("wav"))
         export_menu.addAction("Audio only (.flac)").triggered.connect(lambda: self.export_mixdown_dialog("flac"))
-        export_menu.addAction("Audio only (.ogg)").triggered.connect(lambda: self.export_mixdown_dialog("ogg"))
-        export_menu.addAction("Audio only (.aiff)").triggered.connect(lambda: self.export_mixdown_dialog("aiff"))
         export_menu.addAction("Audio only (.mp3)").triggered.connect(lambda: self.export_mixdown_dialog("mp3"))
-        export_menu.addAction("Audio only (.opus)").triggered.connect(lambda: self.export_mixdown_dialog("opus"))
-        export_menu.addAction("Audio only (.caf)").triggered.connect(lambda: self.export_mixdown_dialog("caf"))
         export_menu.addSeparator()
         # Video + Audio
         export_menu.addAction("Video + Audio (.mp4)").triggered.connect(
@@ -16174,8 +16161,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             lambda: self.export_video_dialog(include_audio=False, container="avi")
         )
         export_menu.addSeparator()
-        # Video game — deterministic script + identity JSON
-        export_menu.addAction("📦 VIDEOGAME GENERATOR Script (.py + .json)").triggered.connect(
+        # Video game — one dropdown option that packages a .zip of every file:
+        # deterministic game script + identity JSON + Windows/macOS/Linux launchers.
+        export_menu.addAction("📦 VIDEOGAME GENERATOR Package (.zip)").triggered.connect(
             self._on_export_videogame_scripts
         )
         self.btn_export.setMenu(export_menu)
@@ -16201,11 +16189,31 @@ class MathematiciansGrooveboxApp(QMainWindow):
         )
         scope_bar.addWidget(self.lbl_canonical_fp, stretch=0)
         scope_bar.addStretch(1)
+        # TRANSPORT_RELOCATE_FIX: big Play/Stop buttons live directly above the
+        # main scenograph monitors, right next to EXPORT. Size stays fixed in
+        # every state label; state changes only recolor (see toggle_playback /
+        # stop_playback) without reflowing the row.
+        for _btn in (self.btn_play, self.btn_stop):
+            _btn.setStyleSheet(
+                "QPushButton { background-color:#14301c; color:#9dffb0; border:2px solid #46d158; "
+                "border-radius:8px; padding:10px 16px; font-weight:900; font-size:13pt; }"
+                "QPushButton:hover { background-color:#1f4228; }"
+                "QPushButton:pressed { background-color:#0c1f10; }"
+            )
+        scope_bar.addWidget(self.btn_play, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
+        scope_bar.addWidget(self.btn_stop, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
+        scope_bar.addSpacing(10)
         scope_bar.addWidget(self.btn_export, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
         try:
             QTimer.singleShot(400, self._refresh_canonical_fingerprint)
         except Exception:
             pass
+
+        # SEMANTIC_THEME_2026: every control gets a function-colored object name
+        # AFTER the layout is complete, so the shared QSS above can paint it by
+        # role (green transport, red danger, cyan export, blue engines, violet
+        # randomizers, magenta game, amber media, teal save/load/context).
+        self._apply_semantic_roles()
 
         master_container.addLayout(scope_bar)
         master_container.addLayout(vis_row)  # Wave/Scope + Spectrum/Geometry, directly above the monitors
@@ -16278,6 +16286,87 @@ class MathematiciansGrooveboxApp(QMainWindow):
         QTimer.singleShot(0, self._sync_square_visuals)
         QTimer.singleShot(120, self._sync_square_visuals)
         self._last_scope_chunk = np.zeros(100, dtype=np.float32)
+
+    def _apply_semantic_roles(self):
+        """Assign every primary control a semantic object name.
+
+        The shared high_contrast_stylesheet paints controls BY FUNCTION via
+        these names — transport green, danger red, export cyan, canonical
+        engines blue, deterministic randomizers violet, video game magenta,
+        media import amber, save/load + local editors teal. Widgets that
+        already carry an intentional widget-level stylesheet (GOAVA amber, DJ
+        pink, euclidean/randomizer toggles, global operator amber) keep their
+        own look — their object name is still set so tooltips/theme queries
+        stay consistent, but the per-widget sheet wins on paint.
+        """
+        roles = {
+            "btn_play": "transportPlay",
+            "btn_stop": "transportStop",
+            "btn_export": "exportMenu",
+            "btn_save_project": "saveLoadBtn",
+            "btn_load_project": "saveLoadBtn",
+            "btn_restore_userdata": "restoreBtn",
+            "btn_clear_memory": "dangerBtn",
+            "btn_keyboard": "helpBtn",
+            "btn_trigger_all": "engineBtn",
+            "btn_goava": "engineBtn",
+            "btn_local_randomize": "engineBtn",
+            "btn_local_phase_lock": "engineBtn",
+            "btn_idealize_rhythm": "engineBtn",
+            "btn_seeded_randomize": "engineBtn",
+            "btn_live_dj_goava": "engineBtn",
+            "btn_live_dj_random": "engineBtn",
+            "btn_randomize_global_play": "randomBtn",
+            "btn_random_seed": "randomBtn",
+            "btn_apply_algo_master": "applyBtn",
+            "btn_gp_wire_algo": "applyBtn",
+            "btn_gp_algo_params": "applyBtn",
+            "btn_nt_apply": "applyBtn",
+            "btn_nt_seed": "applyBtn",
+            "btn_play_videogame": "gameBtn",
+            "btn_load_wav": "mediaBtn",
+            "btn_load_media": "mediaBtn",
+            "btn_help": "helpBtn",
+            "btn_edit_synth": "contextBtn",
+            "btn_script_inst": "contextBtn",
+            "btn_view_patchbay": "contextBtn",
+            "btn_domain_eq": "contextBtn",
+            "btn_view_playlist": "contextBtn",
+            "btn_add_sequence": "contextBtn",
+            "btn_edit_panels_per_sequence": "canonicalCk",
+            "chk_global_playlist": "playlistCk",
+            "chk_canonical_protect": "canonicalCk",
+            "chk_full_unison": "unisonCk",
+            "chk_fullweight_seed": "weightCk",
+            "chk_algo_protect_userdata": "canonicalCk",
+            "chk_convolve_fit": "mediaCk",
+            "spin_bpm": "bpmSpin",
+            "spin_base_frequency": "baseHzSpin",
+            "viz_mode_combo": "vizModeCombo",
+        }
+        for attr, role in roles.items():
+            w = getattr(self, attr, None)
+            if w is not None:
+                try:
+                    w.setObjectName(role)
+                except Exception:
+                    pass
+        group_roles = {
+            "global_effects_group": "fxGroup",
+            "global_composition_group": "engineGroup",
+        }
+        for attr, role in group_roles.items():
+            w = getattr(self, attr, None)
+            if w is not None:
+                try:
+                    w.setObjectName(role)
+                except Exception:
+                    pass
+        if getattr(self, "local_context_group", None) is not None:
+            try:
+                self.local_context_group.setObjectName("contextGroup")
+            except Exception:
+                pass
 
     def on_instrument_switched(self, idx):
         if not (0 <= idx < len(self.instrument_names_48)):
@@ -16785,6 +16874,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
             n_w = len(self.global_algo_state.get("wire") or [])
             self.scope_status_label.setText(
                 f"🎲 Global Play Algorithm randomized · {n_w} wires · {mode}"
+            )
+        # ENGAGED_COLOR_FIX: give the Global Composition Randomizer button a
+        # persistent engaged color once clicked, so the user sees at a glance
+        # that the global play algorithm was (re)written by the randomizer.
+        if getattr(self, "btn_randomize_global_play", None) is not None:
+            self.btn_randomize_global_play.setStyleSheet(
+                "QPushButton { background-color:#176b21; color:#ffffff; border:2px solid #35ff78; "
+                "border-radius:5px; padding:6px 12px; font-weight:900; font-size:10pt; }"
+                "QPushButton:hover { background-color:#1f8c2b; }"
+                "QPushButton:pressed { background-color:#0f4a15; }"
             )
 
     def get_numeric_seed(self):
@@ -18169,50 +18268,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             )
         self._mark_step_touched(mem, s)
 
-    def _on_euclidean_live_toggled(self, checked):
-        # Keep persistent :checked stylesheet — never clear to "" (would lose OFF look).
-        if hasattr(self, "_style_toggle_euclidean"):
-            self.btn_idealize_rhythm.setStyleSheet(self._style_toggle_euclidean)
-        if getattr(self, 'chk_user_program_only', None) and self.chk_user_program_only.isChecked():
-            self.btn_idealize_rhythm.blockSignals(True)
-            self.btn_idealize_rhythm.setChecked(False)
-            self.btn_idealize_rhythm.blockSignals(False)
-            return
-        if checked:
-            self._canonical_sequence_reconcile("euclidean")
-            self._apply_live_engine_once("euclidean")
-            if getattr(self, "goava_active", False):
-                self._apply_goava_to_canonical_playlist()
-            self.btn_idealize_rhythm.setText("✨ Euclidean Live Lock · ON")
-            self._canonical_sequence_reconcile("euclidean")
-        else:
-            self._live_euclid_timer.stop()
-            self.btn_idealize_rhythm.setText("✨ Euclidean Live Lock")
-            self._deactivate_engine_generated_content(source_label="EuclideanLiveLock", source_key="euclidean")
-            self._canonical_sequence_reconcile("euclidean")
-        self._rebuild_active_canonical_playlist("euclidean_toggle")
+    # deduped: shadowed by later _on_euclidean_live_toggled() definition (perfect-unison system).
 
-    def _on_seeded_live_toggled(self, checked):
-        if hasattr(self, "_style_toggle_randomizer"):
-            self.btn_seeded_randomize.setStyleSheet(self._style_toggle_randomizer)
-        if getattr(self, 'chk_user_program_only', None) and self.chk_user_program_only.isChecked():
-            self.btn_seeded_randomize.blockSignals(True)
-            self.btn_seeded_randomize.setChecked(False)
-            self.btn_seeded_randomize.blockSignals(False)
-            return
-        if checked:
-            self._canonical_sequence_reconcile("seeded")
-            self._apply_live_engine_once("seeded")
-            if getattr(self, "goava_active", False):
-                self._apply_goava_to_canonical_playlist()
-            self.btn_seeded_randomize.setText("🎲 Seeded Live Randomizer · ON")
-            self._canonical_sequence_reconcile("seeded")
-        else:
-            self._live_seeded_timer.stop()
-            self.btn_seeded_randomize.setText("🎲 Seeded Live Randomizer")
-            self._deactivate_engine_generated_content(source_label="SeededLiveRandomizer", source_key="seeded")
-            self._canonical_sequence_reconcile("seeded")
-        self._rebuild_active_canonical_playlist("seeded_toggle")
+    # deduped: shadowed by later _on_seeded_live_toggled() definition (perfect-unison system).
 
     def _on_user_program_only_toggled(self, checked):
         if checked:
@@ -18882,11 +18940,30 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "btn_live_dj_goava", "btn_live_dj_random", "chk_convolve_fit",
             "chk_global_playlist", "chk_canonical_protect", "btn_apply_algo_master",
             "chk_algo_protect_userdata", "chk_fullweight_seed", "chk_full_unison",
+            # LIVE_ENGINE_TOGGLES_2026: the euclidean live-lock and seeded
+            # randomizer are part of the live unison engine mask, so they must
+            # round-trip exactly like GOAVA/randomizer — otherwise loading a
+            # project silently changes its canonical fingerprint.
+            "btn_idealize_rhythm", "btn_seeded_randomize",
+            "btn_edit_panels_per_sequence",
         ):
             obj = getattr(self, name, None)
             if obj is not None and hasattr(obj, "isChecked"):
                 try: state[name] = bool(obj.isChecked())
                 except Exception: pass
+        # Combo boxes store {index, text} — restored by text first so a changed
+        # item list in a newer build still lands on the intended mode.
+        state["combos"] = {}
+        for name in ("mode_combo", "viz_mode_combo"):
+            obj = getattr(self, name, None)
+            if obj is not None:
+                try:
+                    state["combos"][name] = {
+                        "index": int(obj.currentIndex()),
+                        "text": str(obj.currentText()),
+                    }
+                except Exception:
+                    pass
         state["instrument_selected_sequence"] = {
             str(k): int(v) for k, v in (getattr(self, "instrument_selected_sequence", {}) or {}).items()
         }
@@ -18909,12 +18986,31 @@ class MathematiciansGrooveboxApp(QMainWindow):
             obj = getattr(self, name, None)
             if obj is None: continue
             if hasattr(obj, "setValue"):
-                try: obj.setValue(value)
+                # Block signals so restoring BPM / synth-count / unison etc. does
+                # not re-fire their valueChanged handlers (double-processing of
+                # sequencer regeneration during load). Values are read directly
+                # afterwards by the explicit label/gp sync blocks below.
+                try:
+                    obj.blockSignals(True); obj.setValue(value); obj.blockSignals(False)
                 except Exception: pass
             elif hasattr(obj, "setChecked"):
                 try:
                     obj.blockSignals(True); obj.setChecked(bool(value)); obj.blockSignals(False)
                 except Exception: pass
+        # Combo boxes: restore by text (robust to reordered/different item lists),
+        # falling back to the saved index for older documents.
+        for name, spec in (state.get("combos") or {}).items():
+            obj = getattr(self, name, None)
+            if obj is None or not isinstance(spec, dict):
+                continue
+            try:
+                idx = obj.findText(str(spec.get("text") or ""))
+                if idx >= 0:
+                    obj.setCurrentIndex(idx)
+                else:
+                    obj.setCurrentIndex(int(spec.get("index") or 0))
+            except Exception:
+                pass
         # Keep FullWeight Seed / Full Unison labels in sync after restore.
         if getattr(self, "chk_fullweight_seed", None) is not None:
             on = bool(self.chk_fullweight_seed.isChecked())
@@ -18970,6 +19066,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
         Modules share this document so music, scenograph, DJ, and video-game
         classification all see the same residue lattice without inventing
         parallel stores.
+
+        UNISON SAVE/LOAD PASS-THROUGH: this saver and `_apply_project_snapshot`
+        are the two halves of one loop — save writes every live input the
+        engine reads, load restores them in the same shape (signals blocked),
+        rebuilds the atomic CompositionToggleState from the restored toggle
+        mask, re-loads the WAV/video carrier by saved path, and re-applies
+        global algos. Every consumer downstream (mixdown render, video export,
+        video-game classify via `_classify_live_game`) reads that restored
+        surface — never a stale parallel copy — so save→export, load→play,
+        save→playgame, load→stop all observe the identical deterministic
+        world. Runtime caches that derive from the state (_voice_phase_carry,
+        _voice_norm_gain, game world coordinates) are deliberately NOT saved;
+        they are recomputed from the identical seed anyway.
         """
         def _safe_json(obj):
             try:
@@ -18999,7 +19108,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             algo_fp = "0" * 16
 
         data = {
-            "version": "3.7.6-canonical-unified",
+            "version": "3.7.7-canonical-unified",
             "seed": self._seed_text() if hasattr(self, "input_seed_val") else "",
             "bpm": float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0,
             "seq_length": int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else 16,
@@ -19032,7 +19141,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "goava_active": bool(getattr(self, "goava_active", False)),
             "live_dj_goava": bool(getattr(self, "live_dj_goava", False)),
             "live_dj_random": bool(getattr(self, "live_dj_random", False)),
-            "convolve_fit": bool(getattr(self, "chk_convolve_fit", None) and self.chk_convolve_fit.isChecked()),
+            # MEDIA_CARRIER_2026: paths only (never the buffers) — the WAV/video
+            # carrier is re-loaded from disk on apply so audio and video exports
+            # see the exact same reference material the saved session had.
+            "media_carrier": {
+                "wav_path": str(getattr(self, "imported_wav_path", "") or ""),
+                "video_path": str(getattr(self, "imported_video_path", "") or ""),
+            },
             "global_algo": _safe_json(gas),
             "global_algo_fingerprint": algo_fp,
             "project_notes": notes,
@@ -19120,6 +19235,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.qe_notes.setPlainText(str(data.get("project_notes") or ""))
             except Exception:
                 pass
+        # MEDIA_CARRIER_2026: re-load the saved WAV/video carrier by path so the
+        # imported reference material (audio carrier + video blend source) is
+        # present for render/export/play after load — a missing/broken path is
+        # a soft skip, never a load error.
+        try:
+            mc = data.get("media_carrier")
+            if isinstance(mc, dict):
+                wav_p = str(mc.get("wav_path") or "")
+                vid_p = str(mc.get("video_path") or "")
+                if wav_p and os.path.isfile(wav_p) and hasattr(self, "_load_wav_path"):
+                    self._load_wav_path(wav_p)
+                elif vid_p and os.path.isfile(vid_p) and hasattr(self, "_load_video_path"):
+                    self._load_video_path(vid_p)
+        except Exception as _mc_exc:
+            print(f"[Load] media carrier: {_mc_exc}")
         self.goava_active = bool(data.get("goava_active", False))
         self.live_dj_goava = bool(data.get("live_dj_goava", False))
         self.live_dj_random = bool(data.get("live_dj_random", False))
@@ -19130,6 +19260,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self._restore_project_ui_state(data["ui_state"])
             except Exception as e:
                 print(f"[Load] ui_state: {e}")
+        # Live engine toggle mask is already restored above — rebuild the atomic
+        # CompositionToggleState so the canonical fingerprint (used by exports
+        # and video-game classification) reflects the loaded mask exactly.
+        if hasattr(self, "_sync_composition_toggle_state"):
+            try:
+                self._sync_composition_toggle_state()
+            except Exception:
+                pass
         # Re-apply global algos to ensemble so modules agree after load
         try:
             gas = getattr(self, "global_algo_state", {}) or {}
@@ -19171,6 +19309,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
 
     def load_project_dialog(self):
+        """Load a unified project document back onto the live surface.
+
+        This is the restore half of the save/load unison contract: everything
+        except the actual audio/video buffers is carried in the document, and
+        the WAV/video carrier is re-loaded from its saved path (see
+        `_apply_project_snapshot`). Skip signals during restore, rebuild the
+        atomic CompositionToggleState from the restored engine mask, then refresh
+        so every downstream consumer (mixdown render, video export, video-game
+        classification) reads the restored source-of-truth — identical
+        canonical fingerprint ⇒ identical exports/play as the saved session.
+        """
         path, _ = QFileDialog.getOpenFileName(self, "Load EQR Project", "", "EQR Project (*.json)")
         if not path:
             return
@@ -21508,7 +21657,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _render_mixdown_buffer(self, max_rows=None):
 
-        """Shared float32 mono render used by both realtime Play and WAV Export."""
+        """Shared float32 mono render used by both realtime Play and WAV Export.
+
+        Uniform pipeline, in order:
+          1. canonical voices → unison snapshot  (engines + harmonic lattice,
+             per-voice PNG-free, carries user material)
+          2. structural bus cross-convolution + domain equations + seed-script
+             T-axis modulation (compositional layers, still pre-effect)
+          3. MASTER EFFECTS, tail-only, in this exact order — Fractallizer
+             (spectral), EQR (tensor), PKP (tempo-locked AM), PED, peak-snap.
+             None of these ever write back to the unison snapshot, so effect
+             sliders cannot influence the canonical engines or the fingerprint.
+        """
         # Freeze imported-carrier + canonical flags into the seed environment so
         # file-input pathways and seed scripts stay coherent for every instrument.
         try:
@@ -21818,10 +21978,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # Derived modulation must be computed after the per-voice identity
                 # fields above are initialized. This also keeps every voice's
                 # modulation field independent and deterministic.
-                dynamic_eqr = base_eqr * (1.0 + 0.3 * np.sin(
-                    2.0 * np.pi * 0.2 * _voice_mod_rate * local_t
-                    + op_idx + _voice_phase0
-                ))
+                # MASTER_FX_FIX_2026: base_eqr is a master-mix effect only; the
+                # per-voice dynamic_eqr multiplier was removed so the EQR effect
+                # can never factor into the unison canonical engines.
                 morph = float(st.get("morph", st.get("internal_p1", 0.5) * 10.0 if "internal_p1" in st else 1.2))
                 harm_hz = float(st.get("harmonic_freq", base_freq))
                 chaos = float(st.get("chaos", st.get("internal_p3", 0.5)))
@@ -21986,8 +22145,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 voice_raw = (1.0 - entropy) * harm + entropy * inh
                 if entropy > 0.4:
                     voice_raw = np.tanh(voice_raw * (1.0 + (entropy - 0.4) * fold_depth * 0.2))
-                eqr_mod = dynamic_eqr * 0.5
-                voice_raw = voice_raw + 0.12 * eqr_mod * (1.0 - 0.5 * entropy) * np.sin(phase * MEUM_CONSTANT)
+                # MASTER_FX_FIX_2026: per-voice EQR additive coloring removed —
+                # the only EQR application is the master-bus tail stage below.
                 peak = float(np.max(np.abs(voice_raw)) + 1e-9)
                 # BURST_FIX_2026: this used to be a hard per-block instantaneous
                 # normalize (seed = voice_raw / peak). Because `peak` is
@@ -22015,15 +22174,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     _gain_ramp = np.array([_new_gain], dtype=np.float32)
                 seed = (voice_raw * _gain_ramp).astype(np.float32)
 
-                beat_hz = float(bpm) / 60.0
-                pkp_sin = 0.55 + 0.45 * np.sin(2.0 * np.pi * beat_hz * local_t)
-                # Do NOT apply exp(-local_t) from the row start — that silenced
-                # everything after ~1–2 tau and caused "burst then long silence".
-                # Per-step envelopes in step_env already shape each hit.
-                # Optional mild overall sustain from pkp_decay as a floor, not a kill.
-                _tau = max(float(pkp_decay) * MEUM_CONSTANT * _voice_decay, 0.25)
-                _row_sustain = 0.55 + 0.45 * np.exp(-local_t / max(_tau * 8.0, 1.0))
-                env_f = (pkp_sin * _row_sustain).astype(np.float32)
+                # MASTER_FX_FIX_2026: the tempo-locked PKP amplitude envelope is
+                # a master-bus effect only — it must not color canonical voices
+                # (that would fold the effect into the unison canonical engines).
+                # Voices keep only a neutral, deterministic decay floor to feed
+                # the per-synth Harmonic Lattice envelope input.
+                _tau = max(MEUM_CONSTANT * _voice_decay, 0.25)
+                env_f = (0.55 + 0.45 * np.exp(-local_t / max(_tau * 8.0, 1.0))).astype(np.float32)
                 gate = step_env
                 if not np.any(gate > 1e-9):
                     continue
@@ -22046,14 +22203,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         )
                     except Exception:
                         pass
-                    # EQR tensor: light color only
-                    eqr_amt = float(st.get("eqr", base_eqr))
-                    eqr_amt = float(np.clip(eqr_amt * max(base_eqr, 0.05) if base_eqr > 0 else eqr_amt, 0.0, 1.0)) * 0.5
-                    if eqr_amt > 1e-6:
-                        try:
-                            voice = self._eqr_tensor.process(voice, activation=eqr_amt)
-                        except Exception:
-                            pass
+                    # MASTER_FX_FIX_2026: per-voice EQR tensor removed — EQR is
+                    # applied once, on the master bus tail, far from the engines.
 
                     # CANONICAL_TIME_FIT: engine-authored (canonical) voices blend toward
                     # the carrier's own waveform at their exact trigger time, so the
@@ -22246,7 +22397,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if fractalizer_val > 1e-6 and hasattr(self, "_music_fractallizer"):
                 beat_hz = float(bpm) / 60.0
                 t_sec = np.arange(len(master), dtype=np.float32) / float(sample_rate)
-                pkp_master = 0.55 + 0.45 * np.sin(2.0 * np.pi * beat_hz * t_sec)
+                # MASTER_FX_FIX_2026: PKP Decay damps the tempo-locked envelope swing
+                # (tail-only effect, never touches the canonical voice stage).
+                try:
+                    pkp_d = max(0.0, float(self.slider_pkp_decay.value()) / 1000.0) if hasattr(self, "slider_pkp_decay") else 0.5
+                except Exception:
+                    pkp_d = 0.5
+                pkp_swing = float(np.clip(0.45 * (1.0 - 0.7 * pkp_d), 0.045, 0.45))
+                pkp_master = 0.55 + pkp_swing * np.sin(2.0 * np.pi * beat_hz * t_sec)
                 master = self._music_fractallizer.process(
                     master,
                     activation=fractalizer_val,
@@ -22276,6 +22434,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 master = self._eqr_tensor.process(master, activation=act)
         except Exception as _eqr_exc:
             print(f"[EQR] mixdown: {_eqr_exc}")
+        # PKP master effect (tail-only): tempo-locked amplitude envelope, with the
+        # swing damped by PKP Decay — applied here so it never factors into the
+        # unison canonical engines.
+        try:
+            try:
+                pkp_d = max(0.0, float(getattr(self, "slider_pkp_decay", None).value()) / 1000.0) if getattr(self, "slider_pkp_decay", None) is not None else 0.5
+            except Exception:
+                pkp_d = 0.5
+            pkp_swing = float(np.clip(0.45 * (1.0 - 0.7 * pkp_d), 0.045, 0.45))
+            if pkp_swing > 0.005 and len(master) > 0:
+                beat_hz = float(bpm) / 60.0
+                t_sec = np.arange(len(master), dtype=np.float32) / float(sample_rate)
+                pkp_master = 0.55 + pkp_swing * np.sin(2.0 * np.pi * beat_hz * t_sec)
+                master = (master * (0.35 + 0.65 * pkp_master)).astype(np.float32)
+        except Exception as _pkp_exc:
+            print(f"[PKP] mixdown: {_pkp_exc}")
         try:
             n = int(getattr(master, "size", 0) or 0)
             if n > 0:
@@ -22298,17 +22472,58 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if peak > 0:
             master = (master / peak) * 0.98
         return master.astype(np.float32), sample_rate
+    def _sync_composition_toggle_state(self):
+        """Maintain an order-independent CompositionToggleState summary.
+
+        Reuses composition_state.py (the atomic canonical-state module). App
+        engine buttons map onto its toggle names: euclidean -> live_randomizer,
+        seeded -> live_phaselock; the rest share names directly. Because
+        CompositionToggleState is immutable and its fingerprint sorts the
+        fields, this tees up an order-independent canonical identity — toggle
+        order can never change the fingerprint for the same active set.
+        """
+        st = getattr(self, "composition_toggle_state", None)
+        if st is None:
+            try:
+                seed = int(_safe_int_seed(self.get_numeric_seed()))
+            except Exception:
+                seed = 0
+            st = _composition_state.CompositionToggleState(seed=seed)
+        for name, btn_attr in (
+            ("goava", "btn_goava"),
+            ("randomizer", "btn_local_randomize"),
+            ("phaselock", "btn_local_phase_lock"),
+            ("live_randomizer", "btn_idealize_rhythm"),
+            ("live_phaselock", "btn_seeded_randomize"),
+        ):
+            btn = getattr(self, btn_attr, None)
+            val = bool(btn and btn.isChecked())
+            if val != getattr(st, name, False):
+                try:
+                    st = st.with_toggle(name, val)
+                except ValueError:
+                    pass
+        self.composition_toggle_state = st
+        return st
+
     def _canonical_fingerprint(self):
         """Order-independent short identity of the live project.
 
         Hash is over seed text, effective seed weight, FullWeight flag, BPM,
-        base frequency, active canonical toggles, and a stable digest of
+        base frequency, the full active-engine toggle vector (incl. the
+        order-independent CompositionToggleState digest from composition_state.py
+        covering euclidean/seeded live engines), and a stable digest of
         sequencer step presence — never over UI layout or toggle chronology.
         """
         try:
             seed = ""
             if hasattr(self, "input_seed_val") and self.input_seed_val is not None:
                 seed = self.input_seed_val.toPlainText() if hasattr(self.input_seed_val, "toPlainText") else str(self.input_seed_val.text() if hasattr(self.input_seed_val, "text") else "")
+            toggle_digest = "-"
+            try:
+                toggle_digest = self._sync_composition_toggle_state().fingerprint()
+            except Exception:
+                toggle_digest = "-"
             parts = [
                 seed.strip(),
                 f"{float(self.spin_engine_strength.value()) if hasattr(self, 'spin_engine_strength') else 0.72:.4f}",
@@ -22318,6 +22533,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "G" if (getattr(self, "btn_goava", None) and self.btn_goava.isChecked()) else "-",
                 "R" if (getattr(self, "btn_local_randomize", None) and self.btn_local_randomize.isChecked()) else "-",
                 "P" if (getattr(self, "btn_local_phase_lock", None) and self.btn_local_phase_lock.isChecked()) else "-",
+                "E" if (getattr(self, "btn_idealize_rhythm", None) and self.btn_idealize_rhythm.isChecked()) else "-",
+                "S" if (getattr(self, "btn_seeded_randomize", None) and self.btn_seeded_randomize.isChecked()) else "-",
+                f"ts{toggle_digest}",
                 f"n{int(self.spin_synth_count.value()) if hasattr(self, 'spin_synth_count') else 48}",
             ]
             raw = "|".join(parts).encode("utf-8")
@@ -22349,6 +22567,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """
         Perfect unison system: All active engines contribute deterministically.
         Re/write is consistent regardless of activation order or history.
+
+        UNISON DATA-FLOW CONTRACT (modern version):
+        • The active engine mask is exactly the live toggle buttons (GOAVA,
+          randomizer, phase-lock, euclidean live-lock, seeded live-randomizer).
+        • Mask + seed + BPM + base frequency + playlist + per-sequence panels +
+          global-algo make up the canonical identity. The document written by
+          `_project_snapshot` (save/export) is the SAME map this engine reads,
+          and `_apply_project_snapshot` (load) restores every one of those
+          inputs, so a loaded project re-derives the identical composition.
+        • The three master effects (Fractallizer, EQR, PKP) are STRICTLY
+          excluded here — they apply on the final master bus in
+          `_render_mixdown_buffer`, after this engine commits, so effect
+          sliders can never factor into canonical identity.
+        • Step 5 re-refreshes the fingerprint so the HUD label always shows
+          the state the export/video-game classifiers will read.
         """
         active_engines = self._get_active_engine_set()
 
@@ -22376,6 +22609,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
             # Step 4: Sync UI to match the deterministic state
             self._sync_ui_to_unison_state()
+
+            # Step 5: Refresh the order-independent canonical identity
+            try:
+                self._refresh_canonical_fingerprint()
+            except Exception:
+                pass
 
         finally:
             self._unison_composition_guard = False
@@ -22985,7 +23224,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if hasattr(self, '_scope_update_timer'):
                 self._scope_update_timer.stop()
             self.btn_play.setText("▶ RESUME Audiovisual Track")
-            self.btn_play.setStyleSheet("background-color: #b8860b; color: white; font-weight: bold;")
+            self.btn_play.setStyleSheet(
+                "QPushButton { background-color:#6b4d0b; color:#ffffff; border:2px solid #ffd75e; "
+                "border-radius:8px; padding:10px 16px; font-weight:900; font-size:13pt; }"
+                "QPushButton:hover { background-color:#7d5c12; }"
+            )
             if hasattr(self, 'scope_status_label'):
                 self.scope_status_label.setText("📊 Audiovisual Track  |  PAUSED")
             return
@@ -23004,7 +23247,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     )
                     self.audio_stream.start()
                 self.btn_play.setText("⏸ PAUSE Audiovisual Track")
-                self.btn_play.setStyleSheet("background-color: #00aa55; color: white; font-weight: bold;")
+                self.btn_play.setStyleSheet(
+                    "QPushButton { background-color:#00aa55; color:#ffffff; border:2px solid #ffffff; "
+                    "border-radius:8px; padding:10px 16px; font-weight:900; font-size:13pt; }"
+                    "QPushButton:hover { background-color:#00c464; }"
+                )
                 self._scope_update_timer.start()
                 return
             except Exception as e:
@@ -23186,7 +23433,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.play_cursor = 0
         if hasattr(self, 'btn_play'):
             self.btn_play.setText("▶ PLAY Audiovisual Track")
-            self.btn_play.setStyleSheet("")
+            self.btn_play.setStyleSheet(
+                "QPushButton { background-color:#14301c; color:#9dffb0; border:2px solid #46d158; "
+                "border-radius:8px; padding:10px 16px; font-weight:900; font-size:13pt; }"
+                "QPushButton:hover { background-color:#1f4228; }"
+                "QPushButton:pressed { background-color:#0c1f10; }"
+            )
         if hasattr(self, 'scope_status_label'):
             self.scope_status_label.setText("📊 Audiovisual Track  |  Stopped")
         if isinstance(getattr(self, 'visual_oscilloscope', None), VisualOscilloscope):
@@ -23468,25 +23720,38 @@ class MathematiciansGrooveboxApp(QMainWindow):
         ), meta
 
     def _on_export_videogame_scripts(self):
-        """Export video-game scripts classified from the live composition."""
+        """Export the video game as one .zip package: deterministic script +
+        identity JSON + Windows/macOS/Linux launchers, all from the live seed."""
         try:
             identity, meta = self._classify_live_game()
         except Exception as e:
             QMessageBox.warning(self, "Video Game", str(e))
             return
-        path = QFileDialog.getExistingDirectory(self, "Export Game Script — choose folder")
+        default_name = os.path.join(
+            os.path.expanduser("~"), f"game_{identity.composition_fingerprint}.zip"
+        )
+        path, _filter = QFileDialog.getSaveFileName(
+            self, "Export Video Game Package", default_name,
+            "Video Game Package (*.zip);;All files (*)",
+        )
         if not path:
             return
+        if not path.lower().endswith(".zip"):
+            path = path + ".zip"
         try:
             global _vge
-            out = _vge.export_game_files(identity, path, meta)
+            out = _vge.package_game_zip(identity, path, meta)
             self._last_videogame_path = out
             self._last_videogame_identity = identity.to_dict()
             QMessageBox.information(
                 self, "Video Game Exported",
-                f"{identity.title}\n\nScript:\n{out}\n\n"
+                f"{identity.title}\n\nPackage (.zip):\n{out}\n\n"
+                f"Includes: game script · identity JSON · launch_windows.bat · "
+                f"launch_macos.command · launch_linux.sh\n\n"
                 f"genre={identity.genre} camera={identity.camera}\n"
-                f"social={identity.social} online={identity.online} port={identity.host_port}"
+                f"objective={identity.objective} difficulty={identity.difficulty}\n"
+                f"level_type={identity.level_type} sigil_count={identity.sigil_count}\n"
+                f"world_fingerprint={identity.world_fingerprint}"
             )
         except Exception as e:
             QMessageBox.warning(self, "Export failed", str(e))
@@ -23510,6 +23775,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
             f"topology=<b>{identity.topology}</b><br>"
             f"social=<b>{identity.social}</b> · mood=<b>{identity.mood}</b> · "
             f"fingerprint=<code>{identity.composition_fingerprint}</code>"
+        ))
+        # WORLD_FACTORS_2026: objective / difficulty / level type / sigils are
+        # part of the same f(seed) world coordinates as genre/camera.
+        lay.addWidget(QLabel(
+            f"objective=<b>{identity.objective}</b> · difficulty=<b>{identity.difficulty}</b>"
+            f" · level=<b>{identity.level_type}</b><br>"
+            f"sigil_count=<b>{identity.sigil_count}</b> · "
+            f"world_fingerprint=<code>{identity.world_fingerprint}</code>"
         ))
         # Splash length = sequence bars of composition
         lay.addWidget(QLabel(

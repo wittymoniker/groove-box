@@ -20,19 +20,218 @@ This module fixes toggle leak:
 - Stochastic modifiers ONLY as sculpted trigger events from hardcoded onboard instruments.
 """
 
+# composition_state.py
 from __future__ import annotations
+
 import hashlib
 import math
-from dataclasses import dataclass, replace, field
-from typing import Dict, List, Set, Tuple, Any, Optional
+from dataclasses import dataclass, field, replace
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
+
+TOGGLE_NAMES = (
+    "randomizer",
+    "phaselock",
+    "live_randomizer",
+    "live_phaselock",
+    "goava",
+    "pkp_boost",
+    "rand_param",
+    "apply_algorithm",
+    "apply_composition",
+)
+
+
+@dataclass(frozen=True)
+class CompositionToggleState:
+    seed: int = 0
+
+    randomizer: bool = False
+    phaselock: bool = False
+    live_randomizer: bool = False
+    live_phaselock: bool = False
+    goava: bool = False
+    pkp_boost: bool = False
+    rand_param: bool = False
+    apply_algorithm: bool = False
+    apply_composition: bool = False
+
+    version: int = 400
+
+    def with_toggle(self, name: str, enabled: bool):
+        if name not in TOGGLE_NAMES:
+            raise ValueError(f"Unknown composition toggle: {name}")
+
+        return replace(self, **{name: bool(enabled)})
+
+    def active_toggles(self) -> Set[str]:
+        return {
+            name for name in TOGGLE_NAMES
+            if getattr(self, name)
+        }
+
+    def fingerprint(self) -> str:
+        payload = "|".join(
+            f"{name}={int(getattr(self, name))}"
+            for name in TOGGLE_NAMES
+        )
+        payload += f"|seed={self.seed}|version={self.version}"
+
+        return hashlib.sha256(
+            payload.encode("utf-8")
+        ).hexdigest()[:16]
 MEUM = 1.19758073433
 MEUM_MINUS_1 = MEUM - 1.0
 PHI = 1.618033988749895
+class CompositionEngine:
+    """
+    Canonical project state is never modified by toggles.
 
+        canonical
+             |
+             +-- randomizer
+             +-- phaselock
+             +-- GOAVA
+             +-- algorithm
+             +-- composition
+             |
+             v
+        derived state
+
+    Rebuilding derived state is deterministic and therefore makes
+    toggle order irrelevant.
+    """
+
+    def __init__(self, canonical_memory: Mapping[str, Any]):
+        self.canonical_memory = dict(canonical_memory)
+        self.layers: Dict[str, ToggleLayer] = {}
+
+    def set_layer(
+        self,
+        name: str,
+        writes: Mapping[str, Any],
+        events: Iterable[Any] = (),
+    ) -> None:
+        self.layers[name] = ToggleLayer(
+            name=name,
+            writes=dict(writes),
+            events=tuple(events),
+        )
+
+    def remove_layer(self, name: str) -> None:
+        self.layers.pop(name, None)
+
+    def clear_layers(self) -> None:
+        self.layers.clear()
+
+    def build(self) -> Dict[str, Any]:
+        """
+        Deterministically rebuild derived memory.
+
+        Canonical memory is copied first.
+        No toggle is allowed to delete from it.
+        """
+        result = dict(self.canonical_memory)
+
+        for name in sorted(self.layers):
+            layer = self.layers[name]
+
+            for key, value in layer.writes.items():
+                result[key] = value
+
+        return result
+
+    def fingerprint(self) -> str:
+        derived = self.build()
+
+        payload = repr((
+            tuple(sorted(derived.items(), key=lambda x: x[0])),
+            tuple(
+                (name, self.layers[name].fingerprint())
+                for name in sorted(self.layers)
+            ),
+        ))
+
+        return hashlib.sha256(
+            payload.encode("utf-8")
+        ).hexdigest()[:16]
 # ---------------------------------------------------------------------------
-# Residue bank — simplest math: hash → float ∈ [0,1) → independent class
+# CompositionToggleMixin — attachable to GrooveboxProject / main window
 # ---------------------------------------------------------------------------
+class CompositionToggleMixin:
+    """
+    Toggle API that never mutates canonical project memory.
+
+    Each toggle only swaps an immutable CompositionToggleState and rebuilds a
+    deterministic derived copy, so toggle order can never change results.
+    """
+
+    def set_composition_toggle(self, name: str, enabled: bool) -> None:
+        """Single entry point for ALL composition toggles.
+
+        Never mutate project_memory directly here.
+        """
+        if not hasattr(self, "toggle_state"):
+            self.toggle_state = CompositionToggleState(
+                seed=int(getattr(self, "seed", 0)),
+            )
+
+        if not hasattr(self, "composition_engine"):
+            self.composition_engine = CompositionEngine(
+                getattr(self, "project_memory", {}),
+            )
+
+        # Change only the immutable toggle state.
+        self.toggle_state = self.toggle_state.with_toggle(name, enabled)
+
+        # Remove old derived layer.
+        self.composition_engine.remove_layer(name)
+
+        # Recreate it only when enabled.
+        if enabled:
+            generator = getattr(self, f"build_{name}_layer", None)
+            if generator is not None:
+                layer = generator(self.toggle_state.seed)
+                if isinstance(layer, ToggleLayer):
+                    self.composition_engine.layers[name] = layer
+                else:
+                    self.composition_engine.set_layer(name, dict(layer))
+
+        # Rebuild playback/derived state.
+        self.rebuild_derived_composition()
+
+    def rebuild_derived_composition(self) -> None:
+        """Rebuild only derived state.
+
+        NEVER rewrite canonical project_memory.
+        """
+        if not hasattr(self, "composition_engine"):
+            return
+        self.derived_memory = self.composition_engine.build()
+
+        # Playback/event state derives from derived_memory.
+        redefine = getattr(self, "redefine_all_events", None)
+        if redefine is not None:
+            redefine(memory=self.derived_memory)
+
+        recompute = getattr(self, "recompute_fingerprint", None)
+        if recompute is not None:
+            recompute()
+
+        # Deliberately NOT:
+        #
+        # self.rescale_all_memory()
+        # self.redefine_all_events()  # without derived input
+        #
+        # because those operations previously allowed a toggle to
+        # mutate/reinterpret canonical memory.
+
+    def toggle_apply_algorithm(self, checked: bool) -> None:
+        self.set_composition_toggle("apply_algorithm", checked)
+
+    def toggle_apply_composition(self, checked: bool) -> None:
+        self.set_composition_toggle("apply_composition", checked)
+
 def meum_effect_residue(seed: int, label: str) -> float:
     h = hashlib.sha256(f"{seed}::{label}".encode()).hexdigest()
     # first 13 hex chars ~ 52 bits
@@ -48,36 +247,28 @@ def residue_to_bipolar(r: float) -> float:
 def residue_to_sym_drive(r: float, half_range: float = 1.4) -> float:
     """GOAVA fix: center at 1.0, symmetric ±half_range, no upward bias."""
     return 1.0 + residue_to_bipolar(r) * half_range
+@dataclass
+class ToggleLayer:
+    """
+    A reversible transformation.
 
-# ---------------------------------------------------------------------------
-# Atomic Toggle State — immutable, hashable, order-independent
-# ---------------------------------------------------------------------------
-@dataclass(frozen=True)
-class CompositionToggleState:
-    seed: int = 0
-    randomizer: bool = False
-    phaselock: bool = False
-    live_randomizer: bool = False
-    live_phaselock: bool = False
-    goava: bool = False
-    pkp_boost: bool = False
-    rand_param: bool = False
-    apply_algorithm: bool = False
-    apply_composition: bool = False
-    version: int = 390  # 3.9.0
+    It never owns canonical project memory.
+    It only describes what should be derived from canonical state.
+    """
+
+    name: str
+    writes: Dict[str, Any]
+    events: Tuple[Any, ...] = ()
 
     def fingerprint(self) -> str:
-        # Order-independent canonical fingerprint — same inputs = same hash
-        payload = "|".join(f"{k}={int(v) if isinstance(v,bool) else v}" for k,v in sorted(self.__dict__.items()))
-        return hashlib.sha256(payload.encode()).hexdigest()[:16]
-
-    def with_toggle(self, name: str, enabled: bool) -> "CompositionToggleState":
-        if not hasattr(self, name):
-            raise ValueError(f"Unknown toggle {name}")
-        return replace(self, **{name: bool(enabled)})
-
-    def active_toggles(self) -> Set[str]:
-        return {k for k in self.__dataclass_fields__ if isinstance(getattr(self,k), bool) and getattr(self,k)}
+        payload = repr((
+            self.name,
+            tuple(sorted(self.writes.items(), key=lambda x: x[0])),
+            self.events,
+        ))
+        return hashlib.sha256(
+            payload.encode("utf-8")
+        ).hexdigest()[:16]
 
 # ---------------------------------------------------------------------------
 # Memory Ledger — tracks what each toggle wrote, so OFF can delete all
