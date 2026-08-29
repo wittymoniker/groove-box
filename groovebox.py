@@ -4104,11 +4104,11 @@ class VideoSynthEngine:
 
             hue = (layer["hue"] + int(self._video_hue_shift) + int(self._centroid * 40) + int(st["ph"] * 30)) % 360
             col = self._hsv(hue, 0.5 + 0.25 * life, 0.32 + 0.5 * min(1.0, e + abs(local)) * life)
-            # VISUAL_DENSITY_V50: stronger formed-shape presence while retaining entropy/fades.
-            # Faces are deliberately highly transparent so the full ensemble
-            # remains legible when many instruments converge. Edges carry the
-            # identity; faces only provide a faint spatial volume cue.
-            alpha = float(np.clip((0.10 + 0.42 * life * (0.45 + 0.35 * e)) * 0.72, 0.045, 0.32))
+            # VISUAL_DENSITY_V50 + DIVERGENCE_2026: higher opacity floors so
+            # seed-to-seed differences (hue, life, entropy) read clearly even
+            # on simple numeric seeds. Edges still dominate; faces now carry
+            # enough presence that consecutive seeds look ~50%+ distinct.
+            alpha = float(np.clip((0.22 + 0.55 * life * (0.50 + 0.40 * e)) * 0.95, 0.12, 0.58))
 
             # Faces when formed
             if life > 0.35 and len(projected) >= 3:
@@ -7386,11 +7386,12 @@ Fingerprint / "program present" checks use the same net-effect rules.
 --------------------------------------------------------------------------------
 7. SIMPLIFY (before additive fill)
 --------------------------------------------------------------------------------
-  • Quantize ON amplitudes to ladder {0.25, 0.5, 0.75, 1.0}
-  • Link identical cross-instrument patterns to one canonical setting
+  • Continuous amplitudes (no ¼ ladder quantize)
+  • Instruments stay distinct (no cross-instrument pattern amp snap)
   • Deduplicate patch cables (app + GLOBAL_BUS)
   • Merge domain partitions with identical bounds/logic/equation
   • Count identical scripts as shared definitions
+  • Sequence scale: each pattern fits playlist row beats via inst_step = row/N
 
 Order:  Bootstrap → Simplify → Additive fill / phase-lock / patch optimize
 
@@ -16397,6 +16398,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_playlist_length.setMinimumWidth(96)
         self.spin_playlist_length.setStyleSheet("font-size: 12pt; font-weight: 700; padding: 4px 6px;")
         self.top_layout_row2.addWidget(self.spin_playlist_length)
+        # Playlist row interval in beats (shared wall-clock for every pattern length)
+        self.top_layout_row2.addWidget(QLabel("Row beats:"))
+        self.spin_row_beats = QDoubleSpinBox()
+        self.spin_row_beats.setRange(0.25, 64.0)
+        self.spin_row_beats.setDecimals(2)
+        self.spin_row_beats.setSingleStep(0.25)
+        self.spin_row_beats.setValue(4.0)
+        self.spin_row_beats.setMinimumHeight(38)
+        self.spin_row_beats.setMinimumWidth(88)
+        self.spin_row_beats.setToolTip(
+            "Playlist row length in beats (BPM-relative). Every instrument "
+            "pattern — any step count — is scaled to fit this interval."
+        )
+        self.spin_row_beats.setStyleSheet("font-size: 11pt; font-weight: 700; padding: 4px 6px;")
+        self.top_layout_row2.addWidget(self.spin_row_beats)
         self.top_layout_row2.addWidget(QLabel("Global Convolve:"))
         self.spin_global_convolve = QDoubleSpinBox()
         self.spin_global_convolve.setRange(0.0, 100.0)
@@ -16858,6 +16874,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_seq_length.valueChanged.connect(self._on_live_source_changed)
         self.spin_playlist_length.valueChanged.connect(self._resize_playlist_memory)
         self.spin_playlist_length.valueChanged.connect(self._on_live_source_changed)
+        if hasattr(self, "spin_row_beats"):
+            self.spin_row_beats.valueChanged.connect(self._on_live_source_changed)
         self.spin_bpm.valueChanged.connect(self._on_live_source_changed)
         self.input_seed_val.textChanged.connect(self._on_live_source_changed)
         # LOCAL_CONTEXT_ISOLATION: changing the active instrument only changes context;
@@ -16905,14 +16923,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         step_edit.addWidget(self.lbl_step_pitch)
         step_edit.addWidget(QLabel("Offset:"))
         self.spin_step_offset = QDoubleSpinBox()
-        self.spin_step_offset.setRange(-0.5, 0.5)
-        self.spin_step_offset.setDecimals(2)
+        self.spin_step_offset.setRange(-1.0, 1.0)
+        self.spin_step_offset.setDecimals(3)
         self.spin_step_offset.setSingleStep(0.01)
         self.spin_step_offset.setSuffix(" step")
         self.spin_step_offset.setFixedWidth(92)
         self.spin_step_offset.setToolTip(
-            "Timing offset in step units. Range −0.50 … +0.50. "
-            "Randomizer and Phase-Locker may optimize engine-owned offsets."
+            "Continuous timing offset in this instrument's step units "
+            "(−1 … +1). Engines may write offsets; no forced ¼ quantize."
         )
         self.spin_step_offset.valueChanged.connect(self._on_step_offset_changed)
         step_edit.addWidget(self.spin_step_offset)
@@ -19074,7 +19092,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         offset = float(mem.get("offsets", [0.0] * len(mem.get("steps", [])))[s_idx]) if s_idx < len(mem.get("offsets", [])) else 0.0
         if hasattr(self, 'spin_step_offset'):
             self.spin_step_offset.blockSignals(True)
-            self.spin_step_offset.setValue(float(np.clip(offset, -0.5, 0.5)))
+            self.spin_step_offset.setValue(float(np.clip(offset, -1.0, 1.0)))
             self.spin_step_offset.blockSignals(False)
 
         # A normal click never invokes Randomizer/Phase-Locker or changes other pads.
@@ -19992,7 +20010,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         save→playgame, load→stop all observe the identical deterministic
         world. Runtime caches that derive from the state (_voice_phase_carry,
         _voice_norm_gain, game world coordinates) are deliberately NOT saved;
-        they are recomputed from the identical seed anyway.
+        they are recomputed from the identical seed anyway.  Phase carry is
+        also reset at the start of every _render_mixdown_buffer so successive
+        full renders (Play / Export) stay bit-identical for the same inputs.
         """
         def _safe_json(obj):
             try:
@@ -20577,8 +20597,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     on = ((s * pulses) % count) < pulses and (rng.random() < 0.85)
                     mem["steps"][s] = bool(on)
                     if on:
-                        ladder = [0.5, 0.75, 1.0]
-                        mem["amplitudes"][s] = float(ladder[(i + s + int(inst_i)) % len(ladder)])
+                        # Continuous amplitude (no quarter ladder)
+                        mem["amplitudes"][s] = float(0.35 + 0.65 * float(rng.random()))
                         mem["probabilities"][s] = 100
             # Keep selected sequence mirror in instrument_sequencer_memory
             try:
@@ -20647,59 +20667,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         stats = {"amps_quantized": 0, "patterns_linked": 0, "patches_deduped": 0,
                  "domains_merged": 0, "scripts_collapsed": 0}
 
-        # --- 1/2 Sequencer: quantize ON-step amps to simplest identical ladder ---
-        # Ladder: 0.25, 0.5, 0.75, 1.0 (minimal distinct set)
-        ladder = np.array([0.25, 0.5, 0.75, 1.0])
-        pattern_index = {}  # fingerprint -> first instrument name
-
+        # CONTINUOUS_AMPS_2026: no 0.25/0.5/0.75/1.0 ladder and no cross-
+        # instrument pattern linking — amplitudes and steps stay continuous
+        # and instrument-distinct. Only patch/domain/script dedupe remains.
         for name in self.instrument_names_48:
             mem = self.instrument_sequencer_memory.get(name)
             if not mem:
                 continue
             self._ensure_seq_mem_length(mem, count)
-
-            # Normalize OFF steps to default amp 1.0 (frees "touched" false positives)
-            for s in range(count):
-                if not mem["steps"][s]:
-                    if abs(float(mem["amplitudes"][s]) - 1.0) > 1e-6 and abs(float(mem["amplitudes"][s]) - 0.5) > 1e-6:
-                        # Only reset amp on OFF if it wasn't meaningfully unique — keep if far from defaults
-                        pass
-                    else:
-                        mem["amplitudes"][s] = 1.0
-
-            # Quantize ON-step amplitudes to nearest ladder value
-            for s in range(count):
-                if mem["steps"][s]:
-                    amp = float(mem["amplitudes"][s])
-                    nearest = float(ladder[np.argmin(np.abs(ladder - amp))])
-                    if abs(nearest - amp) > 1e-9:
-                        mem["amplitudes"][s] = nearest
-                        stats["amps_quantized"] += 1
-                    else:
-                        mem["amplitudes"][s] = nearest  # exact ladder snap
-
-            # Fingerprint pattern for cross-instrument linking.
-            # SKIP when seed field yields multiple evaluated components — linking
-            # would overwrite per-instrument list/script differentiation.
-            try:
-                _seed_vals = list(self.get_seed_values(t_value=0.0) or [])
-            except Exception:
-                _seed_vals = []
-            if len(_seed_vals) <= 1:
-                fp = tuple(
-                    (bool(mem["steps"][s]), round(float(mem["amplitudes"][s]), 8))
-                    for s in range(count)
-                )
-                if any(mem["steps"][s] for s in range(count)):
-                    if fp in pattern_index:
-                        # Snap this instrument's amps exactly to the canonical instrument's ladder values
-                        canon = self.instrument_sequencer_memory[pattern_index[fp]]
-                        for s in range(count):
-                            mem["steps"][s] = bool(canon["steps"][s])
-                            mem["amplitudes"][s] = float(canon["amplitudes"][s])
-                        stats["patterns_linked"] += 1
-                    else:
-                        pattern_index[fp] = name
 
         # --- 4 Patch connections dedupe ---
         if hasattr(self, 'patch_connections') and self.patch_connections:
@@ -22697,7 +22672,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
              (spectral), EQR (tensor), PKP (tempo-locked AM), PED, peak-snap.
              None of these ever write back to the unison snapshot, so effect
              sliders cannot influence the canonical engines or the fingerprint.
+
+        PHASE CONTINUITY CONTRACT (2026):
+          Within a single call the per-voice phase carry advances across rows
+          so row boundaries stay click-free.  Across separate full-render calls
+          (Play button, Export, successive mixes) the carry is deliberately
+          reset to the empty dict.  Both Play and Export therefore start from
+          the same seed-defined phase0 state, producing bit-identical buffers
+          for identical inputs.  Live streaming is just playback of that
+          fixed buffer — no inter-call phase memory is required.
         """
+        # Reset per-voice phase carry so every full mixdown is canonical from
+        # the seed/phase0 lattice.  Intra-render row continuity is still
+        # preserved by the carry updates inside the voice loop.
+        self._voice_phase_carry = {}
         # Freeze imported-carrier + canonical flags into the seed environment so
         # file-input pathways and seed scripts stay coherent for every instrument.
         try:
@@ -22710,6 +22698,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         rows = self.spin_playlist_length.value() if hasattr(self, 'spin_playlist_length') else 32
         if max_rows is not None:
             rows = min(rows, int(max_rows))
+        # Reference grid length (legacy max-pattern) — used only as a fallback
+        # for beats_per_row when the user has not set an explicit bar length.
         seq_len = max(
             [int((m or {}).get("pattern_length", len((m or {}).get("steps", [])) or 1))
              for m in (getattr(self, "instrument_sequencer_memory", {}) or {}).values()] or
@@ -22723,8 +22713,27 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # User edits synchronize explicitly from their edit handlers instead.
 
         seconds_per_beat = 60.0 / max(float(bpm), 0.001)
+        # SEQUENCE_SCALE_2026: playlist row interval is measured in BEATS
+        # (master canonical / user), not "max pattern × 16th".  Every instrument
+        # pattern — any step count — is scaled to fit exactly one row:
+        #     inst_step_duration = row_duration / pattern_len
+        # so a 16-step and a 32-step sequence share the same row wall-clock
+        # and stay phase-aligned via per-step + per-operator offsets.
+        try:
+            if hasattr(self, "spin_row_beats"):
+                beats_per_row = float(self.spin_row_beats.value())
+            elif hasattr(self, "spin_playlist_beats"):
+                beats_per_row = float(self.spin_playlist_beats.value())
+            else:
+                # Default one bar (4 beats). Legacy: if no control, still prefer
+                # 4 beats over max-pattern×16th so mixed lengths fit one bar.
+                beats_per_row = 4.0
+        except Exception:
+            beats_per_row = 4.0
+        beats_per_row = max(0.25, min(64.0, float(beats_per_row)))
+        row_duration = seconds_per_beat * beats_per_row
+        # Reference 16th for engines/UI that still speak in "grid steps"
         step_duration = seconds_per_beat / 4.0
-        row_duration = step_duration * seq_len
         total_duration = max(0.25, rows * row_duration)
 
         n_samples = int(sample_rate * total_duration)
@@ -22990,49 +22999,48 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 amps = mem.get("amplitudes", [1.0] * 16)
                 pitches = mem.get("pitches", [1.0] * 16)
                 offsets = mem.get("offsets", [0.0] * 16)
-                pattern_len = int(mem.get("pattern_length", len(steps) or seq_len))
-                # Each instrument's pattern is independent; longer/shorter
-                # patterns recycle deterministically against the row clock.
+                pattern_len = max(1, int(mem.get("pattern_length", len(steps) or 1)))
+                # SEQUENCE_SCALE_2026: fit this instrument's #steps into the
+                # shared playlist row (beats_per_row × seconds_per_beat).
+                # Different pattern lengths share the same row wall-clock;
+                # only the per-step duration changes.
+                _pat = max(1, min(pattern_len, max(1, len(steps))))
+                inst_step_duration = float(row_duration) / float(_pat)
+                # Playlist / engine operator offset (seconds) — aligns this
+                # instrument inside the shared row without changing step rate.
+                try:
+                    _op_off = float((op_time_offsets or {}).get(op_name, 0.0) or 0.0)
+                except Exception:
+                    _op_off = 0.0
                 _user_mask = (self._user_pattern_mask(mem, pattern_len, instrument_name=op_name)
                               if hasattr(self, "_user_pattern_mask") else [False] * pattern_len)
-                # BURST_RECYCLE_FIX_2026: the loop used to iterate
-                # `range(min(pattern_len, len(steps)))`, which auditions only the
-                # first pattern_len slots of each row.  A row contains seq_len
-                # step slots, so a SHORT pattern left seq_len - pattern_len silent
-                # holes every row — sparse on/off bursts instead of a running
-                # groove.  Patterns now recycle deterministically against the row
-                # clock: slot k plays pattern step (k % pattern_len).
-                _pat = max(1, min(pattern_len, len(steps)))
-                for k in range(max(1, seq_len)):
-                    s_idx = k % _pat
+                # Play the pattern once per row (no recycle against a foreign grid).
+                for s_idx in range(_pat):
                     _user_active = bool(_user_mask[s_idx]) if s_idx < len(_user_mask) else False
                     _canonical_on = self._multinode_step_trigger(_node_field, op_idx, row_idx, s_idx, _user_active)
-                    if steps[s_idx] or _canonical_on:
-                        step_offset = float(np.clip(offsets[s_idx] if s_idx < len(offsets) else 0.0, -0.5, 0.5))
-                        # Phase-lock is a node coordinate, not a timing rewrite.
-                        # Keep user timing intact and use the phase field in DSP below.
-                        s_start = (s_idx + step_offset) * step_duration
-                        s_start = float(np.clip(s_start, 0.0, max(0.0, row_duration - step_duration)))
-                        s_end = s_start + step_duration
+                    if (s_idx < len(steps) and steps[s_idx]) or _canonical_on:
+                        # Continuous fractional-step offset (no forced ±0.5 clamp
+                        # beyond a full-step window for engine safety).
+                        try:
+                            step_offset = float(offsets[s_idx] if s_idx < len(offsets) else 0.0)
+                        except Exception:
+                            step_offset = 0.0
+                        step_offset = float(np.clip(step_offset, -1.0, 1.0))
+                        s_start = (s_idx + step_offset) * inst_step_duration + _op_off
+                        # Wrap into the row so large offsets still land in-bar
+                        if row_duration > 1e-9:
+                            s_start = float(s_start % row_duration)
+                        s_start = float(np.clip(s_start, 0.0, max(0.0, row_duration - 1e-6)))
+                        s_end = min(row_duration, s_start + inst_step_duration)
                         s_mask = (local_t >= s_start) & (local_t < s_end)
                         if np.any(s_mask):
-                            s_local = local_t[s_mask] - s_start
                             amp = amps[s_idx] if s_idx < len(amps) else 1.0
                             pr = pitches[s_idx] if s_idx < len(pitches) else 1.0
-                            if not steps[s_idx] and _canonical_on:
-                                amp *= float(0.25 + 0.75 * float(_node_field.get("trigger_probability", 0.0)))  # continuous
-                            # PKP DECAY → the per-note envelope binding (follower
-                            # always on, sweep ≈ 1 note duration before and after):
-                            #   d = 0.5  → normal 1:1 envelope for note-per-step
-                            #             (hold = 1 step)
-                            #   d = 1.0  → hold binds to the whole sequence length
-                            #   d = 0.0  → hold binds to (1 step)/(seq length)
-                            # The hold maps as hold = step × seq_len^(2d-1), which
-                            # hits all three anchors exactly, and the follower
-                            # always glides ~1 note (1 step) into the onset and
-                            # ~1 note out of the release, whatever d is.
-                            _sw = max(float(step_duration), 1e-6)
-                            _hold = float(step_duration) * (float(max(seq_len, 1)) ** (2.0 * float(pkp_decay) - 1.0))
+                            if not (s_idx < len(steps) and steps[s_idx]) and _canonical_on:
+                                amp *= float(0.25 + 0.75 * float(_node_field.get("trigger_probability", 0.0)))
+                            # PKP hold relative to THIS instrument's step length
+                            _sw = max(float(inst_step_duration), 1e-6)
+                            _hold = float(inst_step_duration) * (float(max(_pat, 1)) ** (2.0 * float(pkp_decay) - 1.0))
                             _note_end = s_start + _hold
                             _lo = s_start - _sw
                             _hi = _note_end + _sw
@@ -23711,16 +23719,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # linear scaling: below the ceiling the canonical wave is numerically
         # untouched modulo one constant factor, and live playback and WAV export
         # now render byte-identical material (same buffer, same headroom).
+        # LOUDNESS_FIX_2026: voices are already float ≈[-1.5, 1.5].  The old
+        # rail formula scaled by ~0.001 for 48 voices (it assumed int16 units)
+        # and made both live Play and WAV export nearly silent.  Scale the
+        # finished buffer so its actual peak maps to TARGET_PEAK (−1 dBFS).
+        # Same buffer feeds Play and Export → matching loudness.
+        TARGET_PEAK = 0.89
+        CEIL = 0.95
         if len(master) > 0:
-            try:
-                _n_inst = int(len(getattr(self, "instrument_names_48", []) or []) or 1)
-            except Exception:
-                _n_inst = 1
-            _rail = float(max(_n_inst, 1)) * 3.0 * (1.1975807343 / 0.1975807343) * 32767.0
-            _rail_to_float = (0.89 * 32767.0) / max(_rail, 1e-9)
-            if _rail > 0.0:
-                master = master * np.float32(_rail_to_float)
-            master = np.clip(master, np.float32(-0.89), np.float32(0.89)).astype(np.float32)
+            peak = float(np.max(np.abs(master)))
+            if peak > 1e-9:
+                master = (master * np.float32(TARGET_PEAK / peak)).astype(np.float32)
+            master = np.clip(master, np.float32(-CEIL), np.float32(CEIL)).astype(np.float32)
         return master.astype(np.float32), sample_rate
     def _sync_composition_toggle_state(self):
         """Maintain an order-independent CompositionToggleState summary.

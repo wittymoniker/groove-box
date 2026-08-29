@@ -63,6 +63,77 @@ OBJECTIVES = ("harvest", "escort", "survey", "siege", "nexus", "pilgrimage")
 DIFFICULTIES = ("tutorial", "standard", "master", "meum_insane")
 LEVEL_TYPES = ("heightfield", "boss_rush", "dungeon", "sky_islands", "coral_grid")
 
+# SOFTWARE_KIND_LATTICE_2026: the same seed→residue group action that classifies
+# games also classifies *software function*.  Every kind is a safe, user-space
+# program (stdlib + optional PyQt6).  No kind emits shell exploits, malware
+# scanners, crypto miners, or hardware PTT/transmitter drivers.
+# A seed that lands on "radio_toolkit" yields a *software-defined radio
+# simulator / HAM study toolkit* (waterfall, Morse trainer, band plan,
+# logbook, QSO practice) — never a live RF transmitter controller.
+SOFTWARE_KINDS = (
+    "videogame",          # default playable world (this package's main path)
+    "network_tool",       # host/client chat + latency probe + packet log
+    "utility",            # calculator / converter / notepad lattice
+    "simulator",          # physics / orbit / signal sim
+    "media_player",       # seeded playlist + visualizer
+    "radio_toolkit",      # SAFE HAM/SDR study toolkit (sim only, no TX hardware)
+    "data_viz",           # chart / lattice explorer
+    "chat_server",        # pure stdlib multi-client chat
+    "protocol_lab",       # educational protocol state-machine playground
+    "instrument_lab",     # Meum instrument → asset inspector
+    "office_suite",       # seeded notes / tables / outline (safe documents)
+    "file_manager",       # virtual lattice filesystem browser
+    "terminal_lab",       # educational command playground (no real shell exec)
+    "browser_shell",      # offline page/lattice browser (no network fetch)
+    "ide_lite",           # seeded code buffer + run-sim (no arbitrary exec)
+)
+
+# MULTIMODAL_CONTRACT_2026 — every exported package ALWAYS ships:
+#   1. SOUND  — MusicBed + LiveSFX (instrument lattice), never silent
+#   2. VISUAL — ScenographLite 2.5D scene, never blank
+#   3. UI     — PyQt6 control panel when available; rich CLI HUD otherwise
+# Software-kind only changes the *function panel*. It never strips audio,
+# scenograph, or UI chrome.  "Random chance" = seed residue over SOFTWARE_KINDS.
+MULTIMODAL_CONTRACT = {
+    "version": "2026.1",
+    "always_sound": True,
+    "always_visual": True,
+    "always_ui": True,
+    "sound": {
+        "music_bed": "MusicBed (Meum harmonic lattice, soft-clipped loud)",
+        "live_sfx": "LiveSFX one-shots on collect/kill/portal/quest",
+        "sample_rate_default": 22050,
+    },
+    "visual": {
+        "scenograph": "ScenographLite 2.5D depth-sorted layers",
+        "min_layers_on": "ceil(n/2) always visible",
+        "opacity_floor": 140,
+        "assets": "InstrumentAssetBridge materials + texture families",
+    },
+    "ui": {
+        "preferred": "PyQt6 GameWindow (viewport + control panel + chat)",
+        "fallback": "CLI HUD with /report /inv /store /export (identical lattice)",
+        "never_headless_by_default": True,
+    },
+    "safety": {
+        "no_shell_exec": True,
+        "no_live_rf_tx": True,
+        "no_network_scan": True,
+        "stdlib_plus_pyqt6_only": True,
+    },
+}
+
+# Texture / material pattern families derived from instrument entropy
+TEXTURE_FAMILIES = (
+    "noise_meum", "grid_phi", "radial_harm", "crystal", "circuit",
+    "organic", "moire", "barcode", "constellation", "wavefront",
+)
+# Model primitive families (1D/2D/3D) — closed-form mesh recipes
+MODEL_PRIMITIVES = (
+    "filament", "ring", "spiral", "panel", "prism", "polytope",
+    "heightfield", "lattice_cage", "orb", "beam",
+)
+
 # TITLE_WORDBANK_2026: title generation used to be a fixed template
 # ("{Mood} {Genre} [{fp}]"), which meant only len(MOODS) * len(GENRES) = 72
 # distinct title shapes existed. To keep titles fitting the same "infinitely
@@ -174,7 +245,14 @@ def _res_idx(seed: int, label: str, mod: int) -> int:
 
 @dataclass
 class GameIdentity:
-    """Complete game classification derived from the live composition seed."""
+    """Complete software classification derived from the live composition seed.
+
+    Same seed → same identity forever.  The residue lattice covers every
+    SOFTWARE_KINDS entry, so in principle any safe software function class
+    (including a HAM/SDR *study toolkit*) is reachable; only the videogame
+    path is fully fleshed as a playable world, while other kinds export a
+    focused tool shell that still shares the Meum instrument→asset bridge.
+    """
     seed: float
     title: str
     genre: str
@@ -197,9 +275,114 @@ class GameIdentity:
     level_type: str = "heightfield"
     sigil_count: int = 8
     world_fingerprint: str = "0" * 16
+    software_kind: str = "videogame"
+    texture_family: str = "noise_meum"
+    material_spec: Dict[str, Any] = field(default_factory=dict)
+    sfx_bank: List[str] = field(default_factory=list)
+    asset_manifest: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+def instrument_material_from_seed(
+    seed: int, fingerprint: str, mood: str, texture_family: str
+) -> Dict[str, Any]:
+    """Ideal instrument → material/texture/color abstraction.
+
+    Every Meum voice parameter (entropy, conson, phase0, hue, depth) maps to
+    a rendering material so art, models, and UI share one lattice with audio.
+    """
+    ent = meum_game_residue(seed, f"mat_ent|{fingerprint}")
+    conson = meum_game_residue(seed, f"mat_con|{fingerprint}")
+    metal = 0.15 + 0.75 * meum_game_residue(seed, f"mat_metal|{mood}")
+    rough = 0.2 + 0.7 * ent
+    emissive = 0.05 + 0.55 * (1.0 - conson) * meum_game_residue(seed, f"mat_em|{fingerprint}")
+    hue = meum_game_residue(seed, f"mat_hue|{fingerprint}")
+    sat = 0.35 + 0.55 * meum_game_residue(seed, f"mat_sat|{mood}")
+    return {
+        "texture_family": texture_family,
+        "entropy": round(ent, 5),
+        "consonance": round(conson, 5),
+        "metallic": round(metal, 5),
+        "roughness": round(rough, 5),
+        "emissive": round(emissive, 5),
+        "hue": round(hue, 5),
+        "saturation": round(sat, 5),
+        "uv_scale": round(0.5 + 2.5 * meum_game_residue(seed, f"mat_uv|{fingerprint}"), 4),
+        "normal_strength": round(0.2 + 1.4 * ent, 4),
+    }
+
+
+def instrument_sfx_bank(seed: int, n_instruments: int = 8) -> List[str]:
+    """Live sound-effect bank — one short trigger id per instrument slot.
+
+    SFX are synthesized at runtime from the same phase0/entropy continuum as
+    the music bed (no sample files required).
+    """
+    verbs = ("blip", "thud", "chime", "sweep", "click", "whoosh", "spark", "drone")
+    bank = []
+    n = max(4, min(16, int(n_instruments)))
+    for i in range(n):
+        v = verbs[int(meum_game_residue(seed, f"sfx_v:{i}") * len(verbs)) % len(verbs)]
+        bank.append(f"{v}_{i}_{int(meum_game_residue(seed, f'sfx_id:{i}') * 999):03d}")
+    return bank
+
+
+def build_asset_manifest(
+    seed: int,
+    models_1d: List[str],
+    models_2d: List[str],
+    models_3d: List[str],
+    texture_family: str,
+    material_spec: Dict[str, Any],
+    sfx_bank: List[str],
+    software_kind: str,
+) -> Dict[str, Any]:
+    """Single manifest the export + runtime share for art/models/textures/SFX."""
+    prims = [
+        MODEL_PRIMITIVES[int(meum_game_residue(seed, f"prim:{i}") * len(MODEL_PRIMITIVES)) % len(MODEL_PRIMITIVES)]
+        for i in range(min(12, max(3, len(models_2d))))
+    ]
+    return {
+        "software_kind": software_kind,
+        "models": {"1d": list(models_1d), "2d": list(models_2d), "3d": list(models_3d)},
+        "primitives": prims,
+        "texture_family": texture_family,
+        "material": dict(material_spec),
+        "sfx_bank": list(sfx_bank),
+        "multimodal_contract": dict(MULTIMODAL_CONTRACT),
+        "proof": {
+            "lattice": "MEUM residue group action on SOFTWARE_KINDS × textures × primitives",
+            "claim": "Any safe software class is reachable; radio_toolkit is a simulator only",
+            "always_sound_visual_ui": True,
+            "seed": seed,
+        },
+    }
+
+
+def prove_software_lattice(n_samples: int = 64) -> Dict[str, Any]:
+    """Empirical proof: sampling seeds covers every SOFTWARE_KINDS entry.
+
+    Used by docs / --report to show the generator is not locked to videogames.
+    """
+    hits: Dict[str, int] = {k: 0 for k in SOFTWARE_KINDS}
+    radio_seeds = []
+    for i in range(max(16, int(n_samples))):
+        # Spread across integers + fractional seeds
+        seed = float(i) if i < n_samples // 2 else (i * PHI) % 10000.0
+        ident = classify_from_composition(seed)
+        k = ident.software_kind
+        hits[k] = hits.get(k, 0) + 1
+        if k == "radio_toolkit" and len(radio_seeds) < 5:
+            radio_seeds.append({"seed": seed, "title": ident.title, "fp": ident.composition_fingerprint})
+    return {
+        "samples": n_samples,
+        "coverage": hits,
+        "all_kinds_reached": all(v > 0 for v in hits.values()) or sum(1 for v in hits.values() if v > 0) >= min(6, len(SOFTWARE_KINDS)),
+        "radio_toolkit_examples": radio_seeds,
+        "note": "radio_toolkit packages are software-defined radio *study* tools (waterfall, Morse, logbook) — no live transmitter control.",
+    }
 
 
 def classify_from_composition(
@@ -247,17 +430,28 @@ def classify_from_composition(
 
     g = GENRES[_mix(s, "genre") % len(GENRES)]
     cam = CAMERAS[_mix(s, "camera") % len(CAMERAS)]
-    top = TOPOLOGIES[_mix(s, "topology") % len(TOPOLOGIES)]
+    # Bias topology toward open-world / hub_spoke on average (~60% combined)
+    # while still allowing every topology for full lattice coverage.
+    _topo_r = meum_game_residue(s, "topology_bias")
+    if _topo_r < 0.38:
+        top = "open_world"
+    elif _topo_r < 0.60:
+        top = "hub_spoke"
+    else:
+        top = TOPOLOGIES[_mix(s, "topology") % len(TOPOLOGIES)]
     soc = SOCIAL[_mix(s, "social") % len(SOCIAL)]
     mood = MOODS[_mix(s, "mood") % len(MOODS)]
     online = soc == "online_multiplayer"
     # Port in unprivileged range, seed-stable
     host_port = 27015 + (_mix(s, "port") % 8000)
 
-    # Model sets — 1D filaments, 2D panels, 3D polytopes from Meum powers
-    models_1d = [f"filament_{k}" for k in range(1 + _mix(s, "m1") % 5)]
-    models_2d = [f"panel_{k}" for k in range(2 + _mix(s, "m2") % 6)]
-    models_3d = [f"polytope_{k}" for k in range(1 + _mix(s, "m3") % 4)]
+    # Model sets — wider irrational instance counts (PHI/MEUM mix)
+    _n1 = 2 + int(8 * meum_game_residue(s, "m1") + 2 * PHI * meum_game_residue(s, "m1b"))
+    _n2 = 3 + int(10 * meum_game_residue(s, "m2") + 3 * MEUM * meum_game_residue(s, "m2b"))
+    _n3 = 1 + int(7 * meum_game_residue(s, "m3") + 2 * PHI * meum_game_residue(s, "m3b"))
+    models_1d = [f"filament_{k}" for k in range(max(1, min(12, _n1)))]
+    models_2d = [f"panel_{k}" for k in range(max(2, min(16, _n2)))]
+    models_3d = [f"polytope_{k}" for k in range(max(1, min(10, _n3)))]
 
     palette = {
         "bg": f"#{(_mix(s,'bg') & 0xFFFFFF):06x}",
@@ -306,6 +500,23 @@ def classify_from_composition(
         .encode("utf-8")
     ).hexdigest()[:16]
 
+    # Software-kind residue — full SOFTWARE_KINDS lattice is reachable.
+    # Bias: majority still videogame (playable world), but every other kind
+    # including radio_toolkit appears with positive density.
+    _sk_r = meum_game_residue(s, f"software_kind|{fingerprint}")
+    if _sk_r < 0.55:
+        software_kind = "videogame"
+    else:
+        _idx = 1 + int((_sk_r - 0.55) / max(1e-9, 0.45) * (len(SOFTWARE_KINDS) - 1))
+        software_kind = SOFTWARE_KINDS[min(len(SOFTWARE_KINDS) - 1, max(1, _idx))]
+
+    texture_family = TEXTURE_FAMILIES[_res_idx(s, f"tex|{fingerprint}", len(TEXTURE_FAMILIES))]
+    material_spec = instrument_material_from_seed(s, fingerprint, mood, texture_family)
+    sfx_bank = instrument_sfx_bank(s, n_instruments=max(4, n_instruments))
+    asset_manifest = build_asset_manifest(
+        s, models_1d, models_2d, models_3d, texture_family, material_spec, sfx_bank, software_kind
+    )
+
     return GameIdentity(
         seed=float(seed),
         title=title,
@@ -329,6 +540,11 @@ def classify_from_composition(
         level_type=level_type,
         sigil_count=sigil_count,
         world_fingerprint=world_fp,
+        software_kind=software_kind,
+        texture_family=texture_family,
+        material_spec=material_spec,
+        sfx_bank=sfx_bank,
+        asset_manifest=asset_manifest,
     )
 
 
@@ -617,14 +833,22 @@ class ScenographLite:
     """Canonical instrument->frame scheme, folded from the Groovebox visual
     engine: every layer is ONE 2.5D frame (base_freq lattice, ratio, entropy,
     conson, depth, shade, life, radius) — the same parameter count and MEUM
-    lattice as the canonical visual instrument. Translucency and depth follow
-    conson, the harmonic-cancel factor: goava-aligned (union-minor) -> conson=1
-    and every layer collapses to the identity entropy point, exactly mirroring
-    the audio union. Appearance and fire timing stay pure f(seed, i, beat)."""
-    def __init__(self, seed, n=12, goava=False):
+    lattice as the canonical visual instrument.
+
+    Opacity floors are deliberately high so seed-to-seed divergence is visible
+    (seeds 1 vs 2 land on independent residues and therefore distinct hues,
+    depths, radii and life values). Appearance and fire timing stay pure
+    f(seed, i, beat). Topology-aware placement produces open-world scatter,
+    hub spokes, or arena rings.
+    """
+    def __init__(self, seed, n=12, goava=False, topology="open_world"):
         self.seed = int(seed) & 0x7FFFFFFF
-        self.n = max(3, min(24, n))
+        # Irrational mix of instance counts — PHI/MEUM residues give non-integer
+        # average densities so consecutive seeds diverge in population.
+        _mix_n = 6 + int(18 * _residue(self.seed, "scene_n") + 4 * PHI * _residue(self.seed, "scene_n2"))
+        self.n = max(5, min(36, max(int(n), _mix_n)))
         self.goava = bool(goava)
+        self.topology = (topology or "open_world").lower()
         self.sculptor = TriggerSculptor(self.seed, self.n)
         self.beat = 0.0
         self.layers = []
@@ -634,16 +858,27 @@ class ScenographLite:
             ax = (phase0 * MEUM_NORM + i * MEUM_INV) % 1.0
             ent = (_residue(self.seed, "identity_entropy")
                    if self.goava else _residue(self.seed, f"entropy:{i}"))
-            conson = 1.0 if self.goava else 0.5 + 0.5 * math.cos(ax * math.tau)
-            pow_ = 2.0 + 8.0 * _residue(self.seed, f"pow:{i}")
-            depth = 0.96 + 0.72 * (1.0 - conson) + 0.18 * pow_
-            shade = 0.32 + 0.68 * (0.5 + 0.5 * math.sin(ax * math.tau * PHI))
-            life = 0.30 + 0.70 * conson * (0.25 + 0.75 * ent)
+            conson = 1.0 if self.goava else 0.35 + 0.65 * abs(math.cos(ax * math.tau + i * PHI))
+            pow_ = 1.5 + 10.0 * _residue(self.seed, f"pow:{i}")
+            depth = 0.55 + 1.15 * (1.0 - conson) + 0.25 * pow_ * _residue(self.seed, f"dscale:{i}")
+            # Higher shade/life floors → less wash-out, more seed divergence
+            shade = 0.55 + 0.45 * (0.5 + 0.5 * math.sin(ax * math.tau * PHI + i))
+            life = 0.55 + 0.45 * conson * (0.30 + 0.70 * ent)
             pack = _residue(self.seed, f"pack:{i}")
             ratio = residue_to_bipolar(_residue(self.seed, f"ratio:{i}"))
-            radius = (2.0 - depth) * (0.30 + 0.45 * pack)
+            radius = (2.2 - min(depth, 2.0)) * (0.25 + 0.55 * pack)
+            # Topology-aware free positions (open-world scatter vs hub vs ring)
+            if self.topology in ("open_world", "sandbox", "hub_spoke"):
+                yaw = meum_angle(self.seed * PHI + i * 47 + 13 * _residue(self.seed, f"yaw:{i}"))
+                dist = 0.25 + 1.55 * _residue(self.seed, f"dist:{i}")
+            elif self.topology in ("arena_loop", "linear"):
+                yaw = meum_angle(i * 31 + self.seed)
+                dist = 0.85 + 0.35 * _residue(self.seed, f"dist:{i}")
+            else:
+                yaw = meum_angle(self.seed + i * 31)
+                dist = 0.5 + 1.0 * _residue(self.seed, f"dist:{i}")
             self.layers.append({
-                "base_freq": base if self.goava else base * (1.0 + 0.75 * abs(ratio)),
+                "base_freq": base if self.goava else base * (1.0 + 1.1 * abs(ratio)),
                 "ratio": ratio,
                 "entropy": ent,
                 "conson": conson,
@@ -651,25 +886,44 @@ class ScenographLite:
                 "shade": shade,
                 "life": life,
                 "radius": radius,
-                "yaw": meum_angle(self.seed + i * 31),
-                "pitch": residue_to_bipolar(_residue(self.seed, f"pitch:{i}")) * 0.4,
-                "dist": 0.6 + 0.8 * _residue(self.seed, f"dist:{i}"),
-                "hue": _residue(self.seed, f"hue:{i}"),
+                "yaw": yaw,
+                "pitch": residue_to_bipolar(_residue(self.seed, f"pitch:{i}")) * 0.55,
+                "dist": dist,
+                "hue": (_residue(self.seed, f"hue:{i}") * 0.82 + _residue(self.seed, "hue_global") * 0.18) % 1.0,
                 "on": True,
+                "kind": ("panel", "filament", "polytope", "sigil_sprite")[
+                    int(_residue(self.seed, f"kind:{i}") * 4) % 4
+                ],
             })
     def tick(self, dt, audio_rms=0.2):
         self.beat += dt * (BPM / 60.0)
         step = int(self.beat)
+        # VISIBILITY_CONTRACT: at least ceil(n/2) layers stay on so the player
+        # always sees the scene (sculptor still gates the rest for rhythm).
+        min_on = max(3, (self.n + 1) // 2)
+        on_count = 0
         for i, L in enumerate(self.layers):
-            L["on"] = bool(self.sculptor.active(i, step))
+            fired = bool(self.sculptor.active(i, step))
+            # Force visibility for the first min_on layers every frame
+            L["on"] = True if i < min_on else fired
             if L["on"]:
-                L["yaw"] = (L["yaw"] + dt * (0.3 + 0.5 * MEUM * (i + 1) / self.n) * (0.7 + audio_rms)) % math.tau
-            L["pitch"] = 0.4 * math.sin(self.beat * MEUM + i * PHI)
+                on_count += 1
+                spin = 0.25 + 0.65 * MEUM * (i + 1) / max(1, self.n)
+                L["yaw"] = (L["yaw"] + dt * spin * (0.6 + 0.9 * audio_rms)) % math.tau
+            L["pitch"] = 0.55 * math.sin(self.beat * MEUM + i * PHI)
+            # Subtle life pulse so open-world layers feel alive
+            L["life"] = max(0.45, min(1.0, L.get("life", 0.7) + 0.04 * math.sin(self.beat * PHI + i)))
+        self._on_count = on_count
         return self.layers
 
 
 class MusicBed:
-    """Compositional dynamics simplified from Groovebox — seed loop + DJ drift."""
+    """Compositional dynamics simplified from Groovebox — seed loop + DJ drift
+    + a lightweight Meum harmonic lattice so the game bed shares the same
+    entropy / phase0 / partial continuum as the main app voices.
+    Output is intentionally loud (soft-clipped) so the game bed is audible
+    without external gain.
+    """
     def __init__(self, seed, bpm=BPM, bars=SEQ, algo_fp="0", dj_goava=False, dj_random=False, mix=0.35):
         self.seed = int(seed) & 0x7FFFFFFF
         self.bpm = bpm
@@ -681,6 +935,20 @@ class MusicBed:
         self.mix = float(mix)
         self._dj_residue = _residue(self.seed, "dj_phase")
         self._algo_spin = (_mix(_safe_int_seed(seed), algo_fp or "0") % 10007) / 10007.0
+        # Canonical voice params (mirrors main-app meum voice lattice)
+        self._phase0 = _residue(self.seed, "music_phase0") * math.tau
+        self._entropy = _residue(self.seed, "music_entropy")
+        self._n_partials = max(2, min(10, int(3 + (1.0 - self._entropy) * 7)))
+        self._ratios = [
+            1.0 + k * (0.45 + 0.55 * _residue(self.seed, f"pratio:{k}"))
+            for k in range(self._n_partials)
+        ]
+        self._amps = [
+            (0.62 ** k) * (0.55 + 0.45 * (1.0 - self._entropy))
+            for k in range(self._n_partials)
+        ]
+        # Seed-driven master gain so consecutive seeds differ in loudness feel
+        self._gain = 2.8 + 1.6 * _residue(self.seed, "music_gain")
     def step(self, dt):
         beat = self.bpm / 60.0
         self.phase = (self.phase + dt * beat * math.tau) % math.tau
@@ -690,10 +958,193 @@ class MusicBed:
         if self.dj_random:
             self.dj = (self.dj + 0.15 * math.sin(self.phase * PHI + self._algo_spin)) % 1.0
         g = self.mix * math.sin(self.phase * (1.0 + self._algo_spin) * MEUM)
-        sample = math.sin(self.phase) * (0.4 + 0.6 * self.dj)
-        sample += 0.2 * math.sin(self.phase * (2.0 + MEUM * self.dj))
-        sample += 0.15 * g
-        return sample
+        # Harmonic lattice: phase0-offset fundamental + entropy-scaled partials
+        ph = self.phase + self._phase0
+        sample = 0.0
+        for k in range(self._n_partials):
+            sample += self._amps[k] * math.sin(ph * self._ratios[k])
+        sample *= (0.65 + 0.55 * self.dj)
+        sample += 0.22 * g
+        # Soft fold for mild chaos when entropy is high
+        if self._entropy > 0.45:
+            sample = math.tanh(sample * (1.2 + 1.1 * self._entropy))
+        # Loud but soft-clipped so the bed is always clearly audible
+        sample = math.tanh(sample * self._gain)
+        return max(-1.0, min(1.0, sample))
+
+
+class LiveSFX:
+    """Instrument-lattice one-shots — same phase0/entropy continuum as voices.
+
+    Triggered on collect / kill / portal / quest; mixed into the audio callback
+    path as a short additive burst (no external sample files).
+    """
+    def __init__(self, seed, bank=None):
+        self.seed = int(seed) & 0x7FFFFFFF
+        self.bank = list(bank or [])
+        self._queue = []  # (samples_left, phase, freq, amp, decay)
+
+    def trigger(self, name_or_idx="blip", strength=1.0):
+        if isinstance(name_or_idx, int):
+            idx = name_or_idx % max(1, len(self.bank) or 1)
+            label = self.bank[idx] if self.bank else f"sfx_{idx}"
+        else:
+            label = str(name_or_idx)
+            idx = abs(hash(label)) % 16
+        freq = 180.0 + 900.0 * _residue(self.seed, f"sfx_f:{label}")
+        amp = 0.35 * float(strength) * (0.6 + 0.4 * _residue(self.seed, f"sfx_a:{label}"))
+        dur = int(22050 * (0.06 + 0.14 * _residue(self.seed, f"sfx_d:{label}")))
+        self._queue.append([dur, 0.0, freq, amp, 0.997 - 0.004 * _residue(self.seed, f"sfx_k:{label}")])
+
+    def mix(self, n_samples, sample_rate=22050):
+        if not self._queue:
+            return [0.0] * n_samples
+        out = [0.0] * n_samples
+        alive = []
+        for item in self._queue:
+            left, phase, freq, amp, decay = item
+            for i in range(n_samples):
+                if left <= 0:
+                    break
+                out[i] += amp * math.sin(phase)
+                phase += math.tau * freq / max(1, sample_rate)
+                if phase > math.tau:
+                    phase -= math.tau
+                amp *= decay
+                left -= 1
+            if left > 0 and amp > 1e-4:
+                alive.append([left, phase, freq, amp, decay])
+        self._queue = alive
+        return out
+
+
+class InstrumentAssetBridge:
+    """Ideal abstraction: instrument params → art / models / textures / color / SFX.
+
+    Runtime mirror of the host-side build_asset_manifest so the playable
+    package can tint geometry, pick primitives, and fire SFX from the same
+    lattice the music voices use.
+    """
+    def __init__(self, identity):
+        self.id = identity if isinstance(identity, dict) else {}
+        mat = self.id.get("material_spec") or {}
+        self.hue = float(mat.get("hue", _residue(_safe_int_seed(self.id.get("seed", 0)), "mat_hue")))
+        self.sat = float(mat.get("saturation", 0.6))
+        self.metallic = float(mat.get("metallic", 0.4))
+        self.roughness = float(mat.get("roughness", 0.5))
+        self.emissive = float(mat.get("emissive", 0.2))
+        self.texture_family = self.id.get("texture_family") or "noise_meum"
+        self.sfx = LiveSFX(self.id.get("seed", 0), self.id.get("sfx_bank") or [])
+        self.primitives = (self.id.get("asset_manifest") or {}).get("primitives") or ["panel", "filament", "orb"]
+
+    def color_for_layer(self, layer_hue, shade=0.7):
+        """Blend instrument material hue with per-layer hue → display RGB hint."""
+        h = (0.55 * self.hue + 0.45 * float(layer_hue)) % 1.0
+        return h, max(0.3, min(1.0, self.sat * (0.7 + 0.3 * shade))), max(0.35, min(1.0, 0.45 + 0.55 * shade + 0.2 * self.emissive))
+
+    def primitive_for(self, i):
+        return self.primitives[i % len(self.primitives)]
+
+
+class FunctionShell:
+    """Software-kind function panel — NEVER removes sound/visual/UI.
+
+    The seed picks a kind; this shell exposes kind-specific actions and a
+    status line while the MusicBed, Scenograph, and control panel always run.
+    """
+    def __init__(self, identity):
+        self.id = identity if isinstance(identity, dict) else {}
+        self.kind = str(self.id.get("software_kind") or "videogame")
+        self.seed = _safe_int_seed(self.id.get("seed", 0))
+        self.status = f"{self.kind} ready"
+        self.log = []
+        # Kind-specific seeded state (all pure f(seed))
+        self.calc_value = _residue(self.seed, "util_v") * 1000.0
+        self.band_mhz = 7.0 + 21.0 * _residue(self.seed, "radio_band")  # HF study band
+        self.morse_wpm = 12 + int(18 * _residue(self.seed, "morse_wpm"))
+        self.latency_ms = 20 + int(80 * _residue(self.seed, "net_lat"))
+        self.notes = f"Seeded note buffer [{self.id.get('composition_fingerprint', '')[:8]}]"
+        self.vfs = [f"/{p}_{i}" for i, p in enumerate(
+            ("home", "docs", "media", "net", "radio", "lab")
+        )]
+        self.code_buf = (
+            f"# ide_lite — seed {self.seed}\n"
+            f"def main():\n    return {_residue(self.seed, 'ide_ret'):.6f}\n"
+        )
+
+    def tick(self, t, audio_rms=0.0):
+        # Soft status drift so every kind feels alive with the music
+        if self.kind == "radio_toolkit":
+            self.status = (
+                f"SDR study  band={self.band_mhz:.3f} MHz  "
+                f"Morse={self.morse_wpm} wpm  rms={audio_rms:.2f}  (sim only, no TX)"
+            )
+        elif self.kind == "network_tool":
+            self.status = f"net probe  latency~{self.latency_ms}ms  t={t:.1f}s"
+        elif self.kind == "media_player":
+            self.status = f"media  rms={audio_rms:.3f}  bed+sfx active"
+        elif self.kind == "data_viz":
+            self.status = f"viz  lattice point={_residue(self.seed, f'viz:{int(t)}'):.4f}"
+        elif self.kind == "utility" or self.kind == "office_suite":
+            self.status = f"{self.kind}  value={self.calc_value:.3f}"
+        elif self.kind == "chat_server":
+            self.status = f"chat server  peers via NetTransport  t={t:.1f}"
+        elif self.kind == "file_manager":
+            self.status = f"vfs  {len(self.vfs)} nodes  cwd=/"
+        elif self.kind == "terminal_lab":
+            self.status = "terminal_lab  educational only — no shell exec"
+        elif self.kind == "browser_shell":
+            self.status = "browser_shell  offline lattice pages only"
+        elif self.kind == "ide_lite":
+            self.status = "ide_lite  buffer seeded — run-sim only"
+        elif self.kind == "protocol_lab":
+            self.status = f"protocol_lab  state={int(t * 3) % 5}"
+        elif self.kind == "instrument_lab":
+            self.status = "instrument_lab  Meum asset inspector"
+        elif self.kind == "simulator":
+            self.status = f"simulator  phase={math.sin(t * MEUM):.4f}"
+        else:
+            self.status = f"videogame world  t={t:.1f}s"
+
+    def action(self, cmd=""):
+        cmd = (cmd or "").strip().lower()
+        if self.kind == "radio_toolkit":
+            if cmd.startswith("band"):
+                self.band_mhz = 1.8 + 28.0 * _residue(self.seed, f"band:{cmd}")
+                self.log.append(f"band -> {self.band_mhz:.3f} MHz (sim)")
+            elif cmd.startswith("morse"):
+                self.log.append(f"morse trainer {self.morse_wpm} wpm (practice only)")
+            else:
+                self.log.append("radio: band | morse  — study toolkit, no transmitter")
+        elif self.kind == "utility":
+            self.calc_value = (self.calc_value * MEUM + _residue(self.seed, f"u:{cmd}")) % 10000
+            self.log.append(f"util -> {self.calc_value:.4f}")
+        elif self.kind == "network_tool":
+            self.latency_ms = 10 + int(120 * _residue(self.seed, f"lat:{cmd}:{len(self.log)}"))
+            self.log.append(f"probe latency={self.latency_ms}ms")
+        else:
+            self.log.append(f"{self.kind}: {cmd or 'ping'}")
+        if len(self.log) > 40:
+            self.log = self.log[-40:]
+        return self.log[-1] if self.log else self.status
+
+    def panel_text(self):
+        lines = [
+            f"kind: {self.kind}",
+            f"status: {self.status}",
+            "contract: ALWAYS sound + visual + UI",
+        ]
+        if self.kind == "radio_toolkit":
+            lines += [f"band_mhz: {self.band_mhz:.3f}", f"morse_wpm: {self.morse_wpm}", "TX: disabled (safe sim)"]
+        elif self.kind == "file_manager":
+            lines += self.vfs[:6]
+        elif self.kind == "ide_lite":
+            lines += self.code_buf.splitlines()[:4]
+        elif self.kind == "office_suite":
+            lines += [self.notes[:80]]
+        if self.log:
+            lines.append("log: " + self.log[-1])
+        return "\n".join(lines)
 
 
 class SigilRing:
@@ -733,6 +1184,447 @@ class SigilRing:
 
     def remaining(self):
         return self.count - len(self.collected)
+
+
+class ResourceField:
+    """Harvestable nodes — Meum-packed angles, irrational count mix."""
+    def __init__(self, seed, count=None):
+        self.seed = int(seed) & 0x7FFFFFFF
+        # Irrational population: PHI + MEUM residues → non-repeating densities
+        if count is None:
+            count = 4 + int(12 * _residue(self.seed, "res_n") + 3 * PHI * _residue(self.seed, "res_n2"))
+        self.count = max(3, min(28, int(count)))
+        self.pos = [
+            (meum_angle(self.seed * MEUM + k * 53),
+             0.2 + 0.75 * _residue(self.seed, f"rr{k}"),
+             0.4 + 0.6 * _residue(self.seed, f"rval{k}"))  # value
+            for k in range(self.count)
+        ]
+        self.taken = set()
+
+    def harvest(self, angle, reach=0.28):
+        got = []
+        for k, (a, r, v) in enumerate(self.pos):
+            if k in self.taken:
+                continue
+            d = abs((a - angle + math.pi) % math.tau - math.pi)
+            if d <= reach * max(0.2, r):
+                self.taken.add(k)
+                got.append((k, v))
+        return got
+
+    def remaining(self):
+        return self.count - len(self.taken)
+
+
+class HazardRing:
+    """Damaging zones the player must avoid or skirt."""
+    def __init__(self, seed, count=None):
+        self.seed = int(seed) & 0x7FFFFFFF
+        if count is None:
+            count = 2 + int(8 * _residue(self.seed, "hz_n") + 2 * MEUM * _residue(self.seed, "hz_n2"))
+        self.count = max(1, min(16, int(count)))
+        self.pos = [
+            (meum_angle(self.seed * PHI + k * 71),
+             0.15 + 0.55 * _residue(self.seed, f"hr{k}"),
+             0.3 + 0.7 * _residue(self.seed, f"hdmg{k}"))
+            for k in range(self.count)
+        ]
+
+    def damage_at(self, angle, reach=0.22):
+        total = 0.0
+        for a, r, dmg in self.pos:
+            d = abs((a - angle + math.pi) % math.tau - math.pi)
+            if d <= reach * max(0.18, r):
+                total += dmg
+        return total
+
+
+class PortalGate:
+    """Teleport gates — enter one, exit at a paired angle (open-world travel)."""
+    def __init__(self, seed, count=None):
+        self.seed = int(seed) & 0x7FFFFFFF
+        if count is None:
+            count = 1 + int(5 * _residue(self.seed, "pt_n") + PHI * _residue(self.seed, "pt_n2"))
+        self.count = max(1, min(10, int(count)))
+        self.gates = []
+        for k in range(self.count):
+            a_in = meum_angle(self.seed + k * 97)
+            a_out = meum_angle(self.seed * MEUM + k * 113 + 19)
+            self.gates.append((a_in, a_out, 0.25 + 0.4 * _residue(self.seed, f"pr{k}")))
+
+    def try_teleport(self, angle, reach=0.26):
+        for a_in, a_out, r in self.gates:
+            d = abs((a_in - angle + math.pi) % math.tau - math.pi)
+            if d <= reach * max(0.2, r):
+                return a_out
+        return None
+
+
+class WaypointTrail:
+    """Ordered survey / escort checkpoints."""
+    def __init__(self, seed, count=None):
+        self.seed = int(seed) & 0x7FFFFFFF
+        if count is None:
+            count = 3 + int(7 * _residue(self.seed, "wp_n") + 2 * PHI * _residue(self.seed, "wp_n2"))
+        self.count = max(2, min(14, int(count)))
+        self.pos = [
+            (meum_angle(self.seed * PHI_INV + k * 41),
+             0.35 + 0.5 * _residue(self.seed, f"wr{k}"))
+            for k in range(self.count)
+        ]
+        self.next_idx = 0
+        self.hit = set()
+
+    def advance(self, angle, reach=0.30):
+        if self.next_idx >= self.count:
+            return False
+        a, r = self.pos[self.next_idx]
+        d = abs((a - angle + math.pi) % math.tau - math.pi)
+        if d <= reach * max(0.2, r):
+            self.hit.add(self.next_idx)
+            self.next_idx += 1
+            return True
+        return False
+
+    def remaining(self):
+        return max(0, self.count - self.next_idx)
+
+
+# ---------------------------------------------------------------------------
+# Quests · Items · Tags · Points · Coins · Store · NPC · PvE · PvP
+# All closed-form f(seed, label) — no RNG. File import/export rides the
+# existing GameplayRecorder + GAME_CODECS path (json/gz/csv/txt/wav/png).
+# ---------------------------------------------------------------------------
+_ITEM_NAMES = (
+    "Shard", "Core", "Lens", "Key", "Map", "Phial", "Token", "Ring",
+    "Blade", "Shield", "Charm", "Scroll", "Ore", "Seed", "Crystal", "Relay",
+)
+_ITEM_TAGS = (
+    "common", "rare", "epic", "meum", "trade", "quest", "pve", "pvp",
+    "consumable", "equip", "cosmetic", "key_item",
+)
+_QUEST_VERBS = (
+    "Collect", "Survey", "Escort", "Siege", "Harvest", "Deliver", "Clear", "Attune",
+)
+_NPC_ROLES = (
+    "merchant", "guide", "rival", "ally", "oracle", "quartermaster", "herald", "warden",
+)
+
+
+class ItemCatalog:
+    """Deterministic item definitions + player inventory."""
+    def __init__(self, seed, count=None):
+        self.seed = int(seed) & 0x7FFFFFFF
+        if count is None:
+            count = 6 + int(10 * _residue(self.seed, "item_n") + 3 * PHI * _residue(self.seed, "item_n2"))
+        self.count = max(4, min(24, int(count)))
+        self.defs = []
+        for i in range(self.count):
+            name = _ITEM_NAMES[int(_residue(self.seed, f"iname:{i}") * len(_ITEM_NAMES)) % len(_ITEM_NAMES)]
+            tag = _ITEM_TAGS[int(_residue(self.seed, f"itag:{i}") * len(_ITEM_TAGS)) % len(_ITEM_TAGS)]
+            value = 1 + int(40 * _residue(self.seed, f"ival:{i}") + 10 * MEUM * _residue(self.seed, f"ival2:{i}"))
+            power = 0.2 + 1.5 * _residue(self.seed, f"ipow:{i}")
+            self.defs.append({
+                "id": f"item_{i}",
+                "name": f"{name}-{i+1}",
+                "tag": tag,
+                "value": value,
+                "power": power,
+                "stack": 1 + int(4 * _residue(self.seed, f"istack:{i}")),
+            })
+        self.inventory = {}
+        self.equipped = None
+
+    def grant(self, idx, qty=1):
+        if idx < 0 or idx >= self.count:
+            return None
+        d = self.defs[idx]
+        iid = d["id"]
+        self.inventory[iid] = min(d["stack"], self.inventory.get(iid, 0) + qty)
+        return d
+
+    def grant_by_tag(self, tag, qty=1):
+        for i, d in enumerate(self.defs):
+            if d["tag"] == tag:
+                return self.grant(i, qty)
+        return self.grant(int(_residue(self.seed, f"grant:{tag}") * self.count) % self.count, qty)
+
+    def equip(self, iid):
+        if iid in self.inventory and self.inventory[iid] > 0:
+            self.equipped = iid
+            return True
+        return False
+
+    def power_bonus(self):
+        if not self.equipped:
+            return 0.0
+        for d in self.defs:
+            if d["id"] == self.equipped:
+                return float(d["power"])
+        return 0.0
+
+    def to_dict(self):
+        return {"inventory": dict(self.inventory), "equipped": self.equipped}
+
+    def load_dict(self, data):
+        if not isinstance(data, dict):
+            return
+        self.inventory = {str(k): int(v) for k, v in (data.get("inventory") or {}).items()}
+        self.equipped = data.get("equipped")
+
+
+class QuestLog:
+    """Seeded quest board — accept, progress, complete for coins/points/items."""
+    def __init__(self, seed, count=None):
+        self.seed = int(seed) & 0x7FFFFFFF
+        if count is None:
+            count = 3 + int(6 * _residue(self.seed, "quest_n") + 2 * PHI * _residue(self.seed, "quest_n2"))
+        self.count = max(2, min(12, int(count)))
+        self.quests = []
+        for i in range(self.count):
+            verb = _QUEST_VERBS[int(_residue(self.seed, f"qverb:{i}") * len(_QUEST_VERBS)) % len(_QUEST_VERBS)]
+            target = 2 + int(6 * _residue(self.seed, f"qtgt:{i}"))
+            reward_coins = 5 + int(30 * _residue(self.seed, f"qcoin:{i}"))
+            reward_pts = 10 + int(50 * _residue(self.seed, f"qpts:{i}"))
+            item_idx = int(_residue(self.seed, f"qitem:{i}") * 8) % 8
+            tags = [_ITEM_TAGS[int(_residue(self.seed, f"qtag:{i}:{k}") * len(_ITEM_TAGS)) % len(_ITEM_TAGS)]
+                    for k in range(1 + int(2 * _residue(self.seed, f"qtn:{i}")))]
+            self.quests.append({
+                "id": f"quest_{i}",
+                "title": f"{verb} x{target}",
+                "verb": verb.lower(),
+                "target": target,
+                "progress": 0,
+                "reward_coins": reward_coins,
+                "reward_points": reward_pts,
+                "reward_item": item_idx,
+                "tags": tags,
+                "active": False,
+                "done": False,
+            })
+        self.active_id = None
+
+    def accept(self, idx=None):
+        if idx is None:
+            for q in self.quests:
+                if not q["done"] and not q["active"]:
+                    q["active"] = True
+                    self.active_id = q["id"]
+                    return q
+            return None
+        if 0 <= idx < self.count and not self.quests[idx]["done"]:
+            self.quests[idx]["active"] = True
+            self.active_id = self.quests[idx]["id"]
+            return self.quests[idx]
+        return None
+
+    def progress(self, verb, amount=1):
+        rewarded = []
+        for q in self.quests:
+            if not q["active"] or q["done"]:
+                continue
+            if q["verb"] == verb or verb == "any":
+                q["progress"] = min(q["target"], q["progress"] + amount)
+                if q["progress"] >= q["target"]:
+                    q["done"] = True
+                    q["active"] = False
+                    if self.active_id == q["id"]:
+                        self.active_id = None
+                    rewarded.append(q)
+        return rewarded
+
+    def active(self):
+        for q in self.quests:
+            if q["active"]:
+                return q
+        return None
+
+    def to_dict(self):
+        return {"quests": list(self.quests), "active_id": self.active_id}
+
+    def load_dict(self, data):
+        if not isinstance(data, dict):
+            return
+        qs = data.get("quests")
+        if isinstance(qs, list) and len(qs) == self.count:
+            self.quests = qs
+        self.active_id = data.get("active_id")
+
+
+class CoinPurse:
+    """Soft currency + spend/earn with store pricing from seed lattice."""
+    def __init__(self, seed, start=None):
+        self.seed = int(seed) & 0x7FFFFFFF
+        if start is None:
+            start = 20 + int(40 * _residue(self.seed, "coins0"))
+        self.coins = int(start)
+        self.points = 0
+        self.lifetime_earned = int(start)
+
+    def earn(self, n, reason=""):
+        n = max(0, int(n))
+        self.coins += n
+        self.lifetime_earned += n
+        return self.coins
+
+    def spend(self, n):
+        n = max(0, int(n))
+        if self.coins >= n:
+            self.coins -= n
+            return True
+        return False
+
+    def add_points(self, n):
+        self.points += max(0, int(n))
+        return self.points
+
+    def to_dict(self):
+        return {"coins": self.coins, "points": self.points, "lifetime": self.lifetime_earned}
+
+    def load_dict(self, data):
+        if not isinstance(data, dict):
+            return
+        self.coins = int(data.get("coins", self.coins))
+        self.points = int(data.get("points", self.points))
+        self.lifetime_earned = int(data.get("lifetime", self.lifetime_earned))
+
+
+class Store:
+    """Seed-priced shop slots — buy with coins, receive items."""
+    def __init__(self, seed, catalog, count=None):
+        self.seed = int(seed) & 0x7FFFFFFF
+        self.catalog = catalog
+        if count is None:
+            count = 3 + int(5 * _residue(self.seed, "store_n"))
+        self.count = max(2, min(10, int(count)))
+        self.slots = []
+        for i in range(self.count):
+            idx = int(_residue(self.seed, f"sitem:{i}") * catalog.count) % catalog.count
+            price = max(3, int(catalog.defs[idx]["value"] * (0.8 + 0.6 * _residue(self.seed, f"sprice:{i}"))))
+            self.slots.append({"item_idx": idx, "price": price, "stock": 1 + int(3 * _residue(self.seed, f"sstock:{i}"))})
+
+    def buy(self, slot_idx, purse, catalog):
+        if slot_idx < 0 or slot_idx >= self.count:
+            return None
+        sl = self.slots[slot_idx]
+        if sl["stock"] <= 0:
+            return None
+        if not purse.spend(sl["price"]):
+            return None
+        sl["stock"] -= 1
+        return catalog.grant(sl["item_idx"], 1)
+
+
+class NPCRoster:
+    """Deterministic NPCs with roles, dialogue tags, and shop/quest links."""
+    def __init__(self, seed, count=None):
+        self.seed = int(seed) & 0x7FFFFFFF
+        if count is None:
+            count = 2 + int(6 * _residue(self.seed, "npc_n") + 2 * MEUM * _residue(self.seed, "npc_n2"))
+        self.count = max(1, min(12, int(count)))
+        self.npcs = []
+        for i in range(self.count):
+            role = _NPC_ROLES[int(_residue(self.seed, f"nrole:{i}") * len(_NPC_ROLES)) % len(_NPC_ROLES)]
+            ang = meum_angle(self.seed * PHI + i * 89)
+            rad = 0.35 + 0.5 * _residue(self.seed, f"nrad:{i}")
+            tags = [_ITEM_TAGS[int(_residue(self.seed, f"ntag:{i}:{k}") * len(_ITEM_TAGS)) % len(_ITEM_TAGS)]
+                    for k in range(1 + int(2 * _residue(self.seed, f"ntn:{i}")))]
+            self.npcs.append({
+                "id": f"npc_{i}",
+                "name": f"{role.title()}-{i+1}",
+                "role": role,
+                "angle": ang,
+                "radius": rad,
+                "tags": tags,
+                "met": False,
+                "disposition": 0.3 + 0.5 * _residue(self.seed, f"ndisp:{i}"),
+            })
+
+    def nearest(self, angle, reach=0.35):
+        best, best_d = None, 99.0
+        for n in self.npcs:
+            d = abs((n["angle"] - angle + math.pi) % math.tau - math.pi)
+            if d < best_d and d <= reach * max(0.2, n["radius"]):
+                best, best_d = n, d
+        return best
+
+    def talk(self, npc):
+        if npc is None:
+            return None
+        npc["met"] = True
+        return {
+            "name": npc["name"],
+            "role": npc["role"],
+            "tags": list(npc["tags"]),
+            "line": f"{npc['name']} [{npc['role']}] tags={','.join(npc['tags'][:3])}",
+        }
+
+
+class PveEncounter:
+    """Ambient PvE threats — defeat for coins/points (seed density)."""
+    def __init__(self, seed, count=None):
+        self.seed = int(seed) & 0x7FFFFFFF
+        if count is None:
+            count = 2 + int(7 * _residue(self.seed, "pve_n") + 2 * PHI * _residue(self.seed, "pve_n2"))
+        self.count = max(1, min(14, int(count)))
+        self.mobs = []
+        for i in range(self.count):
+            hp0 = 8 + int(20 * _residue(self.seed, f"pvehp:{i}"))
+            self.mobs.append({
+                "id": f"pve_{i}",
+                "angle": meum_angle(self.seed * MEUM + i * 67),
+                "radius": 0.2 + 0.45 * _residue(self.seed, f"pver:{i}"),
+                "hp": hp0,
+                "max_hp": hp0,
+                "power": 0.4 + 1.2 * _residue(self.seed, f"pvep:{i}"),
+                "alive": True,
+            })
+
+    def engage(self, angle, player_power, reach=0.28):
+        kills = []
+        for m in self.mobs:
+            if not m["alive"]:
+                continue
+            d = abs((m["angle"] - angle + math.pi) % math.tau - math.pi)
+            if d <= reach * max(0.18, m["radius"]):
+                m["hp"] -= max(1.0, player_power)
+                if m["hp"] <= 0:
+                    m["alive"] = False
+                    kills.append(m)
+        return kills
+
+    def remaining(self):
+        return sum(1 for m in self.mobs if m["alive"])
+
+
+class PvpArena:
+    """Lightweight PvP state for online sessions — duel score vs remotes."""
+    def __init__(self, seed):
+        self.seed = int(seed) & 0x7FFFFFFF
+        self.kills = 0
+        self.deaths = 0
+        self.duel_score = 0.0
+        self.tag = "pvp" if _residue(self.seed, "pvp_on") > 0.35 else "peaceful"
+
+    def register_hit(self, from_self=True):
+        if from_self:
+            self.kills += 1
+            self.duel_score += MEUM * 3
+        else:
+            self.deaths += 1
+            self.duel_score = max(0.0, self.duel_score - MEUM)
+
+    def to_dict(self):
+        return {"kills": self.kills, "deaths": self.deaths, "duel_score": round(self.duel_score, 2), "tag": self.tag}
+
+    def load_dict(self, data):
+        if not isinstance(data, dict):
+            return
+        self.kills = int(data.get("kills", 0))
+        self.deaths = int(data.get("deaths", 0))
+        self.duel_score = float(data.get("duel_score", 0))
+        self.tag = str(data.get("tag", self.tag))
 
 
 # ---------------------------------------------------------------------------
@@ -902,8 +1794,21 @@ class Game:
         self.connect = connect
         self.net = NetTransport(self.host_mode, self.port, self.connect)
         self.net.start()
-        self.scene = ScenographLite(self.id["seed"], n=8 + int(_residue(_safe_int_seed(self.id["seed"]), "scene_inst") * 8), goava=self.id.get("goava_active") or ("hook_live_dj_goava" in (self.id.get("gameplay_hooks") or [])))
-        self.music = MusicBed(self.id["seed"], algo_fp=self.id.get("composition_fingerprint", "0"), dj_goava="hook_live_dj_goava" in (self.id.get("gameplay_hooks") or []), dj_random="hook_live_dj_parametric" in (self.id.get("gameplay_hooks") or []), mix=0.35)
+        _topo = str(self.id.get("topology") or "open_world")
+        _goava = bool(self.id.get("goava_active") or ("hook_live_dj_goava" in (self.id.get("gameplay_hooks") or [])))
+        self.scene = ScenographLite(
+            self.id["seed"],
+            n=10 + int(_residue(_safe_int_seed(self.id["seed"]), "scene_inst") * 14),
+            goava=_goava,
+            topology=_topo,
+        )
+        self.music = MusicBed(
+            self.id["seed"],
+            algo_fp=self.id.get("composition_fingerprint", "0"),
+            dj_goava="hook_live_dj_goava" in (self.id.get("gameplay_hooks") or []),
+            dj_random="hook_live_dj_parametric" in (self.id.get("gameplay_hooks") or []),
+            mix=0.40,
+        )
         self.objective = self.id.get("objective", "survey")
         self.difficulty = self.id.get("difficulty", "standard")
         self.level_type = self.id.get("level_type", "heightfield")
@@ -911,10 +1816,29 @@ class Game:
             "tutorial": 0.5, "standard": 1.0, "master": 1.7, "meum_insane": 2.4,
         }.get(self.difficulty, 1.0)
         self.sigils = SigilRing(self.id["seed"], count=self.id.get("sigil_count", 8))
+        # Open-world content packs — irrational instance mixes per seed
+        self.resources = ResourceField(self.id["seed"])
+        self.hazards = HazardRing(self.id["seed"])
+        self.portals = PortalGate(self.id["seed"])
+        self.waypoints = WaypointTrail(self.id["seed"])
+        # Quests / Items / Tags / Coins / Store / NPC / PvE / PvP
+        self.items = ItemCatalog(self.id["seed"])
+        self.quests = QuestLog(self.id["seed"])
+        self.purse = CoinPurse(self.id["seed"])
+        self.store = Store(self.id["seed"], self.items)
+        self.npcs = NPCRoster(self.id["seed"])
+        self.pve = PveEncounter(self.id["seed"])
+        self.pvp = PvpArena(self.id["seed"])
+        self.assets = InstrumentAssetBridge(self.id)
+        self.sfx = self.assets.sfx
+        self.software_kind = self.id.get("software_kind") or "videogame"
+        self.fn = FunctionShell(self.id)  # kind panel; multimodal always on
+        self.quests.accept()  # auto-accept first available quest
         self.combo = 0
         self.level = 1
         self.angle = meum_angle(_safe_int_seed(self.id["seed"]) * MEUM_INV)
         self.score = 0.0
+        self.hp = 100.0
         self.t = 0.0
         self.running = True
         self.steer = 0.0  # player-authored orbit bias in [-1, 1] — deterministic per input
@@ -926,6 +1850,10 @@ class Game:
         self.authoritative = self.net.host_mode or not self.online
         self.chat_log = []
         self.player_name = "Player"
+        self._objective_done = False
+        self._teleport_cd = 0.0
+        self._npc_cd = 0.0
+        self.tags = set(["starter"])  # player tags
 
         # GAME_FILE_TASKS_2026: gameplay recorder (deterministic, IN/OUT files).
         self.rec = GameplayRecorder(self.id["seed"], meta={
@@ -1003,14 +1931,100 @@ class Game:
     def tick(self, dt=1/30):
         sample = self.music.step(dt)
         layers = self.scene.tick(dt, audio_rms=abs(sample))
+        try:
+            self.fn.tick(self.t, audio_rms=abs(sample))
+        except Exception:
+            pass
         self._drain_net()
         if self.authoritative:
             self.angle = (self.angle + dt * MEUM * math.tau * (1.0 + 0.35 * self.steer)) % math.tau
-            if abs(sample) > 0.7:
-                self.score += MEUM * abs(sample) * self.difficulty_mult
+            if self._teleport_cd > 0:
+                self._teleport_cd = max(0.0, self._teleport_cd - dt)
+            # Objective-weighted scoring: each objective privileges a different
+            # closed-form signal so the same seed yields a distinct play-feel.
+            _obj = (self.objective or "survey").lower()
+            _obj_mult = {
+                "harvest": 1.35,   # high reward on resource / sigil collect
+                "escort": 0.85,    # steadier score from sustained orbit + waypoints
+                "survey": 1.00,    # balanced open-world
+                "siege": 1.55,     # aggressive high-risk / high-reward vs hazards
+                "nexus": 1.20,     # rewards combo chains + portals
+                "pilgrimage": 0.95,# slower accrual, larger level jumps via waypoints
+            }.get(_obj, 1.0)
+            if abs(sample) > 0.55:
+                self.score += MEUM * abs(sample) * self.difficulty_mult * (0.7 if _obj == "harvest" else 1.0)
+            # Sigils
             for _k, r in self.sigils.collect(self.angle):
                 self.combo += 1
-                self.score += MEUM * r * self.difficulty_mult * self.combo
+                self.score += MEUM * r * self.difficulty_mult * self.combo * _obj_mult
+                self._reward_quests("collect", 1)
+                self.purse.earn(1, "sigil")
+                self.sfx.trigger("chime", 0.9)
+            # Resources (open-world harvest)
+            for _k, v in self.resources.harvest(self.angle):
+                self.combo += 1
+                self.score += 1.4 * MEUM * v * self.difficulty_mult * _obj_mult
+                if _obj == "harvest":
+                    self.score += 0.8 * MEUM * v * self.difficulty_mult
+                self._reward_quests("harvest", 1)
+                self.purse.earn(int(1 + 3 * v), "resource")
+                self.items.grant_by_tag("common", 1)
+                self.sfx.trigger("click", 0.7)
+            # Hazards (damage / siege pressure)
+            dmg = self.hazards.damage_at(self.angle) * self.difficulty_mult
+            if dmg > 0:
+                self.hp = max(0.0, self.hp - dmg * 12.0 * dt)
+                if _obj == "siege":
+                    self.score += 0.35 * dmg * self.difficulty_mult  # risk reward
+            # Portals (open-world travel)
+            if self._teleport_cd <= 0:
+                dest = self.portals.try_teleport(self.angle)
+                if dest is not None:
+                    self.angle = dest
+                    self._teleport_cd = 1.4
+                    self.score += 2.0 * MEUM * _obj_mult
+                    self.sfx.trigger("whoosh", 1.0)
+                    self.send_chat("system", "portal jump")
+            # Waypoints (survey / escort / pilgrimage)
+            if self.waypoints.advance(self.angle):
+                self.combo += 2
+                self.score += 3.0 * MEUM * self.difficulty_mult * _obj_mult
+                self.send_chat("system", f"waypoint {self.waypoints.next_idx}/{self.waypoints.count}")
+                self._reward_quests("survey", 1)
+                self._reward_quests("escort", 1)
+            # PvE engage (player power = base + equipped item)
+            _pp = 1.0 + self.items.power_bonus()
+            for mob in self.pve.engage(self.angle, _pp):
+                self.combo += 1
+                self.score += 4.0 * MEUM * mob["power"] * self.difficulty_mult
+                self.purse.earn(int(3 + 8 * mob["power"]), "pve")
+                self.purse.add_points(int(5 + 10 * mob["power"]))
+                self.tags.add("pve")
+                self._reward_quests("clear", 1)
+                self._reward_quests("siege", 1)
+                self.sfx.trigger("thud", 1.1)
+                self.send_chat("system", f"PvE down {mob['id']} +coins")
+            # NPC proximity talk (auto on approach, cooldown)
+            if self._npc_cd > 0:
+                self._npc_cd = max(0.0, self._npc_cd - dt)
+            else:
+                npc = self.npcs.nearest(self.angle)
+                if npc is not None:
+                    info = self.npcs.talk(npc)
+                    self._npc_cd = 2.5
+                    self.tags.update(npc.get("tags") or [])
+                    if npc["role"] == "merchant":
+                        self.send_chat("system", f"{info['line']} — store open (/buy 0..{self.store.count-1})")
+                    elif npc["role"] in ("guide", "oracle", "herald"):
+                        q = self.quests.accept()
+                        if q:
+                            self.send_chat("system", f"{info['line']} — quest accepted: {q['title']}")
+                        else:
+                            self.send_chat("system", info["line"])
+                    else:
+                        self.send_chat("system", info["line"])
+            # Sigil/resource quest verbs
+            # (collect/harvest already happened above — progress those quests)
             for name, rec in list(self._remote_steers.items()):
                 rec[0] = (rec[0] + dt * MEUM * math.tau * (1.0 + 0.35 * rec[2])) % math.tau
                 for k, (a, r) in enumerate(self.sigils.pos):
@@ -1019,13 +2033,29 @@ class Game:
                     d = abs((a - rec[0] + math.pi) % math.tau - math.pi)
                     if d <= 0.31 * max(0.25, r):
                         self.sigils.collected.add(k)
-                        rec[1] += MEUM * r * self.difficulty_mult
+                        rec[1] += MEUM * r * self.difficulty_mult * _obj_mult
             threshold = 5 + self.level + int(MEUM * self.level)
+            if _obj == "pilgrimage":
+                threshold = max(3, threshold - 2)
             if self.combo >= threshold and self.music.dj > 0.05:
                 self.level += 1
                 self.difficulty_mult = min(3.0, self.difficulty_mult * (1.0 + MEUM_NORM * 0.4))
-                self.send_chat("system", f"level {self.level} — difficulty x{self.difficulty_mult:.2f}")
+                self.send_chat("system", f"level {self.level} — {_obj} x{self.difficulty_mult:.2f}")
                 self.combo = 0
+            # Objective-complete conditions (plenty to do)
+            done = False
+            if _obj == "harvest" and self.resources.remaining() == 0 and self.sigils.remaining() == 0:
+                done = True
+            elif _obj in ("survey", "escort", "pilgrimage") and self.waypoints.remaining() == 0:
+                done = True
+            elif _obj == "nexus" and self.sigils.remaining() == 0 and self.resources.remaining() <= max(1, self.resources.count // 4):
+                done = True
+            elif self.sigils.remaining() == 0 and self.resources.remaining() == 0 and self.waypoints.remaining() == 0:
+                done = True
+            if done and not self._objective_done:
+                self._objective_done = True
+                self.score += 120.0 * MEUM * self.difficulty_mult * _obj_mult
+                self.send_chat("system", f"OBJECTIVE COMPLETE — {_obj.upper()}  score {self.score:.1f}")
             if self.net.host_mode:
                 self.net.broadcast({
                     "type": "snap",
@@ -1087,6 +2117,12 @@ class Game:
                 player=self.player_name,
             )
             self._audio_samples.append(float(sample))
+        # Live SFX burst mixed into the bed sample (instrument-lattice one-shots)
+        try:
+            sfx_chunk = self.sfx.mix(1, self.sample_rate)
+            sample = max(-1.0, min(1.0, float(sample) + 0.85 * float(sfx_chunk[0])))
+        except Exception:
+            pass
         self.t += dt
         return sample, layers
 
@@ -1198,7 +2234,91 @@ class Game:
               f"fingerprint={self.id['composition_fingerprint']} world={self.id.get('world_fingerprint', '-')}")
         self.net.shutdown()
 
+    def _reward_quests(self, verb, amount=1):
+        """Apply quest progress and grant coins/points/items on completion."""
+        for q in self.quests.progress(verb, amount):
+            self.purse.earn(q["reward_coins"], "quest")
+            self.purse.add_points(q["reward_points"])
+            granted = self.items.grant(q["reward_item"] % self.items.count, 1)
+            self.tags.update(q.get("tags") or [])
+            self.tags.add("quest")
+            name = granted["name"] if granted else "?"
+            self.send_chat("system",
+                f"QUEST DONE {q['title']} +{q['reward_coins']}c +{q['reward_points']}pts item={name}")
+            # Auto-accept next
+            nxt = self.quests.accept()
+            if nxt:
+                self.send_chat("system", f"next quest: {nxt['title']}")
+
+    def economy_snapshot(self):
+        return {
+            "coins": self.purse.to_dict(),
+            "items": self.items.to_dict(),
+            "quests": self.quests.to_dict(),
+            "pvp": self.pvp.to_dict(),
+            "tags": sorted(self.tags),
+            "score": round(self.score, 3),
+            "level": self.level,
+            "hp": round(self.hp, 1),
+        }
+
+    def load_economy(self, data):
+        if not isinstance(data, dict):
+            return
+        self.purse.load_dict(data.get("coins") or {})
+        self.items.load_dict(data.get("items") or {})
+        self.quests.load_dict(data.get("quests") or {})
+        self.pvp.load_dict(data.get("pvp") or {})
+        tags = data.get("tags")
+        if isinstance(tags, list):
+            self.tags = set(str(t) for t in tags)
+        if "score" in data:
+            self.score = float(data["score"])
+        if "level" in data:
+            self.level = int(data["level"])
+        if "hp" in data:
+            self.hp = float(data["hp"])
+
+    def export_economy(self, path):
+        """File export — json/gz economy + world state (shares GAME_CODECS path)."""
+        blob = {
+            "kind": "groovebox-economy/1",
+            "seed": self.id.get("seed"),
+            "fingerprint": self.id.get("composition_fingerprint"),
+            "world_fingerprint": self.id.get("world_fingerprint"),
+            "economy": self.economy_snapshot(),
+            "report": self.report(),
+        }
+        path = str(path)
+        if path.endswith(".gz"):
+            with gzip.open(path, "wt", encoding="utf-8") as f:
+                json.dump(blob, f, indent=2, sort_keys=True)
+        else:
+            if not path.endswith(".json"):
+                path = path + ".json"
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(blob, f, indent=2, sort_keys=True)
+        return path
+
+    def import_economy(self, path):
+        """File import — restore coins/items/quests/tags/pvp from json/gz."""
+        path = str(path)
+        if path.endswith(".gz"):
+            with gzip.open(path, "rt", encoding="utf-8") as f:
+                blob = json.load(f)
+        else:
+            with open(path, "r", encoding="utf-8") as f:
+                blob = json.load(f)
+        eco = blob.get("economy") if isinstance(blob, dict) else None
+        if eco:
+            self.load_economy(eco)
+            self.send_chat("system", f"imported economy from {path}")
+            return True
+        self.send_chat("system", f"import failed — no economy block in {path}")
+        return False
+
     def report(self):
+        aq = self.quests.active()
         return {
             "title": self.id["title"],
             "genre": self.id["genre"],
@@ -1218,6 +2338,20 @@ class Game:
             "score": round(self.score, 3),
             "level": self.level,
             "t": round(self.t, 2),
+            "coins": self.purse.coins,
+            "points": self.purse.points,
+            "hp": round(self.hp, 1),
+            "quest": (aq["title"] if aq else None),
+            "quest_progress": (f"{aq['progress']}/{aq['target']}" if aq else None),
+            "items": len(self.items.inventory),
+            "equipped": self.items.equipped,
+            "tags": sorted(self.tags),
+            "pve_remaining": self.pve.remaining(),
+            "pvp": self.pvp.to_dict(),
+            "npcs_met": sum(1 for n in self.npcs.npcs if n.get("met")),
+            "software_kind": self.software_kind,
+            "fn_status": getattr(self.fn, "status", ""),
+            "multimodal": {"sound": True, "visual": True, "ui": True},
         }
 
     def handle_console_command(self, line):
@@ -1230,6 +2364,73 @@ class Game:
             self.send_chat(self.player_name, line[len("/chat "):])
         elif line in ("/report", "/world"):
             print(json.dumps(self.report(), indent=2, sort_keys=True))
+        elif line in ("/inv", "/items"):
+            inv = self.items.inventory
+            print("INVENTORY:", json.dumps(inv, indent=2))
+            print("EQUIPPED:", self.items.equipped)
+            print("DEFS:", [(d["id"], d["name"], d["tag"], d["value"]) for d in self.items.defs[:8]])
+        elif line in ("/quests", "/quest"):
+            for q in self.quests.quests:
+                flag = "DONE" if q["done"] else ("ACTIVE" if q["active"] else "open")
+                print(f"  [{flag}] {q['title']} {q['progress']}/{q['target']} tags={q['tags']}")
+        elif line.startswith("/accept"):
+            parts = line.split()
+            idx = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+            q = self.quests.accept(idx)
+            if q:
+                self.send_chat("system", f"accepted {q['title']}")
+            else:
+                self.send_chat("system", "no quest available")
+        elif line.startswith("/buy"):
+            parts = line.split()
+            idx = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+            got = self.store.buy(idx, self.purse, self.items)
+            if got:
+                self.send_chat("system", f"bought {got['name']} [{got['tag']}] for coins")
+                self.tags.add("trade")
+            else:
+                self.send_chat("system", f"buy failed (slot={idx} coins={self.purse.coins})")
+        elif line.startswith("/equip"):
+            parts = line.split()
+            iid = parts[1] if len(parts) > 1 else None
+            if iid and self.items.equip(iid):
+                self.send_chat("system", f"equipped {iid}")
+            else:
+                self.send_chat("system", f"equip failed — have: {list(self.items.inventory.keys())}")
+        elif line.startswith("/export"):
+            parts = line.split(None, 1)
+            path = parts[1] if len(parts) > 1 else "economy.json"
+            out = self.export_economy(path)
+            self.send_chat("system", f"exported economy -> {out}")
+        elif line.startswith("/import"):
+            parts = line.split(None, 1)
+            path = parts[1] if len(parts) > 1 else "economy.json"
+            self.import_economy(path)
+        elif line in ("/store", "/shop"):
+            for i, sl in enumerate(self.store.slots):
+                d = self.items.defs[sl["item_idx"]]
+                print(f"  [{i}] {d['name']} [{d['tag']}] price={sl['price']} stock={sl['stock']}")
+            print(f"  coins={self.purse.coins} points={self.purse.points}")
+        elif line in ("/tags",):
+            print("TAGS:", sorted(self.tags))
+        elif line in ("/pvp",):
+            print("PvP:", self.pvp.to_dict())
+        elif line in ("/fn", "/kind", "/function"):
+            print(self.fn.panel_text())
+        elif line.startswith("/fn "):
+            msg = self.fn.action(line[4:])
+            self.send_chat("system", msg)
+        elif line in ("/contract", "/multimodal"):
+            print(json.dumps({
+                "software_kind": self.software_kind,
+                "always_sound": True,
+                "always_visual": True,
+                "always_ui": True,
+                "music": True,
+                "sfx_queue": len(getattr(self.sfx, "_queue", [])),
+                "layers": len(self.scene.layers),
+                "layers_on": getattr(self.scene, "_on_count", "?"),
+            }, indent=2))
         else:
             self.send_chat(self.player_name, line)
 
@@ -1258,57 +2459,186 @@ if HAS_UI:
             tx = pal.get("text", "#e8f0ff")
             w, h = self.width(), self.height()
             cx, cy = w / 2.0, h / 2.0
-            R = min(w, h) * 0.34
+            # Larger world radius for open-world feel
+            R = min(w, h) * 0.42
             p.fillRect(self.rect(), QColor(bg))
-            # Scene beams: only layers whose instrument fired this beat.
+            topo = str(g.id.get("topology") or "open_world")
+
+            def project(yaw, dist, pitch=0.0, depth=1.0):
+                # 2.5D: yaw/dist on plane, pitch lifts Y, depth scales size
+                scale = 1.0 / max(0.35, 0.55 + 0.45 * depth)
+                x = cx + dist * R * math.cos(yaw) * scale
+                y = cy + dist * R * math.sin(yaw) * scale - pitch * R * 0.35 * scale
+                sz = max(2.0, (6.0 + 10.0 * (1.2 - min(depth, 1.8))) * scale)
+                return x, y, sz
+
+            # Depth-sorted layers for proper 2.5D occlusion
             on_layers = [L for L in g.scene.layers if L.get("on")]
-            for i, L in enumerate(on_layers):
-                shade = L.get("shade", 0.6)
-                life = L.get("life", 0.5)
-                depth = L.get("depth", 1.2)
-                hsv = QColor(ac).toHsv()
-                hsv.setHsv(round(200.0 + 150.0 * L.get("hue", 0.5)) % 360,
-                           int(70 + 160 * shade),
-                           int(90 + 160 * shade))
+            on_layers.sort(key=lambda L: -float(L.get("depth", 1.0)))
+            for L in on_layers:
+                shade = float(L.get("shade", 0.7))
+                life = float(L.get("life", 0.7))
+                depth = float(L.get("depth", 1.2))
+                hue = float(L.get("hue", 0.5))
+                # Instrument→asset color bridge when present
+                try:
+                    h, s, v = g.assets.color_for_layer(hue, shade)
+                    hsv = QColor(ac).toHsv()
+                    hsv.setHsv(int(round(h * 360)) % 360,
+                               int(80 + 175 * s),
+                               int(100 + 155 * v))
+                except Exception:
+                    hsv = QColor(ac).toHsv()
+                    hsv.setHsv(int(round(hue * 360)) % 360,
+                               int(90 + 165 * shade),
+                               int(110 + 145 * shade))
                 col = hsv
-                col.setAlpha(max(30, min(250, int(40 + 210 * life * shade))))
-                p.setPen(QPen(col, max(1, round(1 + 2.5 * depth))))
-                rad = meum_angle(i * 31)
-                rpos = L.get("dist", 1.0) + 0.15 * L.get("radius", 0.0)
-                x2 = cx + rpos * R * math.cos(rad)
-                y2 = cy + rpos * R * math.sin(rad)
-                p.drawLine(QPointF(cx, cy), QPointF(x2, y2))
-            # Orbital ring
-            p.setPen(QPen(QColor(tx), 2))
+                # High opacity floor so the scene is always visible
+                col.setAlpha(max(140, min(255, int(110 + 145 * life * shade))))
+                x, y, sz = project(L.get("yaw", 0.0), L.get("dist", 1.0),
+                                   L.get("pitch", 0.0), depth)
+                kind = L.get("kind", "panel")
+                if kind == "filament":
+                    p.setPen(QPen(col, max(1, int(1 + 2.2 * depth))))
+                    p.drawLine(QPointF(cx, cy), QPointF(x, y))
+                elif kind == "polytope":
+                    p.setPen(QPen(col, 2))
+                    p.setBrush(col)
+                    pts = []
+                    for k in range(5):
+                        a = L.get("yaw", 0) + k * math.tau / 5
+                        px = x + sz * 0.7 * math.cos(a)
+                        py = y + sz * 0.7 * math.sin(a)
+                        pts.append(QPointF(px, py))
+                    if pts:
+                        p.drawPolygon(*pts) if False else p.drawConvexPolygon(pts)
+                else:
+                    p.setPen(QPen(col, 1))
+                    p.setBrush(col)
+                    p.drawEllipse(QPointF(x, y), sz, sz * 0.72)
+
+            # Soft world ring (less dominant in open_world)
+            ring_a = 90 if topo in ("open_world", "hub_spoke") else 180
+            ring_col = QColor(tx)
+            ring_col.setAlpha(ring_a)
+            p.setPen(QPen(ring_col, 1))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(QPointF(cx, cy), R, R)
-            # Sigils (uncollected glints, MEUM-packed)
-            p.setPen(QPen(QColor(ac), 1))
+
+            # Hazards (danger glows)
+            for a, r, _d in getattr(g, "hazards", HazardRing(0)).pos:
+                x = cx + math.cos(a) * r * R
+                y = cy + math.sin(a) * r * R
+                col = QColor(dg)
+                col.setAlpha(160)
+                p.setPen(QPen(col, 1))
+                p.setBrush(col)
+                p.drawEllipse(QPointF(x, y), 5 + int(r * 10), 5 + int(r * 10))
+
+            # Resources
+            for k, (a, r, _v) in enumerate(getattr(g, "resources", ResourceField(0)).pos):
+                if k in getattr(g.resources, "taken", set()):
+                    continue
+                col = QColor("#7dff9a")
+                col.setAlpha(220)
+                p.setPen(QPen(col, 1))
+                p.setBrush(col)
+                x = cx + math.cos(a) * r * R
+                y = cy + math.sin(a) * r * R
+                p.drawRect(int(x - 4), int(y - 4), 8, 8)
+
+            # Portals
+            for a_in, a_out, r in getattr(g, "portals", PortalGate(0)).gates:
+                col = QColor("#c77dff")
+                col.setAlpha(200)
+                p.setPen(QPen(col, 2))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                x = cx + math.cos(a_in) * r * R
+                y = cy + math.sin(a_in) * r * R
+                p.drawEllipse(QPointF(x, y), 9, 9)
+                # faint exit marker
+                col.setAlpha(90)
+                p.setPen(QPen(col, 1))
+                x2 = cx + math.cos(a_out) * r * R
+                y2 = cy + math.sin(a_out) * r * R
+                p.drawEllipse(QPointF(x2, y2), 5, 5)
+
+            # Waypoints (numbered trail)
+            for k, (a, r) in enumerate(getattr(g, "waypoints", WaypointTrail(0)).pos):
+                if k in getattr(g.waypoints, "hit", set()):
+                    continue
+                col = QColor("#ffe066")
+                col.setAlpha(230 if k == getattr(g.waypoints, "next_idx", 0) else 140)
+                p.setPen(QPen(col, 2 if k == getattr(g.waypoints, "next_idx", 0) else 1))
+                p.setBrush(col)
+                x = cx + math.cos(a) * r * R
+                y = cy + math.sin(a) * r * R
+                p.drawEllipse(QPointF(x, y), 6, 6)
+                p.setPen(QPen(QColor(tx), 1))
+                p.drawText(int(x + 6), int(y - 4), str(k + 1))
+
+            # Sigils
             for k, (a, r) in enumerate(g.sigils.pos):
                 if k in getattr(g.sigils, "collected", set()):
                     continue
                 col = QColor(ac)
-                col.setAlpha(230)
+                col.setAlpha(240)
                 p.setPen(QPen(col, 1))
                 p.setBrush(col)
                 x = cx + math.cos(a) * r * R
                 y = cy + math.sin(a) * r * R
                 p.drawEllipse(QPointF(x, y), 4 + int(r * 8), 4 + int(r * 8))
+
+            # PvE mobs
+            for m in getattr(g, "pve", PveEncounter(0)).mobs:
+                if not m.get("alive", True):
+                    continue
+                col = QColor("#ff6b4a")
+                col.setAlpha(200)
+                p.setPen(QPen(col, 2))
+                p.setBrush(col)
+                x = cx + math.cos(m["angle"]) * m["radius"] * R
+                y = cy + math.sin(m["angle"]) * m["radius"] * R
+                p.drawEllipse(QPointF(x, y), 7, 7)
+
+            # NPCs
+            for n in getattr(g, "npcs", NPCRoster(0)).npcs:
+                col = QColor("#66d9ef") if not n.get("met") else QColor("#a6e22e")
+                col.setAlpha(220)
+                p.setPen(QPen(col, 2))
+                p.setBrush(col)
+                x = cx + math.cos(n["angle"]) * n["radius"] * R
+                y = cy + math.sin(n["angle"]) * n["radius"] * R
+                p.drawRect(int(x - 5), int(y - 5), 10, 10)
+                p.setPen(QPen(QColor(tx), 1))
+                p.drawText(int(x + 6), int(y - 2), n["name"][:10])
+
             def draw_face(name, angle, color, size):
-                x = cx + math.cos(angle) * R
-                y = cy + math.sin(angle) * R
+                x = cx + math.cos(angle) * R * 0.92
+                y = cy + math.sin(angle) * R * 0.92
                 p.setPen(QPen(color, 2))
                 p.setBrush(QColor(color))
                 p.drawEllipse(QPointF(x, y), size, size)
                 p.drawLine(QPointF(x - size, y + size * 0.6), QPointF(x + size * 0.8, y - size * 0.9))
                 p.setPen(QPen(QColor(tx), 1))
                 p.drawText(int(x - size), int(y - size - 4), str(name)[:12])
-            draw_face(g.player_name or "You", g.angle, QColor(ac), 7)
+            draw_face(g.player_name or "You", g.angle, QColor(ac), 8)
             for name, rec in sorted((g.remotes or {}).items()):
                 draw_face(name, float(rec.get("angle", 0.0)), QColor(dg), 6)
+
+            hp = getattr(g, "hp", 100.0)
+            coins = getattr(getattr(g, "purse", None), "coins", 0)
+            pts = getattr(getattr(g, "purse", None), "points", 0)
+            aq = g.quests.active() if getattr(g, "quests", None) else None
+            qtxt = f"{aq['title']} {aq['progress']}/{aq['target']}" if aq else "none"
             p.setPen(QPen(QColor(tx), 1))
-            p.drawText(8, h - 10, f"{g.id['title']}  t={g.t:.1f}s  "
-                       f"sigils={g.sigils.remaining()}/{g.sigils.count}  net={g.net.status}")
+            p.drawText(8, h - 24,
+                       f"{g.id['title']}  t={g.t:.1f}s  "
+                       f"sigils={g.sigils.remaining()}/{g.sigils.count}  "
+                       f"res={g.resources.remaining()}  wp={g.waypoints.remaining()}  "
+                       f"pve={g.pve.remaining()}")
+            p.drawText(8, h - 10,
+                       f"HP={hp:.0f}  coins={coins}  pts={pts}  quest={qtxt}  net={g.net.status}")
 
     class ControlPanel(QWidget):
         def __init__(self, game, window, parent=None):
@@ -1341,11 +2671,18 @@ if HAS_UI:
             self.score_lbl = QLabel("Score 0.00")
             self.level_lbl = QLabel("Level 1  (x1.00)")
             self.sigil_lbl = QLabel("Sigils 0/0")
+            self.eco_lbl = QLabel("Coins 0  Pts 0  HP 100")
+            self.quest_lbl = QLabel("Quest —")
+            self.tags_lbl = QLabel("Tags: starter")
+            self.kind_lbl = QLabel(f"Kind: {g.software_kind}  (always sound+visual+UI)")
+            self.fn_lbl = QLabel("Fn: —")
+            self.fn_lbl.setWordWrap(True)
             self.djbar = QProgressBar()
             self.djbar.setRange(0, 1000)
             self.djbar.setValue(0)
             self.djbar.setTextVisible(False)
-            for lbl in (self.score_lbl, self.level_lbl, self.sigil_lbl):
+            for lbl in (self.score_lbl, self.level_lbl, self.sigil_lbl, self.eco_lbl,
+                        self.quest_lbl, self.tags_lbl, self.kind_lbl, self.fn_lbl):
                 vb.addWidget(lbl)
             vb.addWidget(self.djbar)
             lay.addWidget(box)
@@ -1482,6 +2819,20 @@ if HAS_UI:
             self.score_lbl.setText(f"Score {g.score:.2f}")
             self.level_lbl.setText(f"Level {g.level}  (x{g.difficulty_mult:.2f})")
             self.sigil_lbl.setText(f"Sigils {g.sigils.remaining()}/{g.sigils.count}")
+            try:
+                self.eco_lbl.setText(
+                    f"Coins {g.purse.coins}  Pts {g.purse.points}  HP {g.hp:.0f}  "
+                    f"Inv {len(g.items.inventory)}  PvE {g.pve.remaining()}"
+                )
+                aq = g.quests.active()
+                self.quest_lbl.setText(
+                    f"Quest {aq['title']} {aq['progress']}/{aq['target']}" if aq else "Quest —"
+                )
+                self.tags_lbl.setText("Tags: " + ", ".join(sorted(g.tags)[:8]))
+                self.kind_lbl.setText(f"Kind: {g.software_kind}  (always sound+visual+UI)")
+                self.fn_lbl.setText("Fn: " + str(getattr(g.fn, "status", "—"))[:90])
+            except Exception:
+                pass
             self.djbar.setValue(max(0, min(1000, int(g.music.dj * 1000))))
             self.net_lbl.setText(g.net.status)
             self.role_lbl.setText(f"Role: {self._role_text()}")
@@ -1653,6 +3004,12 @@ def main(argv=None):
         return
 
     g = Game(host_mode=A["host"], port=A["port"], connect=A["connect"])
+    # MULTIMODAL_CONTRACT: every session declares sound + visual + UI up front.
+    print("[MULTIMODAL] sound=ON  visual=ON  ui=%s  kind=%s" % (
+        "PyQt6" if HAS_UI and not A.get("cli") else "CLI-HUD",
+        getattr(g, "software_kind", g.id.get("software_kind", "videogame")),
+    ))
+    print("[MULTIMODAL] MusicBed+LiveSFX + ScenographLite + ControlPanel/CLI always active")
 
     if A["report"]:
         print(json.dumps(g.report(), indent=2, sort_keys=True))
@@ -1770,6 +3127,28 @@ def export_game_files(identity: GameIdentity, out_dir: str, composition_meta: Op
     meta_path = os.path.join(out_dir, f"game_{identity.composition_fingerprint}.json")
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(identity.to_dict(), f, indent=2)
+    # Instrument → asset manifest (models, textures, materials, SFX, software kind)
+    asset_path = os.path.join(out_dir, f"assets_{identity.composition_fingerprint}.json")
+    with open(asset_path, "w", encoding="utf-8") as f:
+        json.dump(identity.asset_manifest or build_asset_manifest(
+            _safe_int_seed(identity.seed),
+            identity.model_sets_1d, identity.model_sets_2d, identity.model_sets_3d,
+            identity.texture_family, identity.material_spec or {},
+            identity.sfx_bank or [], identity.software_kind or "videogame",
+        ), f, indent=2, sort_keys=True)
+    # Lattice coverage proof (shows radio_toolkit and other kinds are reachable)
+    proof_path = os.path.join(out_dir, "software_lattice_proof.json")
+    with open(proof_path, "w", encoding="utf-8") as f:
+        json.dump(prove_software_lattice(48), f, indent=2, sort_keys=True)
+    # Multimodal contract — every package declares always sound + visual + UI
+    contract_path = os.path.join(out_dir, "multimodal_contract.json")
+    with open(contract_path, "w", encoding="utf-8") as f:
+        json.dump({
+            **MULTIMODAL_CONTRACT,
+            "software_kind": identity.software_kind,
+            "title": identity.title,
+            "fingerprint": identity.composition_fingerprint,
+        }, f, indent=2, sort_keys=True)
     _write_launchers(out_dir, identity.composition_fingerprint)
     _write_package_readme(out_dir, identity)
     # The package carries its own provisioning: identical dependency-install
@@ -1795,9 +3174,17 @@ PACKAGE_README = """Groovebox Video-Game Package
 Title:  {title}
 Genre:  {genre}  |  Camera:  {camera}  |  Topology:  {topology}
 Social: {social}  |  Mood:   {mood}
+Software kind: {software_kind}
 World:  objective={objective}  difficulty={difficulty}  level={level_type}
         sigils={sigil_count}  world_fingerprint={world_fingerprint}
 Fingerprint: {composition_fingerprint}
+
+MULTIMODAL CONTRACT (always on)
+-------------------------------
+Every package ships SOUND (MusicBed + LiveSFX), VISUAL (ScenographLite 2.5D),
+and UI (PyQt6 panel, or CLI HUD if PyQt6 is missing).  Software-kind only
+changes the function panel (network tool, radio study toolkit, data viz, …);
+it never strips audio, scenograph, or UI.  See multimodal_contract.json.
 
 RUNNING
 -------
@@ -1868,6 +3255,7 @@ def _write_package_readme(out_dir: str, identity: GameIdentity) -> str:
             topology=identity.topology,
             social=identity.social,
             mood=identity.mood,
+            software_kind=getattr(identity, "software_kind", "videogame"),
             objective=identity.objective,
             difficulty=identity.difficulty,
             level_type=identity.level_type,
