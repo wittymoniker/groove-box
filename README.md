@@ -147,8 +147,12 @@ pip install PyQt6 numpy sounddevice scipy
   per-voice EQR and PKP coloring was removed from the canonical voice stage
   (voice stage keeps only the neutral decay floor the per-synth Harmonic
   Lattice needs), so the effect sliders can never factor into the canonical
-  fingerprint or the unison engines. PKP Decay now actually damps the master
-  PKP envelope swing (default 0.5 → 0.2925 swing). No additional
+  fingerprint or the unison engines. PKP Decay now defines the per-note
+  envelope binding with the follower always on: hold = step × seq_len^(2d−1),
+  so 0.5 = normal 1:1 note-per-step envelope (hold = 1 step), 1 = hold spans
+  the whole sequence length, 0 = hold is (1 step)/(sequence length); every
+  note also always sweeps ~1 note duration before and after. PKP Decay still
+  damps the master PKP swing too (default 0.5 → 0.2925 swing). No additional
   Nyquist-domain processors were added — frequency-domain work is confined
   to the one sanctioned spectral effect above.
 - **Export menu is now exactly 3 × 3.** Audio only (WAV / FLAC / MP3),

@@ -15267,6 +15267,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.slider_pkp_decay = QSlider(Qt.Orientation.Horizontal)
         self.slider_pkp_decay.setRange(1, 1000)
         self.slider_pkp_decay.setValue(int(round(0.5 * 1000)))
+        self.slider_pkp_decay.setToolTip(
+            "PKP Decay → per-note envelope binding (follower always on, ≈1-note sweep "
+            "before/after every note). 0.5 = normal 1:1 note-per-step envelope; "
+            "1 = hold spans the whole sequence length; 0 = hold is (1 step)/(sequence "
+            "length) note duration."
+        )
 
         # PKP Envelope Follower is permanently force-enabled (no toggle).
         # Tempo-locked sinusoidal amplitude envelope always drives Fractallizer.
@@ -15441,17 +15447,33 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "Live deterministic parametric macro. It sounds random but is seed/pair/BPM stable and never calls RNG from the audio thread.",
             checkable=True, active_color="#ff1493"
         )
+        # PINK_DJ_BUTTONS: both live-DJ macros share one identical pink engaged
+        # paint — same color, same scheme — so GOAVA DJ / RAND PARAM read as one
+        # matched pink pair (never confused with the teal engine fills or the
+        # violet global randomizer). The engaged pink persists on hover/press,
+        # mirroring the violet ENGAGED_COLOR_FIX pattern.
+        _PINK_DJ_SHEET = (
+            "QPushButton { background-color:#121212; color:#ff9ecf; border:2px solid #ff69b4; "
+            "border-radius:6px; padding:5px 8px; font-weight:bold; }"
+            "QPushButton:checked { background-color:#ff69b4; color:#101010; border:2px solid #ff69b4; }"
+            "QPushButton:checked:hover { background-color:#ff86c4; }"
+            "QPushButton:checked:pressed { background-color:#ff6b00; color:white; }"
+            "QPushButton:hover { background-color:#2a1424; }"
+            "QPushButton:pressed { background-color:#ff6b00; color:white; }"
+        )
+        self.btn_live_dj_goava.setStyleSheet(_PINK_DJ_SHEET)
+        self.btn_live_dj_random.setStyleSheet(_PINK_DJ_SHEET)
         # Video-game generator — deterministic unique worlds from the live composition
         self.btn_play_videogame = _make_global_operator_button(
             "🎮 PLAY VIDEO GAME",
             "Build & test a live game .py from the current composition seed (splash → start → play).",
-            checkable=False, active_color="#ff69b4"
+            checkable=False, active_color="#000080"
         )
-        # GAME_ROLE_THEME: magenta = video-game world, matching the exported
+        # GAME_ROLE_THEME: navy blue = video-game world, matching the exported
         # package identity color. Overrides the generic amber operator paint.
         self.btn_play_videogame.setStyleSheet(
-            "QPushButton { background-color:#1c0f1c; color:#ffa8e6; border:2px solid #f878d0; border-radius:6px; padding:5px 8px; font-weight:bold; } "
-            "QPushButton:hover { background-color:#2a1428; } QPushButton:pressed { background-color:#ff6b00; color:white; }"
+            "QPushButton { background-color:#000080; color:#dfe8ff; border:2px solid #3a5fd0; border-radius:6px; padding:5px 8px; font-weight:bold; } "
+            "QPushButton:hover { background-color:#0a1a66; } QPushButton:pressed { background-color:#2a4ad0; color:white; }"
         )
 
         global_context_group = QGroupBox("GLOBAL · COMPOSITION CANONICALS")
@@ -15634,8 +15656,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # PKP / sequence controls live directly above the sequencer tray.
         # The boost control is square; the three PKP handles are vertical.
         self.pkp_boost_amount = 1.0
+        self.pkp_boost_active = False
         self.btn_pkp_nullock_boost = QPushButton("⚡")
-        self.btn_pkp_nullock_boost.setToolTip("PKP NullLock BOOST — one-shot playover modulator")
+        self.btn_pkp_nullock_boost.setCheckable(True)
+        self.btn_pkp_nullock_boost.setToolTip(
+            "PKP NullLock BOOST — live toggle. While enabled, every hit plays "
+            "frequency = (harmonic-doubled step pitch + GOAVA note-index frequency "
+            "of the selected pitch's base) / 3, evaluated at the step index."
+        )
         self.btn_pkp_nullock_boost.setFixedSize(42, 42)
         self.btn_pkp_nullock_boost.setStyleSheet(
             "QPushButton { background-color:#1a1020; color:#ff66cc; font-weight:bold; "
@@ -16470,8 +16498,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.lbl_pkp_boost_steps.setText(str(int(val)))
 
     def _on_pkp_nullock_boost_clicked(self, checked=False):
-        """Play a PKP NullLock playover modulation burst for 1..sequence_length steps."""
+        """Live PKP Boost toggle: while checked, every hit runs the boost law."""
+        self.pkp_boost_active = bool(checked)
         self.pkp_pad_bank_active = False
+        # Audition one hit immediately so the newly toggled law is heard.
         self._play_selected_instrument_pkp()
 
     def _play_selected_instrument_pkp(self):
@@ -16633,6 +16663,30 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # Scrambled mild offset per step (not a linear ascending ramp)
             _pkp_deg = ((int(step_idx) * 11) + (int(op_idx) * 5)) % 12
             freq = base_freq * (2.0 ** ((_pkp_deg - 6) / 12.0))
+
+            # LIVE PKP BOOST (toggle): per-hit frequency law evaluated at the
+            # step index —
+            #   freq_play = (2·harmonic-doubled step pitch
+            #                + GOAVA note-index frequency
+            #                  of the selected pitch's base) / 3
+            # GOAVA note-index frequency re-expresses the GOAVA note for this
+            # step as a frequency ratio of the selected instrument's base.
+            if getattr(self, "pkp_boost_active", False):
+                evs = list(getattr(self, "goava_note_events", []) or [])
+                if evs:
+                    try:
+                        _ev = evs[int(step_idx) % len(evs)]
+                    except Exception:
+                        _ev = evs[0]
+                    try:
+                        _goava_ratio = float(_ev.get("pitch", 1.0))
+                    except Exception:
+                        _goava_ratio = 1.0
+                    _goava_ratio = max(0.125, min(16.0, _goava_ratio))
+                    goava_freq = float(base_freq) * _goava_ratio
+                else:
+                    goava_freq = float(base_freq)
+                freq = (2.0 * freq + goava_freq) / 3.0
 
             # PKP-style: fast decay sine + soft click transient
             env = np.exp(-t / max(hit_dur * 0.35, 0.01))
@@ -21936,13 +21990,29 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             pr = pitches[s_idx] if s_idx < len(pitches) else 1.0
                             if not steps[s_idx] and _canonical_on:
                                 amp *= float(0.25 + 0.75 * float(_node_field.get("trigger_probability", 0.0)))  # continuous
-                            # Sustain most of the step; short release only at the end.
-                            # Old tau=0.5*step made each hit die by mid-step → bursty gaps.
-                            tau = max(step_duration * 1.35, 0.02)
-                            step_shape = np.exp(-s_local / tau)
-                            # Soft attack so stacked steps don't click
-                            attack = np.clip(s_local / max(step_duration * 0.08, 1e-4), 0.0, 1.0)
-                            step_env[s_mask] += float(amp) * step_shape * attack
+                            # PKP DECAY → the per-note envelope binding (follower
+                            # always on, sweep ≈ 1 note duration before and after):
+                            #   d = 0.5  → normal 1:1 envelope for note-per-step
+                            #             (hold = 1 step)
+                            #   d = 1.0  → hold binds to the whole sequence length
+                            #   d = 0.0  → hold binds to (1 step)/(seq length)
+                            # The hold maps as hold = step × seq_len^(2d-1), which
+                            # hits all three anchors exactly, and the follower
+                            # always glides ~1 note (1 step) into the onset and
+                            # ~1 note out of the release, whatever d is.
+                            _sw = max(float(step_duration), 1e-6)
+                            _hold = float(step_duration) * (float(max(seq_len, 1)) ** (2.0 * float(pkp_decay) - 1.0))
+                            _note_end = s_start + _hold
+                            _lo = s_start - _sw
+                            _hi = _note_end + _sw
+                            _fo = np.zeros_like(local_t, dtype=np.float32)
+                            _pre = (local_t >= _lo) & (local_t < s_start)
+                            _fo[_pre] = (local_t[_pre] - _lo) / _sw
+                            _sust = (local_t >= s_start) & (local_t < _note_end)
+                            _fo[_sust] = 1.0
+                            _post = (local_t >= _note_end) & (local_t < _hi)
+                            _fo[_post] = 1.0 - (local_t[_post] - _note_end) / _sw
+                            step_env += float(amp) * np.clip(_fo, 0.0, 1.0)
                             pitch_track[s_mask] = pr
 
                 # --- Per-synth panel seed (4 knobs) + per-synth Fractallizer ---
@@ -23015,8 +23085,70 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             return float(events[0].get("raw", events[0].get("seed", 0.0)) or 0.0)
 
+    def _bake_dj_write(self, master, sample_rate):
+        """Deterministic full-buffer DJ write for offline masters.
+
+        When a DJ effect is enabled it must write onto the final file and the
+        audio/video/scenograph outputs, not just the live bus.  This re-uses the
+        exact live engine + context (amounts, numeric seed, commutative pair) and
+        tracks the GOAVA scalar along the same note-event lattice the live cursor
+        uses (row-indexed slices, start_sample = absolute position), so an exported
+        file/video carries the same DJ character the live audio thread writes.
+        Pure processing, zero RNG: disabling the DJ or re-rendering with identical
+        state is bit-identical to before.
+        """
+        if not (getattr(self, "live_dj_goava", False) or getattr(self, "live_dj_random", False)):
+            return master
+        engine = getattr(self, "_live_dj_engine", None)
+        if engine is None:
+            return master
+        try:
+            engine.amount_goava = float(getattr(self, "live_dj_goava_amount", 0.0))
+            engine.amount_random = float(getattr(self, "live_dj_random_amount", 0.0))
+            engine.set_context(
+                seed=self.get_numeric_seed(),
+                pair=getattr(self, "_live_dj_pair_ids", (0, 1)),
+                sample_rate=int(sample_rate or TARGET_SAMPLE_RATE),
+            )
+            bpm = float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0
+            events = getattr(self, "goava_note_events", []) or []
+            arr = np.asarray(master, dtype=np.float32)
+            n = int(arr.size)
+            if n == 0:
+                return master
+            if not events:
+                scalar = float(self.get_numeric_seed() if hasattr(self, "get_numeric_seed") else 0.0)
+                return engine.process(arr, start_sample=0, goava_scalar=scalar, bpm=bpm)
+            row_samples = max(
+                1,
+                int(
+                    float(sample_rate) * (60.0 / max(bpm, 1e-6)) / 4.0
+                    * max(1, int(getattr(self, "spin_seq_length", None).value()) if hasattr(self, "spin_seq_length") else 16)
+                ),
+            )
+            scalars = np.asarray(
+                [float(ev.get("raw", ev.get("seed", 0.0)) or 0.0) for ev in events],
+                dtype=np.float32,
+            )
+            out = np.empty(n, dtype=np.float32)
+            pos = 0
+            row = 0
+            while pos < n:
+                seg_len = min(row_samples, n - pos)
+                sc = float(scalars[min(row, len(scalars) - 1)])
+                out[pos:pos + seg_len] = engine.process(
+                    arr[pos:pos + seg_len], start_sample=pos, goava_scalar=sc, bpm=bpm
+                )
+                pos += seg_len
+                row += 1
+            return out
+        except Exception as exc:
+            print(f"[LiveDJ] offline bake skipped: {exc}")
+            return master
+
     def _apply_live_dj_chunk(self, chunk, start_sample):
-        """Realtime-only DJ transform; composition/export remains canonical."""
+        """Realtime-only DJ transform; composition stays canonical, exports/video
+        pick the same write up via _bake_dj_write at materialization time."""
         if not (getattr(self, "live_dj_goava", False) or getattr(self, "live_dj_random", False)):
             return chunk
         try:
@@ -23514,6 +23646,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.scope_status_label.setText(f"📊 Rendering canonical master mix → {audio_format.upper()}…")
             QApplication.processEvents()
             master, sample_rate = self._render_mixdown_buffer()
+            master = self._bake_dj_write(master, sample_rate)
             pcm = (np.clip(master, -1.0, 1.0) * 32767.0).astype(np.int16)
             if audio_format == "wav":
                 if wavfile is not None:
@@ -23890,6 +24023,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             QApplication.processEvents()
 
             master, sr = self._render_mixdown_buffer()
+            master = self._bake_dj_write(master, sr)
             # Meum-friendly frame rate (~24 * MEUM_NORM*PHI cluster stays near 24)
             fps = max(12, int(round(24 * MEUM_NORM / MEUM_NORM)))  # 24
             fps = 24
