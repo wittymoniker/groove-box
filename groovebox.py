@@ -14931,8 +14931,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
         master_container.setContentsMargins(6, 4, 6, 4)
 
         self.transport_layout = QHBoxLayout()
-        self.btn_play = QPushButton("▶ PLAY Audiovisual Track")
-        self.btn_stop = QPushButton("⏹ Stop")
+        self.btn_play = QPushButton("▶ PLAY")
+        self.btn_stop = QPushButton("⏹ STOP")
+        # Primary transport chrome — also mirrored under the main scenograph
+        self.btn_play.setMinimumHeight(52)
+        self.btn_stop.setMinimumHeight(52)
+        self.btn_play.setMinimumWidth(140)
+        self.btn_stop.setMinimumWidth(110)
+        self.btn_play.setStyleSheet(
+            "QPushButton { background-color:#0d3d2a; color:#5dffb0; border:2px solid #2ecc71; "
+            "border-radius:10px; padding:10px 18px; font-weight:900; font-size:14pt; }"
+            "QPushButton:hover { background-color:#145c3c; }"
+            "QPushButton:pressed { background-color:#00aa55; color:#ffffff; }"
+        )
+        self.btn_stop.setStyleSheet(
+            "QPushButton { background-color:#3d1520; color:#ff8fab; border:2px solid #e74c6f; "
+            "border-radius:10px; padding:10px 18px; font-weight:900; font-size:14pt; }"
+            "QPushButton:hover { background-color:#5c1f30; }"
+            "QPushButton:pressed { background-color:#c0392b; color:#ffffff; }"
+        )
         self.lbl_bpm = QLabel("BPM:")
         self.lbl_bpm.setStyleSheet("color:#f5d97d; font-weight:900; font-size:11pt;")
         self.spin_bpm = QDoubleSpinBox()
@@ -15293,8 +15310,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_trigger_all.clicked.connect(self.trigger_all_instruments_hit)
         self.btn_clear_memory.clicked.connect(self._on_clear_memory_clicked)
 
-        self.transport_layout.addWidget(self.btn_play)
-        self.transport_layout.addWidget(self.btn_stop)
+        # PLAY/STOP live under the main scenograph (see visual_pair square column)
         self.transport_layout.addWidget(self.lbl_bpm)
         self.transport_layout.addWidget(self.spin_bpm)
         self.transport_layout.addWidget(self.lbl_sceno_items)
@@ -16323,6 +16339,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 widget, stretch=1,
                 alignment=Qt.AlignmentFlag.AlignHCenter if is_square else Qt.AlignmentFlag.AlignCenter,
             )
+            # Primary PLAY/STOP sits under the main scenograph (not only top transport)
+            if is_square:
+                sceno_transport = QHBoxLayout()
+                sceno_transport.setContentsMargins(4, 6, 4, 2)
+                sceno_transport.setSpacing(12)
+                sceno_transport.addStretch(1)
+                sceno_transport.addWidget(self.btn_play)
+                sceno_transport.addWidget(self.btn_stop)
+                sceno_transport.addStretch(1)
+                col.addLayout(sceno_transport)
             visual_pair.addLayout(col, stretch=(0 if is_square else 1))
         visual_container = QWidget()
         visual_container.setLayout(visual_pair)
@@ -21995,41 +22021,46 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 k4 = float(np.clip((fold_depth / 16.0) * (0.50 + 0.90 * _voice_timbre), 0.0, 3.0))
                 # Chaos can push entropy to extremes; no 0.75 mid-band clamp
                 entropy = float(np.clip(entropy * (0.55 + 0.45 * k3) + 0.35 * k3 * (1.0 - entropy), 0.0, 1.0))
+                # Partial counts: entropy/fold only.
+                # Within-note Nyquist gating is PREDICTIVE-UNISON only (off by default).
+                # Most renders skip gates entirely — simpler, faster, fixed spectrum
+                # for the duration of each note (matches deterministic non-predictive path).
                 n_harm = max(1, int(2 + (1.0 - entropy) * 14 + k4 * 6))
-                # ALIASING_FIX_2026: n_harm (and n_inh below) were computed purely
-                # from entropy/fold-depth, with no relationship to f0 or the
-                # sample rate. For higher-pitched voices, the higher partials
-                # (h * f0, and the inharmonic ratios below which run even higher
-                # than h * f0) routinely exceed Nyquist (sample_rate / 2) and
-                # fold back as aliasing — which sounds like harsh, "damaged"
-                # distortion rather than the intended harmonic color. Because
-                # f0 is seed-derived, this hit a seed-dependent fraction of
-                # voices rather than all of them, which is why it read as
-                # damage concentrated in only part of the material. Fixed by
-                # capping the number of partials to what actually fits under
-                # Nyquist for this voice's fundamental.
-                _nyquist = max(1.0, sample_rate * 0.5)
-                _f0_peak = float(np.max(f0)) if hasattr(f0, "__len__") else float(f0)
-                _max_partial = max(1, int(_nyquist / max(_f0_peak, 1.0)))
-                n_harm = max(1, min(n_harm, _max_partial))
-                # GOAVA = hard-composed pure sine; other engines free waveform.
-                # Live mod (AM/FM/PM) still routes through phase/_am_gain for all.
+                n_inh = max(2, int(2 + entropy * 10 + k4 * 3))
+                _use_predictive_nyquist = bool(getattr(self, "_unison_predictive_partials", False))
+                if _use_predictive_nyquist:
+                    _f0_arr = np.asarray(f0, dtype=np.float64).ravel()
+                    if _f0_arr.size == 0:
+                        _f0_arr = np.array([float(AUDIBLE_LO_HZ)], dtype=np.float64)
+                    _f0_min = float(np.min(_f0_arr))
+                    _f0_max = float(np.max(_f0_arr))
+                    _nyq_edge = max(1.0, float(sample_rate) * 0.45)
+
+                    def _partial_gate(mult):
+                        m = float(mult)
+                        if _f0_min * m >= _nyq_edge:
+                            return None
+                        if _f0_max * m < _nyq_edge:
+                            return 1.0
+                        if _f0_arr.size == phase.size:
+                            return (_f0_arr * m < _nyq_edge).astype(np.float32)
+                        return 1.0 if (_f0_min * m) < _nyq_edge else 0.0
+                else:
+                    def _partial_gate(mult):
+                        return 1.0  # default: no Nyquist partial logic
+
                 _is_goava_voice = (
                     str(mem.get("canonical_owner", "")).startswith("canonical:goava")
                     or "goava" in str(mem.get("engine_source", "")).lower()
                     or bool(st.get("goava_sine_patch"))
                 )
                 if _is_goava_voice:
-                    # Sinusoidal hard-composed patch; mods already in phase/_am_gain
                     harm = np.sin(phase)
-                    # Optional soft second partial only from live mod depth
                     _pm_d = float(_meum_ctx.get("pm_depth", 0.0) or 0.0)
                     if abs(_pm_d) > 0.05:
                         harm = harm + 0.08 * abs(_pm_d) * np.sin(2.0 * phase)
-                    entropy = min(entropy, 0.12)  # keep GOAVA nearly pure
+                    entropy = min(entropy, 0.12)
                 else:
-                    # Optional non-sine carrier from modular / panel waveform key.
-                    # FM+PM already folded into `phase`; AM applied later via _am_gain.
                     _wf = str(st.get("waveform", _meum_ctx.get("waveform", "sine")) or "sine").strip().lower()
                     if _wf in ("saw", "sawtooth", "square", "pulse", "triangle", "tri", "cos", "cosine"):
                         try:
@@ -22046,19 +22077,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             amp_h = (0.35 + 0.55 * (1.0 - entropy)) / (h ** roll)
                             det = 1.0 + 1e-4 * ((_s_int % 97) - 48) * (h - 1) * (0.3 + 0.7 * entropy)
                             ph0 = ((_s_int * h * 13 + op_idx * 7) % 1000) / 1000.0 * math.tau
-                            harm = harm + amp_h * np.sin(phase * h * det + ph0)
-                n_inh = max(2, int(2 + entropy * 10 + k4 * 3))
-                # ALIASING_FIX_2026 (cont.): inharmonic partials use ratios that
-                # run even steeper than n_harm's plain h multiplier (~1.37*h),
-                # so they need their own, tighter Nyquist-derived cap.
-                n_inh = max(1, min(n_inh, max(1, int(_max_partial / 1.4))))
+                            g = _partial_gate(h * det)
+                            if g is None:
+                                continue
+                            harm = harm + (amp_h * g) * np.sin(phase * h * det + ph0)
                 inh = np.zeros_like(local_t, dtype=np.float32)
                 for h in range(1, n_inh + 1):
                     ratio = 1.0 + h * (1.0 + 0.37 * math.sin((_s_int + h * 17) * MEUM_NORM))
                     ratio = 1.0 + (ratio - 1.0) * (0.4 + 0.6 * entropy)
                     amp_i = (0.25 + 0.6 * entropy) / (h ** (0.9 + 0.4 * entropy))
                     ph0 = ((_s_int * h * 31 + op_idx * 11) % 1000) / 1000.0 * math.tau
-                    inh = inh + amp_i * np.sin(phase * ratio + ph0)
+                    g = _partial_gate(ratio)
+                    if g is None:
+                        continue
+                    inh = inh + (amp_i * g) * np.sin(phase * ratio + ph0)
                 if entropy > 0.05:
                     noise = np.sin(phase * (7.0 + (_s_int % 13)) + _s_frac * 100.0)
                     noise = np.sign(noise) * (np.abs(noise) ** (1.0 + entropy))
@@ -22068,6 +22100,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     fm_depth = (0.05 + 0.55 * entropy) * (0.5 + 0.5 * k1)
                     harm = harm * np.cos(fm_depth * np.sin(phase * fm_ratio))
                 voice_raw = (1.0 - entropy) * harm + entropy * inh
+
                 if entropy > 0.4:
                     drive = 1.0 + (entropy - 0.4) * fold_depth * 0.2
                     voice_raw = np.clip(voice_raw * drive, -1.0, 1.0)
@@ -22434,6 +22467,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return
 
         self._unison_composition_guard = True
+        # Predictive within-note Nyquist gates: only during this unison path
+        self._unison_predictive_partials = True
 
         try:
             # Step 1: Establish clean baseline (history-free)
@@ -22451,6 +22486,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         finally:
             self._unison_composition_guard = False
+            self._unison_predictive_partials = False
 
     def _get_active_engine_set(self):
         """Get set of currently active engines in deterministic order"""
@@ -23062,8 +23098,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.audio_stream = None
             if hasattr(self, '_scope_update_timer'):
                 self._scope_update_timer.stop()
-            self.btn_play.setText("▶ RESUME Audiovisual Track")
-            self.btn_play.setStyleSheet("background-color: #b8860b; color: white; font-weight: bold;")
+            self.btn_play.setText("▶ RESUME")
+            self.btn_play.setStyleSheet(
+                "QPushButton { background-color:#5c4a0a; color:#ffe08a; border:2px solid #f1c40f; "
+                "border-radius:10px; padding:10px 18px; font-weight:900; font-size:14pt; }"
+                "QPushButton:hover { background-color:#7a6310; }"
+            )
             if hasattr(self, 'scope_status_label'):
                 self.scope_status_label.setText("📊 Audiovisual Track  |  PAUSED")
             return
@@ -23081,8 +23121,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         callback=self._audio_callback, blocksize=1024, latency='low'
                     )
                     self.audio_stream.start()
-                self.btn_play.setText("⏸ PAUSE Audiovisual Track")
-                self.btn_play.setStyleSheet("background-color: #00aa55; color: white; font-weight: bold;")
+                self.btn_play.setText("⏸ PAUSE")
+                self.btn_play.setStyleSheet(
+                    "QPushButton { background-color:#0a5c3a; color:#ffffff; border:2px solid #2ecc71; "
+                    "border-radius:10px; padding:10px 18px; font-weight:900; font-size:14pt; }"
+                    "QPushButton:hover { background-color:#0d7a4c; }"
+                )
                 self._scope_update_timer.start()
                 return
             except Exception as e:
@@ -23116,8 +23160,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     blocksize=1024, latency='low'
                 )
                 self.audio_stream.start()
-            self.btn_play.setText("⏸ PAUSE Audiovisual Track")
-            self.btn_play.setStyleSheet("background-color: #00aa55; color: white; font-weight: bold;")
+            self.btn_play.setText("⏸ PAUSE")
+            self.btn_play.setStyleSheet(
+                "QPushButton { background-color:#0a5c3a; color:#ffffff; border:2px solid #2ecc71; "
+                "border-radius:10px; padding:10px 18px; font-weight:900; font-size:14pt; }"
+                "QPushButton:hover { background-color:#0d7a4c; }"
+            )
             self._scope_update_timer.start()
             if hasattr(self, 'scope_status_label'):
                 self.scope_status_label.setText("📊 Audiovisual Track  |  LIVE")
@@ -23263,8 +23311,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         with getattr(self, 'play_lock', threading.Lock()):
             self.play_cursor = 0
         if hasattr(self, 'btn_play'):
-            self.btn_play.setText("▶ PLAY Audiovisual Track")
-            self.btn_play.setStyleSheet("")
+            self.btn_play.setText("▶ PLAY")
+            self.btn_play.setStyleSheet(
+                "QPushButton { background-color:#0d3d2a; color:#5dffb0; border:2px solid #2ecc71; "
+                "border-radius:10px; padding:10px 18px; font-weight:900; font-size:14pt; }"
+                "QPushButton:hover { background-color:#145c3c; }"
+                "QPushButton:pressed { background-color:#00aa55; color:#ffffff; }"
+            )
         if hasattr(self, 'scope_status_label'):
             self.scope_status_label.setText("📊 Audiovisual Track  |  Stopped")
         if isinstance(getattr(self, 'visual_oscilloscope', None), VisualOscilloscope):
