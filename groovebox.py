@@ -3424,7 +3424,7 @@ class VideoSynthEngine:
 
     def _live_snap(self):
         snap = {
-            "seeded": False, "euclid": False, "eqr": 0.5, "fractal": 0.33,
+            "seeded": False, "euclid": False, "eqr": 0.2247, "fractal": 0.3819,
             "struct": 0.0, "bpm": 120.0, "carrier": 0.0, "pkp": 0.5, "seed": 0.0,
             "goava": False, "phase_lock": False, "randomizer": False,
             "seed_list": [], "ensemble": 1, "canonical_count": 0,
@@ -15260,13 +15260,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         self.slider_eqr = QSlider(Qt.Orientation.Horizontal)
         self.slider_eqr.setRange(0, 100)
-        self.slider_eqr.setValue(42)
+        self.slider_eqr.setValue(int(round(0.2247 * 100)))
         self.slider_fractalizer = QSlider(Qt.Orientation.Horizontal)
         self.slider_fractalizer.setRange(0, 100)
-        self.slider_fractalizer.setValue(33)
+        self.slider_fractalizer.setValue(int(round(0.3819 * 100)))
         self.slider_pkp_decay = QSlider(Qt.Orientation.Horizontal)
         self.slider_pkp_decay.setRange(1, 1000)
-        self.slider_pkp_decay.setValue(500)
+        self.slider_pkp_decay.setValue(int(round(0.5 * 1000)))
 
         # PKP Envelope Follower is permanently force-enabled (no toggle).
         # Tempo-locked sinusoidal amplitude envelope always drives Fractallizer.
@@ -15406,10 +15406,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Playlist" operators; GOAVA gets its own distinct amber/gold identity
         # since it is a different kind of composition source (numerical-seed).
         _pair_color = "#12e0c4"
+        _pair_color2 = "#41ada2"
         self.btn_local_randomize = _make_global_operator_button(
             "RANDOMIZE",
             "Toggle global randomization; ON paints the generated pattern into Playlist.",
-            checkable=True, active_color=_pair_color
+            checkable=True, active_color=_pair_color2
         )
         self.btn_local_phase_lock = _make_global_operator_button(
             "PHASE-LOCK",
@@ -15773,15 +15774,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # GLOBAL PLAY PATCHER — readable layout: Script / Domain text fields,
         # Wire + Params buttons, Mix/Script/Domain/Wire amount sliders,
         # full-width Apply toggle + Protectable Userdata checkbox.
-        # UI_LAYOUT_2026: Global Play Patcher keeps its position in the local-context
-        # row, but the scroll area itself is now resizable/expanding with a larger
-        # viewport floor so its contents have real room to scroll instead of being
-        # squeezed to the group box's fixed minimum height.
+        # GP_SCROLL_FIX: Global Play Patcher must be scrollable. A 760px floor on
+        # the SCROLL AREA itself meant the viewport never got shorter than the
+        # panel, so the vertical scrollbar never engaged and the pane pushed the
+        # row far beyond the window edge. Now the pane is a compact ~412px strip
+        # (stretching only to the window edge) whose viewport collapses with the
+        # window; the inner group's 600px minimum then makes the vertical
+        # scrollbar appear, so the full panel is always reachable.
         globalplayer_scroll_area = QScrollArea()
         globalplayer_scroll_area.setWidgetResizable(True)
-        globalplayer_scroll_area.setMinimumHeight(760)
+        globalplayer_scroll_area.setMinimumHeight(180)
+        globalplayer_scroll_area.setMaximumWidth(412)
+        globalplayer_scroll_area.setMinimumWidth(360)
         globalplayer_scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         globalplayer_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        globalplayer_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         global_player_group = QGroupBox("🌐 GLOBAL PLAY PATCHER")
         global_player_group.setToolTip(
             "Ensemble-wide algorithmic patching. Four channels share one canonical "
@@ -15802,7 +15809,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "QPushButton:checked { background-color:#00cdb5; color:#0a1014; }"
             "QCheckBox { color:#f5d97d; font-weight:bold; font-size:9pt; background: transparent; }"
         )
-        global_player_group.setMinimumWidth(520)
+        global_player_group.setMinimumWidth(360)
+        global_player_group.setMaximumWidth(412)
         global_player_group.setMinimumHeight(600)
         global_player_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         gp_outer = QVBoxLayout(global_player_group)
@@ -15834,11 +15842,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_apply_algo_master = QPushButton("▶ Apply Algo to Master Mix")
         self.btn_apply_algo_master.setCheckable(True)
         self.btn_apply_algo_master.setMinimumHeight(38)
-        self.btn_apply_algo_master.setMinimumWidth(220)
+        self.btn_apply_algo_master.setMinimumWidth(150)
         self.btn_apply_algo_master.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.chk_algo_protect_userdata = QCheckBox("As Protectable Userdata")
         self.chk_algo_protect_userdata.setChecked(True)
-        self.chk_algo_protect_userdata.setMinimumWidth(180)
+        self.chk_algo_protect_userdata.setMinimumWidth(160)
         apply_row.addWidget(self.btn_apply_algo_master, 3)
         apply_row.addWidget(self.chk_algo_protect_userdata, 1)
         gp_outer.addLayout(apply_row)
@@ -16878,12 +16886,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # ENGAGED_COLOR_FIX: give the Global Composition Randomizer button a
         # persistent engaged color once clicked, so the user sees at a glance
         # that the global play algorithm was (re)written by the randomizer.
+        # VIOLET_ENGAGED: checked/engaged paint matches the deterministic
+        # randomizer role (#a78bfa) so blue/green engine fills are not confused
+        # with a randomize action.
         if getattr(self, "btn_randomize_global_play", None) is not None:
             self.btn_randomize_global_play.setStyleSheet(
-                "QPushButton { background-color:#176b21; color:#ffffff; border:2px solid #35ff78; "
+                "QPushButton { background-color:#a78bfa; color:#101010; border:2px solid #a78bfa; "
                 "border-radius:5px; padding:6px 12px; font-weight:900; font-size:10pt; }"
-                "QPushButton:hover { background-color:#1f8c2b; }"
-                "QPushButton:pressed { background-color:#0f4a15; }"
+                "QPushButton:hover { background-color:#b8a3fc; }"
+                "QPushButton:pressed { background-color:#8f6ff5; }"
             )
 
     def get_numeric_seed(self):
@@ -21597,22 +21608,26 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "phase_lock_target": None,
         }
         # Focus-preserving canonical contributions.
+        # BURST_FIX_2026b (structural, no clips/limiters): every active density
+        # engine raises the trigger floor so canonical events are CONTINUOUS,
+        # not sparse on/off. A rising floor + the continuity clamp below keep
+        # full seeded compositions flowing instead of breaking into bursts.
         if "randomizer" in active:
             # High base density so hits are continuous musical events, not sparse bursts
-            field["trigger_probability"] += .52 + .30*u01(row+"|randomizer")
+            field["trigger_probability"] += .72 + .22*u01(row+"|randomizer")
         if "seeded" in active:
             # seeded: coloration + moderate density contribution
             field["phase"] += (u01(row+"|seeded-phase")-.5)*math.tau*.16
             field["detune"] += (u01(row+"|seeded-detune")-.5)*.0018
-            field["trigger_probability"] += .28 + .20*u01(row+"|seeded-trig")
+            field["trigger_probability"] += .45 + .20*u01(row+"|seeded-trig")
         if "euclidean" in active:
             # Euclidean topology: solid density bias so patterns keep speaking
-            field["trigger_probability"] += .35 + .20*u01(row+"|euclid")
+            field["trigger_probability"] += .50 + .25*u01(row+"|euclid")
             field["euclid_weight"] = .72 + .28*u01(row+"|euclid")
         else:
             field["euclid_weight"] = 0.0
         if "phase_lock" in active or "phase-lock" in active:
-            field["trigger_probability"] += .22 + .15*u01(row+"|pl-trig")
+            field["trigger_probability"] += .35 + .20*u01(row+"|pl-trig")
             roster = max(1, len(getattr(self, "instrument_names_48", []) or []))
             target = (roster - 1 - op_idx) % roster
             field["phase_lock_target"] = target
@@ -22147,32 +22162,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     voice_raw = np.tanh(voice_raw * (1.0 + (entropy - 0.4) * fold_depth * 0.2))
                 # MASTER_FX_FIX_2026: per-voice EQR additive coloring removed —
                 # the only EQR application is the master-bus tail stage below.
-                peak = float(np.max(np.abs(voice_raw)) + 1e-9)
-                # BURST_FIX_2026: this used to be a hard per-block instantaneous
-                # normalize (seed = voice_raw / peak). Because `peak` is
-                # recomputed independently every row/block — and entropy/harmonic
-                # content (and therefore peak) swings a lot row-to-row, especially
-                # once a Global Play Patcher algorithm is applied and raises voice
-                # variance — the normalization gain could jump sharply between
-                # adjacent blocks. That sharp per-block gain jump is what read as
-                # "bursts of activity" / composition separating into loud/quiet
-                # chunks. Fix: keep a persistent, slew-rate-limited gain per
-                # instrument and ramp smoothly across the block instead of
-                # snapping to a new instantaneous gain every time.
-                if not hasattr(self, "_voice_norm_gain"):
-                    self._voice_norm_gain = {}
-                _target_gain = 1.0 / peak
-                _prev_gain = float(self._voice_norm_gain.get(op_name, _target_gain))
-                _max_step = 0.30  # max fractional gain change allowed per block
-                _lo = _prev_gain * (1.0 - _max_step)
-                _hi = _prev_gain * (1.0 + _max_step)
-                _new_gain = float(np.clip(_target_gain, _lo, _hi))
-                self._voice_norm_gain[op_name] = _new_gain
-                if len(voice_raw) > 1:
-                    _gain_ramp = np.linspace(_prev_gain, _new_gain, num=len(voice_raw), dtype=np.float32)
-                else:
-                    _gain_ramp = np.array([_new_gain], dtype=np.float32)
-                seed = (voice_raw * _gain_ramp).astype(np.float32)
+                # NO_NORMALIZE / NO_SLEW: the previous stage peak-normalized
+                # each voice (seed = voice_raw / peak) with a slew-rate-limited
+                # gain ramp. That peak-relative gain is exactly the DSP that
+                # breaks the resonator–unison canonical: a per-block /peak ride
+                # (a normalize) plus adjacent-block gain motion (a slew) makes
+                # the audible result depend on per-row entropy swings instead of
+                # the seed-derived amplitude. Canonical voices pass through at
+                # their pure closed-form amplitude — no normalize, no slew.
+                # The master bus hard-clips at the number-theory rail below.
+                seed = voice_raw.astype(np.float32)
 
                 # MASTER_FX_FIX_2026: the tempo-locked PKP amplitude envelope is
                 # a master-bus effect only — it must not color canonical voices
@@ -22468,9 +22467,26 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception as _ped_exc:
             print(f"[PED] mixdown: {_ped_exc}")
 
-        peak = np.max(np.abs(master))
-        if peak > 0:
-            master = (master / peak) * 0.98
+        # FINAL MASTER BUS CONTRACT — self-authored, no library DSP, no normalize,
+        # no soft limiting, no slew. The canonical amplitude is authoritative;
+        # the ONLY master transformation is a hard clip at the number-theory
+        # rail, a closed-form ceiling with no gain motion of its own:
+        #
+        #       rail = (n instruments) * 3 * (1.1975807343 / 0.1975807343) * WAV_MAX
+        #
+        # x = 0.1975807343 is the phi-complement MEUM-family residue;
+        # 1.1975807343 = 1 + x, so 1.1975807343/0.1975807343 = 1 + 1/x ≈ 6.0612.
+        # ×3 (resonator / PED / PKP triad) × the live voice count × WAV_MAX is
+        # the worst case where every voice aligns constructively. Below the rail
+        # the resonator–unison canonical is numerically untouched; past it the
+        # wave simply stops. Nothing is scaled, ramped, or peak-referenced.
+        if len(master) > 0:
+            try:
+                _n_inst = int(len(getattr(self, "instrument_names_48", []) or []) or 1)
+            except Exception:
+                _n_inst = 1
+            _rail = float(max(_n_inst, 1)) * 3.0 * (1.1975807343 / 0.1975807343) * 32767.0
+            master = np.clip(master, -_rail, _rail)
         return master.astype(np.float32), sample_rate
     def _sync_composition_toggle_state(self):
         """Maintain an order-independent CompositionToggleState summary.
