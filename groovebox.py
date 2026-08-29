@@ -15670,6 +15670,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "border:2px solid #ff66cc; border-radius:4px; }"
             "QPushButton:hover { background-color:#2a1830; }"
             "QPushButton:pressed { background-color:#ff66cc; color:#120818; border-color:#ffffff; }"
+            "QPushButton:checked { background-color:#ff66cc; color:#120818; border-color:#ffffff; }"
         )
         self.btn_pkp_nullock_boost.clicked.connect(self._on_pkp_nullock_boost_clicked)
 
@@ -15741,7 +15742,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # LIVE DJ macros — short, fixed-readable labels (no clip).
         self.btn_live_dj_goava.setText("GOAVA DJ")
         self.btn_live_dj_random.setText("RAND PARAM")
-        self.btn_pkp_nullock_boost.setText("PKP BOOST")
+        self.btn_pkp_nullock_boost.setText("BOOST BEATS")
         for _b in (self.btn_live_dj_goava, self.btn_live_dj_random, self.btn_pkp_nullock_boost):
             _b.setMinimumHeight(42)
             _b.setMinimumWidth(110)
