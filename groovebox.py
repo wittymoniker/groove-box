@@ -14312,21 +14312,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.setWindowTitle("Groovebox")
         self.setMinimumSize(0, 0)
         self.setMaximumSize(16777215, 16777215)
-        # UI_LAYOUT_2026: scale to fit the available screen natively on launch
-        # instead of a fixed 1300x950, while remaining freely resizable
-        # afterward (no min/max lock — user can still shrink/grow the window).
+        # UI_NATIVE_BASELINE_2026: the authored/native UI geometry is 1920x1240.
+        # Keep that as the canonical design coordinate system so the first layout
+        # pass is not silently compressed to an arbitrary screen-dependent size.
+        # The window remains freely resizable; responsive scaling is derived from
+        # this stable baseline rather than from whatever size Qt happened to use
+        # during construction.
         try:
             screen = self.screen() or QApplication.primaryScreen()
             avail = screen.availableGeometry() if screen else None
         except Exception:
             avail = None
+        native_w, native_h = 1920, 1240
         if avail is not None and avail.width() > 0 and avail.height() > 0:
-            target_w = min(1600, int(avail.width() * 0.92))
-            target_h = min(1100, int(avail.height() * 0.92))
+            target_w = min(native_w, int(avail.width() * 0.96))
+            target_h = min(native_h, int(avail.height() * 0.96))
             self.resize(max(1000, target_w), max(700, target_h))
             self.move(avail.center().x() - self.width() // 2, avail.center().y() - self.height() // 2)
         else:
-            self.resize(1300, 950)
+            self.resize(native_w, native_h)
         self.playlist_window = None
         self.patch_bay_dialog = None
         self.synth_editor_window = None
@@ -14537,11 +14541,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._composition_generation_counter = 0
         self._transport_finished = False
         self._stop_requested = False
-        # RESPONSIVE_WINDOW_FREE_2026: child widgets are scaled by the main
-        # window rather than imposing their historical minimum geometry on it.
-        self.setMinimumSize(1, 1)
-        self.setMaximumSize(16777215, 16777215)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.init_ui_components()
         self.initialize_default_playlist_memory()
         self._ensure_sequence_banks_after_resize()
@@ -14592,7 +14591,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             remaining = max(220, avail_w - side - 16)
             side_w = max(110, remaining // 2)
             if self.video_synth_viewer is not None:
-                self.video_synth_viewer.setMinimumSize(0, 0)
+                self.video_synth_viewer.setMinimumSize(side, side)
                 self.video_synth_viewer.setMaximumSize(16777215, 16777215)
                 self.video_synth_viewer.resize(side, side)
                 self.video_synth_viewer.setSizePolicy(
@@ -14614,7 +14613,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             for widget in (self.visual_oscilloscope, self.spectrum_analyzer):
                 if widget is None:
                     continue
-                widget.setMinimumSize(0, 0)
+                widget.setMinimumSize(side_w, side)
                 widget.setMaximumSize(16777215, 16777215)
                 widget.resize(side_w, side)
                 widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -14626,138 +14625,118 @@ class MathematiciansGrooveboxApp(QMainWindow):
     # at the main-window level so nested panels inherit the same scale rather than
     # each panel inventing its own fixed pixel geometry.
     def _init_responsive_ui_scaling(self):
-        """Capture a single coherent UI baseline for proportional resizing.
+        """Capture one immutable 1920x1240 design baseline for responsive UI scaling.
 
-        Geometry, typography, layout spacing/margins, and finite widget limits are
-        all scaled from immutable baseline values.  This avoids the previous
-        uneven behavior where only fixed-size widgets and fonts changed while
-        layout metrics and minimum/maximum dimensions remained at design-time
-        pixels.
+        Geometry is deliberately left to Qt layouts.  Earlier passes resized
+        arbitrary minimum sizes on every widget, which caused siblings to drift
+        out of alignment because layouts recomputed positions from mixed scaled
+        and unscaled constraints.  This pass scales only authored fixed geometry,
+        typography, and layout metrics from a single baseline.
         """
         try:
-            self._responsive_base_size = QSize(max(1, self.width()), max(1, self.height()))
+            self._responsive_base_size = QSize(1920, 1240)
         except Exception:
-            self._responsive_base_size = QSize(1300, 950)
+            self._responsive_base_size = QSize(1920, 1240)
         self._responsive_widgets = []
         self._responsive_layouts = []
         root = self.centralWidget()
         if root is None:
             return
-        try:
-            widgets = [root] + root.findChildren(QWidget)
-            for w in widgets:
+        for w in [root] + root.findChildren(QWidget):
+            try:
                 if w is self.parametric_background:
                     continue
-                f = QFont(w.font())
+                f = w.font()
                 ss = w.styleSheet() or ""
-                min_sz = QSize(w.minimumSize())
-                max_sz = QSize(w.maximumSize())
+                min_size = QSize(w.minimumWidth(), w.minimumHeight())
+                max_size = QSize(w.maximumWidth(), w.maximumHeight())
+                fixed = (w.minimumWidth() == w.maximumWidth() and
+                         w.minimumHeight() == w.maximumHeight() and
+                         w.minimumWidth() > 0 and w.minimumHeight() > 0)
                 self._responsive_widgets.append({
                     "widget": weakref.ref(w),
-                    "font": f,
+                    "font": QFont(f),
                     "style": ss,
-                    "min": min_sz,
-                    "max": max_sz,
-                    "fixed": (min_sz.width() == max_sz.width() and
-                              min_sz.height() == max_sz.height() and
-                              min_sz.width() > 0 and min_sz.height() > 0),
-                    "finite_min": (min_sz.width() > 0 or min_sz.height() > 0),
-                    "finite_max": (max_sz.width() < 16777215 or max_sz.height() < 16777215),
+                    "min": min_size,
+                    "max": max_size,
+                    "fixed": fixed,
                 })
-            # Capture every descendant layout's margins and spacing.  These are
-            # just as important as widget geometry for visually even scaling.
-            layouts = []
-            def collect_layouts(parent):
-                lay = parent.layout()
-                if lay is not None and lay not in layouts:
-                    layouts.append(lay)
-                for child in parent.findChildren(QWidget):
-                    cl = child.layout()
-                    if cl is not None and cl not in layouts:
-                        layouts.append(cl)
-            collect_layouts(root)
-            for lay in layouts:
+            except Exception:
+                continue
+        # Layouts own placement. Record their authored spacing/margins once and
+        # scale those metrics uniformly instead of changing widget minima.
+        for w in [root] + root.findChildren(QWidget):
+            try:
+                lay = w.layout()
+                if lay is None:
+                    continue
                 m = lay.contentsMargins()
                 self._responsive_layouts.append({
-                    "layout": lay,
-                    "margins": (m.left(), m.top(), m.right(), m.bottom()),
+                    "layout": weakref.ref(lay),
                     "spacing": lay.spacing(),
+                    "margins": (m.left(), m.top(), m.right(), m.bottom()),
                 })
-        except Exception:
-            pass
+            except Exception:
+                continue
         self._apply_responsive_ui_scale()
 
     def _apply_responsive_ui_scale(self):
-        """Scale geometry, typography, and layout metrics from one root scale."""
+        """Apply one common scale while preserving Qt's layout relationships."""
         try:
-            bw = max(1, self._responsive_base_size.width())
-            bh = max(1, self._responsive_base_size.height())
-            # Geometric mean keeps very wide/tall aspect changes from making one
-            # dimension visibly jump while still tracking the actual window size.
-            sx = max(0.25, self.width() / bw)
-            sy = max(0.25, self.height() / bh)
-            scale = math.sqrt(max(1e-9, sx * sy))
-            scale = max(0.35, min(2.50, float(scale)))
+            bw = float(self._responsive_base_size.width())
+            bh = float(self._responsive_base_size.height())
+            scale = min(self.width() / max(1.0, bw), self.height() / max(1.0, bh))
+            scale = max(0.45, min(2.0, float(scale)))
             self._responsive_scale = scale
-
             font_re = re.compile(r"font-size\s*:\s*([0-9]+(?:\.[0-9]+)?)px", re.I)
+
             for item in getattr(self, "_responsive_widgets", []):
                 w = item["widget"]()
                 if w is None:
                     continue
                 try:
-                    # Widget font is authoritative for dynamically-created text.
-                    base_font = item["font"]
-                    f = QFont(base_font)
+                    f = QFont(item["font"])
                     base_pt = f.pointSizeF()
                     if base_pt > 0:
                         f.setPointSizeF(max(5.0, base_pt * scale))
-                    elif f.pixelSize() > 0:
-                        f.setPixelSize(max(7, int(round(f.pixelSize() * scale))))
-                    w.setFont(f)
-
-                    # Rebuild stylesheet from the immutable baseline so repeated
-                    # resize events never compound font scaling.
+                        w.setFont(f)
                     base_style = item["style"]
                     if base_style:
                         def repl(m):
                             return f"font-size: {max(5.0, float(m.group(1)) * scale):.2f}px"
                         w.setStyleSheet(font_re.sub(repl, base_style))
-
-                    bmin, bmax = item["min"], item["max"]
+                    # Only genuinely fixed widgets are scaled directly.  Do not
+                    # rewrite the minima of expanding layout children: that was
+                    # the source of the previous alignment drift.
                     if item["fixed"]:
-                        w.setFixedSize(max(1, int(round(bmin.width() * scale))),
-                                       max(1, int(round(bmin.height() * scale))))
-                    else:
-                        # Preserve only meaningful design-time limits, scaled from
-                        # their original baseline. Unlimited dimensions remain Qt's
-                        # expanding limit rather than becoming artificial minima.
-                        min_w = int(round(bmin.width() * scale)) if bmin.width() > 0 else 0
-                        min_h = int(round(bmin.height() * scale)) if bmin.height() > 0 else 0
-                        w.setMinimumSize(min_w, min_h)
-                        if item["finite_max"]:
-                            max_w = int(round(bmax.width() * scale)) if bmax.width() < 16777215 else 16777215
-                            max_h = int(round(bmax.height() * scale)) if bmax.height() < 16777215 else 16777215
-                            w.setMaximumSize(max_w, max_h)
-                        else:
-                            w.setMaximumSize(16777215, 16777215)
+                        b = item["min"]
+                        w.setFixedSize(max(1, int(round(b.width() * scale))),
+                                       max(1, int(round(b.height() * scale))))
                 except Exception:
                     continue
 
             for item in getattr(self, "_responsive_layouts", []):
-                lay = item["layout"]
+                lay = item["layout"]()
+                if lay is None:
+                    continue
                 try:
+                    lay.setSpacing(max(0, int(round(item["spacing"] * scale))))
                     l, t, r, b = item["margins"]
-                    lay.setContentsMargins(int(round(l*scale)), int(round(t*scale)),
-                                           int(round(r*scale)), int(round(b*scale)))
-                    spacing = item["spacing"]
-                    if spacing >= 0:
-                        lay.setSpacing(max(0, int(round(spacing*scale))))
+                    lay.setContentsMargins(
+                        max(0, int(round(l * scale))),
+                        max(0, int(round(t * scale))),
+                        max(0, int(round(r * scale))),
+                        max(0, int(round(b * scale))),
+                    )
                 except Exception:
                     continue
 
             self._sync_square_visuals()
             self._sync_parametric_background_geometry()
+            root = self.centralWidget()
+            if root is not None:
+                root.updateGeometry()
+                root.layout().activate() if root.layout() is not None else None
         except Exception:
             pass
 
