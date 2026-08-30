@@ -2579,6 +2579,31 @@ def canonical_master_slot(voice_index: int, instrument_count: int) -> int:
     # Midpoint quantization distributes N voices across the fixed 64-slot bank.
     return min(CANONICAL_MASTER_SLOTS - 1, int(((2 * i + 1) * CANONICAL_MASTER_SLOTS) / (2 * n)))
 
+def canonical_visual_atom(master_slot: int, ctx):
+    """Return the seed-defined latent image atom for one of 64 master slots.
+
+    The atom is the visual analogue of a canonical audio voice: all of its
+    structural degrees of freedom come from the fixed seed lattice, never from
+    the requested live instrument count.  Instrument Count only repartitions
+    these atoms later.
+    """
+    i = int(master_slot) % CANONICAL_MASTER_SLOTS
+    seedv = float(ctx.get("seed", 0.0))
+    s_abs = abs(seedv) + 1e-9
+    frac = s_abs - math.floor(s_abs)
+    # Independent irrational phases make the 64 atoms richly distinct without
+    # introducing a second random source or a repeated modulo pattern.
+    q = (i + 1) * PHI_INV
+    return {
+        "slot": i,
+        "phase": math.tau * ((frac + q * MEUM_NORM) % 1.0),
+        "angle": math.tau * ((q + frac * MEUM_INV) % 1.0),
+        "scale": 0.55 + 0.45 * ((i * MEUM_NORM + frac * PHI_INV) % 1.0),
+        "fold": 0.35 + 0.65 * ((i * MEUM_INV + frac * MEUM_NORM) % 1.0),
+        "depth": 0.30 + 0.70 * ((i * PHI + frac * MEUM_INV) % 1.0),
+        "texture": 0.25 + 0.75 * ((i * MEUM + frac * PHI) % 1.0),
+    }
+
 def canonical_visual_instrument(slot, ctx, flags):
     """Per-instrument 2.5D parameters mirroring the audio voice pass.
 
@@ -2591,8 +2616,9 @@ def canonical_visual_instrument(slot, ctx, flags):
     max_partial) plus the 2.5D structural co-ordinates the frame needs.
     """
     n_inst = int(ctx.get("n_inst", CANONICAL_MASTER_SLOTS))
-    i = int(slot) % max(2, n_inst)
-    master_i = canonical_master_slot(i, n_inst)
+    i = int(slot) % CANONICAL_MASTER_SLOTS
+    master_i = i
+    atom = canonical_visual_atom(master_i, ctx)
     fu = bool(ctx.get("full_unison"))
     seedv = float(ctx.get("seed", 0.0))
     s_int = int(ctx.get("s_int", int(_safe_int_seed(seedv)) or 1))
@@ -2605,7 +2631,7 @@ def canonical_visual_instrument(slot, ctx, flags):
     n_eng = max(1, n5) if n5 else 6  # no engine on -> idle reference scale 1/6
     k5 = 1.0 / float(n_eng)
     # Canonical slot lattice (irrational fractional index, never repeats).
-    _tpos = (i * MEUM * 3.0) % 36.0
+    _tpos = (master_i * MEUM * 3.0) % 36.0
     _tlo = int(_tpos) % 36
     _thi = (_tlo + 1) % 36
     _tfr = _tpos - int(_tpos)
@@ -2628,7 +2654,7 @@ def canonical_visual_instrument(slot, ctx, flags):
     ch_seed = (0.5 if eng.get("seeded") else 0.0) * k5      # scale axis
     ch_goa = (0.5 if eng.get("goava") else 0.0) * k5        # hue axis
     mod = {
-        "phase_shift": (0.0 if fu else float(math.tau * ((i * MEUM_NORM * PHI_INV) % 1.0))),
+        "phase_shift": (0.0 if fu else float(atom["phase"])),
         "mod_rate": 0.78 + 0.48 * ent,
         "fm_depth": float(np.clip(0.22 + 0.38 * (ch_rnd - ch_ph), -0.95, 0.95)),
         "fm_rate": 0.5 + 2.0 * _pow,
@@ -2638,13 +2664,13 @@ def canonical_visual_instrument(slot, ctx, flags):
         "am_rate": 0.5 + 2.0 * ((i * PHI * MEUM_NORM) % 1.0),
         "meum_depth": float(ctx.get("meum_depth", 1.0)),
     }
-    depth = 1.35 + 0.18 * _pow + 2.2 * (ch_seed - 0.25 * k5)
-    yaw = float(math.fmod(i * PHI * MEUM_NORM + 0.6 * (ch_ph - ch_rnd), math.tau))
-    pitch = 0.12 * math.sin(i * MEUM + ch_euc * 1.3)
-    roll = 0.09 * math.cos(i * MEUM_INV + ch_ph)
-    pack = 0.62 + 0.60 * _pow * (1.0 + 0.8 * (ch_seed - 0.5 * k5))
-    max_partial = int(INSTRUMENT_PARTIAL_CAP_48[i % 48])
-    verts = int(4 + (max_partial % 6) + int(ch_euc * 6.0))
+    depth = 1.35 + 0.18 * _pow + 2.2 * (ch_seed - 0.25 * k5) + 0.18 * atom["depth"]
+    yaw = float(math.fmod(atom["angle"] + 0.6 * (ch_ph - ch_rnd), math.tau))
+    pitch = 0.12 * math.sin(atom["phase"] + ch_euc * 1.3)
+    roll = 0.09 * math.cos(atom["angle"] + ch_ph)
+    pack = 0.62 + 0.60 * _pow * (1.0 + 0.8 * (ch_seed - 0.5 * k5)) * (0.82 + 0.36 * atom["scale"])
+    max_partial = int(INSTRUMENT_PARTIAL_CAP_48[master_i % 48])
+    verts = int(4 + (max_partial % 6) + int(ch_euc * 6.0) + round(3 * atom["texture"]))
     hue = float(math.fmod(master_i * (360.0 / CANONICAL_MASTER_SLOTS) + master_i * 7 + ch_goa * 90.0, 360.0))
     # HARMONIC_CANCELLATION_ALIGNMENT_2026: color shading, translucency and
     # 2.5D depth follow the harmonic cancellation envelope of the SOUND.  Under
@@ -2672,6 +2698,7 @@ def canonical_visual_instrument(slot, ctx, flags):
         "scale_axis": ch_seed, "hue_axis": ch_goa, "engines": n_eng,
         "depth": depth, "yaw": yaw, "pitch": pitch, "roll": roll,
         "pack": pack, "verts": verts, "hue": hue, "life": life, "shade": shade,
+        "master_slot": master_i, "atom": atom,
         "x": float(math.cos(yaw) * rad * math.cos(pitch)),
         "y": float(math.sin(pitch) * rad * 0.72),
         "z": float(depth * (0.6 + 0.4 * math.sin(roll))),
@@ -4185,7 +4212,8 @@ class InstrumentVisualObject:
         self.schema = dict(schema or {})
         self.seed = float(self.schema.get("seed", 0.0))
         self.phase0 = float(self.canonical.get("phase0", self.schema.get("phase", 0.0)))
-        self.identity = identity_unit("instrument-visual", self.seed, self.name, self.index)
+        self.master_slot = int(self.canonical.get("master_slot", self.index)) % CANONICAL_MASTER_SLOTS
+        self.identity = identity_unit("instrument-visual", self.seed, "master", self.master_slot)
         self.dimension = int(self.schema.get("dimension", 1 + int(self.identity * 3.0)))
         self.dimension = max(1, min(3, self.dimension))
 
@@ -4234,7 +4262,7 @@ class InstrumentVisualObject:
         cy = h*0.48 + math.sin(angle0*MEUM_INV + 0.06*math.cos(t*0.19))*radial*h*0.48
         scale = (0.018 + 0.040*v["lattice"] + 0.030*v["amp"] + 0.022*energy) * min(w,h)
         harmonic_count = max(3, min(18, 3 + int(round(12*v["lattice"] + 4*v["fold"]))))
-        band = float(bands[self.index % len(bands)]) if len(bands) else 0.0
+        band = float(bands[self.master_slot % len(bands)]) if len(bands) else 0.0
         scale *= 0.72 + 0.55*band + 0.25*abs(math.sin(phase))
         return cx, cy, max(2.0, scale), phase, harmonic_count, v, wobble
 
@@ -4818,15 +4846,8 @@ class VideoSynthEngine:
         """Implode a screen point into the fitted bounds and clamp each element."""
         px = self._fit_ox + (x - self._fit_cx) * self._fit_sx
         py = self._fit_oy + (y - self._fit_cy) * self._fit_sy
-        # Small seeded frame-local displacement supplies visual entropy while
-        # remaining far inside the global fit box.
-        try:
-            j = (min(self._fit_ox, self._fit_oy) * 0.012 *
-                 float(self._visual_entropy) * 0.5)
-            px += float(self._rng.uniform(-j, j))
-            py += float(self._rng.uniform(-j, j))
-        except Exception:
-            pass
+        # No stochastic pixel jitter: the image field is a pure function of
+        # seed + composition state + time. This keeps frame regeneration exact.
         # Per-element safety clamp: stochastic geometry may evolve freely,
         # but no individual projected element is allowed to escape the frame.
         margin = 2.0
@@ -4922,6 +4943,69 @@ class VideoSynthEngine:
         for i in range(3):
             self._line(img, pts[i,0], pts[i,1], pts[(i+1)%3,0], pts[(i+1)%3,1], col, min(1.0, a*1.15))
 
+    def _subscene_image_synthesis(self, img, w, h, st):
+        """Continuous deterministic image synthesis from the same composition.
+
+        This is the visual counterpart of the audio renderer: instead of a
+        small catalog of decorative shapes, the complete RGB field is generated
+        from a compact latent vector derived from seed, spectrum, waveform,
+        playhead, sequence density and the 64-slot master image lattice.
+        Instrument Count only changes which master atoms are emphasized; it
+        cannot invent a new visual identity.
+        """
+        op = float(self._module_fade.get("field", 0.62))
+        if op <= 0.02:
+            return
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        xn = (xx / max(w - 1, 1) - 0.5) * 2.0
+        yn = (yy / max(h - 1, 1) - 0.48) * 2.0
+        snap = st.get("snap", {})
+        seed = float(snap.get("seed", 0.0))
+        ph = float(st.get("ph", 0.0))
+        e = float(np.clip(self._rms, 0.0, 1.0))
+        centroid = float(np.clip(self._centroid, 0.0, 1.0))
+        # Six basis waves: low/mid/high spectral structure plus spatial folds.
+        bands = np.asarray(self._band, dtype=np.float32)
+        b0,b1,b2 = [float(bands[k]) for k in (0, min(3, len(bands)-1), min(6, len(bands)-1))]
+        # The image field is derived from the complete 64-slot master lattice,
+        # not the live roster.  Therefore N=2 and N=64 see the same underlying
+        # image latent; N only changes how that latent is factorized into voices.
+        master = self._canonical_master if hasattr(self, "_canonical_master") else []
+        active = master
+        if active:
+            atoms = [p.get("atom", {}) for p in active]
+            atom_phase = float(np.mean([a.get("phase",0.0) for a in atoms]))
+            atom_angle = float(np.mean([a.get("angle",0.0) for a in atoms]))
+            atom_tex = float(np.mean([a.get("texture",0.5) for a in atoms]))
+        else:
+            atom_phase = atom_angle = 0.0; atom_tex = 0.5
+        t = float(self.t)
+        # Radial + angular latent coordinates. Every term is tied to a real
+        # composition quantity; there are no purely decorative random fields.
+        r = np.sqrt(xn*xn + yn*yn)
+        a = np.arctan2(yn, xn)
+        f1 = np.sin(a * (3.0 + 5.0*b1) + r * (7.0 + 9.0*b2) + ph + atom_angle)
+        f2 = np.cos(r * (11.0 + 8.0*centroid) - t*(0.07 + 0.13*e) + seed*0.0017)
+        f3 = np.sin((xn*math.cos(atom_phase) + yn*math.sin(atom_phase)) * (8.0 + 12.0*b0) + ph*2.0)
+        f4 = np.cos((xn-yn) * (5.0 + 7.0*atom_tex) + t*0.11 + seed*0.0009)
+        # Harmonic cross-modulation: multiplicative interaction prevents the
+        # image from being a sum of unrelated overlays.
+        field = 0.5 + 0.16*f1 + 0.14*f2 + 0.11*f3 + 0.09*f4 + 0.12*f1*f3
+        field *= 0.82 + 0.18*np.clip(0.5 + 0.5*np.cos((r + ph)*math.tau), 0.0, 1.0)
+        field = np.clip(field, 0.0, 1.0)
+        hue = (145.0 + 170.0*centroid + 70.0*b2 + math.degrees(atom_phase)*0.21 + self._video_hue_shift + ph*55.0) % 360.0
+        # Vectorized continuous RGB basis.  The three channels are phase-shifted
+        # views of the same latent field, so color carries information instead
+        # of being an unrelated decorative palette.
+        c = field * (0.62 + 0.30*e)
+        ang = hue / 60.0 + f1*0.55 + f3*0.35
+        rr = np.clip(c * (0.55 + 0.45*np.cos(ang)), 0, 1)
+        gg = np.clip(c * (0.55 + 0.45*np.cos(ang - 2.0943951)), 0, 1)
+        bb = np.clip(c * (0.55 + 0.45*np.cos(ang - 4.1887902)), 0, 1)
+        field_rgb = np.stack([rr,gg,bb], axis=-1) * 255.0
+        alpha = float(np.clip(0.28 + 0.28*e + 0.18*op, 0.18, 0.78))
+        img[:] = img * (1.0-alpha) + field_rgb.astype(np.float32) * alpha
+
     def _subscene_field(self, img, w, h, st):
         """Background Meum gradient field; no playhead chrome."""
         e = self._rms
@@ -4999,7 +5083,7 @@ class VideoSynthEngine:
             },
             "playlist_rows": len(active_rows),
             "canonical": canonical,
-            "dimension": 1 + int(identity_unit("dimension", self._canonical_ctx.get("seed",0.0), name, i) * 3.0),
+            "dimension": 1 + int(identity_unit("dimension", self._canonical_ctx.get("seed",0.0), "master", int(canonical.get("master_slot", i))) * 3.0),
         }
 
     def _subscene_faces_segments(self, img, w, h, st):
@@ -5824,7 +5908,7 @@ class VideoSynthEngine:
                     seed_key = int(_safe_int_seed(self.app.get_numeric_seed() or 0.0))
                 except Exception:
                     seed_key = 0
-            mixed = (seed_key ^ (int(self._visual_frame) * 0x9E3779B1) ^ (int(self.n) << 5)) & 0x7FFFFFFF
+            mixed = (seed_key ^ (int(self._visual_frame) * 0x9E3779B1)) & 0x7FFFFFFF
             self._rng = np.random.RandomState(mixed if mixed else 1)
             # CANONICAL_VISUAL_2026: _visual_entropy is set by the canonical
             # build below (entropy_draw_0_1 / union context) — the old
@@ -5842,6 +5926,7 @@ class VideoSynthEngine:
         self._build_canonical_ctx_and_layers()
         st = self._meum_state()
         self._update_camera_and_packing(st)
+        self._subscene_image_synthesis(img, w, h, st)
         self._update_scenograph_module_schedule(st)
         # Theory of the union: the per-instrument constellation is drawn FIRST
         # (the "registered subcomponents"); under the 4-engine union every slot
@@ -16535,6 +16620,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_play.setMinimumHeight(56)
         self.btn_play.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.btn_stop = QPushButton("⏹ Stop")
+        self.btn_audio_only = QPushButton("▶ PLAY Audio Track")
+        self.btn_audio_only.setMinimumWidth(220)
+        self.btn_audio_only.setMinimumHeight(56)
+        self.btn_audio_only.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.btn_stop.setMinimumWidth(96)
         self.btn_stop.setMinimumHeight(56)
         self.btn_stop.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -16899,6 +16988,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.global_geometry_layout.setAlignment(self.global_controls_side, Qt.AlignmentFlag.AlignTop)
 
         self.btn_play.clicked.connect(self.toggle_playback)
+        self.btn_audio_only.clicked.connect(self.play_audio_only)
         self.btn_stop.clicked.connect(self.stop_playback)
         self.btn_idealize_rhythm.toggled.connect(self._on_euclidean_live_toggled)
         self.btn_seeded_randomize.toggled.connect(self._on_seeded_live_toggled)
@@ -18206,7 +18296,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # main scenograph monitors, right next to EXPORT. Size stays fixed in
         # every state label; state changes only recolor (see toggle_playback /
         # stop_playback) without reflowing the row.
-        for _btn in (self.btn_play, self.btn_stop):
+        for _btn in (self.btn_play, self.btn_audio_only, self.btn_stop):
             _btn.setStyleSheet(
                 "QPushButton { background-color:#14301c; color:#9dffb0; border:2px solid #46d158; "
                 "border-radius:8px; padding:10px 16px; font-weight:900; font-size:13pt; }"
@@ -18214,6 +18304,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "QPushButton:pressed { background-color:#0c1f10; }"
             )
         scope_bar.addWidget(self.btn_play, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
+        scope_bar.addWidget(self.btn_audio_only, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
         scope_bar.addWidget(self.btn_stop, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
         scope_bar.addSpacing(10)
         scope_bar.addWidget(self.btn_export, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
@@ -18275,6 +18366,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         # Realtime audio engine state (sounddevice stream)
         self.is_playing = False
+        # AUDIO_ONLY_TRANSPORT: mutually exclusive audio-only transport mode.
+        self._audio_only_mode = False
         self._composition_generation_guard = False
         self._live_source_update_pending = False
         self._composition_generation_counter = 0
@@ -18327,6 +18420,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """
         roles = {
             "btn_play": "transportPlay",
+            "btn_audio_only": "transportPlay",
             "btn_stop": "transportStop",
             "btn_export": "exportMenu",
             "btn_save_project": "saveLoadBtn",
@@ -26712,7 +26806,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if not self.is_playing:
             if not getattr(self, "_stop_requested", False):
                 self._transport_finished = True
-            self.stop_playback()
+            if getattr(self, "_audio_only_mode", False):
+                self.stop_audio_playback()
+            else:
+                self.stop_playback()
+            return
+        if getattr(self, "_audio_only_mode", False):
+            if hasattr(self, "scope_status_label"):
+                total = max(1, int(getattr(self, "play_buffer", np.zeros(1)).size or 1))
+                pct = int(100 * float(getattr(self, "play_cursor", 0)) / float(total))
+                self.scope_status_label.setText(f"🔊 Audio Track  |  LIVE {pct}%")
             return
         # Live canonical engines: continuous offset + effect parametrics
         try:
@@ -26768,6 +26871,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def toggle_playback(self):
         """Unified PLAY/PAUSE/RESUME transport over the rendered audiovisual data stream."""
+        # AUDIO_ONLY_CROSS_DEACTIVATE: audiovisual play always wins over the
+        # audio-only transport.
+        if getattr(self, "_audio_only_mode", False):
+            self.stop_audio_playback()
         # A completed one-shot is NOT a paused stream.
         # Start a fresh transport on the next PLAY.
         if getattr(self, "_transport_finished", False):
@@ -26806,6 +26913,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             try:
                 self.is_playing = True
                 self.is_paused = False
+                self._audio_only_mode = False
                 self._transport_finished = False
                 self._play_finished_flag = False
                 if HAS_SOUNDDEVICE:
@@ -26840,6 +26948,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.play_cursor = 0
                 self.is_playing = True
                 self.is_paused = False
+                self._audio_only_mode = False
                 self._transport_finished = False
                 self._play_finished_flag = False
             if HAS_SOUNDDEVICE:
@@ -27022,11 +27131,96 @@ class MathematiciansGrooveboxApp(QMainWindow):
             except Exception:
                 pass
 
+    def play_audio_only(self):
+        """Play the rendered audio track without driving the audiovisual monitors."""
+        # Mutually exclusive with audiovisual playback.
+        if self.is_playing or self.is_paused:
+            if not getattr(self, "_audio_only_mode", False):
+                self.stop_playback()
+            else:
+                return
+        try:
+            if hasattr(self, "scope_status_label"):
+                self.scope_status_label.setText("🔊 Rendering Audio Track…")
+            QApplication.processEvents()
+            buf, sr = self._render_mixdown_buffer()
+            with self.play_lock:
+                self.play_buffer = buf
+                self.play_sample_rate = sr
+                self.play_cursor = 0
+                self.is_playing = True
+                self.is_paused = False
+                self._audio_only_mode = True
+                self._transport_finished = False
+                self._stop_requested = False
+            if HAS_SOUNDDEVICE:
+                if self.audio_stream is not None:
+                    try:
+                        self.audio_stream.stop(); self.audio_stream.close()
+                    except Exception:
+                        pass
+                self.audio_stream = sd.OutputStream(
+                    samplerate=sr, channels=1, dtype="float32", callback=self._audio_callback,
+                    blocksize=1024, latency="low"
+                )
+                self.audio_stream.start()
+            self.btn_audio_only.setText("🔊 AUDIO Track  |  LIVE")
+            self.btn_audio_only.setStyleSheet(
+                "QPushButton { background-color:#00aa55; color:#ffffff; border:2px solid #ffffff; "
+                "border-radius:8px; padding:10px 16px; font-weight:900; font-size:13pt; }"
+                "QPushButton:hover { background-color:#00c464; }"
+            )
+            self.btn_play.setText("▶ PLAY Audiovisual Track")
+            if hasattr(self, "scope_status_label"):
+                self.scope_status_label.setText("🔊 Audio Track  |  LIVE")
+            self._scope_update_timer.start()
+        except Exception as e:
+            self.is_playing = False
+            self.is_paused = False
+            self._audio_only_mode = False
+            print(f"[Audio-only] Playback start failed: {e}")
+            QMessageBox.critical(self, "Audio Playback Error", str(e))
+
+    def stop_audio_playback(self):
+        """Stop/reset audio-only transport without changing composition state."""
+        was_active = self.is_playing and getattr(self, "_audio_only_mode", False)
+        if not getattr(self, "_audio_only_mode", False) and not was_active:
+            return
+        self.is_playing = False
+        self.is_paused = False
+        self._audio_only_mode = False
+        self._transport_finished = False
+        self._stop_requested = True
+        if hasattr(self, "_scope_update_timer") and self._scope_update_timer.isActive():
+            self._scope_update_timer.stop()
+        if getattr(self, "audio_stream", None) is not None:
+            try:
+                self.audio_stream.stop(); self.audio_stream.close()
+            except Exception:
+                pass
+            self.audio_stream = None
+        with getattr(self, "play_lock", threading.Lock()):
+            self.play_cursor = 0
+        if hasattr(self, "btn_audio_only"):
+            self.btn_audio_only.setText("▶ PLAY Audio Track")
+            self.btn_audio_only.setStyleSheet(
+                "QPushButton { background-color:#14301c; color:#9dffb0; border:2px solid #46d158; "
+                "border-radius:8px; padding:10px 16px; font-weight:900; font-size:13pt; }"
+                "QPushButton:hover { background-color:#1f4228; }"
+                "QPushButton:pressed { background-color:#0c1f10; }"
+            )
+        if hasattr(self, "scope_status_label"):
+            self.scope_status_label.setText("📊 GLOBAL monitors · Wave · Scenograph · Spectrum  |  Idle")
+        self._stop_requested = False
+        if was_active:
+            print("[Audio-only] Playback stopped.")
+
     def stop_playback(self):
         """Hard stop: reset the audiovisual transport to the beginning."""
         was_active = self.is_playing or self.is_paused
         self.is_playing = False
         self.is_paused = False
+        self._audio_only_mode = False
         self._stop_requested = True
         self._transport_finished = False
         # Drop live modulation baselines so the next Play starts clean
@@ -27045,6 +27239,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if hasattr(self, 'btn_play'):
             self.btn_play.setText("▶ PLAY Audiovisual Track")
             self.btn_play.setStyleSheet(
+                "QPushButton { background-color:#14301c; color:#9dffb0; border:2px solid #46d158; "
+                "border-radius:8px; padding:10px 16px; font-weight:900; font-size:13pt; }"
+                "QPushButton:hover { background-color:#1f4228; }"
+                "QPushButton:pressed { background-color:#0c1f10; }"
+            )
+        if hasattr(self, 'btn_audio_only'):
+            self.btn_audio_only.setText("▶ PLAY Audio Track")
+            self.btn_audio_only.setStyleSheet(
                 "QPushButton { background-color:#14301c; color:#9dffb0; border:2px solid #46d158; "
                 "border-radius:8px; padding:10px 16px; font-weight:900; font-size:13pt; }"
                 "QPushButton:hover { background-color:#1f4228; }"
@@ -28113,6 +28315,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _on_play_videogame(self):
         """Build a live game .py from the composition and open the start UI (splash + options)."""
+        # GAME_CROSS_DEACTIVATE: launching the game always stops whichever
+        # audio transport is active so two playback modes cannot overlap.
+        try:
+            self.stop_playback()
+        except Exception:
+            pass
         try:
             identity, meta = self._classify_live_game()
         except Exception as e:

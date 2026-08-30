@@ -265,3 +265,13 @@ run through the same `ot_*` kernels when the flag is set, keeping the whole
 lattice deterministic per toggle state. Both toggles (DSP and game) are
 driven by the one large button, so a project's identity is fully
 reproducible from the toggle position alone.
+
+
+## Deterministic visual synthesis
+The visual renderer now has a seed-defined 64-slot master image lattice. A
+continuous RGB image field is synthesized from the same composition state used
+by the audio path: seed, spectral bands, waveform energy, centroid, playhead,
+and master visual atoms. Instrument Count does not seed, randomize, or otherwise
+change that latent image. Counts from 2 through 64 deterministically
+repartition the same master material into different visual instrument
+factorizations, while avoiding duplicate decorative complexity.
