@@ -6547,7 +6547,10 @@ class CablePatchPanel(QWidget):
     """Interactive canvas workspace for nodes and cable patching via ports."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(1600, 1000)
+        # Never impose a fixed canvas size on the parent layout.
+        # The canvas expands/shrinks with its host window.
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.cables = []
         self.active_cable_start = None
         self.current_mouse_pos = QPoint(0, 0)
@@ -9140,7 +9143,7 @@ class InteractivePatchbayCanvas(QWidget):
     """Master Hub visualizing all cross-panel connections."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(1000, 700)
+        self.setMinimumSize(0, 0)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     def paintEvent(self, event):
@@ -11244,7 +11247,10 @@ class InfinitePlaylistInnerWidget(QWidget):
         super().__init__(parent)
         self.engine = engine
         self.parent_page = parent_page
-        self.setMinimumSize(8000, 1600)
+        # Scroll-area content may be arbitrarily large, but it must not
+        # propagate an enormous minimum size back to the main window.
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setStyleSheet("background-color: #070b10;")
 
     def paintEvent(self, event):
@@ -14327,7 +14333,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if avail is not None and avail.width() > 0 and avail.height() > 0:
             target_w = min(native_w, int(avail.width() * 0.96))
             target_h = min(native_h, int(avail.height() * 0.96))
-            self.resize(max(1000, target_w), max(700, target_h))
+            self.resize(target_w, target_h)
             self.move(avail.center().x() - self.width() // 2, avail.center().y() - self.height() // 2)
         else:
             self.resize(native_w, native_h)
@@ -14591,7 +14597,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             remaining = max(220, avail_w - side - 16)
             side_w = max(110, remaining // 2)
             if self.video_synth_viewer is not None:
-                self.video_synth_viewer.setMinimumSize(side, side)
+                self.video_synth_viewer.setMinimumSize(0, 0)
                 self.video_synth_viewer.setMaximumSize(16777215, 16777215)
                 self.video_synth_viewer.resize(side, side)
                 self.video_synth_viewer.setSizePolicy(
@@ -14613,7 +14619,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             for widget in (self.visual_oscilloscope, self.spectrum_analyzer):
                 if widget is None:
                     continue
-                widget.setMinimumSize(side_w, side)
+                widget.setMinimumSize(0, 0)
                 widget.setMaximumSize(16777215, 16777215)
                 widget.resize(side_w, side)
                 widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -14686,7 +14692,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             bw = float(self._responsive_base_size.width())
             bh = float(self._responsive_base_size.height())
             scale = min(self.width() / max(1.0, bw), self.height() / max(1.0, bh))
-            scale = max(0.45, min(2.0, float(scale)))
+            scale = max(0.25, min(2.0, float(scale)))
             self._responsive_scale = scale
             font_re = re.compile(r"font-size\s*:\s*([0-9]+(?:\.[0-9]+)?)px", re.I)
 
