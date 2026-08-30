@@ -14537,6 +14537,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._composition_generation_counter = 0
         self._transport_finished = False
         self._stop_requested = False
+        # RESPONSIVE_WINDOW_FREE_2026: child widgets are scaled by the main
+        # window rather than imposing their historical minimum geometry on it.
+        self.setMinimumSize(1, 1)
+        self.setMaximumSize(16777215, 16777215)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.init_ui_components()
         self.initialize_default_playlist_memory()
         self._ensure_sequence_banks_after_resize()
@@ -14587,7 +14592,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             remaining = max(220, avail_w - side - 16)
             side_w = max(110, remaining // 2)
             if self.video_synth_viewer is not None:
-                self.video_synth_viewer.setMinimumSize(side, side)
+                self.video_synth_viewer.setMinimumSize(0, 0)
                 self.video_synth_viewer.setMaximumSize(16777215, 16777215)
                 self.video_synth_viewer.resize(side, side)
                 self.video_synth_viewer.setSizePolicy(
@@ -14609,7 +14614,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             for widget in (self.visual_oscilloscope, self.spectrum_analyzer):
                 if widget is None:
                     continue
-                widget.setMinimumSize(side_w, side)
+                widget.setMinimumSize(0, 0)
                 widget.setMaximumSize(16777215, 16777215)
                 widget.resize(side_w, side)
                 widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -14656,7 +14661,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             scale = min(self.width() / bw, self.height() / bh)
             # Keep controls usable on very small windows while still allowing
             # genuine enlargement on large displays.
-            scale = max(0.62, min(1.75, float(scale)))
+            scale = max(0.35, min(2.50, float(scale)))
             self._responsive_scale = scale
             font_re = re.compile(r"font-size\\s*:\\s*([0-9]+(?:\\.[0-9]+)?)px", re.I)
             for item in getattr(self, "_responsive_widgets", []):
@@ -14683,12 +14688,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         w.setFixedSize(max(1, int(bmin.width() * scale)),
                                        max(1, int(bmin.height() * scale)))
                     else:
-                        # Do not let historical hard minimums prevent the layout
-                        # from shrinking. Retain only genuinely useful tiny minima.
-                        bmin = item["min"]
-                        if bmin.width() > 1 or bmin.height() > 1:
-                            w.setMinimumSize(max(0, int(bmin.width() * scale)),
-                                              max(0, int(bmin.height() * scale)))
+                        # Responsive mode: historical widget minimums must not
+                        # become a hidden minimum size for the main window.  Let
+                        # the parent layout determine geometry while the control's
+                        # actual font/contents scale with the window.
+                        w.setMinimumSize(0, 0)
                 except Exception:
                     continue
             self._sync_square_visuals()
