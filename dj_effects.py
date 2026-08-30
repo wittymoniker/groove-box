@@ -77,12 +77,39 @@ class LiveDJEffects:
         self.amount_random = 0.0
         self.pair_space = CommutativePairSpace(48)
         self.pair = self.pair_space.descriptor(0, 1)
+        # DJ Boost Hit: a periodic raised window with period = interval samples.
+        # The FIRST trigger sits at `boost_phase` (randomized per engagement), so
+        # the hit lands at a different position inside each interval every time
+        # the effect is armed.  interval <= 0 disables the envelope entirely.
+        self.boost_interval = 0
+        self.boost_phase = 0.0
+        self.boost_amount = 0.0
 
     def set_context(self, *, seed: float = 0.0, pair: tuple[int, int] = (0, 1), sample_rate: int | None = None) -> None:
         self.seed = int(abs(float(seed)) * 1000003) & 0xFFFFFFFF
         if sample_rate is not None:
             self.sample_rate = int(max(8000, sample_rate))
         self.pair = self.pair_space.descriptor(*pair)
+
+    def set_boost(self, interval: int = 0, phase: float = 0.0, amount: float = 0.0) -> None:
+        """Arm the periodic Boost Hit envelope (interval in samples).
+
+        The first trigger fires at absolute-sample `phase`; afterwards it repeats
+        every `interval` samples.  Callers pick a fresh `phase` (random) whenever
+        the boost is re-armed so each engagement lands differently.
+        """
+        self.boost_interval = max(0, int(interval))
+        self.boost_phase = float(phase)
+        self.boost_amount = float(np.clip(amount, 0.0, 1.0))
+
+    def _boost_gain(self, n: int, start_sample: int) -> np.ndarray | None:
+        if self.boost_interval <= 0 or self.boost_amount <= 1e-6 or n <= 0:
+            return None
+        t = float(start_sample) + np.arange(n, dtype=np.float32)
+        pos = (t - self.boost_phase) % float(self.boost_interval)
+        width = max(1.0, float(self.boost_interval) * 0.06)
+        gain = 1.0 + self.boost_amount * np.exp(-0.5 * ((pos / width) ** 2))
+        return gain.astype(np.float32, copy=False)
 
     @staticmethod
     def _mix(dry: np.ndarray, wet: np.ndarray, amount: float) -> np.ndarray:
@@ -133,4 +160,7 @@ class LiveDJEffects:
             y = self.goava_pair_morph(y, start_sample=start_sample, goava_scalar=goava_scalar, bpm=bpm)
         if self.amount_random > 1e-6:
             y = self.random_parametric(y, start_sample=start_sample, bpm=bpm)
+        gain = self._boost_gain(y.size, start_sample)
+        if gain is not None:
+            y = y * gain
         return np.clip(y, -1.0, 1.0).astype(np.float32, copy=False)

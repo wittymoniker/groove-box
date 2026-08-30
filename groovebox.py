@@ -205,6 +205,308 @@ SQRT3 = math.sqrt(3.0)
 SILVER = 1.0 + SQRT2                          # silver ratio δ_s
 
 # ---------------------------------------------------------------------------
+# EQUATION OF REALITY — EQR reality-tensor (book p.78: "Theoretical Equation
+# Parameters for Graphing or Predicting a reality tensor").
+#
+# Three levels per step of the tensor graphing process:
+#   P — the structural evaluation or evolution
+#   E — the energetic enumeration and direction
+#   D — the determination of direction   (uses E and P)
+# with d = distance between the point and point n, t = time, and
+# I = 134964355 ("finite infinity" — book p.68/p.79).
+#
+#   P = Σ_{n=0}^{k} k·isn⁻¹( (isn(d_n) + isn(t)) / 2 )
+#   E = Σ_{n=0}^{k} k·isn(θ_n) / d_n
+#   D = Σ_{n=0}^{k} k·isn⁻¹( isin(θ_n)·E / (I·P) )
+#   Z = P·E + D
+#
+# We evaluate the tensor on the sparse control grid of a master bus (each
+# control point = one harmonic context: its own sample, the neighbours as
+# point n at distances d_n, and the running time fraction t), then interpolate
+# the single-point z-values along the wave.  This is the EQR effect, applied
+# tail-only.  The components are scale-normalized per render so the structural
+# relation P·E + D is preserved without exponent blow-up.
+# ---------------------------------------------------------------------------
+EQR_FINITE_INFINITY = 134964355.0
+
+def eqr_isn(x):
+    x = float(x)
+    return math.sin(x) * MEUM_NORM + math.sin(x * MEUM) * (1.0 - MEUM_NORM)
+
+
+def eqr_ics(x):
+    x = float(x)
+    return math.cos(x) * MEUM_NORM + math.cos(x * MEUM) * (1.0 - MEUM_NORM)
+
+
+def _eqr_invert_odd(f, y, lo=-math.pi / 2.0, hi=math.pi / 2.0, iters=24):
+    """Deterministic bisection inverse of eqr_isn (radians)."""
+    y = float(y)
+    a, b = float(lo), float(hi)
+    fa, fb = f(a) - y, f(b) - y
+    if fa * fb > 0:
+        for _ in range(8):
+            a *= 1.25
+            b *= 1.25
+            fa, fb = f(a) - y, f(b) - y
+            if fa * fb <= 0:
+                break
+    if fa * fb > 0:
+        return 0.0
+    x = (a + b) * 0.5
+    for _ in range(iters):
+        fx = f(x) - y
+        if (fa < 0) != (fx < 0):
+            b = x
+        else:
+            a = x
+            fa = fx
+        x = (a + b) * 0.5
+    return float(x)
+
+
+def eqr_isn_inv(y):
+    """isn⁻¹ — inverse of the Meum-normalized odd sinusoid blend."""
+    y = float(y)
+    limit = float(eqr_isn(math.pi / 2.0))
+    if abs(y) > limit:
+        y = math.copysign(limit, y)
+    return _eqr_invert_odd(eqr_isn, y)
+
+
+def eqr_tensor_step(sample, neighbours, t=0.0):
+    """Single-point z-value from the P,E,D tensor for one harmonic context.
+
+    sample is the point, neighbours is the context window (each neighbour n a
+    point at distance d_n = |sample − neighbour| with angular coordinate equal
+    to the neighbour's signed amplitude), t is time in [0,1].
+    Returns (P, E, D, Z) with Z = P·E + D.
+    """
+    s = float(sample)
+    t = float(t)
+    n = 0 if neighbours is None else max(0, int(len(neighbours)))
+    K = max(1, n)
+    _isn = eqr_isn
+    _invs = eqr_isn_inv
+    _I = EQR_FINITE_INFINITY
+    sum_p = 0.0
+    sum_e = 0.0
+    for v in neighbours:
+        v = float(v)
+        dn = abs(v - s) + 1e-9
+        sum_p += _invs((_isn(dn) + _isn(t)) * 0.5)
+        sum_e += _isn(v) / dn
+    P = K * sum_p
+    E = K * sum_e
+    D = 0.0
+    if abs(P) > 1e-9:
+        for v in neighbours:
+            v = float(v)
+            D += _invs(_isn(v) * E / (_I * P))
+        D = K * D
+    Z = P * E + D
+    return float(P), float(E), float(D), float(Z)
+
+# ---------------------------------------------------------------------------
+# OPERATOR THEORY — the book's alternative arithmetic ("Further Abstract
+# Conclusions and Operator Theory", p.49-50).  Gated by a large master toggle
+# (default OFF: every canonical path is numerically untouched).  When enabled,
+# the DSP pathway's final master transform and the game logic's numeric
+# transforms re-encode every scalar through these rules:
+#
+#   1)  +/- are directionally biased operators: adding two negatives produces
+#       further negatives; subtracting a positive from a negative adds its
+#       value back toward/through zero (= ot_add / ot_sub).
+#   2)  A product keeps its hand: negative·negative = negative, positive·positive
+#       = positive, mixed signs = indeterminate (imaginary), taken on the
+#       negative branch (= ot_prod).
+#   3)  Signed powers/roots are ambiguous only when the hands differ; same-hand
+#       powers resolve to the magnitude and its own orientation (= ot_pow).
+#   a)  (-1)/(-x) = -1/X ; (+1)/(+x) = 1/X ; mixed signs → proper sign (±)X/1
+#       with the net absolute (continued-2^x style) (= ot_div).
+#   b)  Multiplying a graph by (±)1 flips one side's orientation.
+#   c)  0·0 = 1 and 0/0 = 1 (fixes the factorial-0 hole) (= ot_prod / ot_div).
+#   d)  The imaginary unit simply alternates +1/−1 across powers (= ot_i_phase).
+#   e)  For scalar addition/subtraction, the operands step through the
+#       enclosing integer band of their magnitude: |v| ∈ (0,1] hops at 1,
+#       (1,2] at 2, (2,3] at 3, >3 folds back to 1 (= ot_add band hop).
+#   f)  Dividing a number by a divisor in absolute (0,2) re-expresses it in the
+#       "higher-value" numeric field (refined once by the Meum residue).
+# ---------------------------------------------------------------------------
+OP_THEORY_ENABLED = False
+
+
+def set_operator_theory(enabled):
+    global OP_THEORY_ENABLED
+    OP_THEORY_ENABLED = bool(enabled)
+
+
+def operator_theory_enabled():
+    return OP_THEORY_ENABLED
+
+
+def ot_band(x):
+    ax = math.fabs(float(x))
+    if ax <= 1.0:
+        return 1.0
+    if ax <= 2.0:
+        return 2.0
+    if ax <= 3.0:
+        return 3.0
+    return 1.0
+
+
+def ot_add(n, v):
+    n = float(n)
+    v = float(v)
+    s = n + v
+    b = ot_band(v) if math.fabs(v) >= math.fabs(n) else ot_band(n)
+    if s >= 0.0:
+        return s + b * 0.5
+    return s - b * 0.5
+
+
+def ot_sub(n, v):
+    n = float(n)
+    v = float(v)
+    if n < 0.0 and v > 0.0:
+        return n + v
+    return ot_add(n, -v)
+
+
+def ot_prod(a, b):
+    a = float(a)
+    b = float(b)
+    if a == 0.0 and b == 0.0:
+        return 1.0
+    if a == 0.0 or b == 0.0:
+        return 0.0
+    mag = math.fabs(a * b)
+    an = a < 0.0
+    bn = b < 0.0
+    if an and bn:
+        return -mag
+    if not (an or bn):
+        return mag
+    return -mag
+
+
+def ot_pow(b, e):
+    b = float(b)
+    e = float(e)
+    r = math.pow(math.fabs(b), math.fabs(e))
+    same_hand = (b >= 0.0) == (e >= 0.0)
+    return r if same_hand else -r
+
+
+def ot_div(a, b):
+    a = float(a)
+    b = float(b)
+    if a == 0.0 and b == 0.0:
+        return 1.0
+    ab = math.fabs(b)
+    if ab == 0.0:
+        return math.copysign(1.0, a) * 1e9
+    if a == 0.0:
+        return 0.0
+    mag = math.fabs(a) / ab
+    sign = -1.0 if a < 0.0 else 1.0
+    return sign * mag
+
+
+def ot_i_phase(x, k):
+    x = float(x)
+    return x * (-1.0 if int(k) % 2 == 0 else 1.0)
+
+
+def ot_master_transform(x):
+    """Operator-theory re-encoding of the master bus (gated, default off).
+
+    Deterministic float64 whole-buffer map: band-hop add toward the enclosing
+    integer of each magnitude (rule e), dividend refinement by the Meum
+    residual divisor in absolute (0,2) (rule f), negative-run composition
+    (rule 1), then amplitude re-normalization under the master ceiling.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    n = x.size
+    out = np.empty_like(x)
+    if n == 0:
+        return x.astype(np.float32)
+    peak0 = float(np.max(np.abs(x))) or 1.0
+    m = x / peak0
+    band = np.select(
+        [np.abs(m) <= 1.0, np.abs(m) <= 2.0, np.abs(m) <= 3.0],
+        [1.0, 2.0, 3.0],
+        default=1.0,
+    )
+    hop = np.sign(m) * band
+    out = m + 0.35 * hop
+    denom = np.abs(out) + 0.2
+    out = out / denom * (1.0 + MEUM_NORM)
+    prev = np.empty_like(out)
+    prev[0] = out[0]
+    prev[1:] = out[:-1]
+    negrun = (out < 0.0) & (prev < 0.0)
+    out = np.where(negrun, -np.abs(out) * 1.15, out)
+    p = float(np.max(np.abs(out))) or 1.0
+    out = out / p * 0.89
+    return out.astype(np.float32)
+
+
+def build_master_follow_env(master, bpm, sample_rate, pkp_decay):
+    """FULL ENV-FOLLOW SYMMETRY — one shared follow envelope for EQR, PKP,
+    and the Fractallizer (tail-only, deterministic, off-canonical).
+
+    The envelope follows the rectified master magnitude itself (block-max →
+    TIME-PREDICTIVE forward-max window → 0.85/0.15 one-pole release, the same
+    release the EQR tensor uses) stamped onto the tempo-locked plane whose
+    swing the PKP Decay slider damps.  All three master effects therefore
+    step through the exact same envelope function instead of computing their
+    own independent copies:
+        EQR        : z-shaping × this envelope
+        Fractallizer: fractal detail contribution × this envelope
+        PKP        : master × (0.35 + 0.65·this envelope)
+    """
+    m = np.asarray(master, dtype=np.float64).ravel()
+    n = m.size
+    if n == 0:
+        return np.ones(1, dtype=np.float32)
+    decay = max(0.0, float(pkp_decay))
+    swing = float(np.clip(0.45 * (1.0 - 0.7 * decay), 0.045, 0.45))
+    beat_hz = max(float(bpm), 1.0) / 60.0
+    t_sec = np.arange(n, dtype=np.float64) / max(float(sample_rate), 1.0)
+    tempo = 0.55 + swing * np.sin(2.0 * np.pi * beat_hz * t_sec)
+    rect = np.abs(m)
+    block = max(1, n // 4096)
+    nb = (n + block - 1) // block
+    bmax = np.empty(nb, dtype=np.float64)
+    for i in range(nb):
+        lo = i * block
+        hi = min(n, lo + block)
+        bmax[i] = float(np.max(rect[lo:hi]))
+    look = max(1, nb // 24)
+    pf = np.empty(nb, dtype=np.float64)
+    for i in range(nb):
+        pf[i] = float(np.max(bmax[i:min(nb, i + look)]))
+    fol = np.empty_like(pf)
+    prev = float(np.mean(rect))
+    for i in range(nb):
+        if pf[i] > prev:
+            prev = pf[i]
+        else:
+            prev = 0.85 * prev + 0.15 * pf[i]
+        fol[i] = prev
+    fol_up = np.interp(
+        np.arange(n, dtype=np.float64),
+        np.linspace(0, n - 1, nb) if nb > 1 else np.array([0.0]),
+        fol,
+    ) if nb > 1 else np.full(n, float(fol[0]))
+    rmean = float(np.mean(rect)) + 1e-9
+    follow = np.clip(0.5 + 0.5 * (fol_up / rmean), 0.2, 1.5)
+    env = np.clip(tempo * follow, 0.15, 1.5)
+    return env.astype(np.float32)
+
+# ---------------------------------------------------------------------------
 # DETERMINISTIC COMPOSITION KERNEL
 # ---------------------------------------------------------------------------
 # Processor syntax is intentionally uniform:
@@ -1287,6 +1589,59 @@ def _parse_if_elif_shorthand(text):
     return acc
 
 
+def _write_wav_with_provenance(path, sample_rate, pcm_int16, comment_bytes=None):
+    """Write mono 16-bit WAV with an optional custom 'eqrf' provenance chunk.
+
+    The 'eqrf' chunk carries the plain-text export manifest (JSON) so any
+    hexdump / RIFF reader sees the documented generation parameters — the
+    product stays trivially reverse-engineerable back to the main window.
+    Unknown chunks are ignored by standard WAV players.
+    """
+    import struct as _st
+    data = np.asarray(pcm_int16, dtype=np.int16).tobytes()
+
+    def _chunk(cid, payload):
+        payload = bytes(payload)
+        pad = b"\0" if (len(payload) & 1) else b""
+        return cid + _st.pack("<I", len(payload)) + payload + pad
+
+    fmt = _st.pack("<HHIIHH", 1, 1, int(sample_rate), int(sample_rate) * 2, 2, 16)
+    body = _chunk(b"fmt ", fmt) + _chunk(b"data", data)
+    if comment_bytes is not None:
+        body += _chunk(b"eqrf", bytes(comment_bytes))
+    header = b"RIFF" + _st.pack("<I", 4 + len(b"WAVE") + len(body)) + b"WAVE" + body
+    with open(path, "wb") as f:
+        f.write(header)
+
+
+def _extract_wav_provenance(path):
+    """Read back the 'eqrf' provenance chunk a WAV export carries (or None)."""
+    import struct as _st
+    try:
+        with open(path, "rb") as f:
+            head = f.read(12)
+        if len(head) < 12 or head[:4] != b"RIFF" or head[8:12] != b"WAVE":
+            return None
+        size = _st.unpack("<I", head[4:8])[0]
+        with open(path, "rb") as f:
+            data = f.read(12 + size)
+        chunks = data[12:]
+        pos = 0
+        while pos + 8 <= len(chunks):
+            cid = chunks[pos:pos + 4]
+            csz = _st.unpack("<I", chunks[pos + 4:pos + 8])[0]
+            payload = chunks[pos + 8:pos + 8 + csz]
+            if cid == b"eqrf":
+                try:
+                    return json.loads(payload.decode("utf-8"))
+                except Exception:
+                    return None
+            pos += 8 + csz + (csz & 1)
+    except Exception:
+        return None
+    return None
+
+
 def _safe_int_seed(value):
     """Deterministically fold any seed value into a NumPy-safe non-negative
     int32-range integer. Whole-number floats map to their exact integer
@@ -1310,6 +1665,25 @@ def _safe_int_seed(value):
     hi, lo = _st.unpack(">II", _st.pack(">d", as_float))
     mixed = (hi ^ (lo * 0x9E3779B1) ^ int(scaled % (2**31))) & 0x7FFFFFFF
     return mixed if mixed else 1
+
+
+def _stable_hash(value, modulus=None):
+    """Process-stable string hash for canonical IDs/colors/phases.
+
+    Python's built-in hash() on strings is salted per-process
+    (PYTHONHASHSEED), so two runs of the same code could pick different
+    hue/phase/RNG lanes for identical content. This folds any value through
+    SHA-256 — identical bytes ⇒ identical integer on every machine/process.
+    """
+    try:
+        blob = str(value).encode("utf-8", "replace")
+    except Exception:
+        blob = repr(value).encode("utf-8", "replace")
+    d = hashlib.sha256(blob).digest()
+    n = int.from_bytes(d[:8], "big")
+    if modulus is not None and modulus > 0:
+        return n % int(modulus)
+    return n
 
 
 # >>> GROK_EDIT_BEGIN: seed_pitch_identity
@@ -1498,33 +1872,29 @@ def _seed_script_env(t_scalar=0.0, canonical_context=None):
 
     def P(s, c=0.0, *rest):
         s = float(s)
-        c = float(c)
-        if rest:
-            for r in rest:
-                c += float(r)
-        return s * (1.0 + MEUM_NORM * abs(c)) * PHI_INV
+        ctx = [float(c)]
+        for r in rest:
+            ctx.append(float(r))
+        return float(eqr_tensor_step(s, ctx, t=float(t_scalar))[0])
 
     def E(s, c=0.0, *rest):
         s = float(s)
-        c = float(c)
-        if rest:
-            for r in rest:
-                c += float(r)
-        return abs(s) * (1.0 + MEUM_NORM * abs(c)) * PHI_INV
+        ctx = [float(c)]
+        for r in rest:
+            ctx.append(float(r))
+        return float(eqr_tensor_step(s, ctx, t=float(t_scalar))[1])
 
     def D(s, c=0.0, *rest):
         s = float(s)
-        c = float(c)
-        if rest:
-            for r in rest:
-                c += float(r)
-        return abs(MEUM_IDENTITY_RESIDUAL) * 0.1 * math.sin(s * MEUM + c)
+        ctx = [float(c)]
+        for r in rest:
+            ctx.append(float(r))
+        return float(eqr_tensor_step(s, ctx, t=float(t_scalar))[2])
 
     def tensor_z(s, c=0.0):
         s = float(s)
-        c = float(c)
-        z = E(s, c) + D(s, c)
-        z = z * 1.5 / max(abs(s) + 0.15, 1e-6) * 0.35 + 0.5
+        ctx = [float(c)]
+        z = eqr_tensor_step(s, ctx, t=float(t_scalar))[3]
         return float(_clamp(z, 0.05, 3.0))
 
     def tensor_rel(s, c=0.0, z_ref=1.5):
@@ -2591,6 +2961,34 @@ PLAYLIST_STRUCT_COLUMNS = ("script_tag", "domain_tag", "synth_tag", "patch_tag")
 # every Phase-Lock pass).
 _EXPLICIT_ENGINE_SOURCES = ("randomizer", "phase-lock", "phase_lock", "midpoint", "euclidean", "seeded")
 PLAYLIST_STRUCT_COL_INDICES = (2, 3, 4, 5)  # indices into PLAYLIST_COLUMNS
+
+# CANONICAL_MACRO_DEFAULTS_2026: single source of truth for the engine-authored
+# macro defaults. Both the generative writer (_mark_generated_synth_context) and
+# the canonical reset that strips engine residue compute THE SAME numbers from
+# the same frozen context, so the master synth store is a pure function of the
+# final active engine set + user material, never of activation history.
+def canonical_macro_defaults(ctx, i):
+    return {
+        "tuning": float(np.clip(MEUM_INV + (PHI - 1.0) * ctx, 0.75, 1.15)),
+        "filter": float(np.clip(MEUM_NORM + MEUM_INV * ctx, 0.02, 0.98)),
+        "drive": float(np.clip(MEUM_NORM * 0.5 + MEUM_NORM * ctx, 0.0, 0.9)),
+        "amplitude": float(np.clip(MEUM_INV * 0.5 + MEUM_NORM * ctx, 0.05, 1.0)),
+        "duration": float(np.clip(MEUM_NORM + MEUM_INV * (1.0 - ctx), 0.03, 1.0)),
+        "phase_shift": float(math.tau * ((i * MEUM_NORM * PHI_INV) % 1.0)),
+        "am_depth": float(np.clip(MEUM_NORM * 0.2 + MEUM_NORM * ctx * 0.5, 0.0, 0.40)),
+        "am_rate": float(MEUM_NORM + MEUM * ctx),
+        "fm_depth": float(np.clip(MEUM_NORM * 0.1 + MEUM_NORM * ctx * 0.1, 0.0, 0.18)),
+        "fm_rate": float(MEUM_SQ * ctx + MEUM_INV),
+        "pm_depth": float(np.clip(MEUM_NORM * 0.2 + MEUM_NORM * ctx * 0.2, 0.0, 0.35)),
+        "pm_rate": float(MEUM_SQ * ctx + MEUM_INV),
+        "pm_feedback": float(np.clip(MEUM_NORM * 0.1 + MEUM_NORM * ctx * 0.1, 0.0, 0.25)),
+        "meum_depth": float(np.clip(MEUM_NORM * 0.5 + MEUM_NORM * ctx * 0.5, 0.0, 0.45)),
+    }
+
+# The macro key names that engines author into the master synth store.  During
+# the canonical context freeze these are excluded from the synth-signal blob so
+# first-writer engagement residue can never factor into the frozen identity.
+CANONICAL_MACRO_NAMES = frozenset(canonical_macro_defaults(0.5, 0))
 
 def idealized_operator_struct(app, op_name, row=0, seed=0):
     """Build the canonical per-instrument data-struct set used by playlist cells.
@@ -3672,6 +4070,31 @@ class VideoSynthEngine:
             self._video_hue_shift = (r * 0.3 + g * 0.5 + b * 0.2) * 60.0
         self._video_energy = float(max(0.0, min(1.0, energy)))
 
+    def frame_stats(self, frame=None):
+        """Deterministic (mean_rgb, energy) digest of a rendered video frame.
+
+        This is the reverse signal direction: video output -> software output.
+        mean_rgb is the per-channel mean normalized to [0, 1]; energy is the
+        luminance RMS in [0, 1]. It is a pure function of the frame bytes, so
+        the video -> software bridge is itself deterministic and
+        seed-reproducible (the two-way signal-to-output cross-validation).
+        """
+        f = frame if frame is not None else getattr(self, "_frame", None)
+        if f is None:
+            return (0.0, 0.0, 0.0), 0.0
+        arr = np.asarray(f, dtype=np.float32)
+        if arr.ndim == 2:
+            mean_rgb = tuple(float(np.mean(arr) / 255.0) for _ in range(3))
+        else:
+            mean_rgb = tuple(
+                float(np.mean(arr[..., c]) / 255.0) for c in range(min(3, arr.shape[2]))
+            )
+        lum = arr
+        if arr.ndim == 3 and arr.shape[2] >= 3:
+            lum = arr[..., 0] * 0.2126 + arr[..., 1] * 0.7152 + arr[..., 2] * 0.0722
+        energy = float(np.clip(np.sqrt(np.mean((lum / 255.0) ** 2)), 0.0, 1.0))
+        return tuple(mean_rgb[:3]), energy
+
     def _analyze(self):
         w = self.wave
         self._rms = float(np.sqrt(np.mean(w ** 2)) + 1e-9)
@@ -3749,7 +4172,7 @@ class VideoSynthEngine:
 
     def _live_snap(self):
         snap = {
-            "seeded": False, "euclid": False, "eqr": 0.2247, "fractal": 0.3819,
+            "seeded": False, "euclid": False, "eqr": 0.2247, "fractal": 0.40,
             "struct": 0.0, "bpm": 120.0, "carrier": 0.0, "pkp": 0.5, "seed": 0.0,
             "goava": False, "phase_lock": False, "randomizer": False,
             "seed_list": [], "ensemble": 1, "canonical_count": 0,
@@ -5168,6 +5591,12 @@ class VideoSynthViewer(QFrame):
         hh = max(self.height(), 180)
         # Live preview only — oscilloscope/FFT are separate widgets, not composited here
         self._frame = self.engine.render_frame(ww, hh, export=False)
+        # Two-way signal-to-output: feed the rendered frame's digest back into
+        # the software side so live output is video-aware (see _audio_callback).
+        try:
+            self.engine.ingest_video_frame_stats(*self.engine.frame_stats(self._frame))
+        except Exception:
+            pass
         self.update()
 
     def set_mode(self, mode_idx):
@@ -7205,16 +7634,10 @@ class ReadmeGuideDialog(QDialog):
 
     HELP_TEXT = r"""
 ================================================================================
-  EQR GROOVEBOX — Mathematician's / Scientist's Groovebox
+  MATHEMATICIAN'S GROOVEBOX — Mathematician's / Scientist's Groovebox
   Full Documentation, Scripting Syntax & Design Philosophy
 ================================================================================
-  Credits: core EQR design — project author; implementation assistance —
-  Grok (xAI), Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI),
-  Mistral.ai (Mistral), Meta AI (Meta), GitHub Copilot (GitHub),
-  and Cursor Grok 4.6 (polyphony, unison memory, visualizer).
-  Maintenance + level-up fixes (GOAVA pitch DC-centering, dead-code dedup,
-  canonical-state fingerprint, UI layout stability, engaged randomizer
-  colors): opencode (anomalyco).
+  Credits: ESKI (NOAH G KING), VIBECODER
 
 --------------------------------------------------------------------------------
 1. GOAL OF THE SOFTWARE
@@ -7839,47 +8262,39 @@ class HarmonicLattice:
 
 
 class EQRTensorEngine:
-    """Equation of Reality tensor evaluator (low-lag single-point style).
+    """Equation of Reality tensor evaluator (book p.78).
 
-    Feeds an instantaneous waveform sample (plus minimal context) into the
-    reality tensor and extracts total z-value relative volume referenced to 1.5.
-    Activation 0–100% → mix 0–50%.
+    Every harmonic context along the wave yields a single-point z-value
+    Z = P·E + D from the reality tensor (P structure, E energy/direction,
+    D point-to-direction with the finite-infinity constant I).  The z-values
+    are scaled per render to a mean of 1.0 (scale-invariant structural
+    relation) and shaped through a TIME-PREDICTIVE follow envelope — a small
+    forward maximum window, so the filter anticipates transients instead of
+    lagging them.  Activation 0–100% blends in up to 50% of the shaped signal.
     """
     Z_REF = 1.5
 
     def __init__(self):
         self._last_z = 1.0
 
-    def evaluate_z(self, sample, context=None):
-        """Single-point (low-lag) EQR z-value from instantaneous sample."""
+    def evaluate_z(self, sample, context=None, t=0.0):
+        """Single-point z-value (stdout of the P,E,D tensor) for one context."""
         s = float(sample)
-        # Minimal context stabilizes without multi-point lag
-        if context is not None and len(context) > 0:
-            c = float(np.mean(np.asarray(context, dtype=np.float32)))
-        else:
-            c = 0.0
-        # Tensor-like mapping inspired by Meum / EQR geometry
-        # z ≈ |s| * (1 + MEUM_NORM * |c|) * PHI_INV + residual coupling
-        z = abs(s) * (1.0 + MEUM_NORM * abs(c)) * PHI_INV
-        z += abs(MEUM_IDENTITY_RESIDUAL) * 0.1 * math.sin(s * MEUM + c)
-        # EQR_MODULATION_FIX_2026: this used to re-divide z by (|s| + 0.15)
-        # right after building z from |s| — i.e. it built a signal-dependent
-        # value and then immediately canceled the signal dependence back out
-        # (z/|s| saturates to a near-constant ~1.5 for anything but very quiet
-        # samples). That is exactly why EQR read as "not modulating" — its
-        # output barely tracked the actual waveform. Clipping the raw
-        # (still signal-dependent) z directly keeps EQR's shaping tied to the
-        # real amplitude/context it was computed from.
-        z = float(np.clip(z, 0.05, 3.0))
-        self._last_z = z
-        return z
+        ctx = np.asarray(context, dtype=np.float32).ravel().tolist() if context is not None and len(context) else [s]
+        _, _, _, z = eqr_tensor_step(s, ctx, t=float(t))
+        self._last_z = float(z)
+        return float(z)
 
     def process(self, dry, activation=0.0, pkp_env=None):
-        """Scale dry by relative z-volume vs 1.5; max 50% mix at 100% activation.
+        """Predictive-envelope Z-shaped master; max 50% mix at 100% activation.
 
-        pkp_env (optional): the same tempo-locked PKP envelope driving the
-        Fractallizer/PKP master stages, so EQR's shaping breathes with the
-        rest of the master-FX chain instead of evolving independently.
+        Each control point is one harmonic context: the current sample, the
+        ±window neighbours, and the running time fraction t along the wave.
+        The component P/E are mean-normalized over the render (so the
+        structural relation drives the shape, not the raw magnitude), Z = P·E+D
+        is envelope-followed forward (predictive), then crossfaded to dry.
+        pkp_env (optional) is the same tempo-locked envelope the Fractallizer/
+        PKP master stages use, so all three effects breathe together.
         """
         dry = np.asarray(dry, dtype=np.float32).ravel()
         n = dry.size
@@ -7890,27 +8305,43 @@ class EQRTensorEngine:
         if wet_mix < 1e-6:
             return dry.copy()
 
-        # Low-lag: evaluate z on a sparse control grid, interpolate
         ctrl_n = min(64, max(4, n // 256))
         idxs = np.linspace(0, n - 1, ctrl_n).astype(np.int32)
-        z_ctrl = np.empty(ctrl_n, dtype=np.float32)
+        w = max(1, ctrl_n // 8)
+        P_ctrl = np.empty(ctrl_n, dtype=np.float64)
+        E_ctrl = np.empty(ctrl_n, dtype=np.float64)
+        Z_ctrl = np.empty(ctrl_n, dtype=np.float64)
         for i, ix in enumerate(idxs):
-            lo = max(0, ix - 2)
-            hi = min(n, ix + 3)
-            z_ctrl[i] = self.evaluate_z(dry[ix], dry[lo:hi])
-        z_full = np.interp(np.arange(n), idxs.astype(float), z_ctrl).astype(np.float32)
-        # Relative volume vs 1.5 reference
-        rel = z_full / self.Z_REF
+            lo = max(0, ix - w)
+            hi = min(n, ix + w + 1)
+            t = float(ix) / float(max(1, n - 1))
+            pi_, ei_, _di, zi = eqr_tensor_step(dry[ix], dry[lo:hi], t=t)
+            P_ctrl[i], E_ctrl[i], Z_ctrl[i] = pi_, ei_, zi
+        sp = float(np.mean(np.abs(P_ctrl))) + 1e-12
+        se = float(np.mean(np.abs(E_ctrl))) + 1e-12
+        Pn = P_ctrl / sp
+        En = E_ctrl / se
+        Zn = Pn * En + Z_ctrl - (P_ctrl[0] * 0.0)  # scale-invariant Z, D kept raw
+        # Center the combined z on mean 1.0 and clamp the transient excursion
+        zm = float(np.mean(Zn))
+        rel = Zn / max(abs(zm), 1e-9)
+        rel = np.clip(rel, 0.25, 2.5).astype(np.float32)
+        # TIME-PREDICTIVE follow envelope: forward max window anticipates onsets
+        look = max(1, ctrl_n // 12)
+        env = np.empty(ctrl_n, dtype=np.float32)
+        for i in range(ctrl_n):
+            hi = min(ctrl_n, i + look)
+            env[i] = float(np.max(rel[i:hi]))
+            if i > 0 and env[i] < env[i - 1]:
+                env[i] = env[i - 1] * 0.85 + rel[i] * 0.15
+        z_full = np.interp(np.arange(n), idxs.astype(float), env).astype(np.float32)
         env_gain = np.ones(n, dtype=np.float32)
         if pkp_env is not None:
-            env = np.asarray(pkp_env, dtype=np.float32).ravel()
-            if env.size != n:
-                env = np.resize(env, n)
-            env_gain = np.clip(env, 0.0, 1.5)
-        # Soft shaping so EQR modulates amplitude/color without replacing dry,
-        # tied to the shared PKP envelope so all three master effects move
-        # together instead of drifting independently.
-        shaped = dry * (0.65 + 0.35 * np.tanh(rel) * env_gain)
+            env_ = np.asarray(pkp_env, dtype=np.float32).ravel()
+            if env_.size != n:
+                env_ = np.resize(env_, n)
+            env_gain = np.clip(env_, 0.0, 1.5)
+        shaped = dry * (0.65 + 0.35 * np.tanh(z_full)) * env_gain
         out = (1.0 - wet_mix) * dry + wet_mix * shaped
         return out.astype(np.float32)
 
@@ -8448,17 +8879,25 @@ class FormantSynthInstance(StandardSynthInstance):
         return out.tolist()
 
 class DeterministicNoiseInstance(StandardSynthInstance):
-    """Hash-derived noise processor; deterministic for the same seed/state."""
+    """Hash-derived noise processor; deterministic for the same seed/state.
+
+    NO_INCREMENT_2026: the noise value is a pure function H(parameters,
+    absolute_sample_index). The block base is advanced once per block (not per
+    sample), so generating identical absolute samples anywhere yields the same
+    number — no accumulated counter rides along in the generator itself.
+    """
     def render_block(self, num_samples, x, y, z):
         buf = []
-        for _ in range(num_samples):
+        base = int(getattr(self, "_noise_index", 0))
+        for i in range(num_samples):
             # Deterministic noise is a hash-derived value, not process RNG.
-            # The persistent sample index prevents block-boundary repetition.
-            key = deterministic_u64("noise", self.freq, self.sr, x, y, z, self._noise_index)
+            # The absolute sample index prevents block-boundary repetition
+            # without any per-sample incrementation.
+            key = deterministic_u64("noise", self.freq, self.sr, x, y, z, base + i)
             noise = ((key / 18446744073709551615.0) * 2.0) - 1.0
-            self._noise_index += 1
             val = noise * 0.1 * abs(x) * max(0.0, y)
             buf.append(val)
+        self._noise_index = base + num_samples
         self.life -= 1
         self._meum_phase = 0.0
         self._meum_sample_index = 0
@@ -8527,16 +8966,17 @@ class NoiseBurstNode(StandardWaveSynthNode):
     """Deterministic rhythmic noise burst for percussion/texture tabs."""
     def generate_block(self, num_samples, x, y, z):
         buf = []
-        for _ in range(num_samples):
-            # Same syntax as the noise synth: H(parameters, sample_index)
+        base = int(getattr(self, "_noise_index", 0))
+        for i in range(num_samples):
+            # Same syntax as the noise synth: H(parameters, absolute_sample_index)
             # creates repeatable texture while remaining non-periodic within
-            # the finite playback interval.
-            key = deterministic_u64("burst-noise", self.freq, self.sr, x, y, z, self._noise_index)
+            # the finite playback interval — without per-sample incrementation.
+            key = deterministic_u64("burst-noise", self.freq, self.sr, x, y, z, base + i)
             noise = ((key / 18446744073709551615.0) * 2.0) - 1.0
-            self._noise_index += 1
             envelope = max(0.0, 1.0 - (self.phase % 1.0))
             val = noise * envelope * self.amp * x * y
             buf.append(val)
+        self._noise_index = base + num_samples
         return buf
 # -------------------------------------------------------------------------
 # GLOBAL CABLE ROUTING & RESAMPLING BUS MANAGER
@@ -10639,7 +11079,15 @@ class MasterControlPatchbayPage(QWidget):
     def _save_project(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save Project File", "", "EQ爾 Groovebox Files (*.json)")
         if path:
-            self.engine.serialize_project(path)
+            # SAVE_EXT_2026: enforce the .json suffix so the second save with the
+            # canonical-protect toggle can never fail on a bare extension.
+            if not path.lower().endswith(".json"):
+                path = path + ".json"
+            try:
+                self.engine.serialize_project(path)
+            except Exception as exc:
+                QMessageBox.warning(self, "Save failed", str(exc))
+                return
             QMessageBox.information(self, "Project Saved", f"Project successfully saved to:\n{path}")
 
     def _load_project(self):
@@ -10651,6 +11099,11 @@ class MasterControlPatchbayPage(QWidget):
             self.patch_canvas.update()
             self.infinite_playlist_canvas.canvas_inner.update()
             QMessageBox.information(self, "Project Loaded", f"Project successfully loaded from:\n{path}")
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                data = {}
             loaded_state = data.get("instrument_param_state", {})
 
             if isinstance(loaded_state, dict):
@@ -11889,7 +12342,7 @@ class PaintbrushTable(QWidget):
             item = QTableWidgetItem("")
             self.table_widget.setItem(row, col, item)
         # Base hue from member hash / row; shift by overlap and substitution
-        h = (hash(member or f"{row}:{col}") % 360)
+        h = (_stable_hash(member or f"{row}:{col}", 360) % 360)
         if substituted:
             # Distinct convolution: rotate hue + desaturate fill to signal replacement
             h = (h + 137) % 360  # golden-angle step
@@ -13517,11 +13970,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
     def _sync_square_visuals(self):
-        """Layout: large square scenograph (center, ~2×) + rectangular side meters.
+        """Layout: large square scenograph filling ALL free height (plus as much
+        width as a square allows) + rectangular side meters.
 
-        Scenograph is forced square and given roughly double the previous linear
-        size so the video synth dominates the global monitor row. Waveform and
-        spectrum stay rectangles at the same height.
+        UI_LAYOUT_FILL_2026: the scenograph is allowed to grow into every free
+        pixel of the bottom monitor row instead of being pinned to a fixed cap.
+        Hard maximums are removed so Qt's expanding size policies fill the row;
+        the square side is clamped only to the available height so the pane can
+        never paint out of frame. Side meters split the remaining width.
         """
         try:
             container = getattr(self, "_visual_container", None)
@@ -13533,37 +13989,40 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         break
             if container is None:
                 return
-            avail_w = max(480, int(container.width()) - 16)
-            avail_h = max(280, int(container.height()) - 16)
-            # ~2× previous linear size: take up to ~55% of width as the square side,
-            # still clamped to available height.
-            side = max(360, min(avail_h, int(avail_w * 0.55)))
-            remaining = max(160, avail_w - side - 20)
-            side_w = max(140, remaining // 2)
-            # Center: large square scenograph
+            avail_w = max(320, int(container.width()) - 16)
+            avail_h = max(220, int(container.height()) - 16)
+            # Square claims the full free height; width share grows when the row
+            # is wide. Always clamped inside the container so nothing clips.
+            side = max(260, min(avail_h, int(avail_w * 0.60)))
+            remaining = max(120, avail_w - side - 16)
+            side_w = max(110, remaining // 2)
             if self.video_synth_viewer is not None:
                 self.video_synth_viewer.setMinimumSize(side, side)
-                self.video_synth_viewer.setMaximumSize(side + 8, side + 8)
+                self.video_synth_viewer.setMaximumSize(16777215, 16777215)
                 self.video_synth_viewer.resize(side, side)
                 self.video_synth_viewer.setSizePolicy(
-                    QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+                    QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
                 )
                 try:
-                    if hasattr(self.video_synth_viewer, "engine") and self.video_synth_viewer.engine:
-                        self.video_synth_viewer._frame = self.video_synth_viewer.engine.render_frame(
-                            side, side, export=False
-                        )
+                    if (hasattr(self.video_synth_viewer, "_frame") and
+                            self.video_synth_viewer._frame is not None):
+                        if (self.video_synth_viewer._frame.width() != side or
+                                self.video_synth_viewer._frame.height() != side):
+                            if hasattr(self.video_synth_viewer, "engine") and self.video_synth_viewer.engine:
+                                self.video_synth_viewer._frame = self.video_synth_viewer.engine.render_frame(
+                                    side, side, export=False
+                                )
                         self.video_synth_viewer.update()
                 except Exception:
                     pass
-            # Sides: rectangular meters (same height as square)
+            # Sides: rectangular meters (same height as square, expanding width)
             for widget in (self.visual_oscilloscope, self.spectrum_analyzer):
                 if widget is None:
                     continue
                 widget.setMinimumSize(side_w, side)
-                widget.setMaximumSize(16777215, side + 8)
+                widget.setMaximumSize(16777215, 16777215)
                 widget.resize(side_w, side)
-                widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+                widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         except Exception:
             pass
 
@@ -13732,9 +14191,24 @@ class MathematiciansGrooveboxApp(QMainWindow):
         scripts = getattr(self, 'instrument_scripts', {}) or {}
         script = str(scripts.get(instrument_name, ''))
         cables = getattr(self, 'patch_connections', []) or []
-        gb = getattr(globals().get('GLOBAL_BUS', None), 'global_cables', []) or []
+        # CANONICAL_FREEZE_2026: while freezing the context under the
+        # user-material-only key, exclude engine-authored macros and engine
+        # playlist residue so first-writer engagement residue cannot enter the
+        # frozen identity.
+        _freeze_ctx = bool(getattr(self, "_canonical_freeze_ctx", False))
+        # GLOBAL_BUS is a module-level shared routing mirror (live feature). It is
+        # NOT instance state, so counting it here would make the frozen topology
+        # depend on engagement history across instances/order.
+        gb = [] if _freeze_ctx else (getattr(globals().get('GLOBAL_BUS', None), 'global_cables', []) or [])
         playlist = getattr(self, 'master_playlist_data', []) or []
-        active = [r for r in playlist if isinstance(r, dict) and any(v not in (None, '', [], {}) for v in r.values())]
+        if _freeze_ctx:
+            active = [r for r in playlist if isinstance(r, dict)
+                      and (r.get("user_owned") or r.get("user_instances")
+                           or "@u:" in str(r.get("operators_csv", ""))
+                           or "@u:" in str(r.get("operators", "")))
+                      and any(v not in (None, '', [], {}) for v in r.values())]
+        else:
+            active = [r for r in playlist if isinstance(r, dict) and any(v not in (None, '', [], {}) for v in r.values())]
 
         # POWER_V3_CONTEXT_FIELD: synth/wavetable state participates without
         # becoming a preset. Snapshot only scalar/numeric state for stability.
@@ -13743,6 +14217,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             synth_state = {}
         numeric_synth = []
         for k, v in synth_state.items():
+            if _freeze_ctx and (k in CANONICAL_MACRO_NAMES or k == "meum_modulation"):
+                continue
             try:
                 numeric_synth.append((str(k), float(v)))
             except Exception:
@@ -13762,6 +14238,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             vals.append(float(x))
                     if vals:
                         generated_numeric.append((str(k), tuple(round(x, 8) for x in vals)))
+        if _freeze_ctx:
+            # instrument_param_generated is engine macro blowback (derived from
+            # the very ctx we are freezing); it must not feed the frozen identity.
+            generated_numeric = []
         generated_blob = repr(sorted(generated_numeric))
         generated_score = (int(hashlib.sha256(generated_blob.encode('utf-8','replace')).hexdigest()[:12], 16) % 10000) / 10000.0
         synth_score = (int(hashlib.sha256(synth_blob.encode('utf-8','replace')).hexdigest()[:12], 16) % 10000) / 10000.0
@@ -13819,7 +14299,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         row_velocity = 0.5
         if 0 <= row < len(playlist) and isinstance(playlist[row], dict):
             try:
-                row_velocity = float(np.clip(float(playlist[row].get('velocity', 0.5) or 0.5) / 1.5, 0.0, 1.0))
+                _row_user = bool(playlist[row].get("user_owned")) or bool(playlist[row].get("user_instances"))
+                if _freeze_ctx and not _row_user:
+                    row_velocity = 0.5
+                else:
+                    row_velocity = float(np.clip(float(playlist[row].get('velocity', 0.5) or 0.5) / 1.5, 0.0, 1.0))
             except Exception:
                 pass
 
@@ -13878,8 +14362,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
             seed_val = 0.0
         # Evaluated (never hashed) fold of the seed into a smooth 0..1 coordinate.
         seed_phase = ((abs(seed_val) * MEUM) + step * MEUM_INV + row * MEUM_NORM) % 1.0
-        tie_break = 0.5 + 0.5 * math.sin(2.0 * math.pi * seed_phase)
-        return float(np.clip(1.0*f['score'] + 0.0*tie_break, 0.0, 1.0))
+        top = 0.5 + 0.5 * math.sin(2.0 * math.pi * seed_phase)
+        # ORDER_INDEPENDENCE: while a canonical transaction is active the numeric
+        # context must read the FROZEN pre-canonical cache built by
+        # _reset_canonical_engine_derived_state() — never the live accumulated
+        # stores (which engine writes in one order would then read as history).
+        cache = getattr(self, "_canonical_ctx_cache", None)
+        if isinstance(cache, dict) and instrument_name in cache:
+            return float(cache[instrument_name])
+        return float(np.clip(1.0*f['score'] + 0.0*top, 0.0, 1.0))
 
 
     # =====================================================================
@@ -13976,7 +14467,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             e["multi_seq"] = ", ".join(refs)
             # Remove GOAVA-only scalar metadata.  Do not erase other canonical/user fields.
             for _k in ("goava_sequence", "goava_frequency", "goava_pitch", "goava_seed",
-                       "goava_unison_weight", "goava_active", "goava_generated_by_engine"):
+                       "goava_unison_weight", "goava_active", "goava_generated_by_engine",
+                       "goava_harmonic"):
                 e.pop(_k, None)
             ops = e.get("operators") or []
             if isinstance(ops, str):
@@ -14020,68 +14512,35 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if not isinstance(e, dict):
                     e = {}; self.master_playlist_data[r] = e
                 ev = events[r % len(events)]
+                # GOAVA_SINE_HARMONIC_2026: GOAVA is not an instrument and does
+                # NOT occupy an identity. It adds its own pure-ish sine harmonic
+                # at an ideal 33% amplitude on top of the programmed groove. The
+                # row keeps only non-identity harmonic metadata for visuals; the
+                # operator/sequence lattice and sequence banks are untouched.
+                e["goava_harmonic"] = {
+                    "frequency": float(ev["frequency"]),
+                    "pitch": float(ev["pitch"]),
+                    "seed": float(ev["seed"]),
+                    "amplitude": 0.33,
+                    "step": int(r), "enabled": bool(ev.get("enabled", True)),
+                }
                 e["goava_sequence"] = (
-                    f"GOAVA step={r+1} seed={ev['seed']:.9g} raw={ev['raw']:.9g} "
-                    f"hz={ev['frequency']:.6f} pitch={ev['pitch']:.6f} on={int(ev['enabled'])}"
+                    f"GOAVA harmonic hz={ev['frequency']:.6f} "
+                    f"pitch={ev['pitch']:.6f} amp=0.33 on={int(ev['enabled'])}"
                 )
                 e["goava_frequency"] = ev["frequency"]
                 e["goava_pitch"] = ev["pitch"]
                 e["goava_seed"] = ev["seed"]
                 e["goava_active"] = True
                 e["goava_generated_by_engine"] = True
-                ops = [str(x).strip() for x in (e.get("operators") or []) if str(x).strip() and str(x).strip() != "GOAVA"]
-                ops.append("GOAVA")
-                e["operators"] = list(dict.fromkeys(ops))
-                e["operators_csv"] = ", ".join(e["operators"])
-                # GOAVA participates in the same sequence/unison lattice as the
-                # other canonicals.  Do not depend on activation order or on the
-                # currently-selected sequence: distribute uniformly over every
-                # sequence actually available for this instrument.
-                inst = str(e.get("operator") or (self.instrument_names_48[r % len(self.instrument_names_48)] if self.instrument_names_48 else "Operator"))
-                bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(inst, {})
-                ids = sorted(int(k) for k, v in bank.items() if isinstance(v, dict) and str(k).isdigit()) or [1]
-                sid = ids[r % len(ids)]
-                smem = bank.get(sid, {}) if isinstance(bank, dict) else {}
-                plen = max(1, int((smem or {}).get("pattern_length", 16) or 16))
-                phase = (r * max(1, len(ids)) + sid - 1) % plen
-                refs = [f"{inst}#S{sid}"]
                 self._goava_write_ledger.append({
-                    "row": int(r), "instrument": inst, "sequence_id": int(sid),
-                    "ref": refs[0], "ensemble_generation": _resize_generation,
+                    "row": int(r), "harmonic": e["goava_harmonic"],
+                    "ensemble_generation": _resize_generation,
                     "ensemble_size": int(len(getattr(self, "instrument_names_48", []) or [])),
                 })
-                # GOAVA owns a contribution, not the shared playlist fields.  This
-                # is critical for activation-order independence: never replace the
-                # other canonicals' sequence/paint metadata here.  Store GOAVA in the
-                # same contribution lattice and let the single reconciliation pass
-                # merge all active sources uniformly.
-                goava_contrib = {
-                    "operators": ["GOAVA"],
-                    "multi_seq": list(refs),
-                    "sequence_refs": list(refs),
-                    "phase_offsets": {inst: int(phase)},
-                    "sequence_index": int(r % len(ids)) + 1,
-                    "canonical_weight": 1.0 / max(1, self._canonical_active_count()),
-                    "active": True,
-                    "paint_target": "GOAVA → Playlist",
-                    "paint_source": f"Canonical GOAVA · {inst}",
-                    "paint_sequence": refs[0],
-                    "paint_instrument": inst,
-                    "coverage_map": {inst: 1.0},
-                    "coverage": "100%",
-                    # GOAVA does not own playlist timing; preserving the existing
-                    # row timing prevents a GOAVA toggle from resetting user/canonical
-                    # time-marker constraints to zero.
-                    "direction": 0.0,
-                    "direction_vector": "+0.0000",
-                    "velocity": float(ev.get("weight", 1.0)),
-                    "effect_target": "GOAVA",
-                    "auto_amount": "0.0%",
-                    "blend_partner": "",
-                }
-                e.setdefault("engine_contributions", {})["goava"] = copy.deepcopy(goava_contrib)
-                e["goava_unison_weight"] = goava_contrib["canonical_weight"]
-                self._reconcile_engine_playlist_row(e, e.get("user_instances") or [])
+                # Explicitly NOT written here: operators, operators_csv, operator,
+                # sequence_refs, phase_offsets, engine_contributions, bank seqs —
+                # GOAVA never occupies an instrument or a sequence slot.
         else:
             # Reverse-write GOAVA by its recorded identity, not by the current
             # ensemble ordinal. This is the critical resize-safe unwrite path.
@@ -14096,9 +14555,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _goava_mix(self, local_t, row_idx, step_duration):
         if not getattr(self, "goava_active", False):
             return np.zeros_like(local_t, dtype=np.float32)
-        if row_idx >= len(getattr(self, "goava_note_events", [])):
+        events = list(getattr(self, "goava_note_events", []) or [])
+        if not events:
             return np.zeros_like(local_t, dtype=np.float32)
-        ev = self.goava_note_events[row_idx]
+        ev = events[row_idx % len(events)]
         if not ev.get("enabled", True):
             return np.zeros_like(local_t, dtype=np.float32)
         freq = float(ev.get("frequency", 432.0))
@@ -14106,27 +14566,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         tau = max(step_duration * 2.5, 0.08)
         env = np.exp(-local_t / tau)
         attack = np.clip(local_t / max(step_duration * 0.05, 1e-4), 0.0, 1.0)
-        # GOAVA is deliberately singular: one voice per numeric entry.
         ph = 2.0 * np.pi * freq * local_t
-        # GOAVA_IRRATIONAL_2026: GOAVA's own voice is also an instantaneous RNG.
-        # Its note trajectory is sampled per audio sample as a continuous
-        # irrational stream (seed-anchored, phase-lock-independent), gated by the
-        # note's sine so the pitch anchor stays audible.  Inside the full
-        # 4+GOAVA unison this supplies the longitudinal-domain drive that keeps
-        # the organism alive without re-introducing any per-instrument identity.
-        _gnums = getattr(self, "goava_seed_numbers", None) or []
-        if _gnums:
-            try:
-                _stream = goava_irrational_stream(
-                    local_t, _gnums, base_frequency=freq, channel=row_idx
-                )
-                tone = _stream * (0.5 + 0.5 * np.sin(ph))
-            except Exception:
-                tone = np.sin(ph)
-        else:
-            tone = np.sin(ph)
-        n = max(1, self._canonical_active_count())
-        return (tone * env * attack * 0.32 * float(ev.get("weight", 1.0)) * (0.5 / n)).astype(np.float32)
+        # GOAVA_SINE_HARMONIC_2026: GOAVA is not an instrument voice.  It adds
+        # only its own sine harmonic at an ideal 33% amplitude on top of the
+        # programmed groove — a shared harmonic layer, never an occupied row.
+        tone = np.sin(ph)
+        return (tone * env * attack * 0.33 * float(ev.get("weight", 1.0))).astype(np.float32)
 
     def _paint_generated_parameters(self, rng=None, rows=None, source='context'):
         """Paint calculated/random playlist parameters, including velocity.
@@ -14476,24 +14921,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 user = {}
                 self.instrument_param_state[name] = user
 
-            ctx = float(self._contextual_numerology(name, i, i))
+            # ORDER-INDEPENDENCE_2026: prefer the context frozen under the
+            # canonical (user-material-only) program key.  The live numerology
+            # at this point still reflects accumulated engagement history when
+            # the canonical reset has not just run, which would make the engine
+            # defaults depend on activation order.
+            cc = getattr(self, "_canonical_ctx_cache", None)
+            if isinstance(cc, dict) and name in cc:
+                ctx = float(cc[name])
+            else:
+                ctx = float(self._contextual_numerology(name, i, i))
 
-            gen = {
-                "tuning": float(np.clip(MEUM_INV + (PHI - 1.0) * ctx, 0.75, 1.15)),
-                "filter": float(np.clip(MEUM_NORM + MEUM_INV * ctx, 0.02, 0.98)),
-                "drive": float(np.clip(MEUM_NORM * 0.5 + MEUM_NORM * ctx, 0.0, 0.9)),
-                "amplitude": float(np.clip(MEUM_INV * 0.5 + MEUM_NORM * ctx, 0.05, 1.0)),
-                "duration": float(np.clip(MEUM_NORM + MEUM_INV * (1.0 - ctx), 0.03, 1.0)),
-                "phase_shift": float(math.tau * ((i * MEUM_NORM * PHI_INV) % 1.0)),
-                "am_depth": float(np.clip(MEUM_NORM * 0.2 + MEUM_NORM * ctx * 0.5, 0.0, 0.40)),
-                "am_rate": float(MEUM_NORM + MEUM * ctx),
-                "fm_depth": float(np.clip(MEUM_NORM * 0.1 + MEUM_NORM * ctx * 0.1, 0.0, 0.18)),
-                "fm_rate": float(MEUM_SQ * ctx + MEUM_INV),
-                "pm_depth": float(np.clip(MEUM_NORM * 0.2 + MEUM_NORM * ctx * 0.2, 0.0, 0.35)),
-                "pm_rate": float(MEUM_SQ * ctx + MEUM_INV),
-                "pm_feedback": float(np.clip(MEUM_NORM * 0.1 + MEUM_NORM * ctx * 0.1, 0.0, 0.25)),
-                "meum_depth": float(np.clip(MEUM_NORM * 0.5 + MEUM_NORM * ctx * 0.5, 0.0, 0.45)),
-            }
+            gen = canonical_macro_defaults(ctx, i)
 
             self.instrument_param_generated[name] = gen
             for k, v in gen.items():
@@ -14623,7 +15062,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Deterministic from master seed + source only (retoggle-identical).
         # Do NOT fold _composition_generation_counter — that made every retoggle unique.
         seed=int(_safe_int_seed(self.get_numeric_seed()))
-        src_h = int(_safe_int_seed(hash(str(source)) & 0x7FFFFFFF))
+        src_h = int(_safe_int_seed(_stable_hash(str(source)) & 0x7FFFFFFF))
         generated=[]
         for i,name in enumerate(getattr(self,"instrument_names_48",[])):
             q=(seed+src_h*7919+i*104729)%1000003
@@ -14637,7 +15076,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         names=list(getattr(self,"instrument_names_48",[]))
         if not names: return 0
         # Stable per-source salt — identical on every retoggle with the same seed
-        src_h = int(_safe_int_seed(hash(str(source)) & 0x7FFFFFFF))
+        src_h = int(_safe_int_seed(_stable_hash(str(source)) & 0x7FFFFFFF))
         existing={(c.get("source"),c.get("target")) for c in self.patch_connections if isinstance(c,dict)}
         added=0
         for i,name in enumerate(names):
@@ -14799,12 +15238,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # Scalar Operator Identity is the immutable row identity, never the
             # first canonical contributor.  This prevents GOAVA from becoming the
             # sole displayed identity after a toggle/rebuild.
-            base_identity = str(entry.get("_unison_base_operator") or entry.get("operator") or "").strip()
-            if base_identity and base_identity.casefold() != "goava":
-                entry["operator"] = base_identity
-            else:
-                non_goava = [x for x in ops if str(x).casefold() != "goava"]
-                entry["operator"] = sorted(non_goava, key=str.casefold)[0] if non_goava else base_identity
+            preserve_user_op = bool(entry.get("user_owned"))
+            if not preserve_user_op:
+                base_identity = str(entry.get("_unison_base_operator") or entry.get("operator") or "").strip()
+                if base_identity and base_identity.casefold() != "goava":
+                    entry["operator"] = base_identity
+                else:
+                    non_goava = [x for x in ops if str(x).casefold() != "goava"]
+                    entry["operator"] = sorted(non_goava, key=str.casefold)[0] if non_goava else base_identity
             entry["multi_seq"] = ", ".join(dict.fromkeys(multi + ops))
         else:
             entry["operators"] = []
@@ -14958,9 +15399,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             pass
 
             # Preserve only explicitly user-owned instances from the previous row.
-            users = list(e.get('user_instances') or [])
+            def _ui_token(u):
+                if isinstance(u, dict):
+                    return str(u.get("operator") or u.get("name") or "").strip()
+                return str(u).strip()
+            _raw_users = e.get('user_instances') or []
+            users = [t for t in (_ui_token(u) for u in _raw_users) if t]
             old_ops = e.get('operators_csv', e.get('operator', ''))
-            if not users:
+            if not users and not _raw_users:
                 users = user_tokens(old_ops)
 
             # Preserve other engine contributions.  A new pass replaces only
@@ -16060,18 +16506,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         self.slider_eqr = QSlider(Qt.Orientation.Horizontal)
         self.slider_eqr.setRange(0, 100)
-        self.slider_eqr.setValue(int(round(0.2247 * 100)))
+        self.slider_eqr.setValue(42)  # 0.42 activation — the documented canonical EQR default
         self.slider_fractalizer = QSlider(Qt.Orientation.Horizontal)
         self.slider_fractalizer.setRange(0, 100)
-        self.slider_fractalizer.setValue(int(round(0.3819 * 100)))
+        self.slider_fractalizer.setValue(int(round(0.4014 * 100.0)))
         self.slider_pkp_decay = QSlider(Qt.Orientation.Horizontal)
         self.slider_pkp_decay.setRange(1, 1000)
-        self.slider_pkp_decay.setValue(int(round(0.5 * 1000)))
+        self.slider_pkp_decay.setValue(int(round(PHI_INV * 1000.0)))  # φ⁻¹ ≈ 0.618 s
         self.slider_pkp_decay.setToolTip(
             "PKP Decay → per-note envelope binding (follower always on, ≈1-note sweep "
             "before/after every note). 0.5 = normal 1:1 note-per-step envelope; "
             "1 = hold spans the whole sequence length; 0 = hold is (1 step)/(sequence "
-            "length) note duration."
+            "length) note duration.  Default 0.618 (φ⁻¹) — golden-ratio-tempered hold."
         )
 
         # PKP Envelope Follower is permanently force-enabled (no toggle).
@@ -16183,8 +16629,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
 
             if text=="PLAYLIST":
-                b.setMinimumHeight(64)
-                b.setMinimumWidth(240)
+                b.setMinimumHeight(36)
+                b.setMaximumHeight(48)
+                b.setMinimumWidth(120)
+                b.setMaximumWidth(160)
             else:
                 b.setMinimumHeight(40)
                 b.setMinimumWidth(120)
@@ -16462,6 +16910,59 @@ class MathematiciansGrooveboxApp(QMainWindow):
         media_import_row.addWidget(self.lbl_wav_carrier)
         media_import_row.addWidget(self.btn_load_media)
         media_import_row.addStretch(1)
+        # IMPORT_SPEED_2026: varispeed pitch/speed shift for the loaded
+        # WAV/video carrier. One import then yields alternate voicings without
+        # resampling the file on disk; deterministic per render.
+        import_speed_row = QHBoxLayout()
+        import_speed_row.setContentsMargins(0, 0, 0, 4)
+        import_speed_row.addWidget(QLabel("Import Speed:"))
+        self.spin_import_speed = QDoubleSpinBox()
+        self.spin_import_speed.setRange(0.2, 5.0)
+        self.spin_import_speed.setDecimals(2)
+        self.spin_import_speed.setSingleStep(0.05)
+        self.spin_import_speed.setValue(1.0)
+        self.spin_import_speed.setFixedWidth(92)
+        self.spin_import_speed.setToolTip(
+            "Varispeed shift applied to the loaded WAV/video carrier "
+            "(pitch + tempo together; frequency/speed). 1.00 = natural, "
+            "1.50 = half-step-up speed, 0.75 = slower and lower. "
+            "Deterministic per render."
+        )
+        self.spin_import_speed.valueChanged.connect(self._on_import_speed_changed)
+        import_speed_row.addWidget(self.spin_import_speed)
+        self.lbl_import_speed = QLabel("100%")
+        self.lbl_import_speed.setStyleSheet("color: #f5d97d;")
+        import_speed_row.addWidget(self.lbl_import_speed)
+        import_speed_row.addStretch(1)
+        # SPEED_SCRUB_2026: automate the import speed over the playlist rows as a
+        # deterministic per-row lane (closed-form f(seed, row)).  OFF = the
+        # single spin_import_speed value, byte-identical to the legacy path;
+        # ON = the base speed becomes the lane's center and each row pulls toward
+        # ±depth around it, sweeping the carrier like a DJ scrub on wood.
+        self.chk_speed_scrub = QCheckBox("Scrub Lane")
+        self.chk_speed_scrub.setChecked(False)
+        self.chk_speed_scrub.setToolTip(
+            "Automate Import Speed across the playlist rows: each row gets a "
+            "deterministic speed draw (seed + row), pulled ±depth around the "
+            "base speed.  Deterministic, off-canonical."
+        )
+        self.chk_speed_scrub.toggled.connect(self._on_speed_scrub_toggled)
+        import_speed_row.addWidget(self.chk_speed_scrub)
+        self.spin_speed_scrub = QDoubleSpinBox()
+        self.spin_speed_scrub.setRange(0.0, 0.9)
+        self.spin_speed_scrub.setDecimals(2)
+        self.spin_speed_scrub.setSingleStep(0.05)
+        self.spin_speed_scrub.setValue(0.3)
+        self.spin_speed_scrub.setEnabled(False)
+        self.spin_speed_scrub.setFixedWidth(80)
+        self.spin_speed_scrub.setToolTip("Scrub depth: each row pulls ±depth around the base speed (±30% default).")
+        self.spin_speed_scrub.valueChanged.connect(self._on_speed_scrub_changed)
+        import_speed_row.addWidget(self.spin_speed_scrub)
+        self.lbl_speed_scrub = QLabel("±30%")
+        self.lbl_speed_scrub.setStyleSheet("color: #f5d97d;")
+        import_speed_row.addWidget(self.lbl_speed_scrub)
+        import_speed_row.addStretch(1)
+        self._media_speed_row = import_speed_row  # consumed just above visual_pair, left column
         self._media_import_row = media_import_row  # consumed just above visual_pair, left column
 
         # Per-sequence length is the single sequencer length control.
@@ -16492,6 +16993,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # The boost control is square; the three PKP handles are vertical.
         self.pkp_boost_amount = 1.0
         self.pkp_boost_active = False
+        # BOOST_STEP_2026: Step Increment (decimal steps per boost beat) + Step
+        # Offset (fraction of the DJ row where the first beat lands). The offset
+        # replaces the old random.uniform first-trigger placement, so arming a
+        # boost is deterministic. The per-beat hit scheduler state lives here.
+        self.pkp_boost_step_increment = 1.0
+        self.pkp_boost_step_offset = 0.5
+        self._pkp_boost_cursor = 0.0
+        self._pkp_boost_timer = None
+        self._pkp_voice_rng = None
         self.btn_pkp_nullock_boost = QPushButton("⚡")
         self.btn_pkp_nullock_boost.setCheckable(True)
         self.btn_pkp_nullock_boost.setToolTip(
@@ -16515,13 +17025,23 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.slider_pkp_boost_pitch = QSlider(Qt.Orientation.Horizontal)
         self.slider_pkp_boost_pitch.setRange(25, 400); self.slider_pkp_boost_pitch.setValue(100)
         self.slider_pkp_boost_pitch.valueChanged.connect(self._on_pkp_boost_pitch_changed)
-        self.slider_pkp_boost_steps = QSlider(Qt.Orientation.Horizontal)
-        self.slider_pkp_boost_steps.setRange(1, max(1, int(self.spin_seq_length.value())))
-        self.slider_pkp_boost_steps.setValue(min(4, max(1, int(self.spin_seq_length.value()))))
+        self.slider_pkp_boost_steps = QDoubleSpinBox()
+        self._steps_seq_len = max(1, int(self.spin_seq_length.value()))
+        self.slider_pkp_boost_steps.setRange(0.25, float(self._steps_seq_len))
+        self.slider_pkp_boost_steps.setDecimals(2)
+        self.slider_pkp_boost_steps.setSingleStep(0.25)
+        self.slider_pkp_boost_steps.setValue(1.0)
         self.slider_pkp_boost_steps.valueChanged.connect(self._on_pkp_boost_steps_changed)
+        self.slider_pkp_boost_offset = QDoubleSpinBox()
+        self.slider_pkp_boost_offset.setRange(0.0, 1.0)
+        self.slider_pkp_boost_offset.setDecimals(3)
+        self.slider_pkp_boost_offset.setSingleStep(0.05)
+        self.slider_pkp_boost_offset.setValue(0.5)
+        self.slider_pkp_boost_offset.valueChanged.connect(self._on_pkp_boost_offset_changed)
         self.lbl_pkp_boost = QLabel("100%")
         self.lbl_pkp_boost_pitch = QLabel("1.00×")
-        self.lbl_pkp_boost_steps = QLabel(str(self.slider_pkp_boost_steps.value()))
+        self.lbl_pkp_boost_steps = QLabel("1.00")
+        self.lbl_pkp_boost_offset = QLabel("50.0%")
 
         self.spin_pattern_length = QSpinBox()
         self.spin_pattern_length.setRange(1, 1024)
@@ -16554,7 +17074,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         for _label, _slider, _value in (
             ("Boost", self.slider_pkp_boost, self.lbl_pkp_boost),
             ("Pitch", self.slider_pkp_boost_pitch, self.lbl_pkp_boost_pitch),
-            ("Steps", self.slider_pkp_boost_steps, self.lbl_pkp_boost_steps),
+            ("Step Incr", self.slider_pkp_boost_steps, self.lbl_pkp_boost_steps),
+            ("Step Off", self.slider_pkp_boost_offset, self.lbl_pkp_boost_offset),
         ):
             _row = QHBoxLayout()
             _row.setContentsMargins(0, 0, 0, 0)
@@ -16937,20 +17458,96 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.step_editor_popup.hide()
         self.selected_step_idx = None
 
-        # POWER_V3_VISUAL_LAYOUT: master volume is directly above the shorter
-        # visualizer selector so the two controls read as one visual monitoring group.
+        # Master Volume row: volume + Operator Theory on the left; Clip/Gain,
+        # Row Sparse, and Peak on the right. EQR Z readout removed (monitor noise).
         master_vol_row = QHBoxLayout()
+        master_vol_row.setSpacing(8)
         master_vol_row.addWidget(QLabel("Master Volume:"))
         self.slider_master_vol = QSlider(Qt.Orientation.Horizontal)
         self.slider_master_vol.setRange(0, 100)
         self.slider_master_vol.setValue(100)
-        self.slider_master_vol.setFixedWidth(180)
+        self.slider_master_vol.setFixedWidth(160)
         self.slider_master_vol.valueChanged.connect(self._on_master_vol_changed)
         master_vol_row.addWidget(self.slider_master_vol)
         self.lbl_master_vol = QLabel("100%")
         self.lbl_master_vol.setStyleSheet("color: #f5d97d;")
         master_vol_row.addWidget(self.lbl_master_vol)
+
+        # Operator Theory on the master-volume row (moved up from GLOBAL · EFFECTS)
+        self.btn_operator_theory = QPushButton("Use Operator Theory")
+        self.btn_operator_theory.setCheckable(True)
+        self.btn_operator_theory.setChecked(False)
+        self.btn_operator_theory.setMinimumHeight(28)
+        self.btn_operator_theory.setMaximumHeight(32)
+        self.btn_operator_theory.setMinimumWidth(140)
+        self.btn_operator_theory.setToolTip(
+            "Operator Theory (book p.49-50): re-encode master bus, EQR tensor "
+            "(Z = ot_add(ot_prod(P,E), D)), and game angles/residues through "
+            "the alternative arithmetic. OFF by default — canonical renders "
+            "stay byte-identical."
+        )
+        self.btn_operator_theory.setStyleSheet(
+            "QPushButton { background-color:#1a1228; color:#e0c4ff; border:2px solid #c77dff; "
+            "border-radius:6px; padding:4px 10px; font-weight:bold; font-size:10pt; } "
+            "QPushButton:checked { background-color:#c77dff; color:#1a1020; border:2px solid #e0c4ff; } "
+            "QPushButton:hover { background-color:#2a1840; }"
+        )
+        self.btn_operator_theory.setObjectName("operatorTheoryBtn")
+        self.btn_operator_theory.toggled.connect(self._on_operator_theory_toggled)
+        master_vol_row.addWidget(self.btn_operator_theory)
+
         master_vol_row.addStretch(1)
+
+        # RIGHT side: Clip/Gain + Row Sparse + Peak (not stacked above monitors)
+        master_vol_row.addWidget(QLabel("Clip/Gain:"))
+        self.spin_clip_ratio = QDoubleSpinBox()
+        self.spin_clip_ratio.setRange(0.0, 100.0)
+        self.spin_clip_ratio.setDecimals(1)
+        self.spin_clip_ratio.setSingleStep(5.0)
+        self.spin_clip_ratio.setValue(50.0)
+        self.spin_clip_ratio.setFixedWidth(72)
+        self.spin_clip_ratio.setToolTip(
+            "Clip-density ⇄ gain-max balance (0=max gain, 100=clip-free, 50=balanced). "
+            "Deterministic; never in the fingerprint."
+        )
+        self.spin_clip_ratio.valueChanged.connect(self._on_clip_ratio_changed)
+        master_vol_row.addWidget(self.spin_clip_ratio)
+        self.lbl_clip_ratio = QLabel("50.0%")
+        self.lbl_clip_ratio.setStyleSheet("color: #f5d97d;")
+        master_vol_row.addWidget(self.lbl_clip_ratio)
+        self.lbl_clip_gain_status = QLabel("")
+        self.lbl_clip_gain_status.setStyleSheet("color: #7fd9a0;")
+        master_vol_row.addWidget(self.lbl_clip_gain_status)
+
+        self.chk_sparse_mask = QCheckBox("Row Sparse")
+        self.chk_sparse_mask.setChecked(False)
+        self.chk_sparse_mask.setToolTip(
+            "Per-row instrument subgroup from (seed, row). Off-canonical."
+        )
+        self.chk_sparse_mask.toggled.connect(self._on_sparse_mask_toggled)
+        master_vol_row.addWidget(self.chk_sparse_mask)
+        self.spin_sparse_density = QDoubleSpinBox()
+        self.spin_sparse_density.setRange(0.05, 1.0)
+        self.spin_sparse_density.setDecimals(2)
+        self.spin_sparse_density.setSingleStep(0.05)
+        self.spin_sparse_density.setValue(0.5)
+        self.spin_sparse_density.setEnabled(False)
+        self.spin_sparse_density.setFixedWidth(64)
+        self.spin_sparse_density.setToolTip("Fraction of instruments kept per playlist row.")
+        self.spin_sparse_density.valueChanged.connect(self._on_sparse_density_changed)
+        master_vol_row.addWidget(self.spin_sparse_density)
+        self.lbl_sparse_density = QLabel("50%")
+        self.lbl_sparse_density.setStyleSheet("color: #f5d97d;")
+        master_vol_row.addWidget(self.lbl_sparse_density)
+
+        master_vol_row.addWidget(QLabel("Peak:"))
+        self.lbl_peak_hold = QLabel("-∞ dBFS")
+        self.lbl_peak_hold.setStyleSheet("color: #f5d97d;")
+        master_vol_row.addWidget(self.lbl_peak_hold)
+        # Keep lbl_eqr_bands as a hidden stub so any live update paths stay safe
+        self.lbl_eqr_bands = QLabel("")
+        self.lbl_eqr_bands.setVisible(False)
+
         seq_inner.addLayout(master_vol_row)
 
         # UI_LAYOUT_2026: Wave/Scope + Spectrum/Geometry dropdowns are built here
@@ -17015,6 +17612,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_export.setText("⬇ EXPORT")
         self.btn_export.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         export_menu = QMenu(self.btn_export)
+        # REVERSE_ENGINEERING: every export carries its plain provenance
+        # manifest (WAV chunk / ffmpeg comment / game provenance.json) — this
+        # action reads it back and rebuilds the original main-window settings.
+        export_menu.addAction("♻ Reconvert Export → Main Window…").triggered.connect(
+            self.reconvert_export_dialog
+        )
+        # Flip side of export: importing a game .zip recovers the program it
+        # holds — emitted source, identity, triad contract, lattice proof and
+        # the manifest that rebuilds the original window (see README § Reverse).
+        export_menu.addAction("🔓 Reverse-Engineer Program from .zip…").triggered.connect(
+            self._on_reverse_engineer_zip
+        )
+        export_menu.addAction("⚖ Bake & Compare Export…").triggered.connect(
+            self.bake_compare_export_dialog
+        )
+        export_menu.addSeparator()
         # Audio-only — canonical mixdown, three core formats (WAV reference,
         # FLAC lossless-RFC, MP3 universal). Exactly 3 audio options.
         export_menu.addAction("Audio only (.wav)").triggered.connect(lambda: self.export_mixdown_dialog("wav"))
@@ -17087,7 +17700,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         scope_bar.addSpacing(10)
         scope_bar.addWidget(self.btn_export, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
         try:
-            QTimer.singleShot(400, self._refresh_canonical_fingerprint)
+            QTimer.singleShot(0, self._refresh_canonical_fingerprint)
         except Exception:
             pass
 
@@ -17118,12 +17731,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # directly above the left-hand oscilloscope pane specifically.
             if widget is self.visual_oscilloscope and getattr(self, "_media_import_row", None) is not None:
                 col.addLayout(self._media_import_row)
+            if widget is self.visual_oscilloscope and getattr(self, "_media_speed_row", None) is not None:
+                col.addLayout(self._media_speed_row)
             if is_square:
-                widget.setMinimumSize(420, 420)
-                widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+                widget.setMinimumSize(260, 260)
+                widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             else:
-                widget.setMinimumSize(180, 360)
-                widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+                widget.setMinimumSize(110, 240)
+                widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             widget.setMaximumSize(16777215, 16777215)
             col.addWidget(
                 widget, stretch=1,
@@ -17132,7 +17747,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             visual_pair.addLayout(col, stretch=(0 if is_square else 1))
         visual_container = QWidget()
         visual_container.setLayout(visual_pair)
-        visual_container.setMinimumHeight(440)
+        visual_container.setMinimumHeight(280)
         visual_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._visual_container = visual_container
         master_container.addWidget(visual_container, stretch=12)
@@ -17168,6 +17783,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         QTimer.singleShot(0, self._sync_square_visuals)
         QTimer.singleShot(120, self._sync_square_visuals)
         self._last_scope_chunk = np.zeros(100, dtype=np.float32)
+        # AUTOSAVE_2026 + CRASH_RECOVERY_2026: after the UI has come up, start
+        # the periodic autosave and scan for interrupted .part documents so a
+        # crashed save can always be finished.
+        try:
+            self._install_project_autosave()
+        except Exception:
+            pass
+        QTimer.singleShot(1500, self._check_project_recovery)
 
     def _apply_semantic_roles(self):
         """Assign every primary control a semantic object name.
@@ -17329,26 +17952,139 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if not hasattr(self, "slider_pkp_boost_steps"):
             return
         n = max(1, int(val))
-        self.slider_pkp_boost_steps.blockSignals(True)
-        self.slider_pkp_boost_steps.setRange(1, n)
-        self.slider_pkp_boost_steps.setValue(min(self.slider_pkp_boost_steps.value(), n))
-        self.slider_pkp_boost_steps.blockSignals(False)
-        self._on_pkp_boost_steps_changed(self.slider_pkp_boost_steps.value())
+        box = self.slider_pkp_boost_steps
+        box.blockSignals(True)
+        box.setRange(0.25, float(n))
+        box.setValue(min(box.value(), float(n)))
+        box.blockSignals(False)
+        self._on_pkp_boost_steps_changed(box.value())
 
     def _on_pkp_boost_pitch_changed(self, val):
         if hasattr(self, "lbl_pkp_boost_pitch"):
             self.lbl_pkp_boost_pitch.setText(f"{float(val)/100.0:.2f}×")
 
     def _on_pkp_boost_steps_changed(self, val):
+        self.pkp_boost_step_increment = float(val)
         if hasattr(self, "lbl_pkp_boost_steps"):
-            self.lbl_pkp_boost_steps.setText(str(int(val)))
+            self.lbl_pkp_boost_steps.setText(f"{float(val):.2f}")
+
+    def _on_pkp_boost_offset_changed(self, val):
+        self.pkp_boost_step_offset = float(np.clip(float(val), 0.0, 1.0))
+        if hasattr(self, "lbl_pkp_boost_offset"):
+            self.lbl_pkp_boost_offset.setText(f"{float(val) * 100.0:.1f}%")
 
     def _on_pkp_nullock_boost_clicked(self, checked=False):
         """Live PKP Boost toggle: while checked, every hit runs the boost law."""
         self.pkp_boost_active = bool(checked)
         self.pkp_pad_bank_active = False
+        # BOOST_STEP_2026: while engaged, a deterministic per-beat scheduler
+        # fires real one-shot hits on a random voice each beat (see
+        # _pkp_boost_beat_tick). The deck below is separate.
+        self._arm_pkp_boost_beats(checked)
         # Audition one hit immediately so the newly toggled law is heard.
         self._play_selected_instrument_pkp()
+        # DJ BOOST HIT: when a live DJ effect is wired to the master bus, the
+        # boost hit fires at the DJ row/slider interval. The Step Offset slider
+        # (fraction of the DJ row) deterministically places the first trigger —
+        # it replaced the old randomized placement, so each engagement lands at
+        # a reproducible position inside the interval instead of random.uniform.
+        if checked and (getattr(self, "live_dj_goava", False) or getattr(self, "live_dj_random", False)):
+            try:
+                bpm = float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0
+                sr = int(getattr(self, "play_sample_rate", TARGET_SAMPLE_RATE) or TARGET_SAMPLE_RATE)
+                interval = self._dj_row_samples(bpm, sr)
+                phase = float(getattr(self, "pkp_boost_step_offset", 0.0)) * float(max(1, interval))
+                self._live_dj_boost = {
+                    "interval": int(interval),
+                    "phase": float(phase),
+                    "amount": float(getattr(self, "pkp_boost_amount", 1.0)),
+                }
+                if hasattr(self, "scope_status_label"):
+                    self.scope_status_label.setText(
+                        f"⚡ DJ BOOST HIT armed — interval {interval} smp, first hit +{phase:.0f} smp (step offset)")
+            except Exception:
+                pass
+
+    def _arm_pkp_boost_beats(self, checked):
+        """Start/stop the BOOST BEATS per-beat scheduler.
+
+        While engaged, each beat fires a real one-shot hit on a RANDOM voice at
+        a step cursor advanced by the (decimal) Step Increment, starting from
+        the Step Offset. The hit is unconditional: it ignores the sequence's
+        programmed step offsets, mutes, velocities, or any other specifics —
+        the boost just triggers on the next available increment. The voice rng
+        is reseeded from the project seed each time the boost is armed, so the
+        random sequence is fully reproducible (no raw unseeded randomness).
+        """
+        t = getattr(self, "_pkp_boost_timer", None)
+        if not checked:
+            if t is not None:
+                try:
+                    t.stop()
+                except Exception:
+                    pass
+            return
+        try:
+            seed = int(_safe_int_seed(self.get_numeric_seed() if hasattr(self, "get_numeric_seed") else 1))
+            self._pkp_voice_rng = random.Random(seed & 0xFFFFFFFF)
+            seq_len = max(1, int(self.spin_seq_length.value())) if hasattr(self, "spin_seq_length") else 16
+            self._pkp_boost_cursor = float(getattr(self, "pkp_boost_step_offset", 0.0)) * float(seq_len)
+        except Exception:
+            pass
+        if t is None:
+            t = QTimer(self)
+            t.timeout.connect(self._pkp_boost_beat_tick)
+            self._pkp_boost_timer = t
+        self._reschedule_pkp_boost_timer(float(getattr(self, "pkp_boost_step_increment", 1.0)),
+                                         max(1, int(self.spin_seq_length.value())) if hasattr(self, "spin_seq_length") else 16)
+
+    def _reschedule_pkp_boost_timer(self, inc, seq_len):
+        """Recompute the inter-beat interval from BPM, row length and step increment."""
+        try:
+            bpm = float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0
+            sr = int(getattr(self, "play_sample_rate", TARGET_SAMPLE_RATE) or TARGET_SAMPLE_RATE)
+            row_samples = self._dj_row_samples(bpm, sr)
+            period_s = (float(inc) / max(1.0, float(seq_len))) * (float(row_samples) / float(sr))
+            ms = max(40, int(round(period_s * 1000.0)))
+            t = getattr(self, "_pkp_boost_timer", None)
+            if t is not None:
+                t.start(ms)
+        except Exception:
+            pass
+
+    def _pkp_boost_beat_tick(self):
+        """Per-beat BOOST BEATS trigger: random voice, programmatic step cursor.
+
+        The cursor advances by the Step Increment (decimals allowed) from the
+        Step Offset start, wrapping over the pattern length, and the selected
+        step fires even if the sequence has it turned off/offset/muted — the
+        boost intentionally ignores programmed step specifics.
+        """
+        try:
+            if not getattr(self, "pkp_boost_active", False):
+                t = getattr(self, "_pkp_boost_timer", None)
+                if t is not None:
+                    try:
+                        t.stop()
+                    except Exception:
+                        pass
+                return
+            names = getattr(self, "instrument_names_48", None) or []
+            if not names:
+                return
+            rng = getattr(self, "_pkp_voice_rng", None)
+            if rng is None:
+                rng = random.Random()
+                self._pkp_voice_rng = rng
+            voice = names[rng.randrange(len(names))]
+            seq_len = max(1, int(self.spin_seq_length.value())) if hasattr(self, "spin_seq_length") else 16
+            step_idx = int(getattr(self, "_pkp_boost_cursor", 0.0)) % seq_len
+            self._pkp_fire_step_hit(voice, step_idx, amp=1.0)
+            cur = float(getattr(self, "_pkp_boost_cursor", 0.0))
+            self._pkp_boost_cursor = cur + float(getattr(self, "pkp_boost_step_increment", 1.0))
+            self._reschedule_pkp_boost_timer(float(getattr(self, "pkp_boost_step_increment", 1.0)), seq_len)
+        except Exception:
+            pass
 
     def _play_selected_instrument_pkp(self):
         """One-shot audition of a modified PKP/Null-Lock instance of the selected instrument."""
@@ -18620,8 +19356,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.spin_pattern_length.blockSignals(False)
         if hasattr(self, "slider_pkp_boost_steps"):
             self.slider_pkp_boost_steps.blockSignals(True)
-            self.slider_pkp_boost_steps.setRange(1, n)
-            self.slider_pkp_boost_steps.setValue(min(self.slider_pkp_boost_steps.value(), n))
+            self.slider_pkp_boost_steps.setRange(0.25, float(max(1, n)))
+            self.slider_pkp_boost_steps.setValue(min(self.slider_pkp_boost_steps.value(), float(max(1, n))))
             self.slider_pkp_boost_steps.blockSignals(False)
             self._on_pkp_boost_steps_changed(self.slider_pkp_boost_steps.value())
         self.rebuild_sequencer_steps(n)
@@ -18665,8 +19401,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         banks = getattr(self, "instrument_sequence_banks", {}) or {}
         names = list(getattr(self, "instrument_names_48", []) or [])
         active = set(self._active_engine_sources()) if hasattr(self, "_active_engine_sources") else set()
-        if getattr(self, "goava_active", False):
-            active.add("goava")
+        # GOAVA_SINE_HARMONIC_2026: GOAVA no longer occupies a sequence slot in
+        # any instrument bank.  Its sine harmonic is synthesized per-row from
+        # goava_note_events in the mix path; it reserves no canonical sequence.
+        active.discard("goava")
         canonical_order = ["euclidean", "goava", "phase_lock", "randomizer", "seeded"]
         active_order = [x for x in canonical_order if x in active]
         if not names:
@@ -19558,11 +20296,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
             for entry in getattr(self, "master_playlist_data", []) or []:
                 if isinstance(entry, dict):
                     for key in ("goava_sequence","goava_frequency","goava_pitch","goava_seed",
-                                "goava_unison_weight","goava_active","goava_generated_by_engine"):
+                                "goava_unison_weight","goava_active","goava_generated_by_engine",
+                                "goava_harmonic"):
                         entry.pop(key, None)
                     ops = [x for x in (entry.get("operators") or []) if str(x).strip() != "GOAVA"]
                     entry["operators"] = ops
-                    entry["operators_csv"] = ", ".join(ops or entry.get("user_instances", []))
+                    if ops:
+                        entry["operators_csv"] = ", ".join(ops)
+                    else:
+                        _ui_names = [str(u.get("operator") or u.get("name") or "").strip()
+                                     for u in (entry.get("user_instances") or []) if isinstance(u, dict)]
+                        entry["operators_csv"] = ", ".join([n for n in _ui_names if n])
                     entry["multi_seq"] = ", ".join(
                         x for x in str(entry.get("multi_seq","")).split(",") if x.strip() and x.strip() != "GOAVA"
                     )
@@ -19859,9 +20603,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "spin_bpm", "spin_seq_length", "spin_playlist_length", "spin_base_frequency",
             "spin_global_convolve", "spin_synth_count", "slider_eqr", "slider_fractalizer",
             "slider_pkp_decay", "slider_pkp_boost", "slider_pkp_boost_pitch",
-            "slider_pkp_boost_steps", "spin_sceno_items",
+            "slider_pkp_boost_steps", "slider_pkp_boost_offset", "spin_sceno_items",
             "spin_engine_strength", "spin_unison_blend",
             "gp_mix_slider", "gp_script_slider", "gp_domain_slider", "gp_wire_slider",
+            "spin_clip_ratio", "spin_import_speed", "spin_sparse_density", "spin_speed_scrub",
         ):
             obj = getattr(self, name, None)
             if obj is not None and hasattr(obj, "value"):
@@ -19878,6 +20623,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # project silently changes its canonical fingerprint.
             "btn_idealize_rhythm", "btn_seeded_randomize",
             "btn_edit_panels_per_sequence",
+            "chk_sparse_mask", "chk_speed_scrub",
         ):
             obj = getattr(self, name, None)
             if obj is not None and hasattr(obj, "isChecked"):
@@ -19987,6 +20733,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.btn_apply_algo_master.setChecked(bool(gas.get("apply_enabled", False)))
         except Exception as e:
             print(f"[UI] global algo controls restore: {e}")
+        # ROW_SPARSE_MASK_2026 + SPEED_SCRUB_2026: re-sync dependent enable
+        # states + labels after the blocked-value restore above.
+        try:
+            if getattr(self, "chk_sparse_mask", None) is not None:
+                self._on_sparse_mask_toggled(self.chk_sparse_mask.isChecked())
+            if getattr(self, "chk_speed_scrub", None) is not None:
+                self._on_speed_scrub_toggled(self.chk_speed_scrub.isChecked())
+        except Exception:
+            pass
 
 
 
@@ -20224,26 +20979,140 @@ class MathematiciansGrooveboxApp(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(self, "Export Project JSON", "", "EQR Project (*.json)")
         if not path:
             return
+        self._save_project_document(path)
+
+    def _ensure_project_extension(self, path):
+        """SAVE_EXT_2026: always end project documents with .json."""
+        path = str(path or "")
+        if not path.strip():
+            return path
+        if not path.lower().endswith(".json"):
+            path = path + ".json"
+        return path
+
+    def _projects_dir(self):
+        base = os.path.join(os.path.expanduser("~"), ".groovebox", "projects")
+        try:
+            os.makedirs(base, exist_ok=True)
+        except Exception:
+            base = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0] or "groovebox.py")), "groovebox_projects")
+            try:
+                os.makedirs(base, exist_ok=True)
+            except Exception:
+                pass
+        return base
+
+    def _atomic_write_document(self, path, data):
+        """Write a full project document atomically via a .part file.
+
+        PART_FILE_2026: the real document lands in <path>.part first, then is
+        atomically renamed over the destination. A crash mid-write can only
+        ever leave a recoverable .part file (never a half-written project), and
+        a second save may not interrupt the first.
+        """
+        path = self._ensure_project_extension(path)
+        part = str(path) + ".part"
+        payload = json.dumps(data, indent=2, default=str)
+        tmp = part + f".{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, part)
+        os.replace(part, str(path))
+        return path
+
+    def _save_project_document(self, path, show_saved=True):
+        """Serialize on the UI thread, write in a worker so big projects never
+        freeze the UI and multiple saves can queue. Returns the final path."""
+        path = self._ensure_project_extension(path)
         try:
             data = self._project_snapshot()
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, default=str)
-            QMessageBox.information(self, "Exported", f"Project document exported:\n{path}")
         except Exception as e:
-            QMessageBox.warning(self, "Export failed", str(e))
+            QMessageBox.warning(self, "Save failed", f"Could not build project document:\n{e}")
+            return None
+        if not hasattr(self, "_project_save_lock"):
+            self._project_save_lock = threading.Lock()
+
+        def _worker():
+            final = None
+            ok = False
+            try:
+                with self._project_save_lock:
+                    final = self._atomic_write_document(path, data)
+                    ok = True
+            except Exception as e:
+                err = str(e)
+                if show_saved:
+                    QTimer.singleShot(0, lambda: QMessageBox.warning(self, "Save failed", f"{path}\n{err}"))
+                return
+            if ok and show_saved and not self.is_playing:
+                QTimer.singleShot(0, lambda: QMessageBox.information(self, "Saved", f"Project saved:\n{final}"))
+
+        threading.Thread(target=_worker, daemon=True, name="project-save").start()
+        return path
+
+    def _install_project_autosave(self):
+        """AUTOSAVE_2026: every 3 minutes, atomically write the live project to
+        the recovery store (a .part file) so a crash can always be finished."""
+        if getattr(self, "_autosave_timer", None) is None:
+            self._autosave_timer = QTimer(self)
+            self._autosave_timer.setInterval(180000)
+            self._autosave_timer.timeout.connect(self._autosave_project)
+            self._autosave_timer.start()
+        self._last_autosave_fp = getattr(self, "lbl_canonical_fp", None)
+
+    def _autosave_project(self):
+        try:
+            fp = self._last_autosave_fp
+            path = os.path.join(self._projects_dir(), "autosave.json")
+            if fp is not None and hasattr(fp, "text"):
+                self._atomic_write_document(path, self._project_snapshot())
+        except Exception:
+            pass
+
+    def _check_project_recovery(self):
+        """CRASH_RECOVERY_2026: find leftover .part documents and offer to finish
+        the interrupted save. Runs after boot so the UI is ready for dialogs."""
+        try:
+            d = self._projects_dir()
+            candidates = []
+            for name in sorted(os.listdir(d)):
+                if name.endswith(".part") and os.path.isfile(os.path.join(d, name)):
+                    candidates.append(os.path.join(d, name))
+            if not candidates:
+                return
+            newest = max(candidates, key=lambda p: os.path.getmtime(p))
+            try:
+                with open(newest, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                data = None
+            if not isinstance(data, dict):
+                return
+            label = f"Recover {len(candidates)} interrupted save(s)?" if len(candidates) > 1 else "Recover interrupted save?"
+            msg = (f"An interrupted project save was found:\n{newest}\n\n"
+                   "Load it back into the workspace?")
+            if QMessageBox.question(self, label, msg, QMessageBox.StandardButton.Yes, QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
+                self._apply_project_snapshot(data)
+                try:
+                    self.reload_active_instrument_sequencer_ui()
+                except Exception:
+                    pass
+                try:
+                    self._refresh_after_file_input(reason="recovery")
+                except Exception:
+                    pass
+                print(f"[Recovery] restored project from {newest}")
+        except Exception:
+            pass
 
     def save_project_dialog(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save EQR Project", "", "EQR Project (*.json)")
         if not path:
             return
-        data = self._project_snapshot()
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, default=str)
-            QMessageBox.information(self, "Saved", f"Project saved:\n{path}")
-        except Exception as e:
-            QMessageBox.warning(self, "Save failed", str(e))
-
+        path = self._ensure_project_extension(path)
+        self._save_project_document(path)
 
     def load_project_dialog(self):
         """Load a unified project document back onto the live surface.
@@ -21244,6 +22113,109 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if hasattr(self, 'lbl_master_vol'):
             self.lbl_master_vol.setText(f"{val}%")
 
+    def _on_clip_ratio_changed(self, val):
+        """CLIP_GAIN_2026: update ratio label, queue a re-render, and (when a
+        render has produced a report this session) show the live headroom note."""
+        val = float(val)
+        if hasattr(self, 'lbl_clip_ratio'):
+            self.lbl_clip_ratio.setText(f"{val:.1f}%")
+        rep = getattr(self, "_clipgain_report", None)
+        if hasattr(self, 'lbl_clip_gain_status'):
+            st = self.lbl_clip_gain_status
+            st.setVisible(True)
+            if rep and isinstance(rep, dict):
+                st.setText(
+                    f"balance {val:.0f}% · density {rep.get('density_before', 0) * 100:.2f}%→"
+                    f"{rep.get('density_after', 0) * 100:.2f}% · "
+                    f"gain {rep.get('gain_min_db', 0):+.1f}…{rep.get('gain_max_db', 0):+.1f} dB"
+                )
+            else:
+                st.setText("applies on next Play / render")
+        try:
+            self._on_live_source_changed()
+        except Exception:
+            pass
+
+    def _on_import_speed_changed(self, val):
+        """IMPORT_SPEED_2026: update the percent readout and re-render carrier."""
+        val = float(val)
+        if hasattr(self, 'lbl_import_speed'):
+            self.lbl_import_speed.setText(f"{val * 100.0:.0f}%")
+        try:
+            self._on_live_source_changed()
+        except Exception:
+            pass
+
+    def _on_sparse_mask_toggled(self, chk):
+        """ROW_SPARSE_MASK_2026: enable/disable the density spin and sync label."""
+        enabled = bool(chk)
+        if hasattr(self, 'spin_sparse_density'):
+            try:
+                self.spin_sparse_density.setEnabled(enabled)
+            except Exception:
+                pass
+        self._sync_sparse_label()
+        try:
+            self._on_live_source_changed()
+        except Exception:
+            pass
+
+    def _on_sparse_density_changed(self, val):
+        val = float(val)
+        self._sync_sparse_label()
+        try:
+            self._on_live_source_changed()
+        except Exception:
+            pass
+
+    def _sync_sparse_label(self):
+        if not hasattr(self, 'lbl_sparse_density'):
+            return
+        val = 0.5
+        try:
+            val = float(self.spin_sparse_density.value())
+        except Exception:
+            pass
+        try:
+            self.lbl_sparse_density.setText(f"{val * 100.0:.0f}%")
+        except Exception:
+            pass
+
+    def _on_speed_scrub_toggled(self, chk):
+        """SPEED_SCRUB_2026: enable/disable depth spin, sync label, re-render."""
+        enabled = bool(chk)
+        if hasattr(self, 'spin_speed_scrub'):
+            try:
+                self.spin_speed_scrub.setEnabled(enabled)
+            except Exception:
+                pass
+        self._sync_speed_scrub_label()
+        try:
+            self._on_live_source_changed()
+        except Exception:
+            pass
+
+    def _on_speed_scrub_changed(self, val):
+        val = float(val)
+        self._sync_speed_scrub_label()
+        try:
+            self._on_live_source_changed()
+        except Exception:
+            pass
+
+    def _sync_speed_scrub_label(self):
+        if not hasattr(self, 'lbl_speed_scrub'):
+            return
+        val = 0.3
+        try:
+            val = float(self.spin_speed_scrub.value())
+        except Exception:
+            pass
+        try:
+            self.lbl_speed_scrub.setText(f"±{val * 100.0:.0f}%")
+        except Exception:
+            pass
+
     # =====================================================================
     # CONVOLVE_FIT_FEATURE — WAV carrier loading and spectral-fit helpers
     # =====================================================================
@@ -21431,17 +22403,93 @@ class MathematiciansGrooveboxApp(QMainWindow):
         src_duration = src.size / max(float(getattr(self, "imported_sample_rate", 44100) or 44100), 1.0)
         target_duration = target_len / max(float(target_rate), 1.0)
         src_rate = float(getattr(self, "imported_sample_rate", 44100) or 44100)
-        desired = max(2, int(round(target_duration * src_rate)))
-        if src_duration < target_duration:
-            src = np.tile(src, int(np.ceil(target_duration / max(src_duration, 1e-9))))
-        src = src[:desired]
-        # Resample to target length
-        if src.size != target_len:
-            x_old = np.linspace(0.0, 1.0, src.size, endpoint=False)
-            x_new = np.linspace(0.0, 1.0, target_len, endpoint=False)
-            src = np.interp(x_new, x_old, src).astype(np.float32)
+        # IMPORT_SPEED_2026: varispeed. At speed s the output consumes
+        # s·target_duration of natural source seconds, so the resample advance
+        # per output sample is (s·D0)/L — pitch and tempo shift together while
+        # the output length stays target_len. s == 1.0 keeps the byte-exact
+        # legacy path so nothing changes when the new control is untouched.
+        import_speed = 1.0
+        isp = getattr(self, "spin_import_speed", None)
+        if isp is not None:
+            try:
+                import_speed = float(isp.value())
+            except Exception:
+                import_speed = 1.0
+        import_speed = float(np.clip(import_speed, 0.05, 8.0))
+        # SPEED_SCRUB_2026: (base, depth) seed a deterministic per-row speed lane;
+        # when the lane is off this is exactly the plain constant-speed path.
+        scrub_on = bool(getattr(self, "chk_speed_scrub", None) and self.chk_speed_scrub.isChecked())
+        scrub_depth = 0.0
+        if scrub_on:
+            try:
+                scrub_depth = float(getattr(self, "spin_speed_scrub", None).value()) if getattr(self, "spin_speed_scrub", None) is not None else 0.0
+            except Exception:
+                scrub_depth = 0.0
+        scrub_on = scrub_on and scrub_depth > 1e-6
+        if not scrub_on:
+            scrub_depth = 0.0
+        if abs(import_speed - 1.0) < 1e-9 and not scrub_on:
+            desired = max(2, int(round(target_duration * src_rate)))
+            if src_duration < target_duration:
+                src = np.tile(src, int(np.ceil(target_duration / max(src_duration, 1e-9))))
+            src = src[:desired]
+            if src.size != desired:
+                src = src[:desired]
+            if src.size != target_len:
+                x_old = np.linspace(0.0, 1.0, src.size, endpoint=False)
+                x_new = np.linspace(0.0, 1.0, target_len, endpoint=False)
+                src = np.interp(x_new, x_old, src).astype(np.float32)
+            else:
+                src = src.astype(np.float32, copy=False)
         else:
-            src = src.astype(np.float32, copy=False)
+            D0 = max(2, int(round(target_duration * src_rate)))
+            if scrub_on:
+                # SCRUB_LANE_2026: a closed-form per-row speed curve.  Each
+                # playlist row draws a unit residue from (seed, row) mapped into
+                # [1-depth, 1+depth], smoothly interpolated across output samples,
+                # then multiplied by the base speed.  Positions are the cumulative
+                # integral of the per-sample advance, so the pitch/speed sweep is
+                # continuous (a single monotone resample, no per-row seams) and
+                # fully reproducible — a reverse engineer needs only base, depth,
+                # rows and the seed.
+                try:
+                    _rows = int(getattr(self, 'spin_playlist_length').value()) if getattr(self, 'spin_playlist_length', None) is not None else 32
+                except Exception:
+                    _rows = 32
+                _rows = max(1, int(_rows))
+                try:
+                    _seed_n = float(self.get_numeric_seed() or 0.0)
+                except Exception:
+                    _seed_n = 0.0
+                _seed_i = int(_safe_int_seed(_seed_n))
+                _mults = np.empty(_rows, dtype=np.float64)
+                for _ri in range(_rows):
+                    _h = (int(_seed_i) ^ (int(_ri + 1) * 0x9E3779B1)) & 0x7FFFFFFF
+                    _u = ((_h ^ (_h >> 16)) * 0x45D9F3B) & 0x7FFFFFFF
+                    _mults[_ri] = 1.0 + scrub_depth * (2.0 * (float(_u % 100000) / 100000.0) - 1.0)
+                _u_samp = np.arange(target_len, dtype=np.float64) * float(_rows) / float(max(target_len, 1))
+                _row_sel = np.clip(np.floor(_u_samp).astype(np.intp), 0, _rows - 1)
+                _f0 = _u_samp - np.floor(_u_samp)
+                _m0 = _mults[_row_sel]
+                _m1 = _mults[np.clip(_row_sel + 1, 0, _rows - 1)]
+                _speed_curve = (_m0 + (_m1 - _m0) * _f0).astype(np.float64)
+                advance = (import_speed * D0) / float(target_len)
+                step = np.maximum(advance * _speed_curve, 1e-9)
+                pos = np.cumsum(step) - step[0]
+                need = max(D0, int(np.ceil(np.max(pos))) + 2)
+                if src.size < need:
+                    src = np.tile(src, int(np.ceil(need / max(src.size, 1e-9))))
+                src = src[:need]
+                idx = np.arange(need, dtype=np.float64)
+                src = np.interp(np.clip(pos, 0.0, float(need - 1)), idx, src).astype(np.float32)
+            else:
+                need = max(D0, int(round(D0 * import_speed)))
+                if src.size < need:
+                    src = np.tile(src, int(np.ceil(need / max(src.size, 1e-9))))
+                src = src[:need]
+                pos = np.arange(target_len, dtype=np.float64) * (import_speed * D0) / float(target_len)
+                idx = np.arange(need, dtype=np.float64)
+                src = np.interp(pos, idx, src).astype(np.float32)
         # Seed-responsive carrier gain (composition-state evaluation)
         try:
             vals = list(self.get_seed_values(t_value=0.0) or [])
@@ -22178,6 +23226,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return
         self._canonical_rebuild_guard = True
         try:
+            # Order-independence: strip engine-derived residue so the candidate
+            # baseline is identical regardless of prior activation history.
+            try:
+                self._reset_canonical_engine_derived_state()
+            except Exception:
+                pass
             import copy
             rows = max(1, min(1024, int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else 96))
             if not hasattr(self, "master_playlist_data") or self.master_playlist_data is None:
@@ -22220,8 +23274,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 for u in users:
                     if isinstance(u, dict):
                         uop = str(u.get("operator") or u.get("name") or "").strip()
-                        if uop and uop.casefold() != "goava":
-                            user_ops.append(uop)
+                    else:
+                        uop = str(u or "").strip()
+                    if uop and uop.casefold() != "goava":
+                        user_ops.append(uop)
                 if user_ops:
                     e["operator"] = sorted(set(user_ops), key=str.casefold)[0]
                     e["operators"] = sorted(set(user_ops), key=str.casefold)
@@ -22858,6 +23914,31 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if not active_cluster:
                     active_cluster = list(range(len(names)))
 
+            # ROW_SPARSE_MASK_2026 (established once per row): a deterministic
+            # subgroup gate derived purely from (seed, row, density).  Each row
+            # keeps `density` fraction of the active instruments; the rest of that
+            # row's voices are gated to 0 (their oscillators still advance phase
+            # via the carry, so their geometric lattice stays coherent when they
+            # return).  Off-canonical master shaping only — it never touches the
+            # fingerprint, and density 1.00 (or unchecked) is byte-identical.
+            _sp_mask = None
+            try:
+                _sp_enabled = bool(
+                    getattr(self, "chk_sparse_mask", None) and self.chk_sparse_mask.isChecked()
+                )
+                if _sp_enabled:
+                    _dens = float(getattr(self, "spin_sparse_density", None).value()) if getattr(self, "spin_sparse_density", None) is not None else 1.0
+                    _dens = float(np.clip(_dens, 0.01, 1.0))
+                    _nops = len(active_cluster)
+                    _keep = max(1, min(_nops, int(round(_nops * _dens))))
+                    if _nops > 1 and _keep < _nops:
+                        _s = (int(_safe_int_seed(seed_val)) ^ (int(row_idx) * 0x9E3779B1)) & 0x7FFFFFFF
+                        _rng = np.random.RandomState(_s or 1)
+                        _picked = set(int(i) for i in _rng.choice(_nops, size=_keep, replace=False))
+                        _sp_mask = set(int(active_cluster[i]) for i in _picked)
+            except Exception:
+                _sp_mask = None
+
             canonical_count = self._canonical_active_count()
             user_voice_count = 0
             if canonical_count:
@@ -23418,6 +24499,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     voice_gain = self._canonical_voice_gain(
                         op_name, user_voice_count, canonical_count, len(active_cluster)
                     )
+                    # ROW_SPARSE_MASK_2026: gate voices outside this row's
+                    # deterministic subgroup.  Applied after the voice is fully
+                    # synthesized so every oscillator's phase carry still advances
+                    # (no phase jump when the instrument returns on a later row).
+                    if _sp_mask is not None and int(op_idx) not in _sp_mask:
+                        voice_gain = 0.0
                     op_offset_sec = float(op_time_offsets.get(op_name, 0.0) or 0.0)
                     if abs(op_offset_sec) < 1e-9:
                         # Default: unchanged behavior, shares the row's timing.
@@ -23515,6 +24602,31 @@ class MathematiciansGrooveboxApp(QMainWindow):
             except Exception:
                 pass
 
+        # FULL ENV-FOLLOW SYMMETRY — ONE shared time-predictive follow env.
+        # Built once from the canonical unison snapshot (before any global
+        # effect transforms it) and threaded into EVERY master-bus effect —
+        # Global Convolve, DomainEQ, SeedScript T-axis, Fractallizer, EQR,
+        # PED, and PKP — so the whole tail breathes through the exact same
+        # envelope function (EQR follow: forward-max + 0.85/0.15 release;
+        # PKP decay damps the tempo swing).  Stored on self at low resolution
+        # so the visualizers can draw the same envelope.
+        try:
+            _shared_pkp_d = max(0.0, float(self.slider_pkp_decay.value()) / 1000.0) if hasattr(self, "slider_pkp_decay") else 0.5
+        except Exception:
+            _shared_pkp_d = 0.5
+        try:
+            _shared_env = build_master_follow_env(master, float(bpm), float(sample_rate), _shared_pkp_d)
+            _vis = _shared_env[:: max(1, len(_shared_env) // 512)][:512]
+            self._last_master_env = np.asarray(_vis, dtype=np.float32)
+            self._last_master_env_db = float(np.mean(np.abs(master)) + 1e-9)
+        except Exception as _env_exc:
+            print(f"[ENV] shared follow envelope skipped: {_env_exc}")
+            _t_tmp = np.arange(len(master), dtype=np.float32) / float(sample_rate)
+            _sw_tmp = float(np.clip(0.45 * (1.0 - 0.7 * _shared_pkp_d), 0.045, 0.45))
+            _shared_env = (0.55 + _sw_tmp * np.sin(2.0 * np.pi * (float(bpm) / 60.0) * _t_tmp)).astype(np.float32)
+            self._last_master_env = _shared_env[:: max(1, len(_shared_env) // 512)][:512]
+            self._last_master_env_db = float(np.mean(np.abs(master)) + 1e-9)
+
         # Global Convolve: deterministic geometric cross-convolution of the rendered carrier.
         # User-edited controls remain upstream; this stage only mixes the structural wave result.
         try:
@@ -23550,7 +24662,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         _sv_bus = []
                     if _sv_bus or (self._seed_text() if hasattr(self, "_seed_text") else "").strip():
                         conv_amt = min(float(conv_amt), 0.18)
-                    master = (1.0 - conv_amt) * master + conv_amt * conv
+                    master = (1.0 - conv_amt) * master + conv_amt * (conv * _shared_env)
         except Exception as e:
             print(f"[Global Convolve] skipped: {e}")
 
@@ -23562,7 +24674,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 t_norm = np.linspace(0.0, 1.0, len(master))
                 domain_mod = self.domain_eq_engine.evaluate_series(t_norm, x=0.0, y=0.0, z=0.0)
                 # Soft convolution: carrier * (1 + 0.45 * domain) — accentuates without erasing
-                master = master * (1.0 + 0.45 * domain_mod.astype(np.float32))
+                master = master * (1.0 + 0.45 * domain_mod.astype(np.float32) * _shared_env)
             except Exception as e:
                 print(f"[DomainEQ] render modulation skipped: {e}")
 
@@ -23596,7 +24708,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 peak_curve = np.max(np.abs(seed_time_curve))
                 if peak_curve > 1e-9:
                     seed_mod = (seed_time_curve / peak_curve).astype(np.float32)
-                    master = master * (1.0 + 0.20 * MEUM_NORM * seed_mod)
+                    master = master * (1.0 + 0.20 * MEUM_NORM * seed_mod * _shared_env)
         except Exception as e:
             print(f"[SeedScript] T-axis modulation skipped: {e}")
 
@@ -23605,21 +24717,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # already ran on individual voices; this is the heavier import-inclusive stage.
         try:
             if fractalizer_val > 1e-6 and hasattr(self, "_music_fractallizer"):
-                beat_hz = float(bpm) / 60.0
-                t_sec = np.arange(len(master), dtype=np.float32) / float(sample_rate)
                 # MASTER_FX_FIX_2026: PKP Decay damps the tempo-locked envelope swing
                 # (tail-only effect, never touches the canonical voice stage).
-                try:
-                    pkp_d = max(0.0, float(self.slider_pkp_decay.value()) / 1000.0) if hasattr(self, "slider_pkp_decay") else 0.5
-                except Exception:
-                    pkp_d = 0.5
-                pkp_swing = float(np.clip(0.45 * (1.0 - 0.7 * pkp_d), 0.045, 0.45))
-                pkp_master = 0.55 + pkp_swing * np.sin(2.0 * np.pi * beat_hz * t_sec)
                 master = self._music_fractallizer.process(
                     master,
                     activation=fractalizer_val,
                     gamma=1.5 + MEUM_NORM * 2.0,
-                    pkp_env=pkp_master,
+                    pkp_env=_shared_env,
                     bpm=float(bpm),
                     reference_buffer=unison_buffer,
                 )
@@ -23641,31 +24745,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if act > 0.01:
                 if not hasattr(self, "_eqr_tensor") or self._eqr_tensor is None:
                     self._eqr_tensor = EQRTensorEngine()
-                try:
-                    _pkp_d_for_eqr = max(0.0, float(self.slider_pkp_decay.value()) / 1000.0) if hasattr(self, "slider_pkp_decay") else 0.5
-                except Exception:
-                    _pkp_d_for_eqr = 0.5
-                _pkp_swing_for_eqr = float(np.clip(0.45 * (1.0 - 0.7 * _pkp_d_for_eqr), 0.045, 0.45))
-                _beat_hz_for_eqr = float(bpm) / 60.0
-                _t_for_eqr = np.arange(len(master), dtype=np.float32) / float(sample_rate)
-                _eqr_pkp_env = 0.55 + _pkp_swing_for_eqr * np.sin(2.0 * np.pi * _beat_hz_for_eqr * _t_for_eqr)
-                master = self._eqr_tensor.process(master, activation=act, pkp_env=_eqr_pkp_env)
+                master = self._eqr_tensor.process(master, activation=act, pkp_env=_shared_env)
         except Exception as _eqr_exc:
             print(f"[EQR] mixdown: {_eqr_exc}")
-        # PKP master effect (tail-only): tempo-locked amplitude envelope, with the
-        # swing damped by PKP Decay — applied here so it never factors into the
-        # unison canonical engines.
+        # PKP master effect (tail-only): shared follow envelope, swing damped by
+        # PKP Decay — applied here so it never factors into the unison canonical
+        # engines.  Full ENV-follow symmetry: identical envelope to EQR and the
+        # Fractallizer.
         try:
-            try:
-                pkp_d = max(0.0, float(getattr(self, "slider_pkp_decay", None).value()) / 1000.0) if getattr(self, "slider_pkp_decay", None) is not None else 0.5
-            except Exception:
-                pkp_d = 0.5
-            pkp_swing = float(np.clip(0.45 * (1.0 - 0.7 * pkp_d), 0.045, 0.45))
-            if pkp_swing > 0.005 and len(master) > 0:
-                beat_hz = float(bpm) / 60.0
-                t_sec = np.arange(len(master), dtype=np.float32) / float(sample_rate)
-                pkp_master = 0.55 + pkp_swing * np.sin(2.0 * np.pi * beat_hz * t_sec)
-                master = (master * (0.35 + 0.65 * pkp_master)).astype(np.float32)
+            if len(master) > 0:
+                master = (master * (0.35 + 0.65 * _shared_env)).astype(np.float32)
         except Exception as _pkp_exc:
             print(f"[PKP] mixdown: {_pkp_exc}")
         try:
@@ -23674,28 +24763,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 t_axis = np.linspace(0.0, 1.0, n, dtype=np.float64)
                 ctrl = min(128, max(8, n // 512))
                 idx = np.linspace(0, n - 1, ctrl).astype(np.int32)
-                ped = np.empty(ctrl, dtype=np.float64)
+                w = max(1, ctrl // 16)
+                ped_z = np.empty(ctrl, dtype=np.float64)
                 for j, ix in enumerate(idx):
-                    s = float(master[ix])
-                    p = abs(s) * (1.0 + MEUM_NORM * 0.25) * PHI_INV
-                    e = abs(s) * (1.0 + MEUM_NORM * 0.15) * PHI_INV
-                    d = abs(MEUM_IDENTITY_RESIDUAL) * 0.1 * math.sin(s * MEUM + float(t_axis[ix]))
-                    ped[j] = 1.0 + 0.14 * math.tanh((e + d) * 0.8 - p * 0.15)
+                    lo = max(0, ix - w)
+                    hi = min(n, ix + w + 1)
+                    _pi, _ei, _di, zi = eqr_tensor_step(master[ix], master[lo:hi], t=float(t_axis[ix]))
+                    ped_z[j] = zi
+                zmean = float(np.mean(np.abs(ped_z))) + 1e-9
+                ped_rel = np.clip(ped_z / zmean, 0.25, 2.5)
+                ped = 1.0 + 0.14 * np.tanh(ped_rel - 1.0)
                 ped_full = np.interp(np.arange(n), idx.astype(float), ped).astype(np.float32)
-                master = (master * ped_full).astype(np.float32)
+                master = (master * (0.5 + 0.5 * ped_full * _shared_env)).astype(np.float32)
         except Exception as _ped_exc:
             print(f"[PED] mixdown: {_ped_exc}")
 
-        # SMOOTH_OUTPUT_2026: a fixed, hardcoded 3-tap moving-average pass
-        # over the finished master bus. This is deliberately not an adaptive
-        # or signal-dependent filter (no soft-knee, no entropy/level-driven
-        # coefficients) — just a small, constant convolution kernel that
-        # rounds off any residual sharp edges/steps left after all the
-        # additive voice and effect stages, without touching overall level
-        # or introducing its own nonlinearity.
-        if len(master) > 4:
-            _smooth_kernel = np.array([0.25, 0.5, 0.25], dtype=np.float32)
-            master = np.convolve(master, _smooth_kernel, mode="same").astype(np.float32)
+        # CLARITY_FIX_2026: the former SMOOTH_OUTPUT_2026 pass ran an
+        # unconditional 3-tap moving-average (a fixed lowpass) over the whole
+        # master bus — with no control and no activation, it rolled high
+        # frequencies off every render and read as "everything sounds warm."
+        # Removed entirely: the equal-power row crossfade above already keeps
+        # row boundaries click-free, and the closed-form voice harmonics now
+        # reach the bus at their true brightness. No filter, no slate.
 
         # FINAL MASTER BUS CONTRACT — self-authored, no library DSP, no soft
         # limiting, no slew, no adaptive feedback.  The canonical amplitude is
@@ -23724,14 +24813,141 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # and made both live Play and WAV export nearly silent.  Scale the
         # finished buffer so its actual peak maps to TARGET_PEAK (−1 dBFS).
         # Same buffer feeds Play and Export → matching loudness.
+        # CLIP_GAIN_2026: the one-time global peak-normalize + hard ceiling
+        # above flattened every overshoot above CEIL into fixed flat-top
+        # distortion and let a single loud transient duck the whole track.
+        # Replace it with the longitudinal clip-density ⇄ gain-maximization
+        # profile (ratio = spin_clip_ratio, default 50-50). Deterministic and
+        # off-canonical — it runs on the master bus only, so composition
+        # identity is untouched and the profile is exactly reproducible from
+        # the one documented ratio carried in export provenance.
+        try:
+            master, _cg = self._clip_gain_profile(master, sample_rate)
+        except Exception as _cg_exc:
+            print(f"[ClipGain] profile skipped: {_cg_exc}")
+            if len(master) > 0:
+                peak = float(np.max(np.abs(master)))
+                if peak > 1e-9:
+                    master = (master * np.float32(0.89 / peak)).astype(np.float32)
+                master = np.clip(master, np.float32(-0.95), np.float32(0.95)).astype(np.float32)
+        return master.astype(np.float32), sample_rate
+
+    def _clip_gain_profile(self, master, sample_rate):
+        """Longitudinal CLIP-DENSITY ⇄ GAIN-MAXIMIZATION profile.
+
+        Deterministic, off-canonical master-bus shaping (never composition
+        identity). Divides the timeline into ~1/24 s blocks and gives every
+        block a closed-form gain that blends two opposing goals by the ratio
+        `spin_clip_ratio` (0-100, default 50 = balanced 50-50):
+
+            g_max  = headroom toward TARGET_PEAK (gain maximization, capped)
+            g_safe = 1 / (1 + DENSITY_K·density) (clip avoidance: pull down
+                    wherever the flat-top ceiling density is already high)
+            g      = g_max ** (1-r) * g_safe ** r
+
+        The per-block gains are smoothly interpolated across the whole track
+        (no block clicks) and a final rescale only ever lowers the absolute
+        peak toward CEIL — so no flat-top hard clipping remains. With the
+        same ratio and sample rate the same render reproduces the profile
+        bit-for-bit; a reverse engineer needs only the one documented ratio.
+        """
+        ratio_pct = 50.0
+        try:
+            if hasattr(self, "spin_clip_ratio"):
+                ratio_pct = float(self.spin_clip_ratio.value())
+        except Exception:
+            pass
+        r = float(np.clip(ratio_pct / 100.0, 0.0, 1.0))
         TARGET_PEAK = 0.89
         CEIL = 0.95
-        if len(master) > 0:
-            peak = float(np.max(np.abs(master)))
-            if peak > 1e-9:
-                master = (master * np.float32(TARGET_PEAK / peak)).astype(np.float32)
-            master = np.clip(master, np.float32(-CEIL), np.float32(CEIL)).astype(np.float32)
-        return master.astype(np.float32), sample_rate
+        GAIN_CAP = 2.5
+        GAIN_FLOOR = 0.35
+        DENSITY_K = 50.0
+        n = int(getattr(master, "size", 0) or 0)
+        if n <= 0:
+            return master, None
+        m32 = np.asarray(master, dtype=np.float32)
+        block = max(256, int(max(float(sample_rate), 1.0)) // 24)
+        nblocks = max(1, int(np.ceil(n / float(block))))
+        dens = np.empty(nblocks, dtype=np.float64)
+        peaks = np.empty(nblocks, dtype=np.float64)
+        for b in range(nblocks):
+            a = int(b) * block
+            bnd = min(a + block, n)
+            seg = m32[a:bnd]
+            peaks[b] = float(np.max(np.abs(seg))) if seg.size else 0.0
+            dens[b] = float(np.mean(np.abs(seg) > CEIL)) if seg.size else 0.0
+        headroom = TARGET_PEAK / np.maximum(peaks, 1e-9)
+        g_max = np.minimum(np.maximum(headroom, GAIN_FLOOR), GAIN_CAP)
+        g_safe = 1.0 / (1.0 + DENSITY_K * dens)
+        g = np.clip((np.float64(g_max) ** (1.0 - r)) * (np.float64(g_safe) ** r),
+                    GAIN_FLOOR, GAIN_CAP)
+        starts = np.arange(nblocks, dtype=np.int64) * block
+        ends = np.minimum(starts + block, n)
+        centers = (starts + ends - 1) * 0.5
+        if nblocks == 1:
+            profile = np.full(n, np.float32(g[0]), dtype=np.float32)
+        else:
+            profile = np.interp(np.arange(n), centers.astype(np.float64), g).astype(np.float32)
+        out = (m32 * profile).astype(np.float32)
+        peak = float(np.max(np.abs(out))) if out.size else 0.0
+        if peak > CEIL:
+            out = (out * np.float32(CEIL / peak)).astype(np.float32)
+        dens_before = float(np.mean(np.abs(m32) > CEIL)) if n else 0.0
+        dens_after = float(np.mean(np.abs(out) > CEIL)) if n else 0.0
+        # EQR_Z_READOUT_2026: master EQR z-value readout (single-point P·E+D
+        # reality-tensor output) + peak-hold numbers derived once per render from
+        # the effected master (offline, used to color the label and cross-checked
+        # live by the audio callback).  Not persisted, master-only, off-canonical.
+        try:
+            self._eqr_peak_db = None
+            _nfft = 1 << int(math.floor(math.log2(max(2, n))))
+            if _nfft >= 64:
+                _seg = out[:_nfft].astype(np.float64)
+                _rms_tot = float(np.sqrt(np.mean(_seg * _seg))) if _seg.size else 0.0
+                _base = max(_rms_tot, 1e-6)
+                _zn = min(128, max(8, _nfft // 512))
+                _zi = np.linspace(0, _nfft - 1, _zn).astype(np.int32)
+                _zw = max(1, _zn // 16)
+                _zc = np.empty(_zn, dtype=np.float64)
+                for _j, _ix in enumerate(_zi):
+                    _lo = max(0, _ix - _zw)
+                    _hi = min(_nfft, _ix + _zw + 1)
+                    _zc[_j] = eqr_tensor_step(_seg[_ix], _seg[_lo:_hi], t=float(_ix) / max(1, _nfft - 1))[3]
+                _zmean = float(np.mean(np.abs(_zc))) + 1e-9
+                self._eqr_z_rel = float(np.mean(np.abs(_zc / _zmean)))
+                self._eqr_z_db = self._eqr_z_rel
+                _pk = float(np.max(np.abs(out))) if n else 0.0
+                self._eqr_peak_db = float(20.0 * math.log10(max(_pk, 1e-9)))
+        except Exception:
+            pass
+        self._clipgain_report = {
+            "ratio_pct": ratio_pct,
+            "blocks": int(nblocks),
+            "density_before": dens_before,
+            "density_after": dens_after,
+            "gain_min_db": float(20.0 * math.log10(float(np.min(profile)))) if n else 0.0,
+            "gain_max_db": float(20.0 * math.log10(float(np.max(profile)))) if n else 0.0,
+        }
+        if hasattr(self, 'lbl_clip_gain_status'):
+            status = None
+            try:
+                status = self.lbl_clip_gain_status
+            except Exception:
+                status = None
+            if status is not None:
+                try:
+                    status.setVisible(True)
+                    status.setText(
+                        f"balance {ratio_pct:.0f}% · density "
+                        f"{dens_before * 100:.2f}%→{dens_after * 100:.2f}% · "
+                        f"gain {self._clipgain_report['gain_min_db']:+.1f}…"
+                        f"{self._clipgain_report['gain_max_db']:+.1f} dB"
+                    )
+                except Exception:
+                    pass
+        return out, self._clipgain_report
+
     def _sync_composition_toggle_state(self):
         """Maintain an order-independent CompositionToggleState summary.
 
@@ -23804,9 +25020,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return "----------"
 
     def _refresh_canonical_fingerprint(self):
+        # ID_STABILITY_2026: never refresh while a unison/composition transaction
+        # is mid-flight — intermediate rebuild state would flash as a shifting
+        # track id. Defer one event-loop turn so the FINAL committed state lands.
+        if getattr(self, "_unison_composition_guard", False):
+            try:
+                QTimer.singleShot(0, self._refresh_canonical_fingerprint)
+            except Exception:
+                pass
+            return
         fp = self._canonical_fingerprint()
-        if getattr(self, "lbl_canonical_fp", None) is not None:
-            self.lbl_canonical_fp.setText(f"UNIQUE patch id (changes with your program) - {fp}")
+        label = getattr(self, "lbl_canonical_fp", None)
+        if label is not None:
+            text = f"UNIQUE patch id (changes with your program) - {fp}"
+            if label.text() != text:
+                label.setText(text)
 
     def _on_live_source_changed(self, *args):
         """Coalesce seed/seq-length changes into one deferred composition transaction."""
@@ -23857,6 +25085,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._unison_composition_guard = True
 
         try:
+            # Step 0: restore the pre-canonical core (order/history independent).
+            self._reset_canonical_engine_derived_state()
+
             # Step 1: Establish clean baseline (history-free)
             self._establish_clean_baseline()
 
@@ -23869,6 +25100,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
             # Step 4: Sync UI to match the deterministic state
             self._sync_ui_to_unison_state()
+
+            # Step 4b: deterministic re-derive of the per-row context columns
+            # (calculated_context / live_parametrics) from the canonical stores.
+            self._refresh_canonical_derived_columns()
 
             # Step 5: Refresh the order-independent canonical identity
             try:
@@ -23901,6 +25136,287 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 active.add(engine)
 
         return active
+
+    def _reset_canonical_engine_derived_state(self):
+        """Restore the pre-canonical core so every transaction re-derives identically.
+
+        ORDER-INDEPENDENCE: the live panel stores (scripts, patch edges, generated
+        params, sequence panels) accumulate engine residue across toggles.  Three
+        residues are history-order-dependent and make the SAME final active set
+        produce DIFFERENT canonical content depending on activation order:
+          • instrument_scripts — engine ``# --- GENERATED ... ---`` blocks are only
+            appended once each, so the assembled script string's block order mirrors
+            activation history.
+          • patch_connections — generated edges (origin=generated_*) are never
+            cleaned, so the edge list's order/staleness reflects history.
+          • sequence ``panels`` — engine_contributions / engine_source / master_blended
+            markers plus a merged ``synth`` accumulate over transactions.
+        This helper strips exactly that engine residue (never user material) so each
+        transaction starts from a fresh, identical pre-canonical core and the sorted
+        engine write becomes a pure function of the FINAL active toggle set.
+        """
+        import re as _re
+        # Pristine user-row snapshot: captured on the very first canonical
+        # transaction (before any engine pass can paint user-owned cells such as
+        # velocity). Restored at every reset so row_velocity and user-authored
+        # columns stay order-independent at freeze time.
+        if not isinstance(getattr(self, "_canonical_user_rows_snapshot", None), list):
+            self._canonical_user_rows_snapshot = copy.deepcopy(
+                getattr(self, "master_playlist_data", []) or []
+            )
+        # PATTERN_INDEP_2026: the sequencer pattern memory is canonical output.
+        # Engines mutate it during their pass, so the frozen canonical identity
+        # must never see first-writer pattern residue. Capture the pristine boot
+        # pattern (post-seed) once; restore it every reset so the fixed-order
+        # deterministic engine pass re-derives it exactly.
+        if not isinstance(getattr(self, "_canonical_pattern_user_store", None), dict):
+            self._canonical_pattern_user_store = copy.deepcopy(
+                getattr(self, "instrument_sequencer_memory", None) or {})
+        # PANELS_INDEP_2026: instrument_sequence_banks (per-sequence panels)
+        # are written by every unison pass and read back by the deterministic
+        # engine pass (euclidean/seeded blends). Restore the pristine boot banks
+        # at every reset so panel content is a pure function of user material.
+        if not isinstance(getattr(self, "_canonical_panels_user_store", None), dict):
+            self._canonical_panels_user_store = copy.deepcopy(
+                getattr(self, "instrument_sequence_banks", None) or {})
+        strip_pat = _re.compile(r"# --- GENERATED [^\n]*---\n(?:generated_[^\n]*\n?)*")
+        seeded_block_pat = _re.compile(
+            r"# Seeded Geometric Resonance Script[^\n]*\n"
+            r"(?:[^\n]*\n){0,6}"
+            r"def evaluate_wave\(x, y, z\):\n"
+            r"(?:[^\n]*\n){0,6}"
+        )
+
+        scripts = getattr(self, "instrument_scripts", None)
+        if isinstance(scripts, dict):
+            for name, body in list(scripts.items()):
+                if not isinstance(body, str):
+                    continue
+                cleaned = seeded_block_pat.sub("", body)
+                cleaned = strip_pat.sub("", cleaned)
+                # Generated engine params are sometimes appended to scripts without
+                # any marker line; remove any such engine lines regardless of header.
+                cleaned = "\n".join(
+                    ln for ln in cleaned.split("\n")
+                    if not ln.startswith("generated_")
+                )
+                cleaned = _re.sub(r"\n{3,}", "\n\n", cleaned).strip("\n")
+                if not cleaned:
+                    # Fully engine-rewritten script: fall back to the stock
+                    # workspace template so the canonical core stays order-free.
+                    try:
+                        cleaned = (
+                            f"# Script workspace for {name} based on operator rules\n"
+                            f"def evaluate_wave(x, y, z):\n"
+                            f"    return np.sin(x * {1 + int(identity_unit(name, 'default_script_k') * 12)}.0) * np.cos(y) - z"
+                        )
+                    except Exception:
+                        cleaned = f"# Script workspace for {name} based on operator rules"
+                scripts[name] = cleaned if cleaned else ""
+
+        pc = getattr(self, "patch_connections", None)
+        if pc is not None:
+            self.patch_connections = [
+                c for c in pc if not (
+                    isinstance(c, dict)
+                    and (
+                        str(c.get("origin", "")).startswith("generated_")
+                        or "optimizer" in str(c.get("origin", ""))
+                        or str(c.get("origin", "")) == "additive_optimizer"
+                    )
+                )
+            ]
+
+        if not isinstance(getattr(self, "instrument_param_generated", None), dict):
+            self.instrument_param_generated = {}
+        self.instrument_param_generated = {}
+
+        _banks_snap = getattr(self, "_canonical_panels_user_store", None)
+        banks = getattr(self, "instrument_sequence_banks", {}) or {}
+        if isinstance(_banks_snap, dict):
+            for _bname, _bank in list(banks.items()):
+                if _bname in _banks_snap:
+                    banks[_bname] = copy.deepcopy(_banks_snap[_bname])
+        else:
+            for name, bank in banks.items():
+                if not isinstance(bank, dict):
+                    continue
+                for mem in bank.values():
+                    if not isinstance(mem, dict):
+                        continue
+                    panels = mem.get("panels")
+                    if not isinstance(panels, dict):
+                        continue
+                    engine_marked = panels.get("engine_source") is not None or panels.get("master_blended") is not None
+                    panels.pop("engine_contributions", None)
+                    panels.pop("engine_source", None)
+                    panels.pop("master_blended", None)
+                    if engine_marked:
+                        panels["synth"] = {}
+                        panels["script"] = ""
+                        panels["domain"] = {}
+                        panels["patch"] = []
+
+        # Reset engine-authored EQ-domain partitions back to user-defined only.
+        # Generated domains are rebuilt identically per engine in the sorted
+        # canonical pass; leaving them here makes the domain context (0.16 of the
+        # feature score) depend on engagement order.
+        dom_engine = getattr(self, "domain_eq_engine", None)
+        if dom_engine is not None and hasattr(dom_engine, "domains"):
+            try:
+                dom_engine.domains = [
+                    d for d in (dom_engine.domains or [])
+                    if isinstance(d, dict) and (d.get("user_defined", True) or bool(d.get("user_owned")))
+                ]
+            except Exception:
+                pass
+
+        # Stale per-row derived columns carry the ORDER-FIRST-WRITER residue of the
+        # pre-canonical incremental writers (calculated_context / live_parametrics /
+        # engine source markers). Clear them so the unison rebuild re-derives every
+        # cell strictly from canonical stores.
+        for _e in (getattr(self, "master_playlist_data", None) or []):
+            if not isinstance(_e, dict):
+                continue
+            for _k in ("calculated_context", "live_parametrics", "velocity_source",
+                       "generated_source", "generated_sources", "generated_by_engine",
+                       "combined_time_offsets", "engine_contributions"):
+                _e.pop(_k, None)
+
+        # Restore user-authored user-columns (velocity is the canonical one the
+        # engine pass paints) from the pristine snapshot so the freeze — and the
+        # audible downstream — cannot see order-dependent paint residue.
+        _row_snap = getattr(self, "_canonical_user_rows_snapshot", None)
+        if isinstance(_row_snap, list):
+            _pl = getattr(self, "master_playlist_data", None) or []
+            for r, _e in enumerate(_pl):
+                if not isinstance(_e, dict) or not _e.get("user_owned"):
+                    continue
+                _src = _row_snap[r] if r < len(_row_snap) else None
+                if not isinstance(_src, dict):
+                    continue
+                for _col in ("velocity", "operator", "question", "answer", "hint",
+                             "operators", "operators_csv", "target_value",
+                             "formula_row", "domain_spec", "script_spec"):
+                    if _col in _src:
+                        _e[_col] = copy.deepcopy(_src[_col])
+                    elif _col == "operator":
+                        # Keep engine names out of user-owned rows. A pristine
+                        # user row states no operator: default it to the user's
+                        # own instance operator so generic fillers never paint
+                        # an instrument name here.
+                        _ui = _e.get("user_instances") or []
+                        if _ui:
+                            _u0 = _ui[0]
+                            _e["operator"] = str(_u0.get("operator", "") if isinstance(_u0, dict) else _u0)
+                        else:
+                            _e["operator"] = ""
+                    else:
+                        # Pristine user rows carry no engine-painted cells; drop
+                        # whatever the pass wrote into a user-owned column.
+                        _e.pop(_col, None)
+
+        # Restore the pristine pattern memory from the boot snapshot so the
+        # deterministic engine pass starts from identical sequencer slates every
+        # unison. Keys the user has since added (new instruments) are kept.
+        _pat_snap = getattr(self, "_canonical_pattern_user_store", None)
+        if isinstance(_pat_snap, dict):
+            _mem = getattr(self, "instrument_sequencer_memory", None)
+            if isinstance(_mem, dict):
+                _ordered = list(_mem.keys())
+                for _k in _ordered:
+                    if _k not in _pat_snap:
+                        continue
+                    _mem[_k] = copy.deepcopy(_pat_snap[_k])
+
+        # ORDER-INDEPENDENCE_2026: the master macro store must return to the
+        # pre-canonical core BEFORE the freeze. Engines only ever setdefault the
+        # deterministic canonical_macro_defaults values (and always overwrite
+        # meum_modulation) plus arbitrary residual numerics (harmonic_freq /
+        # tuning_ratio); unless the user authored a key at the pristine
+        # pre-first-engine state, reconcile it away so the frozen synth blob and
+        # downstream live_parametrics cannot see first-writer residue.
+        if not isinstance(getattr(self, "_canonical_macro_user_store", None), dict):
+            self._canonical_macro_user_store = copy.deepcopy(getattr(self, "instrument_param_state", {}) or {})
+        cc_pre = getattr(self, "_canonical_ctx_cache", {}) or {}
+        _mus_pre = getattr(self, "_canonical_macro_user_store", {}) or {}
+        for i, name in enumerate(list(getattr(self, "instrument_names_48", []) or [])):
+            _u = (getattr(self, "instrument_param_state", None) or {}).get(name)
+            if not isinstance(_u, dict):
+                continue
+            _user_macros_p = _mus_pre.get(name)
+            if not isinstance(_user_macros_p, dict):
+                _user_macros_p = {}
+            _ctx_pre = float(cc_pre.get(name, 0.5)) if isinstance(cc_pre, dict) else 0.5
+            _defaults_pre = canonical_macro_defaults(_ctx_pre, i)
+            for _k, _dv in _defaults_pre.items():
+                try:
+                    _uv = _user_macros_p.get(_k)
+                    if _uv is not None:
+                        _u[_k] = float(_uv)
+                    else:
+                        _u.pop(_k, None)
+                except Exception:
+                    _u.pop(_k, None)
+            for _k in list(_u.keys()):
+                if _k == "meum_modulation":
+                    _u.pop(_k, None)
+                    continue
+                _rkv = _user_macros_p.get(_k)
+                if _rkv is not None:
+                    try:
+                        _u[_k] = float(_rkv)
+                    except Exception:
+                        pass
+                else:
+                    _u.pop(_k, None)
+
+        # Freeze the numeric-context cache against an order-independent USER key.
+        # Engine writes never enter the key (scripts/patch are already stripped;
+        # roster/seed/length knobs are user-owned), so the same user program yields
+        # the same ctx for the SAME final active set no matter the activation order.
+        key = self._canonical_program_key()
+        if (getattr(self, "_canonical_ctx_key", None) != key) or not isinstance(getattr(self, "_canonical_ctx_cache", None), dict):
+            # Present an EMPTY cache while rebuilding so _contextual_numerology's
+            # early-return cannot feed stale frozen values back into the freeze.
+            self._canonical_ctx_cache = {}
+            cache = {}
+            roste = list(getattr(self, "instrument_names_48", []) or [])
+            self._canonical_freeze_ctx = True
+            try:
+                for i, name in enumerate(roste):
+                    try:
+                        cache[name] = float(self._contextual_numerology(name, i, i))
+                    except Exception:
+                        cache[name] = 0.5
+            finally:
+                self._canonical_freeze_ctx = False
+            self._canonical_ctx_cache = cache
+            self._canonical_ctx_key = key
+
+    def _canonical_program_key(self):
+        """Hash of pre-canonical USER material only — order/history independent."""
+        import hashlib, json as _json
+        seed = ""
+        if hasattr(self, "input_seed_val") and self.input_seed_val is not None:
+            seed = self.input_seed_val.toPlainText() if hasattr(self.input_seed_val, "toPlainText") else str(getattr(self.input_seed_val, "text", lambda: "")())
+        parts = [
+            seed,
+            f"{float(self.spin_bpm.value()) if hasattr(self, 'spin_bpm') else 120:.4f}",
+            f"{float(self.spin_base_frequency.value()) if hasattr(self, 'spin_base_frequency') else 432:.6f}",
+            f"{int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16}",
+            f"{int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else 32}",
+            f"{float(self.spin_row_beats.value()) if hasattr(self, 'spin_row_beats') else 4.0:.3f}",
+            _json.dumps(list(getattr(self, "instrument_names_48", []) or []), sort_keys=True),
+            "|".join(sorted((getattr(self, "instrument_scripts", {}) or {}).values()) or []),
+            _json.dumps(sorted([
+                (str(c.get("source", "")), str(c.get("target", "")))
+                for c in (getattr(self, "patch_connections", []) or []) if isinstance(c, dict)
+            ])),
+            _json.dumps([str(e.get("operator", "")) for e in (getattr(self, "master_playlist_data", []) or [])
+                         if isinstance(e, dict) and e.get("user_owned")], sort_keys=True),
+        ]
+        return hashlib.sha256("|".join(parts).encode("utf-8", "replace")).hexdigest()[:16]
 
     def _establish_clean_baseline(self):
         """Create history-free baseline for perfect unison"""
@@ -23957,7 +25473,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         generation counter is not part of the content identity.
         """
         seed = _safe_int_seed(self.get_numeric_seed())
-        eng_h = int(_safe_int_seed(hash(str(engine)) & 0x7FFFFFFF))
+        eng_h = int(_safe_int_seed(_stable_hash(str(engine)) & 0x7FFFFFFF))
         rng = np.random.default_rng((seed ^ eng_h) & 0x7FFFFFFF)
         self._active_engine_write_source = engine
 
@@ -24047,6 +25563,32 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if hasattr(self, "scope_status_label"):
             active_count = len(self._get_active_engine_set())
             self.scope_status_label.setText(f"🎵 Perfect Unison: {active_count} engines")
+
+    def _refresh_canonical_derived_columns(self):
+        """Recompute per-row calculated_context + live_parametrics from the
+        canonical stores after the sorted engine pass.
+
+        These two columns are the only per-row cells that the pre-canonical
+        incremental writers (legacy paint path) touched AFTER the engine pass,
+        which re-introduced first-writer residue.  Re-deriving them here — and
+        only here — makes them a pure function of the final canonical state.
+        """
+        pl = getattr(self, "master_playlist_data", None) or []
+        names = list(getattr(self, "instrument_names_48", []) or ["Operator"])
+        for r in range(len(pl)):
+            e = pl[r]
+            if not isinstance(e, dict):
+                continue
+            inst = str(e.get("operator") or "") or (names[r % len(names)] if names else "Operator")
+            try:
+                f = self._contextual_feature_vector(inst, r, r)
+                e["calculated_context"] = {k: round(v, 6) for k, v in f.items()}
+            except Exception:
+                pass
+            try:
+                apply_live_parametrics_to_entry(self, e, row_idx=r)
+            except Exception:
+                pass
 
     def _store_engine_signature(self, engine, seed):
         """Store engine signature for duplicate prevention"""
@@ -24256,6 +25798,51 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if hasattr(self, "scope_status_label"):
             self.scope_status_label.setText(f"🎛 LIVE DJ · {self._live_dj_status()} · pair #{self._live_dj_pair_index + 1}")
 
+    def _dj_row_samples(self, bpm, sr):
+        """Row length in samples, measured in BEATS (master canonicals / user).
+
+        SEQUENCE_SCALE_2026: the playlist row interval is a beat count, so the
+        DJ lattice must slice rows the same way the render scheduler does:
+        row_samples = sr · beats_per_row · seconds_per_beat. Any step length
+        (16 vs 32 …) shares the same row wall-clock, so the DJ follows the
+        same note-event lattice as audio/video/scenograph output.
+        """
+        try:
+            if hasattr(self, "spin_row_beats"):
+                beats_per_row = float(self.spin_row_beats.value())
+            elif hasattr(self, "spin_playlist_beats"):
+                beats_per_row = float(self.spin_playlist_beats.value())
+            else:
+                beats_per_row = 4.0
+        except Exception:
+            beats_per_row = 4.0
+        return max(1, int(float(sr) * (60.0 / max(float(bpm), 1e-6)) * max(0.25, min(64.0, beats_per_row))))
+
+    def _media_carrier_energy(self, cursor_samples, sr):
+        """Row energy (0..1) of the imported WAV/video carrier, or None.
+
+        LIVE_DJ_MEDIA_2026: when a media carrier is loaded, the DJ responds to
+        it — the per-row scalar blends the canonical note-event lattice with the
+        carrier's actual energy at that row, so imported media drives the morph.
+        """
+        wave = getattr(self, "imported_waveform", None)
+        if wave is None or not getattr(wave, "size", 0):
+            return None
+        try:
+            arr = np.asarray(wave, dtype=np.float32).ravel()
+            if arr.size == 0:
+                return None
+            row_samples = self._dj_row_samples(
+                float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0,
+                float(sr or TARGET_SAMPLE_RATE),
+            )
+            a = int(cursor_samples) % max(1, arr.size)
+            b = min(arr.size, a + max(1, row_samples))
+            seg = arr[a:b]
+            return float(np.clip(float(np.sqrt(float(np.mean(seg.astype(np.float64) ** 2)) + 1e-12)) * 6.0, 0.0, 1.0))
+        except Exception:
+            return None
+
     def _live_dj_goava_scalar(self, cursor):
         events = getattr(self, "goava_note_events", []) or []
         if not events:
@@ -24263,9 +25850,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             bpm = float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0
             sr = float(getattr(self, "play_sample_rate", TARGET_SAMPLE_RATE) or TARGET_SAMPLE_RATE)
-            row_samples = max(1, int(sr * (60.0 / max(bpm, 1e-6)) / 4.0 * max(1, int(getattr(self, "spin_seq_length", None).value()) if hasattr(self, "spin_seq_length") else 16)))
+            row_samples = self._dj_row_samples(bpm, sr)
             ev = events[min(len(events) - 1, max(0, int(cursor) // row_samples))]
-            return float(ev.get("raw", ev.get("seed", 0.0)) or 0.0)
+            scalar = float(ev.get("raw", ev.get("seed", 0.0)) or 0.0)
+            # LIVE_DJ_MEDIA_2026: imported WAV/video drives the morph too.
+            try:
+                media_e = self._media_carrier_energy(cursor, sr)
+                if media_e is not None:
+                    # Energy-shaped proportional wobble keeps the scalar's own
+                    # numerical scale; media simply steers the morph with its
+                    # content instead of an auxiliary constant.
+                    scalar = scalar + ((media_e - 0.5) * 2.0) * abs(float(scalar) + 1e-9) * 0.35
+            except Exception:
+                pass
+            return scalar
         except Exception:
             return float(events[0].get("raw", events[0].get("seed", 0.0)) or 0.0)
 
@@ -24289,6 +25887,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             engine.amount_goava = float(getattr(self, "live_dj_goava_amount", 0.0))
             engine.amount_random = float(getattr(self, "live_dj_random_amount", 0.0))
+            _bj = getattr(self, "_live_dj_boost", None)
+            if _bj:
+                engine.set_boost(_bj["interval"], _bj["phase"], _bj["amount"])
+            else:
+                engine.set_boost(0)
             engine.set_context(
                 seed=self.get_numeric_seed(),
                 pair=getattr(self, "_live_dj_pair_ids", (0, 1)),
@@ -24303,23 +25906,29 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if not events:
                 scalar = float(self.get_numeric_seed() if hasattr(self, "get_numeric_seed") else 0.0)
                 return engine.process(arr, start_sample=0, goava_scalar=scalar, bpm=bpm)
-            row_samples = max(
-                1,
-                int(
-                    float(sample_rate) * (60.0 / max(bpm, 1e-6)) / 4.0
-                    * max(1, int(getattr(self, "spin_seq_length", None).value()) if hasattr(self, "spin_seq_length") else 16)
-                ),
-            )
+            row_samples = self._dj_row_samples(bpm, sample_rate)
             scalars = np.asarray(
                 [float(ev.get("raw", ev.get("seed", 0.0)) or 0.0) for ev in events],
                 dtype=np.float32,
             )
+            media_rows = None
+            if getattr(self, "imported_waveform", None) is not None:
+                media_rows = np.zeros(max(1, int(n // row_samples) + 1), dtype=np.float32)
+                for r_i in range(media_rows.size):
+                    seg = arr[r_i * row_samples:(r_i + 1) * row_samples]
+                    if seg.size:
+                        media_rows[r_i] = float(np.sqrt(float(np.mean(seg.astype(np.float64) ** 2)) + 1e-12))
             out = np.empty(n, dtype=np.float32)
             pos = 0
             row = 0
             while pos < n:
                 seg_len = min(row_samples, n - pos)
                 sc = float(scalars[min(row, len(scalars) - 1)])
+                # LIVE_DJ_MEDIA_2026: imported WAV/video steers the morph with
+                # its per-row energy (normalized after a 6× gain, like live).
+                if media_rows is not None:
+                    me = float(media_rows[min(row, media_rows.size - 1)])
+                    sc = sc + (max(0.0, min(1.0, me * 6.0)) - 0.5) * 2.0 * abs(sc + 1e-9) * 0.35
                 out[pos:pos + seg_len] = engine.process(
                     arr[pos:pos + seg_len], start_sample=pos, goava_scalar=sc, bpm=bpm
                 )
@@ -24338,6 +25947,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             self._live_dj_engine.amount_goava = float(getattr(self, "live_dj_goava_amount", 0.0))
             self._live_dj_engine.amount_random = float(getattr(self, "live_dj_random_amount", 0.0))
+            _bj = getattr(self, "_live_dj_boost", None)
+            if _bj:
+                self._live_dj_engine.set_boost(_bj["interval"], _bj["phase"], _bj["amount"])
+            else:
+                self._live_dj_engine.set_boost(0)
             self._live_dj_engine.set_context(seed=self.get_numeric_seed(), pair=getattr(self, "_live_dj_pair_ids", (0, 1)), sample_rate=int(getattr(self, "play_sample_rate", TARGET_SAMPLE_RATE) or TARGET_SAMPLE_RATE))
             bpm = float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0
             scalar = self._live_dj_goava_scalar(start_sample)
@@ -24401,7 +26015,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     if key not in off_base:
                         off_base[key] = float(om.get(op_name, 0.0) or 0.0)
                     base = float(off_base[key])
-                    phase = (seed * 0.0001 + ri * MEUM + (hash(str(op_name)) % 997) * 0.01) + t * math.tau
+                    phase = (seed * 0.0001 + ri * MEUM + (_stable_hash(str(op_name), 997)) * 0.01) + t * math.tau
                     depth = 0.04 / n_eng
                     if "phase_lock" in active:
                         om[op_name] = base + depth * math.sin(phase)
@@ -24464,8 +26078,30 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if n > 0:
                 start_sample = int(self.play_cursor)
                 chunk = self.play_buffer[start_sample:start_sample + n] * self.master_volume
+                # VIDEO_TO_SOFTWARE_2026: live master trim driven by the rendered
+                # scenograph energy (the video -> output half of the two-way
+                # cross-validation). Live-DJ and playback dynamics only — the
+                # play_buffer/canonical mixdown/exports are untouched, so the
+                # canonical fingerprint and offline audio are unaffected. The
+                # gain is centered on 1.0 at mean energy (±4% max) and read under
+                # try/except since it is written from the UI thread.
+                try:
+                    _ve = float(getattr(getattr(self, "video_synth_engine", None), "_video_energy", 0.0) or 0.0)
+                    chunk = chunk * float(0.96 + 0.08 * np.clip(_ve, 0.0, 1.0))
+                except Exception:
+                    pass
                 chunk = self._apply_live_dj_chunk(chunk, start_sample)
                 outdata[:n, 0] = chunk
+                # EQR_BAND_READOUT_2026: live peak + peak-hold numbers written by
+                # the audio thread (plain floats — the labels are refreshed by the
+                # UI-thread scope timer, never touched from here).
+                try:
+                    _cpk = float(np.max(np.abs(chunk))) if chunk.size else 0.0
+                    self._live_peak = _cpk
+                    _ph = float(getattr(self, "_live_peak_hold", 0.0))
+                    self._live_peak_hold = max(_cpk, _ph * float(np.exp(-float(n) / max(0.35 * float(self.preferred_sample_rate), 1.0))))
+                except Exception:
+                    pass
                 # stash a short window for the UI scope
                 if n >= 100:
                     self._last_scope_chunk = chunk[::max(1, n // 100)][:100].copy()
@@ -24526,6 +26162,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.spectrum_analyzer.update_spectrum(chunk)
         try:
             self._push_visualizer_seed_hud()
+        except Exception:
+            pass
+        # EQR_Z_READOUT_2026: UI-thread refresh of the master EQR z-value
+        # readout (single-point reality-tensor P·E+D) + peak-hold meter (tied
+        # to the Clip/Gain report).  Offline z value comes from the last
+        # render's _clip_gain_profile; the live peak hold is fed by the audio
+        # callback.
+        try:
+            if hasattr(self, 'lbl_eqr_bands'):
+                z_rel = float(getattr(self, "_eqr_z_rel", 0.0) or 0.0)
+                if z_rel > 1e-9:
+                    self.lbl_eqr_bands.setText(
+                        f"Z {z_rel:+.3f}  (P·E+D)"
+                    )
+            if hasattr(self, 'lbl_peak_hold'):
+                _ph = float(getattr(self, "_live_peak_hold", 0.0) or 0.0)
+                _pk = float(getattr(self, "_live_peak", 0.0) or 0.0)
+                _db = 20.0 * math.log10(max(max(_ph, _pk), 1e-9)) if max(_ph, _pk) > 1e-9 else -120.0
+                self.lbl_peak_hold.setText(f"{_db:.1f} dBFS  (hold {100.0 * _ph:.0f}%)" if _ph > 1e-9 else f"{max(_db, -120.0):.1f} dBFS")
         except Exception:
             pass
 
@@ -24852,6 +26507,754 @@ class MathematiciansGrooveboxApp(QMainWindow):
         h -= h % 2
         return w, h
 
+    def _export_provenance_payload(self):
+        """Self-describing generation manifest embedded in every export (audio
+        WAV chunk / ffmpeg comment / game provenance.json).  Small, plain,
+        standard metadata so reverse-engineering an export back onto the main
+        window is a simple parameter copy — and re-rendering with these values
+        reproduces the exact artifact.  Device-independent (no timestamps).
+        """
+        def _num(widget, default=0.0):
+            w = getattr(self, widget, None)
+            if w is not None and hasattr(w, "value"):
+                try:
+                    return float(w.value())
+                except Exception:
+                    return default
+            return default
+
+        def _txt(widget, default=""):
+            w = getattr(self, widget, None)
+            if w is None:
+                return default
+            try:
+                if hasattr(w, "toPlainText"):
+                    return w.toPlainText()
+                return str(w.text() if hasattr(w, "text") else default)
+            except Exception:
+                return default
+
+        def _on(button):
+            b = getattr(self, button, None)
+            if b is None:
+                return 0.0
+            try:
+                return 1.0 if b.isChecked() else 0.0
+            except Exception:
+                return 0.0
+
+        manifest = {
+            "doc": "eqr_export_manifest_v1",
+            "fingerprint": None,
+            "seed": _txt("input_seed_val", ""),
+            "bpm": _num("spin_bpm", 120.0),
+            "seq_length": _num("spin_seq_length", 16.0),
+            "base_frequency": _num("spin_base_frequency", 432.0),
+            "global_convolve": _num("spin_global_convolve", 0.0),
+            "clip_ratio_pct": _num("spin_clip_ratio", 50.0),
+            "import_speed": _num("spin_import_speed", 1.0),
+            "speed_scrub": 1.0 if (getattr(self, "chk_speed_scrub", None) and self.chk_speed_scrub.isChecked()) else 0.0,
+            "speed_scrub_depth": _num("spin_speed_scrub", 0.0),
+            "sparse_mask": 1.0 if (getattr(self, "chk_sparse_mask", None) and self.chk_sparse_mask.isChecked()) else 0.0,
+            "sparse_density": _num("spin_sparse_density", 1.0),
+            # Documented composition inputs that the canonical fingerprint reads:
+            # re-applying these to a fresh window and recomposing deterministically
+            # reproduces the exported artifact's identity.
+            "engine_strength": _num("spin_engine_strength", 0.72),
+            "synth_count": int(round(_num("spin_synth_count", 48.0))),
+            "engines": {
+                "goava": _on("btn_goava"),
+                "randomizer": _on("btn_local_randomize"),
+                "phase_lock": _on("btn_local_phase_lock"),
+                "euclidean": _on("btn_idealize_rhythm"),
+                "seeded": _on("btn_seeded_randomize"),
+            },
+            "master_volume": _num("slider_master_vol", 100.0),
+            "dj": {
+                "boost": _num("slider_pkp_boost", 0.0),
+                "boost_pitch": _num("slider_pkp_boost_pitch", 0.0),
+                "boost_steps": _num("slider_pkp_boost_steps", 1.0),
+                "boost_offset": _num("slider_pkp_boost_offset", 0.5),
+                "decay": _num("slider_pkp_decay", 0.0),
+            },
+            "fx": {
+                "eqr": _num("slider_eqr", 0.0),
+                "fractalizer": _num("slider_fractalizer", 0.0),
+            },
+        }
+        # GAME_AUDIO_CONTRACT_2026: the numeric triad (audio/visual/game
+        # quantities) is the single cross-verification key between an audio/video
+        # export and the exported game package.  It is a closed-form function of
+        # the composition seed alone, so both artifacts derive the same value and
+        # _triad_digest() can prove they came from one project.
+        try:
+            _gm = self._composition_meta_for_game()
+            _gt = _vge.game_triad(_gm.get("seed"))
+            if isinstance(_gt, dict):
+                manifest["game_triad"] = _gt
+        except Exception:
+            pass
+        try:
+            manifest["fingerprint"] = self._canonical_fingerprint()
+        except Exception:
+            manifest["fingerprint"] = None
+        return json.dumps(manifest, sort_keys=True, separators=(",", ":"))
+
+    def _apply_provenance_payload(self, payload):
+        """Restore the main-window inputs documented in an export manifest."""
+        if not isinstance(payload, dict) or payload.get("doc") != "eqr_export_manifest_v1":
+            return False
+        setmap = {
+            "bpm": ("spin_bpm", float),
+            "seq_length": ("spin_seq_length", float),
+            "base_frequency": ("spin_base_frequency", float),
+            "global_convolve": ("spin_global_convolve", float),
+            "clip_ratio_pct": ("spin_clip_ratio", float),
+            "import_speed": ("spin_import_speed", float),
+            "speed_scrub": ("chk_speed_scrub", bool),
+            "speed_scrub_depth": ("spin_speed_scrub", float),
+            "sparse_mask": ("chk_sparse_mask", bool),
+            "sparse_density": ("spin_sparse_density", float),
+            "master_volume": ("slider_master_vol", float),
+            "engine_strength": ("spin_engine_strength", float),
+            "synth_count": ("spin_synth_count", int),
+        }
+        for manifest_key, (attr, cast) in setmap.items():
+            if manifest_key not in payload:
+                continue
+            w = getattr(self, attr, None)
+            if w is None:
+                continue
+            try:
+                w.blockSignals(True)
+                if cast is bool and hasattr(w, "setChecked"):
+                    w.setChecked(bool(payload[manifest_key]))
+                elif hasattr(w, "setValue"):
+                    w.setValue(cast(payload[manifest_key]))
+            except Exception:
+                try:
+                    w.setValue(0)
+                except Exception:
+                    pass
+            finally:
+                try:
+                    w.blockSignals(False)
+                except Exception:
+                    pass
+        dj = payload.get("dj") if isinstance(payload.get("dj"), dict) else {}
+        fx = payload.get("fx") if isinstance(payload.get("fx"), dict) else {}
+        fills = list(dj.items()) + list(fx.items())
+        for key, val in fills:
+            w = getattr(self, key, None)
+            if w is None or not hasattr(w, "setValue"):
+                continue
+            try:
+                w.blockSignals(True)
+                w.setValue(float(val))
+                w.blockSignals(False)
+            except Exception:
+                pass
+        seed = str(payload.get("seed") or "")
+        if hasattr(self, "input_seed_val") and self.input_seed_val is not None:
+            try:
+                self.input_seed_val.blockSignals(True)
+                if hasattr(self.input_seed_val, "setPlainText"):
+                    self.input_seed_val.setPlainText(seed)
+                elif hasattr(self.input_seed_val, "setText"):
+                    self.input_seed_val.setText(seed)
+                self.input_seed_val.blockSignals(False)
+            except Exception:
+                pass
+        try:
+            self._on_live_source_changed()
+        except Exception:
+            pass
+        # Engine toggles are restored UNBLOCKED so activation regenerates the
+        # composition from the documented inputs (seed/bpm/base + engine mask).
+        engines = payload.get("engines") if isinstance(payload.get("engines"), dict) else {}
+        for eng_name, attr in (
+            ("goava", "btn_goava"), ("randomizer", "btn_local_randomize"),
+            ("phase_lock", "btn_local_phase_lock"), ("euclidean", "btn_idealize_rhythm"),
+            ("seeded", "btn_seeded_randomize"),
+        ):
+            if eng_name not in engines:
+                continue
+            b = getattr(self, attr, None)
+            if b is None:
+                continue
+            try:
+                b.setChecked(bool(engines[eng_name]))
+            except Exception:
+                pass
+        # Let engine-triggered (possibly deferred) scope work complete, then
+        # re-assert the documented instrument count/strength LAST so a faithful
+        # rebuild reproduces the exported artifact's composition identity.
+        from PyQt6.QtWidgets import QApplication as _SQ
+        for _ in range(5):
+            _SQ.processEvents()
+        for mkey, attr in (("synth_count", "spin_synth_count"), ("engine_strength", "spin_engine_strength")):
+            if mkey not in payload:
+                continue
+            w = getattr(self, attr, None)
+            if w is None or not hasattr(w, "setValue"):
+                continue
+            try:
+                # spin_synth_count is an int QSpinBox (PyQt6 rejects float).
+                _val = int(round(float(payload[mkey]))) if mkey == "synth_count" else float(payload[mkey])
+                w.setValue(_val)
+            except Exception:
+                pass
+        return True
+
+    def _recompose_project(self, pump=3):
+        """Regenerate the composition deterministically from the documented
+        inputs (seed / BPM / base frequency / engine mask), stop the live
+        engines' timers, and commit perfect unison so the canonical fingerprint
+        reflects the final committed state — not intermediate rebuild frames."""
+        from PyQt6.QtWidgets import QApplication as _QA
+        for t in (getattr(self, "_live_euclid_timer", None), getattr(self, "_live_seeded_timer", None)):
+            if t is not None:
+                try:
+                    t.stop()
+                except Exception:
+                    pass
+        for _ in range(pump):
+            _QA.processEvents()
+        try:
+            self._ensure_perfect_unison()
+        except Exception:
+            pass
+        for _ in range(2):
+            _QA.processEvents()
+
+    def _triad_digest(self, triad_obj):
+        """Stable short digest of a numeric game triad (audio/visual/game)."""
+        try:
+            if not isinstance(triad_obj, dict):
+                return ""
+            compact = {}
+            for p in ("audio", "visual", "game"):
+                if isinstance(triad_obj.get(p), dict):
+                    compact[p] = {
+                        str(k): round(float(v), 6)
+                        for k, v in triad_obj[p].items() if isinstance(v, (int, float))
+                    }
+            return hashlib.sha256(json.dumps(compact, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:12]
+        except Exception:
+            return ""
+
+    def _triad_matches(self, manifest_triad, zip_triad):
+        """GAME_AUDIO_CONTRACT_2026: field-wise cross-verification between the
+        audio manifest's game_triad and the game package's triad.json.  All
+        audio/visual quantities and all game quantities except sigil_count must
+        agree to float64 precision; sigil_count is classification-tracked (the
+        package legitimately pins its own), so it is reported separately."""
+        try:
+            if not (isinstance(manifest_triad, dict) and isinstance(zip_triad, dict)):
+                return None, ""
+            note = []
+            for p in ("audio", "visual"):
+                a = manifest_triad.get(p) or {}
+                b = zip_triad.get(p) or {}
+                for k in set(a) | set(b):
+                    if abs(float(a.get(k, 0.0)) - float(b.get(k, 0.0))) > 1e-6:
+                        return False, f"{p}.{k} differs"
+            a = manifest_triad.get("game") or {}
+            b = zip_triad.get("game") or {}
+            for k in set(a) | set(b):
+                if k == "sigil_count":
+                    if int(a.get(k, 0) or 0) != int(b.get(k, 0) or 0):
+                        note.append(f"sigil_count {a.get(k)} vs {b.get(k)}")
+                    continue
+                if abs(float(a.get(k, 0.0)) - float(b.get(k, 0.0))) > 1e-6:
+                    return False, f"game.{k} differs"
+            return True, (" · " + "; ".join(note)) if note else ""
+        except Exception:
+            return None, ""
+
+    def _extract_provenance_from_file(self, file_path):
+        """Read the export manifest back out of a WAV / media file / game zip."""
+        low = str(file_path).lower()
+        if low.endswith((".wav", ".aiff", ".aif")):
+            payload = _extract_wav_provenance(file_path)
+            if payload:
+                return payload
+        low = str(file_path).lower()
+        if low.endswith(".zip"):
+            try:
+                import zipfile as _zf
+                with _zf.ZipFile(file_path) as zf:
+                    names = set(zf.namelist())
+                    for cand in ("provenance.json", "main_window_settings.json", "multimodal_contract.json"):
+                        if cand in names:
+                            try:
+                                payload = json.loads(zf.read(cand).decode("utf-8"))
+                                # Legacy packages double-encode the manifest via
+                                # json.dumps when embedding the provenance string;
+                                # unwrap a single layer so payload is always a dict.
+                                if isinstance(payload, str):
+                                    payload = json.loads(payload)
+                                # GAME_AUDIO_CONTRACT_2026: when this is a game zip,
+                                # also surface the package's own triad.json so the
+                                # reconvert step can cross-verify the audio export's
+                                # manifest against the game's numeric contract key.
+                                for triad_cand in ("assets/triad.json", "triad.json"):
+                                    if triad_cand in names:
+                                        try:
+                                            payload["_zip_triad"] = json.loads(zf.read(triad_cand).decode("utf-8"))
+                                        except Exception:
+                                            pass
+                                        break
+                                return payload
+                            except Exception:
+                                continue
+            except Exception:
+                pass
+        ffprobe = shutil.which("ffprobe")
+        if ffprobe:
+            try:
+                proc = subprocess.run(
+                    [ffprobe, "-v", "error", "-show_entries", "format_tags=comment", "-of", "json", file_path],
+                    capture_output=True, text=True, timeout=60,
+                )
+                tags = json.loads(proc.stdout or "{}").get("format", {}).get("tags", {})
+                comment = tags.get("comment") or tags.get("COMMENT") or ""
+                if comment:
+                    return json.loads(comment)
+            except Exception:
+                pass
+        return None
+
+    def reconvert_export_dialog(self):
+        """REVERSE-ENGINEERING: rebuild the main window from an exported
+        artifact.  Reads the plain provenance manifest the export carried
+        (WAV 'eqrf' chunk / ffmpeg 'comment' tag / game provenance.json) and
+        re-applies every documented input so a re-render reproduces the same
+        artifact; the restored canonical fingerprint is shown for comparison.
+        """
+        filter_all = "Exports (*.wav *.flac *.mp3 *.ogg *.opus *.caf *.aiff *.mp4 *.webm *.avi *.zip);;All files (*)"
+        file_path, _ = QFileDialog.getOpenFileName(self, "Reconvert Export → Main Window", "", filter_all)
+        if not file_path:
+            return
+        payload = self._extract_provenance_from_file(file_path)
+        if not payload:
+            QMessageBox.warning(
+                self, "Reconvert Export",
+                "No EQR export manifest found in this file.\n"
+                "Only artifacts written by this app carry the document; a plain "
+                "file cannot be reverse-engineered back to the original window."
+            )
+            return
+        restored_ok = self._apply_provenance_payload(payload)
+        if restored_ok and payload.get("engines"):
+            try:
+                self._recompose_project()
+            except Exception:
+                pass
+        try:
+            self._refresh_canonical_fingerprint()
+        except Exception:
+            pass
+        fp = payload.get("fingerprint")
+        cur = ""
+        try:
+            cur = self._canonical_fingerprint()
+        except Exception:
+            cur = ""
+        # GAME_AUDIO_CONTRACT_2026: if the artifact is a game zip, cross-verify
+        # the embedded triad.json against the audio manifest's game_triad key —
+        # both must be the same closed-form f(seed), proving the audio and game
+        # came from one project.
+        triad_note = ""
+        try:
+            _gt = payload.get("game_triad")
+            _zt = payload.get("_zip_triad")
+            if isinstance(_gt, dict) and isinstance(_zt, dict):
+                _ok, _why = self._triad_matches(_gt, _zt)
+                if _ok is True:
+                    triad_note = " · 🎮⇄♫ game triad matches" + _why
+                elif _ok is False:
+                    triad_note = f" · game triad ≠ manifest ({_why})"
+        except Exception:
+            triad_note = ""
+        if restored_ok:
+            match = "✓ fingerprint matches" if (fp and cur and fp == cur) else ("≠ fingerprint differs" if fp else "")
+            self.scope_status_label.setText(
+                f"♻ Reconverted export → main window restored{(' · ' + match) if match else ''}{triad_note}"
+            )
+            if fp and cur:
+                QMessageBox.information(
+                    self, "Reconvert Export",
+                    f"Main window restored from:\n{os.path.basename(file_path)}\n\n"
+                    f"export fingerprint: {fp}\ncurrent fingerprint:  {cur}\n\n{match}{triad_note}"
+                )
+            else:
+                QMessageBox.information(self, "Reconvert Export", "Main window restored from export manifest." + triad_note)
+        else:
+            QMessageBox.warning(self, "Reconvert Export", "Manifest recognized but could not be restored.")
+
+    def _recover_program_bundle(self, zip_path):
+        """REVERSE-ENGINEERING: a .zip export written by this app is fully
+        self-describing.  Read the package back into its recoverable parts — the
+        emitted program source, its identity, the audio<->game triad contract,
+        the software-lattice proof, and the provenance manifest that rebuilds
+        the original main window.  Returns a bundle dict for display/saving.
+        """
+        import zipfile as _zf
+        import hashlib as _hl
+        bundle = {
+            "zip": str(zip_path),
+            "files": [], "program": None, "identity": None, "triad": None,
+            "payload": None, "lattice": None,
+            "restored": False, "fp_match": None, "triad_ok": None, "triad_note": "",
+        }
+        try:
+            with _zf.ZipFile(zip_path) as zf:
+                names = zf.namelist()
+                script_name = ""
+                script_size = 0
+                for n in names:
+                    low = n.lower()
+                    if not any(low.endswith(e) for e in (".py", ".json", ".md", ".sh", ".bat", ".command", ".txt")):
+                        continue
+                    try:
+                        data = zf.read(n)
+                    except Exception:
+                        continue
+                    bundle["files"].append({
+                        "name": n, "size": len(data),
+                        "sha256": _hl.sha256(data).hexdigest()[ :16],
+                    })
+                    if low.endswith(".py"):
+                        if len(data) > script_size:
+                            script_size = len(data)
+                            script_name = n
+                            bundle["program"] = {
+                                "name": n, "size": len(data),
+                                "sha256": _hl.sha256(data).hexdigest(),
+                                "head": data[:6000].decode("utf-8", "replace"),
+                            }
+                for n in names:
+                    low = n.lower()
+                    if not low.endswith(".json"):
+                        continue
+                    try:
+                        obj = json.loads(zf.read(n).decode("utf-8"))
+                    except Exception:
+                        continue
+                    if isinstance(obj, str):
+                        try:
+                            obj = json.loads(obj)
+                        except Exception:
+                            continue
+                    if not isinstance(obj, dict):
+                        continue
+                    base = os.path.basename(n).lower()
+                    if "provenance" in base or "manifest" in base or "main_window_settings" in base:
+                        if bundle["payload"] is None:
+                            bundle["payload"] = obj
+                    elif "triad" in base:
+                        if bundle["triad"] is None:
+                            bundle["triad"] = obj
+                    elif base.startswith("game_") or "identity" in base:
+                        if bundle["identity"] is None and isinstance(obj, dict) and "title" in obj:
+                            bundle["identity"] = obj
+                    elif "lattice" in base:
+                        bundle["lattice"] = obj
+            # The .py script name is discovered above; also accept the classic
+            # launcher set as proof of a fully self-contained package.
+            if script_name and bundle["program"]:
+                bundle["program"]["name"] = script_name
+        except Exception:
+            return bundle
+        payload = bundle["payload"]
+        if payload:
+            try:
+                bundle["restored"] = bool(self._apply_provenance_payload(payload))
+            except Exception:
+                bundle["restored"] = False
+            if bundle["restored"] and payload.get("engines"):
+                try:
+                    self._recompose_project()
+                except Exception:
+                    pass
+            try:
+                self._refresh_canonical_fingerprint()
+            except Exception:
+                pass
+            try:
+                cur = self._canonical_fingerprint()
+                bundle["fp_match"] = bool(payload.get("fingerprint")) and payload["fingerprint"] == cur
+            except Exception:
+                bundle["fp_match"] = None
+            if bundle["triad"]:
+                try:
+                    _ok2, _why2 = self._triad_matches(payload.get("game_triad"), bundle["triad"])
+                    bundle["triad_ok"], bundle["triad_note"] = _ok2, _why2
+                except Exception:
+                    pass
+        return bundle
+
+    def _on_reverse_engineer_zip(self):
+        """Import a game/software .zip export and recover the program it holds:
+        the emitted source, its identity, the triad contract and the manifest,
+        all demonstrated (fingerprint + triad cross-check) and optionally saved
+        to a folder.  REVERSE_ENGINEERING: the export is the inverse of export.
+        """
+        filter_all = "Exports / Packages (*.zip);;All files (*)"
+        path, _ = QFileDialog.getOpenFileName(self, "Reverse-Engineer Program from .zip", "", filter_all)
+        if not path:
+            return
+        bundle = self._recover_program_bundle(path)
+        if not bundle.get("program") and not bundle.get("payload") and not bundle.get("lattice"):
+            QMessageBox.warning(
+                self, "Reverse-Engineer Program",
+                "This .zip holds no recoverable program source or manifest.\n"
+                "Only packages exported by this app are self-describing inverses."
+            )
+            return
+        prog = bundle.get("program")
+        payload = bundle.get("payload")
+        lines = []
+        lines.append(f"$ reverse-engineer {os.path.basename(path)}")
+        lines.append(f"  recovered files ............ {len(bundle.get('files', []))}")
+        if prog:
+            lines.append(f"  program .................... {prog['name']}")
+            lines.append(f"  program sha256 ............. {prog['sha256'][:32]}…")
+            lines.append(f"  program size ............... {prog['size']} bytes")
+        if bundle.get("identity"):
+            _id = bundle["identity"]
+            lines.append(f"  identity ................... {_id.get('title', '?')} "
+                         f"[{_id.get('genre', '?')} / {_id.get('camera', '?')} / {_id.get('objective', '?')}]")
+        if payload:
+            lines.append(f"  origin seed ................ {payload.get('seed')}")
+            lines.append(f"  manifest fingerprint ....... {payload.get('fingerprint')}")
+            lines.append(f"  main window restored ....... {'yes' if bundle.get('restored') else 'no'}")
+            if bundle.get("fp_match") is True:
+                lines.append("  fingerprint proof .......... ✓ reconstructs the exact original window")
+            elif bundle.get("fp_match") is False:
+                lines.append("  fingerprint proof .......... ≠ (window differs from manifest)")
+        if bundle.get("triad"):
+            t_ok = bundle.get("triad_ok")
+            if t_ok is True:
+                lines.append("  triad proof ................ ✓ audio<->game key matches the package" + (bundle.get("triad_note") or ""))
+            elif t_ok is False:
+                lines.append("  triad proof ................ ✗ differs from game_triad (%s)" % bundle.get("triad_note"))
+        if bundle.get("lattice"):
+            _lp = bundle["lattice"]
+            if isinstance(_lp, dict):
+                _keys = list(_lp.keys())
+                lines.append(f"  lattice proof .............. {_keys[:6]}")
+            else:
+                lines.append(f"  lattice proof .............. {len(_lp)} entries")
+        detail = "\n".join(lines)
+        dlg = QDialog(self)
+        dlg.setWindowTitle("🔓 Reverse-Engineered Program from .zip")
+        dlg.resize(760, 560)
+        dlg.setStyleSheet(DAW_STYLE if "DAW_STYLE" in dir() else "")
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel(
+            "<b>Reverse-engineered program</b> — the .zip export is the inverse of export: "
+            "the program source, its identity, the triad contract and the provenance "
+            "manifest are all recoverable, and re-applying the manifest reproduces the "
+            "original main window."
+        ))
+        txt = QTextEdit()
+        txt.setReadOnly(True)
+        txt.setFont(QFont("Menlo", 10))
+        body = detail + "\n\n" + ("— recovered program source —\n" + prog["head"] if prog else "")
+        if not prog:
+            body += "\n\n(no .py source embedded — manifest-only package)"
+        txt.setPlainText(body)
+        lay.addWidget(txt, 1)
+        row = QHBoxLayout()
+        save_btn = QPushButton("Save recovered program…")
+        close_btn = QPushButton("Close")
+        row.addWidget(save_btn)
+        row.addStretch(1)
+        row.addWidget(close_btn)
+        lay.addLayout(row)
+        close_btn.clicked.connect(dlg.accept)
+
+        def _save():
+            out_dir = QFileDialog.getExistingDirectory(
+                self, "Save recovered program bundle to", os.path.expanduser("~")
+            )
+            if not out_dir:
+                return
+            saved = []
+            try:
+                if prog:
+                    with open(os.path.join(out_dir, prog["name"]), "w", encoding="utf-8") as f:
+                        f.write(prog["head"])
+                        saved.append(prog["name"])
+                for name_key, obj, label in (
+                    ("identity", bundle.get("identity"), "identity_recovered.json"),
+                    ("triad", bundle.get("triad"), "triad_recovered.json"),
+                    ("payload", bundle.get("payload"), "provenance_recovered.json"),
+                ):
+                    if isinstance(obj, dict):
+                        with open(os.path.join(out_dir, label), "w", encoding="utf-8") as f:
+                            json.dump(obj, f, indent=2, sort_keys=True)
+                        saved.append(label)
+                with open(os.path.join(out_dir, "recovered_README.md"), "w", encoding="utf-8") as f:
+                    f.write("# Reverse-engineered from .zip\n\nSource: %s\n\n```\n%s\n```\n"
+                            % (os.path.basename(path), detail))
+                saved.append("recovered_README.md")
+            except Exception as _ee:
+                QMessageBox.warning(self, "Save recovered program", f"Could not save: {_ee}")
+                return
+            QMessageBox.information(
+                self, "Save recovered program",
+                "Recovered bundle written to:\n" + out_dir + "\n\n" + "\n".join("• " + s for s in saved)
+            )
+
+        save_btn.clicked.connect(_save)
+        dlg.exec()
+        self.scope_status_label.setText(
+            f"🔓 Reverse-engineered program from {os.path.basename(path)} "
+            f"({len(bundle.get('files', []))} files)"
+        )
+
+    def _bake_compare_render(self, payload):
+        """Render the current window as one full canonical master (int16 pcm +
+        sample rate + provenance).  Optionally applies a target manifest first
+        (blocked, then restored) so A/B renders isolate the documented inputs."""
+        pcm = None
+        sr = 48000
+        try:
+            self.stop_playback()
+        except Exception:
+            pass
+        try:
+            master, sr = self._render_mixdown_buffer()
+        except Exception as _rexc:
+            print(f"[BakeCompare] render failed: {_rexc}")
+            return None, sr
+        try:
+            master = self._bake_dj_write(master, sr)
+        except Exception:
+            pass
+        try:
+            pcm = (np.clip(master, -1.0, 1.0) * 32767.0).astype(np.int16)
+        except Exception:
+            pcm = None
+        return pcm, sr
+
+    def bake_compare_export_dialog(self):
+        """BAKE_AND_COMPARE_2026: bake the current main window and an exported
+        artifact side by side and diff the actual sample streams.
+
+        A = current window rendered to canonical pcm (as export would write).
+        B = the SAME render after applying the artifact's provenance manifest
+            (blocked, then everything restored to A's values).
+        Reports duration, peak, RMS and per-sample difference so "reconverting"
+        is verified in the sample domain, not just the fingerprint domain.
+        """
+        filter_all = "Exports (*.wav *.flac *.mp3 *.ogg *.opus *.caf *.aiff *.mp4 *.webm *.avi *.zip);;All files (*)"
+        file_path, _ = QFileDialog.getOpenFileName(self, "Bake & Compare Export", "", filter_all)
+        if not file_path:
+            return
+        target = self._extract_provenance_from_file(file_path)
+        if not target:
+            QMessageBox.warning(
+                self, "Bake & Compare",
+                "No EQR export manifest found in this file — cannot bake a "
+                "comparable render from it."
+            )
+            return
+        try:
+            self.stop_playback()
+        except Exception:
+            pass
+        if hasattr(self, 'scope_status_label'):
+            self.scope_status_label.setText("⚖ Bake & Compare: rendering current main window (A)…")
+        QApplication.processEvents()
+        cur_manifest = self._export_provenance_payload()
+        try:
+            cur_payload = json.loads(cur_manifest)
+        except Exception:
+            cur_payload = None
+        A, sr = self._bake_compare_render(None)
+        if A is None or len(A) == 0:
+            QMessageBox.warning(self, "Bake & Compare", "Current render produced no audio.")
+            return
+        # Apply the artifact's documented inputs (blocked), render B, restore.
+        try:
+            self._apply_provenance_payload(target)
+        except Exception:
+            pass
+        try:
+            self._refresh_canonical_fingerprint()
+        except Exception:
+            pass
+        if hasattr(self, 'scope_status_label'):
+            self.scope_status_label.setText("⚖ Bake & Compare: rendering artifact manifest (B)…")
+        QApplication.processEvents()
+        B, _sr2 = self._bake_compare_render(None)
+        try:
+            if cur_payload:
+                self._apply_provenance_payload(cur_payload)
+        except Exception:
+            pass
+        try:
+            self._refresh_canonical_fingerprint()
+        except Exception:
+            pass
+        if hasattr(self, 'scope_status_label'):
+            self.scope_status_label.setText("⚖ Bake & Compare complete — window restored.")
+        if B is None or len(B) == 0:
+            QMessageBox.warning(self, "Bake & Compare", "Artifact render produced no audio.")
+            return
+        n = min(len(A), len(B))
+        if n == 0:
+            QMessageBox.warning(self, "Bake & Compare", "Renders are empty.")
+            return
+        len_match = len(A) == len(B)
+        segA = A[:n].astype(np.float64) / 32767.0
+        segB = B[:n].astype(np.float64) / 32767.0
+        diff = segA - segB
+        rms_a = float(np.sqrt(np.mean(segA * segA))) if n else 0.0
+        rms_b = float(np.sqrt(np.mean(segB * segB))) if n else 0.0
+        max_abs = float(np.max(np.abs(diff))) if n else 0.0
+        denom = float(np.sqrt(np.mean(segA * segA)) + np.sqrt(np.mean(segB * segB))) + 1e-9
+        rms_ratio = float(np.sqrt(np.mean(diff * diff)) / denom)
+        identical = bool(np.array_equal(A[:n], B[:n])) and len_match
+        peak_a = float(np.max(np.abs(segA))) if n else 0.0
+        peak_b = float(np.max(np.abs(segB))) if n else 0.0
+        dur_a = len(A) / max(float(sr), 1.0)
+        dur_b = len(B) / max(float(_sr2 or sr), 1.0)
+        fp_cur = ""
+        fp_tgt = str(target.get("fingerprint") or "")
+        try:
+            fp_cur = self._canonical_fingerprint()
+        except Exception:
+            fp_cur = ""
+        report = (
+            f"Current main window (A)\n"
+            f"  duration {dur_a:.2f}s · peak {20.0 * math.log10(max(peak_a, 1e-9)):+.1f} dBFS\n"
+            f"  fingerprint {fp_cur or '—'}\n\n"
+            f"Artifact manifest (B) from {os.path.basename(file_path)}\n"
+            f"  duration {dur_b:.2f}s · peak {20.0 * math.log10(max(peak_b, 1e-9)):+.1f} dBFS\n"
+            f"  fingerprint {fp_tgt or '—'}\n\n"
+            f"Diff (first {n} samples)\n"
+            f"  identical: {'yes — bit-for-bit' if identical else 'no'}\n"
+            f"  rms ratio: {rms_ratio:.6f} (0 = identical, 1 = unrelated)\n"
+            f"  max abs diff: {max_abs:.6f}\n"
+            f"  length match: {'yes' if len_match else f'no ({len(A)} vs {len(B)})'}\n"
+            f"  rms A {rms_a:.4f} · rms B {rms_b:.4f}\n\n"
+            f"Fingerprints {'match' if (fp_cur and fp_tgt and fp_cur == fp_tgt) else 'differ'}: "
+            f"{fp_cur or '—'} vs {fp_tgt or '—'}"
+        )
+        self.scope_status_label.setText(
+            f"⚖ Bake & Compare: {('identical' if identical else f'rms {rms_ratio:.4f}')} — restored."
+        )
+        box = QMessageBox(self)
+        box.setWindowTitle("Bake & Compare — report")
+        box.setText(report)
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box.exec()
+
     def export_mixdown_dialog(self, audio_format="wav"):
         """Export the same canonical master mix in WAV/FLAC/OGG/AIFF/MP3/OPUS/CAF.
 
@@ -24882,22 +27285,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
             master, sample_rate = self._render_mixdown_buffer()
             master = self._bake_dj_write(master, sample_rate)
             pcm = (np.clip(master, -1.0, 1.0) * 32767.0).astype(np.int16)
+            provenance = self._export_provenance_payload()
             if audio_format == "wav":
-                if wavfile is not None:
-                    wavfile.write(file_path, sample_rate, pcm)
-                else:
-                    with wave.open(file_path, 'w') as wf:
-                        wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sample_rate); wf.writeframes(pcm.tobytes())
+                _write_wav_with_provenance(file_path, sample_rate, pcm, provenance.encode("utf-8"))
             else:
                 ffmpeg = self._resolve_ffmpeg_binary()
                 if not ffmpeg:
                     raise RuntimeError(f"FFmpeg is required for {audio_format.upper()} audio export.")
                 tmp = os.path.join(self._exports_dir(), f".groovebox_audio_tmp_{os.getpid()}_{self.export_counter}.wav")
-                if wavfile is not None:
-                    wavfile.write(tmp, sample_rate, pcm)
-                else:
-                    with wave.open(tmp, 'w') as wf:
-                        wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sample_rate); wf.writeframes(pcm.tobytes())
+                _write_wav_with_provenance(tmp, sample_rate, pcm)
                 codec_args = {
                     "flac": ["-c:a", "flac"],
                     "ogg": ["-c:a", "libvorbis", "-q:a", "6"],
@@ -24907,7 +27303,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     "caf": ["-c:a", "pcm_s16le"],
                 }[audio_format]
                 proc = subprocess.run(
-                    [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", tmp, *codec_args, file_path],
+                    [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", tmp,
+                     *codec_args, "-metadata", f"comment={provenance}", file_path],
                     capture_output=True, text=True, timeout=120,
                 )
                 try:
@@ -25123,7 +27520,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             path = path + ".zip"
         try:
             global _vge
-            out = _vge.package_game_zip(identity, path, meta)
+            _prov = json.loads(self._export_provenance_payload())
+            out = _vge.package_game_zip(identity, path, meta, {"provenance.json": _prov})
             self._last_videogame_path = out
             self._last_videogame_identity = identity.to_dict()
             QMessageBox.information(
@@ -25201,7 +27599,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             global _vge
             try:
                 td = tempfile.mkdtemp(prefix="groovebox_game_")
-                script = _vge.export_game_files(identity, td, meta)
+                script = _vge.export_game_files(identity, td, meta, {"provenance.json": json.loads(self._export_provenance_payload())})
                 self._last_videogame_path = script
                 args = [_sys.executable, script]
                 if host_chk.isChecked() and identity.online:
@@ -25258,6 +27656,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
             master, sr = self._render_mixdown_buffer()
             master = self._bake_dj_write(master, sr)
+            # REVERSE_ENGINEERING: every exported video carries its plain
+            # generation manifest in container metadata (ffmpeg 'comment'),
+            # so re-deriving the original main-window settings is trivial.
+            provenance = self._export_provenance_payload()
             # Meum-friendly frame rate (~24 * MEUM_NORM*PHI cluster stays near 24)
             fps = max(12, int(round(24 * MEUM_NORM / MEUM_NORM)))  # 24
             fps = 24
@@ -25297,6 +27699,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 eng.set_waveform(master[a:b], playhead=ph)
                 # export=True: pure scenograph — no oscilloscope / FFT UI chrome
                 frame = eng.render_frame(w, h, export=True)
+                # Two-way signal-to-output: ingest feeds the exported frame's
+                # digest back into the software side, matching the live path.
+                try:
+                    eng.ingest_video_frame_stats(*eng.frame_stats(frame))
+                except Exception:
+                    pass
                 Image.fromarray(frame, mode="RGB").save(os.path.join(frames_dir, f"frame_{fi:05d}.png"))
                 if fi % 12 == 0 and hasattr(self, 'scope_status_label'):
                     self.scope_status_label.setText(f"🎬 Frames {fi}/{n_frames}…")
@@ -25325,6 +27733,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         "-t", f"{duration_s:.6f}",
                         "-c:v", vcodec, *vargs, *pix,
                         "-c:a", acodec, *aargs,
+                        "-metadata", f"comment={provenance}",
                         "-shortest", out_path,
                     ]
                 elif include_audio:
@@ -25342,6 +27751,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         "-t", f"{duration_s:.6f}",
                         "-c:v", vcodec, *vargs, *pix,
                         "-c:a", acodec, *aargs,
+                        "-metadata", f"comment={provenance}",
                         "-shortest", out_path,
                     ]
                 else:
@@ -25357,6 +27767,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         "-map", "[v]",
                         "-t", f"{duration_s:.6f}",
                         "-c:v", vcodec, *vargs, *pix,
+                        "-metadata", f"comment={provenance}",
                         "-an", out_path,
                     ]
             elif include_audio:
@@ -25367,6 +27778,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     "-t", f"{duration_s:.6f}",
                     "-c:v", vcodec, *vargs, *pix,
                     "-c:a", acodec, *aargs,
+                    "-metadata", f"comment={provenance}",
                     "-shortest", out_path,
                 ]
             else:
@@ -25375,6 +27787,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     "-map", "0:v:0",
                     "-t", f"{duration_s:.6f}",
                     "-c:v", vcodec, *vargs, *pix,
+                    "-metadata", f"comment={provenance}",
                     "-an", out_path,
                 ]
 

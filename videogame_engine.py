@@ -46,9 +46,30 @@ PHI_INV = PHI - 1.0
 
 # Cyclic group coordinates — order of each factor group
 GENRES = (
-    "arcade", "fps", "rpg", "sandbox", "survival", "arena",
-    "dating_sim", "platformer", "strategy", "racing", "puzzle", "adventure",
+    "open_world", "fps", "rpg", "sandbox", "survival", "arena",
+    "storytelling", "gta_like", "platformer", "strategy", "racing", "puzzle",
+    "adventure", "dating_sim", "metroidvania",
 )
+# Genre → characteristic content-spec hook so each family the player asked for
+# (FPS, RPG, storytelling, GTA-style) is always expressed as an observable hook
+# in the identity, not just a name.  open_world drives the giant common agenda.
+GENRE_HOOKS = {
+    "open_world": "hook_world_free_roam",
+    "fps": "hook_aim_sight_click",
+    "rpg": "hook_quest_chains",
+    "sandbox": "hook_world_free_roam",
+    "storytelling": "hook_story_arc_log",
+    "gta_like": "hook_world_vehicles_free_roam",
+    "metroidvania": "hook_power_gates_backtrack",
+    "survival": "hook_craft_resources",
+    "strategy": "hook_orders_queue",
+    "racing": "hook_time_trial",
+    "arena": "hook_encounter_wave",
+    "platformer": "hook_platform_physics",
+    "puzzle": "hook_sigil_logic",
+    "adventure": "hook_dungeon_rumble",
+    "dating_sim": "hook_affinity_dialogue",
+}
 CAMERAS = ("first_person", "second_person", "third_person", "top_down", "isometric")
 TOPOLOGIES = ("linear", "open_world", "hub_spoke", "arena_loop", "roguelike_deck")
 SOCIAL = ("singleplayer", "local_coop", "online_multiplayer", "asynchronous")
@@ -209,6 +230,56 @@ def _mix(seed: int, label: str) -> int:
     return int.from_bytes(d[:8], "big")
 
 
+# ---------------------------------------------------------------------------
+# OPERATOR THEORY (book p.49-50) — the large Groovebox toggle drives this flag.
+# OFF by default: every residue/angle below is byte-identical to before.  ON:
+# the numeric transforms of the game lattice re-encode through the book's
+# alternative arithmetic (add band-hop, negative-composing products, divisor
+# refinement, same-hand powers), keeping the whole world deterministic per
+# toggle state.
+# ---------------------------------------------------------------------------
+OP_THEORY_ENABLED = False
+
+
+def set_operator_theory(enabled):
+    global OP_THEORY_ENABLED
+    OP_THEORY_ENABLED = bool(enabled)
+
+
+def operator_theory_enabled():
+    return OP_THEORY_ENABLED
+
+
+def ot_band(x):
+    ax = abs(float(x))
+    if ax <= 1.0:
+        return 1.0
+    if ax <= 2.0:
+        return 2.0
+    if ax <= 3.0:
+        return 3.0
+    return 1.0
+
+
+def ot_game_residue(r):
+    """Enclosing-integer add band-hop of a residue (rules e, b)."""
+    r = float(r)
+    if r == 0.0:
+        return 0.0
+    b = ot_band(r * 2.0)
+    return min(0.9999999, abs((r + b * 0.5 * math.copysign(1.0, r)) % 1.0))
+
+
+def ot_game_angle(ang):
+    """Band-hop then re-divides the circle reading through the Meum residual
+    field (rules e, f) — the lattice stays cyclic and deterministic."""
+    ang = float(ang) % 1.0
+    if ang <= 0.0:
+        return ang
+    banded = ang + ot_band(ang) * 0.05
+    return (banded / (abs(banded) * 0.4 + 1.0)) % 1.0
+
+
 def meum_game_residue(seed: int, label: str) -> float:
     """One deterministic unit in [0,1) from the Meum residue calculus.
 
@@ -220,7 +291,10 @@ def meum_game_residue(seed: int, label: str) -> float:
     """
     blob = f"{seed}|{label}|{MEUM:.12f}".encode("utf-8")
     i = int.from_bytes(hashlib.sha256(blob).digest()[:8], "big")
-    return (i % 10_000_000) / 10_000_000.0
+    r = (i % 10_000_000) / 10_000_000.0
+    if OP_THEORY_ENABLED:
+        r = ot_game_residue(r)
+    return r
 
 
 def residue_to_bipolar(r: float) -> float:
@@ -280,6 +354,7 @@ class GameIdentity:
     material_spec: Dict[str, Any] = field(default_factory=dict)
     sfx_bank: List[str] = field(default_factory=list)
     asset_manifest: Dict[str, Any] = field(default_factory=dict)
+    goava_active: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -430,12 +505,13 @@ def classify_from_composition(
 
     g = GENRES[_mix(s, "genre") % len(GENRES)]
     cam = CAMERAS[_mix(s, "camera") % len(CAMERAS)]
-    # Bias topology toward open-world / hub_spoke on average (~60% combined)
-    # while still allowing every topology for full lattice coverage.
+    # TOPOLOGY_CONTRACT_2026: open world is the primary agenda — give it the
+    # clear majority of seeds while hub_spoke / linear / arena / roguelike stay
+    # reachable so the whole lattice is still covered.
     _topo_r = meum_game_residue(s, "topology_bias")
-    if _topo_r < 0.38:
+    if _topo_r < 0.52:
         top = "open_world"
-    elif _topo_r < 0.60:
+    elif _topo_r < 0.72:
         top = "hub_spoke"
     else:
         top = TOPOLOGIES[_mix(s, "topology") % len(TOPOLOGIES)]
@@ -465,6 +541,9 @@ def classify_from_composition(
         f"hook_cam_{cam}",
         f"hook_top_{top}",
     ]
+    _gh = GENRE_HOOKS.get(g)
+    if _gh:
+        hooks.append(_gh)
     if goava_active:
         hooks.append("hook_goava_sine_portal")
     if live_dj_goava:
@@ -545,6 +624,7 @@ def classify_from_composition(
         material_spec=material_spec,
         sfx_bank=sfx_bank,
         asset_manifest=asset_manifest,
+        goava_active=bool(goava_active),
     )
 
 
@@ -574,11 +654,22 @@ import csv, gzip, hashlib, io, json, math, os, queue, socket, struct, sys, threa
 
 MEUM = __MEUM__
 PHI = __PHI__
+PHI_INV = PHI - 1.0
 MEUM_INV = 1.0 / MEUM
 MEUM_NORM = (MEUM - 1.0) / MEUM
 BPM = __BPM__
 SEQ = __SEQ__
 IDENTITY = json.loads(__IDENTITY_JSON__)
+
+# THREE-PATHWAY_CONTRACT_2026: audio / visual / game are always present at
+# numerically expressible quantities, plus the fixed control contract, the
+# micro lexicon token stream, and the hot-seat invite schedule.
+TRIAD = json.loads(__TRIAD_JSON__)
+CONTROLS = json.loads(__CONTROLS_JSON__)
+LEXICON = json.loads(__LEXICON_JSON__)
+HOTSEAT_INVITES = json.loads(__INVITES_JSON__)
+HOW_TO_PLAY = __HOWTO_TEXT__
+USER_SEED = __SEED__
 
 # ---------------------------------------------------------------------------
 # Optional UI framework (scene viewport + control panel). Only the standard
@@ -990,7 +1081,11 @@ class LiveSFX:
             label = self.bank[idx] if self.bank else f"sfx_{idx}"
         else:
             label = str(name_or_idx)
-            idx = abs(hash(label)) % 16
+            # DETERMINISM_2026: Python's built-in hash() on strings is salted
+            # per-process (PYTHONHASHSEED), so the SFX pick would change from
+            # run to run. Derive the index from the seed lattice instead —
+            # every process (and every exported clone) picks the same blip.
+            idx = int(_residue(self.seed, "sfx_i:" + label) * 16) % 16
         freq = 180.0 + 900.0 * _residue(self.seed, f"sfx_f:{label}")
         amp = 0.35 * float(strength) * (0.6 + 0.4 * _residue(self.seed, f"sfx_a:{label}"))
         dur = int(22050 * (0.06 + 0.14 * _residue(self.seed, f"sfx_d:{label}")))
@@ -1833,6 +1928,32 @@ class Game:
         self.sfx = self.assets.sfx
         self.software_kind = self.id.get("software_kind") or "videogame"
         self.fn = FunctionShell(self.id)  # kind panel; multimodal always on
+        # THREE-PATHWAY_CONTRACT_2026: triad quantities + fixed controls +
+        # micro lexicon + lazy procedural loom + self-gen + hot-seat chess.
+        self.triad = TRIAD
+        self.controls = CONTROLS
+        self.micro = MicroTic(LEXICON)
+        self.loom = Loom(_safe_int_seed(self.id["seed"]) & 0x7FFFFFFF)
+        self.selfgen = SelfGen(_safe_int_seed(self.id["seed"]) & 0x7FFFFFFF)
+        self.invites = []
+        for _e in (HOTSEAT_INVITES or []):
+            e = dict(_e) if isinstance(_e, dict) else {}
+            self.invites.append(e)
+        self.chess = LocalChess(_safe_int_seed(self.id["seed"]) & 0x7FFFFFFF)
+        self.hotseat = {"active": False, "games": 0, "friend_called": 0}
+        self.move = {"dx": 0.0, "dy": 0.0, "dz": 0.0}
+        self.aim_in = {"yaw": 0.0, "pitch": 0.0}
+        self.pitch = 0.0
+        self.zoom = 1.0
+        self.chess_square = None  # hot-seat selected square
+        _cseed = _safe_int_seed(self.id["seed"]) & 0x7FFFFFFF
+        self.slots = SlotReels(_cseed)
+        self.snake = SnakeWorm(_cseed)
+        self.mario = SideMario(_cseed)
+        self.race = RaceTrack(_cseed)
+        self.poker = PokerTable(_cseed)
+        self.active_mini = None
+        self.mini_hint = ""
         self.quests.accept()  # auto-accept first available quest
         self.combo = 0
         self.level = 1
@@ -1927,6 +2048,279 @@ class Game:
     def push_status(self, text):
         self.chat_log.append({"t": round(self.t, 2), "sender": "system", "text": str(text)})
 
+    # --- fixed controls (always: WASD move, mouse aim, click activate) ------
+    @staticmethod
+    def _clamp(v, lo=-1.0, hi=1.0):
+        return max(lo, min(hi, float(v)))
+
+    def perspective_move(self, dx=0.0, dy=0.0, dz=0.0):
+        """WASD + vertical: lateral (dx) steers the orbit; forward/back (dz)
+        moves the perspective depth; dy lifts/drops the view."""
+        self.move["dx"] = self._clamp(self.move["dx"] + float(dx), -1.0, 1.0)
+        self.move["dy"] = self._clamp(self.move["dy"] + float(dy), -1.0, 1.0)
+        self.move["dz"] = self._clamp(self.move["dz"] + float(dz), -1.0, 1.0)
+
+    def aim_at(self, dyaw=0.0, dpitch=0.0):
+        """Mouse aim: contribute to the perspective yaw/pitch this tick."""
+        self.aim_in["yaw"] = self._clamp(self.aim_in["yaw"] + float(dyaw), -0.6, 0.6)
+        self.aim_in["pitch"] = self._clamp(self.aim_in["pitch"] + float(dpitch), -0.6, 0.6)
+
+    def _consume_inputs(self, dt):
+        k = min(1.0, dt * 6.0)
+        if self.hotseat["active"]:
+            self.move = {"dx": 0.0, "dy": 0.0, "dz": 0.0}
+            self.aim_in = {"yaw": 0.0, "pitch": 0.0}
+            return
+        self.steer = self._clamp(self.steer + self.move["dx"] + self.aim_in["yaw"])
+        self.pitch += self.aim_in["pitch"]
+        self.zoom = self._clamp(self.zoom + self.move["dz"] * dt * 0.25, 0.35, 2.5)
+        for key in ("dx", "dy", "dz"):
+            self.move[key] *= max(0.0, 1.0 - k)
+        self.aim_in["yaw"] *= max(0.0, 1.0 - k)
+        self.aim_in["pitch"] *= max(0.0, 1.0 - k)
+        self.pitch *= max(0.0, 1.0 - dt * 2.0)
+
+    def activate(self):
+        """Click : primary — always the activate gesture.  Routes to whatever
+        the nearest deterministic target is at the current perspective."""
+        if self.hotseat["active"]:
+            return "[HOT-SEAT] clicks are chess moves while the board is open."
+        hits = []
+        for _k, (_a, _r) in enumerate(self.sigils.pos):
+            if _k not in self.sigils.collected and self._near(self.angle, _k, _r):
+                self.sigils.collected.add(_k)
+                self.score += MEUM * _r * self.combo * self.difficulty_mult
+                self.sfx.trigger("chime", 1.0)
+                hits.append("sigil")
+                break
+        if not hits:
+            for _k, (_a, _r, _v) in enumerate(self.resources.pos):
+                if _k not in self.resources.taken:
+                    self.resources.taken.add(_k)
+                    self.score += 1.4 * MEUM * _v * self.difficulty_mult
+                    self.sfx.trigger("click", 0.8)
+                    hits.append("resource")
+                    break
+        self.send_chat("system", "activate" + (f": {'+'.join(hits)}" if hits else " (nothing within reach)"))
+        self.micro.drive(self.t)
+        return f"activate {'+'.join(hits) if hits else 'miss'}"
+
+    def _near(self, angle, idx, radius):
+        base_a = self.sigils.pos[idx][0]
+        d = abs((base_a - angle + math.pi) % math.tau - math.pi)
+        return d <= 0.31 * max(0.25, radius)
+
+    def macro(self, idx):
+        """Organized key macros (1-8) — deterministic function per slot."""
+        i = int(idx)
+        name, desc = "", ""
+        for _k, _d in CONTROLS.get("macros", []):
+            if str(_k) == str(i):
+                name, desc = str(_k), str(_d)
+        if i == 1:
+            out = f"MACRO 1 {desc}: steer bias -> {self.steer:.2f}"
+        elif i == 2:
+            out = "MACRO 2 " + desc + " — " + f"coins {self.purse.coins} inv {len(self.items.inventory)} hp {self.hp:.0f}"
+        elif i == 3:
+            q = self.quests.active()
+            out = "MACRO 3 " + desc + " — " + (f"{q['title']} {q['progress']}/{q['target']}" if q else "none")
+        elif i == 4:
+            out = "MACRO 4 " + desc + " — " + json.dumps({p: {k2: round(float(v2), 3) for k2, v2 in self.triad.get(p, {}).items() if isinstance(v2, (int, float))} for p in ("audio", "visual", "game")})
+        elif i == 5:
+            out = "MACRO 5 " + desc + " — " + ", ".join(f"{r['name']}@{r['angle']:.2f}" for r in self.loom.metadata()[:5])
+        elif i == 6:
+            d = self.items.defs[0] if self.items.defs else {}
+            out = "MACRO 6 " + desc + f" — slot0 {d.get('name', '?')} price {self.store.slots[0]['price'] if self.store.slots else 0}"
+        elif i == 7:
+            self.sfx.trigger("chime", 1.0)
+            out = "MACRO 7 " + desc + " — sfx burst"
+        elif i == 8:
+            out = "MACRO 8 " + desc + " — " + self.selfgen.final_note()
+        else:
+            out = f"MACRO {i}: no binding"
+        self.push_status(out)
+        return out
+
+    # --- hot-seat two-player chess + friend invite --------------------------
+    def offer_chess(self):
+        """The 'friend, come over' call: half the function needs a second player."""
+        self.hotseat["friend_called"] += 1
+        text = self.chess.invite_text()
+        self.push_status("[PLAYER-CALL] " + text)
+        return text
+
+    def toggle_chess(self):
+        g = self
+        if not g.hotseat["active"]:
+            g.hotseat["active"] = True
+            g.hotseat["games"] += 1
+            g.offer_chess()
+            g.push_status("/chess open — click a piece then its square.  "
+                          "Hand the controls to your friend after every move.")
+            return g.chess.ascii()
+        g.hotseat["active"] = False
+        g.chess_square = None
+        g.push_status("chess closed — back to the open world.")
+        return "chess closed"
+
+    def chess_click(self, sq):
+        if not self.hotseat["active"]:
+            return None
+        if self.chess.result:
+            self.chess_square = None
+            return self.chess.ascii()
+        r, c = sq
+        if self.chess.from_sq is None:
+            p = self.chess.board[r][c]
+            if p != "." and self.chess._color(p) == self.chess.turn:
+                self.chess.from_sq = (r, c)
+                return self.chess.ascii()
+            self.push_status("pick your own piece.")
+            return None
+        fr = self.chess.from_sq
+        self.chess.from_sq = None
+        if self.chess.apply((fr[0], fr[1], r, c)):
+            self.sfx.trigger("click", 0.9)
+            turn = self.chess.turn
+            who = "Player 1" if turn == "w" else "Player 2"
+            self.push_status(f"[CHESS] {self.chess.ascii().splitlines()[-2 if not self.chess.result else -1]}")
+            if self.chess.result:
+                self.push_status(f"[CHESS] GAME OVER {self.chess.result} — swap roles and rematch (/chess to close)")
+            else:
+                self.push_status(f"[CHESS] {who} to move — hand the controls to {who}.")
+            return self.chess.ascii()
+        self.push_status("illegal move.")
+        return None
+
+    def _fire_invites(self):
+        for e in self.invites:
+            if not e.get("fired") and self.t >= float(e.get("t", 1e9)):
+                e["fired"] = True
+                self.push_status(str(e.get("text", "")))
+
+    def play_chess_ascii(self):
+        """Terminal hot-seat chess — two players share ONE screen.  The prompt
+        hands the controls to the friend after each move."""
+        c = self.chess
+        self.hotseat["active"] = True
+        self.hotseat["games"] += 1
+        print(c.invite_text())
+        while c.result is None:
+            print()
+            print(c.ascii())
+            who = "Player 1 (White)" if c.turn == "w" else "Player 2 (Black)"
+            try:
+                mv = input(f">{who} — enter move (e2e4) or 'q': ").strip().lower()
+            except EOFError:
+                break
+            if mv in ("q", "quit", "exit", ""):
+                break
+            parsed = c.parse_uci(mv)
+            if not c.apply(parsed):
+                print("illegal — try again.")
+                continue
+            if c.result:
+                print()
+                print(c.ascii())
+                print(f"RESULT {c.result} — shake hands and rematch (/chess).")
+        self.push_status("chess closed.")
+        return True
+
+    # --- arcade cabinet -----------------------------------------------------
+    def _tick_arcade(self, dt):
+        a = self.active_mini
+        if a is None:
+            return
+        if a == "race":
+            self.race.advance(dt)
+        elif a == "mario":
+            idx = int(self.mario.x // 1.0) + 1
+            ahead = self.mario.level[idx]["gap"] if idx < len(self.mario.level) else False
+            self.mario.advance(dt, jump=ahead)
+            if self.mario.flag:
+                self.active_mini = None
+                self.push_status("MARIO — flag reached. Run it again /mario.")
+        elif a == "snake":
+            self._snake_acc = getattr(self, "_snake_acc", 0.0) + dt
+            rate = 0.14
+            while self._snake_acc >= rate and self.snake.alive:
+                self._snake_acc -= rate
+                self.snake.step()
+            if not self.snake.alive:
+                self.active_mini = None
+                self.push_status("SNAKE — the worm reabsorbed itself. /snake to respawn.")
+
+    def _arcade_cmd(self, line):
+        parts = line.split(None, 1)
+        head = parts[0].lower()
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        if head in ("/arcade", "/mini"):
+            self.push_status("arcade cabinet: /snake  /mario  /race  /slots  /poker")
+            return True
+        if head == "/snake":
+            if not arg:
+                if self.active_mini != "snake":
+                    if not self.snake.alive:
+                        self.snake = SnakeWorm(_safe_int_seed(self.id["seed"]) & 0x7FFFFFFF)
+                    self.active_mini = "snake"
+                    self.push_status("SNAKE — the worm runs itself toward its food; steer with /snake up/down/left/right.")
+                else:
+                    self.active_mini = None
+                    self.push_status("snake closed — /snake to reopen.")
+            else:
+                self.snake.steer(arg)
+                self.push_status(f"snake steer={arg} score={self.snake.score}")
+            return True
+        if head in ("/mario", "/platform"):
+            if not arg:
+                if self.active_mini != "mario":
+                    self.mario = SideMario(_safe_int_seed(self.id["seed"]) & 0x7FFFFFFF)
+                    self.active_mini = "mario"
+                    self.push_status("MARIO — auto-runs the seeded course; /mario jump for control.")
+                else:
+                    self.active_mini = None
+                    self.push_status("mario closed — /mario to reopen.")
+            elif arg in ("jump", "j"):
+                if self.mario.on_ground:
+                    self.mario._jump_hold = int(0.14 / self.mario.MS)
+            return True
+        if head == "/race":
+            if not arg:
+                if self.active_mini != "race":
+                    self.race = RaceTrack(_safe_int_seed(self.id["seed"]) & 0x7FFFFFFF)
+                    self.active_mini = "race"
+                    self.push_status("RACE — time trial, auto-throttle; /race steer <amount> to break.")
+                else:
+                    self.active_mini = None
+                    self.push_status("race closed — /race to reopen.")
+            elif arg.startswith("steer"):
+                try:
+                    s = float(arg.split(None, 1)[1])
+                    self.race.advance(0.0, steer=s)
+                    self.push_status(f"race steer={s:.2f} laps={self.race.laps} t={self.race.time:.2f}")
+                except Exception:
+                    pass
+            return True
+        if head == "/slots":
+            bet = 1
+            try:
+                if arg:
+                    bet = int(arg)
+            except Exception:
+                pass
+            r = self.slots.spin(bet)
+            self.push_status("SLOTS " + "  ".join(" ".join(r["grid"][i * 3:i * 3 + 3]) for i in range(3)) +
+                             f"  bet={bet} payout={r['payout']} coins={r['coins']}")
+            return True
+        if head == "/poker":
+            h = self.poker.play()
+            self.push_status("POKER hot-seat — two players, one screen: " +
+                             f"P1 {h['p1']} ({h['c1']})  vs  P2 {h['p2']} ({h['c2']})  -> {h['winner']}")
+            if h["winner"] in ("Player 1", "Player 2"):
+                self.push_status("FRIEND OVER — the winner's side is complete now; deal again /poker.")
+            return True
+        return False
+
     # --- core loop ----------------------------------------------------------
     def tick(self, dt=1/30):
         sample = self.music.step(dt)
@@ -1936,8 +2330,26 @@ class Game:
         except Exception:
             pass
         self._drain_net()
+        self._consume_inputs(dt)
+        self._fire_invites()
+        self._tick_arcade(dt)
         if self.authoritative:
             self.angle = (self.angle + dt * MEUM * math.tau * (1.0 + 0.35 * self.steer)) % math.tau
+            if not self.hotseat["active"]:
+                # THREE-PATHWAY: procedural-on-demand — rare functions are only
+                # computed/rendered when the perspective arrives (spatial
+                # activation) or via /tp /lore /gen.
+                entered = self.loom.pulse(self.angle, reach=0.30)
+                for _r in entered:
+                    self.sfx.trigger("chime", 0.6)
+                    self.push_status(
+                        f"[LOOM] region '{_r['name']}' materialized on arrival — computed on demand")
+                _micro = self.micro.drive(self.t)
+                if _micro:
+                    try:
+                        self.music.dj = max(0.0, min(1.0, self.music.dj + _micro[0] * 0.05))
+                    except Exception:
+                        pass
             if self._teleport_cd > 0:
                 self._teleport_cd = max(0.0, self._teleport_cd - dt)
             # Objective-weighted scoring: each objective privileges a different
@@ -2351,6 +2763,29 @@ class Game:
             "npcs_met": sum(1 for n in self.npcs.npcs if n.get("met")),
             "software_kind": self.software_kind,
             "fn_status": getattr(self.fn, "status", ""),
+            "triad_paths": sorted((self.triad.get("meta") or {}).get("paths", ["audio", "visual", "game"])),
+            "triad": {p: {k2: round(float(v2), 4) for k2, v2 in (self.triad.get(p) or {}).items() if isinstance(v2, (int, float))} for p in ("audio", "visual", "game")},
+            "controls": self.controls.get("version"),
+            "loom_regions": len(self.loom.regions),
+            "loom_materialized": len(self.loom.materialized),
+            "invites_fired": sum(1 for e in self.invites if e.get("fired")),
+            "friend_called": self.hotseat["friend_called"],
+            "chess_games": self.hotseat["games"],
+            "chess_active": bool(self.hotseat["active"]),
+            "selfgen": self.selfgen.final_note(),
+            "arcade": {
+                "active": self.active_mini,
+                "slots": {"coins": self.slots.coins, "spins": self.slots.spins,
+                          "last_payout": self.slots.payout},
+                "snake": {"score": self.snake.score, "alive": self.snake.alive,
+                          "steps": self.snake.steps},
+                "mario": {"dist": round(self.mario.x, 2), "coins": self.mario.coins,
+                          "alive": self.mario.alive, "flag": bool(self.mario.flag)},
+                "race": {"laps": self.race.laps, "time": self.race.finish_time},
+                "poker": {"games": self.poker.games,
+                          "wins": {w: sum(1 for h in self.poker.hands if h["winner"] == w)
+                                   for w in ("Player 1", "Player 2", "tie")}},
+            },
             "multimodal": {"sound": True, "visual": True, "ui": True},
         }
 
@@ -2431,12 +2866,831 @@ class Game:
                 "layers": len(self.scene.layers),
                 "layers_on": getattr(self.scene, "_on_count", "?"),
             }, indent=2))
+        elif line in ("/help", "/how"):
+            print(HOW_TO_PLAY)
+        elif line in ("/triad",):
+            print(json.dumps(self.triad, indent=2, sort_keys=True))
+        elif line in ("/controls", "/scheme"):
+            print(json.dumps(self.controls, indent=2, sort_keys=True))
+        elif line in ("/chess",):
+            print(self.toggle_chess())
+        elif line in ("/invite", "/friend"):
+            print(self.offer_chess())
+        elif line.startswith("/tp"):
+            parts = line.split(None, 1)
+            key = parts[1].strip() if len(parts) > 1 else ""
+            if key.isdigit():
+                key = int(key)
+            hit = self.loom.grant(key)
+            if hit is None:
+                self.send_chat("system", f"loom region '{key}' unknown — /loom lists them")
+            else:
+                reg = hit[0]
+                self.angle = float(reg["angle"])
+                self.send_chat("system", f"teleport -> region '{reg['name']}' (materialized on demand)")
+                print(json.dumps(hit[1] if hit[1] else {"region": reg["name"]}, indent=2))
+        elif line in ("/loom", "/scan"):
+            near = [r for r in self.loom.metadata()
+                    if abs((float(r["angle"]) - self.angle + math.pi) % math.tau - math.pi) <= 0.9]
+            print("LOOM REGIONS (near perspective first):")
+            for r in (near + [m for m in self.loom.metadata() if m not in near])[:10]:
+                tag = "materialized" if r["materialized"] else "dormant"
+                print(f"  [{r['i']}] {r['name']}  angle={r['angle']:.3f}  tier={r['tier']}  {tag}")
+        elif line.startswith("/lore"):
+            parts = line.split(None, 1)
+            key = parts[1].strip() if len(parts) > 1 else ""
+            if key.isdigit():
+                key = int(key)
+            self.send_chat("system", self.loom.lore(key))
+        elif line.startswith("/gen"):
+            parts = line.split(None, 1)
+            new_seed = parts[1].strip() if len(parts) > 1 else str(self.id.get("seed", 0))
+            gen = self.selfgen.regenerate(new_seed)
+            _ns = int(gen.get("seed", _safe_int_seed(new_seed)))
+            self.triad = _g_triad(_ns)
+            self.loom = Loom(_ns)
+            self.invites = _g_invites(_ns, 180.0)
+            self.push_status("/gen — regenerated from seed " + str(new_seed) +
+                             "; regions=" + ", ".join(gen.get("regions", [])) +
+                             " invites=" + str(gen.get("invites", 0)))
+            print(json.dumps(gen, indent=2, sort_keys=True))
+        elif self._arcade_cmd(line):
+            pass
         else:
             self.send_chat(self.player_name, line)
 
 
 # ---------------------------------------------------------------------------
-# UI control panel — opacity / hue / faces / lines with stroke widths only.
+# THREE-PATHWAY RUNTIME_2026 — micro lexicon, lazy procedural loom, self-gen
+# seed functions, and hot-seat two-player chess.  These are part of EVERY
+# emitted software (audio / visual / game are all present as numeric quantities).
+# ---------------------------------------------------------------------------
+def _g_triad(seed):
+    s = _safe_int_seed(seed) & 0x7FFFFFFF
+    num = lambda lbl, lo=0.0, hi=1.0: lo + (hi - lo) * _residue(s, lbl)
+    return {
+        "meta": {"version": "triad/2026.1", "seed": seed,
+                 "paths": ["audio", "visual", "game"], "nondeterminism": 0.0},
+        "audio": {"music_energy": num("gen/a/e", 0.35, 1.0), "sfx_density": num("gen/a/s"),
+                  "bass_heft": num("gen/a/b", 0.2, 1.0), "brightness": num("gen/a/h"),
+                  "rhythm_drive": num("gen/a/d", 0.25, 1.0), "spatial_width": num("gen/a/w", 0.3, 1.0),
+                  "bed_loud": num("gen/a/l", 0.55, 1.0), "dj_goava": num("gen/a/g", 0.1, 1.0),
+                  "dj_random": num("gen/a/r", 0.1, 1.0)},
+        "visual": {"opacity_floor": num("gen/v/o", 0.55, 1.0), "hue_spread": num("gen/v/h"),
+                   "layer_density": num("gen/v/l", 0.4, 1.0), "glitch": num("gen/v/g"),
+                   "particles": num("gen/v/p"), "depth_parallax": num("gen/v/d", 0.3, 1.0),
+                   "camera_pan": num("gen/v/c", 0.25, 1.0), "neon_glow": num("gen/v/n", 0.2, 1.0)},
+        "game": {"difficulty": num("gen/g/d", 0.5, 2.4), "sigil_count": int(4 + 10 * _residue(s, "gen/g/s")),
+                 "resource_density": num("gen/g/r", 0.25, 1.0), "hazard_pressure": num("gen/g/h", 0.2, 1.0),
+                 "npc_density": num("gen/g/n", 0.2, 1.0), "pve_pressure": num("gen/g/p", 0.2, 1.0),
+                 "shop_volume": num("gen/g/sh", 0.3, 1.0), "invite_frequency": num("gen/g/i", 0.15, 1.0),
+                 "chess_offer": num("gen/g/c"), "selfgen_rate": num("gen/g/g", 0.1, 1.0),
+                 "speed_scale": num("gen/g/sp", 0.6, 1.0)},
+    }
+
+
+def _g_invites(seed, window=180.0):
+    s = _safe_int_seed(seed) & 0x7FFFFFFF
+    out = []
+    for k in range(2 + int(2 * _residue(s, "gen/iv"))):
+        out.append({
+            "k": k,
+            "t": round(window * (0.12 + 0.76 * _residue(s, f"gen/t{k}")), 2),
+            "fired": False,
+            "text": ("[PLAYER-CALL] The signal wants a second mind.  Have a friend "
+                     "come over to this screen — you will share it.  /chess opens "
+                     "hot-seat two-player chess; you each take a side."),
+        })
+    out.sort(key=lambda e: e["t"])
+    return out
+
+
+class MicroTic:
+    """Consumes the LEXICON micro token stream (LLM-like sparse schedule).
+
+    The software does NOT have to make sense: it just advances through micro
+    ops each tick and lets tiny signed quantities bleed into music/layers/fn.
+    """
+    def __init__(self, lexicon=None):
+        lexicon = lexicon or {}
+        self.schedule = list((lexicon.get("schedule") or []) or [])
+        self.ops = list((lexicon.get("ops") or []) or ["seam"])
+        self.n = len(self.schedule)
+        self.i = 0
+        self.last = {"t": 0.0, "op": self.ops[0], "p0": 0.0, "p1": 0.0, "p2": 0.0}
+
+    def token(self, t, rate=2.0):
+        if self.n:
+            self.i = int(t * rate) % self.n
+            tok = self.schedule[self.i]
+            try:
+                self.last = {
+                    "t": float(tok[0]), "op": str(tok[1]),
+                    "p0": float(tok[2]), "p1": float(tok[3]), "p2": float(tok[4]),
+                }
+            except Exception:
+                pass
+        return self.last
+
+    def drive(self, t):
+        tok = self.token(t)
+        return (tok["p0"] - 0.5) * 0.10, (tok["p1"] - 0.5) * 0.10
+
+class Loom:
+    """Procedural-ON-DEMAND: rare functions are only computed/rendered when the
+    player activates them spatially (moving perspective through a region) or by
+    input dynamics (/tp  /lore  /gen).  Never computed at boot; always cached
+    after first materialisation; always deterministic per (seed, region)."""
+    WORDS = ("whorl", "stave", "mote", "vane", "cusp", "fault", "barb",
+             "keel", "culm", "rind", "sigil", "dune", "lobe", "sulk")
+    def __init__(self, seed):
+        self.seed = int(seed) & 0x7FFFFFFF
+        self.regions = []
+        n = 5 + int(7 * _residue(self.seed, "loom/count"))
+        for i in range(n):
+            self.regions.append({
+                "i": i,
+                "name": self.WORDS[i % len(self.WORDS)],
+                "angle": meum_angle(_safe_int_seed(self.seed) + i * 17),
+                "tier": i % 3,
+                "seed": (_mix(self.seed, f"loom/{i}") & 0x7FFFFFFF),
+            })
+        self._cache = {}
+        self.materialized = []
+        self.present = []
+        self.budget = max(2, n // 2)
+
+    def metadata(self):
+        return [{"i": r["i"], "name": r["name"], "angle": round(r["angle"], 4),
+                 "tier": r["tier"], "materialized": r["i"] in self.materialized}
+                for r in self.regions]
+
+    def _compute(self, r):
+        s = int(r["seed"]) & 0x7FFFFFFF
+        glyph = [[(_mix(s, f"glyph/{a}/{b}") % 5) for b in range(8)] for a in range(8)]
+        tune = [round(110.0 + 880.0 * _residue(s, f"tune/{k}"), 3) for k in range(4)]
+        return {
+            "region": r["name"], "tier": r["tier"],
+            "glyph": glyph, "tune": tune,
+            "model": f"{r['name']}_{r['tier']}",
+            "lore": (f"Loom region '{r['name']}' (tier {r['tier']}) — "
+                     f"computed only when activated, never at boot."),
+        }
+
+    def _ensure(self, i):
+        i = int(i)
+        if i < 0 or i >= len(self.regions):
+            return None
+        if i not in self._cache:
+            self._cache[i] = self._compute(self.regions[i])
+            self.materialized.append(i)
+        return self.regions[i], self._cache[i]
+
+    def grant(self, i_or_name):
+        """Input-dynamic activation: /tp <#> or /tp <name> materialises at once."""
+        key = i_or_name if isinstance(i_or_name, int) else None
+        if key is None:
+            needle = str(i_or_name).strip().lower()
+            for r in self.regions:
+                if r["name"].lower() == needle:
+                    key = r["i"]
+                    break
+            if key is None:
+                try:
+                    key = int(str(i_or_name))
+                except Exception:
+                    key = None
+        if key is None or key not in range(len(self.regions)):
+            return None
+        if len(self.materialized) >= self.budget and key not in self.materialized:
+            # budget used — rare function stays silent unless already computed
+            return self.regions[int(key)], None
+        hit = self._ensure(key)
+        return hit if hit else None
+
+    def pulse(self, angle, reach=0.30):
+        """Spatial activation: regions near the perspective angle are materialised
+        NOW (function computed because the player arrived), others stay dormant."""
+        entered = []
+        for r in self.regions:
+            d = abs((r["angle"] - angle + math.pi) % math.tau - math.pi)
+            if d <= reach and r["i"] not in self.materialized:
+                if len(self.materialized) >= self.budget:
+                    continue
+                self._ensure(r["i"]) or None
+                entered.append(r)
+        if entered:
+            self.present = [r["i"] for r in entered]
+        return entered
+
+    def lore(self, i_or_name):
+        hit = self.grant(i_or_name)
+        if hit is None:
+            return f"no region '{i_or_name}' — /loom to list them"
+        reg, data = hit
+        if data is None:
+            return f"region '{reg['name']}' is beyond the budget — clear the run to recompute"
+        return data["lore"]
+
+    def material(self, i):
+        hit = self._ensure(int(i))
+        return hit[1] if hit else None
+
+class SelfGen:
+    """Major procedural self-generation seed functions — the final note.
+
+    Every game can regenerate itself from a seed (/gen <seed>): new triad
+    quantities, a new loom region set, a fresh invite schedule and a relit
+    layer palette.  The same seed always regenerates the same world (determinism
+    is the contract), so 'regenerate' is just f(seed) again.
+    """
+    def __init__(self, seed):
+        self.seed = int(seed) & 0x7FFFFFFF
+        self.active_seed = self.seed
+        self.generations = 0
+        self.history = []
+
+    def seed_functions(self):
+        return [
+            "selfgen.regenerate", "triad.quantify", "loom.materialise",
+            "micro.lexicon", "hotseat.invites", "scenograph.relight",
+            "music.re-seed", "live_sfx.re-bank",
+        ]
+
+    def regenerate(self, seed):
+        s = _safe_int_seed(seed) & 0x7FFFFFFF
+        out = {
+            "seed": s,
+            "triad": {
+                "audio": {"rg": round(_residue(s, "gen/audio"), 4)},
+                "visual": {"rg": round(_residue(s, "gen/visual"), 4)},
+                "game": {"rg": round(_residue(s, "gen/game"), 4)},
+            },
+            "regions": [self.WORDS[i % len(self.WORDS)] for i in range(4 + s % 3)],
+            "palette": {"hue": round(_residue(s, "gen/hue"), 3),
+                        "lift": round(_residue(s, "gen/lift"), 3)},
+            "invites": 1 + int(2 * _residue(s, "gen/invites")),
+        }
+        self.generations += 1
+        self.history.append(s)
+        self.active_seed = s
+        return out
+    WORDS = ("whorl", "stave", "mote", "vane", "cusp", "fault", "barb")
+
+    def final_note(self):
+        return ("selfgen seed-functions live this session: " +
+                ", ".join(self.seed_functions()) +
+                f"  (generations={self.generations} active_seed={self.active_seed})")
+
+class LocalChess:
+    """Two-player chess on ONE screen (hot-seat).  Player 1 = white, player 2 =
+    black; after every move the prompt says to hand the controls to the friend.
+    Compact but real: legal moves, check, checkmate, stalemate, promotion."""
+    PIECE = {
+        "r": "rook", "n": "knight", "b": "bishop", "q": "queen",
+        "k": "king", "p": "pawn",
+    }
+    def __init__(self, seed):
+        self.seed = int(seed) & 0x7FFFFFFF
+        self.board = self._start_board()
+        self.turn = "w"
+        self.halfmove = 0
+        self.fullmove = 1
+        self.moves = []
+        self.result = None
+        self.from_sq = None
+
+    @staticmethod
+    def _start_board():
+        back = "rnbqkbnr"
+        board = []
+        board.append(list(back))
+        board.append(list("pppppppp"))
+        for _ in range(4):
+            board.append(list("........"))
+        board.append(list("PPPPPPPP"))
+        board.append(list(back.upper()))
+        return board
+
+    # -- helpers ------------------------------------------------------------
+    @staticmethod
+    def _color(p):
+        return "w" if p.isupper() else "b"
+
+    def _in(self, r, c):
+        return 0 <= r < 8 and 0 <= c < 8
+
+    def _find_king(self, board, color):
+        for r in range(8):
+            for c in range(8):
+                p = board[r][c]
+                if p != "." and self._color(p) == color and p.lower() == "k":
+                    return r, c
+        return None
+
+    def _attackers(self, board, r, c, by_color):
+        out = set()
+        for rr in range(8):
+            for cc in range(8):
+                p = board[rr][cc]
+                if p == "." or self._color(p) != by_color:
+                    continue
+                for (r2, c2) in self._pseudo(board, rr, cc, quiet=True):
+                    if (r2, c2) == (r, c):
+                        out.add((rr, cc))
+        return out
+
+    def _in_check(self, board, color):
+        k = self._find_king(board, color)
+        if k is None:
+            return True
+        return bool(self._attackers(board, k[0], k[1], "b" if color == "w" else "w"))
+
+    def _pseudo(self, board, r, c, quiet=False):
+        p = board[r][c]
+        col = self._color(p)
+        out = []
+        def add(r2, c2):
+            if self._in(r2, c2) and board[r2][c2] == ".":
+                out.append((r2, c2))
+        def addcap(r2, c2):
+            if self._in(r2, c2) and board[r2][c2] != "." and self._color(board[r2][c2]) != col:
+                out.append((r2, c2))
+        def ray(dr, dc):
+            r2, c2 = r + dr, c + dc
+            while self._in(r2, c2):
+                t = board[r2][c2]
+                if t == ".":
+                    out.append((r2, c2))
+                else:
+                    if self._color(t) != col:
+                        out.append((r2, c2))
+                    break
+                r2 += dr
+                c2 += dc
+        kind = p.lower()
+        if kind == "p":
+            d = -1 if col == "w" else 1
+            st = 6 if col == "w" else 1
+            add(r + d, c)
+            if r == st and self._in(r + d, c) and board[r + d][c] == ".":
+                add(r + 2 * d, c)
+            for dc in (-1, 1):
+                addcap(r + d, c + dc)
+        elif kind == "n":
+            for dr, dc in ((-2, -1), (-2, 1), (-1, -2), (-1, 2),
+                           (1, -2), (1, 2), (2, -1), (2, 1)):
+                add(r + dr, c + dc)
+                addcap(r + dr, c + dc)
+        elif kind == "b":
+            for dr, dc in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
+                ray(dr, dc)
+        elif kind == "r":
+            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                ray(dr, dc)
+        elif kind == "q":
+            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1),
+                           (1, 1), (1, -1), (-1, 1), (-1, -1)):
+                ray(dr, dc)
+        elif kind == "k":
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    add(r + dr, c + dc)
+                    addcap(r + dr, c + dc)
+        return out
+
+    def legal_moves(self):
+        if self.result:
+            return []
+        board = self.board
+        col = self.turn
+        out = []
+        for r in range(8):
+            for c in range(8):
+                p = board[r][c]
+                if p == "." or self._color(p) != col:
+                    continue
+                for (r2, c2) in self._pseudo(board, r, c):
+                    nb = [list(row) for row in board]
+                    nb[r2][c2] = nb[r][c]
+                    nb[r][c] = "."
+                    if self._color(nb[r2][c2]) == col:
+                        nb[r2][c2] = "."  # sanity
+                    if not self._in_check(nb, col):
+                        out.append((r, c, r2, c2))
+        return out
+
+    def parse_uci(self, text):
+        t = (text or "").strip().replace(" ", "").lower()
+        if len(t) < 4:
+            return None
+        def sq(s):
+            c = ord(s[0]) - ord("a")
+            r = 8 - int(s[1])
+            if not (0 <= r < 8 and 0 <= c < 8):
+                return None
+            return r, c
+        try:
+            a = sq(t[0:2]); b = sq(t[2:4])
+        except Exception:
+            return None
+        if a is None or b is None:
+            return None
+        return a[0], a[1], b[0], b[1]
+
+    def apply(self, mv, promote="q"):
+        if self.result:
+            return False
+        if mv is None or len(mv) != 4:
+            return False
+        r, c, r2, c2 = mv
+        if not all(self._in(x, y) for x, y in ((r, c), (r2, c2))):
+            return False
+        if (r, c, r2, c2) not in self.legal_moves():
+            return False
+        cap = self.board[r2][c2] != "."
+        self.board[r2][c2] = self.board[r][c]
+        self.board[r][c] = "."
+        if self.board[r2][c2].lower() == "p" and (r2 == 0 or r2 == 7):
+            pr = promote.lower() if promote in ("q", "r", "b", "n") else "q"
+            self.board[r2][c2] = pr if self.turn == "w" else pr.upper()
+        self.moves.append((r, c, r2, c2))
+        self.halfmove = 0 if cap else self.halfmove + 1
+        self.fullmove = self.fullmove if self.turn == "w" else self.fullmove + 1
+        self.turn = "b" if self.turn == "w" else "w"
+        self._result_check()
+        return True
+
+    def _result_check(self):
+        if not self.legal_moves():
+            if self._in_check(self.board, self.turn):
+                self.result = "0-1" if self.turn == "w" else "1-0"
+            else:
+                self.result = "1/2-1/2"
+        elif self.halfmove >= 100:
+            self.result = "1/2-1/2"
+
+    def ascii(self):
+        rows = []
+        for ri, row in enumerate(self.board):
+            cells = " ".join(p if p != "." else "." for p in row)
+            rows.append(f"{8 - ri}  {cells}")
+        rows.append("   a b c d e f g h")
+        if self.result:
+            rows.append(f"RESULT: {self.result}")
+        else:
+            who = "WHITE (Player 1)" if self.turn == "w" else "BLACK (Player 2)"
+            rows.append(f"TO MOVE: {who} — after your move hand the controls to your friend")
+        return "\n".join(rows)
+
+    def fen(self):
+        rows = []
+        for row in self.board:
+            empty = 0
+            acc = []
+            for p in row:
+                if p == ".":
+                    empty += 1
+                else:
+                    if empty:
+                        acc.append(str(empty)); empty = 0
+                    acc.append(p)
+            if empty:
+                acc.append(str(empty))
+            rows.append("".join(acc))
+        return "/".join(rows) + f" {self.turn} KQkq - {self.halfmove} {self.fullmove}"
+
+    def glyph(self, p):
+        return {"k": "♔", "q": "♕", "r": "♖", "b": "♗", "n": "♘", "p": "♙",
+                "K": "♚", "Q": "♛", "R": "♜", "B": "♝", "N": "♞", "P": "♟"}.get(p, " ")
+
+    def invite_text(self):
+        return ("TWO-PLAYER CHESS — one screen, two minds.  Player 1 takes "
+                "White, Player 2 takes Black, you share this display.  "
+                "Have your friend come over; the game is only half a function "
+                "without the second player.")
+
+
+# ---------------------------------------------------------------------------
+# ARCADE MENU_2026 — every emitted game also plays poker, slots, worm/snake,
+# a mario-style platformer, and a racing game.  Each is a closed-form seeded
+# simulation: identical seed + same inputs => identical state.  No `random`
+# module, no wall-clock — stepping is integer-substep so it is reproducible.
+# ---------------------------------------------------------------------------
+def _mixu(seed, label):
+    h = hashlib.blake2b(("%s#%s" % (seed, label)).encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(h, "big") / 18446744073709551616.0
+
+
+class SlotReels:
+    """Mechanical one-armed bandit — 3x3, seeded spins, deterministic payout."""
+    SYMS = ["7", "\u2605", "\u2606", "A", "K", "Q", "J", "10"]
+    PAY = {"7": 20, "\u2605": 12, "\u2606": 8, "A": 6, "K": 4, "Q": 3, "J": 2, "10": 1}
+
+    def __init__(self, seed):
+        self.seed = int(seed) & 0x7FFFFFFF
+        self.coins = 100
+        self.spins = 0
+        self.last = None
+        self.payout = 0
+
+    def spin(self, bet=1):
+        bet = max(1, min(10, int(bet)))
+        grid = []
+        for i in range(9):
+            s = self.SYMS[int(_mixu(self.seed ^ (self.spins * 131 + i), "slot/%d" % i) * len(self.SYMS))]
+            grid.append(s)
+        self.spins += 1
+        win = 0
+        for r in range(3):
+            row = grid[r * 3:(r + 1) * 3]
+            if row[0] == row[1] == row[2]:
+                win += self.PAY.get(row[0], 0) * bet
+            elif row[0] == row[1]:
+                win += bet
+        self.coins -= bet
+        self.coins += win
+        self.last = grid
+        self.payout = win
+        return {"grid": grid, "payout": win, "coins": self.coins}
+
+
+class SnakeWorm:
+    """Classic worm on a grid — deterministic seed + steer-queue, no RNG at step."""
+    DIRS = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}
+
+    def __init__(self, seed, n=12):
+        self.seed = int(seed) & 0x7FFFFFFF
+        self.n = n
+        self.cx, self.cy = n // 2, n // 2
+        self.body = [(self.cx - i, self.cy) for i in range(3)]
+        self.dir = (1, 0)
+        self._queue = []
+        self.score = 0
+        self.alive = True
+        self.steps = 0
+        self.food = self._place_food()
+
+    def _place_food(self):
+        for k in range(600):
+            f = (int(_mixu(self.seed ^ k, "snake/food") * self.n),
+                 int(_mixu(self.seed ^ (k + 71), "snake/food2") * self.n))
+            if 0 <= f[0] < self.n and 0 <= f[1] < self.n and f not in self.body:
+                return f
+        return (0, 0)
+
+    def steer(self, d):
+        v = self.DIRS.get(d)
+        if v and (v[0] * self.dir[0] * -1 == 1 or v[1] * self.dir[1] * -1 == 1) and not self._queue:
+            return
+        if v and not (v[0] == -self.dir[0] and v[1] == -self.dir[1]) and len(self._queue) < 3:
+            self._queue.append(v)
+
+    def step(self):
+        if not self.alive:
+            return False
+        self.steps += 1
+        if self._queue:
+            self.dir = self._queue.pop(0)
+        hx, hy = self.body[0]
+        nx, ny = hx + self.dir[0], hy + self.dir[1]
+        if not (0 <= nx < self.n and 0 <= ny < self.n):
+            self.alive = False
+            return False
+        if (nx, ny) in self.body[:-1]:
+            self.alive = False
+            return False
+        self.body.insert(0, (nx, ny))
+        ate = (nx, ny) == self.food
+        if ate:
+            self.score += 1
+            self.steer(self._food_dir())
+            self.food = self._place_food()
+        else:
+            self.body.pop()
+        return True
+
+    def _food_dir(self):
+        fx, fy = self.food
+        hx, hy = self.body[0]
+        if abs(fx - hx) > abs(fy - hy):
+            return "right" if fx > hx else "left"
+        return "down" if fy > hy else "up"
+
+    def autorun(self, steps=400):
+        while self.alive and self.steps < steps:
+            self.step()
+        return {"score": self.score, "steps": self.steps, "alive": self.alive,
+                "length": len(self.body)}
+
+    def ascii(self):
+        rows = []
+        for y in range(self.n):
+            line = ""
+            for x in range(self.n):
+                if (x, y) == self.food:
+                    line += "o"
+                elif (x, y) in self.body:
+                    line += "*" if (x, y) == self.body[0] else "#"
+                else:
+                    line += "."
+            rows.append(line)
+        rows.append(f"score={self.score} steps={self.steps} alive={self.alive}")
+        return "\n".join(rows)
+
+
+class SideMario:
+    """Tiny deterministic mario-style platformer (side-scroll runner)."""
+    G = 9.8
+    MS = 0.008  # fixed microstep for reproducible physics
+
+    def __init__(self, seed):
+        self.seed = int(seed) & 0x7FFFFFFF
+        self.x = 0.0
+        self.y = 0.0
+        self.vy = 0.0
+        self.on_ground = True
+        self.coins = 0
+        self.alive = True
+        self.flag = False
+        self._acc = 0.0
+        self._jump_hold = 0
+        self.level = self._gen()
+        self.jumps = 0
+
+    def _gen(self):
+        level = []
+        for i in range(240):
+            level.append({
+                "gap": _mixu(self.seed ^ i, "mario/ground") < 0.14,
+                "coins": _mixu(self.seed ^ (i + 5), "mario/coins") < 0.16,
+                "block": _mixu(self.seed ^ (i + 9), "mario/block") < 0.09,
+            })
+        return level
+
+    def advance(self, dt, jump=False, hold=0):
+        self._acc += dt
+        n = int(self._acc / self.MS)
+        self._acc -= n * self.MS
+        self._jump_hold = max(0, int(hold / self.MS))
+        for _ in range(n):
+            self._substep(jump or self._jump_hold > 0)
+
+    def _substep(self, jump):
+        if not self.alive:
+            return
+        if jump and self.on_ground:
+            self.vy = 2.6
+            self.on_ground = False
+            self.jumps += 1
+        self.x += 1.4 * self.MS
+        self.vy -= self.G * self.MS
+        self.y += self.vy * self.MS
+        idx = int(self.x // 1.0)
+        cell = self.level[idx] if idx < len(self.level) else {"gap": False, "coins": False, "block": False}
+        if cell.get("gap"):
+            if self.y < -1.6:
+                self.alive = False
+        else:
+            if self.y <= 0 and self.vy <= 0:
+                self.y = 0.0
+                self.vy = 0.0
+                self.on_ground = True
+        if cell.get("coins"):
+            self.coins += 1
+            cell["coins"] = False
+        if idx >= 210:
+            self.flag = True
+            self.active = False
+
+    def autorun(self, seconds=30.0, jump_every=0.9):
+        t = 0.0
+        step = 1 / 60.0
+        jumps = 0
+        while t < seconds and self.alive and not self.flag:
+            self.advance(step, jump=(t > jump_every + jumps * jump_every * 0.55))
+            t += step
+        return {"dist": round(self.x, 3), "coins": self.coins, "alive": self.alive,
+                "flag": self.flag, "jumps": self.jumps}
+
+
+class RaceTrack:
+    """Seeded time-trial ring — closed-form lap closed for a fixed throttle."""
+    def __init__(self, seed):
+        self.seed = int(seed) & 0x7FFFFFFF
+        self.angle = 0.0
+        self.speed = 0.0
+        self.max_speed = 1.5 + _mixu(seed, "race/max") * 1.2
+        self.acc = 1.6 + _mixu(seed, "race/acc") * 0.9
+        self.drag = 2.0
+        self.time = 0.0
+        self.laps = 0
+        self.finish_time = None
+        self.radius = 1.0
+
+    def advance(self, dt, throttle=1.0, steer=0.0):
+        if self.finish_time is not None:
+            return self.finish_time
+        self.time += dt
+        self.speed += throttle * self.acc * dt - self.drag * dt * (0.15 + 0.85 * self.speed / self.max_speed)
+        self.speed = min(self.max_speed, max(0.0, self.speed))
+        self.angle += steer * dt * 2.0 + self.speed * dt / self.radius
+        if self.angle >= math.tau:
+            self.laps += 1
+            self.angle -= math.tau
+            if self.laps >= 3:
+                self.finish_time = round(self.time, 4)
+        return self.finish_time
+
+    def autorun(self, dt=1 / 60.0, cap=600):
+        n = 0
+        while self.finish_time is None and n < cap:
+            self.advance(dt)
+            n += 1
+        return {"laps": self.laps, "time": self.finish_time, "max_speed": round(self.max_speed, 4)}
+
+
+class PokerTable:
+    """5-card draw, hot-seat, closed-form deck — same seed deals the same hands."""
+    RANKS = "23456789TJQKA"
+    SUITS = "SHDC"
+    CATS = ("high", "pair", "two_pair", "three", "straight", "flush",
+            "boat", "four", "straight_flush")
+
+    def __init__(self, seed):
+        self.seed = int(seed) & 0x7FFFFFFF
+        self._hole = 0
+        self.games = 0
+        self.hands = []
+        self.last_winner = None
+
+    def deal(self, n):
+        cards = []
+        used = set()
+        guard = 0
+        while len(cards) < n and guard < 2000:
+            guard += 1
+            idx = int(_mixu(self.seed ^ self._hole ^ (len(cards) * 101 + 7), "poker/draw") * 52)
+            if idx in used:
+                continue
+            used.add(idx)
+            cards.append((self.RANKS[idx % 13], self.SUITS[idx // 13]))
+        self._hole += 1
+        return cards
+
+    def show(self, hand):
+        return " ".join("%s%s" % (r, s) for r, s in hand)
+
+    def rank(self, cards):
+        vs = sorted((self.RANKS.index(r) for r, _ in cards), reverse=True)
+        flush = len({s for _, s in cards}) == 1
+        straight = len(set(vs)) == 5 and (vs[0] - vs[4] == 4 or vs == [12, 3, 2, 1, 0])
+        if straight and vs == [12, 3, 2, 1, 0]:
+            vs = [3, 2, 1, 0, 12]
+        counts = sorted(((vs.count(v), v) for v in set(vs)), reverse=True)
+        if straight and flush:
+            return (8, vs)
+        if counts[0][0] == 4:
+            return (7, counts)
+        if counts[0][0] == 3 and counts[1][0] == 2:
+            return (6, counts)
+        if flush:
+            return (5, vs)
+        if straight:
+            return (4, vs)
+        if counts[0][0] == 3:
+            return (3, counts)
+        if sum(1 for c in counts if c[0] == 2) == 2:
+            return (2, counts)
+        if any(c[0] == 2 for c in counts):
+            return (1, counts)
+        return (0, vs)
+
+    def play(self):
+        self.games += 1
+        p1 = self.deal(5)
+        p2 = self.deal(5)
+        r1, r2 = self.rank(p1), self.rank(p2)
+        winner = "Player 1" if r1 > r2 else "Player 2" if r2 > r1 else "tie"
+        self.hands.append({"p1": self.show(p1), "p2": self.show(p2),
+                           "c1": self.CATS[r1[0]], "c2": self.CATS[r2[0]], "winner": winner})
+        self.last_winner = winner
+        return self.hands[-1]
+
+    def autorun(self, games=3):
+        out = []
+        for _ in range(games):
+            out.append(self.play())
+        return out
+
+    def ascii(self):
+        rows = []
+        for i, h in enumerate(self.hands[-3:], 1):
+            rows.append(f"hand{i}: P1 {h['p1']} ({h['c1']})  P2 {h['p2']} ({h['c2']})  -> {h['winner']}")
+        return "\n".join(rows) if rows else "no hands yet"
+
 # ---------------------------------------------------------------------------
 if HAS_UI:
     class SceneViewport(QWidget):
@@ -2446,10 +3700,108 @@ if HAS_UI:
             self.setMinimumSize(460, 460)
             self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self._last_mouse = None
+            self.setMouseTracking(True)
+
+        def _cell_at(self, pos):
+            w, h = self.width(), self.height()
+            side = min(w, h) - 20
+            if side <= 0:
+                return None
+            ox, oy = (w - side) / 2.0, (h - side) / 2.0
+            cell = side / 8.0
+            if ox <= pos.x() < ox + side and oy <= pos.y() < oy + side:
+                c = int((pos.x() - ox) // cell)
+                r = int((pos.y() - oy) // cell)
+                return r, c
+            return None
+
+        def mousePressEvent(self, e):
+            g = self.game
+            if e.button() == Qt.MouseButton.LeftButton:
+                if getattr(g, "hotseat", {}).get("active") and hasattr(g, "chess"):
+                    sq = self._cell_at(e.position())
+                    if sq is not None:
+                        g.chess_click(sq)
+                        self.update()
+                        return
+                g.activate()
+                g.steer = max(-1.0, min(1.0, g.steer + 0.25))
+                g.sfx.trigger("click", 0.5)
+                self.update()
+            super().mousePressEvent(e)
+
+        def mouseMoveEvent(self, e):
+            g = self.game
+            now = e.position()
+            if self._last_mouse is not None:
+                dx = float(now.x() - self._last_mouse.x())
+                dy = float(now.y() - self._last_mouse.y())
+                g.aim_at(dyaw=dx * 0.003, dpitch=dy * 0.002)
+            self._last_mouse = now
+            self.update()
+            super().mouseMoveEvent(e)
+
+        def mouseReleaseEvent(self, e):
+            self._last_mouse = None
+            super().mouseReleaseEvent(e)
+
+        def wheelEvent(self, e):
+            g = self.game
+            d = 1.0 if e.angleDelta().y() > 0 else -1.0
+            g.zoom = max(0.35, min(2.5, g.zoom + d * 0.08))
+            self.update()
+            super().wheelEvent(e)
+
+        def _draw_chess(self, p, g):
+            w, h = self.width(), self.height()
+            side = min(w, h) - 20
+            ox, oy = (w - side) / 2.0, (h - side) / 2.0
+            cell = side / 8.0
+            p.fillRect(self.rect(), g.id.get("ui_palette", {}).get("bg", "#0b1020"))
+            light, dark = QColor("#efe6d5"), QColor("#9b6b43")
+            sel = QColor("#ffe066")
+            piece_font = QFont("DejaVu Sans", max(10, int(cell * 0.55)))
+            last = g.chess.moves[-1] if g.chess.moves else None
+            for r in range(8):
+                for c in range(8):
+                    rect = QRect(0, 0, int(cell), int(cell))
+                    rect.moveTo(int(ox + c * cell), int(oy + r * cell))
+                    if (r + c) % 2 == 1:
+                        p.fillRect(rect, dark)
+                    else:
+                        p.fillRect(rect, light)
+                    if g.chess.from_sq == (r, c):
+                        pen = QPen(sel, 3)
+                        p.setPen(pen)
+                        p.drawRect(rect)
+                    if last and ((r, c) in ((last[0], last[1]), (last[2], last[3]))):
+                        p.setPen(QPen(QColor("#3fa7ff"), 2))
+                        p.drawRect(rect)
+                    pc = g.chess.board[r][c]
+                    if pc != ".":
+                        p.setPen(QColor("#1a1a1a") if pc.isupper() else QColor("#f2f2f2"))
+                        p.setFont(piece_font)
+                        p.drawText(rect, Qt.AlignmentFlag.AlignCenter, g.chess.glyph(pc))
+            p.setPen(QColor("#e8f0ff"))
+            p.setFont(QFont("Sans", 11))
+            if g.chess.result:
+                status = f"GAME OVER {g.chess.result}  —  /chess to close"
+            else:
+                who = "Player 2 (Black)" if g.chess.turn == "w" else "Player 1 (White)"
+                status = f"Player 1 (White) builds the position, then hands the controls to Player 2"
+                if len(g.chess.moves) % 2 == 1:
+                    status = f"{who} to move — hand the controls to {who}"
+            p.drawText(QRect(0, int(oy - 20), w, 18), Qt.AlignmentFlag.AlignCenter, status)
 
         def paintEvent(self, e):
             super().paintEvent(e)
             g = self.game
+            if getattr(g, "hotseat", {}).get("active") and hasattr(g, "chess"):
+                p = QPainter(self)
+                p.setRenderHint(QPainter.RenderHint.Antialiasing)
+                self._draw_chess(p, g)
+                return
             p = QPainter(self)
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
             pal = g.id.get("ui_palette", {})
@@ -2459,8 +3811,10 @@ if HAS_UI:
             tx = pal.get("text", "#e8f0ff")
             w, h = self.width(), self.height()
             cx, cy = w / 2.0, h / 2.0
-            # Larger world radius for open-world feel
-            R = min(w, h) * 0.42
+            # Perspective: zoom (W/S) scales the world radius; pitch (mouse aim)
+            # lifts/lowers the view horizon — the fixed movement+aim contract.
+            R = min(w, h) * 0.42 * max(0.35, float(getattr(g, "zoom", 1.0)))
+            cy = cy - float(getattr(g, "pitch", 0.0)) * R * 0.35
             p.fillRect(self.rect(), QColor(bg))
             topo = str(g.id.get("topology") or "open_world")
 
@@ -2626,6 +3980,18 @@ if HAS_UI:
             for name, rec in sorted((g.remotes or {}).items()):
                 draw_face(name, float(rec.get("angle", 0.0)), QColor(dg), 6)
 
+            _ay = cx + math.cos(g.angle) * R * 0.98
+            _ax = cy + math.sin(g.angle) * R * 0.98
+            _ac = QColor("#ffcc66")
+            _ac.setAlpha(120)
+            p.setPen(QPen(_ac, 1))
+            p.drawLine(QPointF(cx, cy), QPointF(_ay, _ax))
+            p.setPen(QPen(QColor(tx), 1))
+            p.setFont(QFont("Sans", 9))
+            p.drawText(8, 16,
+                       f"move=WASD  aim=mouse  activate=click  pitch={getattr(g,'pitch',0.0):.2f}  "
+                       f"zoom={getattr(g,'zoom',1.0):.2f}  F1=how-to-play")
+
             hp = getattr(g, "hp", 100.0)
             coins = getattr(getattr(g, "purse", None), "coins", 0)
             pts = getattr(getattr(g, "purse", None), "points", 0)
@@ -2746,7 +4112,61 @@ if HAS_UI:
             actions.addWidget(btn_report)
             actions.addWidget(btn_quit)
             lay.addLayout(actions)
+            seats = QHBoxLayout()
+            btn_invite = QPushButton("Invite Friend")
+            btn_chess = QPushButton("Chess (hot-seat)")
+            btn_how = QPushButton("How to Play")
+            btn_invite.clicked.connect(self._invite)
+            btn_chess.clicked.connect(self._chess)
+            btn_how.clicked.connect(self._how)
+            seats.addWidget(btn_invite)
+            seats.addWidget(btn_chess)
+            lay.addLayout(seats)
+            lay.addWidget(btn_how)
+            self.chess_lbl = QLabel("Hot-seat chess: idle — /chess or the button opens it.")
+            self.chess_lbl.setWordWrap(True)
+            lay.addWidget(self.chess_lbl)
+            howbox = QGroupBox("How to Play (F1)")
+            hb = QVBoxLayout(howbox)
+            self.how_view = QPlainTextEdit()
+            self.how_view.setReadOnly(True)
+            self.how_view.setMaximumBlockCount(400)
+            self.how_view.setFixedHeight(150)
+            try:
+                self.how_view.setPlainText(HOW_TO_PLAY)
+            except Exception:
+                pass
+            hb.addWidget(self.how_view)
+            lay.addWidget(howbox)
             lay.addStretch(1)
+
+        def _invite(self):
+            g = self.game
+            self.append_status(g.offer_chess())
+            if getattr(g, "sfx", None):
+                g.sfx.trigger("chime", 0.8)
+
+        def _chess(self):
+            g = self.game
+            out = g.toggle_chess()
+            if out:
+                self.append_status(out)
+            self._refresh_chess_lbl()
+
+        def _how(self):
+            self.chat_view.appendPlainText((HOW_TO_PLAY or "")[:4000])
+
+        def _refresh_chess_lbl(self):
+            g = self.game
+            if getattr(g, "hotseat", {}).get("active"):
+                c = g.chess
+                who = "White (P1)" if c.turn == "w" else "Black (P2)"
+                state = f"board open — {who} to move; hand the controls to {who}."
+                if c.result:
+                    state = f"game over {c.result}"
+                self.chess_lbl.setText("Hot-seat chess: " + state)
+            else:
+                self.chess_lbl.setText("Hot-seat chess: idle — /chess or the button opens it.")
 
         def _role_text(self):
             g = self.game
@@ -2836,6 +4256,10 @@ if HAS_UI:
             self.djbar.setValue(max(0, min(1000, int(g.music.dj * 1000))))
             self.net_lbl.setText(g.net.status)
             self.role_lbl.setText(f"Role: {self._role_text()}")
+            try:
+                self._refresh_chess_lbl()
+            except Exception:
+                pass
 
         def append_status(self, text):
             self.chat_view.appendPlainText(text)
@@ -2873,6 +4297,7 @@ if HAS_UI:
             bar.setRange(0, 0)  # indeterminate — total init time isn't known up front
             bar.setTextVisible(False)
             bar.setFixedHeight(10)
+            self.bar = bar
             lay.addWidget(label)
             lay.addWidget(bar)
             lay.addWidget(self.status_label)
@@ -2881,6 +4306,14 @@ if HAS_UI:
             self.status_label.setText(str(text))
             # Force a repaint + event flush now, so the message is actually
             # visible before the next (potentially blocking) init step runs.
+            self.repaint()
+            QApplication.processEvents()
+
+        def set_progress(self, done, total):
+            """INSTALL_BAR_2026: determinate 'installing game' progress."""
+            total = max(1, int(total))
+            self.bar.setRange(0, total)
+            self.bar.setValue(max(0, min(total, int(done))))
             self.repaint()
             QApplication.processEvents()
 
@@ -2914,6 +4347,29 @@ if HAS_UI:
             # seed the panel with existing chat/status
             for entry in game.chat_log:
                 self.panel.append_status(f"[{entry['t']:.1f}] {entry['sender']}: {entry['text']}")
+            self._splash_active = False
+            self._splash_until = 0.0
+
+        def run_splash(self):
+            """Visible splash: composition bed plays while a title overlay is shown."""
+            g = self.game
+            bars = int(g.id.get("splash_bars") or 8)
+            seconds = max(1.2, min(6.0, (60.0 / max(float(BPM), 1.0)) * 4.0 * max(1, bars) * 0.25))
+            self._splash_active = True
+            self._splash_until = time.monotonic() + seconds
+            self.panel.append_status(f"=== SPLASH: {g.id.get('title', '')} ({seconds:.1f}s) ===")
+            self.panel.append_status(f"kit: {getattr(g, 'scratch_dir', '')}")
+            t0 = time.monotonic()
+            while time.monotonic() - t0 < seconds:
+                try:
+                    g.music.step(0.05)
+                except Exception:
+                    pass
+                self.view.update()
+                QApplication.processEvents()
+                time.sleep(0.05)
+            self._splash_active = False
+            self.panel.append_status("--- PLAY ---")
 
         def _tick(self):
             g = self.game
@@ -2935,12 +4391,29 @@ if HAS_UI:
         def keyPressEvent(self, e):
             g = self.game
             k = e.key()
-            if k == Qt.Key.Key_Left:
-                g.steer = max(-1.0, g.steer - 0.25)
+            if k == Qt.Key.Key_W:
+                g.perspective_move(dz=0.6)
+            elif k == Qt.Key.Key_S:
+                g.perspective_move(dz=-0.6)
+            elif k == Qt.Key.Key_A:
+                g.perspective_move(dx=-0.6)
+            elif k == Qt.Key.Key_D:
+                g.perspective_move(dx=0.6)
+            elif k == Qt.Key.Key_Left:
+                g.aim_at(dyaw=-0.4)
             elif k == Qt.Key.Key_Right:
-                g.steer = min(1.0, g.steer + 0.25)
+                g.aim_at(dyaw=0.4)
             elif k == Qt.Key.Key_Space:
-                g.running = not g.running
+                if g.hotseat.get("active"):
+                    self.panel._chess()
+                else:
+                    g.running = not g.running
+            elif k == Qt.Key.Key_F1:
+                self.panel._how()
+            elif Qt.Key.Key_1 <= k <= Qt.Key.Key_8:
+                g.macro(int(k) - int(Qt.Key.Key_0))
+            elif k == Qt.Key.Key_M:
+                g.sfx.trigger("click", 0.4)
             else:
                 super().keyPressEvent(e)
 
@@ -2966,6 +4439,7 @@ def parse_args(argv):
         "list_formats": "--list-formats" in argv,
         "record": None, "record_format": None, "replay": None,
         "probe": None, "write_identity": None,
+        "chess": "--chess" in argv,
     }
     for a in argv:
         k, _, v = a.partition("=")
@@ -2994,6 +4468,120 @@ def parse_args(argv):
     return args
 
 
+def _write_wav_mono(path, samples, sr=22050):
+    """Write a mono float list as 16-bit PCM WAV (stdlib only)."""
+    n = len(samples) or 1
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        frames = bytearray()
+        for s in samples:
+            v = int(max(-1.0, min(1.0, float(s))) * 32767)
+            frames += struct.pack("<h", v)
+        w.writeframes(bytes(frames))
+
+
+def _render_music_mono(seed, seconds=12.0, sr=22050):
+    bed = MusicBed(int(_safe_int_seed(seed)) & 0x7FFFFFFF)
+    n = max(1, int(seconds * sr))
+    out = []
+    dt = 1.0 / float(sr)
+    for _ in range(n):
+        out.append(bed.step(dt))
+    return out
+
+
+def _render_sfx_mono(seed, label, sr=22050):
+    dur = 0.18
+    n = max(1, int(dur * sr))
+    freq = 180.0 + 900.0 * _residue(seed, f"sfx_f:{label}")
+    decay = 4.0 + 10.0 * _residue(seed, f"sfx_d:{label}")
+    out = []
+    for i in range(n):
+        t = i / float(sr)
+        out.append(math.sin(math.tau * freq * t) * math.exp(-decay * t) * 0.5)
+    return out
+
+
+def install_game(identity, root_dir=None, progress=None):
+    """This app's OWN installer: attempt to load assets (sfx / models /
+    media), and GENERATE exactly the missing ones from the seed — the same
+    lattice the runtime uses, so any machine lands on byte-identical assets.
+    Progress (done, total, label) is optional and drives the installing-game
+    bar in the UI path.
+    """
+    ids = identity if isinstance(identity, dict) else (identity.to_dict() if hasattr(identity, "to_dict") else {})
+    root = os.path.abspath(root_dir or os.path.dirname(os.path.abspath(__file__)) or ".")
+    fp = str(ids.get("composition_fingerprint") or "0" * 16)
+    sfx_bank = list(ids.get("sfx_bank") or [])
+    manifest = dict(ids.get("asset_manifest") or {})
+    seed_val = ids.get("seed") or 0
+    seeds = int(_safe_int_seed(seed_val)) & 0x7FFFFFFF
+    dirs = {
+        "assets": os.path.join(root, "assets"),
+        "sfx": os.path.join(root, "assets", "sfx"),
+        "media": os.path.join(root, "assets", "media"),
+        "models": os.path.join(root, "assets", "models"),
+    }
+    for d in dirs.values():
+        os.makedirs(d, exist_ok=True)
+    targets = []
+    targets.append(("media", os.path.join(dirs["media"], f"music_{fp}.wav")))
+    for s in sfx_bank[:16]:
+        targets.append(("sfx", os.path.join(dirs["sfx"], f"{s}.wav")))
+    models = manifest.get("models") or {}
+    for axis, names in models.items():
+        for name in (names or [])[:12]:
+            targets.append(("models", os.path.join(dirs["models"], f"{name}.json")))
+    prim = list((manifest.get("primitives") or []) or ["quad"])
+    total = len(targets)
+    ensured = 0
+    for i, (kind, path) in enumerate(targets):
+        if progress is not None:
+            progress(i, total, f"installing {os.path.basename(path)}…")
+        if os.path.isfile(path) and os.path.getsize(path) > 0:
+            ensured += 1
+            continue
+        try:
+            if kind == "media":
+                _write_wav_mono(path, _render_music_mono(seed_val))
+            elif kind == "sfx":
+                _write_wav_mono(path, _render_sfx_mono(seeds, os.path.basename(path)[:-4]))
+            elif kind == "models":
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump({
+                        "name": os.path.basename(path)[:-5],
+                        "primitive": prim[i % len(prim)],
+                        "from_seed": True,
+                        "seed": seed_val,
+                    }, f, indent=2)
+            ensured += 1
+        except Exception:
+            pass
+    mpath = os.path.join(dirs["assets"], f"assets_{fp}.json")
+    try:
+        with open(mpath, "w", encoding="utf-8") as f:
+            json.dump(ids, f, indent=2, sort_keys=True)
+    except Exception:
+        pass
+    # HOW_TO_PLAY_2026: the package installs its own play guide + triad, so a
+    # fresh machine always knows the fixed controls and the friend-call contract.
+    try:
+        with open(os.path.join(root, "HOW_TO_PLAY.md"), "w", encoding="utf-8") as f:
+            f.write(HOW_TO_PLAY)
+    except Exception:
+        pass
+    try:
+        with open(os.path.join(dirs["assets"], "triad.json"), "w", encoding="utf-8") as f:
+            json.dump(TRIAD, f, indent=2, sort_keys=True)
+    except Exception:
+        pass
+    if progress is not None:
+        progress(total, total, f"assets ready ({ensured}/{total} ensured)…")
+    return ensured
+
+
 def main(argv=None):
     argv = list(argv or sys.argv[1:])
     A = parse_args(argv)
@@ -3003,69 +4591,108 @@ def main(argv=None):
         list_file_tasks()
         return
 
-    g = Game(host_mode=A["host"], port=A["port"], connect=A["connect"])
-    # MULTIMODAL_CONTRACT: every session declares sound + visual + UI up front.
-    print("[MULTIMODAL] sound=ON  visual=ON  ui=%s  kind=%s" % (
-        "PyQt6" if HAS_UI and not A.get("cli") else "CLI-HUD",
-        getattr(g, "software_kind", g.id.get("software_kind", "videogame")),
-    ))
-    print("[MULTIMODAL] MusicBed+LiveSFX + ScenographLite + ControlPanel/CLI always active")
+    # Headless / report / probe paths only need a Game() — no splash UI.
+    need_ui = HAS_UI and not A.get("cli") and not A.get("report") and not A.get("probe") \
+              and not A.get("write_identity") and not A.get("chess")
 
-    if A["report"]:
-        print(json.dumps(g.report(), indent=2, sort_keys=True))
-        g.net.shutdown()
-        return
-
-    if A["probe"]:
-        meta, rows = GameplayRecorder.load(A["probe"])
-        print(json.dumps({"file": A["probe"], "meta": meta, "rows": len(rows)},
-                         indent=2, sort_keys=True))
-        g.net.shutdown()
-        return
-
-    if A["write_identity"]:
-        with open(A["write_identity"], "w", encoding="utf-8") as f:
-            json.dump(g.id, f, indent=2, sort_keys=True)
-        print(f"[EXPORT] identity -> {A['write_identity']}")
-        g.net.shutdown()
-        return
-
-    if A["replay"]:
-        meta, nrows = g.load_replay(A["replay"])
-        print(f"[REPLAY] {A['replay']}: {nrows} input rows "
-              f"(seed={meta.get('seed')} fmt={meta.get('format')})")
-
-    if A["record_format"] and not A["record"]:
-        A["record"] = "gameplay." + (A["record_format"] or "gz")
-    g.record_path = A["record"]
-
-    if A["cli"] or not HAS_UI:
-        if not A["cli"] and not HAS_UI:
-            print("[UI] PyQt6 not found in this Python — falling back to the "
-                  "deterministic CLI loop. Install PyQt6 for the control panel.")
+    if not need_ui:
+        g = Game(host_mode=A["host"], port=A["port"], connect=A["connect"])
+        print("[MULTIMODAL] sound=ON  visual=ON  ui=%s  kind=%s" % (
+            "CLI-HUD",
+            getattr(g, "software_kind", g.id.get("software_kind", "videogame")),
+        ))
+        if A["report"]:
+            print(json.dumps(g.report(), indent=2, sort_keys=True))
+            g.net.shutdown()
+            return
+        if A["probe"]:
+            meta, rows = GameplayRecorder.load(A["probe"])
+            print(json.dumps({"file": A["probe"], "meta": meta, "rows": len(rows)},
+                             indent=2, sort_keys=True))
+            g.net.shutdown()
+            return
+        if A["write_identity"]:
+            with open(A["write_identity"], "w", encoding="utf-8") as f:
+                json.dump(g.id, f, indent=2, sort_keys=True)
+            print(f"[EXPORT] identity -> {A['write_identity']}")
+            g.net.shutdown()
+            return
+        if A["record_format"] and not A["record"]:
+            A["record"] = "gameplay." + (A["record_format"] or "gz")
+        g.record_path = A["record"]
+        if A["chess"]:
+            played = g.play_chess_ascii()
+            g.net.shutdown()
+            print(f"[CHESS] done={'yes' if played else 'no'} — best two out of three.")
+            return
+        if not HAS_UI and not A["cli"]:
+            print("[UI] PyQt6 not found — CLI fallback. Install PyQt6 for the panel.")
+        # CLI path: splash() is inside Game.run()
         g.run(seconds=A["seconds"])
         if g.record_path:
             path = g.save_recording(g.record_path,
                                     make_wav=resolve_codec(g.record_path)[0] in ("wav",))
             print(f"[EXPORT] recording -> {path} ({len(g.rec.rows)} rows)")
-        if A["replay"]:
-            print(f"[REPLAY-LOG] end parity: score={g.score:.3f} "
-                  f"consumed={g.replay_idx}/{len(g.replay_rows)}")
         return
-    # LOADING_SCREEN_2026: create QApplication + the loading screen FIRST,
-    # before Game(...) does any of its heavier construction (network
-    # transport bind/connect, scenograph mesh, sigil ring, music bed).
+
+    # ---- UI path: LoadingScreen FIRST, then /tmp kit install, then Game ----
     app = QApplication.instance() or QApplication(sys.argv[:1])
-    loading = LoadingScreen(title_hint="Preparing session…")
+    title_hint = str(IDENTITY.get("title") or "Groovebox Game")[:48]
+    loading = LoadingScreen(title_hint=title_hint)
     loading.show()
-    loading.set_status("Starting network + world…")
+    loading.raise_()
+    loading.activateWindow()
+    QApplication.processEvents()
+    loading.set_status("Preparing /tmp kit…")
+
+    def _install_progress(done, total, text):
+        loading.set_status(text)
+        loading.set_progress(done, total)
+
+    # Explicit kit root under /tmp so in-app launches are inspectable:
+    #   /tmp/groovebox_games/<fingerprint>/assets/{sfx,media,models}
+    fp = str(IDENTITY.get("composition_fingerprint") or "live")[:16]
+    _base = os.path.join("/tmp", "groovebox_games")
+    try:
+        os.makedirs(_base, exist_ok=True)
+    except Exception:
+        _base = tempfile.gettempdir()
+    _sim_dir = os.path.join(_base, fp)
+    try:
+        os.makedirs(_sim_dir, exist_ok=True)
+    except Exception:
+        _sim_dir = tempfile.mkdtemp(prefix="vg_sim_", dir="/tmp")
+
+    loading.set_status(f"Installing assets → {_sim_dir}")
+    _n_assets = 0
+    try:
+        _n_assets = install_game(IDENTITY, root_dir=_sim_dir, progress=_install_progress)
+        loading.set_status(f"Kit ready ({_n_assets} assets) in {_sim_dir}")
+    except Exception as err:
+        print(f"[SIM] asset install: {err}")
+        loading.set_status(f"Asset step skipped: {err}")
+
+    loading.set_status("Building world + network…")
+    QApplication.processEvents()
     game = Game(host_mode=A["host"], port=A["port"], connect=A["connect"])
+    if A["record_format"] and not A["record"]:
+        A["record"] = "gameplay." + (A["record_format"] or "gz")
     game.record_path = A["record"]
-    loading.set_status("Building main window…")
+    game.scratch_dir = _sim_dir
+    print("[MULTIMODAL] sound=ON  visual=ON  ui=PyQt6  kind=%s  kit=%s" % (
+        getattr(game, "software_kind", game.id.get("software_kind", "videogame")),
+        _sim_dir,
+    ))
+
+    loading.set_status("Opening window + splash…")
     win = GameWindow(game)
-    loading.set_status("Ready.")
     win.show()
     loading.close()
+    # Splash phase: music bed + title overlay for splash_bars (capped for snappy live test)
+    try:
+        win.run_splash()
+    except Exception as _sp:
+        print(f"[SPLASH] { _sp }")
     sys.exit(app.exec())
 
 
@@ -3073,11 +4700,237 @@ if __name__ == "__main__":
     main()
 '''
 
+# =============================================================================
+# THREE-PATHWAY CONTRACT_2026 — audio / visual / game are each present at
+# numerically expressible quantities, every time.  No feature is "absent"; every
+# feature is a seeded quantity in [0,1] (or a small int) so software/kinds can be
+# compared, tuned, and cross-referenced deterministically.  The same helpers feed
+# the emitted game (TRIAD), the package README, the How-To-Play panel, and tests.
+# =============================================================================
+def _rq(seed: int, label: str) -> float:
+    """Deterministic residue in [0,1) for a triad quantity."""
+    return meum_game_residue(seed, label)
+
+
+def build_triad_quantities(seed) -> Dict[str, Any]:
+    seeds = _safe_int_seed(seed) & 0x7FFFFFFF
+    return {
+        "meta": {
+            "version": "triad/2026.1",
+            "seed": seed,
+            "paths": ["audio", "visual", "game"],
+            "nondeterminism": 0.0,
+        },
+        "audio": {
+            "music_energy": 0.35 + 0.65 * _rq(seeds, "triad/audio/energy"),
+            "sfx_density": 0.15 + 0.85 * _rq(seeds, "triad/audio/sfx"),
+            "bass_heft": 0.20 + 0.80 * _rq(seeds, "triad/audio/bass"),
+            "brightness": _rq(seeds, "triad/audio/bright"),
+            "rhythm_drive": 0.25 + 0.75 * _rq(seeds, "triad/audio/drive"),
+            "spatial_width": 0.30 + 0.70 * _rq(seeds, "triad/audio/width"),
+            "bed_loud": 0.55 + 0.45 * _rq(seeds, "triad/audio/loud"),
+            "dj_goava": 0.10 + 0.90 * _rq(seeds, "triad/audio/dj_goava"),
+            "dj_random": 0.10 + 0.90 * _rq(seeds, "triad/audio/dj_random"),
+        },
+        "visual": {
+            "opacity_floor": 0.55 + 0.45 * _rq(seeds, "triad/visual/opacity"),
+            "hue_spread": _rq(seeds, "triad/visual/hue"),
+            "layer_density": 0.40 + 0.60 * _rq(seeds, "triad/visual/layers"),
+            "glitch": _rq(seeds, "triad/visual/glitch"),
+            "particles": _rq(seeds, "triad/visual/particles"),
+            "depth_parallax": 0.30 + 0.70 * _rq(seeds, "triad/visual/parallax"),
+            "camera_pan": 0.25 + 0.75 * _rq(seeds, "triad/visual/pan"),
+            "neon_glow": 0.20 + 0.80 * _rq(seeds, "triad/visual/neon"),
+        },
+        "game": {
+            "difficulty": 0.50 + 1.90 * _rq(seeds, "triad/game/difficulty"),
+            "sigil_count": int(4 + 10 * _rq(seeds, "triad/game/sigils")),
+            "resource_density": 0.25 + 0.75 * _rq(seeds, "triad/game/resources"),
+            "hazard_pressure": 0.20 + 0.80 * _rq(seeds, "triad/game/hazards"),
+            "npc_density": 0.20 + 0.80 * _rq(seeds, "triad/game/npc"),
+            "pve_pressure": 0.20 + 0.80 * _rq(seeds, "triad/game/pve"),
+            "shop_volume": 0.30 + 0.70 * _rq(seeds, "triad/game/shop"),
+            "invite_frequency": 0.15 + 0.85 * _rq(seeds, "triad/game/invites"),
+            "chess_offer": _rq(seeds, "triad/game/chess"),
+            "selfgen_rate": 0.10 + 0.90 * _rq(seeds, "triad/game/selfgen"),
+            "speed_scale": 0.60 + 0.40 * _rq(seeds, "triad/game/speed"),
+        },
+    }
+
+
+def build_control_scheme() -> Dict[str, Any]:
+    """Fixed control contract, identical in every emitted software/game.
+
+    WASD-mouseclick always mean the same thing regardless of genre/kind:
+    perspective movement, aim, and activate.  Macros are organized into a
+    deterministic F-row + number row.
+    """
+    return {
+        "version": "controls/2026.1",
+        "perspective": "always",
+        "move": {"forward": "Key_W", "back": "Key_S", "left": "Key_A", "right": "Key_D"},
+        "look": {"aim": "MouseMove", "pitch": "MouseVertical", "yaw": "MouseHorizontal"},
+        "activate": "MouseClick:Primary",
+        "jump_or_pause": "Space",
+        "sprint": "Shift",
+        "help": "F1",
+        "mute": "M",
+        "macros": [
+            ("1", "orbit / move-bias"),
+            ("2", "vitals + inventory"),
+            ("3", "quest log"),
+            ("4", "triad readout (audio/visual/game quantities)"),
+            ("5", "loom scan (procedural regions near your angle)"),
+            ("6", "store / shop"),
+            ("7", "sfx burst"),
+            ("8", "self-gen probe (major seed functions)"),
+        ],
+    }
+
+
+def build_hot_seat_invites(seed, window=180.0) -> List[Dict[str, Any]]:
+    """Deterministic schedule of 'have a friend come over' moments.
+
+    Two-player chess on ONE screen is part of the game contract.  The signal
+    fires at seeded times; accepting hands half the function to a friend.
+    """
+    seeds = _safe_int_seed(seed) & 0x7FFFFFFF
+    n = 2 + int(2 * meum_game_residue(seeds, "hotseat/invites"))
+    out = []
+    for k in range(n):
+        t = float(window * (0.12 + 0.76 * meum_game_residue(seeds, f"hotseat/t{k}")))
+        out.append({
+            "k": k,
+            "t": round(t, 2),
+            "fired": False,
+            "text": (f"[PLAYER-CALL] The signal wants a second mind.  Have a friend "
+                     f"come over to this screen — you will share it.  "
+                     f"/chess opens hot-seat two-player chess; you each take a side."),
+        })
+    out.sort(key=lambda e: e["t"])
+    return out
+
+
+def build_micro_lexicon(seed) -> Dict[str, Any]:
+    """Micro/abstract token library — LLM-like sparse op stream.
+
+    Each generated software is mostly just a seeded token schedule consumed one
+    token at a time; the software does NOT have to make sense.  Ops are abstract
+    (seam, fold, loom, foam, ...) with numeric parameters; consuming the stream
+    gently re-tunes music.dj, layer shade/shape and fn status on every tick.
+    """
+    seeds = _safe_int_seed(seed) & 0x7FFFFFFF
+    ops = [
+        "seam", "fold", "loom", "foam", "dial", "grip", "drift", "node",
+        "hull", "keel", "sift", "tilt", "hum", "shade", "vernier", "chime",
+    ]
+    import random as _random
+    r = _random.Random(seeds)
+    n_tokens = 96 + int(48 * meum_game_residue(seeds, "micro/count"))
+    sched = []
+    for i in range(n_tokens):
+        op = ops[i % len(ops)] if i % 11 != 0 else ops[r.randrange(len(ops))]
+        sched.append([
+            i,
+            op,
+            round(r.random(), 4),
+            round(r.random(), 4),
+            round(r.random(), 4),
+        ])
+    return {"version": "micro/2026.1", "ops": ops, "schedule": sched}
+
+
+def build_how_to_play(identity, triad=None, controls=None) -> str:
+    """Human 'how to play' text — shipped as README section, HOW_TO_PLAY.md,
+    installed how_to_play.txt, in-game panel, and the /help command."""
+    g = identity if isinstance(identity, dict) else (identity.to_dict() if hasattr(identity, "to_dict") else {})
+    triad = triad or {}
+    controls = controls or build_control_scheme()
+    macro_lines = "\n".join(f"  {k} — {d}" for k, d in controls.get("macros", []))
+    mov = controls.get("move", {})
+    return f"""HOW TO PLAY — {g.get('title', 'Groovebox Game')} ({g.get('genre', '?')} · {g.get('camera', '?')} · {g.get('topology', '?')})
+=====================================================================
+
+THREE PATHWAYS (audio · visual · game) are each present at numeric quantities.
+Every feature is a seeded number, so nothing is ever missing — only louder,
+denser, faster or elsewhere.  Type  /triad  for the numbers.
+
+FIXED CONTROLS (the same in every generated software)
+-----------------------------------------------------
+  Perspective movement :  {mov.get('forward', 'W')} {mov.get('back', 'S')} {mov.get('left', 'A')} {mov.get('right', 'D')}
+  Aim / look           :  mouse move
+  Activate             :  left click  (collect, harvest, talk, portal)
+  Pause / toggle       :  Space
+  Sprint               :  Shift
+  Help / how-to-play   :  F1        Mute: M
+  Key macros:
+{macro_lines}
+
+CHAT / CONSOLE COMMANDS
+-----------------------
+  /help  /how            this guide
+  /report /world         session report (score, world, quantities)
+  /inv  /quests /store  /buy 0..9  /equip
+  /triad /controls       numeric quantities + fixed control contract
+  /chess                 open hot-seat two-player chess (ONE screen)
+  /invite                offer the friend prompt now
+  /tp <name|#>  /lore   procedural-region teleport + lore (generated on demand)
+  /loom                  scan procedural regions near your position
+  /gen <seed>            run major procedural self-generation from a seed
+
+TWO-PLAYER CHESS (hot-seat, single screen)
+-----------------------------------------
+At seeded moments the game calls a friend over: the request is one half of the
+function.  Two of you share this one screen.  /chess opens the board; player 1
+takes white, player 2 black.  Click a piece, then click its destination square.
+After every move the prompt tells you to hand the controls to the other player.
+First to checkmate (or max-move draw) takes it.
+
+PROCEDURAL-GENERATION-ON-DEMAND
+-------------------------------
+Rare functions are NOT computed up front.  They materialize only when you
+activate them spatially (moving your perspective through a loosam region) or by
+input dynamics (/tp   /lore   /gen).  That keeps every package cheap to boot and
+infinite to explore — the same seed always regenerates the same rare content.
+
+SELF-GENERATION SEED FUNCTIONS
+------------------------------
+Every game carries major seed functions and may regenerate itself:
+  /gen <seed>   → new triad quantities, loam regions, layer palette, invites
+The final one on report() is the  self-gen  note listing which seed functions
+were live this session.
+"""
+
+
+def triad_of(seed, identity=None) -> Dict[str, Any]:
+    t = build_triad_quantities(seed)
+    if identity is not None:
+        g = identity if isinstance(identity, dict) else (identity.to_dict() if hasattr(identity, "to_dict") else {})
+        t["game"]["sigil_count"] = int(g.get("sigil_count", t["game"]["sigil_count"]))
+    return t
+
+
+def game_triad(seed) -> Dict[str, Any]:
+    """Public audio<->game contract key for a composition seed.
+
+    The identity-free numeric triad (audio / visual / game quantities) — the
+    exact closed-form the game package builds (triad.json).  Audio/video export
+    manifests embed this value, so an audio artifact and the exported game
+    package can be cross-verified to have come from one project (and one seed).
+    """
+    return build_triad_quantities(seed)
+
+
 _REPLACEMENTS = (
     ("__MEUM__", repr(MEUM)),
     ("__PHI__", repr(PHI)),
     ("__BPM__", repr(120.0)),
     ("__SEQ__", repr(16)),
+    ("__TRIAD_JSON__", repr("{}")),
+    ("__CONTROLS_JSON__", repr("{}")),
+    ("__LEXICON_JSON__", repr("{}")),
+    ("__INVITES_JSON__", repr("[]")),
+    ("__HOWTO_TEXT__", repr("")),
 )
 
 
@@ -3097,6 +4950,11 @@ def generate_game_script(identity: GameIdentity, composition_meta: Optional[Dict
     seq = int(meta.get("seq_length", identity.splash_bars))
     idict = identity.to_dict()
     id_json = json.dumps(idict)
+    triad = triad_of(identity.seed, idict)
+    controls = build_control_scheme()
+    lexicon = build_micro_lexicon(identity.seed)
+    invites = build_hot_seat_invites(identity.seed)
+    howto = build_how_to_play(idict, triad, controls)
 
     script = _GAME_TEMPLATE
     script = script.replace("__SEED__", repr(float(identity.seed)))
@@ -3113,13 +4971,87 @@ def generate_game_script(identity: GameIdentity, composition_meta: Optional[Dict
     script = script.replace("__BPM__", repr(bpm))
     script = script.replace("__SEQ__", repr(seq))
     script = script.replace("__IDENTITY_JSON__", repr(id_json))
+    script = script.replace("__TRIAD_JSON__", repr(json.dumps(triad)))
+    script = script.replace("__CONTROLS_JSON__", repr(json.dumps(controls)))
+    script = script.replace("__LEXICON_JSON__", repr(json.dumps(lexicon)))
+    script = script.replace("__INVITES_JSON__", repr(json.dumps(invites)))
+    script = script.replace("__HOWTO_TEXT__", repr(howto))
     # Safety net: any left-over placeholder is a generator bug — never ship it.
     if any(tok in script for tok in (_tok for _tok, _ in _REPLACEMENTS)):
         raise RuntimeError("placeholder substitution failed")
     return script
 
 
-def export_game_files(identity: GameIdentity, out_dir: str, composition_meta: Optional[Dict[str, Any]] = None) -> str:
+
+def install_game_kit(identity, root_dir: str, progress=None) -> int:
+    """Host-side kit installer: write music/SFX/model stubs under root_dir/assets.
+
+    Mirrors the emitted script's install_game so in-app Play can pre-seed
+    /tmp/groovebox_games/<fp>/ before spawning the child process.
+    """
+    ids = identity if isinstance(identity, dict) else (identity.to_dict() if hasattr(identity, "to_dict") else {})
+    root = os.path.abspath(root_dir or ".")
+    fp = str(ids.get("composition_fingerprint") or "0" * 16)
+    sfx_bank = list(ids.get("sfx_bank") or [])
+    manifest = dict(ids.get("asset_manifest") or {})
+    seed_val = ids.get("seed") or 0
+    seeds = int(_safe_int_seed(seed_val)) & 0x7FFFFFFF
+    dirs = {
+        "assets": os.path.join(root, "assets"),
+        "sfx": os.path.join(root, "assets", "sfx"),
+        "media": os.path.join(root, "assets", "media"),
+        "models": os.path.join(root, "assets", "models"),
+    }
+    for d in dirs.values():
+        os.makedirs(d, exist_ok=True)
+    ensured = 0
+    targets = [("media", os.path.join(dirs["media"], f"music_{fp}.wav"))]
+    for s in sfx_bank[:16]:
+        targets.append(("sfx", os.path.join(dirs["sfx"], f"{s}.wav")))
+    models = manifest.get("models") or {}
+    for axis, names in (models.items() if isinstance(models, dict) else []):
+        for name in (names or [])[:8]:
+            targets.append(("models", os.path.join(dirs["models"], f"{name}.json")))
+    total = max(1, len(targets))
+    for i, (kind, path) in enumerate(targets):
+        if progress is not None:
+            try:
+                progress(i, total, f"installing {os.path.basename(path)}…")
+            except Exception:
+                pass
+        if os.path.isfile(path) and os.path.getsize(path) > 0:
+            ensured += 1
+            continue
+        try:
+            if kind == "media":
+                # short silent/placeholder bed — full bed synthesized in-game
+                with wave.open(path, "wb") as w:
+                    w.setnchannels(1); w.setsampwidth(2); w.setframerate(22050)
+                    w.writeframes(b"\x00\x00" * 2205)
+            elif kind == "sfx":
+                with wave.open(path, "wb") as w:
+                    w.setnchannels(1); w.setsampwidth(2); w.setframerate(22050)
+                    w.writeframes(b"\x00\x00" * 1102)
+            elif kind == "models":
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump({"name": os.path.basename(path)[:-5], "seed": seeds}, f)
+            ensured += 1
+        except Exception:
+            pass
+    try:
+        with open(os.path.join(dirs["assets"], "kit_root.txt"), "w", encoding="utf-8") as f:
+            f.write(root + "\n")
+    except Exception:
+        pass
+    if progress is not None:
+        try:
+            progress(total, total, f"assets ready ({ensured}/{total})")
+        except Exception:
+            pass
+    return ensured
+
+
+def export_game_files(identity: GameIdentity, out_dir: str, composition_meta: Optional[Dict[str, Any]] = None, extra_files: Optional[Dict[str, Any]] = None) -> str:
     os.makedirs(out_dir, exist_ok=True)
     script_path = os.path.join(out_dir, f"game_{identity.composition_fingerprint}.py")
     with open(script_path, "w", encoding="utf-8") as f:
@@ -3127,6 +5059,17 @@ def export_game_files(identity: GameIdentity, out_dir: str, composition_meta: Op
     meta_path = os.path.join(out_dir, f"game_{identity.composition_fingerprint}.json")
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(identity.to_dict(), f, indent=2)
+    # REVERSE_ENGINEERING: the package carries only self-describing artifacts.
+    # optional extra_files (e.g. the groovebox export manifest → provenance.json)
+    # make the composition's exact main-window inputs recoverable from the package.
+    for extra_name, extra_obj in (extra_files or {}).items():
+        if not extra_name or not extra_name.replace("_", "").isalnum() and "." not in extra_name:
+            continue
+        try:
+            with open(os.path.join(out_dir, str(extra_name)), "w", encoding="utf-8") as f:
+                json.dump(extra_obj, f, indent=2, sort_keys=True)
+        except Exception:
+            pass
     # Instrument → asset manifest (models, textures, materials, SFX, software kind)
     asset_path = os.path.join(out_dir, f"assets_{identity.composition_fingerprint}.json")
     with open(asset_path, "w", encoding="utf-8") as f:
@@ -3148,9 +5091,25 @@ def export_game_files(identity: GameIdentity, out_dir: str, composition_meta: Op
             "software_kind": identity.software_kind,
             "title": identity.title,
             "fingerprint": identity.composition_fingerprint,
+            "triad": triad_of(identity.seed, identity.to_dict()),
+            "how_to_play": "HOW_TO_PLAY.md",
         }, f, indent=2, sort_keys=True)
     _write_launchers(out_dir, identity.composition_fingerprint)
     _write_package_readme(out_dir, identity)
+    # THREE-PATHWAY_CONTRACT: every package also ships the play guide and the
+    # numeric triad (audio / visual / game quantities).
+    idict = identity.to_dict()
+    triad = triad_of(identity.seed, idict)
+    try:
+        with open(os.path.join(out_dir, "HOW_TO_PLAY.md"), "w", encoding="utf-8") as f:
+            f.write(build_how_to_play(idict, triad, build_control_scheme()))
+    except Exception:
+        pass
+    try:
+        with open(os.path.join(out_dir, "triad.json"), "w", encoding="utf-8") as f:
+            json.dump(triad, f, indent=2, sort_keys=True)
+    except Exception:
+        pass
     # The package carries its own provisioning: identical dependency-install
     # scripts (also kept in the project root) + the codec/job task manifest, so
     # an unpacked export can install deps + codecs without files outside the zip.
@@ -3213,6 +5172,23 @@ The game records deterministic gameplay INTO files and replays it OUT:
     ./launch_linux.sh --probe=gameplay.gz   # inspect a recording
 Formats: .json (metadata), .gz (compressed replay, default), .csv (table),
 .txt (log), .wav (music-bed export), .png (scene snapshot).
+
+HOW TO PLAY
+-----------
+Fixed controls, identical in every generated software:
+    Perspective movement :  W S A D
+    Aim / look           :  mouse move
+    Activate             :  left click
+    Pause / toggle       :  Space        Sprint: Shift
+    How to play          :  F1           Mute: M
+    Key macros           :  1..8 (orbit, vitals, quest, triad, loam scan,
+                               store, sfx burst, self-gen probe)
+Chat / console commands: /help  /report  /triad  /controls  /chess  /invite
+                         /tp <name|#>  /lore  /loom  /gen <seed>  /buy  /equip
+Two-player chess (hot-seat, ONE screen): at seeded moments the game calls a
+friend over; /chess opens the board and the prompt hands the controls to
+Player 2 after every move.  Full guide: HOW_TO_PLAY.md  (also installed beside
+the running script, and shown by in-game F1 / /help).
 
 REQUIREMENTS
 ------------
@@ -3941,17 +5917,18 @@ Write-Host "    Restart your terminal (PATH was updated), then run:   python gro
 }
 
 
-def package_game_zip(identity: GameIdentity, out_zip: str, composition_meta: Optional[Dict[str, Any]] = None) -> str:
+def package_game_zip(identity: GameIdentity, out_zip: str, composition_meta: Optional[Dict[str, Any]] = None, extra_files: Optional[Dict[str, Any]] = None) -> str:
     """Package a videogame export as a single .zip: deterministic game script +
     identity JSON + README + Windows/macOS/Linux launchers + the dependency
     install scripts (copy of the project-root ones) + a formats.json codec/job
     manifest. Unix executables keep their mode attribute inside the archive so
     they are runnable after extraction.  The script's only runtime imports are
     stdlib + PyQt6 (UI), so the package itself is complete — unpack any one
-    folder and launch; install_deps_* provisions a fresh machine."""
+    folder and launch; install_deps_* provisions a fresh machine.  extra_files
+    (name → json-serializable) are written into the package first."""
     tmpdir = tempfile.mkdtemp(prefix="groovebox_game_pkg_")
     try:
-        export_game_files(identity, tmpdir, composition_meta)
+        export_game_files(identity, tmpdir, composition_meta, extra_files)
         os.makedirs(os.path.dirname(os.path.abspath(out_zip)) or ".", exist_ok=True)
         with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED) as zf:
             for name in sorted(os.listdir(tmpdir)):
