@@ -53,7 +53,7 @@ import weakref
 import numpy as np
 
 from dj_effects import CommutativePairSpace, LiveDJEffects
-from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer, QObject, pyqtSignal, QRunnable, QThreadPool
+from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer, QObject, pyqtSignal, QRunnable, QThreadPool, QSize
 import composition_state as _composition_state
 from PyQt6.QtGui import (
     QPainter, QPen, QColor, QPainterPath, QLinearGradient, QRadialGradient, QBrush, QFont, QPolygonF,
@@ -1761,67 +1761,6 @@ class MeumModulatedOscillator:
         self.phase = float(phase)
         self.sample_index = 0
         return self
-
-# ---------------------------------------------------------------------------
-# CANONICAL UNISON SPECTRAL FIT
-# A single specimen is the source; voice-local AM/FM/PM/shift are correlated
-# around the unison center.  These are deterministic fit parameters, not an
-# additional random modulation source.  The solver prefers phase first, then
-# tiny spectral shift, then FM/AM as progressively more invasive corrections.
-# ---------------------------------------------------------------------------
-def canonical_unison_fit_params(voice_index, voice_count, seed=0.0):
-    """Return correlated per-voice unison AM/FM/PM/shift parameters.
-
-    The center voice is unchanged. Outer voices receive symmetric, bounded
-    deviations so the result remains one specimen expressed as a unison field.
-    """
-    n = max(1, int(voice_count))
-    i = int(voice_index)
-    if n <= 1:
-        return {"shift_cents": 0.0, "fm_depth": 0.0, "fm_rate": 0.0,
-                "pm_depth": 0.0, "pm_rate": 0.0, "am_depth": 0.0, "am_rate": 0.0}
-    center = 0.5 * (n - 1)
-    x = (i - center) / max(center, 1.0)
-    # Deterministic seed phase only rotates the correlation field; it does not
-    # create an independent random modulation family for each voice.
-    seed_phase = math.tau * ((_stable_hash(f"unison|{seed}", 1000000) / 1000000.0) - 0.5)
-    phase = math.sin(seed_phase + x * math.pi * 0.5)
-    return {
-        "shift_cents": 7.5 * x,
-        "fm_depth": 0.018 * x,
-        "fm_rate": 0.35 + 0.15 * abs(x),
-        "pm_depth": 0.075 * phase,
-        "pm_rate": 0.45 + 0.10 * abs(x),
-        "am_depth": 0.035 * abs(x),
-        "am_rate": 0.30 + 0.10 * abs(x),
-    }
-
-
-def _apply_unison_spectral_fit_to_modulation(base_ctx, fit):
-    """Overlay correlated unison corrections on an existing modulation context."""
-    c = dict(base_ctx or {})
-    # Existing modulation remains the canonical baseline; fit corrections are
-    # deliberately small and symmetric so they enrich rather than replace it.
-    c["fm_depth"] = float(np.clip(float(c.get("fm_depth", 0.0)) + fit["fm_depth"], -0.95, 0.95))
-    c["pm_depth"] = float(np.clip(float(c.get("pm_depth", 0.0)) + fit["pm_depth"], -math.pi, math.pi))
-    c["am_depth"] = float(np.clip(float(c.get("am_depth", 0.0)) + fit["am_depth"], 0.0, 1.0))
-    c["fm_rate"] = max(0.0, float(c.get("fm_rate", 1.0)) + fit["fm_rate"])
-    c["pm_rate"] = max(0.0, float(c.get("pm_rate", 1.0)) + fit["pm_rate"])
-    c["am_rate"] = max(0.0, float(c.get("am_rate", 1.0)) + fit["am_rate"])
-    return c
-
-
-def nyquist_safe_harmonic_order(f0, sample_rate, requested, margin=0.94):
-    """Return the highest harmonic whose center frequency fits the Nyquist band."""
-    try:
-        f = max(float(f0), 1e-9)
-        sr = max(float(sample_rate), 1.0)
-        req = max(1, int(requested))
-        return max(1, min(req, int((sr * 0.5 * float(margin)) // f)))
-    except Exception:
-        return max(1, int(requested))
-
-
 def _parse_if_elif_shorthand(text):
     """Parse if/elif[/elif...] chains into a Python ternary expression string.
 
@@ -3366,13 +3305,6 @@ def canonical_macro_defaults(ctx, i):
         "am_depth": float(np.clip(MEUM_NORM * 0.2 + MEUM_NORM * ctx * 0.5, 0.0, 0.40)),
         "am_rate": float(MEUM_NORM + MEUM * ctx),
         "fm_depth": float(np.clip(MEUM_NORM * 0.1 + MEUM_NORM * ctx * 0.1, 0.0, 0.18)),
-        "unison_shift_cents": 0.0,
-        "unison_am_depth": 0.0,
-        "unison_am_rate": 0.0,
-        "unison_fm_depth": 0.0,
-        "unison_fm_rate": 0.0,
-        "unison_pm_depth": 0.0,
-        "unison_pm_rate": 0.0,
         "fm_rate": float(MEUM_SQ * ctx + MEUM_INV),
         "pm_depth": float(np.clip(MEUM_NORM * 0.2 + MEUM_NORM * ctx * 0.2, 0.0, 0.35)),
         "pm_rate": float(MEUM_SQ * ctx + MEUM_INV),
@@ -14608,6 +14540,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.init_ui_components()
         self.initialize_default_playlist_memory()
         self._ensure_sequence_banks_after_resize()
+        # All controls/text are now instantiated; capture their baseline metrics
+        # once and scale them from that baseline on every main-window resize.
+        QTimer.singleShot(0, self._init_responsive_ui_scaling)
         self._composition_generation_guard = False
         self._live_source_update_pending = False
         self._composition_generation_counter = 0
@@ -14681,6 +14616,86 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
 
+    # RESPONSIVE_UI_SCALE_2026: one proportional scale governs control geometry,
+    # widget fonts, and stylesheet-declared text sizes.  This deliberately lives
+    # at the main-window level so nested panels inherit the same scale rather than
+    # each panel inventing its own fixed pixel geometry.
+    def _init_responsive_ui_scaling(self):
+        try:
+            self._responsive_base_size = QSize(self.width(), self.height())
+        except Exception:
+            self._responsive_base_size = QSize(1300, 950)
+        self._responsive_widgets = []
+        root = self.centralWidget()
+        if root is None:
+            return
+        for w in [root] + root.findChildren(QWidget):
+            try:
+                if w is self.parametric_background:
+                    continue
+                f = w.font()
+                ss = w.styleSheet() or ""
+                self._responsive_widgets.append({
+                    "widget": weakref.ref(w),
+                    "font": QFont(f),
+                    "style": ss,
+                    "min": QSize(w.minimumWidth(), w.minimumHeight()),
+                    "max": QSize(w.maximumWidth(), w.maximumHeight()),
+                    "fixed": (w.minimumWidth() == w.maximumWidth() and w.minimumHeight() == w.maximumHeight()
+                              and w.minimumWidth() > 0 and w.minimumHeight() > 0),
+                })
+            except Exception:
+                continue
+        self._apply_responsive_ui_scale()
+
+    def _apply_responsive_ui_scale(self):
+        """Scale UI text and fixed geometry continuously with the main window."""
+        try:
+            bw = max(1, self._responsive_base_size.width())
+            bh = max(1, self._responsive_base_size.height())
+            scale = min(self.width() / bw, self.height() / bh)
+            # Keep controls usable on very small windows while still allowing
+            # genuine enlargement on large displays.
+            scale = max(0.62, min(1.75, float(scale)))
+            self._responsive_scale = scale
+            font_re = re.compile(r"font-size\\s*:\\s*([0-9]+(?:\\.[0-9]+)?)px", re.I)
+            for item in getattr(self, "_responsive_widgets", []):
+                w = item["widget"]()
+                if w is None:
+                    continue
+                try:
+                    base_font = item["font"]
+                    f = QFont(base_font)
+                    base_pt = f.pointSizeF()
+                    if base_pt > 0:
+                        f.setPointSizeF(max(6.0, base_pt * scale))
+                        w.setFont(f)
+
+                    base_style = item["style"]
+                    if base_style:
+                        def repl(m):
+                            return f"font-size: {max(6.0, float(m.group(1)) * scale):.2f}px"
+                        w.setStyleSheet(font_re.sub(repl, base_style))
+
+                    # Fixed-size controls should grow/shrink with the window.
+                    if item["fixed"]:
+                        bmin = item["min"]
+                        w.setFixedSize(max(1, int(bmin.width() * scale)),
+                                       max(1, int(bmin.height() * scale)))
+                    else:
+                        # Do not let historical hard minimums prevent the layout
+                        # from shrinking. Retain only genuinely useful tiny minima.
+                        bmin = item["min"]
+                        if bmin.width() > 1 or bmin.height() > 1:
+                            w.setMinimumSize(max(0, int(bmin.width() * scale)),
+                                              max(0, int(bmin.height() * scale)))
+                except Exception:
+                    continue
+            self._sync_square_visuals()
+            self._sync_parametric_background_geometry()
+        except Exception:
+            pass
+
     def _sync_parametric_background_geometry(self):
         """Keep the full-window math field sized to the central widget.
 
@@ -14701,14 +14716,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._sync_parametric_background_geometry()
-        # LAYOUT_STABILITY_FIX_2026: playback state must not select a different
-        # geometry algorithm.  Every resize uses the same proportional layout,
-        # while a queued second pass lets Qt finish button/style/layout changes
-        # before the monitor bounds are measured.
         try:
-            self._sync_square_visuals()
-            QTimer.singleShot(0, self._sync_square_visuals)
+            self._apply_responsive_ui_scale()
+            self._sync_parametric_background_geometry()
+            QTimer.singleShot(0, self._apply_responsive_ui_scale)
         except Exception:
             pass
 
@@ -24927,12 +24938,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     _voice_decay = float(_voice_rng.uniform(0.82, 1.18))
                     _voice_mod_rate = float(_voice_rng.uniform(0.71, 1.37)) * _node_mod_rate
                 # Derived modulation must be computed after the per-voice identity
-                # fields above are initialized. In full unison, use one specimen
-                # with correlated parametric AM/FM/PM/shift instead of arbitrary
-                # independent voice modulation.
-                _unison_fit = canonical_unison_fit_params(op_idx, len(active_cluster), _voice_seed) if full_unison else {
-                    "shift_cents": 0.0, "fm_depth": 0.0, "fm_rate": 0.0,
-                    "pm_depth": 0.0, "pm_rate": 0.0, "am_depth": 0.0, "am_rate": 0.0}
+                # fields above are initialized. This also keeps every voice's
+                # modulation field independent and deterministic.
                 # MASTER_FX_FIX_2026: base_eqr is a master-mix effect only; the
                 # per-voice dynamic_eqr multiplier was removed so the EQR effect
                 # can never factor into the unison canonical engines.
@@ -24967,11 +24974,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # Seed-driven harmonic ↔ entropy continuum (authoritative voice).
                 # Engines / seed scripts define character HERE. Later stages must
                 # not spectral-fit or convolute these voices back into one shape.
-                # Correlated per-voice spectral shift is the least invasive
-                # way to keep useful detail when neighboring unison partials
-                # would otherwise cancel exactly.
-                if full_unison:
-                    seed_freq = seed_freq * (2.0 ** (float(_unison_fit["shift_cents"]) / 1200.0))
                 f0 = np.maximum(seed_freq, AUDIBLE_LO_HZ)
 
                 # Canonical AM/FM/PM: driven by whatever the randomizers /
@@ -24981,8 +24983,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # per-instrument state if no nested context exists yet.
                 _meum_ctx_raw = st.get("meum_modulation", st)
                 _meum_ctx = _meum_ctx_raw if isinstance(_meum_ctx_raw, dict) else st
-                if full_unison:
-                    _meum_ctx = _apply_unison_spectral_fit_to_modulation(_meum_ctx, _unison_fit)
                 _fm_ratio, _pm_offset, _am_gain = meum_modulation_vectors(local_t, _meum_ctx)
 
                 # FM: integrate the modulated instantaneous frequency into phase
@@ -25070,15 +25070,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # runtime computation. It also keeps neighboring instrument
                 # slots' partial counts close together, which is part of what
                 # makes them blend into one mass instead of standing apart.
-                # Harmonic budget is determined by the actual current specimen
-                # frequency and sample rate, with a small safety margin.  Do not
-                # manufacture an arbitrary roster-index cap: preserve every
-                # representable harmonic and let unison modulation move useful
-                # detail into the representable band.
-                _max_partial = nyquist_safe_harmonic_order(
-                    float(np.max(f0)) if np.size(f0) else float(seed_freq),
-                    sample_rate, n_harm, margin=0.94
-                )
+                _max_partial = INSTRUMENT_PARTIAL_CAP_48[_vo % 48]
                 n_harm = max(1, min(n_harm, _max_partial))
                 # GOAVA = hard-composed pure sine; other engines free waveform.
                 # Live mod (AM/FM/PM) still routes through phase/_am_gain for all.
@@ -25127,9 +25119,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     amp_i = (0.25 + 0.6 * entropy) / (h ** (0.9 + 0.4 * entropy))
                     ph0 = ((_s_int * h * 31 + _vo * 11) % 1000) / 1000.0 * math.tau
                     inh = inh + amp_i * np.sin(phase * ratio + ph0)
-                # No hidden entropy-triggered FM family.  Any FM in the
-                # canonical unison is explicit and parametrically correlated
-                # through _meum_ctx / _unison_fit above.
+                if entropy > 0.1:
+                    fm_ratio = 1.0 + ((_s_int % 19) / 19.0) * 3.0 * entropy
+                    fm_depth = (0.05 + 0.55 * entropy) * (0.5 + 0.5 * k1)
+                    harm = harm * np.cos(fm_depth * np.sin(phase * fm_ratio))
                 voice_raw = (1.0 - entropy) * harm + entropy * inh
                 # HARDCODE_UNISON_2026 / SMOOTH_OUTPUT_2026: the old high-entropy
                 # branch ran a soft tanh saturation whose knee shifted with
