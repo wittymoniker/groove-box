@@ -5301,7 +5301,7 @@ class VideoSynthEngine:
         return pts
 
 
-    
+
     def reset_camera(self):
         """Return scenograph camera to origin view (shared by double-click + Quick Edit)."""
         for attr, val in (("_cam_yaw", 0.0), ("_cam_pitch", 0.0), ("_cam_distance", None),
@@ -5478,7 +5478,7 @@ class VideoSynthEngine:
                     self._dot(img, x, y, col, 0.22 + 0.18 * self._rms, r=1 + (j % 3))
         except Exception:
             pass
-        
+
         # Generic catalog items (up to 64): soft dots / arcs when dedicated drawers absent
         try:
             active = self._active_scenograph_names()
@@ -7634,10 +7634,16 @@ class ReadmeGuideDialog(QDialog):
 
     HELP_TEXT = r"""
 ================================================================================
-  MATHEMATICIAN'S GROOVEBOX — Mathematician's / Scientist's Groovebox
+  EQR GROOVEBOX — Mathematician's / Scientist's Groovebox
   Full Documentation, Scripting Syntax & Design Philosophy
 ================================================================================
-  Credits: ESKI (NOAH G KING), VIBECODER
+  Credits: core EQR design — project author; implementation assistance —
+  Grok (xAI), Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI),
+  Mistral.ai (Mistral), Meta AI (Meta), GitHub Copilot (GitHub),
+  and Cursor Grok 4.6 (polyphony, unison memory, visualizer).
+  Maintenance + level-up fixes (GOAVA pitch DC-centering, dead-code dedup,
+  canonical-state fingerprint, UI layout stability, engaged randomizer
+  colors): opencode (anomalyco).
 
 --------------------------------------------------------------------------------
 1. GOAL OF THE SOFTWARE
@@ -17458,8 +17464,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.step_editor_popup.hide()
         self.selected_step_idx = None
 
-        # Master Volume row: volume + Operator Theory on the left; Clip/Gain,
-        # Row Sparse, and Peak on the right. EQR Z readout removed (monitor noise).
+        # Master Volume row: volume + Operator Theory left; Clip/Gain, Row Sparse, Peak right.
+        # EQR Z readout removed.
         master_vol_row = QHBoxLayout()
         master_vol_row.setSpacing(8)
         master_vol_row.addWidget(QLabel("Master Volume:"))
@@ -17473,7 +17479,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.lbl_master_vol.setStyleSheet("color: #f5d97d;")
         master_vol_row.addWidget(self.lbl_master_vol)
 
-        # Operator Theory on the master-volume row (moved up from GLOBAL · EFFECTS)
         self.btn_operator_theory = QPushButton("Use Operator Theory")
         self.btn_operator_theory.setCheckable(True)
         self.btn_operator_theory.setChecked(False)
@@ -17481,10 +17486,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_operator_theory.setMaximumHeight(32)
         self.btn_operator_theory.setMinimumWidth(140)
         self.btn_operator_theory.setToolTip(
-            "Operator Theory (book p.49-50): re-encode master bus, EQR tensor "
-            "(Z = ot_add(ot_prod(P,E), D)), and game angles/residues through "
-            "the alternative arithmetic. OFF by default — canonical renders "
-            "stay byte-identical."
+            "Operator Theory (book p.49-50): re-encode master bus, EQR tensor, "
+            "and game angles/residues through ot_* arithmetic. OFF by default."
         )
         self.btn_operator_theory.setStyleSheet(
             "QPushButton { background-color:#1a1228; color:#e0c4ff; border:2px solid #c77dff; "
@@ -17498,7 +17501,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         master_vol_row.addStretch(1)
 
-        # RIGHT side: Clip/Gain + Row Sparse + Peak (not stacked above monitors)
         master_vol_row.addWidget(QLabel("Clip/Gain:"))
         self.spin_clip_ratio = QDoubleSpinBox()
         self.spin_clip_ratio.setRange(0.0, 100.0)
@@ -17507,8 +17509,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_clip_ratio.setValue(50.0)
         self.spin_clip_ratio.setFixedWidth(72)
         self.spin_clip_ratio.setToolTip(
-            "Clip-density ⇄ gain-max balance (0=max gain, 100=clip-free, 50=balanced). "
-            "Deterministic; never in the fingerprint."
+            "Clip-density vs gain-max (0=max gain, 100=clip-free, 50=balanced). Off-fingerprint."
         )
         self.spin_clip_ratio.valueChanged.connect(self._on_clip_ratio_changed)
         master_vol_row.addWidget(self.spin_clip_ratio)
@@ -17521,9 +17522,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         self.chk_sparse_mask = QCheckBox("Row Sparse")
         self.chk_sparse_mask.setChecked(False)
-        self.chk_sparse_mask.setToolTip(
-            "Per-row instrument subgroup from (seed, row). Off-canonical."
-        )
+        self.chk_sparse_mask.setToolTip("Per-row instrument subgroup from (seed, row). Off-canonical.")
         self.chk_sparse_mask.toggled.connect(self._on_sparse_mask_toggled)
         master_vol_row.addWidget(self.chk_sparse_mask)
         self.spin_sparse_density = QDoubleSpinBox()
@@ -17544,7 +17543,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.lbl_peak_hold = QLabel("-∞ dBFS")
         self.lbl_peak_hold.setStyleSheet("color: #f5d97d;")
         master_vol_row.addWidget(self.lbl_peak_hold)
-        # Keep lbl_eqr_bands as a hidden stub so any live update paths stay safe
         self.lbl_eqr_bands = QLabel("")
         self.lbl_eqr_bands.setVisible(False)
 
@@ -24822,6 +24820,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # identity is untouched and the profile is exactly reproducible from
         # the one documented ratio carried in export provenance.
         try:
+            if operator_theory_enabled() and len(master) > 0:
+                master = ot_master_transform(master)
+        except Exception as _ot_exc:
+            print(f"[OT] master transform skipped: {_ot_exc}")
+        try:
             master, _cg = self._clip_gain_profile(master, sample_rate)
         except Exception as _cg_exc:
             print(f"[ClipGain] profile skipped: {_cg_exc}")
@@ -25645,6 +25648,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
     # =========================================================================
     # MODIFIED TOGGLE HANDLERS
     # =========================================================================
+
+    def _on_operator_theory_toggled(self, checked):
+        """Master Operator Theory toggle — DSP + EQR + game lattice share one flag."""
+        enabled = bool(checked)
+        try:
+            set_operator_theory(enabled)
+        except Exception as exc:
+            print(f"[OT] set_operator_theory: {exc}")
+        try:
+            if _vge is not None and hasattr(_vge, "set_operator_theory"):
+                _vge.set_operator_theory(enabled)
+        except Exception as exc:
+            print(f"[OT] vge.set_operator_theory: {exc}")
+        try:
+            if hasattr(self, "scope_status_label") and self.scope_status_label is not None:
+                self.scope_status_label.setText(
+                    "Operator Theory ON — EQR/master/game use ot_* arithmetic"
+                    if enabled else
+                    "Operator Theory OFF — classical arithmetic"
+                )
+        except Exception:
+            pass
 
     def _on_goava_toggled(self, checked):
         """Modified to use perfect unison system"""
