@@ -7372,28 +7372,43 @@ def _enforce_ui_layer_order(app):
     except Exception:
         pass
 
-    # Monitors/scenograph are a dedicated visual layer above ordinary panels.
-    visual_names = {
-        "visual_oscilloscope", "video_synth_viewer", "spectrum_analyzer",
-        "_visual_container"
-    }
-    for name in visual_names:
-        try:
-            w = getattr(app, name, None)
-            if w is not None and w.parentWidget() is not None:
-                w.raise_()
-                w.show()
-        except Exception:
-            pass
+    # Visuals are one dedicated, mouse-transparent overlay layer.  Raise the
+    # container as a sibling of the ordinary content, then raise the actual
+    # canvases inside it.  The canvases remain visible but never steal clicks
+    # from buttons/panels underneath.
+    try:
+        vc = getattr(app, "_visual_container", None)
+        if vc is not None and vc.parentWidget() is cw:
+            vc.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            vc.show()
+            vc.raise_()
+            for w in (getattr(app, "visual_oscilloscope", None),
+                      getattr(app, "video_synth_viewer", None),
+                      getattr(app, "spectrum_analyzer", None)):
+                if w is not None and w.parentWidget() is vc:
+                    w.show()
+                    w.raise_()
+    except Exception:
+        pass
 
-    # Within a shared parent, buttons are the top interaction layer.  This does
-    # not raise a button across another parent, so layout structure is preserved.
+    # Ordinary actionable widgets keep their local sibling order.  Do not
+    # globally raise arbitrary panel widgets: that was allowing panel chrome
+    # to leap over controls belonging to another layer.
     try:
         for parent in cw.findChildren(QWidget):
-            children = list(parent.children())
-            for child in children:
+            for child in list(parent.children()):
                 if isinstance(child, QAbstractButton) and child.isVisible():
                     child.raise_()
+    except Exception:
+        pass
+
+    # Re-raise the visual overlay after local button ordering so panel chrome
+    # cannot paint over the monitors.  It is mouse-transparent, so this is a
+    # paint-layer operation only.
+    try:
+        vc = getattr(app, "_visual_container", None)
+        if vc is not None and vc.parentWidget() is cw:
+            vc.raise_()
     except Exception:
         pass
 
@@ -18575,10 +18590,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if widget is self.visual_oscilloscope and getattr(self, "_media_speed_row", None) is not None:
                 col.addLayout(self._media_speed_row)
             if is_square:
-                widget.setMinimumSize(260, 260)
+                widget.setMinimumSize(0, 0)
                 widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             else:
-                widget.setMinimumSize(110, 240)
+                widget.setMinimumSize(0, 0)
                 widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             widget.setMaximumSize(16777215, 16777215)
             col.addWidget(
@@ -18591,8 +18606,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             visual_pair.addLayout(col, stretch=(2 if is_square else 1))
         visual_container = QWidget()
         visual_container.setLayout(visual_pair)
-        visual_container.setMinimumHeight(280)
+        visual_container.setMinimumSize(0, 0)
         visual_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        visual_container.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._visual_container = visual_container
         master_container.addWidget(visual_container, stretch=12)
 
@@ -25705,7 +25721,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 master = ot_master_transform(master)
         except Exception as _ot_exc:
             print(f"[OT] master transform skipped: {_ot_exc}")
-        return master.astype(np.float32), sample_rate
+
+        # MASTER_VOLUME_PRECLIP_2026: master volume is a true final-bus gain
+        # stage, immediately before the output hard ceiling.  It therefore
+        # changes level without becoming part of any canonical voice/unison
+        # calculation, and the eventual output clamp sees the user-selected
+        # volume rather than clipping first and attenuating afterward.
+        try:
+            _mv = float(np.clip(float(getattr(self, "master_volume", 1.0)), 0.0, 1.0))
+        except Exception:
+            _mv = 1.0
+        master = (master * np.float32(_mv)).astype(np.float32)
+        return master, sample_rate
 
     def _clip_gain_profile(self, master, sample_rate):
         """Longitudinal CLIP-DENSITY ⇄ GAIN-MAXIMIZATION profile.
@@ -26993,7 +27020,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             n = min(frames, remaining)
             if n > 0:
                 start_sample = int(self.play_cursor)
-                chunk = self.play_buffer[start_sample:start_sample + n] * self.master_volume
+                chunk = self.play_buffer[start_sample:start_sample + n]
                 # VIDEO_TO_SOFTWARE_2026: live master trim driven by the rendered
                 # scenograph energy (the video -> output half of the two-way
                 # cross-validation). Live-DJ and playback dynamics only — the
