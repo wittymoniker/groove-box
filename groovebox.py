@@ -53,7 +53,7 @@ import weakref
 import numpy as np
 
 from dj_effects import CommutativePairSpace, LiveDJEffects
-from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer
+from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer, QObject, pyqtSignal, QRunnable, QThreadPool
 import composition_state as _composition_state
 from PyQt6.QtGui import (
     QPainter, QPen, QColor, QPainterPath, QLinearGradient, QRadialGradient, QBrush, QFont, QPolygonF,
@@ -2562,6 +2562,23 @@ def entropy_draw_0_1(s_abs, s_frac, s_int, vo):
 # ============================================================================
 _VISUAL_ENGINE_CHANNELS = ("randomizer", "phase_lock", "idealize_rhythm", "seeded", "goava")
 
+# INSTRUMENT_REPARTITION_2026: the composition has one fixed 64-slot
+# deterministic identity lattice.  Instrument Count selects/repartitions that
+# lattice; it never changes the underlying seed-derived material.
+CANONICAL_MASTER_SLOTS = 64
+
+def canonical_master_slot(voice_index: int, instrument_count: int) -> int:
+    """Map a live voice onto a unique, evenly distributed master slot.
+
+    For N<=64 this is an injective deterministic selection from the same
+    64-slot composition lattice.  Thus changing N changes factorization, not
+    the mathematical source of the composition.
+    """
+    n = max(2, min(CANONICAL_MASTER_SLOTS, int(instrument_count or 2)))
+    i = max(0, min(n - 1, int(voice_index)))
+    # Midpoint quantization distributes N voices across the fixed 64-slot bank.
+    return min(CANONICAL_MASTER_SLOTS - 1, int(((2 * i + 1) * CANONICAL_MASTER_SLOTS) / (2 * n)))
+
 def canonical_visual_instrument(slot, ctx, flags):
     """Per-instrument 2.5D parameters mirroring the audio voice pass.
 
@@ -2573,8 +2590,9 @@ def canonical_visual_instrument(slot, ctx, flags):
     voice (base_freq, ratio, s_int, entropy, phase0, meum fm/pm/am set,
     max_partial) plus the 2.5D structural co-ordinates the frame needs.
     """
-    n_inst = int(ctx.get("n_inst", 48))
+    n_inst = int(ctx.get("n_inst", CANONICAL_MASTER_SLOTS))
     i = int(slot) % max(2, n_inst)
+    master_i = canonical_master_slot(i, n_inst)
     fu = bool(ctx.get("full_unison"))
     seedv = float(ctx.get("seed", 0.0))
     s_int = int(ctx.get("s_int", int(_safe_int_seed(seedv)) or 1))
@@ -2600,9 +2618,9 @@ def canonical_visual_instrument(slot, ctx, flags):
         phase0 = 0.0
     else:
         bf = base * _pow
-        sr = float(_seed_to_pitch_ratio(seedv, i, i))
-        ent = float(entropy_draw_0_1(s_abs, s_frac, s_int, i))
-        phase0 = float(INSTRUMENT_PHASE_LOCK_48[i % 48])
+        sr = float(_seed_to_pitch_ratio(seedv, master_i, master_i))
+        ent = float(entropy_draw_0_1(s_abs, s_frac, s_int, master_i))
+        phase0 = float(INSTRUMENT_PHASE_LOCK_48[master_i % 48])
     # Symmetric equal-influence engine channels (each active = k5*0.5, else 0).
     ch_rnd = (0.5 if eng.get("randomizer") else 0.0) * k5   # spread axis
     ch_ph = (0.5 if eng.get("phase_lock") else 0.0) * k5    # twist axis
@@ -2627,7 +2645,7 @@ def canonical_visual_instrument(slot, ctx, flags):
     pack = 0.62 + 0.60 * _pow * (1.0 + 0.8 * (ch_seed - 0.5 * k5))
     max_partial = int(INSTRUMENT_PARTIAL_CAP_48[i % 48])
     verts = int(4 + (max_partial % 6) + int(ch_euc * 6.0))
-    hue = float(math.fmod(i * (360.0 / max(2.0, n_inst)) + i * 7 + ch_goa * 90.0, 360.0))
+    hue = float(math.fmod(master_i * (360.0 / CANONICAL_MASTER_SLOTS) + master_i * 7 + ch_goa * 90.0, 360.0))
     # HARMONIC_CANCELLATION_ALIGNMENT_2026: color shading, translucency and
     # 2.5D depth follow the harmonic cancellation envelope of the SOUND.  Under
     # the union every voice shares identity + phase carry (max reinforcement),
@@ -4642,7 +4660,9 @@ class VideoSynthEngine:
             k_pow = min(35, k_pow + max(0, len(seed_list) - 1) // 2)
         # Volume shell scale from 2^M / M^2 partner
         vol_s = float(MEUM_TWO_POW_OVER_SQ) * (0.5 + 0.5 * self._peak) * (0.6 + 0.4 * snap["eqr"])
-        vol_s *= float(np.clip(0.85 + 0.15 * min(8, int(snap.get("ensemble", 1) or 1)) / 8.0, 0.85, 1.15))
+        # Instrument Count does not create decorative complexity; spectral/audio
+        # activity above is the source of this visual scale.
+        vol_s *= float(np.clip(0.90 + 0.20 * self._harmonic_activity, 0.90, 1.10))
         # Line density from log2(M) · BPM coupling
         line_d = MEUM_LOG2 * (0.5 + 0.5 * (snap["bpm"] / 140.0)) * (0.4 + 0.6 * snap["fractal"])
         if snap.get("canonical_count"):
@@ -4729,18 +4749,31 @@ class VideoSynthEngine:
         e = float(self._rms)
         seed = float(st.get("snap", {}).get("seed", 0.0))
         n = max(2, int(round(getattr(self, "_render_n", self.n))))
-        # Low-amplitude camera motion: enough parallax to reveal depth without
-        # making the composition unstable. Seed keeps exports reproducible.
-        self._cam_yaw = (0.10 * math.sin(self.t * 0.17 + seed * 0.0017) + 0.055 * ph
+        # Cinematic default camera: a gentle 3/4 view reveals depth and
+        # separation much better than the former near-front view. Motion is
+        # deliberately slow and multi-frequency so the scene feels alive
+        # without the seasick/jittery effect of fast camera oscillation.
+        # The seed only changes phase, so the animation remains deterministic.
+        base_yaw = math.radians(28.0)
+        base_pitch = math.radians(-15.0)
+        self._cam_yaw = (base_yaw
+                         + 0.075 * math.sin(self.t * 0.16 + seed * 0.0017)
+                         + 0.028 * math.sin(self.t * 0.047 + ph * math.tau * 0.35)
+                         + 0.035 * ph
                          + float(getattr(self, "_manual_yaw", 0.0)))
-        self._cam_pitch = (0.055 * math.sin(self.t * 0.11 + MEUM + seed * 0.0009)
+        self._cam_pitch = (base_pitch
+                           + 0.040 * math.sin(self.t * 0.105 + MEUM + seed * 0.0009)
+                           + 0.018 * math.sin(self.t * 0.031 + ph * math.tau)
                            + float(getattr(self, "_manual_pitch", 0.0)))
         # GOAVA commutes into the visual transform: enabling it changes the
         # camera phase and packing action, not merely the audio mix.
         goava = bool(st.get("snap", {}).get("goava", False))
         goava_phase = MEUM_NORM if goava else 0.0
-        self._cam_roll = 0.035 * math.sin(self.t * 0.07 + MEUM_INV * 2.0 + ph * math.tau + goava_phase)
-        self._cam_yaw += 0.018 * goava_phase * math.sin(self.t * MEUM_INV + seed * 0.0003)
+        # Keep roll almost imperceptible: enough to make the projection feel
+        # dimensional, but never enough to make the horizon visibly wobble.
+        self._cam_roll = (0.010 * math.sin(self.t * 0.065 + MEUM_INV * 2.0 + ph * math.tau + goava_phase)
+                          + 0.004 * math.sin(self.t * 0.021 + seed * 0.0002))
+        self._cam_yaw += 0.012 * goava_phase * math.sin(self.t * MEUM_INV + seed * 0.0003)
         # Golden-angle disk packing. sqrt radial law gives approximately
         # uniform area density; the logarithmic/implosive term shrinks objects
         # as the ensemble gets denser.
@@ -5277,10 +5310,14 @@ class VideoSynthEngine:
             ratio = float(_seed_to_pitch_ratio(seed, 0, 0))
             s_int = int(_safe_int_seed(seed) or 1)
         ctx = {"seed": seed, "base": base, "ratio": ratio, "s_int": s_int,
-               "full_unison": fu, "n_inst": self.n, "meum_depth": 1.0}
+               "full_unison": fu, "n_inst": CANONICAL_MASTER_SLOTS, "meum_depth": 1.0}
         self._canonical_ctx = ctx
         self._canonical_flags = flags
-        self._canonical = [canonical_visual_instrument(i, ctx, flags)
+        # Build the complete seed identity once.  Live Instrument Count later
+        # selects a deterministic subset/repartition of these slots.
+        self._canonical_master = [canonical_visual_instrument(i, ctx, flags)
+                                  for i in range(CANONICAL_MASTER_SLOTS)]
+        self._canonical = [self._canonical_master[canonical_master_slot(i, self.n)]
                            for i in range(self.n)]
         self._vled_full_window = fu
         if self._canonical:
@@ -5547,7 +5584,7 @@ class VideoSynthEngine:
         if fade <= 0.02:
             return
         cx, cy = w * 0.5, h * 0.46
-        arms = int(np.clip(round(2 + getattr(self, "_render_n", self.n) / 12.0 + 3.0 * getattr(self, "_harmonic_activity", 0.5)), 3, 12))
+        arms = int(np.clip(round(3 + 8.0 * getattr(self, "_harmonic_activity", 0.5)), 3, 11))
         for arm in range(arms):
             pts = []
             for k in range(72):
@@ -5565,11 +5602,11 @@ class VideoSynthEngine:
         if fade <= 0.02:
             return
         cx, cy = w * 0.5, h * 0.44
-        ring_count = int(np.clip(round(2 + getattr(self, "_render_n", self.n) / 24.0 + 2.0 * getattr(self, "_octave_boundary", 0.0)), 2, 6))
+        ring_count = int(np.clip(round(2 + 4.0 * getattr(self, "_octave_boundary", 0.0)), 2, 6))
         for ring in range(ring_count):
             pts = []
             rad = (0.18 + ring * 0.10) * st["rho"]
-            ring_points = int(np.clip(round(24 + 0.75 * getattr(self, "_render_n", self.n)), 24, 72))
+            ring_points = int(np.clip(round(28 + 44.0 * getattr(self, "_harmonic_activity", 0.5)), 28, 72))
             for k in range(ring_points):
                 a = k * math.tau / ring_points + self.t * (0.12 + ring * 0.05)
                 z = 1.0 + 0.15 * math.sin(a * 3.0 + self.t * MEUM)
@@ -5686,11 +5723,21 @@ class VideoSynthEngine:
             local = float(self.wave[i % 256])
             life = max(layer.get("life", 0.3), 0.2)
             dist = layer["distance"] * (1.0 - 0.22 * e) + 0.28 * abs(local)
-            yaw = layer["yaw"] + self.t * (0.28 + 0.55 * e + 0.18 * snap["eqr"]) + local * 0.3
-            pitch = layer["pitch"] + 0.16 * local
-            roll = layer["roll"] + 0.1 * e * math.sin(self.t * MEUM + i)
+            # Slow object-local rotation plus an audio-reactive breathing
+            # term. The old rates were visually busy; this keeps silhouettes
+            # legible while still giving every instrument its own motion.
+            yaw = (layer["yaw"]
+                   + self.t * (0.105 + 0.16 * e + 0.055 * snap["eqr"])
+                   + 0.10 * math.sin(self.t * 0.23 + i * MEUM_INV)
+                   + local * 0.22)
+            pitch = layer["pitch"] + 0.095 * local + 0.035 * math.sin(self.t * 0.19 + i * 0.37)
+            roll = layer["roll"] + 0.055 * e * math.sin(self.t * 0.31 + i * MEUM)
             n_v = max(3, 3 + int(((i * MEUM * 5.0) % 1.0) * 4))
-            scale = (0.26 + 0.32 * abs(local) + 0.14 * e) * (0.28 + 0.72 * life) * st["rho"] * float(layer.get("implode", 1.0))
+            beat = abs(math.sin(self.t * math.pi * max(1.0, float(snap.get("bpm", 120.0))) / 60.0))
+            breathe = 1.0 + 0.045 * beat * (0.35 + 0.65 * e)
+            scale = ((0.26 + 0.32 * abs(local) + 0.14 * e)
+                     * (0.28 + 0.72 * life) * st["rho"]
+                     * float(layer.get("implode", 1.0)) * breathe)
             ang0 = self.t * 0.35 + i * 0.2
             cosy, siny = math.cos(yaw), math.sin(yaw)
             cosp, sinp = math.cos(pitch), math.sin(pitch)
@@ -5827,6 +5874,31 @@ class VideoSynthEngine:
         return np.clip(img, 0, 255).astype(np.uint8)
 
 
+class _VideoRenderSignals(QObject):
+    finished = pyqtSignal(object, int, int, int)
+
+
+class _VideoRenderTask(QRunnable):
+    """Render one latest-only scenograph frame off the Qt GUI thread."""
+    def __init__(self, engine, width, height, export_mode, generation, signals):
+        super().__init__()
+        self.engine = engine
+        self.width = int(width)
+        self.height = int(height)
+        self.export_mode = bool(export_mode)
+        self.generation = int(generation)
+        self.signals = signals
+        self.setAutoDelete(True)
+
+    def run(self):
+        try:
+            frame = self.engine.render_frame(self.width, self.height, export=self.export_mode)
+            self.signals.finished.emit(frame, self.width, self.height, self.generation)
+        except Exception:
+            # A stale/failed preview must never take down the GUI thread.
+            self.signals.finished.emit(None, self.width, self.height, self.generation)
+
+
 class VideoSynthViewer(QFrame):
     """Center square: Meum 2.5D/3D scenograph."""
 
@@ -5848,7 +5920,47 @@ class VideoSynthViewer(QFrame):
         self._manual_yaw_deg = 0.0
         self._manual_pitch_deg = 0.0
         self._drag_origin = None
+        # Preview rendering is CPU-heavy. Keep it off the GUI thread and use a
+        # latest-only queue so rapid audio/UI updates cannot accumulate a backlog.
+        self._render_pool = QThreadPool(self)
+        self._render_pool.setMaxThreadCount(1)
+        self._render_signals = _VideoRenderSignals()
+        self._render_signals.finished.connect(self._on_async_frame_ready)
+        self._render_inflight = False
+        self._render_pending = None
+        self._render_generation = 0
         self.setMouseTracking(True)
+
+    def _request_async_frame(self, width=None, height=None, export=None):
+        """Schedule a latest-only frame render; never block the Qt paint path."""
+        ww = max(int(width if width is not None else self.width()), 180)
+        hh = max(int(height if height is not None else self.height()), 180)
+        ex = self.engine.export_mode if export is None else bool(export)
+        self._render_generation += 1
+        request = (ww, hh, ex, self._render_generation)
+        if self._render_inflight:
+            self._render_pending = request
+            return
+        self._render_inflight = True
+        self._render_pending = None
+        self._render_pool.start(_VideoRenderTask(self.engine, ww, hh, ex, request[3], self._render_signals))
+
+    def _on_async_frame_ready(self, frame, width, height, generation):
+        self._render_inflight = False
+        # Ignore stale frames if a newer request was made while rendering.
+        if frame is not None and int(generation) == int(self._render_generation):
+            self._frame = frame
+            try:
+                self.engine.ingest_video_frame_stats(*self.engine.frame_stats(frame))
+            except Exception:
+                pass
+            self.update()
+        pending = self._render_pending
+        self._render_pending = None
+        if pending is not None:
+            ww, hh, ex, gen = pending
+            self._render_inflight = True
+            self._render_pool.start(_VideoRenderTask(self.engine, ww, hh, ex, gen, self._render_signals))
 
     def _apply_manual_camera(self):
         """Apply the user camera angles in the full [-180°, +180°] range."""
@@ -5875,8 +5987,7 @@ class VideoSynthViewer(QFrame):
             self._drag_origin = pos
             self._apply_manual_camera()
             ww = max(self.width(), 180); hh = max(self.height(), 180)
-            self._frame = self.engine.render_frame(ww, hh, export=False)
-            self.update()
+            self._request_async_frame(ww, hh, False)
             event.accept()
             return
         super().mouseMoveEvent(event)
@@ -5894,8 +6005,7 @@ class VideoSynthViewer(QFrame):
             self._manual_pitch_deg = 0.0
             self._apply_manual_camera()
             ww = max(self.width(), 180); hh = max(self.height(), 180)
-            self._frame = self.engine.render_frame(ww, hh, export=False)
-            self.update()
+            self._request_async_frame(ww, hh, False)
             event.accept()
             return
         super().mouseDoubleClickEvent(event)
@@ -5908,29 +6018,22 @@ class VideoSynthViewer(QFrame):
             self.scope_wave = np.resize(wave_data.astype(np.float32), 100)
         ww = max(self.width(), 180)
         hh = max(self.height(), 180)
-        # Live preview only — oscilloscope/FFT are separate widgets, not composited here
-        self._frame = self.engine.render_frame(ww, hh, export=False)
-        # Two-way signal-to-output: feed the rendered frame's digest back into
-        # the software side so live output is video-aware (see _audio_callback).
-        try:
-            self.engine.ingest_video_frame_stats(*self.engine.frame_stats(self._frame))
-        except Exception:
-            pass
-        self.update()
+        # Live preview only — oscilloscope/FFT are separate widgets, not composited here.
+        # Render asynchronously and coalesce rapid updates to the newest frame.
+        self._request_async_frame(ww, hh, False)
 
     def set_mode(self, mode_idx):
         self.engine.mode = int(mode_idx)
         ww = max(self.width(), 180)
         hh = max(self.height(), 180)
-        self._frame = self.engine.render_frame(ww, hh)
-        self.update()
+        self._request_async_frame(ww, hh, False)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         ww = max(self.width(), 8)
         hh = max(self.height(), 8)
         if self._frame is None or self._frame.shape[1] != ww or self._frame.shape[0] != hh:
-            self._frame = self.engine.render_frame(ww, hh, export=self.engine.export_mode)
+            self._request_async_frame(ww, hh, self.engine.export_mode)
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -7214,9 +7317,9 @@ class ParametricMathBackground(QWidget):
                     numeric.append((key, float(obj.value()) / scale))
                 except Exception:
                     pass
-        # GOAVA is a visual input too: it changes the field's group phase, but
-        # never its bounded instance count.
-        if bool(getattr(self.app, "goava_active", False)):
+        # GOAVA is deliberately absent from the ordinary background. It only
+        # reappears for the Instrument Count easter egg (blank/0/1 input).
+        if bool(getattr(self.app, "_goava_count_easter_egg", False)):
             numeric.append(("GOAVA", 1.0))
         numeric.sort(key=lambda x: x[0])
         self._param_cache = (name, tuple(numeric), self._cycle)
@@ -17000,6 +17103,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """)
         self.spin_synth_count.setRange(2, 64)
         self.spin_synth_count.setValue(48)
+        self._goava_count_easter_egg = False
+        try:
+            # QSpinBox clamps invalid values, so watch the editor text itself
+            # before Qt normalizes it. Blank/0/1 are the intentional easter-egg
+            # triggers; ordinary 2–64 input immediately turns it back off.
+            self.spin_synth_count.lineEdit().textEdited.connect(self._on_synth_count_text_edited)
+        except Exception:
+            pass
         self.spin_synth_count.setToolTip(
             "Number of active synths (2–64). Free (unlocked) voices are "
             "re-spaced across the harmonic-geometric spectrum; user-locked "
@@ -22948,8 +23059,31 @@ class MathematiciansGrooveboxApp(QMainWindow):
         return fitted
 
 
+    def _on_synth_count_text_edited(self, text):
+        raw = str(text).strip()
+        egg = raw == "" or raw in {"0", "1"}
+        changed = egg != bool(getattr(self, "_goava_count_easter_egg", False))
+        self._goava_count_easter_egg = egg
+        if egg:
+            # Do not let the invalid transient value trigger an expensive
+            # ensemble resize. This is visual-only easter-egg state.
+            try:
+                self.parametric_background._reseed()
+                self.parametric_background.update()
+            except Exception:
+                pass
+        elif changed:
+            try:
+                self.parametric_background._reseed()
+                self.parametric_background.update()
+            except Exception:
+                pass
+
     def _on_synth_count_changed(self, new_count):
         """Resize active synth bank (2–64) with harmonic re-spacing of free voices."""
+        # Invalid typed values are an easter-egg state, not a real resize.
+        if getattr(self, "_goava_count_easter_egg", False):
+            return
         # PROJECT_UNDO_2026: snapshot the whole project before the orchestration
         # change so the resize (which re-spaces voices and refactors the playlist)
         # is fully reversible and keeps every surviving instrument's data.
@@ -24454,17 +24588,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     _s_int = _unison_s_int
                 else:
                     base_freq = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
-                    base_freq *= MEUM_POWERS_36[op_idx % 36]
+                    _master_slot = canonical_master_slot(op_idx, max(2, len(self.instrument_names_48)))
+                    base_freq *= MEUM_POWERS_36[_master_slot % 36]
                     # Per-voice evaluated seed (list scripts assign distinct numerics
                     # to each instrument instead of a shared hash/byte token).
                     try:
-                        _voice_seed = float(self.get_seed_value_for_index(op_idx, t_value=float(local_t[0]) if len(local_t) else 0.0))
+                        _voice_seed = float(self.get_seed_value_for_index(_master_slot, t_value=float(local_t[0]) if len(local_t) else 0.0))
                     except Exception:
                         _voice_seed = float(self.get_numeric_seed() or 0.0)
                     # >>> GROK_EDIT_BEGIN: render_seed_pitch
                     # Seed → real scale degree (~2 octaves). Tiny detunes were inaudible
                     # so every seed still "hit the same notes".
-                    _seed_ratio = float(_seed_to_pitch_ratio(_voice_seed, op_idx, 0))
+                    _seed_ratio = float(_seed_to_pitch_ratio(_voice_seed, _master_slot, 0))
                     # Stable integer seed must exist before any per-voice identity
                     # fields use it.  Keep this local and deterministic.
                     _s_int = int(_safe_int_seed(_voice_seed))
@@ -24472,7 +24607,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # FULL_UNISON_2026: synthesis-identity terms keyed to the roster
                 # slot collapse to constant 0 under unison; outside the unison
                 # _vo == op_idx exactly (behavior unchanged).
-                _vo = 0 if full_unison else op_idx
+                _vo = 0 if full_unison else canonical_master_slot(op_idx, max(2, len(self.instrument_names_48)))
                 # Absolute identity anchor survives ensemble resizing.  It is only
                 # established by the resize transaction (or for new identities), so
                 # ordinary synthesis remains compatible with the global base control.
@@ -25417,7 +25552,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "E" if (getattr(self, "btn_idealize_rhythm", None) and self.btn_idealize_rhythm.isChecked()) else "-",
                 "S" if (getattr(self, "btn_seeded_randomize", None) and self.btn_seeded_randomize.isChecked()) else "-",
                 f"ts{toggle_digest}",
-                f"n{int(self.spin_synth_count.value()) if hasattr(self, 'spin_synth_count') else 48}",
+                # Instrument Count is a rendering/repartition choice, not part
+                # of the seed/composition identity.
             ]
             raw = "|".join(parts).encode("utf-8")
             return hashlib.sha256(raw).hexdigest()[:10]
