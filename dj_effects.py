@@ -128,7 +128,8 @@ class LiveDJEffects:
         mod_hz = 0.25 + 0.35 * (abs(raw) % 11.0) + (float(bpm) / 60.0) * (0.5 + d.spread)
         mod = np.sin(math.tau * mod_hz * t + d.phase).astype(np.float32)
         drive = 1.0 + 2.8 * (0.25 + 0.75 * d.ratio) * amt
-        wet = np.tanh(x * drive) * (0.78 + 0.22 * mod)
+        # Dual-mode drive, no tanh saturation.
+        wet = (x * drive) * (0.78 + 0.22 * mod)
         # Preserve polarity while giving the GOAVA scalar a musically obvious sideband.
         wet += x * (0.16 * amt) * mod
         return self._mix(x, wet, min(0.75, 0.55 * amt))
@@ -147,7 +148,8 @@ class LiveDJEffects:
         lfo2 = np.sin(math.tau * beat * (1.0 + d.ratio) * t + seed_phase * 0.37 + d.phase * 1.7)
         # Parametric waveshaper + gated tremolo.  No RNG calls in the audio thread.
         drive = 1.0 + amt * (1.5 + 2.5 * (0.5 + 0.5 * lfo1))
-        shaped = np.tanh(x * drive) / np.tanh(drive)
+        # Dual-mode drive without tanh soft-clip; scale only.
+        shaped = x * drive
         trem = 0.72 + 0.28 * (0.5 + 0.5 * lfo2)
         wet = shaped * trem
         # A tiny phase-dependent bipolar component makes adjacent pair IDs audible.
@@ -163,4 +165,5 @@ class LiveDJEffects:
         gain = self._boost_gain(y.size, start_sample)
         if gain is not None:
             y = y * gain
-        return np.clip(y, -1.0, 1.0).astype(np.float32, copy=False)
+        # No final saturation / hard clip — return the linear mix as-is.
+        return y.astype(np.float32, copy=False)

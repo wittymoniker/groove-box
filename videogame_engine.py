@@ -109,6 +109,29 @@ SOFTWARE_KINDS = (
     "ide_lite",           # seeded code buffer + run-sim (no arbitrary exec)
 )
 
+SOFTWARE_INPUT_SCHEMAS = {
+    "videogame": {"required": ["seed", "time", "player_input"], "optional": ["audio_rms", "phase", "composition_fingerprint"]},
+    "network_tool": {"required": ["seed", "time", "peer_events"], "optional": ["host_port", "player_input"]},
+    "utility": {"required": ["seed", "command"], "optional": ["numeric_value", "text"]},
+    "simulator": {"required": ["seed", "time", "initial_state"], "optional": ["parameters", "player_input"]},
+    "media_player": {"required": ["seed", "time", "media_index"], "optional": ["audio_rms", "visual_phase"]},
+    "radio_toolkit": {"required": ["seed", "frequency", "mode"], "optional": ["morse_text", "waterfall_time"], "safety": "simulation_only_no_tx"},
+    "data_viz": {"required": ["seed", "dataset"], "optional": ["x_field", "y_field", "time"]},
+    "chat_server": {"required": ["seed", "peer_events", "message"], "optional": ["host_port"]},
+    "protocol_lab": {"required": ["seed", "state", "event"], "optional": ["trace"]},
+    "instrument_lab": {"required": ["seed", "instrument_index"], "optional": ["patch_state", "sequence_state"]},
+    "office_suite": {"required": ["seed", "document_action"], "optional": ["text", "table"]},
+    "file_manager": {"required": ["seed", "virtual_path", "action"], "optional": ["selection"]},
+    "terminal_lab": {"required": ["seed", "command_text"], "optional": ["arguments"], "safety": "simulation_only_no_shell_exec"},
+    "browser_shell": {"required": ["seed", "virtual_page"], "optional": ["navigation"]},
+    "ide_lite": {"required": ["seed", "source_buffer", "run_simulation"], "optional": ["language", "test_input"], "safety": "simulation_only_no_arbitrary_exec"},
+}
+
+def software_input_schema(kind):
+    """Return the deterministic input contract for a generated software kind."""
+    return dict(SOFTWARE_INPUT_SCHEMAS.get(str(kind), SOFTWARE_INPUT_SCHEMAS["videogame"]))
+
+
 # MULTIMODAL_CONTRACT_2026 — every exported package ALWAYS ships:
 #   1. SOUND  — MusicBed + LiveSFX (instrument lattice), never silent
 #   2. VISUAL — ScenographLite 2.5D scene, never blank
@@ -362,6 +385,7 @@ class GameIdentity:
     sfx_bank: List[str] = field(default_factory=list)
     asset_manifest: Dict[str, Any] = field(default_factory=dict)
     goava_active: bool = False
+    input_schema: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -428,6 +452,7 @@ def build_asset_manifest(
     ]
     return {
         "software_kind": software_kind,
+        "input_schema": software_input_schema(software_kind),
         "models": {"1d": list(models_1d), "2d": list(models_2d), "3d": list(models_3d)},
         "primitives": prims,
         "texture_family": texture_family,
@@ -632,6 +657,7 @@ def classify_from_composition(
         sfx_bank=sfx_bank,
         asset_manifest=asset_manifest,
         goava_active=bool(goava_active),
+        input_schema=software_input_schema(software_kind),
     )
 
 
@@ -664,6 +690,7 @@ PHI = __PHI__
 PHI_INV = PHI - 1.0
 MEUM_INV = 1.0 / MEUM
 MEUM_NORM = (MEUM - 1.0) / MEUM
+OP_THEORY_ENABLED = False
 BPM = __BPM__
 SEQ = __SEQ__
 IDENTITY = json.loads(__IDENTITY_JSON__)
@@ -1168,6 +1195,7 @@ class FunctionShell:
         self.kind = str(self.id.get("software_kind") or "videogame")
         self.seed = _safe_int_seed(self.id.get("seed", 0))
         self.status = f"{self.kind} ready"
+        self.input_schema = dict(self.id.get("input_schema") or {"required": ["seed", "time"], "optional": ["player_input"]})
         self.log = []
         # Kind-specific seeded state (all pure f(seed))
         self.calc_value = _residue(self.seed, "util_v") * 1000.0
@@ -1244,6 +1272,7 @@ class FunctionShell:
             f"kind: {self.kind}",
             f"status: {self.status}",
             "contract: ALWAYS sound + visual + UI",
+            "inputs: required=" + ",".join(self.input_schema.get("required", [])),
         ]
         if self.kind == "radio_toolkit":
             lines += [f"band_mhz: {self.band_mhz:.3f}", f"morse_wpm: {self.morse_wpm}", "TX: disabled (safe sim)"]
@@ -4999,74 +5028,6 @@ def generate_game_script(identity: GameIdentity, composition_meta: Optional[Dict
 
 
 
-def install_game_kit(identity, root_dir: str, progress=None) -> int:
-    """Host-side kit installer: write music/SFX/model stubs under root_dir/assets.
-
-    Mirrors the emitted script's install_game so in-app Play can pre-seed
-    /tmp/groovebox_games/<fp>/ before spawning the child process.
-    """
-    ids = identity if isinstance(identity, dict) else (identity.to_dict() if hasattr(identity, "to_dict") else {})
-    root = os.path.abspath(root_dir or ".")
-    fp = str(ids.get("composition_fingerprint") or "0" * 16)
-    sfx_bank = list(ids.get("sfx_bank") or [])
-    manifest = dict(ids.get("asset_manifest") or {})
-    seed_val = ids.get("seed") or 0
-    seeds = int(_safe_int_seed(seed_val)) & 0x7FFFFFFF
-    dirs = {
-        "assets": os.path.join(root, "assets"),
-        "sfx": os.path.join(root, "assets", "sfx"),
-        "media": os.path.join(root, "assets", "media"),
-        "models": os.path.join(root, "assets", "models"),
-    }
-    for d in dirs.values():
-        os.makedirs(d, exist_ok=True)
-    ensured = 0
-    targets = [("media", os.path.join(dirs["media"], f"music_{fp}.wav"))]
-    for s in sfx_bank[:16]:
-        targets.append(("sfx", os.path.join(dirs["sfx"], f"{s}.wav")))
-    models = manifest.get("models") or {}
-    for axis, names in (models.items() if isinstance(models, dict) else []):
-        for name in (names or [])[:8]:
-            targets.append(("models", os.path.join(dirs["models"], f"{name}.json")))
-    total = max(1, len(targets))
-    for i, (kind, path) in enumerate(targets):
-        if progress is not None:
-            try:
-                progress(i, total, f"installing {os.path.basename(path)}…")
-            except Exception:
-                pass
-        if os.path.isfile(path) and os.path.getsize(path) > 0:
-            ensured += 1
-            continue
-        try:
-            if kind == "media":
-                # short silent/placeholder bed — full bed synthesized in-game
-                with wave.open(path, "wb") as w:
-                    w.setnchannels(1); w.setsampwidth(2); w.setframerate(22050)
-                    w.writeframes(b"\x00\x00" * 2205)
-            elif kind == "sfx":
-                with wave.open(path, "wb") as w:
-                    w.setnchannels(1); w.setsampwidth(2); w.setframerate(22050)
-                    w.writeframes(b"\x00\x00" * 1102)
-            elif kind == "models":
-                with open(path, "w", encoding="utf-8") as f:
-                    json.dump({"name": os.path.basename(path)[:-5], "seed": seeds}, f)
-            ensured += 1
-        except Exception:
-            pass
-    try:
-        with open(os.path.join(dirs["assets"], "kit_root.txt"), "w", encoding="utf-8") as f:
-            f.write(root + "\n")
-    except Exception:
-        pass
-    if progress is not None:
-        try:
-            progress(total, total, f"assets ready ({ensured}/{total})")
-        except Exception:
-            pass
-    return ensured
-
-
 def export_game_files(identity: GameIdentity, out_dir: str, composition_meta: Optional[Dict[str, Any]] = None, extra_files: Optional[Dict[str, Any]] = None) -> str:
     os.makedirs(out_dir, exist_ok=True)
     script_path = os.path.join(out_dir, f"game_{identity.composition_fingerprint}.py")
@@ -5150,6 +5111,7 @@ Title:  {title}
 Genre:  {genre}  |  Camera:  {camera}  |  Topology:  {topology}
 Social: {social}  |  Mood:   {mood}
 Software kind: {software_kind}
+Input contract: {input_schema}
 World:  objective={objective}  difficulty={difficulty}  level={level_type}
         sigils={sigil_count}  world_fingerprint={world_fingerprint}
 Fingerprint: {composition_fingerprint}
@@ -5248,6 +5210,7 @@ def _write_package_readme(out_dir: str, identity: GameIdentity) -> str:
             social=identity.social,
             mood=identity.mood,
             software_kind=getattr(identity, "software_kind", "videogame"),
+            input_schema=json.dumps(software_input_schema(getattr(identity, "software_kind", "videogame")), sort_keys=True),
             objective=identity.objective,
             difficulty=identity.difficulty,
             level_type=identity.level_type,

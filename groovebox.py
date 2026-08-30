@@ -1,5 +1,5 @@
 # =============================================================================
-# Groovebox Engine v3.7.8 — deterministic audiovisual/game build
+# Groovebox Engine — deterministic audiovisual/game system
 # Mathematician's / Scientist's Groovebox
 #
 # GOAL
@@ -205,38 +205,81 @@ SQRT3 = math.sqrt(3.0)
 SILVER = 1.0 + SQRT2                          # silver ratio δ_s
 
 # ---------------------------------------------------------------------------
-# EQUATION OF REALITY — EQR reality-tensor (book p.78: "Theoretical Equation
-# Parameters for Graphing or Predicting a reality tensor").
+# EQUATION OF REALITY — EQR reality-tensor (book p.78 LaTeX, faithful).
 #
-# Three levels per step of the tensor graphing process:
-#   P — the structural evaluation or evolution
-#   E — the energetic enumeration and direction
-#   D — the determination of direction   (uses E and P)
-# with d = distance between the point and point n, t = time, and
-# I = 134964355 ("finite infinity" — book p.68/p.79).
+# Book isn / isn⁻¹ (p.38, p.43):
+#   isn(θ)  = 2·sin(θ/2)
+#   isn⁻¹(x) = 2·arcsin(clamp(x/2, −1, 1))
 #
-#   P = Σ_{n=0}^{k} k·isn⁻¹( (isn(d_n) + isn(t)) / 2 )
-#   E = Σ_{n=0}^{k} k·isn(θ_n) / d_n
-#   D = Σ_{n=0}^{k} k·isn⁻¹( isin(θ_n)·E / (I·P) )
+# Three levels per step (P structure, E energy/direction, D determination):
+#   All three sums run n = 0 … k (book p.78):
+#   P = Σ_{n=0}^{k} isn⁻¹( (isn(d_n)+isn(t))/2 ) / k
+#   E = Σ_{n=0}^{k} isn(θ_n)/d_n / k
+#   D = Σ_{n=0}^{k} isn⁻¹( isn(θ_n)·E/(I·P) ) / k
 #   Z = P·E + D
+# with I = 134964356 ± 1 (finite infinity, book p.79).
 #
-# We evaluate the tensor on the sparse control grid of a master bus (each
-# control point = one harmonic context: its own sample, the neighbours as
-# point n at distances d_n, and the running time fraction t), then interpolate
-# the single-point z-values along the wave.  This is the EQR effect, applied
-# tail-only.  The components are scale-normalized per render so the structural
-# relation P·E + D is preserved without exponent blow-up.
+# Application (this engine): the single z-value at the origin for the harmonic
+# context of the wave at time t is mixed as a *contribution harmonic* into the
+# contextual audio, time-centered at the origin.  No scale-normalization /
+# equalizer stage.  Effect mix is capped at 50%.
 # ---------------------------------------------------------------------------
-EQR_FINITE_INFINITY = 134964355.0
+EQR_FINITE_INFINITY = 134964356.0
 
 def eqr_isn(x):
+    """Meum-normalized odd sinusoid. OT mode uses nested product/add on the blend."""
     x = float(x)
-    return math.sin(x) * MEUM_NORM + math.sin(x * MEUM) * (1.0 - MEUM_NORM)
+    a = math.sin(x)
+    b = math.sin(x * MEUM)
+    if OP_THEORY_ENABLED:
+        return ot_add(ot_prod(a, MEUM_NORM), ot_prod(b, 1.0 - MEUM_NORM))
+    return a * MEUM_NORM + b * (1.0 - MEUM_NORM)
 
 
 def eqr_ics(x):
+    """Meum-normalized even cosinusoid. OT mode uses nested product/add on the blend."""
     x = float(x)
-    return math.cos(x) * MEUM_NORM + math.cos(x * MEUM) * (1.0 - MEUM_NORM)
+    a = math.cos(x)
+    b = math.cos(x * MEUM)
+    if OP_THEORY_ENABLED:
+        return ot_add(ot_prod(a, MEUM_NORM), ot_prod(b, 1.0 - MEUM_NORM))
+    return a * MEUM_NORM + b * (1.0 - MEUM_NORM)
+
+
+def isn_vec(x):
+    """Vectorized Meum-normalized odd sinusoid (oscillator core). Dual-mode blend."""
+    x = np.asarray(x, dtype=np.float64)
+    a = np.sin(x)
+    b = np.sin(x * MEUM)
+    if OP_THEORY_ENABLED:
+        out = np.empty_like(x, dtype=np.float64)
+        for i in range(x.size):
+            out.flat[i] = ot_add(ot_prod(float(a.flat[i]), MEUM_NORM),
+                                 ot_prod(float(b.flat[i]), 1.0 - MEUM_NORM))
+        return out.astype(np.float32)
+    return (a * MEUM_NORM + b * (1.0 - MEUM_NORM)).astype(np.float32)
+
+
+def ics_vec(x):
+    """Vectorized Meum-normalized even cosinusoid (oscillator core). Dual-mode blend."""
+    x = np.asarray(x, dtype=np.float64)
+    a = np.cos(x)
+    b = np.cos(x * MEUM)
+    if OP_THEORY_ENABLED:
+        out = np.empty_like(x, dtype=np.float64)
+        for i in range(x.size):
+            out.flat[i] = ot_add(ot_prod(float(a.flat[i]), MEUM_NORM),
+                                 ot_prod(float(b.flat[i]), 1.0 - MEUM_NORM))
+        return out.astype(np.float32)
+    return (a * MEUM_NORM + b * (1.0 - MEUM_NORM)).astype(np.float32)
+
+
+def isn_scalar(x):
+    return eqr_isn(x)
+
+
+def ics_scalar(x):
+    return eqr_ics(x)
 
 
 def _eqr_invert_odd(f, y, lo=-math.pi / 2.0, hi=math.pi / 2.0, iters=24):
@@ -274,36 +317,84 @@ def eqr_isn_inv(y):
     return _eqr_invert_odd(eqr_isn, y)
 
 
-def eqr_tensor_step(sample, neighbours, t=0.0):
-    """Single-point z-value from the P,E,D tensor for one harmonic context.
+def book_isn(x):
+    """Book isn (p.38/43): cyclic isosceles sine, isn(θ) = 2·sin(θ/2)."""
+    return 2.0 * math.sin(0.5 * float(x))
 
-    sample is the point, neighbours is the context window (each neighbour n a
-    point at distance d_n = |sample − neighbour| with angular coordinate equal
-    to the neighbour's signed amplitude), t is time in [0,1].
-    Returns (P, E, D, Z) with Z = P·E + D.
+
+def book_isn_inv(y):
+    """Book isn⁻¹(x) = 2·arcsin(clamp(x/2, −1, 1))."""
+    a = max(-1.0, min(1.0, 0.5 * float(y)))
+    return 2.0 * math.asin(a)
+
+
+def book_isn_vec(x):
+    x = np.asarray(x, dtype=np.float64)
+    return (2.0 * np.sin(0.5 * x)).astype(np.float64)
+
+
+def eqr_tensor_step(sample, neighbours, t=0.0):
+    """Book p.78 reality tensor (exact discrete sum, n = 0 … k).
+
+        P = Σ_{n=0}^{k} isn⁻¹( (isn(d_n)+isn(t))/2 ) / k
+        E = Σ_{n=0}^{k} isn(θ_n)/d_n / k
+        D = Σ_{n=0}^{k} isn⁻¹( isn(θ_n)·E / (I·P) ) / k
+        Z = P·E + D
+
+    Prefer eqr_tensor_audio() for 1D/2D audio — same identities, no O(k) loop.
     """
     s = float(sample)
     t = float(t)
-    n = 0 if neighbours is None else max(0, int(len(neighbours)))
-    K = max(1, n)
-    _isn = eqr_isn
-    _invs = eqr_isn_inv
+    pts = [float(v) for v in (neighbours or [])]
+    if not pts:
+        pts = [s]
+    k = max(1, len(pts) - 1)
     _I = EQR_FINITE_INFINITY
     sum_p = 0.0
     sum_e = 0.0
-    for v in neighbours:
-        v = float(v)
+    for v in pts:
         dn = abs(v - s) + 1e-9
-        sum_p += _invs((_isn(dn) + _isn(t)) * 0.5)
-        sum_e += _isn(v) / dn
-    P = K * sum_p
-    E = K * sum_e
+        sum_p += book_isn_inv((book_isn(dn) + book_isn(t)) * 0.5)
+        sum_e += book_isn(v) / dn
+    P = sum_p / float(k)
+    E = sum_e / float(k)
     D = 0.0
-    if abs(P) > 1e-9:
-        for v in neighbours:
-            v = float(v)
-            D += _invs(_isn(v) * E / (_I * P))
-        D = K * D
+    if abs(P) > 1e-12:
+        acc = 0.0
+        for v in pts:
+            acc += book_isn_inv(book_isn(v) * E / (_I * P))
+        D = acc / float(k)
+    Z = P * E + D
+    return float(P), float(E), float(D), float(Z)
+
+
+def eqr_tensor_audio(sample, d_char, theta_char, t=0.0):
+    """Closed-form audio reduction of the book sums (no neighbour loop).
+
+    For a continuous 1D/2D wave the discrete sum Σ_{n=0}^{k} (·)/k collapses
+    to the single characteristic pair (d̄, θ̄) of the local context:
+
+        d̄  = characteristic distance (local MAD / RMS of the window)
+        θ̄  = characteristic amplitude (the sample, or local mean)
+
+    Then each sum is one term (k cancels with the single representative):
+
+        P = isn⁻¹( (isn(d̄)+isn(t))/2 )
+        E = isn(θ̄) / d̄
+        D = isn⁻¹( isn(θ̄)·E / (I·P) )
+        Z = P·E + D
+
+    Same identities as the book; O(1) per sample after one sliding-window pass.
+    """
+    d = abs(float(d_char)) + 1e-9
+    th = float(theta_char)
+    tt = float(t)
+    _I = EQR_FINITE_INFINITY
+    P = book_isn_inv((book_isn(d) + book_isn(tt)) * 0.5)
+    E = book_isn(th) / d
+    D = 0.0
+    if abs(P) > 1e-12:
+        D = book_isn_inv(book_isn(th) * E / (_I * P))
     Z = P * E + D
     return float(P), float(E), float(D), float(Z)
 
@@ -333,7 +424,7 @@ def eqr_tensor_step(sample, neighbours, t=0.0):
 #   f)  Dividing a number by a divisor in absolute (0,2) re-expresses it in the
 #       "higher-value" numeric field (refined once by the Meum residue).
 # ---------------------------------------------------------------------------
-OP_THEORY_ENABLED = False
+OP_THEORY_ENABLED = True  # default ON — nested dynamics active at launch
 
 
 def set_operator_theory(enabled):
@@ -419,98 +510,235 @@ def ot_i_phase(x, k):
     return x * (-1.0 if int(k) % 2 == 0 else 1.0)
 
 
+# ---------------------------------------------------------------------------
+# DUAL MATH MODE — every project math path routes through these helpers.
+#   OFF (default): ordinary arithmetic.
+#   ON: Operator Theory nested dynamics (ot_*), no peak renorm / no soft-clip.
+# There is intentionally NO saturation / normalization stage here.
+# ---------------------------------------------------------------------------
+
+def math_add(a, b):
+    if OP_THEORY_ENABLED:
+        return ot_add(a, b)
+    return float(a) + float(b)
+
+
+def math_sub(a, b):
+    if OP_THEORY_ENABLED:
+        return ot_sub(a, b)
+    return float(a) - float(b)
+
+
+def math_mul(a, b):
+    if OP_THEORY_ENABLED:
+        return ot_prod(a, b)
+    return float(a) * float(b)
+
+
+def math_div(a, b):
+    if OP_THEORY_ENABLED:
+        return ot_div(a, b)
+    b = float(b)
+    if b == 0.0:
+        return 0.0
+    return float(a) / b
+
+
+def math_pow(b, e):
+    if OP_THEORY_ENABLED:
+        return ot_pow(b, e)
+    return math.pow(float(b), float(e))
+
+
+def math_scale(x, gain):
+    """Scale without saturating. OT mode uses product rule; normal is multiply."""
+    if OP_THEORY_ENABLED:
+        return ot_prod(x, gain)
+    return float(x) * float(gain)
+
+
+def dual_map_array(arr, scalar_fn_ot, scalar_fn_normal=None):
+    """Apply OT or normal elementwise map to an array. No clipping."""
+    x = np.asarray(arr, dtype=np.float64)
+    if x.size == 0:
+        return x.astype(np.float32)
+    if OP_THEORY_ENABLED:
+        out = np.empty_like(x)
+        flat = x.ravel()
+        for i, v in enumerate(flat):
+            out.flat[i] = scalar_fn_ot(v)
+        return out.astype(np.float32)
+    if scalar_fn_normal is not None:
+        return np.asarray(scalar_fn_normal(x), dtype=np.float32)
+    return x.astype(np.float32)
+
+
+def no_sat(x):
+    """Identity passthrough — project policy: no soft-clip / no saturation."""
+    return x
+
+
 def ot_master_transform(x):
     """Operator-theory re-encoding of the master bus (gated, default off).
 
-    Deterministic float64 whole-buffer map: band-hop add toward the enclosing
-    integer of each magnitude (rule e), dividend refinement by the Meum
-    residual divisor in absolute (0,2) (rule f), negative-run composition
-    (rule 1), then amplitude re-normalization under the master ceiling.
+    Deterministic float64 whole-buffer map of the book's nested dynamics:
+    band-hop add (rule e), Meum residual refinement (rule f), negative-run
+    composition (rule 1).  NO peak normalization and NO soft-clip saturation.
     """
     x = np.asarray(x, dtype=np.float64)
     n = x.size
-    out = np.empty_like(x)
     if n == 0:
         return x.astype(np.float32)
-    peak0 = float(np.max(np.abs(x))) or 1.0
-    m = x / peak0
     band = np.select(
-        [np.abs(m) <= 1.0, np.abs(m) <= 2.0, np.abs(m) <= 3.0],
+        [np.abs(x) <= 1.0, np.abs(x) <= 2.0, np.abs(x) <= 3.0],
         [1.0, 2.0, 3.0],
         default=1.0,
     )
-    hop = np.sign(m) * band
-    out = m + 0.35 * hop
-    denom = np.abs(out) + 0.2
-    out = out / denom * (1.0 + MEUM_NORM)
+    hop = np.sign(x) * band
+    out = x + 0.35 * hop
+    # Nested Meum residual factor (no unit-ceiling division).
+    out = out * (1.0 + MEUM_NORM * 0.15 / (1.0 + np.abs(out)))
     prev = np.empty_like(out)
     prev[0] = out[0]
     prev[1:] = out[:-1]
     negrun = (out < 0.0) & (prev < 0.0)
     out = np.where(negrun, -np.abs(out) * 1.15, out)
-    p = float(np.max(np.abs(out))) or 1.0
-    out = out / p * 0.89
     return out.astype(np.float32)
 
 
-def build_master_follow_env(master, bpm, sample_rate, pkp_decay):
-    """FULL ENV-FOLLOW SYMMETRY — one shared follow envelope for EQR, PKP,
-    and the Fractallizer (tail-only, deterministic, off-canonical).
+def book_isn_envelope_shape(u, decay):
+    """Smart isn()-based PKP envelope over one step (u∈[0,1] = one step).
 
-    The envelope follows the rectified master magnitude itself (block-max →
-    TIME-PREDICTIVE forward-max window → 0.85/0.15 one-pole release, the same
-    release the EQR tensor uses) stamped onto the tempo-locked plane whose
-    swing the PKP Decay slider damps.  All three master effects therefore
-    step through the exact same envelope function instead of computing their
-    own independent copies:
-        EQR        : z-shaping × this envelope
-        Fractallizer: fractal detail contribution × this envelope
-        PKP        : master × (0.35 + 0.65·this envelope)
+    Balanced to *fit a step*: starts/ends at 0 when the shape is cyclic or
+    two-step (no bleed into the next step); sustain mode holds through the
+    step end.  Peak is balanced to 1.0 so all decay settings share the same
+    crest.  Mean level is gently equalized so 0 / 0.5 / 1 do not jump in loudness.
+
+    decay ∈ [0,1]:
+      0.0 → single isn() cycle over the step (θ: 0→2π).
+      0.5 → 2-step: isn ramp [0→0.5], solid mid, isn release [1.5→2].
+      1.0 → isn cycle then flat sustain to the end of the step/row.
+    """
+    u = np.asarray(u, dtype=np.float64)
+    # Clamp into the open-closed step unit interval.
+    u = np.clip(u, 0.0, 1.0)
+    d = float(np.clip(decay, 0.0, 1.0))
+
+    def _isn_cycle(uu):
+        # Full book-isn cycle fits exactly in the step: 0 at edges, 1 at mid.
+        theta = uu * 2.0 * np.pi
+        return book_isn_vec(theta) * 0.5
+
+    def _two_step(uu):
+        # Phase domain p∈[0,2] mapped from the step — edges at 0.
+        p = uu * 2.0
+        env = np.zeros_like(p)
+        m = p <= 0.5
+        env[m] = book_isn_vec((p[m] / 0.5) * np.pi) * 0.5
+        m = (p > 0.5) & (p < 1.5)
+        env[m] = 1.0
+        m = p >= 1.5
+        env[m] = book_isn_vec(np.pi - ((p[m] - 1.5) / 0.5) * np.pi) * 0.5
+        return env
+
+    def _cycle_then_sustain(uu, cycle_frac=0.35):
+        # isn attack fits the first fraction of the step; solid hold to step end.
+        env = np.ones_like(uu)
+        m = uu <= cycle_frac
+        if np.any(m):
+            env[m] = _isn_cycle(uu[m] / max(cycle_frac, 1e-9))
+        return env
+
+    if d <= 1e-9:
+        shape = _isn_cycle(u)
+    elif d >= 1.0 - 1e-9:
+        shape = _cycle_then_sustain(u)
+    elif d <= 0.5:
+        a = d / 0.5
+        shape = (1.0 - a) * _isn_cycle(u) + a * _two_step(u)
+    else:
+        a = (d - 0.5) / 0.5
+        shape = (1.0 - a) * _two_step(u) + a * _cycle_then_sustain(u)
+
+    # Balance crest to 1.0 so every decay setting fits the same step height.
+    peak = float(np.max(shape)) if shape.size else 1.0
+    if peak > 1e-12:
+        shape = shape / peak
+    # Soft mean balance toward ~0.5 so step energy is comparable across morphs
+    # without a hard equalizer (scale only, no compression).
+    mean = float(np.mean(shape)) if shape.size else 0.5
+    if mean > 1e-12:
+        target_mean = 0.50
+        bal = target_mean / mean
+        # Keep peak ≤ 1 after balance.
+        bal = min(bal, 1.0 / max(float(np.max(shape)), 1e-12))
+        shape = shape * bal
+    return shape.astype(np.float32)
+
+
+def build_master_follow_env(
+    master,
+    bpm,
+    sample_rate,
+    pkp_decay,
+    row_length_samples=None,
+    step_length_samples=None,
+):
+    """PKP isn envelope shared by EQR, Fractallizer, and PKP master stages.
+
+    Balanced to fit a playlist STEP (16th / quarter-beat) by default so each
+    envelope cycle lands cleanly on the step grid with no phase drift:
+
+      0.0 = one isn() cycle per step
+      0.5 = 2-step isn ramp / solid / isn release, still one shape per step
+      1.0 = isn cycle then flat sustain; tile length grows toward row length
+
+    Tile length morphs with decay: step at 0 → row at 1 (when row is known),
+    so the envelope always *fits* an integer number of tiles in the buffer
+    as closely as possible.  No peak-norm.
     """
     m = np.asarray(master, dtype=np.float64).ravel()
     n = m.size
     if n == 0:
         return np.ones(1, dtype=np.float32)
-    decay = max(0.0, float(pkp_decay))
-    swing = float(np.clip(0.45 * (1.0 - 0.7 * decay), 0.045, 0.45))
-    beat_hz = max(float(bpm), 1.0) / 60.0
-    t_sec = np.arange(n, dtype=np.float64) / max(float(sample_rate), 1.0)
-    # TEMPO-ALIGNED plane: cos over the fractional beat so the gain peaks on the
-    # downbeat (0.25-beat phase into the release), then rides the off-beat.
-    beat_phase = (beat_hz * t_sec) % 1.0
-    tempo = 0.55 + swing * np.cos(2.0 * np.pi * (beat_phase + 0.25))
-    rect = np.abs(m)
-    block = max(1, n // 4096)
-    nb = (n + block - 1) // block
-    bmax = np.empty(nb, dtype=np.float64)
-    for i in range(nb):
-        lo = i * block
-        hi = min(n, lo + block)
-        bmax[i] = float(np.max(rect[lo:hi])) or 1e-9
-    look = max(1, nb // 24)
-    pf = np.empty(nb, dtype=np.float64)
-    for i in range(nb):
-        pf[i] = float(np.max(bmax[i:min(nb, i + look)])) or 1e-9
-    fol = np.empty_like(pf)
-    prev = float(np.mean(bmax)) or 1.0
-    for i in range(nb):
-        if pf[i] > prev:
-            prev = pf[i]
-        else:
-            prev = 0.85 * prev + 0.15 * pf[i]
-        fol[i] = prev
-    fol_up = np.interp(
-        np.arange(n, dtype=np.float64),
-        np.linspace(0, n - 1, nb) if nb > 1 else np.array([0.0]),
-        fol,
-    ) if nb > 1 else np.full(n, float(fol[0]))
-    rmean = float(np.mean(rect)) + 1e-9
-    follow = np.clip(0.5 + 0.5 * (fol_up / rmean), 0.0, 2.0)
-    # IDEALIZED SCALE: cliplamp the combined envelope to an enhancement band
-    # so every effect rides each beat (peaks ~1.5 on downbeats/tranients)
-    # without ever fully muting (floor 0.35) or clipping the headroom.
-    env = np.clip(tempo * follow, 0.35, 1.5)
-    return env.astype(np.float32)
+
+    raw = float(pkp_decay)
+    if raw > 1.0:
+        decay = max(0.0, min(1.0, raw / 1000.0))
+    else:
+        decay = max(0.0, min(1.0, raw))
+
+    # Canonical step = one 16th (quarter of a beat) from BPM/SR.
+    sr = max(float(sample_rate), 1.0)
+    beat_samples = sr * (60.0 / max(float(bpm), 1e-6))
+    default_step = max(1, int(round(beat_samples / 4.0)))
+    step = max(1, int(step_length_samples)) if step_length_samples else default_step
+    row = max(step, int(row_length_samples)) if row_length_samples else max(step, default_step * 16)
+
+    # Decay morphs tile length: step (0) → row (1).  Always ≥ step.
+    tile = int(round(step + decay * (row - step)))
+    tile = max(step, min(n, tile))
+
+    # Snap tile so an integer number of tiles fills the buffer when possible
+    # (balance: no orphan partial cycle mid-buffer on exact grid lengths).
+    if tile > 1 and n >= tile:
+        n_tiles = max(1, int(round(n / float(tile))))
+        snapped = max(step, int(round(n / float(n_tiles))))
+        # Prefer snapped only when close to intended tile (keeps step/row intent).
+        if abs(snapped - tile) <= max(1, tile // 16):
+            tile = snapped
+
+    env = np.empty(n, dtype=np.float32)
+    pos = 0
+    while pos < n:
+        hi = min(n, pos + tile)
+        seg_n = hi - pos
+        # Full 0→1 span over this tile so the isn shape always completes
+        # (fits the step/tile even on a short final remainder).
+        u = np.linspace(0.0, 1.0, seg_n, endpoint=False)
+        env[pos:hi] = book_isn_envelope_shape(u, decay)
+        pos = hi
+    return env
 
 # ---------------------------------------------------------------------------
 # DETERMINISTIC COMPOSITION KERNEL
@@ -674,7 +902,7 @@ def _meum_params(params):
         "canonical_count": max(1, int(p.get("canonical_count", 1) or 1)),
         "canonical_phase_lock": bool(p.get("canonical_phase_lock", False)),
         "unison_phase_spread": _f("unison_phase_spread", 0.0),
-        "waveform": str(p.get("waveform", "sine") or "sine"),
+        "waveform": str(p.get("waveform", "isn") or "isn"),
     }
 def _meum_phase_modulation(
     t,
@@ -952,15 +1180,15 @@ def _meum_panel_context(params=None, canonical_context=None):
         ctx["unison_phase_spread"] = 0.0
 
     return ctx
-def meum_waveform_from_phase(phase, waveform="sine"):
-    """Evaluate a basic periodic waveform from phase (radians), vectorized.
+def meum_waveform_from_phase(phase, waveform="isn"):
+    """Evaluate a periodic waveform from phase (radians), vectorized.
 
-    Used by modular Meum oscillators and optional live-path waveform overrides
-    so AM/FM/PM (applied to phase / gain outside this function) work for
-    sine, saw, square, and triangle — not only pure sines.
+    Default and primary cores are isn / ics (Meum-normalized sinusoids) and
+    their inverses. Classical saw/square/triangle remain available by name.
+    No tanh saturators.
     """
     phase = np.asarray(phase, dtype=np.float64)
-    wf = str(waveform or "sine").strip().lower()
+    wf = str(waveform or "isn").strip().lower()
     u = np.mod(phase / (2.0 * np.pi), 1.0)
     if wf in ("saw", "sawtooth"):
         return (2.0 * u - 1.0).astype(np.float32)
@@ -968,9 +1196,24 @@ def meum_waveform_from_phase(phase, waveform="sine"):
         return np.where(u < 0.5, 1.0, -1.0).astype(np.float32)
     if wf in ("triangle", "tri"):
         return (4.0 * np.abs(u - 0.5) - 1.0).astype(np.float32)
-    if wf in ("cos", "cosine"):
-        return np.cos(phase).astype(np.float32)
-    return np.sin(phase).astype(np.float32)
+    if wf in ("ics", "cos", "cosine"):
+        return ics_vec(phase)
+    if wf in ("arcisn", "isn_inv", "isn_inverse"):
+        # Inverse of isn via the shared scalar inverter, vectorized elementwise.
+        out = np.empty(phase.shape, dtype=np.float32)
+        for i, v in enumerate(phase.ravel()):
+            out.flat[i] = float(eqr_isn_inv(float(v) if abs(float(v)) <= 1.5 else math.copysign(1.0, float(v))))
+        return out
+    if wf in ("arcics", "ics_inv", "ics_inverse"):
+        out = np.empty(phase.shape, dtype=np.float32)
+        for i, v in enumerate(phase.ravel()):
+            y = float(v)
+            # ics range is roughly bounded; map phase fraction into that range.
+            y = max(-1.0, min(1.0, y if abs(y) <= 1.0 else math.cos(y)))
+            out.flat[i] = float(eqr_isn_inv(y))  # reuse odd inverter as phase-like map
+        return out
+    # Default: isn (Meum odd sinusoid) — also accepts "sine"/"sin" as aliases.
+    return isn_vec(phase)
 
 
 def meum_modulation_vectors(t, params=None):
@@ -1097,7 +1340,7 @@ class MeumModulatedOscillator:
         self.pm_feedback = 0.0
         self.meum_depth = 0.0
 
-        self.waveform = "sine"
+        self.waveform = "isn"
 
     # ------------------------------------------------------------------
     # PARAMETERS
@@ -1316,7 +1559,7 @@ class MeumModulatedOscillator:
         """
         Evaluate waveform from radians.
 
-        Existing waveform selection is respected.
+        Primary cores: isn / ics / inverses. Classical shapes remain available.
         """
 
         u = (
@@ -1359,13 +1602,31 @@ class MeumModulatedOscillator:
             )
 
         if waveform in (
+            "ics",
             "cos",
             "cosine",
         ):
-            return math.cos(phase)
+            return ics_scalar(phase)
 
-        # Default.
-        return math.sin(phase)
+        if waveform in (
+            "arcisn",
+            "isn_inv",
+            "isn_inverse",
+        ):
+            y = isn_scalar(phase)
+            return float(eqr_isn_inv(y))
+
+        if waveform in (
+            "arcics",
+            "ics_inv",
+            "ics_inverse",
+        ):
+            y = ics_scalar(phase)
+            # Map ics output through the odd inverter as a phase-like reading.
+            return float(eqr_isn_inv(max(-1.0, min(1.0, y))))
+
+        # Default: isn (aliases: sine, sin).
+        return isn_scalar(phase)
 
     # ------------------------------------------------------------------
     # RENDER
@@ -1820,12 +2081,12 @@ def _seed_script_env(t_scalar=0.0, canonical_context=None):
         return float(args[idx])
 
     def isn(x):
-        x = float(x)
-        return math.sin(x) * MEUM_NORM + math.sin(x * MEUM) * (1.0 - MEUM_NORM)
+        # Dual-mode: delegates to eqr_isn (OT nested blend when enabled).
+        return eqr_isn(x)
 
     def ics(x):
-        x = float(x)
-        return math.cos(x) * MEUM_NORM + math.cos(x * MEUM) * (1.0 - MEUM_NORM)
+        # Dual-mode: delegates to eqr_ics (OT nested blend when enabled).
+        return eqr_ics(x)
 
     def _invert_odd(f, y, guess=0.0, lo=-math.pi, hi=math.pi, iters=24):
         y = float(y)
@@ -1929,6 +2190,9 @@ def _seed_script_env(t_scalar=0.0, canonical_context=None):
         "ot_add": ot_add, "ot_sub": ot_sub, "ot_prod": ot_prod,
         "ot_div": ot_div, "ot_pow": ot_pow, "ot_i_phase": ot_i_phase,
         "ot_band": ot_band, "ot_master_transform": ot_master_transform,
+        "math_add": math_add, "math_sub": math_sub, "math_mul": math_mul,
+        "math_div": math_div, "math_pow": math_pow, "math_scale": math_scale,
+        "no_sat": no_sat,
         "op_theory_enabled": operator_theory_enabled,
         "set_op_theory": set_operator_theory,
         "t": float(t_scalar), "x": float(t_scalar), "y": 0.0, "z": 0.0,
@@ -2236,7 +2500,14 @@ def goava_irrational_stream(t_values, numbers, base_frequency=432.0, channel=0):
     # scale (NOT an adaptive peak-ride) makes the stream span [-1, 1] for any
     # seed list.  The final gain is a fixed MEUM-family constant.
     d = (note - ref) / max(scale, 1e-9)
-    return np.tanh(d * (1.0 + MEUM_NORM) * 0.9).astype(np.float32)
+    # Dual-mode scale, no soft-clip / no saturation.
+    gain = (1.0 + MEUM_NORM) * 0.9
+    if operator_theory_enabled():
+        out = np.empty_like(d, dtype=np.float64)
+        for i, v in enumerate(np.asarray(d, dtype=np.float64).ravel()):
+            out.flat[i] = math_scale(v, gain)
+        return out.astype(np.float32)
+    return (d * gain).astype(np.float32)
 
 # UNION_ENTROPY_2026 — the union's entropy is a fixed-point statistic, not a
 # knife-edge.  The per-voice draw D below is a uniform-in-mean hash of the
@@ -2674,17 +2945,17 @@ def generate_random_global_play_algo(rng=None):
     script_pool = [
         f"# Global script algo\ndef global_script(t, name, i):\n    return sin(t * MEUM * {a}) * {mix} + cos(t * PHI) * {round(1 - mix, 3)}\n",
         f"# Global script algo\ndef global_script(t, name, i):\n    return (MEUM_NORM * sin(t * {a}) + (1 - MEUM_NORM) * cos(t * {b})) * {mix}\n",
-        f"# Global script algo\ndef global_script(t, name, i):\n    v = isn(t * MEUM) * {a} + ics(t * PHI) * {b}\n    return clamp(v, -1.0, 1.0) * {mix}\n",
+        f"# Global script algo\ndef global_script(t, name, i):\n    v = isn(t * MEUM) * {a} + ics(t * PHI) * {b}\n    return v * {mix}\n",
         f"# Global script algo\ndef global_script(t, name, i):\n    if sin(t * MEUM) >= 0:\n        return {mix} * cos(t * {a})\n    return {round(1 - mix, 3)} * sin(t * {b})\n",
-        f"# Global script algo\ndef global_script(t, name, i):\n    return tanh(sin(t * MEUM * {a}) * cos(t * PHI * {b})) * {mix}\n",
+        f"# Global script algo\ndef global_script(t, name, i):\n    return isn(sin(t * MEUM * {a}) * cos(t * PHI * {b})) * {mix}\n",
     ]
     domain_pool = [
         f"sin(t * MEUM) * {mix} + cos(t * PHI) * {round(1 - mix, 3)}",
         f"MEUM_NORM * sin(t * {a}) + (1 - MEUM_NORM) * cos(t * {b})",
-        f"tanh(sin(t * MEUM * {a})) * cos(t * PHI)",
+        f"isn(sin(t * MEUM * {a})) * cos(t * PHI)",
         f"log2(abs(sin(t * MEUM)) + 1) * {a} + sqrt(abs(cos(t))) * {b}",
         f"sin(t * MEUM * {a}) * cos(t * {b}) + MEUM_INV * sin(t * PHI)",
-        f"clamp(sin(t * MEUM) * {a}, -1, 1) * cos(t * PHI * {b})",
+        f"sin(t * MEUM) * {a} * cos(t * PHI * {b})",
     ]
     detectors = ("phase", "energy", "spectrum", "goava", "euclidean", "seed", "bpm", "pair")
     targets = ("master_mix", "fractallizer", "eqr", "pkp", "ensemble", "scenograph", "domain", "unison")
@@ -3388,7 +3659,7 @@ class VisualOscilloscope(QFrame):
         # alternative arithmetic on its drawn points, and an optional shared
         # DSP follow-envelope is overplotted so the monitor reflects the same
         # full env-follow symmetry as the DSP pathway.
-        self.operator_theory = False
+        self.operator_theory = True  # match global OT default ON
         self.follow_env = None
 
     def set_operator_theory(self, on):
@@ -3870,6 +4141,156 @@ class SpectrumAnalyzer(QFrame):
                 painter.drawLine(x, h - 8, x, h - 8 - int(6 * abs(v) / mx))
 
 
+class InstrumentVisualObject:
+    """Canonical one-route visual object bound to one live instrument.
+
+    The object is dimension-agnostic: the same state vector can render as a
+    1D filament, 2D closed surface, or 3D projected solid.  Dimension is a
+    deterministic property of the instrument identity and composition schema,
+    never a frame-random choice.  All geometry, motion, fade, and color are
+    derived from the same live state used by audio: the five per-instrument
+    patch parameters, sequence statistics, canonical voice parameters, seed,
+    phase, harmonic spectrum, and engine flags.
+
+    Critically, no term below depends on ensemble size for identity placement.
+    N only determines how many instrument objects are present. Therefore the
+    first two instruments in a 2-voice composition follow the same construction
+    law as those same identities in a 64-voice composition.
+    """
+    PARAMS = ("morph", "harmonic_freq", "chaos", "fold_depth", "harmonic_lattice")
+
+    def __init__(self, engine, index, name, canonical, schema):
+        self.engine = engine
+        self.index = int(index)
+        self.name = str(name or f"Instrument {index+1}")
+        self.canonical = dict(canonical or {})
+        self.schema = dict(schema or {})
+        self.seed = float(self.schema.get("seed", 0.0))
+        self.phase0 = float(self.canonical.get("phase0", self.schema.get("phase", 0.0)))
+        self.identity = identity_unit("instrument-visual", self.seed, self.name, self.index)
+        self.dimension = int(self.schema.get("dimension", 1 + int(self.identity * 3.0)))
+        self.dimension = max(1, min(3, self.dimension))
+
+    @staticmethod
+    def _norm(v, lo, hi):
+        try:
+            return float(np.clip((float(v) - lo) / max(1e-9, hi-lo), 0.0, 1.0))
+        except Exception:
+            return 0.0
+
+    def vector(self):
+        p = self.schema.get("patch", {})
+        seq = self.schema.get("sequence", {})
+        c = self.canonical
+        morph = self._norm(p.get("morph", 1.2), 0.01, 10.0)
+        hf = self._norm(p.get("harmonic_freq", c.get("base_freq", 432.0)), 20.0, 20000.0)
+        chaos = float(np.clip(float(p.get("chaos", 0.75)), 0.0, 1.0))
+        fold = self._norm(p.get("fold_depth", 4.0), 1.0, 16.0)
+        lattice = float(np.clip(float(p.get("harmonic_lattice", 0.33)), 0.0, 1.0))
+        steps = self._norm(seq.get("steps_on", 0), 0.0, max(1.0, float(seq.get("length", 16))))
+        amp = float(np.clip(seq.get("amp_mean", 0.0), 0.0, 1.0))
+        pitch = float(np.clip(seq.get("pitch_mean", 1.0) / 2.0, 0.0, 1.0))
+        ent = float(np.clip(c.get("entropy", 0.5), 0.0, 1.0))
+        ratio = float(np.clip(abs(c.get("ratio", 1.0)) / 4.0, 0.0, 1.0))
+        return dict(morph=morph, hf=hf, chaos=chaos, fold=fold, lattice=lattice,
+                    steps=steps, amp=amp, pitch=pitch, ent=ent, ratio=ratio)
+
+    def color(self, phase, energy):
+        v = self.vector()
+        # Bright continuous spectrum: identity selects the hue family; harmonic
+        # frequency/lattice/phase sweep within it; energy controls luminance.
+        hue = (360.0 * (self.identity + 0.31*v["hf"] + 0.17*v["lattice"] + phase / math.tau)) % 360.0
+        sat = float(np.clip(0.58 + 0.30*v["chaos"] + 0.08*v["lattice"], 0.0, 1.0))
+        val = float(np.clip(0.62 + 0.32*energy + 0.06*v["ent"], 0.0, 1.0))
+        return self.engine._hsv(hue, sat, val)
+
+    def geometry(self, t, energy, bands, w, h):
+        v = self.vector()
+        c = self.canonical
+        # Placement is identity-seeded and N-independent.
+        radial = 0.12 + 0.42 * math.sqrt(self.identity)
+        angle0 = math.tau*self.identity + float(c.get("yaw", 0.0))
+        phase = self.phase0 + t*(0.30 + 0.70*v["morph"] + 0.25*v["steps"])
+        wobble = (0.035 + 0.11*v["chaos"]) * math.sin(t*(0.7+2.0*v["fold"]) + self.identity*math.tau)
+        cx = w*0.5 + math.cos(angle0 + 0.08*math.sin(t*0.23))*radial*w*0.70
+        cy = h*0.48 + math.sin(angle0*MEUM_INV + 0.06*math.cos(t*0.19))*radial*h*0.48
+        scale = (0.018 + 0.040*v["lattice"] + 0.030*v["amp"] + 0.022*energy) * min(w,h)
+        harmonic_count = max(3, min(18, 3 + int(round(12*v["lattice"] + 4*v["fold"]))))
+        band = float(bands[self.index % len(bands)]) if len(bands) else 0.0
+        scale *= 0.72 + 0.55*band + 0.25*abs(math.sin(phase))
+        return cx, cy, max(2.0, scale), phase, harmonic_count, v, wobble
+
+    def draw(self, img, w, h, t, energy, bands):
+        cx, cy, scale, phase, hc, v, wobble = self.geometry(t, energy, bands, w, h)
+        dim = self.dimension
+        # Always-visible breathe: opacity never drops to zero.
+        breathe = 0.62 + 0.38*(0.5 + 0.5*math.sin(phase + self.identity*math.tau))
+        alpha = float(np.clip(0.38 + 0.42*breathe + 0.16*energy, 0.38, 0.98))
+        col = self.color(phase, energy)
+        core = self.engine._hsv((self.identity*360 + 180) % 360, 0.16, 1.0)
+
+        if dim == 1:
+            # 1D harmonic filament: one route, one canonical spectrum.
+            pts=[]
+            for k in range(hc*4):
+                u=k/max(1,hc*4-1)
+                a=phase + math.tau*(u*(1.0+v["fold"]*0.22))
+                rr=scale*(0.45+0.85*u)*(1.0+0.24*math.sin(a*hc*0.23+t))
+                x=cx+math.cos(a)*rr
+                y=cy+math.sin(a*MEUM_INV)*rr*(0.62+0.30*v["morph"])
+                pts.append((x,y))
+            for a,b in zip(pts,pts[1:]):
+                self.engine._line(img,a[0],a[1],b[0],b[1],col,0.55*alpha)
+            self.engine._dot(img,cx,cy,core,0.9*alpha,r=2)
+        elif dim == 2:
+            # 2D harmonic surface: closed radial contour with phase-locked folds.
+            pts=[]
+            count=max(16,hc*4)
+            for k in range(count):
+                a=phase+math.tau*k/count
+                harmonic=sum((1.0/(j+1))*math.sin(a*(j+1)+phase*(0.2+j*0.07)) for j in range(min(hc,8)))
+                rr=scale*(0.82+0.10*math.sin(a*hc)+0.06*harmonic+0.14*v["chaos"]*math.sin(a*3+t))
+                pts.append((cx+math.cos(a)*rr,cy+math.sin(a*MEUM_INV)*rr*(0.72+0.22*v["lattice"])))
+            for k in range(len(pts)):
+                a,b=pts[k],pts[(k+1)%len(pts)]
+                self.engine._line(img,a[0],a[1],b[0],b[1],col,0.62*alpha)
+            for k in range(1,len(pts)-1,2):
+                self.engine._fill_tri(img,pts[0],pts[k],pts[k+1],col,0.14*alpha)
+            self.engine._dot(img,cx,cy,core,0.65*alpha,r=2)
+        else:
+            # 3D shell: three projected rings plus depth-coupled cross edges.
+            rings=[]
+            for rix in range(3):
+                pts=[]; rr0=scale*(0.58+0.22*rix)
+                count=max(18,hc*3)
+                for k in range(count):
+                    a=phase+math.tau*k/count+rix*0.21
+                    z=0.42*math.sin(a*(1.0+v["fold"]*0.35)+t*0.8)+wobble
+                    x3=rr0*math.cos(a)
+                    y3=rr0*math.sin(a*MEUM_INV)
+                    # lightweight 3D projection, consistent with the engine camera.
+                    x3,y3,z3=self.engine._camera_transform(x3,y3,z)
+                    depth=1.55+z3
+                    sx=w*0.5+(cx-w*0.5+x3)/(depth)*1.0
+                    sy=h*0.48+(cy-h*0.48+y3)/(depth)*1.0
+                    pts.append((sx,sy))
+                rings.append(pts)
+            for ri,pts in enumerate(rings):
+                for k in range(len(pts)):
+                    a,b=pts[k],pts[(k+1)%len(pts)]
+                    self.engine._line(img,a[0],a[1],b[0],b[1],col,(0.45+0.12*ri)*alpha)
+                if ri:
+                    prev=rings[ri-1]
+                    for k in range(0,min(len(prev),len(pts)),max(1,len(pts)//12)):
+                        self.engine._line(img,prev[k][0],prev[k][1],pts[k][0],pts[k][1],col,0.28*alpha)
+            self.engine._dot(img,cx,cy,core,0.8*alpha,r=2)
+        # Harmonic spectrum halo: same patch/lattice data, visible in all dimensions.
+        for j in range(min(8, hc)):
+            a=phase+math.tau*j/max(1,hc)
+            rr=scale*(1.35+0.16*j)*(0.72+0.28*v["lattice"])
+            self.engine._dot(img,cx+math.cos(a)*rr,cy+math.sin(a*MEUM_INV)*rr*0.70,
+                             col,0.22*alpha,r=1+int(2*v["lattice"]))
+
 class VideoSynthEngine:
     """
     Meum calculus-driven multi-subscene 2.5D/3D scenograph for live + export.
@@ -3920,8 +4341,8 @@ class VideoSynthEngine:
         _scenograph = MeumScenographController(width=800, height=800)
         _sx, _sy, _sz = _scenograph.generate_field_mesh(resolution=64, ctx=0.4759)
         self._scenograph_points = _scenograph.project_coordinates(_sx, _sy, _sz, scale=512.0)
-        # Up to 64 scenograph render items (name -> base weight). Active count
-        # is gated by self.scenograph_item_count (1..64) from the UI slider.
+        # One visual object is created per live instrument. No independent
+        # graphical-object count exists: visual population == instrument count.
         self.SCENOGRAPH_ITEM_CATALOG = [
             "field", "ribbon", "volumes", "faces", "particles", "bands", "goava",
             "filaments", "roses", "orbitals", "constellations", "lattice",
@@ -3941,7 +4362,6 @@ class VideoSynthEngine:
         while len(self.SCENOGRAPH_ITEM_CATALOG) < 64:
             self.SCENOGRAPH_ITEM_CATALOG.append(f"item_{len(self.SCENOGRAPH_ITEM_CATALOG)}")
         self.SCENOGRAPH_ITEM_CATALOG = self.SCENOGRAPH_ITEM_CATALOG[:64]
-        self.scenograph_item_count = 24  # default active items
         self._module_fade = {name: 0.0 for name in self.SCENOGRAPH_ITEM_CATALOG}
         # Core defaults (legacy weights)
         _defaults = {
@@ -4510,109 +4930,57 @@ class VideoSynthEngine:
             for k in range(len(pts)):
                 self._line(img, pts[k][0], pts[k][1], pts[(k + 1) % len(pts)][0], pts[(k + 1) % len(pts)][1], col, alpha)
 
+    def _live_instrument_visual_schema(self, i, name, canonical):
+        """Resolve the complete live composition record for one instrument."""
+        app = getattr(self, "app", None)
+        state = dict((getattr(app, "instrument_param_state", {}) or {}).get(name, {}) or {}) if app else {}
+        seq = {}
+        if app is not None:
+            try:
+                seq = dict((getattr(app, "instrument_sequencer_memory", {}) or {}).get(name, {}) or {})
+            except Exception:
+                seq = {}
+        steps = list(seq.get("steps") or [])
+        amps = list(seq.get("amplitudes") or [])
+        pitches = list(seq.get("pitches") or [])
+        playlist = getattr(app, "master_playlist_data", None) or [] if app else []
+        active_rows = []
+        for row in playlist:
+            if isinstance(row, dict) and str(row.get("operator", "")).strip() == str(name):
+                active_rows.append(row)
+        return {
+            "seed": float(self._canonical_ctx.get("seed", 0.0)),
+            "phase": float(canonical.get("phase0", 0.0)),
+            "patch": {
+                "morph": float(state.get("morph", 1.2)),
+                "harmonic_freq": float(state.get("harmonic_freq", canonical.get("base_freq", 432.0))),
+                "chaos": float(state.get("chaos", 0.75)),
+                "fold_depth": float(state.get("fold_depth", 4.0)),
+                "harmonic_lattice": float(state.get("harmonic_lattice", state.get("fractalizer", 0.33))),
+            },
+            "sequence": {
+                "length": int(seq.get("pattern_length", len(steps) or 16)),
+                "steps_on": sum(1 for x in steps if x),
+                "amp_mean": float(sum(float(x) for x in amps)/len(amps)) if amps else 0.0,
+                "pitch_mean": float(sum(float(x) for x in pitches)/len(pitches)) if pitches else 1.0,
+            },
+            "playlist_rows": len(active_rows),
+            "canonical": canonical,
+            "dimension": 1 + int(identity_unit("dimension", self._canonical_ctx.get("seed",0.0), name, i) * 3.0),
+        }
+
     def _subscene_faces_segments(self, img, w, h, st):
-        """Instrument layers: expanded/contracted faces + segments from Meum verts."""
-        e = self._rms
-        snap = st["snap"]
-        n_visible = int(round(getattr(self, "_render_n", self.n)))
-        harmonic_mult = 0.72 + 0.85 * getattr(self, "_harmonic_activity", 0.5) + 0.45 * getattr(self, "_octave_boundary", 0.0)
-        n_cap = 34 if self.mode != 3 else 52
-        n_show = min(int(round(n_visible * harmonic_mult)), n_cap, len(self.layers))
-        order = sorted(range(n_show), key=lambda i: -self.layers[i]["distance"])
-        for i in order:
-            layer = self.layers[i]
-            local = float(self.wave[i % 256])
-            band = float(self._band[i % 8])
-            # Formation target from Meum form + engines
-            target = st["form"] * (0.5 + 0.5 * band) + 0.15 * abs(local)
-            if snap["seeded"]:
-                target += 0.1 * abs(math.sin(self.t * MEUM + i))
-            if snap["euclid"]:
-                target += 0.08 * abs(math.cos(self.t * (snap["bpm"] / 60.0) + i * MEUM_INV))
-            target = float(np.clip(target, 0.05, 1.0))
-            layer["life"] += (target - layer["life"]) * MEUM_NORM
-            life = layer["life"]
-            if life < 0.04:
-                continue
-
-            # Vertex count expand/contract from k_pow + selective removal.
-            # `3 + (i % 4)` gave every 4th instrument the identical base
-            # vertex count; fold `i * MEUM` fractionally instead so the base
-            # count doesn't repeat on a short period across many instruments.
-            base_v = 3 + int(((i * MEUM * 5.0) % 1.0) * 4)
-            if st["k_pow"] >= 2:
-                base_v += 2  # expand
-            if st["k_pow"] == 0:
-                base_v = max(3, base_v - 1)  # contract
-            if snap["struct"] < 0.15 and (i % 3 == 0):
-                base_v = max(3, base_v - 1)  # random-ish removal when sparse playlist
-            layer["active_verts"] = base_v
-            n_v = base_v
-
-            dist = layer["distance"] * (1.0 - 0.22 * e) + 0.28 * abs(local)
-            yaw = layer["yaw"] + self.t * (0.28 + 0.55 * e + 0.18 * snap["eqr"]) + local * 0.3
-            pitch = layer["pitch"] + 0.16 * local + 0.1 * snap["fractal"] * math.sin(self.t + i)
-            roll = layer["roll"] + 0.1 * e * math.sin(self.t * MEUM + i)
-
-            # Z/n orbit placement gives every visible layer a distinct
-            # residue before geometry is projected into 2D.
-            go = int(st.get("group_order", max(2, self.n)))
-            gs = max(1, int(st.get("group_step", 1)))
-            residue = (i * gs) % go
-            ang0 = self.t * (0.35 + 0.03 * st.get("group_phase", 0.0)) + residue * (math.tau / go)
-            if snap.get("goava"):
-                ang0 += MEUM_NORM * math.sin(self.t * MEUM_INV + residue)
-            scale = (0.26 + 0.32 * abs(local) + 0.14 * e) * (0.28 + 0.72 * life) * st["rho"] * float(layer.get("implode", 1.0))
-            verts = []
-            for k in range(n_v):
-                a = ang0 + k * (math.tau / n_v)
-                # Constant insertion: Z from MEUM_NORM · sin when seeded
-                z = 0.06 * math.sin(a * 2 + self.t)
-                if snap["seeded"]:
-                    z += MEUM_NORM * 0.04 * math.sin(a * 3 + st["ph"] * math.tau)
-                verts.append((layer.get("field_x", 0.0) + scale * math.cos(a),
-                              layer.get("field_y", 0.0) + scale * math.sin(a),
-                              layer.get("field_z", 0.0) + z))
-
-            cosy, siny = math.cos(yaw), math.sin(yaw)
-            cosp, sinp = math.cos(pitch), math.sin(pitch)
-            cosr, sinr = math.cos(roll), math.sin(roll)
-            depth_factor = 1.0 / (1.0 + z * 0.1 * self.MEUM_INV)
-            projected = []
-            for px, py, pz in verts:
-                xr = px * cosr - py * sinr * self.center_x + (px * scale * depth_factor)
-                yr = px * sinr + py * cosr
-                yp = yr * cosp - pz * sinp * self.center_y + (yr * scale * depth_factor)
-                zp = yr * sinp + pz * cosp
-                xw = xr * cosy - zp * siny * self.center_y + (yr * scale * depth_factor)
-                zw = xr * siny + zp * cosy + dist
-                projected.append(self._project(xw, yp, zw, w, h))
-
-            hue = (layer["hue"] + int(self._video_hue_shift) + int(self._centroid * 40) + int(st["ph"] * 30)) % 360
-            col = self._hsv(hue, 0.5 + 0.25 * life, 0.32 + 0.5 * min(1.0, e + abs(local)) * life)
-            # VISUAL_DENSITY_V50 + DIVERGENCE_2026: higher opacity floors so
-            # seed-to-seed differences (hue, life, entropy) read clearly even
-            # on simple numeric seeds. Edges still dominate; faces now carry
-            # enough presence that consecutive seeds look ~50%+ distinct.
-            alpha = float(np.clip((0.22 + 0.55 * life * (0.50 + 0.40 * e)) * 0.95, 0.12, 0.58))
-
-            # Faces when formed
-            if life > 0.35 and len(projected) >= 3:
-                for k in range(1, len(projected) - 1):
-                    self._fill_tri(img, projected[0], projected[k], projected[k + 1], col, alpha * 0.34)
-            # Segments always
-            for k in range(len(projected)):
-                x0, y0, _ = projected[k]
-                x1, y1, _ = projected[(k + 1) % len(projected)]
-                self._line(img, x0, y0, x1, y1, col, alpha * 0.85)
-                self._dot(img, x0, y0, col, min(0.7, alpha + 0.08), r=1)
-
-            # Inter-layer segment bridges when playlist density high
-            if snap["struct"] > 0.25 and life > 0.35 and i + 5 < n_show:
-                other = projected[0]
-                cx, cy = self._map_xy(w * 0.5, h * 0.45)
-                self._line(img, other[0], other[1], cx, cy,
-                           self._hsv((hue + 40) % 360, 0.35, 0.4), alpha * 0.15 * snap["struct"])
+        """Single canonical visual route: one self-describing object per instrument."""
+        names = list(getattr(self.app, "instrument_names_48", []) or []) if self.app is not None else []
+        n = min(int(round(getattr(self, "_render_n", self.n))), len(self._canonical), len(names) or self.n)
+        if not names:
+            names = [f"Instrument {i+1}" for i in range(n)]
+        energy = float(np.clip(0.35*self._rms + 0.25*self._peak + 0.40*self._visual_entropy, 0.0, 1.0))
+        for i in range(n):
+            name = names[i] if i < len(names) else f"Instrument {i+1}"
+            c = self._canonical[i]
+            schema = self._live_instrument_visual_schema(i, name, c)
+            InstrumentVisualObject(self, i, name, c, schema).draw(img, w, h, self.t, energy, self._band)
 
     def _subscene_particles(self, img, w, h, st):
         """Seed / engine particle field from Meum residual + seed value."""
@@ -5381,42 +5749,6 @@ class VideoSynthEngine:
         except Exception:
             pass
 
-    def set_scenograph_item_count(self, n):
-        """How many of the 64 catalog items may be active (1..64).
-
-        Group-theory note: active items form a finite subset of the instrument
-        catalogue acted on by the cyclic group Z/n. Raising n extends the orbit
-        without duplicating residues — each index i is a unique coset representative
-        of the Meum-scaled rotation on the sphere. Hard ceiling 64 matches the
-        ensemble maximum so the scenograph stays a bijection with voice identity
-        (deterministic unique non-redundant geometry for each seed).
-        """
-        try:
-            n = int(n)
-        except Exception:
-            n = 24
-        self.scenograph_item_count = max(1, min(64, n))
-
-    def _active_scenograph_names(self):
-        cat = list(getattr(self, "SCENOGRAPH_ITEM_CATALOG", []) or [])
-        n = int(getattr(self, "scenograph_item_count", len(cat)) or 1)
-        n = max(1, min(64, n, len(cat) or 1))
-        # Prefer high-fade items first, then catalog order for stability
-        ranked = sorted(
-            cat,
-            key=lambda nm: (-float(self._module_fade.get(nm, 0.0)), cat.index(nm)),
-        )
-        return set(ranked[:n])
-
-    def _item_opacity(self, name, base=1.0):
-        """Per-item opacity with smart breathe (phase-offset sine) and count gate."""
-        if name not in self._active_scenograph_names():
-            return 0.0
-        fade = float(self._module_fade.get(name, 0.0))
-        ph = float(self._item_phase.get(name, 0.0))
-        breathe = 0.82 + 0.18 * math.sin(self.t * (0.7 + ph) + ph * math.tau)
-        return float(max(0.0, min(1.0, fade * breathe * float(base))))
-
     def render_frame(self, w=640, h=360, export=False):
         """Composite all Meum subscenes. export=True skips any UI-only overlays."""
         self.export_mode = bool(export)
@@ -5472,101 +5804,25 @@ class VideoSynthEngine:
         # Identity pass → union bbox → implode every part to fill outer bounds
         self._reset_fit(w, h)
         self._commit_fit(self._collect_fit_points(w, h, st), w, h)
-        if self._module_fade.get("field", 0.0) > 0.02:
-            self._subscene_field(img, w, h, st)
-        # SCENOGRAPH_CLEAN: ribbon (waveform/scope) and band towers (FFT spectrum)
-        # are intentionally omitted from the scenograph — pure geometry only.
-        # Oscilloscope / SpectrumAnalyzer remain as separate UI monitors.
-        if self._module_fade.get("volumes", 0.0) > 0.02:
-            self._subscene_volumes(img, w, h, st)
-        if self._module_fade.get("faces", 0.0) > 0.02:
-            self._subscene_faces_segments(img, w, h, st)
-        if self._module_fade.get("particles", 0.0) > 0.02:
-            self._subscene_particles(img, w, h, st)
-        self._subscene_math_filaments(img, w, h, st)
-        self._subscene_math_roses(img, w, h, st)
-        self._subscene_orbitals(img, w, h, st)
-        self._subscene_constellations(img, w, h, st)
-        self._subscene_lattice(img, w, h, st)
-        self._subscene_bursts(img, w, h, st)
-        self._subscene_spectral_comets(img, w, h, st)
-        self._subscene_rhythm_mandala(img, w, h, st)
-        self._subscene_pulse_grid(img, w, h, st)
-        self._subscene_wave_integration(img, w, h, st)
-        # Subtle Meum golden-angle mesh: always present, contextual, and frame-clamped.
-        cx, cy = w * 0.5, h * 0.47
-        mesh_r = min(w, h) * (0.24 + 0.16 * st["rho"])
-        for q in range(13):
-            aa = (q * MEUM * math.tau + self.t * 0.07 + st["ph"] * math.tau)*np.sin(self.t * self.MEUM_INV * 2.0)
-            rr = mesh_r * (0.45 + 0.55 * q / 12.0)*(np.sin(self.t * self.PHI + st["form"]) * np.cos(self.t * self.MEUM_INV))
-            x = float(np.clip(cx + math.cos(aa) * rr, 2, w - 3))
-            y = float(np.clip(cy + math.sin(aa * MEUM_INV) * rr * 0.72, 2, h - 3))*(np.cos(self.t * self.PHI + st["form"]) * np.sin(self.t * self.MEUM_INV))
-            col = self._hsv((155 + q * 11 + self._video_hue_shift) % 360, 0.28, 0.42)
-            self._dot(img, x, y, col, 0.11 + 0.08 * float(self._band[q % 8]), r=1)
+        # ONE_ROUTE_VISUAL_2026: every normal instrument is rendered by the
+        # same InstrumentVisualObject class. There are no catalog-count graphics,
+        # independent shape generators, or n-dependent identity placements.
+        self._subscene_faces_segments(img, w, h, st)
+        # GOAVA remains a second graphical class, intentionally separate because
+        # its identity is its own irrational numerical stream rather than an
+        # ordinary instrument voice.
         self._subscene_goava(img, w, h, st)
-        # LIVE_DJ_PAIR_VISUAL: the same unique unordered sound pair drives a
-        # distinct visual orbit. This keeps audio/visual identity coupled without
-        # duplicating (A,B) and (B,A).
-        try:
-            ls = st.get("snap", {})
-            dj_on = bool(ls.get("live_dj_goava") or ls.get("live_dj_random"))
-            if dj_on:
-                pidx = int(ls.get("live_dj_pair_index", 0))
-                psig = int(ls.get("live_dj_pair_signature", 0))
-                # Draw every shape parameter from independent 16-bit slices of the
-                # pair's own canonical hash (CommutativePairSpace.signature) rather
-                # than small-modulus wraps of the sequential index. pidx % 97 / % 31
-                # / % 10 / % 5 collide heavily across 1128 pairs (many distinct
-                # pairs land on the same bucket); full-width hash slices don't, so
-                # each unordered (A,B) keeps a visually distinct orbit without any
-                # hardcoded exception or epsilon nudge.
-                slice0 = (psig >> 0) & 0xFFFF
-                slice1 = (psig >> 16) & 0xFFFF
-                slice2 = (psig >> 32) & 0xFFFF
-                slice3 = (psig >> 48) & 0xFFFF
-                u = ((psig & 0xFFFFFFFF) / 4294967296.0)
-                cx, cy = w * 0.5, h * 0.47
-                radius = min(w, h) * (0.12 + 0.28 * (slice0 / 65535.0))
-                turns = 2.0 + 7.0 * (slice1 / 65535.0)
-                phase = self.t * (0.35 + 0.25 * u) + u * math.tau
-                count = 6 + int((slice2 / 65535.0) * 9.999)
-                shape_freq = 1.0 + (slice3 / 65535.0) * 0.85
-                for j in range(count):
-                    a = phase + math.tau * j / count + turns * self.t * 0.02
-                    rr = radius * (0.68 + 0.32 * math.sin(phase * shape_freq + j))
-                    x = cx + math.cos(a) * rr
-                    y = cy + math.sin(a * MEUM_INV) * rr * 0.68
-                    hue = int((u * 360.0 + j * 360.0 / count + (55 if ls.get("live_dj_random") else 285)) % 360)
-                    col = self._hsv(hue, 0.78, 0.55 + 0.35 * self._rms)
-                    self._dot(img, x, y, col, 0.22 + 0.18 * self._rms, r=1 + (j % 3))
-        except Exception:
-            pass
 
-        # Generic catalog items (up to 64): soft dots / arcs when dedicated drawers absent
-        try:
-            active = self._active_scenograph_names()
-            dedicated = {
-                "field", "volumes", "faces", "particles", "bands", "goava",
-                "filaments", "roses", "orbitals", "constellations", "lattice",
-                "bursts", "spectral_comets", "rhythm_mandala", "pulse_grid", "goava_field",
-                "wave_integration",
-            }
-            for name in active:
-                if name in dedicated:
-                    continue
-                op = self._item_opacity(name)
-                if op < 0.04:
-                    continue
-                i = self.SCENOGRAPH_ITEM_CATALOG.index(name) if name in self.SCENOGRAPH_ITEM_CATALOG else 0
-                ang = self.t * (0.15 + 0.02 * i) + i * PHI
-                rad = 0.12 + 0.35 * ((i % 8) / 8.0) * (0.5 + 0.5 * self._rms)
-                x = w * 0.5 + math.cos(ang) * rad * w * 0.42
-                y = h * 0.48 + math.sin(ang * MEUM_INV) * rad * h * 0.36
-                hue = int((i * 360 / 64 + self._video_hue_shift) % 360)
-                col = self._hsv(hue, 0.55 + 0.2 * op, 0.35 + 0.45 * op)
-                self._dot(img, x, y, col, 0.08 + 0.35 * op, r=1 + (i % 4))
-        except Exception:
-            pass
+        # Bright ambient phase field. This is not another object class: it is a
+        # low-cost compositing envelope derived from the same canonical state.
+        cx, cy = w*0.5, h*0.48
+        for q in range(12):
+            a = self.t*(0.045+0.006*q) + q*MEUM
+            rr = min(w,h)*(0.12+0.035*q)*(0.75+0.25*self._visual_entropy)
+            x = cx + math.cos(a)*rr
+            y = cy + math.sin(a*MEUM_INV)*rr*0.72
+            col = self._hsv((q*30 + self._video_hue_shift + self._canonical_ctx.get("seed",0.0)*0.17)%360, 0.45, 0.82)
+            self._dot(img,x,y,col,0.10+0.08*self._rms,r=1)
 
         return np.clip(img, 0, 255).astype(np.uint8)
 
@@ -6692,38 +6948,51 @@ class AdvancedDSPEngine:
 
         phase = 2 * np.pi * freq * sub_t
 
-        # Route math based on the Preset Dropdown selection (0 to 4)
+        # Route math based on the Preset Dropdown selection (0 to 4).
+        # Oscillator cores are isn/ics (not sin/cos/tanh). Dual-mode scale only.
+        ot = operator_theory_enabled()
         if preset == 0:
-            # Preset 0: Non-Linear Wave-Folder Topology
-            raw = np.sin(phase * (1.0 + k1)) + k2 * np.sin(phase * 2.0 * k3)
-            folded = np.tanh(raw * (1.0 + fractal * 5.0))
-            return folded * (1.0 + k4 * np.cos(phase * k5)) * (1.0 - k6 * 0.5)
+            # Preset 0: Non-Linear Wave Topology (isn core, no folder saturation)
+            raw = isn_vec(phase * (1.0 + k1)) + k2 * isn_vec(phase * 2.0 * k3)
+            drive = 1.0 + fractal * 5.0
+            if ot:
+                folded = np.asarray([math_mul(float(v), drive) for v in np.asarray(raw).ravel()], dtype=np.float32).reshape(raw.shape)
+            else:
+                folded = (raw * drive).astype(np.float32)
+            return folded * (1.0 + k4 * ics_vec(phase * k5)) * (1.0 - k6 * 0.5)
 
         elif preset == 1:
-            # Preset 1: Z-Pinch / Quantum Field Resonance
-            pinched = np.sin(phase * (1.0 + track_idx * 0.05)) * (1.0 + k1 * np.tan(np.clip(sub_t * k2, -1.5, 1.5)))
-            resonance = np.arcsin(np.clip(pinched * (0.5 + eqr), -0.99, 0.99))
-            return resonance * k3 * (1.0 + k4 * np.sin(sub_t * k5 * 10.0)) * (1.0 - k6)
+            # Preset 1: Z-Pinch / Quantum Field Resonance (isn core)
+            arg = sub_t * k2
+            arg = np.minimum(np.maximum(arg, -1.5), 1.5)
+            pinched = isn_vec(phase * (1.0 + track_idx * 0.05)) * (1.0 + k1 * np.tan(arg))
+            pinched_b = np.minimum(np.maximum(pinched * (0.5 + eqr), -0.99), 0.99)
+            resonance = np.arcsin(pinched_b)
+            return resonance * k3 * (1.0 + k4 * isn_vec(sub_t * k5 * 10.0)) * (1.0 - k6)
 
         elif preset == 2:
-            # Preset 2: Hyperbolic & Torus Phase-Space
-            hyp = np.sinh(k1 * np.sin(phase)) / (1.0 + np.cosh(k2 * np.cos(phase * k3)))
-            torus_mod = np.cos(phase * (1.0 + k4)) + 0.5 * np.sin(phase * (2.0 + k5))
+            # Preset 2: Hyperbolic & Torus Phase-Space (isn/ics cores)
+            hyp = np.sinh(k1 * isn_vec(phase)) / (1.0 + np.cosh(k2 * ics_vec(phase * k3)))
+            torus_mod = ics_vec(phase * (1.0 + k4)) + 0.5 * isn_vec(phase * (2.0 + k5))
             return hyp * torus_mod * (1.0 + fractal * 3.0) * (1.0 - k6 * 0.2)
 
         elif preset == 3:
-            # Preset 3: Stochastic & Entropic Noise Lattice
+            # Preset 3: Stochastic & Entropic Noise Lattice (isn core)
             stochastic_jitter = np.random.normal(0, 0.15, len(sub_t)) * k1
-            chaotic_wave = np.sin(phase * (1.0 + k2) + stochastic_jitter)
-            modulated = chaotic_wave / (1.0 + k3 * np.abs(np.sin(phase * k4)))
+            chaotic_wave = isn_vec(phase * (1.0 + k2) + stochastic_jitter)
+            modulated = chaotic_wave / (1.0 + k3 * np.abs(isn_vec(phase * k4)))
             return modulated * k5 * (1.0 + eqr * 2.0) * (1.0 - k6 * 0.3)
 
         else:
-            # Preset 4: Custom Polynomial / Matrix Operator
-            # Uses the track index to scale harmonic spacing dynamically across the 48 synths
+            # Preset 4: Custom Polynomial / Matrix Operator (isn/ics cores)
             harmonic_offset = 1.0 + (track_idx % 12) * 0.08
-            poly = k1 * (np.sin(phase * harmonic_offset)**3) - k2 * (np.cos(phase * k3)**2) + k4 * np.sin(phase)
-            return np.tanh(poly * (1.0 + fractal * 4.0)) * (1.0 + eqr) * (1.0 - k6 * 0.1)
+            poly = k1 * (isn_vec(phase * harmonic_offset)**3) - k2 * (ics_vec(phase * k3)**2) + k4 * isn_vec(phase)
+            drive = 1.0 + fractal * 4.0
+            if ot:
+                shaped = np.asarray([math_mul(float(v), drive) for v in np.asarray(poly).ravel()], dtype=np.float32).reshape(poly.shape)
+            else:
+                shaped = (poly * drive).astype(np.float32)
+            return shaped * (1.0 + eqr) * (1.0 - k6 * 0.1)
 
     def render_full_mixdown(self, filename, channel_states, grid_data, instrument_names, tempo_bpm=120):
         seconds_per_beat = 60.0 / float(tempo_bpm)
@@ -6756,24 +7025,33 @@ class AdvancedDSPEngine:
                     if len(sub_t) == 0: continue
 
                     freq = base_tuning * (1.0 + (col_idx % 12) * 0.03)
-                    raw = np.sin(2 * np.pi * freq * sub_t + p1 * np.sin(2 * np.pi * freq * 2 * sub_t))
+                    # isn-based carrier + isn sub-modulator (no sin/tanh)
+                    raw = isn_vec(2 * np.pi * freq * sub_t + p1 * isn_vec(2 * np.pi * freq * 2 * sub_t))
 
                     env = np.sin(np.pi * sub_t / note_dur) * (1.0 + p2 * 0.5)
-                    note_audio = np.tanh(raw * (1.0 + p1 * 2.0)) * env * 0.08 * vol
+                    drive = 1.0 + p1 * 2.0
+                    # Dual-mode gain, no soft-clip saturation.
+                    if operator_theory_enabled():
+                        driven = np.asarray([math_mul(float(v), drive) for v in np.asarray(raw).ravel()], dtype=np.float32).reshape(raw.shape)
+                    else:
+                        driven = (raw * drive).astype(np.float32)
+                    note_audio = driven * env * 0.08 * vol
                     master_buffer[idx_start:idx_start+len(note_audio)] += note_audio
 
-        max_val = np.max(np.abs(master_buffer))
-        if max_val > 0:
-            master_buffer = master_buffer / max_val * 0.95
-
-        scaled = np.int16(master_buffer * 32767)
+        # No peak normalization / no saturation — write the linear sum as-is.
+        # int16 encode only clamps at the PCM boundary (hardware quantize).
+        scaled = np.int16(np.minimum(np.maximum(master_buffer, -1.0), 1.0) * 32767)
         with wave.open(filename, 'w') as wav_file:
             wav_file.setnchannels(1)
             wav_file.setsampwidth(2)
             wav_file.setframerate(self.sample_rate)
             wav_file.writeframes(scaled.tobytes())
 class MathEngine:
-    """Core mathematical engine evaluated strictly on x, y, z variables without Meum factors."""
+    """Core mathematical engine on x, y, z — dual-mode (OT nested dynamics or normal).
+
+    No soft-clip / no peak normalization.  Operator Theory routes products and
+    sums through ot_*; normal mode uses ordinary arithmetic.
+    """
     @staticmethod
     def isn(val):
         return np.sin(val) / (1.0 + np.abs(np.cos(val)))
@@ -6783,12 +7061,36 @@ class MathEngine:
         return np.cos(val) / (1.0 + np.abs(np.sin(val)))
 
     @staticmethod
+    def _mul(a, b):
+        if operator_theory_enabled():
+            try:
+                return float(math_mul(float(a), float(b)))
+            except Exception:
+                return float(a) * float(b)
+        return float(a) * float(b)
+
+    @staticmethod
+    def _add(a, b):
+        if operator_theory_enabled():
+            try:
+                return float(math_add(float(a), float(b)))
+            except Exception:
+                return float(a) + float(b)
+        return float(a) + float(b)
+
+    @staticmethod
     def eskivector(x, y, z):
-        return MathEngine.isn(x) * y, MathEngine.ics(y) * z, np.sin(x * y * z)
+        return (
+            MathEngine._mul(MathEngine.isn(x), y),
+            MathEngine._mul(MathEngine.ics(y), z),
+            np.sin(x * y * z),
+        )
 
     @staticmethod
     def eskitable(x, y, z):
-        return np.clip((x + y) * 0.5, -1.0, 1.0) * MathEngine.ics(z)
+        # Linear average — no clip saturation.
+        mid = MathEngine._add(x, y) * 0.5
+        return mid * MathEngine.ics(z)
 
 def _ensure_single_math_background(app, host):
     """Reuse exactly one mathematical background per host.
@@ -6927,7 +7229,16 @@ class ParametricMathBackground(QWidget):
         if self._param_cache[2] != self._cycle:
             self._reseed()
         vals = [v for _, v in self._param_cache[1]] or [0.5]
-        return [0.5 + 0.5 * math.tanh(abs(v)) for v in vals]
+        # Dual-mode map of absolute scalars into a positive display range.
+        # No tanh saturation — linear fold of |v| through a gentle gain only.
+        out = []
+        for v in vals:
+            a = abs(float(v))
+            if operator_theory_enabled():
+                out.append(0.5 + 0.5 * abs(math_scale(a, 0.35)))
+            else:
+                out.append(0.5 + 0.5 * min(a, 1.0))
+        return out
 
     def _paint_wave(self, painter, index, width, height, scalars, phase):
         sf = scalars[index % len(scalars)]
@@ -7700,13 +8011,9 @@ class ReadmeGuideDialog(QDialog):
   EQR GROOVEBOX — Mathematician's / Scientist's Groovebox
   Full Documentation, Scripting Syntax & Design Philosophy
 ================================================================================
-  Credits: core EQR design — project author; implementation assistance —
-  Grok (xAI), Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI),
-  Mistral.ai (Mistral), Meta AI (Meta), GitHub Copilot (GitHub),
-  and Cursor Grok 4.6 (polyphony, unison memory, visualizer).
-  Maintenance + level-up fixes (GOAVA pitch DC-centering, dead-code dedup,
-  canonical-state fingerprint, UI layout stability, engaged randomizer
-  colors): opencode (anomalyco).
+  Credits: core EQR design — project author; Grok (xAI), Gemini (Google),
+  Claude (Anthropic), ChatGPT (OpenAI), Mistral.ai (Mistral), Meta AI (Meta),
+  GitHub Copilot (GitHub), Cursor Grok 4.6, and opencode (anomalyco).
 
 --------------------------------------------------------------------------------
 1. GOAL OF THE SOFTWARE
@@ -8079,12 +8386,9 @@ Each has sequencer memory (steps, amplitudes, gates, probabilities) and optional
   (and other bank slots) when the user has not touched any of its steps.
 
   End of Help — Groovebox
-  Assisted by Grok (xAI), Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI),
-  Mistral.ai (Mistral), Meta AI (Meta), Github Copilot (GitHub),
-  and Cursor Grok 4.6 (polyphony, unison memory, visualizer).
-  Maintenance + level-up fixes (GOAVA pitch DC-centering, dead-code dedup,
-  canonical-state fingerprint, UI layout stability, engaged randomizer
-  colors): opencode (anomalyco).
+  Credits: Grok (xAI), Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI),
+  Mistral.ai (Mistral), Meta AI (Meta), GitHub Copilot (GitHub),
+  Cursor Grok 4.6, and opencode (anomalyco).
 ================================================================================
 """
 
@@ -8195,12 +8499,13 @@ class ScriptPanelDialog(QDialog):
         btn_layout.addWidget(close_btn)
         layout.addLayout(btn_layout)
 class MusicFractallizer:
-    """Global frequency-domain fractal resonator.
+    """Contextual sub/superharmonic Fractallizer (time-variant).
 
-    The effect operates on spectral magnitude while preserving the input FFT
-    phase exactly.  Fractal/subharmonic detail is therefore *on-phase* with
-    the canonical source instead of being produced by time-domain wrapping,
-    interpolation and nonlinear folding (which could sound gritty/aliased).
+    Reads local subpeaks and subtroughs of the wave (relativistic context
+    around each sample), synthesizes matching subharmonics (½, ⅓) and
+    superharmonics (2×, 3×) as an isn-shaped contextual companion wave, and
+    appends them to every existing partial at up to 50% mix.  No spectral
+    peak-renorm / equalizer stage.
     """
     def __init__(self, dimensions=('x', 'y', 'z'), survival_mode=True, sample_rate=44100):
         self.dimensions = dimensions
@@ -8214,140 +8519,136 @@ class MusicFractallizer:
         arr = np.asarray(seed_data, dtype=np.float32).ravel()
         if arr.size == 0:
             return {dim: np.zeros(1, dtype=np.float32) for dim in self.dimensions}
-        return {dim: np.tanh(arr) for dim in self.dimensions}
+        if operator_theory_enabled():
+            return {dim: dual_map_array(arr, lambda v: math_scale(v, 1.0)) for dim in self.dimensions}
+        return {dim: np.asarray(arr, dtype=np.float32) for dim in self.dimensions}
 
     @staticmethod
-    def _spectral_on_phase_detail(signal, gamma, weights, detail_amount=0.18):
-        """Return a phase-preserving spectral fractalization of *signal*.
+    def _contextual_sub_super(signal, sample_rate, strength=1.0):
+        """Build time-variant sub/superharmonic companion from local context.
 
-        Magnitude is redistributed across log-frequency scale copies; the
-        original FFT phase is retained at every bin.  A deterministic
-        log-frequency residual adds fine detail without nonlinear clipping.
+        Local envelope (subpeaks / subtroughs) modulates isn-shaped partials at
+        1/2…1/6 and 2×…6× relative to a running local fundamental estimate.
         """
-        x = np.asarray(signal, dtype=np.float32).ravel()
+        x = np.asarray(signal, dtype=np.float64).ravel()
         n = x.size
-        if n < 8:
-            return x.copy()
-        win = np.hanning(n).astype(np.float32)
-        X = np.fft.rfft(x * win)
-        mag = np.abs(X).astype(np.float64)
-        phase = np.angle(X)
-        bins = np.arange(mag.size, dtype=np.float64)
-        # Avoid DC/near-DC singularity while retaining the original DC level.
-        safe = np.maximum(bins, 1.0)
-        g = max(1.05, float(gamma))
-        w = np.asarray(weights, dtype=np.float64)
-        w = w / max(float(np.sum(w)), 1e-12)
-        scales = np.asarray((1.0 / g, 1.0, g, g * g), dtype=np.float64)
-        warped = []
-        for sc in scales:
-            src = np.clip(safe * sc, 1.0, float(max(mag.size - 1, 1)))
-            warped.append(np.interp(src, bins, mag))
-        new_mag = sum(float(ww) * mm for ww, mm in zip(w, warped))
-
-        # Scaled detail is a smooth high-resolution spectral residual, not a
-        # waveshaper.  It follows the source envelope and cannot create hard
-        # harmonics by itself.
-        if detail_amount > 0.0 and mag.size > 16:
-            logmag = np.log1p(mag)
-            kernel = np.ones(9, dtype=np.float64) / 9.0
-            smooth = np.convolve(logmag, kernel, mode='same')
-            residual = logmag - smooth
-            # More detail in the upper spectrum, but taper before Nyquist.
-            hi = np.linspace(0.0, 1.0, mag.size, dtype=np.float64)
-            taper = np.sqrt(hi)
-            detail = np.expm1(np.clip(smooth + float(detail_amount) * residual * taper, -20.0, 20.0))
-            new_mag = 0.88 * new_mag + 0.12 * detail
-
-        # Keep the fundamental/DC magnitude anchored and preserve phase.
-        new_mag[0] = mag[0]
-        y_spec = new_mag.astype(np.float64) * np.exp(1j * phase)
-        y = np.fft.irfft(y_spec, n=n)
-        # Undo the Hann energy change with a conservative peak normalization.
-        peak_in = float(np.max(np.abs(x)) + 1e-9)
-        peak_out = float(np.max(np.abs(y)) + 1e-9)
-        if peak_out > 1e-9:
-            y *= peak_in / peak_out
-        return y.astype(np.float32)
+        if n < 16:
+            return np.zeros(n, dtype=np.float32)
+        sr = max(float(sample_rate), 1.0)
+        # Local amplitude context: sliding RMS ≈ subpeaks / subtroughs envelope.
+        win = max(8, min(256, n // 64))
+        kernel = np.ones(win, dtype=np.float64) / float(win)
+        abs_x = np.abs(x)
+        local_env = np.convolve(abs_x, kernel, mode='same')
+        # Local fundamental proxy from zero-crossing density in blocks.
+        block = max(32, min(512, n // 32))
+        nb = max(1, n // block)
+        f0_ctrl = np.empty(nb, dtype=np.float64)
+        for i in range(nb):
+            lo = i * block
+            hi = min(n, lo + block)
+            seg = x[lo:hi]
+            zc = np.where(np.diff(np.signbit(seg)))[0]
+            if zc.size >= 2:
+                period = float(np.median(np.diff(zc)))
+                f0 = sr / max(period * 2.0, 2.0)
+            else:
+                f0 = 110.0
+            f0_ctrl[i] = max(40.0, min(f0, sr * 0.2))
+        f0_full = np.interp(
+            np.arange(n, dtype=np.float64),
+            np.linspace(0, n - 1, nb),
+            f0_ctrl,
+        )
+        t = np.arange(n, dtype=np.float64) / sr
+        # Instantaneous phase advance from local f0.
+        phase = np.cumsum(2.0 * np.pi * f0_full / sr)
+        # isn-shaped partials (book isn) at sub and super ratios.
+        # Subharmonics 1/2 … 1/6 and superharmonics 2× … 6× (isn-shaped).
+        ratios = (
+            1.0/2.0, 1.0/3.0, 1.0/4.0, 1.0/5.0, 1.0/6.0,
+            2.0, 3.0, 4.0, 5.0, 6.0,
+        )
+        # Slight emphasis on nearest partials; equal energy within sub / super banks.
+        weights = (
+            0.14, 0.11, 0.09, 0.07, 0.05,   # sub 1/2 … 1/6
+            0.14, 0.11, 0.09, 0.07, 0.05,   # super 2× … 6×
+        )
+        companion = np.zeros(n, dtype=np.float64)
+        for r, w in zip(ratios, weights):
+            th = phase * r
+            # book isn: 2*sin(θ/2) — positive-lobe friendly; bipolarize with sign of carrier
+            partial = book_isn_vec(np.mod(th, 2.0 * np.pi))
+            # center to bipolar
+            partial = partial - np.mean(partial)
+            companion += w * partial
+        # Match contextual subpeaks/subtroughs: scale by local envelope.
+        companion *= local_env * float(strength)
+        return companion.astype(np.float32)
 
     def process(self, dry, activation=0.33, gamma=2.0, pkp_env=None, bpm=120.0, reference_buffer=None):
-        """Apply phase-coherent frequency-domain fractal detail."""
+        """Append contextual sub/superharmonics; mix capped at 50%."""
         dry = np.asarray(dry, dtype=np.float32).ravel()
         n = dry.size
         if n == 0:
             return dry
+        src = dry
         if reference_buffer is not None:
             ref = np.asarray(reference_buffer, dtype=np.float32).ravel()
             if ref.size == n:
-                dry = ref.copy()
+                src = ref
         act = float(np.clip(activation, 0.0, 1.0))
-        wet_mix = 0.5 * act
+        wet_mix = 0.5 * act  # hard cap 50%
         if wet_mix < 1e-6:
             return dry.copy()
-        g = max(1.1, float(gamma))
-        fractal = self._spectral_on_phase_detail(
-            dry, g, (0.20, 0.35, 0.30, 0.15), detail_amount=0.10 * act
-        )
-        if pkp_env is None:
-            beat_hz = max(float(bpm), 1.0) / 60.0
-            t_sec = np.arange(n, dtype=np.float32) / float(self.sample_rate)
-            pkp_env = 0.55 + 0.45 * np.sin(2.0 * np.pi * beat_hz * t_sec)
-        env = np.asarray(pkp_env, dtype=np.float32).ravel()
-        if env.size != n:
-            env = np.resize(env, n)
-        # Envelope the *detail contribution*, preserving the dry phase/source.
-        detail = (fractal - dry) * np.clip(env, 0.0, 1.5)
-        out = dry + wet_mix * detail
+        strength = 0.5 + 0.5 * float(gamma) / 4.0
+        companion = self._contextual_sub_super(src, self.sample_rate, strength=strength)
+        if pkp_env is not None:
+            env = np.asarray(pkp_env, dtype=np.float32).ravel()
+            if env.size != n:
+                env = np.resize(env, n)
+            companion = companion * env
+        # Append as added harmonics (not a spectral replace).
+        out = dry + wet_mix * companion
         return out.astype(np.float32)
 
 
 class HarmonicLattice:
-    """Per-synth phase-preserving frequency-domain spectrum expander."""
+    """Per-synth contextual sub/superharmonic companion (lighter Fractallizer)."""
     def __init__(self, sample_rate=44100):
         self.sample_rate = int(sample_rate)
+        self._frac = MusicFractallizer(sample_rate=sample_rate)
 
     def process(self, dry, activation=0.33, gamma=2.0, pkp_env=None, bpm=120.0):
-        dry = np.asarray(dry, dtype=np.float32).ravel()
-        n = dry.size
-        if n == 0:
-            return dry
-        act = float(np.clip(activation, 0.0, 1.0))
-        wet_mix = 0.5 * act
-        if wet_mix < 1e-6:
-            return dry.copy()
-        g = max(1.15, float(gamma))
-        fractal = MusicFractallizer._spectral_on_phase_detail(
-            dry, g, (0.30, 0.45, 0.25, 0.0), detail_amount=0.07 * act
+        # Same engine as global Fractallizer; mix still capped at 50%.
+        return self._frac.process(
+            dry, activation=activation, gamma=gamma, pkp_env=pkp_env, bpm=bpm
         )
-        if pkp_env is None:
-            beat_hz = max(float(bpm), 1.0) / 60.0
-            t = np.arange(n, dtype=np.float32) / float(self.sample_rate)
-            pkp_env = 0.55 + 0.45 * np.sin(2.0 * np.pi * beat_hz * t)
-        env = np.asarray(pkp_env, dtype=np.float32).ravel()
-        if env.size != n:
-            env = np.resize(env, n)
-        detail = (fractal - dry) * np.clip(env, 0.0, 1.5)
-        return (dry + wet_mix * detail).astype(np.float32)
 
 
 class EQRTensorEngine:
-    """Equation of Reality tensor evaluator (book p.78).
+    """Equation of Reality tensor (book p.78 LaTeX) — z-at-origin contribution mix.
 
-    Every harmonic context along the wave yields a single-point z-value
-    Z = P·E + D from the reality tensor (P structure, E energy/direction,
-    D point-to-direction with the finite-infinity constant I).  The z-values
-    are scaled per render to a mean of 1.0 (scale-invariant structural
-    relation) and shaped through a TIME-PREDICTIVE follow envelope — a small
-    forward maximum window, so the filter anticipates transients instead of
-    lagging them.  Activation 0–100% blends in up to 50% of the shaped signal.
+    For each time t, the harmonic context around the sample (neighbours as
+    points n at distances d_n) yields a single z-value at the origin:
+
+        P = (1/k) Σ isn⁻¹((isn(d_n)+isn(t))/2)
+        E = (1/k) Σ isn(θ_n)/d_n
+        D = (1/k) Σ isn⁻¹(isn(θ_n)·E/(I·P))
+        Z = P·E + D
+
+    That z is the contribution of the wave *when it passed through the origin*
+    at time t.  It is mixed as a harmonic contribution into the contextual
+    audio, time-centered at the origin.  No scale-normalization / equalizer.
+    Activation 0–100% → wet mix 0–50%.
     """
     Z_REF = 1.5
 
     def __init__(self):
-        self._last_z = 1.0
+        self._last_z = 0.0
 
     def evaluate_z(self, sample, context=None, t=0.0):
-        """Single-point z-value (stdout of the P,E,D tensor) for one context."""
+        """Single-point z-value at the origin for one harmonic context."""
         s = float(sample)
         ctx = np.asarray(context, dtype=np.float32).ravel().tolist() if context is not None and len(context) else [s]
         _, _, _, z = eqr_tensor_step(s, ctx, t=float(t))
@@ -8355,63 +8656,56 @@ class EQRTensorEngine:
         return float(z)
 
     def process(self, dry, activation=0.0, pkp_env=None):
-        """Predictive-envelope Z-shaped master; max 50% mix at 100% activation.
+        """Mix origin-z contribution into contextual audio; max 50% wet.
 
-        Each control point is one harmonic context: the current sample, the
-        ±window neighbours, and the running time fraction t along the wave.
-        The component P/E are mean-normalized over the render (so the
-        structural relation drives the shape, not the raw magnitude), Z = P·E+D
-        is envelope-followed forward (predictive), then crossfaded to dry.
-        pkp_env (optional) is the same tempo-locked envelope the Fractallizer/
-        PKP master stages use, so all three effects breathe together.
+        Uses the closed-form audio reduction (eqr_tensor_audio): one sliding
+        MAD pass for d̄, then O(1) z per sample — no Σ loop.
         """
         dry = np.asarray(dry, dtype=np.float32).ravel()
         n = dry.size
         if n == 0:
             return dry
         act = float(np.clip(activation, 0.0, 1.0))
-        wet_mix = 0.5 * act
+        wet_mix = 0.5 * act  # hard cap 50%
         if wet_mix < 1e-6:
             return dry.copy()
 
-        ctrl_n = min(64, max(4, n // 256))
+        # Characteristic distance d̄: sliding mean-abs-deviation (local context).
+        win = max(8, min(256, n // 64))
+        kernel = np.ones(win, dtype=np.float64) / float(win)
+        abs_x = np.abs(dry.astype(np.float64))
+        d_char = np.convolve(abs_x, kernel, mode='same')  # ≈ local MAD around origin
+
+        # Sparse control grid for z, then interpolate (keeps cost tiny).
+        ctrl_n = min(128, max(4, n // 128))
         idxs = np.linspace(0, n - 1, ctrl_n).astype(np.int32)
-        w = max(1, ctrl_n // 8)
-        P_ctrl = np.empty(ctrl_n, dtype=np.float64)
-        E_ctrl = np.empty(ctrl_n, dtype=np.float64)
         Z_ctrl = np.empty(ctrl_n, dtype=np.float64)
         for i, ix in enumerate(idxs):
-            lo = max(0, ix - w)
-            hi = min(n, ix + w + 1)
             t = float(ix) / float(max(1, n - 1))
-            pi_, ei_, _di, zi = eqr_tensor_step(dry[ix], dry[lo:hi], t=t)
-            P_ctrl[i], E_ctrl[i], Z_ctrl[i] = pi_, ei_, zi
-        sp = float(np.mean(np.abs(P_ctrl))) + 1e-12
-        se = float(np.mean(np.abs(E_ctrl))) + 1e-12
-        Pn = P_ctrl / sp
-        En = E_ctrl / se
-        Zn = Pn * En + Z_ctrl - (P_ctrl[0] * 0.0)  # scale-invariant Z, D kept raw
-        # Center the combined z on mean 1.0 and clamp the transient excursion
-        zm = float(np.mean(Zn))
-        rel = Zn / max(abs(zm), 1e-9)
-        rel = np.clip(rel, 0.25, 2.5).astype(np.float32)
-        # TIME-PREDICTIVE follow envelope: forward max window anticipates onsets
-        look = max(1, ctrl_n // 12)
-        env = np.empty(ctrl_n, dtype=np.float32)
-        for i in range(ctrl_n):
-            hi = min(ctrl_n, i + look)
-            env[i] = float(np.max(rel[i:hi]))
-            if i > 0 and env[i] < env[i - 1]:
-                env[i] = env[i - 1] * 0.85 + rel[i] * 0.15
-        z_full = np.interp(np.arange(n), idxs.astype(float), env).astype(np.float32)
-        env_gain = np.ones(n, dtype=np.float32)
+            _p, _e, _d, zi = eqr_tensor_audio(
+                float(dry[ix]), float(d_char[ix]), float(dry[ix]), t=t
+            )
+            Z_ctrl[i] = zi
+        z_full = np.interp(
+            np.arange(n, dtype=np.float64), idxs.astype(float), Z_ctrl
+        )
+
+        env_gain = np.ones(n, dtype=np.float64)
         if pkp_env is not None:
-            env_ = np.asarray(pkp_env, dtype=np.float32).ravel()
+            env_ = np.asarray(pkp_env, dtype=np.float64).ravel()
             if env_.size != n:
                 env_ = np.resize(env_, n)
-            env_gain = np.clip(env_, 0.0, 1.5)
-        shaped = dry * (0.65 + 0.35 * np.tanh(z_full)) * env_gain
-        out = (1.0 - wet_mix) * dry + wet_mix * shaped
+            env_gain = env_
+
+        # Contribution harmonic mix of origin-z into the wave at time t.
+        if operator_theory_enabled():
+            contrib = np.empty(n, dtype=np.float64)
+            for i in range(n):
+                contrib[i] = math_mul(float(z_full[i]), float(dry[i])) * float(env_gain[i])
+        else:
+            contrib = z_full * dry.astype(np.float64) * env_gain
+
+        out = (1.0 - wet_mix) * dry.astype(np.float64) + wet_mix * contrib
         return out.astype(np.float32)
 
 
@@ -9561,7 +9855,7 @@ class GrooveboxEngine:
             "x * y - z",
             "abs(x) + math.cos(y) - z",
             "x**3 - y**2 + z",
-            "math.tanh(x * y) - z"
+            "isn(x * y) - z"
         ]
         self.scale_equation = random.choice(equations)
         self.global_bpm = float(random.randint(98, 142))
@@ -13131,35 +13425,7 @@ class PermanentPatchBayPanel(QWidget):
         layout.addWidget(self.global_dest)
         layout.addWidget(QLabel("Repeaters:"))
         layout.addWidget(self.repeater_slider)
-        # Inside your main application or control panel __init__:
-# 1. Tuning (SpinBox or Slider)
-        self.spin_tuning = QSpinBox()
-        self.spin_tuning.setRange(100, 1200)
 
-        # 2. Amplitude Slider
-        self.slider_amplitude = QSlider(Qt.Orientation.Horizontal)
-        self.slider_amplitude.setRange(0, 100)
-
-        # 3. Duration / Percussive-Keylike-Padded Slider
-        self.slider_duration = QSlider(Qt.Orientation.Horizontal)
-        self.slider_duration.setRange(0, 100)
-
-        # 4. Fractalizer Slider
-        self.slider_fractalizer = QSlider(Qt.Orientation.Horizontal)
-        self.slider_fractalizer.setRange(0, 100)
-
-        # 5. EQR Effect Slider / Fifth Option Control Dropdown or Slider
-        self.slider_eqr = QSlider(Qt.Orientation.Horizontal)
-        self.slider_eqr.setRange(0, 100)
-
-        # Fifth Option Dropdown Preset Selector (shared or per instrument)
-        self.preset_combo = QComboBox()
-        self.preset_combo.currentIndexChanged.connect(self.on_preset_changed)
-
-    def on_preset_changed(self, index):
-        curr_idx = self.instrument_selector_dropdown.currentIndex()
-        if 0 <= curr_idx < len(self.channel_states):
-            self.channel_states[curr_idx]["preset_idx"] = index
         connect_btn = QPushButton("Patch Global Bus")
         connect_btn.setStyleSheet("background-color: #0984e3; color: white;")
         connect_btn.clicked.connect(lambda: QMessageBox.information(self, "Global Bus Patched", "Global patch bus updated."))
@@ -16183,17 +16449,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         )
         self.preferred_sample_rate = TARGET_SAMPLE_RATE
 
-        # Scenograph density: 1..64 render items (catalog forms fade in/out).
-        # Single control — do not duplicate as "Visual objects" elsewhere.
-        self.lbl_sceno_items = QLabel("Scenograph items:")
-        self.spin_sceno_items = QSpinBox()
-        self.spin_sceno_items.setRange(1, 64)
-        self.spin_sceno_items.setValue(24)
-        self.spin_sceno_items.setToolTip(
-            "How many of the 64 scenograph render items may be active. "
-            "Items fade in/out smoothly; higher counts enrich the field."
-        )
-        self.spin_sceno_items.valueChanged.connect(self._on_sceno_items_changed)
+        # Scenograph density is bound to the live instrument count (no
+        # separate manual override) — see _on_synth_count_changed, which
+        # The scenograph population follows the ensemble automatically.
+        # This guarantees a 2-instrument project and a 64-instrument project
+        # generate the same graph shape (same closed-form placement law),
+        # just sampled at a different N.
 
         self.instrument_selector_dropdown = QComboBox()
         self.instrument_selector_dropdown.addItems(self.instrument_names_48)
@@ -16549,8 +16810,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         self.transport_layout.addWidget(self.lbl_bpm)
         self.transport_layout.addWidget(self.spin_bpm)
-        self.transport_layout.addWidget(self.lbl_sceno_items)
-        self.transport_layout.addWidget(self.spin_sceno_items)
         self.transport_layout.addWidget(QLabel("Active Operator:"))
         self.transport_layout.addWidget(self.instrument_selector_dropdown)
         self.transport_layout.addWidget(self.btn_keyboard)
@@ -16645,10 +16904,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.slider_pkp_decay.setRange(1, 1000)
         self.slider_pkp_decay.setValue(int(round(PHI_INV * 1000.0)))  # φ⁻¹ ≈ 0.618 s
         self.slider_pkp_decay.setToolTip(
-            "PKP Decay → per-note envelope binding (follower always on, ≈1-note sweep "
-            "before/after every note). 0.5 = normal 1:1 note-per-step envelope; "
-            "1 = hold spans the whole sequence length; 0 = hold is (1 step)/(sequence "
-            "length) note duration.  Default 0.618 (φ⁻¹) — golden-ratio-tempered hold."
+            "PKP Decay → smart isn() envelope per note/row. "
+            "0.0 = single isn() cycle per note; "
+            "0.5 = 2-step isn ramp up / solid mid / isn ramp down; "
+            "1.0 = isn cycle then flat sustain to playlist row length. "
+            "Shared with EQR and Fractallizer; all effect mixes ≤ 50%."
         )
 
         # PKP Envelope Follower is permanently force-enabled (no toggle).
@@ -16814,22 +17074,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
         )
         # OP_THEORY_TOGGLE_2026: large toggle applying the book's Operator
         # Theory (p.49-50) to ALL mathematics in the DSP pathway and the
-        # game logic (off by default).  One matched toggle drives the master
+        # game logic (ON by default).  One matched toggle drives the master
         # DSP re-encode and the videogame-engine residue lattice together so
         # every numeric transform of a project is reproducible from the toggle
         # position alone.
-        self.btn_operator_theory = QPushButton("OPERATOR THEORY")
+        self.btn_operator_theory = QPushButton("OPERATOR THEORY · ON")
         self.btn_operator_theory.setCheckable(True)
-        self.btn_operator_theory.setChecked(False)
+        self.btn_operator_theory.setChecked(True)
         self.btn_operator_theory.setMinimumHeight(56)
         self.btn_operator_theory.setMinimumWidth(210)
         self.btn_operator_theory.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.btn_operator_theory.setToolTip(
-            "Enable Operator Theory (book p.49-50): reroute ALL DSP-pathway and "
+            "Operator Theory (book p.49-50): reroute ALL DSP-pathway and "
             "game-logic mathematics through the alternative arithmetic (negative·negative "
             "→ negative, signed powers/roots ambiguous on differing hands, 0·0 = 0/0 = 1, "
-            "band-hopping add/sub, divisor refinement by the Meum residue field). OFF by "
-            "default preserves the canonical identity; ON is fully reproducible per toggle."
+            "band-hopping add/sub, divisor refinement by the Meum residue field). ON by "
+            "default; OFF switches to ordinary arithmetic. Fully reproducible per toggle."
         )
         self.btn_operator_theory.toggled.connect(self._on_operator_theory_toggled)
         # LIVE_DJ_CONTROLS: performance macros do not rewrite canonical
@@ -16888,7 +17148,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         global_context_layout.addWidget(self.btn_local_randomize)
         global_context_layout.addWidget(self.btn_local_phase_lock)
         global_context_layout.addWidget(self.btn_goava)
-        global_context_layout.addWidget(self.btn_operator_theory)
+        global_context_layout.addStretch(1)
         # UNION_ENTROPY_2026 live fixed-point badge: mean of the shared draw at
         # 0.5 (input-invariant) with the realized per-seed min..max range shown,
         # proving "some seeds genuinely entropic, others not — and the centre
@@ -17625,15 +17885,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.lbl_master_vol.setStyleSheet("color: #f5d97d;")
         master_vol_row.addWidget(self.lbl_master_vol)
 
-        self.btn_operator_theory = QPushButton("Use Operator Theory")
+        self.btn_operator_theory = QPushButton("Operator Theory · ON")
         self.btn_operator_theory.setCheckable(True)
-        self.btn_operator_theory.setChecked(False)
+        self.btn_operator_theory.setChecked(True)
         self.btn_operator_theory.setMinimumHeight(28)
         self.btn_operator_theory.setMaximumHeight(32)
-        self.btn_operator_theory.setMinimumWidth(140)
+        self.btn_operator_theory.setMinimumWidth(160)
         self.btn_operator_theory.setToolTip(
             "Operator Theory (book p.49-50): re-encode master bus, EQR tensor, "
-            "and game angles/residues through ot_* arithmetic. OFF by default."
+            "and game angles/residues through ot_* arithmetic. ON by default."
         )
         self.btn_operator_theory.setStyleSheet(
             "QPushButton { background-color:#1a1228; color:#e0c4ff; border:2px solid #c77dff; "
@@ -18805,8 +19065,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 params["BPM"] = float(self.spin_bpm.value())
             if hasattr(self, "spin_base_frequency"):
                 params["BaseHz"] = float(self.spin_base_frequency.value())
-            if hasattr(self, "spin_sceno_items"):
-                params["VisN"] = int(self.spin_sceno_items.value())
+            if hasattr(self, "spin_synth_count"):
+                params["VisN"] = int(self.spin_synth_count.value())
             if hasattr(self, "spin_engine_strength"):
                 # Effective seed weight: FullWeight ON → spin value; OFF → attenuated.
                 raw = float(self.spin_engine_strength.value())
@@ -18847,8 +19107,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             eng = getattr(self, "video_synth_engine", None)
             if eng is not None:
-                if hasattr(self, "spin_sceno_items") and hasattr(eng, "set_scenograph_item_count"):
-                    eng.set_scenograph_item_count(int(self.spin_sceno_items.value()))
                 if hasattr(eng, "_module_target"):
                     # Boost fades for active engine names
                     for name, key in (
@@ -20705,6 +20963,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._live_dj_pair_signature = 0
         self._user_composition_snapshot = None
         self.op_theory_enabled = False
+        self.master_volume = 0.5
         self.playlist_automation = []
 
         self.imported_waveform = None
@@ -20748,7 +21007,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "spin_bpm", "spin_seq_length", "spin_playlist_length", "spin_base_frequency",
             "spin_global_convolve", "spin_synth_count", "slider_eqr", "slider_fractalizer",
             "slider_pkp_decay", "slider_pkp_boost", "slider_pkp_boost_pitch",
-            "slider_pkp_boost_steps", "slider_pkp_boost_offset", "spin_sceno_items",
+            "slider_pkp_boost_steps", "slider_pkp_boost_offset",
             "spin_engine_strength", "spin_unison_blend",
             "gp_mix_slider", "gp_script_slider", "gp_domain_slider", "gp_wire_slider",
             "spin_clip_ratio", "spin_import_speed", "spin_sparse_density", "spin_speed_scrub",
@@ -22067,7 +22326,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             f"# (additive — user carrier preserved; fractal fill only)\n"
                             f"def evaluate_wave(x, y, z):\n"
                             f"    m = {harmonic_multiplier}\n"
-                            f"    return np.sin(x * m) * np.cos(y / m) - np.tanh(z * 0.5)"
+                            f"    return np.sin(x * m) * np.cos(y / m) - isn(z * 0.5)"
                         )
                         scripts_written += 1
 
@@ -22836,7 +23095,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             elif final_names:
                 self.instrument_selector_dropdown.setCurrentIndex(0)
             self.instrument_selector_dropdown.blockSignals(False)
-        # Video synth engine layer count
+        # Video synth engine layer count — scenograph density is bound
+        # directly to instrument count (no separate manual override), so a
+        # 2-instrument and a 64-instrument project sample the same
+        # closed-form placement law at different N instead of diverging.
         if hasattr(self, "video_synth_engine") and self.video_synth_engine is not None:
             try:
                 self.video_synth_engine.set_instrument_count(new_count, smooth=True)
@@ -24513,7 +24775,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 else:
                     # Optional non-sine carrier from modular / panel waveform key.
                     # FM+PM already folded into `phase`; AM applied later via _am_gain.
-                    _wf = str(st.get("waveform", _meum_ctx.get("waveform", "sine")) or "sine").strip().lower()
+                    _wf = str(st.get("waveform", _meum_ctx.get("waveform", "isn")) or "isn").strip().lower()
                     if _wf in ("saw", "sawtooth", "square", "pulse", "triangle", "tri", "cos", "cosine"):
                         try:
                             harm = meum_waveform_from_phase(phase, _wf)
@@ -24760,10 +25022,36 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             _shared_pkp_d = 0.5
         try:
-            _shared_env = build_master_follow_env(master, float(bpm), float(sample_rate), _shared_pkp_d)
+            # Balance env-follow to the playlist STEP grid (16th), morphing
+            # tile length toward one row as PKP Decay → 1.0.
+            _step_len = None
+            _row_len = None
+            try:
+                _sr = float(sample_rate)
+                _beat = _sr * (60.0 / max(float(bpm), 1e-6))
+                _step_len = max(1, int(round(_beat / 4.0)))
+                try:
+                    if hasattr(self, "spin_row_beats"):
+                        _bpr = float(self.spin_row_beats.value())
+                    elif hasattr(self, "spin_playlist_beats"):
+                        _bpr = float(self.spin_playlist_beats.value())
+                    else:
+                        _bpr = 4.0
+                except Exception:
+                    _bpr = 4.0
+                _bpr = max(0.25, min(64.0, _bpr))
+                _row_len = max(_step_len, int(round(_beat * _bpr)))
+            except Exception:
+                _step_len = None
+                _row_len = None
+            _shared_env = build_master_follow_env(
+                master, float(bpm), float(sample_rate), _shared_pkp_d,
+                row_length_samples=_row_len,
+                step_length_samples=_step_len,
+            )
             _vis = _shared_env[:: max(1, len(_shared_env) // 512)][:512]
             self._last_master_env = np.asarray(_vis, dtype=np.float32)
-            self._last_master_env_norm = np.clip((_vis - 0.35) / 1.2, 0.0, 1.0).astype(np.float32)
+            self._last_master_env_norm = np.clip(_vis, 0.0, 1.0).astype(np.float32)
             self._last_master_env_db = float(np.mean(np.abs(master)) + 1e-9)
         except Exception as _env_exc:
             print(f"[ENV] shared follow envelope skipped: {_env_exc}")
@@ -24771,7 +25059,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             _sw_tmp = float(np.clip(0.45 * (1.0 - 0.7 * _shared_pkp_d), 0.045, 0.45))
             _shared_env = (0.55 + _sw_tmp * np.cos(2.0 * np.pi * (float(bpm) / 60.0) * _t_tmp)).astype(np.float32)
             self._last_master_env = _shared_env[:: max(1, len(_shared_env) // 512)][:512]
-            self._last_master_env_norm = np.clip((self._last_master_env - 0.35) / 1.2, 0.0, 1.0)
+            self._last_master_env_norm = np.clip(self._last_master_env, 0.0, 1.0)
             self._last_master_env_db = float(np.mean(np.abs(master)) + 1e-9)
 
         # Global Convolve: deterministic geometric cross-convolution of the rendered carrier.
@@ -24895,93 +25183,51 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 master = self._eqr_tensor.process(master, activation=act, pkp_env=_shared_env)
         except Exception as _eqr_exc:
             print(f"[EQR] mixdown: {_eqr_exc}")
-        # PKP master effect (tail-only): shared follow envelope, swing damped by
-        # PKP Decay — applied here so it never factors into the unison canonical
-        # engines.  Full ENV-follow symmetry: identical envelope to EQR and the
-        # Fractallizer.
+        # PKP master: isn envelope (shared) mixed at up to 50% into the bus.
         try:
             if len(master) > 0:
-                master = (master * (0.35 + 0.65 * _shared_env)).astype(np.float32)
+                env = np.asarray(_shared_env, dtype=np.float32).ravel()
+                if env.size != len(master):
+                    env = np.resize(env, len(master))
+                # wet_mix 0.5: dry + 0.5*(env*dry - dry) = dry * (1 - 0.5 + 0.5*env)
+                master = (master * (0.5 + 0.5 * env)).astype(np.float32)
         except Exception as _pkp_exc:
             print(f"[PKP] mixdown: {_pkp_exc}")
+        # PED master tint: derive the shared EQR z-relative value once and apply
+        # one deterministic, unity-centered multiplier.  The previous patch
+        # recomputed the same scalar inside a control-point loop and multiplied
+        # the entire master buffer once per control point, which could collapse
+        # the level and made the mix dependent on buffer length.
         try:
-            n = int(getattr(master, "size", 0) or 0)
-            if n > 0:
-                t_axis = np.linspace(0.0, 1.0, n, dtype=np.float64)
-                ctrl = min(128, max(8, n // 512))
-                idx = np.linspace(0, n - 1, ctrl).astype(np.int32)
-                w = max(1, ctrl // 16)
-                ped_z = np.empty(ctrl, dtype=np.float64)
-                for j, ix in enumerate(idx):
-                    lo = max(0, ix - w)
-                    hi = min(n, ix + w + 1)
-                    _pi, _ei, _di, zi = eqr_tensor_step(master[ix], master[lo:hi], t=float(t_axis[ix]))
-                    ped_z[j] = zi
-                zmean = float(np.mean(np.abs(ped_z))) + 1e-9
-                ped_rel = np.clip(ped_z / zmean, 0.25, 2.5)
-                ped = 1.0 + 0.14 * np.tanh(ped_rel - 1.0)
-                ped_full = np.interp(np.arange(n), idx.astype(float), ped).astype(np.float32)
-                master = (master * (0.5 + 0.5 * ped_full * _shared_env)).astype(np.float32)
+            if len(master) > 0:
+                zrel = float(getattr(self, "_eqr_z_rel", 0.0) or 0.0)
+                if zrel > 1e-9:
+                    # Idealised scale: map [0.35, 1.5] -> [0, 1].
+                    t = float(np.clip((zrel - 0.35) / 1.2, 0.0, 1.0))
+                    # Dual-mode PED tint — no tanh saturation.
+                    if operator_theory_enabled():
+                        ped = 1.0 + 0.14 * math_scale(float(t - 0.5), 1.0)
+                    else:
+                        ped = 1.0 + 0.14 * float(t - 0.5)
+                else:
+                    ped = 1.0
+                # Half-strength PED tint; the shared envelope above remains the
+                # sole longitudinal EQR/Fractallizer/PKP modulation.
+                master = (master * (0.5 + 0.5 * ped * 0.5)).astype(np.float32)
         except Exception as _ped_exc:
             print(f"[PED] mixdown: {_ped_exc}")
 
-        # CLARITY_FIX_2026: the former SMOOTH_OUTPUT_2026 pass ran an
-        # unconditional 3-tap moving-average (a fixed lowpass) over the whole
-        # master bus — with no control and no activation, it rolled high
-        # frequencies off every render and read as "everything sounds warm."
-        # Removed entirely: the equal-power row crossfade above already keeps
-        # row boundaries click-free, and the closed-form voice harmonics now
-        # reach the bus at their true brightness. No filter, no slate.
+        # CLARITY_FIX_2026: no unconditional smoothing/low-pass pass.  The
+        # equal-power row crossfade and closed-form voice harmonics remain the
+        # authoritative brightness/click-control stages.
 
-        # FINAL MASTER BUS CONTRACT — self-authored, no library DSP, no soft
-        # limiting, no slew, no adaptive feedback.  The canonical amplitude is
-        # authoritative; the ONLY master transformation is a deterministic,
-        # closed-form headroom scaling against the number-theory rail, then a
-        # hard ceiling — no gain motion of its own:
-        #
-        #       rail = (n instruments) * 3 * (1.1975807343 / 0.1975807343) * WAV_MAX
-        #
-        # x = 0.1975807343 is the phi-complement MEUM-family residue;
-        # 1.1975807343 = 1 + x, so 1.1975807343/0.1975807343 = 1 + 1/x ≈ 6.0612.
-        # ×3 (resonator / PED / PKP triad) × the live voice count × WAV_MAX is
-        # the worst case where every voice aligns constructively.
-        #
-        # RAIL_SCALE_FIX_2026 (burst remover): the rail above sat at ~28.6M for
-        # a 48-voice ensemble while the live DAC stream and the WAV exporter both
-        # operate in float [-1,1].  Every peak above full scale was hard-clipped
-        # by the DAC/encoder into flat-topped distortion — the repeated "burst".
-        # The rail is now (A) scaled linearly — rail → -1 dBFS (0.89) — by one
-        # fixed constant, and (B) used as a hard ceiling after scaling.  Pure
-        # linear scaling: below the ceiling the canonical wave is numerically
-        # untouched modulo one constant factor, and live playback and WAV export
-        # now render byte-identical material (same buffer, same headroom).
-        # LOUDNESS_FIX_2026: voices are already float ≈[-1.5, 1.5].  The old
-        # rail formula scaled by ~0.001 for 48 voices (it assumed int16 units)
-        # and made both live Play and WAV export nearly silent.  Scale the
-        # finished buffer so its actual peak maps to TARGET_PEAK (−1 dBFS).
-        # Same buffer feeds Play and Export → matching loudness.
-        # CLIP_GAIN_2026: the one-time global peak-normalize + hard ceiling
-        # above flattened every overshoot above CEIL into fixed flat-top
-        # distortion and let a single loud transient duck the whole track.
-        # Replace it with the longitudinal clip-density ⇄ gain-maximization
-        # profile (ratio = spin_clip_ratio, default 50-50). Deterministic and
-        # off-canonical — it runs on the master bus only, so composition
-        # identity is untouched and the profile is exactly reproducible from
-        # the one documented ratio carried in export provenance.
+        # Dual math mode on the master bus.  OT applies nested dynamics only.
+        # Policy: no clip-gain, no peak renorm, no soft-clip saturation.
         try:
             if operator_theory_enabled() and len(master) > 0:
                 master = ot_master_transform(master)
         except Exception as _ot_exc:
             print(f"[OT] master transform skipped: {_ot_exc}")
-        try:
-            master, _cg = self._clip_gain_profile(master, sample_rate)
-        except Exception as _cg_exc:
-            print(f"[ClipGain] profile skipped: {_cg_exc}")
-            if len(master) > 0:
-                peak = float(np.max(np.abs(master)))
-                if peak > 1e-9:
-                    master = (master * np.float32(0.89 / peak)).astype(np.float32)
-                master = np.clip(master, np.float32(-0.95), np.float32(0.95)).astype(np.float32)
         return master.astype(np.float32), sample_rate
 
     def _clip_gain_profile(self, master, sample_rate):
@@ -25810,12 +26056,30 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 _vge.set_operator_theory(enabled)
         except Exception as exc:
             print(f"[OT] vge.set_operator_theory: {exc}")
+        # Keep every OT button label in sync with the live mode.
+        label_on = "OPERATOR THEORY · ON"
+        label_off = "OPERATOR THEORY · OFF"
+        compact_on = "Operator Theory · ON"
+        compact_off = "Operator Theory · OFF"
+        try:
+            for attr, on_txt, off_txt in (
+                ("btn_operator_theory", label_on, label_off),
+            ):
+                btn = getattr(self, attr, None)
+                if btn is not None and hasattr(btn, "setText"):
+                    # Prefer compact wording for the smaller master-vol button.
+                    txt = on_txt if enabled else off_txt
+                    if btn.objectName() == "operatorTheoryBtn":
+                        txt = compact_on if enabled else compact_off
+                    btn.setText(txt)
+        except Exception:
+            pass
         try:
             if hasattr(self, "scope_status_label") and self.scope_status_label is not None:
                 self.scope_status_label.setText(
-                    "Operator Theory ON — EQR/master/game use ot_* arithmetic"
+                    "Operator Theory ON — nested dynamics (no sat / no peak-norm)"
                     if enabled else
-                    "Operator Theory OFF — classical arithmetic"
+                    "Operator Theory OFF — normal math (no sat / no peak-norm)"
                 )
         except Exception:
             pass
@@ -26614,13 +26878,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self._on_live_source_changed()
             except Exception:
                 pass
-
-    def _on_sceno_items_changed(self, n):
-        eng = getattr(self, "video_synth_engine", None)
-        if eng is not None and hasattr(eng, "set_scenograph_item_count"):
-            eng.set_scenograph_item_count(n)
-        if hasattr(self, "scope_status_label"):
-            self.scope_status_label.setText(f"🎨 Scenograph items → {int(n)}/64")
 
     def stop_playback(self):
         """Hard stop: reset the audiovisual transport to the beginning."""
