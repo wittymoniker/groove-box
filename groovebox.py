@@ -71,15 +71,13 @@ from PyQt6.QtWidgets import (
 
 
 class ButtonOverlapHitPolicy(QObject):
-    """Cross-platform hit-test policy for responsive layouts.
+    """Cross-platform button intersection hit policy.
 
-    Rule: if two or more visible/enabled button-like widgets occupy the exact
-    pointer location, the location is intentionally non-pressable.  Ordinary
-    layout/container widgets do not participate in the conflict, so a button
-    remains clickable even when its geometry is visually covered by a panel.
-
-    This is installed once on QApplication and uses global widget geometry,
-    avoiding platform-specific mouse handling or layout assumptions.
+    Geometry is the only authority here: panels, layouts, canvases and other
+    containers are never considered button conflicts.  A button is clickable
+    everywhere inside its own geometry *except* the exact intersection it shares
+    with another actionable button.  This deliberately does not disable either
+    button, alter signals, or depend on which widget happens to be painted on top.
     """
     _BUTTON_TYPES = (QAbstractButton,)
 
@@ -7340,6 +7338,65 @@ class MathEngine:
         # Linear average — no clip saturation.
         mid = MathEngine._add(x, y) * 0.5
         return mid * MathEngine.ics(z)
+
+def _enforce_ui_layer_order(app):
+    """Reassert the visual hierarchy without moving widgets between layouts.
+
+    Layer contract:
+      0. Parametric/math background (paint-only, mouse transparent)
+      1. Normal panels/layout surfaces
+      2. Visualizer/scenograph canvases
+      3. Actionable buttons in the same parent
+
+    Qt layouts remain the sole authority for geometry.  We only repair sibling
+    stacking order, so a panel cannot paint over a visualizer or a button that
+    belongs to the same parent.  Cross-parent button conflicts are handled by
+    ButtonOverlapHitPolicy's exact geometric intersection test.
+    """
+    if app is None:
+        return
+    try:
+        cw = app.centralWidget()
+    except Exception:
+        cw = None
+    if cw is None:
+        return
+
+    # Background is always the bottom paint layer.
+    try:
+        bg = getattr(app, "parametric_background", None)
+        if bg is not None and bg.parentWidget() is cw:
+            bg.lower()
+            bg.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            bg.show()
+    except Exception:
+        pass
+
+    # Monitors/scenograph are a dedicated visual layer above ordinary panels.
+    visual_names = {
+        "visual_oscilloscope", "video_synth_viewer", "spectrum_analyzer",
+        "_visual_container"
+    }
+    for name in visual_names:
+        try:
+            w = getattr(app, name, None)
+            if w is not None and w.parentWidget() is not None:
+                w.raise_()
+                w.show()
+        except Exception:
+            pass
+
+    # Within a shared parent, buttons are the top interaction layer.  This does
+    # not raise a button across another parent, so layout structure is preserved.
+    try:
+        for parent in cw.findChildren(QWidget):
+            children = list(parent.children())
+            for child in children:
+                if isinstance(child, QAbstractButton) and child.isVisible():
+                    child.raise_()
+    except Exception:
+        pass
+
 
 def _ensure_single_math_background(app, host):
     """Reuse exactly one mathematical background per host.
@@ -14789,6 +14846,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             pass
 
     def _sync_parametric_background_geometry(self):
+        try:
+            _enforce_ui_layer_order(self)
+        except Exception:
+            pass
         """Keep the full-window math field sized to the central widget.
 
         Called once after the first real layout pass (via QTimer.singleShot)
@@ -18565,6 +18626,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.update()  # Trigger repaint
         self._scope_update_timer.setInterval(33)
         self._scope_update_timer.timeout.connect(self._update_scope_from_playhead)
+        # Explicit paint/interaction layer order.  Geometry remains owned by
+        # Qt layouts; this only prevents canvases/panels from painting across
+        # the intended visual and button layers.
+        try:
+            _enforce_ui_layer_order(self)
+            QTimer.singleShot(0, lambda: _enforce_ui_layer_order(self))
+            QTimer.singleShot(120, lambda: _enforce_ui_layer_order(self))
+        except Exception:
+            pass
         QTimer.singleShot(0, self._sync_square_visuals)
         QTimer.singleShot(120, self._sync_square_visuals)
         self._last_scope_chunk = np.zeros(100, dtype=np.float32)
