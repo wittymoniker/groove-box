@@ -301,15 +301,22 @@ def residue_to_bipolar(r: float) -> float:
     return r * 2.0 - 1.0
 
 
-def meum_angle(k: float) -> float:
+def meum_angle(k):
     """Collision-free angle packing on the circle.
 
     k·MEUM mod 1 is a dense cyclic order (a golden-angle analogue). Consecutive
     integers land on distinct circle points, so MEUM-packed sigils/beats never
     overlap and the ordering stays deterministic — a repeated-divergence
-    primitive for scene placement and collection timing.
+    primitive for scene placement and collection timing.  When Operator Theory
+    is enabled the reading is re-bent through the book's band-hop/divisor rules
+    (rule e + f) while staying cyclic and deterministic per toggle position.
     """
-    return math.tau * ((float(k) * MEUM) % 1.0)
+    k = float(k)
+    base = (k * MEUM) % 1.0
+    if OP_THEORY_ENABLED:
+        banded = base + ot_band(base) * 0.05
+        base = (banded / (abs(banded) * 0.4 + 1.0)) % 1.0
+    return math.tau * float(base)
 
 
 def _res_idx(seed: int, label: str, mod: int) -> int:
@@ -713,12 +720,21 @@ def _residue(seed, label):
     return (i % 10_000_000) / 10_000_000.0
 
 def meum_angle(k):
-    return math.tau * ((float(k) * MEUM) % 1.0)
+    """Collision-free angle packing on the circle (OT-gated, p.78/49-50).
+
+    k·MEUM mod 1 is a dense cyclic order (a golden-angle analogue). When
+    Operator Theory is enabled (book p.49-50, rules e + f) the circle reading is
+    re-bent through the band-hop / divisor-refinement field, staying cyclic and
+    deterministic per toggle position.
+    """
+    base = (float(k) * MEUM) % 1.0
+    if OP_THEORY_ENABLED:
+        banded = base + ot_band(base) * 0.05
+        base = (banded / (abs(banded) * 0.4 + 1.0)) % 1.0
+    return math.tau * float(base)
 
 def residue_to_bipolar(r):
-    return r * 2.0 - 1.0
-
-# ---------------------------------------------------------------------------
+    return r * 2.0 - 1.0# ---------------------------------------------------------------------------
 # GAME_FILE_TASKS_2026 — import/export codec jobs + gameplay recording.
 # The game finds its own file work: a format registry (json/gz/csv/txt/wav/png),
 # a router that turns a file/format into concrete jobs (import replay/identity,

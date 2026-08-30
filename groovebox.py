@@ -475,7 +475,10 @@ def build_master_follow_env(master, bpm, sample_rate, pkp_decay):
     swing = float(np.clip(0.45 * (1.0 - 0.7 * decay), 0.045, 0.45))
     beat_hz = max(float(bpm), 1.0) / 60.0
     t_sec = np.arange(n, dtype=np.float64) / max(float(sample_rate), 1.0)
-    tempo = 0.55 + swing * np.sin(2.0 * np.pi * beat_hz * t_sec)
+    # TEMPO-ALIGNED plane: cos over the fractional beat so the gain peaks on the
+    # downbeat (0.25-beat phase into the release), then rides the off-beat.
+    beat_phase = (beat_hz * t_sec) % 1.0
+    tempo = 0.55 + swing * np.cos(2.0 * np.pi * (beat_phase + 0.25))
     rect = np.abs(m)
     block = max(1, n // 4096)
     nb = (n + block - 1) // block
@@ -483,13 +486,13 @@ def build_master_follow_env(master, bpm, sample_rate, pkp_decay):
     for i in range(nb):
         lo = i * block
         hi = min(n, lo + block)
-        bmax[i] = float(np.max(rect[lo:hi]))
+        bmax[i] = float(np.max(rect[lo:hi])) or 1e-9
     look = max(1, nb // 24)
     pf = np.empty(nb, dtype=np.float64)
     for i in range(nb):
-        pf[i] = float(np.max(bmax[i:min(nb, i + look)]))
+        pf[i] = float(np.max(bmax[i:min(nb, i + look)])) or 1e-9
     fol = np.empty_like(pf)
-    prev = float(np.mean(rect))
+    prev = float(np.mean(bmax)) or 1.0
     for i in range(nb):
         if pf[i] > prev:
             prev = pf[i]
@@ -502,8 +505,11 @@ def build_master_follow_env(master, bpm, sample_rate, pkp_decay):
         fol,
     ) if nb > 1 else np.full(n, float(fol[0]))
     rmean = float(np.mean(rect)) + 1e-9
-    follow = np.clip(0.5 + 0.5 * (fol_up / rmean), 0.2, 1.5)
-    env = np.clip(tempo * follow, 0.15, 1.5)
+    follow = np.clip(0.5 + 0.5 * (fol_up / rmean), 0.0, 2.0)
+    # IDEALIZED SCALE: cliplamp the combined envelope to an enhancement band
+    # so every effect rides each beat (peaks ~1.5 on downbeats/tranients)
+    # without ever fully muting (floor 0.35) or clipping the headroom.
+    env = np.clip(tempo * follow, 0.35, 1.5)
     return env.astype(np.float32)
 
 # ---------------------------------------------------------------------------
@@ -1920,6 +1926,11 @@ def _seed_script_env(t_scalar=0.0, canonical_context=None):
         "isn_inverse": isn_inv, "ics_inverse": ics_inv,
         "P": P, "E": E, "D": D,
         "tensor_z": tensor_z, "tensor_rel": tensor_rel,
+        "ot_add": ot_add, "ot_sub": ot_sub, "ot_prod": ot_prod,
+        "ot_div": ot_div, "ot_pow": ot_pow, "ot_i_phase": ot_i_phase,
+        "ot_band": ot_band, "ot_master_transform": ot_master_transform,
+        "op_theory_enabled": operator_theory_enabled,
+        "set_op_theory": set_operator_theory,
         "t": float(t_scalar), "x": float(t_scalar), "y": 0.0, "z": 0.0,
         "True": True, "False": False, "None": None,
         "carrier_present": 0,
@@ -3368,11 +3379,32 @@ class VisualOscilloscope(QFrame):
         self._title = "MEUM WAVEFORM"
         self.seed_values = []       # evaluated numeric seed list (preview)
         self.ensemble_voices = 0    # active render cluster size
-        self.canonical_flags = []   # e.g. ["seeded","euclidean"]
+        self.canonical_flags = []  # e.g. ["seeded","euclidean"]
         self._rms = 0.0
         self._peak = 0.0
         self._phosphor = np.zeros(256, dtype=np.float32)
         self._spark_phase = 0.0
+        # OPERATOR-THEORY_DISPLAY: the visualizer waveform carries the book's
+        # alternative arithmetic on its drawn points, and an optional shared
+        # DSP follow-envelope is overplotted so the monitor reflects the same
+        # full env-follow symmetry as the DSP pathway.
+        self.operator_theory = False
+        self.follow_env = None
+
+    def set_operator_theory(self, on):
+        self.operator_theory = bool(on)
+        self.update()
+
+    def set_follow_env(self, env=None):
+        if env is not None:
+            self.follow_env = np.interp(
+                np.linspace(0, len(env) - 1, 256),
+                np.arange(len(env)),
+                np.asarray(env, dtype=np.float32),
+            ).astype(np.float32) if len(env) > 256 else np.resize(np.asarray(env, dtype=np.float32), 256)
+        else:
+            self.follow_env = None
+        self.update()
 
     def set_mode(self, mode_idx):
         self.mode = int(mode_idx)
@@ -3405,7 +3437,7 @@ class VisualOscilloscope(QFrame):
         self.engine_param_lines = lines
         self.update()
 
-    def update_waveform(self, new_data, overview=None, playhead=None):
+    def update_waveform(self, new_data, overview=None, playhead=None, follow_env=None):
         if isinstance(new_data, np.ndarray) and new_data.size:
             self.wave_data = np.interp(
                 np.linspace(0, new_data.size - 1, 256),
@@ -3418,6 +3450,8 @@ class VisualOscilloscope(QFrame):
                 self._phosphor = np.zeros(256, dtype=np.float32)
             self._phosphor = (0.82 * self._phosphor + 0.18 * self.wave_data).astype(np.float32)
             self._spark_phase = (getattr(self, "_spark_phase", 0.0) + MEUM_NORM) % math.tau
+        if isinstance(follow_env, np.ndarray) and follow_env.size:
+            self.set_follow_env(follow_env)
         if isinstance(overview, np.ndarray) and overview.size:
             self.track_overview = np.interp(
                 np.linspace(0, overview.size - 1, 256),
@@ -3558,16 +3592,32 @@ class VisualOscilloscope(QFrame):
             painter.setPen(QPen(QColor(80, 90, 110, 120), 1))
             painter.drawLine(0, int(mid_y), w, int(mid_y))
         else:
-            painter.fillPath(_wave_path(phos, 1.15), QColor(c.red(), c.green(), min(255, c.blue() + 40), 28))
-            painter.fillPath(_wave_path(self.wave_data, 1.0), QColor(c.red(), c.green(), c.blue(), 55))
+            # OPERATOR-THEORY_DISPLAY: when enabled the drawn waveform points
+            # are re-bent through the book's scalar rules (band-hop add,
+            # negative-run negating composition, divisor refinement) so the
+            # visualizer carries the same arithmetic as the DSP pathway.
+            disp = self.wave_data
+            if self.operator_theory:
+                try:
+                    disp = ot_master_transform(self.wave_data.astype(np.float64)).astype(np.float32)
+                except Exception:
+                    disp = self.wave_data
+            disp_phos = phos
+            if self.operator_theory:
+                try:
+                    disp_phos = ot_master_transform(np.asarray(phos, dtype=np.float64)).astype(np.float32)
+                except Exception:
+                    disp_phos = phos
+            painter.fillPath(_wave_path(disp_phos, 1.15), QColor(c.red(), c.green(), min(255, c.blue() + 40), 28))
+            painter.fillPath(_wave_path(disp, 1.0), QColor(c.red(), c.green(), c.blue(), 55))
             glow_pen = QPen(QColor(c.red(), c.green(), c.blue(), 55))
             glow_pen.setWidth(6)
             painter.setPen(glow_pen)
             for i in range(255):
                 x0 = int(i / 255.0 * (w - 1))
                 x1 = int((i + 1) / 255.0 * (w - 1))
-                y0 = mid_y - float(self.wave_data[i]) * amp
-                y1 = mid_y - float(self.wave_data[i + 1]) * amp
+                y0 = mid_y - float(disp[i]) * amp
+                y1 = mid_y - float(disp[i + 1]) * amp
                 painter.drawLine(x0, int(y0), x1, int(y1))
             pen = QPen(c)
             pen.setWidth(2)
@@ -3575,15 +3625,15 @@ class VisualOscilloscope(QFrame):
             for i in range(255):
                 x0 = int(i / 255.0 * (w - 1))
                 x1 = int((i + 1) / 255.0 * (w - 1))
-                y0 = mid_y - float(self.wave_data[i]) * amp
-                y1 = mid_y - float(self.wave_data[i + 1]) * amp
+                y0 = mid_y - float(disp[i]) * amp
+                y1 = mid_y - float(disp[i + 1]) * amp
                 painter.drawLine(x0, int(y0), x1, int(y1))
             # Cubic harmonic ribbon (shows stacked notes as extra motion)
             ribbon = QPen(QColor.fromHsv((hue_shift + 40) % 360, 180, 255, 140), 1)
             painter.setPen(ribbon)
             for i in range(255):
-                a = float(self.wave_data[i])
-                b = float(self.wave_data[i + 1])
+                a = float(disp[i])
+                b = float(disp[i + 1])
                 x0 = int(i / 255.0 * (w - 1))
                 x1 = int((i + 1) / 255.0 * (w - 1))
                 painter.drawLine(
@@ -3592,6 +3642,19 @@ class VisualOscilloscope(QFrame):
                 )
             painter.setPen(QPen(QColor(80, 90, 110, 120), 1))
             painter.drawLine(0, int(mid_y), w, int(mid_y))
+            # Shared DSP follow-envelope overlay (full env-follow symmetry)
+            fe = getattr(self, "follow_env", None)
+            if isinstance(fe, np.ndarray) and fe.size:
+                fep = QPainterPath()
+                for i in range(256):
+                    xv = i / 255.0 * (w - 1)
+                    yv = mid_y - float(fe[i]) * amp * 0.6
+                    if i == 0:
+                        fep.moveTo(xv, yv)
+                    else:
+                        fep.lineTo(xv, yv)
+                painter.setPen(QPen(QColor.fromHsv((hue_shift + 220) % 360, 180, 255, 160), 1.2, Qt.PenStyle.DashLine))
+                painter.drawPath(fep)
 
         spark = getattr(self, "_spark_phase", 0.0)
         peak_i = int(np.argmax(np.abs(self.wave_data))) if self.wave_data.size else 0
@@ -8361,17 +8424,43 @@ class RealitySynthEngine:
 
 
 class AdvancedWaveformVisualizerCanvas(QWidget):
-    """Multi-model real-time Wavetable, Vector, and Algebraic Equation Visualizer."""
+    """Multi-model real-time Wavetable, Vector, and Algebraic Equation Visualizer.
+
+    When Operator Theory is enabled (book p.49-50), every algebraic waveform is
+    re-drawn through the ot_* scalar rules (band-hop add toward the enclosing
+    integer of each magnitude, negative-run negating composition, signed-power
+    ambiguity, divisor refinement by the Meum residue field) and — if a shared
+    DSP follow-envelope is present — the envelope is overlaid as a translucent
+    band, so the display carries the same Operator-Theory + envelope doctrine
+    as the DSP pathway.
+    """
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumHeight(280)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.phase = 0.0
         self.active_mode = "Eskivector"
+        self.live_audio = None      # optional float32 audio for the overlay plot
+        self.follow_env = None      # optional shared DSP follow envelope (0..1.5)
+
+    def set_live_source(self, audio=None, follow_env=None):
+        if audio is not None:
+            self.live_audio = np.asarray(audio, dtype=np.float32).ravel()
+        if follow_env is not None:
+            self.follow_env = np.asarray(follow_env, dtype=np.float32).ravel()
 
     def update_phase(self):
         self.phase += 0.05
         self.update()
+
+    def _ot_val(self, val):
+        # Rule e (band hop + add) + rule 1 (neg·neg → neg) + rule f (divisor
+        # refinement by the Meum residue field), applied per drawn sample.
+        band = ot_band(val)
+        bent = ot_add(val, 0.0) + 0.25 * band * math.copysign(1.0, val)
+        denom = abs(bent) + 0.2
+        bent = ot_div(bent, denom) if denom != 0 else bent
+        return bent
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -8388,6 +8477,7 @@ class AdvancedWaveformVisualizerCanvas(QWidget):
         path = QPainterPath()
         center_y = h / 2.0
         meum_ratio = MEUM
+        ot_on = operator_theory_enabled()
 
         for px in range(w):
             t_val = (px / w) * 4.0 * math.pi + self.phase
@@ -8397,9 +8487,11 @@ class AdvancedWaveformVisualizerCanvas(QWidget):
                 val = MathEngine.arcisn(math.sin(t_val)) * MathEngine.arcics(math.cos(t_val * 0.5))
             elif self.active_mode == "Eskiosc":
                 val = MathEngine.isn_inv(math.sin(t_val))
-            else: # Eskiequation
+            else:  # Eskiequation
                 val = MathEngine.isn(t_val) * MathEngine.ics(t_val * meum_ratio) + MathEngine.arcisn(math.sin(t_val * 0.25))
 
+            if ot_on:
+                val = self._ot_val(val)
             py = center_y - (val * (h * 0.35))
             if px == 0:
                 path.moveTo(px, py)
@@ -8409,9 +8501,42 @@ class AdvancedWaveformVisualizerCanvas(QWidget):
         p.setPen(QPen(QColor("#00ffcc"), 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         p.drawPath(path)
 
-        p.setPen(QPen(QColor("#58a6ff"), 1, Qt.PenStyle.DashLine))
-        p.drawLine(0, int(center_y), w, int(center_y))
-        p.drawText(15, 25, f"Visualizer Active Model: [{self.active_mode}] — Isosceles Trig & Algebraic Waveform")
+        # Live envelope-follow overlay + Operator-Theory waveform, when provided
+        # by the DSP thread.
+        if self.live_audio is not None and self.live_audio.size > 1:
+            la = self.live_audio
+            ap = QPainterPath()
+            for px in range(w):
+                sx = int(float(px) / float(w) * float(la.size - 1))
+                v = float(la[sx])
+                if ot_on:
+                    v = self._ot_val(v)
+                py = center_y - (v * (h * 0.35))
+                if px == 0:
+                    ap.moveTo(px, py)
+                else:
+                    ap.lineTo(px, py)
+            p.setPen(QPen(QColor("#ff69b4"), 1.6, Qt.PenStyle.DotLine))
+            p.drawPath(ap)
+
+        if self.follow_env is not None and self.follow_env.size > 1:
+            fe = self.follow_env
+            fe = np.asarray(fe, dtype=np.float32)
+            fmax = float(np.max(fe)) or 1.0
+            fep = QPainterPath()
+            for px in range(w):
+                sx = int(float(px) / float(w) * float(fe.size - 1))
+                v = float(fe[sx]) / fmax
+                py = center_y - (v * (h * 0.4))
+                if px == 0:
+                    fep.moveTo(px, py)
+                else:
+                    fep.lineTo(px, py)
+            p.setPen(QPen(QColor("#58a6ff"), 1.0, Qt.PenStyle.DashLine))
+            p.drawPath(fep)
+            p.setPen(QPen(QColor("#58a6ff"), 1, Qt.PenStyle.DashLine))
+            p.drawLine(0, int(center_y), w, int(center_y))
+            p.drawText(15, 25, f"Visualizer Active Model: [{self.active_mode}] — Isosceles Trig & Algebraic Waveform" + ("  + Operator Theory" if ot_on else ""))
 class MultiLaneSequencerCanvas(QWidget):
     """Sequencer canvas with built-in modulation patch outputs per track."""
     def __init__(self, parent=None):
@@ -16687,6 +16812,26 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "QPushButton:checked { background-color:#ffb200; color:#101010; border:2px solid #ffb200; } "
             "QPushButton:hover { background-color:#2a2010; } QPushButton:pressed { background-color:#ff6b00; color:white; }"
         )
+        # OP_THEORY_TOGGLE_2026: large toggle applying the book's Operator
+        # Theory (p.49-50) to ALL mathematics in the DSP pathway and the
+        # game logic (off by default).  One matched toggle drives the master
+        # DSP re-encode and the videogame-engine residue lattice together so
+        # every numeric transform of a project is reproducible from the toggle
+        # position alone.
+        self.btn_operator_theory = QPushButton("OPERATOR THEORY")
+        self.btn_operator_theory.setCheckable(True)
+        self.btn_operator_theory.setChecked(False)
+        self.btn_operator_theory.setMinimumHeight(56)
+        self.btn_operator_theory.setMinimumWidth(210)
+        self.btn_operator_theory.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.btn_operator_theory.setToolTip(
+            "Enable Operator Theory (book p.49-50): reroute ALL DSP-pathway and "
+            "game-logic mathematics through the alternative arithmetic (negative·negative "
+            "→ negative, signed powers/roots ambiguous on differing hands, 0·0 = 0/0 = 1, "
+            "band-hopping add/sub, divisor refinement by the Meum residue field). OFF by "
+            "default preserves the canonical identity; ON is fully reproducible per toggle."
+        )
+        self.btn_operator_theory.toggled.connect(self._on_operator_theory_toggled)
         # LIVE_DJ_CONTROLS: performance macros do not rewrite canonical
         # composition. They are safe, reversible bus transforms applied to the
         # live audio callback and mirrored by the scenograph.
@@ -16743,6 +16888,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         global_context_layout.addWidget(self.btn_local_randomize)
         global_context_layout.addWidget(self.btn_local_phase_lock)
         global_context_layout.addWidget(self.btn_goava)
+        global_context_layout.addWidget(self.btn_operator_theory)
         # UNION_ENTROPY_2026 live fixed-point badge: mean of the shared draw at
         # 0.5 (input-invariant) with the realized per-seed min..max range shown,
         # proving "some seeds genuinely entropic, others not — and the centre
@@ -17471,7 +17617,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         master_vol_row.addWidget(QLabel("Master Volume:"))
         self.slider_master_vol = QSlider(Qt.Orientation.Horizontal)
         self.slider_master_vol.setRange(0, 100)
-        self.slider_master_vol.setValue(100)
+        self.slider_master_vol.setValue(50)
         self.slider_master_vol.setFixedWidth(160)
         self.slider_master_vol.valueChanged.connect(self._on_master_vol_changed)
         master_vol_row.addWidget(self.slider_master_vol)
@@ -20558,6 +20704,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._live_dj_pair_index = 0
         self._live_dj_pair_signature = 0
         self._user_composition_snapshot = None
+        self.op_theory_enabled = False
         self.playlist_automation = []
 
         self.imported_waveform = None
@@ -24616,13 +24763,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
             _shared_env = build_master_follow_env(master, float(bpm), float(sample_rate), _shared_pkp_d)
             _vis = _shared_env[:: max(1, len(_shared_env) // 512)][:512]
             self._last_master_env = np.asarray(_vis, dtype=np.float32)
+            self._last_master_env_norm = np.clip((_vis - 0.35) / 1.2, 0.0, 1.0).astype(np.float32)
             self._last_master_env_db = float(np.mean(np.abs(master)) + 1e-9)
         except Exception as _env_exc:
             print(f"[ENV] shared follow envelope skipped: {_env_exc}")
             _t_tmp = np.arange(len(master), dtype=np.float32) / float(sample_rate)
             _sw_tmp = float(np.clip(0.45 * (1.0 - 0.7 * _shared_pkp_d), 0.045, 0.45))
-            _shared_env = (0.55 + _sw_tmp * np.sin(2.0 * np.pi * (float(bpm) / 60.0) * _t_tmp)).astype(np.float32)
+            _shared_env = (0.55 + _sw_tmp * np.cos(2.0 * np.pi * (float(bpm) / 60.0) * _t_tmp)).astype(np.float32)
             self._last_master_env = _shared_env[:: max(1, len(_shared_env) // 512)][:512]
+            self._last_master_env_norm = np.clip((self._last_master_env - 0.35) / 1.2, 0.0, 1.0)
             self._last_master_env_db = float(np.mean(np.abs(master)) + 1e-9)
 
         # Global Convolve: deterministic geometric cross-convolution of the rendered carrier.
