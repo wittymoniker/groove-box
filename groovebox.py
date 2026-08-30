@@ -14388,10 +14388,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 return
             avail_w = max(320, int(container.width()) - 16)
             avail_h = max(220, int(container.height()) - 16)
-            # Square claims the full free height; width share grows when the row
-            # is wide. Always clamped inside the container so nothing clips.
-            side = max(260, min(avail_h, int(avail_w * 0.60)))
-            remaining = max(120, avail_w - side - 16)
+            # The center scenograph owns the middle half of the monitor width and
+            # the two rectangular monitors share the remaining half.  The square
+            # is then limited only by the available height, so it grows as large
+            # as the lower UI region permits without ever crossing its bounds.
+            side = max(260, min(avail_h, int((avail_w - 16) * 0.50)))
+            remaining = max(220, avail_w - side - 16)
             side_w = max(110, remaining // 2)
             if self.video_synth_viewer is not None:
                 self.video_synth_viewer.setMinimumSize(side, side)
@@ -14444,15 +14446,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._sync_parametric_background_geometry()
-        # LAYOUT_STABILITY_FIX: while a track is playing, keep the three
-        # monitor widgets (square scenograph + side meters) at their current
-        # relative sizes instead of recomputing the square side from window
-        # bounds on every resize. Otherwise any window geometry change during
-        # playback visibly rescales the UI widgets.
-        if getattr(self, "is_playing", False):
-            return
+        # LAYOUT_STABILITY_FIX_2026: playback state must not select a different
+        # geometry algorithm.  Every resize uses the same proportional layout,
+        # while a queued second pass lets Qt finish button/style/layout changes
+        # before the monitor bounds are measured.
         try:
             self._sync_square_visuals()
+            QTimer.singleShot(0, self._sync_square_visuals)
         except Exception:
             pass
 
@@ -17435,7 +17435,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.slider_pkp_boost.setRange(50, 200); self.slider_pkp_boost.setValue(100)
         self.slider_pkp_boost.valueChanged.connect(self._on_pkp_boost_amount_changed)
         self.slider_pkp_boost_pitch = QSlider(Qt.Orientation.Horizontal)
-        self.slider_pkp_boost_pitch.setRange(25, 400); self.slider_pkp_boost_pitch.setValue(100)
+        # LIVE_DJ_PITCH_RANGE_2026: exact multiplicative range requested by the UI
+        # contract.  QSlider is integer-valued, so 0.002x is one slider unit.
+        self.slider_pkp_boost_pitch.setRange(1, 8004)
+        self.slider_pkp_boost_pitch.setValue(500)  # 500 * 0.002 = 1.000x
         self.slider_pkp_boost_pitch.valueChanged.connect(self._on_pkp_boost_pitch_changed)
         self.slider_pkp_boost_steps = QDoubleSpinBox()
         self._steps_seq_len = max(1, int(self.spin_seq_length.value()))
@@ -18148,7 +18151,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 widget, stretch=1,
                 alignment=Qt.AlignmentFlag.AlignHCenter if is_square else Qt.AlignmentFlag.AlignCenter,
             )
-            visual_pair.addLayout(col, stretch=(0 if is_square else 1))
+            # Responsive monitor proportions: narrow side meters + a larger
+            # center scenograph.  The explicit sync pass below clamps the square
+            # to the actual lower-region height, preventing bottom clipping.
+            visual_pair.addLayout(col, stretch=(2 if is_square else 1))
         visual_container = QWidget()
         visual_container.setLayout(visual_pair)
         visual_container.setMinimumHeight(280)
@@ -18365,7 +18371,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _on_pkp_boost_pitch_changed(self, val):
         if hasattr(self, "lbl_pkp_boost_pitch"):
-            self.lbl_pkp_boost_pitch.setText(f"{float(val)/100.0:.2f}×")
+            ratio = float(val) * 0.002
+            self.lbl_pkp_boost_pitch.setText(f"{ratio:.3f}×")
 
     def _on_pkp_boost_steps_changed(self, val):
         self.pkp_boost_step_increment = float(val)
@@ -26651,7 +26658,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.btn_play.setText("▶ RESUME Audiovisual Track")
             self.btn_play.setStyleSheet(
                 "QPushButton { background-color:#6b4d0b; color:#ffffff; border:2px solid #ffd75e; "
-                "border-radius:8px; padding:10px 16px; font-weight:900; font-size:13pt; }"
+                "border-radius:8px; padding:10px 16px; font-weight:900; font-size:13pt; min-width:240px; }"
                 "QPushButton:hover { background-color:#7d5c12; }"
             )
             if hasattr(self, 'scope_status_label'):
@@ -26674,7 +26681,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.btn_play.setText("⏸ PAUSE Audiovisual Track")
                 self.btn_play.setStyleSheet(
                     "QPushButton { background-color:#00aa55; color:#ffffff; border:2px solid #ffffff; "
-                    "border-radius:8px; padding:10px 16px; font-weight:900; font-size:13pt; }"
+                    "border-radius:8px; padding:10px 16px; font-weight:900; font-size:13pt; min-width:240px; }"
                     "QPushButton:hover { background-color:#00c464; }"
                 )
                 self._scope_update_timer.start()
