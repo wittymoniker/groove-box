@@ -920,7 +920,7 @@ def suite_djstep():
     ok_inc_store = abs(w.pkp_boost_step_increment - 1.75) < 1e-9
     ok_inc_lbl = w.lbl_pkp_boost_steps.text() == "1.75"
     spin.setValue(0.5)
-    ok_frac_inc = float(spin.value()) == 0.5 and spin.minimum() == 0.25
+    ok_frac_inc = float(spin.value()) == 0.5 and abs(spin.minimum() - 0.002) < 1e-12 and abs(spin.maximum() - 64.0) < 1e-12
 
     off = w.slider_pkp_boost_offset
     off.setValue(0.333)

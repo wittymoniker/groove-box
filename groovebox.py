@@ -17543,7 +17543,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_pkp_nullock_boost.clicked.connect(self._on_pkp_nullock_boost_clicked)
 
         self.slider_pkp_boost = QSlider(Qt.Orientation.Horizontal)
-        self.slider_pkp_boost.setRange(50, 200); self.slider_pkp_boost.setValue(100)
+        self.slider_pkp_boost.setRange(0, 300); self.slider_pkp_boost.setValue(100)
         self.slider_pkp_boost.valueChanged.connect(self._on_pkp_boost_amount_changed)
         self.slider_pkp_boost_pitch = QSlider(Qt.Orientation.Horizontal)
         # LIVE_DJ_PITCH_RANGE_2026: exact multiplicative range requested by the UI
@@ -17553,9 +17553,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.slider_pkp_boost_pitch.valueChanged.connect(self._on_pkp_boost_pitch_changed)
         self.slider_pkp_boost_steps = QDoubleSpinBox()
         self._steps_seq_len = max(1, int(self.spin_seq_length.value()))
-        self.slider_pkp_boost_steps.setRange(0.25, float(self._steps_seq_len))
-        self.slider_pkp_boost_steps.setDecimals(2)
-        self.slider_pkp_boost_steps.setSingleStep(0.25)
+        self.slider_pkp_boost_steps.setRange(0.002, 64.0)
+        self.slider_pkp_boost_steps.setDecimals(3)
+        self.slider_pkp_boost_steps.setSingleStep(0.002)
         self.slider_pkp_boost_steps.setValue(1.0)
         self.slider_pkp_boost_steps.valueChanged.connect(self._on_pkp_boost_steps_changed)
         self.slider_pkp_boost_offset = QDoubleSpinBox()
@@ -18475,8 +18475,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         n = max(1, int(val))
         box = self.slider_pkp_boost_steps
         box.blockSignals(True)
-        box.setRange(0.25, float(n))
-        box.setValue(min(box.value(), float(n)))
+        box.setRange(0.002, 64.0)
+        box.setValue(min(max(box.value(), 0.002), 64.0))
         box.blockSignals(False)
         self._on_pkp_boost_steps_changed(box.value())
 
