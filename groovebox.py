@@ -53,20 +53,80 @@ import weakref
 import numpy as np
 
 from dj_effects import CommutativePairSpace, LiveDJEffects
-from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer, QObject, pyqtSignal, QRunnable, QThreadPool, QSize
+from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer, QObject, pyqtSignal, QRunnable, QThreadPool, QSize, QEvent
 import composition_state as _composition_state
 from PyQt6.QtGui import (
     QPainter, QPen, QColor, QPainterPath, QLinearGradient, QRadialGradient, QBrush, QFont, QPolygonF,
     QAction, QPalette, QKeyEvent, QKeySequence, QImage
 )
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QFrame, QVBoxLayout,
+    QApplication, QMainWindow, QWidget, QFrame, QVBoxLayout, QAbstractButton,
     QHBoxLayout, QLabel, QSlider, QPushButton, QComboBox, QScrollArea,
     QTabWidget, QLineEdit, QListWidget, QFormLayout, QSpinBox, QDoubleSpinBox,
     QGridLayout, QFileDialog, QSplitter, QGroupBox, QTextEdit, QMenu,
     QMessageBox, QTableWidget, QTableWidgetItem, QCheckBox, QDial, QMenuBar,
     QDialog, QInputDialog, QHeaderView, QProgressBar, QSizePolicy, QToolButton
 )  # QToolButton is required by the global EXPORT menu control.
+
+
+
+class ButtonOverlapHitPolicy(QObject):
+    """Cross-platform hit-test policy for responsive layouts.
+
+    Rule: if two or more visible/enabled button-like widgets occupy the exact
+    pointer location, the location is intentionally non-pressable.  Ordinary
+    layout/container widgets do not participate in the conflict, so a button
+    remains clickable even when its geometry is visually covered by a panel.
+
+    This is installed once on QApplication and uses global widget geometry,
+    avoiding platform-specific mouse handling or layout assumptions.
+    """
+    _BUTTON_TYPES = (QAbstractButton,)
+
+    def eventFilter(self, watched, event):
+        if event.type() not in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease):
+            return False
+        try:
+            if not (event.button() & Qt.MouseButton.LeftButton):
+                return False
+        except Exception:
+            return False
+
+        # Only suppress the press/release when the pointer is genuinely inside
+        # two or more actionable button widgets.  A panel/layout QWidget is
+        # deliberately ignored.
+        try:
+            gp = event.globalPosition().toPoint()
+        except Exception:
+            try:
+                gp = watched.mapToGlobal(event.position().toPoint())
+            except Exception:
+                return False
+
+        hits = []
+        app = QApplication.instance()
+        if app is None:
+            return False
+        for w in app.allWidgets():
+            try:
+                if not isinstance(w, self._BUTTON_TYPES):
+                    continue
+                if not w.isVisible() or not w.isEnabled():
+                    continue
+                if w.width() <= 0 or w.height() <= 0:
+                    continue
+                local = w.mapFromGlobal(gp)
+                if w.rect().contains(local):
+                    hits.append(w)
+            except Exception:
+                continue
+
+        if len(hits) >= 2:
+            # Store a diagnostic without changing application state.  Returning
+            # True consumes both press and release so neither overlapped button
+            # receives a misleading partial click.
+            return True
+        return False
 
 
 # =============================================================================
@@ -3684,7 +3744,7 @@ class VisualOscilloscope(QFrame):
     """
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(180, 180)
+        self.setMinimumSize(0, 0)
         self.setStyleSheet(
             "background-color: #0a0c0e; border: 1px solid #2a2e39; border-radius: 6px;"
         )
@@ -4032,7 +4092,7 @@ class SpectrumAnalyzer(QFrame):
     """
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(180, 180)
+        self.setMinimumSize(0, 0)
         self.setStyleSheet(
             "background-color: #0a0c0e; border: 1px solid #2a2e39; border-radius: 6px;"
         )
@@ -5989,7 +6049,7 @@ class VideoSynthViewer(QFrame):
 
     def __init__(self, parent=None, engine=None):
         super().__init__(parent)
-        self.setMinimumSize(180, 180)
+        self.setMinimumSize(0, 0)
         self.setStyleSheet("background-color: #050608; border: 1px solid #2a2e39; border-radius: 6px;")
         self.engine = engine or VideoSynthEngine()
         if parent is not None:
@@ -6547,8 +6607,6 @@ class CablePatchPanel(QWidget):
     """Interactive canvas workspace for nodes and cable patching via ports."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Never impose a fixed canvas size on the parent layout.
-        # The canvas expands/shrinks with its host window.
         self.setMinimumSize(0, 0)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.cables = []
@@ -11247,8 +11305,6 @@ class InfinitePlaylistInnerWidget(QWidget):
         super().__init__(parent)
         self.engine = engine
         self.parent_page = parent_page
-        # Scroll-area content may be arbitrarily large, but it must not
-        # propagate an enormous minimum size back to the main window.
         self.setMinimumSize(0, 0)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setStyleSheet("background-color: #070b10;")
@@ -11800,7 +11856,8 @@ class ScientificCanvas(QWidget):
     """Interactive canvas workspace mapping mathematical data pipelines with glowing bezier patch lines."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(2400, 1800)
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.cables = []
         self.active_cable_start = None
         self.current_mouse_pos = QPoint(0, 0)
@@ -14330,13 +14387,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             avail = None
         native_w, native_h = 1920, 1240
+        # Cross-platform startup sizing: use Qt's device-independent available
+        # work area, never physical pixels.  This respects Windows taskbars,
+        # Fedora/X11/Wayland panels, macOS menu bars/docks and HiDPI scaling.
+        # The window is deliberately given only a small true minimum so the
+        # user can resize it freely afterwards.
+        self.setMinimumSize(320, 240)
         if avail is not None and avail.width() > 0 and avail.height() > 0:
-            target_w = min(native_w, int(avail.width() * 0.96))
-            target_h = min(native_h, int(avail.height() * 0.96))
+            target_w = min(native_w, max(640, int(avail.width() * 0.90)))
+            target_h = min(native_h, max(480, int(avail.height() * 0.90)))
+            target_w = min(target_w, max(320, avail.width() - 24))
+            target_h = min(target_h, max(240, avail.height() - 48))
             self.resize(target_w, target_h)
-            self.move(avail.center().x() - self.width() // 2, avail.center().y() - self.height() // 2)
+            self.move(avail.left() + max(0, (avail.width() - target_w) // 2),
+                      avail.top() + max(0, (avail.height() - target_h) // 2))
         else:
-            self.resize(native_w, native_h)
+            self.resize(min(native_w, 1600), min(native_h, 1000))
         self.playlist_window = None
         self.patch_bay_dialog = None
         self.synth_editor_window = None
@@ -14568,61 +14634,30 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
     def _sync_square_visuals(self):
-        """Layout: large square scenograph filling ALL free height (plus as much
-        width as a square allows) + rectangular side meters.
+        """Keep visualizers visible without imposing geometry on the parent layout.
 
-        UI_LAYOUT_FILL_2026: the scenograph is allowed to grow into every free
-        pixel of the bottom monitor row instead of being pinned to a fixed cap.
-        Hard maximums are removed so Qt's expanding size policies fill the row;
-        the square side is clamped only to the available height so the pane can
-        never paint out of frame. Side meters split the remaining width.
+        Qt layouts own placement.  The previous implementation called resize() and
+        setMinimumSize() on every resize, which fed a large child size back into the
+        top-level window and made it impossible to shrink reliably on Windows/Fedora.
         """
         try:
-            container = getattr(self, "_visual_container", None)
-            if container is None:
-                for w in (self.video_synth_viewer, self.visual_oscilloscope, self.spectrum_analyzer):
-                    if w is not None and w.parentWidget() is not None:
-                        p = w.parentWidget()
-                        container = p.parentWidget() if p is not None else p
-                        break
-            if container is None:
-                return
-            avail_w = max(320, int(container.width()) - 16)
-            avail_h = max(220, int(container.height()) - 16)
-            # The center scenograph owns the middle half of the monitor width and
-            # the two rectangular monitors share the remaining half.  The square
-            # is then limited only by the available height, so it grows as large
-            # as the lower UI region permits without ever crossing its bounds.
-            side = max(260, min(avail_h, int((avail_w - 16) * 0.50)))
-            remaining = max(220, avail_w - side - 16)
-            side_w = max(110, remaining // 2)
-            if self.video_synth_viewer is not None:
-                self.video_synth_viewer.setMinimumSize(0, 0)
-                self.video_synth_viewer.setMaximumSize(16777215, 16777215)
-                self.video_synth_viewer.resize(side, side)
-                self.video_synth_viewer.setSizePolicy(
-                    QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-                )
-                try:
-                    if (hasattr(self.video_synth_viewer, "_frame") and
-                            self.video_synth_viewer._frame is not None):
-                        if (self.video_synth_viewer._frame.width() != side or
-                                self.video_synth_viewer._frame.height() != side):
-                            if hasattr(self.video_synth_viewer, "engine") and self.video_synth_viewer.engine:
-                                self.video_synth_viewer._frame = self.video_synth_viewer.engine.render_frame(
-                                    side, side, export=False
-                                )
-                        self.video_synth_viewer.update()
-                except Exception:
-                    pass
-            # Sides: rectangular meters (same height as square, expanding width)
-            for widget in (self.visual_oscilloscope, self.spectrum_analyzer):
+            for widget in (self.video_synth_viewer, self.visual_oscilloscope, self.spectrum_analyzer):
                 if widget is None:
                     continue
                 widget.setMinimumSize(0, 0)
                 widget.setMaximumSize(16777215, 16777215)
-                widget.resize(side_w, side)
                 widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+                if widget.width() > 1 and widget.height() > 1:
+                    try:
+                        if (widget is self.video_synth_viewer and
+                                getattr(widget, "_frame", None) is not None and
+                                hasattr(widget, "engine") and widget.engine):
+                            side = max(1, min(widget.width(), widget.height()))
+                            if widget._frame.width() != side or widget._frame.height() != side:
+                                widget._frame = widget.engine.render_frame(side, side, export=False)
+                        widget.update()
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -14692,7 +14727,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             bw = float(self._responsive_base_size.width())
             bh = float(self._responsive_base_size.height())
             scale = min(self.width() / max(1.0, bw), self.height() / max(1.0, bh))
-            scale = max(0.25, min(2.0, float(scale)))
+            scale = max(0.45, min(2.0, float(scale)))
             self._responsive_scale = scale
             font_re = re.compile(r"font-size\s*:\s*([0-9]+(?:\.[0-9]+)?)px", re.I)
 
@@ -14715,9 +14750,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     # rewrite the minima of expanding layout children: that was
                     # the source of the previous alignment drift.
                     if item["fixed"]:
-                        b = item["min"]
-                        w.setFixedSize(max(1, int(round(b.width() * scale))),
-                                       max(1, int(round(b.height() * scale))))
+                        # Preserve the authored size as a size hint through the
+                        # widget/layout system, but never turn it into a hard
+                        # minimum. Hard fixed children are a common source of
+                        # platform-specific top-level resize failures.
+                        w.setMinimumSize(0, 0)
+                        w.setMaximumSize(16777215, 16777215)
+                        if w.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Fixed:
+                            w.setSizePolicy(QSizePolicy.Policy.Preferred, w.sizePolicy().verticalPolicy())
+                        if w.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Fixed:
+                            w.setSizePolicy(w.sizePolicy().horizontalPolicy(), QSizePolicy.Policy.Preferred)
                 except Exception:
                     continue
 
@@ -29752,6 +29794,10 @@ assert all(sym is not None for sym in _REQUIRED_QT_SYMBOLS), "Required PyQt6 UI 
 if __name__ == "__main__":
     import sys
     app = QApplication(sys.argv)
+    # Global, platform-neutral hit policy: button/button overlap is inert;
+    # button/panel overlap remains clickable.
+    _button_overlap_policy = ButtonOverlapHitPolicy(app)
+    app.installEventFilter(_button_overlap_policy)
     player = MathematiciansGrooveboxApp()
     player.show()
     sys.exit(app.exec())

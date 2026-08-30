@@ -1,0 +1,511 @@
+        lay.setSpacing(3)
+        self._body_layout.addWidget(box)
+        self._panels[key] = (box, lay)
+        return lay
+
+    def finish(self):
+        self._body_layout.addStretch(1)
+
+
+class MathematiciansGrooveboxApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Groovebox")
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16777215, 16777215)
+        # UI_NATIVE_BASELINE_2026: the authored/native UI geometry is 1920x1240.
+        # Keep that as the canonical design coordinate system so the first layout
+        # pass is not silently compressed to an arbitrary screen-dependent size.
+        # The window remains freely resizable; responsive scaling is derived from
+        # this stable baseline rather than from whatever size Qt happened to use
+        # during construction.
+        try:
+            screen = self.screen() or QApplication.primaryScreen()
+            avail = screen.availableGeometry() if screen else None
+        except Exception:
+            avail = None
+        native_w, native_h = 1920, 1240
+        if avail is not None and avail.width() > 0 and avail.height() > 0:
+            target_w = min(native_w, int(avail.width() * 0.96))
+            target_h = min(native_h, int(avail.height() * 0.96))
+            self.resize(max(1000, target_w), max(700, target_h))
+            self.move(avail.center().x() - self.width() // 2, avail.center().y() - self.height() // 2)
+        else:
+            self.resize(native_w, native_h)
+        self.playlist_window = None
+        self.patch_bay_dialog = None
+        self.synth_editor_window = None
+        self.script_editor_window = None
+        self.visual_oscilloscope = None
+        self.wavefield_engine = PhaseLockedWavefieldEngine(self)
+        self.domain_eq_engine = DomainPartitionEquationEngine(seed=0.0)
+        self.domain_eq_dialog = None
+        # Initialize the UI Manager as an independent floating control panel
+        # that stays attached to your main app window
+        self.ui_manager = UIComponentManager(self)
+        self.ui_manager.setWindowTitle("EQR Phase-Locked Wavefield Controls")
+        self.ui_manager.resize(850, 120)
+
+        # Force UI manager to render
+        self.ui_manager.show()
+
+        # Instantiate and add the UIComponentManager
+        if not self.centralWidget():
+            central_widget = QWidget(self)
+            self.setCentralWidget(central_widget)
+
+        if not hasattr(self, 'main_window_layout') or self.main_window_layout is None:
+            self.main_window_layout = QVBoxLayout(self.centralWidget())
+
+        # Instantiate and add the UIComponentManager to the main window layout
+        self.main_window_layout.addWidget(self.ui_manager)
+		# ----------------------------------------------------------------
+        # FULL-WINDOW parametric math background (asking-for.txt fix).
+        # Previously the background lived only on UIComponentManager, which
+        # is resized to 850×120 — so the field was effectively invisible.
+        # Parent it to the central widget, fill it, lower behind controls,
+        # and keep it mouse-transparent. Opacity is low so UI stays readable.
+        # ----------------------------------------------------------------
+        try:
+            cw = self.centralWidget()
+            if cw is not None:
+                cw.setObjectName("GrooveboxCentral")
+                # Single instance only — prevents wave/Meum block replication >24
+                self.parametric_background = _ensure_single_math_background(self, cw)
+                self.parametric_background.setObjectName("ParametricMathBackground")
+                self.parametric_background.setGeometry(0, 0, self.width(), self.height())
+                self.parametric_background.lower()
+                self.parametric_background.show()
+                # Re-apply once more after the event loop does its first real
+                # layout pass, and keep it synced on every future resize via
+                # resizeEvent (see below) — belt-and-suspenders against timing.
+                QTimer.singleShot(0, self._sync_parametric_background_geometry)
+                # NOTE: no opaque/near-opaque fill here — the stylesheet already
+                # makes GrooveboxCentral transparent so the math field reads
+                # through. An explicit background-color here was previously
+                # painting over it almost completely (rgba(6,6,6,210) ≈ 82%
+                # opaque), which is why only a sliver of the field was visible.
+                # Reseed glyphs when the active instrument changes
+                if hasattr(self, "instrument_selector_dropdown"):
+                    try:
+                        self.instrument_selector_dropdown.currentIndexChanged.connect(
+                            lambda _i: self.parametric_background._reseed()
+                        )
+                    except Exception:
+                        pass
+        except Exception as _bg_exc:
+            print(f"[Background] attach skipped: {_bg_exc}")
+        # Seeded randomizer button → randomizer ONLY (never chains phase-lock)
+        try:
+            self.ui_manager.btn_seeded_randomizer.clicked.disconnect()
+        except TypeError:
+            pass
+        self.ui_manager.btn_seeded_randomizer.clicked.connect(self.apply_seeded_harmonic_randomization)
+        self.instrument_names_48 = [f"Operator_{i+1}" for i in range(48)]
+        self.instrument_sequencer_memory = {}
+        default_seq_len = 16
+
+        for name in self.instrument_names_48:
+            self.instrument_sequencer_memory[name] = {
+                "steps": [False] * default_seq_len,
+                "amplitudes": [0.5] * default_seq_len
+            }
+
+        # Set an active instrument pointer for the UI sequencer grid
+        self.active_instrument_memory = self.instrument_sequencer_memory[self.instrument_names_48[0]]
+        self.instrument_names_48 = [
+            "Z-Pinch Resonator", "Topological Fold", "Quantum Soliton", "Harmonic Phase-Shift",
+            "Sub-Harmonic Drone", "Micro-Transient Click", "Stochastic Noise Matrix", "Voltage Controlled Crystal",
+            "Resonant Cavity Feedback", "Plasma Streamer Node", "Frequency Divider Array", "Complex Waveguide",
+            "Anomalous Sine Core", "Hyperbolic Sawtooth", "Additive Formant Synth", "Granular Cloud Emitter",
+            "Metallic Tines", "Glass Resonance", "Sub-Bass Ionizer", "Electrostatic Discharge",
+            "Vector Morph Oscillator", "Ring Modulator Bank", "Spectral Smear Filter", "Formant Sweep Matrix",
+            "Bit-Crushed Impulse", "Phase Distortion Core", "Resonant Comb Filter", "Complex FM Modulator",
+            "Analog Drift Oscillator", "Vacuum Tube Saturation", "Tape Flutter Emulator", "Spring Reverb Tank",
+            "Binaural Drone Generator", "Chaotic Attractor Node", "Percolating Noise Burst", "Harmonic Overdrive",
+            "Sub-Audio LFO", "Pulse Width Modulator", "Sync-Lead Synthesizer", "Formant Vocalizer",
+            "Acoustic Plate Simulation", "Piezo Transducer Click", "Thermal Noise Generator", "Galactic Cosmic Ray",
+            "Magnetic Flux Modulator", "Eddy Current Oscillator", "Standing Wave Matrix", "Quantum Entanglement Node"
+        ]
+
+        self.instrument_sequencer_memory = {
+            name: {
+                "steps": [False] * 16,
+                "gates": [True] * 16,
+                "amplitudes": [1.0] * 16,
+                "pitches": [1.0] * 16,
+                "probabilities": [100] * 16,
+                "offsets": [0.0] * 16
+            }
+            for name in self.instrument_names_48
+        }
+
+        # SEQUENCE_BANK_V6: every instrument owns independently addressable,
+        # numbered patterns.  A pattern carries its own length and can be
+        # reused by playlist rows with a deterministic phase/offset.
+        self.instrument_sequence_banks = {}
+        for _name, _mem in self.instrument_sequencer_memory.items():
+            _mem["pattern_length"] = 16
+            _mem["sequence_id"] = 1
+            _mem["user_owned"] = False
+            _mem["canonical_owner"] = None
+            self.instrument_sequence_banks[_name] = {
+                1: _mem
+            }
+        self.instrument_selected_sequence = {name: 1 for name in self.instrument_names_48}
+
+        self.instrument_scripts = {
+            name: f"# Script workspace for {name} based on operator rules\ndef evaluate_wave(x, y, z):\n    return np.sin(x * {1 + int(identity_unit(name, 'default_script_k') * 12)}.0) * np.cos(y) - z"
+            for i, name in enumerate(self.instrument_names_48)
+        }
+
+        # No musical programs are injected at boot.
+        # Harmonic/script/patch/domain defaults remain available as neutral context.
+        # RECOMMENDED_POWER_LAYER: compatibility hook only; no musical presets.
+        self.hardcoded_compositions = {}
+
+        # Master storage mirroring the unquantized playlist rows for audio rendering
+        self.master_playlist_data = []
+        self.global_algo_state = {
+            "script": "# Global script algo\ndef global_script(t, name, i):\n    return 0.0\n",
+            "domain": "equation = \"sin(t * MEUM)\"\n",
+            "wire": [],
+            "params": {"mix": 0.35, "enable_script": True, "enable_domain": True, "enable_wire": True, "script_amount": 1.0, "domain_amount": 1.0, "wire_amount": 1.0},
+            "apply_enabled": False,
+            "protectable_userdata": True,
+        }
+        try:
+            if getattr(self, "qe_notes", None) is not None:
+                self.qe_notes.clear()
+        except Exception:
+            pass
+        self.goava_active = False
+        self.goava_seed_values = []
+        self.goava_note_events = []
+        self.goava_steps = []
+        self.goava_pitches = []
+        self.goava_frequencies = []
+        self.goava_raw_values = []
+        # LIVE_DJ_PAIR_ENGINE: two realtime performance macros share the
+        # canonical unordered pair space.  (A,B) and (B,A) are the same pair,
+        # so pair identities never duplicate.
+        self.live_dj_goava = False
+        self.live_dj_random = False
+        self.live_dj_goava_amount = 0.0
+        self.live_dj_random_amount = 0.0
+        self._live_dj_pair_space = CommutativePairSpace(len(self.instrument_names_48))
+        self._live_dj_pair_ids = (0, 1)
+        self._live_dj_pair_index = 0
+        self._live_dj_pair_signature = 0
+        self._live_dj_engine = LiveDJEffects(sample_rate=TARGET_SAMPLE_RATE)
+        self._user_composition_snapshot = None  # Canonical Overwrite undo buffer
+
+        # PROJECT_UNDO_2026: full-project snapshot history. Every mutating
+        # action (playlist / pattern / instrument resize, every engine apply,
+        # randomize, ℤ-Lattice step-algo apply/unapply, Algorithm→Seed) pushes
+        # an authoritative deep snapshot just before mutation, so all data is
+        # kept and reversible with Ctrl+Z / Ctrl+Y (and the transport buttons).
+        self._undo_stack = []
+        self._redo_stack = []
+        self._undo_max = 64
+        self._undo_in_flight = False
+        # ℤ-Lattice "Apply step algorithm" unapply snapshots: name -> prior mem.
+        self._nt_lattice_snapshot = {}
+        # "Algorithm → Seed" revert history: list of prior seed-field texts.
+        self._seed_history = []
+
+        self.export_counter = 1
+
+        # =====================================================================
+        # USER-REQUESTED WAV CARRIER / CONVOLVE-FIT FEATURE
+        # Revert marker: remove this state block plus the blocks tagged
+        # CONVOLVE_FIT_FEATURE to restore the previous behavior.
+        # =====================================================================
+        self.imported_waveform = None
+        self.imported_sample_rate = 44100
+        self.imported_wav_path = ""
+        # MEDIA_IMPORT_FEATURE: optional video carrier + parsed stream metadata.
+        # Revert: remove this state block and the MEDIA_IMPORT_FEATURE methods/UI.
+        self.imported_video_path = ""
+        self.imported_video_meta = {}
+
+        self.playlist_automation = []
+        # State lock for playlist memory; Qt widgets must still be touched only on the UI thread.
+        self.playlist_state_lock = threading.RLock()
+        self.instrument_param_state = {}
+        # Build the initial program state before rendering the sequencer.
+        # This prevents the first selection click from revealing hidden gates.
+        # RECOMMENDED_POWER_LAYER: neutral mathematical boot. Engines create
+        # musical material only when explicitly invoked.
+        self._composition_generation_guard = False
+        self._live_source_update_pending = False
+        self._composition_generation_counter = 0
+        self._transport_finished = False
+        self._stop_requested = False
+        self.init_ui_components()
+        self.initialize_default_playlist_memory()
+        self._ensure_sequence_banks_after_resize()
+        # All controls/text are now instantiated; capture their baseline metrics
+        # once and scale them from that baseline on every main-window resize.
+        QTimer.singleShot(0, self._init_responsive_ui_scaling)
+        self._composition_generation_guard = False
+        self._live_source_update_pending = False
+        self._composition_generation_counter = 0
+        self._transport_finished = False
+        self._stop_requested = False
+        # PROJECT_UNDO_2026: global keyboard undo/redo (window scope, not text scope,
+        # so Ctrl+Z works from anywhere over project data).
+        try:
+            from PyQt6.QtGui import QShortcut, QKeySequence
+            QShortcut(QKeySequence("Ctrl+Z"), self, activated=self._do_undo)
+            QShortcut(QKeySequence("Ctrl+Shift+Z"), self, activated=self._do_redo)
+            QShortcut(QKeySequence("Ctrl+Y"), self, activated=self._do_redo)
+        except Exception:
+            pass
+    def _sync_square_visuals(self):
+        """Layout: large square scenograph filling ALL free height (plus as much
+        width as a square allows) + rectangular side meters.
+
+        UI_LAYOUT_FILL_2026: the scenograph is allowed to grow into every free
+        pixel of the bottom monitor row instead of being pinned to a fixed cap.
+        Hard maximums are removed so Qt's expanding size policies fill the row;
+        the square side is clamped only to the available height so the pane can
+        never paint out of frame. Side meters split the remaining width.
+        """
+        try:
+            container = getattr(self, "_visual_container", None)
+            if container is None:
+                for w in (self.video_synth_viewer, self.visual_oscilloscope, self.spectrum_analyzer):
+                    if w is not None and w.parentWidget() is not None:
+                        p = w.parentWidget()
+                        container = p.parentWidget() if p is not None else p
+                        break
+            if container is None:
+                return
+            avail_w = max(320, int(container.width()) - 16)
+            avail_h = max(220, int(container.height()) - 16)
+            # The center scenograph owns the middle half of the monitor width and
+            # the two rectangular monitors share the remaining half.  The square
+            # is then limited only by the available height, so it grows as large
+            # as the lower UI region permits without ever crossing its bounds.
+            side = max(260, min(avail_h, int((avail_w - 16) * 0.50)))
+            remaining = max(220, avail_w - side - 16)
+            side_w = max(110, remaining // 2)
+            if self.video_synth_viewer is not None:
+                self.video_synth_viewer.setMinimumSize(side, side)
+                self.video_synth_viewer.setMaximumSize(16777215, 16777215)
+                self.video_synth_viewer.resize(side, side)
+                self.video_synth_viewer.setSizePolicy(
+                    QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+                )
+                try:
+                    if (hasattr(self.video_synth_viewer, "_frame") and
+                            self.video_synth_viewer._frame is not None):
+                        if (self.video_synth_viewer._frame.width() != side or
+                                self.video_synth_viewer._frame.height() != side):
+                            if hasattr(self.video_synth_viewer, "engine") and self.video_synth_viewer.engine:
+                                self.video_synth_viewer._frame = self.video_synth_viewer.engine.render_frame(
+                                    side, side, export=False
+                                )
+                        self.video_synth_viewer.update()
+                except Exception:
+                    pass
+            # Sides: rectangular meters (same height as square, expanding width)
+            for widget in (self.visual_oscilloscope, self.spectrum_analyzer):
+                if widget is None:
+                    continue
+                widget.setMinimumSize(side_w, side)
+                widget.setMaximumSize(16777215, 16777215)
+                widget.resize(side_w, side)
+                widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        except Exception:
+            pass
+
+    # RESPONSIVE_UI_SCALE_2026: one proportional scale governs control geometry,
+    # widget fonts, and stylesheet-declared text sizes.  This deliberately lives
+    # at the main-window level so nested panels inherit the same scale rather than
+    # each panel inventing its own fixed pixel geometry.
+    def _init_responsive_ui_scaling(self):
+        """Capture one immutable 1920x1240 design baseline for responsive UI scaling.
+
+        Geometry is deliberately left to Qt layouts.  Earlier passes resized
+        arbitrary minimum sizes on every widget, which caused siblings to drift
+        out of alignment because layouts recomputed positions from mixed scaled
+        and unscaled constraints.  This pass scales only authored fixed geometry,
+        typography, and layout metrics from a single baseline.
+        """
+        try:
+            self._responsive_base_size = QSize(1920, 1240)
+        except Exception:
+            self._responsive_base_size = QSize(1920, 1240)
+        self._responsive_widgets = []
+        self._responsive_layouts = []
+        root = self.centralWidget()
+        if root is None:
+            return
+        for w in [root] + root.findChildren(QWidget):
+            try:
+                if w is self.parametric_background:
+                    continue
+                f = w.font()
+                ss = w.styleSheet() or ""
+                min_size = QSize(w.minimumWidth(), w.minimumHeight())
+                max_size = QSize(w.maximumWidth(), w.maximumHeight())
+                fixed = (w.minimumWidth() == w.maximumWidth() and
+                         w.minimumHeight() == w.maximumHeight() and
+                         w.minimumWidth() > 0 and w.minimumHeight() > 0)
+                self._responsive_widgets.append({
+                    "widget": weakref.ref(w),
+                    "font": QFont(f),
+                    "style": ss,
+                    "min": min_size,
+                    "max": max_size,
+                    "fixed": fixed,
+                })
+            except Exception:
+                continue
+        # Layouts own placement. Record their authored spacing/margins once and
+        # scale those metrics uniformly instead of changing widget minima.
+        for w in [root] + root.findChildren(QWidget):
+            try:
+                lay = w.layout()
+                if lay is None:
+                    continue
+                m = lay.contentsMargins()
+                self._responsive_layouts.append({
+                    "layout": weakref.ref(lay),
+                    "spacing": lay.spacing(),
+                    "margins": (m.left(), m.top(), m.right(), m.bottom()),
+                })
+            except Exception:
+                continue
+        self._apply_responsive_ui_scale()
+
+    def _apply_responsive_ui_scale(self):
+        """Apply one common scale while preserving Qt's layout relationships."""
+        try:
+            bw = float(self._responsive_base_size.width())
+            bh = float(self._responsive_base_size.height())
+            scale = min(self.width() / max(1.0, bw), self.height() / max(1.0, bh))
+            scale = max(0.45, min(2.0, float(scale)))
+            self._responsive_scale = scale
+            font_re = re.compile(r"font-size\s*:\s*([0-9]+(?:\.[0-9]+)?)px", re.I)
+
+            for item in getattr(self, "_responsive_widgets", []):
+                w = item["widget"]()
+                if w is None:
+                    continue
+                try:
+                    f = QFont(item["font"])
+                    base_pt = f.pointSizeF()
+                    if base_pt > 0:
+                        f.setPointSizeF(max(5.0, base_pt * scale))
+                        w.setFont(f)
+                    base_style = item["style"]
+                    if base_style:
+                        def repl(m):
+                            return f"font-size: {max(5.0, float(m.group(1)) * scale):.2f}px"
+                        w.setStyleSheet(font_re.sub(repl, base_style))
+                    # Only genuinely fixed widgets are scaled directly.  Do not
+                    # rewrite the minima of expanding layout children: that was
+                    # the source of the previous alignment drift.
+                    if item["fixed"]:
+                        b = item["min"]
+                        w.setFixedSize(max(1, int(round(b.width() * scale))),
+                                       max(1, int(round(b.height() * scale))))
+                except Exception:
+                    continue
+
+            for item in getattr(self, "_responsive_layouts", []):
+                lay = item["layout"]()
+                if lay is None:
+                    continue
+                try:
+                    lay.setSpacing(max(0, int(round(item["spacing"] * scale))))
+                    l, t, r, b = item["margins"]
+                    lay.setContentsMargins(
+                        max(0, int(round(l * scale))),
+                        max(0, int(round(t * scale))),
+                        max(0, int(round(r * scale))),
+                        max(0, int(round(b * scale))),
+                    )
+                except Exception:
+                    continue
+
+            self._sync_square_visuals()
+            self._sync_parametric_background_geometry()
+            root = self.centralWidget()
+            if root is not None:
+                root.updateGeometry()
+                root.layout().activate() if root.layout() is not None else None
+        except Exception:
+            pass
+
+    def _sync_parametric_background_geometry(self):
+        """Keep the full-window math field sized to the central widget.
+
+        Called once after the first real layout pass (via QTimer.singleShot)
+        and on every subsequent resize (via resizeEvent below). Without this,
+        the field keeps whatever tiny geometry it was given at construction
+        time, before Qt had laid anything out.
+        """
+        bg = getattr(self, "parametric_background", None)
+        cw = self.centralWidget()
+        if bg is None or cw is None:
+            return
+        try:
+            bg.setGeometry(0, 0, cw.width(), cw.height())
+            bg.lower()
+        except Exception:
+            pass
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        try:
+            self._apply_responsive_ui_scale()
+            self._sync_parametric_background_geometry()
+            QTimer.singleShot(0, self._apply_responsive_ui_scale)
+        except Exception:
+            pass
+
+    def apply_hardcoded_compositions(self):
+        # POWER_V3_EMPTY_BOOT: compatibility hook intentionally does nothing.
+        # The application may keep idealized harmonic/synth/domain defaults, but
+        # it never injects a musical composition into sequencer memory at boot.
+        return 0
+
+    def initialize_default_playlist_memory(self):
+        # Playlist capacity is present, but the musical program is empty on boot.
+        rows = 64
+        # POWER_V3_EMPTY_BOOT: capacity exists, but there is no musical program.
+        self.master_playlist_data = [{} for _ in range(rows)]
+        self.playlist_automation = [{} for _ in range(rows)]
+
+    def sync_playlist_grid_to_memory(self):
+        """Atomically mirror the complete 18-column playlist table into memory."""
+        table = getattr(self, "active_paint_table", None)
+        if not table:
+            return
+
+        lock = getattr(self, "playlist_state_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self.playlist_state_lock = lock
+
+        with lock:
+            old_rows = list(getattr(self, "master_playlist_data", []) or [])
+            rebuilt = []
+
+            def cell(r, c):
+                item = table.item(r, c) if c < table.columnCount() else None
+                return item.text() if item else ""
+
+            for r in range(table.rowCount()):
+                prior = old_rows[r] if r < len(old_rows) and isinstance(old_rows[r], dict) else {}
+                values = [cell(r, c) for c in range(min(PLAYLIST_COLUMN_COUNT, table.columnCount()))]
+                values += [""] * (PLAYLIST_COLUMN_COUNT - len(values))
+                # Full 18-column layout.  The tail (13..17) is authoritative
+                # playlist state and MUST survive every table -> memory sync.
+                vel_txt = values[6]
+                effect = values[7]
+                amount = values[8]
