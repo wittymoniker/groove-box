@@ -788,38 +788,6 @@ PAINT_PERIOD_S = 1.0 / PAINT_RATE_HZ                            # ~0.418 s betwe
 PAINT_INSTANCE_LIMIT = 8
 import numpy as np
 import math
-class MeumScenographController:
-    """
-    Manages scene composition, coordinate mapping, and frame buffers
-    for the Meum scenograph and background canvas widgets.
-    """
-    def __init__(self, width: int = 800, height: int = 600) -> None:
-        self.width = width
-        self.height = height
-        self.center_x = width / 2.0
-        self.center_y = height / 2.0
-        self.MEUM_INV = 1.0 / 1.19758073433
-        self.PHI = 1.61803398875
-
-    def project_coordinates(self, x_vals: np.ndarray, y_vals: np.ndarray, z_vals: np.ndarray, scale: float = 100.0) -> list[tuple[float, float]]:
-        """Projects 3D spatial coordinate arrays (x, y, z) directly onto a 2D canvas space."""
-        # Orthographic/perspective projection mapped strictly to x, y, z variables
-        projected = []
-        for x, y, z in zip(x_vals, y_vals, z_vals):
-            # Apply field rotation and scaling based on structural invariants
-            depth_factor = 1.0 / (1.0 + z * 0.1 * self.MEUM_INV)
-            px = self.center_x + (x * scale * depth_factor)
-            py = self.center_y + (y * scale * depth_factor)
-            projected.append((float(px), float(py)))
-        return projected
-
-    def generate_field_mesh(self, resolution: int = 50, ctx: float = 0.0) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Generates raw x, y, z field arrays for real-time scenograph rendering."""
-        t = np.linspace(0, math.tau, resolution)
-        x = np.sin(t * self.PHI + ctx) * np.cos(t * self.MEUM_INV)
-        y = np.cos(t * self.PHI + ctx) * np.sin(t * self.MEUM_INV)
-        z = np.sin(t * self.MEUM_INV * 2.0)
-        return x, y, z
 class DeterministicPanelManager:
     """
     Manages deterministic parameter overrides across multi-sequence channels
@@ -840,22 +808,6 @@ class DeterministicPanelManager:
         }
 
 
-class DeterministicVisualizerEngine:
-    """
-    Generates deterministic visualizer frame matrices bound directly to
-    the foundational audio field parameters.
-    """
-    def __init__(self, resolution: int = 64) -> None:
-        self.resolution = resolution
-        self.MEUM_INV = 1.0 / 1.19758073433
-        self.PHI = 1.61803398875
-
-    def generate_frame(self, ctx: float) -> list[float]:
-        """Produces a deterministic vertex or color intensity array."""
-        return [
-            float(np.sin(i * self.MEUM_INV * self.PHI + ctx) * 0.5 + 0.5)
-            for i in range(self.resolution)
-        ]
 class DeterministicPanelOverride:
     def __init__(self, channels=4):
         self.channels = channels
@@ -868,17 +820,6 @@ class DeterministicPanelOverride:
             "modulation_skew": float(math.fmod(channel_id * self.PHI, 1.0))
         }
 
-class DeterministicVisualizer:
-    def __init__(self, resolution=64):
-        self.resolution = resolution
-        self.MEUM_INV = 1.0 / 1.19758073433
-        self.PHI = 1.61803398875
-
-    def generate_frame_matrix(self, ctx):
-        return [
-            float(np.sin(i * self.MEUM_INV * self.PHI + ctx) * 0.5 + 0.5)
-            for i in range(self.resolution)
-        ]
 
 def _meum_params(params):
     """Normalize Meum phase/AM/FM/PM parameters safely."""
@@ -2583,130 +2524,7 @@ def canonical_master_slot(voice_index: int, instrument_count: int) -> int:
     # Midpoint quantization distributes N voices across the fixed 64-slot bank.
     return min(CANONICAL_MASTER_SLOTS - 1, int(((2 * i + 1) * CANONICAL_MASTER_SLOTS) / (2 * n)))
 
-def canonical_visual_atom(master_slot: int, ctx):
-    """Return the seed-defined latent image atom for one of 64 master slots.
 
-    The atom is the visual analogue of a canonical audio voice: all of its
-    structural degrees of freedom come from the fixed seed lattice, never from
-    the requested live instrument count.  Instrument Count only repartitions
-    these atoms later.
-    """
-    i = int(master_slot) % CANONICAL_MASTER_SLOTS
-    seedv = float(ctx.get("seed", 0.0))
-    s_abs = abs(seedv) + 1e-9
-    frac = s_abs - math.floor(s_abs)
-    # Independent irrational phases make the 64 atoms richly distinct without
-    # introducing a second random source or a repeated modulo pattern.
-    q = (i + 1) * PHI_INV
-    return {
-        "slot": i,
-        "phase": math.tau * ((frac + q * MEUM_NORM) % 1.0),
-        "angle": math.tau * ((q + frac * MEUM_INV) % 1.0),
-        "scale": 0.55 + 0.45 * ((i * MEUM_NORM + frac * PHI_INV) % 1.0),
-        "fold": 0.35 + 0.65 * ((i * MEUM_INV + frac * MEUM_NORM) % 1.0),
-        "depth": 0.30 + 0.70 * ((i * PHI + frac * MEUM_INV) % 1.0),
-        "texture": 0.25 + 0.75 * ((i * MEUM + frac * PHI) % 1.0),
-    }
-
-def canonical_visual_instrument(slot, ctx, flags):
-    """Per-instrument 2.5D parameters mirroring the audio voice pass.
-
-    ctx: dict with seed, base (already union-scaled when full unison), ratio,
-         s_int, full_unison, n_inst, meum_depth.
-    flags: dict of the five canonical engine booleans
-           (randomizer, phase_lock, idealize_rhythm, seeded, goava).
-    Returns the identical-keyed parameter set the audio pass builds for one
-    voice (base_freq, ratio, s_int, entropy, phase0, meum fm/pm/am set,
-    max_partial) plus the 2.5D structural co-ordinates the frame needs.
-    """
-    n_inst = int(ctx.get("n_inst", CANONICAL_MASTER_SLOTS))
-    i = int(slot) % CANONICAL_MASTER_SLOTS
-    master_i = i
-    atom = canonical_visual_atom(master_i, ctx)
-    fu = bool(ctx.get("full_unison"))
-    seedv = float(ctx.get("seed", 0.0))
-    s_int = int(ctx.get("s_int", int(_safe_int_seed(seedv)) or 1))
-    s_abs = abs(seedv) + 1e-9
-    s_frac = s_abs - math.floor(s_abs)
-    base = float(ctx.get("base", 432.0))
-    ratio = float(ctx.get("ratio", 1.0))
-    eng = dict(flags or {})
-    n5 = sum(1 for _k in _VISUAL_ENGINE_CHANNELS if eng.get(_k))
-    n_eng = max(1, n5) if n5 else 6  # no engine on -> idle reference scale 1/6
-    k5 = 1.0 / float(n_eng)
-    # Canonical slot lattice (irrational fractional index, never repeats).
-    _tpos = (master_i * MEUM * 3.0) % 36.0
-    _tlo = int(_tpos) % 36
-    _thi = (_tlo + 1) % 36
-    _tfr = _tpos - int(_tpos)
-    _pow = (MEUM_POWERS_36[_tlo] * (1.0 - _tfr) + MEUM_POWERS_36[_thi] * _tfr)
-    # Union collapses pitch/identity; otherwise the per-slot lattice drives it.
-    if fu:
-        bf = base
-        sr = ratio
-        ent = float(entropy_draw_0_1(s_abs, s_frac, s_int, 0))
-        phase0 = 0.0
-    else:
-        bf = base * _pow
-        sr = float(_seed_to_pitch_ratio(seedv, master_i, master_i))
-        ent = float(entropy_draw_0_1(s_abs, s_frac, s_int, master_i))
-        phase0 = float(INSTRUMENT_PHASE_LOCK_48[master_i % 48])
-    # Symmetric equal-influence engine channels (each active = k5*0.5, else 0).
-    ch_rnd = (0.5 if eng.get("randomizer") else 0.0) * k5   # spread axis
-    ch_ph = (0.5 if eng.get("phase_lock") else 0.0) * k5    # twist axis
-    ch_euc = (0.5 if eng.get("idealize_rhythm") else 0.0) * k5  # structure axis
-    ch_seed = (0.5 if eng.get("seeded") else 0.0) * k5      # scale axis
-    ch_goa = (0.5 if eng.get("goava") else 0.0) * k5        # hue axis
-    mod = {
-        "phase_shift": (0.0 if fu else float(atom["phase"])),
-        "mod_rate": 0.78 + 0.48 * ent,
-        "fm_depth": float(np.clip(0.22 + 0.38 * (ch_rnd - ch_ph), -0.95, 0.95)),
-        "fm_rate": 0.5 + 2.0 * _pow,
-        "pm_depth": float(math.pi * float(np.clip(0.18 + 0.55 * (ch_ph - ch_seed), -1.0, 1.0))),
-        "pm_rate": 0.5 + 2.0 * ((i * MEUM) % 1.0),
-        "am_depth": float(np.clip(0.16 + 0.5 * ch_euc, 0.0, 1.0)),
-        "am_rate": 0.5 + 2.0 * ((i * PHI * MEUM_NORM) % 1.0),
-        "meum_depth": float(ctx.get("meum_depth", 1.0)),
-    }
-    depth = 1.35 + 0.18 * _pow + 2.2 * (ch_seed - 0.25 * k5) + 0.18 * atom["depth"]
-    yaw = float(math.fmod(atom["angle"] + 0.6 * (ch_ph - ch_rnd), math.tau))
-    pitch = 0.12 * math.sin(atom["phase"] + ch_euc * 1.3)
-    roll = 0.09 * math.cos(atom["angle"] + ch_ph)
-    pack = 0.62 + 0.60 * _pow * (1.0 + 0.8 * (ch_seed - 0.5 * k5)) * (0.82 + 0.36 * atom["scale"])
-    max_partial = int(INSTRUMENT_PARTIAL_CAP_48[master_i % 48])
-    verts = int(4 + (max_partial % 6) + int(ch_euc * 6.0) + round(3 * atom["texture"]))
-    hue = float(math.fmod(master_i * (360.0 / CANONICAL_MASTER_SLOTS) + master_i * 7 + ch_goa * 90.0, 360.0))
-    # HARMONIC_CANCELLATION_ALIGNMENT_2026: color shading, translucency and
-    # 2.5D depth follow the harmonic cancellation envelope of the SOUND.  Under
-    # the union every voice shares identity + phase carry (max reinforcement),
-    # so the frame is one opaque foreground organism; independent voices recede
-    # and grow translucent in proportion to how far their phase locus sits from
-    # the shared meum axis — the same relation the mix's phase cancellation has.
-    _ax = math.fmod(float(phase0) * MEUM_NORM + i * MEUM_INV, 1.0)
-    if fu:
-        conson = 1.0
-    else:
-        conson = 0.5 + 0.5 * math.cos(_ax * math.tau)
-    depth = 0.96 + 0.72 * (1.0 - conson) + 0.18 * _pow
-    # Calculated shading: brightness tracks the same meum phase envelope the
-    # audio pass rings against, dimmed proportionally as a voice recedes.
-    shade = float(np.clip(0.35 + 0.55 * (0.5 + 0.5 * math.sin(_ax * math.tau)) * (0.5 + 0.5 * conson),
-                          0.05, 0.98))
-    life = 0.30 + 0.70 * conson * (0.25 + 0.75 * ent)
-    rad = (2.0 - depth) * (0.30 + 0.45 * pack)
-    return {
-        "i": i, "n_inst": n_inst,
-        "base_freq": bf, "ratio": sr, "s_int": s_int, "entropy": ent,
-        "phase0": phase0, "mod": mod, "max_partial": max_partial,
-        "spread_axis": ch_rnd, "twist_axis": ch_ph, "structure_axis": ch_euc,
-        "scale_axis": ch_seed, "hue_axis": ch_goa, "engines": n_eng,
-        "depth": depth, "yaw": yaw, "pitch": pitch, "roll": roll,
-        "pack": pack, "verts": verts, "hue": hue, "life": life, "shade": shade,
-        "master_slot": master_i, "atom": atom,
-        "x": float(math.cos(yaw) * rad * math.cos(pitch)),
-        "y": float(math.sin(pitch) * rad * 0.72),
-        "z": float(depth * (0.6 + 0.4 * math.sin(roll))),
-    }
 
 def goava_frequency(number_assigned, step, numbers, base_frequency=432.0):
     """Map GOAVA's Java sequence scalar to a stable audible frequency.
@@ -4388,9 +4206,12 @@ class VideoSynthEngine:
         # frame-to-frame, so compute it once here instead of re-instantiating
         # MeumScenographController and recomputing the same mesh every
         # render_frame() call (its result was previously discarded unused).
-        _scenograph = MeumScenographController(width=800, height=800)
-        _sx, _sy, _sz = _scenograph.generate_field_mesh(resolution=64, ctx=0.4759)
-        self._scenograph_points = _scenograph.project_coordinates(_sx, _sy, _sz, scale=512.0)
+        _t = np.linspace(0.0, math.tau, 64)
+        _sx = np.sin(_t * PHI + 0.4759) * np.cos(_t * MEUM_INV)
+        _sy = np.cos(_t * PHI + 0.4759) * np.sin(_t * MEUM_INV)
+        _sz = np.sin(_t * MEUM_INV * 2.0)
+        _depth = 1.0 / (1.0 + _sz * 0.1 * MEUM_INV)
+        self._scenograph_points = [(float(400.0 + x * 512.0 * d), float(400.0 + y * 512.0 * d)) for x,y,d in zip(_sx,_sy,_depth)]
         # One visual object is created per live instrument. No independent
         # graphical-object count exists: visual population == instrument count.
         self.SCENOGRAPH_ITEM_CATALOG = [
@@ -6371,78 +6192,6 @@ class MathNodeWidget(QFrame):
     def mouseReleaseEvent(self, event):
         self.dragging = False
 
-class SoundCloudTimelineVisualizer(QWidget):
-    """SoundCloud-style static waveform overview with split-spectrum color gradient peaks and recursion trigger labels."""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedHeight(140)
-        self.setStyleSheet("background-color: #0b0b0e; border: 1px solid #1f1f2e; border-radius: 6px;")
-        # Pre-calculated structural events: (x_ratio, label, color_mode, depth_param)
-        self.triggers = [
-            (0.08, "EskiBrutuses WaveMorph [x=0.2, d=3]", "#00ffc8", 1),
-            (0.22, "EQR Singularity Collapse [f(x,y,z)=0]", "#ff00ff", 2),
-            (0.35, "EskiPhased Non-Linear Matrix [Feedback 82%]", "#00bfff", 1.5),
-            (0.48, "Fractalizer Harmonic Fold [Depth 5x]", "#ff6400", 3),
-            (0.65, "EskiRecursive Wave-Fold [Chaos Mod 0.4]", "#ffff00", 2.2),
-            (0.82, "Z-Axis Field Resonance [Peak Phase]", "#ff0055", 2.8)
-        ]
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        w = self.width()
-        h = self.height()
-        mid_y = h / 2.0 - 10
-
-        # Draw background track bar
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(16, 16, 24))
-        painter.drawRoundedRect(10, 10, w - 20, h - 20, 6, 6)
-
-        # Draw SoundCloud style static amplitude peaks with split-spectrum colors
-        random.seed(42) # Consistent static peak generation
-        bar_width = 3
-        gap = 2
-        num_bars = (w - 40) // (bar_width + gap)
-
-        for i in range(num_bars):
-            x = 20 + i * (bar_width + gap)
-            ratio = i / num_bars
-
-            # Formulate multi-frequency loudness curve across duration
-            envelope = math.sin(ratio * math.pi * 3.5) * 0.5 + 0.5
-            harmonic = math.cos(ratio * math.pi * 12.0) * 0.25 + 0.75
-            noise = random.uniform(0.4, 1.0)
-            amplitude = int((h - 50) * envelope * harmonic * noise)
-
-            # Split spectrum color grading based on frequency band
-            if ratio < 0.3:
-                grad_color = QColor(0, 255, 200, 200) # Cyan / Sub-bass
-            elif ratio < 0.6:
-                grad_color = QColor(255, 0, 255, 200) # Magenta / Mid harmonics
-            else:
-                grad_color = QColor(255, 100, 0, 200) # Orange / High fractal folds
-
-            painter.setBrush(grad_color)
-            painter.drawRoundedRect(x, int(mid_y - amplitude / 2), bar_width, max(4, amplitude), 1, 1)
-
-        # Draw Timeline Trigger Labels & Recursion Markers
-        for rx, text, hex_col, depth in self.triggers:
-            tx = int(rx * w)
-            # Marker line
-            painter.setPen(QPen(QColor(hex_col), 2, Qt.PenStyle.SolidLine))
-            painter.drawLine(tx, 15, tx, h - 15)
-
-            # Floating label tag
-            painter.setBrush(QColor(18, 18, 28, 230))
-            painter.setPen(QPen(QColor(hex_col), 1))
-            label_w = min(170, len(text) * 6 + 12)
-            painter.drawRoundedRect(tx - 5, h - 38, label_w, 24, 4, 4)
-
-            painter.setPen(QColor(240, 240, 255))
-            painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
-            painter.drawText(tx, h - 22, text)
 
 
 class SynthRackUnitWidget(QFrame):
@@ -6563,56 +6312,6 @@ class SynthRackUnitWidget(QFrame):
                 self.param_fractal.spinbox.setValue(float(st["fractalizer"]))
         except Exception:
             pass
-class WaveformVisualizer(QWidget):
-    """Custom visualizer widget for real-time amplitude peak monitoring."""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumHeight(120)
-        self.amplitude_data = [0.0] * 80
-        self._phosphor = [0.0] * 80
-
-    def update_data(self, new_val):
-        self.amplitude_data.pop(0)
-        self.amplitude_data.append(new_val)
-        self._phosphor = [
-            0.78 * p + 0.22 * v for p, v in zip(self._phosphor, self.amplitude_data)
-        ]
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor(12, 14, 22))
-        width = self.width()
-        height = self.height()
-        n = max(len(self.amplitude_data) - 1, 1)
-        step = width / n
-        mid = height / 2.0
-        path = QPainterPath()
-        path.moveTo(0, mid)
-        for i, v in enumerate(self._phosphor):
-            path.lineTo(int(i * step), mid - v * (height * 0.42))
-        path.lineTo(width, mid)
-        path.closeSubpath()
-        painter.fillPath(path, QColor(0, 220, 180, 40))
-        pen = QPen(QColor(0, 230, 180, 80))
-        pen.setWidth(5)
-        painter.setPen(pen)
-        for i in range(len(self.amplitude_data) - 1):
-            x1 = int(i * step)
-            y1 = int(mid - self.amplitude_data[i] * (height / 2))
-            x2 = int((i + 1) * step)
-            y2 = int(mid - self.amplitude_data[i + 1] * (height / 2))
-            painter.drawLine(x1, y1, x2, y2)
-        pen = QPen(QColor(0, 255, 210))
-        pen.setWidth(2)
-        painter.setPen(pen)
-        for i in range(len(self.amplitude_data) - 1):
-            x1 = int(i * step)
-            y1 = int(mid - self.amplitude_data[i] * (height / 2))
-            x2 = int((i + 1) * step)
-            y2 = int(mid - self.amplitude_data[i + 1] * (height / 2))
-            painter.drawLine(x1, y1, x2, y2)
 class CablePatchPanel(QWidget):
     """Interactive canvas workspace for nodes and cable patching via ports."""
     def __init__(self, parent=None):
@@ -8228,39 +7927,6 @@ class FitToFrameContainer(QWidget):
             bg.update()
 
 # Import Reality Synth and Music Fractallizer from synth_engine (with fallback stubs)
-class FractallizerVisualizerCanvas(QWidget):
-    def __init__(self, parent=None, app_ref=None):
-        super().__init__(parent)
-        self.app_ref = app_ref
-        self.setMinimumHeight(160)
-        self.setStyleSheet("background-color: #080808; border: 1px solid #ff6b00; border-radius: 4px;")
-        self.phase = 0.0
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.update_fractal)
-        self.timer.start(25)
-
-    def update_fractal(self):
-        self.phase += 0.05
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter()
-        if not painter.begin(self): return
-        try:
-            painter.fillRect(self.rect(), QColor(8, 8, 8))
-            w, h = self.width(), self.height()
-            cx, cy = w / 2.0, h / 2.0
-            points = []
-            for i in range(200):
-                t = (i / 200.0) * 6 * np.pi + self.phase
-                r = (55.0 + (self.app_ref.macro_fractal.value() * 5 if self.app_ref else 10)) * np.sin(t * 2.5 + self.phase)
-                points.append(QPointF(cx + r * np.cos(t), cy + r * np.sin(t)))
-            for i in range(len(points) - 1):
-                col = QColor.fromHsvF((i / 200.0 + self.phase * 0.1) % 1.0, 0.9, 1.0)
-                painter.setPen(QPen(col, 2))
-                painter.drawLine(points[i], points[i+1])
-        finally:
-            painter.end()
 class ReadmeGuideDialog(QDialog):
     """Full Help / Readme: philosophy, workflow, scripting syntax, disclaimer."""
 
@@ -8975,120 +8641,6 @@ class RealitySynthEngine:
         return {coord: sig.tolist() for coord, sig in self.fractallizer.generate_fractal_stream(base_patch_data).items()}
 
 
-class AdvancedWaveformVisualizerCanvas(QWidget):
-    """Multi-model real-time Wavetable, Vector, and Algebraic Equation Visualizer.
-
-    When Operator Theory is enabled (book p.49-50), every algebraic waveform is
-    re-drawn through the ot_* scalar rules (band-hop add toward the enclosing
-    integer of each magnitude, negative-run negating composition, signed-power
-    ambiguity, divisor refinement by the Meum residue field) and — if a shared
-    DSP follow-envelope is present — the envelope is overlaid as a translucent
-    band, so the display carries the same Operator-Theory + envelope doctrine
-    as the DSP pathway.
-    """
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumHeight(280)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.phase = 0.0
-        self.active_mode = "Eskivector"
-        self.live_audio = None      # optional float32 audio for the overlay plot
-        self.follow_env = None      # optional shared DSP follow envelope (0..1.5)
-
-    def set_live_source(self, audio=None, follow_env=None):
-        if audio is not None:
-            self.live_audio = np.asarray(audio, dtype=np.float32).ravel()
-        if follow_env is not None:
-            self.follow_env = np.asarray(follow_env, dtype=np.float32).ravel()
-
-    def update_phase(self):
-        self.phase += 0.05
-        self.update()
-
-    def _ot_val(self, val):
-        # Rule e (band hop + add) + rule 1 (neg·neg → neg) + rule f (divisor
-        # refinement by the Meum residue field), applied per drawn sample.
-        band = ot_band(val)
-        bent = ot_add(val, 0.0) + 0.25 * band * math.copysign(1.0, val)
-        denom = abs(bent) + 0.2
-        bent = ot_div(bent, denom) if denom != 0 else bent
-        return bent
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-
-        p.fillRect(0, 0, w, h, QColor("#0a0e14"))
-        p.setPen(QPen(QColor("#161b22"), 1))
-        for x in range(0, w, 40):
-            p.drawLine(x, 0, x, h)
-        for y in range(0, h, 40):
-            p.drawLine(0, y, w, y)
-
-        path = QPainterPath()
-        center_y = h / 2.0
-        meum_ratio = MEUM
-        ot_on = operator_theory_enabled()
-
-        for px in range(w):
-            t_val = (px / w) * 4.0 * math.pi + self.phase
-            if self.active_mode == "Eskivector":
-                val = MathEngine.isn(t_val * meum_ratio) + 0.5 * MathEngine.ics(t_val)
-            elif self.active_mode == "Eskitable":
-                val = MathEngine.arcisn(math.sin(t_val)) * MathEngine.arcics(math.cos(t_val * 0.5))
-            elif self.active_mode == "Eskiosc":
-                val = MathEngine.isn_inv(math.sin(t_val))
-            else:  # Eskiequation
-                val = MathEngine.isn(t_val) * MathEngine.ics(t_val * meum_ratio) + MathEngine.arcisn(math.sin(t_val * 0.25))
-
-            if ot_on:
-                val = self._ot_val(val)
-            py = center_y - (val * (h * 0.35))
-            if px == 0:
-                path.moveTo(px, py)
-            else:
-                path.lineTo(px, py)
-
-        p.setPen(QPen(QColor("#00ffcc"), 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        p.drawPath(path)
-
-        # Live envelope-follow overlay + Operator-Theory waveform, when provided
-        # by the DSP thread.
-        if self.live_audio is not None and self.live_audio.size > 1:
-            la = self.live_audio
-            ap = QPainterPath()
-            for px in range(w):
-                sx = int(float(px) / float(w) * float(la.size - 1))
-                v = float(la[sx])
-                if ot_on:
-                    v = self._ot_val(v)
-                py = center_y - (v * (h * 0.35))
-                if px == 0:
-                    ap.moveTo(px, py)
-                else:
-                    ap.lineTo(px, py)
-            p.setPen(QPen(QColor("#ff69b4"), 1.6, Qt.PenStyle.DotLine))
-            p.drawPath(ap)
-
-        if self.follow_env is not None and self.follow_env.size > 1:
-            fe = self.follow_env
-            fe = np.asarray(fe, dtype=np.float32)
-            fmax = float(np.max(fe)) or 1.0
-            fep = QPainterPath()
-            for px in range(w):
-                sx = int(float(px) / float(w) * float(fe.size - 1))
-                v = float(fe[sx]) / fmax
-                py = center_y - (v * (h * 0.4))
-                if px == 0:
-                    fep.moveTo(px, py)
-                else:
-                    fep.lineTo(px, py)
-            p.setPen(QPen(QColor("#58a6ff"), 1.0, Qt.PenStyle.DashLine))
-            p.drawPath(fep)
-            p.setPen(QPen(QColor("#58a6ff"), 1, Qt.PenStyle.DashLine))
-            p.drawLine(0, int(center_y), w, int(center_y))
-            p.drawText(15, 25, f"Visualizer Active Model: [{self.active_mode}] — Isosceles Trig & Algebraic Waveform" + ("  + Operator Theory" if ot_on else ""))
 class MultiLaneSequencerCanvas(QWidget):
     """Sequencer canvas with built-in modulation patch outputs per track."""
     def __init__(self, parent=None):
@@ -9713,49 +9265,6 @@ class ParameterControlRow(QWidget):
         layout.addWidget(self.jack_btn, 1)
 
         self.setLayout(layout)
-class WavetableVectorVisualizerCanvas(QWidget):
-    """Real-time Wavetable and Isosceles Trigonometric Polynomial Waveform Visualizer."""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumHeight(260)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.phase = 0.0
-
-    def update_phase(self):
-        self.phase += 0.05
-        self.update()
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-
-        p.fillRect(0, 0, w, h, QColor("#0a0e14"))
-        p.setPen(QPen(QColor("#161b22"), 1))
-        for x in range(0, w, 40):
-            p.drawLine(x, 0, x, h)
-        for y in range(0, h, 40):
-            p.drawLine(0, y, w, y)
-
-        path = QPainterPath()
-        center_y = h / 2.0
-        meum_ratio = MEUM
-
-        for px in range(w):
-            t_val = (px / w) * 4.0 * math.pi + self.phase
-            val = MathEngine.isn(t_val * meum_ratio) + 0.5 * MathEngine.ics(t_val) * MathEngine.arcisn(math.sin(t_val * 0.5))
-            py = center_y - (val * (h * 0.35))
-            if px == 0:
-                path.moveTo(px, py)
-            else:
-                path.lineTo(px, py)
-
-        p.setPen(QPen(QColor("#00ffcc"), 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        p.drawPath(path)
-
-        p.setPen(QPen(QColor("#58a6ff"), 1, Qt.PenStyle.DashLine))
-        p.drawLine(0, int(center_y), w, int(center_y))
-        p.drawText(10, 20, "Eskivector / Eskitable / Eskiosc / Eskiequation Real-Time Wavetable Visualizer")
 class GlobalCrossTabBusManager:
     """Manages universal inter-synth wiring, dedicated synth input/output jacks, master audio routing, and resampling."""
     def __init__(self):
@@ -11373,52 +10882,6 @@ class InfinitePlaylistCanvas(QScrollArea):
         self.canvas_inner = InfinitePlaylistInnerWidget(self.engine, self.parent_page)
         self.setWidget(self.canvas_inner)
 
-class EQRVisualizerCanvas(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumHeight(160)
-        self.setStyleSheet("background-color: #0b0b0b; border: 1px solid #ff6b00; border-radius: 4px;")
-
-        self.phase = 0.0
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.update_phase)
-        self.timer.start(30)
-
-    def update_phase(self):
-        self.phase += 0.03
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter()
-        if not painter.begin(self):
-            return
-        try:
-            painter.fillRect(self.rect(), QColor(11, 11, 11))
-            w, h = self.width(), self.height()
-            cx, cy = w / 2.0, h / 2.0
-
-            painter.setPen(QPen(QColor(30, 30, 30), 1, Qt.PenStyle.DashLine))
-            painter.drawLine(0, int(cy), w, int(cy))
-            painter.drawLine(int(cx), 0, int(cx), h)
-
-            num_steps = 300
-            points = []
-            for i in range(num_steps):
-                t = (i / num_steps) * 4 * np.pi + self.phase
-                x_val = np.sin(t * 1.5) * np.cos(t * 0.5 + self.phase * 0.2) * 120.0
-                y_val = np.cos(t * 2.0) * np.sin(t * 1.2) * 80.0
-                z_val = np.sin(t + self.phase) * 50.0
-
-                px = cx + x_val + (z_val * 0.3)
-                py = cy + y_val + (z_val * 0.2)
-                points.append(QPointF(px, py))
-
-            for i in range(len(points) - 1):
-                hue_color = QColor.fromHsvF((i / num_steps + self.phase * 0.1) % 1.0, 0.8, 1.0)
-                painter.setPen(QPen(hue_color, 2))
-                painter.drawLine(points[i], points[i+1])
-        finally:
-            painter.end()
 # -------------------------------------------------------------------------
 # MASTER PATCH CANVAS (Visual Wires & Dedicated Synth Jacks)
 # -------------------------------------------------------------------------
@@ -13228,59 +12691,6 @@ class ModularTabManager(QTabWidget):
             self.removeTab(index)
             widget.deleteLater()
 
-class VisualNodeScriptingWindow(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Visual Equation & Symbolic Scripting Canvas")
-        self.resize(1000, 650)
-        self.setStyleSheet(TELETUBBY_STYLE)
-
-        layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("<b>Interactive Geometric Node Patch Builder & Symbolic Engine</b>"))
-
-        self.geom_canvas = GeometricSymbolicCanvas(self)
-        layout.addWidget(self.geom_canvas)
-
-        canvas_splitter = QSplitter(Qt.Orientation.Horizontal)
-
-        toolbox_widget = QWidget()
-        tb_layout = QVBoxLayout(toolbox_widget)
-        tb_layout.addWidget(QLabel("<b>Click Blocks to Insert</b>"))
-
-        blocks = [
-            "⚡ Eski Sine [Jack]", "🔀 Wavefold Node [Jack]", "🔁 For-Loop Repeater [Jack]",
-            "⚖️ Heuristic Branch [Jack]", "🌀 Noise Generator [Jack]", "📉 Low-Pass Filter [Jack]",
-            "➕ Additive Sum [Jack]", "✖️ Ring Modulator [Jack]", "⏱️ Delay Line [Jack]",
-            "🎛️ Envelope Shaper [Jack]", "🔍 Phase Root [Jack]", "💥 Eskibrutus Fold [Jack]"
-        ]
-        for b in blocks:
-            btn = QPushButton(b)
-            btn.setStyleSheet("background-color: #6c5ce7; color: white; text-align: left; padding-left: 8px;")
-            btn.clicked.connect(lambda checked, text=b: self.append_node_text(text))
-            tb_layout.addWidget(btn)
-
-        canvas_splitter.addWidget(toolbox_widget)
-
-        self.assembly_board = QTextEdit()
-        self.assembly_board.setPlainText(
-            "# Interactive Modular Patch Assembly & Geometric Symbolic Equation Network\n"
-            "[ Node α: Eski-Prime Sine ] ===(Symbolic Jack)===> [ Node β: Dipsy Wavefolder ]\n"
-        )
-        self.assembly_board.setStyleSheet("background-color: #ffffff; color: #1e272e; font-family: monospace; font-size: 13px; border-radius: 10px;")
-        canvas_splitter.addWidget(self.assembly_board)
-
-        canvas_splitter.setSizes([320, 680])
-        layout.addWidget(canvas_splitter)
-
-        compile_btn = QPushButton("Compile and Apply Geometric Symbolic Matrix to Active Stream")
-        compile_btn.setStyleSheet("background-color: #00b894; color: white; font-weight: bold;")
-        compile_btn.clicked.connect(lambda: QMessageBox.information(self, "Compiled", "Interactive visual graph and symbolic equations successfully compiled."))
-        layout.addWidget(compile_btn)
-
-    def append_node_text(self, node_name):
-        current = self.assembly_board.toPlainText()
-        updated = current + f"\n[ Geometric Linked: {node_name} ] ===(Symbolic Patch Jack)===> [ Routing Matrix Bus ]"
-        self.assembly_board.setPlainText(updated)
 # ==========================================
 # 2. COORDINATE VISUALIZER
 # ==========================================
@@ -13691,44 +13101,6 @@ class PermanentPatchBayPanel(QWidget):
 # ==========================================
 # 5. SCRIPTER'S PANE WITH FUNCTION KEYSET
 # ==========================================
-class DenseCoordinateVisualizer(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumHeight(200)
-        self.setStyleSheet("background-color: #1e272e; border: 3px solid #feca57; border-radius: 14px;")
-        self.point_history = []
-        self.max_points = 250
-
-    def update_coordinates(self, x, y):
-        self.point_history.append((x, y))
-        if len(self.point_history) > self.max_points:
-            self.point_history.pop(0)
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter()
-        if not painter.begin(self):
-            return
-        try:
-            painter.fillRect(self.rect(), QColor(30, 39, 46))
-            width, height = self.width(), self.height()
-
-            painter.setPen(QPen(QColor(72, 84, 96), 1, Qt.PenStyle.DashLine))
-            painter.drawLine(0, height // 2, width, height // 2)
-            painter.drawLine(width // 2, 0, width // 2, height)
-
-            if len(self.point_history) >= 2:
-                pen = QPen(QColor(255, 107, 107))
-                pen.setWidth(3)
-                painter.setPen(pen)
-                for i in range(1, len(self.point_history)):
-                    x1 = (self.point_history[i-1][0] + 1.2) * 0.41 * width
-                    y1 = (self.point_history[i-1][1] + 1.2) * 0.41 * height
-                    x2 = (self.point_history[i][0] + 1.2) * 0.41 * width
-                    y2 = (self.point_history[i][1] + 1.2) * 0.41 * height
-                    painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
-        finally:
-            painter.end()
 class TopSideInstrumentSequencerPanel(QWidget):
     def __init__(self, parent=None, app_ref=None):
         super().__init__(parent)
