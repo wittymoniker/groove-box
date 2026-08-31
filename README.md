@@ -275,3 +275,11 @@ and master visual atoms. Instrument Count does not seed, randomize, or otherwise
 change that latent image. Counts from 2 through 64 deterministically
 repartition the same master material into different visual instrument
 factorizations, while avoiding duplicate decorative complexity.
+
+## Deterministic Visual + Game View-Space Rollout (2026-08-31)
+
+This build shares one deterministic visual view-space contract across the host visualizer and generated games:
+
+`seed -> canonical composition -> view state -> projection`
+
+Camera state includes yaw, pitch, roll, distance and FOV. View lattices use equal-area Fibonacci-sphere sampling and deterministic greedy max-min coverage selection. Visual composition fingerprints are order-independent, and projection identities are cryptographic functions of the canonical seed/composition/view tuple. Generated game packages include `visual_determinism.py` so their visual/game camera state is self-contained and reproducible.

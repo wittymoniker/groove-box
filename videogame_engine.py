@@ -37,6 +37,8 @@ import zipfile
 from dataclasses import dataclass, asdict, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from visual_determinism import fibonacci_view, select_views, visual_signal_id, composition_fingerprint as visual_composition_fingerprint
+
 # Meum lattice (same constants as the signal generator — identity partner)
 MEUM = 1.1975807343385265
 MEUM_INV = 1.0 / MEUM
@@ -386,6 +388,8 @@ class GameIdentity:
     asset_manifest: Dict[str, Any] = field(default_factory=dict)
     goava_active: bool = False
     input_schema: Dict[str, Any] = field(default_factory=dict)
+    visual_view_state: Dict[str, Any] = field(default_factory=dict)
+    visual_signal_id: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -630,6 +634,11 @@ def classify_from_composition(
 
     texture_family = TEXTURE_FAMILIES[_res_idx(s, f"tex|{fingerprint}", len(TEXTURE_FAMILIES))]
     material_spec = instrument_material_from_seed(s, fingerprint, mood, texture_family)
+    # GAME_VISUAL_DETERMINISM_2026: the game consumes the same canonical view-space
+    # kernel as Groovebox instead of inventing an independent camera lattice.
+    _view = fibonacci_view(0, 64, s)
+    _visual_state = {**_view, "composition_fingerprint": fingerprint, "abstraction": "structural"}
+    _visual_sid = visual_signal_id(s, fingerprint, _view)
     sfx_bank = instrument_sfx_bank(s, n_instruments=max(4, n_instruments))
     asset_manifest = build_asset_manifest(
         s, models_1d, models_2d, models_3d, texture_family, material_spec, sfx_bank, software_kind
@@ -665,6 +674,8 @@ def classify_from_composition(
         asset_manifest=asset_manifest,
         goava_active=bool(goava_active),
         input_schema=software_input_schema(software_kind),
+        visual_view_state=_visual_state,
+        visual_signal_id=_visual_sid,
     )
 
 
@@ -691,6 +702,8 @@ __TITLE__
 """
 from __future__ import annotations
 import csv, gzip, hashlib, io, json, math, os, queue, socket, struct, sys, threading, time, wave, zlib
+
+from visual_determinism import fibonacci_view, select_views, visual_signal_id
 
 MEUM = __MEUM__
 PHI = __PHI__
@@ -1997,6 +2010,12 @@ class Game:
         self.move = {"dx": 0.0, "dy": 0.0, "dz": 0.0}
         self.aim_in = {"yaw": 0.0, "pitch": 0.0}
         self.pitch = 0.0
+        # Shared canonical camera/view state. Manual input is an overlay; the
+        # deterministic lattice remains the reproducible source of truth.
+        self.visual_view = dict(self.id.get("visual_view_state") or fibonacci_view(0, 64, self.id["seed"]))
+        self.visual_view_index = int(self.visual_view.get("index", 0))
+        self.visual_view_count = int(self.visual_view.get("count", 64))
+        self.visual_signal_id = str(self.id.get("visual_signal_id") or visual_signal_id(self.id["seed"], self.id.get("composition_fingerprint","0"), self.visual_view))
         self.zoom = 1.0
         self.chess_square = None  # hot-seat selected square
         _cseed = _safe_int_seed(self.id["seed"]) & 0x7FFFFFFF
@@ -2537,6 +2556,7 @@ class Game:
                         name: {"angle": round(rec[0], 6), "score": round(rec[1], 3), "steer": round(rec[2], 4)}
                         for name, rec in self._remote_steers.items()
                     },
+                    "visual_view": self.visual_state(),
                     "authoritative": True,
                 })
         else:
@@ -2546,6 +2566,9 @@ class Game:
                 self.score = float(snap.get("score", self.score))
                 self.level = int(snap.get("level", self.level))
                 self.combo = int(snap.get("combo", self.combo))
+                if isinstance(snap.get("visual_view"), dict):
+                    self.visual_view = dict(snap["visual_view"])
+                    self.visual_signal_id = str(self.visual_view.get("visual_signal_id") or self.visual_signal_id)
                 self.difficulty_mult = float(snap.get("difficulty_mult", self.difficulty_mult))
                 collected = snap.get("sigils") or []
                 if isinstance(collected, list):
@@ -3385,6 +3408,19 @@ class LocalChess:
         elif self.halfmove >= 100:
             self.result = "1/2-1/2"
 
+    def set_deterministic_view(self, view_index=0, view_count=64):
+        self.visual_view_index=int(view_index)
+        self.visual_view_count=max(1,int(view_count))
+        self.visual_view=dict(fibonacci_view(self.visual_view_index,self.visual_view_count,self.id["seed"]))
+        self.visual_signal_id=visual_signal_id(self.id["seed"],self.id.get("composition_fingerprint","0"),self.visual_view)
+        return dict(self.visual_view)
+
+    def deterministic_viewset(self, count=32):
+        return select_views(int(count), self.id["seed"])
+
+    def visual_state(self):
+        return {**self.visual_view, "composition_fingerprint": self.id.get("composition_fingerprint"), "visual_signal_id": self.visual_signal_id}
+
     def ascii(self):
         rows = []
         for ri, row in enumerate(self.board):
@@ -3872,11 +3908,26 @@ if HAS_UI:
             topo = str(g.id.get("topology") or "open_world")
 
             def project(yaw, dist, pitch=0.0, depth=1.0):
-                # 2.5D: yaw/dist on plane, pitch lifts Y, depth scales size
+                # Canonical 3D camera projection. Object count never enters the
+                # camera transform; only the canonical view state does.
                 scale = 1.0 / max(0.35, 0.55 + 0.45 * depth)
-                x = cx + dist * R * math.cos(yaw) * scale
-                y = cy + dist * R * math.sin(yaw) * scale - pitch * R * 0.35 * scale
-                sz = max(2.0, (6.0 + 10.0 * (1.2 - min(depth, 1.8))) * scale)
+                ox = dist * math.cos(yaw) * scale
+                oy = pitch * scale
+                oz = dist * math.sin(yaw) * scale + 1.0
+                cyaw = math.radians(float(g.visual_view.get("yaw_deg",0.0))) + float(g.aim_in.get("yaw",0.0))
+                cpit = math.radians(float(g.visual_view.get("pitch_deg",0.0))) + float(g.aim_in.get("pitch",0.0))
+                croll = math.radians(float(g.visual_view.get("roll_deg",0.0)))
+                c, ss = math.cos(cyaw), math.sin(cyaw)
+                x1, z1 = ox*c - oz*ss, ox*ss + oz*c
+                c, ss = math.cos(cpit), math.sin(cpit)
+                y1, z2 = oy*c - z1*ss, oy*ss + z1*c
+                c, ss = math.cos(croll), math.sin(croll)
+                x2, y2 = x1*c - y1*ss, x1*ss + y1*c
+                f = math.tan(math.radians(float(g.visual_view.get("fov_deg",48.0))) * 0.5)
+                inv = 1.0 / max(0.12, z2)
+                x = cx + (x2 * inv / max(f,0.05)) * R * 0.72
+                y = cy - (y2 * inv / max(f,0.05)) * R * 0.72
+                sz = max(2.0, (6.0 + 10.0 * (1.2 - min(depth, 1.8))) * scale * min(1.8, inv))
                 return x, y, sz
 
             # Depth-sorted layers for proper 2.5D occlusion
@@ -5042,6 +5093,14 @@ def export_game_files(identity: GameIdentity, out_dir: str, composition_meta: Op
     script_path = os.path.join(out_dir, f"game_{identity.composition_fingerprint}.py")
     with open(script_path, "w", encoding="utf-8") as f:
         f.write(generate_game_script(identity, composition_meta))
+    # Self-contained visual determinism kernel: generated games use the same
+    # camera/view identity implementation as the host Groovebox.
+    try:
+        src = os.path.join(os.path.dirname(__file__), "visual_determinism.py")
+        if os.path.isfile(src):
+            shutil.copy2(src, os.path.join(out_dir, "visual_determinism.py"))
+    except Exception:
+        pass
     meta_path = os.path.join(out_dir, f"game_{identity.composition_fingerprint}.json")
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(identity.to_dict(), f, indent=2)

@@ -52,6 +52,9 @@ import re
 import weakref
 import numpy as np
 
+# VISUAL_DETERMINISM_2026: canonical seed/view-space kernel.
+from visual_determinism import fibonacci_view, select_views, visual_signal_id, composition_fingerprint as _visual_composition_fingerprint
+
 from dj_effects import CommutativePairSpace, LiveDJEffects
 from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer, QObject, pyqtSignal, QRunnable, QThreadPool
 import composition_state as _composition_state
@@ -4454,6 +4457,11 @@ class VideoSynthEngine:
         self._cam_yaw = 0.0
         self._cam_pitch = 0.0
         self._cam_roll = 0.0
+        self._cam_distance = 0.0
+        self._cam_fov_deg = 48.0
+        self._camera_view_override = None
+        self._visual_view_index = 0
+        self._visual_view_count = 1
         self._manual_yaw = 0.0
         self._manual_pitch = 0.0
         self._pack_radius = 0.0
@@ -4830,10 +4838,16 @@ class VideoSynthEngine:
             layer["field_z"] = 0.08 * math.sin(a * MEUM + i * MEUM_INV)
 
     def _camera_transform(self, x, y, z):
-        """Apply global yaw -> pitch -> roll camera transform."""
-        cy, sy = math.cos(self._cam_yaw), math.sin(self._cam_yaw)
-        cp, sp = math.cos(self._cam_pitch), math.sin(self._cam_pitch)
-        cr, sr = math.cos(self._cam_roll), math.sin(self._cam_roll)
+        """Apply canonical camera yaw/pitch/roll/distance transform."""
+        cyaw, cpitch, croll = self._cam_yaw, self._cam_pitch, self._cam_roll
+        if isinstance(getattr(self, "_camera_view_override", None), dict):
+            v = self._camera_view_override
+            cyaw = math.radians(float(v.get("yaw_deg", 0.0)))
+            cpitch = math.radians(float(v.get("pitch_deg", 0.0)))
+            croll = math.radians(float(v.get("roll_deg", 0.0)))
+        cy, sy = math.cos(cyaw), math.sin(cyaw)
+        cp, sp = math.cos(cpitch), math.sin(cpitch)
+        cr, sr = math.cos(croll), math.sin(croll)
         x1 = x * cy - z * sy
         z1 = x * sy + z * cy
         y1 = y * cp - z1 * sp
@@ -4880,7 +4894,7 @@ class VideoSynthEngine:
 
     def _project(self, x, y, z, w, h, fov=None):
         if fov is None:
-            fov = MEUM + MEUM_NORM * 0.15
+            fov = math.tan(math.radians(float(getattr(self, "_cam_fov_deg", 48.0))) * 0.5) * 2.0
         x, y, z = self._camera_transform(float(x), float(y), float(z))
         z = max(z, 0.12)
         inv = 1.0 / z
@@ -5864,9 +5878,57 @@ class VideoSynthEngine:
 
 
 
+    def set_deterministic_camera_view(self, view_index=0, view_count=64, seed=None):
+        """Select one reproducible view from the canonical low-discrepancy lattice."""
+        if seed is None:
+            seed = self._canonical_ctx.get("seed", 0.0) if isinstance(getattr(self, "_canonical_ctx", None), dict) else 0.0
+        view = fibonacci_view(int(view_index), int(view_count), seed)
+        self._camera_view_override = dict(view)
+        self._visual_view_index = int(view_index)
+        self._visual_view_count = max(1, int(view_count))
+        self._cam_distance = float(view.get("distance", 1.0))
+        self._cam_fov_deg = float(view.get("fov_deg", 48.0))
+        return dict(view)
+
+    def deterministic_viewset(self, count=32, seed=None, existing=()):
+        if seed is None:
+            seed = self._canonical_ctx.get("seed", 0.0) if isinstance(getattr(self, "_canonical_ctx", None), dict) else 0.0
+        return select_views(int(count), seed, existing)
+
+    def render_deterministic_view(self, w=640, h=360, view_index=0, view_count=64, seed=None, export=False):
+        view = self.set_deterministic_camera_view(view_index, view_count, seed)
+        actual_seed = seed if seed is not None else (self._canonical_ctx.get("seed", 0.0) if isinstance(getattr(self, "_canonical_ctx", None), dict) else 0.0)
+        fp = self.visual_composition_fingerprint()
+        sid = visual_signal_id(actual_seed, fp, view)
+        return self.render_frame(w, h, export=export), sid
+
+    def clear_deterministic_camera_view(self):
+        self._camera_view_override = None
+
+    def get_camera_state(self):
+        return {
+            "yaw_deg": math.degrees(float(self._cam_yaw)),
+            "pitch_deg": math.degrees(float(self._cam_pitch)),
+            "roll_deg": math.degrees(float(self._cam_roll)),
+            "distance": float(getattr(self, "_cam_distance", 0.0)),
+            "fov_deg": float(getattr(self, "_cam_fov_deg", 48.0)),
+            "view_index": int(getattr(self, "_visual_view_index", 0)),
+            "view_count": int(getattr(self, "_visual_view_count", 1)),
+            "deterministic": isinstance(getattr(self, "_camera_view_override", None), dict),
+            "composition_fingerprint": self.visual_composition_fingerprint(),
+        }
+
+    def visual_composition_fingerprint(self):
+        objects=[]
+        for i,p in enumerate(getattr(self, "_canonical", []) or []):
+            objects.append({"id":i,"type":"instrument","x":p.get("x",0.0),"y":p.get("y",0.0),"z":p.get("z",0.0),"scale":p.get("pack",1.0),"rotation":p.get("yaw",0.0),"depth":p.get("depth",0.0),"role":"canonical_instrument"})
+        seed=self._canonical_ctx.get("seed",0.0) if isinstance(getattr(self,"_canonical_ctx",None),dict) else 0.0
+        return _visual_composition_fingerprint(objects, seed=seed, abstraction="structural")
+
     def reset_camera(self):
         """Return scenograph camera to origin view (shared by double-click + Quick Edit)."""
-        for attr, val in (("_cam_yaw", 0.0), ("_cam_pitch", 0.0), ("_cam_distance", None),
+        self._camera_view_override = None
+        for attr, val in (("_cam_yaw", 0.0), ("_cam_pitch", 0.0), ("_cam_roll", 0.0), ("_cam_distance", None),
                           ("_yaw", 0.0), ("_pitch", 0.0), ("view_yaw", 0.0), ("view_pitch", 0.0)):
             if hasattr(self, attr):
                 try:
@@ -21509,6 +21571,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "project_notes": notes,
             "last_videogame_identity": _safe_json(getattr(self, "_last_videogame_identity", None)),
             "last_videogame_path": getattr(self, "_last_videogame_path", None),
+            "visual_view_state": _safe_json(self.video_synth_engine.get_camera_state() if getattr(self, "video_synth_engine", None) is not None else {}),
             "ui_state": self._collect_project_ui_state() if hasattr(self, "_collect_project_ui_state") else {},
         }
         return data
@@ -21656,6 +21719,24 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if not path.lower().endswith(".json"):
             path = path + ".json"
         return path
+
+        self._apply_visual_view_state(data.get("visual_view_state", {}))
+
+    def _apply_visual_view_state(self, state):
+        try:
+            eng=getattr(self,"video_synth_engine",None)
+            if eng is None or not isinstance(state,dict): return
+            if bool(state.get("deterministic",False)):
+                eng.set_deterministic_camera_view(int(state.get("view_index",0)),int(state.get("view_count",1)))
+            else:
+                eng.clear_deterministic_camera_view()
+                eng._cam_yaw=math.radians(float(state.get("yaw_deg",0.0)))
+                eng._cam_pitch=math.radians(float(state.get("pitch_deg",0.0)))
+                eng._cam_roll=math.radians(float(state.get("roll_deg",0.0)))
+                eng._cam_distance=float(state.get("distance",0.0))
+                eng._cam_fov_deg=float(state.get("fov_deg",48.0))
+        except Exception as e:
+            print(f"[Load] visual view state: {e}")
 
     def _projects_dir(self):
         base = os.path.join(os.path.expanduser("~"), ".groovebox", "projects")
