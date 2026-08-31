@@ -38,6 +38,7 @@ from dataclasses import dataclass, asdict, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from visual_determinism import fibonacci_view, select_views, visual_signal_id, composition_fingerprint as visual_composition_fingerprint
+from fractal_spatial_engine import FractalSpatialEngine, build_spatial_state
 
 # Meum lattice (same constants as the signal generator — identity partner)
 MEUM = 1.1975807343385265
@@ -390,6 +391,7 @@ class GameIdentity:
     input_schema: Dict[str, Any] = field(default_factory=dict)
     visual_view_state: Dict[str, Any] = field(default_factory=dict)
     visual_signal_id: str = ""
+    spatial_state: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -639,6 +641,7 @@ def classify_from_composition(
     _view = fibonacci_view(0, 64, s)
     _visual_state = {**_view, "composition_fingerprint": fingerprint, "abstraction": "structural"}
     _visual_sid = visual_signal_id(s, fingerprint, _view)
+    _spatial_state = build_spatial_state(s, fingerprint, depth=3, roots=max(5, min(12, n_instruments)), goava=goava_active)
     sfx_bank = instrument_sfx_bank(s, n_instruments=max(4, n_instruments))
     asset_manifest = build_asset_manifest(
         s, models_1d, models_2d, models_3d, texture_family, material_spec, sfx_bank, software_kind
@@ -676,6 +679,7 @@ def classify_from_composition(
         input_schema=software_input_schema(software_kind),
         visual_view_state=_visual_state,
         visual_signal_id=_visual_sid,
+        spatial_state=_spatial_state,
     )
 
 
@@ -704,6 +708,10 @@ from __future__ import annotations
 import csv, gzip, hashlib, io, json, math, os, queue, socket, struct, sys, threading, time, wave, zlib
 
 from visual_determinism import fibonacci_view, select_views, visual_signal_id
+try:
+    from fractal_spatial_engine import FractalSpatialEngine
+except Exception:
+    FractalSpatialEngine = None
 
 MEUM = __MEUM__
 PHI = __PHI__
@@ -2016,6 +2024,8 @@ class Game:
         self.visual_view_index = int(self.visual_view.get("index", 0))
         self.visual_view_count = int(self.visual_view.get("count", 64))
         self.visual_signal_id = str(self.id.get("visual_signal_id") or visual_signal_id(self.id["seed"], self.id.get("composition_fingerprint","0"), self.visual_view))
+        self.spatial_engine = FractalSpatialEngine(self.id["seed"], self.id.get("composition_fingerprint", "0"), bool(self.id.get("goava_active", False)))
+        self.spatial_state = dict(self.id.get("spatial_state") or self.spatial_engine.snapshot(depth=3, roots=max(5, min(12, len(getattr(self, "assets", [])) if hasattr(self, "assets") else 5))))
         self.zoom = 1.0
         self.chess_square = None  # hot-seat selected square
         _cseed = _safe_int_seed(self.id["seed"]) & 0x7FFFFFFF
@@ -3419,7 +3429,12 @@ class LocalChess:
         return select_views(int(count), self.id["seed"])
 
     def visual_state(self):
-        return {**self.visual_view, "composition_fingerprint": self.id.get("composition_fingerprint"), "visual_signal_id": self.visual_signal_id}
+        return {**self.visual_view, "composition_fingerprint": self.id.get("composition_fingerprint"), "visual_signal_id": self.visual_signal_id, "spatial_fingerprint": self.spatial_state.get("fingerprint", ""), "spatial_version": self.spatial_state.get("version", "")}
+
+    def spatial_snapshot(self, depth=3, roots=5):
+        """Return a deterministic finite window of the infinite spatial universe."""
+        self.spatial_state = self.spatial_engine.snapshot(depth=max(0, int(depth)), roots=max(1, int(roots)))
+        return dict(self.spatial_state)
 
     def ascii(self):
         rows = []
@@ -5096,9 +5111,10 @@ def export_game_files(identity: GameIdentity, out_dir: str, composition_meta: Op
     # Self-contained visual determinism kernel: generated games use the same
     # camera/view identity implementation as the host Groovebox.
     try:
-        src = os.path.join(os.path.dirname(__file__), "visual_determinism.py")
-        if os.path.isfile(src):
-            shutil.copy2(src, os.path.join(out_dir, "visual_determinism.py"))
+        for _kernel in ("visual_determinism.py", "fractal_spatial_engine.py"):
+            src = os.path.join(os.path.dirname(__file__), _kernel)
+            if os.path.isfile(src):
+                shutil.copy2(src, os.path.join(out_dir, _kernel))
     except Exception:
         pass
     meta_path = os.path.join(out_dir, f"game_{identity.composition_fingerprint}.json")

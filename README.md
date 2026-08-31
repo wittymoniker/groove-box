@@ -283,3 +283,7 @@ This build shares one deterministic visual view-space contract across the host v
 `seed -> canonical composition -> view state -> projection`
 
 Camera state includes yaw, pitch, roll, distance and FOV. View lattices use equal-area Fibonacci-sphere sampling and deterministic greedy max-min coverage selection. Visual composition fingerprints are order-independent, and projection identities are cryptographic functions of the canonical seed/composition/view tuple. Generated game packages include `visual_determinism.py` so their visual/game camera state is self-contained and reproducible.
+
+
+## Native Four-Engine Spatial 2026.3
+The spatial/game layer is sculpted from the four non-GOAVA canonical engines: randomizer, phase-lock, Euclidean, and seeded. Five spatial channels project that state into position, phase, scale, topology, and complexity. GOAVA is an optional post-projection adapter and is never required for generation, topology, recursion, or infinite-world identity.

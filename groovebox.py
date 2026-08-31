@@ -54,6 +54,7 @@ import numpy as np
 
 # VISUAL_DETERMINISM_2026: canonical seed/view-space kernel.
 from visual_determinism import fibonacci_view, select_views, visual_signal_id, composition_fingerprint as _visual_composition_fingerprint
+from fractal_spatial_engine import FractalSpatialEngine
 
 from dj_effects import CommutativePairSpace, LiveDJEffects
 from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer, QObject, pyqtSignal, QRunnable, QThreadPool
@@ -5877,6 +5878,13 @@ class VideoSynthEngine:
         return pts
 
 
+
+    def fractal_spatial_snapshot(self, depth=3, roots=8, seed=None, goava=False):
+        """Project the canonical visual composition into the audio-immutable spatial grammar."""
+        if seed is None:
+            seed = self._canonical_ctx.get("seed", 0.0) if isinstance(getattr(self, "_canonical_ctx", None), dict) else 0.0
+        fp = self.visual_composition_fingerprint()
+        return FractalSpatialEngine(seed, fp, goava).snapshot(depth=max(0, int(depth)), roots=max(1, int(roots)))
 
     def set_deterministic_camera_view(self, view_index=0, view_count=64, seed=None):
         """Select one reproducible view from the canonical low-discrepancy lattice."""
