@@ -3033,7 +3033,7 @@ def generate_random_global_play_algo(rng=None):
             "wire_amount": wa,
         },
         "apply_enabled": True,
-        "protectable_userdata": True,
+        "user_data": True,
     }
 
 
@@ -14467,7 +14467,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "wire": [],
             "params": {"mix": 0.35, "enable_script": True, "enable_domain": True, "enable_wire": True, "script_amount": 1.0, "domain_amount": 1.0, "wire_amount": 1.0},
             "apply_enabled": False,
-            "protectable_userdata": True,
+            "user_data": True,
+            "canonical_superwrite": True,
         }
         try:
             if getattr(self, "qe_notes", None) is not None:
@@ -14506,6 +14507,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._undo_in_flight = False
         # ℤ-Lattice "Apply step algorithm" unapply snapshots: name -> prior mem.
         self._nt_lattice_snapshot = {}
+        self._nt_lattice_scope = "global"
         # "Algorithm → Seed" revert history: list of prior seed-field texts.
         self._seed_history = []
 
@@ -17080,6 +17082,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Global / all instruments active is the default
         self.mode_combo.addItems(["Mode: Cross-Loaded Ecosystem (Global)", "Mode: Single Instrument"])
         self.mode_combo.setCurrentIndex(0)
+        self.mode_combo.currentIndexChanged.connect(lambda _idx: self._sync_nt_lattice_button_state())
 
         # Global Playlist Switch added to main layout
         self.chk_global_playlist = QCheckBox("🌐 Global Playlist Arrangement Drive")
@@ -17773,8 +17776,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         local_context_layout.addLayout(pkp_and_game_col, 1)
 
         # GLOBAL PLAY PATCHER — readable layout: Script / Domain text fields,
-        # Wire + Params buttons, Mix/Script/Domain/Wire amount sliders,
-        # full-width Apply toggle + Protectable Userdata checkbox.
+        # Wire + Params buttons, Mix/Script/Domain/Wire amount sliders.
+        # Algorithm state is always userdata; canonical unison may superwrite it.
         # GP_SCROLL_FIX: Global Play Patcher must be scrollable. A 760px floor on
         # the SCROLL AREA itself meant the viewport never got shorter than the
         # panel, so the vertical scrollbar never engaged and the pane pushed the
@@ -17837,7 +17840,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         rand_row.addWidget(self.btn_randomize_global_play, 1)
         gp_outer.addLayout(rand_row)
 
-        # Full-width apply row — labels must not clip
+        # Full-width apply row — algorithm state is always userdata.
         apply_row = QHBoxLayout()
         apply_row.setSpacing(10)
         self.btn_apply_algo_master = QPushButton("▶ Apply Algo to Master Mix")
@@ -17845,11 +17848,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_apply_algo_master.setMinimumHeight(38)
         self.btn_apply_algo_master.setMinimumWidth(150)
         self.btn_apply_algo_master.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.chk_algo_protect_userdata = QCheckBox("As Protectable Userdata")
-        self.chk_algo_protect_userdata.setChecked(True)
-        self.chk_algo_protect_userdata.setMinimumWidth(160)
-        apply_row.addWidget(self.btn_apply_algo_master, 3)
-        apply_row.addWidget(self.chk_algo_protect_userdata, 1)
+        apply_row.addWidget(self.btn_apply_algo_master, 1)
         gp_outer.addLayout(apply_row)
 
         # Script Algo — multi-line text
@@ -17936,7 +17935,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if hasattr(self, "lbl_gp_domain_hints"):
                 self.lbl_gp_domain_hints.setText("hints: " + " · ".join(hint_text[:5]))
             self.global_algo_state["apply_enabled"] = bool(self.btn_apply_algo_master.isChecked())
-            self.global_algo_state["protectable_userdata"] = bool(self.chk_algo_protect_userdata.isChecked())
+            self.global_algo_state["user_data"] = True
+            self.global_algo_state["canonical_superwrite"] = True
 
         def _apply_master_algo(checked=True):
             # PROJECT_UNDO_2026: applying/unapplying the Global Play algo is a
@@ -17945,7 +17945,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self._push_undo("Apply Global Algo " + ("ON" if checked else "OFF"))
             _sync_inline_algo()
             self.global_algo_state["apply_enabled"] = bool(checked)
-            self.global_algo_state["protectable_userdata"] = bool(self.chk_algo_protect_userdata.isChecked())
+            self.global_algo_state["user_data"] = True
+            self.global_algo_state["canonical_superwrite"] = True
             if checked:
                 for kind, enabled in (("script", self.gp_script_slider.value()>0), ("domain", self.gp_domain_slider.value()>0), ("wire", self.gp_wire_slider.value()>0)):
                     if enabled:
@@ -17954,7 +17955,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     self._on_live_source_changed()
                 except Exception:
                     pass
-                mode = "protected userdata" if self.chk_algo_protect_userdata.isChecked() else "canonical effector"
+                mode = "userdata · canonical superwrite"
                 self.btn_apply_algo_master.setText("■ Unapply Algo from Master Mix")
                 if hasattr(self, "scope_status_label"):
                     self.scope_status_label.setText(f"🌐 Algo applied to Master Mix · {mode}")
@@ -17965,7 +17966,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     self.scope_status_label.setText("🌐 Master Mix Algo unapplied · canonical state restored")
 
         self.btn_apply_algo_master.toggled.connect(_apply_master_algo)
-        self.chk_algo_protect_userdata.toggled.connect(lambda v: self.global_algo_state.__setitem__("protectable_userdata", bool(v)))
         for sl in (self.gp_mix_slider, self.gp_script_slider, self.gp_domain_slider, self.gp_wire_slider):
             sl.valueChanged.connect(_sync_inline_algo)
         self.gp_script_field.textChanged.connect(_sync_inline_algo)
@@ -18511,7 +18511,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "chk_canonical_protect": "canonicalCk",
             "chk_full_unison": "unisonCk",
             "chk_fullweight_seed": "weightCk",
-            "chk_algo_protect_userdata": "canonicalCk",
             "chk_convolve_fit": "mediaCk",
             "spin_bpm": "bpmSpin",
             "spin_base_frequency": "baseHzSpin",
@@ -19130,8 +19129,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.scope_status_label.setText(f"🌐 Randomize Global Play failed: {exc}")
             return
         # Preserve protectable flag from the checkbox if present
-        if getattr(self, "chk_algo_protect_userdata", None) is not None:
-            state["protectable_userdata"] = bool(self.chk_algo_protect_userdata.isChecked())
+        if getattr(self, None) is not None:
+            state["user_data"] = True
+            state["canonical_superwrite"] = True
         # RANDOMIZE_NO_APPLY_2026: randomization is authoring only.  apply_enabled
         # stays False; no script/domain/wire is written to the ensemble here.
         state["apply_enabled"] = False
@@ -19188,7 +19188,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._refresh_canonical_fingerprint()
         except Exception:
             pass
-        mode = "protected userdata" if self.global_algo_state.get("protectable_userdata") else "canonical effector"
+        mode = "userdata · canonical superwrite"
         if hasattr(self, "scope_status_label"):
             n_w = len(self.global_algo_state.get("wire") or [])
             self.scope_status_label.setText(
@@ -21285,7 +21285,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "btn_goava", "btn_local_randomize", "btn_local_phase_lock",
             "btn_live_dj_goava", "btn_live_dj_random", "chk_convolve_fit",
             "chk_global_playlist", "chk_canonical_protect", "btn_apply_algo_master",
-            "chk_algo_protect_userdata", "chk_fullweight_seed", "chk_full_unison",
+            "chk_fullweight_seed", "chk_full_unison",
             # LIVE_ENGINE_TOGGLES_2026: the euclidean live-lock and seeded
             # randomizer are part of the live unison engine mask, so they must
             # round-trip exactly like GOAVA/randomizer — otherwise loading a
@@ -21396,8 +21396,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
             p = gas.get("params") if isinstance(gas.get("params"), dict) else {}
             for obj, key, default in ((getattr(self,"gp_mix_slider",None),"mix",.35),(getattr(self,"gp_script_slider",None),"script_amount",1.0),(getattr(self,"gp_domain_slider",None),"domain_amount",1.0),(getattr(self,"gp_wire_slider",None),"wire_amount",1.0)):
                 if obj is not None: obj.setValue(int(float(p.get(key, default))*100))
-            if getattr(self, "chk_algo_protect_userdata", None) is not None:
-                self.chk_algo_protect_userdata.setChecked(bool(gas.get("protectable_userdata", True)))
             if getattr(self, "btn_apply_algo_master", None) is not None:
                 self.btn_apply_algo_master.setChecked(bool(gas.get("apply_enabled", False)))
         except Exception as e:
@@ -25669,6 +25667,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.composition_toggle_state = st
         return st
 
+    def _canonical_project_identity_payload(self):
+        rows = []
+        for i, e in enumerate(getattr(self, "master_playlist_data", []) or []):
+            if not isinstance(e, dict): continue
+            rows.append((i, e.get("operator"), e.get("operators_csv"),
+                         tuple(e.get("sequence_refs") or []),
+                         e.get("step_algorithm_scope"), e.get("step_algorithm"),
+                         tuple(e.get("global_algorithm_kinds") or []),
+                         bool(e.get("global_algorithm_applied"))))
+        gas = getattr(self, "global_algo_state", {}) or {}
+        return {"rows": rows, "global_algo": {
+            "apply_enabled": bool(gas.get("apply_enabled", False)),
+            "script": str(gas.get("script", "")), "domain": str(gas.get("domain", "")),
+            "wire": gas.get("wire", []), "params": gas.get("params", {}),
+        }}
+
     def _canonical_fingerprint(self):
         """Order-independent short identity of the live project.
 
@@ -25699,6 +25713,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "E" if (getattr(self, "btn_idealize_rhythm", None) and self.btn_idealize_rhythm.isChecked()) else "-",
                 "S" if (getattr(self, "btn_seeded_randomize", None) and self.btn_seeded_randomize.isChecked()) else "-",
                 f"ts{toggle_digest}",
+                # Playlist-effective algorithm/step state is composition data, not UI.
+                # Include a bounded canonical digest so apply/unapply changes project ID.
+                f"pl{hashlib.sha256(repr(self._canonical_project_identity_payload()).encode('utf-8','replace')).hexdigest()[:16]}",
                 # Instrument Count is a rendering/repartition choice, not part
                 # of the seed/composition identity.
             ]
@@ -25786,6 +25803,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # Step 3: Final reconciliation ensures perfect unison
             self._final_unison_reconciliation()
 
+            # Step 3b: Canonical unison owns the Algorithm Bay projection.
+            # User edits are always userdata; the engine may naturally superwrite
+            # this projection on every canonical transaction.
+            self._canonical_superwrite_global_algo()
+
             # Step 4: Sync UI to match the deterministic state
             self._sync_ui_to_unison_state()
 
@@ -25801,6 +25823,84 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         finally:
             self._unison_composition_guard = False
+
+    def _canonical_superwrite_global_algo(self):
+        """Superwrite the Global Play Algorithm Bay from the canonical unison state.
+
+        The Algorithm Bay is always userdata: user edits are valid input to the
+        composition and the master Apply toggle controls whether that userdata is
+        audible/applied.  Unlike the old *protectable userdata* mode, there is no
+        second ownership switch.  Whenever the canonical unison transaction
+        completes, the engine deterministically rewrites the algorithm bay from
+        the resulting canonical state, so the bay remains a unique, reproducible
+        projection of the composition and is naturally superwritable by the engine.
+        """
+        try:
+            gas = getattr(self, "global_algo_state", None)
+            if not isinstance(gas, dict):
+                gas = {}
+                self.global_algo_state = gas
+            seed = _safe_int_seed(self.get_numeric_seed())
+            active = sorted(self._get_active_engine_set())
+            pl = getattr(self, "master_playlist_data", None) or []
+            n = len(pl)
+            # Stable composition signature intentionally excludes the existing
+            # Global Algorithm Bay so a user edit cannot recursively feed itself.
+            rows_sig = []
+            for i, e in enumerate(pl[:64]):
+                if not isinstance(e, dict):
+                    continue
+                rows_sig.append((i, str(e.get("operator", "")),
+                                 round(float(e.get("time_offset", 0.0) or 0.0), 6),
+                                 round(float(e.get("velocity", 0.0) or 0.0), 6)))
+            sig = _stable_hash(repr((seed, tuple(active), n, tuple(rows_sig)))) & 0xFFFFFFFF
+            phase = (sig % 1000003) / 1000003.0
+            engine_expr = " + ".join(active) if active else "identity"
+            gas["script"] = (
+                "# Canonical Unison Superwrite\n"
+                f"# engines={engine_expr}\n"
+                f"# composition={sig:08x}\n"
+                "def global_script(t, name, i):\n"
+                f"    return np.sin((t + {phase:.9f}) * MEUM) * np.cos((i + 1) * {0.125 + 0.5*phase:.9f})\n"
+            )
+            gas["domain"] = (
+                'equation = "sin((t + %.9f) * MEUM) + cos(x * %.9f)"\n'
+                % (phase, 0.25 + 0.75 * phase)
+            )
+            # One deterministic canonical wire is enough to make the bay a
+            # concrete writable projection without duplicating every engine edge.
+            names = list(getattr(self, "instrument_names_48", []) or [])
+            if names:
+                a = int(sig % len(names)); b = int((sig // max(1, len(names))) % len(names))
+                if a == b and len(names) > 1:
+                    b = (b + 1) % len(names)
+                gas["wire"] = [{
+                    "source": names[a], "target": names[b],
+                    "weight": round(0.25 + 0.65 * phase, 6),
+                    "detector": "harmonic",
+                    "question": "How should canonical unison redistribute harmonic detail?",
+                    "subject": "canonical_unison",
+                    "origin": "canonical_unison",
+                    "user_defined": True,
+                    "user_data": True,
+                    "canonical_superwrite": True,
+                    "apply_enabled": bool(gas.get("apply_enabled", False)),
+                }]
+            gas.setdefault("params", {})
+            gas["params"]["mix"] = round(0.35 + 0.65 * phase, 6)
+            gas["params"]["script_amount"] = 1.0
+            gas["params"]["domain_amount"] = 1.0
+            gas["params"]["wire_amount"] = 1.0
+            gas["user_data"] = True
+            gas["canonical_superwrite"] = True
+            gas.pop("protectable_userdata", None)
+            # Keep the visible fields synchronized if the main bay is open.
+            if getattr(self, "gp_script_field", None) is not None:
+                self.gp_script_field.blockSignals(True); self.gp_script_field.setPlainText(gas["script"]); self.gp_script_field.blockSignals(False)
+            if getattr(self, "gp_domain_field", None) is not None:
+                self.gp_domain_field.blockSignals(True); self.gp_domain_field.setText(str(gas["domain"]).replace("\n", " ")); self.gp_domain_field.blockSignals(False)
+        except Exception as exc:
+            print(f"[Canonical] Global Algorithm superwrite skipped: {exc}")
 
     def _get_active_engine_set(self):
         """Get set of currently active engines in deterministic order"""
@@ -27028,121 +27128,147 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
 
     def _on_nt_lattice_apply(self):
-        """Toggle-apply/Unapply the number-theoretic step mask.
+        """Apply the ℤ-Lattice step algorithm at the selected global/local scope.
 
-        First click: snapshot the current instrument memory, write the mask.
-        Second click (or when a snapshot exists): restore exactly the steps /
-        pitches / amplitudes / pattern_length that existed before the apply.
+        Global mode walks every playlist row and applies the mask to each
+        sequence bank referenced by that row. Local mode touches only the
+        currently selected instrument/pattern. Snapshots are keyed by the same
+        scope so Unapply reverses exactly the affected material.
         """
         import copy as _c
         mode_map = {
-            "Prime steps": "primes",
-            "Square steps": "quadratic",
-            "Coprime steps": "totient",
-            "Square-free steps": "mobius",
-            "Fraction steps": "farey",
-            "Tree-ratio steps": "stern",
-            # legacy labels
-            "Primes": "primes",
-            "Quadratic residues": "quadratic",
-            "Totient units": "totient",
-            "Möbius support": "mobius",
-            "Farey": "farey",
-            "Stern–Brocot": "stern",
+            "Prime steps": "primes", "Square steps": "quadratic", "Coprime steps": "totient",
+            "Square-free steps": "mobius", "Fraction steps": "farey", "Tree-ratio steps": "stern",
+            "Primes": "primes", "Quadratic residues": "quadratic", "Totient units": "totient",
+            "Möbius support": "mobius", "Farey": "farey", "Stern–Brocot": "stern",
         }
-        mode_ui = self.combo_nt_mode.currentText() if hasattr(self, "combo_nt_mode") else "Primes"
-        mode = mode_map.get(mode_ui, "primes")
+        mode_ui = self.combo_nt_mode.currentText() if hasattr(self, "combo_nt_mode") else "Prime steps"
+        mode_alg = mode_map.get(mode_ui, "primes")
         mod = int(self.spin_nt_modulus.value()) if hasattr(self, "spin_nt_modulus") else 12
         depth = int(self.spin_nt_depth.value()) if hasattr(self, "spin_nt_depth") else 5
-        name = None
-        if hasattr(self, "instrument_selector_dropdown"):
-            name = self.instrument_selector_dropdown.currentText()
-        if not name:
-            names = list(getattr(self, "instrument_names_48", []) or [])
-            name = names[0] if names else None
-        if not name:
-            return
-        mem = (getattr(self, "instrument_sequencer_memory", {}) or {}).get(name)
-        if not isinstance(mem, dict):
-            mem = {"steps": [False] * 16, "amplitudes": [1.0] * 16, "pitches": [1.0] * 16}
-            self.instrument_sequencer_memory[name] = mem
+        is_local = bool(hasattr(self, "mode_combo") and "Single Instrument" in self.mode_combo.currentText())
+        self._nt_lattice_scope = "local" if is_local else "global"
 
-        # UN-APPLY path: a snapshot exists for this instrument → restore it.
-        prior = self._nt_lattice_snapshot.get(name)
-        if prior is not None:
-            if not getattr(self, "_undo_in_flight", False):
-                self._push_undo("Unapply step algorithm")
-            for k, v in prior.items():
-                mem[k] = _c.deepcopy(v)
-            self._nt_lattice_snapshot.pop(name, None)
-            if hasattr(self, "_refresh_step_ui"):
-                try:
-                    self._refresh_step_ui()
-                except Exception:
-                    pass
-            if hasattr(self, "scope_status_label"):
-                self.scope_status_label.setText(
-                    f"ℤ-Lattice unapplied → {name}: prior steps/pitches/amplitudes restored"
-                )
-            try:
-                self._on_live_source_changed()
-            except Exception:
-                pass
-            self._sync_nt_lattice_button_state()
-            return
+        def apply_mem(mem, key):
+            if not isinstance(mem, dict):
+                return
+            prior = self._nt_lattice_snapshot.get(key)
+            if prior is not None:
+                return
+            length = max(1, min(128, int(mem.get("pattern_length", len(mem.get("steps") or []) or 16))))
+            steps = list(mem.get("steps") or [])
+            amps = list(mem.get("amplitudes") or [])
+            pitches = list(mem.get("pitches") or [])
+            offsets = list(mem.get("offsets") or [])
+            probabilities = list(mem.get("probabilities") or [])
+            gates = list(mem.get("gates") or [])
+            while len(steps) < length: steps.append(False)
+            while len(amps) < length: amps.append(1.0)
+            while len(pitches) < length: pitches.append(1.0)
+            while len(offsets) < length: offsets.append(0.0)
+            while len(probabilities) < length: probabilities.append(100)
+            while len(gates) < length: gates.append(True)
+            self._nt_lattice_snapshot[key] = {
+                "steps": _c.deepcopy(steps[:length]), "amplitudes": _c.deepcopy(amps[:length]),
+                "pitches": _c.deepcopy(pitches[:length]), "offsets": _c.deepcopy(offsets[:length]),
+                "probabilities": _c.deepcopy(probabilities[:length]), "gates": _c.deepcopy(gates[:length]),
+                "pattern_length": length,
+            }
+            mask = _nt_step_mask(length, mode_alg, mod, depth)
+            for i in range(length):
+                steps[i] = bool(mask[i])
+                if steps[i]:
+                    residue = i % mod
+                    scramble = (residue * 7 + i * 11) % max(1, mod)
+                    pitches[i] = float(np.clip(_seed_to_pitch_ratio(scramble + mod * 0.01, residue, i), 1.0/32.0, 32.0))
+                    amps[i] = float(0.55 + 0.45 * abs(_nt_mobius(residue + 1)))
+            mem.update({"steps": steps[:length], "amplitudes": amps[:length], "pitches": pitches[:length],
+                        "offsets": offsets[:length], "probabilities": probabilities[:length],
+                        "gates": gates[:length], "pattern_length": length})
 
-        if not getattr(self, "_undo_in_flight", False):
-            self._push_undo("Apply step algorithm")
-        # APPLY path: snapshot the untouched instrument memory (all keys).
-        self._nt_lattice_snapshot[name] = {
-            "steps": _c.deepcopy(list(mem.get("steps") or [])),
-            "amplitudes": _c.deepcopy(list(mem.get("amplitudes") or [])),
-            "pitches": _c.deepcopy(list(mem.get("pitches") or [])),
-            "offsets": _c.deepcopy(list(mem.get("offsets") or [])),
-            "pattern_length": int(mem.get("pattern_length", len(mem.get("steps") or []) or 16)),
-            "probabilities": _c.deepcopy(list(mem.get("probabilities") or [])),
-            "gates": _c.deepcopy(list(mem.get("gates") or [])),
-        }
-        length = int(mem.get("pattern_length", len(mem.get("steps") or []) or 16))
-        length = max(1, min(128, length))
-        mask = _nt_step_mask(length, mode, mod, depth)
-        steps = list(mem.get("steps") or [False] * length)
-        amps = list(mem.get("amplitudes") or [1.0] * length)
-        pitches = list(mem.get("pitches") or [1.0] * length)
-        while len(steps) < length:
-            steps.append(False)
-            amps.append(1.0)
-            pitches.append(1.0)
-        for i in range(length):
-            steps[i] = bool(mask[i])
-            if steps[i]:
-                # Full-range pitch from residue scramble + step hash
-                residue = (i % mod)
-                scramble = (residue * 7 + (i * 11)) % max(1, mod)
-                pitches[i] = float(np.clip(
-                    _seed_to_pitch_ratio(scramble + mod * 0.01, residue, i),
-                    1.0/32.0, 32.0
-                ))
-                amps[i] = float(0.55 + 0.45 * abs(_nt_mobius((residue) + 1)) / 1.0)
-        mem["steps"] = steps[:length]
-        mem["amplitudes"] = amps[:length]
-        mem["pitches"] = pitches[:length]
-        mem["pattern_length"] = length
-        # Optional: mark as user-visible pattern
-        if hasattr(self, "_refresh_step_ui"):
-            try:
-                self._refresh_step_ui()
-            except Exception:
-                pass
-        if hasattr(self, "scope_status_label"):
-            on = sum(1 for x in steps[:length] if x)
-            self.scope_status_label.setText(
-                f"ℤ-Lattice {mode_ui} mod {mod} → {name}: {on}/{length} steps (⌫ to unapply)"
-            )
+        if is_local:
+            name = self.instrument_selector_dropdown.currentText() if hasattr(self, "instrument_selector_dropdown") else None
+            if not name:
+                names = list(getattr(self, "instrument_names_48", []) or [])
+                name = names[0] if names else None
+            if not name:
+                return
+            bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(name, {})
+            sid = int((getattr(self, "instrument_selected_sequence", {}) or {}).get(name, 1))
+            mem = bank.get(sid) if isinstance(bank, dict) else None
+            if not isinstance(mem, dict):
+                mem = (getattr(self, "instrument_sequencer_memory", {}) or {}).get(name)
+            key = f"local:{name}"
+            if self._nt_lattice_snapshot.get(key) is not None:
+                if not getattr(self, "_undo_in_flight", False): self._push_undo("Unapply step algorithm")
+                prior = self._nt_lattice_snapshot.pop(key)
+                target = mem if isinstance(mem, dict) else (getattr(self, "instrument_sequencer_memory", {}) or {}).get(name)
+                if isinstance(target, dict): target.update(_c.deepcopy(prior))
+            else:
+                if not getattr(self, "_undo_in_flight", False): self._push_undo("Apply step algorithm")
+                if isinstance(mem, dict): apply_mem(mem, key)
+                elif isinstance((getattr(self, "instrument_sequencer_memory", {}) or {}).get(name), dict):
+                    apply_mem(self.instrument_sequencer_memory[name], key)
+        else:
+            global_keys = [k for k in list(self._nt_lattice_snapshot) if str(k).startswith("global:")]
+            if global_keys:
+                if not getattr(self, "_undo_in_flight", False): self._push_undo("Unapply step algorithm")
+                for key in global_keys:
+                    try:
+                        _, op, sid = str(key).split(":", 2)
+                        mem = (getattr(self, "instrument_sequence_banks", {}) or {}).get(op, {}).get(int(sid))
+                        if isinstance(mem, dict): mem.update(_c.deepcopy(self._nt_lattice_snapshot[key]))
+                    except Exception: pass
+                    self._nt_lattice_snapshot.pop(key, None)
+            else:
+                if not getattr(self, "_undo_in_flight", False): self._push_undo("Apply step algorithm")
+                touched = 0
+                seen = set()
+                for r, entry in enumerate(getattr(self, "master_playlist_data", []) or []):
+                    if not isinstance(entry, dict): continue
+                    refs = entry.get("sequence_refs") or []
+                    if isinstance(refs, str): refs = [x.strip() for x in refs.split(",") if x.strip()]
+                    if not refs:
+                        op = str(entry.get("operator") or "").strip()
+                        sid = int((getattr(self, "instrument_selected_sequence", {}) or {}).get(op, 1)) if op else 1
+                        refs = [f"{op}#S{sid}"] if op else []
+                    row_applied = []
+                    for ref in refs:
+                        txt = str(ref).strip()
+                        if "#S" in txt: op, sid_txt = txt.rsplit("#S", 1)
+                        elif ":" in txt: op, sid_txt = txt.rsplit(":", 1)
+                        else: continue
+                        op = op.strip()
+                        try: sid = int(sid_txt)
+                        except Exception: continue
+                        key = f"global:{op}:{sid}"
+                        if key in seen or key in self._nt_lattice_snapshot: continue
+                        mem = (getattr(self, "instrument_sequence_banks", {}) or {}).get(op, {}).get(sid)
+                        if isinstance(mem, dict):
+                            apply_mem(mem, key); seen.add(key); row_applied.append(key); touched += 1
+                    if row_applied:
+                        entry["step_algorithm_scope"] = "global"
+                        entry["step_algorithm"] = mode_ui
+                        entry["step_algorithm_refs"] = row_applied
+                if touched == 0:
+                    # A global sequence should still reach every row; fall back to
+                    # each row's operator memory when no explicit #S reference exists.
+                    for r, entry in enumerate(getattr(self, "master_playlist_data", []) or []):
+                        if not isinstance(entry, dict): continue
+                        op = str(entry.get("operator") or "").strip()
+                        if not op: continue
+                        mem = (getattr(self, "instrument_sequencer_memory", {}) or {}).get(op)
+                        key = f"global:{op}:1"
+                        if isinstance(mem, dict) and key not in self._nt_lattice_snapshot:
+                            apply_mem(mem, key); entry["step_algorithm_scope"] = "global"; entry["step_algorithm"] = mode_ui
         try:
-            self._on_live_source_changed()
-        except Exception:
-            pass
+            self._refresh_step_ui()
+        except Exception: pass
+        try:
+            self._sync_playlist_paint_table_from_memory()
+        except Exception: pass
+        try: self._on_live_source_changed()
+        except Exception: pass
         self._sync_nt_lattice_button_state()
 
     def _on_nt_to_seed(self):
@@ -28282,6 +28408,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 notes = self.qe_notes.toPlainText()[:200]
         except Exception:
             pass
+        # Algorithm application is composition state, not merely UI state.
+        # Export both the effective per-row step algorithms and their canonical
+        # digest so video/audio/game consumers see the same applied composition.
+        step_rows = []
+        for _r, _e in enumerate(getattr(self, "master_playlist_data", []) or []):
+            if not isinstance(_e, dict):
+                continue
+            step_rows.append({
+                "row": int(_r),
+                "scope": str(_e.get("step_algorithm_scope", "")),
+                "algorithm": str(_e.get("step_algorithm", "")),
+                "refs": list(_e.get("step_algorithm_refs") or []),
+            })
+        try:
+            step_algo_fingerprint = hashlib.sha256(
+                json.dumps(step_rows, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest()[:16]
+        except Exception:
+            step_algo_fingerprint = "0" * 16
         return {
             "bpm": float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0,
             "seq_length": int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else 16,
@@ -28293,6 +28438,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "goava_group_phase": bool(getattr(self, "goava_active", False)),
             "global_algo": gas,
             "global_algo_fingerprint": algo_fp,
+            "step_algorithms": step_rows,
+            "step_algorithm_fingerprint": step_algo_fingerprint,
             "live_dj_goava": bool(getattr(self, "live_dj_goava", False)),
             "live_dj_random": bool(getattr(self, "live_dj_random", False)),
             "project_notes": notes,
@@ -28324,6 +28471,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             live_parametrics=meta.get("live_parametrics"),
             global_algo_fingerprint=meta.get("global_algo_fingerprint"),
             global_algo=meta.get("global_algo"),
+            step_algorithm_fingerprint=meta.get("step_algorithm_fingerprint"),
+            step_algorithms=meta.get("step_algorithms"),
             live_dj_goava=meta.get("live_dj_goava"),
             live_dj_random=meta.get("live_dj_random"),
         ), meta
@@ -28703,7 +28852,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "wire": [],
                 "params": {"mix": 0.35, "enable_script": True, "enable_domain": True, "enable_wire": True, "script_amount": 1.0, "domain_amount": 1.0, "wire_amount": 1.0},
             "apply_enabled": False,
-            "protectable_userdata": True,
+            "user_data": True,
+            "canonical_superwrite": True,
             }
 
         window = QWidget(None, Qt.WindowType.Window)
@@ -28829,8 +28979,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     "question": question_edit.text(),
                     "subject": subject_edit.text(),
                     "origin": "global_player",
-                    "user_defined": bool(gas.get("protectable_userdata", True)),
-                    "protectable_userdata": bool(gas.get("protectable_userdata", True)),
+                    "user_defined": True,
+                    "user_data": True,
                     "apply_enabled": bool(gas.get("apply_enabled", False)),
                 })
                 _refresh_log()
@@ -28934,6 +29084,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                                   if not (isinstance(d, dict) and d.get("source") == "global_player")]
             self.patch_connections = [c for c in (getattr(self, "patch_connections", []) or [])
                                       if not (isinstance(c, dict) and c.get("origin") == "global_player")]
+            for entry in (getattr(self, "master_playlist_data", []) or []):
+                if isinstance(entry, dict):
+                    entry.pop("global_algorithm_scope", None)
+                    entry.pop("global_algorithm_applied", None)
+                    entry.pop("global_algorithm_kinds", None)
             if hasattr(self, "_on_live_source_changed"):
                 self._on_live_source_changed()
         except Exception as e:
@@ -28957,6 +29112,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
         mix = max(0.0, min(1.0, mix * max(0.0, min(1.0, amount))))
         n_touched = 0
 
+        # Playlist rows are the visible global composition surface. Mark every
+        # global row so Save/Load/autosave and the canonical fingerprint retain
+        # exactly which global algorithm overlays were applied.
+        for _row in (getattr(self, "master_playlist_data", []) or []):
+            if isinstance(_row, dict):
+                _row["global_algorithm_scope"] = "global"
+                _row["global_algorithm_applied"] = True
+                _kinds = list(_row.get("global_algorithm_kinds") or [])
+                if which not in _kinds: _kinds.append(which)
+                _row["global_algorithm_kinds"] = _kinds
+
         if which == "script":
             body = str(gas.get("script") or "")
             if not hasattr(self, "instrument_scripts") or self.instrument_scripts is None:
@@ -28969,7 +29135,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     continue
                 st["global_script_algo"] = body
                 st["global_algo_mix"] = mix
-                st["global_algo_user_data"] = bool(gas.get("protectable_userdata", True))
+                st["global_algo_user_data"] = True
                 st["global_algo_apply_enabled"] = bool(gas.get("apply_enabled", False))
                 n_touched += 1
 
@@ -28993,7 +29159,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         "weight": mix,
                         "user_defined": False,
                         "source": "global_player",
-                        "protectable_userdata": bool(gas.get("protectable_userdata", True)),
+                        "user_data": True,
                         "apply_enabled": bool(gas.get("apply_enabled", False)),
                     })
                     n_touched += 1
@@ -29016,8 +29182,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     "target": w.get("target"),
                     "weight": float(w.get("weight", 0.5)) * mix,
                     "origin": "global_player",
-                    "user_defined": bool(gas.get("protectable_userdata", True)),
-                    "protectable_userdata": bool(gas.get("protectable_userdata", True)),
+                    "user_defined": True,
+                    "user_data": True,
                     "apply_enabled": bool(gas.get("apply_enabled", False)),
                 })
                 n_touched += 1
@@ -29652,18 +29818,23 @@ class MathematiciansGrooveboxApp(QMainWindow):
         return True
 
     def _sync_nt_lattice_button_state(self):
-        """Update the ℤ-Lattice button text based on whether an unapply snap exists."""
+        """Reflect the apply/unapply state for the current global/local scope."""
         try:
-            name = None
-            if hasattr(self, "instrument_selector_dropdown"):
-                name = self.instrument_selector_dropdown.currentText()
-            has_snap = bool(self._nt_lattice_snapshot.get(name))
+            mode = str(self.mode_combo.currentText()) if hasattr(self, "mode_combo") else "Global"
+            is_local = "Single Instrument" in mode
+            self._nt_lattice_scope = "local" if is_local else "global"
+            name = self.instrument_selector_dropdown.currentText() if hasattr(self, "instrument_selector_dropdown") else None
+            if is_local:
+                has_snap = bool(self._nt_lattice_snapshot.get(f"local:{name}"))
+            else:
+                has_snap = any(str(k).startswith("global:") for k in self._nt_lattice_snapshot)
             btn = getattr(self, "btn_nt_apply", None)
             if btn is not None:
                 btn.setText("⌫ Unapply step algorithm" if has_snap else "Apply step algorithm")
                 btn.setChecked(has_snap)
         except Exception:
             pass
+
 # ============================================================================
 # STARTUP_DIAGNOSTIC — protects against the exact QSizePolicy crash reported
 # by the user. Keep this import at module scope; do not move it into the UI.

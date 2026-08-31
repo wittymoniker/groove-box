@@ -503,6 +503,8 @@ def classify_from_composition(
     live_parametrics: Optional[str] = None,
     global_algo_fingerprint: Optional[str] = None,
     global_algo: Optional[Dict[str, Any]] = None,
+    step_algorithm_fingerprint: Optional[str] = None,
+    step_algorithms: Optional[List[Dict[str, Any]]] = None,
     live_dj_goava: bool = False,
     live_dj_random: bool = False,
 ) -> GameIdentity:
@@ -530,6 +532,7 @@ def classify_from_composition(
         f"{s}|bpm={bpm}|L={seq_length}|R={playlist_rows}|N={n_instruments}"
         f"|G={int(goava_active)}|DJG={int(live_dj_goava)}|DJR={int(live_dj_random)}"
         f"|GA={global_algo_fingerprint or '0'}"
+        f"|SA={step_algorithm_fingerprint or '0'}"
     )
     if live_parametrics:
         fp_src += f"|lp={str(live_parametrics)[:120]}"
@@ -584,6 +587,10 @@ def classify_from_composition(
         hooks.append("hook_live_dj_parametric")
     if global_algo_fingerprint and global_algo_fingerprint != "0" * 16:
         hooks.append(f"hook_global_algo_{global_algo_fingerprint[:8]}")
+    if step_algorithm_fingerprint and step_algorithm_fingerprint != "0" * 16:
+        hooks.append(f"hook_step_algo_{step_algorithm_fingerprint[:8]}")
+    if step_algorithms:
+        hooks.append(f"hook_step_rows_{len(step_algorithms)}")
     if isinstance(global_algo, dict):
         p = global_algo.get("params") if isinstance(global_algo.get("params"), dict) else {}
         if p.get("enable_script"):
@@ -694,6 +701,7 @@ OP_THEORY_ENABLED = False
 BPM = __BPM__
 SEQ = __SEQ__
 IDENTITY = json.loads(__IDENTITY_JSON__)
+COMPOSITION_META = json.loads(__COMPOSITION_META_JSON__)
 
 # THREE-PATHWAY_CONTRACT_2026: audio / visual / game are always present at
 # numerically expressible quantities, plus the fixed control contract, the
@@ -5016,6 +5024,7 @@ def generate_game_script(identity: GameIdentity, composition_meta: Optional[Dict
     script = script.replace("__BPM__", repr(bpm))
     script = script.replace("__SEQ__", repr(seq))
     script = script.replace("__IDENTITY_JSON__", repr(id_json))
+    script = script.replace("__COMPOSITION_META_JSON__", repr(json.dumps(meta, sort_keys=True, default=str)))
     script = script.replace("__TRIAD_JSON__", repr(json.dumps(triad)))
     script = script.replace("__CONTROLS_JSON__", repr(json.dumps(controls)))
     script = script.replace("__LEXICON_JSON__", repr(json.dumps(lexicon)))
