@@ -125,14 +125,14 @@ class LiveDJEffects:
         t = (float(start_sample) + np.arange(n, dtype=np.float32)) / float(self.sample_rate)
         d = self.pair
         raw = float(goava_scalar)
-        mod_hz = 0.25 + 0.35 * (abs(raw) % 11.0) + (float(bpm) / 60.0) * (0.5 + d.spread)
+        mod_hz = abs(raw) * (float(bpm) / 60.0) * (0.5 + d.spread)
         mod = np.sin(math.tau * mod_hz * t + d.phase).astype(np.float32)
         drive = 1.0 + 2.8 * (0.25 + 0.75 * d.ratio) * amt
         # Dual-mode drive, no tanh saturation.
         wet = (x * drive) * (0.78 + 0.22 * mod)
         # Preserve polarity while giving the GOAVA scalar a musically obvious sideband.
         wet += x * (0.16 * amt) * mod
-        return self._mix(x, wet, min(0.75, 0.55 * amt))
+        return self._mix(x, wet, 0.55 * amt)
 
     def random_parametric(self, x: np.ndarray, *, start_sample: int, bpm: float = 120.0, amount: float | None = None) -> np.ndarray:
         """Seeded, continuously moving DJ macro; random-looking but repeatable."""
@@ -154,7 +154,7 @@ class LiveDJEffects:
         wet = shaped * trem
         # A tiny phase-dependent bipolar component makes adjacent pair IDs audible.
         wet += x * (0.035 * amt) * np.sin(lfo1 + lfo2 + d.phase)
-        return self._mix(x, wet, min(0.78, 0.68 * amt))
+        return self._mix(x, wet, 0.68 * amt)
 
     def process(self, x: np.ndarray, *, start_sample: int, goava_scalar: float = 0.0, bpm: float = 120.0) -> np.ndarray:
         y = np.asarray(x, dtype=np.float32)

@@ -106,6 +106,98 @@ def _canon(obj):
     if isinstance(obj,float): return round(obj,12)
     return obj
 
+def instruments_handler(index: int, count: int, seed=0, sequential_nums=()):
+    """Pure numeric instrument→visual translator.
+
+    The instrument count changes *sampling density*, not identity placement.
+    Slots are fixed on the canonical 64-point lattice; adding/removing an
+    instrument therefore adds/removes samples instead of moving existing ones.
+    ``compensation`` is inverse-count weighting: fewer instruments get more
+    contribution, more instruments get less.  No audio, harmonic, gameplay,
+    wall-clock, mutable-RNG, or UI state participates in this mapping.
+    """
+    n = max(1, min(64, int(count)))
+    i = max(0, min(n - 1, int(index)))
+    master_slot = i  # fixed identity: existing slots never move when N changes
+    identity = (master_slot + 0.5) / 64.0
+    seq = []
+    for value in sequential_nums or ():
+        try:
+            v = float(value)
+            if math.isfinite(v):
+                seq.append(v)
+        except Exception:
+            continue
+    units = []
+    if seq:
+        lo, hi = min(seq), max(seq)
+        units = [0.5 if hi == lo else (v - lo) / (hi - lo) for v in seq]
+    numeric_unit = units[i % len(units)] if units else _u(seed, f"instrument_numeric:{master_slot}")
+    # Inverse-count compensation preserves the aggregate scale while N changes.
+    compensation = 1.0 / float(n)
+    # Continuous sample coordinate is fixed to the master lattice; N is only
+    # allowed to alter weight, never phase, hue, geometry, or identity.
+    phase = 2.0 * math.pi * identity + 2.0 * math.pi * numeric_unit
+    return {
+        "index": i,
+        "count": n,
+        "master_slot": master_slot,
+        "identity": identity,
+        "numeric_unit": numeric_unit,
+        "compensation": compensation,
+        "phase": phase,
+    }
+
+
+def instrument_translation(index: int, count: int, seed=0, sequential_nums=()):
+    """Named alias for the canonical instrument→visual translation contract."""
+    return instruments_handler(index, count, seed=seed, sequential_nums=sequential_nums)
+
+
+def instrument_population(count: int, seed=0, sequential_nums=()):
+    """Return a complete deterministic population with no external state."""
+    n = max(1, min(64, int(count)))
+    return [instrument_translation(i, n, seed, sequential_nums) for i in range(n)]
+
+
+def quantization_error(unit, pixels):
+    """Absolute normalized error introduced by mapping a unit interval to pixels."""
+    u = float(unit)
+    p = max(1, int(pixels))
+    q = round(u * p) / float(p)
+    return abs(q - u)
+
+
+def pure_visual_object(index: int, count: int, seed=0, sequential_nums=()):
+    """A harmonic/audio/gameplay-free visual object projection.
+
+    This is deliberately boring: identity, normalized numeric position, phase,
+    and inverse-count compensation are the only ingredients. It is the audit
+    reference for the richer renderer, not an effects generator.
+    """
+    m = instrument_translation(index, count, seed, sequential_nums)
+    return {
+        "master_slot": m["master_slot"],
+        "identity": m["identity"],
+        "numeric_unit": m["numeric_unit"],
+        "phase_unit": (m["phase"] / math.tau) % 1.0,
+        "compensation": m["compensation"],
+    }
+
+
+def pure_visual_population(count: int, seed=0, sequential_nums=()):
+    return [pure_visual_object(i, count, seed, sequential_nums)
+            for i in range(max(1, min(64, int(count))))]
+
+
+def golden_composition_fingerprint(count: int, seed=0, sequential_nums=()):
+    """Stable structural render hash used by the regression suite."""
+    return composition_fingerprint(
+        pure_visual_population(count, seed, sequential_nums), seed=seed,
+        abstraction="pure-instrument-visual-v1"
+    )
+
+
 def composition_fingerprint(objects: Iterable[Mapping], seed=0, abstraction="structural"):
     rows=[]
     for o in objects or []: rows.append(_canon(dict(o)))

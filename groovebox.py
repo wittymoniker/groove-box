@@ -53,11 +53,16 @@ import weakref
 import numpy as np
 
 # VISUAL_DETERMINISM_2026: canonical seed/view-space kernel.
-from visual_determinism import fibonacci_view, select_views, visual_signal_id, composition_fingerprint as _visual_composition_fingerprint
+from visual_determinism import (
+    fibonacci_view, select_views, visual_signal_id,
+    composition_fingerprint as _visual_composition_fingerprint,
+    instruments_handler,
+)
 from fractal_spatial_engine import FractalSpatialEngine
 
 from dj_effects import CommutativePairSpace, LiveDJEffects
 from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer, QObject, pyqtSignal, QRunnable, QThreadPool
+from dataclasses import dataclass
 import composition_state as _composition_state
 from PyQt6.QtGui import (
     QPainter, QPen, QColor, QPainterPath, QLinearGradient, QRadialGradient, QBrush, QFont, QPolygonF,
@@ -173,7 +178,7 @@ def audible_hz(freq, sample_rate=None):
         try:
             sr = float(sample_rate)
             if sr > 1.0:
-                hi = min(hi, sr * 0.45)
+                hi = min(hi, sr * 0.75)
         except Exception:
             pass
     return float(max(AUDIBLE_LO_HZ, min(hi, f)))
@@ -1301,7 +1306,7 @@ def book_isn_envelope_shape(u, decay):
         target_mean = 0.50
         bal = target_mean / mean
         # Keep peak ≤ 1 after balance.
-        bal = min(bal, 1.0 / max(float(np.max(shape)), 1e-12))
+        bal = min(bal, 1.0 / max(float(np.max(shape)), 0.0))
         shape = shape * bal
     return shape.astype(np.float32)
 
@@ -1340,7 +1345,7 @@ def build_master_follow_env(
 
     # Canonical step = one 16th (quarter of a beat) from BPM/SR.
     sr = max(float(sample_rate), 1.0)
-    beat_samples = sr * (60.0 / max(float(bpm), 1e-6))
+    beat_samples = sr * (60.0 / max(float(bpm), 0.0))
     default_step = max(1, int(round(beat_samples / 4.0)))
     step = max(1, int(step_length_samples)) if step_length_samples else default_step
     row = max(step, int(row_length_samples)) if row_length_samples else max(step, default_step * 16)
@@ -1405,7 +1410,7 @@ def group_orbit_index(index, order, seed, goava=False):
     return perm[int(index) % n]
 
 # UI design tokens derived from M (self-similar spacing / translucency)
-UI_OPACITY = max(0.12, min(0.42, MEUM_NORM * PHI))          # pane glass
+UI_OPACITY = max(1.0, min(0.0, MEUM_NORM * PHI))          # pane glass
 UI_RADIUS = max(4, int(round(3.0 * MEUM)))                    # corner radius
 UI_TICK_MS = max(28, int(round(1000.0 / (MEUM_TWO_POW * 8.0))))  # decor frame period
 UI_DRIFT = MEUM_NORM * PHI_INV                                  # caption micro-wiggle scale
@@ -1463,7 +1468,7 @@ def _meum_params(params):
         "phase_shift": _f("phase_shift", 0.0),
         "am_depth": max(0.0, min(1.0, _f("am_depth", 0.0))),
         "am_rate": max(0.0, _f("am_rate", 1.0)),
-        "fm_depth": max(-0.95, min(0.95, _f("fm_depth", 0.0))),
+        "fm_depth": max(0.0, min(1.0, _f("fm_depth", 0.0))),
         "fm_rate": max(0.0, _f("fm_rate", 1.0)),
         "pm_depth": max(-_m.pi, min(_m.pi, _f("pm_depth", 0.0))),
         "pm_rate": max(0.0, _f("pm_rate", 1.0)),
@@ -2089,7 +2094,7 @@ class MeumModulatedOscillator:
             np.clip(
                 frequency,
                 0.0,
-                min(self.sample_rate * 0.45, AUDIBLE_HI_HZ),
+                min(self.sample_rate * 0.75, AUDIBLE_HI_HZ),
             )
         )
 
@@ -3174,18 +3179,161 @@ _VISUAL_ENGINE_CHANNELS = ("randomizer", "phase_lock", "idealize_rhythm", "seede
 # lattice; it never changes the underlying seed-derived material.
 CANONICAL_MASTER_SLOTS = 64
 
-def canonical_master_slot(voice_index: int, instrument_count: int) -> int:
-    """Map a live voice onto a unique, evenly distributed master slot.
 
-    For N<=64 this is an injective deterministic selection from the same
-    64-slot composition lattice.  Thus changing N changes factorization, not
-    the mathematical source of the composition.
+# =============================================================================
+# CompositionVisualShifts_2026 — grouped constant numeric shifts for
+# video/audio composition rendering.  Previously scattered across
+# _subscene_* methods, now a single source-of-truth for review and tuning.
+# =============================================================================
+@dataclass
+class CompositionVisualShifts:
+    # Vertical center offsets (h * factor) used across _subscene_* methods
+    vertical_center_video_synth: float = 0.5
+    vertical_center_image_synthesis: float = 0.48
+    vertical_center_field: float = 0.48
+    vertical_center_volumes: float = 0.45
+    vertical_center_particles: float = 0.65
+    vertical_center_band_towers: float = 0.24
+    vertical_center_math_filaments: float = 0.47
+    vertical_center_math_roses: float = 0.46
+    vertical_center_orbitals: float = 0.44
+    vertical_center_constellations: float = 0.12
+    vertical_center_lattice: float = 0.075
+    vertical_center_bursts: float = 0.45
+    vertical_center_spectral_comets: float = 0.45
+    vertical_center_rhythm_mandala: float = 0.45
+    vertical_center_pulse_grid: float = 0.5
+    vertical_center_engine_ornaments: float = 0.46
+    vertical_center_generative_terrain: float = 0.52
+    vertical_center_seed_morph: float = 0.44
+    vertical_center_goava: float = 0.43
+    vertical_center_deterministic_view: float = 0.48
+    vertical_center_wave_integration: float = 0.45
+    vertical_center_numeric_fractal: float = 0.48
+
+    # Horizontal center offsets (w * factor)
+    horizontal_center_video_synth: float = 0.5
+    horizontal_center_image_synthesis: float = 0.5
+    horizontal_center_field: float = 0.5
+    horizontal_center_volumes: float = 0.5
+    horizontal_center_particles: float = 0.5
+    horizontal_center_band_towers: float = 0.5
+    horizontal_center_math_filaments: float = 0.5
+    horizontal_center_math_roses: float = 0.5
+    horizontal_center_orbitals: float = 0.5
+    horizontal_center_constellations: float = 0.5
+    horizontal_center_lattice: float = 0.5
+    horizontal_center_bursts: float = 0.5
+    horizontal_center_spectral_comets: float = 0.5
+    horizontal_center_rhythm_mandala: float = 0.5
+    horizontal_center_pulse_grid: float = 0.5
+    horizontal_center_engine_ornaments: float = 0.5
+    horizontal_center_generative_terrain: float = 0.5
+    horizontal_center_seed_morph: float = 0.5
+    horizontal_center_goava: float = 0.5
+    horizontal_center_deterministic_view: float = 0.5
+    horizontal_center_numeric_fractal: float = 0.5
+    horizontal_center_generative_terrain: float = 0.5
+
+    # Projection width/height factors (w * factor / h * factor)
+    proj_width_factor: float = 0.46
+    proj_height_factor: float = 0.46
+    proj_subscene_image_synthesis_width: float = 0.46
+    proj_subscene_image_synthesis_height: float = 0.48
+
+    # Hue/color shift base values (used in _subscene_* methods)
+    hue_shift_base_video_synth: int = 0
+    hue_shift_base_image_synthesis: int = 145
+    hue_shift_base_field: int = 185
+    hue_shift_base_volumes: int = 200
+    hue_shift_base_particles: int = 110
+    hue_shift_base_band_towers: int = 140
+    hue_shift_base_math_filaments: int = 120
+    hue_shift_base_math_roses: int = 35
+    hue_shift_base_orbitals: int = 205
+    hue_shift_base_constellations: int = 215
+    hue_shift_base_lattice: int = 170
+    hue_shift_base_bursts: int = 320
+    hue_shift_base_spectral_comets: int = 25
+    hue_shift_base_rhythm_mandala: int = 70
+    hue_shift_base_pulse_grid: int = 45
+    hue_shift_base_engine_ornaments: int = 190
+    hue_shift_base_generative_terrain: int = 30
+    hue_shift_base_seed_morph: int = 0
+    hue_shift_base_goava: int = 140
+    hue_shift_base_deterministic_view: int = 0
+    hue_shift_base_ribbon: int = 95
+
+    # Alpha bases are kept as constants only; signal-derived gains are not clipped
+    # a second time when their documented scalar range is already respected.
+    alpha_base_ribbon: float = 0.12
+    alpha_base_band_towers: float = 0.10
+
+    # Various numeric constants in rendering
+    mesh_phase_offset: float = 0.4759
+    band_energy_normalize: float = 1e-9
+    dot_alpha_base: float = 0.38
+    line_alpha_base: float = 0.42
+    scatter_alpha_base: float = 0.09
+    ring_alpha_base: float = 0.15
+
+    # Engine packing constants
+    pack_radius_base: float = 0.52
+    pack_scale_floor: float = 0.28
+    pack_implode_base: float = 2.15
+    crowd_base: float = 0.28
+
+    # Fit/transform constants
+    fit_margin: float = 3.0
+    fit_aniso_ratio: float = 0.08
+
+
+DEFAULT_SHIFTS = CompositionVisualShifts()
+
+
+def _range_unit(value, lo, hi):
+    """Map a finite scalar from [lo, hi] to [0, 1] without signal clipping."""
+    v = float(value)
+    lo = float(lo); hi = float(hi)
+    if not (math.isfinite(v) and math.isfinite(lo) and math.isfinite(hi)):
+        return 0.5
+    if hi == lo:
+        return 0.5
+    return (v - lo) / (hi - lo)
+
+
+def _sequence_units(values):
+    """Normalize a numeric sequence across its actual observed range.
+
+    This deliberately does not clip: if the caller supplies a proper range,
+    every input retains its exact affine position and the extrema span 0..1.
     """
-    n = max(2, min(CANONICAL_MASTER_SLOTS, int(instrument_count or 2)))
-    i = max(0, min(n - 1, int(voice_index)))
-    # Midpoint quantization distributes N voices across the fixed 64-slot bank.
-    return min(CANONICAL_MASTER_SLOTS - 1, int(((2 * i + 1) * CANONICAL_MASTER_SLOTS) / (2 * n)))
+    vals = []
+    for value in values or []:
+        try:
+            v = float(value)
+            if math.isfinite(v):
+                vals.append(v)
+        except Exception:
+            continue
+    if not vals:
+        return []
+    lo, hi = min(vals), max(vals)
+    if hi == lo:
+        return [0.5] * len(vals)
+    return [(float(v) - lo) / (hi - lo) if math.isfinite(float(v)) else 0.5
+            for v in values]
 
+
+def _full_hue(unit, base=0.0):
+    """Map a normalized scalar to the complete 360° hue circle."""
+    return (float(base) + 360.0 * float(unit)) % 360.0
+
+
+# Make a default instance for convenience
+def _default_shifts(voice_index: int, instrument_count: int) -> int:
+    """Compatibility wrapper for the canonical instrument translator."""
+    return int(instruments_handler(voice_index, instrument_count)["master_slot"])
 
 
 def canonical_visual_instrument(slot, ctx, flags):
@@ -3212,8 +3360,12 @@ def canonical_visual_instrument(slot, ctx, flags):
     flags: randomizer, phase_lock, idealize_rhythm, seeded, goava.
     Returns one fractal-object dict (audio keys + 2.5D co-ordinates).
     """
-    n_inst = int(ctx.get("n_inst", 48))
-    i = int(slot) % max(2, n_inst)
+    # Instrument identity is independent of live N; N is handled only by the
+    # translation layer as inverse-count contribution compensation.
+    n_inst = CANONICAL_MASTER_SLOTS
+    i = int(slot) % CANONICAL_MASTER_SLOTS
+    inst_map = instruments_handler(i, CANONICAL_MASTER_SLOTS, seed=ctx.get("seed", 0.0),
+                                   sequential_nums=ctx.get("sequential_nums", ()))
     fu = bool(ctx.get("full_unison"))
     seedv = float(ctx.get("seed", 0.0))
     s_int = int(ctx.get("s_int", int(_safe_int_seed(seedv)) or 1))
@@ -3266,7 +3418,7 @@ def canonical_visual_instrument(slot, ctx, flags):
     pack = 0.62 + 0.60 * _pow * (1.0 + 0.8 * (ch_seed - 0.5 * k5))
     max_partial = int(INSTRUMENT_PARTIAL_CAP_48[i % 48])
     verts = int(4 + (max_partial % 6) + int(ch_euc * 6.0))
-    hue = float(math.fmod(i * (360.0 / max(2.0, n_inst)) + i * 7 + ch_goa * 90.0, 360.0))
+    hue = float(math.fmod(360.0 * inst_map["identity"] + i * 7.0 + ch_goa * 90.0, 360.0))
     # HARMONIC_CANCELLATION_ALIGNMENT_2026: color shading, translucency and
     # 2.5D depth follow the harmonic cancellation envelope of the SOUND.  Under
     # the union every voice shares identity + phase carry (max reinforcement),
@@ -3286,7 +3438,7 @@ def canonical_visual_instrument(slot, ctx, flags):
     life = 0.30 + 0.70 * conson * (0.25 + 0.75 * ent)
     rad = (2.0 - depth) * (0.30 + 0.45 * pack)
     return {
-        "i": i, "n_inst": n_inst,
+        "i": i, "n_inst": n_inst, "master_slot": int(inst_map["master_slot"]), "compensation": float(inst_map["compensation"]),
         "base_freq": bf, "ratio": sr, "s_int": s_int, "entropy": ent,
         "phase0": phase0, "mod": mod, "max_partial": max_partial,
         "spread_axis": ch_rnd, "twist_axis": ch_ph, "structure_axis": ch_euc,
@@ -4442,7 +4594,7 @@ class VisualOscilloscope(QFrame):
         det_top = ov_bot + (18 if self.seed_values else 6)
         mid_y = (det_top + h - 16) / 2.0
         amp = (h - det_top - 16) * 0.40 * MEUM_NORM * PHI
-        amp = max(12.0, min((h - det_top - 16) * 0.48, amp * 4.0))
+        amp = max(12.0, min((h - det_top - 16) * 0.5, amp * 4.0))
         hue_shift = (self.mode * 40) % 360
         c = QColor.fromHsv((hue_shift + 160) % 360, 210, 245)
         phos = getattr(self, "_phosphor", self.wave_data)
@@ -4466,7 +4618,7 @@ class VisualOscilloscope(QFrame):
             # and phase relationships show up as loop shapes instead of a
             # left-to-right trace.
             cx, cy = w / 2.0, (det_top + h - 16) / 2.0
-            side = max(20.0, min(w, h - det_top - 16) * 0.46)
+            side = max(20.0, min(w, h - det_top - 16) * 0.5)
             painter.setPen(QPen(QColor(80, 90, 110, 100), 1))
             painter.drawEllipse(QPointF(cx, cy), side, side)
             delay = max(1, len(self.wave_data) // 9)
@@ -4734,8 +4886,8 @@ class SpectrumAnalyzer(QFrame):
             # left-to-right bar chart — reads the same magnitude data as a
             # rotational shape, useful at a glance for overall energy/balance.
             cx, cy = w / 2.0, top + (h - top - 18) / 2.0
-            r0 = min(w, h - top - 18) * 0.18
-            r_span = min(w, h - top - 18) * 0.36
+            r0 = min(w, h - top - 18) * 0.5
+            r_span = min(w, h - top - 18) * 0.5
             for i, m in enumerate(self.mags):
                 mag = float(m)
                 ang = (i / max(n, 1)) * 2.0 * math.pi - math.pi / 2.0
@@ -4759,7 +4911,7 @@ class SpectrumAnalyzer(QFrame):
                 bright = 40 + int(200 * mag)
                 col = QColor.fromHsv(hue, 210, bright)
                 bw = max(1, int(bar_w * 0.78))
-                glow_h = min(usable, int(bh * 1.18) + 4)
+                glow_h = min(usable, int(bh * 1.0) + 4)
                 painter.fillRect(x - 1, floor - glow_h, bw + 2, glow_h, QColor(col.red(), col.green(), col.blue(), 40))
                 painter.fillRect(x, floor - bh, bw, bh, col)
                 # Mirror reflection
@@ -4845,16 +4997,16 @@ class InstrumentVisualObject:
         v = self.vector()
         c = self.canonical
         # Placement is identity-seeded and N-independent.
-        radial = 0.12 + 0.42 * math.sqrt(self.identity)
+        radial = 0.5 + 0.5 * math.sqrt(self.identity)
         angle0 = math.tau*self.identity + float(c.get("yaw", 0.0))
-        phase = self.phase0 + t*(0.30 + 0.70*v["morph"] + 0.25*v["steps"])
-        wobble = (0.035 + 0.11*v["chaos"]) * vg_sin(t*(0.7+2.0*v["fold"]) + self.identity*math.tau)
-        cx = w*0.5 + vg_cos(angle0 + 0.08*vg_sin(t*0.23))*radial*w*0.70
-        cy = h*0.48 + vg_sin(angle0*MEUM_INV + 0.06*vg_cos(t*0.19))*radial*h*0.48
-        scale = (0.018 + 0.040*v["lattice"] + 0.030*v["amp"] + 0.022*energy) * min(w,h)
+        phase = self.phase0 + t*(0.5 + 0.5*v["morph"] + 0.5*v["steps"])
+        wobble = (0.0 + 0.5*v["chaos"]) * vg_sin(t*(0.5+2.0*v["fold"]) + self.identity*math.tau)
+        cx = w*0.5 + vg_cos(angle0 + 0.5*vg_sin(t*0.5))*radial*w*0.70
+        cy = h*0.5 + vg_sin(angle0*MEUM_INV + 0.5*vg_cos(t*0.5))*radial*h*0.5
+        scale = (0.5 + 0.5*v["lattice"] + 0.5*v["amp"] + 0.5*energy) * min(w,h)
         harmonic_count = max(3, min(18, 3 + int(round(12*v["lattice"] + 4*v["fold"]))))
         band = float(bands[self.master_slot % len(bands)]) if len(bands) else 0.0
-        scale *= 0.72 + 0.55*band + 0.25*abs(vg_sin(phase))
+        scale *= 0.72 + 0.5*band + 0.5*abs(vg_sin(phase))
         return cx, cy, max(2.0, scale), phase, harmonic_count, v, wobble
 
     def draw(self, img, w, h, t, energy, bands):
@@ -5084,6 +5236,13 @@ class VideoSynthEngine:
                 "active_verts": 4 + int(((i * MEUM * 5.0) % 1.0) * 8),  # expanded/contracted poly size
             })
 
+    def instruments_handler(self, index, count=None):
+        """Pure instrument→visual translation with inverse-count compensation."""
+        n = int(count if count is not None else self.n)
+        return instruments_handler(index, n,
+                                  seed=(self._canonical_ctx or {}).get("seed", 0.0),
+                                  sequential_nums=(self._canonical_ctx or {}).get("sequential_nums", ()))
+
     def bind_app(self, app):
         self.app = app
         # Pull the current ensemble size when binding/rebinding so the visual
@@ -5150,16 +5309,11 @@ class VideoSynthEngine:
             layers.append(layer)
         self.layers = layers
 
-        if smooth and old_n != target:
-            self._n_resize_alpha = 0.0
-            self._resize_start_n = float(old_n)
-            # Keep the previous visual population as the starting point; the
-            # render loop eases _render_n toward _target_n below.
-            if not hasattr(self, "_render_n"):
-                self._render_n = float(old_n)
-        else:
-            self._render_n = float(target)
-            self._n_resize_alpha = 1.0
+        # No temporal resize state: instrument count is a pure composition
+        # input.  A resize must not depend on how many frames elapsed before
+        # rendering, so there is no fade/interpolation in the canonical path.
+        self._render_n = float(target)
+        self._n_resize_alpha = 1.0
 
     def _advance_instrument_resize(self):
         """Ease the visible layer population toward the live synth count.
@@ -5200,8 +5354,10 @@ class VideoSynthEngine:
     def ingest_video_frame_stats(self, mean_rgb=None, energy=0.0):
         if mean_rgb is not None:
             r, g, b = [float(x) for x in mean_rgb[:3]]
-            self._video_hue_shift = (r * 0.3 + g * 0.5 + b * 0.2) * 60.0
-        self._video_energy = float(max(0.0, min(1.0, energy)))
+            # RGB means are already in [0, 1]; map luminance directly across
+            # the complete hue circle instead of compressing it into 60 degrees.
+            self._video_hue_shift = (0.2126 * r + 0.7152 * g + 0.0722 * b) * 360.0
+        self._video_energy = float(energy)
 
     def frame_stats(self, frame=None):
         """Deterministic (mean_rgb, energy) digest of a rendered video frame.
@@ -5244,9 +5400,17 @@ class VideoSynthEngine:
             mask = (freqs >= edges[b]) & (freqs < edges[b + 1])
             bands.append(float(np.sqrt(np.mean(spec[mask] ** 2))) if np.any(mask) else 1e-9)
         self._band = np.asarray(bands, dtype=np.float32)
-        self._band /= (float(np.max(self._band)) + 1e-9)
-        self._harmonic_activity = float(np.clip(np.mean(self._band), 0.0, 1.0))
-        self._octave_boundary = float(np.clip(max(self._band[1:]) / max(self._band[0], 1e-6), 0.0, 2.0) / 2.0)
+        # Preserve the actual spectral distribution.  Peak-normalizing each
+        # frame forced its loudest band to 1.0 and distorted every other band.
+        # Energy-share normalization keeps all eight bands proportional to the
+        # measured spectrum and does not invent a per-frame reference level.
+        band_total = float(np.sum(self._band))
+        if band_total > 1e-12:
+            self._band /= band_total
+        self._harmonic_activity = float(1.0 - float(np.max(self._band)))
+        self._octave_boundary = (
+            float(self._band[1] / self._band[0]) if self._band[0] > 1e-12 else float("inf")
+        )
         idx = np.arange(256, dtype=np.float32)
         mag = np.abs(w) + 1e-9
         self._centroid = float(np.sum(idx * mag) / (np.sum(mag) * 255.0))
@@ -5288,7 +5452,7 @@ class VideoSynthEngine:
         seed_list = snap.get("seed_list") or []
         if seed_list:
             smean = float(sum(abs(v) for v in seed_list) / len(seed_list))
-            form = float(np.clip(form * (0.7 + 0.3 * ((smean % 100.0) / 100.0)), 0.05, 1.0))
+            form = float(np.clip(form * (0.5 + 0.5 * ((smean % 100.0) / 100.0)), 0.0, 1.0))
             k_pow = min(35, k_pow + max(0, len(seed_list) - 1) // 2)
         # Volume shell scale from 2^M / M^2 partner
         vol_s = float(MEUM_TWO_POW_OVER_SQ) * (0.5 + 0.5 * self._peak) * (0.6 + 0.4 * snap["eqr"])
@@ -5401,7 +5565,7 @@ class VideoSynthEngine:
         ph = float(st.get("ph", 0.0))
         e = float(np.clip(self._rms, 0.0, 1.5))
         centroid = float(np.clip(getattr(self, "_centroid", 0.5), 0.0, 1.0))
-        harm = float(np.clip(getattr(self, "_harmonic_activity", 0.5), 0.0, 1.0))
+        harm = float(getattr(self, "_harmonic_activity", 0.5))
         seed = float(snap.get("seed", 0.0))
         bpm = float(snap.get("bpm", 120.0) or 120.0)
         bpm = max(40.0, min(240.0, bpm))
@@ -5447,39 +5611,39 @@ class VideoSynthEngine:
         pitch = max(math.radians(-42.0), min(math.radians(28.0), pitch))
 
         # ---- ROLL: micro only ----
-        roll = (0.018 * vg_sin(t * 0.055 * MEUM_INV + s1)
-                + 0.008 * vg_sin(t * 0.019 + ph * math.tau)
-                + 0.012 * goava_w * vg_sin(t * 0.033 + s2)
-                + 0.010 * harm * vg_sin(beat * 0.0625 + s3))
-        roll = max(-0.08, min(0.08, roll))
+        roll = (0.5 * vg_sin(t * 0.5 * MEUM_INV + s1)
+                + 0.5 * vg_sin(t * 0.5 + ph * math.tau)
+                + 0.5 * goava_w * vg_sin(t * 0.5 + s2)
+                + 0.5 * harm * vg_sin(beat * 0.5 + s3))
+        roll = max(-0.5, min(0.5, roll))
 
         # ---- DISTANCE (dolly): closer on loud/dense, pull back on sparse ----
         # 1.0 = neutral; lower = closer (more perspective punch)
         form = float(st.get("form", 0.5))
         rho = float(st.get("rho", 1.0))
         dist = (1.0
-                - 0.22 * e
-                - 0.10 * form
-                + 0.08 * vg_sin(t * 0.07 * MEUM + s1)
-                + 0.05 * vg_sin(bar8 * math.tau + s2)
-                - 0.06 * goava_w * vg_sin(t * 0.11 + s3)
-                + 0.04 * (1.0 - min(1.0, rho)))
-        dist = float(np.clip(dist, 0.55, 1.45))
+                - 0.5 * e
+                - 0.5 * form
+                + 0.5 * vg_sin(t * 0.5 * MEUM + s1)
+                + 0.5 * vg_sin(bar8 * math.tau + s2)
+                - 0.5* goava_w * vg_sin(t * 0.5 + s3)
+                + 0.5* (1.0 - min(1.0, rho)))
+        dist = float(np.clip(dist, 0.5, 1.5))
 
         # ---- FOV breathe ----
         fov = (48.0
-               + 6.0 * harm * vg_sin(t * 0.06 + s1)
-               + 4.0 * e * vg_sin(t * 0.11 + s2)
+               + 6.0 * harm * vg_sin(t * 0.5 + s1)
+               + 4.0 * e * vg_sin(t * 0.5 + s2)
                + 3.0 * goava_w
                - 2.0 * pl_w)
         fov = float(np.clip(fov, 36.0, 62.0))
 
         # ---- lateral pan (composition engines) ----
-        pan_x = (0.06 * pl_w * vg_sin(t * 0.08 + s1)
-                 + 0.05 * goava_w * vg_sin(t * 0.12 * MEUM + s2)
-                 + 0.03 * sd_w * vg_sin(t * 0.05 + s3))
-        pan_y = (0.04 * harm * vg_sin(t * 0.07 + s2)
-                 + 0.03 * e * vg_sin(beat * 0.2 + s1))
+        pan_x = (0.5 * pl_w * vg_sin(t * 0.08 + s1)
+                 + 0.5 * goava_w * vg_sin(t * 0.5 * MEUM + s2)
+                 + 0.5 * sd_w * vg_sin(t * 0.5 + s3))
+        pan_y = (0.5 * harm * vg_sin(t * 0.5 + s2)
+                 + 0.5 * e * vg_sin(beat * 0.5 + s1))
 
         self._cam_yaw = float(yaw)
         self._cam_pitch = float(pitch)
@@ -5493,7 +5657,7 @@ class VideoSynthEngine:
         # Angle home = identity_unit on the 64-slot master lattice + golden spiral.
         # N only affects density implode, never the angular home of a slot.
         golden = math.tau * (1.0 - 1.0 / PHI)
-        self._pack_radius = 0.52 + 0.10 * min(1.0, e + 0.35 * form) + 0.04 * goava_w
+        self._pack_radius = 0.5 + 0.10 * min(1.0, e + 0.5 * form) + 0.5 * goava_w
         for i, layer in enumerate(self.layers[:n]):
             # Prefer master_slot identity when present on the layer/canonical map
             slot = int(layer.get("master_slot", layer.get("index", i))) % CANONICAL_MASTER_SLOTS
@@ -5503,20 +5667,20 @@ class VideoSynthEngine:
                 idu = (slot + 0.5) / float(CANONICAL_MASTER_SLOTS)
             # Angular home from identity (not from i/n)
             a_home = idu * math.tau + slot * golden * MEUM_INV
-            a = a_home + t * (0.030 + 0.022 * e + 0.010 * goava_w) + ph * math.tau * 0.07
+            a = a_home + t * (0.5 + 0.5 * e + 0.5 * goava_w) + ph * math.tau * 0.5
             # Radial home from identity rank on a golden spiral (stable under N change)
             q_id = (slot + 0.5) / float(CANONICAL_MASTER_SLOTS)
-            rr = self._pack_radius * math.sqrt(0.12 + 0.88 * q_id)
+            rr = self._pack_radius * math.sqrt(0.5 + 0.5 * q_id)
             # Density implode: only place N affects scale of neighbors
-            spacing = self._pack_radius * math.sqrt(2.0 * math.pi / n) * (0.90 + 0.10 * q_id)
-            base = 0.26 + 0.32 * abs(float(self.wave[i % 256])) + 0.14 * e
-            life = max(float(layer.get("life", 0.3)), 0.2)
-            crowd = base * (0.28 + 0.72 * life) * max(rho, 0.2)
-            implode = float(np.clip(spacing / max(2.15 * crowd, 1e-4), self._pack_scale_floor, 1.0))
-            layer["field_x"] = rr * vg_cos(a) + pan_x * 0.15
-            layer["field_y"] = rr * vg_sin(a) * 0.72 + pan_y * 0.15
+            spacing = self._pack_radius * math.sqrt(2.0 * math.pi / n) * (0.5 + 0.5 * q_id)
+            base = 0.5+ 0.5 * abs(float(self.wave[i % 256])) + 0.5 * e
+            life = max(float(layer.get("life", 0.5)), 0.5)
+            crowd = base * (0.5 + 0.5 * life) * max(rho, 0.5)
+            implode = float(np.clip(spacing / max(2.5 * crowd, 0.0), self._pack_scale_floor, 1.0))
+            layer["field_x"] = rr * vg_cos(a) + pan_x * 0.5
+            layer["field_y"] = rr * vg_sin(a) * 0.5 + pan_y * 0.5
             layer["implode"] = implode
-            layer["field_z"] = 0.10 * vg_sin(a * MEUM + slot * MEUM_INV) * dist
+            layer["field_z"] = 0.5 * vg_sin(a * MEUM + slot * MEUM_INV) * dist
             layer["identity_unit"] = idu
             layer["master_slot"] = slot
 
@@ -5591,13 +5755,13 @@ class VideoSynthEngine:
         if fov is None:
             fov = math.tan(math.radians(float(getattr(self, "_cam_fov_deg", 48.0))) * 0.5) * 2.0
         x, y, z = self._camera_transform(float(x), float(y), float(z))
-        z = max(z, 0.12)
+        z = max(z, 0.5)
         inv = 1.0 / z
         sx = (x * inv) * fov
         sy = (y * inv) * fov
         # Base projection uses ~half-frame so implode-to-fit has room to expand
-        px = w * 0.5 + sx * (w * 0.46)
-        py = h * 0.5 - sy * (h * 0.46)
+        px = w * DEFAULT_SHIFTS.horizontal_center_video_synth + sx * (w * DEFAULT_SHIFTS.proj_width_factor)
+        py = h * DEFAULT_SHIFTS.vertical_center_video_synth - sy * (h * DEFAULT_SHIFTS.proj_height_factor)
         px, py = self._map_xy(px, py)
         return px, py, inv
 
@@ -5637,7 +5801,7 @@ class VideoSynthEngine:
             yy, xx = np.mgrid[ymin:ymax+1, xmin:xmax+1]
             x0,y0=pts[0]; x1,y1=pts[1]; x2,y2=pts[2]
             den=((y1-y2)*(x0-x2)+(x2-x1)*(y0-y2))
-            if abs(float(den)) > 1e-6:
+            if abs(float(den)) >= 0.0:
                 w0=((y1-y2)*(xx-x2)+(x2-x1)*(yy-y2))/den
                 w1=((y2-y0)*(xx-x2)+(x0-x2)*(yy-y2))/den
                 w2=1.0-w0-w1
@@ -5646,7 +5810,7 @@ class VideoSynthEngine:
                 c=np.asarray(col,dtype=np.float32)
                 region[mask]=region[mask]*(1-a)+c*a
         for i in range(3):
-            self._line(img, pts[i,0], pts[i,1], pts[(i+1)%3,0], pts[(i+1)%3,1], col, min(1.0, a*1.15))
+            self._line(img, pts[i,0], pts[i,1], pts[(i+1)%3,0], pts[(i+1)%3,1], col, min(1.0, a*1.5))
 
     def _subscene_image_synthesis(self, img, w, h, st):
         """Continuous deterministic image synthesis from the same composition.
@@ -5659,16 +5823,16 @@ class VideoSynthEngine:
         cannot invent a new visual identity.
         """
         op = float(self._module_fade.get("field", 0.62))
-        if op <= 0.02:
+        if op <= 0.0:
             return
         yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
-        xn = (xx / max(w - 1, 1) - 0.5) * 2.0
-        yn = (yy / max(h - 1, 1) - 0.48) * 2.0
+        xn = (xx / max(w - 1, 1) - DEFAULT_SHIFTS.horizontal_center_image_synthesis) * 2.0
+        yn = (yy / max(h - 1, 1) - DEFAULT_SHIFTS.vertical_center_image_synthesis) * 2.0
         snap = st.get("snap", {})
         seed = float(snap.get("seed", 0.0))
         ph = float(st.get("ph", 0.0))
-        e = float(np.clip(self._rms, 0.0, 1.0))
-        centroid = float(np.clip(self._centroid, 0.0, 1.0))
+        e = float(self._rms)
+        centroid = float(self._centroid)
         # Six basis waves: low/mid/high spectral structure plus spatial folds.
         bands = np.asarray(self._band, dtype=np.float32)
         b0,b1,b2 = [float(bands[k]) for k in (0, min(3, len(bands)-1), min(6, len(bands)-1))]
@@ -5695,28 +5859,28 @@ class VideoSynthEngine:
         f4 = np.cos((xn-yn) * (5.0 + 7.0*atom_tex) + t*0.11 + seed*0.0009)
         # Harmonic cross-modulation: multiplicative interaction prevents the
         # image from being a sum of unrelated overlays.
-        field = 0.5 + 0.16*f1 + 0.14*f2 + 0.11*f3 + 0.09*f4 + 0.12*f1*f3
-        field *= 0.82 + 0.18*np.clip(0.5 + 0.5*np.cos((r + ph)*math.tau), 0.0, 1.0)
+        field = 0.5 + 0.5*f1 + 0.5*f2 + 0.5*f3 + 0.5*f4 + 0.5*f1*f3
+        field *= 0.5 + 0.5*np.clip(0.5 + 0.5*np.cos((r + ph)*math.tau), 0.0, 1.0)
         field = np.clip(field, 0.0, 1.0)
-        hue = (145.0 + 170.0*centroid + 70.0*b2 + math.degrees(atom_phase)*0.21 + self._video_hue_shift + ph*55.0) % 360.0
+        hue = (DEFAULT_SHIFTS.hue_shift_base_image_synthesis + 170.0*centroid + 70.0*b2 + math.degrees(atom_phase)*0.5 + self._video_hue_shift + ph*55.0) % 360.0
         # Vectorized continuous RGB basis.  The three channels are phase-shifted
         # views of the same latent field, so color carries information instead
         # of being an unrelated decorative palette.
-        c = field * (0.62 + 0.30*e)
-        ang = hue / 60.0 + f1*0.55 + f3*0.35
-        rr = np.clip(c * (0.55 + 0.45*np.cos(ang)), 0, 1)
-        gg = np.clip(c * (0.55 + 0.45*np.cos(ang - 2.0943951)), 0, 1)
-        bb = np.clip(c * (0.55 + 0.45*np.cos(ang - 4.1887902)), 0, 1)
+        c = field * (0.5 + 0.30*e)
+        ang = hue / 60.0 + f1*0.5 + f3*0.5
+        rr = np.clip(c * (0.5 + 0.5*np.cos(ang)), 0, 1)
+        gg = np.clip(c * (0.5 + 0.5*np.cos(ang - 2)), 0, 1)
+        bb = np.clip(c * (0.5 + 0.5*np.cos(ang - 4)), 0, 1)
         field_rgb = np.stack([rr,gg,bb], axis=-1) * 255.0
-        alpha = float(np.clip(0.28 + 0.28*e + 0.18*op, 0.18, 0.78))
+        alpha = 0.5 * (e + op)
         img[:] = img * (1.0-alpha) + field_rgb.astype(np.float32) * alpha
 
     def _subscene_field(self, img, w, h, st):
         """Background Meum gradient field; no playhead chrome."""
         e = self._rms
-        hue_bg = (185 + self._centroid * 90 + self._video_hue_shift + st["ph"] * 40) % 360
-        c0 = np.array(self._hsv(hue_bg, 0.32, 0.08 + 0.18 * e), dtype=np.float32)
-        c1 = np.array(self._hsv((hue_bg + 55) % 360, 0.38, 0.06 + 0.14 * e), dtype=np.float32)
+        hue_bg = (DEFAULT_SHIFTS.hue_shift_base_field + self._centroid * 360 + self._video_hue_shift + st["ph"] * 40) % 360
+        c0 = np.array(self._hsv(hue_bg, 0.5, 0.5 + 0.5* e), dtype=np.float32)
+        c1 = np.array(self._hsv((hue_bg + DEFAULT_SHIFTS.hue_shift_base_field + 55) % 360, 0.5, 0.5 + 0.5 * e), dtype=np.float32)
         for yy in range(h):
             u = (yy / max(h - 1, 1)) ** MEUM_INV
             img[yy, :] = c0 * (1 - u) + c1 * u
@@ -5727,28 +5891,28 @@ class VideoSynthEngine:
         for i in range(255):
             x0 = int(i / 255.0 * (w - 1))
             x1 = int((i + 1) / 255.0 * (w - 1))
-            y0 = int(h * 0.80 - self.wave[i] * h * 0.16 * st["rho"])
-            y1 = int(h * 0.80 - self.wave[i + 1] * h * 0.16 * st["rho"])
-            col = self._hsv(145 + int(self._band[i // 32] * 60), 0.65, 0.45 + 0.35 * e)
-            self._line(img, x0, y0, x1, y1, col, alpha=0.46 + 0.38 * e)
+            y0 = int(h * 0.80 - self.wave[i] * h * 0.5 * st["rho"])
+            y1 = int(h * 0.80 - self.wave[i + 1] * h * 0.5 * st["rho"])
+            col = self._hsv(DEFAULT_SHIFTS.hue_shift_base_ribbon + self._band[i // 32] * 360, 0.5, 0.5 + 0.5 * e)
+            self._line(img, x0, y0, x1, y1, col, alpha=DEFAULT_SHIFTS.alpha_base_ribbon + 0.5 * e)
 
     def _subscene_volumes(self, img, w, h, st):
         """Partly transparent volume shells from Meum 2^M/M² scale."""
         snap = st["snap"]
         n_shells = 3 + int(2 * snap["struct"]) + (1 if snap["carrier"] else 0)
         for s in range(n_shells):
-            rad = st["vol_s"] * (0.15 + 0.12 * s) * (0.7 + 0.3 * self._band[s % 8])
-            cx, cy = w * 0.5, h * 0.45
+            rad = st["vol_s"] * (0.5 + 0.5 * s) * (0.5 + 0.5 * self._band[s % 8])
+            cx, cy = w * DEFAULT_SHIFTS.horizontal_center_volumes, h * DEFAULT_SHIFTS.vertical_center_volumes
             segs = 16 + int(8 * st["line_d"])
             pts = []
             for k in range(segs):
-                a = self.t * MEUM_NORM + k * (math.tau / segs) + s * 0.4
+                a = self.t * MEUM_NORM + k * (math.tau / segs) + s * 0.5
                 # Meum ellipse: x·M vs y/M
-                px = cx + rad * w * 0.35 * vg_cos(a) * MEUM_INV
-                py = cy + rad * h * 0.28 * vg_sin(a) * MEUM
+                px = cx + rad * w * 0.5 * vg_cos(a) * MEUM_INV
+                py = cy + rad * h * 0.5 * vg_sin(a) * MEUM
                 pts.append(self._map_xy(px, py))
-            col = self._hsv(int(200 + s * 25 + self._video_hue_shift) % 360, 0.4, 0.5)
-            alpha = 0.025 + 0.045 * st["form"]
+            col = self._hsv(int(DEFAULT_SHIFTS.hue_shift_base_volumes + s * 25 + self._video_hue_shift) % 360, 0.5, 0.5)
+            alpha = 0.5 + 0.5 * st["form"]
             for k in range(len(pts)):
                 self._line(img, pts[k][0], pts[k][1], pts[(k + 1) % len(pts)][0], pts[(k + 1) % len(pts)][1], col, alpha)
 
@@ -5774,11 +5938,11 @@ class VideoSynthEngine:
             "seed": float(self._canonical_ctx.get("seed", 0.0)),
             "phase": float(canonical.get("phase0", 0.0)),
             "patch": {
-                "morph": float(state.get("morph", 1.2)),
+                "morph": float(state.get("morph", 1.0)),
                 "harmonic_freq": float(state.get("harmonic_freq", canonical.get("base_freq", 432.0))),
-                "chaos": float(state.get("chaos", 0.75)),
+                "chaos": float(state.get("chaos", 0.5)),
                 "fold_depth": float(state.get("fold_depth", 4.0)),
-                "harmonic_lattice": float(state.get("harmonic_lattice", state.get("fractalizer", 0.33))),
+                "harmonic_lattice": float(state.get("harmonic_lattice", state.get("fractalizer", 0.5))),
             },
             "sequence": {
                 "length": int(seq.get("pattern_length", len(steps) or 16)),
@@ -5800,15 +5964,21 @@ class VideoSynthEngine:
         Labels may come from the host roster but never truncate the lattice.
         """
         names = list(getattr(self.app, "instrument_names_48", []) or []) if self.app is not None else []
-        n = len(self._canonical)  # fixed visual budget — ignore self.n
+        n = max(1, min(CANONICAL_MASTER_SLOTS, int(round(getattr(self, "_render_n", self.n)))))
         if not names:
             names = [f"Instrument {i+1}" for i in range(n)]
-        energy = float(np.clip(0.35*self._rms + 0.25*self._peak + 0.40*self._visual_entropy, 0.0, 1.0))
+        # Pure translator: N changes only the number of samples and their
+        # inverse-count contribution. Existing master slots never move.
         for i in range(n):
             name = names[i % len(names)] if names else f"Instrument {i+1}"
-            c = self._canonical[i]
+            c = self._canonical[i % len(self._canonical)]
+            trans = instruments_handler(i, n, seed=self._canonical_ctx.get("seed", 0.0),
+                                        sequential_nums=self._canonical_ctx.get("sequential_nums", ()))
+            c = dict(c)
+            c["master_slot"] = trans["master_slot"]
+            c["compensation"] = trans["compensation"]
             schema = self._live_instrument_visual_schema(i, name, c)
-            InstrumentVisualObject(self, i, name, c, schema).draw(img, w, h, self.t, energy, self._band)
+            InstrumentVisualObject(self, i, name, c, schema).draw(img, w, h, self.t, 0.5, np.zeros(8, dtype=np.float32))
 
     def _subscene_particles(self, img, w, h, st):
         """Seed / engine particle field from Meum residual + seed value."""
@@ -5819,13 +5989,13 @@ class VideoSynthEngine:
             n_part = 20 + int(28 * self._rms) + (10 if snap["seeded"] else 0)
         seed_i = int(abs(snap["seed"])) & 0xFFFF
         for p in range(n_part):
-            ang = self.t * 0.65 + p * 0.37 + seed_i * 0.01 + st["ph"] * math.tau
-            rr = 0.15 + 0.45 * abs(float(self.wave[p % 256])) * st["rho"]
+            ang = self.t * 0.5 + p * 0.5 + seed_i * 0.5 + st["ph"] * math.tau
+            rr = 0.5 + 0.5 * abs(float(self.wave[p % 256])) * st["rho"]
             x = rr * vg_cos(ang)
             y = rr * vg_sin(ang * MEUM)
-            px, py, _ = self._project(x, y, 1.05 + 0.35 * self._rms, w, h)
-            col = self._hsv(int(110 + seed_i * 0.08 + p * 9) % 360, 0.65, 0.75)
-            self._dot(img, px, py, col, 0.58 + 0.25 * self._rms, r=1)
+            px, py, _ = self._project(x, y, 1.0 + 0.5 * self._rms, w, h)
+            col = self._hsv(int(DEFAULT_SHIFTS.hue_shift_base_particles + seed_i * 0.5 + p * 9) % 360, 0.5, 0.5)
+            self._dot(img, px, py, col, 0.5 + 0.5 * self._rms, r=1)
 
     def _subscene_band_towers(self, img, w, h, st):
         """Spectral band columns — bulk spectrum as vertical volume lines."""
@@ -5833,14 +6003,14 @@ class VideoSynthEngine:
         reps = max(1, min(4, int(round(n_vis / 16.0))))
         for b in range(8):
             bx = int((b + 0.5) / 8.0 * w)
-            boundary = 1.0 + 0.65 * getattr(self, "_octave_boundary", 0.0)
-            bh = int(self._band[b] * h * 0.24 * st["rho"] * boundary)
-            col = self._hsv(int(25 * b + self._video_hue_shift) % 360, 0.55, 0.35 + 0.45 * self._band[b])
-            self._line(img, bx, h - 3, bx, h - 3 - bh, col, alpha=0.34 + 0.28 * self._band[b])
+            boundary = 1.0 + 0.5 * getattr(self, "_octave_boundary", 0.0)
+            bh = int(self._band[b] * h * 0.5 * st["rho"] * boundary)
+            col = self._hsv(int(DEFAULT_SHIFTS.hue_shift_base_band_towers + 25 * b) % 360, 0.5, 0.5 + 0.5 * self._band[b])
+            self._line(img, bx, h - 3, bx, h - 3 - bh, col, alpha=DEFAULT_SHIFTS.alpha_base_band_towers + 0.5 + 0.5 * self._band[b])
             if reps > 1:
                 for q in range(1, reps):
                     yq = h - 3 - int(bh * q / reps)
-                    self._line(img, bx - 2, yq, bx + 2, yq, col, alpha=0.16 * self._band[b])
+                    self._line(img, bx - 2, yq, bx + 2, yq, col, alpha=DEFAULT_SHIFTS.alpha_base_band_towers * 0.5 * self._band[b])
 
 
     def _colorize_wave_sample(self, algo_idx, i, n, amp, band_val, angle_val):
@@ -5863,13 +6033,13 @@ class VideoSynthEngine:
             hue = ((i / max(n - 1, 1)) * 360.0 + hue_shift) % 360.0
         elif algo_idx == 2:
             # Amplitude + angle: louder samples and wider viewing angles shift hue.
-            hue = (200.0 + 160.0 * amp + math.degrees(angle_val) * 0.25 + hue_shift) % 360.0
+            hue = (200.0 + 160.0 * amp + math.degrees(angle_val) * 0.5 + hue_shift) % 360.0
         else:
             # Golden-angle scatter: irrational step keeps neighboring samples
             # visually distinct instead of banding.
             hue = (60.0 + 300.0 * ((i * PHI) % 1.0) + hue_shift) % 360.0
-        sat = 0.45 + 0.35 * min(1.0, abs(amp))
-        val = 0.30 + 0.55 * (0.5 + 0.5 * band_val)
+        sat = 0.5 + 0.5 * abs(amp)
+        val = 0.5 + 0.5 * (0.5 + 0.5 * band_val)
         return self._hsv(hue, sat, val)
 
     def _distort_wave_point(self, distort_idx, x, y, z, i, n, t, amp):
@@ -5882,19 +6052,19 @@ class VideoSynthEngine:
         u = i / max(n - 1, 1)
         if distort_idx == 0:
             # Radial swirl: bends the point around the origin over time.
-            ang = u * math.tau * 2.0 + t * 0.4
+            ang = u * math.tau * 2.0 + t * 0.5
             r = math.hypot(x, y)
             x, y = r * vg_cos(ang), r * vg_sin(ang)
         elif distort_idx == 1:
             # Ripple: sinusoidal depth push, scaled by the sample's own amplitude.
-            z = z + 0.25 * vg_sin(u * math.tau * 5.0 + t * 1.3) * (0.3 + abs(amp))
+            z = z + 0.5 * vg_sin(u * math.tau * 5.0 + t * 1.0) * (0.5 + abs(amp))
         elif distort_idx == 2:
             # Meum fractal fold: independent Meum/Meum-inverse breathing per axis.
-            x = x * (1.0 + 0.15 * vg_sin(u * MEUM * math.tau + t))
-            y = y * (1.0 + 0.15 * vg_cos(u * MEUM_INV * math.tau + t))
+            x = x * (1.0 + 0.5 * vg_sin(u * MEUM * math.tau + t))
+            y = y * (1.0 + 0.5 * vg_cos(u * MEUM_INV * math.tau + t))
         else:
             # Spiral pinch: whole shape breathes in/out around the frame center.
-            pinch = 0.85 + 0.15 * vg_sin(t * 0.7 + u * math.tau)
+            pinch = 0.85 + 0.5 * vg_sin(t * 1.0 + u * math.tau)
             x, y = x * pinch, y * pinch
         return x, y, z
 
@@ -5918,7 +6088,7 @@ class VideoSynthEngine:
             with the same colorization bank acting as its texture.
         """
         op = self._module_fade.get("wave_integration", 0.0) if "wave_integration" in getattr(self, "SCENOGRAPH_ITEM_CATALOG", []) else 0.0
-        if op < 0.03:
+        if op <= 0.0:
             return
         wave = self.wave
         n = len(wave)
@@ -5929,10 +6099,10 @@ class VideoSynthEngine:
         # Deterministic cycling through the distortion/colorization banks —
         # a function of elapsed time only, so it's reproducible run to run
         # for the same playback, never a per-frame random choice.
-        distort_idx = int(t * 0.13) % 4
-        colorize_idx = int(t * 0.09 + 1.0) % 4
+        distort_idx = int(t * 0.5) % 4
+        colorize_idx = int(t * 0.5 + 1.0) % 4
         angles = (0.0, math.tau / 3.0, 2.0 * math.tau / 3.0)
-        base_r = min(w, h) * (0.16 + 0.10 * st.get("rho", 1.0))
+        base_r = min(w, h) * DEFAULT_SHIFTS.vertical_center_wave_integration
 
         # --- 1D conformity: radial point sweep --------------------------
         for ang_i, base_ang in enumerate(angles):
@@ -5940,13 +6110,13 @@ class VideoSynthEngine:
                 amp = float(wave[i])
                 b = float(band[i % 8])
                 u = i / max(n - 1, 1)
-                r = base_r * (0.4 + 0.6 * abs(amp))
+                r = base_r * (0.5 + 0.5 * abs(amp))
                 ang = base_ang + u * 0.6 + t * 0.05
-                x, y, z = r * vg_cos(ang), r * vg_sin(ang) * 0.6, 0.0
+                x, y, z = r * vg_cos(ang), r * vg_sin(ang) * 0.5, 0.0
                 x, y, z = self._distort_wave_point(distort_idx, x, y, z, i, n, t, amp)
-                px, py, _ = self._project(x, y, 1.1 + 0.4 * ang_i, w, h)
+                px, py, _ = self._project(x, y, 1.1 + 0.5 * ang_i, w, h)
                 col = self._colorize_wave_sample(colorize_idx, i, n, amp, b, base_ang)
-                self._dot(img, px, py, col, op * (0.10 + 0.22 * abs(amp)), r=1)
+                self._dot(img, px, py, col, op * (0.50 + 0.5 * abs(amp)), r=1)
 
         # --- 2D conformity: planar ribbon at each angle ------------------
         for ang_i, base_ang in enumerate(angles):
@@ -5955,15 +6125,15 @@ class VideoSynthEngine:
                 amp = float(wave[i])
                 b = float(band[i % 8])
                 u = i / max(n - 1, 1)
-                lx = (u - 0.5) * base_r * 2.4
-                ly = amp * base_r * 0.9
+                lx = (u - 0.5) * base_r * 2.5
+                ly = amp * base_r * 1.0
                 rx = lx * vg_cos(base_ang)
                 rz = lx * vg_sin(base_ang)
                 x, y, z = self._distort_wave_point(distort_idx, rx, ly, rz, i, n, t, amp)
-                px, py, _ = self._project(x, y, 1.4 + 0.5 * ang_i, w, h)
+                px, py, _ = self._project(x, y, 1.5 + 0.5 * ang_i, w, h)
                 col = self._colorize_wave_sample(colorize_idx, i, n, amp, b, base_ang)
                 if prev is not None:
-                    self._line(img, prev[0], prev[1], px, py, col, op * (0.14 + 0.30 * abs(amp)))
+                    self._line(img, prev[0], prev[1], px, py, col, op * (0.5 + 0.30 * abs(amp)))
                 prev = (px, py)
 
         # --- 3D conformity: meshed + textured extruded surface -----------
@@ -5976,14 +6146,14 @@ class VideoSynthEngine:
                 amp = float(wave[i])
                 b = float(band[i % 8])
                 ang = base_ang + u * math.tau
-                r_in = base_r * (0.55 + 0.10 * ang_i)
-                r_out = r_in * (1.0 + 0.35 * abs(amp) + 0.15 * b)
-                xi, yi, zi = r_in * vg_cos(ang), r_in * vg_sin(ang) * 0.7, 0.0
-                xo, yo, zo = r_out * vg_cos(ang), r_out * vg_sin(ang) * 0.7, 0.18 * amp
+                r_in = base_r * (0.5 + 0.50 * ang_i)
+                r_out = r_in * (1.0 + 0.5 * abs(amp) + 0.5 * b)
+                xi, yi, zi = r_in * vg_cos(ang), r_in * vg_sin(ang) * 0.5, 0.0
+                xo, yo, zo = r_out * vg_cos(ang), r_out * vg_sin(ang) * 0.5, 0.5 * amp
                 xi, yi, zi = self._distort_wave_point(distort_idx, xi, yi, zi, i, n, t, amp)
                 xo, yo, zo = self._distort_wave_point(distort_idx, xo, yo, zo, i, n, t, amp)
-                inner.append(self._project(xi, yi, 1.6 + 0.3 * ang_i, w, h))
-                outer.append(self._project(xo, yo, 1.6 + 0.3 * ang_i, w, h))
+                inner.append(self._project(xi, yi, 1.5 + 0.5 * ang_i, w, h))
+                outer.append(self._project(xo, yo, 1.5 + 0.5 * ang_i, w, h))
             for k in range(ring_n):
                 k2 = (k + 1) % ring_n
                 u = k / ring_n
@@ -5991,9 +6161,9 @@ class VideoSynthEngine:
                 amp = float(wave[i])
                 b = float(band[i % 8])
                 col = self._colorize_wave_sample(colorize_idx, i, n, amp, b, base_ang)
-                alpha = op * (0.05 + 0.16 * (0.4 + 0.6 * abs(amp)))
+                alpha = op * (0.5 + 0.5 * (0.5 + 0.5 * abs(amp)))
                 self._fill_tri(img, inner[k], outer[k], outer[k2], col, alpha)
-                self._fill_tri(img, inner[k], outer[k2], inner[k2], col, alpha * 0.85)
+                self._fill_tri(img, inner[k], outer[k2], inner[k2], col, alpha * 0.5)
 
     def _update_scenograph_module_schedule(self, st):
         """Compute relevance and smooth fade for every visual module.
@@ -6003,45 +6173,45 @@ class VideoSynthEngine:
         re-addition never pop between modules.
         """
         snap = st["snap"]
-        e = float(np.clip(self._rms, 0.0, 1.0))
-        c = float(np.clip(self._centroid, 0.0, 1.0))
+        e = float(self._rms)
+        c = float(self._centroid)
         ph = float(st["ph"])
         relevance = {
-            "field": 0.72 + 0.28 * e,
+            "field": 0.5 + 0.5 * e,
             "ribbon": 0.0,  # disabled: waveform/scope chrome not drawn in scenograph
             "volumes": 0.30 + 0.70 * (0.5 + 0.5 * abs(vg_sin(ph * math.tau * MEUM))),
-            "faces": 0.22 + 0.78 * max(e, float(snap.get("struct", 0.0))),
-            "particles": 0.20 + 0.80 * (0.55 * e + 0.45 * abs(c - 0.5) * 2.0),
+            "faces": 0.5 + 0.5 * max(e, float(snap.get("struct", 0.5))),
+            "particles": 0.5 + 0.5 * (0.5 * e + 0.5 * abs(c - 0.5) * 2.0),
             "bands": 0.0,  # disabled: spectrum bars not drawn in scenograph
-            "goava": 0.95 if snap.get("goava") else 0.0,
-            "filaments": 0.18 + 0.82 * abs(vg_sin((ph + c) * math.tau * MEUM_INV)),
-            "roses": 0.15 + 0.85 * abs(vg_cos((ph * 0.5 + e) * math.tau)),
-            "orbitals": 0.18 + 0.82 * max(e, 1.0 - c),
-            "constellations": 0.48 + 0.40 * (1.0 - e) * (0.55 + 0.45 * float(snap.get("struct", 0.0))),
-            "lattice": 0.34 + 0.46 * (1.0 - min(1.0, e * 1.8)) * (0.5 + 0.5 * float(snap.get("fractal", 0.0))),
-            "bursts": min(1.0, e * 2.8) ** 1.7,
-            "spectral_comets": min(1.0, max(0.0, c) * 1.6) * min(1.0, e * 2.0),
-            "rhythm_mandala": max(0.0, float(snap.get("struct", 0.0)) * (1.0 - abs(c - 0.5) * 1.4)) * (0.55 + 0.45 * float(snap.get("eqr", 0.0))),
-            "pulse_grid": max(0.0, (1.0 - abs(float(snap.get("bpm", 120.0)) - 120.0) / 120.0)) * (0.35 + 0.65 * float(snap.get("struct", 0.0))),
+            "goava": 0.5 if snap.get("goava") else 0.0,
+            "filaments":0.5 + 0.5 * abs(vg_sin((ph + c) * math.tau * MEUM_INV)),
+            "roses": 0.5 + 0.5 * abs(vg_cos((ph * 0.5 + e) * math.tau)),
+            "orbitals": 0.5 + 0.5* max(e, 1.0 - c),
+            "constellations": 0.5 + 0.5 * (1.0 - e) * (0.5 + 0.5 * float(snap.get("struct", 0.5))),
+            "lattice": 0.5 + 0.5 * (1.0 - min(1.0, e * 1.5)) * (0.5 + 0.5 * float(snap.get("fractal", 0.5))),
+            "bursts": min(1.0, e * 2.5) ** 1.5,
+            "spectral_comets": min(1.0, max(0.0, c) * 1.5) * min(1.0, e * 2.0),
+            "rhythm_mandala": max(0.0, float(snap.get("struct", 0.5)) * (1.0 - abs(c - 0.5) * 1.5)) * (0.5 + 0.5 * float(snap.get("eqr", 0.5))),
+            "pulse_grid": max(0.0, (1.0 - abs(float(snap.get("bpm", 120.0)) - 120.0) / 120.0)) * (0.5 + 0.65 * float(snap.get("struct", 0.5))),
             "goava_field": 0.92 if snap.get("goava") else 0.0,
             # Engine-tied ornaments — same flags that change the audible mix.
-            "meum_spiral": 0.30 + 0.55 * float(np.clip(getattr(self, "_harmonic_activity", 0.5), 0.0, 1.0)),
-            "phi_web": 0.22 + 0.50 * float(snap.get("struct", 0.0)),
-            "harmonic_rings": 0.25 + 0.60 * e * (0.4 + 0.6 * c),
-            "seed_sparks": 0.85 if (snap.get("seeded") or snap.get("randomizer")) else 0.12,
-            "euclidean_spokes": 0.80 if snap.get("euclid") else 0.08,
-            "phase_ribbons": 0.80 if snap.get("phase_lock") else 0.10,
-            "lock_rings": 0.78 if snap.get("phase_lock") else 0.0,
-            "seeded_constellation": 0.82 if snap.get("seeded") else 0.0,
-            "goava_glyphs": 0.90 if snap.get("goava") else 0.0,
-            "carrier_wake": 0.70 if float(snap.get("carrier", 0.0) or 0.0) > 0.0 else 0.0,
-            "voice_orbs": 0.35 + 0.50 * e,
-            "ensemble_cloud": 0.28 + 0.45 * float(snap.get("struct", 0.0)),
-            "wave_integration": 0.40 + 0.50 * e,
-            "sub_bass_bloom": 0.20 + 0.70 * float(self._band[0] if len(self._band) else e),
-            "air_glitter": 0.15 + 0.70 * float(self._band[min(7, len(self._band)-1)] if len(self._band) else c),
-            "chord_fans": 0.25 + 0.55 * float(np.clip(getattr(self, "_harmonic_activity", 0.5), 0.0, 1.0)),
-            "depth_fog": 0.20 + 0.40 * (1.0 - e),
+            "meum_spiral": 0.50 + 0.5 * float(np.clip(getattr(self, "_harmonic_activity", 0.5), 0.5, 1.0)),
+            "phi_web": 0.5 + 0.50 * float(snap.get("struct", 0.0)),
+            "harmonic_rings": 0.5 + 0.50 * e * (0.5 + 0.5 * c),
+            "seed_sparks": 0.5 if (snap.get("seeded") or snap.get("randomizer")) else 0.0,
+            "euclidean_spokes": 0.5 if snap.get("euclid") else 0.0,
+            "phase_ribbons": 0.5 if snap.get("phase_lock") else 0.0,
+            "lock_rings": 0.5 if snap.get("phase_lock") else 0.0,
+            "seeded_constellation": 0.5 if snap.get("seeded") else 0.0,
+            "goava_glyphs": 0.5 if snap.get("goava") else 0.0,
+            "carrier_wake": 0.5 if float(snap.get("carrier", 0.0) or 0.0) > 0.0 else 0.0,
+            "voice_orbs": 0.5 + 0.50 * e,
+            "ensemble_cloud": 0.5 + 0.5 * float(snap.get("struct", 0.0)),
+            "wave_integration": 0.5 + 0.50 * e,
+            "sub_bass_bloom": 0.5 + 0.5 * float(self._band[0] if len(self._band) else e),
+            "air_glitter": 0.5 + 0.5 * float(self._band[min(7, len(self._band)-1)] if len(self._band) else c),
+            "chord_fans": 0.5 + 0.5 * float(np.clip(getattr(self, "_harmonic_activity", 0.5), 0.5, 1.0)),
+            "depth_fog": 0.5 + 0.5 * (1.0 - e),
         }
         for name, target in relevance.items():
             # Exciting regions can suppress a module briefly; this is a
@@ -6119,8 +6289,15 @@ class VideoSynthEngine:
             base *= float(MEUM_POWERS_36[0])
             ratio = float(_seed_to_pitch_ratio(seed, 0, 0))
             s_int = int(_safe_int_seed(seed) or 1)
+        # Sequential numeric inputs are canonical data, not live audio.  Keep
+        # them attached to the context so the visual translator sees the exact
+        # same numeric sequence that defined the composition.
+        seq = snap.get("sequential_nums", snap.get("seed_numbers", ())) or ()
+        if not seq and self.app is not None:
+            seq = getattr(self.app, "goava_seed_numbers", ()) or ()
         ctx = {"seed": seed, "base": base, "ratio": ratio, "s_int": s_int,
-               "full_unison": fu, "n_inst": CANONICAL_MASTER_SLOTS, "meum_depth": 1.0}
+               "full_unison": fu, "n_inst": CANONICAL_MASTER_SLOTS,
+               "meum_depth": 1.0, "sequential_nums": list(seq)}
         self._canonical_ctx = ctx
         self._canonical_flags = flags
         # Build the complete seed identity once.  Live Instrument Count later
@@ -6138,7 +6315,7 @@ class VideoSynthEngine:
                 self._visual_entropy = float(self._canonical[0]["entropy"])
             else:
                 self._visual_entropy = float(
-                    self._canonical[int(self._visual_frame) % len(self._canonical)]["entropy"])
+                    self._canonical[int(getattr(self, "_render_frame_index", 0)) % len(self._canonical)]["entropy"])
         self._ledger_visual_entropy()
 
     def _ledger_visual_entropy(self):
@@ -6240,15 +6417,18 @@ class VideoSynthEngine:
                     numbers = getattr(self.app, "goava_seed_numbers", None) or []
                     events = getattr(self.app, "goava_note_events", []) or []
                     for j, ev in enumerate(events[:8]):
-                        hz = max(20.0, float(ev.get("frequency", 432.0)))
-                        key = (float(ev.get("raw", j)) * 0.25 + float(ev.get("seed", 0.0)) * 0.11
-                               + j * PHI * MEUM_NORM)
+                        hz = float(ev.get("frequency", 432.0) or 432.0)
+                        key = _full_hue(
+                            _range_unit(math.log2(max(hz, 1e-12)),
+                                         math.log2(20.0), math.log2(20000.0)) / 360.0,
+                            float(ev.get("raw", j) or j) * 0.01,
+                        )
                         try:
                             txx = np.linspace(0.0, 0.30 + 0.55 * (hz / 260.0), 14)
                             stream = goava_irrational_stream(txx, numbers, base_frequency=hz, channel=j % len(numbers))
                         except Exception:
                             stream = np.sin(np.linspace(0.0, math.tau * 2.0, 14))
-                        cx, cy = w * 0.5, h * 0.46
+                        cx, cy = w * DEFAULT_SHIFTS.horizontal_center_math_roses, h * DEFAULT_SHIFTS.vertical_center_math_roses
                         rad = float(min(w, h)) * (0.16 + 0.30 * float(self._visual_entropy)) * chg
                         pts = []
                         for k in range(14):
@@ -6263,6 +6443,25 @@ class VideoSynthEngine:
         except Exception:
             pass
 
+    def _current_goava_events(self, cache=False):
+        """Return GOAVA events for the current evaluated numeric seed state.
+
+        ``cache=False`` intentionally re-evaluates the seed at render time so
+        time-varying numeric inputs are never replaced by a stale event cache.
+        """
+        if self.app is None:
+            return []
+        try:
+            if not cache and hasattr(self.app, "_build_goava_composition"):
+                t_value = float(getattr(self, "t", 0.0))
+                # Force the same evaluated numeric seed path used by GOAVA.
+                self.app._parse_goava_seed_values(t_value=t_value)
+                events = self.app._build_goava_composition(t_value=t_value)
+                return list(events or [])
+            return list(getattr(self.app, "goava_note_events", []) or [])
+        except Exception:
+            return list(getattr(self.app, "goava_note_events", []) or [])
+
     def _subscene_goava(self, img, w, h, st):
         """GOAVA-native shape engine: Java-derived values + live Meum calculus keys.
 
@@ -6274,10 +6473,10 @@ class VideoSynthEngine:
         if not st["snap"].get("goava"):
             return
         fade = self._module_fade.get("goava", 0.0) * self._module_fade.get("goava_field", 0.0) ** 0.5
-        events = getattr(self.app, "goava_note_events", []) if self.app is not None else []
+        events = self._current_goava_events(cache=False)
         if not events or fade <= 0.02:
             return
-        cx, cy = w * 0.5, h * 0.43
+        cx, cy = w * DEFAULT_SHIFTS.horizontal_center_goava, h * DEFAULT_SHIFTS.vertical_center_goava
         n = len(events)
         # GOAVA count = seed count (one visual node per seed numeric entry).
         # Never instrument-count, never a fixed 16-slot budget.
@@ -6303,19 +6502,31 @@ class VideoSynthEngine:
         rho = float(st.get("rho", 1.0))
         form = float(st.get("form", 0.5))
         line_d = float(st.get("line_d", 0.5))
-        seed_key = abs(float(st["snap"].get("seed", 0.0)))
-        for j, ev in enumerate(events[:goava_count]):
-            hz = max(20.0, float(ev.get("frequency", 432.0)))
-            raw = float(ev.get("raw", 0.0))
-            seed = float(ev.get("seed", 0.0))
+        # Numeric identity lanes use their actual observed ranges.  The old
+        # raw/seed/modulo constants compressed arbitrary inputs into small
+        # repeating intervals, so very different GOAVA values could look alike.
+        active_events = list(events[:goava_count])
+        raw_values = [float(ev.get("raw", 0.0) or 0.0) for ev in active_events]
+        seed_values = [float(ev.get("seed", 0.0) or 0.0) for ev in active_events]
+        raw_units = _sequence_units(raw_values)
+        seed_units = _sequence_units(seed_values)
+        freq_lo, freq_hi = 20.0, 20000.0
+        for j, ev in enumerate(active_events):
+            hz = float(ev.get("frequency", 432.0) or 432.0)
+            raw = float(ev.get("raw", 0.0) or 0.0)
+            seed = float(ev.get("seed", 0.0) or 0.0)
+            raw_u = raw_units[j] if j < len(raw_units) else 0.5
+            seed_u = seed_units[j] if j < len(seed_units) else 0.5
+            freq_u = _range_unit(math.log2(max(hz, 1e-12)), math.log2(freq_lo), math.log2(freq_hi))
+            # Direct normalized identity: raw, seed and frequency each occupy
+            # the complete numeric visual range before composition is applied.
+            key = (raw_u + seed_u + freq_u) / 3.0
             uidx = j / max(n - 1, 1)
-            # Numerical key: GOAVA raw/seed, then Meum calculus state.
-            key = raw + seed * MEUM_INV + seed_key * 0.00017 + u * MEUM + rho * 0.31
-            ang = self.t * (0.12 + 0.0008 * (hz % 31.0)) + uidx * math.tau + key * 0.017
-            depth = 0.72 + 0.28 * vg_sin(key * 0.013 + self.t * MEUM)
-            radius = (0.10 + 0.34 * (0.5 + 0.5 * vg_sin(key * MEUM_INV + form * 3.0))) * rho * depth
-            hue = (255 + j * 19 + hz * 0.035 + seed * 0.11 + self._video_hue_shift) % 360
-            col = self._hsv(hue, 0.72 + 0.18 * form, 0.82 + 0.18 * min(1.0, self._rms + form))
+            ang = self.t * (0.12 + 0.0008 * hz) + uidx * math.tau + key * math.tau
+            depth = 0.72 + 0.28 * vg_sin(key * math.tau + self.t * MEUM)
+            radius = (0.10 + 0.34 * key) * rho * depth
+            hue = _full_hue(key, self._video_hue_shift)
+            col = self._hsv(hue, 0.72 + 0.18 * form, 0.82 + 0.18 * float(self._rms + form))
 
             # 1D: a GOAVA numerical filament whose length responds to calculus line density.
             x1 = cx + vg_cos(ang) * radius * w * (0.25 + 0.30 * line_d)
@@ -6393,7 +6604,7 @@ class VideoSynthEngine:
         fade = self._module_fade.get("filaments", 0.0)
         if fade <= 0.02:
             return
-        cx, cy = w * 0.5, h * 0.47
+        cx, cy = w * DEFAULT_SHIFTS.horizontal_center_math_filaments, h * DEFAULT_SHIFTS.vertical_center_math_filaments
         pts = []
         for k in range(96):
             u = k / 95.0
@@ -6402,14 +6613,14 @@ class VideoSynthEngine:
             pts.append((cx + vg_cos(a) * r * w * 0.46,
                         cy + vg_sin(a * MEUM) * r * h * 0.34))
         for k in range(len(pts) - 1):
-            col = self._hsv((120 + k * 2 + self._video_hue_shift) % 360, 0.55, 0.72)
+            col = self._hsv((DEFAULT_SHIFTS.hue_shift_base_math_filaments + k * 2 + self._video_hue_shift) % 360, 0.55, 0.72)
             self._line(img, *pts[k], *pts[k + 1], col, alpha=0.42 * fade)
 
     def _subscene_math_roses(self, img, w, h, st):
         fade = self._module_fade.get("roses", 0.0)
         if fade <= 0.02:
             return
-        cx, cy = w * 0.5, h * 0.46
+        cx, cy = w * DEFAULT_SHIFTS.horizontal_center_math_roses, h * DEFAULT_SHIFTS.vertical_center_math_roses
         arms = int(np.clip(round(3 + 8.0 * getattr(self, "_harmonic_activity", 0.5)), 3, 11))
         for arm in range(arms):
             pts = []
@@ -6419,7 +6630,7 @@ class VideoSynthEngine:
                 r = (0.06 + 0.58 * u) * (0.58 + 0.42 * self._centroid)
                 pts.append((cx + vg_cos(a) * r * w * 0.47,
                             cy + vg_sin(a * MEUM_INV) * r * h * 0.40))
-            col = self._hsv((35 + arm * 70 + self._centroid * 100) % 360, 0.68, 0.82)
+            col = self._hsv((DEFAULT_SHIFTS.hue_shift_base_math_roses + arm * 70 + self._centroid * 360) % 360, 0.68, 0.82)
             for k in range(len(pts) - 1):
                 self._line(img, *pts[k], *pts[k + 1], col, alpha=0.09 * fade)
 
@@ -6427,7 +6638,7 @@ class VideoSynthEngine:
         fade = self._module_fade.get("orbitals", 0.0)
         if fade <= 0.02:
             return
-        cx, cy = w * 0.5, h * 0.44
+        cx, cy = w * DEFAULT_SHIFTS.horizontal_center_orbitals, h * DEFAULT_SHIFTS.vertical_center_orbitals
         ring_count = int(np.clip(round(2 + 4.0 * getattr(self, "_octave_boundary", 0.0)), 2, 6))
         for ring in range(ring_count):
             pts = []
@@ -6438,7 +6649,7 @@ class VideoSynthEngine:
                 z = 1.0 + 0.15 * vg_sin(a * 3.0 + self.t * MEUM)
                 pts.append((cx + vg_cos(a) * rad * w * 0.35 * z,
                             cy + vg_sin(a) * rad * h * 0.18))
-            col = self._hsv((205 + ring * 40 + self._video_hue_shift) % 360, 0.62, 0.78)
+            col = self._hsv((DEFAULT_SHIFTS.hue_shift_base_orbitals + ring * 40 + self._video_hue_shift) % 360, 0.62, 0.78)
             for k in range(len(pts) - 1):
                 self._line(img, *pts[k], *pts[k + 1], col, alpha=0.15 * fade)
 
@@ -6452,7 +6663,7 @@ class VideoSynthEngine:
             r = 0.12 + 0.34 * ((i * MEUM_NORM) % 1.0)
             x, y, _ = self._project(r * vg_cos(a), r * vg_sin(a * MEUM), 1.0 + 0.18 * vg_sin(a * 2), w, h)
             pts.append((x, y))
-        col = self._hsv((215 + self._video_hue_shift) % 360, 0.35, 0.95)
+        col = self._hsv((DEFAULT_SHIFTS.hue_shift_base_constellations + self._video_hue_shift) % 360, 0.35, 0.95)
         for i, p in enumerate(pts):
             self._dot(img, p[0], p[1], col, 0.65 * fade, r=1)
             if i and i % 2 == 0:
@@ -6462,7 +6673,7 @@ class VideoSynthEngine:
         fade = self._module_fade.get("lattice", 0.0)
         if fade <= 0.02: return
         step = max(24, int(34 - 10 * self._centroid))
-        col = self._hsv((170 + self._video_hue_shift) % 360, 0.55, 0.48)
+        col = self._hsv((DEFAULT_SHIFTS.hue_shift_base_lattice + self._video_hue_shift) % 360, 0.55, 0.48)
         for x in range(-h, w + h, step):
             self._line(img, x, 0, x + h, h, col, 0.075 * fade)
             self._line(img, x, h, x + h, 0, col, 0.055 * fade)
@@ -6470,7 +6681,7 @@ class VideoSynthEngine:
     def _subscene_bursts(self, img, w, h, st):
         fade = self._module_fade.get("bursts", 0.0)
         if fade <= 0.02: return
-        cx, cy = w * 0.5, h * 0.45
+        cx, cy = w * DEFAULT_SHIFTS.horizontal_center_bursts, h * DEFAULT_SHIFTS.vertical_center_bursts
         rings = 2 + int(5 * min(1.0, self._rms * 2.0))
         for r in range(rings):
             rad = (0.08 + 0.055 * r) * (1.0 + self._peak * 2.0)
@@ -6479,7 +6690,7 @@ class VideoSynthEngine:
                 a = k * math.tau / 28 + self.t * (0.9 + r * 0.2)
                 rr = rad * (1.0 + 0.18 * vg_sin(a * (5 + r) + self.t * 4))
                 pts.append((cx + vg_cos(a) * rr * w, cy + vg_sin(a) * rr * h * 0.55))
-            col = self._hsv((320 + r * 28 + self._centroid * 100) % 360, 0.85, 0.95)
+            col = self._hsv((DEFAULT_SHIFTS.hue_shift_base_bursts + r * 28 + self._centroid * 360) % 360, 0.85, 0.95)
             for k in range(len(pts)-1): self._line(img, *pts[k], *pts[k+1], col, 0.34 * fade)
 
     def _subscene_spectral_comets(self, img, w, h, st):
@@ -6487,22 +6698,22 @@ class VideoSynthEngine:
         if fade <= 0.02: return
         for b in range(8):
             amp = float(self._band[b])
-            if amp < 0.12: continue
+            if amp <= 0.0: continue
             a = self.t * (0.4 + amp * 1.7) + b * MEUM_INV
             r = 0.15 + amp * 0.38
-            cx, cy = w * 0.5, h * 0.45
+            cx, cy = w * DEFAULT_SHIFTS.horizontal_center_bursts, h * DEFAULT_SHIFTS.vertical_center_bursts
             x = cx + vg_cos(a) * r * w
             y = cy + vg_sin(a * MEUM) * r * h * 0.48
             tx = cx + vg_cos(a - 0.28) * r * w * 0.72
             ty = cy + vg_sin((a - 0.28) * MEUM) * r * h * 0.36
-            col = self._hsv((25 + b * 42 + self._video_hue_shift) % 360, 0.9, 0.98)
+            col = self._hsv((DEFAULT_SHIFTS.hue_shift_base_spectral_comets + b * 42 + self._video_hue_shift) % 360, 0.9, 0.98)
             self._line(img, tx, ty, x, y, col, (0.35 + 0.55 * amp) * fade)
             self._dot(img, x, y, col, 0.8 * fade, r=1 + int(amp * 3))
 
     def _subscene_rhythm_mandala(self, img, w, h, st):
         fade = self._module_fade.get("rhythm_mandala", 0.0)
         if fade <= 0.02: return
-        cx, cy = w * 0.5, h * 0.45
+        cx, cy = w * DEFAULT_SHIFTS.horizontal_center_bursts, h * DEFAULT_SHIFTS.vertical_center_bursts
         spokes = 12 + int(12 * st["snap"].get("struct", 0.0))
         for i in range(spokes):
             a = self.t * 0.12 + i * math.tau / spokes
@@ -6510,7 +6721,7 @@ class VideoSynthEngine:
             r = (0.12 + 0.25 * amp) * st["rho"]
             x = cx + vg_cos(a) * r * w
             y = cy + vg_sin(a) * r * h * 0.55
-            col = self._hsv((70 + i * 13 + self._video_hue_shift) % 360, 0.72, 0.9)
+            col = self._hsv((DEFAULT_SHIFTS.hue_shift_base_rhythm_mandala + i * 13 + self._video_hue_shift) % 360, 0.72, 0.9)
             self._line(img, cx, cy, x, y, col, 0.18 * fade + 0.25 * fade * amp)
 
     def _subscene_pulse_grid(self, img, w, h, st):
@@ -6518,7 +6729,7 @@ class VideoSynthEngine:
         if fade <= 0.02: return
         n = 8 + int(8 * st["snap"].get("struct", 0.0))
         pulse = abs(vg_sin(self.t * math.pi * max(1.0, st["snap"].get("bpm", 120.0)) / 60.0))
-        col = self._hsv((45 + self._video_hue_shift) % 360, 0.8, 0.9)
+        col = self._hsv((DEFAULT_SHIFTS.hue_shift_base_pulse_grid + self._video_hue_shift) % 360, 0.8, 0.9)
         for i in range(n):
             u = i / max(n - 1, 1)
             x = u * w
@@ -6532,7 +6743,7 @@ class VideoSynthEngine:
         n_shells = 3 + int(2 * snap["struct"]) + (1 if snap["carrier"] else 0)
         for s in range(n_shells):
             rad = st["vol_s"] * (0.15 + 0.12 * s) * (0.7 + 0.3 * self._band[s % 8])
-            cx, cy = w * 0.5, h * 0.45
+            cx, cy = w * DEFAULT_SHIFTS.horizontal_center_bursts, h * DEFAULT_SHIFTS.vertical_center_bursts
             for k in range(8):
                 a = self.t * MEUM_NORM + k * (math.tau / 8.0) + s * 0.4
                 pts.append((
@@ -6604,7 +6815,7 @@ class VideoSynthEngine:
                 key = float(ev.get("raw", 0.0)) + float(ev.get("seed", 0.0)) * MEUM_INV
                 a = self.t * 0.12 + j * math.tau / max(gcount, 1) + key * 0.017
                 rad = (0.10 + 0.34 * (0.5 + 0.5 * vg_sin(key * MEUM_INV + st["form"] * 3.0))) * st["rho"]
-                pts.append((w * 0.5 + vg_cos(a) * rad * w * 0.45, h * 0.43 + vg_sin(a) * rad * h * 0.34))
+                pts.append((w * DEFAULT_SHIFTS.horizontal_center_goava + vg_cos(a) * rad * w * 0.45, h * DEFAULT_SHIFTS.vertical_center_goava + vg_sin(a) * rad * h * 0.34))
         n_part = 12 + int(16 * self._rms)
         seed_i = int(abs(snap["seed"])) & 0xFFFF
         for p in range(min(n_part, 24)):
@@ -6634,7 +6845,7 @@ class VideoSynthEngine:
         fade = 0.20 + 0.55 * e + 0.25 * rms
         if fade < 0.08:
             return
-        cx, cy = w * 0.5, h * 0.52
+        cx, cy = w * DEFAULT_SHIFTS.horizontal_center_generative_terrain, h * DEFAULT_SHIFTS.vertical_center_generative_terrain
         # Number of ridge polylines scales with entropy (more chaos → more folds)
         n_ridges = 3 + int(7 * e + 2 * ((seed * MEUM) % 1.0))
         for r in range(n_ridges):
@@ -6700,14 +6911,14 @@ class VideoSynthEngine:
                     pl = getattr(app, "master_playlist_data", None) or []
                     for row in pl[:32]:
                         if isinstance(row, dict):
-                            playlist_hash ^= hash((
+                            playlist_hash ^= _stable_hash((
                                 str(row.get("step_algorithm", ""))[:24],
                                 str(row.get("operator", ""))[:16],
                                 str(row.get("live_parametrics", ""))[:16],
-                            )) & 0x7FFFFFFF
+                            ), modulus=0x80000000)
                     gas = getattr(app, "global_algo_state", None) or {}
                     if gas:
-                        playlist_hash ^= hash(str(sorted(gas.items())[:12])) & 0x7FFFFFFF
+                        playlist_hash ^= _stable_hash(str(sorted(gas.items())[:12]), modulus=0x80000000)
             except Exception:
                 playlist_hash = 0
 
@@ -6719,7 +6930,7 @@ class VideoSynthEngine:
             if not canon:
                 ctx = getattr(self, "_canonical_ctx", None) or {
                     "seed": seed, "base": 432.0, "ratio": 1.0, "s_int": s_int,
-                    "full_unison": False, "n_inst": CANONICAL_MASTER_SLOTS,
+                    "full_unison": False, "n_inst": CANONICAL_MASTER_SLOTS, "sequential_nums": list(seq),
                 }
                 flags = getattr(self, "_canonical_flags", {}) or {}
                 canon = [canonical_visual_instrument(i, ctx, flags)
@@ -6733,12 +6944,19 @@ class VideoSynthEngine:
             self._last_fractal_family = f"eski:{set_name}:OT={int(ot_on)}:z12"
 
             t = float(getattr(self, "t", 0.0))
-            cx, cy = w * 0.5, h * 0.48
+            cx, cy = w * DEFAULT_SHIFTS.horizontal_center_numeric_fractal, h * DEFAULT_SHIFTS.vertical_center_numeric_fractal
             # Shared compositional origin (seed xyz) — same for all nodes this frame
             ox, oy, oz = compositional_xyz(seed, sequential_nums=seq, t=t, slot=0)
 
             # Field graph: coarse lattice, 12 z-iters per node, transparency by escape
-            step = max(5, min(w, h) // 36)
+            # VISIBLE_FRACTAL_2026: this used to be a sparse grid of 1px dots
+            # (step ~= min(w,h)//36, radius = step//3) capped at alpha<=0.80 —
+            # at typical preview/export resolutions that is a handful of
+            # barely-blended single pixels, i.e. "incredibly faint on the
+            # scale". Denser sampling + larger dots + a full-range alpha
+            # ceiling make the same deterministic field actually readable,
+            # without changing any of the seed-derived math that picks it.
+            step = max(3, min(w, h) // 24)
             for yy in range(0, h, step):
                 for xx in range(0, w, step):
                     u = (xx / max(1, w) - 0.5) * 2.0 + ox * 0.15
@@ -6753,7 +6971,7 @@ class VideoSynthEngine:
                     norm = mag / (1.0 + mag)
                     # Transparency: deeper iter / non-escape → more opaque; early escape → translucent
                     alpha = (0.12 + 0.55 * (n_done / 12.0) * (0.35 if escaped else 1.0)) * boost
-                    alpha = max(0.30, min(0.80, alpha))  # fractal visible over bright bg (was 0.06 floor → invisible in video)
+                    alpha = max(0.30, min(1.0, alpha))  # floor keeps it visible; no artificial ceiling below full opacity
                     # 3D adaptation: project (u,v,z_last) with shared compositional offset
                     px, py, depth = self._project(
                         u * 0.55, v * 0.55, 0.7 + 0.25 * max(-1.0, min(1.0, z_last * 0.15)) + oz * 0.1,
@@ -6761,7 +6979,7 @@ class VideoSynthEngine:
                     col = self._hsv(
                         (norm * 220 + self._video_hue_shift + (35 if ot_on else 0) + n_done * 4) % 360,
                         0.45 + 0.2 * (n_done / 12.0), 0.35 + 0.5 * norm)
-                    self._dot(img, px, py, col, alpha, r=max(1, step // 3))
+                    self._dot(img, px, py, col, alpha, r=max(2, step // 2))
                     # Trail of z-values (transparent trail along iteration)
                     if n_done >= 3:
                         for zi, zv in enumerate(zs[:: max(1, n_done // 3)]):
@@ -6798,23 +7016,23 @@ class VideoSynthEngine:
                     math.sin(yaw * MEUM_INV) * rad_orb * 0.78 + sy * 0.1,
                     0.75 + 0.2 * depth_o + 0.1 * max(-1.0, min(1.0, z_last * 0.1)) * book_w + sz * 0.05,
                     w, h)
-                alpha = (0.18 + 0.5 * ent * (n_done / 12.0) * (0.4 if escaped else 1.0)) * boost
-                alpha *= (0.7 + 0.3 * lat_w + 0.2 * book_w)
+                alpha = (0.5 + 0.5 * ent * (n_done / 12.0) * (0.4 if escaped else 1.0)) * boost
+                alpha *= (0.5 + 0.5 * lat_w + 0.5 * book_w)
                 if mode.get("near_phase_point"):
-                    alpha = min(0.85, alpha + 0.12 * float(mode.get("snap", 0)))
-                alpha = max(0.35, min(0.85, alpha))
+                    alpha = min(1.0, alpha + 0.12 * float(mode.get("snap", 0)))
+                alpha = max(0.5, min(1.0, alpha))
                 hue_m = (hue + self._video_hue_shift + abs(z_last) * 6
                          + 25.0 * float(mode.get("goava", 0))
                          + 15.0 * float(mode.get("phase_lock", 0))) % 360
-                col = self._hsv(hue_m, 0.45 + 0.25 * ent, 0.4 + 0.45 * ent)
-                rad = max(1, int(2 + 4 * ent * boost * (0.8 + 0.4 * lat_w)))
+                col = self._hsv(hue_m, 0.5 + 0.5 * ent, 0.5 + 0.5 * ent)
+                rad = max(1, int(2 + 4 * ent * boost * (0.5+ 0.5 * lat_w)))
                 self._dot(img, px, py, col, alpha, r=rad)
                 # Child sample — stronger when scatter/goava mode weight is up
                 child_a = alpha * (0.35 + 0.25 * float(mode.get("scatter", 0))
                                    + 0.2 * float(mode.get("goava", 0)))
                 cx2, cy2, _ = self._project(
-                    math.cos(yaw * PHI) * (0.12 + 0.15 * depth_o),
-                    math.sin(yaw * MEUM) * (0.12 + 0.15 * depth_o) * 0.7,
+                    math.cos(yaw * PHI) * (0.5 + 0.5 * depth_o),
+                    math.sin(yaw * MEUM) * (0.5 + 0.5 * depth_o) * 0.7,
                     0.8 + 0.1 * depth_o, w, h)
                 col2 = self._hsv((hue_m + 60) % 360, 0.4, 0.35 + 0.3 * ent)
                 self._dot(img, cx2, cy2, col2, child_a, r=max(1, rad // 2))
@@ -6850,7 +7068,7 @@ class VideoSynthEngine:
             except Exception:
                 seed_vals = [0.0]
         e = float(np.clip(getattr(self, "_visual_entropy", 0.5), 0.0, 1.0))
-        cx, cy = w * 0.5, h * 0.44
+        cx, cy = w * DEFAULT_SHIFTS.horizontal_center_orbitals, h * DEFAULT_SHIFTS.vertical_center_orbitals
         n = len(seed_vals)
         for i, val in enumerate(seed_vals):
             try:
@@ -6889,9 +7107,9 @@ class VideoSynthEngine:
         """
         snap = st.get("snap", {}) if isinstance(st.get("snap"), dict) else {}
         seed = float(snap.get("seed", 0.0))
-        e = float(np.clip(self._rms, 0.0, 1.0))
-        c = float(np.clip(self._centroid, 0.0, 1.0))
-        cx, cy = w * 0.5, h * 0.46
+        e = float(self._rms)
+        c = float(self._centroid)
+        cx, cy = w * DEFAULT_SHIFTS.horizontal_center_math_roses, h * DEFAULT_SHIFTS.vertical_center_math_roses
         # phase-lock rings
         if snap.get("phase_lock") or snap.get("euclid"):
             rings = 2 + int(3 * e)
@@ -6921,7 +7139,7 @@ class VideoSynthEngine:
                 col = self._hsv((40 + 280 * u + self._video_hue_shift) % 360, 0.65, 0.85)
                 self._dot(img, px, py, col, 0.18 + 0.22 * e, r=1 + (i % 2))
         # meum spiral (always mild, stronger with harmonic activity)
-        harm = float(np.clip(getattr(self, "_harmonic_activity", 0.5), 0.0, 1.0))
+        harm = float(getattr(self, "_harmonic_activity", 0.5))
         fade_sp = 0.25 + 0.55 * harm
         if fade_sp > 0.05:
             pts = []
@@ -7100,14 +7318,23 @@ class VideoSynthEngine:
         except Exception:
             pass
 
-    def render_frame(self, w=640, h=360, export=False):
-        """Composite all Meum subscenes. export=True skips any UI-only overlays."""
+    def render_frame(self, w=640, h=360, export=False, frame_index=None):
+        """Composite all Meum subscenes. export=True skips UI-only overlays.
+
+        ``frame_index`` is explicit for deterministic offline rendering; live
+        callers may omit it and advance the interactive frame counter normally.
+        """
         self.export_mode = bool(export)
         w = max(int(w), 8)
         h = max(int(h), 8)
         img = np.zeros((h, w, 3), dtype=np.float32)
         self._advance_instrument_resize()
-        self._visual_frame += 1
+        if frame_index is None:
+            self._visual_frame += 1
+            self._render_frame_index = int(self._visual_frame)
+        else:
+            self._render_frame_index = int(frame_index)
+            self._visual_frame = int(frame_index)
 
         # Seeded stochastic evolution from *evaluated* numeric seeds (not
         # SHA of the raw script text — that made visuals drift away from the
@@ -7128,7 +7355,7 @@ class VideoSynthEngine:
                     seed_key = int(_safe_int_seed(self.app.get_numeric_seed() or 0.0))
                 except Exception:
                     seed_key = 0
-            mixed = (seed_key ^ (int(self._visual_frame) * 0x9E3779B1)) & 0x7FFFFFFF
+            mixed = (seed_key ^ (int(self._render_frame_index) * 0x9E3779B1)) & 0x7FFFFFFF
             self._rng = np.random.RandomState(mixed if mixed else 1)
             # CANONICAL_VISUAL_2026: _visual_entropy is set by the canonical
             # build below (entropy_draw_0_1 / union context) — the old
@@ -7434,14 +7661,14 @@ class VideoSynthViewer(QFrame):
             painter.drawText(8, hud_y, f"DJ {' + '.join(dj_labels)} · pair #{int(snap.get('live_dj_pair_index', 0)) + 1}/1128")
         # Seed-list radial ticks around the origin (visual analogue of list[i])
         if seed_list and self.width() > 40 and self.height() > 40:
-            cx, cy = self.width() * 0.5, self.height() * 0.47
+            cx, cy = self.width() * 0.5, self.height() * 0.5
             mx = max(abs(v) for v in seed_list) or 1.0
             for i, v in enumerate(seed_list[:12]):
-                ang = (i / max(len(seed_list[:12]), 1)) * math.tau + float(getattr(self.engine, "t", 0.0)) * 0.15
-                rr = min(self.width(), self.height()) * (0.18 + 0.12 * abs(v) / mx)
+                ang = (i / max(len(seed_list[:12]), 1)) * math.tau + float(getattr(self.engine, "t", 0.0)) * 0.5
+                rr = min(self.width(), self.height()) * (0.5 + 0.5 * abs(v) / mx)
                 x = cx + math.cos(ang) * rr
-                y = cy + math.sin(ang * MEUM_INV) * rr * 0.72
-                col = QColor.fromHsv(int(abs(v) * 0.37) % 360, 180, 230, 200)
+                y = cy + math.sin(ang * MEUM_INV) * rr * 0.5
+                col = QColor.fromHsv(int(abs(v) * 0.5) % 360, 180, 230, 200)
                 painter.setPen(QPen(col, 2))
                 painter.drawEllipse(int(x - 2), int(y - 2), 4, 4)
 
@@ -7931,7 +8158,7 @@ class DomainPartitionEquationEngine:
             weight_total += w
             matched += 1
 
-        if weight_total <= 1e-12:
+        if weight_total <= 0:
             return 0.0
         return float(weighted_sum / weight_total)
 
@@ -7940,7 +8167,7 @@ class DomainPartitionEquationEngine:
         t_array = np.asarray(t_array, dtype=float)
         out = np.zeros_like(t_array, dtype=float)
         t_min, t_max = float(t_array.min()), float(t_array.max())
-        span = max(t_max - t_min, 1e-12)
+        span = max(t_max - t_min, 0)
         max_pts = 1024
         n = len(t_array)
         if n > max_pts:
@@ -8170,11 +8397,11 @@ class AsymmetryCorrection:
         denom = max(left + right, 1e-9)
         lr = (left - right) / denom
         temporal = math.sin(phase * MEUM_LOG2 + index * PHI_INV) * MEUM_NORM
-        x = max(-max_s, min(max_s, -(lr * MEUM_NORM * 0.4 + temporal * UI_DRIFT)))
+        x = max(-max_s, min(max_s, -(lr * MEUM_NORM * 0.5 + temporal * UI_DRIFT)))
         top = sum(scalars[i] for i in range(len(scalars)//2))
         bottom = sum(scalars[i] for i in range(len(scalars)//2, len(scalars)))
-        tb = (top - bottom) / max(top + bottom, 1e-9)
-        y = max(-max_s, min(max_s, -(tb * MEUM_NORM * 0.3)))
+        tb = (top - bottom) / max(top + bottom, 0)
+        y = max(-max_s, min(max_s, -(tb * MEUM_NORM * 0.5)))
         return x, y
 
 
@@ -8344,7 +8571,7 @@ class AdvancedDSPEngine:
             for col_idx, cell in enumerate(row):
                 if cell is not None and cell != "":
                     start_time = (col_idx / total_cols) * total_duration
-                    note_dur = max(0.05, (total_duration / total_cols) * duration_mult)
+                    note_dur = max(0.0, (total_duration / total_cols) * duration_mult)
                     end_time = min(total_duration, start_time + note_dur)
 
                     idx_start = int(start_time * self.sample_rate)
@@ -8584,7 +8811,7 @@ class ParametricMathBackground(QWidget):
         for px in range(0, max(2, width), 8):
             x = px / max(width, 1) + corr_x
             carrier = math.sin((x * freq * math.tau) + phase * direction * (0.7 + sf))
-            mod = math.sin((x * fm * math.tau) + phase * (0.35 + sf2))
+            mod = math.sin((x * fm * math.tau) + phase * (0.5 + sf2))
             amp = (5.0 + 20.0 * sf) * (1.0 + am * mod)
             y = base_y + vertical + direction * amp * carrier
             if px == 0:
@@ -8658,11 +8885,11 @@ class ParametricMathBackground(QWidget):
         # Fewer, quieter blocks so they stay ambient theorem glyphs — not dead labels
         # competing with GLOBAL / LOCAL controls.
         n = min(10, int(getattr(self, "MAX_INSTANCES", 24)), int(max_blocks), len(self.MEUM_BLOCKS))
-        col_w = min(220.0, max(140.0, width * 0.14))
-        a_fill = min(1.0, 0.22 / MEUM_SQ)
-        a_edge = min(1.0, 0.32 / MEUM_SQ)
-        a_title = min(1.0, 0.55 / MEUM_SQ)
-        a_body = min(1.0, 0.42 / MEUM_SQ)
+        col_w = min(220.0, max(140.0, width * 0.5))
+        a_fill = min(1.0, 0.5 / MEUM_SQ)
+        a_edge = min(1.0, 0.5 / MEUM_SQ)
+        a_title = min(1.0, 0.5 / MEUM_SQ)
+        a_body = min(1.0, 0.5 / MEUM_SQ)
         for i, (sym, meaning, fmt, value) in enumerate(self.MEUM_BLOCKS[:n]):
             corr_x, corr_y = AsymmetryCorrection.offset(i, n, phase, scalars)
             # Full-field Meum Lissajous drift (float all over)
@@ -8680,7 +8907,7 @@ class ParametricMathBackground(QWidget):
             x = max(4.0, min(width - col_w - 4.0, x))
             y = max(6.0, min(height - 44.0, y))
             rect = QRectF(x, y, col_w, 40.0)
-            hue = (0.48 + i * MEUM_NORM * 0.08 + 0.04 * math.sin(t)) % 1.0
+            hue = (0.5  + 0.5 * math.sin(t)) % 1.0
             fill = QColor.fromHsvF(hue, 0.35, 0.12, a_fill)
             edge = QColor.fromHsvF(hue, 0.55, 0.95, a_edge)
             painter.setBrush(QBrush(fill))
@@ -8739,6 +8966,156 @@ class UIComponentManager(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self.btn_seeded_randomizer)
 
+
+
+# Credit: UI panel implementation by Jcode.
+class CompositionShiftsReviewPanel(QWidget):
+    """UI panel for reviewing and tuning CompositionVisualShifts values."""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Visual Shifts Review")
+        self.setMinimumWidth(600)
+        
+        # Get default shifts
+        self.shifts = CompositionVisualShifts()
+        
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(8)
+        
+        # Title
+        title = QLabel("Composition Visual Shifts")
+        title.setStyleSheet("font-weight: bold; font-size: 14px;")
+        main_layout.addWidget(title)
+        
+        # Create scrollable content area
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setFixedHeight(400)
+        
+        self.content_widget = QWidget()
+        self.content_layout = QVBoxLayout(self.content_widget)
+        self.content_layout.setAlignment(Qt.AlignTop)
+        self.content_layout.setSpacing(4)
+        
+        # Add vertical center offsets
+        self._add_section("Vertical Center Offsets", [
+            (name.removeprefix("vertical_center_"), value)
+            for name, value in vars(self.shifts).items()
+            if name.startswith("vertical_center_")
+        ])
+        
+        # Add horizontal center offsets
+        self._add_section("Horizontal Center Offsets", [
+            (name.removeprefix("horizontal_center_"), value)
+            for name, value in vars(self.shifts).items()
+            if name.startswith("horizontal_center_")
+        ])
+        
+        # Add projection factors
+        self._add_section("Projection Factors", [
+            ("proj_width", self.shifts.proj_width_factor),
+            ("proj_height", self.shifts.proj_height_factor),
+            ("proj_image_synthesis_w", self.shifts.proj_subscene_image_synthesis_width),
+            ("proj_image_synthesis_h", self.shifts.proj_subscene_image_synthesis_height),
+        ])
+        
+        # Add every hue shift base, not just a sample.
+        self._add_section("Hue Shift Bases", [
+            (name.removeprefix("hue_shift_base_"), value)
+            for name, value in vars(self.shifts).items()
+            if name.startswith("hue_shift_base_")
+        ])
+        
+        # Add engine packing constants
+        self._add_section("Engine Packing Constants", [
+            ("pack_radius_base", self.shifts.pack_radius_base),
+            ("pack_scale_floor", self.shifts.pack_scale_floor),
+            ("pack_implode_base", self.shifts.pack_implode_base),
+            ("crowd_base", self.shifts.crowd_base),
+        ])
+        
+        self.scroll.setWidget(self.content_widget)
+        main_layout.addWidget(self.scroll)
+        
+        # Reset button
+        self.btn_reset = QPushButton("Reset to Defaults")
+        self.btn_reset.clicked.connect(self._reset_to_defaults)
+        main_layout.addWidget(self.btn_reset)
+    
+    def _add_section(self, title, values):
+        section_layout = QHBoxLayout()
+        
+        label = QLabel(title)
+        label.setStyleSheet("font-weight: bold; color: #4a90d9;")
+        section_layout.addWidget(label)
+        section_layout.addStretch()
+        
+        self.content_layout.addLayout(section_layout)
+        
+        for name, value in values:
+            row = QHBoxLayout()
+            row.setContentsMargins(10, 0, 0, 0)
+            
+            name_label = QLabel(f"{name}:")
+            name_label.setStyleSheet("font-size: 11px;")
+            row.addWidget(name_label)
+            
+            value_label = QLabel(f"{value}")
+            value_label.setProperty("name", name)
+            value_label.setStyleSheet("font-family: monospace; font-size: 11px; color: #666;")
+            row.addWidget(value_label)
+            
+            row.addStretch()
+            self.content_layout.addLayout(row)
+        
+        self.content_layout.addSpacing(10)
+    
+    def _reset_to_defaults(self):
+        self.shifts = CompositionVisualShifts()
+        # Refresh the UI; QLayout has no takeAllWidgets() API.
+        while self.content_layout.count():
+            item = self.content_layout.takeAt(0)
+            widget = item.widget()
+            child_layout = item.layout()
+            if widget is not None:
+                widget.deleteLater()
+            elif child_layout is not None:
+                while child_layout.count():
+                    child = child_layout.takeAt(0)
+                    if child.widget() is not None:
+                        child.widget().deleteLater()
+        self._add_section("Vertical Center Offsets", [
+            (name.removeprefix("vertical_center_"), value)
+            for name, value in vars(self.shifts).items()
+            if name.startswith("vertical_center_")
+        ])
+        self._add_section("Horizontal Center Offsets", [
+            (name.removeprefix("horizontal_center_"), value)
+            for name, value in vars(self.shifts).items()
+            if name.startswith("horizontal_center_")
+        ])
+        self._add_section("Projection Factors", [
+            ("proj_width", self.shifts.proj_width_factor),
+            ("proj_height", self.shifts.proj_height_factor),
+            ("proj_image_synthesis_w", self.shifts.proj_subscene_image_synthesis_width),
+            ("proj_image_synthesis_h", self.shifts.proj_subscene_image_synthesis_height),
+        ])
+        self._add_section("Hue Shift Bases", [
+            (name.removeprefix("hue_shift_base_"), value)
+            for name, value in vars(self.shifts).items()
+            if name.startswith("hue_shift_base_")
+        ])
+        self._add_section("Engine Packing Constants", [
+            ("pack_radius_base", self.shifts.pack_radius_base),
+            ("pack_scale_floor", self.shifts.pack_scale_floor),
+            ("pack_implode_base", self.shifts.pack_implode_base),
+            ("crowd_base", self.shifts.crowd_base),
+        ])
+
+
 class PhaseLockedWavefieldEngine:
     """Sensor → director → transducer for phase-coherent field fills.
 
@@ -8773,7 +9150,7 @@ class PhaseLockedWavefieldEngine:
                 inst_seed = _safe_int_seed(seed if seed else 1)
             rng = np.random.default_rng(inst_seed & 0x7fffffff)
             # Euclidean spine + continuous probability fill (no forced even-step burst grid).
-            period = 1 + int((i * MEUM + inst_seed * 0.01) % 3)  # 1..3
+            period = 1 + int((i * MEUM + inst_seed * 0.00) % 3)  # 1..3
             offset = int((i * 3 + inst_seed) % max(period, 1))
             euc = [((s + offset) % period) == 0 for s in range(count)]
             # Continuous density: each silent step may open via full-float probability
@@ -8782,13 +9159,13 @@ class PhaseLockedWavefieldEngine:
                     continue
                 p = float(rng.random())  # any decimal in [0,1)
                 # Soft open threshold from seed phase — not a rigid %2 pattern
-                thr = 0.38 + 0.22 * math.sin((s + 1) * MEUM + i * MEUM_INV)
+                thr = 0.5 + 0.5 * math.sin((s + 1) * MEUM + i * MEUM_INV)
                 if p > thr:
                     euc[s] = True
             t = np.linspace(0, 1, count, endpoint=False)
             # Continuous envelopes — any float decimal
-            env = 0.5 + 0.5 * np.sin(2 * np.pi * t * MEUM + i * 0.17 + inst_seed * 1e-6)
-            har = 0.5 + 0.5 * np.sin(2 * np.pi * t * MEUM_LOG2 + i * 0.31 + inst_seed * 1e-5)
+            env = 0.5 + 0.5 * np.sin(2 * np.pi * t * MEUM + i * 0.5 + inst_seed * 0.0)
+            har = 0.5 + 0.5 * np.sin(2 * np.pi * t * MEUM_LOG2 + i * 0.5 + inst_seed * 0.0)
             self.wavefield[name] = {
                 "euclidean": euc,
                 "envelope": env.astype(float).tolist(),
@@ -9088,7 +9465,7 @@ class WaveformVectorCanvas(QWidget):
 
     def mouseMoveEvent(self, event):
         if self.dragging_point:
-            self.dragging_point.setY(max(5, min(self.height() - 5, event.position().y())))
+            self.dragging_point.setY(max(6, min(self.height() - 6, event.position().y())))
             self.update()
 
     def mouseReleaseEvent(self, event):
@@ -9097,9 +9474,9 @@ class WaveformVectorCanvas(QWidget):
     def wheelEvent(self, event):
         delta = event.angleDelta().y()
         if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
-            self.vector_scale = max(0.1, self.vector_scale + (0.1 if delta > 0 else -0.1))
+            self.vector_scale = max(0.0, self.vector_scale + (0.0 if delta > 0 else -0.0))
         else:
-            self.hardness = max(0.0, min(100.0, self.hardness + (5.0 if delta > 0 else -5.0)))
+            self.hardness = max(0.0, min(100.0, self.hardness + (6.0 if delta > 0 else -6.0)))
         self.update()
 class InstrumentStrip(QGroupBox):
     """Dynamic Instrument Node with modulation resistance profile (Padded, Keys, Percussion),
@@ -9778,7 +10155,7 @@ DEPENDENCIES (install last — same list as project README.md)
   End of Help — Groovebox
   Credits: Grok (xAI), Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI),
   Mistral.ai (Mistral), Meta AI (Meta), GitHub Copilot (GitHub),
-  Cursor Grok 4.6, and opencode (anomalyco).
+  Cursor Grok 4.6, jcode(1jehuang) and opencode (anomalyco).
 ================================================================================
 """
 
@@ -9944,7 +10321,7 @@ class MusicFractallizer:
                 f0 = sr / max(period * 2.0, 2.0)
             else:
                 f0 = 110.0
-            f0_ctrl[i] = max(40.0, min(f0, sr * 0.2))
+            f0_ctrl[i] = max(40.0, min(f0, sr * 0.0))
         f0_full = np.interp(
             np.arange(n, dtype=np.float64),
             np.linspace(0, n - 1, nb),
@@ -10525,7 +10902,7 @@ class FormantSynthInstance(StandardSynthInstance):
             1.0,
             self.freq
             * (
-                0.75
+                0.5
                 + abs(float(x)) * 0.5
             ),
         )
@@ -10596,7 +10973,7 @@ class DeterministicNoiseInstance(StandardSynthInstance):
             # without any per-sample incrementation.
             key = deterministic_u64("noise", self.freq, self.sr, x, y, z, base + i)
             noise = ((key / 18446744073709551615.0) * 2.0) - 1.0
-            val = noise * 0.1 * abs(x) * max(0.0, y)
+            val = noise * 0.0 * abs(x) * max(0.0, y)
             buf.append(val)
         self._noise_index = base + num_samples
         self.life -= 1
@@ -10760,7 +11137,7 @@ class GlobalCrossTabBusManager:
     def update_cable_polarity_gain(self, index, polarity, gain_delta):
         if 0 <= index < len(self.global_cables):
             self.global_cables[index]["polarity"] = polarity
-            self.global_cables[index]["gain"] = max(0.1, round(self.global_cables[index]["gain"] + gain_delta, 2))
+            self.global_cables[index]["gain"] = max(0.0, round(self.global_cables[index]["gain"] + gain_delta, 2))
             self.broadcast_update()
 
     def trigger_resampling(self):
@@ -11142,7 +11519,7 @@ class GrooveboxEngine:
             try:
                 val = eval(self.scale_equation, {"__builtins__": None}, {"x": x, "y": y, "z": z, "math": math})
                 freq = FREQUENCY_432HZ + (float(val) * 22.5)
-                freqs.append(max(35.0, freq))
+                freqs.append(max(1024.0, freq))
             except Exception:
                 freqs.append(FREQUENCY_432HZ + (i * 12.0 * self.scale_increment))
         return freqs
@@ -11156,7 +11533,7 @@ class GrooveboxEngine:
         for offset_mult, amp_val in point_pairs:
             adjusted_offset = offset_mult * x_var * y_var - (z_var * 0.1)
             freq = base_f + (adjusted_offset * self.scale_increment * 55.0)
-            resolved.append((max(20.0, freq), amp_val))
+            resolved.append((max(1024.0, freq), amp_val))
         return resolved
 
     def serialize_project(self, filepath):
@@ -11515,7 +11892,7 @@ class PatchableKnob(QWidget):
                     break
 
     def _adjust_gain(self, delta):
-        self.gain_multiplier = max(0.25, round(self.gain_multiplier + delta, 2))
+        self.gain_multiplier = max(0.0, round(self.gain_multiplier + delta, 2))
         self.gain_lbl.setText(f"Amt: {self.gain_multiplier:.2f}x")
         if self.is_patched:
             for i, c in enumerate(GLOBAL_BUS.global_cables):
@@ -13554,7 +13931,7 @@ class PaintbrushTable(QWidget):
             # Additional overlapping synth identity / automation.
             if (
                 not getattr(self, "_paint_expanding", False)
-                and float(rng.random()) < 0.55
+                and float(rng.random()) < 0.5
             ):
                 extra = self.app.instrument_names_48[
                     int(
@@ -13571,10 +13948,10 @@ class PaintbrushTable(QWidget):
                     try:
                         self.row_coverage.setdefault(row, {})
                         self.row_coverage[row][name] = max(
-                            float(self.row_coverage[row].get(name, 0.0)), 0.55
+                            float(self.row_coverage[row].get(name, 0.0)), 0.5
                         )
                         self.row_coverage[row][extra] = max(
-                            float(self.row_coverage[row].get(extra, 0.0)), 0.45
+                            float(self.row_coverage[row].get(extra, 0.0)), 0.5
                         )
                         self._blend_row_structs(row, name, extra, 0.5 * self._blend_max_fraction())
                     except Exception:
@@ -15267,8 +15644,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.ui_manager.setWindowTitle("EQR Phase-Locked Wavefield Controls")
         self.ui_manager.resize(850, 120)
 
+        # Initialize the Composition Shifts Review Panel
+        self.shifts_panel = CompositionShiftsReviewPanel(self)
+        self.shifts_panel.setWindowTitle("Visual Shifts Review")
+        self.shifts_panel.resize(650, 500)
+        self.shifts_panel.hide()
+
         # Force UI manager to render
         self.ui_manager.show()
+        self.btn_shifts_review = QPushButton("Visual Shifts")
+        self.btn_shifts_review.setToolTip("Review the centralized audiovisual numeric shifts")
+        self.btn_shifts_review.clicked.connect(self.shifts_panel.show)
+
 
         # Instantiate and add the UIComponentManager
         if not self.centralWidget():
@@ -15280,7 +15667,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         # Instantiate and add the UIComponentManager to the main window layout
         self.main_window_layout.addWidget(self.ui_manager)
-		# ----------------------------------------------------------------
+        self.main_window_layout.addWidget(self.btn_shifts_review)
+        # ----------------------------------------------------------------
         # FULL-WINDOW parametric math background (asking-for.txt fix).
         # Previously the background lived only on UIComponentManager, which
         # is resized to 850×120 — so the field was effectively invisible.
@@ -16101,7 +16489,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     # deduped: shadowed by later _on_goava_toggled() definition (perfect-unison system).
 
-    def _goava_mix(self, local_t, row_idx, step_duration):
+    def _goava_mix(self, local_t, row_idx, step_duration, row_start_time=0.0):
         """Mix GOAVA pitched-sine chords using true composition time index.
 
         row_idx is the playlist/row ordinal.  We treat it as the true time
@@ -16109,10 +16497,26 @@ class MathematiciansGrooveboxApp(QMainWindow):
         time-varying) the event that lands on this row is selected by that
         absolute index, not by a static t=0 snapshot.  Each event carries a
         small chord (root + 5th + octave) of pure sines.
+
+        GOAVA_TIME_SEED_FIX_2026: previously ``self.goava_note_events`` was
+        built exactly once per render (t_value=0.0) and every row just
+        indexed into that frozen list. That is correct for a static numeric
+        seed list, but as soon as the seed contains a time-varying
+        expression (``t``, ``sin(t)``, a list indexed by ``t``, etc.) it
+        meant every row played back the SAME t=0 snapshot forever — GOAVA
+        never actually ticked forward in time. We now rebuild the event
+        list for this row using its real absolute start time, so any ``t``
+        in the seed script is evaluated at the moment it actually occurs in
+        the composition instead of once at the very start.
         """
         if not getattr(self, "goava_active", False):
             return np.zeros_like(local_t, dtype=np.float32)
-        events = list(getattr(self, "goava_note_events", []) or [])
+        try:
+            events = list(self._build_goava_composition(
+                t_value=float(row_start_time), true_time_index=int(row_idx)
+            ) or [])
+        except Exception:
+            events = list(getattr(self, "goava_note_events", []) or [])
         if not events:
             return np.zeros_like(local_t, dtype=np.float32)
         # True index across shifted seed: use row as the composition clock
@@ -16128,9 +16532,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             chord_freqs = [float(ev.get("frequency", 432.0))]
             chord_amps = [0.33]
         # Sustain across most of the row/step; short tau was muting GOAVA early
-        tau = max(step_duration * 2.5, 0.08)
+        tau = max(step_duration * 2.5, 0.00)
         env = np.exp(-local_t / tau)
-        attack = np.clip(local_t / max(step_duration * 0.05, 1e-4), 0.0, 1.0)
+        attack = np.clip(local_t / max(step_duration * 0.00, 0.0), 0.0, 1.0)
         weight = float(ev.get("weight", 1.0))
         # GOAVA_SINE_CHORD_2026: each seed numeric entry inserts a pitched
         # sine chord (not a single partial) at ~33% total amplitude on top of
@@ -16543,8 +16947,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             "fm_depth",
                             0.0,
                         ),
-                        -0.95,
-                        0.95,
+                        -1.0,
+                        1.0,
                     )
                 ),
 
@@ -17009,7 +17413,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if n_available:
                 # Scale voice participation smoothly with ensemble size, while
                 # guaranteeing a genuinely multi-instrument row for ensembles >= 2.
-                n_inst = min(n_available, max(2, int(round(math.sqrt(n_available) * 1.55))))
+                n_inst = min(n_available, max(2, int(round(math.sqrt(n_available) * 1.5))))
                 perm = rr.permutation(n_available)
                 idxs = [int(x) for x in perm[:n_inst]]
                 # Stable row rotation prevents one fixed prefix from dominating.
@@ -19786,7 +20190,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             a=float(np.clip(amps[int(selected_step)%len(amps)],0,1)) if amps else 1.0
             pr=float(np.clip(probs[int(selected_step)%len(probs)]/100.0,0,1)) if probs else 1.0
             freq=base*MEUM_POWERS_36[idx%len(MEUM_POWERS_36)]
-            v=np.sin(2*np.pi*freq*t)*a*pr*np.exp(-t/max(step_duration*0.35,0.01))
+            v=np.sin(2*np.pi*freq*t)*a*pr*np.exp(-t/max(step_duration*0.5,0.00))
             total += float(np.mean(v*v))
         return float(np.sqrt(total))
 
@@ -19874,7 +20278,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             sr = 44100
             # One-shot duration = one non-sustained note/step.
             bpm = self.spin_bpm.value() if hasattr(self, 'spin_bpm') else 120
-            hit_dur = max(0.02, min(0.50, (60.0 / max(bpm, 1) / 4.0)))
+            hit_dur = max(0.00, min(0.50, (60.0 / max(bpm, 1) / 4.0)))
             n = int(sr * hit_dur)
             t = np.linspace(0.0, hit_dur, n, endpoint=False)
 
@@ -19891,7 +20295,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
             # PKP-style: fast decay sine + soft click transient. env is defined
             # here (pre-boost) so the n+1 boost-copy voice below shares it.
-            env = np.exp(-t / max(hit_dur * 0.35, 0.01))
+            env = np.exp(-t / max(hit_dur * 0.5, 0.0))
 
             # LIVE PKP BOOST (toggle): per-hit frequency law evaluated at the
             # step index —
@@ -20627,7 +21031,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             amt = float(lane.get("amount", 0.0)) * float(lane.get("direction", 1.0))
             # Overlap reduces exclusive authority but still contributes
             ov = float(lane.get("overlap", 0.0))
-            w = max(0.05, abs(amt) * (1.0 - 0.3 * ov))
+            w = max(0.00, abs(amt) * (1.0 - 0.5 * ov))
             accum[param] = accum.get(param, 0.0) + amt * w
             weights[param] = weights.get(param, 0.0) + w
 
@@ -23202,7 +23606,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     mem["steps"][s] = bool(on)
                     if on:
                         # Continuous amplitude (no quarter ladder)
-                        mem["amplitudes"][s] = float(0.35 + 0.65 * float(rng.random()))
+                        mem["amplitudes"][s] = float(0.5 + 0.5 * float(rng.random()))
                         mem["probabilities"][s] = 100
             # Keep selected sequence mirror in instrument_sequencer_memory
             try:
@@ -23410,7 +23814,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         # Preserve user step; may only gently raise amp toward phase-lock envelope
                         preserved += 1
                         lock_env = 0.5 + 0.5 * abs(np.sin(s * np.pi / count))
-                        mem["amplitudes"][s] = float(max(mem["amplitudes"][s], lock_env * 0.85))
+                        mem["amplitudes"][s] = float(max(mem["amplitudes"][s], lock_env * 1.0))
                         mem["probabilities"][s] = max(int(mem["probabilities"][s]), 100)
                         continue
 
@@ -23788,7 +24192,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if tgt_name in active_ops:
                     score += 1.0
                 fam_dist = abs(family(src_idx) - family(tgt_idx))
-                score += max(0.0, 1.5 - 0.35 * fam_dist)
+                score += max(0.0, 1.5 - 0.5 * fam_dist)
                 # Golden-ratio geometric bias (deterministic, seed-shifted)
                 geo = abs(((src_idx * 1.61803398875 + numeric_seed) % n) - tgt_idx)
                 score += max(0.0, 1.0 - geo / max(n * 0.5, 1))
@@ -25547,11 +25951,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 beats_per_row = 4.0
         except Exception:
             beats_per_row = 4.0
-        beats_per_row = max(0.25, min(64.0, float(beats_per_row)))
+        beats_per_row = max(0.002, min(64.0, float(beats_per_row)))
         row_duration = seconds_per_beat * beats_per_row
         # Reference 16th for engines/UI that still speak in "grid steps"
         step_duration = seconds_per_beat / 4.0
-        total_duration = max(0.25, rows * row_duration)
+        total_duration = max(0.002, rows * row_duration)
 
         n_samples = int(sample_rate * total_duration)
         t = np.linspace(0.0, total_duration, n_samples, endpoint=False)
@@ -25600,7 +26004,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             row_mix = np.zeros_like(local_t, dtype=np.float32)
             velocity_scale = 1.0
             if getattr(self, "goava_active", False):
-                row_mix += self._goava_mix(local_t, row_idx, step_duration)
+                row_mix += self._goava_mix(local_t, row_idx, step_duration, row_start_time=start_time)
 
             if global_playlist_enabled and row_idx < len(getattr(self, 'master_playlist_data', [])):
                 entry = self.master_playlist_data[row_idx]
@@ -26193,8 +26597,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # (that would fold the effect into the unison canonical engines).
                 # Voices keep only a neutral, deterministic decay floor to feed
                 # the per-synth Harmonic Lattice envelope input.
-                _tau = max(MEUM_CONSTANT * _voice_decay, 0.25)
-                env_f = (0.55 + 0.45 * np.exp(-local_t / max(_tau * 8.0, 1.0))).astype(np.float32)
+                _tau = max(MEUM_CONSTANT * _voice_decay, 0.5)
+                env_f = (0.5 + 0.5 * np.exp(-local_t / max(_tau * 8.0, 1.0))).astype(np.float32)
                 gate = step_env
                 if not np.any(gate > 1e-9):
                     continue
@@ -26359,7 +26763,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     for n in (e.get("operators", []) if isinstance(e.get("operators", []), list) else str(e.get("operators", "")).split(","))
                     if str(n).strip() in self.instrument_names_48
                 )))
-                if ensemble_voice_count > 1:
+                if False and ensemble_voice_count > 1:
+                    # AMPLITUDE_FIX_2026: ensemble headroom normalization removed.
+                    # This silently scaled the whole mix down by 1/sqrt(N) on
+                    # every render with >1 active voice, which is exactly the
+                    # kind of "final mix amplitude modification" that must not
+                    # exist outside Master Volume + the hard clipper. Any
+                    # headroom management now belongs solely to Master Volume.
                     master /= float(np.sqrt(ensemble_voice_count))
             except Exception:
                 pass
@@ -26394,7 +26804,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         _bpr = 4.0
                 except Exception:
                     _bpr = 4.0
-                _bpr = max(0.25, min(64.0, _bpr))
+                _bpr = max(0.002, min(64.0, _bpr))
                 _row_len = max(_step_len, int(round(_beat * _bpr)))
             except Exception:
                 _step_len = None
@@ -26502,23 +26912,24 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception as e:
             print(f"[SeedScript] T-axis modulation skipped: {e}")
 
-        # Global Fractallizer on the full master bus (includes imported WAV/video carrier).
-        # Subharmonic + superharmonic scaling; max 50% mix. Per-synth Harmonic Lattice
-        # already ran on individual voices; this is the heavier import-inclusive stage.
-        try:
-            if fractalizer_val > 1e-6 and hasattr(self, "_music_fractallizer"):
-                # MASTER_FX_FIX_2026: PKP Decay damps the tempo-locked envelope swing
-                # (tail-only effect, never touches the canonical voice stage).
-                master = self._music_fractallizer.process(
-                    master,
-                    activation=fractalizer_val,
-                    gamma=1.5 + MEUM_NORM * 2.0,
-                    pkp_env=_shared_env,
-                    bpm=float(bpm),
-                    reference_buffer=unison_buffer,
-                )
-        except Exception as _gf_exc:
-            print(f"[Global Fractallizer] master pass skipped: {_gf_exc}")
+        # AMPLITUDE_FIX_2026: the Global Fractallizer master-bus pass is
+        # disabled. Per-synth Harmonic Lattice still runs on individual
+        # voices (unaffected); this was the extra spectral/gain-shaping pass
+        # on the SUMMED master bus, which is a final-mix modification and is
+        # not allowed to run alongside plain Master Volume + hard clip.
+        if False:
+            try:
+                if fractalizer_val > 1e-6 and hasattr(self, "_music_fractallizer"):
+                    master = self._music_fractallizer.process(
+                        master,
+                        activation=fractalizer_val,
+                        gamma=1.5 + MEUM_NORM * 2.0,
+                        pkp_env=_shared_env,
+                        bpm=float(bpm),
+                        reference_buffer=unison_buffer,
+                    )
+            except Exception as _gf_exc:
+                print(f"[Global Fractallizer] master pass skipped: {_gf_exc}")
 
         # Final effect-buffer integrity: effects may transform their working
         # copy, but the canonical unison snapshot remains available for the next
@@ -26527,50 +26938,58 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._canonical_unison_effect_buffer = unison_buffer.copy()
             self._canonical_unison_effect_length = int(unison_buffer.size)
 
-        # EQR tensor + explicit P/E/D path (always when slider > 0; default 42%)
-        try:
-            act = 0.42
-            if hasattr(self, "slider_eqr"):
-                act = float(self.slider_eqr.value()) / 100.0
-            if act > 0.01:
-                if not hasattr(self, "_eqr_tensor") or self._eqr_tensor is None:
-                    self._eqr_tensor = EQRTensorEngine()
-                master = self._eqr_tensor.process(master, activation=act, pkp_env=_shared_env)
-        except Exception as _eqr_exc:
-            print(f"[EQR] mixdown: {_eqr_exc}")
-        # PKP master: isn envelope (shared) mixed at up to 50% into the bus.
-        try:
-            if len(master) > 0:
-                env = np.asarray(_shared_env, dtype=np.float32).ravel()
-                if env.size != len(master):
-                    env = np.resize(env, len(master))
-                # wet_mix 0.5: dry + 0.5*(env*dry - dry) = dry * (1 - 0.5 + 0.5*env)
-                master = (master * (0.5 + 0.5 * env)).astype(np.float32)
-        except Exception as _pkp_exc:
-            print(f"[PKP] mixdown: {_pkp_exc}")
-        # PED master tint: derive the shared EQR z-relative value once and apply
-        # one deterministic, unity-centered multiplier.  The previous patch
-        # recomputed the same scalar inside a control-point loop and multiplied
-        # the entire master buffer once per control point, which could collapse
-        # the level and made the mix dependent on buffer length.
-        try:
-            if len(master) > 0:
-                zrel = float(getattr(self, "_eqr_z_rel", 0.0) or 0.0)
-                if zrel > 1e-9:
-                    # Idealised scale: map [0.35, 1.5] -> [0, 1].
-                    t = float(np.clip((zrel - 0.35) / 1.2, 0.0, 1.0))
-                    # Dual-mode PED tint — no tanh saturation.
-                    if operator_theory_enabled():
-                        ped = 1.0 + 0.14 * math_scale(float(t - 0.5), 1.0)
+        # AMPLITUDE_FIX_2026: the master-bus EQR tensor pass, the PKP
+        # tempo-locked amplitude-envelope multiply, and the PED "tint"
+        # multiply are all disabled below.
+        #
+        # These three were the actual cause of "clamped to a small value"
+        # and "everything sounds filtered":
+        #   - EQR ran a spectral/tensor transform on the full summed mix.
+        #   - PKP multiplied the ENTIRE master buffer by (0.5 + 0.5*env),
+        #     i.e. a permanent tremolo pulling level down to as low as 50%.
+        #   - PED then multiplied by (0.5 + 0.5*ped*0.5): with no EQR z-rel
+        #     history (ped defaults to 1.0) that is STILL an unconditional
+        #     ×0.75 on every render, even with every slider at its default.
+        #   Stacked, these could pull the pre-hardclip signal down to
+        #   roughly 35-50% of its true level before Master Volume even runs,
+        #   which reads as "clamped" and, because they're envelope-shaped
+        #   multiplies, as "filtered"/pumping.
+        #
+        # Per request: the only legal post-composition amplitude stages now
+        # are Master Volume and the hard clipper in _master_hardclip().
+        if False:
+            try:
+                act = 0.42
+                if hasattr(self, "slider_eqr"):
+                    act = float(self.slider_eqr.value()) / 100.0
+                if act > 0.01:
+                    if not hasattr(self, "_eqr_tensor") or self._eqr_tensor is None:
+                        self._eqr_tensor = EQRTensorEngine()
+                    master = self._eqr_tensor.process(master, activation=act, pkp_env=_shared_env)
+            except Exception as _eqr_exc:
+                print(f"[EQR] mixdown: {_eqr_exc}")
+            try:
+                if len(master) > 0:
+                    env = np.asarray(_shared_env, dtype=np.float32).ravel()
+                    if env.size != len(master):
+                        env = np.resize(env, len(master))
+                    master = (master * (0.5 + 0.5 * env)).astype(np.float32)
+            except Exception as _pkp_exc:
+                print(f"[PKP] mixdown: {_pkp_exc}")
+            try:
+                if len(master) > 0:
+                    zrel = float(getattr(self, "_eqr_z_rel", 0.0) or 0.0)
+                    if zrel > 1e-9:
+                        t = float(np.clip((zrel - 0.35) / 1.2, 0.0, 1.0))
+                        if operator_theory_enabled():
+                            ped = 1.0 + 0.14 * math_scale(float(t - 0.5), 1.0)
+                        else:
+                            ped = 1.0 + 0.14 * float(t - 0.5)
                     else:
-                        ped = 1.0 + 0.14 * float(t - 0.5)
-                else:
-                    ped = 1.0
-                # Half-strength PED tint; the shared envelope above remains the
-                # sole longitudinal EQR/Fractallizer/PKP modulation.
-                master = (master * (0.5 + 0.5 * ped * 0.5)).astype(np.float32)
-        except Exception as _ped_exc:
-            print(f"[PED] mixdown: {_ped_exc}")
+                        ped = 1.0
+                    master = (master * (0.5 + 0.5 * ped * 0.5)).astype(np.float32)
+            except Exception as _ped_exc:
+                print(f"[PED] mixdown: {_ped_exc}")
 
         # CLARITY_FIX_2026: no unconditional smoothing/low-pass pass.  The
         # equal-power row crossfade and closed-form voice harmonics remain the
@@ -27687,7 +28106,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 beats_per_row = 4.0
         except Exception:
             beats_per_row = 4.0
-        return max(1, int(float(sr) * (60.0 / max(float(bpm), 1e-6)) * max(0.25, min(64.0, beats_per_row))))
+        return max(1, int(float(sr) * (60.0 / max(float(bpm), 1e-6)) * max(0.002, min(64.0, beats_per_row))))
 
     def _media_carrier_energy(self, cursor_samples, sr):
         """Row energy (0..1) of the imported WAV/video carrier, or None.
@@ -27799,7 +28218,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # its per-row energy (normalized after a 6× gain, like live).
                 if media_rows is not None:
                     me = float(media_rows[min(row, media_rows.size - 1)])
-                    sc = sc + (max(0.0, min(1.0, me * 6.0)) - 0.5) * 2.0 * abs(sc + 1e-9) * 0.35
+                    sc = sc + (max(0.0, min(1.0, me * 6.0)) - 0.5) * 1.0 * abs(sc + 1e-9)
                 out[pos:pos + seg_len] = engine.process(
                     arr[pos:pos + seg_len], start_sample=pos, goava_scalar=sc, bpm=bpm
                 )
@@ -27886,7 +28305,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     if key not in off_base:
                         off_base[key] = float(om.get(op_name, 0.0) or 0.0)
                     base = float(off_base[key])
-                    phase = (seed * 0.0001 + ri * MEUM + (_stable_hash(str(op_name), 997)) * 0.01) + t * math.tau
+                    phase = (seed * 0.0001 + ri * MEUM + (_stable_hash(str(op_name),1000)) * 0.01) + t * math.tau
                     depth = 0.04 / n_eng
                     if "phase_lock" in active:
                         om[op_name] = base + depth * math.sin(phase)
@@ -27911,28 +28330,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     continue
                 if name not in param_base:
                     param_base[name] = {
-                        "drive": float(pst.get("drive", 0.3) or 0.3),
+                        "drive": float(pst.get("drive", 0.0) or 0.0),
                         "am_rate": float(pst.get("am_rate", 1.0) or 1.0),
                         "pm_rate": float(pst.get("pm_rate", 1.0) or 1.0),
                         "fm_rate": float(pst.get("fm_rate", 1.0) or 1.0),
-                        "filter": float(pst.get("filter", 0.5) or 0.5),
-                        "am_depth": float(pst.get("am_depth", 0.1) or 0.1),
-                        "pm_depth": float(pst.get("pm_depth", 0.1) or 0.1),
+                        "filter": float(pst.get("filter", 0.0) or 0.0),
+                        "am_depth": float(pst.get("am_depth", 1.0) or 1.0),
+                        "pm_depth": float(pst.get("pm_depth", 1.0) or 1.0),
                     }
                 b = param_base[name]
                 phase = (seed * 0.001 + i * PHI_INV + t * math.tau * (1.0 + 0.1 * i))
                 if "randomizer" in active or "seeded" in active:
-                    pst["drive"] = float(np.clip(b["drive"] * (0.92 + 0.16 * (0.5 + 0.5 * math.sin(phase))), 0.0, 1.0))
-                    pst["am_rate"] = float(max(0.05, b["am_rate"] * (0.9 + 0.2 * math.sin(phase * 1.3))))
+                    pst["drive"] = float(np.clip(b["drive"] * (0.5 + 0.5  * (0.5 + 0.5 * math.sin(phase))), 0.0, 1.0))
+                    pst["am_rate"] = float(max(0.05, b["am_rate"] * (0.5 + 0.5  * math.sin(phase * 1.0))))
                 if "phase_lock" in active:
-                    pst["pm_rate"] = float(max(0.05, b["pm_rate"] * (0.88 + 0.24 * math.cos(phase))))
-                    pst["filter"] = float(np.clip(b["filter"] * (0.9 + 0.2 * math.sin(phase * MEUM)), 0.02, 0.98))
+                    pst["pm_rate"] = float(max(0.05, b["pm_rate"] * (0.5 + 0.5  * math.cos(phase))))
+                    pst["filter"] = float(np.clip(b["filter"] * (0.5 + 0.5  * math.sin(phase * MEUM)), 0.0, 1.0))
                 if "euclidean" in active:
-                    pst["fm_rate"] = float(max(0.05, b["fm_rate"] * (0.9 + 0.2 * math.sin(phase * 2.0))))
+                    pst["fm_rate"] = float(max(0.05, b["fm_rate"] * (0.5 + 0.5  * math.sin(phase * 1.0))))
                 if getattr(self, "goava_active", False) and pst.get("goava_sine_patch"):
                     pst["goava_mix_weight"] = 1.0 / n_eng
-                    pst["am_depth"] = float(np.clip(b["am_depth"] * (0.95 + 0.1 * math.sin(phase)), 0.0, 0.5))
-                    pst["pm_depth"] = float(np.clip(b["pm_depth"] * (0.95 + 0.1 * math.cos(phase)), 0.0, 0.6))
+                    pst["am_depth"] = float(np.clip(b["am_depth"] * (0.5 + 0.5  * math.sin(phase)), 0.0, 1.0))
+                    pst["pm_depth"] = float(np.clip(b["pm_depth"] * (0.5 + 0.5 * math.cos(phase)), 0.0, 1.0))
         except Exception:
             pass
 
@@ -27970,7 +28389,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     _cpk = float(np.max(np.abs(chunk))) if chunk.size else 0.0
                     self._live_peak = _cpk
                     _ph = float(getattr(self, "_live_peak_hold", 0.0))
-                    self._live_peak_hold = max(_cpk, _ph * float(np.exp(-float(n) / max(0.35 * float(self.preferred_sample_rate), 1.0))))
+                    self._live_peak_hold = max(_cpk, _ph * float(np.exp(-float(n) / max(0.0 * float(self.preferred_sample_rate), 1.0))))
                 except Exception:
                     pass
                 # stash a short window for the UI scope
@@ -29838,17 +30257,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         _aim = getattr(self, 'active_instrument_memory', None)
         _nmem = len(_aim) if hasattr(_aim, '__len__') else int(getattr(self, 'synth_count', 48) or 48)
-        eng = getattr(self, 'video_synth_engine', None) or VideoSynthEngine(_nmem)
+        # Export is intentionally isolated from the live preview engine.  A fresh
+        # renderer plus explicit frame indices makes the file a pure function of
+        # the composition inputs rather than whatever the UI rendered beforehand.
+        eng = VideoSynthEngine(_nmem)
         if hasattr(eng, 'bind_app'):
             eng.bind_app(self)
 
         pix = ["-pix_fmt", "yuv420p"] if vcodec not in ("mjpeg",) else []
-        frames_root = os.path.join(dest_dir, f".{stem}.frames.part")
-        try:
-            os.makedirs(frames_root, exist_ok=True)
-        except Exception as e:
-            raise RuntimeError(f"Cannot create frames staging dir in render destination: {e}")
-
         try:
             for pi in range(N_PARTS):
                 part_out = part_paths[pi]
@@ -29861,72 +30277,56 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 f0 = pi * frames_per_part
                 f1 = min(n_frames, (pi + 1) * frames_per_part)
                 if f0 >= f1:
-                    # empty trailing part: write a 1-frame placeholder so concat stays aligned
                     f1 = f0 + 1
                     f0 = max(0, n_frames - 1)
 
-                part_frames_dir = os.path.join(frames_root, f"p{pi:02d}")
-                try:
-                    os.makedirs(part_frames_dir, exist_ok=True)
-                except Exception:
-                    pass
-                # clear previous attempt frames for this part
-                for old in os.listdir(part_frames_dir):
-                    try:
-                        os.remove(os.path.join(part_frames_dir, old))
-                    except Exception:
-                        pass
-
-                local_count = 0
-                for fi in range(f0, f1):
-                    a = fi * frame_samples
-                    b = min(len(master), a + frame_samples)
-                    ph = fi / max(n_frames - 1, 1)
-                    eng.set_waveform(master[a:b], playhead=ph)
-                    frame = eng.render_frame(w, h, export=True)
-                    try:
-                        eng.ingest_video_frame_stats(*eng.frame_stats(frame))
-                    except Exception:
-                        pass
-                    Image.fromarray(frame, mode="RGB").save(
-                        os.path.join(part_frames_dir, f"frame_{local_count:05d}.png")
-                    )
-                    local_count += 1
-                    if local_count % 8 == 0 and hasattr(self, 'scope_status_label'):
-                        self.scope_status_label.setText(
-                            f"🎬 Part {pi+1}/{N_PARTS}  frames {local_count}/{f1-f0}…"
-                        )
-                        QApplication.processEvents()
-
-                pattern = os.path.join(part_frames_dir, "frame_%05d.png")
                 part_tmp = part_out + ".part"
-                # part_tmp ends in ".part", not ".mp4"/".webm"/".avi", so ffmpeg
-                # can't infer the muxer from the filename — force it explicitly.
                 _muxer = {"mp4": "mp4", "webm": "webm", "avi": "avi"}.get(container, container)
                 cmd = [
-                    ffmpeg, "-y", "-framerate", str(fps), "-i", pattern,
+                    ffmpeg, "-y",
+                    "-f", "rawvideo", "-pix_fmt", "rgb24",
+                    "-s", f"{w}x{h}", "-framerate", str(fps), "-i", "-",
                     "-map", "0:v:0",
                     "-c:v", vcodec, *vargs, *pix,
-                    "-an",
-                    "-f", _muxer,
-                    part_tmp,
+                    "-an", "-f", _muxer, part_tmp,
                 ]
-                proc = subprocess.run(cmd, capture_output=True, text=True)
-                if proc.returncode != 0:
-                    err = (proc.stderr or proc.stdout or "ffmpeg failed")[-2200:]
-                    raise RuntimeError(f"Part {pi+1}/{N_PARTS} encode failed:\n{err}")
-                os.replace(part_tmp, part_out)
-
-                # free this part's PNGs immediately (keeps peak disk low)
-                for old in os.listdir(part_frames_dir):
+                proc = subprocess.Popen(
+                    cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                )
+                try:
+                    for local_count, fi in enumerate(range(f0, f1), 1):
+                        a = fi * frame_samples
+                        b = min(len(master), a + frame_samples)
+                        ph = fi / max(n_frames - 1, 1)
+                        eng.set_waveform(master[a:b], playhead=ph)
+                        frame = eng.render_frame(w, h, export=True, frame_index=fi)
+                        if frame.dtype != np.uint8:
+                            frame = np.asarray(frame, dtype=np.uint8)
+                        proc.stdin.write(np.ascontiguousarray(frame).tobytes())
+                        if local_count % 8 == 0 and hasattr(self, 'scope_status_label'):
+                            self.scope_status_label.setText(
+                                f"🎬 Part {pi+1}/{N_PARTS}  frames {local_count}/{f1-f0}…"
+                            )
+                            QApplication.processEvents()
+                    proc.stdin.close()
+                    proc.stdin = None
+                    stdout, stderr = proc.communicate()
+                except Exception:
                     try:
-                        os.remove(os.path.join(part_frames_dir, old))
+                        if proc.stdin is not None:
+                            proc.stdin.close()
                     except Exception:
                         pass
-                try:
-                    os.rmdir(part_frames_dir)
-                except Exception:
-                    pass
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    proc.wait()
+                    raise
+                if proc.returncode != 0:
+                    err = (stderr.decode(errors="replace") if isinstance(stderr, bytes) else (stderr or stdout or ""))[-2200:]
+                    raise RuntimeError(f"Part {pi+1}/{N_PARTS} encode failed:\\n{err}")
+                os.replace(part_tmp, part_out)
 
             # Build concat list
             list_path = os.path.join(dest_dir, f".{stem}.concat.part.txt")
@@ -30024,11 +30424,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         os.remove(audio_path)
                 except Exception:
                     pass
-            try:
-                shutil.rmtree(frames_root, ignore_errors=True)
-            except Exception:
-                pass
-
             self.export_counter += 1
             mode = "Video + Audio" if include_audio else "Video only"
             if hasattr(self, 'scope_status_label'):

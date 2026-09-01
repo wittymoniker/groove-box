@@ -265,6 +265,7 @@ Save/load preserves the composition inputs needed by canonical audio and visual 
 
 ## Credits
 Core architecture & original EQR design by the project author.
+UI panel implementation (CompositionShiftsReviewPanel) by Jcode.
 Grok (xAI), Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI), Mistral.ai (Mistral), Meta AI (Meta), GitHub Copilot (GitHub), Cursor Grok 4.6, and opencode (anomalyco).
 
 ## Fractallizer — formulas and fractal repetition of the audio signal

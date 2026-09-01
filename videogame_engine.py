@@ -189,7 +189,7 @@ def instrument_geometry_mode(slot, phase, xyz, flags=None, fractal_set=None):
     dpi = abs(ph - math.pi)
     near = min(d0, dpi) / math.pi
     snap = 1.0 - near
-    geo = max(0.0, min(1.0, (abs(x) + abs(y) + abs(z)) / 3.0))
+    geo = (abs(float(x)) + abs(float(y)) + abs(float(z))) / 3.0
     w = {
         "lattice": 0.45 + 0.25 * (1.0 - geo),
         "book_set": 0.20 + 0.20 * geo,
@@ -1492,7 +1492,13 @@ class ScenographLite:
             life = 0.55 + 0.45 * conson * (0.30 + 0.70 * ent)
             pack = _residue(self.seed, f"pack:{i}")
             ratio = residue_to_bipolar(_residue(self.seed, f"ratio:{i}"))
-            radius = (2.2 - min(depth, 2.0)) * (0.25 + 0.55 * pack)
+            # DECLAMP_2026: depth used to be hard-capped at 2.0 before feeding
+            # radius, which silently flattened every layer past that point to
+            # the same minimum size — an arbitrary clamp, not a real bound.
+            # Radius now scales continuously with the full depth range (depth
+            # is itself unbounded-but-typically-small, seed-derived) and only
+            # keeps a small positive floor so nothing renders at/below zero.
+            radius = max(0.12, (2.2 - depth * 0.28)) * (0.25 + 0.55 * pack)
             # Topology-aware free positions (open-world scatter vs hub vs ring)
             if self.topology in ("open_world", "sandbox", "hub_spoke"):
                 yaw = meum_angle(self.seed * PHI + i * 47 + 13 * _residue(self.seed, f"yaw:{i}"))
@@ -1546,7 +1552,11 @@ class ScenographLite:
             x_spin *= 1.35
             x_energy = min(1.0, x_energy + 0.12)
         if em.get("phase_lock"):
-            x_grid = min(1.5, x_grid + 0.45)
+            # DECLAMP_2026: grid density used to hard-ceiling at 1.5,
+            # which flattened Phase-Lock's visual response once density
+            # was already close to that ceiling. No cap now beyond the
+            # natural floor of 0.0 further down the pipeline.
+            x_grid = x_grid + 0.45
             x_spin *= 0.85
         if em.get("goava"):
             x_hue = (x_hue + 28.0) % 360.0
@@ -1579,7 +1589,7 @@ class ScenographLite:
             x_spin *= (1.0 + 0.08 * max(-1.0, min(1.0, yv * 0.01)) * infl)
             x_hue = (x_hue + 12.0 * max(-1.0, min(1.0, yv * 0.02)) * infl) % 360.0
             if mode0.get("near_phase_point"):
-                x_grid = min(1.5, x_grid + 0.15 * float(mode0.get("snap", 0)))
+                x_grid = x_grid + 0.15 * float(mode0.get("snap", 0))
             # Per-layer mode tags so viewport/debug can show blend state
             for li, layer in enumerate(self.layers):
                 try:
@@ -2704,7 +2714,13 @@ class Game:
         self.visual_view_count = int(self.visual_view.get("count", 64))
         self.visual_signal_id = str(self.id.get("visual_signal_id") or visual_signal_id(self.id["seed"], self.id.get("composition_fingerprint","0"), self.visual_view))
         self.spatial_engine = FractalSpatialEngine(self.id["seed"], self.id.get("composition_fingerprint", "0"), bool(self.id.get("goava_active", False)))
-        self.spatial_state = dict(self.id.get("spatial_state") or self.spatial_engine.snapshot(depth=3, roots=max(5, min(12, len(getattr(self, "assets", [])) if hasattr(self, "assets") else 5))))
+        # VISUAL_INVARIANCE_2026: roots must never depend on ensemble size
+        # (# of instruments/assets) — the spatial fractal has to be a pure
+        # function of (seed, composition_fingerprint, goava) so it looks and
+        # animates identically regardless of how many instruments are loaded.
+        # `roots=8` matches the fixed value used at construction time (see
+        # build_spatial_state(..., roots=8) above) so both paths agree.
+        self.spatial_state = dict(self.id.get("spatial_state") or self.spatial_engine.snapshot(depth=3, roots=8))
         self.zoom = 1.0
         self.camera_mode = int(self.id.get("camera_mode", 0) or 0)
         self.camera_modes = (0, 1, 2)
@@ -4875,28 +4891,41 @@ def instant_video_frame(seed, t=0.0, w=320, h=180, *,
         _ph = 0
         _set = eski_fractal_pick(int(seed) & 0x7FFFFFFF, sequential_nums=_seq, playlist_hash=_ph)
         _c = float((_seq[0] * MEUM_INV) % 2.0 - 1.0)
-        # Vectorized-ish sample on a coarse path via scalar loop avoided: use
-        # closed form of wormhill/star as dominant additive when structured.
         _yf = eski_fractal_eval(_set, float(field.get("u", 0.0)), _c)
         field = dict(field)
         field["fractal_set"] = _set
         field["fractal_y"] = _yf
     except Exception:
         _yf = 0.0
+        _c = 0.0
         _set = "wormhill"
     # Radial + angular field modulated by energy, spin, and book fractal Y
     rr = _np.sqrt(xx * xx + yy * yy) + 1e-6
     ang = _np.arctan2(yy, xx)
     wave = _np.sin(ang * (2.0 + 3.0 * grid) + float(t) * spin * math.tau
-                   + field["u"] * math.tau + 0.15 * float(_yf)) * 0.5 + 0.5
+                   + field["u"] * math.tau + float(_yf)) * 0.5 + 0.5
     ring = _np.exp(-((rr - (0.35 + 0.25 * field["rho"])) ** 2) / (0.08 + 0.12 * field["energy"]))
     # Activity-class lattice overlay
     lat = _np.sin(xx * (6.0 + 8.0 * grid) + float(t) * 0.7) * _np.sin(yy * (6.0 + 8.0 * grid) - float(t) * 0.5)
     lat = (lat * 0.5 + 0.5) * (0.25 + 0.55 * grid)
-    val = _np.clip(0.15 + 0.55 * wave * field["energy"] + 0.45 * ring + 0.25 * lat, 0.0, 1.0)
+    # VISIBLE_FRACTAL_2026: the book-fractal (_yf/_set) used to only nudge
+    # `wave`'s phase by a fixed 0.15 rad, which is nearly invisible — this is
+    # the "incredibly faint" fractal. It now also drives its own explicit,
+    # high-contrast interference-band layer so the chosen fractal set is
+    # clearly readable on screen. Still a pure function of (seed, t,
+    # sequential_nums) — deterministic, and independent of instrument count.
+    _fx = xx * (3.0 + 3.0 * grid) + _c
+    _fy = yy * (3.0 + 3.0 * grid) - _c
+    fractal_bands = _np.abs(_np.sin(_fx + _fy * PHI + float(_yf) * math.tau + float(t) * 0.15 * spin))
+    fractal_bands = fractal_bands ** 0.5  # widen/brighten the bright bands
+    val = _np.clip(
+        0.15 + 0.55 * wave * field["energy"] + 0.45 * ring + 0.25 * lat
+        + 0.35 * fractal_bands,
+        0.0, 1.0,
+    )
     # HSV → RGB (lightweight)
-    h_norm = ((hue0 / 360.0) + 0.08 * wave + 0.05 * field["u"]) % 1.0
-    s_norm = _np.clip(0.45 + 0.40 * field["rho"] + 0.15 * rms_safe(audio_rms), 0.0, 1.0)
+    h_norm = ((hue0 / 360.0) + 0.08 * wave + 0.05 * field["u"] + 0.10 * fractal_bands) % 1.0
+    s_norm = _np.clip(0.45 + 0.40 * field["rho"] + 0.15 * rms_safe(audio_rms) + 0.15 * fractal_bands, 0.0, 1.0)
     v_norm = val
     i = _np.floor(h_norm * 6.0).astype(_np.int32)
     f = h_norm * 6.0 - i
@@ -4914,7 +4943,7 @@ def instant_video_frame(seed, t=0.0, w=320, h=180, *,
     # GOAVA accent: irrational phase ribbon
     if goava_active:
         ribbon = _np.sin((xx + yy) * 9.0 * PHI + float(t) * MEUM * math.tau) * 0.5 + 0.5
-        rgb[:, :, 1] = _np.clip(rgb[:, :, 1] + 0.12 * ribbon * field["energy"], 0.0, 1.0)
+        rgb[:, :, 1] = rgb[:, :, 1] + ribbon * field["energy"]
     # Generative terrain ridges (seed-tilted heightfield folds)
     s = int(seed) & 0x7FFFFFFF
     n_ridges = 2 + int(5 * _residue(s, "frame/ridges"))
@@ -4923,8 +4952,8 @@ def instant_video_frame(seed, t=0.0, w=320, h=180, *,
         phase = float(t) * (0.3 + 0.5 * _residue(s, f"frame/ph:{ri}")) + ri * PHI
         ridge = _np.sin((xx * tilt + yy * (2.0 - tilt)) * (3.0 + 4.0 * grid) + phase)
         ridge = _np.clip(ridge, 0.0, 1.0) ** 2 * (0.08 + 0.12 * field["energy"])
-        rgb[:, :, 0] = _np.clip(rgb[:, :, 0] + ridge * 0.55, 0.0, 1.0)
-        rgb[:, :, 2] = _np.clip(rgb[:, :, 2] + ridge * 0.25, 0.0, 1.0)
+        rgb[:, :, 0] = _np.clip(rgb[:, :, 0] + ridge, 0.0, 1.0)
+        rgb[:, :, 2] = _np.clip(rgb[:, :, 2] + ridge, 0.0, 1.0)
     # Topology-specific generative accent
     topo = snap.get("topology") or "open_world"
     if topo in ("arena", "hub_spoke"):
@@ -4948,11 +4977,11 @@ def instant_video_frame(seed, t=0.0, w=320, h=180, *,
         cx_i, cy_i = w * 0.5, h * 0.48
         for i in range(n_samples):
             ent = float(music_entropy) * (0.5 + 0.5 * _residue(int(seed) & 0x7FFFFFFF, f"ivf_ent:{i}"))
-            hue = (hue0 + i * 37.0 + 40.0 * ((seq[i % len(seq)] * MEUM_INV) % 1.0)) % 360.0
+            hue = (hue0 + i * 37.0 + 360.0 * ((seq[i % len(seq)] * MEUM_INV) % 1.0)) % 360.0
             phase0 = float(music_phase) + i * MEUM
             seq_bias = float(seq[i % len(seq)])
             yaw = phase0 + float(t) * (0.05 + 0.02 * ent) + (seq_bias * MEUM_INV) % math.tau
-            dist = (0.15 + 0.55 * ent) * min(w, h) * 0.42
+            dist = ent * min(w, h) * 0.42
             x = int(cx_i + math.cos(yaw) * dist)
             y = int(cy_i + math.sin(yaw * MEUM_INV) * dist * 0.78)
             if 0 <= x < w and 0 <= y < h:
