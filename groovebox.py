@@ -709,26 +709,39 @@ def ot_equiv_hypot(a, b):
 # ---------------------------------------------------------------------------
 
 def math_add(a, b):
+    """Composition add — OT uses book ot_add (numeric significance on sums).
+
+    isn/ics/EQR still use ot_equiv_* so the oscillator identity stays stable.
+    Playlist algorithms, FX drives, and seed folds that call math_* get real
+    OT arithmetic when the toggle is on.
+    """
     if OP_THEORY_ENABLED:
-        return ot_equiv_add(a, b)
+        return ot_add(a, b)
     return float(a) + float(b)
 
 
 def math_sub(a, b):
+    """Composition sub — OT uses book ot_sub."""
     if OP_THEORY_ENABLED:
-        return ot_equiv_sub(a, b)
+        return ot_sub(a, b)
     return float(a) - float(b)
 
 
 def math_mul(a, b):
+    """Composition product — OT uses book ot_prod (signed product rules).
+
+    This is where OT changes the *music*: gains, drives, and ratio folds that
+    multiply through math_mul inherit OT significance.  Ordinary * when off.
+    """
     if OP_THEORY_ENABLED:
-        return ot_equiv_mul(a, b)
+        return ot_prod(a, b)
     return float(a) * float(b)
 
 
 def math_div(a, b):
+    """Composition division — OT uses book ot_div (0/0→1 rule)."""
     if OP_THEORY_ENABLED:
-        return ot_equiv_div(a, b)
+        return ot_div(a, b)
     b = float(b)
     if b == 0.0:
         return 0.0
@@ -736,16 +749,279 @@ def math_div(a, b):
 
 
 def math_pow(b, e):
+    """Composition power — OT uses book ot_pow (same-hand / opposite-hand)."""
     if OP_THEORY_ENABLED:
-        return ot_equiv_pow(b, e)
+        return ot_pow(b, e)
     return math.pow(float(b), float(e))
 
 
 def math_scale(x, gain):
-    """Scale without saturating; OT mode uses the equivalence kernel."""
+    """Scale without soft saturation; OT uses book ot_prod for gain significance."""
     if OP_THEORY_ENABLED:
-        return ot_equiv_mul(x, gain)
+        return ot_prod(x, gain)
     return float(x) * float(gain)
+
+# ---------------------------------------------------------------------------
+# ESKI BOOK FRACTAL SETS (Scientific Theories and Inventions, p.26)
+#
+# Unlike isn / ics / sin / cos (and their inverses), which keep a fixed
+# audible formula and only change *execution route* under OT, these fractal
+# sets keep the **same algebraic expression** in both modes.  What changes
+# under Operator Theory is the *nature of the arithmetic itself* (book OT
+# product / power / root / add rules from p.48) — the expression text is
+# never rewritten.
+#
+#   Without OT: ordinary IEEE + * ** sqrt
+#   With OT:    ot_add / ot_prod / ot_pow / ot_div on the identical form
+#
+# Table (book):
+#   Divergent Space Set  Y = x·c + c
+#   Wormhole Set         Y = x^c + x
+#   Wormhill Set         Y = x + c
+#   Worms Set            Y = c · √x
+#   Star Set             Y = c^x
+#   Starburst Set        Y = √c · x
+#
+# Prevalence in video/game: sequential numeric inputs + playlist / step
+# algorithms select which set is most active; the fractal *object* remains
+# the same schema sampled per instrument slot.
+# ---------------------------------------------------------------------------
+
+ESKI_FRACTAL_SET_NAMES = (
+    "divergent_space",  # Y = xc + c
+    "wormhole",         # Y = x^c + x
+    "wormhill",         # Y = x + c
+    "worms",            # Y = c * root(x)
+    "star",             # Y = c^x
+    "starburst",        # Y = root(c) * x
+)
+
+
+def _fractal_add(a, b):
+    """Addition: OT → book ot_add (directional bias); else ordinary +."""
+    if OP_THEORY_ENABLED:
+        return ot_add(a, b)
+    return float(a) + float(b)
+
+
+def _fractal_mul(a, b):
+    """Product: OT → book ot_prod (signed product rules); else ordinary *."""
+    if OP_THEORY_ENABLED:
+        return ot_prod(a, b)
+    return float(a) * float(b)
+
+
+def _fractal_pow(base, exp):
+    """Power: OT → book ot_pow (same-hand / opposite-hand); else |b|^|e| sign rules via math.pow on abs with sign."""
+    if OP_THEORY_ENABLED:
+        return ot_pow(base, exp)
+    try:
+        return math.pow(float(base), float(exp))
+    except Exception:
+        # Domain guard for negative base / fractional exp
+        b = float(base)
+        e = float(exp)
+        if b < 0.0:
+            return -math.pow(abs(b), e) if e == int(e) and int(e) % 2 else float("nan")
+        return math.pow(max(b, 0.0), e)
+
+
+def _fractal_root(x, n=2.0):
+    """Root: OT uses ot_pow with 1/n under book rules; else ordinary root."""
+    x = float(x)
+    n = float(n) if float(n) != 0.0 else 2.0
+    if OP_THEORY_ENABLED:
+        return ot_pow(max(x, 0.0) if x < 0 else x, 1.0 / n)
+    if x < 0.0 and abs(n - 2.0) < 1e-12:
+        return float("nan")
+    try:
+        return math.pow(max(x, 0.0), 1.0 / n) if x < 0 else math.pow(x, 1.0 / n)
+    except Exception:
+        return float("nan")
+
+
+def eski_fractal_eval(set_name, x, c):
+    """Evaluate one book fractal set at (x, c) — expression never rewritten.
+
+    OT toggle selects arithmetic nature only.  Returns a finite float (nan
+    coerced to 0 for graphing stability in the frame path).
+    """
+    name = (set_name or "wormhill").lower().strip().replace(" ", "_")
+    x = float(x)
+    c = float(c)
+    try:
+        if name in ("divergent_space", "divergent", "divergent_space_set"):
+            # Y = x*c + c
+            y = _fractal_add(_fractal_mul(x, c), c)
+        elif name in ("wormhole", "wormhole_set"):
+            # Y = x^c + x
+            y = _fractal_add(_fractal_pow(x, c), x)
+        elif name in ("wormhill", "wormhill_set"):
+            # Y = x + c
+            y = _fractal_add(x, c)
+        elif name in ("worms", "worms_set"):
+            # Y = c * root(x)
+            y = _fractal_mul(c, _fractal_root(max(x, 0.0), 2.0))
+        elif name in ("star", "star_set"):
+            # Y = c^x
+            y = _fractal_pow(c, x)
+        elif name in ("starburst", "starburst_set"):
+            # Y = root(c) * x
+            y = _fractal_mul(_fractal_root(max(c, 0.0), 2.0), x)
+        else:
+            y = _fractal_add(x, c)
+    except Exception:
+        y = 0.0
+    if not math.isfinite(y):
+        y = 0.0
+    # Soft bound for graphing (does not change the expression — display only)
+    if abs(y) > 1e6:
+        y = math.copysign(1e6, y)
+    return float(y)
+
+
+def eski_fractal_pick(seed_key, sequential_nums=None, playlist_hash=0):
+    """Pick which book set is most prevalent from numeric / playlist geometry.
+
+    Prevalence driver (most → least): sequential numeric inputs → playlist /
+    step-algorithm fingerprint → raw seed.  Returns a set name from
+    ESKI_FRACTAL_SET_NAMES.
+    """
+    seq = list(sequential_nums or []) or [float(seed_key or 0)]
+    mean = sum(abs(float(v)) for v in seq) / max(1, len(seq))
+    fold = abs(float(seq[0]) * MEUM) % 1.0 if seq else 0.0
+    # Mix playlist / algo identity so composition pathways change the set
+    h = int(seed_key or 0) ^ int(playlist_hash or 0) & 0x7FFFFFFF
+    h ^= int(fold * 1000) & 0xFFFF
+    h ^= int(mean * 100) & 0xFFFF
+    return ESKI_FRACTAL_SET_NAMES[h % len(ESKI_FRACTAL_SET_NAMES)]
+
+
+def eski_fractal_field_sample(set_name, u, v, c, t=0.0):
+    """2D graphing sample: treat (u,v) as complex-ish indices into the set.
+
+    Book: Y for all directional axis values with alternate dimensions
+    cross-factored (X) and complex distance from solution point (C).
+    Here u ~ real, v ~ imag contribution folded into x = u + MEUM*v*sin(t).
+    """
+    x = float(u) + MEUM * float(v) * math.sin(float(t) * MEUM_INV + float(c))
+    return eski_fractal_eval(set_name, x, c)
+
+
+# Hard cap on z-iterations per node (user request / graphing stability).
+ESKI_FRACTAL_MAX_ITER = 12
+
+
+def compositional_xyz(seed, sequential_nums=None, t=0.0, slot=0):
+    """Shared compositional X,Y,Z from seed + sequential numerics.
+
+    Why shared: video, game, and music lattices should sample the *same*
+    spatial identity for a given composition so fractal nodes, instrument
+    objects, and pitch residues stay cross-correlated.  OT does not rewrite
+    these coordinates; it only changes arithmetic when they are later
+    combined under fractal / ratio ops.
+    """
+    seq = list(sequential_nums or []) or [float(seed or 0.0)]
+    s = float(seed or 0.0)
+    t = float(t)
+    i = int(slot) & 0x7FFF
+    # Deterministic axes from sequential geometry + slot
+    x = ((seq[0] if seq else s) * MEUM_INV + i * PHI_INV + t * 0.01) % 2.0 - 1.0
+    y = ((seq[1] if len(seq) > 1 else s * MEUM) * MEUM_INV + i * MEUM + t * 0.013) % 2.0 - 1.0
+    z = ((seq[2] if len(seq) > 2 else s * PHI) * MEUM_INV + i * 0.07 + t * 0.008) % 2.0 - 1.0
+    if OP_THEORY_ENABLED:
+        # OT combination of axes (expression: x' = x+y*z style via book ops)
+        try:
+            x = _fractal_add(x, _fractal_mul(y, 0.05))
+            y = _fractal_add(y, _fractal_mul(z, 0.05))
+            z = _fractal_add(z, _fractal_mul(x, 0.03))
+        except Exception:
+            pass
+    return float(x), float(y), float(z)
+
+
+def eski_fractal_iterate_z(set_name, x, y, z0, c, max_iter=None):
+    """Iterate fractal z-values at a node — **max 12 iterations**.
+
+    Each step applies the book set expression to a mix of (x, y, z_n) without
+    rewriting the equation.  Returns (z_list, n_done, escaped) where z_list
+    has length ≤ 12.  Escape when |z| exceeds a bound (graphing only).
+    """
+    max_iter = int(max_iter if max_iter is not None else ESKI_FRACTAL_MAX_ITER)
+    max_iter = max(1, min(12, max_iter))  # hard ceiling of 12
+    z = float(z0)
+    c = float(c)
+    x, y = float(x), float(y)
+    zs = []
+    escaped = False
+    for n in range(max_iter):
+        # Fold 3D into the 1D book variable: ξ = x + MEUM·y + z (same expression input)
+        xi = _fractal_add(_fractal_add(x, _fractal_mul(MEUM, y)), z)
+        z = eski_fractal_eval(set_name, xi, c)
+        zs.append(z)
+        if abs(z) > 8.0:
+            escaped = True
+            break
+    return zs, len(zs), escaped
+
+
+def instrument_geometry_mode(slot, phase, xyz, flags=None, fractal_set=None):
+    """Blend / switch instrument modes from geometry at phase-points.
+
+    Three engines (music, video, game) call this so each instrument object
+    follows the composition as closely as possible:
+
+      * phase   — voice phase0 + time (phase-point on the circle)
+      * xyz     — compositional_xyz for this slot (shared spatial identity)
+      * flags   — engine mask (randomizer / phase_lock / goava / …)
+      * fractal_set — active book set name (optional)
+
+    Returns weights dict summing ~1.0:
+      lattice   — instrument_lattice / canonical object draw (default dominant)
+      book_set  — book fractal field influence
+      phase_lock — lock-ring / phase-ribbon emphasis
+      scatter   — randomizer spread emphasis
+      goava     — goava portal/glyph emphasis
+
+    Switch vs blend: near phase-points (phase mod τ close to 0 or π) weights
+    snap harder (switch); between phase-points they interpolate (blend).
+    """
+    flags = dict(flags or {})
+    x, y, z = xyz if xyz and len(xyz) >= 3 else (0.0, 0.0, 0.0)
+    ph = float(phase) % math.tau
+    # Distance to nearest phase-point (0 or π)
+    d0 = min(abs(ph), abs(ph - math.tau))
+    dpi = abs(ph - math.pi)
+    near = min(d0, dpi) / math.pi  # 0 at point, 1 at farthest mid
+    snap = 1.0 - near  # 1 at phase-point → switch; 0 mid → soft blend
+    # Geometry residue from position
+    geo = (abs(x) + abs(y) + abs(z)) / 3.0
+    geo = max(0.0, min(1.0, geo))
+    w = {
+        "lattice": 0.45 + 0.25 * (1.0 - geo),
+        "book_set": 0.20 + 0.20 * geo,
+        "phase_lock": 0.08 * (1.5 if flags.get("phase_lock") else 0.4),
+        "scatter": 0.08 * (1.5 if flags.get("randomizer") else 0.4),
+        "goava": 0.08 * (1.6 if flags.get("goava") else 0.3),
+    }
+    # At phase-points, boost lattice or book_set by slot parity (switch)
+    if snap > 0.65:
+        if int(slot) % 2 == 0:
+            w["lattice"] += 0.20 * snap
+        else:
+            w["book_set"] += 0.20 * snap
+    else:
+        # Mid-arc blend: mix lattice/book by xyz.z
+        w["lattice"] = w["lattice"] * (1.0 - 0.3 * near) + w["book_set"] * 0.15 * near
+    # Normalize
+    s = sum(w.values()) or 1.0
+    for k in w:
+        w[k] = float(w[k] / s)
+    w["snap"] = float(snap)
+    w["near_phase_point"] = bool(snap > 0.65)
+    w["fractal_set"] = fractal_set or ""
+    w["slot"] = int(slot)
+    return w
 
 
 def math_sin(x):
@@ -2275,7 +2551,20 @@ def _seed_to_pitch_ratio(seed_val, op_idx=0, step=0):
     ))
     # ±4.5 octaves = 10800 cents; map hash uniformly into that span
     cents = float(h % 10800) - 5400.0
-    ratio = 2.0 ** (cents / 1200.0)
+    # OT significance: same formula 2^(cents/1200), but power uses book ot_pow
+    # when OT is on — signed/handedness rules can matter for extreme seeds.
+    # Without OT: ordinary IEEE power.  Expression is never rewritten.
+    exp = cents / 1200.0
+    if OP_THEORY_ENABLED:
+        try:
+            ratio = float(ot_pow(2.0, exp))
+            # ot_pow uses abs bases; restore octave direction from cents sign
+            if cents < 0.0 and ratio > 0.0:
+                ratio = 1.0 / ratio if ratio != 0.0 else 1.0
+        except Exception:
+            ratio = 2.0 ** exp
+    else:
+        ratio = 2.0 ** exp
     # Hard floor/ceil for ratio safety (still ~9 octaves total span)
     if ratio < 1.0 / 32.0:
         ratio = 1.0 / 32.0
@@ -2900,15 +3189,28 @@ def canonical_master_slot(voice_index: int, instrument_count: int) -> int:
 
 
 def canonical_visual_instrument(slot, ctx, flags):
-    """Per-instrument 2.5D parameters mirroring the audio voice pass.
+    """ONE fractal object type per instrument — same schema for every slot.
 
-    ctx: dict with seed, base (already union-scaled when full unison), ratio,
-         s_int, full_unison, n_inst, meum_depth.
-    flags: dict of the five canonical engine booleans
-           (randomizer, phase_lock, idealize_rhythm, seeded, goava).
-    Returns the identical-keyed parameter set the audio pass builds for one
-    voice (base_freq, ratio, s_int, entropy, phase0, meum fm/pm/am set,
-    max_partial) plus the 2.5D structural co-ordinates the frame needs.
+    Why this is the fractal we want
+    -------------------------------
+    Every instrument (and every visual layer that mirrors one) is the *same
+    object class*: a point on the shared Meum lattice with (base_freq, ratio,
+    entropy, phase, depth, hue, …).  The fractal is not "a different effect
+    per instrument"; it is the *same object* sampled at every slot, so the
+    ensemble is a single self-similar field.  Prevalence of which *regions*
+    of that field light up is driven by sequential numeric inputs fed into
+    the canonicals (seed list geometry), not by instrument count.
+
+    Geometry hierarchy (most prevalent → most relevant):
+      1. Sequential numeric inputs (seed script values over time) — primary
+      2. Canonical lattice position of the slot (MEUM_POWERS_36 fold)
+      3. Active engines (randomizer / phase_lock / goava / …) — tilt axes
+      4. Music pitch/entropy for this slot (same numbers as the voice)
+      5. Game spatial residues when the consumer is the videogame path
+
+    ctx: seed, base, ratio, s_int, full_unison, n_inst, meum_depth.
+    flags: randomizer, phase_lock, idealize_rhythm, seeded, goava.
+    Returns one fractal-object dict (audio keys + 2.5D co-ordinates).
     """
     n_inst = int(ctx.get("n_inst", 48))
     i = int(slot) % max(2, n_inst)
@@ -4794,13 +5096,15 @@ class VideoSynthEngine:
             pass
 
     def set_instrument_count(self, count, smooth=True):
-        """Synchronize the scenograph to the live synth count (2–64).
+        """UI ensemble size only — does NOT change seeded video identity.
 
-        Existing layers retain their phase/depth/life state. New layers are
-        seeded deterministically from their index, and removed layers fade out
-        through the render-count transition instead of disappearing abruptly.
-        ``self.n`` is updated immediately so all engine calculations see the
-        new ensemble size; only visual layer admission is smoothed.
+        Canonical visual layers are always the fixed 16-slot master lattice
+        (see ``_build_canonical_ctx_and_layers``).  ``self.n`` tracks the host
+        instrument spinner for labels/admission fades, but seeded geometry,
+        entropy, fractal set pick, and mode blends are functions of seed +
+        engines + sequential numerics alone — same contract as the music
+        canonical master.  Changing instrument count must not re-blend the
+        video.
         """
         try:
             target = int(max(2, min(64, int(count))))
@@ -4822,7 +5126,8 @@ class VideoSynthEngine:
                 layer = dict(old_layers[i])
                 layer["i"] = i
                 layer["family"] = i // 8
-                layer["hue"] = int((i * 360 / max(target, 1) + i * 7) % 360)
+                # Fixed 64-slot hue lattice — not divided by live instrument count
+                layer["hue"] = int((i * 360 / 64.0 + i * 7) % 360)
                 if i >= target:
                     layer["life"] = float(layer.get("life", 0.3))
             else:
@@ -5491,14 +5796,20 @@ class VideoSynthEngine:
         }
 
     def _subscene_faces_segments(self, img, w, h, st):
-        """Single canonical visual route: one self-describing object per instrument."""
+        """Canonical visual route: always the fixed slot lattice (not ensemble N).
+
+        Music keeps a canonical master independent of instrument count; video
+        must do the same.  Drawing ``len(self._canonical)`` (16 fixed slots)
+        means seeded blend/geometry is identical for 2 instruments or 48.
+        Labels may come from the host roster but never truncate the lattice.
+        """
         names = list(getattr(self.app, "instrument_names_48", []) or []) if self.app is not None else []
-        n = min(int(round(getattr(self, "_render_n", self.n))), len(self._canonical), len(names) or self.n)
+        n = len(self._canonical)  # fixed visual budget — ignore self.n
         if not names:
             names = [f"Instrument {i+1}" for i in range(n)]
         energy = float(np.clip(0.35*self._rms + 0.25*self._peak + 0.40*self._visual_entropy, 0.0, 1.0))
         for i in range(n):
-            name = names[i] if i < len(names) else f"Instrument {i+1}"
+            name = names[i % len(names)] if names else f"Instrument {i+1}"
             c = self._canonical[i]
             schema = self._live_instrument_visual_schema(i, name, c)
             InstrumentVisualObject(self, i, name, c, schema).draw(img, w, h, self.t, energy, self._band)
@@ -5972,9 +6283,22 @@ class VideoSynthEngine:
             return
         cx, cy = w * 0.5, h * 0.43
         n = len(events)
-        n_inst = max(2, int(round(getattr(self, "_render_n", self.n))))
-        harmonic_mult = 0.65 + 0.95 * getattr(self, "_harmonic_activity", 0.5) + 0.55 * getattr(self, "_octave_boundary", 0.0)
-        goava_count = min(n, max(2, int(round(n_inst * 0.42 * harmonic_mult))))
+        # GOAVA count = seed count (one visual node per seed numeric entry).
+        # Never instrument-count, never a fixed 16-slot budget.
+        seed_count = 0
+        try:
+            seed_count = len(getattr(self.app, "goava_seed_numbers", None) or [])
+        except Exception:
+            seed_count = 0
+        if seed_count <= 0 and self.app is not None and hasattr(self.app, "get_seed_values"):
+            try:
+                seed_count = len(list(self.app.get_seed_values(
+                    t_value=float(getattr(self, "t", 0.0)) % 8.0) or []) or [])
+            except Exception:
+                seed_count = 0
+        if seed_count <= 0:
+            seed_count = n  # events already 1:1 with seeds when GOAVA built them
+        goava_count = min(n, max(1, int(seed_count)))
         # GOAVA is intentionally a minor unison operator: it follows the
         # ensemble rather than dominating it.
         minor = 0.28
@@ -6265,8 +6589,21 @@ class VideoSynthEngine:
         # rest of the scenograph instead of floating outside the fitted frame.
         if snap.get("goava"):
             events = getattr(self.app, "goava_note_events", []) if self.app is not None else []
-            n_inst = max(2, int(round(getattr(self, "_render_n", self.n))))
-            gcount = min(len(events), max(2, int(round(n_inst * (0.40 + 0.35 * getattr(self, "_harmonic_activity", 0.5))))))
+            # GOAVA fit-box count = seed count (same as draw path).
+            seed_count = 0
+            try:
+                seed_count = len(getattr(self.app, "goava_seed_numbers", None) or [])
+            except Exception:
+                seed_count = 0
+            if seed_count <= 0 and self.app is not None and hasattr(self.app, "get_seed_values"):
+                try:
+                    seed_count = len(list(self.app.get_seed_values(
+                        t_value=float(getattr(self, "t", 0.0)) % 8.0) or []) or [])
+                except Exception:
+                    seed_count = 0
+            if seed_count <= 0:
+                seed_count = len(events)
+            gcount = min(len(events), max(1, int(seed_count)))
             for j, ev in enumerate(events[:gcount]):
                 key = float(ev.get("raw", 0.0)) + float(ev.get("seed", 0.0)) * MEUM_INV
                 a = self.t * 0.12 + j * math.tau / max(gcount, 1) + key * 0.017
@@ -6328,6 +6665,171 @@ class VideoSynthEngine:
             if r % 2 == 0 and pts:
                 mid = pts[len(pts) // 2]
                 self._dot(img, mid[0], mid[1], col, 0.15 + 0.2 * fade, r=1)
+
+    def _subscene_numeric_fractal(self, img, w, h, st):
+        """Book fractal sets — 12 z-iters/node, transparency, shared 3D xyz.
+
+        Goal
+        ----
+        Each instrument is the same fractal object.  Each *node* runs at most
+        **12** iterations of z-values (ESKI_FRACTAL_MAX_ITER).  OT never
+        rewrites the book equations; it only changes arithmetic nature.
+        Compositional X,Y,Z are shared with the music lattice so video/game
+        nodes track the same numeric identity as pitch/FX pathways.
+
+        Prevalence: sequential numerics → playlist/algo → music lattice → residual.
+        """
+        try:
+            seed = 0.0
+            seq = []
+            if self.app is not None and hasattr(self.app, "get_seed_values"):
+                try:
+                    seq = [float(v) for v in (self.app.get_seed_values(
+                        t_value=float(getattr(self, "t", 0.0)) % 8.0) or [])[:16]]
+                except Exception:
+                    seq = []
+            if self.app is not None and hasattr(self.app, "get_numeric_seed"):
+                try:
+                    seed = float(self.app.get_numeric_seed() or 0.0)
+                except Exception:
+                    seed = 0.0
+            if not seq:
+                seq = [seed, seed * MEUM, seed * PHI, seed * MEUM_INV]
+            s_int = int(_safe_int_seed(seed)) & 0x7FFFFFFF
+
+            playlist_hash = 0
+            try:
+                app = self.app
+                if app is not None:
+                    pl = getattr(app, "master_playlist_data", None) or []
+                    for row in pl[:32]:
+                        if isinstance(row, dict):
+                            playlist_hash ^= hash((
+                                str(row.get("step_algorithm", ""))[:24],
+                                str(row.get("operator", ""))[:16],
+                                str(row.get("live_parametrics", ""))[:16],
+                            )) & 0x7FFFFFFF
+                    gas = getattr(app, "global_algo_state", None) or {}
+                    if gas:
+                        playlist_hash ^= hash(str(sorted(gas.items())[:12])) & 0x7FFFFFFF
+            except Exception:
+                playlist_hash = 0
+
+            set_name = eski_fractal_pick(s_int, sequential_nums=seq, playlist_hash=playlist_hash)
+            c_param = float(seq[0] * MEUM_INV) if seq else float(seed * MEUM_INV)
+            c_param = ((c_param % 4.0) - 2.0) * 0.5
+
+            canon = list(getattr(self, "_canonical", None) or [])
+            if not canon:
+                ctx = getattr(self, "_canonical_ctx", None) or {
+                    "seed": seed, "base": 432.0, "ratio": 1.0, "s_int": s_int,
+                    "full_unison": False, "n_inst": CANONICAL_MASTER_SLOTS,
+                }
+                flags = getattr(self, "_canonical_flags", {}) or {}
+                canon = [canonical_visual_instrument(i, ctx, flags)
+                         for i in range(min(16, CANONICAL_MASTER_SLOTS))]
+
+            flags = getattr(self, "_canonical_flags", {}) or {}
+            boost = 1.0 + 0.25 * (1 if flags.get("randomizer") else 0) \
+                    + 0.2 * (1 if flags.get("phase_lock") else 0) \
+                    + 0.3 * (1 if flags.get("goava") else 0)
+            ot_on = bool(OP_THEORY_ENABLED)
+            self._last_fractal_family = f"eski:{set_name}:OT={int(ot_on)}:z12"
+
+            t = float(getattr(self, "t", 0.0))
+            cx, cy = w * 0.5, h * 0.48
+            # Shared compositional origin (seed xyz) — same for all nodes this frame
+            ox, oy, oz = compositional_xyz(seed, sequential_nums=seq, t=t, slot=0)
+
+            # Field graph: coarse lattice, 12 z-iters per node, transparency by escape
+            step = max(5, min(w, h) // 36)
+            for yy in range(0, h, step):
+                for xx in range(0, w, step):
+                    u = (xx / max(1, w) - 0.5) * 2.0 + ox * 0.15
+                    v = (yy / max(1, h) - 0.5) * 2.0 + oy * 0.15
+                    z0 = oz * 0.25
+                    zs, n_done, escaped = eski_fractal_iterate_z(
+                        set_name, u, v, z0, c_param, max_iter=12)
+                    if not zs:
+                        continue
+                    z_last = zs[-1]
+                    mag = abs(z_last)
+                    norm = mag / (1.0 + mag)
+                    # Transparency: deeper iter / non-escape → more opaque; early escape → translucent
+                    alpha = (0.12 + 0.55 * (n_done / 12.0) * (0.35 if escaped else 1.0)) * boost
+                    alpha = max(0.06, min(0.72, alpha))  # decent transparency floor/ceil
+                    # 3D adaptation: project (u,v,z_last) with shared compositional offset
+                    px, py, depth = self._project(
+                        u * 0.55, v * 0.55, 0.7 + 0.25 * math.tanh(z_last * 0.15) + oz * 0.1,
+                        w, h)
+                    col = self._hsv(
+                        (norm * 220 + self._video_hue_shift + (35 if ot_on else 0) + n_done * 4) % 360,
+                        0.45 + 0.2 * (n_done / 12.0), 0.35 + 0.5 * norm)
+                    self._dot(img, px, py, col, alpha, r=max(1, step // 3))
+                    # Trail of z-values (transparent trail along iteration)
+                    if n_done >= 3:
+                        for zi, zv in enumerate(zs[:: max(1, n_done // 3)]):
+                            t_alpha = alpha * (0.25 + 0.2 * (zi / max(1, len(zs))))
+                            qx, qy, _ = self._project(
+                                u * 0.55, v * 0.55,
+                                0.7 + 0.2 * math.tanh(zv * 0.15), w, h)
+                            self._dot(img, qx, qy, col, t_alpha, r=1)
+
+            # Instrument objects: follow composition geometry; blend/switch modes
+            # at phase-points (instrument_geometry_mode). Same object schema always.
+            for i, obj in enumerate(canon):
+                if not isinstance(obj, dict):
+                    continue
+                ent = float(obj.get("entropy", 0.5) or 0.5)
+                hue = float(obj.get("hue", (i * 37) % 360) or 0.0)
+                depth_o = float(obj.get("depth", 0.5) or 0.5)
+                phase0 = float(obj.get("phase0", 0.0) or 0.0)
+                ratio = float(obj.get("ratio", 1.0) or 1.0)
+                sx, sy, sz = compositional_xyz(seed, sequential_nums=seq, t=t, slot=i)
+                live_phase = phase0 + t * (0.30 + 0.70 * ent)  # tracks composition time
+                mode = instrument_geometry_mode(
+                    i, live_phase, (sx, sy, sz), flags=flags, fractal_set=set_name)
+                zs, n_done, escaped = eski_fractal_iterate_z(
+                    set_name, sx, sy, sz, c_param, max_iter=12)
+                z_last = zs[-1] if zs else 0.0
+                # Mode blend: lattice vs book_set pulls position / alpha
+                lat_w = float(mode.get("lattice", 0.5))
+                book_w = float(mode.get("book_set", 0.2))
+                yaw = live_phase + z_last * 0.08 * book_w
+                rad_orb = (0.25 + 0.35 * depth_o) * (0.85 + 0.3 * lat_w)
+                px, py, _ = self._project(
+                    math.cos(yaw) * rad_orb + sx * 0.1,
+                    math.sin(yaw * MEUM_INV) * rad_orb * 0.78 + sy * 0.1,
+                    0.75 + 0.2 * depth_o + 0.1 * math.tanh(z_last * 0.1) * book_w + sz * 0.05,
+                    w, h)
+                alpha = (0.18 + 0.5 * ent * (n_done / 12.0) * (0.4 if escaped else 1.0)) * boost
+                alpha *= (0.7 + 0.3 * lat_w + 0.2 * book_w)
+                if mode.get("near_phase_point"):
+                    alpha = min(0.85, alpha + 0.12 * float(mode.get("snap", 0)))
+                alpha = max(0.08, min(0.78, alpha))
+                hue_m = (hue + self._video_hue_shift + abs(z_last) * 6
+                         + 25.0 * float(mode.get("goava", 0))
+                         + 15.0 * float(mode.get("phase_lock", 0))) % 360
+                col = self._hsv(hue_m, 0.45 + 0.25 * ent, 0.4 + 0.45 * ent)
+                rad = max(1, int(2 + 4 * ent * boost * (0.8 + 0.4 * lat_w)))
+                self._dot(img, px, py, col, alpha, r=rad)
+                # Child sample — stronger when scatter/goava mode weight is up
+                child_a = alpha * (0.35 + 0.25 * float(mode.get("scatter", 0))
+                                   + 0.2 * float(mode.get("goava", 0)))
+                cx2, cy2, _ = self._project(
+                    math.cos(yaw * PHI) * (0.12 + 0.15 * depth_o),
+                    math.sin(yaw * MEUM) * (0.12 + 0.15 * depth_o) * 0.7,
+                    0.8 + 0.1 * depth_o, w, h)
+                col2 = self._hsv((hue_m + 60) % 360, 0.4, 0.35 + 0.3 * ent)
+                self._dot(img, cx2, cy2, col2, child_a, r=max(1, rad // 2))
+                # Stash mode on object for cross-engine debug alignment
+                try:
+                    obj["_geom_mode"] = mode
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
 
     def _subscene_seed_morph(self, img, w, h, st):
         """Instantaneous seed-morph glyphs: every evaluated seed number becomes
@@ -6595,14 +7097,20 @@ class VideoSynthEngine:
         self._subscene_rhythm_mandala(img, w, h, st)
         self._subscene_pulse_grid(img, w, h, st)
         self._subscene_wave_integration(img, w, h, st)
-        # Generative visual layers (seed-driven terrain + morph glyphs).
-        # Visual-only: they never call into the music generator.
+        # Generative visual layers — visual-only (never mutates the music engine).
+        # Prevalence hierarchy is documented on _subscene_numeric_fractal:
+        # sequential numeric inputs → music lattice → game geometry → residuals.
         try:
             self._subscene_generative_terrain(img, w, h, st)
         except Exception:
             pass
         try:
             self._subscene_seed_morph(img, w, h, st)
+        except Exception:
+            pass
+        # Core fractal: each instrument = same object; ensemble = the fractal.
+        try:
+            self._subscene_numeric_fractal(img, w, h, st)
         except Exception:
             pass
         # GOAVA remains a second graphical class, intentionally separate because
@@ -18459,7 +18967,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.slider_master_vol.setFixedWidth(160)
         self.slider_master_vol.valueChanged.connect(self._on_master_vol_changed)
         master_vol_row.addWidget(self.slider_master_vol)
-        self.lbl_master_vol = QLabel("100%")
+        self.lbl_master_vol = QLabel("50%")  # matches slider default; 50% is the warning
         self.lbl_master_vol.setStyleSheet("color: #f5d97d;")
         master_vol_row.addWidget(self.lbl_master_vol)
 
@@ -18493,7 +19001,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_clip_ratio.setValue(50.0)
         self.spin_clip_ratio.setFixedWidth(72)
         self.spin_clip_ratio.setToolTip(
-            "Clip-density vs gain-max (0=max gain, 100=clip-free, 50=balanced). Off-fingerprint."
+            "HARDCLIP factors into the master bus (0=unity drive, 50=1.5×, 100=2.5×). "
+            "Master Volume × this drive, then hard-clip to ±1. "
+            "No normalizer / limiter / EQ on this path. 50% master vol is the warning."
         )
         self.spin_clip_ratio.valueChanged.connect(self._on_clip_ratio_changed)
         master_vol_row.addWidget(self.spin_clip_ratio)
@@ -18816,7 +19326,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._pkp_poly_generation = 0
         self._pkp_poly_stream = None
         self._pkp_poly_sr = 44100
-        self.master_volume = 1.00
+        self.master_volume = 0.50  # 50% default = intentional warning
         self._scope_update_timer = QTimer(self)
         self.update()  # Trigger repaint
         self._scope_update_timer.setInterval(33)
@@ -25948,27 +26458,44 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # OT_EQUIVALENCE_2026: Operator Theory changes the internal arithmetic
         # route, never the final master waveform.  The legacy ot_master_transform
         # remains available to explicit scripts but is not an implicit DSP stage.
+        #
+        # MASTER_HARDCLIP_2026: the rendered buffer is stored *pre* volume so
+        # the live slider can still trim.  Hard-clip-with-factors is applied
+        # at playback and at export (see `_master_hardclip`).  We do NOT peak-
+        # normalize here — that would hide the warning the 50% default is for.
         return master.astype(np.float32), sample_rate
 
-    def _clip_gain_profile(self, master, sample_rate):
-        """Longitudinal CLIP-DENSITY ⇄ GAIN-MAXIMIZATION profile.
+    def _master_hardclip(self, master, sample_rate=None, *, apply_master_vol=True):
+        """MASTER BUS = volume × factors → HARD CLIP. Nothing else.
 
-        Deterministic, off-canonical master-bus shaping (never composition
-        identity). Divides the timeline into ~1/24 s blocks and gives every
-        block a closed-form gain that blends two opposing goals by the ratio
-        `spin_clip_ratio` (0-100, default 50 = balanced 50-50):
+        Why this exists / what it deliberately is NOT
+        ---------------------------------------------
+        The composition sum is the composition identity.  The only legal
+        master-stage operations after that sum are:
 
-            g_max  = headroom toward TARGET_PEAK (gain maximization, capped)
-            g_safe = 1 / (1 + DENSITY_K·density) (clip avoidance: pull down
-                    wherever the flat-top ceiling density is already high)
-            g      = g_max ** (1-r) * g_safe ** r
+          1. multiply by Master Volume (default 50% — intentional warning:
+             play/preview at 50% with live hard-clip is how you hear overload
+             before export; it is NOT a soft-limiter safety net),
+          2. multiply by Clip/Gain *factors* from ``spin_clip_ratio``,
+          3. hard-clip to [-1, +1].
 
-        The per-block gains are smoothly interpolated across the whole track
-        (no block clicks) and a final rescale only ever lowers the absolute
-        peak toward CEIL — so no flat-top hard clipping remains. With the
-        same ratio and sample rate the same render reproduces the profile
-        bit-for-bit; a reverse engineer needs only the one documented ratio.
+        There is NO peak normalizer, NO brickwall limiter envelope, NO EQ,
+        NO filter, and NO "gain maximization toward a target peak" on this
+        bus.  Earlier soft-gain / density profiles are retired because they
+        hid clipping instead of exposing it.  Flat-top hard clip *is* the
+        expected behavior when the sum is hot — that is the warning.
+
+        Factors (spin_clip_ratio 0..100):
+            0%   → drive ≈ 1.0  (unity into the clipper)
+            50%  → drive ≈ 1.5  (default balanced push)
+            100% → drive ≈ 2.5  (aggressive push into hard clip)
+
+        Reproducible: same buffer + same ratio + same master_vol → same out.
         """
+        n = int(getattr(master, "size", 0) or 0)
+        if n <= 0:
+            return (np.asarray(master, dtype=np.float32), None)
+        m32 = np.asarray(master, dtype=np.float32).ravel()
         ratio_pct = 50.0
         try:
             if hasattr(self, "spin_clip_ratio"):
@@ -25976,95 +26503,57 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
         r = float(np.clip(ratio_pct / 100.0, 0.0, 1.0))
-        TARGET_PEAK = 0.89
-        CEIL = 0.95
-        GAIN_CAP = 2.5
-        GAIN_FLOOR = 0.35
-        DENSITY_K = 50.0
-        n = int(getattr(master, "size", 0) or 0)
-        if n <= 0:
-            return master, None
-        m32 = np.asarray(master, dtype=np.float32)
-        block = max(256, int(max(float(sample_rate), 1.0)) // 24)
-        nblocks = max(1, int(np.ceil(n / float(block))))
-        dens = np.empty(nblocks, dtype=np.float64)
-        peaks = np.empty(nblocks, dtype=np.float64)
-        for b in range(nblocks):
-            a = int(b) * block
-            bnd = min(a + block, n)
-            seg = m32[a:bnd]
-            peaks[b] = float(np.max(np.abs(seg))) if seg.size else 0.0
-            dens[b] = float(np.mean(np.abs(seg) > CEIL)) if seg.size else 0.0
-        headroom = TARGET_PEAK / np.maximum(peaks, 1e-9)
-        g_max = np.minimum(np.maximum(headroom, GAIN_FLOOR), GAIN_CAP)
-        g_safe = 1.0 / (1.0 + DENSITY_K * dens)
-        g = np.clip((np.float64(g_max) ** (1.0 - r)) * (np.float64(g_safe) ** r),
-                    GAIN_FLOOR, GAIN_CAP)
-        starts = np.arange(nblocks, dtype=np.int64) * block
-        ends = np.minimum(starts + block, n)
-        centers = (starts + ends - 1) * 0.5
-        if nblocks == 1:
-            profile = np.full(n, np.float32(g[0]), dtype=np.float32)
-        else:
-            profile = np.interp(np.arange(n), centers.astype(np.float64), g).astype(np.float32)
-        out = (m32 * profile).astype(np.float32)
-        peak = float(np.max(np.abs(out))) if out.size else 0.0
-        if peak > CEIL:
-            out = (out * np.float32(CEIL / peak)).astype(np.float32)
-        dens_before = float(np.mean(np.abs(m32) > CEIL)) if n else 0.0
-        dens_after = float(np.mean(np.abs(out) > CEIL)) if n else 0.0
-        # EQR_Z_READOUT_2026: master EQR z-value readout (single-point P·E+D
-        # reality-tensor output) + peak-hold numbers derived once per render from
-        # the effected master (offline, used to color the label and cross-checked
-        # live by the audio callback).  Not persisted, master-only, off-canonical.
+        # Linear drive into the clipper — not a soft curve, not a compressor.
+        drive = float(1.0 + 1.5 * r)  # 1.0 .. 2.5
+        vol = 1.0
+        if apply_master_vol:
+            try:
+                vol = float(getattr(self, "master_volume", 0.5) or 0.5)
+            except Exception:
+                vol = 0.5
+        scaled = m32 * np.float32(vol * drive)
+        # HARD CLIP — the only ceiling.  No peak rescale afterward.
+        out = np.clip(scaled, -1.0, 1.0).astype(np.float32)
+        dens_before = float(np.mean(np.abs(m32) > 0.99)) if n else 0.0
+        dens_after = float(np.mean(np.abs(out) >= 0.999)) if n else 0.0
         try:
             self._eqr_peak_db = None
-            _nfft = 1 << int(math.floor(math.log2(max(2, n))))
-            if _nfft >= 64:
-                _seg = out[:_nfft].astype(np.float64)
-                _rms_tot = float(np.sqrt(np.mean(_seg * _seg))) if _seg.size else 0.0
-                _base = max(_rms_tot, 1e-6)
-                _zn = min(128, max(8, _nfft // 512))
-                _zi = np.linspace(0, _nfft - 1, _zn).astype(np.int32)
-                _zw = max(1, _zn // 16)
-                _zc = np.empty(_zn, dtype=np.float64)
-                for _j, _ix in enumerate(_zi):
-                    _lo = max(0, _ix - _zw)
-                    _hi = min(_nfft, _ix + _zw + 1)
-                    _zc[_j] = eqr_tensor_step(_seg[_ix], _seg[_lo:_hi], t=float(_ix) / max(1, _nfft - 1))[3]
-                _zmean = float(np.mean(np.abs(_zc))) + 1e-9
-                self._eqr_z_rel = float(np.mean(np.abs(_zc / _zmean)))
-                self._eqr_z_db = self._eqr_z_rel
-                _pk = float(np.max(np.abs(out))) if n else 0.0
-                self._eqr_peak_db = float(20.0 * math.log10(max(_pk, 1e-9)))
+            _pk = float(np.max(np.abs(out))) if n else 0.0
+            self._eqr_peak_db = float(20.0 * math.log10(max(_pk, 1e-9)))
+            self._eqr_z_rel = dens_after
+            self._eqr_z_db = dens_after
         except Exception:
             pass
         self._clipgain_report = {
+            "mode": "hardclip",
             "ratio_pct": ratio_pct,
-            "blocks": int(nblocks),
+            "drive": drive,
+            "vol": vol,
             "density_before": dens_before,
             "density_after": dens_after,
-            "gain_min_db": float(20.0 * math.log10(float(np.min(profile)))) if n else 0.0,
-            "gain_max_db": float(20.0 * math.log10(float(np.max(profile)))) if n else 0.0,
+            "peak": float(np.max(np.abs(out))) if n else 0.0,
         }
-        if hasattr(self, 'lbl_clip_gain_status'):
-            status = None
+        if hasattr(self, "lbl_clip_gain_status"):
             try:
                 status = self.lbl_clip_gain_status
-            except Exception:
-                status = None
-            if status is not None:
-                try:
+                if status is not None:
                     status.setVisible(True)
                     status.setText(
-                        f"balance {ratio_pct:.0f}% · density "
-                        f"{dens_before * 100:.2f}%→{dens_after * 100:.2f}% · "
-                        f"gain {self._clipgain_report['gain_min_db']:+.1f}…"
-                        f"{self._clipgain_report['gain_max_db']:+.1f} dB"
+                        f"HARDCLIP drive {drive:.2f} · vol {vol*100:.0f}% · "
+                        f"clip dens {dens_before*100:.2f}%→{dens_after*100:.2f}%"
                     )
-                except Exception:
-                    pass
+            except Exception:
+                pass
         return out, self._clipgain_report
+
+    def _clip_gain_profile(self, master, sample_rate):
+        """Backward-compatible name → pure hardclip (see ``_master_hardclip``).
+
+        Historical soft gain-maximization / anti-flat-top profile is retired.
+        Callers that still invoke this name get volume × factors → hard clip.
+        """
+        return self._master_hardclip(master, sample_rate, apply_master_vol=True)
+
 
     def _sync_composition_toggle_state(self):
         """Maintain an order-independent CompositionToggleState summary.
@@ -27338,20 +27827,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
             n = min(frames, remaining)
             if n > 0:
                 start_sample = int(self.play_cursor)
-                chunk = self.play_buffer[start_sample:start_sample + n] * self.master_volume
-                # VIDEO_TO_SOFTWARE_2026: live master trim driven by the rendered
-                # scenograph energy (the video -> output half of the two-way
-                # cross-validation). Live-DJ and playback dynamics only — the
-                # play_buffer/canonical mixdown/exports are untouched, so the
-                # canonical fingerprint and offline audio are unaffected. The
-                # gain is centered on 1.0 at mean energy (±4% max) and read under
-                # try/except since it is written from the UI thread.
+                # MASTER_HARDCLIP_2026: volume × clip-factors → hard clip only.
+                # No video-energy bedding, no peak normalize, no soft limiter.
+                # Default master vol 50% is the warning; hard clip is the ceiling.
+                raw = self.play_buffer[start_sample:start_sample + n]
                 try:
-                    _ve = float(getattr(getattr(self, "video_synth_engine", None), "_video_energy", 0.0) or 0.0)
-                    chunk = chunk * float(0.96 + 0.08 * np.clip(_ve, 0.0, 1.0))
+                    ratio_pct = float(self.spin_clip_ratio.value()) if hasattr(self, "spin_clip_ratio") else 50.0
                 except Exception:
-                    pass
+                    ratio_pct = 50.0
+                drive = float(1.0 + 1.5 * (ratio_pct / 100.0))
+                vol = float(getattr(self, "master_volume", 0.5) or 0.5)
+                chunk = np.clip(raw * np.float32(vol * drive), -1.0, 1.0).astype(np.float32)
                 chunk = self._apply_live_dj_chunk(chunk, start_sample)
+                # Live DJ may boost; hard-clip again so no path escapes the ceiling.
+                chunk = np.clip(chunk, -1.0, 1.0).astype(np.float32)
                 outdata[:n, 0] = chunk
                 # EQR_BAND_READOUT_2026: live peak + peak-hold numbers written by
                 # the audio thread (plain floats — the labels are refreshed by the
@@ -28524,6 +29013,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
         try:
+            # Export gets the same hardclip path as live: vol × factors → clip.
+            master, _ = self._master_hardclip(master, sr, apply_master_vol=True)
             pcm = (np.clip(master, -1.0, 1.0) * 32767.0).astype(np.int16)
         except Exception:
             pcm = None
@@ -28646,9 +29137,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def export_mixdown_dialog(self, audio_format="wav"):
         """Export the same canonical master mix in WAV/FLAC/OGG/AIFF/MP3/OPUS/CAF.
 
-        WAV uses the native writer; all other formats use the same ffmpeg
-        binary already used by video export, so every output is derived from one
-        canonical render rather than a second serialization model.
+        Pathway (all formats share this — no alternate soft bus):
+          1. ``_render_mixdown_buffer`` — composition identity (sum of voices)
+          2. optional bake-DJ write (live parametric, not a normalizer)
+          3. ``_master_hardclip`` — Master Volume × Clip/Gain factors → hard clip
+             (NO peak normalizer, NO limiter, NO EQ/filter on this final bus)
+          4. int16 quantize for container write
+
+        50% default Master Volume is the intentional warning on play/preview;
+        export uses the same hardclip path so offline files match what you heard.
+        Video exports that embed this mixdown inherit the same hardclip stage.
         """
         audio_format = str(audio_format or "wav").lower().lstrip(".")
         if audio_format not in {"wav", "flac", "ogg", "aiff", "mp3", "opus", "caf"}:
@@ -28672,6 +29170,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             QApplication.processEvents()
             master, sample_rate = self._render_mixdown_buffer()
             master = self._bake_dj_write(master, sample_rate)
+            # MASTER_HARDCLIP_2026: no normalize/limiter/EQ on the final bus.
+            master, _ = self._master_hardclip(master, sample_rate, apply_master_vol=True)
             pcm = (np.clip(master, -1.0, 1.0) * 32767.0).astype(np.int16)
             provenance = self._export_provenance_payload()
             if audio_format == "wav":

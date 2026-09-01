@@ -112,6 +112,29 @@ ffmpeg -hide_banner -version | head -1
 | Full Unison Blend | **OFF**; blend control defaults to **0.55** |
 | Meum lattice | **MEUM ≈ 1.19758…** |
 
+## Open-World Sandbox Contract
+
+Games classified as `open_world` or `sandbox` are free-roaming by design. The player
+controls movement and look; the world never auto-spins or traps the player in a sigil,
+activity, or region. Sigils, hazards, portals, NPCs, resources, and rare activities
+are optional world content rather than progression cages.
+
+The world is region-based and sandboxable. Each procedural Loom region has persistent
+local state for placed objects, removed objects, notes, and visit count. Useful commands
+inside the game chat/console include:
+
+```text
+/sandbox              inspect the current region's editable state
+/build crate My Box  place a lightweight persistent sandbox object
+/remove               remove the most recently placed local object
+/note <text>          attach a note to the current region
+/region               alias for /sandbox
+```
+
+The GUI chat box is also the game console: slash commands are routed through the same
+command parser as the CLI, while ordinary text remains chat. This keeps local play and
+multiplayer chat on the same interaction path.
+
 ## Quick Start
 1. Set BPM and sequence length.
 2. Select an instrument and program its pads/sequence.

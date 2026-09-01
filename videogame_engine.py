@@ -44,8 +44,207 @@ from fractal_spatial_engine import FractalSpatialEngine, build_spatial_state
 MEUM = 1.1975807343385265
 MEUM_INV = 1.0 / MEUM
 MEUM_NORM = (MEUM - 1.0) / MEUM
+
 PHI = 1.618033988749895
 PHI_INV = PHI - 1.0
+
+# ---------------------------------------------------------------------------
+# ESKI BOOK FRACTAL SETS (p.26) — game / package path
+# Same expressions under OT and non-OT; only arithmetic nature changes.
+# Prefer host groovebox operators when available so OT toggle is shared.
+# ---------------------------------------------------------------------------
+ESKI_FRACTAL_SET_NAMES = (
+    "divergent_space", "wormhole", "wormhill", "worms", "star", "starburst",
+)
+
+def _game_ot_enabled():
+    try:
+        import groovebox as _gb
+        return bool(getattr(_gb, "OP_THEORY_ENABLED", False) or _gb.operator_theory_enabled())
+    except Exception:
+        return False
+
+def _g_fractal_add(a, b):
+    if _game_ot_enabled():
+        try:
+            from groovebox import ot_add
+            return ot_add(a, b)
+        except Exception:
+            pass
+    return float(a) + float(b)
+
+def _g_fractal_mul(a, b):
+    if _game_ot_enabled():
+        try:
+            from groovebox import ot_prod
+            return ot_prod(a, b)
+        except Exception:
+            pass
+    return float(a) * float(b)
+
+def _g_fractal_pow(base, exp):
+    if _game_ot_enabled():
+        try:
+            from groovebox import ot_pow
+            return ot_pow(base, exp)
+        except Exception:
+            pass
+    try:
+        return math.pow(float(base), float(exp))
+    except Exception:
+        return 0.0
+
+def _g_fractal_root(x, n=2.0):
+    x = float(x)
+    n = float(n) if float(n) else 2.0
+    if _game_ot_enabled():
+        try:
+            from groovebox import ot_pow
+            return ot_pow(max(x, 0.0), 1.0 / n)
+        except Exception:
+            pass
+    try:
+        return math.pow(max(x, 0.0), 1.0 / n)
+    except Exception:
+        return 0.0
+
+def eski_fractal_eval(set_name, x, c):
+    """Book fractal Y(x,c) — expression fixed; OT changes arithmetic nature only."""
+    name = (set_name or "wormhill").lower().strip().replace(" ", "_")
+    x, c = float(x), float(c)
+    try:
+        if name.startswith("divergent"):
+            y = _g_fractal_add(_g_fractal_mul(x, c), c)
+        elif name.startswith("wormhole"):
+            y = _g_fractal_add(_g_fractal_pow(x, c), x)
+        elif name.startswith("wormhill"):
+            y = _g_fractal_add(x, c)
+        elif name.startswith("worms"):
+            y = _g_fractal_mul(c, _g_fractal_root(max(x, 0.0), 2.0))
+        elif name == "star" or name.startswith("star_set"):
+            y = _g_fractal_pow(c, x)
+        elif name.startswith("starburst"):
+            y = _g_fractal_mul(_g_fractal_root(max(c, 0.0), 2.0), x)
+        else:
+            y = _g_fractal_add(x, c)
+    except Exception:
+        y = 0.0
+    if not math.isfinite(y):
+        y = 0.0
+    if abs(y) > 1e6:
+        y = math.copysign(1e6, y)
+    return float(y)
+
+def eski_fractal_pick(seed_key, sequential_nums=None, playlist_hash=0):
+    seq = list(sequential_nums or []) or [float(seed_key or 0)]
+    mean = sum(abs(float(v)) for v in seq) / max(1, len(seq))
+    fold = abs(float(seq[0]) * MEUM) % 1.0 if seq else 0.0
+    h = int(seed_key or 0) ^ int(playlist_hash or 0) & 0x7FFFFFFF
+    h ^= int(fold * 1000) & 0xFFFF
+    h ^= int(mean * 100) & 0xFFFF
+    return ESKI_FRACTAL_SET_NAMES[h % len(ESKI_FRACTAL_SET_NAMES)]
+
+ESKI_FRACTAL_MAX_ITER = 12
+
+def compositional_xyz(seed, sequential_nums=None, t=0.0, slot=0):
+    """Shared compositional X,Y,Z — matches host video lattice."""
+    seq = list(sequential_nums or []) or [float(seed or 0.0)]
+    s = float(seed or 0.0)
+    t = float(t)
+    i = int(slot) & 0x7FFF
+    x = ((seq[0] if seq else s) * MEUM_INV + i * PHI_INV + t * 0.01) % 2.0 - 1.0
+    y = ((seq[1] if len(seq) > 1 else s * MEUM) * MEUM_INV + i * MEUM + t * 0.013) % 2.0 - 1.0
+    z = ((seq[2] if len(seq) > 2 else s * PHI) * MEUM_INV + i * 0.07 + t * 0.008) % 2.0 - 1.0
+    if _game_ot_enabled():
+        try:
+            x = _g_fractal_add(x, _g_fractal_mul(y, 0.05))
+            y = _g_fractal_add(y, _g_fractal_mul(z, 0.05))
+            z = _g_fractal_add(z, _g_fractal_mul(x, 0.03))
+        except Exception:
+            pass
+    return float(x), float(y), float(z)
+
+def eski_fractal_iterate_z(set_name, x, y, z0, c, max_iter=None):
+    """Max 12 z-iterations per node (hard cap)."""
+    max_iter = int(max_iter if max_iter is not None else ESKI_FRACTAL_MAX_ITER)
+    max_iter = max(1, min(12, max_iter))
+    z = float(z0)
+    zs = []
+    escaped = False
+    for _ in range(max_iter):
+        xi = _g_fractal_add(_g_fractal_add(float(x), _g_fractal_mul(MEUM, float(y))), z)
+        z = eski_fractal_eval(set_name, xi, float(c))
+        zs.append(z)
+        if abs(z) > 8.0:
+            escaped = True
+            break
+    return zs, len(zs), escaped
+
+def instrument_geometry_mode(slot, phase, xyz, flags=None, fractal_set=None):
+    """Same blend contract as host groovebox.instrument_geometry_mode."""
+    flags = dict(flags or {})
+    x, y, z = xyz if xyz and len(xyz) >= 3 else (0.0, 0.0, 0.0)
+    ph = float(phase) % math.tau
+    d0 = min(abs(ph), abs(ph - math.tau))
+    dpi = abs(ph - math.pi)
+    near = min(d0, dpi) / math.pi
+    snap = 1.0 - near
+    geo = max(0.0, min(1.0, (abs(x) + abs(y) + abs(z)) / 3.0))
+    w = {
+        "lattice": 0.45 + 0.25 * (1.0 - geo),
+        "book_set": 0.20 + 0.20 * geo,
+        "phase_lock": 0.08 * (1.5 if flags.get("phase_lock") else 0.4),
+        "scatter": 0.08 * (1.5 if flags.get("randomizer") else 0.4),
+        "goava": 0.08 * (1.6 if flags.get("goava") else 0.3),
+    }
+    if snap > 0.65:
+        if int(slot) % 2 == 0:
+            w["lattice"] += 0.20 * snap
+        else:
+            w["book_set"] += 0.20 * snap
+    else:
+        w["lattice"] = w["lattice"] * (1.0 - 0.3 * near) + w["book_set"] * 0.15 * near
+    s = sum(w.values()) or 1.0
+    for k in w:
+        w[k] = float(w[k] / s)
+    w["snap"] = float(snap)
+    w["near_phase_point"] = bool(snap > 0.65)
+    w["fractal_set"] = fractal_set or ""
+    w["slot"] = int(slot)
+    return w
+
+def debug_cross_engine_alignment(seed=42.0, t=1.0, n_slots=8):
+    """Last-debug helper: verify fractal pick / xyz / mode line up for slots.
+
+    Returns a report dict.  Safe to call without UI.  Confirms:
+      * set pick stable for same sequential nums
+      * compositional_xyz finite
+      * geometry mode weights sum ~1
+      * max z-iters ≤ 12
+    """
+    seq = [float(seed), float(seed) * MEUM, float(seed) * PHI]
+    set_name = eski_fractal_pick(int(seed) & 0x7FFFFFFF, sequential_nums=seq, playlist_hash=0)
+    report = {"set": set_name, "slots": [], "ok": True, "errors": []}
+    for i in range(int(n_slots)):
+        xyz = compositional_xyz(seed, sequential_nums=seq, t=t, slot=i)
+        if not all(math.isfinite(v) for v in xyz):
+            report["ok"] = False
+            report["errors"].append(f"slot {i} non-finite xyz")
+        zs, n_done, esc = eski_fractal_iterate_z(set_name, xyz[0], xyz[1], xyz[2], 0.3, max_iter=12)
+        if n_done > 12:
+            report["ok"] = False
+            report["errors"].append(f"slot {i} iters {n_done} > 12")
+        mode = instrument_geometry_mode(i, t + i * 0.1, xyz, flags={"goava": False}, fractal_set=set_name)
+        wsum = sum(mode[k] for k in ("lattice", "book_set", "phase_lock", "scatter", "goava"))
+        if abs(wsum - 1.0) > 1e-3:
+            report["ok"] = False
+            report["errors"].append(f"slot {i} weights sum {wsum}")
+        report["slots"].append({
+            "i": i, "xyz": xyz, "n_iter": n_done, "escaped": esc,
+            "mode": {k: round(mode[k], 3) for k in ("lattice", "book_set", "snap") if k in mode},
+        })
+    return report
+
 
 # Cyclic group coordinates — order of each factor group
 GENRES = (
@@ -86,6 +285,42 @@ MOODS = ("neon_noir", "pastoral", "cosmic", "industrial", "mythic", "glitch")
 OBJECTIVES = ("harvest", "escort", "survey", "siege", "nexus", "pilgrimage")
 DIFFICULTIES = ("tutorial", "standard", "master", "meum_insane")
 LEVEL_TYPES = ("heightfield", "boss_rush", "dungeon", "sky_islands", "coral_grid")
+
+# GOAL TEXT — what the player is actually doing.  Important because the old
+# design always *felt* like "clear the sigils" even when objective said otherwise.
+# These strings are the contract between the numeric objective residue and the
+# human-readable purpose of the session.  free_play overrides them.
+OBJECTIVE_BRIEFS = {
+    "harvest": (
+        "Harvest: gather resource nodes scattered on the orbit. "
+        "Sigils are not the goal; empty the resource field."
+    ),
+    "escort": (
+        "Escort: follow the waypoint trail in order. "
+        "Movement and timing matter more than pickups."
+    ),
+    "survey": (
+        "Survey: visit every waypoint checkpoint. "
+        "The world is a map to cover, not a ring to clear."
+    ),
+    "siege": (
+        "Siege: engage PvE threats and survive hazard rings. "
+        "Combat density is the objective, not collectibles."
+    ),
+    "nexus": (
+        "Nexus: this is the rare case where sigils *are* the goal. "
+        "Collect the sigil ring to complete the objective."
+    ),
+    "pilgrimage": (
+        "Pilgrimage: walk the waypoint path; slower score, larger level jumps. "
+        "The journey is the content."
+    ),
+}
+FREE_PLAY_BRIEF = (
+    "Free roam / sandbox: no forced objective. Explore loom regions, place objects, "
+    "take notes. Ambient pickups exist but nothing is a win condition — "
+    "you are not playing against a sigil ring."
+)
 
 # SOFTWARE_KIND_LATTICE_2026: the same seed→residue group action that classifies
 # games also classifies *software function*.  Every kind is a safe, user-space
@@ -1173,16 +1408,25 @@ class TriggerSculptor:
 
 
 class ScenographLite:
-    """Canonical instrument->frame scheme, folded from the Groovebox visual
-    engine: every layer is ONE 2.5D frame (base_freq lattice, ratio, entropy,
-    conson, depth, shade, life, radius) — the same parameter count and MEUM
-    lattice as the canonical visual instrument.
+    """Game-side fractal: every layer is the SAME instrument-object type.
 
-    Opacity floors are deliberately high so seed-to-seed divergence is visible
-    (seeds 1 vs 2 land on independent residues and therefore distinct hues,
-    depths, radii and life values). Appearance and fire timing stay pure
-    f(seed, i, beat). Topology-aware placement produces open-world scatter,
-    hub spokes, or arena rings.
+    Why this mirrors Groovebox video/music
+    --------------------------------------
+    Groovebox defines one fractal object per instrument via
+    ``canonical_visual_instrument`` (base_freq, ratio, entropy, phase, depth,
+    hue, …).  The game does **not** invent a second schema: each scenograph
+    layer is that same object, sampled on the Meum lattice.  The ensemble is
+    one self-similar fractal (parent + scaled child sample per layer).
+
+    Prevalence of what you *see* (most → least relevant):
+      1. Sequential numeric / seed geometry fed into the canonicals
+      2. Music lattice (this layer's pitch/entropy/phase)
+      3. Game topology + engine_mask (RND / PL / GOAVA)
+      4. Residual kind labels (panel/filament/…) — cosmetic only
+
+    Instrument *count* does not redefine the object — only how many samples
+    of the same object appear.  Appearance and fire timing stay pure
+    f(seed, i, beat).
     """
     def __init__(self, seed, n=12, goava=False, topology="open_world"):
         self.seed = int(seed) & 0x7FFFFFFF
@@ -1220,7 +1464,11 @@ class ScenographLite:
             else:
                 yaw = meum_angle(self.seed + i * 31)
                 dist = 0.5 + 1.0 * _residue(self.seed, f"dist:{i}")
+            # FRACTAL_OBJECT_2026: identical schema for every instrument sample.
+            # child_scale = self-similar child (same object type, smaller).
             self.layers.append({
+                "fractal_object": True,
+                "slot": i,
                 "base_freq": base if self.goava else base * (1.0 + 1.1 * abs(ratio)),
                 "ratio": ratio,
                 "entropy": ent,
@@ -1233,6 +1481,8 @@ class ScenographLite:
                 "pitch": residue_to_bipolar(_residue(self.seed, f"pitch:{i}")) * 0.55,
                 "dist": dist,
                 "hue": (_residue(self.seed, f"hue:{i}") * 0.82 + _residue(self.seed, "hue_global") * 0.18) % 1.0,
+                "phase0": phase0 * math.tau,
+                "child_scale": 0.45 + 0.15 * ent,
                 "on": True,
                 "kind": ("panel", "filament", "polytope", "sigil_sprite",
                          "ridge", "orb", "spoke", "glyph")[
@@ -1262,6 +1512,51 @@ class ScenographLite:
         if em.get("goava"):
             x_hue = (x_hue + 28.0) % 360.0
             x_spin *= 1.12
+        # Book fractal set (p.26): same expression under OT; arithmetic nature
+        # flips with the host OT toggle.  Playlist/algo hash tilts which set.
+        try:
+            ph = int(getattr(self, "_playlist_hash", 0) or 0)
+            set_name = eski_fractal_pick(self.seed, sequential_nums=[float(self.seed), float(self.beat)],
+                                        playlist_hash=ph)
+            self._fractal_set = set_name
+            # Sample at beat phase — warps spin/hue from Y without new sprites
+            # Align with host: compositional xyz + geometry mode at phase-points
+            em_flags = {
+                "randomizer": bool(em.get("randomizer")),
+                "phase_lock": bool(em.get("phase_lock")),
+                "goava": bool(em.get("goava")),
+            }
+            sx, sy, sz = compositional_xyz(
+                self.seed, sequential_nums=[float(self.seed), float(self.beat)],
+                t=self.beat, slot=0)
+            zs, n_done, escaped = eski_fractal_iterate_z(
+                set_name, sx, sy, sz, float(self.seed) * MEUM_INV % 1.0, max_iter=12)
+            yv = zs[-1] if zs else 0.0
+            mode0 = instrument_geometry_mode(
+                0, self.beat * math.tau * 0.1, (sx, sy, sz),
+                flags=em_flags, fractal_set=set_name)
+            infl = (n_done / 12.0) * (0.4 if escaped else 1.0)
+            infl *= (0.6 + 0.4 * float(mode0.get("book_set", 0.2)))
+            x_spin *= (1.0 + 0.08 * math.tanh(yv * 0.01) * infl)
+            x_hue = (x_hue + 12.0 * math.tanh(yv * 0.02) * infl) % 360.0
+            if mode0.get("near_phase_point"):
+                x_grid = min(1.5, x_grid + 0.15 * float(mode0.get("snap", 0)))
+            # Per-layer mode tags so viewport/debug can show blend state
+            for li, layer in enumerate(self.layers):
+                try:
+                    lx, ly, lz = compositional_xyz(
+                        self.seed, sequential_nums=[float(self.seed), float(self.beat)],
+                        t=self.beat, slot=li)
+                    ph = float(layer.get("phase0", 0.0)) + self.beat * 0.3
+                    layer["_geom_mode"] = instrument_geometry_mode(
+                        li, ph, (lx, ly, lz), flags=em_flags, fractal_set=set_name)
+                    # Follow composition: nudge life/radius toward mode lattice weight
+                    lat = float(layer["_geom_mode"].get("lattice", 0.5))
+                    layer["life"] = float(layer.get("life", 0.5)) * (0.85 + 0.3 * lat)
+                except Exception:
+                    pass
+        except Exception:
+            pass
         # VISIBILITY_CONTRACT: at least ceil(n/2) layers stay on so the player
         # always sees the scene (sculptor still gates the rest for rhythm).
         min_on = max(3, (self.n + 1) // 2)
@@ -1529,7 +1824,8 @@ class SigilRing:
 
     def __init__(self, seed, count=8, radius=0.9):
         self.seed = int(seed) & 0x7FFFFFFF
-        self.count = max(3, min(24, int(count)))
+        # count=0 is valid: no sigils in the world (free-play / non-nexus objectives)
+        self.count = max(0, min(24, int(count)))
         self.radius = float(radius)
         self.pos = [
             (meum_angle(_safe_int_seed(seed) + k * 31),
@@ -1570,7 +1866,7 @@ class ResourceField:
         # Irrational population: PHI + MEUM residues → non-repeating densities
         if count is None:
             count = 4 + int(12 * _residue(self.seed, "res_n") + 3 * PHI * _residue(self.seed, "res_n2"))
-        self.count = max(3, min(28, int(count)))
+        self.count = max(0, min(28, int(count)))
         self.pos = [
             (meum_angle(self.seed * MEUM + k * 53),
              0.2 + 0.75 * _residue(self.seed, f"rr{k}"),
@@ -1644,7 +1940,8 @@ class WaypointTrail:
         self.seed = int(seed) & 0x7FFFFFFF
         if count is None:
             count = 3 + int(7 * _residue(self.seed, "wp_n") + 2 * PHI * _residue(self.seed, "wp_n2"))
-        self.count = max(2, min(14, int(count)))
+        # count=0 allowed: free-play has no forced trail
+        self.count = max(0, min(14, int(count)))
         self.pos = [
             (meum_angle(self.seed * PHI_INV + k * 41),
              0.35 + 0.5 * _residue(self.seed, f"wr{k}"))
@@ -1944,7 +2241,7 @@ class PveEncounter:
         self.seed = int(seed) & 0x7FFFFFFF
         if count is None:
             count = 2 + int(7 * _residue(self.seed, "pve_n") + 2 * PHI * _residue(self.seed, "pve_n2"))
-        self.count = max(1, min(14, int(count)))
+        self.count = max(0, min(14, int(count)))
         self.mobs = []
         for i in range(self.count):
             hp0 = 8 + int(20 * _residue(self.seed, f"pvehp:{i}"))
@@ -2190,6 +2487,14 @@ class Game:
             topology=_topo,
         )
         self.scene._engine_mask = dict(self.engine_mask)
+        # Playlist / step-algo / composition fingerprints tilt which book fractal
+        # set is prevalent — same pathway the host video uses.
+        try:
+            fp = str(self.id.get("composition_fingerprint") or "0")
+            sa = str(self.id.get("world_fingerprint") or "0")
+            self.scene._playlist_hash = (hash(fp) ^ hash(sa)) & 0x7FFFFFFF
+        except Exception:
+            self.scene._playlist_hash = 0
         self.music = MusicBed(
             self.id["seed"],
             algo_fp=self.id.get("composition_fingerprint", "0"),
@@ -2215,19 +2520,84 @@ class Game:
         self.difficulty_mult = {
             "tutorial": 0.5, "standard": 1.0, "master": 1.7, "meum_insane": 2.4,
         }.get(self.difficulty, 1.0)
-        self.sigils = SigilRing(self.id["seed"], count=self.id.get("sigil_count", 8))
-        # Open-world content packs — irrational instance mixes per seed
-        self.resources = ResourceField(self.id["seed"])
-        self.hazards = HazardRing(self.id["seed"])
-        self.portals = PortalGate(self.id["seed"])
-        self.waypoints = WaypointTrail(self.id["seed"])
-        # Quests / Items / Tags / Coins / Store / NPC / PvE / PvP
+        # ------------------------------------------------------------------
+        # WORLD_CONTENT_BY_OBJECTIVE (why this block exists)
+        # ------------------------------------------------------------------
+        # Historical failure mode: every generated game placed a SigilRing and
+        # scored on collecting it. Players correctly reported "I'm always
+        # playing against a sigil" even when the objective label said harvest /
+        # survey / free roam.  The fix is structural, not cosmetic:
+        #   * primary_focus names the *actual* content that defines the session
+        #   * sigil count is 0 unless the objective (or an explicit genre hook)
+        #     is about sigils
+        #   * free_play never gets a forced trail or a forced sigil ring
+        #   * HUD / activate / completion gates all key off primary_focus
+        # Without this, objective diversity is a lie printed on the start screen.
+        # ------------------------------------------------------------------
+        _obj0 = str(self.objective or "survey").lower()
+        _hooks = list(self.id.get("gameplay_hooks") or [])
+        _want_sigils = (
+            (not self.free_play and _obj0 == "nexus")
+            or any("sigil" in str(h).lower() for h in _hooks)
+        )
+        _sigil_n = int(self.id.get("sigil_count", 8) or 8) if _want_sigils else 0
+        self.sigils = SigilRing(self.id["seed"], count=max(0, _sigil_n))
+        self.primary_focus = (
+            "sigils" if _want_sigils else
+            "resources" if _obj0 == "harvest" else
+            "waypoints" if _obj0 in ("survey", "escort", "pilgrimage") else
+            "combat" if _obj0 == "siege" else
+            "sandbox" if self.free_play else
+            "explore"
+        )
+        # Publish the brief once so chat/HUD can show it without re-deriving.
+        self._goal_brief = (
+            FREE_PLAY_BRIEF if self.free_play
+            else OBJECTIVE_BRIEFS.get(_obj0, f"Focus: {self.primary_focus}")
+        )
+        _seed = self.id["seed"]
+        _si = _safe_int_seed(_seed)
+        if self.free_play:
+            self.resources = ResourceField(_seed, count=max(2, int(4 * _residue(_si, "fp_res"))))
+            self.hazards = HazardRing(_seed, count=max(1, int(3 * _residue(_si, "fp_hz"))))
+            self.portals = PortalGate(_seed, count=max(1, int(3 * _residue(_si, "fp_pt"))))
+            self.waypoints = WaypointTrail(_seed, count=0)
+            self.pve = PveEncounter(_seed, count=max(0, int(2 * _residue(_si, "fp_pve"))))
+        elif _obj0 == "harvest":
+            self.resources = ResourceField(_seed)
+            self.hazards = HazardRing(_seed, count=2)
+            self.portals = PortalGate(_seed, count=2)
+            self.waypoints = WaypointTrail(_seed, count=0)
+            self.pve = PveEncounter(_seed, count=1)
+        elif _obj0 in ("survey", "escort", "pilgrimage"):
+            self.resources = ResourceField(_seed, count=3)
+            self.hazards = HazardRing(_seed, count=2)
+            self.portals = PortalGate(_seed)
+            self.waypoints = WaypointTrail(_seed)
+            self.pve = PveEncounter(_seed, count=1)
+        elif _obj0 == "siege":
+            self.resources = ResourceField(_seed, count=2)
+            self.hazards = HazardRing(_seed)
+            self.portals = PortalGate(_seed, count=2)
+            self.waypoints = WaypointTrail(_seed, count=0)
+            self.pve = PveEncounter(_seed)
+        elif _obj0 == "nexus":
+            self.resources = ResourceField(_seed, count=2)
+            self.hazards = HazardRing(_seed, count=2)
+            self.portals = PortalGate(_seed)
+            self.waypoints = WaypointTrail(_seed, count=0)
+            self.pve = PveEncounter(_seed, count=2)
+        else:
+            self.resources = ResourceField(_seed)
+            self.hazards = HazardRing(_seed)
+            self.portals = PortalGate(_seed)
+            self.waypoints = WaypointTrail(_seed)
+            self.pve = PveEncounter(_seed)
         self.items = ItemCatalog(self.id["seed"])
         self.quests = QuestLog(self.id["seed"])
         self.purse = CoinPurse(self.id["seed"])
         self.store = Store(self.id["seed"], self.items)
         self.npcs = NPCRoster(self.id["seed"])
-        self.pve = PveEncounter(self.id["seed"])
         self.pvp = PvpArena(self.id["seed"])
         self.assets = InstrumentAssetBridge(self.id)
         self.sfx = self.assets.sfx
@@ -2280,6 +2650,12 @@ class Game:
         self._activity_seed = _cseed
         self._live_activities = set()  # currently open activity classes
         self._current_region = None    # (name, tier) of the loom region we occupy
+        # SANDBOX_WORLD_2026: regions are persistent, editable chunks.  The
+        # player may roam freely; entering a region only changes its context.
+        # It never takes control of movement/camera and never creates a cage.
+        self.region_state = {}
+        self._last_region_index = None
+        self.sandbox_mode = True
         self.hotseat = {"active": False, "games": 0, "friend_called": 0}
         self.move = {"dx": 0.0, "dy": 0.0, "dz": 0.0}
         self.aim_in = {"yaw": 0.0, "pitch": 0.0}
@@ -2330,6 +2706,72 @@ class Game:
         self._last_record_t = -1000.0
         self._audio_samples = []
         self.sample_rate = 22050
+
+    # --- sandbox / region world -------------------------------------------
+    def _region_index_at(self, angle):
+        if not self.loom.regions:
+            return None
+        best = None
+        best_d = math.tau
+        for r in self.loom.regions:
+            d = abs((float(r["angle"]) - float(angle) + math.pi) % math.tau - math.pi)
+            if d < best_d:
+                best_d, best = d, int(r["i"])
+        return best
+
+    def _ensure_region_state(self, idx):
+        if idx is None:
+            return None
+        idx = int(idx)
+        if idx not in self.region_state:
+            r = self.loom.regions[idx]
+            self.region_state[idx] = {
+                "name": r["name"], "tier": r["tier"],
+                "objects": [], "removed": [], "notes": [], "visits": 0,
+            }
+        return self.region_state[idx]
+
+    def sandbox_place(self, kind="marker", label=None):
+        """Place a lightweight persistent sandbox object in the current region."""
+        idx = self._region_index_at(self.angle)
+        st = self._ensure_region_state(idx)
+        if st is None:
+            return "no region"
+        obj = {"kind": str(kind)[:32], "label": str(label or kind)[:64],
+               "angle": round(float(self.angle), 6), "id": len(st["objects"])}
+        st["objects"].append(obj)
+        self.push_status(f"[SANDBOX] placed {obj['label']} in {st['name']}")
+        return obj
+
+    def sandbox_remove(self, index=-1):
+        idx = self._region_index_at(self.angle)
+        st = self._ensure_region_state(idx)
+        if st is None or not st["objects"]:
+            return "nothing placed in this region"
+        try:
+            obj = st["objects"].pop(int(index))
+        except (ValueError, IndexError):
+            obj = st["objects"].pop()
+        st["removed"].append(obj)
+        self.push_status(f"[SANDBOX] removed {obj['label']} from {st['name']}")
+        return obj
+
+    def sandbox_note(self, text):
+        idx = self._region_index_at(self.angle)
+        st = self._ensure_region_state(idx)
+        if st is None:
+            return "no region"
+        note = str(text).strip()[:240]
+        if note:
+            st["notes"].append(note)
+        return note
+
+    def sandbox_region(self):
+        idx = self._region_index_at(self.angle)
+        st = self._ensure_region_state(idx)
+        if st is None:
+            return {"region": None}
+        return dict(st)
 
     # --- networking ---------------------------------------------------------
     def toggle_host_mode(self):
@@ -2469,6 +2911,8 @@ class Game:
 
         el.append({"id": "objective", "label": "Objective",
                    "value": f"{getattr(self, 'objective', 'survey')}  free_play={bool(getattr(self, 'free_play', True))}"})
+        el.append({"id": "goal", "label": "Goal",
+                   "value": str(getattr(self, "_goal_brief", None) or self.goal_brief())[:120]})
         try:
             geom = getattr(self, "level_geometry", None) or {}
             el.append({"id": "level", "label": "Level geometry",
@@ -2499,8 +2943,15 @@ class Game:
 
         # World pickups / hazards (counts only — always relevant)
         try:
-            el.append({"id": "sigils", "label": "Sigils",
-                       "value": f"{self.sigils.remaining()}/{self.sigils.count}"})
+            focus = getattr(self, "primary_focus", "explore")
+            el.append({"id": "focus", "label": "Primary focus",
+                       "value": f"{focus}  (not always sigils)"})
+            if getattr(self.sigils, "count", 0) > 0:
+                el.append({"id": "sigils", "label": "Sigils",
+                           "value": f"{self.sigils.remaining()}/{self.sigils.count}"})
+            else:
+                el.append({"id": "sigils", "label": "Sigils",
+                           "value": "none in this world"})
             el.append({"id": "resources", "label": "Resources",
                        "value": f"{self.resources.remaining()} left"})
             el.append({"id": "waypoints", "label": "Waypoints",
@@ -2593,34 +3044,55 @@ class Game:
         self.pitch *= max(0.0, 1.0 - dt * 2.0)
 
     def activate(self):
-        """Click : primary — always the activate gesture.  Routes to whatever
-        the nearest deterministic target is at the current perspective."""
+        """Click : primary — routes to the nearest target for the *primary focus*
+        of this world (sigils only when nexus; otherwise resources/waypoints/…)."""
         if self.hotseat["active"]:
             return "[HOT-SEAT] clicks are chess moves while the board is open."
         hits = []
-        for _k, (_a, _r) in enumerate(self.sigils.pos):
-            if _k not in self.sigils.collected and self._near(self.angle, _k, _r):
-                self.sigils.collected.add(_k)
-                self.score += MEUM * _r * self.combo * self.difficulty_mult
-                self.sfx.trigger("chime", 1.0)
-                hits.append("sigil")
-                break
-        if not hits:
+        focus = getattr(self, "primary_focus", "explore")
+        # Prefer the focus type, then fall through to other present elements
+        if focus == "sigils" and getattr(self.sigils, "count", 0) > 0:
+            for _k, (_a, _r) in enumerate(self.sigils.pos):
+                if _k not in self.sigils.collected and self._near_angle(self.angle, _a, _r):
+                    self.sigils.collected.add(_k)
+                    self.score += MEUM * _r * max(1, self.combo) * self.difficulty_mult
+                    self.sfx.trigger("chime", 1.0)
+                    hits.append("sigil")
+                    break
+        if not hits and getattr(self.resources, "count", 0) > 0:
             for _k, (_a, _r, _v) in enumerate(self.resources.pos):
-                if _k not in self.resources.taken:
+                if _k not in self.resources.taken and self._near_angle(self.angle, _a, _r):
                     self.resources.taken.add(_k)
                     self.score += 1.4 * MEUM * _v * self.difficulty_mult
                     self.sfx.trigger("click", 0.8)
                     hits.append("resource")
                     break
+        if not hits and getattr(self.waypoints, "count", 0) > 0:
+            if self.waypoints.advance(self.angle):
+                self.score += 2.0 * MEUM * self.difficulty_mult
+                self.sfx.trigger("chime", 0.7)
+                hits.append("waypoint")
+        if not hits and getattr(self.sigils, "count", 0) > 0 and focus != "sigils":
+            for _k, (_a, _r) in enumerate(self.sigils.pos):
+                if _k not in self.sigils.collected and self._near_angle(self.angle, _a, _r):
+                    self.sigils.collected.add(_k)
+                    self.score += MEUM * _r * self.difficulty_mult
+                    hits.append("sigil")
+                    break
         self.send_chat("system", "activate" + (f": {'+'.join(hits)}" if hits else " (nothing within reach)"))
         self.micro.drive(self.t)
         return f"activate {'+'.join(hits) if hits else 'miss'}"
 
+    def _near_angle(self, angle, target_a, radius):
+        d = abs((float(target_a) - angle + math.pi) % math.tau - math.pi)
+        return d <= 0.31 * max(0.25, float(radius))
+
     def _near(self, angle, idx, radius):
+        """Legacy helper — only valid when sigils exist."""
+        if not getattr(self.sigils, "pos", None) or idx >= len(self.sigils.pos):
+            return False
         base_a = self.sigils.pos[idx][0]
-        d = abs((base_a - angle + math.pi) % math.tau - math.pi)
-        return d <= 0.31 * max(0.25, radius)
+        return self._near_angle(angle, base_a, radius)
 
     def resolve_key(self, qt_key, modifiers=0):
         """Map a Qt key code to a control action name using the auto scheme."""
@@ -2953,12 +3425,24 @@ class Game:
             pass
 
     def render_instant_frame(self, w=320, h=180):
-        """Any video frame from the current cross-correlation field, instantly.
+        """Instant frame on the SAME fractal object path as host video/export.
 
-        Pure numeric projection — no external access, no UI dependency.
+        Carries sequential numeric geometry + engine_mask into
+        ``instant_video_frame`` so the game viewport is not a second visual
+        system: each instrument sample is the same fractal object, prevalence
+        follows numeric → music → game geometry.
         """
         snap = self._xcorr_snap or {}
         field = snap.get("field") or {}
+        # Sequential numeric inputs: seed + composition fingerprint residues
+        # stand in when a live host seed list is unavailable in the package.
+        seq = [
+            float(self.id.get("seed", 0.0) or 0.0),
+            float(int(str(self.id.get("composition_fingerprint", "0") or "0")[:8], 16) % 10000)
+            if str(self.id.get("composition_fingerprint", "") or "").isalnum() else 0.0,
+            float(getattr(self.music, "phase", 0.0) or 0.0),
+            float(getattr(self.music, "_entropy", 0.5) or 0.5),
+        ]
         frame = instant_video_frame(
             self._activity_seed,
             t=float(getattr(self, "t", 0.0) or 0.0),
@@ -2969,8 +3453,11 @@ class Game:
             audio_rms=float(field.get("energy", 0.0) or 0.0),
             music_entropy=float(getattr(self.music, "_entropy", 0.5) or 0.5),
             music_phase=float(getattr(self.music, "phase", 0.0) or 0.0),
-            goava_active=bool(getattr(self.music, "dj_goava", False)),
+            goava_active=bool(getattr(self.music, "dj_goava", False)
+                              or (getattr(self, "engine_mask", {}) or {}).get("goava")),
             software_kind=str(self.id.get("software_kind") or "videogame"),
+            sequential_nums=seq,
+            engine_mask=dict(getattr(self, "engine_mask", {}) or {}),
         )
         self._last_frame = frame
         return frame
@@ -3167,12 +3654,23 @@ class Game:
 
     # --- core loop ----------------------------------------------------------
     def _update_cinematic_camera(self, dt, audio_rms=0.0):
-        """IDEAL_CAMERA_2026 for games — deterministic multi-band orbit.
+        """Update camera without taking movement authority from the player.
 
-        Same philosophy as Groovebox VideoSynthEngine: yaw/pitch/roll/fov/distance
-        are closed-form f(t, seed, audio). Manual aim overlays on top. Object
-        count never enters the camera law.
+        Open-world/sandbox games use a stable camera base plus explicit look
+        input.  Cinematic drift is retained only for non-free-play topologies.
         """
+        base = dict(self.visual_view or {})
+        yaw0 = float(base.get("yaw_deg", 0.0))
+        pit0 = float(base.get("pitch_deg", 0.0))
+        if bool(getattr(self, "free_play", False)):
+            # No autonomous orbit/roll/FOV breathing in a sandbox.
+            yaw = yaw0 + math.degrees(float(getattr(self, "steer", 0.0) or 0.0)) * 0.35
+            pitch = pit0 + math.degrees(float(getattr(self, "pitch", 0.0) or 0.0))
+            self.visual_view = {**base, "yaw_deg": yaw, "pitch_deg": pitch,
+                                "roll_deg": 0.0,
+                                "distance": max(0.55, min(1.45, float(base.get("distance", 1.0) or 1.0))),
+                                "fov_deg": max(36.0, min(62.0, float(base.get("fov_deg", 48.0) or 48.0)))}
+            return
         try:
             seed = float(self.id.get("seed", 0) or 0)
         except Exception:
@@ -3184,43 +3682,14 @@ class Game:
         bar8 = beat / 32.0
         s1 = (seed * MEUM_NORM + MEUM) % math.tau
         s2 = (seed * MEUM_INV + PHI) % math.tau
-        base = dict(self.visual_view or {})
-        # Auto orbit (additive to stored base angles from fibonacci view)
-        yaw0 = float(base.get("yaw_deg", 0.0))
-        pit0 = float(base.get("pitch_deg", 0.0))
-        yaw = yaw0 + math.degrees(
-            0.35 * bar8 * math.tau * (0.10 + 0.04 * e)
-            + 0.08 * vg_sin(t * 0.13 * MEUM + s1)
-            + 0.04 * vg_sin(t * 0.041 * MEUM_INV + s2)
-            + 0.06 * e * vg_sin(t * 0.09 + s1)
-        )
-        pitch = pit0 + math.degrees(
-            0.05 * vg_sin(t * 0.09 * MEUM + s2)
-            + 0.03 * e * vg_sin(beat * 0.5 + s1)
-        )
-        roll = math.degrees(
-            0.015 * vg_sin(t * 0.055 * MEUM_INV + s1)
-            + 0.008 * vg_sin(t * 0.019 + s2)
-        )
-        dist = float(base.get("distance", 1.0) or 1.0)
-        dist = dist * (1.0 - 0.12 * e + 0.06 * vg_sin(t * 0.07 * MEUM + s1))
-        dist = max(0.55, min(1.45, dist))
-        fov = float(base.get("fov_deg", 48.0) or 48.0)
-        fov = fov + 4.0 * e * vg_sin(t * 0.11 + s2)
-        fov = max(36.0, min(62.0, fov))
-        self.visual_view = {
-            **base,
-            "yaw_deg": float(yaw),
-            "pitch_deg": float(pitch),
-            "roll_deg": float(roll),
-            "distance": float(dist),
-            "fov_deg": float(fov),
-        }
-        # Zoom couples with dolly so W/S still feels intentional
-        try:
-            self.zoom = max(0.35, min(2.5, float(getattr(self, "zoom", 1.0)) * (0.98 + 0.02 * dist)))
-        except Exception:
-            pass
+        yaw = yaw0 + math.degrees(0.35 * bar8 * math.tau * (0.10 + 0.04 * e) + 0.08 * vg_sin(t * 0.13 * MEUM + s1))
+        pitch = pit0 + math.degrees(0.05 * vg_sin(t * 0.09 * MEUM + s2) + 0.03 * e * vg_sin(beat * 0.5 + s1))
+        roll = math.degrees(0.015 * vg_sin(t * 0.055 * MEUM_INV + s1))
+        dist = float(base.get("distance", 1.0) or 1.0) * (1.0 - 0.12 * e + 0.06 * vg_sin(t * 0.07 * MEUM + s1))
+        fov = float(base.get("fov_deg", 48.0) or 48.0) + 4.0 * e * vg_sin(t * 0.11 + s2)
+        self.visual_view = {**base, "yaw_deg": float(yaw), "pitch_deg": float(pitch),
+                            "roll_deg": float(roll), "distance": max(0.55, min(1.45, dist)),
+                            "fov_deg": max(36.0, min(62.0, fov))}
 
     def tick(self, dt=1/30):
         sample = self.music.step(dt)
@@ -3244,8 +3713,12 @@ class Game:
         self._fire_invites()
         self._tick_arcade(dt)
         if self.authoritative:
-            self.angle = (self.angle + dt * MEUM * math.tau * (1.0 + 0.35 * self.steer)) % math.tau
+            # FREE-ROAM CONTRACT: movement is player-authored only.  Never
+            # auto-advance the player's world position/orbit; that old behavior
+            # made sigils feel like spinning cages and violated sandbox play.
             if not self.hotseat["active"]:
+                move_speed = 0.95 + 0.35 * self.difficulty_mult
+                self.angle = (self.angle + dt * move_speed * (self.steer + 0.35 * self.move["dz"])) % math.tau
                 # THREE-PATHWAY: procedural-on-demand — rare functions are only
                 # computed/rendered when the perspective arrives (spatial
                 # activation) or via /tp /lore /gen.
@@ -3254,13 +3727,31 @@ class Game:
                     self.sfx.trigger("chime", 0.6)
                     self.push_status(
                         f"[LOOM] region '{_r['name']}' materialized on arrival — computed on demand")
-                    # Occupied region drives the protected-activity area gate.
-                    self._current_region = (_r["name"], _r["tier"])
-                # If we are still near a previously present region, keep it.
-                if self.loom.present and not entered:
-                    i = self.loom.present[0]
-                    r = self.loom.regions[i]
+                # Region context follows the player continuously, but never
+                # controls position.  Sandbox edits live in this region state.
+                ridx = self._region_index_at(self.angle)
+                if ridx is not None:
+                    r = self.loom.regions[ridx]
                     self._current_region = (r["name"], r["tier"])
+                    rst = self._ensure_region_state(ridx)
+                    if self._last_region_index != ridx:
+                        rst["visits"] += 1
+                        self._last_region_index = ridx
+                        self.push_status(f"[REGION] {r['name']} — free roam")
+                        # Free-play milestone (NOT a win condition): visiting
+                        # distinct regions is the natural substitute for the
+                        # old "clear the sigils" dopamine loop. Soft score only.
+                        if bool(getattr(self, "free_play", False)) and rst["visits"] == 1:
+                            self.score += 5.0 * MEUM
+                            self.tags.add("explorer")
+                            visited = sum(
+                                1 for st in (getattr(self, "region_state", {}) or {}).values()
+                                if int(st.get("visits", 0) or 0) > 0
+                            )
+                            self.push_status(
+                                f"[EXPLORE] first visit to '{r['name']}' "
+                                f"({visited} regions touched — still no forced objective)"
+                            )
                 _micro = self.micro.drive(self.t)
                 if _micro:
                     try:
@@ -3287,13 +3778,14 @@ class Game:
             }.get(_obj, 1.0)
             if abs(sample) > 0.55:
                 self.score += MEUM * abs(sample) * self.difficulty_mult * (0.7 if _obj == "harvest" else 1.0)
-            # Sigils
-            for _k, r in self.sigils.collect(self.angle):
-                self.combo += 1
-                self.score += MEUM * r * self.difficulty_mult * self.combo * _obj_mult
-                self._reward_quests("collect", 1)
-                self.purse.earn(1, "sigil")
-                self.sfx.trigger("chime", 0.9)
+            # Sigils — only when the world actually has them (nexus / explicit hook)
+            if getattr(self.sigils, "count", 0) > 0:
+                for _k, r in self.sigils.collect(self.angle):
+                    self.combo += 1
+                    self.score += MEUM * r * self.difficulty_mult * self.combo * _obj_mult
+                    self._reward_quests("collect", 1)
+                    self.purse.earn(1, "sigil")
+                    self.sfx.trigger("chime", 0.9)
             # Resources (open-world harvest)
             for _k, v in self.resources.harvest(self.angle):
                 self.combo += 1
@@ -3521,7 +4013,9 @@ class Game:
                 self.last_snap = obj
 
     def reset_world(self):
-        self.sigils = SigilRing(self.id["seed"], count=self.id.get("sigil_count", 8))
+        # Preserve primary_focus: do not re-inject a full sigil ring into free-play.
+        n = getattr(self.sigils, "count", 0)
+        self.sigils = SigilRing(self.id["seed"], count=n)
         self.combo = 0
         self.level = 1
         self.score = 0.0
@@ -3529,9 +4023,23 @@ class Game:
         self.difficulty_mult = {
             "tutorial": 0.5, "standard": 1.0, "master": 1.7, "meum_insane": 2.4,
         }.get(self.difficulty, 1.0)
-        self.push_status("world reset.")
+        self.push_status(f"world reset. focus={getattr(self, 'primary_focus', '?')} sigils={n}")
 
     # --- presentation -------------------------------------------------------
+    def goal_brief(self) -> str:
+        """Human-readable goal for this session.
+
+        Why this exists: without an explicit brief, every world collapses to
+        'whatever the HUD counts first' (historically sigils).  The brief is
+        derived from free_play + primary_focus + objective so the player can
+        tell what success means *before* touching a control.
+        """
+        if bool(getattr(self, "free_play", False)):
+            return FREE_PLAY_BRIEF
+        obj = str(getattr(self, "objective", "survey") or "survey").lower()
+        return OBJECTIVE_BRIEFS.get(obj, f"Objective '{obj}': play the primary focus "
+                                         f"({getattr(self, 'primary_focus', 'explore')}).")
+
     def splash(self, duration=None):
         bars = duration if duration is not None else self.id.get("splash_bars", SEQ)
         seconds = max(1.0, (60.0 / max(BPM, 1.0)) * 4.0 * bars)
@@ -3548,8 +4056,15 @@ class Game:
         print(f"Genre: {self.id['genre']} | Camera: {self.id['camera']} | Topology: {self.id['topology']}")
         print(f"Social: {self.id['social']} | Mood: {self.id['mood']}")
         print(f"Objective: {self.objective} | Difficulty: {self.difficulty} (x{self.difficulty_mult:.2f})")
-        print(f"Level pack: {self.level_type} | Sigil ring: {self.sigils.count} placed")
+        print(f"Level pack: {self.level_type} | focus={getattr(self, 'primary_focus', '?')} | sigils={self.sigils.count}")
         print(f"World fingerprint: {self.id.get('world_fingerprint', '-')}")
+        # Goal first — without this the player only sees counters and invents a
+        # "clear the ring" story that the design no longer intends.
+        print("GOAL:", self.goal_brief())
+        em = getattr(self, "engine_mask", {}) or {}
+        print(f"Engines: RND={int(bool(em.get('randomizer')))} "
+              f"PL={int(bool(em.get('phase_lock')))} "
+              f"GOAVA={int(bool(em.get('goava')))}  (drive world bias; N instruments ignored)")
         if self.id.get("online"):
             print(f"Online host port: {self.port}  (host_mode={self.host_mode})")
         print("Models 1D/2D/3D:", self.id["model_sets_1d"], self.id["model_sets_2d"], self.id["model_sets_3d"])
@@ -3709,6 +4224,12 @@ class Game:
             "chess_games": self.hotseat["games"],
             "chess_active": bool(self.hotseat["active"]),
             "selfgen": self.selfgen.final_note(),
+            "sandbox": {
+                "enabled": bool(getattr(self, "sandbox_mode", True)),
+                "current_region": (self._current_region[0] if self._current_region else None),
+                "edited_regions": len(getattr(self, "region_state", {}) or {}),
+                "placed_objects": sum(len(v.get("objects", [])) for v in (getattr(self, "region_state", {}) or {}).values()),
+            },
             # Arcade/scoring classes are materialized only while their gate is
             # open. Keep reports total and machine-readable when those systems
             # are inactive (including immediately after launch).
@@ -3832,6 +4353,20 @@ class Game:
             print(self.toggle_chess())
         elif line in ("/invite", "/friend"):
             print(self.offer_chess())
+        elif line in ("/sandbox", "/region"):
+            print(json.dumps(self.sandbox_region(), indent=2, sort_keys=True))
+        elif line.startswith("/build") or line.startswith("/place"):
+            parts = line.split(None, 2)
+            kind = parts[1] if len(parts) > 1 else "marker"
+            label = parts[2] if len(parts) > 2 else kind
+            print(json.dumps(self.sandbox_place(kind, label), indent=2, sort_keys=True))
+        elif line.startswith("/remove"):
+            parts = line.split(None, 1)
+            idx = int(parts[1]) if len(parts) > 1 and parts[1].lstrip("-").isdigit() else -1
+            print(json.dumps(self.sandbox_remove(idx), indent=2, sort_keys=True))
+        elif line.startswith("/note"):
+            text = line[5:].strip()
+            print("sandbox note:", self.sandbox_note(text))
         elif line.startswith("/tp"):
             parts = line.split(None, 1)
             key = parts[1].strip() if len(parts) > 1 else ""
@@ -4206,12 +4741,23 @@ class CrossCorrelationKernel:
 def instant_video_frame(seed, t=0.0, w=320, h=180, *,
                         live_activities=None, region_name=None, region_tier=0,
                         audio_rms=0.0, music_entropy=0.5, music_phase=0.0,
-                        goava_active=False, software_kind="videogame"):
-    """Pure, instantaneous RGB frame from the cross-correlation field.
+                        goava_active=False, software_kind="videogame",
+                        sequential_nums=None, engine_mask=None):
+    """Pure instantaneous RGB frame — same fractal object path as host video.
 
-    No UI, no file I/O, no external access — only the numeric tuple.  Any
-    video frame is reachable in theory by choosing (seed, t, live set, …).
-    Returns a float32 HxWx3 array in [0, 1].
+    Prevalence (most → least relevant to what appears):
+      1. Sequential numeric inputs (``sequential_nums`` / seed geometry)
+         fed into the canonicals — primary driver of the fractal field
+      2. Music lattice (entropy / phase / rms)
+      3. Game geometry (region, topology, live activities, engine_mask)
+      4. Residual open effect mass
+
+    Each "instrument sample" drawn here uses the *same* fractal-object
+    schema as Groovebox ``canonical_visual_instrument`` / ScenographLite
+    layers — so host video, game viewport, and exported frames are one
+    fractal, not three different systems.
+
+    No UI, no external file access. Returns float32 HxWx3 in [0, 1].
     """
     try:
         import numpy as _np
@@ -4233,11 +4779,26 @@ def instant_video_frame(seed, t=0.0, w=320, h=180, *,
     img = _np.zeros((h, w, 3), dtype=_np.float32)
     yy = _np.linspace(-1.0, 1.0, h, dtype=_np.float32)[:, None]
     xx = _np.linspace(-1.0, 1.0, w, dtype=_np.float32)[None, :]
-    # Radial + angular field modulated by energy and spin
+    # Book fractal set field (prevalent geometry from sequential nums / playlist)
+    try:
+        _seq = list(sequential_nums or []) or [float(seed)]
+        _ph = 0
+        _set = eski_fractal_pick(int(seed) & 0x7FFFFFFF, sequential_nums=_seq, playlist_hash=_ph)
+        _c = float((_seq[0] * MEUM_INV) % 2.0 - 1.0)
+        # Vectorized-ish sample on a coarse path via scalar loop avoided: use
+        # closed form of wormhill/star as dominant additive when structured.
+        _yf = eski_fractal_eval(_set, float(field.get("u", 0.0)), _c)
+        field = dict(field)
+        field["fractal_set"] = _set
+        field["fractal_y"] = _yf
+    except Exception:
+        _yf = 0.0
+        _set = "wormhill"
+    # Radial + angular field modulated by energy, spin, and book fractal Y
     rr = _np.sqrt(xx * xx + yy * yy) + 1e-6
     ang = _np.arctan2(yy, xx)
     wave = _np.sin(ang * (2.0 + 3.0 * grid) + float(t) * spin * math.tau
-                   + field["u"] * math.tau) * 0.5 + 0.5
+                   + field["u"] * math.tau + 0.15 * float(_yf)) * 0.5 + 0.5
     ring = _np.exp(-((rr - (0.35 + 0.25 * field["rho"])) ** 2) / (0.08 + 0.12 * field["energy"]))
     # Activity-class lattice overlay
     lat = _np.sin(xx * (6.0 + 8.0 * grid) + float(t) * 0.7) * _np.sin(yy * (6.0 + 8.0 * grid) - float(t) * 0.5)
@@ -4287,6 +4848,41 @@ def instant_video_frame(seed, t=0.0, w=320, h=180, *,
     elif topo == "lattice":
         cells = (_np.abs(_np.sin(xx * 12.0 * grid)) * _np.abs(_np.sin(yy * 12.0 * grid)))
         rgb[:, :, 0] = _np.clip(rgb[:, :, 0] + cells * 0.12 * field["energy"], 0.0, 1.0)
+    # INSTRUMENT_FRACTAL_SAMPLES: same object type for every slot (parent + child).
+    # Sequential numeric inputs bias yaw; instrument count is fixed sample count.
+    try:
+        seq = list(sequential_nums or []) or [float(seed), float(seed) * MEUM, float(seed) * PHI]
+        em = dict(engine_mask or {})
+        boost = 1.0 + 0.2 * (1 if em.get("randomizer") else 0)                 + 0.15 * (1 if em.get("phase_lock") else 0)                 + 0.25 * (1 if (em.get("goava") or goava_active) else 0)
+        n_samples = 16  # fixed — not host instrument count
+        cx_i, cy_i = w * 0.5, h * 0.48
+        for i in range(n_samples):
+            ent = float(music_entropy) * (0.5 + 0.5 * _residue(int(seed) & 0x7FFFFFFF, f"ivf_ent:{i}"))
+            hue = (hue0 + i * 37.0 + 40.0 * ((seq[i % len(seq)] * MEUM_INV) % 1.0)) % 360.0
+            phase0 = float(music_phase) + i * MEUM
+            seq_bias = float(seq[i % len(seq)])
+            yaw = phase0 + float(t) * (0.05 + 0.02 * ent) + (seq_bias * MEUM_INV) % math.tau
+            dist = (0.15 + 0.55 * ent) * min(w, h) * 0.42
+            x = int(cx_i + math.cos(yaw) * dist)
+            y = int(cy_i + math.sin(yaw * MEUM_INV) * dist * 0.78)
+            if 0 <= x < w and 0 <= y < h:
+                # soft stamp
+                for dy in range(-2, 3):
+                    for dx in range(-2, 3):
+                        xx_, yy_ = x + dx, y + dy
+                        if 0 <= xx_ < w and 0 <= yy_ < h:
+                            a = 0.15 * boost * math.exp(-(dx * dx + dy * dy) / 3.0)
+                            # HSV-ish via hue0 already in field; simple additive tint
+                            rgb[yy_, xx_, 0] = min(1.0, float(rgb[yy_, xx_, 0]) + a * (0.5 + 0.5 * math.sin(hue)))
+                            rgb[yy_, xx_, 1] = min(1.0, float(rgb[yy_, xx_, 1]) + a * 0.4)
+                            rgb[yy_, xx_, 2] = min(1.0, float(rgb[yy_, xx_, 2]) + a * (0.5 + 0.5 * math.cos(hue)))
+            # child sample (same object, scaled)
+            x2 = int(cx_i + math.cos(yaw * PHI) * dist * 0.45)
+            y2 = int(cy_i + math.sin(yaw * MEUM) * dist * 0.4)
+            if 0 <= x2 < w and 0 <= y2 < h:
+                rgb[y2, x2, :] = _np.clip(rgb[y2, x2, :] + 0.08 * boost, 0.0, 1.0)
+    except Exception:
+        pass
     return _np.clip(rgb, 0.0, 1.0).astype(_np.float32)
 
 
@@ -5398,17 +5994,18 @@ if HAS_UI:
                 p.setPen(QPen(QColor(tx), 1))
                 p.drawText(int(x + 6), int(y - 4), str(k + 1))
 
-            # Sigils
-            for k, (a, r) in enumerate(g.sigils.pos):
-                if k in getattr(g.sigils, "collected", set()):
-                    continue
-                col = QColor(ac)
-                col.setAlpha(240)
-                p.setPen(QPen(col, 1))
-                p.setBrush(col)
-                x = cx + vg_cos(a) * r * R
-                y = cy + vg_sin(a) * r * R
-                p.drawEllipse(QPointF(x, y), 4 + int(r * 8), 4 + int(r * 8))
+            # Sigils — only when this world actually placed them (nexus / sigil hook)
+            if getattr(g.sigils, "count", 0) > 0:
+                for k, (a, r) in enumerate(g.sigils.pos):
+                    if k in getattr(g.sigils, "collected", set()):
+                        continue
+                    col = QColor(ac)
+                    col.setAlpha(240)
+                    p.setPen(QPen(col, 1))
+                    p.setBrush(col)
+                    x = cx + vg_cos(a) * r * R
+                    y = cy + vg_sin(a) * r * R
+                    p.drawEllipse(QPointF(x, y), 4 + int(r * 8), 4 + int(r * 8))
 
             # PvE mobs
             for m in getattr(g, "pve", PveEncounter(0)).mobs:
@@ -5488,11 +6085,16 @@ if HAS_UI:
             pts = getattr(getattr(g, "purse", None), "points", 0)
             aq = g.quests.active() if getattr(g, "quests", None) else None
             qtxt = f"{aq['title']} {aq['progress']}/{aq['target']}" if aq else "none"
+            focus = getattr(g, "primary_focus", "explore")
+            world_bits = [f"focus={focus}"]
+            if getattr(g.sigils, "count", 0) > 0:
+                world_bits.append(f"sigils={g.sigils.remaining()}/{g.sigils.count}")
+            world_bits.append(f"res={g.resources.remaining()}")
+            if getattr(g.waypoints, "count", 0) > 0:
+                world_bits.append(f"wp={g.waypoints.remaining()}")
+            world_bits.append(f"pve={g.pve.remaining()}")
             p.drawText(8, int(h) - 24,
-                       f"{g.id.get('title', '')}  t={g.t:.1f}s  "
-                       f"sigils={g.sigils.remaining()}/{g.sigils.count}  "
-                       f"res={g.resources.remaining()}  wp={g.waypoints.remaining()}  "
-                       f"pve={g.pve.remaining()}")
+                       f"{g.id.get('title', '')}  t={g.t:.1f}s  " + "  ".join(world_bits))
             p.drawText(8, int(h) - 10,
                        f"HP={hp:.0f}  coins={coins}  pts={pts}  score={getattr(g,'score',0):.1f}  "
                        f"Lv{getattr(g,'level',1)}  quest={qtxt}  net={g.net.status}")
@@ -5570,7 +6172,7 @@ if HAS_UI:
             self.act_lbl.setWordWrap(True)
             self.score_lbl = QLabel("Score 0.00")
             self.level_lbl = QLabel("Level 1  (x1.00)")
-            self.sigil_lbl = QLabel("Sigils 0/0")
+            self.sigil_lbl = QLabel("Focus: —")
             self.eco_lbl = QLabel("Coins 0  Pts 0  HP 100")
             self.quest_lbl = QLabel("Quest —")
             self.tags_lbl = QLabel("Tags: starter")
@@ -5771,10 +6373,25 @@ if HAS_UI:
                 elif text in ("/host", "/client"):
                     self._switch_role()
                 else:
-                    self.game.send_chat(self.game.player_name, text)
+                    # The chat box is also the in-game console. Route every
+                    # slash command to the same command parser as CLI so the
+                    # GUI does not silently turn valid commands into chat text.
+                    self.game.handle_console_command(text)
+                    self._sync_chat_from_game()
             else:
                 self.game.send_chat(self.game.player_name, text)
+                self._sync_chat_from_game()
             self.chat_edit.clear()
+
+        def _sync_chat_from_game(self):
+            """Refresh the GUI transcript after local/remote command handling."""
+            try:
+                self.chat_view.clear()
+                for entry in self.game.chat_log[-500:]:
+                    self.chat_view.appendPlainText(f"[{entry.get('sender','system')}] {entry.get('text','')}")
+                self.chat_view.verticalScrollBar().setValue(self.chat_view.verticalScrollBar().maximum())
+            except Exception:
+                pass
 
         def _reset(self):
             g = self.game
@@ -5784,7 +6401,11 @@ if HAS_UI:
             g.reset_world()
             self.score_lbl.setText(f"Score {g.score:.2f}")
             self.level_lbl.setText(f"Level {g.level}  (x{g.difficulty_mult:.2f})")
-            self.sigil_lbl.setText(f"Sigils {g.sigils.remaining()}/{g.sigils.count}")
+            focus = getattr(g, "primary_focus", "explore")
+            if getattr(g.sigils, "count", 0) > 0:
+                self.sigil_lbl.setText(f"Focus {focus} · sigils {g.sigils.remaining()}/{g.sigils.count}")
+            else:
+                self.sigil_lbl.setText(f"Focus {focus} · no sigils in this world")
 
         def _report(self):
             snap = self.game.report()
@@ -5813,7 +6434,11 @@ if HAS_UI:
                 pass
             self.score_lbl.setText(f"Score {g.score:.2f}")
             self.level_lbl.setText(f"Level {g.level}  (x{g.difficulty_mult:.2f})")
-            self.sigil_lbl.setText(f"Sigils {g.sigils.remaining()}/{g.sigils.count}")
+            focus = getattr(g, "primary_focus", "explore")
+            if getattr(g.sigils, "count", 0) > 0:
+                self.sigil_lbl.setText(f"Focus {focus} · sigils {g.sigils.remaining()}/{g.sigils.count}")
+            else:
+                self.sigil_lbl.setText(f"Focus {focus} · no sigils in this world")
             try:
                 self.eco_lbl.setText(
                     f"Coins {g.purse.coins}  Pts {g.purse.points}  HP {g.hp:.0f}  "
@@ -6620,6 +7245,16 @@ AUTO CONTROLS (derived from this creation — complexity {cx} / {cl})
 {extra_binds}
   Key macros:
 {macro_lines}
+
+OPEN-WORLD / SANDBOX RULES
+--------------------------
+  Open-world and sandbox games are free-roaming. Movement and camera look are player-controlled;
+  the world never auto-spins you or traps you inside a sigil, activity, or region.
+  Regions are editable local sandboxes with persistent placed objects and notes.
+  /sandbox or /region        inspect the current region
+  /build <kind> <label>      place a persistent local object
+  /remove                    remove the last placed local object
+  /note <text>               attach a note to this region
 
 CHAT / CONSOLE COMMANDS
 -----------------------
