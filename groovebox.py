@@ -15356,31 +15356,26 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "pitches": [1.0] * 16,
             "probabilities": [100] * 16,
             "offsets": [0.0] * 16,
-
-            # NEW
-            "pkp_boost": [False] * 16,
         }
-            for name in self.instrument_names_48
-        }
-
+        for name in self.instrument_names_48:
         # SEQUENCE_BANK_V6: every instrument owns independently addressable,
         # numbered patterns.  A pattern carries its own length and can be
         # reused by playlist rows with a deterministic phase/offset.
-        self.instrument_sequence_banks = {}
-        for _name, _mem in self.instrument_sequencer_memory.items():
-            _mem["pattern_length"] = 16
-            _mem["sequence_id"] = 1
-            _mem["user_owned"] = False
-            _mem["canonical_owner"] = None
-            self.instrument_sequence_banks[_name] = {
-                1: _mem
-            }
-        self.instrument_selected_sequence = {name: 1 for name in self.instrument_names_48}
+            self.instrument_sequence_banks = {}
+            for _name, _mem in self.instrument_sequencer_memory.items():
+                _mem["pattern_length"] = 16
+                _mem["sequence_id"] = 1
+                _mem["user_owned"] = False
+                _mem["canonical_owner"] = None
+                self.instrument_sequence_banks[_name] = {
+                    1: _mem
+                }
+            self.instrument_selected_sequence = {name: 1 for name in self.instrument_names_48}
 
-        self.instrument_scripts = {
-            name: f"# Script workspace for {name} based on operator rules\ndef evaluate_wave(x, y, z):\n    return np.sin(x * {1 + int(identity_unit(name, 'default_script_k') * 12)}.0) * np.cos(y) - z"
-            for i, name in enumerate(self.instrument_names_48)
-        }
+            self.instrument_scripts = {
+                name: f"# Script workspace for {name} based on operator rules\ndef evaluate_wave(x, y, z):\n    return np.sin(x * {1 + int(identity_unit(name, 'default_script_k') * 12)}.0) * np.cos(y) - z"
+                for i, name in enumerate(self.instrument_names_48)
+            }
 
         # No musical programs are injected at boot.
         # Harmonic/script/patch/domain defaults remain available as neutral context.
