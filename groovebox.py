@@ -7271,6 +7271,34 @@ class ParametricMathBackground(QWidget):
         # wave/shape/Meum budget instead of each panel adding another 24.
         self._instances.add(self)
 
+    @staticmethod
+    def _visual_unit(value, default=0.0):
+        """Audio-style finite normalization at the visual color boundary."""
+        try:
+            x = float(value)
+        except (TypeError, ValueError):
+            x = float(default)
+        if not math.isfinite(x):
+            x = float(default)
+        return float(np.clip(x, 0.0, 1.0))
+
+    @classmethod
+    def _hsvf(cls, h, s, v, a=1.0):
+        """Bounded QColor.fromHsvF bridge; hue wraps, other channels clamp."""
+        try:
+            hh = float(h)
+        except (TypeError, ValueError):
+            hh = 0.0
+        if not math.isfinite(hh):
+            hh = 0.0
+        hh %= 1.0
+        return QColor.fromHsvF(
+            hh,
+            cls._visual_unit(s),
+            cls._visual_unit(v),
+            cls._visual_unit(a, 1.0),
+        )
+
     def _advance(self):
         elapsed = time.monotonic() - self._started
         new_cycle = int(elapsed / (MEUM * PHI + 1.0))
