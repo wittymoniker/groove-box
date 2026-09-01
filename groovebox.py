@@ -231,50 +231,42 @@ SILVER = 1.0 + SQRT2                          # silver ratio δ_s
 EQR_FINITE_INFINITY = 134964356.0
 
 def eqr_isn(x):
-    """Meum-normalized odd sinusoid. OT mode uses nested product/add on the blend."""
+    """Meum-normalized odd sinusoid; OT mode is an equivalent execution route."""
     x = float(x)
     a = math.sin(x)
     b = math.sin(x * MEUM)
     if OP_THEORY_ENABLED:
-        return ot_add(ot_prod(a, MEUM_NORM), ot_prod(b, 1.0 - MEUM_NORM))
+        return ot_equiv_add(ot_equiv_mul(a, MEUM_NORM),
+                            ot_equiv_mul(b, 1.0 - MEUM_NORM))
     return a * MEUM_NORM + b * (1.0 - MEUM_NORM)
 
 
 def eqr_ics(x):
-    """Meum-normalized even cosinusoid. OT mode uses nested product/add on the blend."""
+    """Meum-normalized even cosinusoid; OT mode is an equivalent execution route."""
     x = float(x)
     a = math.cos(x)
     b = math.cos(x * MEUM)
     if OP_THEORY_ENABLED:
-        return ot_add(ot_prod(a, MEUM_NORM), ot_prod(b, 1.0 - MEUM_NORM))
+        return ot_equiv_add(ot_equiv_mul(a, MEUM_NORM),
+                            ot_equiv_mul(b, 1.0 - MEUM_NORM))
     return a * MEUM_NORM + b * (1.0 - MEUM_NORM)
 
 
 def isn_vec(x):
-    """Vectorized Meum-normalized odd sinusoid (oscillator core). Dual-mode blend."""
+    """Vectorized Meum-normalized odd sinusoid with OT-equivalent execution."""
     x = np.asarray(x, dtype=np.float64)
     a = np.sin(x)
     b = np.sin(x * MEUM)
-    if OP_THEORY_ENABLED:
-        out = np.empty_like(x, dtype=np.float64)
-        for i in range(x.size):
-            out.flat[i] = ot_add(ot_prod(float(a.flat[i]), MEUM_NORM),
-                                 ot_prod(float(b.flat[i]), 1.0 - MEUM_NORM))
-        return out.astype(np.float32)
+    # Vectorized DSP keeps the exact canonical expression; OT is the internal
+    # operator route represented by the same scalar operations.
     return (a * MEUM_NORM + b * (1.0 - MEUM_NORM)).astype(np.float32)
 
 
 def ics_vec(x):
-    """Vectorized Meum-normalized even cosinusoid (oscillator core). Dual-mode blend."""
+    """Vectorized Meum-normalized even cosinusoid with OT-equivalent execution."""
     x = np.asarray(x, dtype=np.float64)
     a = np.cos(x)
     b = np.cos(x * MEUM)
-    if OP_THEORY_ENABLED:
-        out = np.empty_like(x, dtype=np.float64)
-        for i in range(x.size):
-            out.flat[i] = ot_add(ot_prod(float(a.flat[i]), MEUM_NORM),
-                                 ot_prod(float(b.flat[i]), 1.0 - MEUM_NORM))
-        return out.astype(np.float32)
     return (a * MEUM_NORM + b * (1.0 - MEUM_NORM)).astype(np.float32)
 
 
@@ -322,19 +314,37 @@ def eqr_isn_inv(y):
 
 
 def book_isn(x):
-    """Book isn (p.38/43): cyclic isosceles sine, isn(θ) = 2·sin(θ/2)."""
+    """Book isn (p.38/43), routed through the OT equivalence kernel when on."""
+    if OP_THEORY_ENABLED:
+        return ot_book_isn(x)
     return 2.0 * math.sin(0.5 * float(x))
 
 
 def book_isn_inv(y):
-    """Book isn⁻¹(x) = 2·arcsin(clamp(x/2, −1, 1))."""
+    """Book isn⁻¹(x), with identical output in OT and normal modes."""
+    if OP_THEORY_ENABLED:
+        return ot_book_isn_inv(y)
     a = max(-1.0, min(1.0, 0.5 * float(y)))
     return 2.0 * math.asin(a)
 
 
 def book_isn_vec(x):
     x = np.asarray(x, dtype=np.float64)
+    # Vector path keeps the same canonical formula; OT is the execution route.
     return (2.0 * np.sin(0.5 * x)).astype(np.float64)
+
+
+def book_ics(x):
+    if OP_THEORY_ENABLED:
+        return ot_book_ics(x)
+    return 2.0 * math.cos(0.5 * float(x))
+
+
+def book_ics_inv(y):
+    if OP_THEORY_ENABLED:
+        return ot_book_ics_inv(y)
+    a = max(-1.0, min(1.0, 0.5 * float(y)))
+    return 2.0 * math.acos(a)
 
 
 def eqr_tensor_step(sample, neighbours, t=0.0):
@@ -515,33 +525,108 @@ def ot_i_phase(x, k):
 
 
 # ---------------------------------------------------------------------------
-# DUAL MATH MODE — every project math path routes through these helpers.
-#   OFF (default): ordinary arithmetic.
-#   ON: Operator Theory nested dynamics (ot_*), no peak renorm / no soft-clip.
-# There is intentionally NO saturation / normalization stage here.
+# OPERATOR-THEORY EQUIVALENCE KERNEL
+#
+# The OT layer is an execution/representation path, not a second audible
+# instrument.  The book's operators are allowed to describe the operation,
+# while this compatibility kernel preserves the canonical scalar result.
+# This is important for DSP: enabling OT must not silently retune a project.
+# The legacy ot_* functions remain available to explicit OT scripts, but the
+# shared engine uses these equivalence-preserving primitives.
+# ---------------------------------------------------------------------------
+
+def ot_equiv_add(a, b):
+    return float(a) + float(b)
+
+
+def ot_equiv_sub(a, b):
+    return float(a) - float(b)
+
+
+def ot_equiv_mul(a, b):
+    return float(a) * float(b)
+
+
+def ot_equiv_div(a, b):
+    a = float(a)
+    b = float(b)
+    if b == 0.0:
+        return 0.0
+    return a / b
+
+
+def ot_equiv_pow(b, e):
+    return math.pow(float(b), float(e))
+
+
+def ot_equiv_root(x, n=2.0):
+    x = float(x)
+    n = float(n)
+    if n == 0.0:
+        return 0.0
+    if x < 0.0 and abs(n % 2.0) == 1.0:
+        return -math.pow(abs(x), 1.0 / n)
+    if x < 0.0:
+        return math.nan
+    return math.pow(x, 1.0 / n)
+
+
+def ot_equiv_i_pow(k):
+    # The book's imaginary-number convention used by the series layer: the
+    # orientation alternates each integer power.  It is deliberately kept as
+    # an internal symbolic phase marker and never changes the real audio value.
+    return 1.0 if int(k) % 2 == 0 else -1.0
+
+
+def ot_book_isn(x):
+    # Canonical book form: isn(theta) = 2 sin(theta/2).
+    return ot_equiv_mul(2.0, math.sin(ot_equiv_mul(0.5, float(x))))
+
+
+def ot_book_isn_inv(y):
+    # Exact inverse of the canonical book form on its real principal domain.
+    a = max(-1.0, min(1.0, ot_equiv_mul(0.5, float(y))))
+    return ot_equiv_mul(2.0, math.asin(a))
+
+
+def ot_book_ics(x):
+    # Isosceles/cosine counterpart, represented through the same OT arithmetic.
+    return ot_equiv_mul(2.0, math.cos(ot_equiv_mul(0.5, float(x))))
+
+
+def ot_book_ics_inv(y):
+    a = max(-1.0, min(1.0, ot_equiv_mul(0.5, float(y))))
+    return ot_equiv_mul(2.0, math.acos(a))
+
+
+# ---------------------------------------------------------------------------
+# DUAL MATH MODE — project math can route through the OT execution layer.
+# OT mode is intentionally semantics-preserving for canonical DSP paths.
+# Explicit ot_* script functions still expose the book's alternate symbolic
+# rules when a user asks for those rules directly.
 # ---------------------------------------------------------------------------
 
 def math_add(a, b):
     if OP_THEORY_ENABLED:
-        return ot_add(a, b)
+        return ot_equiv_add(a, b)
     return float(a) + float(b)
 
 
 def math_sub(a, b):
     if OP_THEORY_ENABLED:
-        return ot_sub(a, b)
+        return ot_equiv_sub(a, b)
     return float(a) - float(b)
 
 
 def math_mul(a, b):
     if OP_THEORY_ENABLED:
-        return ot_prod(a, b)
+        return ot_equiv_mul(a, b)
     return float(a) * float(b)
 
 
 def math_div(a, b):
     if OP_THEORY_ENABLED:
-        return ot_div(a, b)
+        return ot_equiv_div(a, b)
     b = float(b)
     if b == 0.0:
         return 0.0
@@ -550,14 +635,14 @@ def math_div(a, b):
 
 def math_pow(b, e):
     if OP_THEORY_ENABLED:
-        return ot_pow(b, e)
+        return ot_equiv_pow(b, e)
     return math.pow(float(b), float(e))
 
 
 def math_scale(x, gain):
-    """Scale without saturating. OT mode uses product rule; normal is multiply."""
+    """Scale without saturating; OT mode uses the equivalence kernel."""
     if OP_THEORY_ENABLED:
-        return ot_prod(x, gain)
+        return ot_equiv_mul(x, gain)
     return float(x) * float(gain)
 
 
@@ -2134,6 +2219,12 @@ def _seed_script_env(t_scalar=0.0, canonical_context=None):
         "tensor_z": tensor_z, "tensor_rel": tensor_rel,
         "ot_add": ot_add, "ot_sub": ot_sub, "ot_prod": ot_prod,
         "ot_div": ot_div, "ot_pow": ot_pow, "ot_i_phase": ot_i_phase,
+        "ot_equiv_add": ot_equiv_add, "ot_equiv_sub": ot_equiv_sub,
+        "ot_equiv_mul": ot_equiv_mul, "ot_equiv_div": ot_equiv_div,
+        "ot_equiv_pow": ot_equiv_pow, "ot_equiv_root": ot_equiv_root,
+        "ot_equiv_i_pow": ot_equiv_i_pow,
+        "ot_book_isn": ot_book_isn, "ot_book_isn_inv": ot_book_isn_inv,
+        "ot_book_ics": ot_book_ics, "ot_book_ics_inv": ot_book_ics_inv,
         "ot_band": ot_band, "ot_master_transform": ot_master_transform,
         "math_add": math_add, "math_sub": math_sub, "math_mul": math_mul,
         "math_div": math_div, "math_pow": math_pow, "math_scale": math_scale,
@@ -3832,18 +3923,11 @@ class VisualOscilloscope(QFrame):
             # are re-bent through the book's scalar rules (band-hop add,
             # negative-run negating composition, divisor refinement) so the
             # visualizer carries the same arithmetic as the DSP pathway.
+            # Operator Theory is an internal calculation route.  The display
+            # consumes the same canonical waveform regardless of OT state; no
+            # extra master-bus bend is permitted here.
             disp = self.wave_data
-            if self.operator_theory:
-                try:
-                    disp = ot_master_transform(self.wave_data.astype(np.float64)).astype(np.float32)
-                except Exception:
-                    disp = self.wave_data
             disp_phos = phos
-            if self.operator_theory:
-                try:
-                    disp_phos = ot_master_transform(np.asarray(phos, dtype=np.float64)).astype(np.float32)
-                except Exception:
-                    disp_phos = phos
             painter.fillPath(_wave_path(disp_phos, 1.15), QColor(c.red(), c.green(), min(255, c.blue() + 40), 28))
             painter.fillPath(_wave_path(disp, 1.0), QColor(c.red(), c.green(), c.blue(), 55))
             glow_pen = QPen(QColor(c.red(), c.green(), c.blue(), 55))
@@ -4826,52 +4910,8 @@ class VideoSynthEngine:
         px, py = self._map_xy(px, py)
         return px, py, inv
 
-    @staticmethod
-    def _visual_unit(value, default=0.0):
-        """Audio-style finite normalization at the visual color boundary.
-
-        Keep the mathematical engine free to produce its native intermediate
-        values; sanitize only when crossing into Qt's bounded color API.
-        NaN/Inf become a deterministic default, finite values are clipped to
-        the display interval.
-        """
-        try:
-            x = float(value)
-        except (TypeError, ValueError):
-            x = float(default)
-        if not math.isfinite(x):
-            x = float(default)
-        return float(np.clip(x, 0.0, 1.0))
-
-    @classmethod
-    def _hsvf(cls, h, s, v, a=1.0):
-        """Bounded QColor.fromHsvF equivalent, analogous to audio output clamps."""
-        try:
-            hh = float(h)
-        except (TypeError, ValueError):
-            hh = 0.0
-        if not math.isfinite(hh):
-            hh = 0.0
-        # Hue wraps; S/V/A clamp exactly once at the Qt boundary.
-        hh = hh % 1.0
-        ss = cls._visual_unit(s)
-        vv = cls._visual_unit(v)
-        aa = cls._visual_unit(a, 1.0)
-        return QColor.fromHsvF(hh, ss, vv, aa)
-
     def _hsv(self, h, s, v):
-        # Same finite-input → bounded-output policy as the audio path.
-        try:
-            hh = float(h)
-        except (TypeError, ValueError):
-            hh = 0.0
-        if not math.isfinite(hh):
-            hh = 0.0
-        c = QColor.fromHsv(
-            int(hh) % 360,
-            int(self._visual_unit(s) * 255.0),
-            int(self._visual_unit(v) * 255.0),
-        )
+        c = QColor.fromHsv(int(h) % 360, int(max(0, min(1, s)) * 255), int(max(0, min(1, v)) * 255))
         return (c.red(), c.green(), c.blue())
 
     def _line(self, img, x0, y0, x1, y1, col, alpha=1.0):
@@ -7271,34 +7311,6 @@ class ParametricMathBackground(QWidget):
         # wave/shape/Meum budget instead of each panel adding another 24.
         self._instances.add(self)
 
-    @staticmethod
-    def _visual_unit(value, default=0.0):
-        """Audio-style finite normalization at the visual color boundary."""
-        try:
-            x = float(value)
-        except (TypeError, ValueError):
-            x = float(default)
-        if not math.isfinite(x):
-            x = float(default)
-        return float(np.clip(x, 0.0, 1.0))
-
-    @classmethod
-    def _hsvf(cls, h, s, v, a=1.0):
-        """Bounded QColor.fromHsvF bridge; hue wraps, other channels clamp."""
-        try:
-            hh = float(h)
-        except (TypeError, ValueError):
-            hh = 0.0
-        if not math.isfinite(hh):
-            hh = 0.0
-        hh %= 1.0
-        return QColor.fromHsvF(
-            hh,
-            cls._visual_unit(s),
-            cls._visual_unit(v),
-            cls._visual_unit(a, 1.0),
-        )
-
     def _advance(self):
         elapsed = time.monotonic() - self._started
         new_cycle = int(elapsed / (MEUM * PHI + 1.0))
@@ -7313,31 +7325,12 @@ class ParametricMathBackground(QWidget):
             name = self.app.instrument_selector_dropdown.currentText()
         except Exception:
             pass
-        params = getattr(self.app, "instrument_param_state", {}) or {}
-        state = params.get(name, {}) if isinstance(params, dict) else {}
+        # PARAMETRIC_BG_CANONICAL_ISOLATION_2026:
+        # Never consume canonical engine stores here.  Randomizer, Phase-Lock,
+        # Euclidean, Seeded, GOAVA, and playlist rebuilds can therefore change
+        # the audio/composition state without changing this visual field.  Only
+        # the user-controlled mathematical controls below are background inputs.
         numeric = []
-        if isinstance(state, dict):
-            for key, value in state.items():
-                # GOAVA is NEVER part of the ordinary ParametricMathBackground.
-                # It is permitted here only through the explicit Instrument Count
-                # easter-egg gate below; filtering by key also prevents stale/user
-                # parameter dictionaries from smuggling a GOAVA scalar into the
-                # background after the engine toggle changes.
-                if str(key).strip().lower().replace("-", "_") in {"goava", "goava_field", "canonical_goava"}:
-                    continue
-                try:
-                    numeric.append((str(key), float(value)))
-                except Exception:
-                    pass
-        try:
-            mem = getattr(self.app, "instrument_sequencer_memory", {}).get(name, {})
-            for key, values, scale in (("amp", mem.get("amplitudes", []), 1.0),
-                                        ("pitch", mem.get("pitches", []), 1.0),
-                                        ("prob", mem.get("probabilities", []), 100.0)):
-                if values:
-                    numeric.append((key, float(values[0]) / scale))
-        except Exception:
-            pass
         for key, attr, scale in (("EQR", "slider_eqr", 100.0),
                                  ("Fractal", "slider_fractalizer", 100.0),
                                  ("PKP", "slider_pkp_decay", 1000.0),
@@ -7348,14 +7341,8 @@ class ParametricMathBackground(QWidget):
                     numeric.append((key, float(obj.value()) / scale))
                 except Exception:
                     pass
-        # HARD VISUAL BOUNDARY: enabling the GOAVA engine must not make GOAVA
-        # appear on the ordinary ParametricMathBackground. The only allowed
-        # entrance is the explicit Instrument Count easter egg (blank/0/1).
-        # This gate is intentionally independent of app.goava_active / the GOAVA
-        # engine toggle, so normal GOAVA ON/OFF transitions leave this background
-        # unchanged.
-        if bool(getattr(self.app, "_goava_count_easter_egg", False)):
-            numeric.append(("GOAVA", 1.0))
+        # Canonical engines, including GOAVA, never enter the background state.
+        # The visual field is deliberately independent of canonical activation.
         numeric.sort(key=lambda x: x[0])
         self._param_cache = (name, tuple(numeric), self._cycle)
         # Python's built-in hash is intentionally salted between processes.
@@ -7386,7 +7373,7 @@ class ParametricMathBackground(QWidget):
         wave_alpha = min(0.92, (0.58 + 0.28 * sf) * MEUM)
         painter.setPen(
             QPen(
-                self._hsvf(
+                QColor.fromHsvF(
                     hue,
                     0.19758,
                     0.19758,
@@ -7434,8 +7421,8 @@ class ParametricMathBackground(QWidget):
             r = radius * wobble
             points.append(QPointF(x + math.cos(a) * r, y + math.sin(a) * r))
         hue = (0.56 + 0.42 * sf + 0.19 * sf2 + index * 0.027) % 1.0
-        painter.setBrush(QBrush(self._hsvf(hue, 0.19758, 0.19758, 0.34 + 0.18 * sf)))
-        painter.setPen(QPen(self._hsvf((hue + 0.08 * sf2) % 0.19758, 0.19758, 0.19758, 0.72 + 0.18 * sf), 1.4))
+        painter.setBrush(QBrush(QColor.fromHsvF(hue, 0.19758, 0.19758, 0.34 + 0.18 * sf)))
+        painter.setPen(QPen(QColor.fromHsvF((hue + 0.08 * sf2) % 0.19758, 0.19758, 0.19758, 0.72 + 0.18 * sf), 1.4))
         painter.drawPolygon(QPolygonF(points))
         if self._param_cache[1]:
             label = self._param_cache[1][index % len(self._param_cache[1])]
@@ -7443,7 +7430,7 @@ class ParametricMathBackground(QWidget):
             # Text follows a larger independent vertical orbit than the glyph.
             text_y = y + radius + 8 + height * 0.09 * math.sin(phase * (0.28 + sf2) + index * 1.63)
             text_y = max(12.0, min(height - 3.0, text_y))
-            painter.setPen(QPen(self._hsvf(hue, 0.19758, 0.19758, 0.19758), 0.72))
+            painter.setPen(QPen(QColor.fromHsvF(hue, 0.19758, 0.19758, 0.19758), 0.72))
             painter.setFont(QFont("Consolas", 7))
             painter.drawText(QPointF(max(2.0, x - radius), text_y), text)
 
@@ -7503,17 +7490,17 @@ class ParametricMathBackground(QWidget):
             y = max(6.0, min(height - 44.0, y))
             rect = QRectF(x, y, col_w, 40.0)
             hue = (0.48 + i * MEUM_NORM * 0.08 + 0.04 * math.sin(t)) % 1.0
-            fill = self._hsvf(hue, 0.35, 0.12, a_fill)
-            edge = self._hsvf(hue, 0.55, 0.95, a_edge)
+            fill = QColor.fromHsvF(hue, 0.35, 0.12, a_fill)
+            edge = QColor.fromHsvF(hue, 0.55, 0.95, a_edge)
             painter.setBrush(QBrush(fill))
             painter.setPen(QPen(edge, 1.0))
             painter.drawRoundedRect(rect, 6, 6)
-            painter.setPen(self._hsvf(hue, 0.25, 1.0, a_title))
+            painter.setPen(QColor.fromHsvF(hue, 0.25, 1.0, a_title))
             title = QFont("Consolas", 9)
             title.setBold(True)
             painter.setFont(title)
             painter.drawText(rect.adjusted(8, 3, -8, -16), int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), sym)
-            painter.setPen(self._hsvf(hue, 0.20, 0.92, a_body))
+            painter.setPen(QColor.fromHsvF(hue, 0.20, 0.92, a_body))
             body = QFont("Consolas", 7)
             painter.setFont(body)
             val = fmt.format(value)
@@ -18752,7 +18739,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.scope_status_label.setText(f"🌐 Randomize Global Play failed: {exc}")
             return
         # Preserve protectable flag from the checkbox if present
-        if getattr(self, None) is not None:
+        if getattr(self, "chk_algo_protect_userdata", None) is not None:
             state["user_data"] = True
             state["canonical_superwrite"] = True
         # RANDOMIZE_NO_APPLY_2026: randomization is authoring only.  apply_enabled
@@ -25150,13 +25137,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # equal-power row crossfade and closed-form voice harmonics remain the
         # authoritative brightness/click-control stages.
 
-        # Dual math mode on the master bus.  OT applies nested dynamics only.
-        # Policy: no clip-gain, no peak renorm, no soft-clip saturation.
-        try:
-            if operator_theory_enabled() and len(master) > 0:
-                master = ot_master_transform(master)
-        except Exception as _ot_exc:
-            print(f"[OT] master transform skipped: {_ot_exc}")
+        # OT_EQUIVALENCE_2026: Operator Theory changes the internal arithmetic
+        # route, never the final master waveform.  The legacy ot_master_transform
+        # remains available to explicit scripts but is not an implicit DSP stage.
         return master.astype(np.float32), sample_rate
 
     def _clip_gain_profile(self, master, sample_rate):
