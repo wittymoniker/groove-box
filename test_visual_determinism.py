@@ -9,7 +9,7 @@ B = [fibonacci_view(i, 128, 918273) for i in range(128)]
 assert A == B
 
 # 2. Exact view uniqueness for a finite viewset
-keys = {(v['yaw'], v['pitch'], v['roll'], v['distance'], v['fov_deg']) for v in A}
+keys = {(v['yaw_deg'], v['pitch_deg'], v['roll_deg'], v['distance'], v['fov_deg']) for v in A}
 assert len(keys) == 128
 
 # 3. Object-count independence of the camera lattice

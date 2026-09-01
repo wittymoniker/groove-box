@@ -5820,8 +5820,11 @@ class VideoSynthEngine:
         # selects a deterministic subset/repartition of these slots.
         self._canonical_master = [canonical_visual_instrument(i, ctx, flags)
                                   for i in range(CANONICAL_MASTER_SLOTS)]
-        self._canonical = [self._canonical_master[canonical_master_slot(i, self.n)]
-                           for i in range(self.n)]
+        # Fixed visual render slot count — instrument count must NOT change
+        # video identity.  Engine flags (randomizer / phase_lock / goava) do.
+        _VISUAL_RENDER_SLOTS = 16
+        self._canonical = [self._canonical_master[canonical_master_slot(i, _VISUAL_RENDER_SLOTS)]
+                           for i in range(_VISUAL_RENDER_SLOTS)]
         self._vled_full_window = fu
         if self._canonical:
             if fu:
@@ -6283,6 +6286,101 @@ class VideoSynthEngine:
 
 
 
+    def _subscene_generative_terrain(self, img, w, h, st):
+        """Procedural heightfield / ridge mesh from seed + entropy + time.
+
+        Pure visual generation: ridges, basins, and contour stitches whose
+        density and orientation are closed-form in (seed, t, visual_entropy).
+        Does not read or write any audio/music generator state.
+        """
+        snap = st.get("snap", {}) if isinstance(st.get("snap"), dict) else {}
+        seed = float(snap.get("seed", 0.0) or getattr(self, "_canonical_ctx", {}).get("seed", 0.0) or 0.0)
+        e = float(np.clip(getattr(self, "_visual_entropy", 0.5), 0.0, 1.0))
+        rms = float(np.clip(getattr(self, "_rms", 0.2), 0.0, 1.0))
+        # Skip if almost invisible
+        fade = 0.20 + 0.55 * e + 0.25 * rms
+        if fade < 0.08:
+            return
+        cx, cy = w * 0.5, h * 0.52
+        # Number of ridge polylines scales with entropy (more chaos → more folds)
+        n_ridges = 3 + int(7 * e + 2 * ((seed * MEUM) % 1.0))
+        for r in range(n_ridges):
+            u0 = identity_unit("terrain", seed, "ridge", r)
+            pts = []
+            segs = 18 + int(14 * e)
+            for k in range(segs):
+                t_u = k / max(1, segs - 1)
+                # Heightfield wave along a seed-tilted axis
+                a = t_u * math.tau * (1.0 + 1.5 * u0) + self.t * (0.07 + 0.04 * r) + seed * 0.002
+                height = 0.08 + 0.22 * abs(vg_sin(a * MEUM + r * PHI))
+                height *= (0.6 + 0.4 * e)
+                xw = (t_u - 0.5) * 1.15 + 0.08 * vg_cos(a * PHI)
+                yw = height * vg_sin(a) - 0.05 * r
+                zw = 0.7 + 0.25 * ((u0 + t_u) % 1.0)
+                px, py, _ = self._project(xw, yw, zw, w, h)
+                pts.append((px, py))
+            hue = (30 + 40 * r + 80 * u0 + self._video_hue_shift) % 360
+            col = self._hsv(hue, 0.35 + 0.25 * e, 0.45 + 0.35 * fade)
+            alpha = 0.07 + 0.12 * fade
+            for k in range(len(pts) - 1):
+                self._line(img, pts[k][0], pts[k][1], pts[k + 1][0], pts[k + 1][1], col, alpha)
+            # Contour dots on ridge peaks
+            if r % 2 == 0 and pts:
+                mid = pts[len(pts) // 2]
+                self._dot(img, mid[0], mid[1], col, 0.15 + 0.2 * fade, r=1)
+
+    def _subscene_seed_morph(self, img, w, h, st):
+        """Instantaneous seed-morph glyphs: every evaluated seed number becomes
+        a small generative glyph family that evolves with t.
+
+        Cross-correlates list-seed length with visual population so a longer
+        numeric seed field literally grows more shape identity on screen.
+        Visual-only — does not touch the music generator.
+        """
+        seed_vals = []
+        try:
+            if self.app is not None and hasattr(self.app, "get_seed_values"):
+                seed_vals = list(self.app.get_seed_values(
+                    t_value=float(getattr(self, "t", 0.0)) % 16.0) or [])[:24]
+        except Exception:
+            seed_vals = []
+        if not seed_vals:
+            # Fall back to a single residue of the numeric seed
+            try:
+                if self.app is not None and hasattr(self.app, "get_numeric_seed"):
+                    seed_vals = [float(self.app.get_numeric_seed() or 0.0)]
+            except Exception:
+                seed_vals = [0.0]
+        e = float(np.clip(getattr(self, "_visual_entropy", 0.5), 0.0, 1.0))
+        cx, cy = w * 0.5, h * 0.44
+        n = len(seed_vals)
+        for i, val in enumerate(seed_vals):
+            try:
+                v = float(val)
+            except Exception:
+                v = float(i)
+            if not math.isfinite(v):
+                v = float(i)
+            u = identity_unit("morph", v, i, int(self.t * 10) % 97)
+            # Glyph center on a slow orbit whose radius depends on |v|
+            ang = self.t * (0.09 + 0.02 * (i % 5)) + u * math.tau + i * MEUM
+            rad = 0.12 + 0.38 * ((abs(v) * PHI) % 1.0) * (0.5 + 0.5 * e)
+            px, py, _ = self._project(rad * vg_cos(ang), rad * vg_sin(ang) * 0.72,
+                                      0.85 + 0.2 * u, w, h)
+            # Petal count from seed magnitude
+            petals = 3 + int(abs(v) * 7 + u * 5) % 6
+            hue = (v * 17.3 + i * 41 + self._video_hue_shift) % 360
+            col = self._hsv(hue, 0.55 + 0.3 * e, 0.7 + 0.2 * e)
+            alpha = 0.10 + 0.18 * e
+            for p in range(petals):
+                a2 = ang + p * math.tau / petals + self.t * 0.15
+                r2 = 8.0 + 18.0 * ((u + p * 0.13) % 1.0)
+                x2 = px + r2 * vg_cos(a2)
+                y2 = py + r2 * vg_sin(a2) * 0.85
+                self._line(img, px, py, x2, y2, col, alpha)
+                self._dot(img, x2, y2, col, alpha + 0.08, r=1)
+            self._dot(img, px, py, col, 0.2 + 0.15 * e, r=1 + (i % 2))
+
     def _subscene_engine_ornaments(self, img, w, h, st):
         """Extra closed-form ornaments driven by the same engine flags as audio.
 
@@ -6497,6 +6595,16 @@ class VideoSynthEngine:
         self._subscene_rhythm_mandala(img, w, h, st)
         self._subscene_pulse_grid(img, w, h, st)
         self._subscene_wave_integration(img, w, h, st)
+        # Generative visual layers (seed-driven terrain + morph glyphs).
+        # Visual-only: they never call into the music generator.
+        try:
+            self._subscene_generative_terrain(img, w, h, st)
+        except Exception:
+            pass
+        try:
+            self._subscene_seed_morph(img, w, h, st)
+        except Exception:
+            pass
         # GOAVA remains a second graphical class, intentionally separate because
         # its identity is its own irrational numerical stream rather than an
         # ordinary instrument voice.
@@ -15171,17 +15279,32 @@ class MathematiciansGrooveboxApp(QMainWindow):
     # It is intentionally separate from user data, Randomizer, and Phase-Lock.
     # Toggling the button rebuilds/removes only GOAVA-owned state.
     # =====================================================================
-    def _parse_goava_seed_values(self):
+    def _parse_goava_seed_values(self, t_value=0.0):
         """Parse seed field into evaluated numeric list for GOAVA events.
 
         Every comma/newline component is evaluated as a seed expression (math,
         if/elif, constants). Instruments/events then consume these real numbers
         rather than hash/byte tokens.
-        """
-        return list(self.get_seed_values(t_value=0.0))
 
-    def _build_goava_composition(self):
-        numbers = self._parse_goava_seed_values()
+        t_value: current composition time so time-ticking / time-varying seed
+        scripts (sin(t), lists indexed by t, if(sin(t)...) etc.) produce the
+        correct numeric entries at the moment of evaluation. This is the key
+        for tracking the real time index across a shifted seed.
+        """
+        return list(self.get_seed_values(t_value=float(t_value)))
+
+    def _build_goava_composition(self, t_value=0.0, true_time_index=None):
+        """Build GOAVA pitched-sine chord events from the seed numeric list.
+
+        When the seed is a list or a time-varying expression, t_value and
+        true_time_index keep the event list indexed to the real composition
+        clock rather than a static t=0 snapshot.  true_time_index (when
+        supplied) is the authoritative ordinal along the composition; the
+        seed list is treated as a circular field whose phase is advanced by
+        that index so that "the seed shifts" still maps onto the correct
+        absolute time slot.
+        """
+        numbers = self._parse_goava_seed_values(t_value=t_value)
         if not numbers:
             self.goava_seed_numbers = []
             return []
@@ -15190,20 +15313,40 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # per-frame re-parse.
         self.goava_seed_numbers = list(numbers)
         base = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
+        n = len(numbers)
+        # True index across a shifted seed: use the supplied composition
+        # ordinal when available, otherwise fall back to ordinary enumerate.
+        base_idx = int(true_time_index) if true_time_index is not None else 0
         events = []
         for i, number in enumerate(numbers):
-            hz, raw = goava_frequency(number, i, numbers, base)
+            # Real time index for this entry = composition clock + list offset
+            # (mod length) so that a rotating/shifted seed still lands on the
+            # correct absolute slot in the composition timeline.
+            true_idx = (base_idx + i) % max(1, n)
+            step = float(true_idx) + float(t_value)
+            hz, raw = goava_frequency(number, step, numbers, base)
             # GOAVA: no pitch-ratio clip — report true mapped ratio.
             _den = max(float(base), 1e-12)
             pitch = float(hz / _den) if math.isfinite(hz) else 1.0
             if not math.isfinite(pitch) or pitch <= 0.0:
                 pitch = 1.0
+            # Build a small pitched-sine chord (root + 5th + octave) from the
+            # same centered ratio so each seed numeric entry becomes a chord
+            # rather than a single partial.
+            chord_ratios = [1.0, 1.5, 2.0]
+            chord_freqs = [float(hz) * r for r in chord_ratios]
+            chord_amps = [0.33, 0.22, 0.15]
             events.append({
-                "step": i,
+                "step": true_idx,
+                "list_index": i,
+                "true_time_index": true_idx,
+                "t_value": float(t_value),
                 "seed": float(number),
                 "raw": float(raw),
                 "frequency": float(hz),
                 "pitch": pitch,
+                "chord_freqs": chord_freqs,
+                "chord_amps": chord_amps,
                 "enabled": True,
                 "source": "GOAVA",
                 "weight": 1.0,
@@ -15350,25 +15493,46 @@ class MathematiciansGrooveboxApp(QMainWindow):
     # deduped: shadowed by later _on_goava_toggled() definition (perfect-unison system).
 
     def _goava_mix(self, local_t, row_idx, step_duration):
+        """Mix GOAVA pitched-sine chords using true composition time index.
+
+        row_idx is the playlist/row ordinal.  We treat it as the true time
+        index along the composition; when the seed list has shifted (or is
+        time-varying) the event that lands on this row is selected by that
+        absolute index, not by a static t=0 snapshot.  Each event carries a
+        small chord (root + 5th + octave) of pure sines.
+        """
         if not getattr(self, "goava_active", False):
             return np.zeros_like(local_t, dtype=np.float32)
         events = list(getattr(self, "goava_note_events", []) or [])
         if not events:
             return np.zeros_like(local_t, dtype=np.float32)
-        ev = events[row_idx % len(events)]
+        # True index across shifted seed: use row as the composition clock
+        # ordinal so the active seed entry follows real time, not a frozen list.
+        true_idx = int(row_idx) % len(events)
+        ev = events[true_idx]
         if not ev.get("enabled", True):
             return np.zeros_like(local_t, dtype=np.float32)
-        freq = float(ev.get("frequency", 432.0))
+        # Prefer the chord stored on the event; fall back to single sine.
+        chord_freqs = ev.get("chord_freqs")
+        chord_amps = ev.get("chord_amps")
+        if not chord_freqs:
+            chord_freqs = [float(ev.get("frequency", 432.0))]
+            chord_amps = [0.33]
         # Sustain across most of the row/step; short tau was muting GOAVA early
         tau = max(step_duration * 2.5, 0.08)
         env = np.exp(-local_t / tau)
         attack = np.clip(local_t / max(step_duration * 0.05, 1e-4), 0.0, 1.0)
-        ph = 2.0 * np.pi * freq * local_t
-        # GOAVA_SINE_HARMONIC_2026: GOAVA is not an instrument voice.  It adds
-        # only its own sine harmonic at an ideal 33% amplitude on top of the
-        # programmed groove — a shared harmonic layer, never an occupied row.
-        tone = np.sin(ph)
-        return (tone * env * attack * 0.33 * float(ev.get("weight", 1.0))).astype(np.float32)
+        weight = float(ev.get("weight", 1.0))
+        # GOAVA_SINE_CHORD_2026: each seed numeric entry inserts a pitched
+        # sine chord (not a single partial) at ~33% total amplitude on top of
+        # the programmed groove — a shared harmonic layer, never an occupied row.
+        tone = np.zeros_like(local_t, dtype=np.float64)
+        for f, a in zip(chord_freqs, chord_amps):
+            if not math.isfinite(f) or f <= 0.0:
+                continue
+            ph = 2.0 * np.pi * float(f) * local_t
+            tone += np.sin(ph) * float(a)
+        return (tone * env * attack * weight).astype(np.float32)
 
     def _paint_generated_parameters(self, rng=None, rows=None, source='context'):
         """Paint calculated/random playlist parameters, including velocity.
@@ -28696,12 +28860,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
             ).hexdigest()[:16]
         except Exception:
             step_algo_fingerprint = "0" * 16
+        # Engine bits from live toggles — these control game + video identity.
+        # Instrument count is recorded for UI only; classify ignores it.
+        rnd_on = bool(getattr(self, "btn_local_randomize", None) and self.btn_local_randomize.isChecked())
+        pl_on = bool(getattr(self, "btn_local_phase_lock", None) and self.btn_local_phase_lock.isChecked())
         return {
             "bpm": float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0,
             "seq_length": int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else 16,
             "playlist_rows": int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else 32,
             "n_instruments": len(getattr(self, "instrument_names_48", []) or []),
             "goava_active": bool(getattr(self, "goava_active", False)),
+            "randomizer_active": rnd_on,
+            "phase_lock_active": pl_on,
             "seed": float(self.get_numeric_seed()) if hasattr(self, "get_numeric_seed") else 0.0,
             "live_parametrics": live_p,
             "goava_group_phase": bool(getattr(self, "goava_active", False)),
@@ -28735,8 +28905,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             bpm=meta["bpm"],
             seq_length=meta["seq_length"],
             playlist_rows=meta["playlist_rows"],
-            n_instruments=meta["n_instruments"],
+            n_instruments=meta.get("n_instruments", 8),  # ignored by identity
             goava_active=meta["goava_active"],
+            randomizer_active=bool(meta.get("randomizer_active", False)),
+            phase_lock_active=bool(meta.get("phase_lock_active", False)),
             live_parametrics=meta.get("live_parametrics"),
             global_algo_fingerprint=meta.get("global_algo_fingerprint"),
             global_algo=meta.get("global_algo"),

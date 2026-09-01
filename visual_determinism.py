@@ -74,6 +74,16 @@ def _ang(a,b):
     c=max(-1,min(1,(ax*bx+ay*by+az*bz)/(na*nb)))
     return vg_acos(c)
 
+def camera_distance(a, b):
+    """Angular distance between two canonical camera/view vectors (radians).
+
+    Compatibility helper retained for older visual tests and downstream
+    exporters; the canonical implementation is the same spherical metric
+    used by ``select_views``.
+    """
+    return _ang(a, b)
+
+
 def select_views(count=32, seed=0, existing=()):
     n=max(1,int(count)); pool=[fibonacci_view(i,max(n*2,32),seed) for i in range(max(n*2,32))]
     chosen=list(existing or [])
