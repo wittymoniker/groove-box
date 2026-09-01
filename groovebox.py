@@ -3179,6 +3179,22 @@ _VISUAL_ENGINE_CHANNELS = ("randomizer", "phase_lock", "idealize_rhythm", "seede
 # lattice; it never changes the underlying seed-derived material.
 CANONICAL_MASTER_SLOTS = 64
 
+def canonical_master_slot(index: int, count: int) -> int:
+    """Map a live/render index onto the fixed canonical 64-slot lattice."""
+    try:
+        n = max(1, int(count))
+    except Exception:
+        n = 1
+    try:
+        i = int(index)
+    except Exception:
+        i = 0
+    i = max(0, min(n - 1, i))
+    if n <= 1:
+        return 0
+    slot = int((i * (CANONICAL_MASTER_SLOTS - 1) + (n - 1) // 2) // (n - 1))
+    return max(0, min(CANONICAL_MASTER_SLOTS - 1, slot))
+
 
 # =============================================================================
 # CompositionVisualShifts_2026 — grouped constant numeric shifts for
@@ -8992,12 +9008,12 @@ class CompositionShiftsReviewPanel(QWidget):
         # Create scrollable content area
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll.setFixedHeight(400)
         
         self.content_widget = QWidget()
         self.content_layout = QVBoxLayout(self.content_widget)
-        self.content_layout.setAlignment(Qt.AlignTop)
+        self.content_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.content_layout.setSpacing(4)
         
         # Add vertical center offsets
@@ -14077,13 +14093,9 @@ class PaintbrushTable(QWidget):
             if mode == self.MODE_RANDOM_PARAMETERS:
                 velocity = float(rng.uniform(0.0, 2.0))
             else:
-                velocity = float(
-                    np.clip(
-                        0.15 + 1.15 * ctx,
-                        0.05,
-                        1.5,
-                    )
-                )
+                # Do not derive amplitude from row position/context by default.
+                # Amplitude is a composition/user parameter, not hidden timeline automation.
+                velocity = 1.0
 
             _append_cell_member(
                 row,
@@ -14091,7 +14103,9 @@ class PaintbrushTable(QWidget):
                 f"{velocity * 100:.1f}%",
             )
 
-            entry["velocity"] = velocity
+            if not math.isfinite(float(velocity)):
+                velocity = 1.0
+            entry["velocity"] = float(np.clip(velocity, 0.0, 1.5))
 
             # Explicit amp state so the paint operation actually affects
             # amplitude rather than merely displaying a velocity token.
@@ -16201,7 +16215,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if _freeze_ctx and not _row_user:
                     row_velocity = 0.5
                 else:
-                    row_velocity = float(np.clip(float(playlist[row].get('velocity', 0.5) or 0.5) / 1.5, 0.0, 1.0))
+                    _rv = float(playlist[row].get('velocity', 1.0) or 1.0)
+                    row_velocity = float(np.clip(_rv if math.isfinite(_rv) else 1.0, 0.0, 1.0))
             except Exception:
                 pass
 
@@ -17278,7 +17293,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         for _pk, _vals in paint_meta.items():
             entry[_pk] = " | ".join(dict.fromkeys(_vals)) if _vals else entry.get(_pk, "")
         entry["blend_partner"] = next((p for p in partners if p), "")
-        entry["velocity"] = float(np.mean(velocities)) if velocities else 0.0
+        _v = float(np.mean(velocities)) if velocities else 0.0
+        entry["velocity"] = float(np.clip(_v if math.isfinite(_v) else 1.0, 0.0, 1.5))
         entry["active"] = bool(active_any)
         entry["generated_by_engine"] = bool(contribs)
         entry["generated_sources"] = sorted(contribs.keys())
@@ -17427,7 +17443,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             t_off = (r * (0.125 + 0.031 * MEUM_NORM) + float(rr.uniform(-0.045, 0.045)))
             if not active:
                 t_off = r * (0.125 + 0.031 * MEUM_NORM)
-            velocity = float(np.clip(0.42 + 0.48 * (0.5 + 0.5 * np.sin((r + 1) * MEUM + (seed % 997) * 0.017)), 0.08, 0.98)) if active else 0.0
+            velocity = 1.0 if active else 0.0  # no implicit row/time amplitude field
             target = ("eqr", "fractalizer", "pkp_decay", "filter", "drive")[int(rr.integers(0, 5))] if active else "none"
             amount = float(np.clip(0.22 + 0.62 * rr.random(), 0.0, 0.95)) if active else 0.0
             direction = float(np.sin((r + 1) * MEUM_INV + (seed % 991) * 0.013)) if active else 0.0
@@ -21947,7 +21963,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
             user_locked = bool(entry.get("velocity_user_locked", False))
             if user_locked and self._canonical_protect_user():
                 continue
-            entry["velocity"] = float(np.clip((1.0-strength) * old + strength * target, 0.05, 1.5))
+            if randomize:
+                entry["velocity"] = float(np.clip((1.0-strength) * old + strength * target, 0.05, 1.5))
+            else:
+                # Phase-lock must not silently create a timeline amplitude slope.
+                # Keep the existing/user value, sanitized to a finite range.
+                entry["velocity"] = float(np.clip(old if math.isfinite(old) else 1.0, 0.05, 1.5))
 
         if hasattr(self, 'active_paint_table') and self.active_paint_table:
             table = self.active_paint_table
@@ -26205,7 +26226,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     _s_int = _unison_s_int
                 else:
                     base_freq = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
-                    _master_slot = canonical_master_slot(op_idx, max(2, len(self.instrument_names_48)))
+                    _master_slot = canonical_master_slot(int(op_idx) if np.isfinite(op_idx) else 0, max(2, len(self.instrument_names_48)))
                     base_freq *= MEUM_POWERS_36[_master_slot % 36]
                     # Per-voice evaluated seed (list scripts assign distinct numerics
                     # to each instrument instead of a shared hash/byte token).
@@ -26224,7 +26245,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # FULL_UNISON_2026: synthesis-identity terms keyed to the roster
                 # slot collapse to constant 0 under unison; outside the unison
                 # _vo == op_idx exactly (behavior unchanged).
-                _vo = 0 if full_unison else canonical_master_slot(op_idx, max(2, len(self.instrument_names_48)))
+                _vo = 0 if full_unison else canonical_master_slot(int(op_idx) if np.isfinite(op_idx) else 0, max(2, len(self.instrument_names_48)))
                 # Absolute identity anchor survives ensemble resizing.  It is only
                 # established by the resize transaction (or for new identities), so
                 # ordinary synthesis remains compatible with the global base control.
@@ -29545,6 +29566,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             pass
         try:
             master, sr = self._render_mixdown_buffer()
+            master = np.nan_to_num(np.asarray(master, dtype=np.float32), nan=0.0, posinf=1.0, neginf=-1.0)
         except Exception as _rexc:
             print(f"[BakeCompare] render failed: {_rexc}")
             return None, sr
@@ -29709,6 +29731,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.scope_status_label.setText(f"📊 Rendering canonical master mix → {audio_format.upper()}…")
             QApplication.processEvents()
             master, sample_rate = self._render_mixdown_buffer()
+            master = np.nan_to_num(np.asarray(master, dtype=np.float32), nan=0.0, posinf=1.0, neginf=-1.0)
             master = self._bake_dj_write(master, sample_rate)
             # MASTER_HARDCLIP_2026: no normalize/limiter/EQ on the final bus.
             master, _ = self._master_hardclip(master, sample_rate, apply_master_vol=True)
@@ -30170,6 +30193,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         QApplication.processEvents()
 
         master, sr = self._render_mixdown_buffer()
+        master = np.nan_to_num(np.asarray(master, dtype=np.float32), nan=0.0, posinf=1.0, neginf=-1.0)
         master = self._bake_dj_write(master, sr)
         provenance = self._export_provenance_payload()
         fps = 24

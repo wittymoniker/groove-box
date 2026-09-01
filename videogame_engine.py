@@ -3823,8 +3823,15 @@ class Game:
             # auto-advance the player's world position/orbit; that old behavior
             # made sigils feel like spinning cages and violated sandbox play.
             if not self.hotseat["active"]:
+                # PLAYER-MOTION CONTRACT: never synthesize forward/orbit motion.
+                # The previous default advanced ``angle`` every tick, which made
+                # every world feel like a conveyor belt toward its collectibles
+                # (especially sigils).  Position changes now come only from the
+                # player's steer/movement input.
                 move_speed = 0.95 + 0.35 * self.difficulty_mult
-                self.angle = (self.angle + dt * move_speed * (self.steer + 0.35 * self.move["dz"])) % math.tau
+                player_motion = float(self.steer) + 0.35 * float(self.move["dz"])
+                if math.isfinite(player_motion) and abs(player_motion) > 1e-12:
+                    self.angle = (self.angle + dt * move_speed * player_motion) % math.tau
                 # THREE-PATHWAY: procedural-on-demand — rare functions are only
                 # computed/rendered when the perspective arrives (spatial
                 # activation) or via /tp /lore /gen.
