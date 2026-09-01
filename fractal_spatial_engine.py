@@ -22,6 +22,33 @@ def _seed_int(seed: Any) -> int:
         return int.from_bytes(hashlib.sha256(str(seed).encode()).digest()[:8], "big")
 
 
+
+
+# Operator Theory video/game trig via isn · ics · arcisn · arcics.
+# book: isn(θ)=2·sin(θ/2) ⇒ sin(θ)=isn(2θ)/2 ; ics similarly for cos.
+# Always runs through the isn/ics family (numeric-identical to math.sin/cos).
+def _book_isn(x):
+    return 2.0 * math.sin(0.5 * float(x))
+def _book_ics(x):
+    return 2.0 * math.cos(0.5 * float(x))
+def _book_isn_inv(y):
+    a = max(-1.0, min(1.0, 0.5 * float(y)))
+    return 2.0 * math.asin(a)
+def _book_ics_inv(y):
+    a = max(-1.0, min(1.0, 0.5 * float(y)))
+    return 2.0 * math.acos(a)
+def vg_sin(x):
+    return 0.5 * _book_isn(2.0 * float(x))
+def vg_cos(x):
+    return 0.5 * _book_ics(2.0 * float(x))
+def vg_asin(x):
+    x = max(-1.0, min(1.0, float(x)))
+    return 0.5 * _book_isn_inv(2.0 * x)
+def vg_acos(x):
+    x = max(-1.0, min(1.0, float(x)))
+    return 0.5 * _book_ics_inv(2.0 * x)
+
+
 def residue(seed: Any, label: str) -> float:
     d = hashlib.sha256(f"{_seed_int(seed)}|{label}".encode()).digest()
     return int.from_bytes(d[:8], "big") / float(1 << 64)
@@ -93,7 +120,7 @@ class FractalSpatialEngine:
         }[channel]
         x = sum(v*w for v,w in zip(vals, weights))
         # Nonlinear folding keeps the field bounded while preserving seed identity.
-        return (math.sin(math.tau * (x + MEUM * self.seed * 1e-9)) + 1.0) * 0.5
+        return (vg_sin(math.tau * (x + MEUM * self.seed * 1e-9)) + 1.0) * 0.5
 
     def phase_lock(self, parent_phase: float, depth: int, index: int) -> float:
         r = self.channel(depth, index, "phase")
@@ -133,9 +160,9 @@ class FractalSpatialEngine:
             bx, by, bz = 0.0, 0.0, 0.0
         else:
             bx, by, bz = p.x, p.y, p.z
-        dx = radius * math.cos(a) * math.cos(elev)
-        dy = radius * math.sin(elev)
-        dz = radius * math.sin(a) * math.cos(elev)
+        dx = radius * vg_cos(a) * vg_cos(elev)
+        dy = radius * vg_sin(elev)
+        dz = radius * vg_sin(a) * vg_cos(elev)
         if topo & 1:
             dx, dz = dz, -dx
         sid = _hash_id({"s": self.seed, "fp": self.composition_fingerprint,

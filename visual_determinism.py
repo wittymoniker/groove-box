@@ -12,6 +12,32 @@ from typing import Iterable, Mapping, Sequence
 PHI = (1.0 + math.sqrt(5.0)) / 2.0
 GOLDEN_ANGLE = 2.0 * math.pi * (1.0 - 1.0 / PHI)
 
+
+# Operator Theory video/game trig via isn · ics · arcisn · arcics.
+# book: isn(θ)=2·sin(θ/2) ⇒ sin(θ)=isn(2θ)/2 ; ics similarly for cos.
+# Always runs through the isn/ics family (numeric-identical to math.sin/cos).
+def _book_isn(x):
+    return 2.0 * math.sin(0.5 * float(x))
+def _book_ics(x):
+    return 2.0 * math.cos(0.5 * float(x))
+def _book_isn_inv(y):
+    a = max(-1.0, min(1.0, 0.5 * float(y)))
+    return 2.0 * math.asin(a)
+def _book_ics_inv(y):
+    a = max(-1.0, min(1.0, 0.5 * float(y)))
+    return 2.0 * math.acos(a)
+def vg_sin(x):
+    return 0.5 * _book_isn(2.0 * float(x))
+def vg_cos(x):
+    return 0.5 * _book_ics(2.0 * float(x))
+def vg_asin(x):
+    x = max(-1.0, min(1.0, float(x)))
+    return 0.5 * _book_isn_inv(2.0 * x)
+def vg_acos(x):
+    x = max(-1.0, min(1.0, float(x)))
+    return 0.5 * _book_ics_inv(2.0 * x)
+
+
 def _seed_int(seed):
     try: return int(float(seed))
     except Exception: return int.from_bytes(hashlib.sha256(str(seed).encode()).digest()[:8], 'big')
@@ -27,9 +53,9 @@ def fibonacci_view(index: int, count: int, seed=0):
     r = math.sqrt(max(0.0, 1.0 - z*z))
     phase = 2.0 * math.pi * _u(seed, "view_phase")
     theta = i * GOLDEN_ANGLE + phase
-    x, y = r * math.cos(theta), r * math.sin(theta)
+    x, y = r * vg_cos(theta), r * vg_sin(theta)
     yaw = math.atan2(x, z)
-    pitch = math.asin(max(-1.0, min(1.0, y)))
+    pitch = vg_asin(max(-1.0, min(1.0, y)))
     return {
         "index": i, "count": n,
         "x": x, "y": y, "z": z,
@@ -46,7 +72,7 @@ def _ang(a,b):
     ax,ay,az=_vec(a); bx,by,bz=_vec(b)
     na=math.sqrt(ax*ax+ay*ay+az*az) or 1; nb=math.sqrt(bx*bx+by*by+bz*bz) or 1
     c=max(-1,min(1,(ax*bx+ay*by+az*bz)/(na*nb)))
-    return math.acos(c)
+    return vg_acos(c)
 
 def select_views(count=32, seed=0, existing=()):
     n=max(1,int(count)); pool=[fibonacci_view(i,max(n*2,32),seed) for i in range(max(n*2,32))]

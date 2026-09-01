@@ -276,6 +276,58 @@ def operator_theory_enabled():
     return OP_THEORY_ENABLED
 
 
+# isn / ics / arcisn / arcics — book forms; OT video/game trig routes through these.
+def book_isn(x):
+    return 2.0 * math.sin(0.5 * float(x))
+
+def book_ics(x):
+    return 2.0 * math.cos(0.5 * float(x))
+
+def book_isn_inv(y):
+    a = max(-1.0, min(1.0, 0.5 * float(y)))
+    return 2.0 * math.asin(a)
+
+def book_ics_inv(y):
+    a = max(-1.0, min(1.0, 0.5 * float(y)))
+    return 2.0 * math.acos(a)
+
+def ot_sin_via_isn(x):
+    return 0.5 * book_isn(2.0 * float(x))
+
+def ot_cos_via_ics(x):
+    return 0.5 * book_ics(2.0 * float(x))
+
+def ot_asin_via_arcisn(y):
+    y = max(-1.0, min(1.0, float(y)))
+    return 0.5 * book_isn_inv(2.0 * y)
+
+def ot_acos_via_arcics(y):
+    y = max(-1.0, min(1.0, float(y)))
+    return 0.5 * book_ics_inv(2.0 * y)
+
+def vg_sin(x):
+    """Game/video sine: isn-route when Operator Theory is ON."""
+    if OP_THEORY_ENABLED:
+        return ot_sin_via_isn(x)
+    return math.sin(float(x))
+
+def vg_cos(x):
+    if OP_THEORY_ENABLED:
+        return ot_cos_via_ics(x)
+    return math.cos(float(x))
+
+def vg_asin(x):
+    if OP_THEORY_ENABLED:
+        return ot_asin_via_arcisn(x)
+    return math.asin(max(-1.0, min(1.0, float(x))))
+
+def vg_acos(x):
+    if OP_THEORY_ENABLED:
+        return ot_acos_via_arcics(x)
+    return math.acos(max(-1.0, min(1.0, float(x))))
+
+
+
 def ot_band(x):
     ax = abs(float(x))
     if ax <= 1.0:
@@ -719,6 +771,62 @@ PHI_INV = PHI - 1.0
 MEUM_INV = 1.0 / MEUM
 MEUM_NORM = (MEUM - 1.0) / MEUM
 OP_THEORY_ENABLED = False
+
+def set_operator_theory(enabled):
+    global OP_THEORY_ENABLED
+    OP_THEORY_ENABLED = bool(enabled)
+
+def operator_theory_enabled():
+    return OP_THEORY_ENABLED
+
+def book_isn(x):
+    return 2.0 * math.sin(0.5 * float(x))
+
+def book_ics(x):
+    return 2.0 * math.cos(0.5 * float(x))
+
+def book_isn_inv(y):
+    a = max(-1.0, min(1.0, 0.5 * float(y)))
+    return 2.0 * math.asin(a)
+
+def book_ics_inv(y):
+    a = max(-1.0, min(1.0, 0.5 * float(y)))
+    return 2.0 * math.acos(a)
+
+def ot_sin_via_isn(x):
+    return 0.5 * book_isn(2.0 * float(x))
+
+def ot_cos_via_ics(x):
+    return 0.5 * book_ics(2.0 * float(x))
+
+def ot_asin_via_arcisn(y):
+    y = max(-1.0, min(1.0, float(y)))
+    return 0.5 * book_isn_inv(2.0 * y)
+
+def ot_acos_via_arcics(y):
+    y = max(-1.0, min(1.0, float(y)))
+    return 0.5 * book_ics_inv(2.0 * y)
+
+def vg_sin(x):
+    if OP_THEORY_ENABLED:
+        return ot_sin_via_isn(x)
+    return math.sin(float(x))
+
+def vg_cos(x):
+    if OP_THEORY_ENABLED:
+        return ot_cos_via_ics(x)
+    return math.cos(float(x))
+
+def vg_asin(x):
+    if OP_THEORY_ENABLED:
+        return ot_asin_via_arcisn(x)
+    return math.asin(max(-1.0, min(1.0, float(x))))
+
+def vg_acos(x):
+    if OP_THEORY_ENABLED:
+        return ot_acos_via_arcics(x)
+    return math.acos(max(-1.0, min(1.0, float(x))))
+
 BPM = __BPM__
 SEQ = __SEQ__
 IDENTITY = json.loads(__IDENTITY_JSON__)
@@ -988,7 +1096,7 @@ class TriggerSculptor:
         self.phase = [_residue(self.seed, f"trig_phase:{i}") for i in range(self.n)]
     def active(self, i, t):
         t = int(t) % self.steps
-        prob = self.density[i] + 0.2 * math.sin(math.tau * (t / self.steps + self.phase[i]))
+        prob = self.density[i] + 0.2 * vg_sin(math.tau * (t / self.steps + self.phase[i]))
         return _residue(self.seed, f"trig:{i}:{t}") < prob
 
 
@@ -1021,11 +1129,11 @@ class ScenographLite:
             ax = (phase0 * MEUM_NORM + i * MEUM_INV) % 1.0
             ent = (_residue(self.seed, "identity_entropy")
                    if self.goava else _residue(self.seed, f"entropy:{i}"))
-            conson = 1.0 if self.goava else 0.35 + 0.65 * abs(math.cos(ax * math.tau + i * PHI))
+            conson = 1.0 if self.goava else 0.35 + 0.65 * abs(vg_cos(ax * math.tau + i * PHI))
             pow_ = 1.5 + 10.0 * _residue(self.seed, f"pow:{i}")
             depth = 0.55 + 1.15 * (1.0 - conson) + 0.25 * pow_ * _residue(self.seed, f"dscale:{i}")
             # Higher shade/life floors → less wash-out, more seed divergence
-            shade = 0.55 + 0.45 * (0.5 + 0.5 * math.sin(ax * math.tau * PHI + i))
+            shade = 0.55 + 0.45 * (0.5 + 0.5 * vg_sin(ax * math.tau * PHI + i))
             life = 0.55 + 0.45 * conson * (0.30 + 0.70 * ent)
             pack = _residue(self.seed, f"pack:{i}")
             ratio = residue_to_bipolar(_residue(self.seed, f"ratio:{i}"))
@@ -1073,9 +1181,9 @@ class ScenographLite:
                 on_count += 1
                 spin = 0.25 + 0.65 * MEUM * (i + 1) / max(1, self.n)
                 L["yaw"] = (L["yaw"] + dt * spin * (0.6 + 0.9 * audio_rms)) % math.tau
-            L["pitch"] = 0.55 * math.sin(self.beat * MEUM + i * PHI)
+            L["pitch"] = 0.55 * vg_sin(self.beat * MEUM + i * PHI)
             # Subtle life pulse so open-world layers feel alive
-            L["life"] = max(0.45, min(1.0, L.get("life", 0.7) + 0.04 * math.sin(self.beat * PHI + i)))
+            L["life"] = max(0.45, min(1.0, L.get("life", 0.7) + 0.04 * vg_sin(self.beat * PHI + i)))
         self._on_count = on_count
         return self.layers
 
@@ -1115,17 +1223,17 @@ class MusicBed:
     def step(self, dt):
         beat = self.bpm / 60.0
         self.phase = (self.phase + dt * beat * math.tau) % math.tau
-        self.dj = 0.5 + 0.5 * math.sin(self.phase * MEUM + self._dj_residue * 0.01)
+        self.dj = 0.5 + 0.5 * vg_sin(self.phase * MEUM + self._dj_residue * 0.01)
         if self.dj_goava:
-            self.dj = 0.5 * self.dj + 0.5 * (0.5 + 0.5 * math.sin(self.phase * MEUM_INV))
+            self.dj = 0.5 * self.dj + 0.5 * (0.5 + 0.5 * vg_sin(self.phase * MEUM_INV))
         if self.dj_random:
-            self.dj = (self.dj + 0.15 * math.sin(self.phase * PHI + self._algo_spin)) % 1.0
-        g = self.mix * math.sin(self.phase * (1.0 + self._algo_spin) * MEUM)
+            self.dj = (self.dj + 0.15 * vg_sin(self.phase * PHI + self._algo_spin)) % 1.0
+        g = self.mix * vg_sin(self.phase * (1.0 + self._algo_spin) * MEUM)
         # Harmonic lattice: phase0-offset fundamental + entropy-scaled partials
         ph = self.phase + self._phase0
         sample = 0.0
         for k in range(self._n_partials):
-            sample += self._amps[k] * math.sin(ph * self._ratios[k])
+            sample += self._amps[k] * vg_sin(ph * self._ratios[k])
         sample *= (0.65 + 0.55 * self.dj)
         sample += 0.22 * g
         # Soft fold for mild chaos when entropy is high
@@ -1173,7 +1281,7 @@ class LiveSFX:
             for i in range(n_samples):
                 if left <= 0:
                     break
-                out[i] += amp * math.sin(phase)
+                out[i] += amp * vg_sin(phase)
                 phase += math.tau * freq / max(1, sample_rate)
                 if phase > math.tau:
                     phase -= math.tau
@@ -1270,7 +1378,7 @@ class FunctionShell:
         elif self.kind == "instrument_lab":
             self.status = "instrument_lab  Meum asset inspector"
         elif self.kind == "simulator":
-            self.status = f"simulator  phase={math.sin(t * MEUM):.4f}"
+            self.status = f"simulator  phase={vg_sin(t * MEUM):.4f}"
         else:
             self.status = f"videogame world  t={t:.1f}s"
 
@@ -2192,34 +2300,216 @@ class Game:
         d = abs((base_a - angle + math.pi) % math.tau - math.pi)
         return d <= 0.31 * max(0.25, radius)
 
-    def macro(self, idx):
-        """Organized key macros (1-8) — deterministic function per slot."""
-        i = int(idx)
-        name, desc = "", ""
-        for _k, _d in CONTROLS.get("macros", []):
-            if str(_k) == str(i):
-                name, desc = str(_k), str(_d)
-        if i == 1:
-            out = f"MACRO 1 {desc}: steer bias -> {self.steer:.2f}"
-        elif i == 2:
-            out = "MACRO 2 " + desc + " — " + f"coins {self.purse.coins} inv {len(self.items.inventory)} hp {self.hp:.0f}"
-        elif i == 3:
-            q = self.quests.active()
-            out = "MACRO 3 " + desc + " — " + (f"{q['title']} {q['progress']}/{q['target']}" if q else "none")
-        elif i == 4:
-            out = "MACRO 4 " + desc + " — " + json.dumps({p: {k2: round(float(v2), 3) for k2, v2 in self.triad.get(p, {}).items() if isinstance(v2, (int, float))} for p in ("audio", "visual", "game")})
-        elif i == 5:
-            out = "MACRO 5 " + desc + " — " + ", ".join(f"{r['name']}@{r['angle']:.2f}" for r in self.loom.metadata()[:5])
-        elif i == 6:
+    def resolve_key(self, qt_key, modifiers=0):
+        """Map a Qt key code to a control action name using the auto scheme."""
+        try:
+            from PyQt6.QtCore import Qt as _Qt
+        except Exception:
+            _Qt = None
+        binds = CONTROLS.get("binds") or {}
+        # Build reverse index qt_name -> action once
+        if not hasattr(self, "_key_action_index"):
+            idx = {}
+            for _name, spec in binds.items():
+                if not isinstance(spec, dict):
+                    continue
+                qt = str(spec.get("qt") or "")
+                act = str(spec.get("action") or "")
+                if qt and act:
+                    idx[qt] = act
+            # also legacy number macros
+            for m in CONTROLS.get("macro_binds") or []:
+                if isinstance(m, dict) and m.get("qt") and m.get("action"):
+                    idx[str(m["qt"])] = str(m["action"])
+            self._key_action_index = idx
+        # Resolve qt key enum name
+        key_name = None
+        if _Qt is not None:
+            try:
+                key_name = _Qt.Key(qt_key).name  # e.g. 'Key_W'
+            except Exception:
+                key_name = None
+        if key_name is None:
+            key_name = f"Key_{qt_key}"
+        return self._key_action_index.get(key_name)
+
+    def dispatch_control(self, action, panel=None):
+        """Execute a named control action — best-fit mapping onto live systems."""
+        a = str(action or "")
+        out = None
+        if a == "move_forward":
+            self.perspective_move(dz=0.6)
+        elif a == "move_back":
+            self.perspective_move(dz=-0.6)
+        elif a == "move_left":
+            self.perspective_move(dx=-0.6)
+        elif a == "move_right":
+            self.perspective_move(dx=0.6)
+        elif a == "aim_left":
+            self.aim_at(dyaw=-0.4)
+        elif a == "aim_right":
+            self.aim_at(dyaw=0.4)
+        elif a == "aim_up":
+            self.aim_at(dpitch=0.35)
+        elif a == "aim_down":
+            self.aim_at(dpitch=-0.35)
+        elif a == "activate":
+            out = self.activate()
+        elif a == "pause_toggle":
+            if self.hotseat.get("active"):
+                out = self.toggle_chess()
+            else:
+                self.running = not getattr(self, "running", True)
+                out = "paused" if not self.running else "running"
+        elif a == "help":
+            out = "F1 help — see HOW_TO_PLAY / /help"
+            if panel is not None and hasattr(panel, "_how"):
+                panel._how()
+        elif a == "mute":
+            self.sfx.trigger("click", 0.4)
+            out = "mute/sfx tick"
+        elif a == "sprint":
+            self.perspective_move(dz=1.0)
+            out = "sprint"
+        elif a == "inventory":
+            out = f"inv {len(self.items.inventory)} coins {self.purse.coins}"
+        elif a == "store":
             d = self.items.defs[0] if self.items.defs else {}
-            out = "MACRO 6 " + desc + f" — slot0 {d.get('name', '?')} price {self.store.slots[0]['price'] if self.store.slots else 0}"
-        elif i == 7:
-            self.sfx.trigger("chime", 1.0)
-            out = "MACRO 7 " + desc + " — sfx burst"
-        elif i == 8:
-            out = "MACRO 8 " + desc + " — " + self.selfgen.final_note()
+            out = f"store — {d.get('name', '?')} @ {self.store.slots[0]['price'] if self.store.slots else 0}"
+        elif a == "quests":
+            q = self.quests.active()
+            out = (f"quest {q['title']} {q['progress']}/{q['target']}" if q else "no active quest")
+        elif a == "loom_scan":
+            out = "loom: " + ", ".join(f"{r['name']}@{r['angle']:.2f}" for r in self.loom.metadata()[:6])
+        elif a == "teleport_hint":
+            out = "teleport — move into a portal or /tp <name|#>"
+        elif a == "report":
+            try:
+                out = self.report() if hasattr(self, "report") else "/report"
+            except Exception as e:
+                out = f"report: {e}"
+        elif a == "engage":
+            out = self.macro(9) if False else "engage — close range PvE / hazards"
+            try:
+                n = 0
+                for mob in getattr(self.pve, "mobs", []) or []:
+                    n += 1
+                out = f"engage field — {n} contacts (use activate near targets)"
+            except Exception:
+                pass
+        elif a == "dodge":
+            self.perspective_move(dx=0.9 if (int(self.t * 10) % 2 == 0) else -0.9)
+            out = "dodge"
+        elif a == "chess_toggle":
+            out = self.toggle_chess()
+        elif a == "invite":
+            out = self.offer_chess()
+        elif a == "selfgen":
+            try:
+                out = self.selfgen.final_note()
+            except Exception:
+                out = "/gen <seed>"
+        elif a == "triad":
+            out = json.dumps({p: {k2: round(float(v2), 3) for k2, v2 in self.triad.get(p, {}).items() if isinstance(v2, (int, float))} for p in ("audio", "visual", "game")})
+        elif a == "cam_reset":
+            try:
+                if hasattr(self, "set_deterministic_view"):
+                    self.set_deterministic_view(0, getattr(self, "visual_view_count", 64))
+                out = "camera view 0"
+            except Exception:
+                out = "cam reset"
+        elif a == "cam_next_view":
+            try:
+                n = int(getattr(self, "visual_view_count", 64) or 64)
+                i = (int(getattr(self, "visual_view_index", 0)) + 1) % n
+                if hasattr(self, "set_deterministic_view"):
+                    self.set_deterministic_view(i, n)
+                out = f"camera view {i}/{n}"
+            except Exception:
+                out = "cam next"
+        elif a == "cam_prev_view":
+            try:
+                n = int(getattr(self, "visual_view_count", 64) or 64)
+                i = (int(getattr(self, "visual_view_index", 0)) - 1) % n
+                if hasattr(self, "set_deterministic_view"):
+                    self.set_deterministic_view(i, n)
+                out = f"camera view {i}/{n}"
+            except Exception:
+                out = "cam prev"
+        elif a == "arcade_menu":
+            out = "arcade: /snake /mario /race /slots /poker"
+        elif a == "network_status":
+            online = bool(self.id.get("online"))
+            out = f"network online={online} host={getattr(self,'authoritative',False)}"
+        elif a == "radio_panel":
+            out = "radio toolkit — waterfall/Morse study (no TX)"
+        elif a.startswith("macro_") or a in (
+            "macro_orbit", "macro_vitals", "macro_quests", "macro_triad",
+            "macro_loom", "macro_store", "macro_sfx", "macro_selfgen",
+            "macro_engage", "macro_social", "macro_dump", "macro_cam_next",
+        ):
+            out = self._run_named_macro(a)
         else:
-            out = f"MACRO {i}: no binding"
+            out = f"unbound action: {a}"
+        if out:
+            self.push_status(str(out)[:500])
+        return out
+
+    def _run_named_macro(self, action):
+        a = str(action)
+        if a in ("macro_orbit", "macro_1") or a.endswith("_orbit"):
+            return f"MACRO orbit: steer bias -> {self.steer:.2f}"
+        if a in ("macro_vitals", "macro_2"):
+            return f"MACRO vitals — coins {self.purse.coins} inv {len(self.items.inventory)} hp {self.hp:.0f}"
+        if a in ("macro_quests", "macro_3"):
+            q = self.quests.active()
+            return "MACRO quest — " + (f"{q['title']} {q['progress']}/{q['target']}" if q else "none")
+        if a in ("macro_triad", "macro_4"):
+            return "MACRO triad — " + json.dumps({p: {k2: round(float(v2), 3) for k2, v2 in self.triad.get(p, {}).items() if isinstance(v2, (int, float))} for p in ("audio", "visual", "game")})
+        if a in ("macro_loom", "macro_5"):
+            return "MACRO loom — " + ", ".join(f"{r['name']}@{r['angle']:.2f}" for r in self.loom.metadata()[:5])
+        if a in ("macro_store", "macro_6"):
+            d = self.items.defs[0] if self.items.defs else {}
+            return f"MACRO store — {d.get('name', '?')} price {self.store.slots[0]['price'] if self.store.slots else 0}"
+        if a in ("macro_sfx", "macro_7"):
+            self.sfx.trigger("chime", 1.0)
+            return "MACRO sfx burst"
+        if a in ("macro_selfgen", "macro_8"):
+            return "MACRO self-gen — " + self.selfgen.final_note()
+        if a in ("macro_engage", "macro_9"):
+            return "MACRO engage — close with hazards/PvE (activate near target)"
+        if a in ("macro_social", "macro_0"):
+            return self.offer_chess()
+        if a == "macro_dump":
+            layers = (CONTROLS.get("analysis") or {}).get("layers") or {}
+            return "MACRO dump — layers " + ",".join(k for k, v in layers.items() if v)
+        if a == "macro_cam_next":
+            return self.dispatch_control("cam_next_view")
+        return f"MACRO {a}"
+
+    def macro(self, idx):
+        """Organized key macros — routes through named macro table when present."""
+        i = str(idx)
+        # Prefer scheme-defined macro action
+        for m in CONTROLS.get("macro_binds") or []:
+            if str(m.get("slot") or m.get("key")) == i:
+                return self._run_named_macro(str(m.get("action") or f"macro_{i}"))
+        # Fallback numeric 1..8
+        try:
+            n = int(idx)
+        except Exception:
+            n = -1
+        mapping = {
+            1: "macro_orbit", 2: "macro_vitals", 3: "macro_quests", 4: "macro_triad",
+            5: "macro_loom", 6: "macro_store", 7: "macro_sfx", 8: "macro_selfgen",
+            9: "macro_engage", 0: "macro_social",
+        }
+        act = mapping.get(n)
+        if act:
+            out = self._run_named_macro(act)
+            self.push_status(out)
+            return out
+        out = f"MACRO {idx}: no binding"
         self.push_status(out)
         return out
 
@@ -2404,8 +2694,65 @@ class Game:
         return False
 
     # --- core loop ----------------------------------------------------------
+    def _update_cinematic_camera(self, dt, audio_rms=0.0):
+        """IDEAL_CAMERA_2026 for games — deterministic multi-band orbit.
+
+        Same philosophy as Groovebox VideoSynthEngine: yaw/pitch/roll/fov/distance
+        are closed-form f(t, seed, audio). Manual aim overlays on top. Object
+        count never enters the camera law.
+        """
+        try:
+            seed = float(self.id.get("seed", 0) or 0)
+        except Exception:
+            seed = 0.0
+        t = float(getattr(self, "t", 0.0))
+        e = float(max(0.0, min(1.5, audio_rms)))
+        bpm = float(BPM) if BPM else 120.0
+        beat = t * (bpm / 60.0)
+        bar8 = beat / 32.0
+        s1 = (seed * MEUM_NORM + MEUM) % math.tau
+        s2 = (seed * MEUM_INV + PHI) % math.tau
+        base = dict(self.visual_view or {})
+        # Auto orbit (additive to stored base angles from fibonacci view)
+        yaw0 = float(base.get("yaw_deg", 0.0))
+        pit0 = float(base.get("pitch_deg", 0.0))
+        yaw = yaw0 + math.degrees(
+            0.35 * bar8 * math.tau * (0.10 + 0.04 * e)
+            + 0.08 * vg_sin(t * 0.13 * MEUM + s1)
+            + 0.04 * vg_sin(t * 0.041 * MEUM_INV + s2)
+            + 0.06 * e * vg_sin(t * 0.09 + s1)
+        )
+        pitch = pit0 + math.degrees(
+            0.05 * vg_sin(t * 0.09 * MEUM + s2)
+            + 0.03 * e * vg_sin(beat * 0.5 + s1)
+        )
+        roll = math.degrees(
+            0.015 * vg_sin(t * 0.055 * MEUM_INV + s1)
+            + 0.008 * vg_sin(t * 0.019 + s2)
+        )
+        dist = float(base.get("distance", 1.0) or 1.0)
+        dist = dist * (1.0 - 0.12 * e + 0.06 * vg_sin(t * 0.07 * MEUM + s1))
+        dist = max(0.55, min(1.45, dist))
+        fov = float(base.get("fov_deg", 48.0) or 48.0)
+        fov = fov + 4.0 * e * vg_sin(t * 0.11 + s2)
+        fov = max(36.0, min(62.0, fov))
+        self.visual_view = {
+            **base,
+            "yaw_deg": float(yaw),
+            "pitch_deg": float(pitch),
+            "roll_deg": float(roll),
+            "distance": float(dist),
+            "fov_deg": float(fov),
+        }
+        # Zoom couples with dolly so W/S still feels intentional
+        try:
+            self.zoom = max(0.35, min(2.5, float(getattr(self, "zoom", 1.0)) * (0.98 + 0.02 * dist)))
+        except Exception:
+            pass
+
     def tick(self, dt=1/30):
         sample = self.music.step(dt)
+
         layers = self.scene.tick(dt, audio_rms=abs(sample))
         try:
             self.fn.tick(self.t, audio_rms=abs(sample))
@@ -2413,6 +2760,7 @@ class Game:
             pass
         self._drain_net()
         self._consume_inputs(dt)
+        self._update_cinematic_camera(dt, abs(sample))
         self._fire_invites()
         self._tick_arcade(dt)
         if self.authoritative:
@@ -2957,7 +3305,20 @@ class Game:
         elif line in ("/triad",):
             print(json.dumps(self.triad, indent=2, sort_keys=True))
         elif line in ("/controls", "/scheme"):
-            print(json.dumps(self.controls, indent=2, sort_keys=True))
+            scheme = self.controls if isinstance(self.controls, dict) else CONTROLS
+            analysis = scheme.get("analysis") or {}
+            print(f"controls {scheme.get('version')}  complexity={scheme.get('complexity_label')} ({scheme.get('complexity')})")
+            print("layers:", ", ".join(scheme.get("layers_active") or []))
+            print("binds:")
+            for name, spec in sorted((scheme.get("binds") or {}).items()):
+                if isinstance(spec, dict):
+                    print(f"  {spec.get('key','?'):>8}  ->  {spec.get('action', name)}  [{spec.get('layer','')}]")
+            print("macros:")
+            for m in scheme.get("macro_binds") or scheme.get("macros") or []:
+                if isinstance(m, dict):
+                    print(f"  {m.get('key')}: {m.get('label')}")
+                elif isinstance(m, (list, tuple)) and len(m) >= 2:
+                    print(f"  {m[0]}: {m[1]}")
         elif line in ("/chess",):
             print(self.toggle_chess())
         elif line in ("/invite", "/friend"):
@@ -3926,17 +4287,17 @@ if HAS_UI:
                 # Canonical 3D camera projection. Object count never enters the
                 # camera transform; only the canonical view state does.
                 scale = 1.0 / max(0.35, 0.55 + 0.45 * depth)
-                ox = dist * math.cos(yaw) * scale
+                ox = dist * vg_cos(yaw) * scale
                 oy = pitch * scale
-                oz = dist * math.sin(yaw) * scale + 1.0
+                oz = dist * vg_sin(yaw) * scale + 1.0
                 cyaw = math.radians(float(g.visual_view.get("yaw_deg",0.0))) + float(g.aim_in.get("yaw",0.0))
                 cpit = math.radians(float(g.visual_view.get("pitch_deg",0.0))) + float(g.aim_in.get("pitch",0.0))
                 croll = math.radians(float(g.visual_view.get("roll_deg",0.0)))
-                c, ss = math.cos(cyaw), math.sin(cyaw)
+                c, ss = vg_cos(cyaw), vg_sin(cyaw)
                 x1, z1 = ox*c - oz*ss, ox*ss + oz*c
-                c, ss = math.cos(cpit), math.sin(cpit)
+                c, ss = vg_cos(cpit), vg_sin(cpit)
                 y1, z2 = oy*c - z1*ss, oy*ss + z1*c
-                c, ss = math.cos(croll), math.sin(croll)
+                c, ss = vg_cos(croll), vg_sin(croll)
                 x2, y2 = x1*c - y1*ss, x1*ss + y1*c
                 f = math.tan(math.radians(float(g.visual_view.get("fov_deg",48.0))) * 0.5)
                 inv = 1.0 / max(0.12, z2)
@@ -3987,8 +4348,8 @@ if HAS_UI:
                     pts = []
                     for k in range(5):
                         a = L.get("yaw", 0) + k * math.tau / 5
-                        px = x + sz * 0.7 * math.cos(a)
-                        py = y + sz * 0.7 * math.sin(a)
+                        px = x + sz * 0.7 * vg_cos(a)
+                        py = y + sz * 0.7 * vg_sin(a)
                         pts.append(QPointF(px, py))
                     if pts:
                         p.drawPolygon(*pts) if False else p.drawConvexPolygon(pts)
@@ -4007,8 +4368,8 @@ if HAS_UI:
 
             # Hazards (danger glows)
             for a, r, _d in getattr(g, "hazards", HazardRing(0)).pos:
-                x = cx + math.cos(a) * r * R
-                y = cy + math.sin(a) * r * R
+                x = cx + vg_cos(a) * r * R
+                y = cy + vg_sin(a) * r * R
                 col = QColor(dg)
                 col.setAlpha(160)
                 p.setPen(QPen(col, 1))
@@ -4023,8 +4384,8 @@ if HAS_UI:
                 col.setAlpha(220)
                 p.setPen(QPen(col, 1))
                 p.setBrush(col)
-                x = cx + math.cos(a) * r * R
-                y = cy + math.sin(a) * r * R
+                x = cx + vg_cos(a) * r * R
+                y = cy + vg_sin(a) * r * R
                 p.drawRect(int(x - 4), int(y - 4), 8, 8)
 
             # Portals
@@ -4033,14 +4394,14 @@ if HAS_UI:
                 col.setAlpha(200)
                 p.setPen(QPen(col, 2))
                 p.setBrush(Qt.BrushStyle.NoBrush)
-                x = cx + math.cos(a_in) * r * R
-                y = cy + math.sin(a_in) * r * R
+                x = cx + vg_cos(a_in) * r * R
+                y = cy + vg_sin(a_in) * r * R
                 p.drawEllipse(QPointF(x, y), 9, 9)
                 # faint exit marker
                 col.setAlpha(90)
                 p.setPen(QPen(col, 1))
-                x2 = cx + math.cos(a_out) * r * R
-                y2 = cy + math.sin(a_out) * r * R
+                x2 = cx + vg_cos(a_out) * r * R
+                y2 = cy + vg_sin(a_out) * r * R
                 p.drawEllipse(QPointF(x2, y2), 5, 5)
 
             # Waypoints (numbered trail)
@@ -4051,8 +4412,8 @@ if HAS_UI:
                 col.setAlpha(230 if k == getattr(g.waypoints, "next_idx", 0) else 140)
                 p.setPen(QPen(col, 2 if k == getattr(g.waypoints, "next_idx", 0) else 1))
                 p.setBrush(col)
-                x = cx + math.cos(a) * r * R
-                y = cy + math.sin(a) * r * R
+                x = cx + vg_cos(a) * r * R
+                y = cy + vg_sin(a) * r * R
                 p.drawEllipse(QPointF(x, y), 6, 6)
                 p.setPen(QPen(QColor(tx), 1))
                 p.drawText(int(x + 6), int(y - 4), str(k + 1))
@@ -4065,8 +4426,8 @@ if HAS_UI:
                 col.setAlpha(240)
                 p.setPen(QPen(col, 1))
                 p.setBrush(col)
-                x = cx + math.cos(a) * r * R
-                y = cy + math.sin(a) * r * R
+                x = cx + vg_cos(a) * r * R
+                y = cy + vg_sin(a) * r * R
                 p.drawEllipse(QPointF(x, y), 4 + int(r * 8), 4 + int(r * 8))
 
             # PvE mobs
@@ -4077,8 +4438,8 @@ if HAS_UI:
                 col.setAlpha(200)
                 p.setPen(QPen(col, 2))
                 p.setBrush(col)
-                x = cx + math.cos(m["angle"]) * m["radius"] * R
-                y = cy + math.sin(m["angle"]) * m["radius"] * R
+                x = cx + vg_cos(m["angle"]) * m["radius"] * R
+                y = cy + vg_sin(m["angle"]) * m["radius"] * R
                 p.drawEllipse(QPointF(x, y), 7, 7)
 
             # NPCs
@@ -4087,15 +4448,15 @@ if HAS_UI:
                 col.setAlpha(220)
                 p.setPen(QPen(col, 2))
                 p.setBrush(col)
-                x = cx + math.cos(n["angle"]) * n["radius"] * R
-                y = cy + math.sin(n["angle"]) * n["radius"] * R
+                x = cx + vg_cos(n["angle"]) * n["radius"] * R
+                y = cy + vg_sin(n["angle"]) * n["radius"] * R
                 p.drawRect(int(x - 5), int(y - 5), 10, 10)
                 p.setPen(QPen(QColor(tx), 1))
                 p.drawText(int(x + 6), int(y - 2), n["name"][:10])
 
             def draw_face(name, angle, color, size):
-                x = cx + math.cos(angle) * R * 0.92
-                y = cy + math.sin(angle) * R * 0.92
+                x = cx + vg_cos(angle) * R * 0.92
+                y = cy + vg_sin(angle) * R * 0.92
                 p.setPen(QPen(color, 2))
                 p.setBrush(QColor(color))
                 p.drawEllipse(QPointF(x, y), size, size)
@@ -4106,8 +4467,8 @@ if HAS_UI:
             for name, rec in sorted((g.remotes or {}).items()):
                 draw_face(name, float(rec.get("angle", 0.0)), QColor(dg), 6)
 
-            _ay = cx + math.cos(g.angle) * R * 0.98
-            _ax = cy + math.sin(g.angle) * R * 0.98
+            _ay = cx + vg_cos(g.angle) * R * 0.98
+            _ax = cy + vg_sin(g.angle) * R * 0.98
             _ac = QColor("#ffcc66")
             _ac.setAlpha(120)
             p.setPen(QPen(_ac, 1))
@@ -4517,31 +4878,25 @@ if HAS_UI:
         def keyPressEvent(self, e):
             g = self.game
             k = e.key()
-            if k == Qt.Key.Key_W:
-                g.perspective_move(dz=0.6)
-            elif k == Qt.Key.Key_S:
-                g.perspective_move(dz=-0.6)
-            elif k == Qt.Key.Key_A:
-                g.perspective_move(dx=-0.6)
-            elif k == Qt.Key.Key_D:
-                g.perspective_move(dx=0.6)
-            elif k == Qt.Key.Key_Left:
-                g.aim_at(dyaw=-0.4)
-            elif k == Qt.Key.Key_Right:
-                g.aim_at(dyaw=0.4)
-            elif k == Qt.Key.Key_Space:
-                if g.hotseat.get("active"):
-                    self.panel._chess()
-                else:
-                    g.running = not g.running
-            elif k == Qt.Key.Key_F1:
-                self.panel._how()
-            elif Qt.Key.Key_1 <= k <= Qt.Key.Key_8:
+            # AUTO_CONTROLS_2026: resolve via the complexity-derived scheme first.
+            try:
+                action = g.resolve_key(k, int(e.modifiers().value) if hasattr(e.modifiers(), "value") else 0)
+            except Exception:
+                action = None
+            if action:
+                try:
+                    g.dispatch_control(action, panel=getattr(self, "panel", None))
+                    return
+                except Exception as err:
+                    print(f"[controls] {action}: {err}")
+            # Legacy numeric macros 0-9 if scheme did not claim them
+            if Qt.Key.Key_0 <= k <= Qt.Key.Key_9:
                 g.macro(int(k) - int(Qt.Key.Key_0))
-            elif k == Qt.Key.Key_M:
-                g.sfx.trigger("click", 0.4)
-            else:
-                super().keyPressEvent(e)
+                return
+            if k == Qt.Key.Key_F1:
+                self.panel._how()
+                return
+            super().keyPressEvent(e)
 
         def closeEvent(self, e):
             self.timer.stop()
@@ -4626,7 +4981,7 @@ def _render_sfx_mono(seed, label, sr=22050):
     out = []
     for i in range(n):
         t = i / float(sr)
-        out.append(math.sin(math.tau * freq * t) * math.exp(-decay * t) * 0.5)
+        out.append(vg_sin(math.tau * freq * t) * math.exp(-decay * t) * 0.5)
     return out
 
 
@@ -4884,16 +5239,181 @@ def build_triad_quantities(seed) -> Dict[str, Any]:
     }
 
 
-def build_control_scheme() -> Dict[str, Any]:
-    """Fixed control contract, identical in every emitted software/game.
+def analyze_software_complexity(identity=None) -> Dict[str, Any]:
+    """Derive which functional layers a creation actually exposes.
 
-    WASD-mouseclick always mean the same thing regardless of genre/kind:
-    perspective movement, aim, and activate.  Macros are organized into a
-    deterministic F-row + number row.
+    Best-fit implications of the whole package: software_kind, objective,
+    social mode, online flag, gameplay hooks, and implied systems (economy,
+    quests, portals, PvE, arcade, radio toolkit, …). Complexity is a count of
+    live layers — higher complexity ⇒ denser automatic keybind surface.
     """
+    idict = {}
+    if identity is None:
+        idict = {}
+    elif isinstance(identity, dict):
+        idict = identity
+    elif hasattr(identity, "to_dict"):
+        try:
+            idict = identity.to_dict()
+        except Exception:
+            idict = {}
+    kind = str(idict.get("software_kind") or "videogame")
+    objective = str(idict.get("objective") or "survey")
+    social = str(idict.get("social") or "solo")
+    online = bool(idict.get("online"))
+    hooks = [str(h) for h in (idict.get("gameplay_hooks") or [])]
+    genre = str(idict.get("genre") or "")
+    topology = str(idict.get("topology") or "")
+    level_type = str(idict.get("level_type") or "")
+    difficulty = str(idict.get("difficulty") or "standard")
+
+    layers = {
+        "core": True,  # always: move, look, activate, pause, help
+        "economy": any(x in hooks for x in ("hook_store", "hook_inventory", "hook_coins"))
+                   or objective in ("harvest", "nexus")
+                   or kind in ("videogame", "simulator"),
+        "quests": any("quest" in h for h in hooks) or objective in ("escort", "pilgrimage", "survey"),
+        "world_travel": any(x in hooks for x in ("hook_portal", "hook_loom", "hook_waypoint"))
+                        or topology in ("open_world", "graph", "maze")
+                        or "portal" in " ".join(hooks),
+        "combat": objective in ("siege",) or any("pve" in h or "hazard" in h or "combat" in h for h in hooks)
+                  or genre in ("action", "shooter", "survival"),
+        "social": online or social not in ("solo", "") or any("chess" in h or "hotseat" in h or "invite" in h for h in hooks),
+        "creative": kind in ("ide_lite", "simulator", "network_tool") or any("gen" in h or "selfgen" in h for h in hooks),
+        "arcade": any("arcade" in h or "mini" in h or "snake" in h or "mario" in h for h in hooks)
+                  or genre in ("arcade", "puzzle"),
+        "radio": kind == "radio_toolkit" or any("radio" in h or "morse" in h or "qso" in h for h in hooks),
+        "network": online or kind == "network_tool",
+        "cinematic": True,  # camera orbit always available on generated packages
+    }
+    # Soft defaults: pure videogames always get economy+quests+world at baseline
+    if kind == "videogame":
+        layers["economy"] = True
+        layers["quests"] = True
+        layers["world_travel"] = True
+        layers["creative"] = True
+        layers["social"] = layers["social"] or True  # hot-seat chess is in the contract
+    score = sum(1 for v in layers.values() if v)
     return {
-        "version": "controls/2026.1",
+        "software_kind": kind,
+        "objective": objective,
+        "social": social,
+        "online": online,
+        "genre": genre,
+        "topology": topology,
+        "difficulty": difficulty,
+        "hooks": hooks,
+        "layers": layers,
+        "complexity": int(score),
+        "complexity_label": (
+            "minimal" if score <= 3 else
+            "standard" if score <= 6 else
+            "rich" if score <= 9 else
+            "maximal"
+        ),
+    }
+
+
+def build_control_scheme(identity=None) -> Dict[str, Any]:
+    """Automatic keybind surface derived from software complexity.
+
+    Core binds are stable (WASD / mouse / click / Space / F1). Additional
+    binds and macros appear only when the corresponding functional layer is
+    live on the creation — best-fit logical implication of the package as a
+    whole. Higher complexity ⇒ denser, still deterministic, control map.
+    """
+    analysis = analyze_software_complexity(identity)
+    layers = analysis["layers"]
+
+    # --- primary continuous controls (always) ---
+    binds = {
+        "move_forward": {"key": "W", "qt": "Key_W", "action": "move_forward", "layer": "core"},
+        "move_back": {"key": "S", "qt": "Key_S", "action": "move_back", "layer": "core"},
+        "move_left": {"key": "A", "qt": "Key_A", "action": "move_left", "layer": "core"},
+        "move_right": {"key": "D", "qt": "Key_D", "action": "move_right", "layer": "core"},
+        "aim_left": {"key": "Left", "qt": "Key_Left", "action": "aim_left", "layer": "core"},
+        "aim_right": {"key": "Right", "qt": "Key_Right", "action": "aim_right", "layer": "core"},
+        "aim_up": {"key": "Up", "qt": "Key_Up", "action": "aim_up", "layer": "core"},
+        "aim_down": {"key": "Down", "qt": "Key_Down", "action": "aim_down", "layer": "core"},
+        "activate": {"key": "Mouse1", "qt": "MouseButton.LeftButton", "action": "activate", "layer": "core"},
+        "pause": {"key": "Space", "qt": "Key_Space", "action": "pause_toggle", "layer": "core"},
+        "help": {"key": "F1", "qt": "Key_F1", "action": "help", "layer": "core"},
+        "mute": {"key": "M", "qt": "Key_M", "action": "mute", "layer": "core"},
+        "sprint": {"key": "Shift", "qt": "Key_Shift", "action": "sprint", "layer": "core"},
+    }
+
+    # --- layer-gated binds ---
+    if layers.get("economy"):
+        binds["inventory"] = {"key": "I", "qt": "Key_I", "action": "inventory", "layer": "economy"}
+        binds["store"] = {"key": "B", "qt": "Key_B", "action": "store", "layer": "economy"}
+    if layers.get("quests"):
+        binds["quests"] = {"key": "J", "qt": "Key_J", "action": "quests", "layer": "quests"}
+    if layers.get("world_travel"):
+        binds["loom"] = {"key": "L", "qt": "Key_L", "action": "loom_scan", "layer": "world_travel"}
+        binds["teleport"] = {"key": "T", "qt": "Key_T", "action": "teleport_hint", "layer": "world_travel"}
+        binds["report"] = {"key": "R", "qt": "Key_R", "action": "report", "layer": "world_travel"}
+    if layers.get("combat"):
+        binds["engage"] = {"key": "F", "qt": "Key_F", "action": "engage", "layer": "combat"}
+        binds["dodge"] = {"key": "Q", "qt": "Key_Q", "action": "dodge", "layer": "combat"}
+    if layers.get("social"):
+        binds["chess"] = {"key": "C", "qt": "Key_C", "action": "chess_toggle", "layer": "social"}
+        binds["invite"] = {"key": "Y", "qt": "Key_Y", "action": "invite", "layer": "social"}
+    if layers.get("creative"):
+        binds["selfgen"] = {"key": "G", "qt": "Key_G", "action": "selfgen", "layer": "creative"}
+        binds["triad"] = {"key": "V", "qt": "Key_V", "action": "triad", "layer": "creative"}
+    if layers.get("cinematic"):
+        binds["cam_reset"] = {"key": "Home", "qt": "Key_Home", "action": "cam_reset", "layer": "cinematic"}
+        binds["cam_next"] = {"key": "PageDown", "qt": "Key_PageDown", "action": "cam_next_view", "layer": "cinematic"}
+        binds["cam_prev"] = {"key": "PageUp", "qt": "Key_PageUp", "action": "cam_prev_view", "layer": "cinematic"}
+    if layers.get("arcade"):
+        binds["arcade"] = {"key": "P", "qt": "Key_P", "action": "arcade_menu", "layer": "arcade"}
+    if layers.get("network"):
+        binds["network"] = {"key": "N", "qt": "Key_N", "action": "network_status", "layer": "network"}
+    if layers.get("radio"):
+        binds["radio"] = {"key": "U", "qt": "Key_U", "action": "radio_panel", "layer": "radio"}
+
+    # --- macros: grow with complexity (1..N) ---
+    macros = [
+        ("1", "orbit / move-bias", "macro_orbit"),
+        ("2", "vitals + inventory", "macro_vitals"),
+        ("3", "quest log", "macro_quests"),
+        ("4", "triad readout", "macro_triad"),
+    ]
+    if layers.get("world_travel"):
+        macros.append(("5", "loom scan", "macro_loom"))
+    if layers.get("economy"):
+        macros.append(("6", "store / shop", "macro_store"))
+    macros.append(("7", "sfx burst", "macro_sfx"))
+    if layers.get("creative"):
+        macros.append(("8", "self-gen probe", "macro_selfgen"))
+    if layers.get("combat"):
+        macros.append(("9", "engage nearest", "macro_engage"))
+    if layers.get("social"):
+        macros.append(("0", "invite / chess", "macro_social"))
+    if analysis["complexity"] >= 9:
+        macros.append(("F2", "full systems dump", "macro_dump"))
+        macros.append(("F3", "next camera view", "macro_cam_next"))
+
+    # number-row qt mapping for macros
+    macro_binds = []
+    for slot, desc, action in macros:
+        if slot.isdigit():
+            qt = f"Key_{slot}" if slot != "0" else "Key_0"
+            key = slot
+        else:
+            qt = f"Key_{slot}"
+            key = slot
+        macro_binds.append({
+            "key": key, "qt": qt, "label": desc, "action": action, "slot": slot,
+        })
+        binds[f"macro_{slot}"] = {
+            "key": key, "qt": qt, "action": action, "layer": "macro", "label": desc,
+        }
+
+    return {
+        "version": "controls/2026.2-auto",
         "perspective": "always",
+        "analysis": analysis,
         "move": {"forward": "Key_W", "back": "Key_S", "left": "Key_A", "right": "Key_D"},
         "look": {"aim": "MouseMove", "pitch": "MouseVertical", "yaw": "MouseHorizontal"},
         "activate": "MouseClick:Primary",
@@ -4901,16 +5421,12 @@ def build_control_scheme() -> Dict[str, Any]:
         "sprint": "Shift",
         "help": "F1",
         "mute": "M",
-        "macros": [
-            ("1", "orbit / move-bias"),
-            ("2", "vitals + inventory"),
-            ("3", "quest log"),
-            ("4", "triad readout (audio/visual/game quantities)"),
-            ("5", "loom scan (procedural regions near your angle)"),
-            ("6", "store / shop"),
-            ("7", "sfx burst"),
-            ("8", "self-gen probe (major seed functions)"),
-        ],
+        "binds": binds,
+        "macros": [(m["key"], m["label"]) for m in macro_binds],
+        "macro_binds": macro_binds,
+        "complexity": analysis["complexity"],
+        "complexity_label": analysis["complexity_label"],
+        "layers_active": [k for k, v in layers.items() if v],
     }
 
 
@@ -4971,9 +5487,20 @@ def build_how_to_play(identity, triad=None, controls=None) -> str:
     installed how_to_play.txt, in-game panel, and the /help command."""
     g = identity if isinstance(identity, dict) else (identity.to_dict() if hasattr(identity, "to_dict") else {})
     triad = triad or {}
-    controls = controls or build_control_scheme()
+    controls = controls or build_control_scheme(identity)
     macro_lines = "\n".join(f"  {k} — {d}" for k, d in controls.get("macros", []))
     mov = controls.get("move", {})
+    layers = ", ".join(controls.get("layers_active") or [])
+    cx = controls.get("complexity", 0)
+    cl = controls.get("complexity_label", "standard")
+    extra = []
+    for name, spec in sorted((controls.get("binds") or {}).items()):
+        if not isinstance(spec, dict):
+            continue
+        if spec.get("layer") in ("core", "macro"):
+            continue
+        extra.append(f"  {spec.get('key', '?'):>8}  ->  {spec.get('action', name)}  [{spec.get('layer')}]")
+    extra_binds = "\n".join(extra) if extra else "  (core only)"
     return f"""HOW TO PLAY — {g.get('title', 'Groovebox Game')} ({g.get('genre', '?')} · {g.get('camera', '?')} · {g.get('topology', '?')})
 =====================================================================
 
@@ -4981,14 +5508,17 @@ THREE PATHWAYS (audio · visual · game) are each present at numeric quantities.
 Every feature is a seeded number, so nothing is ever missing — only louder,
 denser, faster or elsewhere.  Type  /triad  for the numbers.
 
-FIXED CONTROLS (the same in every generated software)
+AUTO CONTROLS (derived from this creation — complexity {cx} / {cl})
 -----------------------------------------------------
+  Active layers        :  {layers}
   Perspective movement :  {mov.get('forward', 'W')} {mov.get('back', 'S')} {mov.get('left', 'A')} {mov.get('right', 'D')}
-  Aim / look           :  mouse move
+  Aim / look           :  mouse move (+ arrow keys)
   Activate             :  left click  (collect, harvest, talk, portal)
   Pause / toggle       :  Space
   Sprint               :  Shift
   Help / how-to-play   :  F1        Mute: M
+  Extra binds (appear only when the layer is live on this package):
+{extra_binds}
   Key macros:
 {macro_lines}
 
@@ -4997,7 +5527,7 @@ CHAT / CONSOLE COMMANDS
   /help  /how            this guide
   /report /world         session report (score, world, quantities)
   /inv  /quests /store  /buy 0..9  /equip
-  /triad /controls       numeric quantities + fixed control contract
+  /triad /controls       numeric quantities + auto control contract
   /chess                 open hot-seat two-player chess (ONE screen)
   /invite                offer the friend prompt now
   /tp <name|#>  /lore   procedural-region teleport + lore (generated on demand)
@@ -5077,7 +5607,7 @@ def generate_game_script(identity: GameIdentity, composition_meta: Optional[Dict
     idict = identity.to_dict()
     id_json = json.dumps(idict)
     triad = triad_of(identity.seed, idict)
-    controls = build_control_scheme()
+    controls = build_control_scheme(identity)
     lexicon = build_micro_lexicon(identity.seed)
     invites = build_hot_seat_invites(identity.seed)
     howto = build_how_to_play(idict, triad, controls)

@@ -10,9 +10,93 @@ Design pillars:
 4. **Unified:** audio, visual, video, and game outputs derive from the same composition fingerprint and phase/harmonic vocabulary.
 5. **Self-describing visuals:** every live instrument owns exactly one visual object whose geometry, motion, color, fade, and harmonic detail are derived from that instrument's live composition record.
 
+## Dependencies (all platforms)
+
+**Python packages (pip)** — required on every OS:
+
+| Package | Purpose |
+|---|---|
+| `PyQt6` | UI |
+| `numpy` | DSP / buffers |
+| `scipy` | WAV I/O helpers, signal utilities |
+| `sounddevice` | Real-time audio I/O |
+| `Pillow` | Frame export (PNG) for video |
+
+**System tools**
+
+| Tool | Purpose |
+|---|---|
+| **Python 3.9+** (3.10–3.12 recommended) | Runtime |
+| **ffmpeg** + **ffprobe** (full build with encoders) | Video/audio export (mp4/webm/avi, mp3/flac/…) |
+| PortAudio / ALSA / CoreAudio (via sounddevice) | Playback |
+
+### One-shot installers (preferred)
+
+```bash
+# Linux — auto-detects Fedora vs Ubuntu/Debian
+./install_deps_linux.sh
+# or force a family:
+./install_deps_linux.sh --fedora
+./install_deps_linux.sh --ubuntu
+
+# macOS (Homebrew + pip)
+./install_deps_macos.sh
+
+# Windows (PowerShell; uses winget when available)
+./install_deps_windows.ps1
+```
+
+These scripts install the pip packages above **and** a usable ffmpeg, then verify imports.
+
+### Manual install
+
+**Ubuntu / Debian**
+```bash
+sudo apt update
+sudo apt install -y python3 python3-pip python3-venv python3-dev build-essential \
+  ffmpeg libasound2-dev portaudio19-dev
+python3 -m pip install --upgrade pip
+python3 -m pip install numpy scipy PyQt6 sounddevice Pillow
+```
+
+**Fedora**
+```bash
+# Full ffmpeg codecs come from RPM Fusion
+sudo dnf install -y \
+  https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm \
+  https://download1.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm
+sudo dnf install -y python3 python3-pip python3-devel gcc gcc-c++ \
+  ffmpeg ffmpeg-libs alsa-lib-devel portaudio-devel
+python3 -m pip install --upgrade pip
+python3 -m pip install numpy scipy PyQt6 sounddevice Pillow
+```
+
+**macOS**
+```bash
+brew install python ffmpeg portaudio
+python3 -m pip install --upgrade pip
+python3 -m pip install numpy scipy PyQt6 sounddevice Pillow
+```
+
+**Windows**
+```powershell
+# Python 3.12 from python.org or:
+winget install Python.Python.3.12
+winget install Gyan.FFmpeg
+python -m pip install --upgrade pip
+python -m pip install numpy scipy PyQt6 sounddevice Pillow
+```
+
+Optional: place static `ffmpeg` / `ffprobe` binaries in `./bin/` next to `groovebox.py` (the app checks there first).
+
+### Verify
+```bash
+python3 -c "import numpy, scipy, PyQt6.QtCore, sounddevice, PIL; print('python deps OK')"
+ffmpeg -hide_banner -version | head -1
+```
+
 ## Run
 ```bash
-pip install PyQt6 numpy sounddevice scipy
 ./launch_desktop.sh
 # or: ./launch_mobile.sh
 # or: python3 groovebox.py
@@ -35,6 +119,82 @@ pip install PyQt6 numpy sounddevice scipy
 4. Use Playlist to arrange operators over time.
 5. Press **Play** or export audio/video.
 6. Optionally use Euclidean/Phase-Lock, Seeded Harmonic Randomizer, Domain Equations, Patch Modular, or GOAVA.
+7. Use **Global Play** to author Script/Domain/Wire algorithms (Randomize is authoring-only; **Apply Algo to Master Mix** broadcasts). See *Global Play Panel* below.
+
+## Global Play Panel — algorithms, params, and launched windows
+
+The **Global Play** group on the main window is the project-level algorithm layer. It does **not** overwrite the seed field or per-instrument seed scripts. Authored algorithm text lives in `global_algo_state` until you **apply** it to the master mix / ensemble.
+
+### Layout (main panel)
+
+| Control | Role |
+|---|---|
+| **🎲 Randomize Global Play Algorithm** | Fills Script, Domain, Wire, and amount params from the Meum/PED vocabulary. **Authoring only** — does **not** apply to the ensemble until you press Apply. |
+| **▶ Apply Algo to Master Mix** | Toggle. When ON, script / domain / wire (as enabled in params) broadcast to the ensemble. When OFF, written music/shapes are left alone. Undoable. |
+| **Script Algo** (multi-line) | Project-level script over `t`, `MEUM`, `PHI`, `seed`, instrument `name` / `i`. Typical form: `def global_script(t, name, i): return …` |
+| **Domain Algo** (single line) | Equation string, e.g. `sin(t * MEUM) + cos(t * PHI)`. Hints update live (sin/cos → phase, log/exp → scale, domain → transmutor). |
+| **Wire Algo** button | Opens the **Global Wire Algo** window — routing matrix from detectors to targets. |
+| **Algo Params** button | Opens the **Global Algo Params** window — extended convolution / enable flags. |
+| **Mix / Script / Domain / Wire amount** sliders | 0–100%. Relative wet amounts for each layer when Apply is on. |
+
+### Launched windows (`Wire Algo` / `Algo Params`, and optional script/domain editors)
+
+Four panel kinds share the same chrome (translucent + math décor). Edits write only into `global_algo_state`:
+
+1. **Global Script Algo** — full multi-line editor for the script body (same language as the seed field: `sin`/`cos`/`isn`/`ics`, `MEUM`, `t`, conditionals, `return`).
+2. **Global Domain Algo** — domain equation editor + hints.
+3. **Global Wire Algo** — list of wires `{source, target, amount}`:
+   - **Detectors (sources):** `phase`, `energy`, `spectrum`, `goava`, `euclidean`, `seed`, `bpm`, `pair`
+   - **Targets:** `master_mix`, `fractallizer`, `eqr`, `pkp`, `ensemble`, `scenograph`, `domain`, `unison`
+4. **Global Algo Params** — structured params, including:
+   - `mix` — overall wet level (default ~0.35)
+   - `enable_script` / `enable_domain` / `enable_wire` — per-layer gates
+   - `script_amount` / `domain_amount` / `wire_amount` — same as the main-panel sliders
+
+Close a panel; state remains. Re-open raises the existing window if still alive.
+
+### Scripting guide (Script Algo)
+
+Same expression environment as seed scripts (Operator Theory routes `sin`/`cos`/… through the equivalence kernel when OT is on):
+
+```text
+# Global script algo
+def global_script(t, name, i):
+    v = isn(t * MEUM) * 0.4 + ics(t * PHI) * 0.3
+    return v * 0.35
+```
+
+Also accepted: bare expressions, `if/elif` shorthands, `return` lines. Arguments:
+
+| Name | Meaning |
+|---|---|
+| `t` | Time (seconds / phase axis used by the renderer) |
+| `name` | Instrument name string when applied per voice |
+| `i` | Instrument index |
+
+**Domain Algo** examples:
+
+```text
+sin(t * MEUM) * 0.35 + cos(t * PHI) * 0.65
+MEUM_NORM * sin(t * 0.5) + (1 - MEUM_NORM) * cos(t * 0.3)
+isn(sin(t * MEUM)) * cos(t * PHI)
+```
+
+### Apply semantics (important)
+
+- **Randomize** = write fields only (`apply_enabled = False`). Music/shapes unchanged.
+- **Apply ON** = push enabled layers to the ensemble (script/domain/wire as gated by params).
+- **Apply OFF** = stop broadcasting; prior user composition remains the carrier where protected.
+- Algorithm state is **userdata** (saved in the project document) and is **undoable** (Ctrl+Z).
+- Global Play never writes the **seed** field; seed stays user-controlled.
+
+### Workflow
+
+1. Optionally **Randomize** to get a starting script/domain/wire set, or type your own.
+2. Tweak **Mix / Script / Domain / Wire** amounts.
+3. Open **Wire Algo** / **Algo Params** if you need routing or enable flags.
+4. Press **▶ Apply Algo to Master Mix** to hear the overlay.
+5. Toggle Apply off or Undo to revert the ensemble overlay.
 
 ## Per-instrument synth geometry
 Each instrument has five live patch parameters:
@@ -209,13 +369,28 @@ single tempo-locked master entity instead of drifting independently:
 ## Operator Theory — the book's alternative arithmetic
 
 From the book ("Further Abstract Conclusions and Operator Theory", p.49-50).
-A **large toggle** ("Operator Theory") in the global-operator bar enables
-the rules on **all mathematics in the DSP pathway and the game logic**.
-Off by default → every canonical render is byte-identical to before. When
-enabled the scalar kernels below replace the ordinary arithmetic at the
-gated surfaces (final master-bus transform; game residue/angle numerics)
-and are also exposed to seed scripts as `ot_add/ot_sub/ot_prod/ot_div/
-ot_pow/ot_i_phase`.
+A **large toggle** ("Operator Theory") in the global-operator bar selects the
+execution route for mathematics in the DSP pathway and game logic.
+
+**Equivalence policy (important):** enabling Operator Theory must not retune a
+project. Shared engine paths use an **equivalence kernel** (`ot_equiv_*` /
+`math_*`) whose numeric results are identical to ordinary arithmetic and
+transcendentals. The book's alternate symbolic operators (`ot_add`, `ot_prod`,
+…) remain available to explicit scripts when you want those rules directly.
+
+Covered under the equivalence route (same output with OT ON or OFF):
+
+| Family | Functions |
+|---|---|
+| Arithmetic | `math_add` `math_sub` `math_mul` `math_div` `math_pow` `math_scale` |
+| Trig | `math_sin` `math_cos` `math_tan` `math_asin` `math_acos` `math_atan` `math_atan2` |
+| Hyperbolic | `math_sinh` `math_cosh` `math_tanh` |
+| Transcendental | `math_sqrt` `math_exp` `math_log` `math_log2` `math_log10` |
+| Book isn / ics | `book_isn` `book_isn_inv` `book_ics` `book_ics_inv` / EQR isn path |
+
+Seed/domain scripts see `sin`/`cos`/`tan`/`asin`/… bound to the `math_*`
+wrappers, so OT ON still yields the normal values. Explicit `ot_*` names keep
+the book's alternate hand/band rules.
 
 ```
 1)  +/- are directional operators:

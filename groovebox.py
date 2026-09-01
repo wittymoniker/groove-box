@@ -69,7 +69,8 @@ from PyQt6.QtWidgets import (
     QTabWidget, QLineEdit, QListWidget, QFormLayout, QSpinBox, QDoubleSpinBox,
     QGridLayout, QFileDialog, QSplitter, QGroupBox, QTextEdit, QMenu,
     QMessageBox, QTableWidget, QTableWidgetItem, QCheckBox, QDial, QMenuBar,
-    QDialog, QInputDialog, QHeaderView, QProgressBar, QSizePolicy, QToolButton
+    QDialog, QInputDialog, QHeaderView, QProgressBar, QSizePolicy, QToolButton,
+    QDialogButtonBox,
 )  # QToolButton is required by the global EXPORT menu control.
 
 
@@ -233,22 +234,26 @@ EQR_FINITE_INFINITY = 134964356.0
 def eqr_isn(x):
     """Meum-normalized odd sinusoid; OT mode is an equivalent execution route."""
     x = float(x)
-    a = math.sin(x)
-    b = math.sin(x * MEUM)
     if OP_THEORY_ENABLED:
+        a = ot_equiv_sin(x)
+        b = ot_equiv_sin(x * MEUM)
         return ot_equiv_add(ot_equiv_mul(a, MEUM_NORM),
                             ot_equiv_mul(b, 1.0 - MEUM_NORM))
+    a = math.sin(x)
+    b = math.sin(x * MEUM)
     return a * MEUM_NORM + b * (1.0 - MEUM_NORM)
 
 
 def eqr_ics(x):
     """Meum-normalized even cosinusoid; OT mode is an equivalent execution route."""
     x = float(x)
-    a = math.cos(x)
-    b = math.cos(x * MEUM)
     if OP_THEORY_ENABLED:
+        a = ot_equiv_cos(x)
+        b = ot_equiv_cos(x * MEUM)
         return ot_equiv_add(ot_equiv_mul(a, MEUM_NORM),
                             ot_equiv_mul(b, 1.0 - MEUM_NORM))
+    a = math.cos(x)
+    b = math.cos(x * MEUM)
     return a * MEUM_NORM + b * (1.0 - MEUM_NORM)
 
 
@@ -579,24 +584,121 @@ def ot_equiv_i_pow(k):
 
 
 def ot_book_isn(x):
-    # Canonical book form: isn(theta) = 2 sin(theta/2).
-    return ot_equiv_mul(2.0, math.sin(ot_equiv_mul(0.5, float(x))))
+    # Canonical book form: isn(theta) = 2 sin(theta/2). OT-equivalent sin.
+    return ot_equiv_mul(2.0, ot_equiv_sin(ot_equiv_mul(0.5, float(x))))
 
 
 def ot_book_isn_inv(y):
     # Exact inverse of the canonical book form on its real principal domain.
     a = max(-1.0, min(1.0, ot_equiv_mul(0.5, float(y))))
-    return ot_equiv_mul(2.0, math.asin(a))
+    return ot_equiv_mul(2.0, ot_equiv_asin(a))
 
 
 def ot_book_ics(x):
     # Isosceles/cosine counterpart, represented through the same OT arithmetic.
-    return ot_equiv_mul(2.0, math.cos(ot_equiv_mul(0.5, float(x))))
+    return ot_equiv_mul(2.0, ot_equiv_cos(ot_equiv_mul(0.5, float(x))))
 
 
 def ot_book_ics_inv(y):
     a = max(-1.0, min(1.0, ot_equiv_mul(0.5, float(y))))
-    return ot_equiv_mul(2.0, math.acos(a))
+    return ot_equiv_mul(2.0, ot_equiv_acos(a))
+
+
+# ---------------------------------------------------------------------------
+# OT-EQUIVALENT transcendental functions
+#
+# Same contract as ot_equiv_add/mul/…: when Operator Theory is ON these are
+# the execution route, but the numeric result is identical to the ordinary
+# math.* function.  That lets CPU / event paths prefer the OT call graph
+# without retuning a project (matches isn / arcisn / EQR policy).
+# ---------------------------------------------------------------------------
+
+def ot_equiv_sin(x):
+    return math.sin(float(x))
+
+
+def ot_equiv_cos(x):
+    return math.cos(float(x))
+
+
+def ot_equiv_tan(x):
+    return math.tan(float(x))
+
+
+def ot_equiv_asin(x):
+    return math.asin(max(-1.0, min(1.0, float(x))))
+
+
+def ot_equiv_acos(x):
+    return math.acos(max(-1.0, min(1.0, float(x))))
+
+
+def ot_equiv_atan(x):
+    return math.atan(float(x))
+
+
+def ot_equiv_atan2(y, x):
+    return math.atan2(float(y), float(x))
+
+
+def ot_equiv_sinh(x):
+    return math.sinh(float(x))
+
+
+def ot_equiv_cosh(x):
+    return math.cosh(float(x))
+
+
+def ot_equiv_tanh(x):
+    return math.tanh(float(x))
+
+
+def ot_equiv_sqrt(x):
+    x = float(x)
+    if x < 0.0:
+        return math.nan
+    return math.sqrt(x)
+
+
+def ot_equiv_exp(x):
+    return math.exp(float(x))
+
+
+def ot_equiv_log(x):
+    x = float(x)
+    if x <= 0.0:
+        return math.nan
+    return math.log(x)
+
+
+def ot_equiv_log2(x):
+    x = float(x)
+    if x <= 0.0:
+        return math.nan
+    return math.log2(x)
+
+
+def ot_equiv_log10(x):
+    x = float(x)
+    if x <= 0.0:
+        return math.nan
+    return math.log10(x)
+
+
+def ot_equiv_fabs(x):
+    return math.fabs(float(x))
+
+
+def ot_equiv_floor(x):
+    return float(math.floor(float(x)))
+
+
+def ot_equiv_ceil(x):
+    return float(math.ceil(float(x)))
+
+
+def ot_equiv_hypot(a, b):
+    return math.hypot(float(a), float(b))
 
 
 # ---------------------------------------------------------------------------
@@ -644,6 +746,169 @@ def math_scale(x, gain):
     if OP_THEORY_ENABLED:
         return ot_equiv_mul(x, gain)
     return float(x) * float(gain)
+
+
+def math_sin(x):
+    """sin — OT route is numeric-identical to math.sin."""
+    if OP_THEORY_ENABLED:
+        return ot_equiv_sin(x)
+    return math.sin(float(x))
+
+
+def math_cos(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_cos(x)
+    return math.cos(float(x))
+
+
+def math_tan(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_tan(x)
+    return math.tan(float(x))
+
+
+def math_asin(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_asin(x)
+    return math.asin(max(-1.0, min(1.0, float(x))))
+
+
+def math_acos(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_acos(x)
+    return math.acos(max(-1.0, min(1.0, float(x))))
+
+
+def math_atan(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_atan(x)
+    return math.atan(float(x))
+
+
+def math_atan2(y, x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_atan2(y, x)
+    return math.atan2(float(y), float(x))
+
+
+def math_sinh(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_sinh(x)
+    return math.sinh(float(x))
+
+
+def math_cosh(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_cosh(x)
+    return math.cosh(float(x))
+
+
+def math_tanh(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_tanh(x)
+    return math.tanh(float(x))
+
+
+def math_sqrt(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_sqrt(x)
+    x = float(x)
+    return math.sqrt(x) if x >= 0.0 else math.nan
+
+
+def math_exp(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_exp(x)
+    return math.exp(float(x))
+
+
+def math_log(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_log(x)
+    x = float(x)
+    return math.log(x) if x > 0.0 else math.nan
+
+
+def math_log2(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_log2(x)
+    x = float(x)
+    return math.log2(x) if x > 0.0 else math.nan
+
+
+def math_log10(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_log10(x)
+    x = float(x)
+    return math.log10(x) if x > 0.0 else math.nan
+
+
+# ---------------------------------------------------------------------------
+# VIDEO / GAME trig via isn · ics · arcisn · arcics (Operator Theory ON)
+#
+# book:  isn(θ) = 2 sin(θ/2)  ⇒  sin(θ) = isn(2θ)/2
+#        ics(θ) = 2 cos(θ/2)  ⇒  cos(θ) = ics(2θ)/2
+#        isn⁻¹(y) = 2 arcsin(y/2)  ⇒  arcsin(y) = isn⁻¹(2y)/2
+#        ics⁻¹(y) = 2 arccos(y/2)  ⇒  arccos(y) = ics⁻¹(2y)/2
+# When OT is ON these call graphs run through the isn/ics family while remaining
+# numerically identical to math.sin/cos/asin/acos (equivalence kernel).
+# When OT is OFF they are plain math.* for zero overhead.
+# ---------------------------------------------------------------------------
+
+def ot_sin_via_isn(x):
+    return ot_equiv_mul(0.5, ot_book_isn(ot_equiv_mul(2.0, float(x))))
+
+
+def ot_cos_via_ics(x):
+    return ot_equiv_mul(0.5, ot_book_ics(ot_equiv_mul(2.0, float(x))))
+
+
+def ot_asin_via_arcisn(y):
+    y = max(-1.0, min(1.0, float(y)))
+    return ot_equiv_mul(0.5, ot_book_isn_inv(ot_equiv_mul(2.0, y)))
+
+
+def ot_acos_via_arcics(y):
+    y = max(-1.0, min(1.0, float(y)))
+    return ot_equiv_mul(0.5, ot_book_ics_inv(ot_equiv_mul(2.0, y)))
+
+
+def ot_tan_via_isn_ics(x):
+    c = ot_cos_via_ics(x)
+    if abs(c) < 1e-18:
+        return math.copysign(1e18, ot_sin_via_isn(x))
+    return ot_equiv_div(ot_sin_via_isn(x), c)
+
+
+def vg_sin(x):
+    """Video/game sine: isn-route under Operator Theory, else math.sin."""
+    if OP_THEORY_ENABLED:
+        return ot_sin_via_isn(x)
+    return math.sin(float(x))
+
+
+def vg_cos(x):
+    if OP_THEORY_ENABLED:
+        return ot_cos_via_ics(x)
+    return math.cos(float(x))
+
+
+def vg_tan(x):
+    if OP_THEORY_ENABLED:
+        return ot_tan_via_isn_ics(x)
+    return math.tan(float(x))
+
+
+def vg_asin(x):
+    if OP_THEORY_ENABLED:
+        return ot_asin_via_arcisn(x)
+    return math.asin(max(-1.0, min(1.0, float(x))))
+
+
+def vg_acos(x):
+    if OP_THEORY_ENABLED:
+        return ot_acos_via_arcics(x)
+    return math.acos(max(-1.0, min(1.0, float(x))))
 
 
 def dual_map_array(arr, scalar_fn_ot, scalar_fn_normal=None):
@@ -2199,12 +2464,14 @@ def _seed_script_env(t_scalar=0.0, canonical_context=None):
 
     env = {
         "__builtins__": {},
-        "sin": math.sin, "cos": math.cos, "tan": math.tan, "sqrt": math.sqrt,
-        "log": math.log, "log2": math.log2, "log10": math.log10, "exp": math.exp,
+        # Transcendentals route through math_* so Operator Theory ON uses the
+        # equivalence kernel (identical numeric result to ordinary math.*).
+        "sin": math_sin, "cos": math_cos, "tan": math_tan, "sqrt": math_sqrt,
+        "log": math_log, "log2": math_log2, "log10": math_log10, "exp": math_exp,
         "abs": abs, "min": min, "max": max, "floor": math.floor, "ceil": math.ceil,
         "round": round, "pow": pow, "fabs": math.fabs, "hypot": math.hypot,
-        "atan2": math.atan2, "asin": math.asin, "acos": math.acos, "atan": math.atan,
-        "sinh": math.sinh, "cosh": math.cosh, "tanh": math.tanh,
+        "atan2": math_atan2, "asin": math_asin, "acos": math_acos, "atan": math_atan,
+        "sinh": math_sinh, "cosh": math_cosh, "tanh": math_tanh,
         "degrees": math.degrees, "radians": math.radians,
         "pi": math.pi, "e": math.e, "tau": math.tau,
         "PHI": PHI, "MEUM": MEUM, "MEUM_NORM": MEUM_NORM, "MEUM_INV": MEUM_INV,
@@ -2228,6 +2495,21 @@ def _seed_script_env(t_scalar=0.0, canonical_context=None):
         "ot_band": ot_band, "ot_master_transform": ot_master_transform,
         "math_add": math_add, "math_sub": math_sub, "math_mul": math_mul,
         "math_div": math_div, "math_pow": math_pow, "math_scale": math_scale,
+        "math_sin": math_sin, "math_cos": math_cos, "math_tan": math_tan,
+        "math_asin": math_asin, "math_acos": math_acos, "math_atan": math_atan,
+        "math_atan2": math_atan2, "math_sinh": math_sinh, "math_cosh": math_cosh,
+        "math_tanh": math_tanh, "math_sqrt": math_sqrt, "math_exp": math_exp,
+        "math_log": math_log, "math_log2": math_log2, "math_log10": math_log10,
+        "ot_equiv_sin": ot_equiv_sin, "ot_equiv_cos": ot_equiv_cos,
+        "ot_equiv_tan": ot_equiv_tan, "ot_equiv_asin": ot_equiv_asin,
+        "ot_equiv_acos": ot_equiv_acos, "ot_equiv_atan": ot_equiv_atan,
+        "ot_equiv_atan2": ot_equiv_atan2, "ot_equiv_sinh": ot_equiv_sinh,
+        "ot_equiv_cosh": ot_equiv_cosh, "ot_equiv_tanh": ot_equiv_tanh,
+        "ot_equiv_sqrt": ot_equiv_sqrt, "ot_equiv_exp": ot_equiv_exp,
+        "ot_equiv_log": ot_equiv_log, "ot_equiv_log2": ot_equiv_log2,
+        "ot_equiv_log10": ot_equiv_log10, "ot_equiv_fabs": ot_equiv_fabs,
+        "ot_equiv_floor": ot_equiv_floor, "ot_equiv_ceil": ot_equiv_ceil,
+        "ot_equiv_hypot": ot_equiv_hypot,
         "no_sat": no_sat,
         "op_theory_enabled": operator_theory_enabled,
         "set_op_theory": set_operator_theory,
@@ -2716,12 +2998,7 @@ def canonical_visual_instrument(slot, ctx, flags):
 
 
 def goava_frequency(number_assigned, step, numbers, base_frequency=432.0):
-    """Map GOAVA's Java sequence scalar to a stable audible frequency.
-
-    The Java implementation's primary arpeggio path is getNote()*16.  Its
-    original runtime also contains a safety fallback for values outside the
-    practical range.  We preserve that behavior, then constrain the final
-    oscillator frequency to a safe audio range.
+    """Map GOAVA's Java sequence scalar to a frequency — no cutoffs or clips.
 
     Upward-tendency fix: getNote() is non-negative by construction (every
     term is (1+cos)/positive), which forced every GOAVA pitch above the base
@@ -2730,6 +3007,10 @@ def goava_frequency(number_assigned, step, numbers, base_frequency=432.0):
     below the base — same seed still maps to the same centered trajectory
     (deterministic), the projection (per-note delta) is unchanged, only the
     constant offset that created the bias is removed.
+
+    GOAVA policy: no audible_hz / Nyquist / octave clamps on the frequency
+    value itself. Callers that need a safe oscillator rate may still apply
+    their own limits; GOAVA reports the true mapped frequency.
     """
     raw = goava_get_note(number_assigned, step, numbers)
     # GOAVA musical output is intentionally a single sine at a base-frequency
@@ -2743,10 +3024,14 @@ def goava_frequency(number_assigned, step, numbers, base_frequency=432.0):
     except Exception:
         center = 0.0
     raw_c = raw - center
-    # Full-range: centered raw drives up to ±4.5 octaves before audible_hz safety
-    ratio = 2.0 ** float(np.clip(raw_c * 2.25, -4.5, 4.5))
+    # Unclipped: centered raw drives the ratio freely (no ±octave or audible_hz).
+    ratio = 2.0 ** float(raw_c * 2.25)
+    if not math.isfinite(ratio) or ratio <= 0.0:
+        ratio = 1.0
     freq = float(base_frequency) * ratio
-    return float(audible_hz(freq)), float(raw_c)
+    if not math.isfinite(freq):
+        freq = float(base_frequency)
+    return float(freq), float(raw_c)
 
 
 # ---------------------------------------------------------------------------
@@ -4261,20 +4546,20 @@ class InstrumentVisualObject:
         radial = 0.12 + 0.42 * math.sqrt(self.identity)
         angle0 = math.tau*self.identity + float(c.get("yaw", 0.0))
         phase = self.phase0 + t*(0.30 + 0.70*v["morph"] + 0.25*v["steps"])
-        wobble = (0.035 + 0.11*v["chaos"]) * math.sin(t*(0.7+2.0*v["fold"]) + self.identity*math.tau)
-        cx = w*0.5 + math.cos(angle0 + 0.08*math.sin(t*0.23))*radial*w*0.70
-        cy = h*0.48 + math.sin(angle0*MEUM_INV + 0.06*math.cos(t*0.19))*radial*h*0.48
+        wobble = (0.035 + 0.11*v["chaos"]) * vg_sin(t*(0.7+2.0*v["fold"]) + self.identity*math.tau)
+        cx = w*0.5 + vg_cos(angle0 + 0.08*vg_sin(t*0.23))*radial*w*0.70
+        cy = h*0.48 + vg_sin(angle0*MEUM_INV + 0.06*vg_cos(t*0.19))*radial*h*0.48
         scale = (0.018 + 0.040*v["lattice"] + 0.030*v["amp"] + 0.022*energy) * min(w,h)
         harmonic_count = max(3, min(18, 3 + int(round(12*v["lattice"] + 4*v["fold"]))))
         band = float(bands[self.master_slot % len(bands)]) if len(bands) else 0.0
-        scale *= 0.72 + 0.55*band + 0.25*abs(math.sin(phase))
+        scale *= 0.72 + 0.55*band + 0.25*abs(vg_sin(phase))
         return cx, cy, max(2.0, scale), phase, harmonic_count, v, wobble
 
     def draw(self, img, w, h, t, energy, bands):
         cx, cy, scale, phase, hc, v, wobble = self.geometry(t, energy, bands, w, h)
         dim = self.dimension
         # Always-visible breathe: opacity never drops to zero.
-        breathe = 0.62 + 0.38*(0.5 + 0.5*math.sin(phase + self.identity*math.tau))
+        breathe = 0.62 + 0.38*(0.5 + 0.5*vg_sin(phase + self.identity*math.tau))
         alpha = float(np.clip(0.38 + 0.42*breathe + 0.16*energy, 0.38, 0.98))
         col = self.color(phase, energy)
         core = self.engine._hsv((self.identity*360 + 180) % 360, 0.16, 1.0)
@@ -4285,9 +4570,9 @@ class InstrumentVisualObject:
             for k in range(hc*4):
                 u=k/max(1,hc*4-1)
                 a=phase + math.tau*(u*(1.0+v["fold"]*0.22))
-                rr=scale*(0.45+0.85*u)*(1.0+0.24*math.sin(a*hc*0.23+t))
-                x=cx+math.cos(a)*rr
-                y=cy+math.sin(a*MEUM_INV)*rr*(0.62+0.30*v["morph"])
+                rr=scale*(0.45+0.85*u)*(1.0+0.24*vg_sin(a*hc*0.23+t))
+                x=cx+vg_cos(a)*rr
+                y=cy+vg_sin(a*MEUM_INV)*rr*(0.62+0.30*v["morph"])
                 pts.append((x,y))
             for a,b in zip(pts,pts[1:]):
                 self.engine._line(img,a[0],a[1],b[0],b[1],col,0.55*alpha)
@@ -4298,9 +4583,9 @@ class InstrumentVisualObject:
             count=max(16,hc*4)
             for k in range(count):
                 a=phase+math.tau*k/count
-                harmonic=sum((1.0/(j+1))*math.sin(a*(j+1)+phase*(0.2+j*0.07)) for j in range(min(hc,8)))
-                rr=scale*(0.82+0.10*math.sin(a*hc)+0.06*harmonic+0.14*v["chaos"]*math.sin(a*3+t))
-                pts.append((cx+math.cos(a)*rr,cy+math.sin(a*MEUM_INV)*rr*(0.72+0.22*v["lattice"])))
+                harmonic=sum((1.0/(j+1))*vg_sin(a*(j+1)+phase*(0.2+j*0.07)) for j in range(min(hc,8)))
+                rr=scale*(0.82+0.10*vg_sin(a*hc)+0.06*harmonic+0.14*v["chaos"]*vg_sin(a*3+t))
+                pts.append((cx+vg_cos(a)*rr,cy+vg_sin(a*MEUM_INV)*rr*(0.72+0.22*v["lattice"])))
             for k in range(len(pts)):
                 a,b=pts[k],pts[(k+1)%len(pts)]
                 self.engine._line(img,a[0],a[1],b[0],b[1],col,0.62*alpha)
@@ -4315,9 +4600,9 @@ class InstrumentVisualObject:
                 count=max(18,hc*3)
                 for k in range(count):
                     a=phase+math.tau*k/count+rix*0.21
-                    z=0.42*math.sin(a*(1.0+v["fold"]*0.35)+t*0.8)+wobble
-                    x3=rr0*math.cos(a)
-                    y3=rr0*math.sin(a*MEUM_INV)
+                    z=0.42*vg_sin(a*(1.0+v["fold"]*0.35)+t*0.8)+wobble
+                    x3=rr0*vg_cos(a)
+                    y3=rr0*vg_sin(a*MEUM_INV)
                     # lightweight 3D projection, consistent with the engine camera.
                     x3,y3,z3=self.engine._camera_transform(x3,y3,z)
                     depth=1.55+z3
@@ -4338,7 +4623,7 @@ class InstrumentVisualObject:
         for j in range(min(8, hc)):
             a=phase+math.tau*j/max(1,hc)
             rr=scale*(1.35+0.16*j)*(0.72+0.28*v["lattice"])
-            self.engine._dot(img,cx+math.cos(a)*rr,cy+math.sin(a*MEUM_INV)*rr*0.70,
+            self.engine._dot(img,cx+vg_cos(a)*rr,cy+vg_sin(a*MEUM_INV)*rr*0.70,
                              col,0.22*alpha,r=1+int(2*v["lattice"]))
 
 class VideoSynthEngine:
@@ -4461,8 +4746,10 @@ class VideoSynthEngine:
         self._cam_yaw = 0.0
         self._cam_pitch = 0.0
         self._cam_roll = 0.0
-        self._cam_distance = 0.0
+        self._cam_distance = 1.0
         self._cam_fov_deg = 48.0
+        self._cam_pan_x = 0.0
+        self._cam_pan_y = 0.0
         self._camera_view_override = None
         self._visual_view_index = 0
         self._visual_view_count = 1
@@ -4669,7 +4956,7 @@ class VideoSynthEngine:
         ph = self.playhead
         t = self.t
         # Base identities
-        u = MEUM_NORM * math.sin(MEUM * t + ph * math.tau) + MEUM_INV * self._centroid
+        u = MEUM_NORM * vg_sin(MEUM * t + ph * math.tau) + MEUM_INV * self._centroid
         # Dimensional expand/contract: insert/remove powers based on engines
         k_pow = 1
         if snap["seeded"]:
@@ -4784,80 +5071,179 @@ class VideoSynthEngine:
         self._fit_oy = h * 0.5
 
     def _update_camera_and_packing(self, st):
-        """Compute a deterministic rotating camera and collision-avoiding field layout."""
+        """IDEAL_CAMERA_2026 — multi-band deterministic camera + identity packing.
+
+        Six simultaneous degrees of freedom, all closed-form
+        f(t, seed, composition, audio features) — never RNG:
+
+          yaw      tempo-locked orbit + Meum slow drift + energy push
+          pitch    spectral elevation + subharmonic nod
+          roll     micro horizon (dimensional, never seasick)
+          distance dolly in/out with RMS and structural density
+          fov      mild breathe with harmonic activity
+          pan      lateral shift from phase-lock / GOAVA
+
+        Band rates are irrational multiples of BPM and MEUM so the path is
+        dense on the torus (no short-period loops) while remaining
+        bit-identical for the same seed + composition + time.
+
+        Packing places each instrument by its *identity unit* (master-slot
+        lattice), not by "index among N". Ensemble size N only scales density
+        (implode); the same instrument identity occupies the same angular
+        home in a 2-voice or 64-voice composition.
+        """
+        snap = st.get("snap", {}) if isinstance(st.get("snap"), dict) else {}
         ph = float(st.get("ph", 0.0))
-        e = float(self._rms)
-        seed = float(st.get("snap", {}).get("seed", 0.0))
+        e = float(np.clip(self._rms, 0.0, 1.5))
+        centroid = float(np.clip(getattr(self, "_centroid", 0.5), 0.0, 1.0))
+        harm = float(np.clip(getattr(self, "_harmonic_activity", 0.5), 0.0, 1.0))
+        seed = float(snap.get("seed", 0.0))
+        bpm = float(snap.get("bpm", 120.0) or 120.0)
+        bpm = max(40.0, min(240.0, bpm))
         n = max(2, int(round(getattr(self, "_render_n", self.n))))
-        # Cinematic default camera: a gentle 3/4 view reveals depth and
-        # separation much better than the former near-front view. Motion is
-        # deliberately slow and multi-frequency so the scene feels alive
-        # without the seasick/jittery effect of fast camera oscillation.
-        # The seed only changes phase, so the animation remains deterministic.
-        base_yaw = math.radians(28.0)
-        base_pitch = math.radians(-15.0)
-        self._cam_yaw = (base_yaw
-                         + 0.075 * math.sin(self.t * 0.16 + seed * 0.0017)
-                         + 0.028 * math.sin(self.t * 0.047 + ph * math.tau * 0.35)
-                         + 0.035 * ph
-                         + float(getattr(self, "_manual_yaw", 0.0)))
-        self._cam_pitch = (base_pitch
-                           + 0.040 * math.sin(self.t * 0.105 + MEUM + seed * 0.0009)
-                           + 0.018 * math.sin(self.t * 0.031 + ph * math.tau)
-                           + float(getattr(self, "_manual_pitch", 0.0)))
-        # GOAVA commutes into the visual transform: enabling it changes the
-        # camera phase and packing action, not merely the audio mix.
-        goava = bool(st.get("snap", {}).get("goava", False))
-        goava_phase = MEUM_NORM if goava else 0.0
-        # Keep roll almost imperceptible: enough to make the projection feel
-        # dimensional, but never enough to make the horizon visibly wobble.
-        self._cam_roll = (0.010 * math.sin(self.t * 0.065 + MEUM_INV * 2.0 + ph * math.tau + goava_phase)
-                          + 0.004 * math.sin(self.t * 0.021 + seed * 0.0002))
-        self._cam_yaw += 0.012 * goava_phase * math.sin(self.t * MEUM_INV + seed * 0.0003)
-        # Golden-angle disk packing. sqrt radial law gives approximately
-        # uniform area density; the logarithmic/implosive term shrinks objects
-        # as the ensemble gets denser.
-        golden = math.tau * (1.0 - 1.0 / ((1.0 + math.sqrt(5.0)) * 0.5))
-        self._pack_radius = 0.54 + 0.08 * min(1.0, e + 0.35 * float(st.get("form", 0.5)))
+        t = float(self.t)
+
+        # Tempo phase: one revolution per 8 bars at current BPM (locked to audio).
+        beat = t * (bpm / 60.0)
+        bar8 = beat / 32.0  # 8 bars of 4/4
+        # Seed-derived phase offsets (closed-form, no RNG).
+        s1 = (seed * MEUM_NORM + MEUM) % math.tau
+        s2 = (seed * MEUM_INV + PHI) % math.tau
+        s3 = (seed * PHI + MEUM_INV) % math.tau
+
+        goava = bool(snap.get("goava", False))
+        phase_lock = bool(snap.get("phase_lock", False) or snap.get("euclid", False))
+        seeded = bool(snap.get("seeded", False) or snap.get("randomizer", False))
+        goava_w = MEUM_NORM if goava else 0.0
+        pl_w = 0.55 if phase_lock else 0.0
+        sd_w = 0.35 if seeded else 0.0
+
+        # ---- YAW: primary orbit (tempo) + Meum drift + energy punch ----
+        base_yaw = math.radians(32.0)
+        yaw = (base_yaw
+               + 0.55 * bar8 * math.tau * (0.12 + 0.04 * e)          # slow orbit
+               + 0.11 * vg_sin(t * 0.13 * MEUM + s1)                  # Meum band
+               + 0.055 * vg_sin(t * 0.041 * MEUM_INV + s2)            # sub-band
+               + 0.040 * vg_sin(beat * 0.25 * PHI + ph * math.tau)    # beat accent
+               + 0.085 * e * vg_sin(t * 0.09 + centroid * math.tau)   # energy push
+               + 0.07 * goava_w * vg_sin(t * MEUM_INV + s3)
+               + 0.05 * pl_w * vg_sin(beat * 0.125 + s1)
+               + float(getattr(self, "_manual_yaw", 0.0)))
+
+        # ---- PITCH: spectral elevation + gentle nod ----
+        base_pitch = math.radians(-14.0)
+        pitch = (base_pitch
+                 + 0.22 * (centroid - 0.5)                             # bright → look up
+                 + 0.070 * vg_sin(t * 0.09 * MEUM + s2)
+                 + 0.035 * vg_sin(t * 0.027 + ph * math.tau)
+                 + 0.030 * e * vg_sin(beat * 0.5 + s3)
+                 + 0.04 * goava_w * vg_sin(t * 0.07 + MEUM)
+                 + float(getattr(self, "_manual_pitch", 0.0)))
+        pitch = max(math.radians(-42.0), min(math.radians(28.0), pitch))
+
+        # ---- ROLL: micro only ----
+        roll = (0.018 * vg_sin(t * 0.055 * MEUM_INV + s1)
+                + 0.008 * vg_sin(t * 0.019 + ph * math.tau)
+                + 0.012 * goava_w * vg_sin(t * 0.033 + s2)
+                + 0.010 * harm * vg_sin(beat * 0.0625 + s3))
+        roll = max(-0.08, min(0.08, roll))
+
+        # ---- DISTANCE (dolly): closer on loud/dense, pull back on sparse ----
+        # 1.0 = neutral; lower = closer (more perspective punch)
+        form = float(st.get("form", 0.5))
+        rho = float(st.get("rho", 1.0))
+        dist = (1.0
+                - 0.22 * e
+                - 0.10 * form
+                + 0.08 * vg_sin(t * 0.07 * MEUM + s1)
+                + 0.05 * vg_sin(bar8 * math.tau + s2)
+                - 0.06 * goava_w * vg_sin(t * 0.11 + s3)
+                + 0.04 * (1.0 - min(1.0, rho)))
+        dist = float(np.clip(dist, 0.55, 1.45))
+
+        # ---- FOV breathe ----
+        fov = (48.0
+               + 6.0 * harm * vg_sin(t * 0.06 + s1)
+               + 4.0 * e * vg_sin(t * 0.11 + s2)
+               + 3.0 * goava_w
+               - 2.0 * pl_w)
+        fov = float(np.clip(fov, 36.0, 62.0))
+
+        # ---- lateral pan (composition engines) ----
+        pan_x = (0.06 * pl_w * vg_sin(t * 0.08 + s1)
+                 + 0.05 * goava_w * vg_sin(t * 0.12 * MEUM + s2)
+                 + 0.03 * sd_w * vg_sin(t * 0.05 + s3))
+        pan_y = (0.04 * harm * vg_sin(t * 0.07 + s2)
+                 + 0.03 * e * vg_sin(beat * 0.2 + s1))
+
+        self._cam_yaw = float(yaw)
+        self._cam_pitch = float(pitch)
+        self._cam_roll = float(roll)
+        self._cam_distance = float(dist)
+        self._cam_fov_deg = float(fov)
+        self._cam_pan_x = float(pan_x)
+        self._cam_pan_y = float(pan_y)
+
+        # ---- IDENTITY packing (N-independent homes) ----
+        # Angle home = identity_unit on the 64-slot master lattice + golden spiral.
+        # N only affects density implode, never the angular home of a slot.
+        golden = math.tau * (1.0 - 1.0 / PHI)
+        self._pack_radius = 0.52 + 0.10 * min(1.0, e + 0.35 * form) + 0.04 * goava_w
         for i, layer in enumerate(self.layers[:n]):
-            q = (i + 0.5) / n
-            go = max(2, int(st.get("group_order", n)))
-            gs = max(1, int(st.get("group_step", 1)))
-            residue = (i * gs) % go
-            a = residue * (math.tau / go) + i * golden * MEUM_INV
-            a += self.t * (0.035 + 0.025 * e + 0.008 * goava_phase) + ph * math.tau * 0.08
-            rr = self._pack_radius * math.sqrt(q)
-            # Local neighborhood spacing estimate for a disk packing.
-            spacing = self._pack_radius * math.sqrt(2.0 * math.pi / n) * (0.90 + 0.10 * q)
+            # Prefer master_slot identity when present on the layer/canonical map
+            slot = int(layer.get("master_slot", layer.get("index", i))) % CANONICAL_MASTER_SLOTS
+            try:
+                idu = float(identity_unit("instrument-visual", seed, "master", slot))
+            except Exception:
+                idu = (slot + 0.5) / float(CANONICAL_MASTER_SLOTS)
+            # Angular home from identity (not from i/n)
+            a_home = idu * math.tau + slot * golden * MEUM_INV
+            a = a_home + t * (0.030 + 0.022 * e + 0.010 * goava_w) + ph * math.tau * 0.07
+            # Radial home from identity rank on a golden spiral (stable under N change)
+            q_id = (slot + 0.5) / float(CANONICAL_MASTER_SLOTS)
+            rr = self._pack_radius * math.sqrt(0.12 + 0.88 * q_id)
+            # Density implode: only place N affects scale of neighbors
+            spacing = self._pack_radius * math.sqrt(2.0 * math.pi / n) * (0.90 + 0.10 * q_id)
             base = 0.26 + 0.32 * abs(float(self.wave[i % 256])) + 0.14 * e
             life = max(float(layer.get("life", 0.3)), 0.2)
-            crowd = base * (0.28 + 0.72 * life) * max(float(st.get("rho", 1.0)), 0.2)
+            crowd = base * (0.28 + 0.72 * life) * max(rho, 0.2)
             implode = float(np.clip(spacing / max(2.15 * crowd, 1e-4), self._pack_scale_floor, 1.0))
-            # Preserve the instrument's individual phase, but place its center
-            # on the packed field. The slight depth staggering reduces projected
-            # collisions after perspective.
-            layer["field_x"] = rr * math.cos(a)
-            layer["field_y"] = rr * math.sin(a) * 0.72
+            layer["field_x"] = rr * vg_cos(a) + pan_x * 0.15
+            layer["field_y"] = rr * vg_sin(a) * 0.72 + pan_y * 0.15
             layer["implode"] = implode
-            layer["field_z"] = 0.08 * math.sin(a * MEUM + i * MEUM_INV)
+            layer["field_z"] = 0.10 * vg_sin(a * MEUM + slot * MEUM_INV) * dist
+            layer["identity_unit"] = idu
+            layer["master_slot"] = slot
 
     def _camera_transform(self, x, y, z):
-        """Apply canonical camera yaw/pitch/roll/distance transform."""
+        """Apply canonical camera yaw/pitch/roll + dolly distance transform."""
         cyaw, cpitch, croll = self._cam_yaw, self._cam_pitch, self._cam_roll
         if isinstance(getattr(self, "_camera_view_override", None), dict):
             v = self._camera_view_override
             cyaw = math.radians(float(v.get("yaw_deg", 0.0)))
             cpitch = math.radians(float(v.get("pitch_deg", 0.0)))
             croll = math.radians(float(v.get("roll_deg", 0.0)))
-        cy, sy = math.cos(cyaw), math.sin(cyaw)
-        cp, sp = math.cos(cpitch), math.sin(cpitch)
-        cr, sr = math.cos(croll), math.sin(croll)
+            if "distance" in v:
+                try:
+                    self._cam_distance = float(v.get("distance") or self._cam_distance or 1.0)
+                except Exception:
+                    pass
+        cy, sy = vg_cos(cyaw), vg_sin(cyaw)
+        cp, sp = vg_cos(cpitch), vg_sin(cpitch)
+        cr, sr = vg_cos(croll), vg_sin(croll)
         x1 = x * cy - z * sy
         z1 = x * sy + z * cy
         y1 = y * cp - z1 * sp
         z2 = y * sp + z1 * cp
         x2 = x1 * cr - y1 * sr
         y2 = x1 * sr + y1 * cr
+        # Dolly: distance scales the view depth (1.0 neutral). Closer → larger
+        # projected size and stronger perspective separation between layers.
+        dist = float(getattr(self, "_cam_distance", 1.0) or 1.0)
+        dist = max(0.45, min(1.8, dist))
+        z2 = z2 * dist + (dist - 1.0) * 0.35
+        x2 = x2 + float(getattr(self, "_cam_pan_x", 0.0))
+        y2 = y2 + float(getattr(self, "_cam_pan_y", 0.0))
         return x2, y2, z2
 
     def _map_xy(self, x, y):
@@ -5004,7 +5390,7 @@ class VideoSynthEngine:
         a = np.arctan2(yn, xn)
         f1 = np.sin(a * (3.0 + 5.0*b1) + r * (7.0 + 9.0*b2) + ph + atom_angle)
         f2 = np.cos(r * (11.0 + 8.0*centroid) - t*(0.07 + 0.13*e) + seed*0.0017)
-        f3 = np.sin((xn*math.cos(atom_phase) + yn*math.sin(atom_phase)) * (8.0 + 12.0*b0) + ph*2.0)
+        f3 = np.sin((xn*vg_cos(atom_phase) + yn*vg_sin(atom_phase)) * (8.0 + 12.0*b0) + ph*2.0)
         f4 = np.cos((xn-yn) * (5.0 + 7.0*atom_tex) + t*0.11 + seed*0.0009)
         # Harmonic cross-modulation: multiplicative interaction prevents the
         # image from being a sum of unrelated overlays.
@@ -5057,8 +5443,8 @@ class VideoSynthEngine:
             for k in range(segs):
                 a = self.t * MEUM_NORM + k * (math.tau / segs) + s * 0.4
                 # Meum ellipse: x·M vs y/M
-                px = cx + rad * w * 0.35 * math.cos(a) * MEUM_INV
-                py = cy + rad * h * 0.28 * math.sin(a) * MEUM
+                px = cx + rad * w * 0.35 * vg_cos(a) * MEUM_INV
+                py = cy + rad * h * 0.28 * vg_sin(a) * MEUM
                 pts.append(self._map_xy(px, py))
             col = self._hsv(int(200 + s * 25 + self._video_hue_shift) % 360, 0.4, 0.5)
             alpha = 0.025 + 0.045 * st["form"]
@@ -5128,8 +5514,8 @@ class VideoSynthEngine:
         for p in range(n_part):
             ang = self.t * 0.65 + p * 0.37 + seed_i * 0.01 + st["ph"] * math.tau
             rr = 0.15 + 0.45 * abs(float(self.wave[p % 256])) * st["rho"]
-            x = rr * math.cos(ang)
-            y = rr * math.sin(ang * MEUM)
+            x = rr * vg_cos(ang)
+            y = rr * vg_sin(ang * MEUM)
             px, py, _ = self._project(x, y, 1.05 + 0.35 * self._rms, w, h)
             col = self._hsv(int(110 + seed_i * 0.08 + p * 9) % 360, 0.65, 0.75)
             self._dot(img, px, py, col, 0.58 + 0.25 * self._rms, r=1)
@@ -5191,17 +5577,17 @@ class VideoSynthEngine:
             # Radial swirl: bends the point around the origin over time.
             ang = u * math.tau * 2.0 + t * 0.4
             r = math.hypot(x, y)
-            x, y = r * math.cos(ang), r * math.sin(ang)
+            x, y = r * vg_cos(ang), r * vg_sin(ang)
         elif distort_idx == 1:
             # Ripple: sinusoidal depth push, scaled by the sample's own amplitude.
-            z = z + 0.25 * math.sin(u * math.tau * 5.0 + t * 1.3) * (0.3 + abs(amp))
+            z = z + 0.25 * vg_sin(u * math.tau * 5.0 + t * 1.3) * (0.3 + abs(amp))
         elif distort_idx == 2:
             # Meum fractal fold: independent Meum/Meum-inverse breathing per axis.
-            x = x * (1.0 + 0.15 * math.sin(u * MEUM * math.tau + t))
-            y = y * (1.0 + 0.15 * math.cos(u * MEUM_INV * math.tau + t))
+            x = x * (1.0 + 0.15 * vg_sin(u * MEUM * math.tau + t))
+            y = y * (1.0 + 0.15 * vg_cos(u * MEUM_INV * math.tau + t))
         else:
             # Spiral pinch: whole shape breathes in/out around the frame center.
-            pinch = 0.85 + 0.15 * math.sin(t * 0.7 + u * math.tau)
+            pinch = 0.85 + 0.15 * vg_sin(t * 0.7 + u * math.tau)
             x, y = x * pinch, y * pinch
         return x, y, z
 
@@ -5249,7 +5635,7 @@ class VideoSynthEngine:
                 u = i / max(n - 1, 1)
                 r = base_r * (0.4 + 0.6 * abs(amp))
                 ang = base_ang + u * 0.6 + t * 0.05
-                x, y, z = r * math.cos(ang), r * math.sin(ang) * 0.6, 0.0
+                x, y, z = r * vg_cos(ang), r * vg_sin(ang) * 0.6, 0.0
                 x, y, z = self._distort_wave_point(distort_idx, x, y, z, i, n, t, amp)
                 px, py, _ = self._project(x, y, 1.1 + 0.4 * ang_i, w, h)
                 col = self._colorize_wave_sample(colorize_idx, i, n, amp, b, base_ang)
@@ -5264,8 +5650,8 @@ class VideoSynthEngine:
                 u = i / max(n - 1, 1)
                 lx = (u - 0.5) * base_r * 2.4
                 ly = amp * base_r * 0.9
-                rx = lx * math.cos(base_ang)
-                rz = lx * math.sin(base_ang)
+                rx = lx * vg_cos(base_ang)
+                rz = lx * vg_sin(base_ang)
                 x, y, z = self._distort_wave_point(distort_idx, rx, ly, rz, i, n, t, amp)
                 px, py, _ = self._project(x, y, 1.4 + 0.5 * ang_i, w, h)
                 col = self._colorize_wave_sample(colorize_idx, i, n, amp, b, base_ang)
@@ -5285,8 +5671,8 @@ class VideoSynthEngine:
                 ang = base_ang + u * math.tau
                 r_in = base_r * (0.55 + 0.10 * ang_i)
                 r_out = r_in * (1.0 + 0.35 * abs(amp) + 0.15 * b)
-                xi, yi, zi = r_in * math.cos(ang), r_in * math.sin(ang) * 0.7, 0.0
-                xo, yo, zo = r_out * math.cos(ang), r_out * math.sin(ang) * 0.7, 0.18 * amp
+                xi, yi, zi = r_in * vg_cos(ang), r_in * vg_sin(ang) * 0.7, 0.0
+                xo, yo, zo = r_out * vg_cos(ang), r_out * vg_sin(ang) * 0.7, 0.18 * amp
                 xi, yi, zi = self._distort_wave_point(distort_idx, xi, yi, zi, i, n, t, amp)
                 xo, yo, zo = self._distort_wave_point(distort_idx, xo, yo, zo, i, n, t, amp)
                 inner.append(self._project(xi, yi, 1.6 + 0.3 * ang_i, w, h))
@@ -5316,24 +5702,39 @@ class VideoSynthEngine:
         relevance = {
             "field": 0.72 + 0.28 * e,
             "ribbon": 0.0,  # disabled: waveform/scope chrome not drawn in scenograph
-            "volumes": 0.30 + 0.70 * (0.5 + 0.5 * abs(math.sin(ph * math.tau * MEUM))),
-            "faces": 0.22 + 0.78 * max(e, float(snap["struct"])),
+            "volumes": 0.30 + 0.70 * (0.5 + 0.5 * abs(vg_sin(ph * math.tau * MEUM))),
+            "faces": 0.22 + 0.78 * max(e, float(snap.get("struct", 0.0))),
             "particles": 0.20 + 0.80 * (0.55 * e + 0.45 * abs(c - 0.5) * 2.0),
             "bands": 0.0,  # disabled: spectrum bars not drawn in scenograph
             "goava": 0.95 if snap.get("goava") else 0.0,
-            "filaments": 0.18 + 0.82 * abs(math.sin((ph + c) * math.tau * MEUM_INV)),
-            "roses": 0.15 + 0.85 * abs(math.cos((ph * 0.5 + e) * math.tau)),
+            "filaments": 0.18 + 0.82 * abs(vg_sin((ph + c) * math.tau * MEUM_INV)),
+            "roses": 0.15 + 0.85 * abs(vg_cos((ph * 0.5 + e) * math.tau)),
             "orbitals": 0.18 + 0.82 * max(e, 1.0 - c),
-            # Silence/context modules: slow, structural, and deliberately independent of loudness.
-            "constellations": 0.48 + 0.40 * (1.0 - e) * (0.55 + 0.45 * snap["struct"]),
-            "lattice": 0.34 + 0.46 * (1.0 - min(1.0, e * 1.8)) * (0.5 + 0.5 * snap["fractal"]),
-            # Loudness/instantaneous modules.
+            "constellations": 0.48 + 0.40 * (1.0 - e) * (0.55 + 0.45 * float(snap.get("struct", 0.0))),
+            "lattice": 0.34 + 0.46 * (1.0 - min(1.0, e * 1.8)) * (0.5 + 0.5 * float(snap.get("fractal", 0.0))),
             "bursts": min(1.0, e * 2.8) ** 1.7,
             "spectral_comets": min(1.0, max(0.0, c) * 1.6) * min(1.0, e * 2.0),
-            # Stable rhythm modules: suppress on chaotic/high residual motion.
-            "rhythm_mandala": max(0.0, snap["struct"] * (1.0 - abs(c - 0.5) * 1.4)) * (0.55 + 0.45 * snap["eqr"]),
-            "pulse_grid": max(0.0, (1.0 - abs(snap["bpm"] - 120.0) / 120.0)) * (0.35 + 0.65 * snap["struct"]),
+            "rhythm_mandala": max(0.0, float(snap.get("struct", 0.0)) * (1.0 - abs(c - 0.5) * 1.4)) * (0.55 + 0.45 * float(snap.get("eqr", 0.0))),
+            "pulse_grid": max(0.0, (1.0 - abs(float(snap.get("bpm", 120.0)) - 120.0) / 120.0)) * (0.35 + 0.65 * float(snap.get("struct", 0.0))),
             "goava_field": 0.92 if snap.get("goava") else 0.0,
+            # Engine-tied ornaments — same flags that change the audible mix.
+            "meum_spiral": 0.30 + 0.55 * float(np.clip(getattr(self, "_harmonic_activity", 0.5), 0.0, 1.0)),
+            "phi_web": 0.22 + 0.50 * float(snap.get("struct", 0.0)),
+            "harmonic_rings": 0.25 + 0.60 * e * (0.4 + 0.6 * c),
+            "seed_sparks": 0.85 if (snap.get("seeded") or snap.get("randomizer")) else 0.12,
+            "euclidean_spokes": 0.80 if snap.get("euclid") else 0.08,
+            "phase_ribbons": 0.80 if snap.get("phase_lock") else 0.10,
+            "lock_rings": 0.78 if snap.get("phase_lock") else 0.0,
+            "seeded_constellation": 0.82 if snap.get("seeded") else 0.0,
+            "goava_glyphs": 0.90 if snap.get("goava") else 0.0,
+            "carrier_wake": 0.70 if float(snap.get("carrier", 0.0) or 0.0) > 0.0 else 0.0,
+            "voice_orbs": 0.35 + 0.50 * e,
+            "ensemble_cloud": 0.28 + 0.45 * float(snap.get("struct", 0.0)),
+            "wave_integration": 0.40 + 0.50 * e,
+            "sub_bass_bloom": 0.20 + 0.70 * float(self._band[0] if len(self._band) else e),
+            "air_glitter": 0.15 + 0.70 * float(self._band[min(7, len(self._band)-1)] if len(self._band) else c),
+            "chord_fans": 0.25 + 0.55 * float(np.clip(getattr(self, "_harmonic_activity", 0.5), 0.0, 1.0)),
+            "depth_fog": 0.20 + 0.40 * (1.0 - e),
         }
         for name, target in relevance.items():
             # Exciting regions can suppress a module briefly; this is a
@@ -5504,7 +5905,7 @@ class VideoSynthEngine:
                 poly = []
                 for k in range(v):
                     a = a0 + k * math.tau / float(v)
-                    poly.append(self._map_xy(sx + math.cos(a) * r0, sy + math.sin(a * MEUM_INV) * r0 * 0.72))
+                    poly.append(self._map_xy(sx + vg_cos(a) * r0, sy + vg_sin(a * MEUM_INV) * r0 * 0.72))
                 for k in range(len(poly)):
                     x1, y1 = poly[k]; x2, y2 = poly[(k + 1) % len(poly)]
                     self._line(img, x1, y1, x2, y2, col, min(0.5, 0.10 + 0.34 * al))
@@ -5544,7 +5945,7 @@ class VideoSynthEngine:
                             a = float(np.pi * 2.0 * k / 14.0) + float(key) * 0.017 + self.t * 0.05
                             sw = float(stream[k])
                             rr = rad * (0.45 + 0.85 * (0.5 * sw + 0.5))
-                            pts.append(self._map_xy(cx + math.cos(a) * rr, cy + math.sin(a * MEUM_INV) * rr * 0.7))
+                            pts.append(self._map_xy(cx + vg_cos(a) * rr, cy + vg_sin(a * MEUM_INV) * rr * 0.7))
                         gcol = self._hsv((140 + j * 24 + hz * 0.02 + self._video_hue_shift) % 360, 0.5 + 0.3 * float(self._visual_entropy), 0.55 + 0.35 * chg)
                         for k in range(len(pts)):
                             x1, y1 = pts[k]; x2, y2 = pts[(k + 1) % len(pts)]
@@ -5588,16 +5989,16 @@ class VideoSynthEngine:
             # Numerical key: GOAVA raw/seed, then Meum calculus state.
             key = raw + seed * MEUM_INV + seed_key * 0.00017 + u * MEUM + rho * 0.31
             ang = self.t * (0.12 + 0.0008 * (hz % 31.0)) + uidx * math.tau + key * 0.017
-            depth = 0.72 + 0.28 * math.sin(key * 0.013 + self.t * MEUM)
-            radius = (0.10 + 0.34 * (0.5 + 0.5 * math.sin(key * MEUM_INV + form * 3.0))) * rho * depth
+            depth = 0.72 + 0.28 * vg_sin(key * 0.013 + self.t * MEUM)
+            radius = (0.10 + 0.34 * (0.5 + 0.5 * vg_sin(key * MEUM_INV + form * 3.0))) * rho * depth
             hue = (255 + j * 19 + hz * 0.035 + seed * 0.11 + self._video_hue_shift) % 360
             col = self._hsv(hue, 0.72 + 0.18 * form, 0.82 + 0.18 * min(1.0, self._rms + form))
 
             # 1D: a GOAVA numerical filament whose length responds to calculus line density.
-            x1 = cx + math.cos(ang) * radius * w * (0.25 + 0.30 * line_d)
-            y1 = cy + math.sin(ang) * radius * h * (0.20 + 0.25 * line_d)
-            x2 = cx + math.cos(ang + 0.10 + form * 0.12) * radius * w * (0.42 + 0.35 * line_d)
-            y2 = cy + math.sin(ang + 0.10 + form * 0.12) * radius * h * (0.28 + 0.28 * line_d)
+            x1 = cx + vg_cos(ang) * radius * w * (0.25 + 0.30 * line_d)
+            y1 = cy + vg_sin(ang) * radius * h * (0.20 + 0.25 * line_d)
+            x2 = cx + vg_cos(ang + 0.10 + form * 0.12) * radius * w * (0.42 + 0.35 * line_d)
+            y2 = cy + vg_sin(ang + 0.10 + form * 0.12) * radius * h * (0.28 + 0.28 * line_d)
             x1, y1 = self._map_xy(x1, y1); x2, y2 = self._map_xy(x2, y2)
             self._line(img, x1, y1, x2, y2, col, minor * 0.72 * fade)
 
@@ -5609,7 +6010,7 @@ class VideoSynthEngine:
             # regardless of pitch/seed, which is the same collision pattern the
             # DJ-pair orbit had. A hash-like fractional fold of `key` spreads
             # petal counts by what the note actually is, not where it sits.
-            petals = 4 + int(abs(math.sin(key * 12.9898)) * 100 % 5)
+            petals = 4 + int(abs(vg_sin(key * 12.9898)) * 100 % 5)
             # GOAVA_IRRATIONAL_2026 — waveform resemblance: the 2D/3D shapes
             # trace GOAVA's OWN irrational stream (sampled from the cached seed
             # numbers at this event's base frequency), so the glyph visibly
@@ -5628,9 +6029,9 @@ class VideoSynthEngine:
                     sw = float(_gstream[k])
                     rr = radius * (0.45 + 0.85 * (0.5 * sw + 0.5))
                 else:
-                    rr = radius * (0.50 + 0.34 * math.sin(petals * a + key * 0.021 + u))
-                pts.append(self._map_xy(cx + math.cos(a) * rr * w * 0.33,
-                            cy + math.sin(a * MEUM_INV) * rr * h * 0.25))
+                    rr = radius * (0.50 + 0.34 * vg_sin(petals * a + key * 0.021 + u))
+                pts.append(self._map_xy(cx + vg_cos(a) * rr * w * 0.33,
+                            cy + vg_sin(a * MEUM_INV) * rr * h * 0.25))
             # Filled 2D GOAVA petal sectors: visible surfaces, not merely outlines.
             face_col = self._hsv((hue + 18) % 360, 0.58 + 0.25 * form, 0.72 + 0.20 * form)
             for k in range(1, len(pts) - 1):
@@ -5641,19 +6042,19 @@ class VideoSynthEngine:
 
             # 3D: depth ring projected with Meum-controlled z and a seed-derived tilt.
             ring = []
-            tilt = 0.15 + 0.45 * math.sin(key * 0.007 + u)
+            tilt = 0.15 + 0.45 * vg_sin(key * 0.007 + u)
             for k in range(18):
                 a = ang + k * math.tau / 18.0
                 if _gstream is not None:
                     swk = float(_gstream[k % len(_gstream)])
                     rr = radius * (0.62 + 0.30 * swk)
                 else:
-                    rr = radius * (0.62 + 0.12 * math.sin(a * 3.0 + key))
-                xx = rr * math.cos(a)
-                yy = rr * math.sin(a) * 0.68
-                zz = 1.0 + 0.34 * math.sin(a * 2.0 + key * 0.011) * (0.6 + 0.4 * form)
-                xr = xx * math.cos(tilt) - zz * math.sin(tilt)
-                zr = xx * math.sin(tilt) + zz * math.cos(tilt)
+                    rr = radius * (0.62 + 0.12 * vg_sin(a * 3.0 + key))
+                xx = rr * vg_cos(a)
+                yy = rr * vg_sin(a) * 0.68
+                zz = 1.0 + 0.34 * vg_sin(a * 2.0 + key * 0.011) * (0.6 + 0.4 * form)
+                xr = xx * vg_cos(tilt) - zz * vg_sin(tilt)
+                zr = xx * vg_sin(tilt) + zz * vg_cos(tilt)
                 px, py, _ = self._project(xr, yy, zr, w, h)
                 ring.append(self._map_xy(px, py))
             # 3D depth object: triangulated surface fan plus silhouette.
@@ -5675,8 +6076,8 @@ class VideoSynthEngine:
             u = k / 95.0
             a = self.t * MEUM_INV + u * math.tau * (1.0 + MEUM_NORM)
             r = (0.05 + 0.42 * u) * (0.65 + 0.35 * self._rms)
-            pts.append((cx + math.cos(a) * r * w * 0.46,
-                        cy + math.sin(a * MEUM) * r * h * 0.34))
+            pts.append((cx + vg_cos(a) * r * w * 0.46,
+                        cy + vg_sin(a * MEUM) * r * h * 0.34))
         for k in range(len(pts) - 1):
             col = self._hsv((120 + k * 2 + self._video_hue_shift) % 360, 0.55, 0.72)
             self._line(img, *pts[k], *pts[k + 1], col, alpha=0.42 * fade)
@@ -5693,8 +6094,8 @@ class VideoSynthEngine:
                 u = k / 71.0
                 a = u * math.tau * 3.0 + self.t * 0.3 + arm * math.pi / 2.0
                 r = (0.06 + 0.58 * u) * (0.58 + 0.42 * self._centroid)
-                pts.append((cx + math.cos(a) * r * w * 0.47,
-                            cy + math.sin(a * MEUM_INV) * r * h * 0.40))
+                pts.append((cx + vg_cos(a) * r * w * 0.47,
+                            cy + vg_sin(a * MEUM_INV) * r * h * 0.40))
             col = self._hsv((35 + arm * 70 + self._centroid * 100) % 360, 0.68, 0.82)
             for k in range(len(pts) - 1):
                 self._line(img, *pts[k], *pts[k + 1], col, alpha=0.09 * fade)
@@ -5711,9 +6112,9 @@ class VideoSynthEngine:
             ring_points = int(np.clip(round(28 + 44.0 * getattr(self, "_harmonic_activity", 0.5)), 28, 72))
             for k in range(ring_points):
                 a = k * math.tau / ring_points + self.t * (0.12 + ring * 0.05)
-                z = 1.0 + 0.15 * math.sin(a * 3.0 + self.t * MEUM)
-                pts.append((cx + math.cos(a) * rad * w * 0.35 * z,
-                            cy + math.sin(a) * rad * h * 0.18))
+                z = 1.0 + 0.15 * vg_sin(a * 3.0 + self.t * MEUM)
+                pts.append((cx + vg_cos(a) * rad * w * 0.35 * z,
+                            cy + vg_sin(a) * rad * h * 0.18))
             col = self._hsv((205 + ring * 40 + self._video_hue_shift) % 360, 0.62, 0.78)
             for k in range(len(pts) - 1):
                 self._line(img, *pts[k], *pts[k + 1], col, alpha=0.15 * fade)
@@ -5726,7 +6127,7 @@ class VideoSynthEngine:
         for i in range(34):
             a = i * MEUM_INV + self.t * 0.035 + seed * 0.0007
             r = 0.12 + 0.34 * ((i * MEUM_NORM) % 1.0)
-            x, y, _ = self._project(r * math.cos(a), r * math.sin(a * MEUM), 1.0 + 0.18 * math.sin(a * 2), w, h)
+            x, y, _ = self._project(r * vg_cos(a), r * vg_sin(a * MEUM), 1.0 + 0.18 * vg_sin(a * 2), w, h)
             pts.append((x, y))
         col = self._hsv((215 + self._video_hue_shift) % 360, 0.35, 0.95)
         for i, p in enumerate(pts):
@@ -5753,8 +6154,8 @@ class VideoSynthEngine:
             pts = []
             for k in range(28):
                 a = k * math.tau / 28 + self.t * (0.9 + r * 0.2)
-                rr = rad * (1.0 + 0.18 * math.sin(a * (5 + r) + self.t * 4))
-                pts.append((cx + math.cos(a) * rr * w, cy + math.sin(a) * rr * h * 0.55))
+                rr = rad * (1.0 + 0.18 * vg_sin(a * (5 + r) + self.t * 4))
+                pts.append((cx + vg_cos(a) * rr * w, cy + vg_sin(a) * rr * h * 0.55))
             col = self._hsv((320 + r * 28 + self._centroid * 100) % 360, 0.85, 0.95)
             for k in range(len(pts)-1): self._line(img, *pts[k], *pts[k+1], col, 0.34 * fade)
 
@@ -5767,10 +6168,10 @@ class VideoSynthEngine:
             a = self.t * (0.4 + amp * 1.7) + b * MEUM_INV
             r = 0.15 + amp * 0.38
             cx, cy = w * 0.5, h * 0.45
-            x = cx + math.cos(a) * r * w
-            y = cy + math.sin(a * MEUM) * r * h * 0.48
-            tx = cx + math.cos(a - 0.28) * r * w * 0.72
-            ty = cy + math.sin((a - 0.28) * MEUM) * r * h * 0.36
+            x = cx + vg_cos(a) * r * w
+            y = cy + vg_sin(a * MEUM) * r * h * 0.48
+            tx = cx + vg_cos(a - 0.28) * r * w * 0.72
+            ty = cy + vg_sin((a - 0.28) * MEUM) * r * h * 0.36
             col = self._hsv((25 + b * 42 + self._video_hue_shift) % 360, 0.9, 0.98)
             self._line(img, tx, ty, x, y, col, (0.35 + 0.55 * amp) * fade)
             self._dot(img, x, y, col, 0.8 * fade, r=1 + int(amp * 3))
@@ -5784,8 +6185,8 @@ class VideoSynthEngine:
             a = self.t * 0.12 + i * math.tau / spokes
             amp = 0.35 + 0.65 * float(self._band[i % 8])
             r = (0.12 + 0.25 * amp) * st["rho"]
-            x = cx + math.cos(a) * r * w
-            y = cy + math.sin(a) * r * h * 0.55
+            x = cx + vg_cos(a) * r * w
+            y = cy + vg_sin(a) * r * h * 0.55
             col = self._hsv((70 + i * 13 + self._video_hue_shift) % 360, 0.72, 0.9)
             self._line(img, cx, cy, x, y, col, 0.18 * fade + 0.25 * fade * amp)
 
@@ -5793,12 +6194,12 @@ class VideoSynthEngine:
         fade = self._module_fade.get("pulse_grid", 0.0)
         if fade <= 0.02: return
         n = 8 + int(8 * st["snap"].get("struct", 0.0))
-        pulse = abs(math.sin(self.t * math.pi * max(1.0, st["snap"].get("bpm", 120.0)) / 60.0))
+        pulse = abs(vg_sin(self.t * math.pi * max(1.0, st["snap"].get("bpm", 120.0)) / 60.0))
         col = self._hsv((45 + self._video_hue_shift) % 360, 0.8, 0.9)
         for i in range(n):
             u = i / max(n - 1, 1)
             x = u * w
-            y = h * 0.5 + math.sin(self.t * 0.4 + i * MEUM) * h * 0.16 * (0.3 + 0.7 * pulse)
+            y = h * 0.5 + vg_sin(self.t * 0.4 + i * MEUM) * h * 0.16 * (0.3 + 0.7 * pulse)
             self._dot(img, x, y, col, (0.12 + 0.45 * pulse) * fade, r=1 + int(2 * pulse))
 
     def _collect_fit_points(self, w, h, st):
@@ -5812,8 +6213,8 @@ class VideoSynthEngine:
             for k in range(8):
                 a = self.t * MEUM_NORM + k * (math.tau / 8.0) + s * 0.4
                 pts.append((
-                    cx + rad * w * 0.35 * math.cos(a) * MEUM_INV,
-                    cy + rad * h * 0.28 * math.sin(a) * MEUM,
+                    cx + rad * w * 0.35 * vg_cos(a) * MEUM_INV,
+                    cy + rad * h * 0.28 * vg_sin(a) * MEUM,
                 ))
         e = self._rms
         n_visible = int(round(getattr(self, "_render_n", self.n)))
@@ -5830,25 +6231,25 @@ class VideoSynthEngine:
             # legible while still giving every instrument its own motion.
             yaw = (layer["yaw"]
                    + self.t * (0.105 + 0.16 * e + 0.055 * snap["eqr"])
-                   + 0.10 * math.sin(self.t * 0.23 + i * MEUM_INV)
+                   + 0.10 * vg_sin(self.t * 0.23 + i * MEUM_INV)
                    + local * 0.22)
-            pitch = layer["pitch"] + 0.095 * local + 0.035 * math.sin(self.t * 0.19 + i * 0.37)
-            roll = layer["roll"] + 0.055 * e * math.sin(self.t * 0.31 + i * MEUM)
+            pitch = layer["pitch"] + 0.095 * local + 0.035 * vg_sin(self.t * 0.19 + i * 0.37)
+            roll = layer["roll"] + 0.055 * e * vg_sin(self.t * 0.31 + i * MEUM)
             n_v = max(3, 3 + int(((i * MEUM * 5.0) % 1.0) * 4))
-            beat = abs(math.sin(self.t * math.pi * max(1.0, float(snap.get("bpm", 120.0))) / 60.0))
+            beat = abs(vg_sin(self.t * math.pi * max(1.0, float(snap.get("bpm", 120.0))) / 60.0))
             breathe = 1.0 + 0.045 * beat * (0.35 + 0.65 * e)
             scale = ((0.26 + 0.32 * abs(local) + 0.14 * e)
                      * (0.28 + 0.72 * life) * st["rho"]
                      * float(layer.get("implode", 1.0)) * breathe)
             ang0 = self.t * 0.35 + i * 0.2
-            cosy, siny = math.cos(yaw), math.sin(yaw)
-            cosp, sinp = math.cos(pitch), math.sin(pitch)
-            cosr, sinr = math.cos(roll), math.sin(roll)
+            cosy, siny = vg_cos(yaw), vg_sin(yaw)
+            cosp, sinp = vg_cos(pitch), vg_sin(pitch)
+            cosr, sinr = vg_cos(roll), vg_sin(roll)
             for k in range(n_v):
                 a = ang0 + k * (math.tau / n_v)
-                px = layer.get("field_x", 0.0) + scale * math.cos(a)
-                py = layer.get("field_y", 0.0) + scale * math.sin(a)
-                pz = layer.get("field_z", 0.0) + 0.06 * math.sin(a * 2 + self.t)
+                px = layer.get("field_x", 0.0) + scale * vg_cos(a)
+                py = layer.get("field_y", 0.0) + scale * vg_sin(a)
+                pz = layer.get("field_z", 0.0) + 0.06 * vg_sin(a * 2 + self.t)
                 xr = px * cosr - py * sinr
                 yr = px * sinr + py * cosr
                 yp = yr * cosp - pz * sinp
@@ -5866,15 +6267,15 @@ class VideoSynthEngine:
             for j, ev in enumerate(events[:gcount]):
                 key = float(ev.get("raw", 0.0)) + float(ev.get("seed", 0.0)) * MEUM_INV
                 a = self.t * 0.12 + j * math.tau / max(gcount, 1) + key * 0.017
-                rad = (0.10 + 0.34 * (0.5 + 0.5 * math.sin(key * MEUM_INV + st["form"] * 3.0))) * st["rho"]
-                pts.append((w * 0.5 + math.cos(a) * rad * w * 0.45, h * 0.43 + math.sin(a) * rad * h * 0.34))
+                rad = (0.10 + 0.34 * (0.5 + 0.5 * vg_sin(key * MEUM_INV + st["form"] * 3.0))) * st["rho"]
+                pts.append((w * 0.5 + vg_cos(a) * rad * w * 0.45, h * 0.43 + vg_sin(a) * rad * h * 0.34))
         n_part = 12 + int(16 * self._rms)
         seed_i = int(abs(snap["seed"])) & 0xFFFF
         for p in range(min(n_part, 24)):
             ang = self.t * 0.65 + p * 0.37 + seed_i * 0.01 + st["ph"] * math.tau
             rr = 0.15 + 0.45 * abs(float(self.wave[p % 256])) * st["rho"]
             sx, sy, _ = self._project(
-                rr * math.cos(ang), rr * math.sin(ang * MEUM),
+                rr * vg_cos(ang), rr * vg_sin(ang * MEUM),
                 1.05 + 0.35 * self._rms, w, h,
             )
             pts.append((sx, sy))
@@ -5882,7 +6283,75 @@ class VideoSynthEngine:
 
 
 
+    def _subscene_engine_ornaments(self, img, w, h, st):
+        """Extra closed-form ornaments driven by the same engine flags as audio.
+
+        Each ornament is a pure function of (seed, t, snap flags, spectrum).
+        Enabling GOAVA / phase-lock / seeded / euclid changes which ornaments
+        appear — mirroring how those engines change the audible mix — without
+        inventing a second non-deterministic visual identity.
+        """
+        snap = st.get("snap", {}) if isinstance(st.get("snap"), dict) else {}
+        seed = float(snap.get("seed", 0.0))
+        e = float(np.clip(self._rms, 0.0, 1.0))
+        c = float(np.clip(self._centroid, 0.0, 1.0))
+        cx, cy = w * 0.5, h * 0.46
+        # phase-lock rings
+        if snap.get("phase_lock") or snap.get("euclid"):
+            rings = 2 + int(3 * e)
+            for r in range(rings):
+                pts = []
+                rad = (0.14 + 0.11 * r) * (0.7 + 0.3 * e)
+                segs = 24 + int(20 * e)
+                for k in range(segs):
+                    a = k * math.tau / segs + self.t * (0.08 + 0.03 * r) + seed * 0.001
+                    px, py, _ = self._project(rad * vg_cos(a), rad * vg_sin(a) * 0.72,
+                                              0.9 + 0.15 * r, w, h)
+                    pts.append((px, py))
+                col = self._hsv((190 + r * 25 + self._video_hue_shift) % 360, 0.55, 0.7)
+                for k in range(len(pts)):
+                    self._line(img, pts[k][0], pts[k][1],
+                               pts[(k + 1) % len(pts)][0], pts[(k + 1) % len(pts)][1],
+                               col, 0.12 + 0.10 * e)
+        # seeded constellation sparks
+        if snap.get("seeded") or snap.get("randomizer"):
+            n_sparks = 8 + int(16 * e)
+            for i in range(n_sparks):
+                u = identity_unit("spark", seed, "ornament", i)
+                a = u * math.tau + self.t * 0.11
+                rr = 0.12 + 0.40 * ((u * PHI) % 1.0)
+                px, py, _ = self._project(rr * vg_cos(a), rr * vg_sin(a * MEUM_INV) * 0.7,
+                                          0.85 + 0.2 * ((u * MEUM) % 1.0), w, h)
+                col = self._hsv((40 + 280 * u + self._video_hue_shift) % 360, 0.65, 0.85)
+                self._dot(img, px, py, col, 0.18 + 0.22 * e, r=1 + (i % 2))
+        # meum spiral (always mild, stronger with harmonic activity)
+        harm = float(np.clip(getattr(self, "_harmonic_activity", 0.5), 0.0, 1.0))
+        fade_sp = 0.25 + 0.55 * harm
+        if fade_sp > 0.05:
+            pts = []
+            for k in range(64):
+                u = k / 63.0
+                a = u * math.tau * 3.0 * MEUM + self.t * 0.22
+                rr = (0.05 + 0.48 * u) * (0.6 + 0.4 * e)
+                px, py, _ = self._project(rr * vg_cos(a), rr * vg_sin(a * MEUM_INV),
+                                          1.0 + 0.1 * vg_sin(a), w, h)
+                pts.append((px, py))
+            col = self._hsv((280 + self._video_hue_shift) % 360, 0.5, 0.65)
+            for k in range(len(pts) - 1):
+                self._line(img, *pts[k], *pts[k + 1], col, 0.08 * fade_sp)
+        # carrier wake
+        if float(snap.get("carrier", 0.0) or 0.0) > 0.0:
+            for k in range(20):
+                u = k / 19.0
+                a = self.t * 0.4 + u * math.tau
+                rr = 0.35 + 0.15 * vg_sin(self.t * 0.5 + u * 4)
+                px, py, _ = self._project(rr * vg_cos(a), rr * vg_sin(a) * 0.5,
+                                          1.1, w, h)
+                col = self._hsv((160 + 40 * u) % 360, 0.4, 0.55)
+                self._dot(img, px, py, col, 0.10 + 0.08 * e, r=1)
+
     def fractal_spatial_snapshot(self, depth=3, roots=8, seed=None, goava=False):
+
         """Project the canonical visual composition into the audio-immutable spatial grammar."""
         if seed is None:
             seed = self._canonical_ctx.get("seed", 0.0) if isinstance(getattr(self, "_canonical_ctx", None), dict) else 0.0
@@ -6013,10 +6482,27 @@ class VideoSynthEngine:
         # same InstrumentVisualObject class. There are no catalog-count graphics,
         # independent shape generators, or n-dependent identity placements.
         self._subscene_faces_segments(img, w, h, st)
+        # Full scenograph stack — every module is a closed-form function of the
+        # same composition state the audio engine uses. Fade schedule (above)
+        # decides presence; nothing here is random or N-dependent for identity.
+        self._subscene_volumes(img, w, h, st)
+        self._subscene_particles(img, w, h, st)
+        self._subscene_math_filaments(img, w, h, st)
+        self._subscene_math_roses(img, w, h, st)
+        self._subscene_orbitals(img, w, h, st)
+        self._subscene_constellations(img, w, h, st)
+        self._subscene_lattice(img, w, h, st)
+        self._subscene_bursts(img, w, h, st)
+        self._subscene_spectral_comets(img, w, h, st)
+        self._subscene_rhythm_mandala(img, w, h, st)
+        self._subscene_pulse_grid(img, w, h, st)
+        self._subscene_wave_integration(img, w, h, st)
         # GOAVA remains a second graphical class, intentionally separate because
         # its identity is its own irrational numerical stream rather than an
         # ordinary instrument voice.
         self._subscene_goava(img, w, h, st)
+        # Engine-flag ornaments + ambient field (deterministic, composition-tied).
+        self._subscene_engine_ornaments(img, w, h, st)
 
         # Bright ambient phase field. This is not another object class: it is a
         # low-cost compositing envelope derived from the same canonical state.
@@ -6024,8 +6510,11 @@ class VideoSynthEngine:
         for q in range(12):
             a = self.t*(0.045+0.006*q) + q*MEUM
             rr = min(w,h)*(0.12+0.035*q)*(0.75+0.25*self._visual_entropy)
-            x = cx + math.cos(a)*rr
-            y = cy + math.sin(a*MEUM_INV)*rr*0.72
+            # Camera-aware ambient: orbit slightly with yaw so the field feels
+            # attached to the world, not glued to the screen.
+            yaw_bias = float(getattr(self, "_cam_yaw", 0.0)) * 0.15
+            x = cx + vg_cos(a + yaw_bias)*rr
+            y = cy + vg_sin(a*MEUM_INV + float(getattr(self, "_cam_pitch", 0.0))*0.1)*rr*0.72
             col = self._hsv((q*30 + self._video_hue_shift + self._canonical_ctx.get("seed",0.0)*0.17)%360, 0.45, 0.82)
             self._dot(img,x,y,col,0.10+0.08*self._rms,r=1)
 
@@ -8428,10 +8917,7 @@ Windows
   Realtime: sounddevice OutputStream callback; master volume live
   Export: shared _render_mixdown_buffer → WAV; 2.5D MP4 includes rendered audio
   PKP hits: non-blocking sd.play blips when pad bank is armed
-
-  Install:
-    pip install numpy PyQt6 sounddevice scipy
-    python groovebox.py
+  (Install / dependencies are listed at the bottom of this guide.)
 
 --------------------------------------------------------------------------------
 14. 48 OPERATORS
@@ -8477,6 +8963,116 @@ Each has sequencer memory (steps, amplitudes, gates, probabilities) and optional
   never replace the master bus. Engines may resize the selected sequence
   (and other bank slots) when the user has not touched any of its steps.
 
+--------------------------------------------------------------------------------
+GLOBAL PLAY PANEL — ALGORITHMS, PARAMS & LAUNCHED WINDOWS
+--------------------------------------------------------------------------------
+  The Global Play group is the project-level algorithm layer. It never overwrites
+  the seed field or per-instrument seed scripts. Text lives in global_algo_state
+  until you apply it to the master mix / ensemble.
+
+  MAIN CONTROLS
+  -------------
+  🎲 Randomize Global Play Algorithm
+      Fills Script, Domain, Wire, and amount params from the Meum/PED vocabulary.
+      AUTHORING ONLY — does not apply to the ensemble until you press Apply.
+
+  ▶ Apply Algo to Master Mix  (toggle)
+      ON  → enabled layers (script / domain / wire) broadcast to the ensemble.
+      OFF → written music/shapes left alone. Undoable (Ctrl+Z).
+
+  Script Algo (multi-line text)
+      Project-level script over t, MEUM, PHI, seed, instrument name / i.
+      Typical form:
+          def global_script(t, name, i):
+              v = isn(t * MEUM) * 0.4 + ics(t * PHI) * 0.3
+              return v * 0.35
+      Same expression language as the seed field (sin/cos/isn/ics, conditionals,
+      return). When Operator Theory is ON, sin/cos/… use the equivalence kernel.
+
+  Domain Algo (single line)
+      Equation string, e.g. sin(t * MEUM) + cos(t * PHI).
+      Live hints: sin/cos → phase · log/exp → scale · domain → transmutor.
+
+  Wire Algo button  → opens Global Wire Algo window
+      Routing matrix: detectors → targets with amounts.
+      Detectors: phase, energy, spectrum, goava, euclidean, seed, bpm, pair
+      Targets:   master_mix, fractallizer, eqr, pkp, ensemble, scenograph,
+                 domain, unison
+
+  Algo Params button → opens Global Algo Params window
+      mix                  overall wet (default ~0.35)
+      enable_script/domain/wire   per-layer gates
+      script_amount / domain_amount / wire_amount   same as main sliders
+
+  Mix / Script / Domain / Wire amount sliders (0–100%)
+      Relative wet amounts when Apply is on.
+
+  APPLY RULES
+  -----------
+  • Randomize never auto-applies (authoring only).
+  • Apply ON pushes enabled layers; Apply OFF stops the overlay.
+  • Algorithm state is userdata (saved in the project) and undoable.
+  • Global Play never writes the seed field.
+
+  WORKFLOW
+  --------
+  1. Randomize or type Script / Domain text.
+  2. Adjust amount sliders; open Wire / Params windows if needed.
+  3. Press Apply Algo to Master Mix to hear the overlay.
+  4. Toggle Apply off or Undo to revert the ensemble overlay.
+
+--------------------------------------------------------------------------------
+DEPENDENCIES (install last — same list as project README.md)
+--------------------------------------------------------------------------------
+  Python packages (pip) — every OS:
+    PyQt6          UI
+    numpy          DSP / buffers
+    scipy          WAV I/O helpers, signal utilities
+    sounddevice    Real-time audio I/O
+    Pillow         Frame export (PNG) for video
+
+  System tools:
+    Python 3.9+ (3.10–3.12 recommended)
+    ffmpeg + ffprobe (full build with encoders) for video/audio export
+    PortAudio / ALSA / CoreAudio (via sounddevice) for playback
+
+  One-shot installers (preferred):
+    Linux:   ./install_deps_linux.sh   [--fedora | --ubuntu]
+    macOS:   ./install_deps_macos.sh
+    Windows: ./install_deps_windows.ps1
+
+  Manual pip (any OS):
+    python3 -m pip install --upgrade pip
+    python3 -m pip install numpy scipy PyQt6 sounddevice Pillow
+
+  Ubuntu/Debian system packages:
+    sudo apt install -y python3 python3-pip python3-venv python3-dev \
+      build-essential ffmpeg libasound2-dev portaudio19-dev
+
+  Fedora:
+    sudo dnf install -y python3 python3-pip python3-devel gcc gcc-c++ \
+      ffmpeg ffmpeg-libs alsa-lib-devel portaudio-devel
+    (enable RPM Fusion for full ffmpeg codecs)
+
+  macOS:
+    brew install python ffmpeg portaudio
+
+  Windows:
+    winget install Python.Python.3.12
+    winget install Gyan.FFmpeg
+
+  Optional: place static ffmpeg / ffprobe in ./bin/ next to groovebox.py
+  (the app checks there first).
+
+  Verify:
+    python3 -c "import numpy, scipy, PyQt6.QtCore, sounddevice, PIL; print('OK')"
+    ffmpeg -hide_banner -version | head -1
+
+  Run:
+    ./launch_desktop.sh
+    # or: python3 groovebox.py
+
+--------------------------------------------------------------------------------
   End of Help — Groovebox
   Credits: Grok (xAI), Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI),
   Mistral.ai (Mistral), Meta AI (Meta), GitHub Copilot (GitHub),
@@ -14597,7 +15193,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         events = []
         for i, number in enumerate(numbers):
             hz, raw = goava_frequency(number, i, numbers, base)
-            pitch = float(np.clip(hz / max(base, 1e-6), 0.125, 16.0))
+            # GOAVA: no pitch-ratio clip — report true mapped ratio.
+            _den = max(float(base), 1e-12)
+            pitch = float(hz / _den) if math.isfinite(hz) else 1.0
+            if not math.isfinite(pitch) or pitch <= 0.0:
+                pitch = 1.0
             events.append({
                 "step": i,
                 "seed": float(number),
@@ -18542,7 +19142,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         _goava_ratio = float(_ev.get("pitch", 1.0))
                     except Exception:
                         _goava_ratio = 1.0
-                    _goava_ratio = max(0.125, min(16.0, _goava_ratio))
+                    # GOAVA: no frequency-ratio cutoffs/clips.
+                    if not math.isfinite(_goava_ratio) or _goava_ratio <= 0.0:
+                        _goava_ratio = 1.0
                     goava_freq = float(base_freq) * _goava_ratio
                 else:
                     goava_freq = float(base_freq)
@@ -21250,6 +21852,33 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     self._apply_global_algo_to_ensemble("wire")
         except Exception as e:
             print(f"[Load] global algo re-apply: {e}")
+        # Visual camera / deterministic view state (was previously orphaned).
+        try:
+            self._apply_visual_view_state(data.get("visual_view_state", {}))
+        except Exception as e:
+            print(f"[Load] visual view state: {e}")
+        # Force UI surfaces that hold loaded data to repaint / rebind.
+        try:
+            if hasattr(self, "reload_active_instrument_sequencer_ui"):
+                self.reload_active_instrument_sequencer_ui()
+        except Exception as e:
+            print(f"[Load] sequencer UI: {e}")
+        try:
+            if hasattr(self, "_refresh_step_ui"):
+                self._refresh_step_ui()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "update_playlist_display"):
+                self.update_playlist_display()
+            elif hasattr(self, "_refresh_playlist_ui"):
+                self._refresh_playlist_ui()
+        except Exception:
+            pass
+        try:
+            QApplication.processEvents()
+        except Exception:
+            pass
 
 
     def export_project_json(self):
@@ -21267,8 +21896,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if not path.lower().endswith(".mgpr"):
             path = path + ".mgpr"
         return path
-
-        self._apply_visual_view_state(data.get("visual_view_state", {}))
 
     def _apply_visual_view_state(self, state):
         try:
@@ -21374,7 +22001,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             d = self._projects_dir()
             candidates = []
             for name in sorted(os.listdir(d)):
-                if name.endswith(".part") and os.path.isfile(os.path.join(d, name)):
+                # Only project recovery documents (*.mgpr.part), never video
+                # segment leftovers or pid tmp files.
+                if (name.endswith(".mgpr.part")
+                        and not name.endswith(".tmp")
+                        and os.path.isfile(os.path.join(d, name))):
                     candidates.append(os.path.join(d, name))
             if not candidates:
                 return
@@ -21422,11 +22053,24 @@ class MathematiciansGrooveboxApp(QMainWindow):
         classification) reads the restored source-of-truth — identical
         canonical fingerprint ⇒ identical exports/play as the saved session.
         """
-        path, _ = QFileDialog.getOpenFileName(self, "Load Mathematician's Groovebox Project", "", "Mathematician's Groovebox Project (*.mgpr)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load Mathematician's Groovebox Project", "",
+            "Mathematician's Groovebox Project (*.mgpr *.mgpr.part);;All files (*)",
+        )
         if not path:
             return
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            # Autorecovery: if user picks a leftover .mgpr.part (or a .mgpr that
+            # is missing but the .part sibling exists), load the recoverable copy.
+            load_path = path
+            if path.lower().endswith(".mgpr.part"):
+                load_path = path
+            elif not os.path.isfile(path) and os.path.isfile(path + ".part"):
+                load_path = path + ".part"
+            elif path.lower().endswith(".mgpr") and os.path.isfile(path + ".part"):
+                # Prefer complete .mgpr; only fall back if it fails to parse.
+                load_path = path
+            with open(load_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             self._apply_project_snapshot(data)
             try:
@@ -28226,211 +28870,378 @@ class MathematiciansGrooveboxApp(QMainWindow):
         dlg.exec()
 
     def export_video_dialog(self, include_audio=True, container="mp4"):
-        """Render 2.5D frames; optionally mux audio. container: mp4|webm|avi."""
-        tmp = None
+        """Render 2.5D frames in 16 recoverable .part segments inside the
+        chosen render destination (never /tmp). User controls resolution;
+        size is predicted before work starts. container: mp4|webm|avi.
+
+        PART_FILE_2026 video path:
+          - intermediates live next to the final file as
+            <stem>.partNN.<container>.part  (16 parts)
+          - each part is encoded independently so peak disk is ~1/16 of a
+            full frame dump; completed parts survive a crash for resume
+          - final output is written as <out>.part then atomically renamed
+        """
         try:
             from PIL import Image
-            ffmpeg = self._resolve_ffmpeg_binary()
-            if not ffmpeg:
-                raise RuntimeError(
-                    "ffmpeg not found. Install a full build (see Help) or place "
-                    "ffmpeg at ./bin/ffmpeg or on PATH."
-                )
-            container = (container or "mp4").lower().lstrip(".")
-            if container not in ("mp4", "webm", "avi"):
-                container = "mp4"
-            vcodec, vargs, acodec, aargs = self._ffmpeg_encoder_args(ffmpeg, container)
+        except Exception as e:
+            QMessageBox.critical(self, "Video Export Error", f"PIL required: {e}")
+            return
 
-            default_name = os.path.join(
-                self._exports_dir(), f"groovebox_video_{self.export_counter:03d}.{container}"
+        ffmpeg = self._resolve_ffmpeg_binary()
+        if not ffmpeg:
+            QMessageBox.critical(
+                self, "Video Export Error",
+                "ffmpeg not found. Install a full build (see Help) or place "
+                "ffmpeg at ./bin/ffmpeg or on PATH."
             )
-            filters = {
-                "mp4": "MP4 Video (*.mp4)",
-                "webm": "WebM Video (*.webm)",
-                "avi": "AVI Video (*.avi)",
-            }
-            file_filter = f"{filters[container]};;All Files (*)"
-            out_path, _ = QFileDialog.getSaveFileName(
-                self, "Export Video", default_name, file_filter
+            return
+
+        container = (container or "mp4").lower().lstrip(".")
+        if container not in ("mp4", "webm", "avi"):
+            container = "mp4"
+        vcodec, vargs, acodec, aargs = self._ffmpeg_encoder_args(ffmpeg, container)
+
+        # --- resolution control ---
+        try:
+            def_w, def_h = self._export_frame_size()
+        except Exception:
+            def_w, def_h = 1280, 720
+        res_dlg = QDialog(self)
+        res_dlg.setWindowTitle("Video Export — Resolution & Size")
+        res_dlg.setStyleSheet(getattr(self, "styleSheet", lambda: "")() or "")
+        form = QFormLayout(res_dlg)
+        spin_w = QSpinBox(); spin_w.setRange(160, 7680); spin_w.setSingleStep(2); spin_w.setValue(int(def_w))
+        spin_h = QSpinBox(); spin_h.setRange(120, 4320); spin_h.setSingleStep(2); spin_h.setValue(int(def_h))
+        form.addRow("Width (px)", spin_w)
+        form.addRow("Height (px)", spin_h)
+        info = QLabel("Size estimate appears after you choose the output path.")
+        info.setWordWrap(True)
+        form.addRow(info)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(res_dlg.accept)
+        btns.rejected.connect(res_dlg.reject)
+        form.addRow(btns)
+        if res_dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        w = int(spin_w.value()); h = int(spin_h.value())
+        w -= w % 2; h -= h % 2
+        w = max(160, w); h = max(120, h)
+
+        default_name = os.path.join(
+            self._exports_dir(), f"groovebox_video_{self.export_counter:03d}.{container}"
+        )
+        filters = {
+            "mp4": "MP4 Video (*.mp4)",
+            "webm": "WebM Video (*.webm)",
+            "avi": "AVI Video (*.avi)",
+        }
+        file_filter = f"{filters[container]};;All Files (*)"
+        out_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Video", default_name, file_filter
+        )
+        if not out_path:
+            return
+        if not out_path.lower().endswith("." + container):
+            out_path = out_path + "." + container
+
+        dest_dir = os.path.dirname(os.path.abspath(out_path)) or self._exports_dir()
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+        except Exception:
+            pass
+        stem = os.path.splitext(os.path.basename(out_path))[0]
+        N_PARTS = 16
+
+        if hasattr(self, 'scope_status_label'):
+            mode = "Video + Audio" if include_audio else "Video only"
+            self.scope_status_label.setText(f"🎬 Preparing {mode} ({container}) {w}x{h}…")
+        QApplication.processEvents()
+
+        master, sr = self._render_mixdown_buffer()
+        master = self._bake_dj_write(master, sr)
+        provenance = self._export_provenance_payload()
+        fps = 24
+        frame_samples = max(1, int(sr / fps))
+        n_frames = max(1, int(np.ceil(len(master) / frame_samples)))
+        n_frames = min(n_frames, fps * 60 * 30)  # soft 30 min ceiling
+        duration_s = n_frames / float(fps)
+
+        # --- size prediction ---
+        # Rough final-video estimate: ~CRF18 ~0.15–0.35 bits/pixel/frame + audio.
+        bpp = 0.22
+        est_video_bytes = int(n_frames * w * h * bpp / 8.0)
+        est_audio_bytes = int(duration_s * 192000 / 8.0) if include_audio else 0
+        # Peak intermediate: one part's frames as PNG (~0.4 of raw RGB) + that part video
+        frames_per_part = (n_frames + N_PARTS - 1) // N_PARTS
+        est_peak_part_png = int(frames_per_part * w * h * 3 * 0.35)
+        est_peak = est_peak_part_png + (est_video_bytes // N_PARTS) + est_audio_bytes
+        def _fmt(n):
+            for unit, div in (("GB", 1<<30), ("MB", 1<<20), ("KB", 1<<10)):
+                if n >= div:
+                    return f"{n / div:.2f} {unit}"
+            return f"{n} B"
+        size_msg = (
+            f"Resolution: {w}×{h} @ {fps} fps\n"
+            f"Frames: {n_frames}  (~{duration_s:.1f}s)  in {N_PARTS} parts\n"
+            f"Predicted final size: ~{_fmt(est_video_bytes + est_audio_bytes)}\n"
+            f"Predicted peak temp (1 part): ~{_fmt(est_peak)}\n"
+            f"Part files will be written under:\n{dest_dir}\n\nContinue?"
+        )
+        reply = QMessageBox.question(
+            self, "Export size prediction", size_msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Recovery: reuse completed part videos if present and non-empty
+        part_paths = []
+        for pi in range(N_PARTS):
+            part_paths.append(os.path.join(dest_dir, f"{stem}.part{pi:02d}.{container}"))
+        existing = [p for p in part_paths if os.path.isfile(p) and os.path.getsize(p) > 64]
+        resume = False
+        if existing:
+            r = QMessageBox.question(
+                self, "Recover partial export?",
+                f"Found {len(existing)}/{N_PARTS} existing .part segment(s) in the render folder.\n"
+                "Yes = resume (skip completed parts)\nNo = delete them and start fresh",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
             )
-            if not out_path:
-                return
-            if not out_path.lower().endswith("." + container):
-                out_path = out_path + "." + container
+            resume = (r == QMessageBox.StandardButton.Yes)
+            if not resume:
+                for p in part_paths:
+                    try:
+                        if os.path.isfile(p):
+                            os.remove(p)
+                    except Exception:
+                        pass
+                for p in part_paths:
+                    try:
+                        pp = p + ".part"
+                        if os.path.isfile(pp):
+                            os.remove(pp)
+                    except Exception:
+                        pass
 
-            if hasattr(self, 'scope_status_label'):
-                mode = "Video + Audio" if include_audio else "Video only"
-                self.scope_status_label.setText(f"🎬 Rendering {mode} ({container})…")
-            QApplication.processEvents()
-
-            master, sr = self._render_mixdown_buffer()
-            master = self._bake_dj_write(master, sr)
-            # REVERSE_ENGINEERING: every exported video carries its plain
-            # generation manifest in container metadata (ffmpeg 'comment'),
-            # so re-deriving the original main-window settings is trivial.
-            provenance = self._export_provenance_payload()
-            # Meum-friendly frame rate (~24 * MEUM_NORM*PHI cluster stays near 24)
-            fps = max(12, int(round(24 * MEUM_NORM / MEUM_NORM)))  # 24
-            fps = 24
-            frame_samples = max(1, int(sr / fps))
-            n_frames = max(1, int(np.ceil(len(master) / frame_samples)))
-            # No artificial 60s cap — export the full rendered track.
-            # Soft safety ceiling (30 min) only to avoid runaway memory on bad state.
-            n_frames = min(n_frames, fps * 60 * 30)
-            duration_s = n_frames / float(fps)
-            # Resolution = main window at export time (not the in-pane thumbnail)
-            w, h = self._export_frame_size()
-
-            tmp = tempfile.mkdtemp(prefix="eqr_vid_")
-            frames_dir = os.path.join(tmp, "frames")
-            os.makedirs(frames_dir, exist_ok=True)
-            audio_path = os.path.join(tmp, "groovebox_audio.wav")
-
-            # Trim audio to the video duration so mux lengths match.
-            if include_audio:
-                n_audio = min(len(master), int(round(duration_s * sr)))
-                audio_clip = master[:max(1, n_audio)]
+        audio_path = None
+        if include_audio:
+            audio_path = os.path.join(dest_dir, f".{stem}.audio.part.wav")
+            n_audio = min(len(master), int(round(duration_s * sr)))
+            audio_clip = master[:max(1, n_audio)]
+            pcm = (np.clip(audio_clip, -1, 1) * 32767).astype(np.int16)
+            try:
                 if wavfile is not None:
-                    wavfile.write(audio_path, sr, (np.clip(audio_clip, -1, 1) * 32767).astype(np.int16))
+                    wavfile.write(audio_path, sr, pcm)
                 else:
                     with wave.open(audio_path, 'wb') as wf:
-                        wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr)
-                        wf.writeframes((np.clip(audio_clip, -1, 1) * 32767).astype(np.int16).tobytes())
+                        wf.setnchannels(1)
+                        wf.setsampwidth(2)
+                        wf.setframerate(int(sr))
+                        wf.writeframes(pcm.tobytes())
+            except Exception as e:
+                raise RuntimeError(f"Could not write audio temp: {e}")
 
-            _aim = getattr(self, 'active_instrument_memory', None)
-            _nmem = len(_aim) if hasattr(_aim, '__len__') else int(getattr(self, 'synth_count', 48) or 48)
-            eng = getattr(self, 'video_synth_engine', None) or VideoSynthEngine(_nmem)
-            if hasattr(eng, 'bind_app'):
-                eng.bind_app(self)
-            # w, h already set from _export_frame_size()
-            for fi in range(n_frames):
-                a = fi * frame_samples
-                b = min(len(master), a + frame_samples)
-                ph = fi / max(n_frames - 1, 1)
-                eng.set_waveform(master[a:b], playhead=ph)
-                # export=True: pure scenograph — no oscilloscope / FFT UI chrome
-                frame = eng.render_frame(w, h, export=True)
-                # Two-way signal-to-output: ingest feeds the exported frame's
-                # digest back into the software side, matching the live path.
+        _aim = getattr(self, 'active_instrument_memory', None)
+        _nmem = len(_aim) if hasattr(_aim, '__len__') else int(getattr(self, 'synth_count', 48) or 48)
+        eng = getattr(self, 'video_synth_engine', None) or VideoSynthEngine(_nmem)
+        if hasattr(eng, 'bind_app'):
+            eng.bind_app(self)
+
+        pix = ["-pix_fmt", "yuv420p"] if vcodec not in ("mjpeg",) else []
+        frames_root = os.path.join(dest_dir, f".{stem}.frames.part")
+        try:
+            os.makedirs(frames_root, exist_ok=True)
+        except Exception as e:
+            raise RuntimeError(f"Cannot create frames staging dir in render destination: {e}")
+
+        try:
+            for pi in range(N_PARTS):
+                part_out = part_paths[pi]
+                if resume and os.path.isfile(part_out) and os.path.getsize(part_out) > 64:
+                    if hasattr(self, 'scope_status_label'):
+                        self.scope_status_label.setText(f"🎬 Part {pi+1}/{N_PARTS} already done — skip")
+                        QApplication.processEvents()
+                    continue
+
+                f0 = pi * frames_per_part
+                f1 = min(n_frames, (pi + 1) * frames_per_part)
+                if f0 >= f1:
+                    # empty trailing part: write a 1-frame placeholder so concat stays aligned
+                    f1 = f0 + 1
+                    f0 = max(0, n_frames - 1)
+
+                part_frames_dir = os.path.join(frames_root, f"p{pi:02d}")
                 try:
-                    eng.ingest_video_frame_stats(*eng.frame_stats(frame))
+                    os.makedirs(part_frames_dir, exist_ok=True)
                 except Exception:
                     pass
-                Image.fromarray(frame, mode="RGB").save(os.path.join(frames_dir, f"frame_{fi:05d}.png"))
-                if fi % 12 == 0 and hasattr(self, 'scope_status_label'):
-                    self.scope_status_label.setText(f"🎬 Frames {fi}/{n_frames}…")
-                    QApplication.processEvents()
+                # clear previous attempt frames for this part
+                for old in os.listdir(part_frames_dir):
+                    try:
+                        os.remove(os.path.join(part_frames_dir, old))
+                    except Exception:
+                        pass
 
-            pattern = os.path.join(frames_dir, "frame_%05d.png")
-            source_video = self.imported_video_path if getattr(self, 'imported_video_path', '') else ''
-            pix = ["-pix_fmt", "yuv420p"] if vcodec not in ("mjpeg",) else []
+                local_count = 0
+                for fi in range(f0, f1):
+                    a = fi * frame_samples
+                    b = min(len(master), a + frame_samples)
+                    ph = fi / max(n_frames - 1, 1)
+                    eng.set_waveform(master[a:b], playhead=ph)
+                    frame = eng.render_frame(w, h, export=True)
+                    try:
+                        eng.ingest_video_frame_stats(*eng.frame_stats(frame))
+                    except Exception:
+                        pass
+                    Image.fromarray(frame, mode="RGB").save(
+                        os.path.join(part_frames_dir, f"frame_{local_count:05d}.png")
+                    )
+                    local_count += 1
+                    if local_count % 8 == 0 and hasattr(self, 'scope_status_label'):
+                        self.scope_status_label.setText(
+                            f"🎬 Part {pi+1}/{N_PARTS}  frames {local_count}/{f1-f0}…"
+                        )
+                        QApplication.processEvents()
 
-            if source_video and os.path.abspath(source_video) != os.path.abspath(out_path):
-                source_has_audio = bool(getattr(self, 'imported_video_meta', {}).get('has_audio', False))
-                if include_audio and source_has_audio:
-                    filter_complex = (
-                        "[1:v]scale={0}:{1}:force_original_aspect_ratio=increase,"
-                        "crop={0}:{1},setsar=1,format=yuv420p[iv];"
-                        "[0:v][iv]blend=all_mode=screen:all_opacity=0.35[v];"
-                        "[2:a]volume=0.35[srca];[3:a]volume=1.0[gena];"
-                        "[srca][gena]amix=inputs=2:duration=longest:normalize=0[a]"
-                    ).format(w, h)
-                    cmd = [
-                        ffmpeg, "-y", "-framerate", str(fps), "-i", pattern,
-                        "-stream_loop", "-1", "-i", source_video,
-                        "-i", audio_path, "-i", source_video,
-                        "-filter_complex", filter_complex,
-                        "-map", "[v]", "-map", "[a]",
-                        "-t", f"{duration_s:.6f}",
-                        "-c:v", vcodec, *vargs, *pix,
-                        "-c:a", acodec, *aargs,
-                        "-metadata", f"comment={provenance}",
-                        "-shortest", out_path,
-                    ]
-                elif include_audio:
-                    filter_complex = (
-                        "[1:v]scale={0}:{1}:force_original_aspect_ratio=increase,"
-                        "crop={0}:{1},setsar=1,format=yuv420p[iv];"
-                        "[0:v][iv]blend=all_mode=screen:all_opacity=0.35[v]"
-                    ).format(w, h)
-                    cmd = [
-                        ffmpeg, "-y", "-framerate", str(fps), "-i", pattern,
-                        "-stream_loop", "-1", "-i", source_video,
-                        "-i", audio_path,
-                        "-filter_complex", filter_complex,
-                        "-map", "[v]", "-map", "2:a:0",
-                        "-t", f"{duration_s:.6f}",
-                        "-c:v", vcodec, *vargs, *pix,
-                        "-c:a", acodec, *aargs,
-                        "-metadata", f"comment={provenance}",
-                        "-shortest", out_path,
-                    ]
-                else:
-                    filter_complex = (
-                        "[1:v]scale={0}:{1}:force_original_aspect_ratio=increase,"
-                        "crop={0}:{1},setsar=1,format=yuv420p[iv];"
-                        "[0:v][iv]blend=all_mode=screen:all_opacity=0.35[v]"
-                    ).format(w, h)
-                    cmd = [
-                        ffmpeg, "-y", "-framerate", str(fps), "-i", pattern,
-                        "-stream_loop", "-1", "-i", source_video,
-                        "-filter_complex", filter_complex,
-                        "-map", "[v]",
-                        "-t", f"{duration_s:.6f}",
-                        "-c:v", vcodec, *vargs, *pix,
-                        "-metadata", f"comment={provenance}",
-                        "-an", out_path,
-                    ]
-            elif include_audio:
-                cmd = [
-                    ffmpeg, "-y", "-framerate", str(fps), "-i", pattern,
-                    "-i", audio_path,
-                    "-map", "0:v:0", "-map", "1:a:0",
-                    "-t", f"{duration_s:.6f}",
-                    "-c:v", vcodec, *vargs, *pix,
-                    "-c:a", acodec, *aargs,
-                    "-metadata", f"comment={provenance}",
-                    "-shortest", out_path,
-                ]
-            else:
+                pattern = os.path.join(part_frames_dir, "frame_%05d.png")
+                part_tmp = part_out + ".part"
                 cmd = [
                     ffmpeg, "-y", "-framerate", str(fps), "-i", pattern,
                     "-map", "0:v:0",
-                    "-t", f"{duration_s:.6f}",
                     "-c:v", vcodec, *vargs, *pix,
-                    "-metadata", f"comment={provenance}",
-                    "-an", out_path,
+                    "-an",
+                    part_tmp,
                 ]
+                proc = subprocess.run(cmd, capture_output=True, text=True)
+                if proc.returncode != 0:
+                    err = (proc.stderr or proc.stdout or "ffmpeg failed")[-2200:]
+                    raise RuntimeError(f"Part {pi+1}/{N_PARTS} encode failed:\n{err}")
+                os.replace(part_tmp, part_out)
 
+                # free this part's PNGs immediately (keeps peak disk low)
+                for old in os.listdir(part_frames_dir):
+                    try:
+                        os.remove(os.path.join(part_frames_dir, old))
+                    except Exception:
+                        pass
+                try:
+                    os.rmdir(part_frames_dir)
+                except Exception:
+                    pass
+
+            # Build concat list
+            list_path = os.path.join(dest_dir, f".{stem}.concat.part.txt")
+            with open(list_path, "w", encoding="utf-8") as lf:
+                for pp in part_paths:
+                    if not os.path.isfile(pp):
+                        raise RuntimeError(f"Missing part segment: {pp}")
+                    # ffmpeg concat demuxer needs escaped single quotes
+                    esc = pp.replace("'", "'\\''")
+                    lf.write(f"file '{esc}'\n")
+
+            final_tmp = out_path + ".part"
+            if include_audio and audio_path and os.path.isfile(audio_path):
+                cmd = [
+                    ffmpeg, "-y",
+                    "-f", "concat", "-safe", "0", "-i", list_path,
+                    "-i", audio_path,
+                    "-map", "0:v:0", "-map", "1:a:0",
+                    "-t", f"{duration_s:.6f}",
+                    "-c:v", "copy",
+                    "-c:a", acodec, *aargs,
+                    "-metadata", f"comment={provenance}",
+                    "-shortest",
+                    final_tmp,
+                ]
+            else:
+                cmd = [
+                    ffmpeg, "-y",
+                    "-f", "concat", "-safe", "0", "-i", list_path,
+                    "-map", "0:v:0",
+                    "-t", f"{duration_s:.6f}",
+                    "-c:v", "copy",
+                    "-metadata", f"comment={provenance}",
+                    "-an",
+                    final_tmp,
+                ]
             proc = subprocess.run(cmd, capture_output=True, text=True)
             if proc.returncode != 0:
-                err = (proc.stderr or proc.stdout or "ffmpeg failed")[-2200:]
-                if "Unknown encoder" in err or "Encoder not found" in err:
-                    err += (
-                        f"\n\nThis ffmpeg ({ffmpeg}) lacks encoder '{vcodec}'.\n"
-                        "Install a full build, e.g. on Ubuntu/Debian:\n"
-                        "  sudo apt update && sudo apt install -y ffmpeg\n"
-                        "Or download a static binary and place it at ./bin/ffmpeg"
-                    )
-                raise RuntimeError(err)
+                # fallback: re-encode if stream copy fails (codec/container mismatch)
+                err1 = (proc.stderr or proc.stdout or "")[-1200:]
+                if include_audio and audio_path and os.path.isfile(audio_path):
+                    cmd = [
+                        ffmpeg, "-y",
+                        "-f", "concat", "-safe", "0", "-i", list_path,
+                        "-i", audio_path,
+                        "-map", "0:v:0", "-map", "1:a:0",
+                        "-t", f"{duration_s:.6f}",
+                        "-c:v", vcodec, *vargs, *pix,
+                        "-c:a", acodec, *aargs,
+                        "-metadata", f"comment={provenance}",
+                        "-shortest",
+                        final_tmp,
+                    ]
+                else:
+                    cmd = [
+                        ffmpeg, "-y",
+                        "-f", "concat", "-safe", "0", "-i", list_path,
+                        "-map", "0:v:0",
+                        "-t", f"{duration_s:.6f}",
+                        "-c:v", vcodec, *vargs, *pix,
+                        "-metadata", f"comment={provenance}",
+                        "-an",
+                        final_tmp,
+                    ]
+                proc = subprocess.run(cmd, capture_output=True, text=True)
+                if proc.returncode != 0:
+                    err = (proc.stderr or proc.stdout or "ffmpeg concat failed")[-2200:]
+                    raise RuntimeError(f"Final mux failed:\n{err}\n(earlier copy attempt: {err1})")
+
+            os.replace(final_tmp, out_path)
+
+            # success: remove part segments + staging (optional keep for recovery —
+            # user asked for .part in render dest; leave them unless clean succeeds)
+            for pp in part_paths:
+                try:
+                    if os.path.isfile(pp):
+                        os.remove(pp)
+                except Exception:
+                    pass
+            try:
+                if os.path.isfile(list_path):
+                    os.remove(list_path)
+            except Exception:
+                pass
+            if audio_path:
+                try:
+                    if os.path.isfile(audio_path):
+                        os.remove(audio_path)
+                except Exception:
+                    pass
+            try:
+                shutil.rmtree(frames_root, ignore_errors=True)
+            except Exception:
+                pass
 
             self.export_counter += 1
             mode = "Video + Audio" if include_audio else "Video only"
             if hasattr(self, 'scope_status_label'):
                 self.scope_status_label.setText(
-                    f"🎬 {mode} exported → {os.path.basename(out_path)}  ({vcodec}/{acodec if include_audio else 'no-audio'})"
+                    f"🎬 {mode} exported → {os.path.basename(out_path)}  ({vcodec}/{acodec if include_audio else 'no-audio'}) {w}x{h}"
                 )
             QMessageBox.information(
                 self, "Export complete",
-                f"Saved:\n{out_path}\n\nEncoder: {vcodec}"
+                f"Saved:\n{out_path}\n\n"
+                f"Encoder: {vcodec}"
                 + (f" + {acodec}" if include_audio else " (video only)")
+                + f"\nResolution: {w}×{h}  ·  {n_frames} frames in {N_PARTS} parts"
             )
         except Exception as e:
             print(f"[Video] export error: {e}")
             QMessageBox.critical(self, "Video Export Error", str(e))
-        finally:
-            if tmp:
-                shutil.rmtree(tmp, ignore_errors=True)
+            # leave .part segments on disk for recovery
 
     def closeEvent(self, event):
         """Ensure audio stream and PKP pad clock are torn down on close."""
