@@ -15160,6 +15160,8 @@ import sys
 import json
 import random
 import wave
+import inspect
+import importlib
 import numpy as np
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -15626,6 +15628,9 @@ class LayeredPanelHost(QWidget):
 class MathematiciansGrooveboxApp(QMainWindow):
     def __init__(self):
         super().__init__()
+        # Keep every application-owned component reachable through one lazy
+        # registry; widgets/dialogs are constructed only when opened.
+        self.component_registry = COMPONENT_CLASS_REGISTRY
         self.setWindowTitle("Groovebox")
         self.setMinimumSize(0, 0)
         self.setMaximumSize(16777215, 16777215)
@@ -31495,6 +31500,46 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 btn.setChecked(has_snap)
         except Exception:
             pass
+
+# ============================================================================
+# COMPONENT REGISTRY — every application-owned usable class is reachable
+# ============================================================================
+def build_component_registry():
+    """Return the complete lazy registry of application-owned classes.
+
+    Classes are registered rather than eagerly constructed so optional dialogs
+    and heavyweight widgets do not consume resources until the user requests
+    them.  This makes every usable class discoverable/reachable while keeping
+    startup deterministic and lightweight.
+    """
+    modules = [
+        sys.modules.get(__name__),
+        importlib.import_module("composition_state"),
+        importlib.import_module("dj_effects"),
+        importlib.import_module("fractal_spatial_engine"),
+        importlib.import_module("videogame_engine"),
+        importlib.import_module("fast_widgets"),
+    ]
+    registry = {}
+    for module in modules:
+        if module is None:
+            continue
+        for name, obj in vars(module).items():
+            if not name.startswith("_") and inspect.isclass(obj):
+                registry.setdefault(name, obj)
+    return dict(sorted(registry.items()))
+
+
+# A module-level registry is also useful to tests/tools without launching Qt.
+COMPONENT_CLASS_REGISTRY = build_component_registry()
+
+def create_component(name, *args, **kwargs):
+    """Lazily construct any registered application component by class name."""
+    cls = COMPONENT_CLASS_REGISTRY.get(str(name))
+    if cls is None:
+        raise KeyError(f"Unknown Groovebox component: {name}")
+    return cls(*args, **kwargs)
+
 
 # ============================================================================
 # STARTUP_DIAGNOSTIC — protects against the exact QSizePolicy crash reported

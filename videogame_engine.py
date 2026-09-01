@@ -974,7 +974,10 @@ def classify_from_composition(
     objective = OBJECTIVES[_res_idx(s, f"objective|{world_fp}", len(OBJECTIVES))]
     difficulty = DIFFICULTIES[_res_idx(s, f"difficulty|{world_fp}", len(DIFFICULTIES))]
     level_type = LEVEL_TYPES[_res_idx(s, f"level|{world_fp}", len(LEVEL_TYPES))]
-    sigil_count = 5 + _res_idx(s, f"sigils|{world_fp}", 8)  # 5..12
+    # Sigils are a world mechanic, not a universal game skin.  Keep a
+    # deterministic count available for Nexus worlds, but non-Nexus worlds
+    # instantiate zero sigils unless explicitly opted in.
+    sigil_count = 5 + _res_idx(s, f"sigils|{world_fp}", 8)  # 5..12 for Nexus
     world_fp = hashlib.sha256(
         f"{world_fp}|ob={objective}|df={difficulty}|lv={level_type}|s={sigil_count}"
         .encode("utf-8")
@@ -2583,10 +2586,13 @@ class Game:
         # ------------------------------------------------------------------
         _obj0 = str(self.objective or "survey").lower()
         _hooks = list(self.id.get("gameplay_hooks") or [])
-        _want_sigils = (
-            (not self.free_play and _obj0 == "nexus")
-            or any("sigil" in str(h).lower() for h in _hooks)
-        )
+        # Sigils are an explicit Nexus mechanic only.  A genre hook may mention
+        # sigils as vocabulary/visual grammar, but that must never silently turn
+        # the whole game into a sigil-collection game.  An explicit manifest
+        # opt-in can still request them for a custom exported game.
+        # SIGIL_OPT_IN_2026: sigils are never a default spawn/lock mechanic.
+        # They exist only when an exported identity explicitly opts in.
+        _want_sigils = bool(self.id.get("force_sigils", False))
         _sigil_n = int(self.id.get("sigil_count", 8) or 8) if _want_sigils else 0
         self.sigils = SigilRing(self.id["seed"], count=max(0, _sigil_n))
         self.primary_focus = (
@@ -2731,6 +2737,12 @@ class Game:
         self.combo = 0
         self.level = 1
         self.angle = meum_angle(_safe_int_seed(self.id["seed"]) * MEUM_INV)
+        # PLAYER_POSITION_2026: A/D and W/S are true planar movement, not orbit
+        # steering.  The old radial-angle control made left/right look like a
+        # camera spin.  Keep angle as facing/region orientation, while the
+        # Cartesian position is the authoritative world location.
+        self.player_x = 0.0
+        self.player_z = 0.0
         self.score = 0.0
         self.hp = 100.0
         self.t = 0.0
@@ -3119,9 +3131,10 @@ class Game:
                 self.move = {"dx": 0.0, "dy": 0.0, "dz": 0.0}
                 self.aim_in = {"yaw": 0.0, "pitch": 0.0}
             return
-        self.steer = self._clamp(self.steer + self.move["dx"] + self.aim_in["yaw"])
+        # A/D and W/S are movement; arrow keys / mouse yaw are look only.
+        self.steer = self._clamp(self.steer + self.aim_in["yaw"])
         self.pitch += self.aim_in["pitch"]
-        self.zoom = self._clamp(self.zoom + self.move["dz"] * dt * 0.25, 0.35, 2.5)
+        self.zoom = self._clamp(self.zoom, 0.35, 2.5)
         for key in ("dx", "dy", "dz"):
             self.move[key] *= max(0.0, 1.0 - k)
         self.aim_in["yaw"] *= max(0.0, 1.0 - k)
@@ -3146,42 +3159,54 @@ class Game:
             self.zoom = max(0.5, min(1.4, float(getattr(self, "zoom", 1.0)) * 1.2))
         return self.camera_mode
 
+    def _target_world(self, angle, radius):
+        return float(radius) * math.cos(float(angle)), float(radius) * math.sin(float(angle))
+
+    def _player_distance(self, angle, radius):
+        x, z = self._target_world(angle, radius)
+        return math.hypot(x - float(self.player_x), z - float(self.player_z))
+
     def activate(self):
-        """Click : primary — routes to the nearest target for the *primary focus*
-        of this world (sigils only when nexus; otherwise resources/waypoints/…)."""
+        """Activate the nearest real world object at the player's Cartesian position."""
         if self.hotseat["active"]:
             return "[HOT-SEAT] clicks are chess moves while the board is open."
         hits = []
         focus = getattr(self, "primary_focus", "explore")
-        # Prefer the focus type, then fall through to other present elements
+        reach = 0.55
         if focus == "sigils" and getattr(self.sigils, "count", 0) > 0:
-            for _k, (_a, _r) in enumerate(self.sigils.pos):
-                if _k not in self.sigils.collected and self._near_angle(self.angle, _a, _r):
-                    self.sigils.collected.add(_k)
-                    self.score += MEUM * _r * max(1, self.combo) * self.difficulty_mult
-                    self.sfx.trigger("chime", 1.0)
-                    hits.append("sigil")
-                    break
+            best = None
+            for k, (a, r) in enumerate(self.sigils.pos):
+                if k in self.sigils.collected:
+                    continue
+                d = self._player_distance(a, r)
+                if d <= reach and (best is None or d < best[0]):
+                    best = (d, k, r)
+            if best is not None:
+                _, k, r = best
+                self.sigils.collected.add(k)
+                self.score += MEUM * r * max(1, self.combo) * self.difficulty_mult
+                self.sfx.trigger("chime", 1.0)
+                hits.append("sigil")
         if not hits and getattr(self.resources, "count", 0) > 0:
-            for _k, (_a, _r, _v) in enumerate(self.resources.pos):
-                if _k not in self.resources.taken and self._near_angle(self.angle, _a, _r):
-                    self.resources.taken.add(_k)
-                    self.score += 1.4 * MEUM * _v * self.difficulty_mult
-                    self.sfx.trigger("click", 0.8)
-                    hits.append("resource")
-                    break
+            best = None
+            for k, (a, r, v) in enumerate(self.resources.pos):
+                if k in self.resources.taken:
+                    continue
+                d = self._player_distance(a, r)
+                if d <= reach and (best is None or d < best[0]):
+                    best = (d, k, v)
+            if best is not None:
+                _, k, v = best
+                self.resources.taken.add(k)
+                self.score += 1.4 * MEUM * v * self.difficulty_mult
+                self.sfx.trigger("click", 0.8)
+                hits.append("resource")
         if not hits and getattr(self.waypoints, "count", 0) > 0:
-            if self.waypoints.advance(self.angle):
+            best = min((self._player_distance(a, r), a) for a, r in self.waypoints.pos) if self.waypoints.pos else None
+            if best and best[0] <= reach and self.waypoints.advance(best[1]):
                 self.score += 2.0 * MEUM * self.difficulty_mult
                 self.sfx.trigger("chime", 0.7)
                 hits.append("waypoint")
-        if not hits and getattr(self.sigils, "count", 0) > 0 and focus != "sigils":
-            for _k, (_a, _r) in enumerate(self.sigils.pos):
-                if _k not in self.sigils.collected and self._near_angle(self.angle, _a, _r):
-                    self.sigils.collected.add(_k)
-                    self.score += MEUM * _r * self.difficulty_mult
-                    hits.append("sigil")
-                    break
         self.send_chat("system", "activate" + (f": {'+'.join(hits)}" if hits else " (nothing within reach)"))
         self.micro.drive(self.t)
         return f"activate {'+'.join(hits) if hits else 'miss'}"
@@ -3818,59 +3843,72 @@ class Game:
         self._update_cinematic_camera(dt, abs(sample))
         self._fire_invites()
         self._tick_arcade(dt)
-        if self.authoritative:
-            # FREE-ROAM CONTRACT: movement is player-authored only.  Never
-            # auto-advance the player's world position/orbit; that old behavior
-            # made sigils feel like spinning cages and violated sandbox play.
-            if not self.hotseat["active"]:
-                # PLAYER-MOTION CONTRACT: never synthesize forward/orbit motion.
-                # The previous default advanced ``angle`` every tick, which made
-                # every world feel like a conveyor belt toward its collectibles
-                # (especially sigils).  Position changes now come only from the
-                # player's steer/movement input.
-                move_speed = 0.95 + 0.35 * self.difficulty_mult
-                player_motion = float(self.steer) + 0.35 * float(self.move["dz"])
-                if math.isfinite(player_motion) and abs(player_motion) > 1e-12:
-                    self.angle = (self.angle + dt * move_speed * player_motion) % math.tau
-                # THREE-PATHWAY: procedural-on-demand — rare functions are only
-                # computed/rendered when the perspective arrives (spatial
-                # activation) or via /tp /lore /gen.
-                entered = self.loom.pulse(self.angle, reach=0.30)
-                for _r in entered:
-                    self.sfx.trigger("chime", 0.6)
-                    self.push_status(
-                        f"[LOOM] region '{_r['name']}' materialized on arrival — computed on demand")
-                # Region context follows the player continuously, but never
-                # controls position.  Sandbox edits live in this region state.
-                ridx = self._region_index_at(self.angle)
-                if ridx is not None:
-                    r = self.loom.regions[ridx]
-                    self._current_region = (r["name"], r["tier"])
-                    rst = self._ensure_region_state(ridx)
-                    if self._last_region_index != ridx:
-                        rst["visits"] += 1
-                        self._last_region_index = ridx
-                        self.push_status(f"[REGION] {r['name']} — free roam")
-                        # Free-play milestone (NOT a win condition): visiting
-                        # distinct regions is the natural substitute for the
-                        # old "clear the sigils" dopamine loop. Soft score only.
-                        if bool(getattr(self, "free_play", False)) and rst["visits"] == 1:
-                            self.score += 5.0 * MEUM
-                            self.tags.add("explorer")
-                            visited = sum(
-                                1 for st in (getattr(self, "region_state", {}) or {}).values()
-                                if int(st.get("visits", 0) or 0) > 0
-                            )
-                            self.push_status(
-                                f"[EXPLORE] first visit to '{r['name']}' "
-                                f"({visited} regions touched — still no forced objective)"
-                            )
-                _micro = self.micro.drive(self.t)
-                if _micro:
-                    try:
-                        self.music.dj = max(0.0, min(1.0, self.music.dj + _micro[0] * 0.05))
-                    except Exception:
-                        pass
+        # FREE-ROAM CONTRACT: movement is always local/player-authored, including
+        # network clients.  Authority controls shared-world simulation, not whether
+        # the local player can walk.
+        if not self.hotseat["active"]:
+            # PLAYER-MOTION CONTRACT: never synthesize forward/orbit motion.
+            # The previous default advanced ``angle`` every tick, which made
+            # every world feel like a conveyor belt toward its collectibles
+            # (especially sigils).  Position changes now come only from the
+            # player's steer/movement input.
+            move_speed = 2.25 + 0.55 * self.difficulty_mult
+            _dx = float(self.move.get("dx", 0.0) or 0.0)
+            _dz = float(self.move.get("dz", 0.0) or 0.0)
+            # True planar movement. A/D = strafe, W/S = forward/back
+            # relative to the current look yaw. No orbit/spin motion.
+            if math.isfinite(_dx) and math.isfinite(_dz):
+                _yaw = float(self.steer)
+                _fx, _fz = math.sin(_yaw), math.cos(_yaw)
+                _rx, _rz = math.cos(_yaw), -math.sin(_yaw)
+                self.player_x += (_dx * _rx + _dz * _fx) * move_speed * dt
+                self.player_z += (_dx * _rz + _dz * _fz) * move_speed * dt
+                # IMPORTANT: player position is Cartesian. Never overwrite it
+                # into the legacy radial ``angle`` field; doing so turns walking
+                # around the origin into apparent sigil rotation.
+                if abs(_dx) + abs(_dz) > 1e-9:
+                    # Compatibility angle changes only because the player moved.
+                    # It is never used as the player's physical position.
+                    self.angle = (float(self.angle) + math.hypot(_dx, _dz) * dt * 1.5) % math.tau
+            # THREE-PATHWAY: procedural-on-demand — rare functions are only
+            # computed/rendered when the perspective arrives (spatial
+            # activation) or via /tp /lore /gen.
+            entered = self.loom.pulse(self.angle, reach=0.30)
+            for _r in entered:
+                self.sfx.trigger("chime", 0.6)
+                self.push_status(
+                    f"[LOOM] region '{_r['name']}' materialized on arrival — computed on demand")
+            # Region context follows the player continuously, but never
+            # controls position.  Sandbox edits live in this region state.
+            ridx = self._region_index_at(self.angle)
+            if ridx is not None:
+                r = self.loom.regions[ridx]
+                self._current_region = (r["name"], r["tier"])
+                rst = self._ensure_region_state(ridx)
+                if self._last_region_index != ridx:
+                    rst["visits"] += 1
+                    self._last_region_index = ridx
+                    self.push_status(f"[REGION] {r['name']} — free roam")
+                    # Free-play milestone (NOT a win condition): visiting
+                    # distinct regions is the natural substitute for the
+                    # old "clear the sigils" dopamine loop. Soft score only.
+                    if bool(getattr(self, "free_play", False)) and rst["visits"] == 1:
+                        self.score += 5.0 * MEUM
+                        self.tags.add("explorer")
+                        visited = sum(
+                            1 for st in (getattr(self, "region_state", {}) or {}).values()
+                            if int(st.get("visits", 0) or 0) > 0
+                        )
+                        self.push_status(
+                            f"[EXPLORE] first visit to '{r['name']}' "
+                            f"({visited} regions touched — still no forced objective)"
+                        )
+            _micro = self.micro.drive(self.t)
+            if _micro:
+                try:
+                    self.music.dj = max(0.0, min(1.0, self.music.dj + _micro[0] * 0.05))
+                except Exception:
+                    pass
             # Re-evaluate protected activities every tick: area + state + music.
             try:
                 self._refresh_activities(audio_rms=abs(sample))
@@ -3891,14 +3929,10 @@ class Game:
             }.get(_obj, 1.0)
             if abs(sample) > 0.55:
                 self.score += MEUM * abs(sample) * self.difficulty_mult * (0.7 if _obj == "harvest" else 1.0)
-            # Sigils — only when the world actually has them (nexus / explicit hook)
-            if getattr(self.sigils, "count", 0) > 0:
-                for _k, r in self.sigils.collect(self.angle):
-                    self.combo += 1
-                    self.score += MEUM * r * self.difficulty_mult * self.combo * _obj_mult
-                    self._reward_quests("collect", 1)
-                    self.purse.earn(1, "sigil")
-                    self.sfx.trigger("chime", 0.9)
+            # SIGIL_INTERACTION_2026: never auto-collect from player angle.
+            # Sigils, when explicitly enabled, require the normal click/activate
+            # interaction. This prevents spawning on a target from feeling like
+            # the player is physically trapped inside a sigil.
             # Resources (open-world harvest)
             for _k, v in self.resources.harvest(self.angle):
                 self.combo += 1
@@ -3966,13 +4000,14 @@ class Game:
             # (collect/harvest already happened above — progress those quests)
             for name, rec in list(self._remote_steers.items()):
                 rec[0] = (rec[0] + dt * MEUM * math.tau * (1.0 + 0.35 * rec[2])) % math.tau
-                for k, (a, r) in enumerate(self.sigils.pos):
-                    if k in self.sigils.collected:
-                        continue
-                    d = abs((a - rec[0] + math.pi) % math.tau - math.pi)
-                    if d <= 0.31 * max(0.25, r):
-                        self.sigils.collected.add(k)
-                        rec[1] += MEUM * r * self.difficulty_mult * _obj_mult
+                if getattr(self, "primary_focus", "explore") == "sigils" and getattr(self.sigils, "count", 0) > 0:
+                    for k, (a, r) in enumerate(self.sigils.pos):
+                        if k in self.sigils.collected:
+                            continue
+                        d = abs((a - rec[0] + math.pi) % math.tau - math.pi)
+                        if d <= 0.31 * max(0.25, r):
+                            self.sigils.collected.add(k)
+                            rec[1] += MEUM * r * self.difficulty_mult * _obj_mult
             threshold = 5 + self.level + int(MEUM * self.level)
             if _obj == "pilgrimage":
                 threshold = max(3, threshold - 2)
@@ -5847,7 +5882,8 @@ if HAS_UI:
             self.game = game
             self.setMinimumSize(460, 460)
             self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-            self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            self.setFocus()
             self._last_mouse = None
             self.setMouseTracking(True)
 
@@ -5866,6 +5902,7 @@ if HAS_UI:
 
         def mousePressEvent(self, e):
             g = self.game
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
             if e.button() == Qt.MouseButton.LeftButton:
                 if getattr(g, "hotseat", {}).get("active") and hasattr(g, "chess"):
                     sq = self._cell_at(e.position())
@@ -5874,7 +5911,6 @@ if HAS_UI:
                         self.update()
                         return
                 g.activate()
-                g.steer = max(-1.0, min(1.0, g.steer + 0.25))
                 g.sfx.trigger("click", 0.5)
                 self.update()
             super().mousePressEvent(e)
@@ -5896,14 +5932,25 @@ if HAS_UI:
 
         def wheelEvent(self, e):
             g = self.game
-            d = 1.0 if e.angleDelta().y() > 0 else -1.0
-            g.cycle_camera(direction=d)
-            try:
-                g.push_status(f"CAMERA: {g.camera_mode_name()} (mode {int(g.camera_mode)})")
-            except Exception:
-                pass
+            steps = float(e.angleDelta().y()) / 120.0
+            if abs(steps) > 0.0:
+                # Mouse wheel is real zoom.  Shift+wheel is the explicit camera-mode switch.
+                mods = e.modifiers()
+                if mods & Qt.KeyboardModifier.ShiftModifier:
+                    g.cycle_camera(direction=1 if steps > 0 else -1)
+                    try:
+                        g.push_status(f"CAMERA: {g.camera_mode_name()} (mode {int(g.camera_mode)})")
+                    except Exception:
+                        pass
+                else:
+                    # Positive wheel = zoom in; negative = zoom out.
+                    g.zoom = max(0.35, min(2.5, float(getattr(g, "zoom", 1.0)) * (1.12 ** steps)))
+                    try:
+                        g.push_status(f"ZOOM: {g.zoom:.2f}x")
+                    except Exception:
+                        pass
             self.update()
-            super().wheelEvent(e)
+            e.accept()
 
         def _draw_chess(self, p, g):
             w, h = self.width(), self.height()
@@ -5981,17 +6028,21 @@ if HAS_UI:
                     # 2D top-down orthographic: planar controls transform.
                     _f2 = math.tan(math.radians(_fov) * 0.5)
                     _s2 = scale * 0.8 / max(_f2, 0.05)
-                    _x0 = dist * vg_cos(yaw) * _s2 * R * 0.72
-                    _y0 = -dist * vg_sin(yaw) * _s2 * R * 0.72 - pitch * R * 0.35
+                    _wx = dist * vg_cos(yaw) - float(getattr(g, "player_x", 0.0))
+                    _wz = dist * vg_sin(yaw) - float(getattr(g, "player_z", 0.0))
+                    _x0 = _wx * _s2 * R * 0.72
+                    _y0 = -_wz * _s2 * R * 0.72 - pitch * R * 0.35
                     _sz2 = max(2.0, (6.0 + 10.0 * (1.2 - min(depth, 1.8))) * scale)
                     return cx + _x0, cy + _y0, _sz2
                 if _cam_mode == 1:
                     # First person: pull the eye into the world and widen the lens.
                     dist = max(0.0, dist - 0.35)
                     _fov = min(90.0, _fov + 26.0)
-                ox = dist * vg_cos(yaw) * scale
+                _wx = dist * vg_cos(yaw) - float(getattr(g, "player_x", 0.0))
+                _wz = dist * vg_sin(yaw) - float(getattr(g, "player_z", 0.0))
+                ox = _wx * scale
                 oy = pitch * scale
-                oz = dist * vg_sin(yaw) * scale + 1.0
+                oz = _wz * scale + 1.0
                 cyaw = math.radians(float(g.visual_view.get("yaw_deg",0.0))) + float(g.aim_in.get("yaw",0.0))
                 cpit = math.radians(float(g.visual_view.get("pitch_deg",0.0))) + float(g.aim_in.get("pitch",0.0))
                 croll = math.radians(float(g.visual_view.get("roll_deg",0.0)))
@@ -6007,6 +6058,11 @@ if HAS_UI:
                 y = cy - (y2 * inv / max(f,0.05)) * R * 0.72
                 sz = max(2.0, (6.0 + 10.0 * (1.2 - min(depth, 1.8))) * scale * min(1.8, inv))
                 return x, y, sz
+
+            def project_polar(angle, radius, pitch=0.0, depth=1.0):
+                # Convert deterministic polar world content into Cartesian world
+                # coordinates, then subtract the actual player position.
+                return project(float(angle), float(radius), pitch, depth)
 
             # Depth-sorted layers for proper 2.5D occlusion
             on_layers = [L for L in g.scene.layers if L.get("on")]
@@ -6140,7 +6196,7 @@ if HAS_UI:
                 p.drawText(int(x + 6), int(y - 4), str(k + 1))
 
             # Sigils — only when this world actually placed them (nexus / sigil hook)
-            if getattr(g.sigils, "count", 0) > 0:
+            if getattr(g, "primary_focus", "explore") == "sigils" and getattr(g.sigils, "count", 0) > 0:
                 for k, (a, r) in enumerate(g.sigils.pos):
                     if k in getattr(g.sigils, "collected", set()):
                         continue
@@ -6148,9 +6204,9 @@ if HAS_UI:
                     col.setAlpha(240)
                     p.setPen(QPen(col, 1))
                     p.setBrush(col)
-                    x = cx + vg_cos(a) * r * R
-                    y = cy + vg_sin(a) * r * R
-                    p.drawEllipse(QPointF(x, y), 4 + int(r * 8), 4 + int(r * 8))
+                    x, y, _sz = project(a, r, 0.0, 1.0)
+                    _sr = max(4, int((4 + r * 8) * max(0.7, min(1.5, float(getattr(g, "zoom", 1.0))))))
+                    p.drawEllipse(QPointF(x, y), _sr, _sr)
 
             # PvE mobs
             for m in getattr(g, "pve", PveEncounter(0)).mobs:
@@ -6176,21 +6232,20 @@ if HAS_UI:
                 p.setPen(QPen(QColor(tx), 1))
                 p.drawText(int(x + 6), int(y - 2), n["name"][:10])
 
-            def draw_face(name, angle, color, size):
-                x = cx + vg_cos(angle) * R * 0.92
-                y = cy + vg_sin(angle) * R * 0.92
-                p.setPen(QPen(color, 2))
-                p.setBrush(QColor(color))
-                p.drawEllipse(QPointF(x, y), size, size)
-                p.drawLine(QPointF(x - size, y + size * 0.6), QPointF(x + size * 0.8, y - size * 0.9))
-                p.setPen(QPen(QColor(tx), 1))
-                p.drawText(int(x - size), int(y - size - 4), str(name)[:12])
-            draw_face(g.player_name or "You", g.angle, QColor(ac), 8)
+            # The player is the camera origin in every view. Do not draw the
+            # avatar on the old radial ``angle`` ring.
+            _ps = max(7.0, 8.0 * math.sqrt(max(0.35, float(getattr(g, "zoom", 1.0)))))
+            p.setPen(QPen(QColor(ac), 2))
+            p.setBrush(QColor(ac))
+            p.drawEllipse(QPointF(cx, cy), _ps, _ps)
+            p.drawLine(QPointF(cx, cy), QPointF(cx + _ps * math.sin(float(g.steer)), cy - _ps * math.cos(float(g.steer))))
+            p.setPen(QPen(QColor(tx), 1))
+            p.drawText(int(cx + _ps + 3), int(cy - _ps - 4), str(g.player_name or "You")[:12])
             for name, rec in sorted((g.remotes or {}).items()):
                 draw_face(name, float(rec.get("angle", 0.0)), QColor(dg), 6)
 
-            _ay = cx + vg_cos(g.angle) * R * 0.98
-            _ax = cy + vg_sin(g.angle) * R * 0.98
+            _ay = cx + math.sin(float(g.steer)) * R * 0.18
+            _ax = cy - math.cos(float(g.steer)) * R * 0.18
             _ac = QColor("#ffcc66")
             _ac.setAlpha(120)
             p.setPen(QPen(_ac, 1))
@@ -6404,6 +6459,9 @@ if HAS_UI:
             # /activity, or the live status label — never a hardcoded always-on control.
             lay.addLayout(seats)
             lay.addWidget(btn_how)
+            controls_lbl = QLabel("CONTROLS: W/A/S/D = move · mouse = look/aim · wheel = zoom · Shift+wheel = camera · click = activate · ESC = menu · F1 = help")
+            controls_lbl.setWordWrap(True)
+            lay.addWidget(controls_lbl)
             self.chess_lbl = QLabel(
                 "Activities: none live — enter a region, hold an allowing state, "
                 "and let the music numbers open a scoring/arcade/social class."
@@ -6766,6 +6824,24 @@ if HAS_UI:
                 self.panel._how()
                 return
             super().keyPressEvent(e)
+
+        def keyReleaseEvent(self, e):
+            g = self.game
+            k = e.key()
+            # Release the movement impulse so one key press never becomes a
+            # sticky orbit/spin state. Look controls remain momentary too.
+            try:
+                action = g.resolve_key(k, int(e.modifiers().value) if hasattr(e.modifiers(), "value") else 0)
+            except Exception:
+                action = None
+            release = {"move_forward": {"dz": -0.6}, "move_back": {"dz": 0.6},
+                       "move_left": {"dx": 0.6}, "move_right": {"dx": -0.6}}
+            if action in release:
+                vals = release[action]
+                g.perspective_move(**vals)
+                self.view.update()
+                return
+            super().keyReleaseEvent(e)
 
         def closeEvent(self, e):
             self.timer.stop()
