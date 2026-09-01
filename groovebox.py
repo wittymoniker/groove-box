@@ -21254,7 +21254,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def export_project_json(self):
         """Export the unified project snapshot (same document as Save)."""
-        path, _ = QFileDialog.getSaveFileName(self, "Export Project JSON", "", "EQR Project (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, "Export Project JSON", "", "Mathematician's Groovebox Project (*.json)")
         if not path:
             return
         self._save_project_document(path)
