@@ -1079,6 +1079,45 @@ MEUM_INV = 1.0 / MEUM
 MEUM_NORM = (MEUM - 1.0) / MEUM
 OP_THEORY_ENABLED = False
 
+# GOAL TEXT — what the player is actually doing. Important because the old
+# design always *felt* like "clear the sigils" even when objective said otherwise.
+# These strings are the contract between the numeric objective residue and the
+# human-readable purpose of the session.  free_play overrides them.
+# (Defined here, inside the self-contained script, so the standalone package is
+# valid — the generator must never emit a file that references undefined names.)
+OBJECTIVE_BRIEFS = {
+    "harvest": (
+        "Harvest: gather resource nodes scattered on the orbit. "
+        "Sigils are not the goal; empty the resource field."
+    ),
+    "escort": (
+        "Escort: follow the waypoint trail in order. "
+        "Movement and timing matter more than pickups."
+    ),
+    "survey": (
+        "Survey: visit every waypoint checkpoint. "
+        "The world is a map to cover, not a ring to clear."
+    ),
+    "siege": (
+        "Siege: engage PvE threats and survive hazard rings. "
+        "Combat density is the objective, not collectibles."
+    ),
+    "nexus": (
+        "Nexus: this is the rare case where sigils *are* the goal. "
+        "Collect the sigil ring to complete the objective."
+    ),
+    "pilgrimage": (
+        "Pilgrimage: walk the waypoint path; slower score, larger level jumps. "
+        "The journey is the content."
+    ),
+}
+FREE_PLAY_BRIEF = (
+    "Free roam / sandbox: no forced objective. Explore loom regions, place objects, "
+    "take notes. Ambient pickups exist but nothing is a win condition — "
+    "you are not playing against a sigil ring."
+)
+ESKI_FRACTAL_MAX_ITER = 12
+
 def set_operator_theory(enabled):
     global OP_THEORY_ENABLED
     OP_THEORY_ENABLED = bool(enabled)
