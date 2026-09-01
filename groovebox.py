@@ -6753,7 +6753,7 @@ class VideoSynthEngine:
                     norm = mag / (1.0 + mag)
                     # Transparency: deeper iter / non-escape → more opaque; early escape → translucent
                     alpha = (0.12 + 0.55 * (n_done / 12.0) * (0.35 if escaped else 1.0)) * boost
-                    alpha = max(0.06, min(0.72, alpha))  # decent transparency floor/ceil
+                    alpha = max(0.30, min(0.80, alpha))  # fractal visible over bright bg (was 0.06 floor → invisible in video)
                     # 3D adaptation: project (u,v,z_last) with shared compositional offset
                     px, py, depth = self._project(
                         u * 0.55, v * 0.55, 0.7 + 0.25 * max(-1.0, min(1.0, z_last * 0.15)) + oz * 0.1,
@@ -6802,7 +6802,7 @@ class VideoSynthEngine:
                 alpha *= (0.7 + 0.3 * lat_w + 0.2 * book_w)
                 if mode.get("near_phase_point"):
                     alpha = min(0.85, alpha + 0.12 * float(mode.get("snap", 0)))
-                alpha = max(0.08, min(0.78, alpha))
+                alpha = max(0.35, min(0.85, alpha))
                 hue_m = (hue + self._video_hue_shift + abs(z_last) * 6
                          + 25.0 * float(mode.get("goava", 0))
                          + 15.0 * float(mode.get("phase_lock", 0))) % 360

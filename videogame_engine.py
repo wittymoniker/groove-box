@@ -2706,6 +2706,8 @@ class Game:
         self.spatial_engine = FractalSpatialEngine(self.id["seed"], self.id.get("composition_fingerprint", "0"), bool(self.id.get("goava_active", False)))
         self.spatial_state = dict(self.id.get("spatial_state") or self.spatial_engine.snapshot(depth=3, roots=max(5, min(12, len(getattr(self, "assets", [])) if hasattr(self, "assets") else 5))))
         self.zoom = 1.0
+        self.camera_mode = int(self.id.get("camera_mode", 0) or 0)
+        self.camera_modes = (0, 1, 2)
         self.chess_square = None
         self.active_mini = None
         self.mini_hint = ""
@@ -3092,8 +3094,14 @@ class Game:
     def _consume_inputs(self, dt):
         k = min(1.0, dt * 6.0)
         if self.hotseat["active"]:
-            self.move = {"dx": 0.0, "dy": 0.0, "dz": 0.0}
-            self.aim_in = {"yaw": 0.0, "pitch": 0.0}
+            # Movement-lock safety net: a hotseat flag stranded True (activity
+            # gate closed mid-game) must never leave the player unable to move.
+            live = getattr(self, "_live_activities", None) or []
+            if self.chess is None or ("scoring_board" not in live and "social_duel" not in live):
+                self.hotseat["active"] = False
+            else:
+                self.move = {"dx": 0.0, "dy": 0.0, "dz": 0.0}
+                self.aim_in = {"yaw": 0.0, "pitch": 0.0}
             return
         self.steer = self._clamp(self.steer + self.move["dx"] + self.aim_in["yaw"])
         self.pitch += self.aim_in["pitch"]
@@ -3103,6 +3111,24 @@ class Game:
         self.aim_in["yaw"] *= max(0.0, 1.0 - k)
         self.aim_in["pitch"] *= max(0.0, 1.0 - k)
         self.pitch *= max(0.0, 1.0 - dt * 2.0)
+
+    def camera_mode_name(self):
+        return {0: "2.5D (third-person)", 1: "First person", 2: "2D (top-down)"}.get(
+            int(getattr(self, "camera_mode", 0) or 0), "2.5D (third-person)")
+
+    def cycle_camera(self, direction=1):
+        modes = list(getattr(self, "camera_modes", (0, 1, 2)) or (0, 1, 2))
+        cm = int(getattr(self, "camera_mode", 0) or 0)
+        idx = modes.index(cm) if cm in modes else 0
+        idx = max(0, min(len(modes) - 1, idx + (1 if direction >= 0 else -1)))
+        self.camera_mode = modes[idx]
+        # Every camera mode is reachable/escapable: the zoom is never pinned in
+        # a way that traps the wheel from cycling back out.
+        if self.camera_mode == 1:
+            self.zoom = max(0.6, min(1.0, float(getattr(self, "zoom", 1.0))))
+        elif self.camera_mode == 2:
+            self.zoom = max(0.5, min(1.4, float(getattr(self, "zoom", 1.0)) * 1.2))
+        return self.camera_mode
 
     def activate(self):
         """Click : primary — routes to the nearest target for the *primary focus*
@@ -3538,22 +3564,25 @@ class Game:
     def toggle_chess(self):
         g = self
         g._refresh_activities()
+        # Closing is ALWAYS allowed. A hotseat flag stranded True because the
+        # activity gate closed mid-game must never lock world movement forever.
+        if g.hotseat["active"]:
+            g.hotseat["active"] = False
+            g.chess_square = None
+            g.push_status("chess closed — back to the open world.")
+            return "chess closed"
+        # Only the OPEN path is subject to the activity gate.
         if "scoring_board" not in g._live_activities and "social_duel" not in g._live_activities:
             g.push_status("[open-world] chess absent — area/state/music gate closed.")
             return "chess unavailable here"
         if g.chess is None:
             g.chess = LocalChess(g._activity_seed)
-        if not g.hotseat["active"]:
-            g.hotseat["active"] = True
-            g.hotseat["games"] += 1
-            g.offer_chess()
-            g.push_status("/chess open — click a piece then its square.  "
-                          "Hand the controls to your friend after every move.")
-            return g.chess.ascii()
-        g.hotseat["active"] = False
-        g.chess_square = None
-        g.push_status("chess closed — back to the open world.")
-        return "chess closed"
+        g.hotseat["active"] = True
+        g.hotseat["games"] += 1
+        g.offer_chess()
+        g.push_status("/chess open — click a piece then its square.  "
+                      "Hand the controls to your friend after every move.")
+        return g.chess.ascii()
 
     def chess_click(self, sq):
         if self.chess is None or not self.hotseat["active"]:
@@ -5832,7 +5861,11 @@ if HAS_UI:
         def wheelEvent(self, e):
             g = self.game
             d = 1.0 if e.angleDelta().y() > 0 else -1.0
-            g.zoom = max(0.35, min(2.5, g.zoom + d * 0.08))
+            g.cycle_camera(direction=d)
+            try:
+                g.push_status(f"CAMERA: {g.camera_mode_name()} (mode {int(g.camera_mode)})")
+            except Exception:
+                pass
             self.update()
             super().wheelEvent(e)
 
@@ -5901,10 +5934,25 @@ if HAS_UI:
             p.fillRect(self.rect(), QColor(bg))
             topo = str(g.id.get("topology") or "open_world")
 
+            _cam_mode = int(getattr(g, "camera_mode", 0) or 0)
+
             def project(yaw, dist, pitch=0.0, depth=1.0):
                 # Canonical 3D camera projection. Object count never enters the
                 # camera transform; only the canonical view state does.
                 scale = 1.0 / max(0.35, 0.55 + 0.45 * depth)
+                _fov = float(g.visual_view.get("fov_deg", 48.0))
+                if _cam_mode == 2:
+                    # 2D top-down orthographic: planar controls transform.
+                    _f2 = math.tan(math.radians(_fov) * 0.5)
+                    _s2 = scale * 0.8 / max(_f2, 0.05)
+                    _x0 = dist * vg_cos(yaw) * _s2 * R * 0.72
+                    _y0 = -dist * vg_sin(yaw) * _s2 * R * 0.72 - pitch * R * 0.35
+                    _sz2 = max(2.0, (6.0 + 10.0 * (1.2 - min(depth, 1.8))) * scale)
+                    return cx + _x0, cy + _y0, _sz2
+                if _cam_mode == 1:
+                    # First person: pull the eye into the world and widen the lens.
+                    dist = max(0.0, dist - 0.35)
+                    _fov = min(90.0, _fov + 26.0)
                 ox = dist * vg_cos(yaw) * scale
                 oy = pitch * scale
                 oz = dist * vg_sin(yaw) * scale + 1.0
@@ -5917,7 +5965,7 @@ if HAS_UI:
                 y1, z2 = oy*c - z1*ss, oy*ss + z1*c
                 c, ss = vg_cos(croll), vg_sin(croll)
                 x2, y2 = x1*c - y1*ss, x1*ss + y1*c
-                f = math.tan(math.radians(float(g.visual_view.get("fov_deg",48.0))) * 0.5)
+                f = math.tan(math.radians(_fov) * 0.5)
                 inv = 1.0 / max(0.12, z2)
                 x = cx + (x2 * inv / max(f,0.05)) * R * 0.72
                 y = cy - (y2 * inv / max(f,0.05)) * R * 0.72
