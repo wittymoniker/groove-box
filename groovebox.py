@@ -7005,6 +7005,88 @@ class VideoSynthEngine:
         seed=self._canonical_ctx.get("seed",0.0) if isinstance(getattr(self,"_canonical_ctx",None),dict) else 0.0
         return _visual_composition_fingerprint(objects, seed=seed, abstraction="structural")
 
+    def composition_snapshot(self, t=None):
+        """Unified composition state shared by music lattice, video, and game.
+
+        Goal: prove video/game respond to the *same* canonicals as the music.
+        Object/instrument count is deliberately omitted from identity fields so
+        raising or lowering the ensemble leaves seeded geometry identical.
+        """
+        t = float(t if t is not None else getattr(self, "t", 0.0))
+        ctx = dict(getattr(self, "_canonical_ctx", None) or {})
+        flags = dict(getattr(self, "_canonical_flags", None) or {})
+        seed = float(ctx.get("seed", 0.0) or 0.0)
+        seq = []
+        try:
+            if self.app is not None and hasattr(self.app, "get_seed_values"):
+                seq = [float(v) for v in (self.app.get_seed_values(t_value=t % 8.0) or [])]
+        except Exception:
+            seq = []
+        if not seq:
+            seq = [seed]
+        seed_count = len(seq)
+        try:
+            gsn = getattr(self.app, "goava_seed_numbers", None) if self.app is not None else None
+            if gsn:
+                seed_count = max(seed_count, len(gsn))
+        except Exception:
+            pass
+        set_name = eski_fractal_pick(
+            int(_safe_int_seed(seed)) & 0x7FFFFFFF,
+            sequential_nums=seq,
+            playlist_hash=0,
+        )
+        ox, oy, oz = compositional_xyz(seed, sequential_nums=seq, t=t, slot=0)
+        modes = []
+        for i in range(min(8, len(getattr(self, "_canonical", []) or []) or 8)):
+            c = (getattr(self, "_canonical", None) or [{}])[i] if getattr(self, "_canonical", None) else {}
+            if not isinstance(c, dict):
+                c = {}
+            xyz = compositional_xyz(seed, sequential_nums=seq, t=t, slot=i)
+            ph = float(c.get("phase0", 0.0) or 0.0) + t * (0.30 + 0.70 * float(c.get("entropy", 0.5) or 0.5))
+            modes.append(instrument_geometry_mode(i, ph, xyz, flags=flags, fractal_set=set_name))
+        return {
+            "t": t,
+            "seed": seed,
+            "seed_list": list(seq),
+            "seed_count": int(seed_count),  # GOAVA count source
+            "goava_count": int(seed_count),
+            "fractal_set": set_name,
+            "xyz": (ox, oy, oz),
+            "flags": {
+                "randomizer": bool(flags.get("randomizer")),
+                "phase_lock": bool(flags.get("phase_lock")),
+                "goava": bool(flags.get("goava")),
+                "seeded": bool(flags.get("seeded")),
+            },
+            "ot_enabled": bool(OP_THEORY_ENABLED),
+            "canonical_slots": int(len(getattr(self, "_canonical", []) or [])),  # fixed visual budget
+            "mode_weights": modes,
+            "fingerprint": self.visual_composition_fingerprint(),
+            # identity ignores instrument/object count by design
+            "identity_note": "N-independent: same seed+flags+seq → same visual/game geometry",
+        }
+
+    def composition_readout_lines(self, t=None):
+        """HUD/ESC lines: fractal set, GOAVA seed count, OT, mode blend."""
+        snap = self.composition_snapshot(t=t)
+        lines = []
+        lines.append(f"fractal {snap['fractal_set']} · OT={'ON' if snap['ot_enabled'] else 'OFF'}")
+        lines.append(f"GOAVA seeds {snap['goava_count']} · slots {snap['canonical_slots']} (N-independent)")
+        xyz = snap.get("xyz") or (0, 0, 0)
+        lines.append(f"xyz ({xyz[0]:+.3f},{xyz[1]:+.3f},{xyz[2]:+.3f})")
+        flags = snap.get("flags") or {}
+        eng = "+".join(k.upper()[:4] for k, v in flags.items() if v) or "none"
+        lines.append(f"engines {eng}")
+        if snap.get("mode_weights"):
+            m0 = snap["mode_weights"][0]
+            lines.append(
+                f"mode0 lattice={m0.get('lattice',0):.2f} book={m0.get('book_set',0):.2f} "
+                f"snap={m0.get('snap',0):.2f}{' · PHASEPOINT' if m0.get('near_phase_point') else ''}"
+            )
+        lines.append(f"fp {str(snap.get('fingerprint',''))[:12]}")
+        return lines
+
     def reset_camera(self):
         """Return scenograph camera to origin view (shared by double-click + Quick Edit)."""
         self._camera_view_override = None
@@ -7338,6 +7420,14 @@ class VideoSynthViewer(QFrame):
             painter.setPen(QColor(160, 200, 255, 200))
             painter.drawText(8, hud_y, f"ensemble {ens} · RMS {getattr(self.engine, '_rms', 0):.3f}")
             hud_y += 11
+        # Composition readout (fractal / GOAVA seed count / OT / mode) — N-independent identity
+        try:
+            for line in (self.engine.composition_readout_lines() if self.engine else [])[:5]:
+                painter.setPen(QColor(170, 230, 255, 210))
+                painter.drawText(8, hud_y, str(line)[: max(20, self.width() // 6)])
+                hud_y += 11
+        except Exception:
+            pass
         if snap.get("live_dj_goava") or snap.get("live_dj_random"):
             dj_labels = []
             if snap.get("live_dj_goava"):
@@ -11096,7 +11186,18 @@ class GrooveboxEngine:
             "active_fx_modules": self.active_fx_modules,
             "active_sequencer_modules": self.active_sequencer_modules,
             "active_drum_kits": self.active_drum_kits,
-            "active_synth_panels": self.active_synth_panels
+            "active_synth_panels": self.active_synth_panels,
+            # Composition pathways (video/game/music identity) — carried on every export
+            "composition_meta": {
+                "operator_theory": bool(OP_THEORY_ENABLED),
+                "hardclip_master": True,  # master vol → hardclip factors only; no limiter/EQ bed
+                "eski_fractal_max_iter": int(ESKI_FRACTAL_MAX_ITER),
+                "canonical_master_slots": int(CANONICAL_MASTER_SLOTS),
+                "visual_render_slots": 16,
+                "goava_count_policy": "seed_count",
+                "n_independent_identity": True,
+                "identity_note": "seed+engines+sequential nums; instrument count ignored",
+            },
         }
         with open(filepath, 'w') as f:
             json.dump(data, f, indent=4)
@@ -11105,6 +11206,13 @@ class GrooveboxEngine:
         with open(filepath, 'r') as f:
             data = json.load(f)
         self.global_bpm = data.get("global_bpm", 112.0)
+        # Restore composition pathways when present (OT toggle, fractal policy)
+        try:
+            meta = data.get("composition_meta") or {}
+            if "operator_theory" in meta:
+                set_operator_theory(bool(meta.get("operator_theory")))
+        except Exception:
+            pass
         self.scale_equation = data.get("scale_equation", "x**2 + y - z")
         self.scale_increment = data.get("scale_increment", 0.25)
         self.divergence_steps_count = data.get("divergence_steps_count", 16)

@@ -2901,6 +2901,30 @@ class Game:
                              f"PL={int(bool(em.get('phase_lock')))}  "
                              f"GOAVA={int(bool(em.get('goava')))}  "
                              f"(drive game+video; N instruments ignored)")})
+        # Shared composition snapshot fields (parity with video/music canonicals)
+        try:
+            seed = float(self.id.get("seed") or getattr(self, "seed", 0) or 0)
+            seq = [seed, seed * MEUM, seed * PHI]
+            set_name = eski_fractal_pick(int(seed) & 0x7FFFFFFF, sequential_nums=seq, playlist_hash=0)
+            xyz = compositional_xyz(seed, sequential_nums=seq, t=float(getattr(self, "t", 0.0)), slot=0)
+            mode = instrument_geometry_mode(
+                0, float(getattr(self, "t", 0.0)), xyz,
+                flags={"randomizer": bool(em.get("randomizer")),
+                       "phase_lock": bool(em.get("phase_lock")),
+                       "goava": bool(em.get("goava"))},
+                fractal_set=set_name)
+            el.append({"id": "fractal", "label": "Fractal set",
+                       "value": f"{set_name}  OT={int(_game_ot_enabled())}  z-iters≤{ESKI_FRACTAL_MAX_ITER}"})
+            el.append({"id": "comp_xyz", "label": "Composition xyz",
+                       "value": f"({xyz[0]:+.3f},{xyz[1]:+.3f},{xyz[2]:+.3f})"})
+            el.append({"id": "geom_mode", "label": "Geometry mode",
+                       "value": (f"lattice={mode.get('lattice',0):.2f} book={mode.get('book_set',0):.2f} "
+                                 f"snap={mode.get('snap',0):.2f}"
+                                 f"{' PHASEPOINT' if mode.get('near_phase_point') else ''}")})
+            el.append({"id": "seed_count", "label": "GOAVA seed count policy",
+                       "value": "seed_count (not instrument count)"})
+        except Exception as _ex:
+            el.append({"id": "composition", "label": "Composition", "value": f"readout deferred ({_ex})"})
 
         snap = getattr(self, "_xcorr_snap", {}) or {}
         field = snap.get("field") or {}
