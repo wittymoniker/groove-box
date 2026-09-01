@@ -1,5 +1,5 @@
 # =============================================================================
-# Groovebox Engine v3.7.8 — deterministic audiovisual/game build
+# Groovebox Engine — deterministic audiovisual/game system
 # Mathematician's / Scientist's Groovebox
 #
 # GOAL
@@ -52,8 +52,12 @@ import re
 import weakref
 import numpy as np
 
+# VISUAL_DETERMINISM_2026: canonical seed/view-space kernel.
+from visual_determinism import fibonacci_view, select_views, visual_signal_id, composition_fingerprint as _visual_composition_fingerprint
+from fractal_spatial_engine import FractalSpatialEngine
+
 from dj_effects import CommutativePairSpace, LiveDJEffects
-from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer
+from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer, QObject, pyqtSignal, QRunnable, QThreadPool
 import composition_state as _composition_state
 from PyQt6.QtGui import (
     QPainter, QPen, QColor, QPainterPath, QLinearGradient, QRadialGradient, QBrush, QFont, QPolygonF,
@@ -65,7 +69,8 @@ from PyQt6.QtWidgets import (
     QTabWidget, QLineEdit, QListWidget, QFormLayout, QSpinBox, QDoubleSpinBox,
     QGridLayout, QFileDialog, QSplitter, QGroupBox, QTextEdit, QMenu,
     QMessageBox, QTableWidget, QTableWidgetItem, QCheckBox, QDial, QMenuBar,
-    QDialog, QInputDialog, QHeaderView, QProgressBar, QSizePolicy, QToolButton
+    QDialog, QInputDialog, QHeaderView, QProgressBar, QSizePolicy, QToolButton,
+    QDialogButtonBox,
 )  # QToolButton is required by the global EXPORT menu control.
 
 
@@ -205,38 +210,77 @@ SQRT3 = math.sqrt(3.0)
 SILVER = 1.0 + SQRT2                          # silver ratio δ_s
 
 # ---------------------------------------------------------------------------
-# EQUATION OF REALITY — EQR reality-tensor (book p.78: "Theoretical Equation
-# Parameters for Graphing or Predicting a reality tensor").
+# EQUATION OF REALITY — EQR reality-tensor (book p.78 LaTeX, faithful).
 #
-# Three levels per step of the tensor graphing process:
-#   P — the structural evaluation or evolution
-#   E — the energetic enumeration and direction
-#   D — the determination of direction   (uses E and P)
-# with d = distance between the point and point n, t = time, and
-# I = 134964355 ("finite infinity" — book p.68/p.79).
+# Book isn / isn⁻¹ (p.38, p.43):
+#   isn(θ)  = 2·sin(θ/2)
+#   isn⁻¹(x) = 2·arcsin(clamp(x/2, −1, 1))
 #
-#   P = Σ_{n=0}^{k} k·isn⁻¹( (isn(d_n) + isn(t)) / 2 )
-#   E = Σ_{n=0}^{k} k·isn(θ_n) / d_n
-#   D = Σ_{n=0}^{k} k·isn⁻¹( isin(θ_n)·E / (I·P) )
+# Three levels per step (P structure, E energy/direction, D determination):
+#   All three sums run n = 0 … k (book p.78):
+#   P = Σ_{n=0}^{k} isn⁻¹( (isn(d_n)+isn(t))/2 ) / k
+#   E = Σ_{n=0}^{k} isn(θ_n)/d_n / k
+#   D = Σ_{n=0}^{k} isn⁻¹( isn(θ_n)·E/(I·P) ) / k
 #   Z = P·E + D
+# with I = 134964356 ± 1 (finite infinity, book p.79).
 #
-# We evaluate the tensor on the sparse control grid of a master bus (each
-# control point = one harmonic context: its own sample, the neighbours as
-# point n at distances d_n, and the running time fraction t), then interpolate
-# the single-point z-values along the wave.  This is the EQR effect, applied
-# tail-only.  The components are scale-normalized per render so the structural
-# relation P·E + D is preserved without exponent blow-up.
+# Application (this engine): the single z-value at the origin for the harmonic
+# context of the wave at time t is mixed as a *contribution harmonic* into the
+# contextual audio, time-centered at the origin.  No scale-normalization /
+# equalizer stage.  Effect mix is capped at 50%.
 # ---------------------------------------------------------------------------
-EQR_FINITE_INFINITY = 134964355.0
+EQR_FINITE_INFINITY = 134964356.0
 
 def eqr_isn(x):
+    """Meum-normalized odd sinusoid; OT mode is an equivalent execution route."""
     x = float(x)
-    return math.sin(x) * MEUM_NORM + math.sin(x * MEUM) * (1.0 - MEUM_NORM)
+    if OP_THEORY_ENABLED:
+        a = ot_equiv_sin(x)
+        b = ot_equiv_sin(x * MEUM)
+        return ot_equiv_add(ot_equiv_mul(a, MEUM_NORM),
+                            ot_equiv_mul(b, 1.0 - MEUM_NORM))
+    a = math.sin(x)
+    b = math.sin(x * MEUM)
+    return a * MEUM_NORM + b * (1.0 - MEUM_NORM)
 
 
 def eqr_ics(x):
+    """Meum-normalized even cosinusoid; OT mode is an equivalent execution route."""
     x = float(x)
-    return math.cos(x) * MEUM_NORM + math.cos(x * MEUM) * (1.0 - MEUM_NORM)
+    if OP_THEORY_ENABLED:
+        a = ot_equiv_cos(x)
+        b = ot_equiv_cos(x * MEUM)
+        return ot_equiv_add(ot_equiv_mul(a, MEUM_NORM),
+                            ot_equiv_mul(b, 1.0 - MEUM_NORM))
+    a = math.cos(x)
+    b = math.cos(x * MEUM)
+    return a * MEUM_NORM + b * (1.0 - MEUM_NORM)
+
+
+def isn_vec(x):
+    """Vectorized Meum-normalized odd sinusoid with OT-equivalent execution."""
+    x = np.asarray(x, dtype=np.float64)
+    a = np.sin(x)
+    b = np.sin(x * MEUM)
+    # Vectorized DSP keeps the exact canonical expression; OT is the internal
+    # operator route represented by the same scalar operations.
+    return (a * MEUM_NORM + b * (1.0 - MEUM_NORM)).astype(np.float32)
+
+
+def ics_vec(x):
+    """Vectorized Meum-normalized even cosinusoid with OT-equivalent execution."""
+    x = np.asarray(x, dtype=np.float64)
+    a = np.cos(x)
+    b = np.cos(x * MEUM)
+    return (a * MEUM_NORM + b * (1.0 - MEUM_NORM)).astype(np.float32)
+
+
+def isn_scalar(x):
+    return eqr_isn(x)
+
+
+def ics_scalar(x):
+    return eqr_ics(x)
 
 
 def _eqr_invert_odd(f, y, lo=-math.pi / 2.0, hi=math.pi / 2.0, iters=24):
@@ -274,36 +318,102 @@ def eqr_isn_inv(y):
     return _eqr_invert_odd(eqr_isn, y)
 
 
-def eqr_tensor_step(sample, neighbours, t=0.0):
-    """Single-point z-value from the P,E,D tensor for one harmonic context.
+def book_isn(x):
+    """Book isn (p.38/43), routed through the OT equivalence kernel when on."""
+    if OP_THEORY_ENABLED:
+        return ot_book_isn(x)
+    return 2.0 * math.sin(0.5 * float(x))
 
-    sample is the point, neighbours is the context window (each neighbour n a
-    point at distance d_n = |sample − neighbour| with angular coordinate equal
-    to the neighbour's signed amplitude), t is time in [0,1].
-    Returns (P, E, D, Z) with Z = P·E + D.
+
+def book_isn_inv(y):
+    """Book isn⁻¹(x), with identical output in OT and normal modes."""
+    if OP_THEORY_ENABLED:
+        return ot_book_isn_inv(y)
+    a = max(-1.0, min(1.0, 0.5 * float(y)))
+    return 2.0 * math.asin(a)
+
+
+def book_isn_vec(x):
+    x = np.asarray(x, dtype=np.float64)
+    # Vector path keeps the same canonical formula; OT is the execution route.
+    return (2.0 * np.sin(0.5 * x)).astype(np.float64)
+
+
+def book_ics(x):
+    if OP_THEORY_ENABLED:
+        return ot_book_ics(x)
+    return 2.0 * math.cos(0.5 * float(x))
+
+
+def book_ics_inv(y):
+    if OP_THEORY_ENABLED:
+        return ot_book_ics_inv(y)
+    a = max(-1.0, min(1.0, 0.5 * float(y)))
+    return 2.0 * math.acos(a)
+
+
+def eqr_tensor_step(sample, neighbours, t=0.0):
+    """Book p.78 reality tensor (exact discrete sum, n = 0 … k).
+
+        P = Σ_{n=0}^{k} isn⁻¹( (isn(d_n)+isn(t))/2 ) / k
+        E = Σ_{n=0}^{k} isn(θ_n)/d_n / k
+        D = Σ_{n=0}^{k} isn⁻¹( isn(θ_n)·E / (I·P) ) / k
+        Z = P·E + D
+
+    Prefer eqr_tensor_audio() for 1D/2D audio — same identities, no O(k) loop.
     """
     s = float(sample)
     t = float(t)
-    n = 0 if neighbours is None else max(0, int(len(neighbours)))
-    K = max(1, n)
-    _isn = eqr_isn
-    _invs = eqr_isn_inv
+    pts = [float(v) for v in (neighbours or [])]
+    if not pts:
+        pts = [s]
+    k = max(1, len(pts) - 1)
     _I = EQR_FINITE_INFINITY
     sum_p = 0.0
     sum_e = 0.0
-    for v in neighbours:
-        v = float(v)
+    for v in pts:
         dn = abs(v - s) + 1e-9
-        sum_p += _invs((_isn(dn) + _isn(t)) * 0.5)
-        sum_e += _isn(v) / dn
-    P = K * sum_p
-    E = K * sum_e
+        sum_p += book_isn_inv((book_isn(dn) + book_isn(t)) * 0.5)
+        sum_e += book_isn(v) / dn
+    P = sum_p / float(k)
+    E = sum_e / float(k)
     D = 0.0
-    if abs(P) > 1e-9:
-        for v in neighbours:
-            v = float(v)
-            D += _invs(_isn(v) * E / (_I * P))
-        D = K * D
+    if abs(P) > 1e-12:
+        acc = 0.0
+        for v in pts:
+            acc += book_isn_inv(book_isn(v) * E / (_I * P))
+        D = acc / float(k)
+    Z = P * E + D
+    return float(P), float(E), float(D), float(Z)
+
+
+def eqr_tensor_audio(sample, d_char, theta_char, t=0.0):
+    """Closed-form audio reduction of the book sums (no neighbour loop).
+
+    For a continuous 1D/2D wave the discrete sum Σ_{n=0}^{k} (·)/k collapses
+    to the single characteristic pair (d̄, θ̄) of the local context:
+
+        d̄  = characteristic distance (local MAD / RMS of the window)
+        θ̄  = characteristic amplitude (the sample, or local mean)
+
+    Then each sum is one term (k cancels with the single representative):
+
+        P = isn⁻¹( (isn(d̄)+isn(t))/2 )
+        E = isn(θ̄) / d̄
+        D = isn⁻¹( isn(θ̄)·E / (I·P) )
+        Z = P·E + D
+
+    Same identities as the book; O(1) per sample after one sliding-window pass.
+    """
+    d = abs(float(d_char)) + 1e-9
+    th = float(theta_char)
+    tt = float(t)
+    _I = EQR_FINITE_INFINITY
+    P = book_isn_inv((book_isn(d) + book_isn(tt)) * 0.5)
+    E = book_isn(th) / d
+    D = 0.0
+    if abs(P) > 1e-12:
+        D = book_isn_inv(book_isn(th) * E / (_I * P))
     Z = P * E + D
     return float(P), float(E), float(D), float(Z)
 
@@ -333,7 +443,7 @@ def eqr_tensor_step(sample, neighbours, t=0.0):
 #   f)  Dividing a number by a divisor in absolute (0,2) re-expresses it in the
 #       "higher-value" numeric field (refined once by the Meum residue).
 # ---------------------------------------------------------------------------
-OP_THEORY_ENABLED = False
+OP_THEORY_ENABLED = True  # default ON — nested dynamics active at launch
 
 
 def set_operator_theory(enabled):
@@ -419,98 +529,846 @@ def ot_i_phase(x, k):
     return x * (-1.0 if int(k) % 2 == 0 else 1.0)
 
 
+# ---------------------------------------------------------------------------
+# OPERATOR-THEORY EQUIVALENCE KERNEL
+#
+# The OT layer is an execution/representation path, not a second audible
+# instrument.  The book's operators are allowed to describe the operation,
+# while this compatibility kernel preserves the canonical scalar result.
+# This is important for DSP: enabling OT must not silently retune a project.
+# The legacy ot_* functions remain available to explicit OT scripts, but the
+# shared engine uses these equivalence-preserving primitives.
+# ---------------------------------------------------------------------------
+
+def ot_equiv_add(a, b):
+    return float(a) + float(b)
+
+
+def ot_equiv_sub(a, b):
+    return float(a) - float(b)
+
+
+def ot_equiv_mul(a, b):
+    return float(a) * float(b)
+
+
+def ot_equiv_div(a, b):
+    a = float(a)
+    b = float(b)
+    if b == 0.0:
+        return 0.0
+    return a / b
+
+
+def ot_equiv_pow(b, e):
+    return math.pow(float(b), float(e))
+
+
+def ot_equiv_root(x, n=2.0):
+    x = float(x)
+    n = float(n)
+    if n == 0.0:
+        return 0.0
+    if x < 0.0 and abs(n % 2.0) == 1.0:
+        return -math.pow(abs(x), 1.0 / n)
+    if x < 0.0:
+        return math.nan
+    return math.pow(x, 1.0 / n)
+
+
+def ot_equiv_i_pow(k):
+    # The book's imaginary-number convention used by the series layer: the
+    # orientation alternates each integer power.  It is deliberately kept as
+    # an internal symbolic phase marker and never changes the real audio value.
+    return 1.0 if int(k) % 2 == 0 else -1.0
+
+
+def ot_book_isn(x):
+    # Canonical book form: isn(theta) = 2 sin(theta/2). OT-equivalent sin.
+    return ot_equiv_mul(2.0, ot_equiv_sin(ot_equiv_mul(0.5, float(x))))
+
+
+def ot_book_isn_inv(y):
+    # Exact inverse of the canonical book form on its real principal domain.
+    a = max(-1.0, min(1.0, ot_equiv_mul(0.5, float(y))))
+    return ot_equiv_mul(2.0, ot_equiv_asin(a))
+
+
+def ot_book_ics(x):
+    # Isosceles/cosine counterpart, represented through the same OT arithmetic.
+    return ot_equiv_mul(2.0, ot_equiv_cos(ot_equiv_mul(0.5, float(x))))
+
+
+def ot_book_ics_inv(y):
+    a = max(-1.0, min(1.0, ot_equiv_mul(0.5, float(y))))
+    return ot_equiv_mul(2.0, ot_equiv_acos(a))
+
+
+# ---------------------------------------------------------------------------
+# OT-EQUIVALENT transcendental functions
+#
+# Same contract as ot_equiv_add/mul/…: when Operator Theory is ON these are
+# the execution route, but the numeric result is identical to the ordinary
+# math.* function.  That lets CPU / event paths prefer the OT call graph
+# without retuning a project (matches isn / arcisn / EQR policy).
+# ---------------------------------------------------------------------------
+
+def ot_equiv_sin(x):
+    return math.sin(float(x))
+
+
+def ot_equiv_cos(x):
+    return math.cos(float(x))
+
+
+def ot_equiv_tan(x):
+    return math.tan(float(x))
+
+
+def ot_equiv_asin(x):
+    return math.asin(max(-1.0, min(1.0, float(x))))
+
+
+def ot_equiv_acos(x):
+    return math.acos(max(-1.0, min(1.0, float(x))))
+
+
+def ot_equiv_atan(x):
+    return math.atan(float(x))
+
+
+def ot_equiv_atan2(y, x):
+    return math.atan2(float(y), float(x))
+
+
+def ot_equiv_sinh(x):
+    return math.sinh(float(x))
+
+
+def ot_equiv_cosh(x):
+    return math.cosh(float(x))
+
+
+def ot_equiv_tanh(x):
+    return math.tanh(float(x))
+
+
+def ot_equiv_sqrt(x):
+    x = float(x)
+    if x < 0.0:
+        return math.nan
+    return math.sqrt(x)
+
+
+def ot_equiv_exp(x):
+    return math.exp(float(x))
+
+
+def ot_equiv_log(x):
+    x = float(x)
+    if x <= 0.0:
+        return math.nan
+    return math.log(x)
+
+
+def ot_equiv_log2(x):
+    x = float(x)
+    if x <= 0.0:
+        return math.nan
+    return math.log2(x)
+
+
+def ot_equiv_log10(x):
+    x = float(x)
+    if x <= 0.0:
+        return math.nan
+    return math.log10(x)
+
+
+def ot_equiv_fabs(x):
+    return math.fabs(float(x))
+
+
+def ot_equiv_floor(x):
+    return float(math.floor(float(x)))
+
+
+def ot_equiv_ceil(x):
+    return float(math.ceil(float(x)))
+
+
+def ot_equiv_hypot(a, b):
+    return math.hypot(float(a), float(b))
+
+
+# ---------------------------------------------------------------------------
+# DUAL MATH MODE — project math can route through the OT execution layer.
+# OT mode is intentionally semantics-preserving for canonical DSP paths.
+# Explicit ot_* script functions still expose the book's alternate symbolic
+# rules when a user asks for those rules directly.
+# ---------------------------------------------------------------------------
+
+def math_add(a, b):
+    """Composition add — OT uses book ot_add (numeric significance on sums).
+
+    isn/ics/EQR still use ot_equiv_* so the oscillator identity stays stable.
+    Playlist algorithms, FX drives, and seed folds that call math_* get real
+    OT arithmetic when the toggle is on.
+    """
+    if OP_THEORY_ENABLED:
+        return ot_add(a, b)
+    return float(a) + float(b)
+
+
+def math_sub(a, b):
+    """Composition sub — OT uses book ot_sub."""
+    if OP_THEORY_ENABLED:
+        return ot_sub(a, b)
+    return float(a) - float(b)
+
+
+def math_mul(a, b):
+    """Composition product — OT uses book ot_prod (signed product rules).
+
+    This is where OT changes the *music*: gains, drives, and ratio folds that
+    multiply through math_mul inherit OT significance.  Ordinary * when off.
+    """
+    if OP_THEORY_ENABLED:
+        return ot_prod(a, b)
+    return float(a) * float(b)
+
+
+def math_div(a, b):
+    """Composition division — OT uses book ot_div (0/0→1 rule)."""
+    if OP_THEORY_ENABLED:
+        return ot_div(a, b)
+    b = float(b)
+    if b == 0.0:
+        return 0.0
+    return float(a) / b
+
+
+def math_pow(b, e):
+    """Composition power — OT uses book ot_pow (same-hand / opposite-hand)."""
+    if OP_THEORY_ENABLED:
+        return ot_pow(b, e)
+    return math.pow(float(b), float(e))
+
+
+def math_scale(x, gain):
+    """Scale without soft saturation; OT uses book ot_prod for gain significance."""
+    if OP_THEORY_ENABLED:
+        return ot_prod(x, gain)
+    return float(x) * float(gain)
+
+# ---------------------------------------------------------------------------
+# ESKI BOOK FRACTAL SETS (Scientific Theories and Inventions, p.26)
+#
+# Unlike isn / ics / sin / cos (and their inverses), which keep a fixed
+# audible formula and only change *execution route* under OT, these fractal
+# sets keep the **same algebraic expression** in both modes.  What changes
+# under Operator Theory is the *nature of the arithmetic itself* (book OT
+# product / power / root / add rules from p.48) — the expression text is
+# never rewritten.
+#
+#   Without OT: ordinary IEEE + * ** sqrt
+#   With OT:    ot_add / ot_prod / ot_pow / ot_div on the identical form
+#
+# Table (book):
+#   Divergent Space Set  Y = x·c + c
+#   Wormhole Set         Y = x^c + x
+#   Wormhill Set         Y = x + c
+#   Worms Set            Y = c · √x
+#   Star Set             Y = c^x
+#   Starburst Set        Y = √c · x
+#
+# Prevalence in video/game: sequential numeric inputs + playlist / step
+# algorithms select which set is most active; the fractal *object* remains
+# the same schema sampled per instrument slot.
+# ---------------------------------------------------------------------------
+
+ESKI_FRACTAL_SET_NAMES = (
+    "divergent_space",  # Y = xc + c
+    "wormhole",         # Y = x^c + x
+    "wormhill",         # Y = x + c
+    "worms",            # Y = c * root(x)
+    "star",             # Y = c^x
+    "starburst",        # Y = root(c) * x
+)
+
+
+def _fractal_add(a, b):
+    """Addition: OT → book ot_add (directional bias); else ordinary +."""
+    if OP_THEORY_ENABLED:
+        return ot_add(a, b)
+    return float(a) + float(b)
+
+
+def _fractal_mul(a, b):
+    """Product: OT → book ot_prod (signed product rules); else ordinary *."""
+    if OP_THEORY_ENABLED:
+        return ot_prod(a, b)
+    return float(a) * float(b)
+
+
+def _fractal_pow(base, exp):
+    """Power: OT → book ot_pow (same-hand / opposite-hand); else |b|^|e| sign rules via math.pow on abs with sign."""
+    if OP_THEORY_ENABLED:
+        return ot_pow(base, exp)
+    try:
+        return math.pow(float(base), float(exp))
+    except Exception:
+        # Domain guard for negative base / fractional exp
+        b = float(base)
+        e = float(exp)
+        if b < 0.0:
+            return -math.pow(abs(b), e) if e == int(e) and int(e) % 2 else float("nan")
+        return math.pow(max(b, 0.0), e)
+
+
+def _fractal_root(x, n=2.0):
+    """Root: OT uses ot_pow with 1/n under book rules; else ordinary root."""
+    x = float(x)
+    n = float(n) if float(n) != 0.0 else 2.0
+    if OP_THEORY_ENABLED:
+        return ot_pow(max(x, 0.0) if x < 0 else x, 1.0 / n)
+    if x < 0.0 and abs(n - 2.0) < 1e-12:
+        return float("nan")
+    try:
+        return math.pow(max(x, 0.0), 1.0 / n) if x < 0 else math.pow(x, 1.0 / n)
+    except Exception:
+        return float("nan")
+
+
+def eski_fractal_eval(set_name, x, c):
+    """Evaluate one book fractal set at (x, c) — expression never rewritten.
+
+    OT toggle selects arithmetic nature only.  Returns a finite float (nan
+    coerced to 0 for graphing stability in the frame path).
+    """
+    name = (set_name or "wormhill").lower().strip().replace(" ", "_")
+    x = float(x)
+    c = float(c)
+    try:
+        if name in ("divergent_space", "divergent", "divergent_space_set"):
+            # Y = x*c + c
+            y = _fractal_add(_fractal_mul(x, c), c)
+        elif name in ("wormhole", "wormhole_set"):
+            # Y = x^c + x
+            y = _fractal_add(_fractal_pow(x, c), x)
+        elif name in ("wormhill", "wormhill_set"):
+            # Y = x + c
+            y = _fractal_add(x, c)
+        elif name in ("worms", "worms_set"):
+            # Y = c * root(x)
+            y = _fractal_mul(c, _fractal_root(max(x, 0.0), 2.0))
+        elif name in ("star", "star_set"):
+            # Y = c^x
+            y = _fractal_pow(c, x)
+        elif name in ("starburst", "starburst_set"):
+            # Y = root(c) * x
+            y = _fractal_mul(_fractal_root(max(c, 0.0), 2.0), x)
+        else:
+            y = _fractal_add(x, c)
+    except Exception:
+        y = 0.0
+    if not math.isfinite(y):
+        y = 0.0
+    # Soft bound for graphing (does not change the expression — display only)
+    if abs(y) > 1e6:
+        y = math.copysign(1e6, y)
+    return float(y)
+
+
+def eski_fractal_pick(seed_key, sequential_nums=None, playlist_hash=0):
+    """Pick which book set is most prevalent from numeric / playlist geometry.
+
+    Prevalence driver (most → least): sequential numeric inputs → playlist /
+    step-algorithm fingerprint → raw seed.  Returns a set name from
+    ESKI_FRACTAL_SET_NAMES.
+    """
+    seq = list(sequential_nums or []) or [float(seed_key or 0)]
+    mean = sum(abs(float(v)) for v in seq) / max(1, len(seq))
+    fold = abs(float(seq[0]) * MEUM) % 1.0 if seq else 0.0
+    # Mix playlist / algo identity so composition pathways change the set
+    h = int(seed_key or 0) ^ int(playlist_hash or 0) & 0x7FFFFFFF
+    h ^= int(fold * 1000) & 0xFFFF
+    h ^= int(mean * 100) & 0xFFFF
+    return ESKI_FRACTAL_SET_NAMES[h % len(ESKI_FRACTAL_SET_NAMES)]
+
+
+def eski_fractal_field_sample(set_name, u, v, c, t=0.0):
+    """2D graphing sample: treat (u,v) as complex-ish indices into the set.
+
+    Book: Y for all directional axis values with alternate dimensions
+    cross-factored (X) and complex distance from solution point (C).
+    Here u ~ real, v ~ imag contribution folded into x = u + MEUM*v*sin(t).
+    """
+    x = float(u) + MEUM * float(v) * math.sin(float(t) * MEUM_INV + float(c))
+    return eski_fractal_eval(set_name, x, c)
+
+
+# Hard cap on z-iterations per node (user request / graphing stability).
+ESKI_FRACTAL_MAX_ITER = 12
+
+
+def compositional_xyz(seed, sequential_nums=None, t=0.0, slot=0):
+    """Shared compositional X,Y,Z from seed + sequential numerics.
+
+    Why shared: video, game, and music lattices should sample the *same*
+    spatial identity for a given composition so fractal nodes, instrument
+    objects, and pitch residues stay cross-correlated.  OT does not rewrite
+    these coordinates; it only changes arithmetic when they are later
+    combined under fractal / ratio ops.
+    """
+    seq = list(sequential_nums or []) or [float(seed or 0.0)]
+    s = float(seed or 0.0)
+    t = float(t)
+    i = int(slot) & 0x7FFF
+    # Deterministic axes from sequential geometry + slot
+    x = ((seq[0] if seq else s) * MEUM_INV + i * PHI_INV + t * 0.01) % 2.0 - 1.0
+    y = ((seq[1] if len(seq) > 1 else s * MEUM) * MEUM_INV + i * MEUM + t * 0.013) % 2.0 - 1.0
+    z = ((seq[2] if len(seq) > 2 else s * PHI) * MEUM_INV + i * 0.07 + t * 0.008) % 2.0 - 1.0
+    if OP_THEORY_ENABLED:
+        # OT combination of axes (expression: x' = x+y*z style via book ops)
+        try:
+            x = _fractal_add(x, _fractal_mul(y, 0.05))
+            y = _fractal_add(y, _fractal_mul(z, 0.05))
+            z = _fractal_add(z, _fractal_mul(x, 0.03))
+        except Exception:
+            pass
+    return float(x), float(y), float(z)
+
+
+def eski_fractal_iterate_z(set_name, x, y, z0, c, max_iter=None):
+    """Iterate fractal z-values at a node — **max 12 iterations**.
+
+    Each step applies the book set expression to a mix of (x, y, z_n) without
+    rewriting the equation.  Returns (z_list, n_done, escaped) where z_list
+    has length ≤ 12.  Escape when |z| exceeds a bound (graphing only).
+    """
+    max_iter = int(max_iter if max_iter is not None else ESKI_FRACTAL_MAX_ITER)
+    max_iter = max(1, min(12, max_iter))  # hard ceiling of 12
+    z = float(z0)
+    c = float(c)
+    x, y = float(x), float(y)
+    zs = []
+    escaped = False
+    for n in range(max_iter):
+        # Fold 3D into the 1D book variable: ξ = x + MEUM·y + z (same expression input)
+        xi = _fractal_add(_fractal_add(x, _fractal_mul(MEUM, y)), z)
+        z = eski_fractal_eval(set_name, xi, c)
+        zs.append(z)
+        if abs(z) > 8.0:
+            escaped = True
+            break
+    return zs, len(zs), escaped
+
+
+def instrument_geometry_mode(slot, phase, xyz, flags=None, fractal_set=None):
+    """Blend / switch instrument modes from geometry at phase-points.
+
+    Three engines (music, video, game) call this so each instrument object
+    follows the composition as closely as possible:
+
+      * phase   — voice phase0 + time (phase-point on the circle)
+      * xyz     — compositional_xyz for this slot (shared spatial identity)
+      * flags   — engine mask (randomizer / phase_lock / goava / …)
+      * fractal_set — active book set name (optional)
+
+    Returns weights dict summing ~1.0:
+      lattice   — instrument_lattice / canonical object draw (default dominant)
+      book_set  — book fractal field influence
+      phase_lock — lock-ring / phase-ribbon emphasis
+      scatter   — randomizer spread emphasis
+      goava     — goava portal/glyph emphasis
+
+    Switch vs blend: near phase-points (phase mod τ close to 0 or π) weights
+    snap harder (switch); between phase-points they interpolate (blend).
+    """
+    flags = dict(flags or {})
+    x, y, z = xyz if xyz and len(xyz) >= 3 else (0.0, 0.0, 0.0)
+    ph = float(phase) % math.tau
+    # Distance to nearest phase-point (0 or π)
+    d0 = min(abs(ph), abs(ph - math.tau))
+    dpi = abs(ph - math.pi)
+    near = min(d0, dpi) / math.pi  # 0 at point, 1 at farthest mid
+    snap = 1.0 - near  # 1 at phase-point → switch; 0 mid → soft blend
+    # Geometry residue from position
+    geo = (abs(x) + abs(y) + abs(z)) / 3.0
+    geo = max(0.0, min(1.0, geo))
+    w = {
+        "lattice": 0.45 + 0.25 * (1.0 - geo),
+        "book_set": 0.20 + 0.20 * geo,
+        "phase_lock": 0.08 * (1.5 if flags.get("phase_lock") else 0.4),
+        "scatter": 0.08 * (1.5 if flags.get("randomizer") else 0.4),
+        "goava": 0.08 * (1.6 if flags.get("goava") else 0.3),
+    }
+    # At phase-points, boost lattice or book_set by slot parity (switch)
+    if snap > 0.65:
+        if int(slot) % 2 == 0:
+            w["lattice"] += 0.20 * snap
+        else:
+            w["book_set"] += 0.20 * snap
+    else:
+        # Mid-arc blend: mix lattice/book by xyz.z
+        w["lattice"] = w["lattice"] * (1.0 - 0.3 * near) + w["book_set"] * 0.15 * near
+    # Normalize
+    s = sum(w.values()) or 1.0
+    for k in w:
+        w[k] = float(w[k] / s)
+    w["snap"] = float(snap)
+    w["near_phase_point"] = bool(snap > 0.65)
+    w["fractal_set"] = fractal_set or ""
+    w["slot"] = int(slot)
+    return w
+
+
+def math_sin(x):
+    """sin — OT route is numeric-identical to math.sin."""
+    if OP_THEORY_ENABLED:
+        return ot_equiv_sin(x)
+    return math.sin(float(x))
+
+
+def math_cos(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_cos(x)
+    return math.cos(float(x))
+
+
+def math_tan(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_tan(x)
+    return math.tan(float(x))
+
+
+def math_asin(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_asin(x)
+    return math.asin(max(-1.0, min(1.0, float(x))))
+
+
+def math_acos(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_acos(x)
+    return math.acos(max(-1.0, min(1.0, float(x))))
+
+
+def math_atan(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_atan(x)
+    return math.atan(float(x))
+
+
+def math_atan2(y, x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_atan2(y, x)
+    return math.atan2(float(y), float(x))
+
+
+def math_sinh(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_sinh(x)
+    return math.sinh(float(x))
+
+
+def math_cosh(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_cosh(x)
+    return math.cosh(float(x))
+
+
+def math_tanh(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_tanh(x)
+    return math.tanh(float(x))
+
+
+def math_sqrt(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_sqrt(x)
+    x = float(x)
+    return math.sqrt(x) if x >= 0.0 else math.nan
+
+
+def math_exp(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_exp(x)
+    return math.exp(float(x))
+
+
+def math_log(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_log(x)
+    x = float(x)
+    return math.log(x) if x > 0.0 else math.nan
+
+
+def math_log2(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_log2(x)
+    x = float(x)
+    return math.log2(x) if x > 0.0 else math.nan
+
+
+def math_log10(x):
+    if OP_THEORY_ENABLED:
+        return ot_equiv_log10(x)
+    x = float(x)
+    return math.log10(x) if x > 0.0 else math.nan
+
+
+# ---------------------------------------------------------------------------
+# VIDEO / GAME trig via isn · ics · arcisn · arcics (Operator Theory ON)
+#
+# book:  isn(θ) = 2 sin(θ/2)  ⇒  sin(θ) = isn(2θ)/2
+#        ics(θ) = 2 cos(θ/2)  ⇒  cos(θ) = ics(2θ)/2
+#        isn⁻¹(y) = 2 arcsin(y/2)  ⇒  arcsin(y) = isn⁻¹(2y)/2
+#        ics⁻¹(y) = 2 arccos(y/2)  ⇒  arccos(y) = ics⁻¹(2y)/2
+# When OT is ON these call graphs run through the isn/ics family while remaining
+# numerically identical to math.sin/cos/asin/acos (equivalence kernel).
+# When OT is OFF they are plain math.* for zero overhead.
+# ---------------------------------------------------------------------------
+
+def ot_sin_via_isn(x):
+    return ot_equiv_mul(0.5, ot_book_isn(ot_equiv_mul(2.0, float(x))))
+
+
+def ot_cos_via_ics(x):
+    return ot_equiv_mul(0.5, ot_book_ics(ot_equiv_mul(2.0, float(x))))
+
+
+def ot_asin_via_arcisn(y):
+    y = max(-1.0, min(1.0, float(y)))
+    return ot_equiv_mul(0.5, ot_book_isn_inv(ot_equiv_mul(2.0, y)))
+
+
+def ot_acos_via_arcics(y):
+    y = max(-1.0, min(1.0, float(y)))
+    return ot_equiv_mul(0.5, ot_book_ics_inv(ot_equiv_mul(2.0, y)))
+
+
+def ot_tan_via_isn_ics(x):
+    c = ot_cos_via_ics(x)
+    if abs(c) < 1e-18:
+        return math.copysign(1e18, ot_sin_via_isn(x))
+    return ot_equiv_div(ot_sin_via_isn(x), c)
+
+
+def vg_sin(x):
+    """Video/game sine: isn-route under Operator Theory, else math.sin."""
+    if OP_THEORY_ENABLED:
+        return ot_sin_via_isn(x)
+    return math.sin(float(x))
+
+
+def vg_cos(x):
+    if OP_THEORY_ENABLED:
+        return ot_cos_via_ics(x)
+    return math.cos(float(x))
+
+
+def vg_tan(x):
+    if OP_THEORY_ENABLED:
+        return ot_tan_via_isn_ics(x)
+    return math.tan(float(x))
+
+
+def vg_asin(x):
+    if OP_THEORY_ENABLED:
+        return ot_asin_via_arcisn(x)
+    return math.asin(max(-1.0, min(1.0, float(x))))
+
+
+def vg_acos(x):
+    if OP_THEORY_ENABLED:
+        return ot_acos_via_arcics(x)
+    return math.acos(max(-1.0, min(1.0, float(x))))
+
+
+def dual_map_array(arr, scalar_fn_ot, scalar_fn_normal=None):
+    """Apply OT or normal elementwise map to an array. No clipping."""
+    x = np.asarray(arr, dtype=np.float64)
+    if x.size == 0:
+        return x.astype(np.float32)
+    if OP_THEORY_ENABLED:
+        out = np.empty_like(x)
+        flat = x.ravel()
+        for i, v in enumerate(flat):
+            out.flat[i] = scalar_fn_ot(v)
+        return out.astype(np.float32)
+    if scalar_fn_normal is not None:
+        return np.asarray(scalar_fn_normal(x), dtype=np.float32)
+    return x.astype(np.float32)
+
+
+def no_sat(x):
+    """Identity passthrough — project policy: no soft-clip / no saturation."""
+    return x
+
+
 def ot_master_transform(x):
     """Operator-theory re-encoding of the master bus (gated, default off).
 
-    Deterministic float64 whole-buffer map: band-hop add toward the enclosing
-    integer of each magnitude (rule e), dividend refinement by the Meum
-    residual divisor in absolute (0,2) (rule f), negative-run composition
-    (rule 1), then amplitude re-normalization under the master ceiling.
+    Deterministic float64 whole-buffer map of the book's nested dynamics:
+    band-hop add (rule e), Meum residual refinement (rule f), negative-run
+    composition (rule 1).  NO peak normalization and NO soft-clip saturation.
     """
     x = np.asarray(x, dtype=np.float64)
     n = x.size
-    out = np.empty_like(x)
     if n == 0:
         return x.astype(np.float32)
-    peak0 = float(np.max(np.abs(x))) or 1.0
-    m = x / peak0
     band = np.select(
-        [np.abs(m) <= 1.0, np.abs(m) <= 2.0, np.abs(m) <= 3.0],
+        [np.abs(x) <= 1.0, np.abs(x) <= 2.0, np.abs(x) <= 3.0],
         [1.0, 2.0, 3.0],
         default=1.0,
     )
-    hop = np.sign(m) * band
-    out = m + 0.35 * hop
-    denom = np.abs(out) + 0.2
-    out = out / denom * (1.0 + MEUM_NORM)
+    hop = np.sign(x) * band
+    out = x + 0.35 * hop
+    # Nested Meum residual factor (no unit-ceiling division).
+    out = out * (1.0 + MEUM_NORM * 0.15 / (1.0 + np.abs(out)))
     prev = np.empty_like(out)
     prev[0] = out[0]
     prev[1:] = out[:-1]
     negrun = (out < 0.0) & (prev < 0.0)
     out = np.where(negrun, -np.abs(out) * 1.15, out)
-    p = float(np.max(np.abs(out))) or 1.0
-    out = out / p * 0.89
     return out.astype(np.float32)
 
 
-def build_master_follow_env(master, bpm, sample_rate, pkp_decay):
-    """FULL ENV-FOLLOW SYMMETRY — one shared follow envelope for EQR, PKP,
-    and the Fractallizer (tail-only, deterministic, off-canonical).
+def book_isn_envelope_shape(u, decay):
+    """Smart isn()-based PKP envelope over one step (u∈[0,1] = one step).
 
-    The envelope follows the rectified master magnitude itself (block-max →
-    TIME-PREDICTIVE forward-max window → 0.85/0.15 one-pole release, the same
-    release the EQR tensor uses) stamped onto the tempo-locked plane whose
-    swing the PKP Decay slider damps.  All three master effects therefore
-    step through the exact same envelope function instead of computing their
-    own independent copies:
-        EQR        : z-shaping × this envelope
-        Fractallizer: fractal detail contribution × this envelope
-        PKP        : master × (0.35 + 0.65·this envelope)
+    Balanced to *fit a step*: starts/ends at 0 when the shape is cyclic or
+    two-step (no bleed into the next step); sustain mode holds through the
+    step end.  Peak is balanced to 1.0 so all decay settings share the same
+    crest.  Mean level is gently equalized so 0 / 0.5 / 1 do not jump in loudness.
+
+    decay ∈ [0,1]:
+      0.0 → single isn() cycle over the step (θ: 0→2π).
+      0.5 → 2-step: isn ramp [0→0.5], solid mid, isn release [1.5→2].
+      1.0 → isn cycle then flat sustain to the end of the step/row.
+    """
+    u = np.asarray(u, dtype=np.float64)
+    # Clamp into the open-closed step unit interval.
+    u = np.clip(u, 0.0, 1.0)
+    d = float(np.clip(decay, 0.0, 1.0))
+
+    def _isn_cycle(uu):
+        # Full book-isn cycle fits exactly in the step: 0 at edges, 1 at mid.
+        theta = uu * 2.0 * np.pi
+        return book_isn_vec(theta) * 0.5
+
+    def _two_step(uu):
+        # Phase domain p∈[0,2] mapped from the step — edges at 0.
+        p = uu * 2.0
+        env = np.zeros_like(p)
+        m = p <= 0.5
+        env[m] = book_isn_vec((p[m] / 0.5) * np.pi) * 0.5
+        m = (p > 0.5) & (p < 1.5)
+        env[m] = 1.0
+        m = p >= 1.5
+        env[m] = book_isn_vec(np.pi - ((p[m] - 1.5) / 0.5) * np.pi) * 0.5
+        return env
+
+    def _cycle_then_sustain(uu, cycle_frac=0.35):
+        # isn attack fits the first fraction of the step; solid hold to step end.
+        env = np.ones_like(uu)
+        m = uu <= cycle_frac
+        if np.any(m):
+            env[m] = _isn_cycle(uu[m] / max(cycle_frac, 1e-9))
+        return env
+
+    if d <= 1e-9:
+        shape = _isn_cycle(u)
+    elif d >= 1.0 - 1e-9:
+        shape = _cycle_then_sustain(u)
+    elif d <= 0.5:
+        a = d / 0.5
+        shape = (1.0 - a) * _isn_cycle(u) + a * _two_step(u)
+    else:
+        a = (d - 0.5) / 0.5
+        shape = (1.0 - a) * _two_step(u) + a * _cycle_then_sustain(u)
+
+    # Balance crest to 1.0 so every decay setting fits the same step height.
+    peak = float(np.max(shape)) if shape.size else 1.0
+    if peak > 1e-12:
+        shape = shape / peak
+    # Soft mean balance toward ~0.5 so step energy is comparable across morphs
+    # without a hard equalizer (scale only, no compression).
+    mean = float(np.mean(shape)) if shape.size else 0.5
+    if mean > 1e-12:
+        target_mean = 0.50
+        bal = target_mean / mean
+        # Keep peak ≤ 1 after balance.
+        bal = min(bal, 1.0 / max(float(np.max(shape)), 1e-12))
+        shape = shape * bal
+    return shape.astype(np.float32)
+
+
+def build_master_follow_env(
+    master,
+    bpm,
+    sample_rate,
+    pkp_decay,
+    row_length_samples=None,
+    step_length_samples=None,
+):
+    """PKP isn envelope shared by EQR, Fractallizer, and PKP master stages.
+
+    Balanced to fit a playlist STEP (16th / quarter-beat) by default so each
+    envelope cycle lands cleanly on the step grid with no phase drift:
+
+      0.0 = one isn() cycle per step
+      0.5 = 2-step isn ramp / solid / isn release, still one shape per step
+      1.0 = isn cycle then flat sustain; tile length grows toward row length
+
+    Tile length morphs with decay: step at 0 → row at 1 (when row is known),
+    so the envelope always *fits* an integer number of tiles in the buffer
+    as closely as possible.  No peak-norm.
     """
     m = np.asarray(master, dtype=np.float64).ravel()
     n = m.size
     if n == 0:
         return np.ones(1, dtype=np.float32)
-    decay = max(0.0, float(pkp_decay))
-    swing = float(np.clip(0.45 * (1.0 - 0.7 * decay), 0.045, 0.45))
-    beat_hz = max(float(bpm), 1.0) / 60.0
-    t_sec = np.arange(n, dtype=np.float64) / max(float(sample_rate), 1.0)
-    # TEMPO-ALIGNED plane: cos over the fractional beat so the gain peaks on the
-    # downbeat (0.25-beat phase into the release), then rides the off-beat.
-    beat_phase = (beat_hz * t_sec) % 1.0
-    tempo = 0.55 + swing * np.cos(2.0 * np.pi * (beat_phase + 0.25))
-    rect = np.abs(m)
-    block = max(1, n // 4096)
-    nb = (n + block - 1) // block
-    bmax = np.empty(nb, dtype=np.float64)
-    for i in range(nb):
-        lo = i * block
-        hi = min(n, lo + block)
-        bmax[i] = float(np.max(rect[lo:hi])) or 1e-9
-    look = max(1, nb // 24)
-    pf = np.empty(nb, dtype=np.float64)
-    for i in range(nb):
-        pf[i] = float(np.max(bmax[i:min(nb, i + look)])) or 1e-9
-    fol = np.empty_like(pf)
-    prev = float(np.mean(bmax)) or 1.0
-    for i in range(nb):
-        if pf[i] > prev:
-            prev = pf[i]
-        else:
-            prev = 0.85 * prev + 0.15 * pf[i]
-        fol[i] = prev
-    fol_up = np.interp(
-        np.arange(n, dtype=np.float64),
-        np.linspace(0, n - 1, nb) if nb > 1 else np.array([0.0]),
-        fol,
-    ) if nb > 1 else np.full(n, float(fol[0]))
-    rmean = float(np.mean(rect)) + 1e-9
-    follow = np.clip(0.5 + 0.5 * (fol_up / rmean), 0.0, 2.0)
-    # IDEALIZED SCALE: cliplamp the combined envelope to an enhancement band
-    # so every effect rides each beat (peaks ~1.5 on downbeats/tranients)
-    # without ever fully muting (floor 0.35) or clipping the headroom.
-    env = np.clip(tempo * follow, 0.35, 1.5)
-    return env.astype(np.float32)
+
+    raw = float(pkp_decay)
+    if raw > 1.0:
+        decay = max(0.0, min(1.0, raw / 1000.0))
+    else:
+        decay = max(0.0, min(1.0, raw))
+
+    # Canonical step = one 16th (quarter of a beat) from BPM/SR.
+    sr = max(float(sample_rate), 1.0)
+    beat_samples = sr * (60.0 / max(float(bpm), 1e-6))
+    default_step = max(1, int(round(beat_samples / 4.0)))
+    step = max(1, int(step_length_samples)) if step_length_samples else default_step
+    row = max(step, int(row_length_samples)) if row_length_samples else max(step, default_step * 16)
+
+    # Decay morphs tile length: step (0) → row (1).  Always ≥ step.
+    tile = int(round(step + decay * (row - step)))
+    tile = max(step, min(n, tile))
+
+    # Snap tile so an integer number of tiles fills the buffer when possible
+    # (balance: no orphan partial cycle mid-buffer on exact grid lengths).
+    if tile > 1 and n >= tile:
+        n_tiles = max(1, int(round(n / float(tile))))
+        snapped = max(step, int(round(n / float(n_tiles))))
+        # Prefer snapped only when close to intended tile (keeps step/row intent).
+        if abs(snapped - tile) <= max(1, tile // 16):
+            tile = snapped
+
+    env = np.empty(n, dtype=np.float32)
+    pos = 0
+    while pos < n:
+        hi = min(n, pos + tile)
+        seg_n = hi - pos
+        # Full 0→1 span over this tile so the isn shape always completes
+        # (fits the step/tile even on a short final remainder).
+        u = np.linspace(0.0, 1.0, seg_n, endpoint=False)
+        env[pos:hi] = book_isn_envelope_shape(u, decay)
+        pos = hi
+    return env
 
 # ---------------------------------------------------------------------------
 # DETERMINISTIC COMPOSITION KERNEL
@@ -556,38 +1414,6 @@ PAINT_PERIOD_S = 1.0 / PAINT_RATE_HZ                            # ~0.418 s betwe
 PAINT_INSTANCE_LIMIT = 8
 import numpy as np
 import math
-class MeumScenographController:
-    """
-    Manages scene composition, coordinate mapping, and frame buffers
-    for the Meum scenograph and background canvas widgets.
-    """
-    def __init__(self, width: int = 800, height: int = 600) -> None:
-        self.width = width
-        self.height = height
-        self.center_x = width / 2.0
-        self.center_y = height / 2.0
-        self.MEUM_INV = 1.0 / 1.19758073433
-        self.PHI = 1.61803398875
-
-    def project_coordinates(self, x_vals: np.ndarray, y_vals: np.ndarray, z_vals: np.ndarray, scale: float = 100.0) -> list[tuple[float, float]]:
-        """Projects 3D spatial coordinate arrays (x, y, z) directly onto a 2D canvas space."""
-        # Orthographic/perspective projection mapped strictly to x, y, z variables
-        projected = []
-        for x, y, z in zip(x_vals, y_vals, z_vals):
-            # Apply field rotation and scaling based on structural invariants
-            depth_factor = 1.0 / (1.0 + z * 0.1 * self.MEUM_INV)
-            px = self.center_x + (x * scale * depth_factor)
-            py = self.center_y + (y * scale * depth_factor)
-            projected.append((float(px), float(py)))
-        return projected
-
-    def generate_field_mesh(self, resolution: int = 50, ctx: float = 0.0) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Generates raw x, y, z field arrays for real-time scenograph rendering."""
-        t = np.linspace(0, math.tau, resolution)
-        x = np.sin(t * self.PHI + ctx) * np.cos(t * self.MEUM_INV)
-        y = np.cos(t * self.PHI + ctx) * np.sin(t * self.MEUM_INV)
-        z = np.sin(t * self.MEUM_INV * 2.0)
-        return x, y, z
 class DeterministicPanelManager:
     """
     Manages deterministic parameter overrides across multi-sequence channels
@@ -608,22 +1434,6 @@ class DeterministicPanelManager:
         }
 
 
-class DeterministicVisualizerEngine:
-    """
-    Generates deterministic visualizer frame matrices bound directly to
-    the foundational audio field parameters.
-    """
-    def __init__(self, resolution: int = 64) -> None:
-        self.resolution = resolution
-        self.MEUM_INV = 1.0 / 1.19758073433
-        self.PHI = 1.61803398875
-
-    def generate_frame(self, ctx: float) -> list[float]:
-        """Produces a deterministic vertex or color intensity array."""
-        return [
-            float(np.sin(i * self.MEUM_INV * self.PHI + ctx) * 0.5 + 0.5)
-            for i in range(self.resolution)
-        ]
 class DeterministicPanelOverride:
     def __init__(self, channels=4):
         self.channels = channels
@@ -636,17 +1446,6 @@ class DeterministicPanelOverride:
             "modulation_skew": float(math.fmod(channel_id * self.PHI, 1.0))
         }
 
-class DeterministicVisualizer:
-    def __init__(self, resolution=64):
-        self.resolution = resolution
-        self.MEUM_INV = 1.0 / 1.19758073433
-        self.PHI = 1.61803398875
-
-    def generate_frame_matrix(self, ctx):
-        return [
-            float(np.sin(i * self.MEUM_INV * self.PHI + ctx) * 0.5 + 0.5)
-            for i in range(self.resolution)
-        ]
 
 def _meum_params(params):
     """Normalize Meum phase/AM/FM/PM parameters safely."""
@@ -674,7 +1473,7 @@ def _meum_params(params):
         "canonical_count": max(1, int(p.get("canonical_count", 1) or 1)),
         "canonical_phase_lock": bool(p.get("canonical_phase_lock", False)),
         "unison_phase_spread": _f("unison_phase_spread", 0.0),
-        "waveform": str(p.get("waveform", "sine") or "sine"),
+        "waveform": str(p.get("waveform", "isn") or "isn"),
     }
 def _meum_phase_modulation(
     t,
@@ -952,15 +1751,15 @@ def _meum_panel_context(params=None, canonical_context=None):
         ctx["unison_phase_spread"] = 0.0
 
     return ctx
-def meum_waveform_from_phase(phase, waveform="sine"):
-    """Evaluate a basic periodic waveform from phase (radians), vectorized.
+def meum_waveform_from_phase(phase, waveform="isn"):
+    """Evaluate a periodic waveform from phase (radians), vectorized.
 
-    Used by modular Meum oscillators and optional live-path waveform overrides
-    so AM/FM/PM (applied to phase / gain outside this function) work for
-    sine, saw, square, and triangle — not only pure sines.
+    Default and primary cores are isn / ics (Meum-normalized sinusoids) and
+    their inverses. Classical saw/square/triangle remain available by name.
+    No tanh saturators.
     """
     phase = np.asarray(phase, dtype=np.float64)
-    wf = str(waveform or "sine").strip().lower()
+    wf = str(waveform or "isn").strip().lower()
     u = np.mod(phase / (2.0 * np.pi), 1.0)
     if wf in ("saw", "sawtooth"):
         return (2.0 * u - 1.0).astype(np.float32)
@@ -968,9 +1767,24 @@ def meum_waveform_from_phase(phase, waveform="sine"):
         return np.where(u < 0.5, 1.0, -1.0).astype(np.float32)
     if wf in ("triangle", "tri"):
         return (4.0 * np.abs(u - 0.5) - 1.0).astype(np.float32)
-    if wf in ("cos", "cosine"):
-        return np.cos(phase).astype(np.float32)
-    return np.sin(phase).astype(np.float32)
+    if wf in ("ics", "cos", "cosine"):
+        return ics_vec(phase)
+    if wf in ("arcisn", "isn_inv", "isn_inverse"):
+        # Inverse of isn via the shared scalar inverter, vectorized elementwise.
+        out = np.empty(phase.shape, dtype=np.float32)
+        for i, v in enumerate(phase.ravel()):
+            out.flat[i] = float(eqr_isn_inv(float(v) if abs(float(v)) <= 1.5 else math.copysign(1.0, float(v))))
+        return out
+    if wf in ("arcics", "ics_inv", "ics_inverse"):
+        out = np.empty(phase.shape, dtype=np.float32)
+        for i, v in enumerate(phase.ravel()):
+            y = float(v)
+            # ics range is roughly bounded; map phase fraction into that range.
+            y = max(-1.0, min(1.0, y if abs(y) <= 1.0 else math.cos(y)))
+            out.flat[i] = float(eqr_isn_inv(y))  # reuse odd inverter as phase-like map
+        return out
+    # Default: isn (Meum odd sinusoid) — also accepts "sine"/"sin" as aliases.
+    return isn_vec(phase)
 
 
 def meum_modulation_vectors(t, params=None):
@@ -1097,7 +1911,7 @@ class MeumModulatedOscillator:
         self.pm_feedback = 0.0
         self.meum_depth = 0.0
 
-        self.waveform = "sine"
+        self.waveform = "isn"
 
     # ------------------------------------------------------------------
     # PARAMETERS
@@ -1316,7 +2130,7 @@ class MeumModulatedOscillator:
         """
         Evaluate waveform from radians.
 
-        Existing waveform selection is respected.
+        Primary cores: isn / ics / inverses. Classical shapes remain available.
         """
 
         u = (
@@ -1359,13 +2173,31 @@ class MeumModulatedOscillator:
             )
 
         if waveform in (
+            "ics",
             "cos",
             "cosine",
         ):
-            return math.cos(phase)
+            return ics_scalar(phase)
 
-        # Default.
-        return math.sin(phase)
+        if waveform in (
+            "arcisn",
+            "isn_inv",
+            "isn_inverse",
+        ):
+            y = isn_scalar(phase)
+            return float(eqr_isn_inv(y))
+
+        if waveform in (
+            "arcics",
+            "ics_inv",
+            "ics_inverse",
+        ):
+            y = ics_scalar(phase)
+            # Map ics output through the odd inverter as a phase-like reading.
+            return float(eqr_isn_inv(max(-1.0, min(1.0, y))))
+
+        # Default: isn (aliases: sine, sin).
+        return isn_scalar(phase)
 
     # ------------------------------------------------------------------
     # RENDER
@@ -1719,7 +2551,20 @@ def _seed_to_pitch_ratio(seed_val, op_idx=0, step=0):
     ))
     # ±4.5 octaves = 10800 cents; map hash uniformly into that span
     cents = float(h % 10800) - 5400.0
-    ratio = 2.0 ** (cents / 1200.0)
+    # OT significance: same formula 2^(cents/1200), but power uses book ot_pow
+    # when OT is on — signed/handedness rules can matter for extreme seeds.
+    # Without OT: ordinary IEEE power.  Expression is never rewritten.
+    exp = cents / 1200.0
+    if OP_THEORY_ENABLED:
+        try:
+            ratio = float(ot_pow(2.0, exp))
+            # ot_pow uses abs bases; restore octave direction from cents sign
+            if cents < 0.0 and ratio > 0.0:
+                ratio = 1.0 / ratio if ratio != 0.0 else 1.0
+        except Exception:
+            ratio = 2.0 ** exp
+    else:
+        ratio = 2.0 ** exp
     # Hard floor/ceil for ratio safety (still ~9 octaves total span)
     if ratio < 1.0 / 32.0:
         ratio = 1.0 / 32.0
@@ -1820,12 +2665,12 @@ def _seed_script_env(t_scalar=0.0, canonical_context=None):
         return float(args[idx])
 
     def isn(x):
-        x = float(x)
-        return math.sin(x) * MEUM_NORM + math.sin(x * MEUM) * (1.0 - MEUM_NORM)
+        # Dual-mode: delegates to eqr_isn (OT nested blend when enabled).
+        return eqr_isn(x)
 
     def ics(x):
-        x = float(x)
-        return math.cos(x) * MEUM_NORM + math.cos(x * MEUM) * (1.0 - MEUM_NORM)
+        # Dual-mode: delegates to eqr_ics (OT nested blend when enabled).
+        return eqr_ics(x)
 
     def _invert_odd(f, y, guess=0.0, lo=-math.pi, hi=math.pi, iters=24):
         y = float(y)
@@ -1908,12 +2753,14 @@ def _seed_script_env(t_scalar=0.0, canonical_context=None):
 
     env = {
         "__builtins__": {},
-        "sin": math.sin, "cos": math.cos, "tan": math.tan, "sqrt": math.sqrt,
-        "log": math.log, "log2": math.log2, "log10": math.log10, "exp": math.exp,
+        # Transcendentals route through math_* so Operator Theory ON uses the
+        # equivalence kernel (identical numeric result to ordinary math.*).
+        "sin": math_sin, "cos": math_cos, "tan": math_tan, "sqrt": math_sqrt,
+        "log": math_log, "log2": math_log2, "log10": math_log10, "exp": math_exp,
         "abs": abs, "min": min, "max": max, "floor": math.floor, "ceil": math.ceil,
         "round": round, "pow": pow, "fabs": math.fabs, "hypot": math.hypot,
-        "atan2": math.atan2, "asin": math.asin, "acos": math.acos, "atan": math.atan,
-        "sinh": math.sinh, "cosh": math.cosh, "tanh": math.tanh,
+        "atan2": math_atan2, "asin": math_asin, "acos": math_acos, "atan": math_atan,
+        "sinh": math_sinh, "cosh": math_cosh, "tanh": math_tanh,
         "degrees": math.degrees, "radians": math.radians,
         "pi": math.pi, "e": math.e, "tau": math.tau,
         "PHI": PHI, "MEUM": MEUM, "MEUM_NORM": MEUM_NORM, "MEUM_INV": MEUM_INV,
@@ -1928,7 +2775,31 @@ def _seed_script_env(t_scalar=0.0, canonical_context=None):
         "tensor_z": tensor_z, "tensor_rel": tensor_rel,
         "ot_add": ot_add, "ot_sub": ot_sub, "ot_prod": ot_prod,
         "ot_div": ot_div, "ot_pow": ot_pow, "ot_i_phase": ot_i_phase,
+        "ot_equiv_add": ot_equiv_add, "ot_equiv_sub": ot_equiv_sub,
+        "ot_equiv_mul": ot_equiv_mul, "ot_equiv_div": ot_equiv_div,
+        "ot_equiv_pow": ot_equiv_pow, "ot_equiv_root": ot_equiv_root,
+        "ot_equiv_i_pow": ot_equiv_i_pow,
+        "ot_book_isn": ot_book_isn, "ot_book_isn_inv": ot_book_isn_inv,
+        "ot_book_ics": ot_book_ics, "ot_book_ics_inv": ot_book_ics_inv,
         "ot_band": ot_band, "ot_master_transform": ot_master_transform,
+        "math_add": math_add, "math_sub": math_sub, "math_mul": math_mul,
+        "math_div": math_div, "math_pow": math_pow, "math_scale": math_scale,
+        "math_sin": math_sin, "math_cos": math_cos, "math_tan": math_tan,
+        "math_asin": math_asin, "math_acos": math_acos, "math_atan": math_atan,
+        "math_atan2": math_atan2, "math_sinh": math_sinh, "math_cosh": math_cosh,
+        "math_tanh": math_tanh, "math_sqrt": math_sqrt, "math_exp": math_exp,
+        "math_log": math_log, "math_log2": math_log2, "math_log10": math_log10,
+        "ot_equiv_sin": ot_equiv_sin, "ot_equiv_cos": ot_equiv_cos,
+        "ot_equiv_tan": ot_equiv_tan, "ot_equiv_asin": ot_equiv_asin,
+        "ot_equiv_acos": ot_equiv_acos, "ot_equiv_atan": ot_equiv_atan,
+        "ot_equiv_atan2": ot_equiv_atan2, "ot_equiv_sinh": ot_equiv_sinh,
+        "ot_equiv_cosh": ot_equiv_cosh, "ot_equiv_tanh": ot_equiv_tanh,
+        "ot_equiv_sqrt": ot_equiv_sqrt, "ot_equiv_exp": ot_equiv_exp,
+        "ot_equiv_log": ot_equiv_log, "ot_equiv_log2": ot_equiv_log2,
+        "ot_equiv_log10": ot_equiv_log10, "ot_equiv_fabs": ot_equiv_fabs,
+        "ot_equiv_floor": ot_equiv_floor, "ot_equiv_ceil": ot_equiv_ceil,
+        "ot_equiv_hypot": ot_equiv_hypot,
+        "no_sat": no_sat,
         "op_theory_enabled": operator_theory_enabled,
         "set_op_theory": set_operator_theory,
         "t": float(t_scalar), "x": float(t_scalar), "y": 0.0, "z": 0.0,
@@ -2236,7 +3107,14 @@ def goava_irrational_stream(t_values, numbers, base_frequency=432.0, channel=0):
     # scale (NOT an adaptive peak-ride) makes the stream span [-1, 1] for any
     # seed list.  The final gain is a fixed MEUM-family constant.
     d = (note - ref) / max(scale, 1e-9)
-    return np.tanh(d * (1.0 + MEUM_NORM) * 0.9).astype(np.float32)
+    # Dual-mode scale, no soft-clip / no saturation.
+    gain = (1.0 + MEUM_NORM) * 0.9
+    if operator_theory_enabled():
+        out = np.empty_like(d, dtype=np.float64)
+        for i, v in enumerate(np.asarray(d, dtype=np.float64).ravel()):
+            out.flat[i] = math_scale(v, gain)
+        return out.astype(np.float32)
+    return (d * gain).astype(np.float32)
 
 # UNION_ENTROPY_2026 — the union's entropy is a fixed-point statistic, not a
 # knife-edge.  The per-voice draw D below is a uniform-in-mean hash of the
@@ -2291,16 +3169,48 @@ def entropy_draw_0_1(s_abs, s_frac, s_int, vo):
 # ============================================================================
 _VISUAL_ENGINE_CHANNELS = ("randomizer", "phase_lock", "idealize_rhythm", "seeded", "goava")
 
-def canonical_visual_instrument(slot, ctx, flags):
-    """Per-instrument 2.5D parameters mirroring the audio voice pass.
+# INSTRUMENT_REPARTITION_2026: the composition has one fixed 64-slot
+# deterministic identity lattice.  Instrument Count selects/repartitions that
+# lattice; it never changes the underlying seed-derived material.
+CANONICAL_MASTER_SLOTS = 64
 
-    ctx: dict with seed, base (already union-scaled when full unison), ratio,
-         s_int, full_unison, n_inst, meum_depth.
-    flags: dict of the five canonical engine booleans
-           (randomizer, phase_lock, idealize_rhythm, seeded, goava).
-    Returns the identical-keyed parameter set the audio pass builds for one
-    voice (base_freq, ratio, s_int, entropy, phase0, meum fm/pm/am set,
-    max_partial) plus the 2.5D structural co-ordinates the frame needs.
+def canonical_master_slot(voice_index: int, instrument_count: int) -> int:
+    """Map a live voice onto a unique, evenly distributed master slot.
+
+    For N<=64 this is an injective deterministic selection from the same
+    64-slot composition lattice.  Thus changing N changes factorization, not
+    the mathematical source of the composition.
+    """
+    n = max(2, min(CANONICAL_MASTER_SLOTS, int(instrument_count or 2)))
+    i = max(0, min(n - 1, int(voice_index)))
+    # Midpoint quantization distributes N voices across the fixed 64-slot bank.
+    return min(CANONICAL_MASTER_SLOTS - 1, int(((2 * i + 1) * CANONICAL_MASTER_SLOTS) / (2 * n)))
+
+
+
+def canonical_visual_instrument(slot, ctx, flags):
+    """ONE fractal object type per instrument — same schema for every slot.
+
+    Why this is the fractal we want
+    -------------------------------
+    Every instrument (and every visual layer that mirrors one) is the *same
+    object class*: a point on the shared Meum lattice with (base_freq, ratio,
+    entropy, phase, depth, hue, …).  The fractal is not "a different effect
+    per instrument"; it is the *same object* sampled at every slot, so the
+    ensemble is a single self-similar field.  Prevalence of which *regions*
+    of that field light up is driven by sequential numeric inputs fed into
+    the canonicals (seed list geometry), not by instrument count.
+
+    Geometry hierarchy (most prevalent → most relevant):
+      1. Sequential numeric inputs (seed script values over time) — primary
+      2. Canonical lattice position of the slot (MEUM_POWERS_36 fold)
+      3. Active engines (randomizer / phase_lock / goava / …) — tilt axes
+      4. Music pitch/entropy for this slot (same numbers as the voice)
+      5. Game spatial residues when the consumer is the videogame path
+
+    ctx: seed, base, ratio, s_int, full_unison, n_inst, meum_depth.
+    flags: randomizer, phase_lock, idealize_rhythm, seeded, goava.
+    Returns one fractal-object dict (audio keys + 2.5D co-ordinates).
     """
     n_inst = int(ctx.get("n_inst", 48))
     i = int(slot) % max(2, n_inst)
@@ -2388,13 +3298,9 @@ def canonical_visual_instrument(slot, ctx, flags):
         "z": float(depth * (0.6 + 0.4 * math.sin(roll))),
     }
 
-def goava_frequency(number_assigned, step, numbers, base_frequency=432.0):
-    """Map GOAVA's Java sequence scalar to a stable audible frequency.
 
-    The Java implementation's primary arpeggio path is getNote()*16.  Its
-    original runtime also contains a safety fallback for values outside the
-    practical range.  We preserve that behavior, then constrain the final
-    oscillator frequency to a safe audio range.
+def goava_frequency(number_assigned, step, numbers, base_frequency=432.0):
+    """Map GOAVA's Java sequence scalar to a frequency — no cutoffs or clips.
 
     Upward-tendency fix: getNote() is non-negative by construction (every
     term is (1+cos)/positive), which forced every GOAVA pitch above the base
@@ -2403,6 +3309,10 @@ def goava_frequency(number_assigned, step, numbers, base_frequency=432.0):
     below the base — same seed still maps to the same centered trajectory
     (deterministic), the projection (per-note delta) is unchanged, only the
     constant offset that created the bias is removed.
+
+    GOAVA policy: no audible_hz / Nyquist / octave clamps on the frequency
+    value itself. Callers that need a safe oscillator rate may still apply
+    their own limits; GOAVA reports the true mapped frequency.
     """
     raw = goava_get_note(number_assigned, step, numbers)
     # GOAVA musical output is intentionally a single sine at a base-frequency
@@ -2416,10 +3326,14 @@ def goava_frequency(number_assigned, step, numbers, base_frequency=432.0):
     except Exception:
         center = 0.0
     raw_c = raw - center
-    # Full-range: centered raw drives up to ±4.5 octaves before audible_hz safety
-    ratio = 2.0 ** float(np.clip(raw_c * 2.25, -4.5, 4.5))
+    # Unclipped: centered raw drives the ratio freely (no ±octave or audible_hz).
+    ratio = 2.0 ** float(raw_c * 2.25)
+    if not math.isfinite(ratio) or ratio <= 0.0:
+        ratio = 1.0
     freq = float(base_frequency) * ratio
-    return float(audible_hz(freq)), float(raw_c)
+    if not math.isfinite(freq):
+        freq = float(base_frequency)
+    return float(freq), float(raw_c)
 
 
 # ---------------------------------------------------------------------------
@@ -2674,17 +3588,17 @@ def generate_random_global_play_algo(rng=None):
     script_pool = [
         f"# Global script algo\ndef global_script(t, name, i):\n    return sin(t * MEUM * {a}) * {mix} + cos(t * PHI) * {round(1 - mix, 3)}\n",
         f"# Global script algo\ndef global_script(t, name, i):\n    return (MEUM_NORM * sin(t * {a}) + (1 - MEUM_NORM) * cos(t * {b})) * {mix}\n",
-        f"# Global script algo\ndef global_script(t, name, i):\n    v = isn(t * MEUM) * {a} + ics(t * PHI) * {b}\n    return clamp(v, -1.0, 1.0) * {mix}\n",
+        f"# Global script algo\ndef global_script(t, name, i):\n    v = isn(t * MEUM) * {a} + ics(t * PHI) * {b}\n    return v * {mix}\n",
         f"# Global script algo\ndef global_script(t, name, i):\n    if sin(t * MEUM) >= 0:\n        return {mix} * cos(t * {a})\n    return {round(1 - mix, 3)} * sin(t * {b})\n",
-        f"# Global script algo\ndef global_script(t, name, i):\n    return tanh(sin(t * MEUM * {a}) * cos(t * PHI * {b})) * {mix}\n",
+        f"# Global script algo\ndef global_script(t, name, i):\n    return isn(sin(t * MEUM * {a}) * cos(t * PHI * {b})) * {mix}\n",
     ]
     domain_pool = [
         f"sin(t * MEUM) * {mix} + cos(t * PHI) * {round(1 - mix, 3)}",
         f"MEUM_NORM * sin(t * {a}) + (1 - MEUM_NORM) * cos(t * {b})",
-        f"tanh(sin(t * MEUM * {a})) * cos(t * PHI)",
+        f"isn(sin(t * MEUM * {a})) * cos(t * PHI)",
         f"log2(abs(sin(t * MEUM)) + 1) * {a} + sqrt(abs(cos(t))) * {b}",
         f"sin(t * MEUM * {a}) * cos(t * {b}) + MEUM_INV * sin(t * PHI)",
-        f"clamp(sin(t * MEUM) * {a}, -1, 1) * cos(t * PHI * {b})",
+        f"sin(t * MEUM) * {a} * cos(t * PHI * {b})",
     ]
     detectors = ("phase", "energy", "spectrum", "goava", "euclidean", "seed", "bpm", "pair")
     targets = ("master_mix", "fractallizer", "eqr", "pkp", "ensemble", "scenograph", "domain", "unison")
@@ -2717,7 +3631,7 @@ def generate_random_global_play_algo(rng=None):
             "wire_amount": wa,
         },
         "apply_enabled": True,
-        "protectable_userdata": True,
+        "user_data": True,
     }
 
 
@@ -3388,7 +4302,7 @@ class VisualOscilloscope(QFrame):
         # alternative arithmetic on its drawn points, and an optional shared
         # DSP follow-envelope is overplotted so the monitor reflects the same
         # full env-follow symmetry as the DSP pathway.
-        self.operator_theory = False
+        self.operator_theory = True  # match global OT default ON
         self.follow_env = None
 
     def set_operator_theory(self, on):
@@ -3596,18 +4510,11 @@ class VisualOscilloscope(QFrame):
             # are re-bent through the book's scalar rules (band-hop add,
             # negative-run negating composition, divisor refinement) so the
             # visualizer carries the same arithmetic as the DSP pathway.
+            # Operator Theory is an internal calculation route.  The display
+            # consumes the same canonical waveform regardless of OT state; no
+            # extra master-bus bend is permitted here.
             disp = self.wave_data
-            if self.operator_theory:
-                try:
-                    disp = ot_master_transform(self.wave_data.astype(np.float64)).astype(np.float32)
-                except Exception:
-                    disp = self.wave_data
             disp_phos = phos
-            if self.operator_theory:
-                try:
-                    disp_phos = ot_master_transform(np.asarray(phos, dtype=np.float64)).astype(np.float32)
-                except Exception:
-                    disp_phos = phos
             painter.fillPath(_wave_path(disp_phos, 1.15), QColor(c.red(), c.green(), min(255, c.blue() + 40), 28))
             painter.fillPath(_wave_path(disp, 1.0), QColor(c.red(), c.green(), c.blue(), 55))
             glow_pen = QPen(QColor(c.red(), c.green(), c.blue(), 55))
@@ -3870,6 +4777,157 @@ class SpectrumAnalyzer(QFrame):
                 painter.drawLine(x, h - 8, x, h - 8 - int(6 * abs(v) / mx))
 
 
+class InstrumentVisualObject:
+    """Canonical one-route visual object bound to one live instrument.
+
+    The object is dimension-agnostic: the same state vector can render as a
+    1D filament, 2D closed surface, or 3D projected solid.  Dimension is a
+    deterministic property of the instrument identity and composition schema,
+    never a frame-random choice.  All geometry, motion, fade, and color are
+    derived from the same live state used by audio: the five per-instrument
+    patch parameters, sequence statistics, canonical voice parameters, seed,
+    phase, harmonic spectrum, and engine flags.
+
+    Critically, no term below depends on ensemble size for identity placement.
+    N only determines how many instrument objects are present. Therefore the
+    first two instruments in a 2-voice composition follow the same construction
+    law as those same identities in a 64-voice composition.
+    """
+    PARAMS = ("morph", "harmonic_freq", "chaos", "fold_depth", "harmonic_lattice")
+
+    def __init__(self, engine, index, name, canonical, schema):
+        self.engine = engine
+        self.index = int(index)
+        self.name = str(name or f"Instrument {index+1}")
+        self.canonical = dict(canonical or {})
+        self.schema = dict(schema or {})
+        self.seed = float(self.schema.get("seed", 0.0))
+        self.phase0 = float(self.canonical.get("phase0", self.schema.get("phase", 0.0)))
+        self.master_slot = int(self.canonical.get("master_slot", self.index)) % CANONICAL_MASTER_SLOTS
+        self.identity = identity_unit("instrument-visual", self.seed, "master", self.master_slot)
+        self.dimension = int(self.schema.get("dimension", 1 + int(self.identity * 3.0)))
+        self.dimension = max(1, min(3, self.dimension))
+
+    @staticmethod
+    def _norm(v, lo, hi):
+        try:
+            return float(np.clip((float(v) - lo) / max(1e-9, hi-lo), 0.0, 1.0))
+        except Exception:
+            return 0.0
+
+    def vector(self):
+        p = self.schema.get("patch", {})
+        seq = self.schema.get("sequence", {})
+        c = self.canonical
+        morph = self._norm(p.get("morph", 1.2), 0.01, 10.0)
+        hf = self._norm(p.get("harmonic_freq", c.get("base_freq", 432.0)), 20.0, 20000.0)
+        chaos = float(np.clip(float(p.get("chaos", 0.75)), 0.0, 1.0))
+        fold = self._norm(p.get("fold_depth", 4.0), 1.0, 16.0)
+        lattice = float(np.clip(float(p.get("harmonic_lattice", 0.33)), 0.0, 1.0))
+        steps = self._norm(seq.get("steps_on", 0), 0.0, max(1.0, float(seq.get("length", 16))))
+        amp = float(np.clip(seq.get("amp_mean", 0.0), 0.0, 1.0))
+        pitch = float(np.clip(seq.get("pitch_mean", 1.0) / 2.0, 0.0, 1.0))
+        ent = float(np.clip(c.get("entropy", 0.5), 0.0, 1.0))
+        ratio = float(np.clip(abs(c.get("ratio", 1.0)) / 4.0, 0.0, 1.0))
+        return dict(morph=morph, hf=hf, chaos=chaos, fold=fold, lattice=lattice,
+                    steps=steps, amp=amp, pitch=pitch, ent=ent, ratio=ratio)
+
+    def color(self, phase, energy):
+        v = self.vector()
+        # Bright continuous spectrum: identity selects the hue family; harmonic
+        # frequency/lattice/phase sweep within it; energy controls luminance.
+        hue = (360.0 * (self.identity + 0.31*v["hf"] + 0.17*v["lattice"] + phase / math.tau)) % 360.0
+        sat = float(np.clip(0.58 + 0.30*v["chaos"] + 0.08*v["lattice"], 0.0, 1.0))
+        val = float(np.clip(0.62 + 0.32*energy + 0.06*v["ent"], 0.0, 1.0))
+        return self.engine._hsv(hue, sat, val)
+
+    def geometry(self, t, energy, bands, w, h):
+        v = self.vector()
+        c = self.canonical
+        # Placement is identity-seeded and N-independent.
+        radial = 0.12 + 0.42 * math.sqrt(self.identity)
+        angle0 = math.tau*self.identity + float(c.get("yaw", 0.0))
+        phase = self.phase0 + t*(0.30 + 0.70*v["morph"] + 0.25*v["steps"])
+        wobble = (0.035 + 0.11*v["chaos"]) * vg_sin(t*(0.7+2.0*v["fold"]) + self.identity*math.tau)
+        cx = w*0.5 + vg_cos(angle0 + 0.08*vg_sin(t*0.23))*radial*w*0.70
+        cy = h*0.48 + vg_sin(angle0*MEUM_INV + 0.06*vg_cos(t*0.19))*radial*h*0.48
+        scale = (0.018 + 0.040*v["lattice"] + 0.030*v["amp"] + 0.022*energy) * min(w,h)
+        harmonic_count = max(3, min(18, 3 + int(round(12*v["lattice"] + 4*v["fold"]))))
+        band = float(bands[self.master_slot % len(bands)]) if len(bands) else 0.0
+        scale *= 0.72 + 0.55*band + 0.25*abs(vg_sin(phase))
+        return cx, cy, max(2.0, scale), phase, harmonic_count, v, wobble
+
+    def draw(self, img, w, h, t, energy, bands):
+        cx, cy, scale, phase, hc, v, wobble = self.geometry(t, energy, bands, w, h)
+        dim = self.dimension
+        # Always-visible breathe: opacity never drops to zero.
+        breathe = 0.62 + 0.38*(0.5 + 0.5*vg_sin(phase + self.identity*math.tau))
+        alpha = float(np.clip(0.38 + 0.42*breathe + 0.16*energy, 0.38, 0.98))
+        col = self.color(phase, energy)
+        core = self.engine._hsv((self.identity*360 + 180) % 360, 0.16, 1.0)
+
+        if dim == 1:
+            # 1D harmonic filament: one route, one canonical spectrum.
+            pts=[]
+            for k in range(hc*4):
+                u=k/max(1,hc*4-1)
+                a=phase + math.tau*(u*(1.0+v["fold"]*0.22))
+                rr=scale*(0.45+0.85*u)*(1.0+0.24*vg_sin(a*hc*0.23+t))
+                x=cx+vg_cos(a)*rr
+                y=cy+vg_sin(a*MEUM_INV)*rr*(0.62+0.30*v["morph"])
+                pts.append((x,y))
+            for a,b in zip(pts,pts[1:]):
+                self.engine._line(img,a[0],a[1],b[0],b[1],col,0.55*alpha)
+            self.engine._dot(img,cx,cy,core,0.9*alpha,r=2)
+        elif dim == 2:
+            # 2D harmonic surface: closed radial contour with phase-locked folds.
+            pts=[]
+            count=max(16,hc*4)
+            for k in range(count):
+                a=phase+math.tau*k/count
+                harmonic=sum((1.0/(j+1))*vg_sin(a*(j+1)+phase*(0.2+j*0.07)) for j in range(min(hc,8)))
+                rr=scale*(0.82+0.10*vg_sin(a*hc)+0.06*harmonic+0.14*v["chaos"]*vg_sin(a*3+t))
+                pts.append((cx+vg_cos(a)*rr,cy+vg_sin(a*MEUM_INV)*rr*(0.72+0.22*v["lattice"])))
+            for k in range(len(pts)):
+                a,b=pts[k],pts[(k+1)%len(pts)]
+                self.engine._line(img,a[0],a[1],b[0],b[1],col,0.62*alpha)
+            for k in range(1,len(pts)-1,2):
+                self.engine._fill_tri(img,pts[0],pts[k],pts[k+1],col,0.14*alpha)
+            self.engine._dot(img,cx,cy,core,0.65*alpha,r=2)
+        else:
+            # 3D shell: three projected rings plus depth-coupled cross edges.
+            rings=[]
+            for rix in range(3):
+                pts=[]; rr0=scale*(0.58+0.22*rix)
+                count=max(18,hc*3)
+                for k in range(count):
+                    a=phase+math.tau*k/count+rix*0.21
+                    z=0.42*vg_sin(a*(1.0+v["fold"]*0.35)+t*0.8)+wobble
+                    x3=rr0*vg_cos(a)
+                    y3=rr0*vg_sin(a*MEUM_INV)
+                    # lightweight 3D projection, consistent with the engine camera.
+                    x3,y3,z3=self.engine._camera_transform(x3,y3,z)
+                    depth=1.55+z3
+                    sx=w*0.5+(cx-w*0.5+x3)/(depth)*1.0
+                    sy=h*0.48+(cy-h*0.48+y3)/(depth)*1.0
+                    pts.append((sx,sy))
+                rings.append(pts)
+            for ri,pts in enumerate(rings):
+                for k in range(len(pts)):
+                    a,b=pts[k],pts[(k+1)%len(pts)]
+                    self.engine._line(img,a[0],a[1],b[0],b[1],col,(0.45+0.12*ri)*alpha)
+                if ri:
+                    prev=rings[ri-1]
+                    for k in range(0,min(len(prev),len(pts)),max(1,len(pts)//12)):
+                        self.engine._line(img,prev[k][0],prev[k][1],pts[k][0],pts[k][1],col,0.28*alpha)
+            self.engine._dot(img,cx,cy,core,0.8*alpha,r=2)
+        # Harmonic spectrum halo: same patch/lattice data, visible in all dimensions.
+        for j in range(min(8, hc)):
+            a=phase+math.tau*j/max(1,hc)
+            rr=scale*(1.35+0.16*j)*(0.72+0.28*v["lattice"])
+            self.engine._dot(img,cx+vg_cos(a)*rr,cy+vg_sin(a*MEUM_INV)*rr*0.70,
+                             col,0.22*alpha,r=1+int(2*v["lattice"]))
+
 class VideoSynthEngine:
     """
     Meum calculus-driven multi-subscene 2.5D/3D scenograph for live + export.
@@ -3917,11 +4975,14 @@ class VideoSynthEngine:
         # frame-to-frame, so compute it once here instead of re-instantiating
         # MeumScenographController and recomputing the same mesh every
         # render_frame() call (its result was previously discarded unused).
-        _scenograph = MeumScenographController(width=800, height=800)
-        _sx, _sy, _sz = _scenograph.generate_field_mesh(resolution=64, ctx=0.4759)
-        self._scenograph_points = _scenograph.project_coordinates(_sx, _sy, _sz, scale=512.0)
-        # Up to 64 scenograph render items (name -> base weight). Active count
-        # is gated by self.scenograph_item_count (1..64) from the UI slider.
+        _t = np.linspace(0.0, math.tau, 64)
+        _sx = np.sin(_t * PHI + 0.4759) * np.cos(_t * MEUM_INV)
+        _sy = np.cos(_t * PHI + 0.4759) * np.sin(_t * MEUM_INV)
+        _sz = np.sin(_t * MEUM_INV * 2.0)
+        _depth = 1.0 / (1.0 + _sz * 0.1 * MEUM_INV)
+        self._scenograph_points = [(float(400.0 + x * 512.0 * d), float(400.0 + y * 512.0 * d)) for x,y,d in zip(_sx,_sy,_depth)]
+        # One visual object is created per live instrument. No independent
+        # graphical-object count exists: visual population == instrument count.
         self.SCENOGRAPH_ITEM_CATALOG = [
             "field", "ribbon", "volumes", "faces", "particles", "bands", "goava",
             "filaments", "roses", "orbitals", "constellations", "lattice",
@@ -3941,7 +5002,6 @@ class VideoSynthEngine:
         while len(self.SCENOGRAPH_ITEM_CATALOG) < 64:
             self.SCENOGRAPH_ITEM_CATALOG.append(f"item_{len(self.SCENOGRAPH_ITEM_CATALOG)}")
         self.SCENOGRAPH_ITEM_CATALOG = self.SCENOGRAPH_ITEM_CATALOG[:64]
-        self.scenograph_item_count = 24  # default active items
         self._module_fade = {name: 0.0 for name in self.SCENOGRAPH_ITEM_CATALOG}
         # Core defaults (legacy weights)
         _defaults = {
@@ -3988,6 +5048,13 @@ class VideoSynthEngine:
         self._cam_yaw = 0.0
         self._cam_pitch = 0.0
         self._cam_roll = 0.0
+        self._cam_distance = 1.0
+        self._cam_fov_deg = 48.0
+        self._cam_pan_x = 0.0
+        self._cam_pan_y = 0.0
+        self._camera_view_override = None
+        self._visual_view_index = 0
+        self._visual_view_count = 1
         self._manual_yaw = 0.0
         self._manual_pitch = 0.0
         self._pack_radius = 0.0
@@ -4029,13 +5096,15 @@ class VideoSynthEngine:
             pass
 
     def set_instrument_count(self, count, smooth=True):
-        """Synchronize the scenograph to the live synth count (2–64).
+        """UI ensemble size only — does NOT change seeded video identity.
 
-        Existing layers retain their phase/depth/life state. New layers are
-        seeded deterministically from their index, and removed layers fade out
-        through the render-count transition instead of disappearing abruptly.
-        ``self.n`` is updated immediately so all engine calculations see the
-        new ensemble size; only visual layer admission is smoothed.
+        Canonical visual layers are always the fixed 16-slot master lattice
+        (see ``_build_canonical_ctx_and_layers``).  ``self.n`` tracks the host
+        instrument spinner for labels/admission fades, but seeded geometry,
+        entropy, fractal set pick, and mode blends are functions of seed +
+        engines + sequential numerics alone — same contract as the music
+        canonical master.  Changing instrument count must not re-blend the
+        video.
         """
         try:
             target = int(max(2, min(64, int(count))))
@@ -4057,7 +5126,8 @@ class VideoSynthEngine:
                 layer = dict(old_layers[i])
                 layer["i"] = i
                 layer["family"] = i // 8
-                layer["hue"] = int((i * 360 / max(target, 1) + i * 7) % 360)
+                # Fixed 64-slot hue lattice — not divided by live instrument count
+                layer["hue"] = int((i * 360 / 64.0 + i * 7) % 360)
                 if i >= target:
                     layer["life"] = float(layer.get("life", 0.3))
             else:
@@ -4191,7 +5261,7 @@ class VideoSynthEngine:
         ph = self.playhead
         t = self.t
         # Base identities
-        u = MEUM_NORM * math.sin(MEUM * t + ph * math.tau) + MEUM_INV * self._centroid
+        u = MEUM_NORM * vg_sin(MEUM * t + ph * math.tau) + MEUM_INV * self._centroid
         # Dimensional expand/contract: insert/remove powers based on engines
         k_pow = 1
         if snap["seeded"]:
@@ -4222,7 +5292,9 @@ class VideoSynthEngine:
             k_pow = min(35, k_pow + max(0, len(seed_list) - 1) // 2)
         # Volume shell scale from 2^M / M^2 partner
         vol_s = float(MEUM_TWO_POW_OVER_SQ) * (0.5 + 0.5 * self._peak) * (0.6 + 0.4 * snap["eqr"])
-        vol_s *= float(np.clip(0.85 + 0.15 * min(8, int(snap.get("ensemble", 1) or 1)) / 8.0, 0.85, 1.15))
+        # Instrument Count does not create decorative complexity; spectral/audio
+        # activity above is the source of this visual scale.
+        vol_s *= float(np.clip(0.90 + 0.20 * self._harmonic_activity, 0.90, 1.10))
         # Line density from log2(M) · BPM coupling
         line_d = MEUM_LOG2 * (0.5 + 0.5 * (snap["bpm"] / 140.0)) * (0.4 + 0.6 * snap["fractal"])
         if snap.get("canonical_count"):
@@ -4304,76 +5376,187 @@ class VideoSynthEngine:
         self._fit_oy = h * 0.5
 
     def _update_camera_and_packing(self, st):
-        """Compute a deterministic rotating camera and collision-avoiding field layout."""
+        """IDEAL_CAMERA_2026 — multi-band deterministic camera + identity packing.
+
+        Six simultaneous degrees of freedom, all closed-form
+        f(t, seed, composition, audio features) — never RNG:
+
+          yaw      tempo-locked orbit + Meum slow drift + energy push
+          pitch    spectral elevation + subharmonic nod
+          roll     micro horizon (dimensional, never seasick)
+          distance dolly in/out with RMS and structural density
+          fov      mild breathe with harmonic activity
+          pan      lateral shift from phase-lock / GOAVA
+
+        Band rates are irrational multiples of BPM and MEUM so the path is
+        dense on the torus (no short-period loops) while remaining
+        bit-identical for the same seed + composition + time.
+
+        Packing places each instrument by its *identity unit* (master-slot
+        lattice), not by "index among N". Ensemble size N only scales density
+        (implode); the same instrument identity occupies the same angular
+        home in a 2-voice or 64-voice composition.
+        """
+        snap = st.get("snap", {}) if isinstance(st.get("snap"), dict) else {}
         ph = float(st.get("ph", 0.0))
-        e = float(self._rms)
-        seed = float(st.get("snap", {}).get("seed", 0.0))
+        e = float(np.clip(self._rms, 0.0, 1.5))
+        centroid = float(np.clip(getattr(self, "_centroid", 0.5), 0.0, 1.0))
+        harm = float(np.clip(getattr(self, "_harmonic_activity", 0.5), 0.0, 1.0))
+        seed = float(snap.get("seed", 0.0))
+        bpm = float(snap.get("bpm", 120.0) or 120.0)
+        bpm = max(40.0, min(240.0, bpm))
         n = max(2, int(round(getattr(self, "_render_n", self.n))))
-        # Low-amplitude camera motion: enough parallax to reveal depth without
-        # making the composition unstable. Seed keeps exports reproducible.
-        self._cam_yaw = (0.10 * math.sin(self.t * 0.17 + seed * 0.0017) + 0.055 * ph
-                         + float(getattr(self, "_manual_yaw", 0.0)))
-        self._cam_pitch = (0.055 * math.sin(self.t * 0.11 + MEUM + seed * 0.0009)
-                           + float(getattr(self, "_manual_pitch", 0.0)))
-        # GOAVA commutes into the visual transform: enabling it changes the
-        # camera phase and packing action, not merely the audio mix.
-        goava = bool(st.get("snap", {}).get("goava", False))
-        goava_phase = MEUM_NORM if goava else 0.0
-        self._cam_roll = 0.035 * math.sin(self.t * 0.07 + MEUM_INV * 2.0 + ph * math.tau + goava_phase)
-        self._cam_yaw += 0.018 * goava_phase * math.sin(self.t * MEUM_INV + seed * 0.0003)
-        # Golden-angle disk packing. sqrt radial law gives approximately
-        # uniform area density; the logarithmic/implosive term shrinks objects
-        # as the ensemble gets denser.
-        golden = math.tau * (1.0 - 1.0 / ((1.0 + math.sqrt(5.0)) * 0.5))
-        self._pack_radius = 0.54 + 0.08 * min(1.0, e + 0.35 * float(st.get("form", 0.5)))
+        t = float(self.t)
+
+        # Tempo phase: one revolution per 8 bars at current BPM (locked to audio).
+        beat = t * (bpm / 60.0)
+        bar8 = beat / 32.0  # 8 bars of 4/4
+        # Seed-derived phase offsets (closed-form, no RNG).
+        s1 = (seed * MEUM_NORM + MEUM) % math.tau
+        s2 = (seed * MEUM_INV + PHI) % math.tau
+        s3 = (seed * PHI + MEUM_INV) % math.tau
+
+        goava = bool(snap.get("goava", False))
+        phase_lock = bool(snap.get("phase_lock", False) or snap.get("euclid", False))
+        seeded = bool(snap.get("seeded", False) or snap.get("randomizer", False))
+        goava_w = MEUM_NORM if goava else 0.0
+        pl_w = 0.55 if phase_lock else 0.0
+        sd_w = 0.35 if seeded else 0.0
+
+        # ---- YAW: primary orbit (tempo) + Meum drift + energy punch ----
+        base_yaw = math.radians(32.0)
+        yaw = (base_yaw
+               + 0.55 * bar8 * math.tau * (0.12 + 0.04 * e)          # slow orbit
+               + 0.11 * vg_sin(t * 0.13 * MEUM + s1)                  # Meum band
+               + 0.055 * vg_sin(t * 0.041 * MEUM_INV + s2)            # sub-band
+               + 0.040 * vg_sin(beat * 0.25 * PHI + ph * math.tau)    # beat accent
+               + 0.085 * e * vg_sin(t * 0.09 + centroid * math.tau)   # energy push
+               + 0.07 * goava_w * vg_sin(t * MEUM_INV + s3)
+               + 0.05 * pl_w * vg_sin(beat * 0.125 + s1)
+               + float(getattr(self, "_manual_yaw", 0.0)))
+
+        # ---- PITCH: spectral elevation + gentle nod ----
+        base_pitch = math.radians(-14.0)
+        pitch = (base_pitch
+                 + 0.22 * (centroid - 0.5)                             # bright → look up
+                 + 0.070 * vg_sin(t * 0.09 * MEUM + s2)
+                 + 0.035 * vg_sin(t * 0.027 + ph * math.tau)
+                 + 0.030 * e * vg_sin(beat * 0.5 + s3)
+                 + 0.04 * goava_w * vg_sin(t * 0.07 + MEUM)
+                 + float(getattr(self, "_manual_pitch", 0.0)))
+        pitch = max(math.radians(-42.0), min(math.radians(28.0), pitch))
+
+        # ---- ROLL: micro only ----
+        roll = (0.018 * vg_sin(t * 0.055 * MEUM_INV + s1)
+                + 0.008 * vg_sin(t * 0.019 + ph * math.tau)
+                + 0.012 * goava_w * vg_sin(t * 0.033 + s2)
+                + 0.010 * harm * vg_sin(beat * 0.0625 + s3))
+        roll = max(-0.08, min(0.08, roll))
+
+        # ---- DISTANCE (dolly): closer on loud/dense, pull back on sparse ----
+        # 1.0 = neutral; lower = closer (more perspective punch)
+        form = float(st.get("form", 0.5))
+        rho = float(st.get("rho", 1.0))
+        dist = (1.0
+                - 0.22 * e
+                - 0.10 * form
+                + 0.08 * vg_sin(t * 0.07 * MEUM + s1)
+                + 0.05 * vg_sin(bar8 * math.tau + s2)
+                - 0.06 * goava_w * vg_sin(t * 0.11 + s3)
+                + 0.04 * (1.0 - min(1.0, rho)))
+        dist = float(np.clip(dist, 0.55, 1.45))
+
+        # ---- FOV breathe ----
+        fov = (48.0
+               + 6.0 * harm * vg_sin(t * 0.06 + s1)
+               + 4.0 * e * vg_sin(t * 0.11 + s2)
+               + 3.0 * goava_w
+               - 2.0 * pl_w)
+        fov = float(np.clip(fov, 36.0, 62.0))
+
+        # ---- lateral pan (composition engines) ----
+        pan_x = (0.06 * pl_w * vg_sin(t * 0.08 + s1)
+                 + 0.05 * goava_w * vg_sin(t * 0.12 * MEUM + s2)
+                 + 0.03 * sd_w * vg_sin(t * 0.05 + s3))
+        pan_y = (0.04 * harm * vg_sin(t * 0.07 + s2)
+                 + 0.03 * e * vg_sin(beat * 0.2 + s1))
+
+        self._cam_yaw = float(yaw)
+        self._cam_pitch = float(pitch)
+        self._cam_roll = float(roll)
+        self._cam_distance = float(dist)
+        self._cam_fov_deg = float(fov)
+        self._cam_pan_x = float(pan_x)
+        self._cam_pan_y = float(pan_y)
+
+        # ---- IDENTITY packing (N-independent homes) ----
+        # Angle home = identity_unit on the 64-slot master lattice + golden spiral.
+        # N only affects density implode, never the angular home of a slot.
+        golden = math.tau * (1.0 - 1.0 / PHI)
+        self._pack_radius = 0.52 + 0.10 * min(1.0, e + 0.35 * form) + 0.04 * goava_w
         for i, layer in enumerate(self.layers[:n]):
-            q = (i + 0.5) / n
-            go = max(2, int(st.get("group_order", n)))
-            gs = max(1, int(st.get("group_step", 1)))
-            residue = (i * gs) % go
-            a = residue * (math.tau / go) + i * golden * MEUM_INV
-            a += self.t * (0.035 + 0.025 * e + 0.008 * goava_phase) + ph * math.tau * 0.08
-            rr = self._pack_radius * math.sqrt(q)
-            # Local neighborhood spacing estimate for a disk packing.
-            spacing = self._pack_radius * math.sqrt(2.0 * math.pi / n) * (0.90 + 0.10 * q)
+            # Prefer master_slot identity when present on the layer/canonical map
+            slot = int(layer.get("master_slot", layer.get("index", i))) % CANONICAL_MASTER_SLOTS
+            try:
+                idu = float(identity_unit("instrument-visual", seed, "master", slot))
+            except Exception:
+                idu = (slot + 0.5) / float(CANONICAL_MASTER_SLOTS)
+            # Angular home from identity (not from i/n)
+            a_home = idu * math.tau + slot * golden * MEUM_INV
+            a = a_home + t * (0.030 + 0.022 * e + 0.010 * goava_w) + ph * math.tau * 0.07
+            # Radial home from identity rank on a golden spiral (stable under N change)
+            q_id = (slot + 0.5) / float(CANONICAL_MASTER_SLOTS)
+            rr = self._pack_radius * math.sqrt(0.12 + 0.88 * q_id)
+            # Density implode: only place N affects scale of neighbors
+            spacing = self._pack_radius * math.sqrt(2.0 * math.pi / n) * (0.90 + 0.10 * q_id)
             base = 0.26 + 0.32 * abs(float(self.wave[i % 256])) + 0.14 * e
             life = max(float(layer.get("life", 0.3)), 0.2)
-            crowd = base * (0.28 + 0.72 * life) * max(float(st.get("rho", 1.0)), 0.2)
+            crowd = base * (0.28 + 0.72 * life) * max(rho, 0.2)
             implode = float(np.clip(spacing / max(2.15 * crowd, 1e-4), self._pack_scale_floor, 1.0))
-            # Preserve the instrument's individual phase, but place its center
-            # on the packed field. The slight depth staggering reduces projected
-            # collisions after perspective.
-            layer["field_x"] = rr * math.cos(a)
-            layer["field_y"] = rr * math.sin(a) * 0.72
+            layer["field_x"] = rr * vg_cos(a) + pan_x * 0.15
+            layer["field_y"] = rr * vg_sin(a) * 0.72 + pan_y * 0.15
             layer["implode"] = implode
-            layer["field_z"] = 0.08 * math.sin(a * MEUM + i * MEUM_INV)
+            layer["field_z"] = 0.10 * vg_sin(a * MEUM + slot * MEUM_INV) * dist
+            layer["identity_unit"] = idu
+            layer["master_slot"] = slot
 
     def _camera_transform(self, x, y, z):
-        """Apply global yaw -> pitch -> roll camera transform."""
-        cy, sy = math.cos(self._cam_yaw), math.sin(self._cam_yaw)
-        cp, sp = math.cos(self._cam_pitch), math.sin(self._cam_pitch)
-        cr, sr = math.cos(self._cam_roll), math.sin(self._cam_roll)
+        """Apply canonical camera yaw/pitch/roll + dolly distance transform."""
+        cyaw, cpitch, croll = self._cam_yaw, self._cam_pitch, self._cam_roll
+        if isinstance(getattr(self, "_camera_view_override", None), dict):
+            v = self._camera_view_override
+            cyaw = math.radians(float(v.get("yaw_deg", 0.0)))
+            cpitch = math.radians(float(v.get("pitch_deg", 0.0)))
+            croll = math.radians(float(v.get("roll_deg", 0.0)))
+            if "distance" in v:
+                try:
+                    self._cam_distance = float(v.get("distance") or self._cam_distance or 1.0)
+                except Exception:
+                    pass
+        cy, sy = vg_cos(cyaw), vg_sin(cyaw)
+        cp, sp = vg_cos(cpitch), vg_sin(cpitch)
+        cr, sr = vg_cos(croll), vg_sin(croll)
         x1 = x * cy - z * sy
         z1 = x * sy + z * cy
         y1 = y * cp - z1 * sp
         z2 = y * sp + z1 * cp
         x2 = x1 * cr - y1 * sr
         y2 = x1 * sr + y1 * cr
+        # Dolly: distance scales the view depth (1.0 neutral). Closer → larger
+        # projected size and stronger perspective separation between layers.
+        dist = float(getattr(self, "_cam_distance", 1.0) or 1.0)
+        dist = max(0.45, min(1.8, dist))
+        z2 = z2 * dist + (dist - 1.0) * 0.35
+        x2 = x2 + float(getattr(self, "_cam_pan_x", 0.0))
+        y2 = y2 + float(getattr(self, "_cam_pan_y", 0.0))
         return x2, y2, z2
 
     def _map_xy(self, x, y):
         """Implode a screen point into the fitted bounds and clamp each element."""
         px = self._fit_ox + (x - self._fit_cx) * self._fit_sx
         py = self._fit_oy + (y - self._fit_cy) * self._fit_sy
-        # Small seeded frame-local displacement supplies visual entropy while
-        # remaining far inside the global fit box.
-        try:
-            j = (min(self._fit_ox, self._fit_oy) * 0.012 *
-                 float(self._visual_entropy) * 0.5)
-            px += float(self._rng.uniform(-j, j))
-            py += float(self._rng.uniform(-j, j))
-        except Exception:
-            pass
+        # No stochastic pixel jitter: the image field is a pure function of
+        # seed + composition state + time. This keeps frame regeneration exact.
         # Per-element safety clamp: stochastic geometry may evolve freely,
         # but no individual projected element is allowed to escape the frame.
         margin = 2.0
@@ -4406,7 +5589,7 @@ class VideoSynthEngine:
 
     def _project(self, x, y, z, w, h, fov=None):
         if fov is None:
-            fov = MEUM + MEUM_NORM * 0.15
+            fov = math.tan(math.radians(float(getattr(self, "_cam_fov_deg", 48.0))) * 0.5) * 2.0
         x, y, z = self._camera_transform(float(x), float(y), float(z))
         z = max(z, 0.12)
         inv = 1.0 / z
@@ -4423,8 +5606,6 @@ class VideoSynthEngine:
         return (c.red(), c.green(), c.blue())
 
     def _line(self, img, x0, y0, x1, y1, col, alpha=1.0):
-        # VISUAL_DENSITY_V50: raise scenograph presence without making it fully opaque.
-        alpha = float(alpha) * 1.65
         hh, ww, _ = img.shape
         steps = max(abs(int(x1) - int(x0)), abs(int(y1) - int(y0)), 1)
         a = float(np.clip(alpha, 0.0, 1.0))
@@ -4437,8 +5618,6 @@ class VideoSynthEngine:
                 img[y, x] = img[y, x] * (1 - a) + c * a
 
     def _dot(self, img, x, y, col, alpha=1.0, r=1):
-        # VISUAL_DENSITY_V50: moderate 50%-entropy presentation; retain fade behavior.
-        alpha = float(alpha) * 1.65
         hh, ww, _ = img.shape
         a = float(np.clip(alpha, 0.0, 1.0))
         c = np.array(col, dtype=np.float32)
@@ -4468,6 +5647,69 @@ class VideoSynthEngine:
                 region[mask]=region[mask]*(1-a)+c*a
         for i in range(3):
             self._line(img, pts[i,0], pts[i,1], pts[(i+1)%3,0], pts[(i+1)%3,1], col, min(1.0, a*1.15))
+
+    def _subscene_image_synthesis(self, img, w, h, st):
+        """Continuous deterministic image synthesis from the same composition.
+
+        This is the visual counterpart of the audio renderer: instead of a
+        small catalog of decorative shapes, the complete RGB field is generated
+        from a compact latent vector derived from seed, spectrum, waveform,
+        playhead, sequence density and the 64-slot master image lattice.
+        Instrument Count only changes which master atoms are emphasized; it
+        cannot invent a new visual identity.
+        """
+        op = float(self._module_fade.get("field", 0.62))
+        if op <= 0.02:
+            return
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        xn = (xx / max(w - 1, 1) - 0.5) * 2.0
+        yn = (yy / max(h - 1, 1) - 0.48) * 2.0
+        snap = st.get("snap", {})
+        seed = float(snap.get("seed", 0.0))
+        ph = float(st.get("ph", 0.0))
+        e = float(np.clip(self._rms, 0.0, 1.0))
+        centroid = float(np.clip(self._centroid, 0.0, 1.0))
+        # Six basis waves: low/mid/high spectral structure plus spatial folds.
+        bands = np.asarray(self._band, dtype=np.float32)
+        b0,b1,b2 = [float(bands[k]) for k in (0, min(3, len(bands)-1), min(6, len(bands)-1))]
+        # The image field is derived from the complete 64-slot master lattice,
+        # not the live roster.  Therefore N=2 and N=64 see the same underlying
+        # image latent; N only changes how that latent is factorized into voices.
+        master = self._canonical_master if hasattr(self, "_canonical_master") else []
+        active = master
+        if active:
+            atoms = [p.get("atom", {}) for p in active]
+            atom_phase = float(np.mean([a.get("phase",0.0) for a in atoms]))
+            atom_angle = float(np.mean([a.get("angle",0.0) for a in atoms]))
+            atom_tex = float(np.mean([a.get("texture",0.5) for a in atoms]))
+        else:
+            atom_phase = atom_angle = 0.0; atom_tex = 0.5
+        t = float(self.t)
+        # Radial + angular latent coordinates. Every term is tied to a real
+        # composition quantity; there are no purely decorative random fields.
+        r = np.sqrt(xn*xn + yn*yn)
+        a = np.arctan2(yn, xn)
+        f1 = np.sin(a * (3.0 + 5.0*b1) + r * (7.0 + 9.0*b2) + ph + atom_angle)
+        f2 = np.cos(r * (11.0 + 8.0*centroid) - t*(0.07 + 0.13*e) + seed*0.0017)
+        f3 = np.sin((xn*vg_cos(atom_phase) + yn*vg_sin(atom_phase)) * (8.0 + 12.0*b0) + ph*2.0)
+        f4 = np.cos((xn-yn) * (5.0 + 7.0*atom_tex) + t*0.11 + seed*0.0009)
+        # Harmonic cross-modulation: multiplicative interaction prevents the
+        # image from being a sum of unrelated overlays.
+        field = 0.5 + 0.16*f1 + 0.14*f2 + 0.11*f3 + 0.09*f4 + 0.12*f1*f3
+        field *= 0.82 + 0.18*np.clip(0.5 + 0.5*np.cos((r + ph)*math.tau), 0.0, 1.0)
+        field = np.clip(field, 0.0, 1.0)
+        hue = (145.0 + 170.0*centroid + 70.0*b2 + math.degrees(atom_phase)*0.21 + self._video_hue_shift + ph*55.0) % 360.0
+        # Vectorized continuous RGB basis.  The three channels are phase-shifted
+        # views of the same latent field, so color carries information instead
+        # of being an unrelated decorative palette.
+        c = field * (0.62 + 0.30*e)
+        ang = hue / 60.0 + f1*0.55 + f3*0.35
+        rr = np.clip(c * (0.55 + 0.45*np.cos(ang)), 0, 1)
+        gg = np.clip(c * (0.55 + 0.45*np.cos(ang - 2.0943951)), 0, 1)
+        bb = np.clip(c * (0.55 + 0.45*np.cos(ang - 4.1887902)), 0, 1)
+        field_rgb = np.stack([rr,gg,bb], axis=-1) * 255.0
+        alpha = float(np.clip(0.28 + 0.28*e + 0.18*op, 0.18, 0.78))
+        img[:] = img * (1.0-alpha) + field_rgb.astype(np.float32) * alpha
 
     def _subscene_field(self, img, w, h, st):
         """Background Meum gradient field; no playhead chrome."""
@@ -4502,117 +5744,71 @@ class VideoSynthEngine:
             for k in range(segs):
                 a = self.t * MEUM_NORM + k * (math.tau / segs) + s * 0.4
                 # Meum ellipse: x·M vs y/M
-                px = cx + rad * w * 0.35 * math.cos(a) * MEUM_INV
-                py = cy + rad * h * 0.28 * math.sin(a) * MEUM
+                px = cx + rad * w * 0.35 * vg_cos(a) * MEUM_INV
+                py = cy + rad * h * 0.28 * vg_sin(a) * MEUM
                 pts.append(self._map_xy(px, py))
             col = self._hsv(int(200 + s * 25 + self._video_hue_shift) % 360, 0.4, 0.5)
             alpha = 0.025 + 0.045 * st["form"]
             for k in range(len(pts)):
                 self._line(img, pts[k][0], pts[k][1], pts[(k + 1) % len(pts)][0], pts[(k + 1) % len(pts)][1], col, alpha)
 
+    def _live_instrument_visual_schema(self, i, name, canonical):
+        """Resolve the complete live composition record for one instrument."""
+        app = getattr(self, "app", None)
+        state = dict((getattr(app, "instrument_param_state", {}) or {}).get(name, {}) or {}) if app else {}
+        seq = {}
+        if app is not None:
+            try:
+                seq = dict((getattr(app, "instrument_sequencer_memory", {}) or {}).get(name, {}) or {})
+            except Exception:
+                seq = {}
+        steps = list(seq.get("steps") or [])
+        amps = list(seq.get("amplitudes") or [])
+        pitches = list(seq.get("pitches") or [])
+        playlist = getattr(app, "master_playlist_data", None) or [] if app else []
+        active_rows = []
+        for row in playlist:
+            if isinstance(row, dict) and str(row.get("operator", "")).strip() == str(name):
+                active_rows.append(row)
+        return {
+            "seed": float(self._canonical_ctx.get("seed", 0.0)),
+            "phase": float(canonical.get("phase0", 0.0)),
+            "patch": {
+                "morph": float(state.get("morph", 1.2)),
+                "harmonic_freq": float(state.get("harmonic_freq", canonical.get("base_freq", 432.0))),
+                "chaos": float(state.get("chaos", 0.75)),
+                "fold_depth": float(state.get("fold_depth", 4.0)),
+                "harmonic_lattice": float(state.get("harmonic_lattice", state.get("fractalizer", 0.33))),
+            },
+            "sequence": {
+                "length": int(seq.get("pattern_length", len(steps) or 16)),
+                "steps_on": sum(1 for x in steps if x),
+                "amp_mean": float(sum(float(x) for x in amps)/len(amps)) if amps else 0.0,
+                "pitch_mean": float(sum(float(x) for x in pitches)/len(pitches)) if pitches else 1.0,
+            },
+            "playlist_rows": len(active_rows),
+            "canonical": canonical,
+            "dimension": 1 + int(identity_unit("dimension", self._canonical_ctx.get("seed",0.0), "master", int(canonical.get("master_slot", i))) * 3.0),
+        }
+
     def _subscene_faces_segments(self, img, w, h, st):
-        """Instrument layers: expanded/contracted faces + segments from Meum verts."""
-        e = self._rms
-        snap = st["snap"]
-        n_visible = int(round(getattr(self, "_render_n", self.n)))
-        harmonic_mult = 0.72 + 0.85 * getattr(self, "_harmonic_activity", 0.5) + 0.45 * getattr(self, "_octave_boundary", 0.0)
-        n_cap = 34 if self.mode != 3 else 52
-        n_show = min(int(round(n_visible * harmonic_mult)), n_cap, len(self.layers))
-        order = sorted(range(n_show), key=lambda i: -self.layers[i]["distance"])
-        for i in order:
-            layer = self.layers[i]
-            local = float(self.wave[i % 256])
-            band = float(self._band[i % 8])
-            # Formation target from Meum form + engines
-            target = st["form"] * (0.5 + 0.5 * band) + 0.15 * abs(local)
-            if snap["seeded"]:
-                target += 0.1 * abs(math.sin(self.t * MEUM + i))
-            if snap["euclid"]:
-                target += 0.08 * abs(math.cos(self.t * (snap["bpm"] / 60.0) + i * MEUM_INV))
-            target = float(np.clip(target, 0.05, 1.0))
-            layer["life"] += (target - layer["life"]) * MEUM_NORM
-            life = layer["life"]
-            if life < 0.04:
-                continue
+        """Canonical visual route: always the fixed slot lattice (not ensemble N).
 
-            # Vertex count expand/contract from k_pow + selective removal.
-            # `3 + (i % 4)` gave every 4th instrument the identical base
-            # vertex count; fold `i * MEUM` fractionally instead so the base
-            # count doesn't repeat on a short period across many instruments.
-            base_v = 3 + int(((i * MEUM * 5.0) % 1.0) * 4)
-            if st["k_pow"] >= 2:
-                base_v += 2  # expand
-            if st["k_pow"] == 0:
-                base_v = max(3, base_v - 1)  # contract
-            if snap["struct"] < 0.15 and (i % 3 == 0):
-                base_v = max(3, base_v - 1)  # random-ish removal when sparse playlist
-            layer["active_verts"] = base_v
-            n_v = base_v
-
-            dist = layer["distance"] * (1.0 - 0.22 * e) + 0.28 * abs(local)
-            yaw = layer["yaw"] + self.t * (0.28 + 0.55 * e + 0.18 * snap["eqr"]) + local * 0.3
-            pitch = layer["pitch"] + 0.16 * local + 0.1 * snap["fractal"] * math.sin(self.t + i)
-            roll = layer["roll"] + 0.1 * e * math.sin(self.t * MEUM + i)
-
-            # Z/n orbit placement gives every visible layer a distinct
-            # residue before geometry is projected into 2D.
-            go = int(st.get("group_order", max(2, self.n)))
-            gs = max(1, int(st.get("group_step", 1)))
-            residue = (i * gs) % go
-            ang0 = self.t * (0.35 + 0.03 * st.get("group_phase", 0.0)) + residue * (math.tau / go)
-            if snap.get("goava"):
-                ang0 += MEUM_NORM * math.sin(self.t * MEUM_INV + residue)
-            scale = (0.26 + 0.32 * abs(local) + 0.14 * e) * (0.28 + 0.72 * life) * st["rho"] * float(layer.get("implode", 1.0))
-            verts = []
-            for k in range(n_v):
-                a = ang0 + k * (math.tau / n_v)
-                # Constant insertion: Z from MEUM_NORM · sin when seeded
-                z = 0.06 * math.sin(a * 2 + self.t)
-                if snap["seeded"]:
-                    z += MEUM_NORM * 0.04 * math.sin(a * 3 + st["ph"] * math.tau)
-                verts.append((layer.get("field_x", 0.0) + scale * math.cos(a),
-                              layer.get("field_y", 0.0) + scale * math.sin(a),
-                              layer.get("field_z", 0.0) + z))
-
-            cosy, siny = math.cos(yaw), math.sin(yaw)
-            cosp, sinp = math.cos(pitch), math.sin(pitch)
-            cosr, sinr = math.cos(roll), math.sin(roll)
-            depth_factor = 1.0 / (1.0 + z * 0.1 * self.MEUM_INV)
-            projected = []
-            for px, py, pz in verts:
-                xr = px * cosr - py * sinr * self.center_x + (px * scale * depth_factor)
-                yr = px * sinr + py * cosr
-                yp = yr * cosp - pz * sinp * self.center_y + (yr * scale * depth_factor)
-                zp = yr * sinp + pz * cosp
-                xw = xr * cosy - zp * siny * self.center_y + (yr * scale * depth_factor)
-                zw = xr * siny + zp * cosy + dist
-                projected.append(self._project(xw, yp, zw, w, h))
-
-            hue = (layer["hue"] + int(self._video_hue_shift) + int(self._centroid * 40) + int(st["ph"] * 30)) % 360
-            col = self._hsv(hue, 0.5 + 0.25 * life, 0.32 + 0.5 * min(1.0, e + abs(local)) * life)
-            # VISUAL_DENSITY_V50 + DIVERGENCE_2026: higher opacity floors so
-            # seed-to-seed differences (hue, life, entropy) read clearly even
-            # on simple numeric seeds. Edges still dominate; faces now carry
-            # enough presence that consecutive seeds look ~50%+ distinct.
-            alpha = float(np.clip((0.22 + 0.55 * life * (0.50 + 0.40 * e)) * 0.95, 0.12, 0.58))
-
-            # Faces when formed
-            if life > 0.35 and len(projected) >= 3:
-                for k in range(1, len(projected) - 1):
-                    self._fill_tri(img, projected[0], projected[k], projected[k + 1], col, alpha * 0.34)
-            # Segments always
-            for k in range(len(projected)):
-                x0, y0, _ = projected[k]
-                x1, y1, _ = projected[(k + 1) % len(projected)]
-                self._line(img, x0, y0, x1, y1, col, alpha * 0.85)
-                self._dot(img, x0, y0, col, min(0.7, alpha + 0.08), r=1)
-
-            # Inter-layer segment bridges when playlist density high
-            if snap["struct"] > 0.25 and life > 0.35 and i + 5 < n_show:
-                other = projected[0]
-                cx, cy = self._map_xy(w * 0.5, h * 0.45)
-                self._line(img, other[0], other[1], cx, cy,
-                           self._hsv((hue + 40) % 360, 0.35, 0.4), alpha * 0.15 * snap["struct"])
+        Music keeps a canonical master independent of instrument count; video
+        must do the same.  Drawing ``len(self._canonical)`` (16 fixed slots)
+        means seeded blend/geometry is identical for 2 instruments or 48.
+        Labels may come from the host roster but never truncate the lattice.
+        """
+        names = list(getattr(self.app, "instrument_names_48", []) or []) if self.app is not None else []
+        n = len(self._canonical)  # fixed visual budget — ignore self.n
+        if not names:
+            names = [f"Instrument {i+1}" for i in range(n)]
+        energy = float(np.clip(0.35*self._rms + 0.25*self._peak + 0.40*self._visual_entropy, 0.0, 1.0))
+        for i in range(n):
+            name = names[i % len(names)] if names else f"Instrument {i+1}"
+            c = self._canonical[i]
+            schema = self._live_instrument_visual_schema(i, name, c)
+            InstrumentVisualObject(self, i, name, c, schema).draw(img, w, h, self.t, energy, self._band)
 
     def _subscene_particles(self, img, w, h, st):
         """Seed / engine particle field from Meum residual + seed value."""
@@ -4625,8 +5821,8 @@ class VideoSynthEngine:
         for p in range(n_part):
             ang = self.t * 0.65 + p * 0.37 + seed_i * 0.01 + st["ph"] * math.tau
             rr = 0.15 + 0.45 * abs(float(self.wave[p % 256])) * st["rho"]
-            x = rr * math.cos(ang)
-            y = rr * math.sin(ang * MEUM)
+            x = rr * vg_cos(ang)
+            y = rr * vg_sin(ang * MEUM)
             px, py, _ = self._project(x, y, 1.05 + 0.35 * self._rms, w, h)
             col = self._hsv(int(110 + seed_i * 0.08 + p * 9) % 360, 0.65, 0.75)
             self._dot(img, px, py, col, 0.58 + 0.25 * self._rms, r=1)
@@ -4688,17 +5884,17 @@ class VideoSynthEngine:
             # Radial swirl: bends the point around the origin over time.
             ang = u * math.tau * 2.0 + t * 0.4
             r = math.hypot(x, y)
-            x, y = r * math.cos(ang), r * math.sin(ang)
+            x, y = r * vg_cos(ang), r * vg_sin(ang)
         elif distort_idx == 1:
             # Ripple: sinusoidal depth push, scaled by the sample's own amplitude.
-            z = z + 0.25 * math.sin(u * math.tau * 5.0 + t * 1.3) * (0.3 + abs(amp))
+            z = z + 0.25 * vg_sin(u * math.tau * 5.0 + t * 1.3) * (0.3 + abs(amp))
         elif distort_idx == 2:
             # Meum fractal fold: independent Meum/Meum-inverse breathing per axis.
-            x = x * (1.0 + 0.15 * math.sin(u * MEUM * math.tau + t))
-            y = y * (1.0 + 0.15 * math.cos(u * MEUM_INV * math.tau + t))
+            x = x * (1.0 + 0.15 * vg_sin(u * MEUM * math.tau + t))
+            y = y * (1.0 + 0.15 * vg_cos(u * MEUM_INV * math.tau + t))
         else:
             # Spiral pinch: whole shape breathes in/out around the frame center.
-            pinch = 0.85 + 0.15 * math.sin(t * 0.7 + u * math.tau)
+            pinch = 0.85 + 0.15 * vg_sin(t * 0.7 + u * math.tau)
             x, y = x * pinch, y * pinch
         return x, y, z
 
@@ -4721,7 +5917,7 @@ class VideoSynthEngine:
             amplitude/band energy) stitched into a triangle-strip mesh,
             with the same colorization bank acting as its texture.
         """
-        op = self._item_opacity("wave_integration") if "wave_integration" in getattr(self, "SCENOGRAPH_ITEM_CATALOG", []) else 0.0
+        op = self._module_fade.get("wave_integration", 0.0) if "wave_integration" in getattr(self, "SCENOGRAPH_ITEM_CATALOG", []) else 0.0
         if op < 0.03:
             return
         wave = self.wave
@@ -4746,7 +5942,7 @@ class VideoSynthEngine:
                 u = i / max(n - 1, 1)
                 r = base_r * (0.4 + 0.6 * abs(amp))
                 ang = base_ang + u * 0.6 + t * 0.05
-                x, y, z = r * math.cos(ang), r * math.sin(ang) * 0.6, 0.0
+                x, y, z = r * vg_cos(ang), r * vg_sin(ang) * 0.6, 0.0
                 x, y, z = self._distort_wave_point(distort_idx, x, y, z, i, n, t, amp)
                 px, py, _ = self._project(x, y, 1.1 + 0.4 * ang_i, w, h)
                 col = self._colorize_wave_sample(colorize_idx, i, n, amp, b, base_ang)
@@ -4761,8 +5957,8 @@ class VideoSynthEngine:
                 u = i / max(n - 1, 1)
                 lx = (u - 0.5) * base_r * 2.4
                 ly = amp * base_r * 0.9
-                rx = lx * math.cos(base_ang)
-                rz = lx * math.sin(base_ang)
+                rx = lx * vg_cos(base_ang)
+                rz = lx * vg_sin(base_ang)
                 x, y, z = self._distort_wave_point(distort_idx, rx, ly, rz, i, n, t, amp)
                 px, py, _ = self._project(x, y, 1.4 + 0.5 * ang_i, w, h)
                 col = self._colorize_wave_sample(colorize_idx, i, n, amp, b, base_ang)
@@ -4782,8 +5978,8 @@ class VideoSynthEngine:
                 ang = base_ang + u * math.tau
                 r_in = base_r * (0.55 + 0.10 * ang_i)
                 r_out = r_in * (1.0 + 0.35 * abs(amp) + 0.15 * b)
-                xi, yi, zi = r_in * math.cos(ang), r_in * math.sin(ang) * 0.7, 0.0
-                xo, yo, zo = r_out * math.cos(ang), r_out * math.sin(ang) * 0.7, 0.18 * amp
+                xi, yi, zi = r_in * vg_cos(ang), r_in * vg_sin(ang) * 0.7, 0.0
+                xo, yo, zo = r_out * vg_cos(ang), r_out * vg_sin(ang) * 0.7, 0.18 * amp
                 xi, yi, zi = self._distort_wave_point(distort_idx, xi, yi, zi, i, n, t, amp)
                 xo, yo, zo = self._distort_wave_point(distort_idx, xo, yo, zo, i, n, t, amp)
                 inner.append(self._project(xi, yi, 1.6 + 0.3 * ang_i, w, h))
@@ -4813,24 +6009,39 @@ class VideoSynthEngine:
         relevance = {
             "field": 0.72 + 0.28 * e,
             "ribbon": 0.0,  # disabled: waveform/scope chrome not drawn in scenograph
-            "volumes": 0.30 + 0.70 * (0.5 + 0.5 * abs(math.sin(ph * math.tau * MEUM))),
-            "faces": 0.22 + 0.78 * max(e, float(snap["struct"])),
+            "volumes": 0.30 + 0.70 * (0.5 + 0.5 * abs(vg_sin(ph * math.tau * MEUM))),
+            "faces": 0.22 + 0.78 * max(e, float(snap.get("struct", 0.0))),
             "particles": 0.20 + 0.80 * (0.55 * e + 0.45 * abs(c - 0.5) * 2.0),
             "bands": 0.0,  # disabled: spectrum bars not drawn in scenograph
             "goava": 0.95 if snap.get("goava") else 0.0,
-            "filaments": 0.18 + 0.82 * abs(math.sin((ph + c) * math.tau * MEUM_INV)),
-            "roses": 0.15 + 0.85 * abs(math.cos((ph * 0.5 + e) * math.tau)),
+            "filaments": 0.18 + 0.82 * abs(vg_sin((ph + c) * math.tau * MEUM_INV)),
+            "roses": 0.15 + 0.85 * abs(vg_cos((ph * 0.5 + e) * math.tau)),
             "orbitals": 0.18 + 0.82 * max(e, 1.0 - c),
-            # Silence/context modules: slow, structural, and deliberately independent of loudness.
-            "constellations": 0.48 + 0.40 * (1.0 - e) * (0.55 + 0.45 * snap["struct"]),
-            "lattice": 0.34 + 0.46 * (1.0 - min(1.0, e * 1.8)) * (0.5 + 0.5 * snap["fractal"]),
-            # Loudness/instantaneous modules.
+            "constellations": 0.48 + 0.40 * (1.0 - e) * (0.55 + 0.45 * float(snap.get("struct", 0.0))),
+            "lattice": 0.34 + 0.46 * (1.0 - min(1.0, e * 1.8)) * (0.5 + 0.5 * float(snap.get("fractal", 0.0))),
             "bursts": min(1.0, e * 2.8) ** 1.7,
             "spectral_comets": min(1.0, max(0.0, c) * 1.6) * min(1.0, e * 2.0),
-            # Stable rhythm modules: suppress on chaotic/high residual motion.
-            "rhythm_mandala": max(0.0, snap["struct"] * (1.0 - abs(c - 0.5) * 1.4)) * (0.55 + 0.45 * snap["eqr"]),
-            "pulse_grid": max(0.0, (1.0 - abs(snap["bpm"] - 120.0) / 120.0)) * (0.35 + 0.65 * snap["struct"]),
+            "rhythm_mandala": max(0.0, float(snap.get("struct", 0.0)) * (1.0 - abs(c - 0.5) * 1.4)) * (0.55 + 0.45 * float(snap.get("eqr", 0.0))),
+            "pulse_grid": max(0.0, (1.0 - abs(float(snap.get("bpm", 120.0)) - 120.0) / 120.0)) * (0.35 + 0.65 * float(snap.get("struct", 0.0))),
             "goava_field": 0.92 if snap.get("goava") else 0.0,
+            # Engine-tied ornaments — same flags that change the audible mix.
+            "meum_spiral": 0.30 + 0.55 * float(np.clip(getattr(self, "_harmonic_activity", 0.5), 0.0, 1.0)),
+            "phi_web": 0.22 + 0.50 * float(snap.get("struct", 0.0)),
+            "harmonic_rings": 0.25 + 0.60 * e * (0.4 + 0.6 * c),
+            "seed_sparks": 0.85 if (snap.get("seeded") or snap.get("randomizer")) else 0.12,
+            "euclidean_spokes": 0.80 if snap.get("euclid") else 0.08,
+            "phase_ribbons": 0.80 if snap.get("phase_lock") else 0.10,
+            "lock_rings": 0.78 if snap.get("phase_lock") else 0.0,
+            "seeded_constellation": 0.82 if snap.get("seeded") else 0.0,
+            "goava_glyphs": 0.90 if snap.get("goava") else 0.0,
+            "carrier_wake": 0.70 if float(snap.get("carrier", 0.0) or 0.0) > 0.0 else 0.0,
+            "voice_orbs": 0.35 + 0.50 * e,
+            "ensemble_cloud": 0.28 + 0.45 * float(snap.get("struct", 0.0)),
+            "wave_integration": 0.40 + 0.50 * e,
+            "sub_bass_bloom": 0.20 + 0.70 * float(self._band[0] if len(self._band) else e),
+            "air_glitter": 0.15 + 0.70 * float(self._band[min(7, len(self._band)-1)] if len(self._band) else c),
+            "chord_fans": 0.25 + 0.55 * float(np.clip(getattr(self, "_harmonic_activity", 0.5), 0.0, 1.0)),
+            "depth_fog": 0.20 + 0.40 * (1.0 - e),
         }
         for name, target in relevance.items():
             # Exciting regions can suppress a module briefly; this is a
@@ -4909,11 +6120,18 @@ class VideoSynthEngine:
             ratio = float(_seed_to_pitch_ratio(seed, 0, 0))
             s_int = int(_safe_int_seed(seed) or 1)
         ctx = {"seed": seed, "base": base, "ratio": ratio, "s_int": s_int,
-               "full_unison": fu, "n_inst": self.n, "meum_depth": 1.0}
+               "full_unison": fu, "n_inst": CANONICAL_MASTER_SLOTS, "meum_depth": 1.0}
         self._canonical_ctx = ctx
         self._canonical_flags = flags
-        self._canonical = [canonical_visual_instrument(i, ctx, flags)
-                           for i in range(self.n)]
+        # Build the complete seed identity once.  Live Instrument Count later
+        # selects a deterministic subset/repartition of these slots.
+        self._canonical_master = [canonical_visual_instrument(i, ctx, flags)
+                                  for i in range(CANONICAL_MASTER_SLOTS)]
+        # Fixed visual render slot count — instrument count must NOT change
+        # video identity.  Engine flags (randomizer / phase_lock / goava) do.
+        _VISUAL_RENDER_SLOTS = 16
+        self._canonical = [self._canonical_master[canonical_master_slot(i, _VISUAL_RENDER_SLOTS)]
+                           for i in range(_VISUAL_RENDER_SLOTS)]
         self._vled_full_window = fu
         if self._canonical:
             if fu:
@@ -4997,7 +6215,7 @@ class VideoSynthEngine:
                 poly = []
                 for k in range(v):
                     a = a0 + k * math.tau / float(v)
-                    poly.append(self._map_xy(sx + math.cos(a) * r0, sy + math.sin(a * MEUM_INV) * r0 * 0.72))
+                    poly.append(self._map_xy(sx + vg_cos(a) * r0, sy + vg_sin(a * MEUM_INV) * r0 * 0.72))
                 for k in range(len(poly)):
                     x1, y1 = poly[k]; x2, y2 = poly[(k + 1) % len(poly)]
                     self._line(img, x1, y1, x2, y2, col, min(0.5, 0.10 + 0.34 * al))
@@ -5037,7 +6255,7 @@ class VideoSynthEngine:
                             a = float(np.pi * 2.0 * k / 14.0) + float(key) * 0.017 + self.t * 0.05
                             sw = float(stream[k])
                             rr = rad * (0.45 + 0.85 * (0.5 * sw + 0.5))
-                            pts.append(self._map_xy(cx + math.cos(a) * rr, cy + math.sin(a * MEUM_INV) * rr * 0.7))
+                            pts.append(self._map_xy(cx + vg_cos(a) * rr, cy + vg_sin(a * MEUM_INV) * rr * 0.7))
                         gcol = self._hsv((140 + j * 24 + hz * 0.02 + self._video_hue_shift) % 360, 0.5 + 0.3 * float(self._visual_entropy), 0.55 + 0.35 * chg)
                         for k in range(len(pts)):
                             x1, y1 = pts[k]; x2, y2 = pts[(k + 1) % len(pts)]
@@ -5061,9 +6279,22 @@ class VideoSynthEngine:
             return
         cx, cy = w * 0.5, h * 0.43
         n = len(events)
-        n_inst = max(2, int(round(getattr(self, "_render_n", self.n))))
-        harmonic_mult = 0.65 + 0.95 * getattr(self, "_harmonic_activity", 0.5) + 0.55 * getattr(self, "_octave_boundary", 0.0)
-        goava_count = min(n, max(2, int(round(n_inst * 0.42 * harmonic_mult))))
+        # GOAVA count = seed count (one visual node per seed numeric entry).
+        # Never instrument-count, never a fixed 16-slot budget.
+        seed_count = 0
+        try:
+            seed_count = len(getattr(self.app, "goava_seed_numbers", None) or [])
+        except Exception:
+            seed_count = 0
+        if seed_count <= 0 and self.app is not None and hasattr(self.app, "get_seed_values"):
+            try:
+                seed_count = len(list(self.app.get_seed_values(
+                    t_value=float(getattr(self, "t", 0.0)) % 8.0) or []) or [])
+            except Exception:
+                seed_count = 0
+        if seed_count <= 0:
+            seed_count = n  # events already 1:1 with seeds when GOAVA built them
+        goava_count = min(n, max(1, int(seed_count)))
         # GOAVA is intentionally a minor unison operator: it follows the
         # ensemble rather than dominating it.
         minor = 0.28
@@ -5081,16 +6312,16 @@ class VideoSynthEngine:
             # Numerical key: GOAVA raw/seed, then Meum calculus state.
             key = raw + seed * MEUM_INV + seed_key * 0.00017 + u * MEUM + rho * 0.31
             ang = self.t * (0.12 + 0.0008 * (hz % 31.0)) + uidx * math.tau + key * 0.017
-            depth = 0.72 + 0.28 * math.sin(key * 0.013 + self.t * MEUM)
-            radius = (0.10 + 0.34 * (0.5 + 0.5 * math.sin(key * MEUM_INV + form * 3.0))) * rho * depth
+            depth = 0.72 + 0.28 * vg_sin(key * 0.013 + self.t * MEUM)
+            radius = (0.10 + 0.34 * (0.5 + 0.5 * vg_sin(key * MEUM_INV + form * 3.0))) * rho * depth
             hue = (255 + j * 19 + hz * 0.035 + seed * 0.11 + self._video_hue_shift) % 360
             col = self._hsv(hue, 0.72 + 0.18 * form, 0.82 + 0.18 * min(1.0, self._rms + form))
 
             # 1D: a GOAVA numerical filament whose length responds to calculus line density.
-            x1 = cx + math.cos(ang) * radius * w * (0.25 + 0.30 * line_d)
-            y1 = cy + math.sin(ang) * radius * h * (0.20 + 0.25 * line_d)
-            x2 = cx + math.cos(ang + 0.10 + form * 0.12) * radius * w * (0.42 + 0.35 * line_d)
-            y2 = cy + math.sin(ang + 0.10 + form * 0.12) * radius * h * (0.28 + 0.28 * line_d)
+            x1 = cx + vg_cos(ang) * radius * w * (0.25 + 0.30 * line_d)
+            y1 = cy + vg_sin(ang) * radius * h * (0.20 + 0.25 * line_d)
+            x2 = cx + vg_cos(ang + 0.10 + form * 0.12) * radius * w * (0.42 + 0.35 * line_d)
+            y2 = cy + vg_sin(ang + 0.10 + form * 0.12) * radius * h * (0.28 + 0.28 * line_d)
             x1, y1 = self._map_xy(x1, y1); x2, y2 = self._map_xy(x2, y2)
             self._line(img, x1, y1, x2, y2, col, minor * 0.72 * fade)
 
@@ -5102,7 +6333,7 @@ class VideoSynthEngine:
             # regardless of pitch/seed, which is the same collision pattern the
             # DJ-pair orbit had. A hash-like fractional fold of `key` spreads
             # petal counts by what the note actually is, not where it sits.
-            petals = 4 + int(abs(math.sin(key * 12.9898)) * 100 % 5)
+            petals = 4 + int(abs(vg_sin(key * 12.9898)) * 100 % 5)
             # GOAVA_IRRATIONAL_2026 — waveform resemblance: the 2D/3D shapes
             # trace GOAVA's OWN irrational stream (sampled from the cached seed
             # numbers at this event's base frequency), so the glyph visibly
@@ -5121,9 +6352,9 @@ class VideoSynthEngine:
                     sw = float(_gstream[k])
                     rr = radius * (0.45 + 0.85 * (0.5 * sw + 0.5))
                 else:
-                    rr = radius * (0.50 + 0.34 * math.sin(petals * a + key * 0.021 + u))
-                pts.append(self._map_xy(cx + math.cos(a) * rr * w * 0.33,
-                            cy + math.sin(a * MEUM_INV) * rr * h * 0.25))
+                    rr = radius * (0.50 + 0.34 * vg_sin(petals * a + key * 0.021 + u))
+                pts.append(self._map_xy(cx + vg_cos(a) * rr * w * 0.33,
+                            cy + vg_sin(a * MEUM_INV) * rr * h * 0.25))
             # Filled 2D GOAVA petal sectors: visible surfaces, not merely outlines.
             face_col = self._hsv((hue + 18) % 360, 0.58 + 0.25 * form, 0.72 + 0.20 * form)
             for k in range(1, len(pts) - 1):
@@ -5134,19 +6365,19 @@ class VideoSynthEngine:
 
             # 3D: depth ring projected with Meum-controlled z and a seed-derived tilt.
             ring = []
-            tilt = 0.15 + 0.45 * math.sin(key * 0.007 + u)
+            tilt = 0.15 + 0.45 * vg_sin(key * 0.007 + u)
             for k in range(18):
                 a = ang + k * math.tau / 18.0
                 if _gstream is not None:
                     swk = float(_gstream[k % len(_gstream)])
                     rr = radius * (0.62 + 0.30 * swk)
                 else:
-                    rr = radius * (0.62 + 0.12 * math.sin(a * 3.0 + key))
-                xx = rr * math.cos(a)
-                yy = rr * math.sin(a) * 0.68
-                zz = 1.0 + 0.34 * math.sin(a * 2.0 + key * 0.011) * (0.6 + 0.4 * form)
-                xr = xx * math.cos(tilt) - zz * math.sin(tilt)
-                zr = xx * math.sin(tilt) + zz * math.cos(tilt)
+                    rr = radius * (0.62 + 0.12 * vg_sin(a * 3.0 + key))
+                xx = rr * vg_cos(a)
+                yy = rr * vg_sin(a) * 0.68
+                zz = 1.0 + 0.34 * vg_sin(a * 2.0 + key * 0.011) * (0.6 + 0.4 * form)
+                xr = xx * vg_cos(tilt) - zz * vg_sin(tilt)
+                zr = xx * vg_sin(tilt) + zz * vg_cos(tilt)
                 px, py, _ = self._project(xr, yy, zr, w, h)
                 ring.append(self._map_xy(px, py))
             # 3D depth object: triangulated surface fan plus silhouette.
@@ -5168,8 +6399,8 @@ class VideoSynthEngine:
             u = k / 95.0
             a = self.t * MEUM_INV + u * math.tau * (1.0 + MEUM_NORM)
             r = (0.05 + 0.42 * u) * (0.65 + 0.35 * self._rms)
-            pts.append((cx + math.cos(a) * r * w * 0.46,
-                        cy + math.sin(a * MEUM) * r * h * 0.34))
+            pts.append((cx + vg_cos(a) * r * w * 0.46,
+                        cy + vg_sin(a * MEUM) * r * h * 0.34))
         for k in range(len(pts) - 1):
             col = self._hsv((120 + k * 2 + self._video_hue_shift) % 360, 0.55, 0.72)
             self._line(img, *pts[k], *pts[k + 1], col, alpha=0.42 * fade)
@@ -5179,15 +6410,15 @@ class VideoSynthEngine:
         if fade <= 0.02:
             return
         cx, cy = w * 0.5, h * 0.46
-        arms = int(np.clip(round(2 + getattr(self, "_render_n", self.n) / 12.0 + 3.0 * getattr(self, "_harmonic_activity", 0.5)), 3, 12))
+        arms = int(np.clip(round(3 + 8.0 * getattr(self, "_harmonic_activity", 0.5)), 3, 11))
         for arm in range(arms):
             pts = []
             for k in range(72):
                 u = k / 71.0
                 a = u * math.tau * 3.0 + self.t * 0.3 + arm * math.pi / 2.0
                 r = (0.06 + 0.58 * u) * (0.58 + 0.42 * self._centroid)
-                pts.append((cx + math.cos(a) * r * w * 0.47,
-                            cy + math.sin(a * MEUM_INV) * r * h * 0.40))
+                pts.append((cx + vg_cos(a) * r * w * 0.47,
+                            cy + vg_sin(a * MEUM_INV) * r * h * 0.40))
             col = self._hsv((35 + arm * 70 + self._centroid * 100) % 360, 0.68, 0.82)
             for k in range(len(pts) - 1):
                 self._line(img, *pts[k], *pts[k + 1], col, alpha=0.09 * fade)
@@ -5197,16 +6428,16 @@ class VideoSynthEngine:
         if fade <= 0.02:
             return
         cx, cy = w * 0.5, h * 0.44
-        ring_count = int(np.clip(round(2 + getattr(self, "_render_n", self.n) / 24.0 + 2.0 * getattr(self, "_octave_boundary", 0.0)), 2, 6))
+        ring_count = int(np.clip(round(2 + 4.0 * getattr(self, "_octave_boundary", 0.0)), 2, 6))
         for ring in range(ring_count):
             pts = []
             rad = (0.18 + ring * 0.10) * st["rho"]
-            ring_points = int(np.clip(round(24 + 0.75 * getattr(self, "_render_n", self.n)), 24, 72))
+            ring_points = int(np.clip(round(28 + 44.0 * getattr(self, "_harmonic_activity", 0.5)), 28, 72))
             for k in range(ring_points):
                 a = k * math.tau / ring_points + self.t * (0.12 + ring * 0.05)
-                z = 1.0 + 0.15 * math.sin(a * 3.0 + self.t * MEUM)
-                pts.append((cx + math.cos(a) * rad * w * 0.35 * z,
-                            cy + math.sin(a) * rad * h * 0.18))
+                z = 1.0 + 0.15 * vg_sin(a * 3.0 + self.t * MEUM)
+                pts.append((cx + vg_cos(a) * rad * w * 0.35 * z,
+                            cy + vg_sin(a) * rad * h * 0.18))
             col = self._hsv((205 + ring * 40 + self._video_hue_shift) % 360, 0.62, 0.78)
             for k in range(len(pts) - 1):
                 self._line(img, *pts[k], *pts[k + 1], col, alpha=0.15 * fade)
@@ -5219,7 +6450,7 @@ class VideoSynthEngine:
         for i in range(34):
             a = i * MEUM_INV + self.t * 0.035 + seed * 0.0007
             r = 0.12 + 0.34 * ((i * MEUM_NORM) % 1.0)
-            x, y, _ = self._project(r * math.cos(a), r * math.sin(a * MEUM), 1.0 + 0.18 * math.sin(a * 2), w, h)
+            x, y, _ = self._project(r * vg_cos(a), r * vg_sin(a * MEUM), 1.0 + 0.18 * vg_sin(a * 2), w, h)
             pts.append((x, y))
         col = self._hsv((215 + self._video_hue_shift) % 360, 0.35, 0.95)
         for i, p in enumerate(pts):
@@ -5246,8 +6477,8 @@ class VideoSynthEngine:
             pts = []
             for k in range(28):
                 a = k * math.tau / 28 + self.t * (0.9 + r * 0.2)
-                rr = rad * (1.0 + 0.18 * math.sin(a * (5 + r) + self.t * 4))
-                pts.append((cx + math.cos(a) * rr * w, cy + math.sin(a) * rr * h * 0.55))
+                rr = rad * (1.0 + 0.18 * vg_sin(a * (5 + r) + self.t * 4))
+                pts.append((cx + vg_cos(a) * rr * w, cy + vg_sin(a) * rr * h * 0.55))
             col = self._hsv((320 + r * 28 + self._centroid * 100) % 360, 0.85, 0.95)
             for k in range(len(pts)-1): self._line(img, *pts[k], *pts[k+1], col, 0.34 * fade)
 
@@ -5260,10 +6491,10 @@ class VideoSynthEngine:
             a = self.t * (0.4 + amp * 1.7) + b * MEUM_INV
             r = 0.15 + amp * 0.38
             cx, cy = w * 0.5, h * 0.45
-            x = cx + math.cos(a) * r * w
-            y = cy + math.sin(a * MEUM) * r * h * 0.48
-            tx = cx + math.cos(a - 0.28) * r * w * 0.72
-            ty = cy + math.sin((a - 0.28) * MEUM) * r * h * 0.36
+            x = cx + vg_cos(a) * r * w
+            y = cy + vg_sin(a * MEUM) * r * h * 0.48
+            tx = cx + vg_cos(a - 0.28) * r * w * 0.72
+            ty = cy + vg_sin((a - 0.28) * MEUM) * r * h * 0.36
             col = self._hsv((25 + b * 42 + self._video_hue_shift) % 360, 0.9, 0.98)
             self._line(img, tx, ty, x, y, col, (0.35 + 0.55 * amp) * fade)
             self._dot(img, x, y, col, 0.8 * fade, r=1 + int(amp * 3))
@@ -5277,8 +6508,8 @@ class VideoSynthEngine:
             a = self.t * 0.12 + i * math.tau / spokes
             amp = 0.35 + 0.65 * float(self._band[i % 8])
             r = (0.12 + 0.25 * amp) * st["rho"]
-            x = cx + math.cos(a) * r * w
-            y = cy + math.sin(a) * r * h * 0.55
+            x = cx + vg_cos(a) * r * w
+            y = cy + vg_sin(a) * r * h * 0.55
             col = self._hsv((70 + i * 13 + self._video_hue_shift) % 360, 0.72, 0.9)
             self._line(img, cx, cy, x, y, col, 0.18 * fade + 0.25 * fade * amp)
 
@@ -5286,12 +6517,12 @@ class VideoSynthEngine:
         fade = self._module_fade.get("pulse_grid", 0.0)
         if fade <= 0.02: return
         n = 8 + int(8 * st["snap"].get("struct", 0.0))
-        pulse = abs(math.sin(self.t * math.pi * max(1.0, st["snap"].get("bpm", 120.0)) / 60.0))
+        pulse = abs(vg_sin(self.t * math.pi * max(1.0, st["snap"].get("bpm", 120.0)) / 60.0))
         col = self._hsv((45 + self._video_hue_shift) % 360, 0.8, 0.9)
         for i in range(n):
             u = i / max(n - 1, 1)
             x = u * w
-            y = h * 0.5 + math.sin(self.t * 0.4 + i * MEUM) * h * 0.16 * (0.3 + 0.7 * pulse)
+            y = h * 0.5 + vg_sin(self.t * 0.4 + i * MEUM) * h * 0.16 * (0.3 + 0.7 * pulse)
             self._dot(img, x, y, col, (0.12 + 0.45 * pulse) * fade, r=1 + int(2 * pulse))
 
     def _collect_fit_points(self, w, h, st):
@@ -5305,8 +6536,8 @@ class VideoSynthEngine:
             for k in range(8):
                 a = self.t * MEUM_NORM + k * (math.tau / 8.0) + s * 0.4
                 pts.append((
-                    cx + rad * w * 0.35 * math.cos(a) * MEUM_INV,
-                    cy + rad * h * 0.28 * math.sin(a) * MEUM,
+                    cx + rad * w * 0.35 * vg_cos(a) * MEUM_INV,
+                    cy + rad * h * 0.28 * vg_sin(a) * MEUM,
                 ))
         e = self._rms
         n_visible = int(round(getattr(self, "_render_n", self.n)))
@@ -5318,20 +6549,30 @@ class VideoSynthEngine:
             local = float(self.wave[i % 256])
             life = max(layer.get("life", 0.3), 0.2)
             dist = layer["distance"] * (1.0 - 0.22 * e) + 0.28 * abs(local)
-            yaw = layer["yaw"] + self.t * (0.28 + 0.55 * e + 0.18 * snap["eqr"]) + local * 0.3
-            pitch = layer["pitch"] + 0.16 * local
-            roll = layer["roll"] + 0.1 * e * math.sin(self.t * MEUM + i)
+            # Slow object-local rotation plus an audio-reactive breathing
+            # term. The old rates were visually busy; this keeps silhouettes
+            # legible while still giving every instrument its own motion.
+            yaw = (layer["yaw"]
+                   + self.t * (0.105 + 0.16 * e + 0.055 * snap["eqr"])
+                   + 0.10 * vg_sin(self.t * 0.23 + i * MEUM_INV)
+                   + local * 0.22)
+            pitch = layer["pitch"] + 0.095 * local + 0.035 * vg_sin(self.t * 0.19 + i * 0.37)
+            roll = layer["roll"] + 0.055 * e * vg_sin(self.t * 0.31 + i * MEUM)
             n_v = max(3, 3 + int(((i * MEUM * 5.0) % 1.0) * 4))
-            scale = (0.26 + 0.32 * abs(local) + 0.14 * e) * (0.28 + 0.72 * life) * st["rho"] * float(layer.get("implode", 1.0))
+            beat = abs(vg_sin(self.t * math.pi * max(1.0, float(snap.get("bpm", 120.0))) / 60.0))
+            breathe = 1.0 + 0.045 * beat * (0.35 + 0.65 * e)
+            scale = ((0.26 + 0.32 * abs(local) + 0.14 * e)
+                     * (0.28 + 0.72 * life) * st["rho"]
+                     * float(layer.get("implode", 1.0)) * breathe)
             ang0 = self.t * 0.35 + i * 0.2
-            cosy, siny = math.cos(yaw), math.sin(yaw)
-            cosp, sinp = math.cos(pitch), math.sin(pitch)
-            cosr, sinr = math.cos(roll), math.sin(roll)
+            cosy, siny = vg_cos(yaw), vg_sin(yaw)
+            cosp, sinp = vg_cos(pitch), vg_sin(pitch)
+            cosr, sinr = vg_cos(roll), vg_sin(roll)
             for k in range(n_v):
                 a = ang0 + k * (math.tau / n_v)
-                px = layer.get("field_x", 0.0) + scale * math.cos(a)
-                py = layer.get("field_y", 0.0) + scale * math.sin(a)
-                pz = layer.get("field_z", 0.0) + 0.06 * math.sin(a * 2 + self.t)
+                px = layer.get("field_x", 0.0) + scale * vg_cos(a)
+                py = layer.get("field_y", 0.0) + scale * vg_sin(a)
+                pz = layer.get("field_z", 0.0) + 0.06 * vg_sin(a * 2 + self.t)
                 xr = px * cosr - py * sinr
                 yr = px * sinr + py * cosr
                 yp = yr * cosp - pz * sinp
@@ -5344,20 +6585,33 @@ class VideoSynthEngine:
         # rest of the scenograph instead of floating outside the fitted frame.
         if snap.get("goava"):
             events = getattr(self.app, "goava_note_events", []) if self.app is not None else []
-            n_inst = max(2, int(round(getattr(self, "_render_n", self.n))))
-            gcount = min(len(events), max(2, int(round(n_inst * (0.40 + 0.35 * getattr(self, "_harmonic_activity", 0.5))))))
+            # GOAVA fit-box count = seed count (same as draw path).
+            seed_count = 0
+            try:
+                seed_count = len(getattr(self.app, "goava_seed_numbers", None) or [])
+            except Exception:
+                seed_count = 0
+            if seed_count <= 0 and self.app is not None and hasattr(self.app, "get_seed_values"):
+                try:
+                    seed_count = len(list(self.app.get_seed_values(
+                        t_value=float(getattr(self, "t", 0.0)) % 8.0) or []) or [])
+                except Exception:
+                    seed_count = 0
+            if seed_count <= 0:
+                seed_count = len(events)
+            gcount = min(len(events), max(1, int(seed_count)))
             for j, ev in enumerate(events[:gcount]):
                 key = float(ev.get("raw", 0.0)) + float(ev.get("seed", 0.0)) * MEUM_INV
                 a = self.t * 0.12 + j * math.tau / max(gcount, 1) + key * 0.017
-                rad = (0.10 + 0.34 * (0.5 + 0.5 * math.sin(key * MEUM_INV + st["form"] * 3.0))) * st["rho"]
-                pts.append((w * 0.5 + math.cos(a) * rad * w * 0.45, h * 0.43 + math.sin(a) * rad * h * 0.34))
+                rad = (0.10 + 0.34 * (0.5 + 0.5 * vg_sin(key * MEUM_INV + st["form"] * 3.0))) * st["rho"]
+                pts.append((w * 0.5 + vg_cos(a) * rad * w * 0.45, h * 0.43 + vg_sin(a) * rad * h * 0.34))
         n_part = 12 + int(16 * self._rms)
         seed_i = int(abs(snap["seed"])) & 0xFFFF
         for p in range(min(n_part, 24)):
             ang = self.t * 0.65 + p * 0.37 + seed_i * 0.01 + st["ph"] * math.tau
             rr = 0.15 + 0.45 * abs(float(self.wave[p % 256])) * st["rho"]
             sx, sy, _ = self._project(
-                rr * math.cos(ang), rr * math.sin(ang * MEUM),
+                rr * vg_cos(ang), rr * vg_sin(ang * MEUM),
                 1.05 + 0.35 * self._rms, w, h,
             )
             pts.append((sx, sy))
@@ -5365,9 +6619,474 @@ class VideoSynthEngine:
 
 
 
+    def _subscene_generative_terrain(self, img, w, h, st):
+        """Procedural heightfield / ridge mesh from seed + entropy + time.
+
+        Pure visual generation: ridges, basins, and contour stitches whose
+        density and orientation are closed-form in (seed, t, visual_entropy).
+        Does not read or write any audio/music generator state.
+        """
+        snap = st.get("snap", {}) if isinstance(st.get("snap"), dict) else {}
+        seed = float(snap.get("seed", 0.0) or getattr(self, "_canonical_ctx", {}).get("seed", 0.0) or 0.0)
+        e = float(np.clip(getattr(self, "_visual_entropy", 0.5), 0.0, 1.0))
+        rms = float(np.clip(getattr(self, "_rms", 0.2), 0.0, 1.0))
+        # Skip if almost invisible
+        fade = 0.20 + 0.55 * e + 0.25 * rms
+        if fade < 0.08:
+            return
+        cx, cy = w * 0.5, h * 0.52
+        # Number of ridge polylines scales with entropy (more chaos → more folds)
+        n_ridges = 3 + int(7 * e + 2 * ((seed * MEUM) % 1.0))
+        for r in range(n_ridges):
+            u0 = identity_unit("terrain", seed, "ridge", r)
+            pts = []
+            segs = 18 + int(14 * e)
+            for k in range(segs):
+                t_u = k / max(1, segs - 1)
+                # Heightfield wave along a seed-tilted axis
+                a = t_u * math.tau * (1.0 + 1.5 * u0) + self.t * (0.07 + 0.04 * r) + seed * 0.002
+                height = 0.08 + 0.22 * abs(vg_sin(a * MEUM + r * PHI))
+                height *= (0.6 + 0.4 * e)
+                xw = (t_u - 0.5) * 1.15 + 0.08 * vg_cos(a * PHI)
+                yw = height * vg_sin(a) - 0.05 * r
+                zw = 0.7 + 0.25 * ((u0 + t_u) % 1.0)
+                px, py, _ = self._project(xw, yw, zw, w, h)
+                pts.append((px, py))
+            hue = (30 + 40 * r + 80 * u0 + self._video_hue_shift) % 360
+            col = self._hsv(hue, 0.35 + 0.25 * e, 0.45 + 0.35 * fade)
+            alpha = 0.07 + 0.12 * fade
+            for k in range(len(pts) - 1):
+                self._line(img, pts[k][0], pts[k][1], pts[k + 1][0], pts[k + 1][1], col, alpha)
+            # Contour dots on ridge peaks
+            if r % 2 == 0 and pts:
+                mid = pts[len(pts) // 2]
+                self._dot(img, mid[0], mid[1], col, 0.15 + 0.2 * fade, r=1)
+
+    def _subscene_numeric_fractal(self, img, w, h, st):
+        """Book fractal sets — 12 z-iters/node, transparency, shared 3D xyz.
+
+        Goal
+        ----
+        Each instrument is the same fractal object.  Each *node* runs at most
+        **12** iterations of z-values (ESKI_FRACTAL_MAX_ITER).  OT never
+        rewrites the book equations; it only changes arithmetic nature.
+        Compositional X,Y,Z are shared with the music lattice so video/game
+        nodes track the same numeric identity as pitch/FX pathways.
+
+        Prevalence: sequential numerics → playlist/algo → music lattice → residual.
+        """
+        try:
+            seed = 0.0
+            seq = []
+            if self.app is not None and hasattr(self.app, "get_seed_values"):
+                try:
+                    seq = [float(v) for v in (self.app.get_seed_values(
+                        t_value=float(getattr(self, "t", 0.0)) % 8.0) or [])[:16]]
+                except Exception:
+                    seq = []
+            if self.app is not None and hasattr(self.app, "get_numeric_seed"):
+                try:
+                    seed = float(self.app.get_numeric_seed() or 0.0)
+                except Exception:
+                    seed = 0.0
+            if not seq:
+                seq = [seed, seed * MEUM, seed * PHI, seed * MEUM_INV]
+            s_int = int(_safe_int_seed(seed)) & 0x7FFFFFFF
+
+            playlist_hash = 0
+            try:
+                app = self.app
+                if app is not None:
+                    pl = getattr(app, "master_playlist_data", None) or []
+                    for row in pl[:32]:
+                        if isinstance(row, dict):
+                            playlist_hash ^= hash((
+                                str(row.get("step_algorithm", ""))[:24],
+                                str(row.get("operator", ""))[:16],
+                                str(row.get("live_parametrics", ""))[:16],
+                            )) & 0x7FFFFFFF
+                    gas = getattr(app, "global_algo_state", None) or {}
+                    if gas:
+                        playlist_hash ^= hash(str(sorted(gas.items())[:12])) & 0x7FFFFFFF
+            except Exception:
+                playlist_hash = 0
+
+            set_name = eski_fractal_pick(s_int, sequential_nums=seq, playlist_hash=playlist_hash)
+            c_param = float(seq[0] * MEUM_INV) if seq else float(seed * MEUM_INV)
+            c_param = ((c_param % 4.0) - 2.0) * 0.5
+
+            canon = list(getattr(self, "_canonical", None) or [])
+            if not canon:
+                ctx = getattr(self, "_canonical_ctx", None) or {
+                    "seed": seed, "base": 432.0, "ratio": 1.0, "s_int": s_int,
+                    "full_unison": False, "n_inst": CANONICAL_MASTER_SLOTS,
+                }
+                flags = getattr(self, "_canonical_flags", {}) or {}
+                canon = [canonical_visual_instrument(i, ctx, flags)
+                         for i in range(min(16, CANONICAL_MASTER_SLOTS))]
+
+            flags = getattr(self, "_canonical_flags", {}) or {}
+            boost = 1.0 + 0.25 * (1 if flags.get("randomizer") else 0) \
+                    + 0.2 * (1 if flags.get("phase_lock") else 0) \
+                    + 0.3 * (1 if flags.get("goava") else 0)
+            ot_on = bool(OP_THEORY_ENABLED)
+            self._last_fractal_family = f"eski:{set_name}:OT={int(ot_on)}:z12"
+
+            t = float(getattr(self, "t", 0.0))
+            cx, cy = w * 0.5, h * 0.48
+            # Shared compositional origin (seed xyz) — same for all nodes this frame
+            ox, oy, oz = compositional_xyz(seed, sequential_nums=seq, t=t, slot=0)
+
+            # Field graph: coarse lattice, 12 z-iters per node, transparency by escape
+            step = max(5, min(w, h) // 36)
+            for yy in range(0, h, step):
+                for xx in range(0, w, step):
+                    u = (xx / max(1, w) - 0.5) * 2.0 + ox * 0.15
+                    v = (yy / max(1, h) - 0.5) * 2.0 + oy * 0.15
+                    z0 = oz * 0.25
+                    zs, n_done, escaped = eski_fractal_iterate_z(
+                        set_name, u, v, z0, c_param, max_iter=12)
+                    if not zs:
+                        continue
+                    z_last = zs[-1]
+                    mag = abs(z_last)
+                    norm = mag / (1.0 + mag)
+                    # Transparency: deeper iter / non-escape → more opaque; early escape → translucent
+                    alpha = (0.12 + 0.55 * (n_done / 12.0) * (0.35 if escaped else 1.0)) * boost
+                    alpha = max(0.06, min(0.72, alpha))  # decent transparency floor/ceil
+                    # 3D adaptation: project (u,v,z_last) with shared compositional offset
+                    px, py, depth = self._project(
+                        u * 0.55, v * 0.55, 0.7 + 0.25 * max(-1.0, min(1.0, z_last * 0.15)) + oz * 0.1,
+                        w, h)
+                    col = self._hsv(
+                        (norm * 220 + self._video_hue_shift + (35 if ot_on else 0) + n_done * 4) % 360,
+                        0.45 + 0.2 * (n_done / 12.0), 0.35 + 0.5 * norm)
+                    self._dot(img, px, py, col, alpha, r=max(1, step // 3))
+                    # Trail of z-values (transparent trail along iteration)
+                    if n_done >= 3:
+                        for zi, zv in enumerate(zs[:: max(1, n_done // 3)]):
+                            t_alpha = alpha * (0.25 + 0.2 * (zi / max(1, len(zs))))
+                            qx, qy, _ = self._project(
+                                u * 0.55, v * 0.55,
+                                0.7 + 0.2 * max(-1.0, min(1.0, zv * 0.15)), w, h)
+                            self._dot(img, qx, qy, col, t_alpha, r=1)
+
+            # Instrument objects: follow composition geometry; blend/switch modes
+            # at phase-points (instrument_geometry_mode). Same object schema always.
+            for i, obj in enumerate(canon):
+                if not isinstance(obj, dict):
+                    continue
+                ent = float(obj.get("entropy", 0.5) or 0.5)
+                hue = float(obj.get("hue", (i * 37) % 360) or 0.0)
+                depth_o = float(obj.get("depth", 0.5) or 0.5)
+                phase0 = float(obj.get("phase0", 0.0) or 0.0)
+                ratio = float(obj.get("ratio", 1.0) or 1.0)
+                sx, sy, sz = compositional_xyz(seed, sequential_nums=seq, t=t, slot=i)
+                live_phase = phase0 + t * (0.30 + 0.70 * ent)  # tracks composition time
+                mode = instrument_geometry_mode(
+                    i, live_phase, (sx, sy, sz), flags=flags, fractal_set=set_name)
+                zs, n_done, escaped = eski_fractal_iterate_z(
+                    set_name, sx, sy, sz, c_param, max_iter=12)
+                z_last = zs[-1] if zs else 0.0
+                # Mode blend: lattice vs book_set pulls position / alpha
+                lat_w = float(mode.get("lattice", 0.5))
+                book_w = float(mode.get("book_set", 0.2))
+                yaw = live_phase + z_last * 0.08 * book_w
+                rad_orb = (0.25 + 0.35 * depth_o) * (0.85 + 0.3 * lat_w)
+                px, py, _ = self._project(
+                    math.cos(yaw) * rad_orb + sx * 0.1,
+                    math.sin(yaw * MEUM_INV) * rad_orb * 0.78 + sy * 0.1,
+                    0.75 + 0.2 * depth_o + 0.1 * max(-1.0, min(1.0, z_last * 0.1)) * book_w + sz * 0.05,
+                    w, h)
+                alpha = (0.18 + 0.5 * ent * (n_done / 12.0) * (0.4 if escaped else 1.0)) * boost
+                alpha *= (0.7 + 0.3 * lat_w + 0.2 * book_w)
+                if mode.get("near_phase_point"):
+                    alpha = min(0.85, alpha + 0.12 * float(mode.get("snap", 0)))
+                alpha = max(0.08, min(0.78, alpha))
+                hue_m = (hue + self._video_hue_shift + abs(z_last) * 6
+                         + 25.0 * float(mode.get("goava", 0))
+                         + 15.0 * float(mode.get("phase_lock", 0))) % 360
+                col = self._hsv(hue_m, 0.45 + 0.25 * ent, 0.4 + 0.45 * ent)
+                rad = max(1, int(2 + 4 * ent * boost * (0.8 + 0.4 * lat_w)))
+                self._dot(img, px, py, col, alpha, r=rad)
+                # Child sample — stronger when scatter/goava mode weight is up
+                child_a = alpha * (0.35 + 0.25 * float(mode.get("scatter", 0))
+                                   + 0.2 * float(mode.get("goava", 0)))
+                cx2, cy2, _ = self._project(
+                    math.cos(yaw * PHI) * (0.12 + 0.15 * depth_o),
+                    math.sin(yaw * MEUM) * (0.12 + 0.15 * depth_o) * 0.7,
+                    0.8 + 0.1 * depth_o, w, h)
+                col2 = self._hsv((hue_m + 60) % 360, 0.4, 0.35 + 0.3 * ent)
+                self._dot(img, cx2, cy2, col2, child_a, r=max(1, rad // 2))
+                # Stash mode on object for cross-engine debug alignment
+                try:
+                    obj["_geom_mode"] = mode
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+
+    def _subscene_seed_morph(self, img, w, h, st):
+        """Instantaneous seed-morph glyphs: every evaluated seed number becomes
+        a small generative glyph family that evolves with t.
+
+        Cross-correlates list-seed length with visual population so a longer
+        numeric seed field literally grows more shape identity on screen.
+        Visual-only — does not touch the music generator.
+        """
+        seed_vals = []
+        try:
+            if self.app is not None and hasattr(self.app, "get_seed_values"):
+                seed_vals = list(self.app.get_seed_values(
+                    t_value=float(getattr(self, "t", 0.0)) % 16.0) or [])[:24]
+        except Exception:
+            seed_vals = []
+        if not seed_vals:
+            # Fall back to a single residue of the numeric seed
+            try:
+                if self.app is not None and hasattr(self.app, "get_numeric_seed"):
+                    seed_vals = [float(self.app.get_numeric_seed() or 0.0)]
+            except Exception:
+                seed_vals = [0.0]
+        e = float(np.clip(getattr(self, "_visual_entropy", 0.5), 0.0, 1.0))
+        cx, cy = w * 0.5, h * 0.44
+        n = len(seed_vals)
+        for i, val in enumerate(seed_vals):
+            try:
+                v = float(val)
+            except Exception:
+                v = float(i)
+            if not math.isfinite(v):
+                v = float(i)
+            u = identity_unit("morph", v, i, int(self.t * 10) % 97)
+            # Glyph center on a slow orbit whose radius depends on |v|
+            ang = self.t * (0.09 + 0.02 * (i % 5)) + u * math.tau + i * MEUM
+            rad = 0.12 + 0.38 * ((abs(v) * PHI) % 1.0) * (0.5 + 0.5 * e)
+            px, py, _ = self._project(rad * vg_cos(ang), rad * vg_sin(ang) * 0.72,
+                                      0.85 + 0.2 * u, w, h)
+            # Petal count from seed magnitude
+            petals = 3 + int(abs(v) * 7 + u * 5) % 6
+            hue = (v * 17.3 + i * 41 + self._video_hue_shift) % 360
+            col = self._hsv(hue, 0.55 + 0.3 * e, 0.7 + 0.2 * e)
+            alpha = 0.10 + 0.18 * e
+            for p in range(petals):
+                a2 = ang + p * math.tau / petals + self.t * 0.15
+                r2 = 8.0 + 18.0 * ((u + p * 0.13) % 1.0)
+                x2 = px + r2 * vg_cos(a2)
+                y2 = py + r2 * vg_sin(a2) * 0.85
+                self._line(img, px, py, x2, y2, col, alpha)
+                self._dot(img, x2, y2, col, alpha + 0.08, r=1)
+            self._dot(img, px, py, col, 0.2 + 0.15 * e, r=1 + (i % 2))
+
+    def _subscene_engine_ornaments(self, img, w, h, st):
+        """Extra closed-form ornaments driven by the same engine flags as audio.
+
+        Each ornament is a pure function of (seed, t, snap flags, spectrum).
+        Enabling GOAVA / phase-lock / seeded / euclid changes which ornaments
+        appear — mirroring how those engines change the audible mix — without
+        inventing a second non-deterministic visual identity.
+        """
+        snap = st.get("snap", {}) if isinstance(st.get("snap"), dict) else {}
+        seed = float(snap.get("seed", 0.0))
+        e = float(np.clip(self._rms, 0.0, 1.0))
+        c = float(np.clip(self._centroid, 0.0, 1.0))
+        cx, cy = w * 0.5, h * 0.46
+        # phase-lock rings
+        if snap.get("phase_lock") or snap.get("euclid"):
+            rings = 2 + int(3 * e)
+            for r in range(rings):
+                pts = []
+                rad = (0.14 + 0.11 * r) * (0.7 + 0.3 * e)
+                segs = 24 + int(20 * e)
+                for k in range(segs):
+                    a = k * math.tau / segs + self.t * (0.08 + 0.03 * r) + seed * 0.001
+                    px, py, _ = self._project(rad * vg_cos(a), rad * vg_sin(a) * 0.72,
+                                              0.9 + 0.15 * r, w, h)
+                    pts.append((px, py))
+                col = self._hsv((190 + r * 25 + self._video_hue_shift) % 360, 0.55, 0.7)
+                for k in range(len(pts)):
+                    self._line(img, pts[k][0], pts[k][1],
+                               pts[(k + 1) % len(pts)][0], pts[(k + 1) % len(pts)][1],
+                               col, 0.12 + 0.10 * e)
+        # seeded constellation sparks
+        if snap.get("seeded") or snap.get("randomizer"):
+            n_sparks = 8 + int(16 * e)
+            for i in range(n_sparks):
+                u = identity_unit("spark", seed, "ornament", i)
+                a = u * math.tau + self.t * 0.11
+                rr = 0.12 + 0.40 * ((u * PHI) % 1.0)
+                px, py, _ = self._project(rr * vg_cos(a), rr * vg_sin(a * MEUM_INV) * 0.7,
+                                          0.85 + 0.2 * ((u * MEUM) % 1.0), w, h)
+                col = self._hsv((40 + 280 * u + self._video_hue_shift) % 360, 0.65, 0.85)
+                self._dot(img, px, py, col, 0.18 + 0.22 * e, r=1 + (i % 2))
+        # meum spiral (always mild, stronger with harmonic activity)
+        harm = float(np.clip(getattr(self, "_harmonic_activity", 0.5), 0.0, 1.0))
+        fade_sp = 0.25 + 0.55 * harm
+        if fade_sp > 0.05:
+            pts = []
+            for k in range(64):
+                u = k / 63.0
+                a = u * math.tau * 3.0 * MEUM + self.t * 0.22
+                rr = (0.05 + 0.48 * u) * (0.6 + 0.4 * e)
+                px, py, _ = self._project(rr * vg_cos(a), rr * vg_sin(a * MEUM_INV),
+                                          1.0 + 0.1 * vg_sin(a), w, h)
+                pts.append((px, py))
+            col = self._hsv((280 + self._video_hue_shift) % 360, 0.5, 0.65)
+            for k in range(len(pts) - 1):
+                self._line(img, *pts[k], *pts[k + 1], col, 0.08 * fade_sp)
+        # carrier wake
+        if float(snap.get("carrier", 0.0) or 0.0) > 0.0:
+            for k in range(20):
+                u = k / 19.0
+                a = self.t * 0.4 + u * math.tau
+                rr = 0.35 + 0.15 * vg_sin(self.t * 0.5 + u * 4)
+                px, py, _ = self._project(rr * vg_cos(a), rr * vg_sin(a) * 0.5,
+                                          1.1, w, h)
+                col = self._hsv((160 + 40 * u) % 360, 0.4, 0.55)
+                self._dot(img, px, py, col, 0.10 + 0.08 * e, r=1)
+
+    def fractal_spatial_snapshot(self, depth=3, roots=8, seed=None, goava=False):
+
+        """Project the canonical visual composition into the audio-immutable spatial grammar."""
+        if seed is None:
+            seed = self._canonical_ctx.get("seed", 0.0) if isinstance(getattr(self, "_canonical_ctx", None), dict) else 0.0
+        fp = self.visual_composition_fingerprint()
+        return FractalSpatialEngine(seed, fp, goava).snapshot(depth=max(0, int(depth)), roots=max(1, int(roots)))
+
+    def set_deterministic_camera_view(self, view_index=0, view_count=64, seed=None):
+        """Select one reproducible view from the canonical low-discrepancy lattice."""
+        if seed is None:
+            seed = self._canonical_ctx.get("seed", 0.0) if isinstance(getattr(self, "_canonical_ctx", None), dict) else 0.0
+        view = fibonacci_view(int(view_index), int(view_count), seed)
+        self._camera_view_override = dict(view)
+        self._visual_view_index = int(view_index)
+        self._visual_view_count = max(1, int(view_count))
+        self._cam_distance = float(view.get("distance", 1.0))
+        self._cam_fov_deg = float(view.get("fov_deg", 48.0))
+        return dict(view)
+
+    def deterministic_viewset(self, count=32, seed=None, existing=()):
+        if seed is None:
+            seed = self._canonical_ctx.get("seed", 0.0) if isinstance(getattr(self, "_canonical_ctx", None), dict) else 0.0
+        return select_views(int(count), seed, existing)
+
+    def render_deterministic_view(self, w=640, h=360, view_index=0, view_count=64, seed=None, export=False):
+        view = self.set_deterministic_camera_view(view_index, view_count, seed)
+        actual_seed = seed if seed is not None else (self._canonical_ctx.get("seed", 0.0) if isinstance(getattr(self, "_canonical_ctx", None), dict) else 0.0)
+        fp = self.visual_composition_fingerprint()
+        sid = visual_signal_id(actual_seed, fp, view)
+        return self.render_frame(w, h, export=export), sid
+
+    def clear_deterministic_camera_view(self):
+        self._camera_view_override = None
+
+    def get_camera_state(self):
+        return {
+            "yaw_deg": math.degrees(float(self._cam_yaw)),
+            "pitch_deg": math.degrees(float(self._cam_pitch)),
+            "roll_deg": math.degrees(float(self._cam_roll)),
+            "distance": float(getattr(self, "_cam_distance", 0.0)),
+            "fov_deg": float(getattr(self, "_cam_fov_deg", 48.0)),
+            "view_index": int(getattr(self, "_visual_view_index", 0)),
+            "view_count": int(getattr(self, "_visual_view_count", 1)),
+            "deterministic": isinstance(getattr(self, "_camera_view_override", None), dict),
+            "composition_fingerprint": self.visual_composition_fingerprint(),
+        }
+
+    def visual_composition_fingerprint(self):
+        objects=[]
+        for i,p in enumerate(getattr(self, "_canonical", []) or []):
+            objects.append({"id":i,"type":"instrument","x":p.get("x",0.0),"y":p.get("y",0.0),"z":p.get("z",0.0),"scale":p.get("pack",1.0),"rotation":p.get("yaw",0.0),"depth":p.get("depth",0.0),"role":"canonical_instrument"})
+        seed=self._canonical_ctx.get("seed",0.0) if isinstance(getattr(self,"_canonical_ctx",None),dict) else 0.0
+        return _visual_composition_fingerprint(objects, seed=seed, abstraction="structural")
+
+    def composition_snapshot(self, t=None):
+        """Unified composition state shared by music lattice, video, and game.
+
+        Goal: prove video/game respond to the *same* canonicals as the music.
+        Object/instrument count is deliberately omitted from identity fields so
+        raising or lowering the ensemble leaves seeded geometry identical.
+        """
+        t = float(t if t is not None else getattr(self, "t", 0.0))
+        ctx = dict(getattr(self, "_canonical_ctx", None) or {})
+        flags = dict(getattr(self, "_canonical_flags", None) or {})
+        seed = float(ctx.get("seed", 0.0) or 0.0)
+        seq = []
+        try:
+            if self.app is not None and hasattr(self.app, "get_seed_values"):
+                seq = [float(v) for v in (self.app.get_seed_values(t_value=t % 8.0) or [])]
+        except Exception:
+            seq = []
+        if not seq:
+            seq = [seed]
+        seed_count = len(seq)
+        try:
+            gsn = getattr(self.app, "goava_seed_numbers", None) if self.app is not None else None
+            if gsn:
+                seed_count = max(seed_count, len(gsn))
+        except Exception:
+            pass
+        set_name = eski_fractal_pick(
+            int(_safe_int_seed(seed)) & 0x7FFFFFFF,
+            sequential_nums=seq,
+            playlist_hash=0,
+        )
+        ox, oy, oz = compositional_xyz(seed, sequential_nums=seq, t=t, slot=0)
+        modes = []
+        for i in range(min(8, len(getattr(self, "_canonical", []) or []) or 8)):
+            c = (getattr(self, "_canonical", None) or [{}])[i] if getattr(self, "_canonical", None) else {}
+            if not isinstance(c, dict):
+                c = {}
+            xyz = compositional_xyz(seed, sequential_nums=seq, t=t, slot=i)
+            ph = float(c.get("phase0", 0.0) or 0.0) + t * (0.30 + 0.70 * float(c.get("entropy", 0.5) or 0.5))
+            modes.append(instrument_geometry_mode(i, ph, xyz, flags=flags, fractal_set=set_name))
+        return {
+            "t": t,
+            "seed": seed,
+            "seed_list": list(seq),
+            "seed_count": int(seed_count),  # GOAVA count source
+            "goava_count": int(seed_count),
+            "fractal_set": set_name,
+            "xyz": (ox, oy, oz),
+            "flags": {
+                "randomizer": bool(flags.get("randomizer")),
+                "phase_lock": bool(flags.get("phase_lock")),
+                "goava": bool(flags.get("goava")),
+                "seeded": bool(flags.get("seeded")),
+            },
+            "ot_enabled": bool(OP_THEORY_ENABLED),
+            "canonical_slots": int(len(getattr(self, "_canonical", []) or [])),  # fixed visual budget
+            "mode_weights": modes,
+            "fingerprint": self.visual_composition_fingerprint(),
+            # identity ignores instrument/object count by design
+            "identity_note": "N-independent: same seed+flags+seq → same visual/game geometry",
+        }
+
+    def composition_readout_lines(self, t=None):
+        """HUD/ESC lines: fractal set, GOAVA seed count, OT, mode blend."""
+        snap = self.composition_snapshot(t=t)
+        lines = []
+        lines.append(f"fractal {snap['fractal_set']} · OT={'ON' if snap['ot_enabled'] else 'OFF'}")
+        lines.append(f"GOAVA seeds {snap['goava_count']} · slots {snap['canonical_slots']} (N-independent)")
+        xyz = snap.get("xyz") or (0, 0, 0)
+        lines.append(f"xyz ({xyz[0]:+.3f},{xyz[1]:+.3f},{xyz[2]:+.3f})")
+        flags = snap.get("flags") or {}
+        eng = "+".join(k.upper()[:4] for k, v in flags.items() if v) or "none"
+        lines.append(f"engines {eng}")
+        if snap.get("mode_weights"):
+            m0 = snap["mode_weights"][0]
+            lines.append(
+                f"mode0 lattice={m0.get('lattice',0):.2f} book={m0.get('book_set',0):.2f} "
+                f"snap={m0.get('snap',0):.2f}{' · PHASEPOINT' if m0.get('near_phase_point') else ''}"
+            )
+        lines.append(f"fp {str(snap.get('fingerprint',''))[:12]}")
+        return lines
+
     def reset_camera(self):
         """Return scenograph camera to origin view (shared by double-click + Quick Edit)."""
-        for attr, val in (("_cam_yaw", 0.0), ("_cam_pitch", 0.0), ("_cam_distance", None),
+        self._camera_view_override = None
+        for attr, val in (("_cam_yaw", 0.0), ("_cam_pitch", 0.0), ("_cam_roll", 0.0), ("_cam_distance", None),
                           ("_yaw", 0.0), ("_pitch", 0.0), ("view_yaw", 0.0), ("view_pitch", 0.0)):
             if hasattr(self, attr):
                 try:
@@ -5380,42 +7099,6 @@ class VideoSynthEngine:
             self.update()
         except Exception:
             pass
-
-    def set_scenograph_item_count(self, n):
-        """How many of the 64 catalog items may be active (1..64).
-
-        Group-theory note: active items form a finite subset of the instrument
-        catalogue acted on by the cyclic group Z/n. Raising n extends the orbit
-        without duplicating residues — each index i is a unique coset representative
-        of the Meum-scaled rotation on the sphere. Hard ceiling 64 matches the
-        ensemble maximum so the scenograph stays a bijection with voice identity
-        (deterministic unique non-redundant geometry for each seed).
-        """
-        try:
-            n = int(n)
-        except Exception:
-            n = 24
-        self.scenograph_item_count = max(1, min(64, n))
-
-    def _active_scenograph_names(self):
-        cat = list(getattr(self, "SCENOGRAPH_ITEM_CATALOG", []) or [])
-        n = int(getattr(self, "scenograph_item_count", len(cat)) or 1)
-        n = max(1, min(64, n, len(cat) or 1))
-        # Prefer high-fade items first, then catalog order for stability
-        ranked = sorted(
-            cat,
-            key=lambda nm: (-float(self._module_fade.get(nm, 0.0)), cat.index(nm)),
-        )
-        return set(ranked[:n])
-
-    def _item_opacity(self, name, base=1.0):
-        """Per-item opacity with smart breathe (phase-offset sine) and count gate."""
-        if name not in self._active_scenograph_names():
-            return 0.0
-        fade = float(self._module_fade.get(name, 0.0))
-        ph = float(self._item_phase.get(name, 0.0))
-        breathe = 0.82 + 0.18 * math.sin(self.t * (0.7 + ph) + ph * math.tau)
-        return float(max(0.0, min(1.0, fade * breathe * float(base))))
 
     def render_frame(self, w=640, h=360, export=False):
         """Composite all Meum subscenes. export=True skips any UI-only overlays."""
@@ -5445,7 +7128,7 @@ class VideoSynthEngine:
                     seed_key = int(_safe_int_seed(self.app.get_numeric_seed() or 0.0))
                 except Exception:
                     seed_key = 0
-            mixed = (seed_key ^ (int(self._visual_frame) * 0x9E3779B1) ^ (int(self.n) << 5)) & 0x7FFFFFFF
+            mixed = (seed_key ^ (int(self._visual_frame) * 0x9E3779B1)) & 0x7FFFFFFF
             self._rng = np.random.RandomState(mixed if mixed else 1)
             # CANONICAL_VISUAL_2026: _visual_entropy is set by the canonical
             # build below (entropy_draw_0_1 / union context) — the old
@@ -5463,6 +7146,7 @@ class VideoSynthEngine:
         self._build_canonical_ctx_and_layers()
         st = self._meum_state()
         self._update_camera_and_packing(st)
+        self._subscene_image_synthesis(img, w, h, st)
         self._update_scenograph_module_schedule(st)
         # Theory of the union: the per-instrument constellation is drawn FIRST
         # (the "registered subcomponents"); under the 4-engine union every slot
@@ -5472,17 +7156,15 @@ class VideoSynthEngine:
         # Identity pass → union bbox → implode every part to fill outer bounds
         self._reset_fit(w, h)
         self._commit_fit(self._collect_fit_points(w, h, st), w, h)
-        if self._module_fade.get("field", 0.0) > 0.02:
-            self._subscene_field(img, w, h, st)
-        # SCENOGRAPH_CLEAN: ribbon (waveform/scope) and band towers (FFT spectrum)
-        # are intentionally omitted from the scenograph — pure geometry only.
-        # Oscilloscope / SpectrumAnalyzer remain as separate UI monitors.
-        if self._module_fade.get("volumes", 0.0) > 0.02:
-            self._subscene_volumes(img, w, h, st)
-        if self._module_fade.get("faces", 0.0) > 0.02:
-            self._subscene_faces_segments(img, w, h, st)
-        if self._module_fade.get("particles", 0.0) > 0.02:
-            self._subscene_particles(img, w, h, st)
+        # ONE_ROUTE_VISUAL_2026: every normal instrument is rendered by the
+        # same InstrumentVisualObject class. There are no catalog-count graphics,
+        # independent shape generators, or n-dependent identity placements.
+        self._subscene_faces_segments(img, w, h, st)
+        # Full scenograph stack — every module is a closed-form function of the
+        # same composition state the audio engine uses. Fade schedule (above)
+        # decides presence; nothing here is random or N-dependent for identity.
+        self._subscene_volumes(img, w, h, st)
+        self._subscene_particles(img, w, h, st)
         self._subscene_math_filaments(img, w, h, st)
         self._subscene_math_roses(img, w, h, st)
         self._subscene_orbitals(img, w, h, st)
@@ -5493,82 +7175,69 @@ class VideoSynthEngine:
         self._subscene_rhythm_mandala(img, w, h, st)
         self._subscene_pulse_grid(img, w, h, st)
         self._subscene_wave_integration(img, w, h, st)
-        # Subtle Meum golden-angle mesh: always present, contextual, and frame-clamped.
-        cx, cy = w * 0.5, h * 0.47
-        mesh_r = min(w, h) * (0.24 + 0.16 * st["rho"])
-        for q in range(13):
-            aa = (q * MEUM * math.tau + self.t * 0.07 + st["ph"] * math.tau)*np.sin(self.t * self.MEUM_INV * 2.0)
-            rr = mesh_r * (0.45 + 0.55 * q / 12.0)*(np.sin(self.t * self.PHI + st["form"]) * np.cos(self.t * self.MEUM_INV))
-            x = float(np.clip(cx + math.cos(aa) * rr, 2, w - 3))
-            y = float(np.clip(cy + math.sin(aa * MEUM_INV) * rr * 0.72, 2, h - 3))*(np.cos(self.t * self.PHI + st["form"]) * np.sin(self.t * self.MEUM_INV))
-            col = self._hsv((155 + q * 11 + self._video_hue_shift) % 360, 0.28, 0.42)
-            self._dot(img, x, y, col, 0.11 + 0.08 * float(self._band[q % 8]), r=1)
+        # Generative visual layers — visual-only (never mutates the music engine).
+        # Prevalence hierarchy is documented on _subscene_numeric_fractal:
+        # sequential numeric inputs → music lattice → game geometry → residuals.
+        try:
+            self._subscene_generative_terrain(img, w, h, st)
+        except Exception:
+            pass
+        try:
+            self._subscene_seed_morph(img, w, h, st)
+        except Exception:
+            pass
+        # Core fractal: each instrument = same object; ensemble = the fractal.
+        try:
+            self._subscene_numeric_fractal(img, w, h, st)
+        except Exception:
+            pass
+        # GOAVA remains a second graphical class, intentionally separate because
+        # its identity is its own irrational numerical stream rather than an
+        # ordinary instrument voice.
         self._subscene_goava(img, w, h, st)
-        # LIVE_DJ_PAIR_VISUAL: the same unique unordered sound pair drives a
-        # distinct visual orbit. This keeps audio/visual identity coupled without
-        # duplicating (A,B) and (B,A).
-        try:
-            ls = st.get("snap", {})
-            dj_on = bool(ls.get("live_dj_goava") or ls.get("live_dj_random"))
-            if dj_on:
-                pidx = int(ls.get("live_dj_pair_index", 0))
-                psig = int(ls.get("live_dj_pair_signature", 0))
-                # Draw every shape parameter from independent 16-bit slices of the
-                # pair's own canonical hash (CommutativePairSpace.signature) rather
-                # than small-modulus wraps of the sequential index. pidx % 97 / % 31
-                # / % 10 / % 5 collide heavily across 1128 pairs (many distinct
-                # pairs land on the same bucket); full-width hash slices don't, so
-                # each unordered (A,B) keeps a visually distinct orbit without any
-                # hardcoded exception or epsilon nudge.
-                slice0 = (psig >> 0) & 0xFFFF
-                slice1 = (psig >> 16) & 0xFFFF
-                slice2 = (psig >> 32) & 0xFFFF
-                slice3 = (psig >> 48) & 0xFFFF
-                u = ((psig & 0xFFFFFFFF) / 4294967296.0)
-                cx, cy = w * 0.5, h * 0.47
-                radius = min(w, h) * (0.12 + 0.28 * (slice0 / 65535.0))
-                turns = 2.0 + 7.0 * (slice1 / 65535.0)
-                phase = self.t * (0.35 + 0.25 * u) + u * math.tau
-                count = 6 + int((slice2 / 65535.0) * 9.999)
-                shape_freq = 1.0 + (slice3 / 65535.0) * 0.85
-                for j in range(count):
-                    a = phase + math.tau * j / count + turns * self.t * 0.02
-                    rr = radius * (0.68 + 0.32 * math.sin(phase * shape_freq + j))
-                    x = cx + math.cos(a) * rr
-                    y = cy + math.sin(a * MEUM_INV) * rr * 0.68
-                    hue = int((u * 360.0 + j * 360.0 / count + (55 if ls.get("live_dj_random") else 285)) % 360)
-                    col = self._hsv(hue, 0.78, 0.55 + 0.35 * self._rms)
-                    self._dot(img, x, y, col, 0.22 + 0.18 * self._rms, r=1 + (j % 3))
-        except Exception:
-            pass
+        # Engine-flag ornaments + ambient field (deterministic, composition-tied).
+        self._subscene_engine_ornaments(img, w, h, st)
 
-        # Generic catalog items (up to 64): soft dots / arcs when dedicated drawers absent
-        try:
-            active = self._active_scenograph_names()
-            dedicated = {
-                "field", "volumes", "faces", "particles", "bands", "goava",
-                "filaments", "roses", "orbitals", "constellations", "lattice",
-                "bursts", "spectral_comets", "rhythm_mandala", "pulse_grid", "goava_field",
-                "wave_integration",
-            }
-            for name in active:
-                if name in dedicated:
-                    continue
-                op = self._item_opacity(name)
-                if op < 0.04:
-                    continue
-                i = self.SCENOGRAPH_ITEM_CATALOG.index(name) if name in self.SCENOGRAPH_ITEM_CATALOG else 0
-                ang = self.t * (0.15 + 0.02 * i) + i * PHI
-                rad = 0.12 + 0.35 * ((i % 8) / 8.0) * (0.5 + 0.5 * self._rms)
-                x = w * 0.5 + math.cos(ang) * rad * w * 0.42
-                y = h * 0.48 + math.sin(ang * MEUM_INV) * rad * h * 0.36
-                hue = int((i * 360 / 64 + self._video_hue_shift) % 360)
-                col = self._hsv(hue, 0.55 + 0.2 * op, 0.35 + 0.45 * op)
-                self._dot(img, x, y, col, 0.08 + 0.35 * op, r=1 + (i % 4))
-        except Exception:
-            pass
+        # Bright ambient phase field. This is not another object class: it is a
+        # low-cost compositing envelope derived from the same canonical state.
+        cx, cy = w*0.5, h*0.48
+        for q in range(12):
+            a = self.t*(0.045+0.006*q) + q*MEUM
+            rr = min(w,h)*(0.12+0.035*q)*(0.75+0.25*self._visual_entropy)
+            # Camera-aware ambient: orbit slightly with yaw so the field feels
+            # attached to the world, not glued to the screen.
+            yaw_bias = float(getattr(self, "_cam_yaw", 0.0)) * 0.15
+            x = cx + vg_cos(a + yaw_bias)*rr
+            y = cy + vg_sin(a*MEUM_INV + float(getattr(self, "_cam_pitch", 0.0))*0.1)*rr*0.72
+            col = self._hsv((q*30 + self._video_hue_shift + self._canonical_ctx.get("seed",0.0)*0.17)%360, 0.45, 0.82)
+            self._dot(img,x,y,col,0.10+0.08*self._rms,r=1)
 
         return np.clip(img, 0, 255).astype(np.uint8)
+
+
+class _VideoRenderSignals(QObject):
+    finished = pyqtSignal(object, int, int, int)
+
+
+class _VideoRenderTask(QRunnable):
+    """Render one latest-only scenograph frame off the Qt GUI thread."""
+    def __init__(self, engine, width, height, export_mode, generation, signals):
+        super().__init__()
+        self.engine = engine
+        self.width = int(width)
+        self.height = int(height)
+        self.export_mode = bool(export_mode)
+        self.generation = int(generation)
+        self.signals = signals
+        self.setAutoDelete(True)
+
+    def run(self):
+        try:
+            frame = self.engine.render_frame(self.width, self.height, export=self.export_mode)
+            self.signals.finished.emit(frame, self.width, self.height, self.generation)
+        except Exception:
+            # A stale/failed preview must never take down the GUI thread.
+            self.signals.finished.emit(None, self.width, self.height, self.generation)
 
 
 class VideoSynthViewer(QFrame):
@@ -5592,7 +7261,47 @@ class VideoSynthViewer(QFrame):
         self._manual_yaw_deg = 0.0
         self._manual_pitch_deg = 0.0
         self._drag_origin = None
+        # Preview rendering is CPU-heavy. Keep it off the GUI thread and use a
+        # latest-only queue so rapid audio/UI updates cannot accumulate a backlog.
+        self._render_pool = QThreadPool(self)
+        self._render_pool.setMaxThreadCount(1)
+        self._render_signals = _VideoRenderSignals()
+        self._render_signals.finished.connect(self._on_async_frame_ready)
+        self._render_inflight = False
+        self._render_pending = None
+        self._render_generation = 0
         self.setMouseTracking(True)
+
+    def _request_async_frame(self, width=None, height=None, export=None):
+        """Schedule a latest-only frame render; never block the Qt paint path."""
+        ww = max(int(width if width is not None else self.width()), 180)
+        hh = max(int(height if height is not None else self.height()), 180)
+        ex = self.engine.export_mode if export is None else bool(export)
+        self._render_generation += 1
+        request = (ww, hh, ex, self._render_generation)
+        if self._render_inflight:
+            self._render_pending = request
+            return
+        self._render_inflight = True
+        self._render_pending = None
+        self._render_pool.start(_VideoRenderTask(self.engine, ww, hh, ex, request[3], self._render_signals))
+
+    def _on_async_frame_ready(self, frame, width, height, generation):
+        self._render_inflight = False
+        # Ignore stale frames if a newer request was made while rendering.
+        if frame is not None and int(generation) == int(self._render_generation):
+            self._frame = frame
+            try:
+                self.engine.ingest_video_frame_stats(*self.engine.frame_stats(frame))
+            except Exception:
+                pass
+            self.update()
+        pending = self._render_pending
+        self._render_pending = None
+        if pending is not None:
+            ww, hh, ex, gen = pending
+            self._render_inflight = True
+            self._render_pool.start(_VideoRenderTask(self.engine, ww, hh, ex, gen, self._render_signals))
 
     def _apply_manual_camera(self):
         """Apply the user camera angles in the full [-180°, +180°] range."""
@@ -5619,8 +7328,7 @@ class VideoSynthViewer(QFrame):
             self._drag_origin = pos
             self._apply_manual_camera()
             ww = max(self.width(), 180); hh = max(self.height(), 180)
-            self._frame = self.engine.render_frame(ww, hh, export=False)
-            self.update()
+            self._request_async_frame(ww, hh, False)
             event.accept()
             return
         super().mouseMoveEvent(event)
@@ -5638,8 +7346,7 @@ class VideoSynthViewer(QFrame):
             self._manual_pitch_deg = 0.0
             self._apply_manual_camera()
             ww = max(self.width(), 180); hh = max(self.height(), 180)
-            self._frame = self.engine.render_frame(ww, hh, export=False)
-            self.update()
+            self._request_async_frame(ww, hh, False)
             event.accept()
             return
         super().mouseDoubleClickEvent(event)
@@ -5652,29 +7359,22 @@ class VideoSynthViewer(QFrame):
             self.scope_wave = np.resize(wave_data.astype(np.float32), 100)
         ww = max(self.width(), 180)
         hh = max(self.height(), 180)
-        # Live preview only — oscilloscope/FFT are separate widgets, not composited here
-        self._frame = self.engine.render_frame(ww, hh, export=False)
-        # Two-way signal-to-output: feed the rendered frame's digest back into
-        # the software side so live output is video-aware (see _audio_callback).
-        try:
-            self.engine.ingest_video_frame_stats(*self.engine.frame_stats(self._frame))
-        except Exception:
-            pass
-        self.update()
+        # Live preview only — oscilloscope/FFT are separate widgets, not composited here.
+        # Render asynchronously and coalesce rapid updates to the newest frame.
+        self._request_async_frame(ww, hh, False)
 
     def set_mode(self, mode_idx):
         self.engine.mode = int(mode_idx)
         ww = max(self.width(), 180)
         hh = max(self.height(), 180)
-        self._frame = self.engine.render_frame(ww, hh)
-        self.update()
+        self._request_async_frame(ww, hh, False)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         ww = max(self.width(), 8)
         hh = max(self.height(), 8)
         if self._frame is None or self._frame.shape[1] != ww or self._frame.shape[0] != hh:
-            self._frame = self.engine.render_frame(ww, hh, export=self.engine.export_mode)
+            self._request_async_frame(ww, hh, self.engine.export_mode)
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -5716,6 +7416,14 @@ class VideoSynthViewer(QFrame):
             painter.setPen(QColor(160, 200, 255, 200))
             painter.drawText(8, hud_y, f"ensemble {ens} · RMS {getattr(self.engine, '_rms', 0):.3f}")
             hud_y += 11
+        # Composition readout (fractal / GOAVA seed count / OT / mode) — N-independent identity
+        try:
+            for line in (self.engine.composition_readout_lines() if self.engine else [])[:5]:
+                painter.setPen(QColor(170, 230, 255, 210))
+                painter.drawText(8, hud_y, str(line)[: max(20, self.width() // 6)])
+                hud_y += 11
+        except Exception:
+            pass
         if snap.get("live_dj_goava") or snap.get("live_dj_random"):
             dj_labels = []
             if snap.get("live_dj_goava"):
@@ -5857,78 +7565,6 @@ class MathNodeWidget(QFrame):
     def mouseReleaseEvent(self, event):
         self.dragging = False
 
-class SoundCloudTimelineVisualizer(QWidget):
-    """SoundCloud-style static waveform overview with split-spectrum color gradient peaks and recursion trigger labels."""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedHeight(140)
-        self.setStyleSheet("background-color: #0b0b0e; border: 1px solid #1f1f2e; border-radius: 6px;")
-        # Pre-calculated structural events: (x_ratio, label, color_mode, depth_param)
-        self.triggers = [
-            (0.08, "EskiBrutuses WaveMorph [x=0.2, d=3]", "#00ffc8", 1),
-            (0.22, "EQR Singularity Collapse [f(x,y,z)=0]", "#ff00ff", 2),
-            (0.35, "EskiPhased Non-Linear Matrix [Feedback 82%]", "#00bfff", 1.5),
-            (0.48, "Fractalizer Harmonic Fold [Depth 5x]", "#ff6400", 3),
-            (0.65, "EskiRecursive Wave-Fold [Chaos Mod 0.4]", "#ffff00", 2.2),
-            (0.82, "Z-Axis Field Resonance [Peak Phase]", "#ff0055", 2.8)
-        ]
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        w = self.width()
-        h = self.height()
-        mid_y = h / 2.0 - 10
-
-        # Draw background track bar
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(16, 16, 24))
-        painter.drawRoundedRect(10, 10, w - 20, h - 20, 6, 6)
-
-        # Draw SoundCloud style static amplitude peaks with split-spectrum colors
-        random.seed(42) # Consistent static peak generation
-        bar_width = 3
-        gap = 2
-        num_bars = (w - 40) // (bar_width + gap)
-
-        for i in range(num_bars):
-            x = 20 + i * (bar_width + gap)
-            ratio = i / num_bars
-
-            # Formulate multi-frequency loudness curve across duration
-            envelope = math.sin(ratio * math.pi * 3.5) * 0.5 + 0.5
-            harmonic = math.cos(ratio * math.pi * 12.0) * 0.25 + 0.75
-            noise = random.uniform(0.4, 1.0)
-            amplitude = int((h - 50) * envelope * harmonic * noise)
-
-            # Split spectrum color grading based on frequency band
-            if ratio < 0.3:
-                grad_color = QColor(0, 255, 200, 200) # Cyan / Sub-bass
-            elif ratio < 0.6:
-                grad_color = QColor(255, 0, 255, 200) # Magenta / Mid harmonics
-            else:
-                grad_color = QColor(255, 100, 0, 200) # Orange / High fractal folds
-
-            painter.setBrush(grad_color)
-            painter.drawRoundedRect(x, int(mid_y - amplitude / 2), bar_width, max(4, amplitude), 1, 1)
-
-        # Draw Timeline Trigger Labels & Recursion Markers
-        for rx, text, hex_col, depth in self.triggers:
-            tx = int(rx * w)
-            # Marker line
-            painter.setPen(QPen(QColor(hex_col), 2, Qt.PenStyle.SolidLine))
-            painter.drawLine(tx, 15, tx, h - 15)
-
-            # Floating label tag
-            painter.setBrush(QColor(18, 18, 28, 230))
-            painter.setPen(QPen(QColor(hex_col), 1))
-            label_w = min(170, len(text) * 6 + 12)
-            painter.drawRoundedRect(tx - 5, h - 38, label_w, 24, 4, 4)
-
-            painter.setPen(QColor(240, 240, 255))
-            painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
-            painter.drawText(tx, h - 22, text)
 
 
 class SynthRackUnitWidget(QFrame):
@@ -6049,56 +7685,6 @@ class SynthRackUnitWidget(QFrame):
                 self.param_fractal.spinbox.setValue(float(st["fractalizer"]))
         except Exception:
             pass
-class WaveformVisualizer(QWidget):
-    """Custom visualizer widget for real-time amplitude peak monitoring."""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumHeight(120)
-        self.amplitude_data = [0.0] * 80
-        self._phosphor = [0.0] * 80
-
-    def update_data(self, new_val):
-        self.amplitude_data.pop(0)
-        self.amplitude_data.append(new_val)
-        self._phosphor = [
-            0.78 * p + 0.22 * v for p, v in zip(self._phosphor, self.amplitude_data)
-        ]
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor(12, 14, 22))
-        width = self.width()
-        height = self.height()
-        n = max(len(self.amplitude_data) - 1, 1)
-        step = width / n
-        mid = height / 2.0
-        path = QPainterPath()
-        path.moveTo(0, mid)
-        for i, v in enumerate(self._phosphor):
-            path.lineTo(int(i * step), mid - v * (height * 0.42))
-        path.lineTo(width, mid)
-        path.closeSubpath()
-        painter.fillPath(path, QColor(0, 220, 180, 40))
-        pen = QPen(QColor(0, 230, 180, 80))
-        pen.setWidth(5)
-        painter.setPen(pen)
-        for i in range(len(self.amplitude_data) - 1):
-            x1 = int(i * step)
-            y1 = int(mid - self.amplitude_data[i] * (height / 2))
-            x2 = int((i + 1) * step)
-            y2 = int(mid - self.amplitude_data[i + 1] * (height / 2))
-            painter.drawLine(x1, y1, x2, y2)
-        pen = QPen(QColor(0, 255, 210))
-        pen.setWidth(2)
-        painter.setPen(pen)
-        for i in range(len(self.amplitude_data) - 1):
-            x1 = int(i * step)
-            y1 = int(mid - self.amplitude_data[i] * (height / 2))
-            x2 = int((i + 1) * step)
-            y2 = int(mid - self.amplitude_data[i + 1] * (height / 2))
-            painter.drawLine(x1, y1, x2, y2)
 class CablePatchPanel(QWidget):
     """Interactive canvas workspace for nodes and cable patching via ports."""
     def __init__(self, parent=None):
@@ -6692,38 +8278,51 @@ class AdvancedDSPEngine:
 
         phase = 2 * np.pi * freq * sub_t
 
-        # Route math based on the Preset Dropdown selection (0 to 4)
+        # Route math based on the Preset Dropdown selection (0 to 4).
+        # Oscillator cores are isn/ics (not sin/cos/tanh). Dual-mode scale only.
+        ot = operator_theory_enabled()
         if preset == 0:
-            # Preset 0: Non-Linear Wave-Folder Topology
-            raw = np.sin(phase * (1.0 + k1)) + k2 * np.sin(phase * 2.0 * k3)
-            folded = np.tanh(raw * (1.0 + fractal * 5.0))
-            return folded * (1.0 + k4 * np.cos(phase * k5)) * (1.0 - k6 * 0.5)
+            # Preset 0: Non-Linear Wave Topology (isn core, no folder saturation)
+            raw = isn_vec(phase * (1.0 + k1)) + k2 * isn_vec(phase * 2.0 * k3)
+            drive = 1.0 + fractal * 5.0
+            if ot:
+                folded = np.asarray([math_mul(float(v), drive) for v in np.asarray(raw).ravel()], dtype=np.float32).reshape(raw.shape)
+            else:
+                folded = (raw * drive).astype(np.float32)
+            return folded * (1.0 + k4 * ics_vec(phase * k5)) * (1.0 - k6 * 0.5)
 
         elif preset == 1:
-            # Preset 1: Z-Pinch / Quantum Field Resonance
-            pinched = np.sin(phase * (1.0 + track_idx * 0.05)) * (1.0 + k1 * np.tan(np.clip(sub_t * k2, -1.5, 1.5)))
-            resonance = np.arcsin(np.clip(pinched * (0.5 + eqr), -0.99, 0.99))
-            return resonance * k3 * (1.0 + k4 * np.sin(sub_t * k5 * 10.0)) * (1.0 - k6)
+            # Preset 1: Z-Pinch / Quantum Field Resonance (isn core)
+            arg = sub_t * k2
+            arg = np.minimum(np.maximum(arg, -1.5), 1.5)
+            pinched = isn_vec(phase * (1.0 + track_idx * 0.05)) * (1.0 + k1 * np.tan(arg))
+            pinched_b = np.minimum(np.maximum(pinched * (0.5 + eqr), -0.99), 0.99)
+            resonance = np.arcsin(pinched_b)
+            return resonance * k3 * (1.0 + k4 * isn_vec(sub_t * k5 * 10.0)) * (1.0 - k6)
 
         elif preset == 2:
-            # Preset 2: Hyperbolic & Torus Phase-Space
-            hyp = np.sinh(k1 * np.sin(phase)) / (1.0 + np.cosh(k2 * np.cos(phase * k3)))
-            torus_mod = np.cos(phase * (1.0 + k4)) + 0.5 * np.sin(phase * (2.0 + k5))
+            # Preset 2: Hyperbolic & Torus Phase-Space (isn/ics cores)
+            hyp = np.sinh(k1 * isn_vec(phase)) / (1.0 + np.cosh(k2 * ics_vec(phase * k3)))
+            torus_mod = ics_vec(phase * (1.0 + k4)) + 0.5 * isn_vec(phase * (2.0 + k5))
             return hyp * torus_mod * (1.0 + fractal * 3.0) * (1.0 - k6 * 0.2)
 
         elif preset == 3:
-            # Preset 3: Stochastic & Entropic Noise Lattice
+            # Preset 3: Stochastic & Entropic Noise Lattice (isn core)
             stochastic_jitter = np.random.normal(0, 0.15, len(sub_t)) * k1
-            chaotic_wave = np.sin(phase * (1.0 + k2) + stochastic_jitter)
-            modulated = chaotic_wave / (1.0 + k3 * np.abs(np.sin(phase * k4)))
+            chaotic_wave = isn_vec(phase * (1.0 + k2) + stochastic_jitter)
+            modulated = chaotic_wave / (1.0 + k3 * np.abs(isn_vec(phase * k4)))
             return modulated * k5 * (1.0 + eqr * 2.0) * (1.0 - k6 * 0.3)
 
         else:
-            # Preset 4: Custom Polynomial / Matrix Operator
-            # Uses the track index to scale harmonic spacing dynamically across the 48 synths
+            # Preset 4: Custom Polynomial / Matrix Operator (isn/ics cores)
             harmonic_offset = 1.0 + (track_idx % 12) * 0.08
-            poly = k1 * (np.sin(phase * harmonic_offset)**3) - k2 * (np.cos(phase * k3)**2) + k4 * np.sin(phase)
-            return np.tanh(poly * (1.0 + fractal * 4.0)) * (1.0 + eqr) * (1.0 - k6 * 0.1)
+            poly = k1 * (isn_vec(phase * harmonic_offset)**3) - k2 * (ics_vec(phase * k3)**2) + k4 * isn_vec(phase)
+            drive = 1.0 + fractal * 4.0
+            if ot:
+                shaped = np.asarray([math_mul(float(v), drive) for v in np.asarray(poly).ravel()], dtype=np.float32).reshape(poly.shape)
+            else:
+                shaped = (poly * drive).astype(np.float32)
+            return shaped * (1.0 + eqr) * (1.0 - k6 * 0.1)
 
     def render_full_mixdown(self, filename, channel_states, grid_data, instrument_names, tempo_bpm=120):
         seconds_per_beat = 60.0 / float(tempo_bpm)
@@ -6756,24 +8355,33 @@ class AdvancedDSPEngine:
                     if len(sub_t) == 0: continue
 
                     freq = base_tuning * (1.0 + (col_idx % 12) * 0.03)
-                    raw = np.sin(2 * np.pi * freq * sub_t + p1 * np.sin(2 * np.pi * freq * 2 * sub_t))
+                    # isn-based carrier + isn sub-modulator (no sin/tanh)
+                    raw = isn_vec(2 * np.pi * freq * sub_t + p1 * isn_vec(2 * np.pi * freq * 2 * sub_t))
 
                     env = np.sin(np.pi * sub_t / note_dur) * (1.0 + p2 * 0.5)
-                    note_audio = np.tanh(raw * (1.0 + p1 * 2.0)) * env * 0.08 * vol
+                    drive = 1.0 + p1 * 2.0
+                    # Dual-mode gain, no soft-clip saturation.
+                    if operator_theory_enabled():
+                        driven = np.asarray([math_mul(float(v), drive) for v in np.asarray(raw).ravel()], dtype=np.float32).reshape(raw.shape)
+                    else:
+                        driven = (raw * drive).astype(np.float32)
+                    note_audio = driven * env * 0.08 * vol
                     master_buffer[idx_start:idx_start+len(note_audio)] += note_audio
 
-        max_val = np.max(np.abs(master_buffer))
-        if max_val > 0:
-            master_buffer = master_buffer / max_val * 0.95
-
-        scaled = np.int16(master_buffer * 32767)
+        # No peak normalization / no saturation — write the linear sum as-is.
+        # int16 encode only clamps at the PCM boundary (hardware quantize).
+        scaled = np.int16(np.minimum(np.maximum(master_buffer, -1.0), 1.0) * 32767)
         with wave.open(filename, 'w') as wav_file:
             wav_file.setnchannels(1)
             wav_file.setsampwidth(2)
             wav_file.setframerate(self.sample_rate)
             wav_file.writeframes(scaled.tobytes())
 class MathEngine:
-    """Core mathematical engine evaluated strictly on x, y, z variables without Meum factors."""
+    """Core mathematical engine on x, y, z — dual-mode (OT nested dynamics or normal).
+
+    No soft-clip / no peak normalization.  Operator Theory routes products and
+    sums through ot_*; normal mode uses ordinary arithmetic.
+    """
     @staticmethod
     def isn(val):
         return np.sin(val) / (1.0 + np.abs(np.cos(val)))
@@ -6783,12 +8391,36 @@ class MathEngine:
         return np.cos(val) / (1.0 + np.abs(np.sin(val)))
 
     @staticmethod
+    def _mul(a, b):
+        if operator_theory_enabled():
+            try:
+                return float(math_mul(float(a), float(b)))
+            except Exception:
+                return float(a) * float(b)
+        return float(a) * float(b)
+
+    @staticmethod
+    def _add(a, b):
+        if operator_theory_enabled():
+            try:
+                return float(math_add(float(a), float(b)))
+            except Exception:
+                return float(a) + float(b)
+        return float(a) + float(b)
+
+    @staticmethod
     def eskivector(x, y, z):
-        return MathEngine.isn(x) * y, MathEngine.ics(y) * z, np.sin(x * y * z)
+        return (
+            MathEngine._mul(MathEngine.isn(x), y),
+            MathEngine._mul(MathEngine.ics(y), z),
+            np.sin(x * y * z),
+        )
 
     @staticmethod
     def eskitable(x, y, z):
-        return np.clip((x + y) * 0.5, -1.0, 1.0) * MathEngine.ics(z)
+        # Linear average — no clip saturation.
+        mid = MathEngine._add(x, y) * 0.5
+        return mid * MathEngine.ics(z)
 
 def _ensure_single_math_background(app, host):
     """Reuse exactly one mathematical background per host.
@@ -6884,24 +8516,12 @@ class ParametricMathBackground(QWidget):
             name = self.app.instrument_selector_dropdown.currentText()
         except Exception:
             pass
-        params = getattr(self.app, "instrument_param_state", {}) or {}
-        state = params.get(name, {}) if isinstance(params, dict) else {}
+        # PARAMETRIC_BG_CANONICAL_ISOLATION_2026:
+        # Never consume canonical engine stores here.  Randomizer, Phase-Lock,
+        # Euclidean, Seeded, GOAVA, and playlist rebuilds can therefore change
+        # the audio/composition state without changing this visual field.  Only
+        # the user-controlled mathematical controls below are background inputs.
         numeric = []
-        if isinstance(state, dict):
-            for key, value in state.items():
-                try:
-                    numeric.append((str(key), float(value)))
-                except Exception:
-                    pass
-        try:
-            mem = getattr(self.app, "instrument_sequencer_memory", {}).get(name, {})
-            for key, values, scale in (("amp", mem.get("amplitudes", []), 1.0),
-                                        ("pitch", mem.get("pitches", []), 1.0),
-                                        ("prob", mem.get("probabilities", []), 100.0)):
-                if values:
-                    numeric.append((key, float(values[0]) / scale))
-        except Exception:
-            pass
         for key, attr, scale in (("EQR", "slider_eqr", 100.0),
                                  ("Fractal", "slider_fractalizer", 100.0),
                                  ("PKP", "slider_pkp_decay", 1000.0),
@@ -6912,10 +8532,8 @@ class ParametricMathBackground(QWidget):
                     numeric.append((key, float(obj.value()) / scale))
                 except Exception:
                     pass
-        # GOAVA is a visual input too: it changes the field's group phase, but
-        # never its bounded instance count.
-        if bool(getattr(self.app, "goava_active", False)):
-            numeric.append(("GOAVA", 1.0))
+        # Canonical engines, including GOAVA, never enter the background state.
+        # The visual field is deliberately independent of canonical activation.
         numeric.sort(key=lambda x: x[0])
         self._param_cache = (name, tuple(numeric), self._cycle)
         # Python's built-in hash is intentionally salted between processes.
@@ -6927,7 +8545,16 @@ class ParametricMathBackground(QWidget):
         if self._param_cache[2] != self._cycle:
             self._reseed()
         vals = [v for _, v in self._param_cache[1]] or [0.5]
-        return [0.5 + 0.5 * math.tanh(abs(v)) for v in vals]
+        # Dual-mode map of absolute scalars into a positive display range.
+        # No tanh saturation — linear fold of |v| through a gentle gain only.
+        out = []
+        for v in vals:
+            a = abs(float(v))
+            if operator_theory_enabled():
+                out.append(0.5 + 0.5 * abs(math_scale(a, 0.35)))
+            else:
+                out.append(0.5 + 0.5 * min(a, 1.0))
+        return out
 
     def _paint_wave(self, painter, index, width, height, scalars, phase):
         sf = scalars[index % len(scalars)]
@@ -7659,39 +9286,6 @@ class FitToFrameContainer(QWidget):
             bg.update()
 
 # Import Reality Synth and Music Fractallizer from synth_engine (with fallback stubs)
-class FractallizerVisualizerCanvas(QWidget):
-    def __init__(self, parent=None, app_ref=None):
-        super().__init__(parent)
-        self.app_ref = app_ref
-        self.setMinimumHeight(160)
-        self.setStyleSheet("background-color: #080808; border: 1px solid #ff6b00; border-radius: 4px;")
-        self.phase = 0.0
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.update_fractal)
-        self.timer.start(25)
-
-    def update_fractal(self):
-        self.phase += 0.05
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter()
-        if not painter.begin(self): return
-        try:
-            painter.fillRect(self.rect(), QColor(8, 8, 8))
-            w, h = self.width(), self.height()
-            cx, cy = w / 2.0, h / 2.0
-            points = []
-            for i in range(200):
-                t = (i / 200.0) * 6 * np.pi + self.phase
-                r = (55.0 + (self.app_ref.macro_fractal.value() * 5 if self.app_ref else 10)) * np.sin(t * 2.5 + self.phase)
-                points.append(QPointF(cx + r * np.cos(t), cy + r * np.sin(t)))
-            for i in range(len(points) - 1):
-                col = QColor.fromHsvF((i / 200.0 + self.phase * 0.1) % 1.0, 0.9, 1.0)
-                painter.setPen(QPen(col, 2))
-                painter.drawLine(points[i], points[i+1])
-        finally:
-            painter.end()
 class ReadmeGuideDialog(QDialog):
     """Full Help / Readme: philosophy, workflow, scripting syntax, disclaimer."""
 
@@ -7700,13 +9294,9 @@ class ReadmeGuideDialog(QDialog):
   EQR GROOVEBOX — Mathematician's / Scientist's Groovebox
   Full Documentation, Scripting Syntax & Design Philosophy
 ================================================================================
-  Credits: core EQR design — project author; implementation assistance —
-  Grok (xAI), Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI),
-  Mistral.ai (Mistral), Meta AI (Meta), GitHub Copilot (GitHub),
-  and Cursor Grok 4.6 (polyphony, unison memory, visualizer).
-  Maintenance + level-up fixes (GOAVA pitch DC-centering, dead-code dedup,
-  canonical-state fingerprint, UI layout stability, engaged randomizer
-  colors): opencode (anomalyco).
+  Credits: core EQR design — project author; Grok (xAI), Gemini (Google),
+  Claude (Anthropic), ChatGPT (OpenAI), Mistral.ai (Mistral), Meta AI (Meta),
+  GitHub Copilot (GitHub), Cursor Grok 4.6, and opencode (anomalyco).
 
 --------------------------------------------------------------------------------
 1. GOAL OF THE SOFTWARE
@@ -8029,10 +9619,7 @@ Windows
   Realtime: sounddevice OutputStream callback; master volume live
   Export: shared _render_mixdown_buffer → WAV; 2.5D MP4 includes rendered audio
   PKP hits: non-blocking sd.play blips when pad bank is armed
-
-  Install:
-    pip install numpy PyQt6 sounddevice scipy
-    python groovebox.py
+  (Install / dependencies are listed at the bottom of this guide.)
 
 --------------------------------------------------------------------------------
 14. 48 OPERATORS
@@ -8078,13 +9665,120 @@ Each has sequencer memory (steps, amplitudes, gates, probabilities) and optional
   never replace the master bus. Engines may resize the selected sequence
   (and other bank slots) when the user has not touched any of its steps.
 
+--------------------------------------------------------------------------------
+GLOBAL PLAY PANEL — ALGORITHMS, PARAMS & LAUNCHED WINDOWS
+--------------------------------------------------------------------------------
+  The Global Play group is the project-level algorithm layer. It never overwrites
+  the seed field or per-instrument seed scripts. Text lives in global_algo_state
+  until you apply it to the master mix / ensemble.
+
+  MAIN CONTROLS
+  -------------
+  🎲 Randomize Global Play Algorithm
+      Fills Script, Domain, Wire, and amount params from the Meum/PED vocabulary.
+      AUTHORING ONLY — does not apply to the ensemble until you press Apply.
+
+  ▶ Apply Algo to Master Mix  (toggle)
+      ON  → enabled layers (script / domain / wire) broadcast to the ensemble.
+      OFF → written music/shapes left alone. Undoable (Ctrl+Z).
+
+  Script Algo (multi-line text)
+      Project-level script over t, MEUM, PHI, seed, instrument name / i.
+      Typical form:
+          def global_script(t, name, i):
+              v = isn(t * MEUM) * 0.4 + ics(t * PHI) * 0.3
+              return v * 0.35
+      Same expression language as the seed field (sin/cos/isn/ics, conditionals,
+      return). When Operator Theory is ON, sin/cos/… use the equivalence kernel.
+
+  Domain Algo (single line)
+      Equation string, e.g. sin(t * MEUM) + cos(t * PHI).
+      Live hints: sin/cos → phase · log/exp → scale · domain → transmutor.
+
+  Wire Algo button  → opens Global Wire Algo window
+      Routing matrix: detectors → targets with amounts.
+      Detectors: phase, energy, spectrum, goava, euclidean, seed, bpm, pair
+      Targets:   master_mix, fractallizer, eqr, pkp, ensemble, scenograph,
+                 domain, unison
+
+  Algo Params button → opens Global Algo Params window
+      mix                  overall wet (default ~0.35)
+      enable_script/domain/wire   per-layer gates
+      script_amount / domain_amount / wire_amount   same as main sliders
+
+  Mix / Script / Domain / Wire amount sliders (0–100%)
+      Relative wet amounts when Apply is on.
+
+  APPLY RULES
+  -----------
+  • Randomize never auto-applies (authoring only).
+  • Apply ON pushes enabled layers; Apply OFF stops the overlay.
+  • Algorithm state is userdata (saved in the project) and undoable.
+  • Global Play never writes the seed field.
+
+  WORKFLOW
+  --------
+  1. Randomize or type Script / Domain text.
+  2. Adjust amount sliders; open Wire / Params windows if needed.
+  3. Press Apply Algo to Master Mix to hear the overlay.
+  4. Toggle Apply off or Undo to revert the ensemble overlay.
+
+--------------------------------------------------------------------------------
+DEPENDENCIES (install last — same list as project README.md)
+--------------------------------------------------------------------------------
+  Python packages (pip) — every OS:
+    PyQt6          UI
+    numpy          DSP / buffers
+    scipy          WAV I/O helpers, signal utilities
+    sounddevice    Real-time audio I/O
+    Pillow         Frame export (PNG) for video
+
+  System tools:
+    Python 3.9+ (3.10–3.12 recommended)
+    ffmpeg + ffprobe (full build with encoders) for video/audio export
+    PortAudio / ALSA / CoreAudio (via sounddevice) for playback
+
+  One-shot installers (preferred):
+    Linux:   ./install_deps_linux.sh   [--fedora | --ubuntu]
+    macOS:   ./install_deps_macos.sh
+    Windows: ./install_deps_windows.ps1
+
+  Manual pip (any OS):
+    python3 -m pip install --upgrade pip
+    python3 -m pip install numpy scipy PyQt6 sounddevice Pillow
+
+  Ubuntu/Debian system packages:
+    sudo apt install -y python3 python3-pip python3-venv python3-dev \
+      build-essential ffmpeg libasound2-dev portaudio19-dev
+
+  Fedora:
+    sudo dnf install -y python3 python3-pip python3-devel gcc gcc-c++ \
+      ffmpeg ffmpeg-libs alsa-lib-devel portaudio-devel
+    (enable RPM Fusion for full ffmpeg codecs)
+
+  macOS:
+    brew install python ffmpeg portaudio
+
+  Windows:
+    winget install Python.Python.3.12
+    winget install Gyan.FFmpeg
+
+  Optional: place static ffmpeg / ffprobe in ./bin/ next to groovebox.py
+  (the app checks there first).
+
+  Verify:
+    python3 -c "import numpy, scipy, PyQt6.QtCore, sounddevice, PIL; print('OK')"
+    ffmpeg -hide_banner -version | head -1
+
+  Run:
+    ./launch_desktop.sh
+    # or: python3 groovebox.py
+
+--------------------------------------------------------------------------------
   End of Help — Groovebox
-  Assisted by Grok (xAI), Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI),
-  Mistral.ai (Mistral), Meta AI (Meta), Github Copilot (GitHub),
-  and Cursor Grok 4.6 (polyphony, unison memory, visualizer).
-  Maintenance + level-up fixes (GOAVA pitch DC-centering, dead-code dedup,
-  canonical-state fingerprint, UI layout stability, engaged randomizer
-  colors): opencode (anomalyco).
+  Credits: Grok (xAI), Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI),
+  Mistral.ai (Mistral), Meta AI (Meta), GitHub Copilot (GitHub),
+  Cursor Grok 4.6, and opencode (anomalyco).
 ================================================================================
 """
 
@@ -8195,12 +9889,13 @@ class ScriptPanelDialog(QDialog):
         btn_layout.addWidget(close_btn)
         layout.addLayout(btn_layout)
 class MusicFractallizer:
-    """Global frequency-domain fractal resonator.
+    """Contextual sub/superharmonic Fractallizer (time-variant).
 
-    The effect operates on spectral magnitude while preserving the input FFT
-    phase exactly.  Fractal/subharmonic detail is therefore *on-phase* with
-    the canonical source instead of being produced by time-domain wrapping,
-    interpolation and nonlinear folding (which could sound gritty/aliased).
+    Reads local subpeaks and subtroughs of the wave (relativistic context
+    around each sample), synthesizes matching subharmonics (½, ⅓) and
+    superharmonics (2×, 3×) as an isn-shaped contextual companion wave, and
+    appends them to every existing partial at up to 50% mix.  No spectral
+    peak-renorm / equalizer stage.
     """
     def __init__(self, dimensions=('x', 'y', 'z'), survival_mode=True, sample_rate=44100):
         self.dimensions = dimensions
@@ -8214,140 +9909,136 @@ class MusicFractallizer:
         arr = np.asarray(seed_data, dtype=np.float32).ravel()
         if arr.size == 0:
             return {dim: np.zeros(1, dtype=np.float32) for dim in self.dimensions}
-        return {dim: np.tanh(arr) for dim in self.dimensions}
+        if operator_theory_enabled():
+            return {dim: dual_map_array(arr, lambda v: math_scale(v, 1.0)) for dim in self.dimensions}
+        return {dim: np.asarray(arr, dtype=np.float32) for dim in self.dimensions}
 
     @staticmethod
-    def _spectral_on_phase_detail(signal, gamma, weights, detail_amount=0.18):
-        """Return a phase-preserving spectral fractalization of *signal*.
+    def _contextual_sub_super(signal, sample_rate, strength=1.0):
+        """Build time-variant sub/superharmonic companion from local context.
 
-        Magnitude is redistributed across log-frequency scale copies; the
-        original FFT phase is retained at every bin.  A deterministic
-        log-frequency residual adds fine detail without nonlinear clipping.
+        Local envelope (subpeaks / subtroughs) modulates isn-shaped partials at
+        1/2…1/6 and 2×…6× relative to a running local fundamental estimate.
         """
-        x = np.asarray(signal, dtype=np.float32).ravel()
+        x = np.asarray(signal, dtype=np.float64).ravel()
         n = x.size
-        if n < 8:
-            return x.copy()
-        win = np.hanning(n).astype(np.float32)
-        X = np.fft.rfft(x * win)
-        mag = np.abs(X).astype(np.float64)
-        phase = np.angle(X)
-        bins = np.arange(mag.size, dtype=np.float64)
-        # Avoid DC/near-DC singularity while retaining the original DC level.
-        safe = np.maximum(bins, 1.0)
-        g = max(1.05, float(gamma))
-        w = np.asarray(weights, dtype=np.float64)
-        w = w / max(float(np.sum(w)), 1e-12)
-        scales = np.asarray((1.0 / g, 1.0, g, g * g), dtype=np.float64)
-        warped = []
-        for sc in scales:
-            src = np.clip(safe * sc, 1.0, float(max(mag.size - 1, 1)))
-            warped.append(np.interp(src, bins, mag))
-        new_mag = sum(float(ww) * mm for ww, mm in zip(w, warped))
-
-        # Scaled detail is a smooth high-resolution spectral residual, not a
-        # waveshaper.  It follows the source envelope and cannot create hard
-        # harmonics by itself.
-        if detail_amount > 0.0 and mag.size > 16:
-            logmag = np.log1p(mag)
-            kernel = np.ones(9, dtype=np.float64) / 9.0
-            smooth = np.convolve(logmag, kernel, mode='same')
-            residual = logmag - smooth
-            # More detail in the upper spectrum, but taper before Nyquist.
-            hi = np.linspace(0.0, 1.0, mag.size, dtype=np.float64)
-            taper = np.sqrt(hi)
-            detail = np.expm1(np.clip(smooth + float(detail_amount) * residual * taper, -20.0, 20.0))
-            new_mag = 0.88 * new_mag + 0.12 * detail
-
-        # Keep the fundamental/DC magnitude anchored and preserve phase.
-        new_mag[0] = mag[0]
-        y_spec = new_mag.astype(np.float64) * np.exp(1j * phase)
-        y = np.fft.irfft(y_spec, n=n)
-        # Undo the Hann energy change with a conservative peak normalization.
-        peak_in = float(np.max(np.abs(x)) + 1e-9)
-        peak_out = float(np.max(np.abs(y)) + 1e-9)
-        if peak_out > 1e-9:
-            y *= peak_in / peak_out
-        return y.astype(np.float32)
+        if n < 16:
+            return np.zeros(n, dtype=np.float32)
+        sr = max(float(sample_rate), 1.0)
+        # Local amplitude context: sliding RMS ≈ subpeaks / subtroughs envelope.
+        win = max(8, min(256, n // 64))
+        kernel = np.ones(win, dtype=np.float64) / float(win)
+        abs_x = np.abs(x)
+        local_env = np.convolve(abs_x, kernel, mode='same')
+        # Local fundamental proxy from zero-crossing density in blocks.
+        block = max(32, min(512, n // 32))
+        nb = max(1, n // block)
+        f0_ctrl = np.empty(nb, dtype=np.float64)
+        for i in range(nb):
+            lo = i * block
+            hi = min(n, lo + block)
+            seg = x[lo:hi]
+            zc = np.where(np.diff(np.signbit(seg)))[0]
+            if zc.size >= 2:
+                period = float(np.median(np.diff(zc)))
+                f0 = sr / max(period * 2.0, 2.0)
+            else:
+                f0 = 110.0
+            f0_ctrl[i] = max(40.0, min(f0, sr * 0.2))
+        f0_full = np.interp(
+            np.arange(n, dtype=np.float64),
+            np.linspace(0, n - 1, nb),
+            f0_ctrl,
+        )
+        t = np.arange(n, dtype=np.float64) / sr
+        # Instantaneous phase advance from local f0.
+        phase = np.cumsum(2.0 * np.pi * f0_full / sr)
+        # isn-shaped partials (book isn) at sub and super ratios.
+        # Subharmonics 1/2 … 1/6 and superharmonics 2× … 6× (isn-shaped).
+        ratios = (
+            1.0/2.0, 1.0/3.0, 1.0/4.0, 1.0/5.0, 1.0/6.0,
+            2.0, 3.0, 4.0, 5.0, 6.0,
+        )
+        # Slight emphasis on nearest partials; equal energy within sub / super banks.
+        weights = (
+            0.14, 0.11, 0.09, 0.07, 0.05,   # sub 1/2 … 1/6
+            0.14, 0.11, 0.09, 0.07, 0.05,   # super 2× … 6×
+        )
+        companion = np.zeros(n, dtype=np.float64)
+        for r, w in zip(ratios, weights):
+            th = phase * r
+            # book isn: 2*sin(θ/2) — positive-lobe friendly; bipolarize with sign of carrier
+            partial = book_isn_vec(np.mod(th, 2.0 * np.pi))
+            # center to bipolar
+            partial = partial - np.mean(partial)
+            companion += w * partial
+        # Match contextual subpeaks/subtroughs: scale by local envelope.
+        companion *= local_env * float(strength)
+        return companion.astype(np.float32)
 
     def process(self, dry, activation=0.33, gamma=2.0, pkp_env=None, bpm=120.0, reference_buffer=None):
-        """Apply phase-coherent frequency-domain fractal detail."""
+        """Append contextual sub/superharmonics; mix capped at 50%."""
         dry = np.asarray(dry, dtype=np.float32).ravel()
         n = dry.size
         if n == 0:
             return dry
+        src = dry
         if reference_buffer is not None:
             ref = np.asarray(reference_buffer, dtype=np.float32).ravel()
             if ref.size == n:
-                dry = ref.copy()
+                src = ref
         act = float(np.clip(activation, 0.0, 1.0))
-        wet_mix = 0.5 * act
+        wet_mix = 0.5 * act  # hard cap 50%
         if wet_mix < 1e-6:
             return dry.copy()
-        g = max(1.1, float(gamma))
-        fractal = self._spectral_on_phase_detail(
-            dry, g, (0.20, 0.35, 0.30, 0.15), detail_amount=0.10 * act
-        )
-        if pkp_env is None:
-            beat_hz = max(float(bpm), 1.0) / 60.0
-            t_sec = np.arange(n, dtype=np.float32) / float(self.sample_rate)
-            pkp_env = 0.55 + 0.45 * np.sin(2.0 * np.pi * beat_hz * t_sec)
-        env = np.asarray(pkp_env, dtype=np.float32).ravel()
-        if env.size != n:
-            env = np.resize(env, n)
-        # Envelope the *detail contribution*, preserving the dry phase/source.
-        detail = (fractal - dry) * np.clip(env, 0.0, 1.5)
-        out = dry + wet_mix * detail
+        strength = 0.5 + 0.5 * float(gamma) / 4.0
+        companion = self._contextual_sub_super(src, self.sample_rate, strength=strength)
+        if pkp_env is not None:
+            env = np.asarray(pkp_env, dtype=np.float32).ravel()
+            if env.size != n:
+                env = np.resize(env, n)
+            companion = companion * env
+        # Append as added harmonics (not a spectral replace).
+        out = dry + wet_mix * companion
         return out.astype(np.float32)
 
 
 class HarmonicLattice:
-    """Per-synth phase-preserving frequency-domain spectrum expander."""
+    """Per-synth contextual sub/superharmonic companion (lighter Fractallizer)."""
     def __init__(self, sample_rate=44100):
         self.sample_rate = int(sample_rate)
+        self._frac = MusicFractallizer(sample_rate=sample_rate)
 
     def process(self, dry, activation=0.33, gamma=2.0, pkp_env=None, bpm=120.0):
-        dry = np.asarray(dry, dtype=np.float32).ravel()
-        n = dry.size
-        if n == 0:
-            return dry
-        act = float(np.clip(activation, 0.0, 1.0))
-        wet_mix = 0.5 * act
-        if wet_mix < 1e-6:
-            return dry.copy()
-        g = max(1.15, float(gamma))
-        fractal = MusicFractallizer._spectral_on_phase_detail(
-            dry, g, (0.30, 0.45, 0.25, 0.0), detail_amount=0.07 * act
+        # Same engine as global Fractallizer; mix still capped at 50%.
+        return self._frac.process(
+            dry, activation=activation, gamma=gamma, pkp_env=pkp_env, bpm=bpm
         )
-        if pkp_env is None:
-            beat_hz = max(float(bpm), 1.0) / 60.0
-            t = np.arange(n, dtype=np.float32) / float(self.sample_rate)
-            pkp_env = 0.55 + 0.45 * np.sin(2.0 * np.pi * beat_hz * t)
-        env = np.asarray(pkp_env, dtype=np.float32).ravel()
-        if env.size != n:
-            env = np.resize(env, n)
-        detail = (fractal - dry) * np.clip(env, 0.0, 1.5)
-        return (dry + wet_mix * detail).astype(np.float32)
 
 
 class EQRTensorEngine:
-    """Equation of Reality tensor evaluator (book p.78).
+    """Equation of Reality tensor (book p.78 LaTeX) — z-at-origin contribution mix.
 
-    Every harmonic context along the wave yields a single-point z-value
-    Z = P·E + D from the reality tensor (P structure, E energy/direction,
-    D point-to-direction with the finite-infinity constant I).  The z-values
-    are scaled per render to a mean of 1.0 (scale-invariant structural
-    relation) and shaped through a TIME-PREDICTIVE follow envelope — a small
-    forward maximum window, so the filter anticipates transients instead of
-    lagging them.  Activation 0–100% blends in up to 50% of the shaped signal.
+    For each time t, the harmonic context around the sample (neighbours as
+    points n at distances d_n) yields a single z-value at the origin:
+
+        P = (1/k) Σ isn⁻¹((isn(d_n)+isn(t))/2)
+        E = (1/k) Σ isn(θ_n)/d_n
+        D = (1/k) Σ isn⁻¹(isn(θ_n)·E/(I·P))
+        Z = P·E + D
+
+    That z is the contribution of the wave *when it passed through the origin*
+    at time t.  It is mixed as a harmonic contribution into the contextual
+    audio, time-centered at the origin.  No scale-normalization / equalizer.
+    Activation 0–100% → wet mix 0–50%.
     """
     Z_REF = 1.5
 
     def __init__(self):
-        self._last_z = 1.0
+        self._last_z = 0.0
 
     def evaluate_z(self, sample, context=None, t=0.0):
-        """Single-point z-value (stdout of the P,E,D tensor) for one context."""
+        """Single-point z-value at the origin for one harmonic context."""
         s = float(sample)
         ctx = np.asarray(context, dtype=np.float32).ravel().tolist() if context is not None and len(context) else [s]
         _, _, _, z = eqr_tensor_step(s, ctx, t=float(t))
@@ -8355,63 +10046,56 @@ class EQRTensorEngine:
         return float(z)
 
     def process(self, dry, activation=0.0, pkp_env=None):
-        """Predictive-envelope Z-shaped master; max 50% mix at 100% activation.
+        """Mix origin-z contribution into contextual audio; max 50% wet.
 
-        Each control point is one harmonic context: the current sample, the
-        ±window neighbours, and the running time fraction t along the wave.
-        The component P/E are mean-normalized over the render (so the
-        structural relation drives the shape, not the raw magnitude), Z = P·E+D
-        is envelope-followed forward (predictive), then crossfaded to dry.
-        pkp_env (optional) is the same tempo-locked envelope the Fractallizer/
-        PKP master stages use, so all three effects breathe together.
+        Uses the closed-form audio reduction (eqr_tensor_audio): one sliding
+        MAD pass for d̄, then O(1) z per sample — no Σ loop.
         """
         dry = np.asarray(dry, dtype=np.float32).ravel()
         n = dry.size
         if n == 0:
             return dry
         act = float(np.clip(activation, 0.0, 1.0))
-        wet_mix = 0.5 * act
+        wet_mix = 0.5 * act  # hard cap 50%
         if wet_mix < 1e-6:
             return dry.copy()
 
-        ctrl_n = min(64, max(4, n // 256))
+        # Characteristic distance d̄: sliding mean-abs-deviation (local context).
+        win = max(8, min(256, n // 64))
+        kernel = np.ones(win, dtype=np.float64) / float(win)
+        abs_x = np.abs(dry.astype(np.float64))
+        d_char = np.convolve(abs_x, kernel, mode='same')  # ≈ local MAD around origin
+
+        # Sparse control grid for z, then interpolate (keeps cost tiny).
+        ctrl_n = min(128, max(4, n // 128))
         idxs = np.linspace(0, n - 1, ctrl_n).astype(np.int32)
-        w = max(1, ctrl_n // 8)
-        P_ctrl = np.empty(ctrl_n, dtype=np.float64)
-        E_ctrl = np.empty(ctrl_n, dtype=np.float64)
         Z_ctrl = np.empty(ctrl_n, dtype=np.float64)
         for i, ix in enumerate(idxs):
-            lo = max(0, ix - w)
-            hi = min(n, ix + w + 1)
             t = float(ix) / float(max(1, n - 1))
-            pi_, ei_, _di, zi = eqr_tensor_step(dry[ix], dry[lo:hi], t=t)
-            P_ctrl[i], E_ctrl[i], Z_ctrl[i] = pi_, ei_, zi
-        sp = float(np.mean(np.abs(P_ctrl))) + 1e-12
-        se = float(np.mean(np.abs(E_ctrl))) + 1e-12
-        Pn = P_ctrl / sp
-        En = E_ctrl / se
-        Zn = Pn * En + Z_ctrl - (P_ctrl[0] * 0.0)  # scale-invariant Z, D kept raw
-        # Center the combined z on mean 1.0 and clamp the transient excursion
-        zm = float(np.mean(Zn))
-        rel = Zn / max(abs(zm), 1e-9)
-        rel = np.clip(rel, 0.25, 2.5).astype(np.float32)
-        # TIME-PREDICTIVE follow envelope: forward max window anticipates onsets
-        look = max(1, ctrl_n // 12)
-        env = np.empty(ctrl_n, dtype=np.float32)
-        for i in range(ctrl_n):
-            hi = min(ctrl_n, i + look)
-            env[i] = float(np.max(rel[i:hi]))
-            if i > 0 and env[i] < env[i - 1]:
-                env[i] = env[i - 1] * 0.85 + rel[i] * 0.15
-        z_full = np.interp(np.arange(n), idxs.astype(float), env).astype(np.float32)
-        env_gain = np.ones(n, dtype=np.float32)
+            _p, _e, _d, zi = eqr_tensor_audio(
+                float(dry[ix]), float(d_char[ix]), float(dry[ix]), t=t
+            )
+            Z_ctrl[i] = zi
+        z_full = np.interp(
+            np.arange(n, dtype=np.float64), idxs.astype(float), Z_ctrl
+        )
+
+        env_gain = np.ones(n, dtype=np.float64)
         if pkp_env is not None:
-            env_ = np.asarray(pkp_env, dtype=np.float32).ravel()
+            env_ = np.asarray(pkp_env, dtype=np.float64).ravel()
             if env_.size != n:
                 env_ = np.resize(env_, n)
-            env_gain = np.clip(env_, 0.0, 1.5)
-        shaped = dry * (0.65 + 0.35 * np.tanh(z_full)) * env_gain
-        out = (1.0 - wet_mix) * dry + wet_mix * shaped
+            env_gain = env_
+
+        # Contribution harmonic mix of origin-z into the wave at time t.
+        if operator_theory_enabled():
+            contrib = np.empty(n, dtype=np.float64)
+            for i in range(n):
+                contrib[i] = math_mul(float(z_full[i]), float(dry[i])) * float(env_gain[i])
+        else:
+            contrib = z_full * dry.astype(np.float64) * env_gain
+
+        out = (1.0 - wet_mix) * dry.astype(np.float64) + wet_mix * contrib
         return out.astype(np.float32)
 
 
@@ -8423,120 +10107,6 @@ class RealitySynthEngine:
         return {coord: sig.tolist() for coord, sig in self.fractallizer.generate_fractal_stream(base_patch_data).items()}
 
 
-class AdvancedWaveformVisualizerCanvas(QWidget):
-    """Multi-model real-time Wavetable, Vector, and Algebraic Equation Visualizer.
-
-    When Operator Theory is enabled (book p.49-50), every algebraic waveform is
-    re-drawn through the ot_* scalar rules (band-hop add toward the enclosing
-    integer of each magnitude, negative-run negating composition, signed-power
-    ambiguity, divisor refinement by the Meum residue field) and — if a shared
-    DSP follow-envelope is present — the envelope is overlaid as a translucent
-    band, so the display carries the same Operator-Theory + envelope doctrine
-    as the DSP pathway.
-    """
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumHeight(280)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.phase = 0.0
-        self.active_mode = "Eskivector"
-        self.live_audio = None      # optional float32 audio for the overlay plot
-        self.follow_env = None      # optional shared DSP follow envelope (0..1.5)
-
-    def set_live_source(self, audio=None, follow_env=None):
-        if audio is not None:
-            self.live_audio = np.asarray(audio, dtype=np.float32).ravel()
-        if follow_env is not None:
-            self.follow_env = np.asarray(follow_env, dtype=np.float32).ravel()
-
-    def update_phase(self):
-        self.phase += 0.05
-        self.update()
-
-    def _ot_val(self, val):
-        # Rule e (band hop + add) + rule 1 (neg·neg → neg) + rule f (divisor
-        # refinement by the Meum residue field), applied per drawn sample.
-        band = ot_band(val)
-        bent = ot_add(val, 0.0) + 0.25 * band * math.copysign(1.0, val)
-        denom = abs(bent) + 0.2
-        bent = ot_div(bent, denom) if denom != 0 else bent
-        return bent
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-
-        p.fillRect(0, 0, w, h, QColor("#0a0e14"))
-        p.setPen(QPen(QColor("#161b22"), 1))
-        for x in range(0, w, 40):
-            p.drawLine(x, 0, x, h)
-        for y in range(0, h, 40):
-            p.drawLine(0, y, w, y)
-
-        path = QPainterPath()
-        center_y = h / 2.0
-        meum_ratio = MEUM
-        ot_on = operator_theory_enabled()
-
-        for px in range(w):
-            t_val = (px / w) * 4.0 * math.pi + self.phase
-            if self.active_mode == "Eskivector":
-                val = MathEngine.isn(t_val * meum_ratio) + 0.5 * MathEngine.ics(t_val)
-            elif self.active_mode == "Eskitable":
-                val = MathEngine.arcisn(math.sin(t_val)) * MathEngine.arcics(math.cos(t_val * 0.5))
-            elif self.active_mode == "Eskiosc":
-                val = MathEngine.isn_inv(math.sin(t_val))
-            else:  # Eskiequation
-                val = MathEngine.isn(t_val) * MathEngine.ics(t_val * meum_ratio) + MathEngine.arcisn(math.sin(t_val * 0.25))
-
-            if ot_on:
-                val = self._ot_val(val)
-            py = center_y - (val * (h * 0.35))
-            if px == 0:
-                path.moveTo(px, py)
-            else:
-                path.lineTo(px, py)
-
-        p.setPen(QPen(QColor("#00ffcc"), 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        p.drawPath(path)
-
-        # Live envelope-follow overlay + Operator-Theory waveform, when provided
-        # by the DSP thread.
-        if self.live_audio is not None and self.live_audio.size > 1:
-            la = self.live_audio
-            ap = QPainterPath()
-            for px in range(w):
-                sx = int(float(px) / float(w) * float(la.size - 1))
-                v = float(la[sx])
-                if ot_on:
-                    v = self._ot_val(v)
-                py = center_y - (v * (h * 0.35))
-                if px == 0:
-                    ap.moveTo(px, py)
-                else:
-                    ap.lineTo(px, py)
-            p.setPen(QPen(QColor("#ff69b4"), 1.6, Qt.PenStyle.DotLine))
-            p.drawPath(ap)
-
-        if self.follow_env is not None and self.follow_env.size > 1:
-            fe = self.follow_env
-            fe = np.asarray(fe, dtype=np.float32)
-            fmax = float(np.max(fe)) or 1.0
-            fep = QPainterPath()
-            for px in range(w):
-                sx = int(float(px) / float(w) * float(fe.size - 1))
-                v = float(fe[sx]) / fmax
-                py = center_y - (v * (h * 0.4))
-                if px == 0:
-                    fep.moveTo(px, py)
-                else:
-                    fep.lineTo(px, py)
-            p.setPen(QPen(QColor("#58a6ff"), 1.0, Qt.PenStyle.DashLine))
-            p.drawPath(fep)
-            p.setPen(QPen(QColor("#58a6ff"), 1, Qt.PenStyle.DashLine))
-            p.drawLine(0, int(center_y), w, int(center_y))
-            p.drawText(15, 25, f"Visualizer Active Model: [{self.active_mode}] — Isosceles Trig & Algebraic Waveform" + ("  + Operator Theory" if ot_on else ""))
 class MultiLaneSequencerCanvas(QWidget):
     """Sequencer canvas with built-in modulation patch outputs per track."""
     def __init__(self, parent=None):
@@ -9161,49 +10731,6 @@ class ParameterControlRow(QWidget):
         layout.addWidget(self.jack_btn, 1)
 
         self.setLayout(layout)
-class WavetableVectorVisualizerCanvas(QWidget):
-    """Real-time Wavetable and Isosceles Trigonometric Polynomial Waveform Visualizer."""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumHeight(260)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.phase = 0.0
-
-    def update_phase(self):
-        self.phase += 0.05
-        self.update()
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-
-        p.fillRect(0, 0, w, h, QColor("#0a0e14"))
-        p.setPen(QPen(QColor("#161b22"), 1))
-        for x in range(0, w, 40):
-            p.drawLine(x, 0, x, h)
-        for y in range(0, h, 40):
-            p.drawLine(0, y, w, y)
-
-        path = QPainterPath()
-        center_y = h / 2.0
-        meum_ratio = MEUM
-
-        for px in range(w):
-            t_val = (px / w) * 4.0 * math.pi + self.phase
-            val = MathEngine.isn(t_val * meum_ratio) + 0.5 * MathEngine.ics(t_val) * MathEngine.arcisn(math.sin(t_val * 0.5))
-            py = center_y - (val * (h * 0.35))
-            if px == 0:
-                path.moveTo(px, py)
-            else:
-                path.lineTo(px, py)
-
-        p.setPen(QPen(QColor("#00ffcc"), 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        p.drawPath(path)
-
-        p.setPen(QPen(QColor("#58a6ff"), 1, Qt.PenStyle.DashLine))
-        p.drawLine(0, int(center_y), w, int(center_y))
-        p.drawText(10, 20, "Eskivector / Eskitable / Eskiosc / Eskiequation Real-Time Wavetable Visualizer")
 class GlobalCrossTabBusManager:
     """Manages universal inter-synth wiring, dedicated synth input/output jacks, master audio routing, and resampling."""
     def __init__(self):
@@ -9561,7 +11088,7 @@ class GrooveboxEngine:
             "x * y - z",
             "abs(x) + math.cos(y) - z",
             "x**3 - y**2 + z",
-            "math.tanh(x * y) - z"
+            "isn(x * y) - z"
         ]
         self.scale_equation = random.choice(equations)
         self.global_bpm = float(random.randint(98, 142))
@@ -9655,7 +11182,18 @@ class GrooveboxEngine:
             "active_fx_modules": self.active_fx_modules,
             "active_sequencer_modules": self.active_sequencer_modules,
             "active_drum_kits": self.active_drum_kits,
-            "active_synth_panels": self.active_synth_panels
+            "active_synth_panels": self.active_synth_panels,
+            # Composition pathways (video/game/music identity) — carried on every export
+            "composition_meta": {
+                "operator_theory": bool(OP_THEORY_ENABLED),
+                "hardclip_master": True,  # master vol → hardclip factors only; no limiter/EQ bed
+                "eski_fractal_max_iter": int(ESKI_FRACTAL_MAX_ITER),
+                "canonical_master_slots": int(CANONICAL_MASTER_SLOTS),
+                "visual_render_slots": 16,
+                "goava_count_policy": "seed_count",
+                "n_independent_identity": True,
+                "identity_note": "seed+engines+sequential nums; instrument count ignored",
+            },
         }
         with open(filepath, 'w') as f:
             json.dump(data, f, indent=4)
@@ -9664,6 +11202,13 @@ class GrooveboxEngine:
         with open(filepath, 'r') as f:
             data = json.load(f)
         self.global_bpm = data.get("global_bpm", 112.0)
+        # Restore composition pathways when present (OT toggle, fractal policy)
+        try:
+            meta = data.get("composition_meta") or {}
+            if "operator_theory" in meta:
+                set_operator_theory(bool(meta.get("operator_theory")))
+        except Exception:
+            pass
         self.scale_equation = data.get("scale_equation", "x**2 + y - z")
         self.scale_increment = data.get("scale_increment", 0.25)
         self.divergence_steps_count = data.get("divergence_steps_count", 16)
@@ -10821,52 +12366,6 @@ class InfinitePlaylistCanvas(QScrollArea):
         self.canvas_inner = InfinitePlaylistInnerWidget(self.engine, self.parent_page)
         self.setWidget(self.canvas_inner)
 
-class EQRVisualizerCanvas(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumHeight(160)
-        self.setStyleSheet("background-color: #0b0b0b; border: 1px solid #ff6b00; border-radius: 4px;")
-
-        self.phase = 0.0
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.update_phase)
-        self.timer.start(30)
-
-    def update_phase(self):
-        self.phase += 0.03
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter()
-        if not painter.begin(self):
-            return
-        try:
-            painter.fillRect(self.rect(), QColor(11, 11, 11))
-            w, h = self.width(), self.height()
-            cx, cy = w / 2.0, h / 2.0
-
-            painter.setPen(QPen(QColor(30, 30, 30), 1, Qt.PenStyle.DashLine))
-            painter.drawLine(0, int(cy), w, int(cy))
-            painter.drawLine(int(cx), 0, int(cx), h)
-
-            num_steps = 300
-            points = []
-            for i in range(num_steps):
-                t = (i / num_steps) * 4 * np.pi + self.phase
-                x_val = np.sin(t * 1.5) * np.cos(t * 0.5 + self.phase * 0.2) * 120.0
-                y_val = np.cos(t * 2.0) * np.sin(t * 1.2) * 80.0
-                z_val = np.sin(t + self.phase) * 50.0
-
-                px = cx + x_val + (z_val * 0.3)
-                py = cy + y_val + (z_val * 0.2)
-                points.append(QPointF(px, py))
-
-            for i in range(len(points) - 1):
-                hue_color = QColor.fromHsvF((i / num_steps + self.phase * 0.1) % 1.0, 0.8, 1.0)
-                painter.setPen(QPen(hue_color, 2))
-                painter.drawLine(points[i], points[i+1])
-        finally:
-            painter.end()
 # -------------------------------------------------------------------------
 # MASTER PATCH CANVAS (Visual Wires & Dedicated Synth Jacks)
 # -------------------------------------------------------------------------
@@ -11208,12 +12707,12 @@ class MasterControlPatchbayPage(QWidget):
         QMessageBox.information(self, "Song & Patchbay Randomizer", "Successfully randomized song arrangement, synth wiring, effects modules, and global cross-tab patch cables!")
 
     def _save_project(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Save Project File", "", "EQ爾 Groovebox Files (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, "Save Project File", "", "EQ爾 Groovebox Files (*.mgpr)")
         if path:
-            # SAVE_EXT_2026: enforce the .json suffix so the second save with the
+            # SAVE_EXT_2026: enforce the .mgpr suffix so the second save with the
             # canonical-protect toggle can never fail on a bare extension.
-            if not path.lower().endswith(".json"):
-                path = path + ".json"
+            if not path.lower().endswith(".mgpr"):
+                path = path + ".mgpr"
             try:
                 self.engine.serialize_project(path)
             except Exception as exc:
@@ -11222,7 +12721,7 @@ class MasterControlPatchbayPage(QWidget):
             QMessageBox.information(self, "Project Saved", f"Project successfully saved to:\n{path}")
 
     def _load_project(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Open Project File", "", "EQ爾 Groovebox Files (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "Open Project File", "", "EQ爾 Groovebox Files (*.mgpr)")
         if path:
             self.engine.deserialize_project(path)
             self.bpm_slider.setValue(int(self.engine.global_bpm * 10))
@@ -12676,59 +14175,6 @@ class ModularTabManager(QTabWidget):
             self.removeTab(index)
             widget.deleteLater()
 
-class VisualNodeScriptingWindow(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Visual Equation & Symbolic Scripting Canvas")
-        self.resize(1000, 650)
-        self.setStyleSheet(TELETUBBY_STYLE)
-
-        layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("<b>Interactive Geometric Node Patch Builder & Symbolic Engine</b>"))
-
-        self.geom_canvas = GeometricSymbolicCanvas(self)
-        layout.addWidget(self.geom_canvas)
-
-        canvas_splitter = QSplitter(Qt.Orientation.Horizontal)
-
-        toolbox_widget = QWidget()
-        tb_layout = QVBoxLayout(toolbox_widget)
-        tb_layout.addWidget(QLabel("<b>Click Blocks to Insert</b>"))
-
-        blocks = [
-            "⚡ Eski Sine [Jack]", "🔀 Wavefold Node [Jack]", "🔁 For-Loop Repeater [Jack]",
-            "⚖️ Heuristic Branch [Jack]", "🌀 Noise Generator [Jack]", "📉 Low-Pass Filter [Jack]",
-            "➕ Additive Sum [Jack]", "✖️ Ring Modulator [Jack]", "⏱️ Delay Line [Jack]",
-            "🎛️ Envelope Shaper [Jack]", "🔍 Phase Root [Jack]", "💥 Eskibrutus Fold [Jack]"
-        ]
-        for b in blocks:
-            btn = QPushButton(b)
-            btn.setStyleSheet("background-color: #6c5ce7; color: white; text-align: left; padding-left: 8px;")
-            btn.clicked.connect(lambda checked, text=b: self.append_node_text(text))
-            tb_layout.addWidget(btn)
-
-        canvas_splitter.addWidget(toolbox_widget)
-
-        self.assembly_board = QTextEdit()
-        self.assembly_board.setPlainText(
-            "# Interactive Modular Patch Assembly & Geometric Symbolic Equation Network\n"
-            "[ Node α: Eski-Prime Sine ] ===(Symbolic Jack)===> [ Node β: Dipsy Wavefolder ]\n"
-        )
-        self.assembly_board.setStyleSheet("background-color: #ffffff; color: #1e272e; font-family: monospace; font-size: 13px; border-radius: 10px;")
-        canvas_splitter.addWidget(self.assembly_board)
-
-        canvas_splitter.setSizes([320, 680])
-        layout.addWidget(canvas_splitter)
-
-        compile_btn = QPushButton("Compile and Apply Geometric Symbolic Matrix to Active Stream")
-        compile_btn.setStyleSheet("background-color: #00b894; color: white; font-weight: bold;")
-        compile_btn.clicked.connect(lambda: QMessageBox.information(self, "Compiled", "Interactive visual graph and symbolic equations successfully compiled."))
-        layout.addWidget(compile_btn)
-
-    def append_node_text(self, node_name):
-        current = self.assembly_board.toPlainText()
-        updated = current + f"\n[ Geometric Linked: {node_name} ] ===(Symbolic Patch Jack)===> [ Routing Matrix Bus ]"
-        self.assembly_board.setPlainText(updated)
 # ==========================================
 # 2. COORDINATE VISUALIZER
 # ==========================================
@@ -13131,35 +14577,7 @@ class PermanentPatchBayPanel(QWidget):
         layout.addWidget(self.global_dest)
         layout.addWidget(QLabel("Repeaters:"))
         layout.addWidget(self.repeater_slider)
-        # Inside your main application or control panel __init__:
-# 1. Tuning (SpinBox or Slider)
-        self.spin_tuning = QSpinBox()
-        self.spin_tuning.setRange(100, 1200)
 
-        # 2. Amplitude Slider
-        self.slider_amplitude = QSlider(Qt.Orientation.Horizontal)
-        self.slider_amplitude.setRange(0, 100)
-
-        # 3. Duration / Percussive-Keylike-Padded Slider
-        self.slider_duration = QSlider(Qt.Orientation.Horizontal)
-        self.slider_duration.setRange(0, 100)
-
-        # 4. Fractalizer Slider
-        self.slider_fractalizer = QSlider(Qt.Orientation.Horizontal)
-        self.slider_fractalizer.setRange(0, 100)
-
-        # 5. EQR Effect Slider / Fifth Option Control Dropdown or Slider
-        self.slider_eqr = QSlider(Qt.Orientation.Horizontal)
-        self.slider_eqr.setRange(0, 100)
-
-        # Fifth Option Dropdown Preset Selector (shared or per instrument)
-        self.preset_combo = QComboBox()
-        self.preset_combo.currentIndexChanged.connect(self.on_preset_changed)
-
-    def on_preset_changed(self, index):
-        curr_idx = self.instrument_selector_dropdown.currentIndex()
-        if 0 <= curr_idx < len(self.channel_states):
-            self.channel_states[curr_idx]["preset_idx"] = index
         connect_btn = QPushButton("Patch Global Bus")
         connect_btn.setStyleSheet("background-color: #0984e3; color: white;")
         connect_btn.clicked.connect(lambda: QMessageBox.information(self, "Global Bus Patched", "Global patch bus updated."))
@@ -13167,44 +14585,6 @@ class PermanentPatchBayPanel(QWidget):
 # ==========================================
 # 5. SCRIPTER'S PANE WITH FUNCTION KEYSET
 # ==========================================
-class DenseCoordinateVisualizer(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumHeight(200)
-        self.setStyleSheet("background-color: #1e272e; border: 3px solid #feca57; border-radius: 14px;")
-        self.point_history = []
-        self.max_points = 250
-
-    def update_coordinates(self, x, y):
-        self.point_history.append((x, y))
-        if len(self.point_history) > self.max_points:
-            self.point_history.pop(0)
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter()
-        if not painter.begin(self):
-            return
-        try:
-            painter.fillRect(self.rect(), QColor(30, 39, 46))
-            width, height = self.width(), self.height()
-
-            painter.setPen(QPen(QColor(72, 84, 96), 1, Qt.PenStyle.DashLine))
-            painter.drawLine(0, height // 2, width, height // 2)
-            painter.drawLine(width // 2, 0, width // 2, height)
-
-            if len(self.point_history) >= 2:
-                pen = QPen(QColor(255, 107, 107))
-                pen.setWidth(3)
-                painter.setPen(pen)
-                for i in range(1, len(self.point_history)):
-                    x1 = (self.point_history[i-1][0] + 1.2) * 0.41 * width
-                    y1 = (self.point_history[i-1][1] + 1.2) * 0.41 * height
-                    x2 = (self.point_history[i][0] + 1.2) * 0.41 * width
-                    y2 = (self.point_history[i][1] + 1.2) * 0.41 * height
-                    painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
-        finally:
-            painter.end()
 class TopSideInstrumentSequencerPanel(QWidget):
     def __init__(self, parent=None, app_ref=None):
         super().__init__(parent)
@@ -14013,7 +15393,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "wire": [],
             "params": {"mix": 0.35, "enable_script": True, "enable_domain": True, "enable_wire": True, "script_amount": 1.0, "domain_amount": 1.0, "wire_amount": 1.0},
             "apply_enabled": False,
-            "protectable_userdata": True,
+            "user_data": True,
+            "canonical_superwrite": True,
         }
         try:
             if getattr(self, "qe_notes", None) is not None:
@@ -14052,6 +15433,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._undo_in_flight = False
         # ℤ-Lattice "Apply step algorithm" unapply snapshots: name -> prior mem.
         self._nt_lattice_snapshot = {}
+        self._nt_lattice_scope = "global"
         # "Algorithm → Seed" revert history: list of prior seed-field texts.
         self._seed_history = []
 
@@ -14122,10 +15504,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 return
             avail_w = max(320, int(container.width()) - 16)
             avail_h = max(220, int(container.height()) - 16)
-            # Square claims the full free height; width share grows when the row
-            # is wide. Always clamped inside the container so nothing clips.
-            side = max(260, min(avail_h, int(avail_w * 0.60)))
-            remaining = max(120, avail_w - side - 16)
+            # The center scenograph owns the middle half of the monitor width and
+            # the two rectangular monitors share the remaining half.  The square
+            # is then limited only by the available height, so it grows as large
+            # as the lower UI region permits without ever crossing its bounds.
+            side = max(260, min(avail_h, int((avail_w - 16) * 0.50)))
+            remaining = max(220, avail_w - side - 16)
             side_w = max(110, remaining // 2)
             if self.video_synth_viewer is not None:
                 self.video_synth_viewer.setMinimumSize(side, side)
@@ -14178,15 +15562,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._sync_parametric_background_geometry()
-        # LAYOUT_STABILITY_FIX: while a track is playing, keep the three
-        # monitor widgets (square scenograph + side meters) at their current
-        # relative sizes instead of recomputing the square side from window
-        # bounds on every resize. Otherwise any window geometry change during
-        # playback visibly rescales the UI widgets.
-        if getattr(self, "is_playing", False):
-            return
+        # LAYOUT_STABILITY_FIX_2026: playback state must not select a different
+        # geometry algorithm.  Every resize uses the same proportional layout,
+        # while a queued second pass lets Qt finish button/style/layout changes
+        # before the monitor bounds are measured.
         try:
             self._sync_square_visuals()
+            QTimer.singleShot(0, self._sync_square_visuals)
         except Exception:
             pass
 
@@ -14509,17 +15891,32 @@ class MathematiciansGrooveboxApp(QMainWindow):
     # It is intentionally separate from user data, Randomizer, and Phase-Lock.
     # Toggling the button rebuilds/removes only GOAVA-owned state.
     # =====================================================================
-    def _parse_goava_seed_values(self):
+    def _parse_goava_seed_values(self, t_value=0.0):
         """Parse seed field into evaluated numeric list for GOAVA events.
 
         Every comma/newline component is evaluated as a seed expression (math,
         if/elif, constants). Instruments/events then consume these real numbers
         rather than hash/byte tokens.
-        """
-        return list(self.get_seed_values(t_value=0.0))
 
-    def _build_goava_composition(self):
-        numbers = self._parse_goava_seed_values()
+        t_value: current composition time so time-ticking / time-varying seed
+        scripts (sin(t), lists indexed by t, if(sin(t)...) etc.) produce the
+        correct numeric entries at the moment of evaluation. This is the key
+        for tracking the real time index across a shifted seed.
+        """
+        return list(self.get_seed_values(t_value=float(t_value)))
+
+    def _build_goava_composition(self, t_value=0.0, true_time_index=None):
+        """Build GOAVA pitched-sine chord events from the seed numeric list.
+
+        When the seed is a list or a time-varying expression, t_value and
+        true_time_index keep the event list indexed to the real composition
+        clock rather than a static t=0 snapshot.  true_time_index (when
+        supplied) is the authoritative ordinal along the composition; the
+        seed list is treated as a circular field whose phase is advanced by
+        that index so that "the seed shifts" still maps onto the correct
+        absolute time slot.
+        """
+        numbers = self._parse_goava_seed_values(t_value=t_value)
         if not numbers:
             self.goava_seed_numbers = []
             return []
@@ -14528,16 +15925,40 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # per-frame re-parse.
         self.goava_seed_numbers = list(numbers)
         base = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
+        n = len(numbers)
+        # True index across a shifted seed: use the supplied composition
+        # ordinal when available, otherwise fall back to ordinary enumerate.
+        base_idx = int(true_time_index) if true_time_index is not None else 0
         events = []
         for i, number in enumerate(numbers):
-            hz, raw = goava_frequency(number, i, numbers, base)
-            pitch = float(np.clip(hz / max(base, 1e-6), 0.125, 16.0))
+            # Real time index for this entry = composition clock + list offset
+            # (mod length) so that a rotating/shifted seed still lands on the
+            # correct absolute slot in the composition timeline.
+            true_idx = (base_idx + i) % max(1, n)
+            step = float(true_idx) + float(t_value)
+            hz, raw = goava_frequency(number, step, numbers, base)
+            # GOAVA: no pitch-ratio clip — report true mapped ratio.
+            _den = max(float(base), 1e-12)
+            pitch = float(hz / _den) if math.isfinite(hz) else 1.0
+            if not math.isfinite(pitch) or pitch <= 0.0:
+                pitch = 1.0
+            # Build a small pitched-sine chord (root + 5th + octave) from the
+            # same centered ratio so each seed numeric entry becomes a chord
+            # rather than a single partial.
+            chord_ratios = [1.0, 1.5, 2.0]
+            chord_freqs = [float(hz) * r for r in chord_ratios]
+            chord_amps = [0.33, 0.22, 0.15]
             events.append({
-                "step": i,
+                "step": true_idx,
+                "list_index": i,
+                "true_time_index": true_idx,
+                "t_value": float(t_value),
                 "seed": float(number),
                 "raw": float(raw),
                 "frequency": float(hz),
                 "pitch": pitch,
+                "chord_freqs": chord_freqs,
+                "chord_amps": chord_amps,
                 "enabled": True,
                 "source": "GOAVA",
                 "weight": 1.0,
@@ -14684,25 +16105,46 @@ class MathematiciansGrooveboxApp(QMainWindow):
     # deduped: shadowed by later _on_goava_toggled() definition (perfect-unison system).
 
     def _goava_mix(self, local_t, row_idx, step_duration):
+        """Mix GOAVA pitched-sine chords using true composition time index.
+
+        row_idx is the playlist/row ordinal.  We treat it as the true time
+        index along the composition; when the seed list has shifted (or is
+        time-varying) the event that lands on this row is selected by that
+        absolute index, not by a static t=0 snapshot.  Each event carries a
+        small chord (root + 5th + octave) of pure sines.
+        """
         if not getattr(self, "goava_active", False):
             return np.zeros_like(local_t, dtype=np.float32)
         events = list(getattr(self, "goava_note_events", []) or [])
         if not events:
             return np.zeros_like(local_t, dtype=np.float32)
-        ev = events[row_idx % len(events)]
+        # True index across shifted seed: use row as the composition clock
+        # ordinal so the active seed entry follows real time, not a frozen list.
+        true_idx = int(row_idx) % len(events)
+        ev = events[true_idx]
         if not ev.get("enabled", True):
             return np.zeros_like(local_t, dtype=np.float32)
-        freq = float(ev.get("frequency", 432.0))
+        # Prefer the chord stored on the event; fall back to single sine.
+        chord_freqs = ev.get("chord_freqs")
+        chord_amps = ev.get("chord_amps")
+        if not chord_freqs:
+            chord_freqs = [float(ev.get("frequency", 432.0))]
+            chord_amps = [0.33]
         # Sustain across most of the row/step; short tau was muting GOAVA early
         tau = max(step_duration * 2.5, 0.08)
         env = np.exp(-local_t / tau)
         attack = np.clip(local_t / max(step_duration * 0.05, 1e-4), 0.0, 1.0)
-        ph = 2.0 * np.pi * freq * local_t
-        # GOAVA_SINE_HARMONIC_2026: GOAVA is not an instrument voice.  It adds
-        # only its own sine harmonic at an ideal 33% amplitude on top of the
-        # programmed groove — a shared harmonic layer, never an occupied row.
-        tone = np.sin(ph)
-        return (tone * env * attack * 0.33 * float(ev.get("weight", 1.0))).astype(np.float32)
+        weight = float(ev.get("weight", 1.0))
+        # GOAVA_SINE_CHORD_2026: each seed numeric entry inserts a pitched
+        # sine chord (not a single partial) at ~33% total amplitude on top of
+        # the programmed groove — a shared harmonic layer, never an occupied row.
+        tone = np.zeros_like(local_t, dtype=np.float64)
+        for f, a in zip(chord_freqs, chord_amps):
+            if not math.isfinite(f) or f <= 0.0:
+                continue
+            ph = 2.0 * np.pi * float(f) * local_t
+            tone += np.sin(ph) * float(a)
+        return (tone * env * attack * weight).astype(np.float32)
 
     def _paint_generated_parameters(self, rng=None, rows=None, source='context'):
         """Paint calculated/random playlist parameters, including velocity.
@@ -16166,6 +17608,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_play.setMinimumHeight(56)
         self.btn_play.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.btn_stop = QPushButton("⏹ Stop")
+        self.btn_audio_only = QPushButton("▶ PLAY Audio Track")
+        self.btn_audio_only.setMinimumWidth(220)
+        self.btn_audio_only.setMinimumHeight(56)
+        self.btn_audio_only.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.btn_stop.setMinimumWidth(96)
         self.btn_stop.setMinimumHeight(56)
         self.btn_stop.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -16183,17 +17629,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         )
         self.preferred_sample_rate = TARGET_SAMPLE_RATE
 
-        # Scenograph density: 1..64 render items (catalog forms fade in/out).
-        # Single control — do not duplicate as "Visual objects" elsewhere.
-        self.lbl_sceno_items = QLabel("Scenograph items:")
-        self.spin_sceno_items = QSpinBox()
-        self.spin_sceno_items.setRange(1, 64)
-        self.spin_sceno_items.setValue(24)
-        self.spin_sceno_items.setToolTip(
-            "How many of the 64 scenograph render items may be active. "
-            "Items fade in/out smoothly; higher counts enrich the field."
-        )
-        self.spin_sceno_items.valueChanged.connect(self._on_sceno_items_changed)
+        # Scenograph density is bound to the live instrument count (no
+        # separate manual override) — see _on_synth_count_changed, which
+        # The scenograph population follows the ensemble automatically.
+        # This guarantees a 2-instrument project and a 64-instrument project
+        # generate the same graph shape (same closed-form placement law),
+        # just sampled at a different N.
 
         self.instrument_selector_dropdown = QComboBox()
         self.instrument_selector_dropdown.addItems(self.instrument_names_48)
@@ -16535,6 +17976,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.global_geometry_layout.setAlignment(self.global_controls_side, Qt.AlignmentFlag.AlignTop)
 
         self.btn_play.clicked.connect(self.toggle_playback)
+        self.btn_audio_only.clicked.connect(self.play_audio_only)
         self.btn_stop.clicked.connect(self.stop_playback)
         self.btn_idealize_rhythm.toggled.connect(self._on_euclidean_live_toggled)
         self.btn_seeded_randomize.toggled.connect(self._on_seeded_live_toggled)
@@ -16549,8 +17991,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         self.transport_layout.addWidget(self.lbl_bpm)
         self.transport_layout.addWidget(self.spin_bpm)
-        self.transport_layout.addWidget(self.lbl_sceno_items)
-        self.transport_layout.addWidget(self.spin_sceno_items)
         self.transport_layout.addWidget(QLabel("Active Operator:"))
         self.transport_layout.addWidget(self.instrument_selector_dropdown)
         self.transport_layout.addWidget(self.btn_keyboard)
@@ -16628,6 +18068,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Global / all instruments active is the default
         self.mode_combo.addItems(["Mode: Cross-Loaded Ecosystem (Global)", "Mode: Single Instrument"])
         self.mode_combo.setCurrentIndex(0)
+        self.mode_combo.currentIndexChanged.connect(lambda _idx: self._sync_nt_lattice_button_state())
 
         # Global Playlist Switch added to main layout
         self.chk_global_playlist = QCheckBox("🌐 Global Playlist Arrangement Drive")
@@ -16645,10 +18086,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.slider_pkp_decay.setRange(1, 1000)
         self.slider_pkp_decay.setValue(int(round(PHI_INV * 1000.0)))  # φ⁻¹ ≈ 0.618 s
         self.slider_pkp_decay.setToolTip(
-            "PKP Decay → per-note envelope binding (follower always on, ≈1-note sweep "
-            "before/after every note). 0.5 = normal 1:1 note-per-step envelope; "
-            "1 = hold spans the whole sequence length; 0 = hold is (1 step)/(sequence "
-            "length) note duration.  Default 0.618 (φ⁻¹) — golden-ratio-tempered hold."
+            "PKP Decay → smart isn() envelope per note/row. "
+            "0.0 = single isn() cycle per note; "
+            "0.5 = 2-step isn ramp up / solid mid / isn ramp down; "
+            "1.0 = isn cycle then flat sustain to playlist row length. "
+            "Shared with EQR and Fractallizer; all effect mixes ≤ 50%."
         )
 
         # PKP Envelope Follower is permanently force-enabled (no toggle).
@@ -16740,6 +18182,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """)
         self.spin_synth_count.setRange(2, 64)
         self.spin_synth_count.setValue(48)
+        self._goava_count_easter_egg = False
+        try:
+            # QSpinBox clamps invalid values, so watch the editor text itself
+            # before Qt normalizes it. Blank/0/1 are the intentional easter-egg
+            # triggers; ordinary 2–64 input immediately turns it back off.
+            self.spin_synth_count.lineEdit().textEdited.connect(self._on_synth_count_text_edited)
+        except Exception:
+            pass
         self.spin_synth_count.setToolTip(
             "Number of active synths (2–64). Free (unlocked) voices are "
             "re-spaced across the harmonic-geometric spectrum; user-locked "
@@ -16814,22 +18264,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
         )
         # OP_THEORY_TOGGLE_2026: large toggle applying the book's Operator
         # Theory (p.49-50) to ALL mathematics in the DSP pathway and the
-        # game logic (off by default).  One matched toggle drives the master
+        # game logic (ON by default).  One matched toggle drives the master
         # DSP re-encode and the videogame-engine residue lattice together so
         # every numeric transform of a project is reproducible from the toggle
         # position alone.
-        self.btn_operator_theory = QPushButton("OPERATOR THEORY")
+        self.btn_operator_theory = QPushButton("OPERATOR THEORY · ON")
         self.btn_operator_theory.setCheckable(True)
-        self.btn_operator_theory.setChecked(False)
+        self.btn_operator_theory.setChecked(True)
         self.btn_operator_theory.setMinimumHeight(56)
         self.btn_operator_theory.setMinimumWidth(210)
         self.btn_operator_theory.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.btn_operator_theory.setToolTip(
-            "Enable Operator Theory (book p.49-50): reroute ALL DSP-pathway and "
+            "Operator Theory (book p.49-50): reroute ALL DSP-pathway and "
             "game-logic mathematics through the alternative arithmetic (negative·negative "
             "→ negative, signed powers/roots ambiguous on differing hands, 0·0 = 0/0 = 1, "
-            "band-hopping add/sub, divisor refinement by the Meum residue field). OFF by "
-            "default preserves the canonical identity; ON is fully reproducible per toggle."
+            "band-hopping add/sub, divisor refinement by the Meum residue field). ON by "
+            "default; OFF switches to ordinary arithmetic. Fully reproducible per toggle."
         )
         self.btn_operator_theory.toggled.connect(self._on_operator_theory_toggled)
         # LIVE_DJ_CONTROLS: performance macros do not rewrite canonical
@@ -17172,16 +18622,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_pkp_nullock_boost.clicked.connect(self._on_pkp_nullock_boost_clicked)
 
         self.slider_pkp_boost = QSlider(Qt.Orientation.Horizontal)
-        self.slider_pkp_boost.setRange(50, 200); self.slider_pkp_boost.setValue(100)
+        self.slider_pkp_boost.setRange(0, 300); self.slider_pkp_boost.setValue(100)
         self.slider_pkp_boost.valueChanged.connect(self._on_pkp_boost_amount_changed)
         self.slider_pkp_boost_pitch = QSlider(Qt.Orientation.Horizontal)
-        self.slider_pkp_boost_pitch.setRange(25, 400); self.slider_pkp_boost_pitch.setValue(100)
+        # LIVE_DJ_PITCH_RANGE_2026: exact multiplicative range requested by the UI
+        # contract.  QSlider is integer-valued, so 0.002x is one slider unit.
+        self.slider_pkp_boost_pitch.setRange(1, 8004)
+        self.slider_pkp_boost_pitch.setValue(500)  # 500 * 0.002 = 1.000x
         self.slider_pkp_boost_pitch.valueChanged.connect(self._on_pkp_boost_pitch_changed)
         self.slider_pkp_boost_steps = QDoubleSpinBox()
         self._steps_seq_len = max(1, int(self.spin_seq_length.value()))
-        self.slider_pkp_boost_steps.setRange(0.25, float(self._steps_seq_len))
-        self.slider_pkp_boost_steps.setDecimals(2)
-        self.slider_pkp_boost_steps.setSingleStep(0.25)
+        self.slider_pkp_boost_steps.setRange(0.002, 64.0)
+        self.slider_pkp_boost_steps.setDecimals(3)
+        self.slider_pkp_boost_steps.setSingleStep(0.002)
         self.slider_pkp_boost_steps.setValue(1.0)
         self.slider_pkp_boost_steps.valueChanged.connect(self._on_pkp_boost_steps_changed)
         self.slider_pkp_boost_offset = QDoubleSpinBox()
@@ -17309,8 +18762,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         local_context_layout.addLayout(pkp_and_game_col, 1)
 
         # GLOBAL PLAY PATCHER — readable layout: Script / Domain text fields,
-        # Wire + Params buttons, Mix/Script/Domain/Wire amount sliders,
-        # full-width Apply toggle + Protectable Userdata checkbox.
+        # Wire + Params buttons, Mix/Script/Domain/Wire amount sliders.
+        # Algorithm state is always userdata; canonical unison may superwrite it.
         # GP_SCROLL_FIX: Global Play Patcher must be scrollable. A 760px floor on
         # the SCROLL AREA itself meant the viewport never got shorter than the
         # panel, so the vertical scrollbar never engaged and the pane pushed the
@@ -17373,7 +18826,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         rand_row.addWidget(self.btn_randomize_global_play, 1)
         gp_outer.addLayout(rand_row)
 
-        # Full-width apply row — labels must not clip
+        # Full-width apply row — algorithm state is always userdata.
         apply_row = QHBoxLayout()
         apply_row.setSpacing(10)
         self.btn_apply_algo_master = QPushButton("▶ Apply Algo to Master Mix")
@@ -17381,11 +18834,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_apply_algo_master.setMinimumHeight(38)
         self.btn_apply_algo_master.setMinimumWidth(150)
         self.btn_apply_algo_master.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.chk_algo_protect_userdata = QCheckBox("As Protectable Userdata")
-        self.chk_algo_protect_userdata.setChecked(True)
-        self.chk_algo_protect_userdata.setMinimumWidth(160)
-        apply_row.addWidget(self.btn_apply_algo_master, 3)
-        apply_row.addWidget(self.chk_algo_protect_userdata, 1)
+        apply_row.addWidget(self.btn_apply_algo_master, 1)
         gp_outer.addLayout(apply_row)
 
         # Script Algo — multi-line text
@@ -17472,7 +18921,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if hasattr(self, "lbl_gp_domain_hints"):
                 self.lbl_gp_domain_hints.setText("hints: " + " · ".join(hint_text[:5]))
             self.global_algo_state["apply_enabled"] = bool(self.btn_apply_algo_master.isChecked())
-            self.global_algo_state["protectable_userdata"] = bool(self.chk_algo_protect_userdata.isChecked())
+            self.global_algo_state["user_data"] = True
+            self.global_algo_state["canonical_superwrite"] = True
 
         def _apply_master_algo(checked=True):
             # PROJECT_UNDO_2026: applying/unapplying the Global Play algo is a
@@ -17481,7 +18931,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self._push_undo("Apply Global Algo " + ("ON" if checked else "OFF"))
             _sync_inline_algo()
             self.global_algo_state["apply_enabled"] = bool(checked)
-            self.global_algo_state["protectable_userdata"] = bool(self.chk_algo_protect_userdata.isChecked())
+            self.global_algo_state["user_data"] = True
+            self.global_algo_state["canonical_superwrite"] = True
             if checked:
                 for kind, enabled in (("script", self.gp_script_slider.value()>0), ("domain", self.gp_domain_slider.value()>0), ("wire", self.gp_wire_slider.value()>0)):
                     if enabled:
@@ -17490,7 +18941,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     self._on_live_source_changed()
                 except Exception:
                     pass
-                mode = "protected userdata" if self.chk_algo_protect_userdata.isChecked() else "canonical effector"
+                mode = "userdata · canonical superwrite"
                 self.btn_apply_algo_master.setText("■ Unapply Algo from Master Mix")
                 if hasattr(self, "scope_status_label"):
                     self.scope_status_label.setText(f"🌐 Algo applied to Master Mix · {mode}")
@@ -17501,7 +18952,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     self.scope_status_label.setText("🌐 Master Mix Algo unapplied · canonical state restored")
 
         self.btn_apply_algo_master.toggled.connect(_apply_master_algo)
-        self.chk_algo_protect_userdata.toggled.connect(lambda v: self.global_algo_state.__setitem__("protectable_userdata", bool(v)))
         for sl in (self.gp_mix_slider, self.gp_script_slider, self.gp_domain_slider, self.gp_wire_slider):
             sl.valueChanged.connect(_sync_inline_algo)
         self.gp_script_field.textChanged.connect(_sync_inline_algo)
@@ -17621,19 +19071,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.slider_master_vol.setFixedWidth(160)
         self.slider_master_vol.valueChanged.connect(self._on_master_vol_changed)
         master_vol_row.addWidget(self.slider_master_vol)
-        self.lbl_master_vol = QLabel("100%")
+        self.lbl_master_vol = QLabel("50%")  # matches slider default; 50% is the warning
         self.lbl_master_vol.setStyleSheet("color: #f5d97d;")
         master_vol_row.addWidget(self.lbl_master_vol)
 
-        self.btn_operator_theory = QPushButton("Use Operator Theory")
+        self.btn_operator_theory = QPushButton("Operator Theory · ON")
         self.btn_operator_theory.setCheckable(True)
-        self.btn_operator_theory.setChecked(False)
+        self.btn_operator_theory.setChecked(True)
         self.btn_operator_theory.setMinimumHeight(28)
         self.btn_operator_theory.setMaximumHeight(32)
-        self.btn_operator_theory.setMinimumWidth(140)
+        self.btn_operator_theory.setMinimumWidth(160)
         self.btn_operator_theory.setToolTip(
             "Operator Theory (book p.49-50): re-encode master bus, EQR tensor, "
-            "and game angles/residues through ot_* arithmetic. OFF by default."
+            "and game angles/residues through ot_* arithmetic. ON by default."
         )
         self.btn_operator_theory.setStyleSheet(
             "QPushButton { background-color:#1a1228; color:#e0c4ff; border:2px solid #c77dff; "
@@ -17655,7 +19105,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_clip_ratio.setValue(50.0)
         self.spin_clip_ratio.setFixedWidth(72)
         self.spin_clip_ratio.setToolTip(
-            "Clip-density vs gain-max (0=max gain, 100=clip-free, 50=balanced). Off-fingerprint."
+            "HARDCLIP factors into the master bus (0=unity drive, 50=1.5×, 100=2.5×). "
+            "Master Volume × this drive, then hard-clip to ±1. "
+            "No normalizer / limiter / EQ on this path. 50% master vol is the warning."
         )
         self.spin_clip_ratio.valueChanged.connect(self._on_clip_ratio_changed)
         master_vol_row.addWidget(self.spin_clip_ratio)
@@ -17757,7 +19209,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_export.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         export_menu = QMenu(self.btn_export)
         # REVERSE_ENGINEERING: every export carries its plain provenance
-        # manifest (WAV chunk / ffmpeg comment / game provenance.json) — this
+        # manifest (WAV chunk / ffmpeg comment / game provenance.mgpr) — this
         # action reads it back and rebuilds the original main-window settings.
         export_menu.addAction("♻ Reconvert Export → Main Window…").triggered.connect(
             self.reconvert_export_dialog
@@ -17832,7 +19284,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # main scenograph monitors, right next to EXPORT. Size stays fixed in
         # every state label; state changes only recolor (see toggle_playback /
         # stop_playback) without reflowing the row.
-        for _btn in (self.btn_play, self.btn_stop):
+        for _btn in (self.btn_play, self.btn_audio_only, self.btn_stop):
             _btn.setStyleSheet(
                 "QPushButton { background-color:#14301c; color:#9dffb0; border:2px solid #46d158; "
                 "border-radius:8px; padding:10px 16px; font-weight:900; font-size:13pt; }"
@@ -17840,6 +19292,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "QPushButton:pressed { background-color:#0c1f10; }"
             )
         scope_bar.addWidget(self.btn_play, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
+        scope_bar.addWidget(self.btn_audio_only, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
         scope_bar.addWidget(self.btn_stop, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
         scope_bar.addSpacing(10)
         scope_bar.addWidget(self.btn_export, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
@@ -17854,8 +19307,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # randomizers, magenta game, amber media, teal save/load/context).
         self._apply_semantic_roles()
 
-        master_container.addLayout(scope_bar)
-        master_container.addLayout(vis_row)  # Wave/Scope + Spectrum/Geometry, directly above the monitors
         visual_pair = QHBoxLayout()
         visual_pair.setSpacing(8)
         visual_pair.setContentsMargins(0, 0, 0, 0)
@@ -17888,16 +19339,76 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 widget, stretch=1,
                 alignment=Qt.AlignmentFlag.AlignHCenter if is_square else Qt.AlignmentFlag.AlignCenter,
             )
-            visual_pair.addLayout(col, stretch=(0 if is_square else 1))
+            # Responsive monitor proportions: narrow side meters + a larger
+            # center scenograph.  The explicit sync pass below clamps the square
+            # to the actual lower-region height, preventing bottom clipping.
+            visual_pair.addLayout(col, stretch=(2 if is_square else 1))
         visual_container = QWidget()
         visual_container.setLayout(visual_pair)
         visual_container.setMinimumHeight(280)
+        visual_container.setMinimumWidth(720)
         visual_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._visual_container = visual_container
-        master_container.addWidget(visual_container, stretch=12)
+
+        # STRUCTURAL_SCROLL_2026: keep the original control geometry intact,
+        # but put the complete upper UI in a bidirectional scroll area.  The
+        # render deck is a separate sibling pane so it can never be pushed
+        # below the window by the control layout's sizeHint().
+        top_content = QWidget()
+        top_layout = QVBoxLayout(top_content)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(4)
+        while master_container.count():
+            item = master_container.takeAt(0)
+            if item.widget() is not None:
+                top_layout.addWidget(item.widget())
+            elif item.layout() is not None:
+                top_layout.addLayout(item.layout())
+            elif item.spacerItem() is not None:
+                top_layout.addItem(item.spacerItem())
+        top_layout.addStretch(1)
+        top_scroll = QScrollArea()
+        top_scroll.setWidgetResizable(True)
+        top_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        top_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        top_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        top_scroll.setWidget(top_content)
+        top_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.top_ui_scroll = top_scroll
+
+        bottom_content = QWidget()
+        bottom_layout = QVBoxLayout(bottom_content)
+        bottom_layout.setContentsMargins(6, 6, 6, 6)
+        bottom_layout.setSpacing(4)
+        bottom_layout.addLayout(scope_bar)
+        bottom_layout.addLayout(vis_row)
+        bottom_layout.addWidget(visual_container, 1)
+        bottom_content.setMinimumWidth(760)
+        bottom_scroll = QScrollArea()
+        bottom_scroll.setWidgetResizable(True)
+        bottom_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        bottom_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        bottom_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        bottom_scroll.setWidget(bottom_content)
+        bottom_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.bottom_render_scroll = bottom_scroll
+
+        render_splitter = QSplitter(Qt.Orientation.Vertical)
+        render_splitter.setChildrenCollapsible(False)
+        render_splitter.setHandleWidth(8)
+        render_splitter.addWidget(top_scroll)
+        render_splitter.addWidget(bottom_scroll)
+        render_splitter.setStretchFactor(0, 3)
+        render_splitter.setStretchFactor(1, 2)
+        render_splitter.setSizes([720, 480])
+        master_container.addWidget(render_splitter, 1)
+        self.render_splitter = render_splitter
+        self.render_pane = bottom_content
 
         # Realtime audio engine state (sounddevice stream)
         self.is_playing = False
+        # AUDIO_ONLY_TRANSPORT: mutually exclusive audio-only transport mode.
+        self._audio_only_mode = False
         self._composition_generation_guard = False
         self._live_source_update_pending = False
         self._composition_generation_counter = 0
@@ -17919,7 +19430,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._pkp_poly_generation = 0
         self._pkp_poly_stream = None
         self._pkp_poly_sr = 44100
-        self.master_volume = 1.00
+        self.master_volume = 0.50  # 50% default = intentional warning
         self._scope_update_timer = QTimer(self)
         self.update()  # Trigger repaint
         self._scope_update_timer.setInterval(33)
@@ -17950,6 +19461,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """
         roles = {
             "btn_play": "transportPlay",
+            "btn_audio_only": "transportPlay",
             "btn_stop": "transportStop",
             "btn_export": "exportMenu",
             "btn_save_project": "saveLoadBtn",
@@ -17987,7 +19499,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "chk_canonical_protect": "canonicalCk",
             "chk_full_unison": "unisonCk",
             "chk_fullweight_seed": "weightCk",
-            "chk_algo_protect_userdata": "canonicalCk",
             "chk_convolve_fit": "mediaCk",
             "spin_bpm": "bpmSpin",
             "spin_base_frequency": "baseHzSpin",
@@ -18098,14 +19609,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         n = max(1, int(val))
         box = self.slider_pkp_boost_steps
         box.blockSignals(True)
-        box.setRange(0.25, float(n))
-        box.setValue(min(box.value(), float(n)))
+        box.setRange(0.002, 64.0)
+        box.setValue(min(max(box.value(), 0.002), 64.0))
         box.blockSignals(False)
         self._on_pkp_boost_steps_changed(box.value())
 
     def _on_pkp_boost_pitch_changed(self, val):
         if hasattr(self, "lbl_pkp_boost_pitch"):
-            self.lbl_pkp_boost_pitch.setText(f"{float(val)/100.0:.2f}×")
+            ratio = float(val) * 0.002
+            self.lbl_pkp_boost_pitch.setText(f"{ratio:.3f}×")
 
     def _on_pkp_boost_steps_changed(self, val):
         self.pkp_boost_step_increment = float(val)
@@ -18121,15 +19633,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """Live PKP Boost toggle: while checked, every hit runs the boost law."""
         self.pkp_boost_active = bool(checked)
         self.pkp_pad_bank_active = False
-        # PKP BOOST is an always-available local timing tool when engaged.
-        # Its three controls remain live independently; GOAVA and RAND PARAM
-        # are optional modifiers, not prerequisites for BOOST.
         # BOOST_STEP_2026: while engaged, a deterministic per-beat scheduler
         # fires real one-shot hits on a random voice each beat (see
         # _pkp_boost_beat_tick). The deck below is separate.
         self._arm_pkp_boost_beats(checked)
-        # Audition one hit immediately so the newly toggled law is heard.
-        self._play_selected_instrument_pkp()
+        # Audition one hit immediately only when ENABLING so the newly toggled
+        # law is heard; when disabling, silence immediately (no stray hit).
+        if checked:
+            self._play_selected_instrument_pkp()
         # DJ BOOST HIT: when a live DJ effect is wired to the master bus, the
         # boost hit fires at the DJ row/slider interval. The Step Offset slider
         # (fraction of the DJ row) deterministically places the first trigger —
@@ -18208,10 +19719,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         boost intentionally ignores programmed step specifics.
         """
         try:
-            dj_goava = bool(getattr(self, "btn_live_dj_goava", None) and self.btn_live_dj_goava.isChecked())
-            dj_random = bool(getattr(self, "btn_live_dj_random", None) and self.btn_live_dj_random.isChecked())
-            # BOOST itself owns its timing when engaged. GOAVA and RAND PARAM
-            # are optional modifiers; neither is required to run BOOST.
             if not getattr(self, "pkp_boost_active", False):
                 t = getattr(self, "_pkp_boost_timer", None)
                 if t is not None:
@@ -18223,19 +19730,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             names = getattr(self, "instrument_names_48", None) or []
             if not names:
                 return
-            # PKP BOOST owns a distinct n+1 live voice.  It always chooses its
-            # own instrument from the 48-voice roster; RAND PARAM does NOT gate
-            # this choice and does not mutate the source instrument's parameters.
-            # The choice is seeded and therefore deterministic.
             rng = getattr(self, "_pkp_voice_rng", None)
             if rng is None:
-                seed = int(_safe_int_seed(self.get_numeric_seed() if hasattr(self, "get_numeric_seed") else 1))
-                rng = random.Random((seed ^ 0x504B5056) & 0xFFFFFFFF)
+                rng = random.Random()
                 self._pkp_voice_rng = rng
             voice = names[rng.randrange(len(names))]
-            # RAND PARAM, when explicitly enabled, may additionally alter the
-            # BOOST copy's generated parameters; it never changes the source
-            # instrument state.  Instrument selection itself is always active.
             seq_len = max(1, int(self.spin_seq_length.value())) if hasattr(self, "spin_seq_length") else 16
             step_idx = int(getattr(self, "_pkp_boost_cursor", 0.0)) % seq_len
             self._pkp_fire_step_hit(voice, step_idx, amp=1.0)
@@ -18313,7 +19812,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self._pkp_poly_voices = []
 
             alive = []
-            active_count = 0
             for buf, pos, gain in voices:
                 remaining = len(buf) - pos
                 if remaining <= 0:
@@ -18323,23 +19821,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 pos += take
                 if pos < len(buf):
                     alive.append((buf, pos, gain))
-                    active_count += 1
 
             if alive:
                 with self._pkp_poly_lock:
                     # A note may have arrived while we were mixing. Preserve it.
                     pending = self._pkp_poly_voices
                     self._pkp_poly_voices = alive + pending
-
-            # Constant-power-ish bus compensation.  Use active voices rather
-            # than the raw snapshot so expired notes do not attenuate a chord.
-            total = max(1, active_count)
-            if total > 1:
-                mix *= np.float32(1.0 / np.sqrt(float(total)))
-
-            peak = float(np.max(np.abs(mix))) if frames else 0.0
-            if peak > 0.98:
-                mix *= np.float32(0.98 / peak)
 
             outdata.fill(0.0)
             outdata[:, 0] = mix
@@ -18405,6 +19892,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             _pkp_deg = ((int(step_idx) * 11) + (int(op_idx) * 5)) % 12
             freq = base_freq * (2.0 ** ((_pkp_deg - 6) / 12.0))
 
+            # PKP-style: fast decay sine + soft click transient. env is defined
+            # here (pre-boost) so the n+1 boost-copy voice below shares it.
+            env = np.exp(-t / max(hit_dur * 0.35, 0.01))
+
             # LIVE PKP BOOST (toggle): per-hit frequency law evaluated at the
             # step index —
             #   freq_play = (2·harmonic-doubled step pitch
@@ -18412,8 +19903,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             #                  of the selected pitch's base) / 3
             # GOAVA note-index frequency re-expresses the GOAVA note for this
             # step as a frequency ratio of the selected instrument's base.
-            if (getattr(self, "pkp_boost_active", False) and
-                    bool(getattr(self, "btn_live_dj_goava", None) and self.btn_live_dj_goava.isChecked())):
+            boost_voice = None
+            if getattr(self, "pkp_boost_active", False):
                 evs = list(getattr(self, "goava_note_events", []) or [])
                 if evs:
                     try:
@@ -18424,17 +19915,50 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         _goava_ratio = float(_ev.get("pitch", 1.0))
                     except Exception:
                         _goava_ratio = 1.0
-                    _goava_ratio = max(0.125, min(16.0, _goava_ratio))
+                    # GOAVA: no frequency-ratio cutoffs/clips.
+                    if not math.isfinite(_goava_ratio) or _goava_ratio <= 0.0:
+                        _goava_ratio = 1.0
                     goava_freq = float(base_freq) * _goava_ratio
                 else:
                     goava_freq = float(base_freq)
                 freq = (2.0 * freq + goava_freq) / 3.0
+                # n+1 live-copy instrument: build a TEMP instance copy of the
+                # instrument's step state (pitch / offset / live params) and
+                # render the boost as a derivative voice inserted into the mix
+                # (wave insertion), pitch-locked (null-lock) to the source
+                # step and folded with the Boost Pitch + Boost Amount controls.
+                # Everything derives from step state + boost sliders — no RNG.
+                try:
+                    mem = (getattr(self, "instrument_sequencer_memory", {}) or {}).get(inst_name, {})
+                    _pch = mem.get("pitches", [1.0]) or [1.0]
+                    _pitch = float(_pch[int(step_idx) % len(_pch)]) if _pch else 1.0
+                    if not math.isfinite(_pitch) or _pitch <= 0.0:
+                        _pitch = 1.0
+                    _boost_pitch_ratio = 1.0
+                    try:
+                        _bp = getattr(self, "slider_pkp_boost_pitch", None)
+                        _boost_pitch_ratio = float(_bp.value() * 0.002) if _bp is not None else 1.0
+                    except Exception:
+                        _boost_pitch_ratio = 1.0
+                    if not math.isfinite(_boost_pitch_ratio) or _boost_pitch_ratio <= 0.0:
+                        _boost_pitch_ratio = 1.0
+                    # Null-lock: the copy locks pitch to the source step pitch
+                    # (harmonic) while the Boost Pitch slider adds a fold.
+                    _boost_freq = float(base_freq) * _pitch * _boost_pitch_ratio
+                    _boost_amount = float(getattr(self, "pkp_boost_amount", 1.0))
+                    if math.isfinite(_boost_freq) and _boost_freq > 0.0:
+                        boost_voice = np.sin(2 * np.pi * _boost_freq * t) * env * float(amp) * float(_boost_amount)
+                except Exception:
+                    boost_voice = None
 
             # PKP-style: fast decay sine + soft click transient
-            env = np.exp(-t / max(hit_dur * 0.35, 0.01))
             body = np.sin(2 * np.pi * freq * t)
             # Keep PKP hits strictly pitched; omit the click/transient component.
             hit = body * env * float(amp)
+            # Wave insertion: the n+1 boost-copy voice is layered into the mix
+            # on top of the source step hit (boosting the mix as before).
+            if boost_voice is not None:
+                hit = hit + boost_voice
             hit_rms = float(np.sqrt(np.mean(hit * hit))) if hit.size else 0.0
             target_rms = 0.0
             try:
@@ -18443,9 +19967,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 pass
             if target_rms > 1e-9 and hit_rms > 1e-9:
                 hit *= target_rms / hit_rms
-            # MASTER_CHAIN_2026: no per-hit peak normalization.  Preserve the
-            # instrument's native deterministic amplitude and let the master
-            # volume + final hard clip be the only output-level clamp.
             hit *= float(getattr(self, 'master_volume', 1.0))
 
             # Scope preview
@@ -18622,7 +20143,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return
         # Preserve protectable flag from the checkbox if present
         if getattr(self, "chk_algo_protect_userdata", None) is not None:
-            state["protectable_userdata"] = bool(self.chk_algo_protect_userdata.isChecked())
+            state["user_data"] = True
+            state["canonical_superwrite"] = True
         # RANDOMIZE_NO_APPLY_2026: randomization is authoring only.  apply_enabled
         # stays False; no script/domain/wire is written to the ensemble here.
         state["apply_enabled"] = False
@@ -18679,7 +20201,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._refresh_canonical_fingerprint()
         except Exception:
             pass
-        mode = "protected userdata" if self.global_algo_state.get("protectable_userdata") else "canonical effector"
+        mode = "userdata · canonical superwrite"
         if hasattr(self, "scope_status_label"):
             n_w = len(self.global_algo_state.get("wire") or [])
             self.scope_status_label.setText(
@@ -18821,8 +20343,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 params["BPM"] = float(self.spin_bpm.value())
             if hasattr(self, "spin_base_frequency"):
                 params["BaseHz"] = float(self.spin_base_frequency.value())
-            if hasattr(self, "spin_sceno_items"):
-                params["VisN"] = int(self.spin_sceno_items.value())
+            if hasattr(self, "spin_synth_count"):
+                params["VisN"] = int(self.spin_synth_count.value())
             if hasattr(self, "spin_engine_strength"):
                 # Effective seed weight: FullWeight ON → spin value; OFF → attenuated.
                 raw = float(self.spin_engine_strength.value())
@@ -18863,8 +20385,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             eng = getattr(self, "video_synth_engine", None)
             if eng is not None:
-                if hasattr(self, "spin_sceno_items") and hasattr(eng, "set_scenograph_item_count"):
-                    eng.set_scenograph_item_count(int(self.spin_sceno_items.value()))
                 if hasattr(eng, "_module_target"):
                     # Boost fades for active engine names
                     for name, key in (
@@ -20765,7 +22285,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "spin_bpm", "spin_seq_length", "spin_playlist_length", "spin_base_frequency",
             "spin_global_convolve", "spin_synth_count", "slider_eqr", "slider_fractalizer",
             "slider_pkp_decay", "slider_pkp_boost", "slider_pkp_boost_pitch",
-            "slider_pkp_boost_steps", "slider_pkp_boost_offset", "spin_sceno_items",
+            "slider_pkp_boost_steps", "slider_pkp_boost_offset",
             "spin_engine_strength", "spin_unison_blend",
             "gp_mix_slider", "gp_script_slider", "gp_domain_slider", "gp_wire_slider",
             "spin_clip_ratio", "spin_import_speed", "spin_sparse_density", "spin_speed_scrub",
@@ -20778,7 +22298,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "btn_goava", "btn_local_randomize", "btn_local_phase_lock",
             "btn_live_dj_goava", "btn_live_dj_random", "chk_convolve_fit",
             "chk_global_playlist", "chk_canonical_protect", "btn_apply_algo_master",
-            "chk_algo_protect_userdata", "chk_fullweight_seed", "chk_full_unison",
+            "chk_fullweight_seed", "chk_full_unison",
             # LIVE_ENGINE_TOGGLES_2026: the euclidean live-lock and seeded
             # randomizer are part of the live unison engine mask, so they must
             # round-trip exactly like GOAVA/randomizer — otherwise loading a
@@ -20889,8 +22409,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
             p = gas.get("params") if isinstance(gas.get("params"), dict) else {}
             for obj, key, default in ((getattr(self,"gp_mix_slider",None),"mix",.35),(getattr(self,"gp_script_slider",None),"script_amount",1.0),(getattr(self,"gp_domain_slider",None),"domain_amount",1.0),(getattr(self,"gp_wire_slider",None),"wire_amount",1.0)):
                 if obj is not None: obj.setValue(int(float(p.get(key, default))*100))
-            if getattr(self, "chk_algo_protect_userdata", None) is not None:
-                self.chk_algo_protect_userdata.setChecked(bool(gas.get("protectable_userdata", True)))
             if getattr(self, "btn_apply_algo_master", None) is not None:
                 self.btn_apply_algo_master.setChecked(bool(gas.get("apply_enabled", False)))
         except Exception as e:
@@ -21004,6 +22522,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "project_notes": notes,
             "last_videogame_identity": _safe_json(getattr(self, "_last_videogame_identity", None)),
             "last_videogame_path": getattr(self, "_last_videogame_path", None),
+            "visual_view_state": _safe_json(self.video_synth_engine.get_camera_state() if getattr(self, "video_synth_engine", None) is not None else {}),
             "ui_state": self._collect_project_ui_state() if hasattr(self, "_collect_project_ui_state") else {},
         }
         return data
@@ -21134,23 +22653,66 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     self._apply_global_algo_to_ensemble("wire")
         except Exception as e:
             print(f"[Load] global algo re-apply: {e}")
+        # Visual camera / deterministic view state (was previously orphaned).
+        try:
+            self._apply_visual_view_state(data.get("visual_view_state", {}))
+        except Exception as e:
+            print(f"[Load] visual view state: {e}")
+        # Force UI surfaces that hold loaded data to repaint / rebind.
+        try:
+            if hasattr(self, "reload_active_instrument_sequencer_ui"):
+                self.reload_active_instrument_sequencer_ui()
+        except Exception as e:
+            print(f"[Load] sequencer UI: {e}")
+        try:
+            if hasattr(self, "_refresh_step_ui"):
+                self._refresh_step_ui()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "update_playlist_display"):
+                self.update_playlist_display()
+            elif hasattr(self, "_refresh_playlist_ui"):
+                self._refresh_playlist_ui()
+        except Exception:
+            pass
+        try:
+            QApplication.processEvents()
+        except Exception:
+            pass
 
 
     def export_project_json(self):
         """Export the unified project snapshot (same document as Save)."""
-        path, _ = QFileDialog.getSaveFileName(self, "Export Project JSON", "", "EQR Project (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, "Export Project JSON", "", "Mathematician's Groovebox Project (*.mgpr)")
         if not path:
             return
         self._save_project_document(path)
 
     def _ensure_project_extension(self, path):
-        """SAVE_EXT_2026: always end project documents with .json."""
+        """SAVE_EXT_2026: always end project documents with .mgpr."""
         path = str(path or "")
         if not path.strip():
             return path
-        if not path.lower().endswith(".json"):
-            path = path + ".json"
+        if not path.lower().endswith(".mgpr"):
+            path = path + ".mgpr"
         return path
+
+    def _apply_visual_view_state(self, state):
+        try:
+            eng=getattr(self,"video_synth_engine",None)
+            if eng is None or not isinstance(state,dict): return
+            if bool(state.get("deterministic",False)):
+                eng.set_deterministic_camera_view(int(state.get("view_index",0)),int(state.get("view_count",1)))
+            else:
+                eng.clear_deterministic_camera_view()
+                eng._cam_yaw=math.radians(float(state.get("yaw_deg",0.0)))
+                eng._cam_pitch=math.radians(float(state.get("pitch_deg",0.0)))
+                eng._cam_roll=math.radians(float(state.get("roll_deg",0.0)))
+                eng._cam_distance=float(state.get("distance",0.0))
+                eng._cam_fov_deg=float(state.get("fov_deg",48.0))
+        except Exception as e:
+            print(f"[Load] visual view state: {e}")
 
     def _projects_dir(self):
         base = os.path.join(os.path.expanduser("~"), ".groovebox", "projects")
@@ -21227,7 +22789,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _autosave_project(self):
         try:
             fp = self._last_autosave_fp
-            path = os.path.join(self._projects_dir(), "autosave.json")
+            path = os.path.join(self._projects_dir(), "autosave.mgpr")
             if fp is not None and hasattr(fp, "text"):
                 self._atomic_write_document(path, self._project_snapshot())
         except Exception:
@@ -21240,7 +22802,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             d = self._projects_dir()
             candidates = []
             for name in sorted(os.listdir(d)):
-                if name.endswith(".part") and os.path.isfile(os.path.join(d, name)):
+                # Only project recovery documents (*.mgpr.part), never video
+                # segment leftovers or pid tmp files.
+                if (name.endswith(".mgpr.part")
+                        and not name.endswith(".tmp")
+                        and os.path.isfile(os.path.join(d, name))):
                     candidates.append(os.path.join(d, name))
             if not candidates:
                 return
@@ -21270,7 +22836,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             pass
 
     def save_project_dialog(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Save EQR Project", "", "EQR Project (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, "Save Mathematician's Groovebox Project", "", "Mathematician's Groovebox Project (*.mgpr)")
         if not path:
             return
         path = self._ensure_project_extension(path)
@@ -21288,11 +22854,24 @@ class MathematiciansGrooveboxApp(QMainWindow):
         classification) reads the restored source-of-truth — identical
         canonical fingerprint ⇒ identical exports/play as the saved session.
         """
-        path, _ = QFileDialog.getOpenFileName(self, "Load EQR Project", "", "EQR Project (*.json)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load Mathematician's Groovebox Project", "",
+            "Mathematician's Groovebox Project (*.mgpr *.mgpr.part);;All files (*)",
+        )
         if not path:
             return
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            # Autorecovery: if user picks a leftover .mgpr.part (or a .mgpr that
+            # is missing but the .part sibling exists), load the recoverable copy.
+            load_path = path
+            if path.lower().endswith(".mgpr.part"):
+                load_path = path
+            elif not os.path.isfile(path) and os.path.isfile(path + ".part"):
+                load_path = path + ".part"
+            elif path.lower().endswith(".mgpr") and os.path.isfile(path + ".part"):
+                # Prefer complete .mgpr; only fall back if it fails to parse.
+                load_path = path
+            with open(load_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             self._apply_project_snapshot(data)
             try:
@@ -21357,9 +22936,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 freq = 44.0 * MEUM_POWERS_36[i % 36]
                 env = np.exp(-t / 0.03)
                 mix += (0.15 * env * np.sin(2 * np.pi * freq * t)).astype(np.float32)
-            # MASTER_CHAIN_2026: preserve native summed amplitude here; do not
-            # normalize this audition mix independently of the master bus.
-            mix *= float(getattr(self, 'master_volume', 1.0))
             if isinstance(getattr(self, 'visual_oscilloscope', None), VisualOscilloscope):
                 idx = np.linspace(0, len(mix) - 1, 100).astype(int)
                 self.visual_oscilloscope.update_waveform(mix[idx])
@@ -22084,7 +23660,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             f"# (additive — user carrier preserved; fractal fill only)\n"
                             f"def evaluate_wave(x, y, z):\n"
                             f"    m = {harmonic_multiplier}\n"
-                            f"    return np.sin(x * m) * np.cos(y / m) - np.tanh(z * 0.5)"
+                            f"    return np.sin(x * m) * np.cos(y / m) - isn(z * 0.5)"
                         )
                         scripts_written += 1
 
@@ -22699,8 +24275,31 @@ class MathematiciansGrooveboxApp(QMainWindow):
         return fitted
 
 
+    def _on_synth_count_text_edited(self, text):
+        raw = str(text).strip()
+        egg = raw == "" or raw in {"0", "1"}
+        changed = egg != bool(getattr(self, "_goava_count_easter_egg", False))
+        self._goava_count_easter_egg = egg
+        if egg:
+            # Do not let the invalid transient value trigger an expensive
+            # ensemble resize. This is visual-only easter-egg state.
+            try:
+                self.parametric_background._reseed()
+                self.parametric_background.update()
+            except Exception:
+                pass
+        elif changed:
+            try:
+                self.parametric_background._reseed()
+                self.parametric_background.update()
+            except Exception:
+                pass
+
     def _on_synth_count_changed(self, new_count):
         """Resize active synth bank (2–64) with harmonic re-spacing of free voices."""
+        # Invalid typed values are an easter-egg state, not a real resize.
+        if getattr(self, "_goava_count_easter_egg", False):
+            return
         # PROJECT_UNDO_2026: snapshot the whole project before the orchestration
         # change so the resize (which re-spaces voices and refactors the playlist)
         # is fully reversible and keeps every surviving instrument's data.
@@ -22853,7 +24452,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             elif final_names:
                 self.instrument_selector_dropdown.setCurrentIndex(0)
             self.instrument_selector_dropdown.blockSignals(False)
-        # Video synth engine layer count
+        # Video synth engine layer count — scenograph density is bound
+        # directly to instrument count (no separate manual override), so a
+        # 2-instrument and a 64-instrument project sample the same
+        # closed-form placement law at different N instead of diverging.
         if hasattr(self, "video_synth_engine") and self.video_synth_engine is not None:
             try:
                 self.video_synth_engine.set_instrument_count(new_count, smooth=True)
@@ -24202,17 +25804,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     _s_int = _unison_s_int
                 else:
                     base_freq = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
-                    base_freq *= MEUM_POWERS_36[op_idx % 36]
+                    _master_slot = canonical_master_slot(op_idx, max(2, len(self.instrument_names_48)))
+                    base_freq *= MEUM_POWERS_36[_master_slot % 36]
                     # Per-voice evaluated seed (list scripts assign distinct numerics
                     # to each instrument instead of a shared hash/byte token).
                     try:
-                        _voice_seed = float(self.get_seed_value_for_index(op_idx, t_value=float(local_t[0]) if len(local_t) else 0.0))
+                        _voice_seed = float(self.get_seed_value_for_index(_master_slot, t_value=float(local_t[0]) if len(local_t) else 0.0))
                     except Exception:
                         _voice_seed = float(self.get_numeric_seed() or 0.0)
                     # >>> GROK_EDIT_BEGIN: render_seed_pitch
                     # Seed → real scale degree (~2 octaves). Tiny detunes were inaudible
                     # so every seed still "hit the same notes".
-                    _seed_ratio = float(_seed_to_pitch_ratio(_voice_seed, op_idx, 0))
+                    _seed_ratio = float(_seed_to_pitch_ratio(_voice_seed, _master_slot, 0))
                     # Stable integer seed must exist before any per-voice identity
                     # fields use it.  Keep this local and deterministic.
                     _s_int = int(_safe_int_seed(_voice_seed))
@@ -24220,7 +25823,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # FULL_UNISON_2026: synthesis-identity terms keyed to the roster
                 # slot collapse to constant 0 under unison; outside the unison
                 # _vo == op_idx exactly (behavior unchanged).
-                _vo = 0 if full_unison else op_idx
+                _vo = 0 if full_unison else canonical_master_slot(op_idx, max(2, len(self.instrument_names_48)))
                 # Absolute identity anchor survives ensemble resizing.  It is only
                 # established by the resize transaction (or for new identities), so
                 # ordinary synthesis remains compatible with the global base control.
@@ -24530,7 +26133,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 else:
                     # Optional non-sine carrier from modular / panel waveform key.
                     # FM+PM already folded into `phase`; AM applied later via _am_gain.
-                    _wf = str(st.get("waveform", _meum_ctx.get("waveform", "sine")) or "sine").strip().lower()
+                    _wf = str(st.get("waveform", _meum_ctx.get("waveform", "isn")) or "isn").strip().lower()
                     if _wf in ("saw", "sawtooth", "square", "pulse", "triangle", "tri", "cos", "cosine"):
                         try:
                             harm = meum_waveform_from_phase(phase, _wf)
@@ -24777,10 +26380,36 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             _shared_pkp_d = 0.5
         try:
-            _shared_env = build_master_follow_env(master, float(bpm), float(sample_rate), _shared_pkp_d)
+            # Balance env-follow to the playlist STEP grid (16th), morphing
+            # tile length toward one row as PKP Decay → 1.0.
+            _step_len = None
+            _row_len = None
+            try:
+                _sr = float(sample_rate)
+                _beat = _sr * (60.0 / max(float(bpm), 1e-6))
+                _step_len = max(1, int(round(_beat / 4.0)))
+                try:
+                    if hasattr(self, "spin_row_beats"):
+                        _bpr = float(self.spin_row_beats.value())
+                    elif hasattr(self, "spin_playlist_beats"):
+                        _bpr = float(self.spin_playlist_beats.value())
+                    else:
+                        _bpr = 4.0
+                except Exception:
+                    _bpr = 4.0
+                _bpr = max(0.25, min(64.0, _bpr))
+                _row_len = max(_step_len, int(round(_beat * _bpr)))
+            except Exception:
+                _step_len = None
+                _row_len = None
+            _shared_env = build_master_follow_env(
+                master, float(bpm), float(sample_rate), _shared_pkp_d,
+                row_length_samples=_row_len,
+                step_length_samples=_step_len,
+            )
             _vis = _shared_env[:: max(1, len(_shared_env) // 512)][:512]
             self._last_master_env = np.asarray(_vis, dtype=np.float32)
-            self._last_master_env_norm = np.clip((_vis - 0.35) / 1.2, 0.0, 1.0).astype(np.float32)
+            self._last_master_env_norm = np.clip(_vis, 0.0, 1.0).astype(np.float32)
             self._last_master_env_db = float(np.mean(np.abs(master)) + 1e-9)
         except Exception as _env_exc:
             print(f"[ENV] shared follow envelope skipped: {_env_exc}")
@@ -24788,7 +26417,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             _sw_tmp = float(np.clip(0.45 * (1.0 - 0.7 * _shared_pkp_d), 0.045, 0.45))
             _shared_env = (0.55 + _sw_tmp * np.cos(2.0 * np.pi * (float(bpm) / 60.0) * _t_tmp)).astype(np.float32)
             self._last_master_env = _shared_env[:: max(1, len(_shared_env) // 512)][:512]
-            self._last_master_env_norm = np.clip((self._last_master_env - 0.35) / 1.2, 0.0, 1.0)
+            self._last_master_env_norm = np.clip(self._last_master_env, 0.0, 1.0)
             self._last_master_env_db = float(np.mean(np.abs(master)) + 1e-9)
 
         # Global Convolve: deterministic geometric cross-convolution of the rendered carrier.
@@ -24912,120 +26541,85 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 master = self._eqr_tensor.process(master, activation=act, pkp_env=_shared_env)
         except Exception as _eqr_exc:
             print(f"[EQR] mixdown: {_eqr_exc}")
-        # PKP master effect (tail-only): shared follow envelope, swing damped by
-        # PKP Decay — applied here so it never factors into the unison canonical
-        # engines.  Full ENV-follow symmetry: identical envelope to EQR and the
-        # Fractallizer.
+        # PKP master: isn envelope (shared) mixed at up to 50% into the bus.
         try:
             if len(master) > 0:
-                master = (master * (0.35 + 0.65 * _shared_env)).astype(np.float32)
+                env = np.asarray(_shared_env, dtype=np.float32).ravel()
+                if env.size != len(master):
+                    env = np.resize(env, len(master))
+                # wet_mix 0.5: dry + 0.5*(env*dry - dry) = dry * (1 - 0.5 + 0.5*env)
+                master = (master * (0.5 + 0.5 * env)).astype(np.float32)
         except Exception as _pkp_exc:
             print(f"[PKP] mixdown: {_pkp_exc}")
+        # PED master tint: derive the shared EQR z-relative value once and apply
+        # one deterministic, unity-centered multiplier.  The previous patch
+        # recomputed the same scalar inside a control-point loop and multiplied
+        # the entire master buffer once per control point, which could collapse
+        # the level and made the mix dependent on buffer length.
         try:
-            n = int(getattr(master, "size", 0) or 0)
-            if n > 0:
-                t_axis = np.linspace(0.0, 1.0, n, dtype=np.float64)
-                ctrl = min(128, max(8, n // 512))
-                idx = np.linspace(0, n - 1, ctrl).astype(np.int32)
-                w = max(1, ctrl // 16)
-                ped_z = np.empty(ctrl, dtype=np.float64)
-                for j, ix in enumerate(idx):
-                    lo = max(0, ix - w)
-                    hi = min(n, ix + w + 1)
-                    # PED — unified reality-tint using the shared EQR z-value follow envelope.
-                    # When Operator Theory is enabled the tint follows the same full‑follow
-                    # envelope as EQR/Fractallizer/PKP (clamped to [0.35,1.5] ideal band).
-                    # When OFF the tint is unity (no colouration).
-                    try:
-                        zrel = float(getattr(self, "_eqr_z_rel", 0.0) or 0.0)
-                        if zrel > 1e-9:
-                            # Idealised scale: map [0.35,1.5] → [0,1] for tint depth
-                            t = np.clip((zrel - 0.35) / 1.2, 0.0, 1.0)
-                            ped = 1.0 + 0.14 * np.tanh(t - 0.5)  # centred centring at t=0.5
-                        else:
-                            ped = 1.0
-                        # Apply as a gentle tint on the master bus — half‑strength blend
-                        # at default activation; the shared _shared_env already modulates
-                        # the overall master bus (so PED does not double‑enhance).
-                        master = (master * (0.5 + 0.5 * ped * 0.5)).astype(np.float32)
-                    except Exception as _ped_exc:
-                        print(f"[PED] mixdown: {_ped_exc}")
-                # CLARITY_FIX_2026: the former SMOOTH_OUTPUT_2026 pass ran an
-                # unconditional 3-tap moving-average (a fixed lowpass) over the whole
-                # master bus — with no control and no activation, it rolled high
-                # frequencies off every render and read as "everything sounds warm."
-                # Removed entirely: the equal-power row crossfade above already keeps
-                # row boundaries click-free, and the closed-form voice harmonics now
-                # reach the bus at their true brightness. No filter, no slate.
+            if len(master) > 0:
+                zrel = float(getattr(self, "_eqr_z_rel", 0.0) or 0.0)
+                if zrel > 1e-9:
+                    # Idealised scale: map [0.35, 1.5] -> [0, 1].
+                    t = float(np.clip((zrel - 0.35) / 1.2, 0.0, 1.0))
+                    # Dual-mode PED tint — no tanh saturation.
+                    if operator_theory_enabled():
+                        ped = 1.0 + 0.14 * math_scale(float(t - 0.5), 1.0)
+                    else:
+                        ped = 1.0 + 0.14 * float(t - 0.5)
+                else:
+                    ped = 1.0
+                # Half-strength PED tint; the shared envelope above remains the
+                # sole longitudinal EQR/Fractallizer/PKP modulation.
+                master = (master * (0.5 + 0.5 * ped * 0.5)).astype(np.float32)
+        except Exception as _ped_exc:
+            print(f"[PED] mixdown: {_ped_exc}")
 
-                # FINAL MASTER BUS CONTRACT — self-authored, no library DSP, no soft
-                # limiting, no slew, no adaptive feedback.  The canonical amplitude is
-                # authoritative; the ONLY master transformation is a deterministic,
-                # closed-form headroom scaling against the number-theory rail, then a
-                # hard ceiling — no gain motion of its own:
-                #
-                #       rail = (n instruments) * 3 * (1.1975807343 / 0.1975807343) * WAV_MAX
-                #
-                # x = 0.1975807343 is the phi-complement MEUM-family residue;
-                # 1.1975807343 = 1 + x, so 1.1975807343/0.1975807343 = 1 + 1/x ≈ 6.0612.
-                # ×3 (resonator / PED / PKP triad) × the live voice count × WAV_MAX is
-                # the worst case where every voice aligns constructively.
-                #
-                # RAIL_SCALE_FIX_2026 (burst remover): the rail above sat at ~28.6M for
-                # a 48-voice ensemble while the live DAC stream and the WAV exporter both
-                # operate in float [-1,1].  Every peak above full scale was hard-clipped
-                # by the DAC/encoder into flat-topped distortion — the repeated "burst".
-                # The rail is now (A) scaled linearly — rail → -1 dBFS (0.89) — by one
-                # fixed constant, and (B) used as a hard ceiling after scaling.  Pure
-                # linear scaling: below the ceiling the canonical wave is numerically
-                # untouched modulo one constant factor, and live playback and WAV export
-                # now render byte-identical material (same buffer, same headroom).
-                # LOUDNESS_FIX_2026: voices are already float ≈[-1.5, 1.5].  The old
-                # rail formula scaled by ~0.001 for 48 voices (it assumed int16 units)
-                # and made both live Play and WAV export nearly silent.  Scale the
-            # finished buffer so its actual peak maps to TARGET_PEAK (−1 dBFS).
-            # Same buffer feeds Play and Export → matching loudness.
-            # CLIP_GAIN_2026: the one-time global peak-normalize + hard ceiling
-            # above flattened every overshoot above CEIL into fixed flat-top
-            # distortion and let a single loud transient duck the whole track.
-            # Replace it with the longitudinal clip-density ⇄ gain-maximization
-            # profile (ratio = spin_clip_ratio, default 50-50). Deterministic and
-            # off-canonical — it runs on the master bus only, so composition
-            # identity is untouched and the profile is exactly reproducible from
-            # the one documented ratio carried in export provenance.
-            # MASTER_CHAIN_2026: keep the final audio chain intentionally small.
-            # No automatic peak normalization, clip-density gain riding, or
-            # operator-theory master-bus re-encoding is inserted here.  The
-            # rendered stream keeps its native deterministic dynamics; only the
-            # user master volume and final hard clip constrain output level.
-            try:
-                master *= np.float32(float(getattr(self, 'master_volume', 1.0)))
-                master = np.clip(master, np.float32(-1.0), np.float32(1.0)).astype(np.float32)
-            except Exception as _master_level_exc:
-                print(f"[MasterLevel] skipped: {_master_level_exc}")
-        except Exception as _master_post_exc:
-            print(f"[MasterPost] skipped: {_master_post_exc}")
+        # CLARITY_FIX_2026: no unconditional smoothing/low-pass pass.  The
+        # equal-power row crossfade and closed-form voice harmonics remain the
+        # authoritative brightness/click-control stages.
+
+        # OT_EQUIVALENCE_2026: Operator Theory changes the internal arithmetic
+        # route, never the final master waveform.  The legacy ot_master_transform
+        # remains available to explicit scripts but is not an implicit DSP stage.
+        #
+        # MASTER_HARDCLIP_2026: the rendered buffer is stored *pre* volume so
+        # the live slider can still trim.  Hard-clip-with-factors is applied
+        # at playback and at export (see `_master_hardclip`).  We do NOT peak-
+        # normalize here — that would hide the warning the 50% default is for.
         return master.astype(np.float32), sample_rate
 
-    def _clip_gain_profile(self, master, sample_rate):
-        """Longitudinal CLIP-DENSITY ⇄ GAIN-MAXIMIZATION profile.
+    def _master_hardclip(self, master, sample_rate=None, *, apply_master_vol=True):
+        """MASTER BUS = volume × factors → HARD CLIP. Nothing else.
 
-        Deterministic, off-canonical master-bus shaping (never composition
-        identity). Divides the timeline into ~1/24 s blocks and gives every
-        block a closed-form gain that blends two opposing goals by the ratio
-        `spin_clip_ratio` (0-100, default 50 = balanced 50-50):
+        Why this exists / what it deliberately is NOT
+        ---------------------------------------------
+        The composition sum is the composition identity.  The only legal
+        master-stage operations after that sum are:
 
-            g_max  = headroom toward TARGET_PEAK (gain maximization, capped)
-            g_safe = 1 / (1 + DENSITY_K·density) (clip avoidance: pull down
-                    wherever the flat-top ceiling density is already high)
-            g      = g_max ** (1-r) * g_safe ** r
+          1. multiply by Master Volume (default 50% — intentional warning:
+             play/preview at 50% with live hard-clip is how you hear overload
+             before export; it is NOT a soft-limiter safety net),
+          2. multiply by Clip/Gain *factors* from ``spin_clip_ratio``,
+          3. hard-clip to [-1, +1].
 
-        The per-block gains are smoothly interpolated across the whole track
-        (no block clicks) and a final rescale only ever lowers the absolute
-        peak toward CEIL — so no flat-top hard clipping remains. With the
-        same ratio and sample rate the same render reproduces the profile
-        bit-for-bit; a reverse engineer needs only the one documented ratio.
+        There is NO peak normalizer, NO brickwall limiter envelope, NO EQ,
+        NO filter, and NO "gain maximization toward a target peak" on this
+        bus.  Earlier soft-gain / density profiles are retired because they
+        hid clipping instead of exposing it.  Flat-top hard clip *is* the
+        expected behavior when the sum is hot — that is the warning.
+
+        Factors (spin_clip_ratio 0..100):
+            0%   → drive ≈ 1.0  (unity into the clipper)
+            50%  → drive ≈ 1.5  (default balanced push)
+            100% → drive ≈ 2.5  (aggressive push into hard clip)
+
+        Reproducible: same buffer + same ratio + same master_vol → same out.
         """
+        n = int(getattr(master, "size", 0) or 0)
+        if n <= 0:
+            return (np.asarray(master, dtype=np.float32), None)
+        m32 = np.asarray(master, dtype=np.float32).ravel()
         ratio_pct = 50.0
         try:
             if hasattr(self, "spin_clip_ratio"):
@@ -25033,95 +26627,57 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
         r = float(np.clip(ratio_pct / 100.0, 0.0, 1.0))
-        TARGET_PEAK = 0.89
-        CEIL = 0.95
-        GAIN_CAP = 2.5
-        GAIN_FLOOR = 0.35
-        DENSITY_K = 50.0
-        n = int(getattr(master, "size", 0) or 0)
-        if n <= 0:
-            return master, None
-        m32 = np.asarray(master, dtype=np.float32)
-        block = max(256, int(max(float(sample_rate), 1.0)) // 24)
-        nblocks = max(1, int(np.ceil(n / float(block))))
-        dens = np.empty(nblocks, dtype=np.float64)
-        peaks = np.empty(nblocks, dtype=np.float64)
-        for b in range(nblocks):
-            a = int(b) * block
-            bnd = min(a + block, n)
-            seg = m32[a:bnd]
-            peaks[b] = float(np.max(np.abs(seg))) if seg.size else 0.0
-            dens[b] = float(np.mean(np.abs(seg) > CEIL)) if seg.size else 0.0
-        headroom = TARGET_PEAK / np.maximum(peaks, 1e-9)
-        g_max = np.minimum(np.maximum(headroom, GAIN_FLOOR), GAIN_CAP)
-        g_safe = 1.0 / (1.0 + DENSITY_K * dens)
-        g = np.clip((np.float64(g_max) ** (1.0 - r)) * (np.float64(g_safe) ** r),
-                    GAIN_FLOOR, GAIN_CAP)
-        starts = np.arange(nblocks, dtype=np.int64) * block
-        ends = np.minimum(starts + block, n)
-        centers = (starts + ends - 1) * 0.5
-        if nblocks == 1:
-            profile = np.full(n, np.float32(g[0]), dtype=np.float32)
-        else:
-            profile = np.interp(np.arange(n), centers.astype(np.float64), g).astype(np.float32)
-        out = (m32 * profile).astype(np.float32)
-        peak = float(np.max(np.abs(out))) if out.size else 0.0
-        if peak > CEIL:
-            out = (out * np.float32(CEIL / peak)).astype(np.float32)
-        dens_before = float(np.mean(np.abs(m32) > CEIL)) if n else 0.0
-        dens_after = float(np.mean(np.abs(out) > CEIL)) if n else 0.0
-        # EQR_Z_READOUT_2026: master EQR z-value readout (single-point P·E+D
-        # reality-tensor output) + peak-hold numbers derived once per render from
-        # the effected master (offline, used to color the label and cross-checked
-        # live by the audio callback).  Not persisted, master-only, off-canonical.
+        # Linear drive into the clipper — not a soft curve, not a compressor.
+        drive = float(1.0 + 1.5 * r)  # 1.0 .. 2.5
+        vol = 1.0
+        if apply_master_vol:
+            try:
+                vol = float(getattr(self, "master_volume", 0.5) or 0.5)
+            except Exception:
+                vol = 0.5
+        scaled = m32 * np.float32(vol * drive)
+        # HARD CLIP — the only ceiling.  No peak rescale afterward.
+        out = np.clip(scaled, -1.0, 1.0).astype(np.float32)
+        dens_before = float(np.mean(np.abs(m32) > 0.99)) if n else 0.0
+        dens_after = float(np.mean(np.abs(out) >= 0.999)) if n else 0.0
         try:
             self._eqr_peak_db = None
-            _nfft = 1 << int(math.floor(math.log2(max(2, n))))
-            if _nfft >= 64:
-                _seg = out[:_nfft].astype(np.float64)
-                _rms_tot = float(np.sqrt(np.mean(_seg * _seg))) if _seg.size else 0.0
-                _base = max(_rms_tot, 1e-6)
-                _zn = min(128, max(8, _nfft // 512))
-                _zi = np.linspace(0, _nfft - 1, _zn).astype(np.int32)
-                _zw = max(1, _zn // 16)
-                _zc = np.empty(_zn, dtype=np.float64)
-                for _j, _ix in enumerate(_zi):
-                    _lo = max(0, _ix - _zw)
-                    _hi = min(_nfft, _ix + _zw + 1)
-                    _zc[_j] = eqr_tensor_step(_seg[_ix], _seg[_lo:_hi], t=float(_ix) / max(1, _nfft - 1))[3]
-                _zmean = float(np.mean(np.abs(_zc))) + 1e-9
-                self._eqr_z_rel = float(np.mean(np.abs(_zc / _zmean)))
-                self._eqr_z_db = self._eqr_z_rel
-                _pk = float(np.max(np.abs(out))) if n else 0.0
-                self._eqr_peak_db = float(20.0 * math.log10(max(_pk, 1e-9)))
+            _pk = float(np.max(np.abs(out))) if n else 0.0
+            self._eqr_peak_db = float(20.0 * math.log10(max(_pk, 1e-9)))
+            self._eqr_z_rel = dens_after
+            self._eqr_z_db = dens_after
         except Exception:
             pass
         self._clipgain_report = {
+            "mode": "hardclip",
             "ratio_pct": ratio_pct,
-            "blocks": int(nblocks),
+            "drive": drive,
+            "vol": vol,
             "density_before": dens_before,
             "density_after": dens_after,
-            "gain_min_db": float(20.0 * math.log10(float(np.min(profile)))) if n else 0.0,
-            "gain_max_db": float(20.0 * math.log10(float(np.max(profile)))) if n else 0.0,
+            "peak": float(np.max(np.abs(out))) if n else 0.0,
         }
-        if hasattr(self, 'lbl_clip_gain_status'):
-            status = None
+        if hasattr(self, "lbl_clip_gain_status"):
             try:
                 status = self.lbl_clip_gain_status
-            except Exception:
-                status = None
-            if status is not None:
-                try:
+                if status is not None:
                     status.setVisible(True)
                     status.setText(
-                        f"balance {ratio_pct:.0f}% · density "
-                        f"{dens_before * 100:.2f}%→{dens_after * 100:.2f}% · "
-                        f"gain {self._clipgain_report['gain_min_db']:+.1f}…"
-                        f"{self._clipgain_report['gain_max_db']:+.1f} dB"
+                        f"HARDCLIP drive {drive:.2f} · vol {vol*100:.0f}% · "
+                        f"clip dens {dens_before*100:.2f}%→{dens_after*100:.2f}%"
                     )
-                except Exception:
-                    pass
+            except Exception:
+                pass
         return out, self._clipgain_report
+
+    def _clip_gain_profile(self, master, sample_rate):
+        """Backward-compatible name → pure hardclip (see ``_master_hardclip``).
+
+        Historical soft gain-maximization / anti-flat-top profile is retired.
+        Callers that still invoke this name get volume × factors → hard clip.
+        """
+        return self._master_hardclip(master, sample_rate, apply_master_vol=True)
+
 
     def _sync_composition_toggle_state(self):
         """Maintain an order-independent CompositionToggleState summary.
@@ -25157,6 +26713,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.composition_toggle_state = st
         return st
 
+    def _canonical_project_identity_payload(self):
+        rows = []
+        for i, e in enumerate(getattr(self, "master_playlist_data", []) or []):
+            if not isinstance(e, dict): continue
+            rows.append((i, e.get("operator"), e.get("operators_csv"),
+                         tuple(e.get("sequence_refs") or []),
+                         e.get("step_algorithm_scope"), e.get("step_algorithm"),
+                         tuple(e.get("global_algorithm_kinds") or []),
+                         bool(e.get("global_algorithm_applied"))))
+        gas = getattr(self, "global_algo_state", {}) or {}
+        return {"rows": rows, "global_algo": {
+            "apply_enabled": bool(gas.get("apply_enabled", False)),
+            "script": str(gas.get("script", "")), "domain": str(gas.get("domain", "")),
+            "wire": gas.get("wire", []), "params": gas.get("params", {}),
+        }}
+
     def _canonical_fingerprint(self):
         """Order-independent short identity of the live project.
 
@@ -25187,7 +26759,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "E" if (getattr(self, "btn_idealize_rhythm", None) and self.btn_idealize_rhythm.isChecked()) else "-",
                 "S" if (getattr(self, "btn_seeded_randomize", None) and self.btn_seeded_randomize.isChecked()) else "-",
                 f"ts{toggle_digest}",
-                f"n{int(self.spin_synth_count.value()) if hasattr(self, 'spin_synth_count') else 48}",
+                # Playlist-effective algorithm/step state is composition data, not UI.
+                # Include a bounded canonical digest so apply/unapply changes project ID.
+                f"pl{hashlib.sha256(repr(self._canonical_project_identity_payload()).encode('utf-8','replace')).hexdigest()[:16]}",
+                # Instrument Count is a rendering/repartition choice, not part
+                # of the seed/composition identity.
             ]
             raw = "|".join(parts).encode("utf-8")
             return hashlib.sha256(raw).hexdigest()[:10]
@@ -25273,6 +26849,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # Step 3: Final reconciliation ensures perfect unison
             self._final_unison_reconciliation()
 
+            # Step 3b: Canonical unison owns the Algorithm Bay projection.
+            # User edits are always userdata; the engine may naturally superwrite
+            # this projection on every canonical transaction.
+            self._canonical_superwrite_global_algo()
+
             # Step 4: Sync UI to match the deterministic state
             self._sync_ui_to_unison_state()
 
@@ -25288,6 +26869,84 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         finally:
             self._unison_composition_guard = False
+
+    def _canonical_superwrite_global_algo(self):
+        """Superwrite the Global Play Algorithm Bay from the canonical unison state.
+
+        The Algorithm Bay is always userdata: user edits are valid input to the
+        composition and the master Apply toggle controls whether that userdata is
+        audible/applied.  Unlike the old *protectable userdata* mode, there is no
+        second ownership switch.  Whenever the canonical unison transaction
+        completes, the engine deterministically rewrites the algorithm bay from
+        the resulting canonical state, so the bay remains a unique, reproducible
+        projection of the composition and is naturally superwritable by the engine.
+        """
+        try:
+            gas = getattr(self, "global_algo_state", None)
+            if not isinstance(gas, dict):
+                gas = {}
+                self.global_algo_state = gas
+            seed = _safe_int_seed(self.get_numeric_seed())
+            active = sorted(self._get_active_engine_set())
+            pl = getattr(self, "master_playlist_data", None) or []
+            n = len(pl)
+            # Stable composition signature intentionally excludes the existing
+            # Global Algorithm Bay so a user edit cannot recursively feed itself.
+            rows_sig = []
+            for i, e in enumerate(pl[:64]):
+                if not isinstance(e, dict):
+                    continue
+                rows_sig.append((i, str(e.get("operator", "")),
+                                 round(float(e.get("time_offset", 0.0) or 0.0), 6),
+                                 round(float(e.get("velocity", 0.0) or 0.0), 6)))
+            sig = _stable_hash(repr((seed, tuple(active), n, tuple(rows_sig)))) & 0xFFFFFFFF
+            phase = (sig % 1000003) / 1000003.0
+            engine_expr = " + ".join(active) if active else "identity"
+            gas["script"] = (
+                "# Canonical Unison Superwrite\n"
+                f"# engines={engine_expr}\n"
+                f"# composition={sig:08x}\n"
+                "def global_script(t, name, i):\n"
+                f"    return np.sin((t + {phase:.9f}) * MEUM) * np.cos((i + 1) * {0.125 + 0.5*phase:.9f})\n"
+            )
+            gas["domain"] = (
+                'equation = "sin((t + %.9f) * MEUM) + cos(x * %.9f)"\n'
+                % (phase, 0.25 + 0.75 * phase)
+            )
+            # One deterministic canonical wire is enough to make the bay a
+            # concrete writable projection without duplicating every engine edge.
+            names = list(getattr(self, "instrument_names_48", []) or [])
+            if names:
+                a = int(sig % len(names)); b = int((sig // max(1, len(names))) % len(names))
+                if a == b and len(names) > 1:
+                    b = (b + 1) % len(names)
+                gas["wire"] = [{
+                    "source": names[a], "target": names[b],
+                    "weight": round(0.25 + 0.65 * phase, 6),
+                    "detector": "harmonic",
+                    "question": "How should canonical unison redistribute harmonic detail?",
+                    "subject": "canonical_unison",
+                    "origin": "canonical_unison",
+                    "user_defined": True,
+                    "user_data": True,
+                    "canonical_superwrite": True,
+                    "apply_enabled": bool(gas.get("apply_enabled", False)),
+                }]
+            gas.setdefault("params", {})
+            gas["params"]["mix"] = round(0.35 + 0.65 * phase, 6)
+            gas["params"]["script_amount"] = 1.0
+            gas["params"]["domain_amount"] = 1.0
+            gas["params"]["wire_amount"] = 1.0
+            gas["user_data"] = True
+            gas["canonical_superwrite"] = True
+            gas.pop("protectable_userdata", None)
+            # Keep the visible fields synchronized if the main bay is open.
+            if getattr(self, "gp_script_field", None) is not None:
+                self.gp_script_field.blockSignals(True); self.gp_script_field.setPlainText(gas["script"]); self.gp_script_field.blockSignals(False)
+            if getattr(self, "gp_domain_field", None) is not None:
+                self.gp_domain_field.blockSignals(True); self.gp_domain_field.setText(str(gas["domain"]).replace("\n", " ")); self.gp_domain_field.blockSignals(False)
+        except Exception as exc:
+            print(f"[Canonical] Global Algorithm superwrite skipped: {exc}")
 
     def _get_active_engine_set(self):
         """Get set of currently active engines in deterministic order"""
@@ -25833,12 +27492,30 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 _vge.set_operator_theory(enabled)
         except Exception as exc:
             print(f"[OT] vge.set_operator_theory: {exc}")
+        # Keep every OT button label in sync with the live mode.
+        label_on = "OPERATOR THEORY · ON"
+        label_off = "OPERATOR THEORY · OFF"
+        compact_on = "Operator Theory · ON"
+        compact_off = "Operator Theory · OFF"
+        try:
+            for attr, on_txt, off_txt in (
+                ("btn_operator_theory", label_on, label_off),
+            ):
+                btn = getattr(self, attr, None)
+                if btn is not None and hasattr(btn, "setText"):
+                    # Prefer compact wording for the smaller master-vol button.
+                    txt = on_txt if enabled else off_txt
+                    if btn.objectName() == "operatorTheoryBtn":
+                        txt = compact_on if enabled else compact_off
+                    btn.setText(txt)
+        except Exception:
+            pass
         try:
             if hasattr(self, "scope_status_label") and self.scope_status_label is not None:
                 self.scope_status_label.setText(
-                    "Operator Theory ON — EQR/master/game use ot_* arithmetic"
+                    "Operator Theory ON — nested dynamics (no sat / no peak-norm)"
                     if enabled else
-                    "Operator Theory OFF — classical arithmetic"
+                    "Operator Theory OFF — normal math (no sat / no peak-norm)"
                 )
         except Exception:
             pass
@@ -26274,20 +27951,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
             n = min(frames, remaining)
             if n > 0:
                 start_sample = int(self.play_cursor)
-                chunk = self.play_buffer[start_sample:start_sample + n] * self.master_volume
-                # VIDEO_TO_SOFTWARE_2026: live master trim driven by the rendered
-                # scenograph energy (the video -> output half of the two-way
-                # cross-validation). Live-DJ and playback dynamics only — the
-                # play_buffer/canonical mixdown/exports are untouched, so the
-                # canonical fingerprint and offline audio are unaffected. The
-                # gain is centered on 1.0 at mean energy (±4% max) and read under
-                # try/except since it is written from the UI thread.
+                # MASTER_HARDCLIP_2026: volume × clip-factors → hard clip only.
+                # No video-energy bedding, no peak normalize, no soft limiter.
+                # Default master vol 50% is the warning; hard clip is the ceiling.
+                raw = self.play_buffer[start_sample:start_sample + n]
                 try:
-                    _ve = float(getattr(getattr(self, "video_synth_engine", None), "_video_energy", 0.0) or 0.0)
-                    chunk = chunk * float(0.96 + 0.08 * np.clip(_ve, 0.0, 1.0))
+                    ratio_pct = float(self.spin_clip_ratio.value()) if hasattr(self, "spin_clip_ratio") else 50.0
                 except Exception:
-                    pass
+                    ratio_pct = 50.0
+                drive = float(1.0 + 1.5 * (ratio_pct / 100.0))
+                vol = float(getattr(self, "master_volume", 0.5) or 0.5)
+                chunk = np.clip(raw * np.float32(vol * drive), -1.0, 1.0).astype(np.float32)
                 chunk = self._apply_live_dj_chunk(chunk, start_sample)
+                # Live DJ may boost; hard-clip again so no path escapes the ceiling.
+                chunk = np.clip(chunk, -1.0, 1.0).astype(np.float32)
                 outdata[:n, 0] = chunk
                 # EQR_BAND_READOUT_2026: live peak + peak-hold numbers written by
                 # the audio thread (plain floats — the labels are refreshed by the
@@ -26328,7 +28005,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if not self.is_playing:
             if not getattr(self, "_stop_requested", False):
                 self._transport_finished = True
-            self.stop_playback()
+            if getattr(self, "_audio_only_mode", False):
+                self.stop_audio_playback()
+            else:
+                self.stop_playback()
+            return
+        if getattr(self, "_audio_only_mode", False):
+            if hasattr(self, "scope_status_label"):
+                total = max(1, int(getattr(self, "play_buffer", np.zeros(1)).size or 1))
+                pct = int(100 * float(getattr(self, "play_cursor", 0)) / float(total))
+                self.scope_status_label.setText(f"🔊 Audio Track  |  LIVE {pct}%")
             return
         # Live canonical engines: continuous offset + effect parametrics
         try:
@@ -26384,6 +28070,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def toggle_playback(self):
         """Unified PLAY/PAUSE/RESUME transport over the rendered audiovisual data stream."""
+        # AUDIO_ONLY_CROSS_DEACTIVATE: audiovisual play always wins over the
+        # audio-only transport.
+        if getattr(self, "_audio_only_mode", False):
+            self.stop_audio_playback()
         # A completed one-shot is NOT a paused stream.
         # Start a fresh transport on the next PLAY.
         if getattr(self, "_transport_finished", False):
@@ -26410,7 +28100,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.btn_play.setText("▶ RESUME Audiovisual Track")
             self.btn_play.setStyleSheet(
                 "QPushButton { background-color:#6b4d0b; color:#ffffff; border:2px solid #ffd75e; "
-                "border-radius:8px; padding:10px 16px; font-weight:900; font-size:13pt; }"
+                "border-radius:8px; padding:10px 16px; font-weight:900; font-size:13pt; min-width:240px; }"
                 "QPushButton:hover { background-color:#7d5c12; }"
             )
             if hasattr(self, 'scope_status_label'):
@@ -26422,6 +28112,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             try:
                 self.is_playing = True
                 self.is_paused = False
+                self._audio_only_mode = False
                 self._transport_finished = False
                 self._play_finished_flag = False
                 if HAS_SOUNDDEVICE:
@@ -26433,7 +28124,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.btn_play.setText("⏸ PAUSE Audiovisual Track")
                 self.btn_play.setStyleSheet(
                     "QPushButton { background-color:#00aa55; color:#ffffff; border:2px solid #ffffff; "
-                    "border-radius:8px; padding:10px 16px; font-weight:900; font-size:13pt; }"
+                    "border-radius:8px; padding:10px 16px; font-weight:900; font-size:13pt; min-width:240px; }"
                     "QPushButton:hover { background-color:#00c464; }"
                 )
                 self._scope_update_timer.start()
@@ -26456,6 +28147,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.play_cursor = 0
                 self.is_playing = True
                 self.is_paused = False
+                self._audio_only_mode = False
                 self._transport_finished = False
                 self._play_finished_flag = False
             if HAS_SOUNDDEVICE:
@@ -26482,121 +28174,147 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
 
     def _on_nt_lattice_apply(self):
-        """Toggle-apply/Unapply the number-theoretic step mask.
+        """Apply the ℤ-Lattice step algorithm at the selected global/local scope.
 
-        First click: snapshot the current instrument memory, write the mask.
-        Second click (or when a snapshot exists): restore exactly the steps /
-        pitches / amplitudes / pattern_length that existed before the apply.
+        Global mode walks every playlist row and applies the mask to each
+        sequence bank referenced by that row. Local mode touches only the
+        currently selected instrument/pattern. Snapshots are keyed by the same
+        scope so Unapply reverses exactly the affected material.
         """
         import copy as _c
         mode_map = {
-            "Prime steps": "primes",
-            "Square steps": "quadratic",
-            "Coprime steps": "totient",
-            "Square-free steps": "mobius",
-            "Fraction steps": "farey",
-            "Tree-ratio steps": "stern",
-            # legacy labels
-            "Primes": "primes",
-            "Quadratic residues": "quadratic",
-            "Totient units": "totient",
-            "Möbius support": "mobius",
-            "Farey": "farey",
-            "Stern–Brocot": "stern",
+            "Prime steps": "primes", "Square steps": "quadratic", "Coprime steps": "totient",
+            "Square-free steps": "mobius", "Fraction steps": "farey", "Tree-ratio steps": "stern",
+            "Primes": "primes", "Quadratic residues": "quadratic", "Totient units": "totient",
+            "Möbius support": "mobius", "Farey": "farey", "Stern–Brocot": "stern",
         }
-        mode_ui = self.combo_nt_mode.currentText() if hasattr(self, "combo_nt_mode") else "Primes"
-        mode = mode_map.get(mode_ui, "primes")
+        mode_ui = self.combo_nt_mode.currentText() if hasattr(self, "combo_nt_mode") else "Prime steps"
+        mode_alg = mode_map.get(mode_ui, "primes")
         mod = int(self.spin_nt_modulus.value()) if hasattr(self, "spin_nt_modulus") else 12
         depth = int(self.spin_nt_depth.value()) if hasattr(self, "spin_nt_depth") else 5
-        name = None
-        if hasattr(self, "instrument_selector_dropdown"):
-            name = self.instrument_selector_dropdown.currentText()
-        if not name:
-            names = list(getattr(self, "instrument_names_48", []) or [])
-            name = names[0] if names else None
-        if not name:
-            return
-        mem = (getattr(self, "instrument_sequencer_memory", {}) or {}).get(name)
-        if not isinstance(mem, dict):
-            mem = {"steps": [False] * 16, "amplitudes": [1.0] * 16, "pitches": [1.0] * 16}
-            self.instrument_sequencer_memory[name] = mem
+        is_local = bool(hasattr(self, "mode_combo") and "Single Instrument" in self.mode_combo.currentText())
+        self._nt_lattice_scope = "local" if is_local else "global"
 
-        # UN-APPLY path: a snapshot exists for this instrument → restore it.
-        prior = self._nt_lattice_snapshot.get(name)
-        if prior is not None:
-            if not getattr(self, "_undo_in_flight", False):
-                self._push_undo("Unapply step algorithm")
-            for k, v in prior.items():
-                mem[k] = _c.deepcopy(v)
-            self._nt_lattice_snapshot.pop(name, None)
-            if hasattr(self, "_refresh_step_ui"):
-                try:
-                    self._refresh_step_ui()
-                except Exception:
-                    pass
-            if hasattr(self, "scope_status_label"):
-                self.scope_status_label.setText(
-                    f"ℤ-Lattice unapplied → {name}: prior steps/pitches/amplitudes restored"
-                )
-            try:
-                self._on_live_source_changed()
-            except Exception:
-                pass
-            self._sync_nt_lattice_button_state()
-            return
+        def apply_mem(mem, key):
+            if not isinstance(mem, dict):
+                return
+            prior = self._nt_lattice_snapshot.get(key)
+            if prior is not None:
+                return
+            length = max(1, min(128, int(mem.get("pattern_length", len(mem.get("steps") or []) or 16))))
+            steps = list(mem.get("steps") or [])
+            amps = list(mem.get("amplitudes") or [])
+            pitches = list(mem.get("pitches") or [])
+            offsets = list(mem.get("offsets") or [])
+            probabilities = list(mem.get("probabilities") or [])
+            gates = list(mem.get("gates") or [])
+            while len(steps) < length: steps.append(False)
+            while len(amps) < length: amps.append(1.0)
+            while len(pitches) < length: pitches.append(1.0)
+            while len(offsets) < length: offsets.append(0.0)
+            while len(probabilities) < length: probabilities.append(100)
+            while len(gates) < length: gates.append(True)
+            self._nt_lattice_snapshot[key] = {
+                "steps": _c.deepcopy(steps[:length]), "amplitudes": _c.deepcopy(amps[:length]),
+                "pitches": _c.deepcopy(pitches[:length]), "offsets": _c.deepcopy(offsets[:length]),
+                "probabilities": _c.deepcopy(probabilities[:length]), "gates": _c.deepcopy(gates[:length]),
+                "pattern_length": length,
+            }
+            mask = _nt_step_mask(length, mode_alg, mod, depth)
+            for i in range(length):
+                steps[i] = bool(mask[i])
+                if steps[i]:
+                    residue = i % mod
+                    scramble = (residue * 7 + i * 11) % max(1, mod)
+                    pitches[i] = float(np.clip(_seed_to_pitch_ratio(scramble + mod * 0.01, residue, i), 1.0/32.0, 32.0))
+                    amps[i] = float(0.55 + 0.45 * abs(_nt_mobius(residue + 1)))
+            mem.update({"steps": steps[:length], "amplitudes": amps[:length], "pitches": pitches[:length],
+                        "offsets": offsets[:length], "probabilities": probabilities[:length],
+                        "gates": gates[:length], "pattern_length": length})
 
-        if not getattr(self, "_undo_in_flight", False):
-            self._push_undo("Apply step algorithm")
-        # APPLY path: snapshot the untouched instrument memory (all keys).
-        self._nt_lattice_snapshot[name] = {
-            "steps": _c.deepcopy(list(mem.get("steps") or [])),
-            "amplitudes": _c.deepcopy(list(mem.get("amplitudes") or [])),
-            "pitches": _c.deepcopy(list(mem.get("pitches") or [])),
-            "offsets": _c.deepcopy(list(mem.get("offsets") or [])),
-            "pattern_length": int(mem.get("pattern_length", len(mem.get("steps") or []) or 16)),
-            "probabilities": _c.deepcopy(list(mem.get("probabilities") or [])),
-            "gates": _c.deepcopy(list(mem.get("gates") or [])),
-        }
-        length = int(mem.get("pattern_length", len(mem.get("steps") or []) or 16))
-        length = max(1, min(128, length))
-        mask = _nt_step_mask(length, mode, mod, depth)
-        steps = list(mem.get("steps") or [False] * length)
-        amps = list(mem.get("amplitudes") or [1.0] * length)
-        pitches = list(mem.get("pitches") or [1.0] * length)
-        while len(steps) < length:
-            steps.append(False)
-            amps.append(1.0)
-            pitches.append(1.0)
-        for i in range(length):
-            steps[i] = bool(mask[i])
-            if steps[i]:
-                # Full-range pitch from residue scramble + step hash
-                residue = (i % mod)
-                scramble = (residue * 7 + (i * 11)) % max(1, mod)
-                pitches[i] = float(np.clip(
-                    _seed_to_pitch_ratio(scramble + mod * 0.01, residue, i),
-                    1.0/32.0, 32.0
-                ))
-                amps[i] = float(0.55 + 0.45 * abs(_nt_mobius((residue) + 1)) / 1.0)
-        mem["steps"] = steps[:length]
-        mem["amplitudes"] = amps[:length]
-        mem["pitches"] = pitches[:length]
-        mem["pattern_length"] = length
-        # Optional: mark as user-visible pattern
-        if hasattr(self, "_refresh_step_ui"):
-            try:
-                self._refresh_step_ui()
-            except Exception:
-                pass
-        if hasattr(self, "scope_status_label"):
-            on = sum(1 for x in steps[:length] if x)
-            self.scope_status_label.setText(
-                f"ℤ-Lattice {mode_ui} mod {mod} → {name}: {on}/{length} steps (⌫ to unapply)"
-            )
+        if is_local:
+            name = self.instrument_selector_dropdown.currentText() if hasattr(self, "instrument_selector_dropdown") else None
+            if not name:
+                names = list(getattr(self, "instrument_names_48", []) or [])
+                name = names[0] if names else None
+            if not name:
+                return
+            bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(name, {})
+            sid = int((getattr(self, "instrument_selected_sequence", {}) or {}).get(name, 1))
+            mem = bank.get(sid) if isinstance(bank, dict) else None
+            if not isinstance(mem, dict):
+                mem = (getattr(self, "instrument_sequencer_memory", {}) or {}).get(name)
+            key = f"local:{name}"
+            if self._nt_lattice_snapshot.get(key) is not None:
+                if not getattr(self, "_undo_in_flight", False): self._push_undo("Unapply step algorithm")
+                prior = self._nt_lattice_snapshot.pop(key)
+                target = mem if isinstance(mem, dict) else (getattr(self, "instrument_sequencer_memory", {}) or {}).get(name)
+                if isinstance(target, dict): target.update(_c.deepcopy(prior))
+            else:
+                if not getattr(self, "_undo_in_flight", False): self._push_undo("Apply step algorithm")
+                if isinstance(mem, dict): apply_mem(mem, key)
+                elif isinstance((getattr(self, "instrument_sequencer_memory", {}) or {}).get(name), dict):
+                    apply_mem(self.instrument_sequencer_memory[name], key)
+        else:
+            global_keys = [k for k in list(self._nt_lattice_snapshot) if str(k).startswith("global:")]
+            if global_keys:
+                if not getattr(self, "_undo_in_flight", False): self._push_undo("Unapply step algorithm")
+                for key in global_keys:
+                    try:
+                        _, op, sid = str(key).split(":", 2)
+                        mem = (getattr(self, "instrument_sequence_banks", {}) or {}).get(op, {}).get(int(sid))
+                        if isinstance(mem, dict): mem.update(_c.deepcopy(self._nt_lattice_snapshot[key]))
+                    except Exception: pass
+                    self._nt_lattice_snapshot.pop(key, None)
+            else:
+                if not getattr(self, "_undo_in_flight", False): self._push_undo("Apply step algorithm")
+                touched = 0
+                seen = set()
+                for r, entry in enumerate(getattr(self, "master_playlist_data", []) or []):
+                    if not isinstance(entry, dict): continue
+                    refs = entry.get("sequence_refs") or []
+                    if isinstance(refs, str): refs = [x.strip() for x in refs.split(",") if x.strip()]
+                    if not refs:
+                        op = str(entry.get("operator") or "").strip()
+                        sid = int((getattr(self, "instrument_selected_sequence", {}) or {}).get(op, 1)) if op else 1
+                        refs = [f"{op}#S{sid}"] if op else []
+                    row_applied = []
+                    for ref in refs:
+                        txt = str(ref).strip()
+                        if "#S" in txt: op, sid_txt = txt.rsplit("#S", 1)
+                        elif ":" in txt: op, sid_txt = txt.rsplit(":", 1)
+                        else: continue
+                        op = op.strip()
+                        try: sid = int(sid_txt)
+                        except Exception: continue
+                        key = f"global:{op}:{sid}"
+                        if key in seen or key in self._nt_lattice_snapshot: continue
+                        mem = (getattr(self, "instrument_sequence_banks", {}) or {}).get(op, {}).get(sid)
+                        if isinstance(mem, dict):
+                            apply_mem(mem, key); seen.add(key); row_applied.append(key); touched += 1
+                    if row_applied:
+                        entry["step_algorithm_scope"] = "global"
+                        entry["step_algorithm"] = mode_ui
+                        entry["step_algorithm_refs"] = row_applied
+                if touched == 0:
+                    # A global sequence should still reach every row; fall back to
+                    # each row's operator memory when no explicit #S reference exists.
+                    for r, entry in enumerate(getattr(self, "master_playlist_data", []) or []):
+                        if not isinstance(entry, dict): continue
+                        op = str(entry.get("operator") or "").strip()
+                        if not op: continue
+                        mem = (getattr(self, "instrument_sequencer_memory", {}) or {}).get(op)
+                        key = f"global:{op}:1"
+                        if isinstance(mem, dict) and key not in self._nt_lattice_snapshot:
+                            apply_mem(mem, key); entry["step_algorithm_scope"] = "global"; entry["step_algorithm"] = mode_ui
         try:
-            self._on_live_source_changed()
-        except Exception:
-            pass
+            self._refresh_step_ui()
+        except Exception: pass
+        try:
+            self._sync_playlist_paint_table_from_memory()
+        except Exception: pass
+        try: self._on_live_source_changed()
+        except Exception: pass
         self._sync_nt_lattice_button_state()
 
     def _on_nt_to_seed(self):
@@ -26638,18 +28356,96 @@ class MathematiciansGrooveboxApp(QMainWindow):
             except Exception:
                 pass
 
-    def _on_sceno_items_changed(self, n):
-        eng = getattr(self, "video_synth_engine", None)
-        if eng is not None and hasattr(eng, "set_scenograph_item_count"):
-            eng.set_scenograph_item_count(n)
+    def play_audio_only(self):
+        """Play the rendered audio track without driving the audiovisual monitors."""
+        # Mutually exclusive with audiovisual playback.
+        if self.is_playing or self.is_paused:
+            if not getattr(self, "_audio_only_mode", False):
+                self.stop_playback()
+            else:
+                return
+        try:
+            if hasattr(self, "scope_status_label"):
+                self.scope_status_label.setText("🔊 Rendering Audio Track…")
+            QApplication.processEvents()
+            buf, sr = self._render_mixdown_buffer()
+            with self.play_lock:
+                self.play_buffer = buf
+                self.play_sample_rate = sr
+                self.play_cursor = 0
+                self.is_playing = True
+                self.is_paused = False
+                self._audio_only_mode = True
+                self._transport_finished = False
+                self._stop_requested = False
+            if HAS_SOUNDDEVICE:
+                if self.audio_stream is not None:
+                    try:
+                        self.audio_stream.stop(); self.audio_stream.close()
+                    except Exception:
+                        pass
+                self.audio_stream = sd.OutputStream(
+                    samplerate=sr, channels=1, dtype="float32", callback=self._audio_callback,
+                    blocksize=1024, latency="low"
+                )
+                self.audio_stream.start()
+            self.btn_audio_only.setText("🔊 AUDIO Track  |  LIVE")
+            self.btn_audio_only.setStyleSheet(
+                "QPushButton { background-color:#00aa55; color:#ffffff; border:2px solid #ffffff; "
+                "border-radius:8px; padding:10px 16px; font-weight:900; font-size:13pt; }"
+                "QPushButton:hover { background-color:#00c464; }"
+            )
+            self.btn_play.setText("▶ PLAY Audiovisual Track")
+            if hasattr(self, "scope_status_label"):
+                self.scope_status_label.setText("🔊 Audio Track  |  LIVE")
+            self._scope_update_timer.start()
+        except Exception as e:
+            self.is_playing = False
+            self.is_paused = False
+            self._audio_only_mode = False
+            print(f"[Audio-only] Playback start failed: {e}")
+            QMessageBox.critical(self, "Audio Playback Error", str(e))
+
+    def stop_audio_playback(self):
+        """Stop/reset audio-only transport without changing composition state."""
+        was_active = self.is_playing and getattr(self, "_audio_only_mode", False)
+        if not getattr(self, "_audio_only_mode", False) and not was_active:
+            return
+        self.is_playing = False
+        self.is_paused = False
+        self._audio_only_mode = False
+        self._transport_finished = False
+        self._stop_requested = True
+        if hasattr(self, "_scope_update_timer") and self._scope_update_timer.isActive():
+            self._scope_update_timer.stop()
+        if getattr(self, "audio_stream", None) is not None:
+            try:
+                self.audio_stream.stop(); self.audio_stream.close()
+            except Exception:
+                pass
+            self.audio_stream = None
+        with getattr(self, "play_lock", threading.Lock()):
+            self.play_cursor = 0
+        if hasattr(self, "btn_audio_only"):
+            self.btn_audio_only.setText("▶ PLAY Audio Track")
+            self.btn_audio_only.setStyleSheet(
+                "QPushButton { background-color:#14301c; color:#9dffb0; border:2px solid #46d158; "
+                "border-radius:8px; padding:10px 16px; font-weight:900; font-size:13pt; }"
+                "QPushButton:hover { background-color:#1f4228; }"
+                "QPushButton:pressed { background-color:#0c1f10; }"
+            )
         if hasattr(self, "scope_status_label"):
-            self.scope_status_label.setText(f"🎨 Scenograph items → {int(n)}/64")
+            self.scope_status_label.setText("📊 GLOBAL monitors · Wave · Scenograph · Spectrum  |  Idle")
+        self._stop_requested = False
+        if was_active:
+            print("[Audio-only] Playback stopped.")
 
     def stop_playback(self):
         """Hard stop: reset the audiovisual transport to the beginning."""
         was_active = self.is_playing or self.is_paused
         self.is_playing = False
         self.is_paused = False
+        self._audio_only_mode = False
         self._stop_requested = True
         self._transport_finished = False
         # Drop live modulation baselines so the next Play starts clean
@@ -26668,6 +28464,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if hasattr(self, 'btn_play'):
             self.btn_play.setText("▶ PLAY Audiovisual Track")
             self.btn_play.setStyleSheet(
+                "QPushButton { background-color:#14301c; color:#9dffb0; border:2px solid #46d158; "
+                "border-radius:8px; padding:10px 16px; font-weight:900; font-size:13pt; }"
+                "QPushButton:hover { background-color:#1f4228; }"
+                "QPushButton:pressed { background-color:#0c1f10; }"
+            )
+        if hasattr(self, 'btn_audio_only'):
+            self.btn_audio_only.setText("▶ PLAY Audio Track")
+            self.btn_audio_only.setStyleSheet(
                 "QPushButton { background-color:#14301c; color:#9dffb0; border:2px solid #46d158; "
                 "border-radius:8px; padding:10px 16px; font-weight:900; font-size:13pt; }"
                 "QPushButton:hover { background-color:#1f4228; }"
@@ -26706,7 +28510,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _export_provenance_payload(self):
         """Self-describing generation manifest embedded in every export (audio
-        WAV chunk / ffmpeg comment / game provenance.json).  Small, plain,
+        WAV chunk / ffmpeg comment / game provenance.mgpr).  Small, plain,
         standard metadata so reverse-engineering an export back onto the main
         window is a simple parameter copy — and re-rendering with these values
         reproduces the exact artifact.  Device-independent (no timestamps).
@@ -26942,7 +28746,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _triad_matches(self, manifest_triad, zip_triad):
         """GAME_AUDIO_CONTRACT_2026: field-wise cross-verification between the
-        audio manifest's game_triad and the game package's triad.json.  All
+        audio manifest's game_triad and the game package's triad.mgpr.  All
         audio/visual quantities and all game quantities except sigil_count must
         agree to float64 precision; sigil_count is classification-tracked (the
         package legitimately pins its own), so it is reported separately."""
@@ -26982,7 +28786,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 import zipfile as _zf
                 with _zf.ZipFile(file_path) as zf:
                     names = set(zf.namelist())
-                    for cand in ("provenance.json", "main_window_settings.json", "multimodal_contract.json"):
+                    for cand in ("provenance.mgpr", "main_window_settings.mgpr", "multimodal_contract.mgpr"):
                         if cand in names:
                             try:
                                 payload = json.loads(zf.read(cand).decode("utf-8"))
@@ -26992,10 +28796,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                                 if isinstance(payload, str):
                                     payload = json.loads(payload)
                                 # GAME_AUDIO_CONTRACT_2026: when this is a game zip,
-                                # also surface the package's own triad.json so the
+                                # also surface the package's own triad.mgpr so the
                                 # reconvert step can cross-verify the audio export's
                                 # manifest against the game's numeric contract key.
-                                for triad_cand in ("assets/triad.json", "triad.json"):
+                                for triad_cand in ("assets/triad.mgpr", "triad.mgpr"):
                                     if triad_cand in names:
                                         try:
                                             payload["_zip_triad"] = json.loads(zf.read(triad_cand).decode("utf-8"))
@@ -27025,7 +28829,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def reconvert_export_dialog(self):
         """REVERSE-ENGINEERING: rebuild the main window from an exported
         artifact.  Reads the plain provenance manifest the export carried
-        (WAV 'eqrf' chunk / ffmpeg 'comment' tag / game provenance.json) and
+        (WAV 'eqrf' chunk / ffmpeg 'comment' tag / game provenance.mgpr) and
         re-applies every documented input so a re-render reproduces the same
         artifact; the restored canonical fingerprint is shown for comparison.
         """
@@ -27059,7 +28863,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             cur = ""
         # GAME_AUDIO_CONTRACT_2026: if the artifact is a game zip, cross-verify
-        # the embedded triad.json against the audio manifest's game_triad key —
+        # the embedded triad.mgpr against the audio manifest's game_triad key —
         # both must be the same closed-form f(seed), proving the audio and game
         # came from one project.
         triad_note = ""
@@ -27112,7 +28916,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 script_size = 0
                 for n in names:
                     low = n.lower()
-                    if not any(low.endswith(e) for e in (".py", ".json", ".md", ".sh", ".bat", ".command", ".txt")):
+                    if not any(low.endswith(e) for e in (".py", ".mgpr", ".md", ".sh", ".bat", ".command", ".txt")):
                         continue
                     try:
                         data = zf.read(n)
@@ -27133,7 +28937,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             }
                 for n in names:
                     low = n.lower()
-                    if not low.endswith(".json"):
+                    if not low.endswith(".mgpr"):
                         continue
                     try:
                         obj = json.loads(zf.read(n).decode("utf-8"))
@@ -27286,9 +29090,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         f.write(prog["head"])
                         saved.append(prog["name"])
                 for name_key, obj, label in (
-                    ("identity", bundle.get("identity"), "identity_recovered.json"),
-                    ("triad", bundle.get("triad"), "triad_recovered.json"),
-                    ("payload", bundle.get("payload"), "provenance_recovered.json"),
+                    ("identity", bundle.get("identity"), "identity_recovered.mgpr"),
+                    ("triad", bundle.get("triad"), "triad_recovered.mgpr"),
+                    ("payload", bundle.get("payload"), "provenance_recovered.mgpr"),
                 ):
                     if isinstance(obj, dict):
                         with open(os.path.join(out_dir, label), "w", encoding="utf-8") as f:
@@ -27333,6 +29137,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
         try:
+            # Export gets the same hardclip path as live: vol × factors → clip.
+            master, _ = self._master_hardclip(master, sr, apply_master_vol=True)
             pcm = (np.clip(master, -1.0, 1.0) * 32767.0).astype(np.int16)
         except Exception:
             pcm = None
@@ -27455,9 +29261,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def export_mixdown_dialog(self, audio_format="wav"):
         """Export the same canonical master mix in WAV/FLAC/OGG/AIFF/MP3/OPUS/CAF.
 
-        WAV uses the native writer; all other formats use the same ffmpeg
-        binary already used by video export, so every output is derived from one
-        canonical render rather than a second serialization model.
+        Pathway (all formats share this — no alternate soft bus):
+          1. ``_render_mixdown_buffer`` — composition identity (sum of voices)
+          2. optional bake-DJ write (live parametric, not a normalizer)
+          3. ``_master_hardclip`` — Master Volume × Clip/Gain factors → hard clip
+             (NO peak normalizer, NO limiter, NO EQ/filter on this final bus)
+          4. int16 quantize for container write
+
+        50% default Master Volume is the intentional warning on play/preview;
+        export uses the same hardclip path so offline files match what you heard.
+        Video exports that embed this mixdown inherit the same hardclip stage.
         """
         audio_format = str(audio_format or "wav").lower().lstrip(".")
         if audio_format not in {"wav", "flac", "ogg", "aiff", "mp3", "opus", "caf"}:
@@ -27481,6 +29294,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             QApplication.processEvents()
             master, sample_rate = self._render_mixdown_buffer()
             master = self._bake_dj_write(master, sample_rate)
+            # MASTER_HARDCLIP_2026: no normalize/limiter/EQ on the final bus.
+            master, _ = self._master_hardclip(master, sample_rate, apply_master_vol=True)
             pcm = (np.clip(master, -1.0, 1.0) * 32767.0).astype(np.int16)
             provenance = self._export_provenance_payload()
             if audio_format == "wav":
@@ -27650,17 +29465,44 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 notes = self.qe_notes.toPlainText()[:200]
         except Exception:
             pass
+        # Algorithm application is composition state, not merely UI state.
+        # Export both the effective per-row step algorithms and their canonical
+        # digest so video/audio/game consumers see the same applied composition.
+        step_rows = []
+        for _r, _e in enumerate(getattr(self, "master_playlist_data", []) or []):
+            if not isinstance(_e, dict):
+                continue
+            step_rows.append({
+                "row": int(_r),
+                "scope": str(_e.get("step_algorithm_scope", "")),
+                "algorithm": str(_e.get("step_algorithm", "")),
+                "refs": list(_e.get("step_algorithm_refs") or []),
+            })
+        try:
+            step_algo_fingerprint = hashlib.sha256(
+                json.dumps(step_rows, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest()[:16]
+        except Exception:
+            step_algo_fingerprint = "0" * 16
+        # Engine bits from live toggles — these control game + video identity.
+        # Instrument count is recorded for UI only; classify ignores it.
+        rnd_on = bool(getattr(self, "btn_local_randomize", None) and self.btn_local_randomize.isChecked())
+        pl_on = bool(getattr(self, "btn_local_phase_lock", None) and self.btn_local_phase_lock.isChecked())
         return {
             "bpm": float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0,
             "seq_length": int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else 16,
             "playlist_rows": int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else 32,
             "n_instruments": len(getattr(self, "instrument_names_48", []) or []),
             "goava_active": bool(getattr(self, "goava_active", False)),
+            "randomizer_active": rnd_on,
+            "phase_lock_active": pl_on,
             "seed": float(self.get_numeric_seed()) if hasattr(self, "get_numeric_seed") else 0.0,
             "live_parametrics": live_p,
             "goava_group_phase": bool(getattr(self, "goava_active", False)),
             "global_algo": gas,
             "global_algo_fingerprint": algo_fp,
+            "step_algorithms": step_rows,
+            "step_algorithm_fingerprint": step_algo_fingerprint,
             "live_dj_goava": bool(getattr(self, "live_dj_goava", False)),
             "live_dj_random": bool(getattr(self, "live_dj_random", False)),
             "project_notes": notes,
@@ -27687,11 +29529,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
             bpm=meta["bpm"],
             seq_length=meta["seq_length"],
             playlist_rows=meta["playlist_rows"],
-            n_instruments=meta["n_instruments"],
+            n_instruments=meta.get("n_instruments", 8),  # ignored by identity
             goava_active=meta["goava_active"],
+            randomizer_active=bool(meta.get("randomizer_active", False)),
+            phase_lock_active=bool(meta.get("phase_lock_active", False)),
             live_parametrics=meta.get("live_parametrics"),
             global_algo_fingerprint=meta.get("global_algo_fingerprint"),
             global_algo=meta.get("global_algo"),
+            step_algorithm_fingerprint=meta.get("step_algorithm_fingerprint"),
+            step_algorithms=meta.get("step_algorithms"),
             live_dj_goava=meta.get("live_dj_goava"),
             live_dj_random=meta.get("live_dj_random"),
         ), meta
@@ -27718,7 +29564,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             global _vge
             _prov = json.loads(self._export_provenance_payload())
-            out = _vge.package_game_zip(identity, path, meta, {"provenance.json": _prov})
+            out = _vge.package_game_zip(identity, path, meta, {"provenance.mgpr": _prov})
             self._last_videogame_path = out
             self._last_videogame_identity = identity.to_dict()
             QMessageBox.information(
@@ -27736,6 +29582,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _on_play_videogame(self):
         """Build a live game .py from the composition and open the start UI (splash + options)."""
+        # GAME_CROSS_DEACTIVATE: launching the game always stops whichever
+        # audio transport is active so two playback modes cannot overlap.
+        try:
+            self.stop_playback()
+        except Exception:
+            pass
         try:
             identity, meta = self._classify_live_game()
         except Exception as e:
@@ -27796,7 +29648,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             global _vge
             try:
                 td = tempfile.mkdtemp(prefix="groovebox_game_")
-                script = _vge.export_game_files(identity, td, meta, {"provenance.json": json.loads(self._export_provenance_payload())})
+                script = _vge.export_game_files(identity, td, meta, {"provenance.mgpr": json.loads(self._export_provenance_payload())})
                 self._last_videogame_path = script
                 args = [_sys.executable, script]
                 if host_chk.isChecked() and identity.online:
@@ -27814,209 +29666,389 @@ class MathematiciansGrooveboxApp(QMainWindow):
         dlg.exec()
 
     def export_video_dialog(self, include_audio=True, container="mp4"):
-        """Render 2.5D frames; optionally mux audio. container: mp4|webm|avi."""
-        tmp = None
+        """Render 2.5D frames in 16 recoverable .part segments inside the
+        chosen render destination (never /tmp). User controls resolution;
+        size is predicted before work starts. container: mp4|webm|avi.
+
+        PART_FILE_2026 video path:
+          - intermediates live next to the final file as
+            <stem>.partNN.<container>.part  (16 parts)
+          - each part is encoded independently so peak disk is ~1/16 of a
+            full frame dump; completed parts survive a crash for resume
+          - final output is written as <out>.part then atomically renamed
+        """
         try:
             from PIL import Image
-            ffmpeg = self._resolve_ffmpeg_binary()
-            if not ffmpeg:
-                raise RuntimeError(
-                    "ffmpeg not found. Install a full build (see Help) or place "
-                    "ffmpeg at ./bin/ffmpeg or on PATH."
-                )
-            container = (container or "mp4").lower().lstrip(".")
-            if container not in ("mp4", "webm", "avi"):
-                container = "mp4"
-            vcodec, vargs, acodec, aargs = self._ffmpeg_encoder_args(ffmpeg, container)
+        except Exception as e:
+            QMessageBox.critical(self, "Video Export Error", f"PIL required: {e}")
+            return
 
-            default_name = os.path.join(
-                self._exports_dir(), f"groovebox_video_{self.export_counter:03d}.{container}"
+        ffmpeg = self._resolve_ffmpeg_binary()
+        if not ffmpeg:
+            QMessageBox.critical(
+                self, "Video Export Error",
+                "ffmpeg not found. Install a full build (see Help) or place "
+                "ffmpeg at ./bin/ffmpeg or on PATH."
             )
-            filters = {
-                "mp4": "MP4 Video (*.mp4)",
-                "webm": "WebM Video (*.webm)",
-                "avi": "AVI Video (*.avi)",
-            }
-            file_filter = f"{filters[container]};;All Files (*)"
-            out_path, _ = QFileDialog.getSaveFileName(
-                self, "Export Video", default_name, file_filter
+            return
+
+        container = (container or "mp4").lower().lstrip(".")
+        if container not in ("mp4", "webm", "avi"):
+            container = "mp4"
+        vcodec, vargs, acodec, aargs = self._ffmpeg_encoder_args(ffmpeg, container)
+
+        # --- resolution control ---
+        try:
+            def_w, def_h = self._export_frame_size()
+        except Exception:
+            def_w, def_h = 1280, 720
+        res_dlg = QDialog(self)
+        res_dlg.setWindowTitle("Video Export — Resolution & Size")
+        res_dlg.setStyleSheet(getattr(self, "styleSheet", lambda: "")() or "")
+        form = QFormLayout(res_dlg)
+        spin_w = QSpinBox(); spin_w.setRange(160, 7680); spin_w.setSingleStep(2); spin_w.setValue(int(def_w))
+        spin_h = QSpinBox(); spin_h.setRange(120, 4320); spin_h.setSingleStep(2); spin_h.setValue(int(def_h))
+        form.addRow("Width (px)", spin_w)
+        form.addRow("Height (px)", spin_h)
+        info = QLabel("Size estimate appears after you choose the output path.")
+        info.setWordWrap(True)
+        form.addRow(info)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(res_dlg.accept)
+        btns.rejected.connect(res_dlg.reject)
+        form.addRow(btns)
+        if res_dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        w = int(spin_w.value()); h = int(spin_h.value())
+        w -= w % 2; h -= h % 2
+        w = max(160, w); h = max(120, h)
+
+        default_name = os.path.join(
+            self._exports_dir(), f"groovebox_video_{self.export_counter:03d}.{container}"
+        )
+        filters = {
+            "mp4": "MP4 Video (*.mp4)",
+            "webm": "WebM Video (*.webm)",
+            "avi": "AVI Video (*.avi)",
+        }
+        file_filter = f"{filters[container]};;All Files (*)"
+        out_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Video", default_name, file_filter
+        )
+        if not out_path:
+            return
+        if not out_path.lower().endswith("." + container):
+            out_path = out_path + "." + container
+
+        dest_dir = os.path.dirname(os.path.abspath(out_path)) or self._exports_dir()
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+        except Exception:
+            pass
+        stem = os.path.splitext(os.path.basename(out_path))[0]
+        N_PARTS = 16
+
+        if hasattr(self, 'scope_status_label'):
+            mode = "Video + Audio" if include_audio else "Video only"
+            self.scope_status_label.setText(f"🎬 Preparing {mode} ({container}) {w}x{h}…")
+        QApplication.processEvents()
+
+        master, sr = self._render_mixdown_buffer()
+        master = self._bake_dj_write(master, sr)
+        provenance = self._export_provenance_payload()
+        fps = 24
+        frame_samples = max(1, int(sr / fps))
+        n_frames = max(1, int(np.ceil(len(master) / frame_samples)))
+        n_frames = min(n_frames, fps * 60 * 30)  # soft 30 min ceiling
+        duration_s = n_frames / float(fps)
+
+        # --- size prediction ---
+        # Rough final-video estimate: ~CRF18 ~0.15–0.35 bits/pixel/frame + audio.
+        bpp = 0.22
+        est_video_bytes = int(n_frames * w * h * bpp / 8.0)
+        est_audio_bytes = int(duration_s * 192000 / 8.0) if include_audio else 0
+        # Peak intermediate: one part's frames as PNG (~0.4 of raw RGB) + that part video
+        frames_per_part = (n_frames + N_PARTS - 1) // N_PARTS
+        est_peak_part_png = int(frames_per_part * w * h * 3 * 0.35)
+        est_peak = est_peak_part_png + (est_video_bytes // N_PARTS) + est_audio_bytes
+        def _fmt(n):
+            for unit, div in (("GB", 1<<30), ("MB", 1<<20), ("KB", 1<<10)):
+                if n >= div:
+                    return f"{n / div:.2f} {unit}"
+            return f"{n} B"
+        size_msg = (
+            f"Resolution: {w}×{h} @ {fps} fps\n"
+            f"Frames: {n_frames}  (~{duration_s:.1f}s)  in {N_PARTS} parts\n"
+            f"Predicted final size: ~{_fmt(est_video_bytes + est_audio_bytes)}\n"
+            f"Predicted peak temp (1 part): ~{_fmt(est_peak)}\n"
+            f"Part files will be written under:\n{dest_dir}\n\nContinue?"
+        )
+        reply = QMessageBox.question(
+            self, "Export size prediction", size_msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Recovery: reuse completed part videos if present and non-empty
+        part_paths = []
+        for pi in range(N_PARTS):
+            part_paths.append(os.path.join(dest_dir, f"{stem}.part{pi:02d}.{container}"))
+        existing = [p for p in part_paths if os.path.isfile(p) and os.path.getsize(p) > 64]
+        resume = False
+        if existing:
+            r = QMessageBox.question(
+                self, "Recover partial export?",
+                f"Found {len(existing)}/{N_PARTS} existing .part segment(s) in the render folder.\n"
+                "Yes = resume (skip completed parts)\nNo = delete them and start fresh",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
             )
-            if not out_path:
-                return
-            if not out_path.lower().endswith("." + container):
-                out_path = out_path + "." + container
+            resume = (r == QMessageBox.StandardButton.Yes)
+            if not resume:
+                for p in part_paths:
+                    try:
+                        if os.path.isfile(p):
+                            os.remove(p)
+                    except Exception:
+                        pass
+                for p in part_paths:
+                    try:
+                        pp = p + ".part"
+                        if os.path.isfile(pp):
+                            os.remove(pp)
+                    except Exception:
+                        pass
 
-            if hasattr(self, 'scope_status_label'):
-                mode = "Video + Audio" if include_audio else "Video only"
-                self.scope_status_label.setText(f"🎬 Rendering {mode} ({container})…")
-            QApplication.processEvents()
-
-            master, sr = self._render_mixdown_buffer()
-            master = self._bake_dj_write(master, sr)
-            # REVERSE_ENGINEERING: every exported video carries its plain
-            # generation manifest in container metadata (ffmpeg 'comment'),
-            # so re-deriving the original main-window settings is trivial.
-            provenance = self._export_provenance_payload()
-            # Meum-friendly frame rate (~24 * MEUM_NORM*PHI cluster stays near 24)
-            fps = max(12, int(round(24 * MEUM_NORM / MEUM_NORM)))  # 24
-            fps = 24
-            frame_samples = max(1, int(sr / fps))
-            n_frames = max(1, int(np.ceil(len(master) / frame_samples)))
-            # No artificial 60s cap — export the full rendered track.
-            # Soft safety ceiling (30 min) only to avoid runaway memory on bad state.
-            n_frames = min(n_frames, fps * 60 * 30)
-            duration_s = n_frames / float(fps)
-            # Resolution = main window at export time (not the in-pane thumbnail)
-            w, h = self._export_frame_size()
-
-            tmp = tempfile.mkdtemp(prefix="eqr_vid_")
-            frames_dir = os.path.join(tmp, "frames")
-            os.makedirs(frames_dir, exist_ok=True)
-            audio_path = os.path.join(tmp, "groovebox_audio.wav")
-
-            # Trim audio to the video duration so mux lengths match.
-            if include_audio:
-                n_audio = min(len(master), int(round(duration_s * sr)))
-                audio_clip = master[:max(1, n_audio)]
+        audio_path = None
+        if include_audio:
+            audio_path = os.path.join(dest_dir, f".{stem}.audio.part.wav")
+            n_audio = min(len(master), int(round(duration_s * sr)))
+            audio_clip = master[:max(1, n_audio)]
+            pcm = (np.clip(audio_clip, -1, 1) * 32767).astype(np.int16)
+            try:
                 if wavfile is not None:
-                    wavfile.write(audio_path, sr, (np.clip(audio_clip, -1, 1) * 32767).astype(np.int16))
+                    wavfile.write(audio_path, sr, pcm)
                 else:
                     with wave.open(audio_path, 'wb') as wf:
-                        wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr)
-                        wf.writeframes((np.clip(audio_clip, -1, 1) * 32767).astype(np.int16).tobytes())
+                        wf.setnchannels(1)
+                        wf.setsampwidth(2)
+                        wf.setframerate(int(sr))
+                        wf.writeframes(pcm.tobytes())
+            except Exception as e:
+                raise RuntimeError(f"Could not write audio temp: {e}")
 
-            eng = getattr(self, 'video_synth_engine', None) or VideoSynthEngine(len(active_instrument_memory))
-            if hasattr(eng, 'bind_app'):
-                eng.bind_app(self)
-            # w, h already set from _export_frame_size()
-            for fi in range(n_frames):
-                a = fi * frame_samples
-                b = min(len(master), a + frame_samples)
-                ph = fi / max(n_frames - 1, 1)
-                eng.set_waveform(master[a:b], playhead=ph)
-                # export=True: pure scenograph — no oscilloscope / FFT UI chrome
-                frame = eng.render_frame(w, h, export=True)
-                # Two-way signal-to-output: ingest feeds the exported frame's
-                # digest back into the software side, matching the live path.
+        _aim = getattr(self, 'active_instrument_memory', None)
+        _nmem = len(_aim) if hasattr(_aim, '__len__') else int(getattr(self, 'synth_count', 48) or 48)
+        eng = getattr(self, 'video_synth_engine', None) or VideoSynthEngine(_nmem)
+        if hasattr(eng, 'bind_app'):
+            eng.bind_app(self)
+
+        pix = ["-pix_fmt", "yuv420p"] if vcodec not in ("mjpeg",) else []
+        frames_root = os.path.join(dest_dir, f".{stem}.frames.part")
+        try:
+            os.makedirs(frames_root, exist_ok=True)
+        except Exception as e:
+            raise RuntimeError(f"Cannot create frames staging dir in render destination: {e}")
+
+        try:
+            for pi in range(N_PARTS):
+                part_out = part_paths[pi]
+                if resume and os.path.isfile(part_out) and os.path.getsize(part_out) > 64:
+                    if hasattr(self, 'scope_status_label'):
+                        self.scope_status_label.setText(f"🎬 Part {pi+1}/{N_PARTS} already done — skip")
+                        QApplication.processEvents()
+                    continue
+
+                f0 = pi * frames_per_part
+                f1 = min(n_frames, (pi + 1) * frames_per_part)
+                if f0 >= f1:
+                    # empty trailing part: write a 1-frame placeholder so concat stays aligned
+                    f1 = f0 + 1
+                    f0 = max(0, n_frames - 1)
+
+                part_frames_dir = os.path.join(frames_root, f"p{pi:02d}")
                 try:
-                    eng.ingest_video_frame_stats(*eng.frame_stats(frame))
+                    os.makedirs(part_frames_dir, exist_ok=True)
                 except Exception:
                     pass
-                Image.fromarray(frame, mode="RGB").save(os.path.join(frames_dir, f"frame_{fi:05d}.png"))
-                if fi % 12 == 0 and hasattr(self, 'scope_status_label'):
-                    self.scope_status_label.setText(f"🎬 Frames {fi}/{n_frames}…")
-                    QApplication.processEvents()
+                # clear previous attempt frames for this part
+                for old in os.listdir(part_frames_dir):
+                    try:
+                        os.remove(os.path.join(part_frames_dir, old))
+                    except Exception:
+                        pass
 
-            pattern = os.path.join(frames_dir, "frame_%05d.png")
-            source_video = self.imported_video_path if getattr(self, 'imported_video_path', '') else ''
-            pix = ["-pix_fmt", "yuv420p"] if vcodec not in ("mjpeg",) else []
+                local_count = 0
+                for fi in range(f0, f1):
+                    a = fi * frame_samples
+                    b = min(len(master), a + frame_samples)
+                    ph = fi / max(n_frames - 1, 1)
+                    eng.set_waveform(master[a:b], playhead=ph)
+                    frame = eng.render_frame(w, h, export=True)
+                    try:
+                        eng.ingest_video_frame_stats(*eng.frame_stats(frame))
+                    except Exception:
+                        pass
+                    Image.fromarray(frame, mode="RGB").save(
+                        os.path.join(part_frames_dir, f"frame_{local_count:05d}.png")
+                    )
+                    local_count += 1
+                    if local_count % 8 == 0 and hasattr(self, 'scope_status_label'):
+                        self.scope_status_label.setText(
+                            f"🎬 Part {pi+1}/{N_PARTS}  frames {local_count}/{f1-f0}…"
+                        )
+                        QApplication.processEvents()
 
-            if source_video and os.path.abspath(source_video) != os.path.abspath(out_path):
-                source_has_audio = bool(getattr(self, 'imported_video_meta', {}).get('has_audio', False))
-                if include_audio and source_has_audio:
-                    filter_complex = (
-                        "[1:v]scale={0}:{1}:force_original_aspect_ratio=increase,"
-                        "crop={0}:{1},setsar=1,format=yuv420p[iv];"
-                        "[0:v][iv]blend=all_mode=screen:all_opacity=0.35[v];"
-                        "[2:a]volume=0.35[srca];[3:a]volume=1.0[gena];"
-                        "[srca][gena]amix=inputs=2:duration=longest:normalize=0[a]"
-                    ).format(w, h)
-                    cmd = [
-                        ffmpeg, "-y", "-framerate", str(fps), "-i", pattern,
-                        "-stream_loop", "-1", "-i", source_video,
-                        "-i", audio_path, "-i", source_video,
-                        "-filter_complex", filter_complex,
-                        "-map", "[v]", "-map", "[a]",
-                        "-t", f"{duration_s:.6f}",
-                        "-c:v", vcodec, *vargs, *pix,
-                        "-c:a", acodec, *aargs,
-                        "-metadata", f"comment={provenance}",
-                        "-shortest", out_path,
-                    ]
-                elif include_audio:
-                    filter_complex = (
-                        "[1:v]scale={0}:{1}:force_original_aspect_ratio=increase,"
-                        "crop={0}:{1},setsar=1,format=yuv420p[iv];"
-                        "[0:v][iv]blend=all_mode=screen:all_opacity=0.35[v]"
-                    ).format(w, h)
-                    cmd = [
-                        ffmpeg, "-y", "-framerate", str(fps), "-i", pattern,
-                        "-stream_loop", "-1", "-i", source_video,
-                        "-i", audio_path,
-                        "-filter_complex", filter_complex,
-                        "-map", "[v]", "-map", "2:a:0",
-                        "-t", f"{duration_s:.6f}",
-                        "-c:v", vcodec, *vargs, *pix,
-                        "-c:a", acodec, *aargs,
-                        "-metadata", f"comment={provenance}",
-                        "-shortest", out_path,
-                    ]
-                else:
-                    filter_complex = (
-                        "[1:v]scale={0}:{1}:force_original_aspect_ratio=increase,"
-                        "crop={0}:{1},setsar=1,format=yuv420p[iv];"
-                        "[0:v][iv]blend=all_mode=screen:all_opacity=0.35[v]"
-                    ).format(w, h)
-                    cmd = [
-                        ffmpeg, "-y", "-framerate", str(fps), "-i", pattern,
-                        "-stream_loop", "-1", "-i", source_video,
-                        "-filter_complex", filter_complex,
-                        "-map", "[v]",
-                        "-t", f"{duration_s:.6f}",
-                        "-c:v", vcodec, *vargs, *pix,
-                        "-metadata", f"comment={provenance}",
-                        "-an", out_path,
-                    ]
-            elif include_audio:
-                cmd = [
-                    ffmpeg, "-y", "-framerate", str(fps), "-i", pattern,
-                    "-i", audio_path,
-                    "-map", "0:v:0", "-map", "1:a:0",
-                    "-t", f"{duration_s:.6f}",
-                    "-c:v", vcodec, *vargs, *pix,
-                    "-c:a", acodec, *aargs,
-                    "-metadata", f"comment={provenance}",
-                    "-shortest", out_path,
-                ]
-            else:
+                pattern = os.path.join(part_frames_dir, "frame_%05d.png")
+                part_tmp = part_out + ".part"
+                # part_tmp ends in ".part", not ".mp4"/".webm"/".avi", so ffmpeg
+                # can't infer the muxer from the filename — force it explicitly.
+                _muxer = {"mp4": "mp4", "webm": "webm", "avi": "avi"}.get(container, container)
                 cmd = [
                     ffmpeg, "-y", "-framerate", str(fps), "-i", pattern,
                     "-map", "0:v:0",
-                    "-t", f"{duration_s:.6f}",
                     "-c:v", vcodec, *vargs, *pix,
-                    "-metadata", f"comment={provenance}",
-                    "-an", out_path,
+                    "-an",
+                    "-f", _muxer,
+                    part_tmp,
                 ]
+                proc = subprocess.run(cmd, capture_output=True, text=True)
+                if proc.returncode != 0:
+                    err = (proc.stderr or proc.stdout or "ffmpeg failed")[-2200:]
+                    raise RuntimeError(f"Part {pi+1}/{N_PARTS} encode failed:\n{err}")
+                os.replace(part_tmp, part_out)
 
+                # free this part's PNGs immediately (keeps peak disk low)
+                for old in os.listdir(part_frames_dir):
+                    try:
+                        os.remove(os.path.join(part_frames_dir, old))
+                    except Exception:
+                        pass
+                try:
+                    os.rmdir(part_frames_dir)
+                except Exception:
+                    pass
+
+            # Build concat list
+            list_path = os.path.join(dest_dir, f".{stem}.concat.part.txt")
+            with open(list_path, "w", encoding="utf-8") as lf:
+                for pp in part_paths:
+                    if not os.path.isfile(pp):
+                        raise RuntimeError(f"Missing part segment: {pp}")
+                    # ffmpeg concat demuxer needs escaped single quotes
+                    esc = pp.replace("'", "'\\''")
+                    lf.write(f"file '{esc}'\n")
+
+            final_tmp = out_path + ".part"
+            # Same issue as the per-part encode: final_tmp ends in ".part", so
+            # ffmpeg can't infer the output muxer from the extension — set it
+            # explicitly via -f, matching the target container.
+            if include_audio and audio_path and os.path.isfile(audio_path):
+                cmd = [
+                    ffmpeg, "-y",
+                    "-f", "concat", "-safe", "0", "-i", list_path,
+                    "-i", audio_path,
+                    "-map", "0:v:0", "-map", "1:a:0",
+                    "-t", f"{duration_s:.6f}",
+                    "-c:v", "copy",
+                    "-c:a", acodec, *aargs,
+                    "-metadata", f"comment={provenance}",
+                    "-shortest",
+                    "-f", _muxer,
+                    final_tmp,
+                ]
+            else:
+                cmd = [
+                    ffmpeg, "-y",
+                    "-f", "concat", "-safe", "0", "-i", list_path,
+                    "-map", "0:v:0",
+                    "-t", f"{duration_s:.6f}",
+                    "-c:v", "copy",
+                    "-metadata", f"comment={provenance}",
+                    "-an",
+                    "-f", _muxer,
+                    final_tmp,
+                ]
             proc = subprocess.run(cmd, capture_output=True, text=True)
             if proc.returncode != 0:
-                err = (proc.stderr or proc.stdout or "ffmpeg failed")[-2200:]
-                if "Unknown encoder" in err or "Encoder not found" in err:
-                    err += (
-                        f"\n\nThis ffmpeg ({ffmpeg}) lacks encoder '{vcodec}'.\n"
-                        "Install a full build, e.g. on Ubuntu/Debian:\n"
-                        "  sudo apt update && sudo apt install -y ffmpeg\n"
-                        "Or download a static binary and place it at ./bin/ffmpeg"
-                    )
-                raise RuntimeError(err)
+                # fallback: re-encode if stream copy fails (codec/container mismatch)
+                err1 = (proc.stderr or proc.stdout or "")[-1200:]
+                if include_audio and audio_path and os.path.isfile(audio_path):
+                    cmd = [
+                        ffmpeg, "-y",
+                        "-f", "concat", "-safe", "0", "-i", list_path,
+                        "-i", audio_path,
+                        "-map", "0:v:0", "-map", "1:a:0",
+                        "-t", f"{duration_s:.6f}",
+                        "-c:v", vcodec, *vargs, *pix,
+                        "-c:a", acodec, *aargs,
+                        "-metadata", f"comment={provenance}",
+                        "-shortest",
+                        "-f", _muxer,
+                        final_tmp,
+                    ]
+                else:
+                    cmd = [
+                        ffmpeg, "-y",
+                        "-f", "concat", "-safe", "0", "-i", list_path,
+                        "-map", "0:v:0",
+                        "-t", f"{duration_s:.6f}",
+                        "-c:v", vcodec, *vargs, *pix,
+                        "-metadata", f"comment={provenance}",
+                        "-an",
+                        "-f", _muxer,
+                        final_tmp,
+                    ]
+                proc = subprocess.run(cmd, capture_output=True, text=True)
+                if proc.returncode != 0:
+                    err = (proc.stderr or proc.stdout or "ffmpeg concat failed")[-2200:]
+                    raise RuntimeError(f"Final mux failed:\n{err}\n(earlier copy attempt: {err1})")
+
+            os.replace(final_tmp, out_path)
+
+            # success: remove part segments + staging (optional keep for recovery —
+            # user asked for .part in render dest; leave them unless clean succeeds)
+            for pp in part_paths:
+                try:
+                    if os.path.isfile(pp):
+                        os.remove(pp)
+                except Exception:
+                    pass
+            try:
+                if os.path.isfile(list_path):
+                    os.remove(list_path)
+            except Exception:
+                pass
+            if audio_path:
+                try:
+                    if os.path.isfile(audio_path):
+                        os.remove(audio_path)
+                except Exception:
+                    pass
+            try:
+                shutil.rmtree(frames_root, ignore_errors=True)
+            except Exception:
+                pass
 
             self.export_counter += 1
             mode = "Video + Audio" if include_audio else "Video only"
             if hasattr(self, 'scope_status_label'):
                 self.scope_status_label.setText(
-                    f"🎬 {mode} exported → {os.path.basename(out_path)}  ({vcodec}/{acodec if include_audio else 'no-audio'})"
+                    f"🎬 {mode} exported → {os.path.basename(out_path)}  ({vcodec}/{acodec if include_audio else 'no-audio'}) {w}x{h}"
                 )
             QMessageBox.information(
                 self, "Export complete",
-                f"Saved:\n{out_path}\n\nEncoder: {vcodec}"
+                f"Saved:\n{out_path}\n\n"
+                f"Encoder: {vcodec}"
                 + (f" + {acodec}" if include_audio else " (video only)")
+                + f"\nResolution: {w}×{h}  ·  {n_frames} frames in {N_PARTS} parts"
             )
         except Exception as e:
             print(f"[Video] export error: {e}")
             QMessageBox.critical(self, "Video Export Error", str(e))
-        finally:
-            if tmp:
-                shutil.rmtree(tmp, ignore_errors=True)
+            # leave .part segments on disk for recovery
 
     def closeEvent(self, event):
         """Ensure audio stream and PKP pad clock are torn down on close."""
@@ -28065,7 +30097,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "wire": [],
                 "params": {"mix": 0.35, "enable_script": True, "enable_domain": True, "enable_wire": True, "script_amount": 1.0, "domain_amount": 1.0, "wire_amount": 1.0},
             "apply_enabled": False,
-            "protectable_userdata": True,
+            "user_data": True,
+            "canonical_superwrite": True,
             }
 
         window = QWidget(None, Qt.WindowType.Window)
@@ -28191,8 +30224,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     "question": question_edit.text(),
                     "subject": subject_edit.text(),
                     "origin": "global_player",
-                    "user_defined": bool(gas.get("protectable_userdata", True)),
-                    "protectable_userdata": bool(gas.get("protectable_userdata", True)),
+                    "user_defined": True,
+                    "user_data": True,
                     "apply_enabled": bool(gas.get("apply_enabled", False)),
                 })
                 _refresh_log()
@@ -28296,6 +30329,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                                   if not (isinstance(d, dict) and d.get("source") == "global_player")]
             self.patch_connections = [c for c in (getattr(self, "patch_connections", []) or [])
                                       if not (isinstance(c, dict) and c.get("origin") == "global_player")]
+            for entry in (getattr(self, "master_playlist_data", []) or []):
+                if isinstance(entry, dict):
+                    entry.pop("global_algorithm_scope", None)
+                    entry.pop("global_algorithm_applied", None)
+                    entry.pop("global_algorithm_kinds", None)
             if hasattr(self, "_on_live_source_changed"):
                 self._on_live_source_changed()
         except Exception as e:
@@ -28319,6 +30357,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
         mix = max(0.0, min(1.0, mix * max(0.0, min(1.0, amount))))
         n_touched = 0
 
+        # Playlist rows are the visible global composition surface. Mark every
+        # global row so Save/Load/autosave and the canonical fingerprint retain
+        # exactly which global algorithm overlays were applied.
+        for _row in (getattr(self, "master_playlist_data", []) or []):
+            if isinstance(_row, dict):
+                _row["global_algorithm_scope"] = "global"
+                _row["global_algorithm_applied"] = True
+                _kinds = list(_row.get("global_algorithm_kinds") or [])
+                if which not in _kinds: _kinds.append(which)
+                _row["global_algorithm_kinds"] = _kinds
+
         if which == "script":
             body = str(gas.get("script") or "")
             if not hasattr(self, "instrument_scripts") or self.instrument_scripts is None:
@@ -28331,7 +30380,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     continue
                 st["global_script_algo"] = body
                 st["global_algo_mix"] = mix
-                st["global_algo_user_data"] = bool(gas.get("protectable_userdata", True))
+                st["global_algo_user_data"] = True
                 st["global_algo_apply_enabled"] = bool(gas.get("apply_enabled", False))
                 n_touched += 1
 
@@ -28355,7 +30404,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         "weight": mix,
                         "user_defined": False,
                         "source": "global_player",
-                        "protectable_userdata": bool(gas.get("protectable_userdata", True)),
+                        "user_data": True,
                         "apply_enabled": bool(gas.get("apply_enabled", False)),
                     })
                     n_touched += 1
@@ -28378,8 +30427,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     "target": w.get("target"),
                     "weight": float(w.get("weight", 0.5)) * mix,
                     "origin": "global_player",
-                    "user_defined": bool(gas.get("protectable_userdata", True)),
-                    "protectable_userdata": bool(gas.get("protectable_userdata", True)),
+                    "user_defined": True,
+                    "user_data": True,
                     "apply_enabled": bool(gas.get("apply_enabled", False)),
                 })
                 n_touched += 1
@@ -29014,18 +31063,23 @@ class MathematiciansGrooveboxApp(QMainWindow):
         return True
 
     def _sync_nt_lattice_button_state(self):
-        """Update the ℤ-Lattice button text based on whether an unapply snap exists."""
+        """Reflect the apply/unapply state for the current global/local scope."""
         try:
-            name = None
-            if hasattr(self, "instrument_selector_dropdown"):
-                name = self.instrument_selector_dropdown.currentText()
-            has_snap = bool(self._nt_lattice_snapshot.get(name))
+            mode = str(self.mode_combo.currentText()) if hasattr(self, "mode_combo") else "Global"
+            is_local = "Single Instrument" in mode
+            self._nt_lattice_scope = "local" if is_local else "global"
+            name = self.instrument_selector_dropdown.currentText() if hasattr(self, "instrument_selector_dropdown") else None
+            if is_local:
+                has_snap = bool(self._nt_lattice_snapshot.get(f"local:{name}"))
+            else:
+                has_snap = any(str(k).startswith("global:") for k in self._nt_lattice_snapshot)
             btn = getattr(self, "btn_nt_apply", None)
             if btn is not None:
                 btn.setText("⌫ Unapply step algorithm" if has_snap else "Apply step algorithm")
                 btn.setChecked(has_snap)
         except Exception:
             pass
+
 # ============================================================================
 # STARTUP_DIAGNOSTIC — protects against the exact QSizePolicy crash reported
 # by the user. Keep this import at module scope; do not move it into the UI.
