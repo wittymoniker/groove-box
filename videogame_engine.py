@@ -600,11 +600,20 @@ def classify_from_composition(
     cam = CAMERAS[_mix(s, "camera") % len(CAMERAS)]
     # TOPOLOGY_CONTRACT_2026: open world is the primary agenda — give it the
     # clear majority of seeds while hub_spoke / linear / arena / roguelike stay
-    # reachable so the whole lattice is still covered.
+    # reachable so the whole lattice is still covered. These are the "ideal
+    # ratios" the constructor draws topology from — tune here, nowhere else,
+    # so gamemode selectivity stays centralized instead of re-derived per call
+    # site. OPEN_WORLD_SHARE also is what gates Game.free_play (see Game.__init__),
+    # so raising it means more seeds get genuine free-roam, no forced objective.
+    OPEN_WORLD_SHARE = 0.55   # fraction of seeds landing directly on open_world
+    HUB_SPOKE_SHARE = 0.20    # next slice landing on hub_spoke
+    # remaining (1 - OPEN_WORLD_SHARE - HUB_SPOKE_SHARE) fraction draws evenly
+    # from the full TOPOLOGIES lattice (which can itself re-roll open_world/
+    # hub_spoke, so their true totals run a bit higher than the shares above).
     _topo_r = meum_game_residue(s, "topology_bias")
-    if _topo_r < 0.52:
+    if _topo_r < OPEN_WORLD_SHARE:
         top = "open_world"
-    elif _topo_r < 0.72:
+    elif _topo_r < OPEN_WORLD_SHARE + HUB_SPOKE_SHARE:
         top = "hub_spoke"
     else:
         top = TOPOLOGIES[_mix(s, "topology") % len(TOPOLOGIES)]
@@ -2089,6 +2098,15 @@ class Game:
         self.objective = self.id.get("objective", "survey")
         self.difficulty = self.id.get("difficulty", "standard")
         self.level_type = self.id.get("level_type", "heightfield")
+        # FREE_PLAY_2026: open_world / sandbox topologies (and any genre whose
+        # hook is the free-roam hook) are genuinely open — no forced objective
+        # completion loop. This is what "open world" is supposed to mean; it
+        # used to still gate progress behind clearing sigils/resources like
+        # every other topology, which is why every generated game converged on
+        # the same "collect the sigils" feel regardless of genre.
+        self.free_play = _topo in ("open_world", "sandbox") or (
+            "hook_world_free_roam" in (self.id.get("gameplay_hooks") or [])
+        )
         self.difficulty_mult = {
             "tutorial": 0.5, "standard": 1.0, "master": 1.7, "meum_insane": 2.4,
         }.get(self.difficulty, 1.0)
@@ -2884,15 +2902,22 @@ class Game:
                 self.difficulty_mult = min(3.0, self.difficulty_mult * (1.0 + MEUM_NORM * 0.4))
                 self.send_chat("system", f"level {self.level} — {_obj} x{self.difficulty_mult:.2f}")
                 self.combo = 0
-            # Objective-complete conditions (plenty to do)
+            # Objective-complete conditions — each objective resolves on its own
+            # signal now, so a genre never gets funneled into "clear the sigils"
+            # by default (sigils remain a scoring pickup everywhere, but are only
+            # a *completion gate* for the objectives that are actually about them).
             done = False
-            if _obj == "harvest" and self.resources.remaining() == 0 and self.sigils.remaining() == 0:
+            if self.free_play:
+                # Open-world / sandbox: no forced completion at all — roam, and
+                # objective-complete only ever fires as a bonus milestone below.
+                done = False
+            elif _obj == "harvest" and self.resources.remaining() == 0:
                 done = True
             elif _obj in ("survey", "escort", "pilgrimage") and self.waypoints.remaining() == 0:
                 done = True
-            elif _obj == "nexus" and self.sigils.remaining() == 0 and self.resources.remaining() <= max(1, self.resources.count // 4):
+            elif _obj == "nexus" and self.sigils.remaining() == 0:
                 done = True
-            elif self.sigils.remaining() == 0 and self.resources.remaining() == 0 and self.waypoints.remaining() == 0:
+            elif _obj == "siege" and self.pve.remaining() == 0:
                 done = True
             if done and not self._objective_done:
                 self._objective_done = True
