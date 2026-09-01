@@ -19284,7 +19284,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # VIDEO_EXPORT_TOGGLE_2026: the button itself is the run/stop control;
         # the arrow/menu remains available for choosing an export type.
         self.btn_export.setCheckable(True)
-        self.btn_export.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        self.btn_export.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.btn_export.clicked.connect(self._toggle_video_export)
         export_menu = QMenu(self.btn_export)
         # REVERSE_ENGINEERING: every export carries its plain provenance
@@ -29733,6 +29733,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
             btn.setChecked(bool(active))
             btn.setText("⏹ STOP EXPORT" if active else "⬇ EXPORT")
             btn.setToolTip("Stop the active video export" if active else "Choose an export format")
+            # Whole-button semantics: idle opens the menu; active stops export.
+            # No default format is implicitly executed by a plain Export click.
+            btn.setPopupMode(
+                QToolButton.ToolButtonPopupMode.NoPopup
+                if active else QToolButton.ToolButtonPopupMode.InstantPopup
+            )
             btn.blockSignals(False)
         save_btn = getattr(self, "_save_project_button", None)
         if save_btn is not None:
@@ -29747,9 +29753,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._video_export_stop_requested = True
             self._set_video_export_ui(True, "🎬 Stopping export… finishing current encoded frame/part")
             return
-        # The menu is still the format selector. A main-button click starts the
-        # canonical default export without creating a second export pathway.
-        self.export_video_dialog(include_audio=True, container="mp4")
+        # IDLE EXPORT IS MENU-ONLY: InstantPopup makes the entire button open
+        # the format/action menu. There is deliberately no implicit MP4 default.
+        # While active, _set_video_export_ui switches the button to NoPopup so
+        # the same whole-button click becomes the deterministic stop control.
 
     def _video_export_should_stop(self):
         return bool(getattr(self, "_video_export_stop_requested", False))
