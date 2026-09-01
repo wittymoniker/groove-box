@@ -29107,11 +29107,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
                 pattern = os.path.join(part_frames_dir, "frame_%05d.png")
                 part_tmp = part_out + ".part"
+                # part_tmp ends in ".part", not ".mp4"/".webm"/".avi", so ffmpeg
+                # can't infer the muxer from the filename — force it explicitly.
+                _muxer = {"mp4": "mp4", "webm": "webm", "avi": "avi"}.get(container, container)
                 cmd = [
                     ffmpeg, "-y", "-framerate", str(fps), "-i", pattern,
                     "-map", "0:v:0",
                     "-c:v", vcodec, *vargs, *pix,
                     "-an",
+                    "-f", _muxer,
                     part_tmp,
                 ]
                 proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -29142,6 +29146,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     lf.write(f"file '{esc}'\n")
 
             final_tmp = out_path + ".part"
+            # Same issue as the per-part encode: final_tmp ends in ".part", so
+            # ffmpeg can't infer the output muxer from the extension — set it
+            # explicitly via -f, matching the target container.
             if include_audio and audio_path and os.path.isfile(audio_path):
                 cmd = [
                     ffmpeg, "-y",
@@ -29153,6 +29160,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     "-c:a", acodec, *aargs,
                     "-metadata", f"comment={provenance}",
                     "-shortest",
+                    "-f", _muxer,
                     final_tmp,
                 ]
             else:
@@ -29164,6 +29172,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     "-c:v", "copy",
                     "-metadata", f"comment={provenance}",
                     "-an",
+                    "-f", _muxer,
                     final_tmp,
                 ]
             proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -29181,6 +29190,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         "-c:a", acodec, *aargs,
                         "-metadata", f"comment={provenance}",
                         "-shortest",
+                        "-f", _muxer,
                         final_tmp,
                     ]
                 else:
@@ -29192,6 +29202,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         "-c:v", vcodec, *vargs, *pix,
                         "-metadata", f"comment={provenance}",
                         "-an",
+                        "-f", _muxer,
                         final_tmp,
                     ]
                 proc = subprocess.run(cmd, capture_output=True, text=True)
