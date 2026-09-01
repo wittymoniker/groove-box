@@ -11391,12 +11391,12 @@ class MasterControlPatchbayPage(QWidget):
         QMessageBox.information(self, "Song & Patchbay Randomizer", "Successfully randomized song arrangement, synth wiring, effects modules, and global cross-tab patch cables!")
 
     def _save_project(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Save Project File", "", "EQ爾 Groovebox Files (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, "Save Project File", "", "EQ爾 Groovebox Files (*.mgpr)")
         if path:
-            # SAVE_EXT_2026: enforce the .json suffix so the second save with the
+            # SAVE_EXT_2026: enforce the .mgpr suffix so the second save with the
             # canonical-protect toggle can never fail on a bare extension.
-            if not path.lower().endswith(".json"):
-                path = path + ".json"
+            if not path.lower().endswith(".mgpr"):
+                path = path + ".mgpr"
             try:
                 self.engine.serialize_project(path)
             except Exception as exc:
@@ -11405,7 +11405,7 @@ class MasterControlPatchbayPage(QWidget):
             QMessageBox.information(self, "Project Saved", f"Project successfully saved to:\n{path}")
 
     def _load_project(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Open Project File", "", "EQ爾 Groovebox Files (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "Open Project File", "", "EQ爾 Groovebox Files (*.mgpr)")
         if path:
             self.engine.deserialize_project(path)
             self.bpm_slider.setValue(int(self.engine.global_bpm * 10))
@@ -17831,7 +17831,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_export.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         export_menu = QMenu(self.btn_export)
         # REVERSE_ENGINEERING: every export carries its plain provenance
-        # manifest (WAV chunk / ffmpeg comment / game provenance.json) — this
+        # manifest (WAV chunk / ffmpeg comment / game provenance.mgpr) — this
         # action reads it back and rebuilds the original main-window settings.
         export_menu.addAction("♻ Reconvert Export → Main Window…").triggered.connect(
             self.reconvert_export_dialog
@@ -21254,18 +21254,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def export_project_json(self):
         """Export the unified project snapshot (same document as Save)."""
-        path, _ = QFileDialog.getSaveFileName(self, "Export Project JSON", "", "Mathematician's Groovebox Project (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, "Export Project JSON", "", "Mathematician's Groovebox Project (*.mgpr)")
         if not path:
             return
         self._save_project_document(path)
 
     def _ensure_project_extension(self, path):
-        """SAVE_EXT_2026: always end project documents with .json."""
+        """SAVE_EXT_2026: always end project documents with .mgpr."""
         path = str(path or "")
         if not path.strip():
             return path
-        if not path.lower().endswith(".json"):
-            path = path + ".json"
+        if not path.lower().endswith(".mgpr"):
+            path = path + ".mgpr"
         return path
 
         self._apply_visual_view_state(data.get("visual_view_state", {}))
@@ -21361,7 +21361,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _autosave_project(self):
         try:
             fp = self._last_autosave_fp
-            path = os.path.join(self._projects_dir(), "autosave.json")
+            path = os.path.join(self._projects_dir(), "autosave.mgpr")
             if fp is not None and hasattr(fp, "text"):
                 self._atomic_write_document(path, self._project_snapshot())
         except Exception:
@@ -21404,7 +21404,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             pass
 
     def save_project_dialog(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Save EQR Project", "", "EQR Project (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, "Save Mathematician's Groovebox Project", "", "Mathematician's Groovebox Project (*.mgpr)")
         if not path:
             return
         path = self._ensure_project_extension(path)
@@ -21422,7 +21422,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         classification) reads the restored source-of-truth — identical
         canonical fingerprint ⇒ identical exports/play as the saved session.
         """
-        path, _ = QFileDialog.getOpenFileName(self, "Load EQR Project", "", "EQR Project (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "Load Mathematician's Groovebox Project", "", "Mathematician's Groovebox Project (*.mgpr)")
         if not path:
             return
         try:
@@ -27089,7 +27089,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _export_provenance_payload(self):
         """Self-describing generation manifest embedded in every export (audio
-        WAV chunk / ffmpeg comment / game provenance.json).  Small, plain,
+        WAV chunk / ffmpeg comment / game provenance.mgpr).  Small, plain,
         standard metadata so reverse-engineering an export back onto the main
         window is a simple parameter copy — and re-rendering with these values
         reproduces the exact artifact.  Device-independent (no timestamps).
@@ -27325,7 +27325,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _triad_matches(self, manifest_triad, zip_triad):
         """GAME_AUDIO_CONTRACT_2026: field-wise cross-verification between the
-        audio manifest's game_triad and the game package's triad.json.  All
+        audio manifest's game_triad and the game package's triad.mgpr.  All
         audio/visual quantities and all game quantities except sigil_count must
         agree to float64 precision; sigil_count is classification-tracked (the
         package legitimately pins its own), so it is reported separately."""
@@ -27365,7 +27365,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 import zipfile as _zf
                 with _zf.ZipFile(file_path) as zf:
                     names = set(zf.namelist())
-                    for cand in ("provenance.json", "main_window_settings.json", "multimodal_contract.json"):
+                    for cand in ("provenance.mgpr", "main_window_settings.mgpr", "multimodal_contract.mgpr"):
                         if cand in names:
                             try:
                                 payload = json.loads(zf.read(cand).decode("utf-8"))
@@ -27375,10 +27375,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                                 if isinstance(payload, str):
                                     payload = json.loads(payload)
                                 # GAME_AUDIO_CONTRACT_2026: when this is a game zip,
-                                # also surface the package's own triad.json so the
+                                # also surface the package's own triad.mgpr so the
                                 # reconvert step can cross-verify the audio export's
                                 # manifest against the game's numeric contract key.
-                                for triad_cand in ("assets/triad.json", "triad.json"):
+                                for triad_cand in ("assets/triad.mgpr", "triad.mgpr"):
                                     if triad_cand in names:
                                         try:
                                             payload["_zip_triad"] = json.loads(zf.read(triad_cand).decode("utf-8"))
@@ -27408,7 +27408,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def reconvert_export_dialog(self):
         """REVERSE-ENGINEERING: rebuild the main window from an exported
         artifact.  Reads the plain provenance manifest the export carried
-        (WAV 'eqrf' chunk / ffmpeg 'comment' tag / game provenance.json) and
+        (WAV 'eqrf' chunk / ffmpeg 'comment' tag / game provenance.mgpr) and
         re-applies every documented input so a re-render reproduces the same
         artifact; the restored canonical fingerprint is shown for comparison.
         """
@@ -27442,7 +27442,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             cur = ""
         # GAME_AUDIO_CONTRACT_2026: if the artifact is a game zip, cross-verify
-        # the embedded triad.json against the audio manifest's game_triad key —
+        # the embedded triad.mgpr against the audio manifest's game_triad key —
         # both must be the same closed-form f(seed), proving the audio and game
         # came from one project.
         triad_note = ""
@@ -27495,7 +27495,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 script_size = 0
                 for n in names:
                     low = n.lower()
-                    if not any(low.endswith(e) for e in (".py", ".json", ".md", ".sh", ".bat", ".command", ".txt")):
+                    if not any(low.endswith(e) for e in (".py", ".mgpr", ".md", ".sh", ".bat", ".command", ".txt")):
                         continue
                     try:
                         data = zf.read(n)
@@ -27516,7 +27516,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             }
                 for n in names:
                     low = n.lower()
-                    if not low.endswith(".json"):
+                    if not low.endswith(".mgpr"):
                         continue
                     try:
                         obj = json.loads(zf.read(n).decode("utf-8"))
@@ -27669,9 +27669,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         f.write(prog["head"])
                         saved.append(prog["name"])
                 for name_key, obj, label in (
-                    ("identity", bundle.get("identity"), "identity_recovered.json"),
-                    ("triad", bundle.get("triad"), "triad_recovered.json"),
-                    ("payload", bundle.get("payload"), "provenance_recovered.json"),
+                    ("identity", bundle.get("identity"), "identity_recovered.mgpr"),
+                    ("triad", bundle.get("triad"), "triad_recovered.mgpr"),
+                    ("payload", bundle.get("payload"), "provenance_recovered.mgpr"),
                 ):
                     if isinstance(obj, dict):
                         with open(os.path.join(out_dir, label), "w", encoding="utf-8") as f:
@@ -28124,7 +28124,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             global _vge
             _prov = json.loads(self._export_provenance_payload())
-            out = _vge.package_game_zip(identity, path, meta, {"provenance.json": _prov})
+            out = _vge.package_game_zip(identity, path, meta, {"provenance.mgpr": _prov})
             self._last_videogame_path = out
             self._last_videogame_identity = identity.to_dict()
             QMessageBox.information(
@@ -28208,7 +28208,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             global _vge
             try:
                 td = tempfile.mkdtemp(prefix="groovebox_game_")
-                script = _vge.export_game_files(identity, td, meta, {"provenance.json": json.loads(self._export_provenance_payload())})
+                script = _vge.export_game_files(identity, td, meta, {"provenance.mgpr": json.loads(self._export_provenance_payload())})
                 self._last_videogame_path = script
                 args = [_sys.executable, script]
                 if host_chk.isChecked() and identity.online:
