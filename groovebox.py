@@ -2526,6 +2526,104 @@ def canonical_master_slot(voice_index: int, instrument_count: int) -> int:
 
 
 
+def canonical_visual_instrument(slot, ctx, flags):
+    """Per-instrument 2.5D parameters mirroring the audio voice pass.
+
+    ctx: dict with seed, base (already union-scaled when full unison), ratio,
+         s_int, full_unison, n_inst, meum_depth.
+    flags: dict of the five canonical engine booleans
+           (randomizer, phase_lock, idealize_rhythm, seeded, goava).
+    Returns the identical-keyed parameter set the audio pass builds for one
+    voice (base_freq, ratio, s_int, entropy, phase0, meum fm/pm/am set,
+    max_partial) plus the 2.5D structural co-ordinates the frame needs.
+    """
+    n_inst = int(ctx.get("n_inst", 48))
+    i = int(slot) % max(2, n_inst)
+    fu = bool(ctx.get("full_unison"))
+    seedv = float(ctx.get("seed", 0.0))
+    s_int = int(ctx.get("s_int", int(_safe_int_seed(seedv)) or 1))
+    s_abs = abs(seedv) + 1e-9
+    s_frac = s_abs - math.floor(s_abs)
+    base = float(ctx.get("base", 432.0))
+    ratio = float(ctx.get("ratio", 1.0))
+    eng = dict(flags or {})
+    n5 = sum(1 for _k in _VISUAL_ENGINE_CHANNELS if eng.get(_k))
+    n_eng = max(1, n5) if n5 else 6  # no engine on -> idle reference scale 1/6
+    k5 = 1.0 / float(n_eng)
+    # Canonical slot lattice (irrational fractional index, never repeats).
+    _tpos = (i * MEUM * 3.0) % 36.0
+    _tlo = int(_tpos) % 36
+    _thi = (_tlo + 1) % 36
+    _tfr = _tpos - int(_tpos)
+    _pow = (MEUM_POWERS_36[_tlo] * (1.0 - _tfr) + MEUM_POWERS_36[_thi] * _tfr)
+    # Union collapses pitch/identity; otherwise the per-slot lattice drives it.
+    if fu:
+        bf = base
+        sr = ratio
+        ent = float(entropy_draw_0_1(s_abs, s_frac, s_int, 0))
+        phase0 = 0.0
+    else:
+        bf = base * _pow
+        sr = float(_seed_to_pitch_ratio(seedv, i, i))
+        ent = float(entropy_draw_0_1(s_abs, s_frac, s_int, i))
+        phase0 = float(INSTRUMENT_PHASE_LOCK_48[i % 48])
+    # Symmetric equal-influence engine channels (each active = k5*0.5, else 0).
+    ch_rnd = (0.5 if eng.get("randomizer") else 0.0) * k5   # spread axis
+    ch_ph = (0.5 if eng.get("phase_lock") else 0.0) * k5    # twist axis
+    ch_euc = (0.5 if eng.get("idealize_rhythm") else 0.0) * k5  # structure axis
+    ch_seed = (0.5 if eng.get("seeded") else 0.0) * k5      # scale axis
+    ch_goa = (0.5 if eng.get("goava") else 0.0) * k5        # hue axis
+    mod = {
+        "phase_shift": (0.0 if fu else float(math.tau * ((i * MEUM_NORM * PHI_INV) % 1.0))),
+        "mod_rate": 0.78 + 0.48 * ent,
+        "fm_depth": float(np.clip(0.22 + 0.38 * (ch_rnd - ch_ph), -0.95, 0.95)),
+        "fm_rate": 0.5 + 2.0 * _pow,
+        "pm_depth": float(math.pi * float(np.clip(0.18 + 0.55 * (ch_ph - ch_seed), -1.0, 1.0))),
+        "pm_rate": 0.5 + 2.0 * ((i * MEUM) % 1.0),
+        "am_depth": float(np.clip(0.16 + 0.5 * ch_euc, 0.0, 1.0)),
+        "am_rate": 0.5 + 2.0 * ((i * PHI * MEUM_NORM) % 1.0),
+        "meum_depth": float(ctx.get("meum_depth", 1.0)),
+    }
+    depth = 1.35 + 0.18 * _pow + 2.2 * (ch_seed - 0.25 * k5)
+    yaw = float(math.fmod(i * PHI * MEUM_NORM + 0.6 * (ch_ph - ch_rnd), math.tau))
+    pitch = 0.12 * math.sin(i * MEUM + ch_euc * 1.3)
+    roll = 0.09 * math.cos(i * MEUM_INV + ch_ph)
+    pack = 0.62 + 0.60 * _pow * (1.0 + 0.8 * (ch_seed - 0.5 * k5))
+    max_partial = int(INSTRUMENT_PARTIAL_CAP_48[i % 48])
+    verts = int(4 + (max_partial % 6) + int(ch_euc * 6.0))
+    hue = float(math.fmod(i * (360.0 / max(2.0, n_inst)) + i * 7 + ch_goa * 90.0, 360.0))
+    # HARMONIC_CANCELLATION_ALIGNMENT_2026: color shading, translucency and
+    # 2.5D depth follow the harmonic cancellation envelope of the SOUND.  Under
+    # the union every voice shares identity + phase carry (max reinforcement),
+    # so the frame is one opaque foreground organism; independent voices recede
+    # and grow translucent in proportion to how far their phase locus sits from
+    # the shared meum axis — the same relation the mix's phase cancellation has.
+    _ax = math.fmod(float(phase0) * MEUM_NORM + i * MEUM_INV, 1.0)
+    if fu:
+        conson = 1.0
+    else:
+        conson = 0.5 + 0.5 * math.cos(_ax * math.tau)
+    depth = 0.96 + 0.72 * (1.0 - conson) + 0.18 * _pow
+    # Calculated shading: brightness tracks the same meum phase envelope the
+    # audio pass rings against, dimmed proportionally as a voice recedes.
+    shade = float(np.clip(0.35 + 0.55 * (0.5 + 0.5 * math.sin(_ax * math.tau)) * (0.5 + 0.5 * conson),
+                          0.05, 0.98))
+    life = 0.30 + 0.70 * conson * (0.25 + 0.75 * ent)
+    rad = (2.0 - depth) * (0.30 + 0.45 * pack)
+    return {
+        "i": i, "n_inst": n_inst,
+        "base_freq": bf, "ratio": sr, "s_int": s_int, "entropy": ent,
+        "phase0": phase0, "mod": mod, "max_partial": max_partial,
+        "spread_axis": ch_rnd, "twist_axis": ch_ph, "structure_axis": ch_euc,
+        "scale_axis": ch_seed, "hue_axis": ch_goa, "engines": n_eng,
+        "depth": depth, "yaw": yaw, "pitch": pitch, "roll": roll,
+        "pack": pack, "verts": verts, "hue": hue, "life": life, "shade": shade,
+        "x": float(math.cos(yaw) * rad * math.cos(pitch)),
+        "y": float(math.sin(pitch) * rad * 0.72),
+        "z": float(depth * (0.6 + 0.4 * math.sin(roll))),
+    }
+
+
 def goava_frequency(number_assigned, step, numbers, base_frequency=432.0):
     """Map GOAVA's Java sequence scalar to a stable audible frequency.
 
@@ -4728,8 +4826,52 @@ class VideoSynthEngine:
         px, py = self._map_xy(px, py)
         return px, py, inv
 
+    @staticmethod
+    def _visual_unit(value, default=0.0):
+        """Audio-style finite normalization at the visual color boundary.
+
+        Keep the mathematical engine free to produce its native intermediate
+        values; sanitize only when crossing into Qt's bounded color API.
+        NaN/Inf become a deterministic default, finite values are clipped to
+        the display interval.
+        """
+        try:
+            x = float(value)
+        except (TypeError, ValueError):
+            x = float(default)
+        if not math.isfinite(x):
+            x = float(default)
+        return float(np.clip(x, 0.0, 1.0))
+
+    @classmethod
+    def _hsvf(cls, h, s, v, a=1.0):
+        """Bounded QColor.fromHsvF equivalent, analogous to audio output clamps."""
+        try:
+            hh = float(h)
+        except (TypeError, ValueError):
+            hh = 0.0
+        if not math.isfinite(hh):
+            hh = 0.0
+        # Hue wraps; S/V/A clamp exactly once at the Qt boundary.
+        hh = hh % 1.0
+        ss = cls._visual_unit(s)
+        vv = cls._visual_unit(v)
+        aa = cls._visual_unit(a, 1.0)
+        return QColor.fromHsvF(hh, ss, vv, aa)
+
     def _hsv(self, h, s, v):
-        c = QColor.fromHsv(int(h) % 360, int(max(0, min(1, s)) * 255), int(max(0, min(1, v)) * 255))
+        # Same finite-input → bounded-output policy as the audio path.
+        try:
+            hh = float(h)
+        except (TypeError, ValueError):
+            hh = 0.0
+        if not math.isfinite(hh):
+            hh = 0.0
+        c = QColor.fromHsv(
+            int(hh) % 360,
+            int(self._visual_unit(s) * 255.0),
+            int(self._visual_unit(v) * 255.0),
+        )
         return (c.red(), c.green(), c.blue())
 
     def _line(self, img, x0, y0, x1, y1, col, alpha=1.0):
@@ -7148,6 +7290,13 @@ class ParametricMathBackground(QWidget):
         numeric = []
         if isinstance(state, dict):
             for key, value in state.items():
+                # GOAVA is NEVER part of the ordinary ParametricMathBackground.
+                # It is permitted here only through the explicit Instrument Count
+                # easter-egg gate below; filtering by key also prevents stale/user
+                # parameter dictionaries from smuggling a GOAVA scalar into the
+                # background after the engine toggle changes.
+                if str(key).strip().lower().replace("-", "_") in {"goava", "goava_field", "canonical_goava"}:
+                    continue
                 try:
                     numeric.append((str(key), float(value)))
                 except Exception:
@@ -7171,8 +7320,12 @@ class ParametricMathBackground(QWidget):
                     numeric.append((key, float(obj.value()) / scale))
                 except Exception:
                     pass
-        # GOAVA is deliberately absent from the ordinary background. It only
-        # reappears for the Instrument Count easter egg (blank/0/1 input).
+        # HARD VISUAL BOUNDARY: enabling the GOAVA engine must not make GOAVA
+        # appear on the ordinary ParametricMathBackground. The only allowed
+        # entrance is the explicit Instrument Count easter egg (blank/0/1).
+        # This gate is intentionally independent of app.goava_active / the GOAVA
+        # engine toggle, so normal GOAVA ON/OFF transitions leave this background
+        # unchanged.
         if bool(getattr(self.app, "_goava_count_easter_egg", False)):
             numeric.append(("GOAVA", 1.0))
         numeric.sort(key=lambda x: x[0])
@@ -7205,7 +7358,7 @@ class ParametricMathBackground(QWidget):
         wave_alpha = min(0.92, (0.58 + 0.28 * sf) * MEUM)
         painter.setPen(
             QPen(
-                QColor.fromHsvF(
+                self._hsvf(
                     hue,
                     0.19758,
                     0.19758,
@@ -7253,8 +7406,8 @@ class ParametricMathBackground(QWidget):
             r = radius * wobble
             points.append(QPointF(x + math.cos(a) * r, y + math.sin(a) * r))
         hue = (0.56 + 0.42 * sf + 0.19 * sf2 + index * 0.027) % 1.0
-        painter.setBrush(QBrush(QColor.fromHsvF(hue, 0.19758, 0.19758, 0.34 + 0.18 * sf)))
-        painter.setPen(QPen(QColor.fromHsvF((hue + 0.08 * sf2) % 0.19758, 0.19758, 0.19758, 0.72 + 0.18 * sf), 1.4))
+        painter.setBrush(QBrush(self._hsvf(hue, 0.19758, 0.19758, 0.34 + 0.18 * sf)))
+        painter.setPen(QPen(self._hsvf((hue + 0.08 * sf2) % 0.19758, 0.19758, 0.19758, 0.72 + 0.18 * sf), 1.4))
         painter.drawPolygon(QPolygonF(points))
         if self._param_cache[1]:
             label = self._param_cache[1][index % len(self._param_cache[1])]
@@ -7262,7 +7415,7 @@ class ParametricMathBackground(QWidget):
             # Text follows a larger independent vertical orbit than the glyph.
             text_y = y + radius + 8 + height * 0.09 * math.sin(phase * (0.28 + sf2) + index * 1.63)
             text_y = max(12.0, min(height - 3.0, text_y))
-            painter.setPen(QPen(QColor.fromHsvF(hue, 0.19758, 0.19758, 0.19758), 0.72))
+            painter.setPen(QPen(self._hsvf(hue, 0.19758, 0.19758, 0.19758), 0.72))
             painter.setFont(QFont("Consolas", 7))
             painter.drawText(QPointF(max(2.0, x - radius), text_y), text)
 
@@ -7322,17 +7475,17 @@ class ParametricMathBackground(QWidget):
             y = max(6.0, min(height - 44.0, y))
             rect = QRectF(x, y, col_w, 40.0)
             hue = (0.48 + i * MEUM_NORM * 0.08 + 0.04 * math.sin(t)) % 1.0
-            fill = QColor.fromHsvF(hue, 0.35, 0.12, a_fill)
-            edge = QColor.fromHsvF(hue, 0.55, 0.95, a_edge)
+            fill = self._hsvf(hue, 0.35, 0.12, a_fill)
+            edge = self._hsvf(hue, 0.55, 0.95, a_edge)
             painter.setBrush(QBrush(fill))
             painter.setPen(QPen(edge, 1.0))
             painter.drawRoundedRect(rect, 6, 6)
-            painter.setPen(QColor.fromHsvF(hue, 0.25, 1.0, a_title))
+            painter.setPen(self._hsvf(hue, 0.25, 1.0, a_title))
             title = QFont("Consolas", 9)
             title.setBold(True)
             painter.setFont(title)
             painter.drawText(rect.adjusted(8, 3, -8, -16), int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), sym)
-            painter.setPen(QColor.fromHsvF(hue, 0.20, 0.92, a_body))
+            painter.setPen(self._hsvf(hue, 0.20, 0.92, a_body))
             body = QFont("Consolas", 7)
             painter.setFont(body)
             val = fmt.format(value)
@@ -28133,7 +28286,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr)
                         wf.writeframes((np.clip(audio_clip, -1, 1) * 32767).astype(np.int16).tobytes())
 
-            eng = getattr(self, 'video_synth_engine', None) or VideoSynthEngine(len(active_instrument_memory))
+            _aim = getattr(self, 'active_instrument_memory', None)
+            _nmem = len(_aim) if hasattr(_aim, '__len__') else int(getattr(self, 'synth_count', 48) or 48)
+            eng = getattr(self, 'video_synth_engine', None) or VideoSynthEngine(_nmem)
             if hasattr(eng, 'bind_app'):
                 eng.bind_app(self)
             # w, h already set from _export_frame_size()

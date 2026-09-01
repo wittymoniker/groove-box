@@ -3957,14 +3957,21 @@ if HAS_UI:
                 try:
                     h, s, v = g.assets.color_for_layer(hue, shade)
                     hsv = QColor(ac).toHsv()
-                    hsv.setHsv(int(round(h * 360)) % 360,
-                               int(80 + 175 * s),
-                               int(100 + 155 * v))
+                    # Audio-style finite clamp at the Qt color boundary.
+                    if not math.isfinite(float(h)): h = 0.0
+                    if not math.isfinite(float(s)): s = 0.0
+                    if not math.isfinite(float(v)): v = 0.0
+                    hsv.setHsv(int(round(float(h) * 360.0)) % 360,
+                               int(max(0.0, min(1.0, float(s))) * 175.0 + 80.0),
+                               int(max(0.0, min(1.0, float(v))) * 155.0 + 100.0))
                 except Exception:
                     hsv = QColor(ac).toHsv()
-                    hsv.setHsv(int(round(hue * 360)) % 360,
-                               int(90 + 165 * shade),
-                               int(110 + 145 * shade))
+                    if not math.isfinite(float(hue)): hue = 0.0
+                    if not math.isfinite(float(shade)): shade = 0.0
+                    shade = max(0.0, min(1.0, float(shade)))
+                    hsv.setHsv(int(round(float(hue) * 360.0)) % 360,
+                               int(90.0 + 165.0 * shade),
+                               int(110.0 + 145.0 * shade))
                 col = hsv
                 # High opacity floor so the scene is always visible
                 col.setAlpha(max(140, min(255, int(110 + 145 * life * shade))))
