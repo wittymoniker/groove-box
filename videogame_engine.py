@@ -3521,6 +3521,7 @@ class Game:
             software_kind=str(self.id.get("software_kind") or "videogame"),
             sequential_nums=seq,
             engine_mask=dict(getattr(self, "engine_mask", {}) or {}),
+            camera_view=dict(getattr(self, "visual_view", {}) or {}),
         )
         self._last_frame = frame
         return frame
@@ -4801,11 +4802,58 @@ class CrossCorrelationKernel:
         }
 
 
+def deterministic_view_state(seed, t=0.0, audio_rms=0.0, music_entropy=0.5,
+                           music_phase=0.0, goava_active=False, view=None):
+    """Canonical deterministic cinematic view used by game + exported frames.
+
+    The view is analytic: identical (seed, time, audio/composition state) gives
+    identical yaw/pitch/roll/dolly/FOV.  ``view`` may override it for a live
+    player camera; no wall-clock or random state is consulted.
+    """
+    if isinstance(view, dict):
+        try:
+            return (math.radians(float(view.get("yaw_deg", 0.0))),
+                    math.radians(float(view.get("pitch_deg", 0.0))),
+                    math.radians(float(view.get("roll_deg", 0.0))),
+                    float(view.get("distance", 1.0) or 1.0),
+                    float(view.get("fov_deg", 48.0) or 48.0),
+                    float(view.get("pan_x", 0.0) or 0.0),
+                    float(view.get("pan_y", 0.0) or 0.0))
+        except Exception:
+            pass
+    seedf = float(seed or 0.0)
+    e = float(max(0.0, min(1.0, abs(float(audio_rms or 0.0)))) )
+    ent = float(max(0.0, min(1.0, float(music_entropy or 0.5))))
+    beat = float(t) * (float(BPM) / 60.0 if BPM else 2.0)
+    bar8 = beat / 32.0
+    s1 = (seedf * MEUM_NORM + MEUM) % math.tau
+    s2 = (seedf * MEUM_INV + PHI) % math.tau
+    s3 = (seedf * PHI + MEUM_INV) % math.tau
+    gw = MEUM_NORM if goava_active else 0.0
+    yaw = (0.55 * bar8 * math.tau * (0.12 + 0.05 * e)
+           + 0.11 * vg_sin(t * 0.13 * MEUM + s1)
+           + 0.075 * vg_sin(beat * 0.03125 + s3)
+           + 0.08 * e * vg_sin(t * 0.09 + ent * math.tau)
+           + 0.07 * gw * vg_sin(t * MEUM_INV + s3))
+    pitch = (-0.10 + 0.13 * (ent - 0.5)
+             + 0.07 * vg_sin(t * 0.09 * MEUM + s2)
+             + 0.04 * vg_sin(bar8 * math.tau * 0.5 + s1))
+    roll = (0.035 * vg_sin(t * 0.055 * MEUM_INV + s1)
+            + 0.016 * vg_sin(bar8 * math.tau + s2)
+            + 0.018 * gw * vg_sin(t * 0.033 + s2))
+    dist = 1.0 - 0.24 * e - 0.08 * ent + 0.07 * vg_sin(t * 0.07 * MEUM + s1)
+    dist += 0.05 * vg_sin(bar8 * math.tau * 0.5 + s3)
+    fov = 48.0 + 6.0 * ent * vg_sin(t * 0.06 + s1) + 5.0 * e * vg_sin(t * 0.11 + s2)
+    pan_x = 0.045 * vg_sin(t * 0.08 + s1)
+    pan_y = 0.035 * vg_sin(t * 0.07 + s2)
+    return yaw, pitch, roll, max(0.58, min(1.42, dist)), max(36.0, min(62.0, fov)), pan_x, pan_y
+
+
 def instant_video_frame(seed, t=0.0, w=320, h=180, *,
                         live_activities=None, region_name=None, region_tier=0,
                         audio_rms=0.0, music_entropy=0.5, music_phase=0.0,
                         goava_active=False, software_kind="videogame",
-                        sequential_nums=None, engine_mask=None):
+                        sequential_nums=None, engine_mask=None, camera_view=None):
     """Pure instantaneous RGB frame — same fractal object path as host video.
 
     Prevalence (most → least relevant to what appears):
@@ -4840,6 +4888,9 @@ def instant_video_frame(seed, t=0.0, w=320, h=180, *,
     spin = snap["spin"]
     grid = snap["grid"]
     img = _np.zeros((h, w, 3), dtype=_np.float32)
+    cam_yaw, cam_pitch, cam_roll, cam_dist, cam_fov, cam_pan_x, cam_pan_y = deterministic_view_state(
+        seed, t=t, audio_rms=audio_rms, music_entropy=music_entropy,
+        music_phase=music_phase, goava_active=goava_active, view=camera_view)
     yy = _np.linspace(-1.0, 1.0, h, dtype=_np.float32)[:, None]
     xx = _np.linspace(-1.0, 1.0, w, dtype=_np.float32)[None, :]
     # Book fractal set field (prevalent geometry from sequential nums / playlist)
@@ -4858,13 +4909,22 @@ def instant_video_frame(seed, t=0.0, w=320, h=180, *,
         _yf = 0.0
         _set = "wormhill"
     # Radial + angular field modulated by energy, spin, and book fractal Y
-    rr = _np.sqrt(xx * xx + yy * yy) + 1e-6
-    ang = _np.arctan2(yy, xx)
+    # Camera/view transform is applied to the entire field, not merely to
+    # instrument stamps. This makes zoom, roll and yaw readable in the game.
+    c, s = math.cos(cam_roll), math.sin(cam_roll)
+    xcam = xx * c - yy * s
+    ycam = xx * s + yy * c
+    # Dolly + FOV: closer camera enlarges the world deterministically.
+    zoom = (1.0 / max(cam_dist, 0.45)) * (48.0 / max(cam_fov, 1.0))
+    xcam = (xcam - cam_pan_x) * zoom
+    ycam = (ycam - cam_pan_y) * zoom + 0.08 * math.sin(cam_pitch)
+    rr = _np.sqrt(xcam * xcam + ycam * ycam) + 1e-6
+    ang = _np.arctan2(ycam, xcam) + cam_yaw * 0.18
     wave = _np.sin(ang * (2.0 + 3.0 * grid) + float(t) * spin * math.tau
-                   + field["u"] * math.tau + 0.15 * float(_yf)) * 0.5 + 0.5
+                   + field["u"] * math.tau + 0.15 * float(_yf) + cam_yaw) * 0.5 + 0.5
     ring = _np.exp(-((rr - (0.35 + 0.25 * field["rho"])) ** 2) / (0.08 + 0.12 * field["energy"]))
     # Activity-class lattice overlay
-    lat = _np.sin(xx * (6.0 + 8.0 * grid) + float(t) * 0.7) * _np.sin(yy * (6.0 + 8.0 * grid) - float(t) * 0.5)
+    lat = _np.sin(xcam * (6.0 + 8.0 * grid) + float(t) * 0.7) * _np.sin(ycam * (6.0 + 8.0 * grid) - float(t) * 0.5)
     lat = (lat * 0.5 + 0.5) * (0.25 + 0.55 * grid)
     val = _np.clip(0.15 + 0.55 * wave * field["energy"] + 0.45 * ring + 0.25 * lat, 0.0, 1.0)
     # HSV → RGB (lightweight)
@@ -4894,7 +4954,7 @@ def instant_video_frame(seed, t=0.0, w=320, h=180, *,
     for ri in range(n_ridges):
         tilt = 0.4 + 1.6 * _residue(s, f"frame/tilt:{ri}")
         phase = float(t) * (0.3 + 0.5 * _residue(s, f"frame/ph:{ri}")) + ri * PHI
-        ridge = _np.sin((xx * tilt + yy * (2.0 - tilt)) * (3.0 + 4.0 * grid) + phase)
+        ridge = _np.sin((xcam * tilt + ycam * (2.0 - tilt)) * (3.0 + 4.0 * grid) + phase)
         ridge = _np.clip(ridge, 0.0, 1.0) ** 2 * (0.08 + 0.12 * field["energy"])
         rgb[:, :, 0] = _np.clip(rgb[:, :, 0] + ridge * 0.55, 0.0, 1.0)
         rgb[:, :, 2] = _np.clip(rgb[:, :, 2] + ridge * 0.25, 0.0, 1.0)
@@ -4944,6 +5004,25 @@ def instant_video_frame(seed, t=0.0, w=320, h=180, *,
             y2 = int(cy_i + math.sin(yaw * MEUM) * dist * 0.4)
             if 0 <= x2 < w and 0 <= y2 < h:
                 rgb[y2, x2, :] = _np.clip(rgb[y2, x2, :] + 0.08 * boost, 0.0, 1.0)
+    except Exception:
+        pass
+
+    # CINEMATIC_VIEW_V51: analytic orbital tracers + soft lens vignette.
+    # These are frame-local functions, never a temporal history buffer.
+    try:
+        tracer = _np.zeros((h, w), dtype=_np.float32)
+        for q in range(3):
+            r0 = 0.24 + 0.055 * q
+            a = float(t) * (0.08 + 0.021 * q) + cam_yaw * (0.45 + 0.12 * q) + q * MEUM
+            tx = math.cos(a) * r0
+            ty = math.sin(a * MEUM_INV + cam_pitch) * r0 * 0.38
+            d = _np.sqrt((xcam - tx) ** 2 + (ycam - ty) ** 2)
+            tracer += _np.exp(-(d * d) / (0.0018 + 0.0006 * q)) * (0.028 + 0.012 * rms_safe(audio_rms))
+        rgb[:, :, 1] = _np.clip(rgb[:, :, 1] + tracer, 0.0, 1.0)
+        rad = _np.sqrt((_np.linspace(-1, 1, w, dtype=_np.float32)[None, :]) ** 2 +
+                       (_np.linspace(-1, 1, h, dtype=_np.float32)[:, None]) ** 2)
+        vign = _np.clip((rad - 0.48) / 0.65, 0.0, 1.0) * 0.055
+        rgb *= (1.0 - vign[..., None])
     except Exception:
         pass
     return _np.clip(rgb, 0.0, 1.0).astype(_np.float32)

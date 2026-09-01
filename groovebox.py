@@ -3270,7 +3270,7 @@ def canonical_visual_instrument(slot, ctx, flags):
     # HARMONIC_CANCELLATION_ALIGNMENT_2026: color shading, translucency and
     # 2.5D depth follow the harmonic cancellation envelope of the SOUND.  Under
     # the union every voice shares identity + phase carry (max reinforcement),
-    # so the frame reads as one coherent foreground organism; independent voices recede
+    # so the frame is one opaque foreground organism; independent voices recede
     # and grow translucent in proportion to how far their phase locus sits from
     # the shared meum axis — the same relation the mix's phase cancellation has.
     _ax = math.fmod(float(phase0) * MEUM_NORM + i * MEUM_INV, 1.0)
@@ -5425,12 +5425,16 @@ class VideoSynthEngine:
 
         # ---- YAW: primary orbit (tempo) + Meum drift + energy punch ----
         base_yaw = math.radians(32.0)
+        # CINEMATIC_CAMERA_V51: a deterministic multi-timescale camera rig.
+        # Slow orbit is intentionally larger than the prior micro-drift; all
+        # terms remain closed-form functions of seed/time/audio state.
         yaw = (base_yaw
-               + 0.55 * bar8 * math.tau * (0.12 + 0.04 * e)          # slow orbit
+               + 0.82 * bar8 * math.tau * (0.12 + 0.05 * e)          # slow orbit
                + 0.11 * vg_sin(t * 0.13 * MEUM + s1)                  # Meum band
                + 0.055 * vg_sin(t * 0.041 * MEUM_INV + s2)            # sub-band
                + 0.040 * vg_sin(beat * 0.25 * PHI + ph * math.tau)    # beat accent
-               + 0.085 * e * vg_sin(t * 0.09 + centroid * math.tau)   # energy push
+               + 0.12 * e * vg_sin(t * 0.09 + centroid * math.tau)
+               + 0.075 * vg_sin(beat * 0.03125 + s3)   # energy push
                + 0.07 * goava_w * vg_sin(t * MEUM_INV + s3)
                + 0.05 * pl_w * vg_sin(beat * 0.125 + s1)
                + float(getattr(self, "_manual_yaw", 0.0)))
@@ -5438,38 +5442,42 @@ class VideoSynthEngine:
         # ---- PITCH: spectral elevation + gentle nod ----
         base_pitch = math.radians(-14.0)
         pitch = (base_pitch
-                 + 0.22 * (centroid - 0.5)                             # bright → look up
+                 + 0.24 * (centroid - 0.5)                             # bright → look up
                  + 0.070 * vg_sin(t * 0.09 * MEUM + s2)
                  + 0.035 * vg_sin(t * 0.027 + ph * math.tau)
-                 + 0.030 * e * vg_sin(beat * 0.5 + s3)
+                 + 0.045 * e * vg_sin(beat * 0.5 + s3)
+                 + 0.035 * vg_sin(bar8 * math.tau * 0.5 + s1)
                  + 0.04 * goava_w * vg_sin(t * 0.07 + MEUM)
                  + float(getattr(self, "_manual_pitch", 0.0)))
         pitch = max(math.radians(-42.0), min(math.radians(28.0), pitch))
 
-        # ---- ROLL: micro only ----
-        roll = (0.018 * vg_sin(t * 0.055 * MEUM_INV + s1)
+        # ---- ROLL: readable cinematic banking, still bounded ----
+        roll = (0.040 * vg_sin(t * 0.055 * MEUM_INV + s1)
                 + 0.008 * vg_sin(t * 0.019 + ph * math.tau)
-                + 0.012 * goava_w * vg_sin(t * 0.033 + s2)
-                + 0.010 * harm * vg_sin(beat * 0.0625 + s3))
-        roll = max(-0.08, min(0.08, roll))
+                + 0.020 * goava_w * vg_sin(t * 0.033 + s2)
+                + 0.018 * harm * vg_sin(beat * 0.0625 + s3)
+                + 0.018 * e * vg_sin(bar8 * math.tau + s2))
+        roll = max(-0.14, min(0.14, roll))
 
         # ---- DISTANCE (dolly): closer on loud/dense, pull back on sparse ----
         # 1.0 = neutral; lower = closer (more perspective punch)
         form = float(st.get("form", 0.5))
         rho = float(st.get("rho", 1.0))
         dist = (1.0
-                - 0.22 * e
+                - 0.30 * e
                 - 0.10 * form
                 + 0.08 * vg_sin(t * 0.07 * MEUM + s1)
                 + 0.05 * vg_sin(bar8 * math.tau + s2)
                 - 0.06 * goava_w * vg_sin(t * 0.11 + s3)
-                + 0.04 * (1.0 - min(1.0, rho)))
+                + 0.04 * (1.0 - min(1.0, rho))
+                + 0.055 * vg_sin(bar8 * math.tau * 0.5 + s3))
         dist = float(np.clip(dist, 0.55, 1.45))
 
         # ---- FOV breathe ----
         fov = (48.0
-               + 6.0 * harm * vg_sin(t * 0.06 + s1)
-               + 4.0 * e * vg_sin(t * 0.11 + s2)
+               + 7.5 * harm * vg_sin(t * 0.06 + s1)
+               + 5.5 * e * vg_sin(t * 0.11 + s2)
+               + 2.5 * vg_sin(bar8 * math.tau + s3)
                + 3.0 * goava_w
                - 2.0 * pl_w)
         fov = float(np.clip(fov, 36.0, 62.0))
@@ -5579,14 +5587,9 @@ class VideoSynthEngine:
         m = max(3.0, min(w, h) * MEUM_NORM * 0.08)
         avail_w = max(w - 2.0 * m, 8.0)
         avail_h = max(h - 2.0 * m, 8.0)
-        # CAMERA_VISIBILITY_V51: use one scale for both axes.  Independent x/y
-        # normalization was mathematically safe but visually absorbed much of
-        # the camera's yaw/pitch/roll by re-stretching every frame to the same
-        # rectangle.  Uniform fitting preserves the projected aspect changes
-        # that make the deterministic camera path legible.
-        fit = min(avail_w / bw, avail_h / bh)
-        self._fit_sx = fit
-        self._fit_sy = fit
+        # Anisotropic implode: fill both axes (fills screen, stays inside bounds)
+        self._fit_sx = avail_w / bw
+        self._fit_sy = avail_h / bh
         self._fit_cx = 0.5 * (minx + maxx)
         self._fit_cy = 0.5 * (miny + maxy)
         self._fit_ox = w * 0.5
@@ -5611,9 +5614,10 @@ class VideoSynthEngine:
         return (c.red(), c.green(), c.blue())
 
     def _line(self, img, x0, y0, x1, y1, col, alpha=1.0):
-        # VISUAL_DENSITY_V51: caller alpha is authoritative.  Do not apply a
-        # global density multiplier here: repeated lattice marks must remain
-        # translucent so camera/depth/fractal layers can survive the stack.
+        # VISUAL_DENSITY_V51: caller alpha is authoritative.  Do not globally
+        # amplify line opacity: dense matrix layers otherwise saturate to 1.0
+        # and bury camera/fractal information beneath the lattice.
+        alpha = float(alpha)
         hh, ww, _ = img.shape
         steps = max(abs(int(x1) - int(x0)), abs(int(y1) - int(y0)), 1)
         a = float(np.clip(alpha, 0.0, 1.0))
@@ -5626,8 +5630,9 @@ class VideoSynthEngine:
                 img[y, x] = img[y, x] * (1 - a) + c * a
 
     def _dot(self, img, x, y, col, alpha=1.0, r=1):
-        # VISUAL_DENSITY_V51: caller alpha is authoritative.  The previous
-        # 1.65x boost saturated many matrix dots at the 1.0 ceiling.
+        # VISUAL_DENSITY_V51: preserve the semantic alpha supplied by each
+        # subscene; density is controlled at the source layer, not here.
+        alpha = float(alpha)
         hh, ww, _ = img.shape
         a = float(np.clip(alpha, 0.0, 1.0))
         c = np.array(col, dtype=np.float32)
@@ -6147,14 +6152,8 @@ class VideoSynthEngine:
             if fu:
                 self._visual_entropy = float(self._canonical[0]["entropy"])
             else:
-                # DETERMINISTIC_RENDER_V51: frame identity comes from explicit
-                # render time/index, never from how many times the viewer has
-                # happened to repaint.  Re-rendering the same t therefore gives
-                # the same entropy lane.
-                frame_key = int(getattr(self, "_render_frame_index",
-                                        round(max(0.0, float(self.t)) * 60.0)))
                 self._visual_entropy = float(
-                    self._canonical[frame_key % len(self._canonical)]["entropy"])
+                    self._canonical[int(self._visual_frame) % len(self._canonical)]["entropy"])
         self._ledger_visual_entropy()
 
     def _ledger_visual_entropy(self):
@@ -6196,31 +6195,6 @@ class VideoSynthEngine:
         self._vled_sumsq = 0.0
         self._vled_rmin = 1.0
         self._vled_rmax = 0.0
-
-    def _current_goava_events(self):
-        """Return GOAVA events for the current render time without mutating app state.
-
-        GOAVA is a live numerical field: a time-varying/list seed must be
-        re-evaluated at the actual frame time.  The cached playlist events are
-        retained for normal UI state, but video rendering uses this pure read so
-        a prior toggle/activation cannot freeze the video on one frequency.
-        """
-        app = self.app
-        if app is None or not bool(getattr(app, "goava_active", False)):
-            return [], []
-        t_value = float(getattr(self, "t", 0.0))
-        frame_index = int(getattr(self, "_render_frame_index", round(max(0.0, t_value) * 60.0)))
-        try:
-            if hasattr(app, "_parse_goava_seed_values") and hasattr(app, "_build_goava_composition"):
-                numbers = list(app._parse_goava_seed_values(t_value=t_value) or [])
-                events = list(app._build_goava_composition(
-                    t_value=t_value, true_time_index=frame_index, cache=False) or [])
-                return numbers, events
-        except Exception:
-            pass
-        numbers = list(getattr(app, "goava_seed_numbers", None) or [])
-        events = list(getattr(app, "goava_note_events", []) or [])
-        return numbers, events
 
     def _draw_canonical_constellation(self, img, w, h, st):
         """The instrument -> total-frame pass (visual dual of the audio per-voice
@@ -6278,11 +6252,10 @@ class VideoSynthEngine:
                 eng5 = sum(1 for _k in _VISUAL_ENGINE_CHANNELS if flags.get(_k))
                 chg = (0.5 / max(1, eng5)) if flags.get("goava") else 0.0
                 if chg > 0.01:
-                    numbers, events = self._current_goava_events()
+                    numbers = getattr(self.app, "goava_seed_numbers", None) or []
+                    events = getattr(self.app, "goava_note_events", []) or []
                     for j, ev in enumerate(events[:8]):
-                        hz = float(ev.get("frequency", 432.0))
-                        if not math.isfinite(hz) or hz <= 0.0:
-                            hz = 432.0
+                        hz = max(20.0, float(ev.get("frequency", 432.0)))
                         key = (float(ev.get("raw", j)) * 0.25 + float(ev.get("seed", 0.0)) * 0.11
                                + j * PHI * MEUM_NORM)
                         try:
@@ -6316,7 +6289,7 @@ class VideoSynthEngine:
         if not st["snap"].get("goava"):
             return
         fade = self._module_fade.get("goava", 0.0) * self._module_fade.get("goava_field", 0.0) ** 0.5
-        numbers, events = self._current_goava_events()
+        events = getattr(self.app, "goava_note_events", []) if self.app is not None else []
         if not events or fade <= 0.02:
             return
         cx, cy = w * 0.5, h * 0.43
@@ -6347,9 +6320,7 @@ class VideoSynthEngine:
         line_d = float(st.get("line_d", 0.5))
         seed_key = abs(float(st["snap"].get("seed", 0.0)))
         for j, ev in enumerate(events[:goava_count]):
-            hz = float(ev.get("frequency", 432.0))
-            if not math.isfinite(hz) or hz <= 0.0:
-                hz = 432.0
+            hz = max(20.0, float(ev.get("frequency", 432.0)))
             raw = float(ev.get("raw", 0.0))
             seed = float(ev.get("seed", 0.0))
             uidx = j / max(n - 1, 1)
@@ -6383,7 +6354,7 @@ class VideoSynthEngine:
             # numbers at this event's base frequency), so the glyph visibly
             # echoes the GOAVA voice's waveform rather than an abstract fold.
             _gstream = None
-            _gn = numbers
+            _gn = getattr(self.app, "goava_seed_numbers", None) or []
             if _gn:
                 try:
                     _txx = np.linspace(0.0, 0.30 + 0.55 * (hz / 260.0), 24)
@@ -6628,9 +6599,13 @@ class VideoSynthEngine:
         # Include GOAVA geometry in the fit box so its shapes implode with the
         # rest of the scenograph instead of floating outside the fitted frame.
         if snap.get("goava"):
-            numbers, events = self._current_goava_events()
+            events = getattr(self.app, "goava_note_events", []) if self.app is not None else []
             # GOAVA fit-box count = seed count (same as draw path).
-            seed_count = len(numbers)
+            seed_count = 0
+            try:
+                seed_count = len(getattr(self.app, "goava_seed_numbers", None) or [])
+            except Exception:
+                seed_count = 0
             if seed_count <= 0 and self.app is not None and hasattr(self.app, "get_seed_values"):
                 try:
                     seed_count = len(list(self.app.get_seed_values(
@@ -6740,14 +6715,14 @@ class VideoSynthEngine:
                     pl = getattr(app, "master_playlist_data", None) or []
                     for row in pl[:32]:
                         if isinstance(row, dict):
-                            playlist_hash ^= _stable_hash((
+                            playlist_hash ^= hash((
                                 str(row.get("step_algorithm", ""))[:24],
                                 str(row.get("operator", ""))[:16],
                                 str(row.get("live_parametrics", ""))[:16],
                             )) & 0x7FFFFFFF
                     gas = getattr(app, "global_algo_state", None) or {}
                     if gas:
-                        playlist_hash ^= _stable_hash(str(sorted(gas.items())[:12])) & 0x7FFFFFFF
+                        playlist_hash ^= hash(str(sorted(gas.items())[:12])) & 0x7FFFFFFF
             except Exception:
                 playlist_hash = 0
 
@@ -7140,56 +7115,88 @@ class VideoSynthEngine:
         except Exception:
             pass
 
-    def _draw_camera_orientation_glyph(self, img, w, h):
-        """Draw a restrained world-axis cue so deterministic camera motion reads.
+    def _apply_cinematic_finish(self, img, w, h, st):
+        """Deterministic post-composite depth/lens pass shared by live + video.
 
-        This is part of the scenograph, not UI chrome.  It uses the exact camera
-        transform and fitted projection used by the scene, so yaw/pitch/roll can
-        be perceived even when the composition is visually dense.
+        This is deliberately a pure function of the current frame state: no
+        previous-frame buffers, wall-clock time, RNG, or repaint count.  It
+        adds readable depth separation, a restrained motion-echo field, and a
+        lens vignette without obscuring the underlying fractal geometry.
         """
-        world_scale = 0.28
-        origin = self._project(0.0, 0.0, 0.95, w, h)
-        ox, oy = origin[0], origin[1]
-        axes = ((world_scale, 0.0, 0.0, 25.0), (0.0, world_scale, 0.0, 145.0), (0.0, 0.0, world_scale, 265.0))
-        for ax, ay, az, hue in axes:
-            ex, ey, _ = self._project(ax, ay, 0.95 + az, w, h)
-            # Keep the cue subtle; it is deliberately weaker than primary geometry.
-            self._line(img, ox, oy, ex, ey, self._hsv(hue + self._video_hue_shift, 0.55, 0.72), 0.13)
+        try:
+            yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+            nx = (xx - w * 0.5) / max(1.0, w * 0.5)
+            ny = (yy - h * 0.48) / max(1.0, h * 0.5)
+            e = float(np.clip(getattr(self, "_rms", 0.0), 0.0, 1.0))
+            harm = float(np.clip(getattr(self, "_harmonic_activity", 0.0), 0.0, 1.0))
+            yaw = float(getattr(self, "_cam_yaw", 0.0))
+            pitch = float(getattr(self, "_cam_pitch", 0.0))
+            roll = float(getattr(self, "_cam_roll", 0.0))
+            # Radial depth veil: strongest at the perimeter, weak at center so
+            # the fractal/object remains the visual anchor.
+            rr = np.sqrt(nx * nx + ny * ny)
+            veil = np.clip((rr - 0.38) / 0.72, 0.0, 1.0)
+            veil *= 0.055 + 0.045 * harm
+            img *= (1.0 - veil[..., None])
 
-    def render_frame(self, w=640, h=360, export=False, frame_index=None):
-        """Composite one Meum frame.
+            # Deterministic lens breathing: a very soft center lift tied to FOV
+            # and camera orientation.  No bloom/blur state is carried between frames.
+            focal = np.exp(-((nx * (1.0 + 0.25 * abs(pitch))) ** 2 +
+                             (ny * (1.0 + 0.20 * abs(roll))) ** 2) / 0.34)
+            img += focal[..., None] * (0.010 + 0.018 * e)
 
-        ``frame_index`` is optional for live callers but authoritative for
-        deterministic export.  Identity-bearing visual state is derived from
-        composition + explicit time/index rather than repaint history.
-        """
+            # Sparse orbital tracer: a visual cue for camera rotation. It is
+            # analytic, not a history buffer, so frame N always reproduces.
+            cx, cy = w * 0.5, h * 0.48
+            tracer_col = self._hsv((self._video_hue_shift + math.degrees(yaw) * 0.7 + 210) % 360, 0.42, 0.82)
+            tracer_alpha = 0.035 + 0.025 * e
+            for q in range(3):
+                a0 = self.t * (0.08 + q * 0.021) + yaw * (0.45 + q * 0.12) + q * MEUM
+                r0 = min(w, h) * (0.24 + q * 0.055)
+                p0 = (cx + math.cos(a0) * r0, cy + math.sin(a0 * MEUM_INV + pitch) * r0 * 0.38)
+                a1 = a0 + 0.42 + 0.12 * math.sin(self.t * 0.11 + q * PHI)
+                r1 = r0 * (0.93 + 0.03 * math.sin(yaw + q))
+                p1 = (cx + math.cos(a1) * r1, cy + math.sin(a1 * MEUM_INV + pitch) * r1 * 0.38)
+                self._line(img, p0[0], p0[1], p1[0], p1[1], tracer_col, tracer_alpha)
+        except Exception:
+            pass
+
+    def render_frame(self, w=640, h=360, export=False):
+        """Composite all Meum subscenes. export=True skips any UI-only overlays."""
         self.export_mode = bool(export)
         w = max(int(w), 8)
         h = max(int(h), 8)
         img = np.zeros((h, w, 3), dtype=np.float32)
         self._advance_instrument_resize()
         self._visual_frame += 1
-        if frame_index is None:
-            frame_index = int(round(max(0.0, float(getattr(self, "t", 0.0))) * 60.0))
-        self._render_frame_index = max(0, int(frame_index))
 
-        # DETERMINISTIC_RENDER_V51: no per-render RNG is needed by the visual
-        # identity path.  Keep the compatibility RandomState seeded from the
-        # explicit frame key for legacy helpers, but never seed it from repaint
-        # count or process-global randomness.
+        # Seeded stochastic evolution from *evaluated* numeric seeds (not
+        # SHA of the raw script text — that made visuals drift away from the
+        # numbers the user typed). Same seed list + frame is reproducible.
         try:
             seed_key = 0
             if self.app is not None and hasattr(self.app, "get_seed_values"):
-                vals = list(self.app.get_seed_values(
-                    t_value=float(getattr(self, "t", 0.0)) % 8.0) or [])
-                for _vi, _vv in enumerate(vals[:6]):
-                    seed_key ^= (int(_safe_int_seed(_vv)) << (_vi % 8)) & 0x7FFFFFFF
+                try:
+                    vals = list(self.app.get_seed_values(t_value=float(getattr(self, "t", 0.0)) % 8.0) or [])
+                    if vals:
+                        seed_key = int(_safe_int_seed(vals[0]))
+                        for _vi, _vv in enumerate(vals[1:6]):
+                            seed_key ^= (int(_safe_int_seed(_vv)) << (_vi % 8)) & 0x7FFFFFFF
+                except Exception:
+                    seed_key = 0
             if not seed_key and self.app is not None and hasattr(self.app, "get_numeric_seed"):
-                seed_key = int(_safe_int_seed(self.app.get_numeric_seed() or 0.0))
-            mixed = (seed_key ^ (self._render_frame_index * 0x9E3779B1)) & 0x7FFFFFFF
+                try:
+                    seed_key = int(_safe_int_seed(self.app.get_numeric_seed() or 0.0))
+                except Exception:
+                    seed_key = 0
+            mixed = (seed_key ^ (int(self._visual_frame) * 0x9E3779B1)) & 0x7FFFFFFF
             self._rng = np.random.RandomState(mixed if mixed else 1)
+            # CANONICAL_VISUAL_2026: _visual_entropy is set by the canonical
+            # build below (entropy_draw_0_1 / union context) — the old
+            # `0.5 + 0.5*rng` convenience draw sat on a skewed 0.75 mean and was
+            # the one place the visual side left the audio entropy family.
         except Exception:
-            self._rng = np.random.RandomState(self._render_frame_index & 0x7FFFFFFF or 1)
+            pass
         # CANONICAL_VISUAL_2026: build the analog of the audio instrument pass.
         # Every instrument slot -> one canonical 2.5D layer parameter set, from
         # the SAME latices and the SAME entropy draw the audio engine uses.
@@ -7210,7 +7217,6 @@ class VideoSynthEngine:
         # Identity pass → union bbox → implode every part to fill outer bounds
         self._reset_fit(w, h)
         self._commit_fit(self._collect_fit_points(w, h, st), w, h)
-        self._draw_camera_orientation_glyph(img, w, h)
         # ONE_ROUTE_VISUAL_2026: every normal instrument is rendered by the
         # same InstrumentVisualObject class. There are no catalog-count graphics,
         # independent shape generators, or n-dependent identity placements.
@@ -7267,6 +7273,7 @@ class VideoSynthEngine:
             col = self._hsv((q*30 + self._video_hue_shift + self._canonical_ctx.get("seed",0.0)*0.17)%360, 0.45, 0.82)
             self._dot(img,x,y,col,0.10+0.08*self._rms,r=1)
 
+        self._apply_cinematic_finish(img, w, h, st)
         return np.clip(img, 0, 255).astype(np.uint8)
 
 
@@ -12635,6 +12642,7 @@ class MasterControlPatchbayPage(QWidget):
         save_btn = QPushButton("💾 Save Project")
         save_btn.setStyleSheet("background-color: #1f242c; color: #ffffff; border: 1px solid #30363d; padding: 6px;")
         save_btn.clicked.connect(self._save_project)
+        self._save_project_button = save_btn
 
         load_btn = QPushButton("📂 Load Project")
         load_btn.setStyleSheet("background-color: #1f242c; color: #ffffff; border: 1px solid #30363d; padding: 6px;")
@@ -12762,6 +12770,13 @@ class MasterControlPatchbayPage(QWidget):
         QMessageBox.information(self, "Song & Patchbay Randomizer", "Successfully randomized song arrangement, synth wiring, effects modules, and global cross-tab patch cables!")
 
     def _save_project(self):
+        if getattr(self, "_video_export_active", False):
+            QMessageBox.information(
+                self, "Export in progress",
+                "Project saving is paused while video export owns the deterministic render snapshot.\n"
+                "Stop Export first, then save the project."
+            )
+            return
         path, _ = QFileDialog.getSaveFileName(self, "Save Project File", "", "EQ爾 Groovebox Files (*.mgpr)")
         if path:
             # SAVE_EXT_2026: enforce the .mgpr suffix so the second save with the
@@ -15493,6 +15508,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._seed_history = []
 
         self.export_counter = 1
+        # VIDEO_EXPORT_TOGGLE_2026: one authoritative export session state.
+        # Save is disabled while a render owns the live composition; the Export
+        # control can be clicked again to request a clean stop.
+        self._video_export_active = False
+        self._video_export_stop_requested = False
 
         # =====================================================================
         # USER-REQUESTED WAV CARRIER / CONVOLVE-FIT FEATURE
@@ -15960,7 +15980,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """
         return list(self.get_seed_values(t_value=float(t_value)))
 
-    def _build_goava_composition(self, t_value=0.0, true_time_index=None, cache=True):
+    def _build_goava_composition(self, t_value=0.0, true_time_index=None):
         """Build GOAVA pitched-sine chord events from the seed numeric list.
 
         When the seed is a list or a time-varying expression, t_value and
@@ -15973,14 +15993,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """
         numbers = self._parse_goava_seed_values(t_value=t_value)
         if not numbers:
-            if cache:
-                self.goava_seed_numbers = []
+            self.goava_seed_numbers = []
             return []
         # Cache the evaluated seed list so the irrational sampler (and any
         # per-sample GOAVA drive) can read the exact same numbers without a
         # per-frame re-parse.
-        if cache:
-            self.goava_seed_numbers = list(numbers)
+        self.goava_seed_numbers = list(numbers)
         base = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
         n = len(numbers)
         # True index across a shifted seed: use the supplied composition
@@ -19263,7 +19281,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         self.btn_export = QToolButton()
         self.btn_export.setText("⬇ EXPORT")
-        self.btn_export.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        # VIDEO_EXPORT_TOGGLE_2026: the button itself is the run/stop control;
+        # the arrow/menu remains available for choosing an export type.
+        self.btn_export.setCheckable(True)
+        self.btn_export.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        self.btn_export.clicked.connect(self._toggle_video_export)
         export_menu = QMenu(self.btn_export)
         # REVERSE_ENGINEERING: every export carries its plain provenance
         # manifest (WAV chunk / ffmpeg comment / game provenance.mgpr) — this
@@ -28619,18 +28641,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "eqr": _num("slider_eqr", 0.0),
                 "fractalizer": _num("slider_fractalizer", 0.0),
             },
-            # VIDEO_RENDER_CONTRACT_V51: artifact-level parameters are explicit
-            # so the same source project can be rendered without relying on UI
-            # window state or an implicit live-preview history.
-            "video_render_contract": {
-                "renderer": "MeumScenograph-V51",
-                "fps": 24,
-                "pixel_format": "rgb24->yuv420p",
-                "frame_time": "frame_index / fps",
-                "camera_fit": "uniform",
-                "alpha_policy": "caller_authoritative",
-                "goava_indexing": "evaluated_seed_list_at_frame_time",
-            },
         }
         # GAME_AUDIO_CONTRACT_2026: the numeric triad (audio/visual/game
         # quantities) is the single cross-verification key between an audio/video
@@ -29714,22 +29724,54 @@ class MathematiciansGrooveboxApp(QMainWindow):
         btn_close.clicked.connect(dlg.accept)
         dlg.exec()
 
+    def _set_video_export_ui(self, active=False, status=None):
+        """Synchronize Export toggle + Save availability with the render owner."""
+        self._video_export_active = bool(active)
+        btn = getattr(self, "btn_export", None)
+        if btn is not None:
+            btn.blockSignals(True)
+            btn.setChecked(bool(active))
+            btn.setText("⏹ STOP EXPORT" if active else "⬇ EXPORT")
+            btn.setToolTip("Stop the active video export" if active else "Choose an export format")
+            btn.blockSignals(False)
+        save_btn = getattr(self, "_save_project_button", None)
+        if save_btn is not None:
+            save_btn.setEnabled(not active)
+            save_btn.setToolTip("Disabled while video export owns the deterministic render snapshot" if active else "Save Project")
+        if status is not None and hasattr(self, "scope_status_label"):
+            self.scope_status_label.setText(str(status))
+
+    def _toggle_video_export(self, checked=False):
+        """Export is a true toggle: a second click requests a clean render stop."""
+        if self._video_export_active:
+            self._video_export_stop_requested = True
+            self._set_video_export_ui(True, "🎬 Stopping export… finishing current encoded frame/part")
+            return
+        # The menu is still the format selector. A main-button click starts the
+        # canonical default export without creating a second export pathway.
+        self.export_video_dialog(include_audio=True, container="mp4")
+
+    def _video_export_should_stop(self):
+        return bool(getattr(self, "_video_export_stop_requested", False))
+
     def export_video_dialog(self, include_audio=True, container="mp4"):
         """Render 2.5D frames in 16 recoverable .part segments inside the
         chosen render destination (never /tmp). User controls resolution;
         size is predicted before work starts. container: mp4|webm|avi.
 
         PART_FILE_2026 video path:
-          - encoded intermediates live next to the final file as
+          - intermediates live next to the final file as
             <stem>.partNN.<container>.part  (16 parts)
-          - each part is encoded independently from a raw RGB pipe, so no
-            full frame dump or per-frame PNG staging is required; completed
-            parts survive a crash for resume
+          - each part is encoded independently so peak disk is ~1/16 of a
+            full frame dump; completed parts survive a crash for resume
           - final output is written as <out>.part then atomically renamed
         """
-        # VIDEO_PIPE_V51: export frames are streamed directly to ffmpeg as raw
-        # RGB24.  This removes the PNG encode/decode and large frame staging tree
-        # while preserving the recoverable encoded-part architecture.
+        try:
+            from PIL import Image
+        except Exception as e:
+            QMessageBox.critical(self, "Video Export Error", f"PIL required: {e}")
+            return
+
         ffmpeg = self._resolve_ffmpeg_binary()
         if not ffmpeg:
             QMessageBox.critical(
@@ -29868,6 +29910,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     except Exception:
                         pass
 
+        # From this point the render owns a deterministic snapshot of the
+        # mixdown. Saving the mutable live project is deliberately blocked.
+        self._video_export_stop_requested = False
+        self._set_video_export_ui(True, f"🎬 Exporting {mode} ({container}) {w}x{h}…")
+        QApplication.processEvents()
+
         audio_path = None
         if include_audio:
             audio_path = os.path.join(dest_dir, f".{stem}.audio.part.wav")
@@ -29888,18 +29936,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         _aim = getattr(self, 'active_instrument_memory', None)
         _nmem = len(_aim) if hasattr(_aim, '__len__') else int(getattr(self, 'synth_count', 48) or 48)
-        # DETERMINISTIC_EXPORT_V51: never reuse the live viewer engine.  Live
-        # repaint/fade/camera state must not contaminate an offline export.
-        # The fresh engine is still bound to the same application composition,
-        # so the source-of-truth remains unified.
-        eng = VideoSynthEngine(_nmem)
+        eng = getattr(self, 'video_synth_engine', None) or VideoSynthEngine(_nmem)
         if hasattr(eng, 'bind_app'):
             eng.bind_app(self)
 
         pix = ["-pix_fmt", "yuv420p"] if vcodec not in ("mjpeg",) else []
+        frames_root = os.path.join(dest_dir, f".{stem}.frames.part")
+        try:
+            os.makedirs(frames_root, exist_ok=True)
+        except Exception as e:
+            raise RuntimeError(f"Cannot create frames staging dir in render destination: {e}")
 
         try:
             for pi in range(N_PARTS):
+                if self._video_export_should_stop():
+                    raise InterruptedError("Video export stopped by user")
                 part_out = part_paths[pi]
                 if resume and os.path.isfile(part_out) and os.path.getsize(part_out) > 64:
                     if hasattr(self, 'scope_status_label'):
@@ -29914,70 +29965,70 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     f1 = f0 + 1
                     f0 = max(0, n_frames - 1)
 
-                # Stream RGB24 directly to ffmpeg.  The encoded part remains
-                # the recovery boundary, so a completed part is still reusable
-                # after a crash while raw frame PNGs never touch disk.
+                part_frames_dir = os.path.join(frames_root, f"p{pi:02d}")
+                try:
+                    os.makedirs(part_frames_dir, exist_ok=True)
+                except Exception:
+                    pass
+                # clear previous attempt frames for this part
+                for old in os.listdir(part_frames_dir):
+                    try:
+                        os.remove(os.path.join(part_frames_dir, old))
+                    except Exception:
+                        pass
+
+                local_count = 0
+                for fi in range(f0, f1):
+                    if self._video_export_should_stop():
+                        raise InterruptedError("Video export stopped by user")
+                    a = fi * frame_samples
+                    b = min(len(master), a + frame_samples)
+                    ph = fi / max(n_frames - 1, 1)
+                    eng.set_waveform(master[a:b], playhead=ph)
+                    frame = eng.render_frame(w, h, export=True)
+                    try:
+                        eng.ingest_video_frame_stats(*eng.frame_stats(frame))
+                    except Exception:
+                        pass
+                    Image.fromarray(frame, mode="RGB").save(
+                        os.path.join(part_frames_dir, f"frame_{local_count:05d}.png")
+                    )
+                    local_count += 1
+                    if local_count % 8 == 0 and hasattr(self, 'scope_status_label'):
+                        self.scope_status_label.setText(
+                            f"🎬 Part {pi+1}/{N_PARTS}  frames {local_count}/{f1-f0}…"
+                        )
+                        QApplication.processEvents()
+
+                pattern = os.path.join(part_frames_dir, "frame_%05d.png")
                 part_tmp = part_out + ".part"
+                # part_tmp ends in ".part", not ".mp4"/".webm"/".avi", so ffmpeg
+                # can't infer the muxer from the filename — force it explicitly.
                 _muxer = {"mp4": "mp4", "webm": "webm", "avi": "avi"}.get(container, container)
                 cmd = [
-                    ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
-                    "-f", "rawvideo", "-pix_fmt", "rgb24",
-                    "-s", f"{w}x{h}", "-framerate", str(fps), "-i", "-",
+                    ffmpeg, "-y", "-framerate", str(fps), "-i", pattern,
                     "-map", "0:v:0",
                     "-c:v", vcodec, *vargs, *pix,
-                    "-an", "-f", _muxer, part_tmp,
+                    "-an",
+                    "-f", _muxer,
+                    part_tmp,
                 ]
-                proc = subprocess.Popen(
-                    cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE, text=False,
-                )
-                try:
-                    local_count = 0
-                    for fi in range(f0, f1):
-                        a = fi * frame_samples
-                        b = min(len(master), a + frame_samples)
-                        ph = fi / max(n_frames - 1, 1)
-                        # Explicit composition time/index: no dependence on prior
-                        # preview paints, wall-clock timing, or mutable engine age.
-                        eng.set_waveform(master[a:b], playhead=ph)
-                        eng.t = float(fi) / float(fps)
-                        eng.playhead = float(ph)
-                        frame = eng.render_frame(w, h, export=True, frame_index=fi)
-                        if frame.dtype != np.uint8 or frame.shape != (h, w, 3):
-                            frame = np.asarray(frame, dtype=np.uint8).reshape((h, w, 3))
-                        # Preserve the documented deterministic video→software
-                        # feedback bridge.  The fresh export engine makes this
-                        # feedback sequence independent of live preview history.
-                        try:
-                            eng.ingest_video_frame_stats(*eng.frame_stats(frame))
-                        except Exception:
-                            pass
-                        proc.stdin.write(frame.tobytes(order="C"))
-                        local_count += 1
-                        if local_count % 8 == 0 and hasattr(self, 'scope_status_label'):
-                            self.scope_status_label.setText(
-                                f"🎬 Part {pi+1}/{N_PARTS}  frames {local_count}/{f1-f0}…"
-                            )
-                            QApplication.processEvents()
-                    proc.stdin.close()
-                    proc.stdin = None
-                    _stdout, _stderr = proc.communicate()
-                except Exception:
-                    try:
-                        if proc.stdin is not None:
-                            proc.stdin.close()
-                    except Exception:
-                        pass
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                    proc.wait()
-                    raise
+                proc = subprocess.run(cmd, capture_output=True, text=True)
                 if proc.returncode != 0:
-                    err = (_stderr.decode(errors="replace") if _stderr else "ffmpeg failed")[-2200:]
+                    err = (proc.stderr or proc.stdout or "ffmpeg failed")[-2200:]
                     raise RuntimeError(f"Part {pi+1}/{N_PARTS} encode failed:\n{err}")
                 os.replace(part_tmp, part_out)
+
+                # free this part's PNGs immediately (keeps peak disk low)
+                for old in os.listdir(part_frames_dir):
+                    try:
+                        os.remove(os.path.join(part_frames_dir, old))
+                    except Exception:
+                        pass
+                try:
+                    os.rmdir(part_frames_dir)
+                except Exception:
+                    pass
 
             # Build concat list
             list_path = os.path.join(dest_dir, f".{stem}.concat.part.txt")
@@ -30075,12 +30126,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         os.remove(audio_path)
                 except Exception:
                     pass
+            try:
+                shutil.rmtree(frames_root, ignore_errors=True)
+            except Exception:
+                pass
+
             self.export_counter += 1
             mode = "Video + Audio" if include_audio else "Video only"
-            if hasattr(self, 'scope_status_label'):
-                self.scope_status_label.setText(
-                    f"🎬 {mode} exported → {os.path.basename(out_path)}  ({vcodec}/{acodec if include_audio else 'no-audio'}) {w}x{h}"
-                )
+            self._video_export_stop_requested = False
+            self._set_video_export_ui(False,
+                f"🎬 {mode} exported → {os.path.basename(out_path)}  ({vcodec}/{acodec if include_audio else 'no-audio'}) {w}x{h}")
             QMessageBox.information(
                 self, "Export complete",
                 f"Saved:\n{out_path}\n\n"
@@ -30088,8 +30143,26 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 + (f" + {acodec}" if include_audio else " (video only)")
                 + f"\nResolution: {w}×{h}  ·  {n_frames} frames in {N_PARTS} parts"
             )
+        except InterruptedError:
+            # Cancellation is a normal terminal state. Completed .part segments
+            # intentionally remain available for deterministic recovery/resume.
+            print("[Video] export stopped by user; completed parts retained")
+            self._video_export_stop_requested = False
+            self._set_video_export_ui(False, "⏹ Export stopped — completed .part segments retained for resume")
+            try:
+                if audio_path and os.path.isfile(audio_path):
+                    os.remove(audio_path)
+            except Exception:
+                pass
+            try:
+                shutil.rmtree(frames_root, ignore_errors=True)
+            except Exception:
+                pass
+            return
         except Exception as e:
             print(f"[Video] export error: {e}")
+            self._video_export_stop_requested = False
+            self._set_video_export_ui(False, f"📊 Export error: {e}")
             QMessageBox.critical(self, "Video Export Error", str(e))
             # leave .part segments on disk for recovery
 

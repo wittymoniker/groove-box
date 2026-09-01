@@ -247,31 +247,6 @@ The game generator supports a safe lattice of software kinds including videogame
 
 Every exported game package includes its identity, input contract, sound/visual/UI contract, asset manifest, software-kind coverage proof, launchers, and play guide. In-app Play uses the same `install_game()` path as exported packages and caches generated assets under a fingerprinted temporary directory, so the first generation and subsequent reuse share one deterministic source.
 
-## Deterministic Meum Video Render Contract (2026-09-01)
-
-The offline video renderer is intentionally separated from the live viewer state.
-Each export creates a fresh `VideoSynthEngine`, binds it to the same canonical project
-source, and renders every frame at the explicit time `frame_index / fps`. Repainting the
-viewer before export therefore cannot change the exported visual identity.
-
-The scenograph raster helpers treat their caller-provided alpha as authoritative. The
-previous global 1.65x line/dot density boost was removed because it saturated translucent
-lattice marks and buried camera/fractal structure. Camera fitting is now uniform in X/Y,
-which preserves projected aspect changes and makes the deterministic yaw/pitch/roll path
-visually legible. A restrained world-axis cue uses the same camera transform as the scene.
-
-GOAVA video geometry re-evaluates the supplied numeric seed list at the current render
-time and uses the same time-indexed GOAVA event construction as the composition layer.
-Cached activation-time events remain available for normal UI state, but they no longer
-freeze the offline/live scenograph on one frequency. GOAVA frequency values are not
-artificially floor-clamped in the visual path; only non-finite/non-positive failures use
-a deterministic 432 Hz fallback.
-
-For throughput, frame pixels are streamed as deterministic RGB24 directly into ffmpeg
-for each recoverable encoded part. This removes per-frame PNG staging while preserving
-the 16-part crash/recovery boundary. The completed parts are still concatenated/muxed
-atomically into the final container.
-
 ## Export
 The export menu is organized as:
 - **Audio only:** WAV / FLAC / MP3
