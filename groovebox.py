@@ -15349,15 +15349,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "Magnetic Flux Modulator", "Eddy Current Oscillator", "Standing Wave Matrix", "Quantum Entanglement Node"
         ]
 
-        self.instrument_sequencer_memory = {
-            name: {
-                "steps": [False] * 16,
-                "gates": [True] * 16,
-                "amplitudes": [1.0] * 16,
-                "pitches": [1.0] * 16,
-                "probabilities": [100] * 16,
-                "offsets": [0.0] * 16
-            }
+        self.instrument_sequencer_memory[name] = {
+            "steps": [False] * 16,
+            "gates": [True] * 16,
+            "amplitudes": [1.0] * 16,
+            "pitches": [1.0] * 16,
+            "probabilities": [100] * 16,
+            "offsets": [0.0] * 16,
+
+            # NEW
+            "pkp_boost": [False] * 16,
+        }
             for name in self.instrument_names_48
         }
 
@@ -19693,7 +19695,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             t = QTimer(self)
             t.timeout.connect(self._pkp_boost_beat_tick)
             self._pkp_boost_timer = t
-        self._reschedule_pkp_boost_timer(float(getattr(self, "pkp_boost_step_increment", 1.0)),
+            self._reschedule_pkp_boost_timer(float(getattr(self, "pkp_boost_step_increment", 1.0)),
                                          max(1, int(self.spin_seq_length.value())) if hasattr(self, "spin_seq_length") else 16)
 
     def _reschedule_pkp_boost_timer(self, inc, seq_len):
