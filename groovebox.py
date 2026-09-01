@@ -5610,7 +5610,7 @@ class VideoSynthEngine:
             amplitude/band energy) stitched into a triangle-strip mesh,
             with the same colorization bank acting as its texture.
         """
-        op = self._item_opacity("wave_integration") if "wave_integration" in getattr(self, "SCENOGRAPH_ITEM_CATALOG", []) else 0.0
+        op = self._module_fade.get("wave_integration", 0.0) if "wave_integration" in getattr(self, "SCENOGRAPH_ITEM_CATALOG", []) else 0.0
         if op < 0.03:
             return
         wave = self.wave
