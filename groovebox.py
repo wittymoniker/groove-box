@@ -3270,7 +3270,7 @@ def canonical_visual_instrument(slot, ctx, flags):
     # HARMONIC_CANCELLATION_ALIGNMENT_2026: color shading, translucency and
     # 2.5D depth follow the harmonic cancellation envelope of the SOUND.  Under
     # the union every voice shares identity + phase carry (max reinforcement),
-    # so the frame is one opaque foreground organism; independent voices recede
+    # so the frame reads as one coherent foreground organism; independent voices recede
     # and grow translucent in proportion to how far their phase locus sits from
     # the shared meum axis — the same relation the mix's phase cancellation has.
     _ax = math.fmod(float(phase0) * MEUM_NORM + i * MEUM_INV, 1.0)
@@ -5579,9 +5579,14 @@ class VideoSynthEngine:
         m = max(3.0, min(w, h) * MEUM_NORM * 0.08)
         avail_w = max(w - 2.0 * m, 8.0)
         avail_h = max(h - 2.0 * m, 8.0)
-        # Anisotropic implode: fill both axes (fills screen, stays inside bounds)
-        self._fit_sx = avail_w / bw
-        self._fit_sy = avail_h / bh
+        # CAMERA_VISIBILITY_V51: use one scale for both axes.  Independent x/y
+        # normalization was mathematically safe but visually absorbed much of
+        # the camera's yaw/pitch/roll by re-stretching every frame to the same
+        # rectangle.  Uniform fitting preserves the projected aspect changes
+        # that make the deterministic camera path legible.
+        fit = min(avail_w / bw, avail_h / bh)
+        self._fit_sx = fit
+        self._fit_sy = fit
         self._fit_cx = 0.5 * (minx + maxx)
         self._fit_cy = 0.5 * (miny + maxy)
         self._fit_ox = w * 0.5
@@ -5606,8 +5611,9 @@ class VideoSynthEngine:
         return (c.red(), c.green(), c.blue())
 
     def _line(self, img, x0, y0, x1, y1, col, alpha=1.0):
-        # VISUAL_DENSITY_V50: raise scenograph presence without making it fully opaque.
-        alpha = float(alpha) * 1.65
+        # VISUAL_DENSITY_V51: caller alpha is authoritative.  Do not apply a
+        # global density multiplier here: repeated lattice marks must remain
+        # translucent so camera/depth/fractal layers can survive the stack.
         hh, ww, _ = img.shape
         steps = max(abs(int(x1) - int(x0)), abs(int(y1) - int(y0)), 1)
         a = float(np.clip(alpha, 0.0, 1.0))
@@ -5620,8 +5626,8 @@ class VideoSynthEngine:
                 img[y, x] = img[y, x] * (1 - a) + c * a
 
     def _dot(self, img, x, y, col, alpha=1.0, r=1):
-        # VISUAL_DENSITY_V50: moderate 50%-entropy presentation; retain fade behavior.
-        alpha = float(alpha) * 1.65
+        # VISUAL_DENSITY_V51: caller alpha is authoritative.  The previous
+        # 1.65x boost saturated many matrix dots at the 1.0 ceiling.
         hh, ww, _ = img.shape
         a = float(np.clip(alpha, 0.0, 1.0))
         c = np.array(col, dtype=np.float32)
@@ -6141,8 +6147,14 @@ class VideoSynthEngine:
             if fu:
                 self._visual_entropy = float(self._canonical[0]["entropy"])
             else:
+                # DETERMINISTIC_RENDER_V51: frame identity comes from explicit
+                # render time/index, never from how many times the viewer has
+                # happened to repaint.  Re-rendering the same t therefore gives
+                # the same entropy lane.
+                frame_key = int(getattr(self, "_render_frame_index",
+                                        round(max(0.0, float(self.t)) * 60.0)))
                 self._visual_entropy = float(
-                    self._canonical[int(self._visual_frame) % len(self._canonical)]["entropy"])
+                    self._canonical[frame_key % len(self._canonical)]["entropy"])
         self._ledger_visual_entropy()
 
     def _ledger_visual_entropy(self):
@@ -6184,6 +6196,31 @@ class VideoSynthEngine:
         self._vled_sumsq = 0.0
         self._vled_rmin = 1.0
         self._vled_rmax = 0.0
+
+    def _current_goava_events(self):
+        """Return GOAVA events for the current render time without mutating app state.
+
+        GOAVA is a live numerical field: a time-varying/list seed must be
+        re-evaluated at the actual frame time.  The cached playlist events are
+        retained for normal UI state, but video rendering uses this pure read so
+        a prior toggle/activation cannot freeze the video on one frequency.
+        """
+        app = self.app
+        if app is None or not bool(getattr(app, "goava_active", False)):
+            return [], []
+        t_value = float(getattr(self, "t", 0.0))
+        frame_index = int(getattr(self, "_render_frame_index", round(max(0.0, t_value) * 60.0)))
+        try:
+            if hasattr(app, "_parse_goava_seed_values") and hasattr(app, "_build_goava_composition"):
+                numbers = list(app._parse_goava_seed_values(t_value=t_value) or [])
+                events = list(app._build_goava_composition(
+                    t_value=t_value, true_time_index=frame_index, cache=False) or [])
+                return numbers, events
+        except Exception:
+            pass
+        numbers = list(getattr(app, "goava_seed_numbers", None) or [])
+        events = list(getattr(app, "goava_note_events", []) or [])
+        return numbers, events
 
     def _draw_canonical_constellation(self, img, w, h, st):
         """The instrument -> total-frame pass (visual dual of the audio per-voice
@@ -6241,10 +6278,11 @@ class VideoSynthEngine:
                 eng5 = sum(1 for _k in _VISUAL_ENGINE_CHANNELS if flags.get(_k))
                 chg = (0.5 / max(1, eng5)) if flags.get("goava") else 0.0
                 if chg > 0.01:
-                    numbers = getattr(self.app, "goava_seed_numbers", None) or []
-                    events = getattr(self.app, "goava_note_events", []) or []
+                    numbers, events = self._current_goava_events()
                     for j, ev in enumerate(events[:8]):
-                        hz = max(20.0, float(ev.get("frequency", 432.0)))
+                        hz = float(ev.get("frequency", 432.0))
+                        if not math.isfinite(hz) or hz <= 0.0:
+                            hz = 432.0
                         key = (float(ev.get("raw", j)) * 0.25 + float(ev.get("seed", 0.0)) * 0.11
                                + j * PHI * MEUM_NORM)
                         try:
@@ -6278,7 +6316,7 @@ class VideoSynthEngine:
         if not st["snap"].get("goava"):
             return
         fade = self._module_fade.get("goava", 0.0) * self._module_fade.get("goava_field", 0.0) ** 0.5
-        events = getattr(self.app, "goava_note_events", []) if self.app is not None else []
+        numbers, events = self._current_goava_events()
         if not events or fade <= 0.02:
             return
         cx, cy = w * 0.5, h * 0.43
@@ -6309,7 +6347,9 @@ class VideoSynthEngine:
         line_d = float(st.get("line_d", 0.5))
         seed_key = abs(float(st["snap"].get("seed", 0.0)))
         for j, ev in enumerate(events[:goava_count]):
-            hz = max(20.0, float(ev.get("frequency", 432.0)))
+            hz = float(ev.get("frequency", 432.0))
+            if not math.isfinite(hz) or hz <= 0.0:
+                hz = 432.0
             raw = float(ev.get("raw", 0.0))
             seed = float(ev.get("seed", 0.0))
             uidx = j / max(n - 1, 1)
@@ -6343,7 +6383,7 @@ class VideoSynthEngine:
             # numbers at this event's base frequency), so the glyph visibly
             # echoes the GOAVA voice's waveform rather than an abstract fold.
             _gstream = None
-            _gn = getattr(self.app, "goava_seed_numbers", None) or []
+            _gn = numbers
             if _gn:
                 try:
                     _txx = np.linspace(0.0, 0.30 + 0.55 * (hz / 260.0), 24)
@@ -6588,13 +6628,9 @@ class VideoSynthEngine:
         # Include GOAVA geometry in the fit box so its shapes implode with the
         # rest of the scenograph instead of floating outside the fitted frame.
         if snap.get("goava"):
-            events = getattr(self.app, "goava_note_events", []) if self.app is not None else []
+            numbers, events = self._current_goava_events()
             # GOAVA fit-box count = seed count (same as draw path).
-            seed_count = 0
-            try:
-                seed_count = len(getattr(self.app, "goava_seed_numbers", None) or [])
-            except Exception:
-                seed_count = 0
+            seed_count = len(numbers)
             if seed_count <= 0 and self.app is not None and hasattr(self.app, "get_seed_values"):
                 try:
                     seed_count = len(list(self.app.get_seed_values(
@@ -6704,14 +6740,14 @@ class VideoSynthEngine:
                     pl = getattr(app, "master_playlist_data", None) or []
                     for row in pl[:32]:
                         if isinstance(row, dict):
-                            playlist_hash ^= hash((
+                            playlist_hash ^= _stable_hash((
                                 str(row.get("step_algorithm", ""))[:24],
                                 str(row.get("operator", ""))[:16],
                                 str(row.get("live_parametrics", ""))[:16],
                             )) & 0x7FFFFFFF
                     gas = getattr(app, "global_algo_state", None) or {}
                     if gas:
-                        playlist_hash ^= hash(str(sorted(gas.items())[:12])) & 0x7FFFFFFF
+                        playlist_hash ^= _stable_hash(str(sorted(gas.items())[:12])) & 0x7FFFFFFF
             except Exception:
                 playlist_hash = 0
 
@@ -7104,42 +7140,56 @@ class VideoSynthEngine:
         except Exception:
             pass
 
-    def render_frame(self, w=640, h=360, export=False):
-        """Composite all Meum subscenes. export=True skips any UI-only overlays."""
+    def _draw_camera_orientation_glyph(self, img, w, h):
+        """Draw a restrained world-axis cue so deterministic camera motion reads.
+
+        This is part of the scenograph, not UI chrome.  It uses the exact camera
+        transform and fitted projection used by the scene, so yaw/pitch/roll can
+        be perceived even when the composition is visually dense.
+        """
+        world_scale = 0.28
+        origin = self._project(0.0, 0.0, 0.95, w, h)
+        ox, oy = origin[0], origin[1]
+        axes = ((world_scale, 0.0, 0.0, 25.0), (0.0, world_scale, 0.0, 145.0), (0.0, 0.0, world_scale, 265.0))
+        for ax, ay, az, hue in axes:
+            ex, ey, _ = self._project(ax, ay, 0.95 + az, w, h)
+            # Keep the cue subtle; it is deliberately weaker than primary geometry.
+            self._line(img, ox, oy, ex, ey, self._hsv(hue + self._video_hue_shift, 0.55, 0.72), 0.13)
+
+    def render_frame(self, w=640, h=360, export=False, frame_index=None):
+        """Composite one Meum frame.
+
+        ``frame_index`` is optional for live callers but authoritative for
+        deterministic export.  Identity-bearing visual state is derived from
+        composition + explicit time/index rather than repaint history.
+        """
         self.export_mode = bool(export)
         w = max(int(w), 8)
         h = max(int(h), 8)
         img = np.zeros((h, w, 3), dtype=np.float32)
         self._advance_instrument_resize()
         self._visual_frame += 1
+        if frame_index is None:
+            frame_index = int(round(max(0.0, float(getattr(self, "t", 0.0))) * 60.0))
+        self._render_frame_index = max(0, int(frame_index))
 
-        # Seeded stochastic evolution from *evaluated* numeric seeds (not
-        # SHA of the raw script text — that made visuals drift away from the
-        # numbers the user typed). Same seed list + frame is reproducible.
+        # DETERMINISTIC_RENDER_V51: no per-render RNG is needed by the visual
+        # identity path.  Keep the compatibility RandomState seeded from the
+        # explicit frame key for legacy helpers, but never seed it from repaint
+        # count or process-global randomness.
         try:
             seed_key = 0
             if self.app is not None and hasattr(self.app, "get_seed_values"):
-                try:
-                    vals = list(self.app.get_seed_values(t_value=float(getattr(self, "t", 0.0)) % 8.0) or [])
-                    if vals:
-                        seed_key = int(_safe_int_seed(vals[0]))
-                        for _vi, _vv in enumerate(vals[1:6]):
-                            seed_key ^= (int(_safe_int_seed(_vv)) << (_vi % 8)) & 0x7FFFFFFF
-                except Exception:
-                    seed_key = 0
+                vals = list(self.app.get_seed_values(
+                    t_value=float(getattr(self, "t", 0.0)) % 8.0) or [])
+                for _vi, _vv in enumerate(vals[:6]):
+                    seed_key ^= (int(_safe_int_seed(_vv)) << (_vi % 8)) & 0x7FFFFFFF
             if not seed_key and self.app is not None and hasattr(self.app, "get_numeric_seed"):
-                try:
-                    seed_key = int(_safe_int_seed(self.app.get_numeric_seed() or 0.0))
-                except Exception:
-                    seed_key = 0
-            mixed = (seed_key ^ (int(self._visual_frame) * 0x9E3779B1)) & 0x7FFFFFFF
+                seed_key = int(_safe_int_seed(self.app.get_numeric_seed() or 0.0))
+            mixed = (seed_key ^ (self._render_frame_index * 0x9E3779B1)) & 0x7FFFFFFF
             self._rng = np.random.RandomState(mixed if mixed else 1)
-            # CANONICAL_VISUAL_2026: _visual_entropy is set by the canonical
-            # build below (entropy_draw_0_1 / union context) — the old
-            # `0.5 + 0.5*rng` convenience draw sat on a skewed 0.75 mean and was
-            # the one place the visual side left the audio entropy family.
         except Exception:
-            pass
+            self._rng = np.random.RandomState(self._render_frame_index & 0x7FFFFFFF or 1)
         # CANONICAL_VISUAL_2026: build the analog of the audio instrument pass.
         # Every instrument slot -> one canonical 2.5D layer parameter set, from
         # the SAME latices and the SAME entropy draw the audio engine uses.
@@ -7160,6 +7210,7 @@ class VideoSynthEngine:
         # Identity pass → union bbox → implode every part to fill outer bounds
         self._reset_fit(w, h)
         self._commit_fit(self._collect_fit_points(w, h, st), w, h)
+        self._draw_camera_orientation_glyph(img, w, h)
         # ONE_ROUTE_VISUAL_2026: every normal instrument is rendered by the
         # same InstrumentVisualObject class. There are no catalog-count graphics,
         # independent shape generators, or n-dependent identity placements.
@@ -15909,7 +15960,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """
         return list(self.get_seed_values(t_value=float(t_value)))
 
-    def _build_goava_composition(self, t_value=0.0, true_time_index=None):
+    def _build_goava_composition(self, t_value=0.0, true_time_index=None, cache=True):
         """Build GOAVA pitched-sine chord events from the seed numeric list.
 
         When the seed is a list or a time-varying expression, t_value and
@@ -15922,12 +15973,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """
         numbers = self._parse_goava_seed_values(t_value=t_value)
         if not numbers:
-            self.goava_seed_numbers = []
+            if cache:
+                self.goava_seed_numbers = []
             return []
         # Cache the evaluated seed list so the irrational sampler (and any
         # per-sample GOAVA drive) can read the exact same numbers without a
         # per-frame re-parse.
-        self.goava_seed_numbers = list(numbers)
+        if cache:
+            self.goava_seed_numbers = list(numbers)
         base = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
         n = len(numbers)
         # True index across a shifted seed: use the supplied composition
@@ -28566,6 +28619,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "eqr": _num("slider_eqr", 0.0),
                 "fractalizer": _num("slider_fractalizer", 0.0),
             },
+            # VIDEO_RENDER_CONTRACT_V51: artifact-level parameters are explicit
+            # so the same source project can be rendered without relying on UI
+            # window state or an implicit live-preview history.
+            "video_render_contract": {
+                "renderer": "MeumScenograph-V51",
+                "fps": 24,
+                "pixel_format": "rgb24->yuv420p",
+                "frame_time": "frame_index / fps",
+                "camera_fit": "uniform",
+                "alpha_policy": "caller_authoritative",
+                "goava_indexing": "evaluated_seed_list_at_frame_time",
+            },
         }
         # GAME_AUDIO_CONTRACT_2026: the numeric triad (audio/visual/game
         # quantities) is the single cross-verification key between an audio/video
@@ -29655,18 +29720,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
         size is predicted before work starts. container: mp4|webm|avi.
 
         PART_FILE_2026 video path:
-          - intermediates live next to the final file as
+          - encoded intermediates live next to the final file as
             <stem>.partNN.<container>.part  (16 parts)
-          - each part is encoded independently so peak disk is ~1/16 of a
-            full frame dump; completed parts survive a crash for resume
+          - each part is encoded independently from a raw RGB pipe, so no
+            full frame dump or per-frame PNG staging is required; completed
+            parts survive a crash for resume
           - final output is written as <out>.part then atomically renamed
         """
-        try:
-            from PIL import Image
-        except Exception as e:
-            QMessageBox.critical(self, "Video Export Error", f"PIL required: {e}")
-            return
-
+        # VIDEO_PIPE_V51: export frames are streamed directly to ffmpeg as raw
+        # RGB24.  This removes the PNG encode/decode and large frame staging tree
+        # while preserving the recoverable encoded-part architecture.
         ffmpeg = self._resolve_ffmpeg_binary()
         if not ffmpeg:
             QMessageBox.critical(
@@ -29825,16 +29888,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         _aim = getattr(self, 'active_instrument_memory', None)
         _nmem = len(_aim) if hasattr(_aim, '__len__') else int(getattr(self, 'synth_count', 48) or 48)
-        eng = getattr(self, 'video_synth_engine', None) or VideoSynthEngine(_nmem)
+        # DETERMINISTIC_EXPORT_V51: never reuse the live viewer engine.  Live
+        # repaint/fade/camera state must not contaminate an offline export.
+        # The fresh engine is still bound to the same application composition,
+        # so the source-of-truth remains unified.
+        eng = VideoSynthEngine(_nmem)
         if hasattr(eng, 'bind_app'):
             eng.bind_app(self)
 
         pix = ["-pix_fmt", "yuv420p"] if vcodec not in ("mjpeg",) else []
-        frames_root = os.path.join(dest_dir, f".{stem}.frames.part")
-        try:
-            os.makedirs(frames_root, exist_ok=True)
-        except Exception as e:
-            raise RuntimeError(f"Cannot create frames staging dir in render destination: {e}")
 
         try:
             for pi in range(N_PARTS):
@@ -29852,68 +29914,70 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     f1 = f0 + 1
                     f0 = max(0, n_frames - 1)
 
-                part_frames_dir = os.path.join(frames_root, f"p{pi:02d}")
-                try:
-                    os.makedirs(part_frames_dir, exist_ok=True)
-                except Exception:
-                    pass
-                # clear previous attempt frames for this part
-                for old in os.listdir(part_frames_dir):
-                    try:
-                        os.remove(os.path.join(part_frames_dir, old))
-                    except Exception:
-                        pass
-
-                local_count = 0
-                for fi in range(f0, f1):
-                    a = fi * frame_samples
-                    b = min(len(master), a + frame_samples)
-                    ph = fi / max(n_frames - 1, 1)
-                    eng.set_waveform(master[a:b], playhead=ph)
-                    frame = eng.render_frame(w, h, export=True)
-                    try:
-                        eng.ingest_video_frame_stats(*eng.frame_stats(frame))
-                    except Exception:
-                        pass
-                    Image.fromarray(frame, mode="RGB").save(
-                        os.path.join(part_frames_dir, f"frame_{local_count:05d}.png")
-                    )
-                    local_count += 1
-                    if local_count % 8 == 0 and hasattr(self, 'scope_status_label'):
-                        self.scope_status_label.setText(
-                            f"🎬 Part {pi+1}/{N_PARTS}  frames {local_count}/{f1-f0}…"
-                        )
-                        QApplication.processEvents()
-
-                pattern = os.path.join(part_frames_dir, "frame_%05d.png")
+                # Stream RGB24 directly to ffmpeg.  The encoded part remains
+                # the recovery boundary, so a completed part is still reusable
+                # after a crash while raw frame PNGs never touch disk.
                 part_tmp = part_out + ".part"
-                # part_tmp ends in ".part", not ".mp4"/".webm"/".avi", so ffmpeg
-                # can't infer the muxer from the filename — force it explicitly.
                 _muxer = {"mp4": "mp4", "webm": "webm", "avi": "avi"}.get(container, container)
                 cmd = [
-                    ffmpeg, "-y", "-framerate", str(fps), "-i", pattern,
+                    ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+                    "-f", "rawvideo", "-pix_fmt", "rgb24",
+                    "-s", f"{w}x{h}", "-framerate", str(fps), "-i", "-",
                     "-map", "0:v:0",
                     "-c:v", vcodec, *vargs, *pix,
-                    "-an",
-                    "-f", _muxer,
-                    part_tmp,
+                    "-an", "-f", _muxer, part_tmp,
                 ]
-                proc = subprocess.run(cmd, capture_output=True, text=True)
-                if proc.returncode != 0:
-                    err = (proc.stderr or proc.stdout or "ffmpeg failed")[-2200:]
-                    raise RuntimeError(f"Part {pi+1}/{N_PARTS} encode failed:\n{err}")
-                os.replace(part_tmp, part_out)
-
-                # free this part's PNGs immediately (keeps peak disk low)
-                for old in os.listdir(part_frames_dir):
+                proc = subprocess.Popen(
+                    cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE, text=False,
+                )
+                try:
+                    local_count = 0
+                    for fi in range(f0, f1):
+                        a = fi * frame_samples
+                        b = min(len(master), a + frame_samples)
+                        ph = fi / max(n_frames - 1, 1)
+                        # Explicit composition time/index: no dependence on prior
+                        # preview paints, wall-clock timing, or mutable engine age.
+                        eng.set_waveform(master[a:b], playhead=ph)
+                        eng.t = float(fi) / float(fps)
+                        eng.playhead = float(ph)
+                        frame = eng.render_frame(w, h, export=True, frame_index=fi)
+                        if frame.dtype != np.uint8 or frame.shape != (h, w, 3):
+                            frame = np.asarray(frame, dtype=np.uint8).reshape((h, w, 3))
+                        # Preserve the documented deterministic video→software
+                        # feedback bridge.  The fresh export engine makes this
+                        # feedback sequence independent of live preview history.
+                        try:
+                            eng.ingest_video_frame_stats(*eng.frame_stats(frame))
+                        except Exception:
+                            pass
+                        proc.stdin.write(frame.tobytes(order="C"))
+                        local_count += 1
+                        if local_count % 8 == 0 and hasattr(self, 'scope_status_label'):
+                            self.scope_status_label.setText(
+                                f"🎬 Part {pi+1}/{N_PARTS}  frames {local_count}/{f1-f0}…"
+                            )
+                            QApplication.processEvents()
+                    proc.stdin.close()
+                    proc.stdin = None
+                    _stdout, _stderr = proc.communicate()
+                except Exception:
                     try:
-                        os.remove(os.path.join(part_frames_dir, old))
+                        if proc.stdin is not None:
+                            proc.stdin.close()
                     except Exception:
                         pass
-                try:
-                    os.rmdir(part_frames_dir)
-                except Exception:
-                    pass
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    proc.wait()
+                    raise
+                if proc.returncode != 0:
+                    err = (_stderr.decode(errors="replace") if _stderr else "ffmpeg failed")[-2200:]
+                    raise RuntimeError(f"Part {pi+1}/{N_PARTS} encode failed:\n{err}")
+                os.replace(part_tmp, part_out)
 
             # Build concat list
             list_path = os.path.join(dest_dir, f".{stem}.concat.part.txt")
@@ -30011,11 +30075,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         os.remove(audio_path)
                 except Exception:
                     pass
-            try:
-                shutil.rmtree(frames_root, ignore_errors=True)
-            except Exception:
-                pass
-
             self.export_counter += 1
             mode = "Video + Audio" if include_audio else "Video only"
             if hasattr(self, 'scope_status_label'):
