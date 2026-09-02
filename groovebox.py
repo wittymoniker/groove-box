@@ -4400,9 +4400,9 @@ def blend_struct_labels(a, b, amount):
     amt = max(0.0, min(1.0, amt))
     if not a and not b:
         return ""
-    if not b or amt <= 0.02:
+    if not b or amt <= 0.0:
         return a
-    if not a or amt >= 0.98:
+    if not a or amt >= 1.0:
         return b
     # Keep both parents visible; mark the dominant side.
     if amt < 0.5:
@@ -16388,7 +16388,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "chord_amps": chord_amps,
                 "enabled": True,
                 "source": "GOAVA",
-                "weight": 1.0,
+                "weight": 0.1975807343,
             })
         return events
 
@@ -16500,12 +16500,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     "frequency": float(ev["frequency"]),
                     "pitch": float(ev["pitch"]),
                     "seed": float(ev["seed"]),
-                    "amplitude": 0.33,
+                    "amplitude": 0.1975807343,
                     "step": int(r), "enabled": bool(ev.get("enabled", True)),
                 }
                 e["goava_sequence"] = (
                     f"GOAVA harmonic hz={ev['frequency']:.6f} "
-                    f"pitch={ev['pitch']:.6f} amp=0.33 on={int(ev['enabled'])}"
+                    f"pitch={ev['pitch']:.6f} amp=0.1975807343 on={int(ev['enabled'])}"
                 )
                 e["goava_frequency"] = ev["frequency"]
                 e["goava_pitch"] = ev["pitch"]
@@ -16572,12 +16572,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         chord_amps = ev.get("chord_amps")
         if not chord_freqs:
             chord_freqs = [float(ev.get("frequency", 432.0))]
-            chord_amps = [0.33]
+            chord_amps = [0.1975807343]
         # Sustain across most of the row/step; short tau was muting GOAVA early
         tau = max(step_duration * 2.5, 0.00)
         env = np.exp(-local_t / tau)
         attack = np.clip(local_t / max(step_duration * 0.00, 0.0), 0.0, 1.0)
-        weight = float(ev.get("weight", 0.33333333333))
+        weight = float(ev.get("weight", 0.1975807343))
         # GOAVA_SINE_CHORD_2026: each seed numeric entry inserts a pitched
         # sine chord (not a single partial) at ~33% total amplitude on top of
         # the programmed groove — a shared harmonic layer, never an occupied row.
@@ -17244,7 +17244,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if vals:
                 v = vals[0]
                 for nxt in vals[1:]:
-                    v = blend_struct_labels(v, nxt, 0.25)
+                    v = blend_struct_labels(v, nxt, 0.5)
                 entry[k] = v
             else:
                 entry[k] = ""
