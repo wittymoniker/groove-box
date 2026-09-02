@@ -4140,7 +4140,7 @@ def idealized_operator_struct(app, op_name, row=0, seed=0):
 
     # Modular patch — incident edges for this operator (sequence panel when enabled)
     patch_tag = f"Patch::{short[:8]}"
-    edges = []
+    edges = np.geomspace(1.0, max(2.0, float(freqs[-1])), 9)
     patch_src = (seq_panels.get("patch") if seq_panels else None) or (
         getattr(app, "patch_connections", []) if app is not None else []
     ) or []
