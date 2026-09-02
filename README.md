@@ -475,7 +475,7 @@ change that latent image. Counts from 2 through 64 deterministically
 repartition the same master material into different visual instrument
 factorizations, while avoiding duplicate decorative complexity.
 
-## Deterministic Visual + Game View-Space Rollout (2026-08-31)
+## Deterministic Visual + Game View-Space Rollout
 
 This build shares one deterministic visual view-space contract across the host visualizer and generated games:
 
@@ -484,5 +484,120 @@ This build shares one deterministic visual view-space contract across the host v
 Camera state includes yaw, pitch, roll, distance and FOV. View lattices use equal-area Fibonacci-sphere sampling and deterministic greedy max-min coverage selection. Visual composition fingerprints are order-independent, and projection identities are cryptographic functions of the canonical seed/composition/view tuple. Generated game packages include `visual_determinism.py` so their visual/game camera state is self-contained and reproducible.
 
 
-## Native Four-Engine Spatial 2026.3
+## Native Four-Engine Spatial
+
 The spatial/game layer is sculpted from the four non-GOAVA canonical engines: randomizer, phase-lock, Euclidean, and seeded. Five spatial channels project that state into position, phase, scale, topology, and complexity. GOAVA is an optional post-projection adapter and is never required for generation, topology, recursion, or infinite-world identity.
+
+---
+
+## Equations and Proof of Concept
+
+### Constants
+
+\[
+M = 1.1975807343385265 \quad\text{(Meum)}
+\qquad
+\Phi = \frac{1+\sqrt{5}}{2}
+\qquad
+M_n = \frac{M-1}{M}
+\qquad
+M^{-1} = \frac{1}{M}
+\qquad
+\Phi^{-1} = \Phi - 1
+\]
+
+### Unit residue (order-independent hash → continuous scalar)
+
+\[
+r(s,k) = \frac{\mathrm{blake2b}(s\|k) \bmod 2^{64}}{2^{64}} \in [0,1)
+\]
+
+Same identity in → same full-entropy scalar out. No RNG, no small-period modulus.
+
+### Audio: free modulator (closed form)
+
+Carrier phase (start phase is always zero; no default offset):
+
+\[
+\varphi(t) = 2\pi f_0 t + \underbrace{\Delta\varphi_{\mathrm{PM}}(t)}_{\text{PM}}
+\qquad
+f_{\mathrm{inst}}(t) = f_0\bigl(1 + d_{\mathrm{FM}}\,L_{\mathrm{FM}}(t)\bigr)
+\]
+
+Partial series (pure \(1/n\) amplitudes, unrestricted count):
+
+\[
+y(t) = \sum_{h=1}^{N}\frac{M_n}{h}\,W\bigl(\varphi(t)\,h\cdot\delta_h\bigr)
+\cdot
+\bigl(1 + d_{\mathrm{AM}}\,L_{\mathrm{AM}}(t)\bigr)
+\]
+
+- \(W\) is the chosen wavefunction (`isn` / Meum odd sinusoid, or classical shapes).
+- \(N\) grows with seed + entropy (no hard 7–12 ceiling).
+- Modulation **rates and depths** are unrestricted continuous values (negative rate = reverse LFO).
+- **No** filters, EQ, drive, limiter, normalizer, soft-clip, or Nyquist soft clamp on the spectrum. Above-Nyquist content is deterministic aliasing.
+
+**Start of track:** \(\varphi(0)=0\), amplitude of sample \(0\) is \(0\).
+
+**Master bus:** Master Volume only. No drive stage, no hard-clip ceiling in the free-spectrum path.
+
+### Visualizer: same residue → geometry
+
+Each instrument slot \(i\) is one sample of a fractal of audio visualization modes (1D / 2D / 3D):
+
+\[
+\begin{align*}
+\mathrm{depth}_i &= M_n + \Phi(1-\mathrm{conson}_i) + M^{-1}\cdot\mathrm{pow}_i\cdot r(s,d_i)\\
+\mathrm{radius}_i &= (M+\Phi - \mathrm{depth}_i\cdot M^{-1})\,(M^{-1}+M_n\cdot r(s,p_i))\\
+\mathrm{kind}_i &= \mathcal{K}\bigl\lfloor r(s,\kappa_i)\,|\mathcal{K}|\bigr\rfloor
+\end{align*}
+\]
+
+with \(\mathcal{K}\) enumerating waveform/spectrum/phase-portrait (1D), spectrogram/vectorscope/lissajous (2D), volumetric spectrum/phase-space/polytope (3D).
+
+Screen projection is a pure trigonometric camera map \(\Pi(\mathrm{yaw},\mathrm{dist},\mathrm{pitch},\mathrm{depth};\mathrm{cam})\). Zero depth/radius use **case branches**, not microscopic epsilons.
+
+### Video / game engine = seed math (same contract as audio)
+
+\[
+\mathrm{visual}(s,i,t,X) = \Pi\bigl(r(s,\cdot),\;\mathrm{kind}_i,\;X_{\mathrm{audio}}\bigr)
+\]
+
+No independent visual RNG. Chunk LODs are pure functions of \((s,c_x,c_z,\mathrm{lod})\).
+
+### Engine attenuation (playlist → canonical goals)
+
+Boolean mask \(m_e\in\{0,1\}\) gates engine \(e\); continuous weight \(a_e\in\mathbb{R}\) scales influence:
+
+\[
+w_e = m_e\cdot a_e
+\qquad
+\begin{aligned}
+&\text{randomizer}\rightarrow\text{spectral scatter}\\
+&\text{phase\_lock}\rightarrow\text{phase grid}\\
+&\text{goava}\rightarrow\text{pure lattice}\\
+&\text{euclidean}\rightarrow\text{rhythm}\\
+&\text{seeded}\rightarrow\text{seed variation}
+\end{aligned}
+\]
+
+Scenograph fields (spin, grid, hue) scale by \(w_e\).
+
+### Proof of concept (what to verify)
+
+1. **Determinism:** same seed + same UI state → bit-identical mixdown buffer on successive Play/Export (phase carry reset at full render).
+2. **Start silence / phase:** first sample is \(0\); all instruments begin at \(\varphi=0\).
+3. **Free spectrum:** no design-window clamp on frequency; no master EQ/drive/limiter path active (`if False` gates on EQR/PKP/PED/Fractallizer).
+4. **Visualizer identity:** changing instrument count repartitions the same latent image; does not invent a new seed lattice.
+5. **Game control:** WASD only moves the avatar; release keys → velocity damps to zero (no sequence-driven walk).
+6. **House / cursor:** right-click near home claims without freeze; OS cursor remains visible in UI radius.
+7. **Chunks:** walking loads near full props, mid silhouettes, far residual dots via a background thread pool; cache stays bounded.
+8. **Composition debugger:** host button exposes per-voice closed form + SHA-256 spectral fingerprint of param state.
+9. **Package identity:** exported game `composition_fingerprint` matches host classification for the same seed.
+
+### Player / camera contract (summary)
+
+- WASD = local planar move relative to look yaw; Space/Ctrl = fly.
+- Mouse look updates camera targets; look sensitivity is continuous.
+- Camera collision: solid house footprint push-out + accelerating dezoom when zoomed into geometry.
+- Open-world topology never injects cinematic orbit while the player is driving.
