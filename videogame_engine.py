@@ -3958,11 +3958,13 @@ class Game:
         Mouse motion is not a transient camera impulse.  It changes a target
         yaw/pitch, and the simulation eases toward that target.  This keeps
         aiming usable even on high-polling mice and prevents visual jitter.
+        look_sensitivity (default 0.35) scales both axes continuously.
         """
         try:
-            self.camera_yaw_target = (float(getattr(self, "camera_yaw_target", self.steer)) + float(dyaw)) % math.tau
+            s = float(getattr(self, "look_sensitivity", 0.35) or 0.35)
+            self.camera_yaw_target = (float(getattr(self, "camera_yaw_target", self.steer)) + float(dyaw) * s) % math.tau
             # FREE_2026: pitch is unrestricted; the projection handles any value.
-            self.camera_pitch_target = float(getattr(self, "camera_pitch_target", 0.0)) + float(dpitch)
+            self.camera_pitch_target = float(getattr(self, "camera_pitch_target", 0.0)) + float(dpitch) * s
         except Exception:
             pass
 
@@ -8621,6 +8623,84 @@ if HAS_UI:
             cb.addWidget(self.chat_view)
             cb.addLayout(cr)
             chatt=QWidget(); cl=QVBoxLayout(chatt); cl.addWidget(chatbox); self.tabs.addTab(chatt,"CHAT")
+            # ── MODERN CONTROL STRIP (2026) ──────────────────────────────
+            # Compact, always-visible game-feel controls: camera, sensitivity,
+            # reticle, minimap, FOV readout.  Pure UI — does not alter the
+            # free modulator / scenograph math.
+            ctrl_box = QGroupBox("Modern Controls")
+            ctrl_lay = QVBoxLayout(ctrl_box)
+            # Row 1: camera mode + cycle
+            cam_row = QHBoxLayout()
+            self.cam_mode_lbl = QLabel("Camera: 2.5D")
+            btn_cam = QPushButton("Cycle Cam")
+            btn_cam.setToolTip("Cycle camera modes (Shift+wheel also works)")
+            btn_cam.clicked.connect(lambda: (g.cycle_camera(1), self.refresh()))
+            cam_row.addWidget(self.cam_mode_lbl, 1)
+            cam_row.addWidget(btn_cam)
+            ctrl_lay.addLayout(cam_row)
+            # Row 2: look sensitivity
+            sens_row = QHBoxLayout()
+            sens_row.addWidget(QLabel("Look sens"))
+            self.sens_spin = QSpinBox()
+            self.sens_spin.setRange(1, 100)
+            self.sens_spin.setValue(int(float(getattr(g, "look_sensitivity", 0.35)) * 100) if hasattr(g, "look_sensitivity") else 35)
+            self.sens_spin.setSuffix("%")
+            self.sens_spin.setToolTip("Mouse-look sensitivity (1–100%)")
+            def _set_sens(v):
+                try:
+                    g.look_sensitivity = max(0.01, float(v) / 100.0)
+                except Exception:
+                    pass
+            self.sens_spin.valueChanged.connect(_set_sens)
+            if not hasattr(g, "look_sensitivity"):
+                g.look_sensitivity = 0.35
+            sens_row.addWidget(self.sens_spin)
+            ctrl_lay.addLayout(sens_row)
+            # Row 3: toggles (reticle / minimap / vignette / hold-to-sprint)
+            tog_row = QHBoxLayout()
+            self.chk_reticle = QCheckBox("Reticle")
+            self.chk_reticle.setChecked(bool(getattr(g, "show_reticle", True)))
+            self.chk_reticle.toggled.connect(lambda on: setattr(g, "show_reticle", bool(on)))
+            self.chk_minimap = QCheckBox("Minimap")
+            self.chk_minimap.setChecked(bool(getattr(g, "show_minimap", True)))
+            self.chk_minimap.toggled.connect(lambda on: setattr(g, "show_minimap", bool(on)))
+            self.chk_vignette = QCheckBox("Vignette")
+            self.chk_vignette.setChecked(bool(getattr(g, "show_vignette", False)))
+            self.chk_vignette.toggled.connect(lambda on: setattr(g, "show_vignette", bool(on)))
+            for w in (self.chk_reticle, self.chk_minimap, self.chk_vignette):
+                tog_row.addWidget(w)
+            ctrl_lay.addLayout(tog_row)
+            # Row 4: FOV / zoom readout + reset view
+            fov_row = QHBoxLayout()
+            self.fov_lbl = QLabel("FOV —  Zoom —")
+            btn_reset_view = QPushButton("Reset View")
+            btn_reset_view.setToolTip("Reset yaw/pitch/zoom to identity")
+            def _reset_view():
+                try:
+                    g.camera_yaw_target = 0.0
+                    g.camera_pitch_target = 0.0
+                    g.camera_yaw = 0.0
+                    g.camera_pitch = 0.0
+                    g.zoom = 1.0
+                    g.push_status("VIEW reset")
+                    self.refresh()
+                except Exception:
+                    pass
+            btn_reset_view.clicked.connect(_reset_view)
+            fov_row.addWidget(self.fov_lbl, 1)
+            fov_row.addWidget(btn_reset_view)
+            ctrl_lay.addLayout(fov_row)
+            # Row 5: quick actions
+            qa_row = QHBoxLayout()
+            for label, cmd in (("Interact", "activate"), ("Inventory", "inventory"),
+                               ("Map", "map"), ("Photo", "photo")):
+                b = QPushButton(label)
+                b.setToolTip(f"/{cmd}")
+                b.clicked.connect(lambda _=False, c=cmd: (g.push_status(f"/{c}"), getattr(g, c, lambda: None)() if callable(getattr(g, c, None)) else None, self.refresh()))
+                qa_row.addWidget(b)
+            ctrl_lay.addLayout(qa_row)
+            lay.addWidget(ctrl_box)
+
             actions = QHBoxLayout()
             btn_reset = QPushButton("Reset World")
             btn_report = QPushButton("/report")
@@ -8959,6 +9039,17 @@ if HAS_UI:
             self.djbar.setValue(max(0, min(1000, int(g.music.dj * 1000))))
             self.net_lbl.setText(g.net.status)
             self.role_lbl.setText(f"Role: {self._role_text()} · H=Host · Server tab=connections")
+            # Modern control strip readouts
+            try:
+                if hasattr(self, "cam_mode_lbl"):
+                    self.cam_mode_lbl.setText(f"Camera: {g.camera_mode_name()}")
+                if hasattr(self, "fov_lbl"):
+                    vv = getattr(g, "visual_view", {}) or {}
+                    fov = float(vv.get("fov_deg", 48.0) or 48.0)
+                    z = float(getattr(g, "zoom", 1.0) or 1.0)
+                    self.fov_lbl.setText(f"FOV {fov:.0f}°  Zoom {z:.2f}x")
+            except Exception:
+                pass
             try:
                 self._refresh_chess_lbl()
             except Exception:

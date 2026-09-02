@@ -166,25 +166,21 @@ except Exception:
 DEFAULT_SAMPLE_RATE = 48000  # practical default; export/render may lift to TARGET
 
 def audible_hz(freq, sample_rate=None):
-    """Return frequency with real case handling — no soft spectral clamp.
+    """Pass-through frequency — no spectral clamp, no design window.
 
-    - Non-finite → design floor (AUDIBLE_LO_HZ)
-    - Negative → absolute value (phase-reversal is already handled upstream)
-    - Above Nyquist → left as-is (deterministic aliasing is allowed and
-      contributes high-frequency content the previous clamp removed)
-    - Below design floor → design floor (only to avoid literal zero/denormal
-      oscillators that produce no energy)
+    - Non-finite → 0.0 (silent oscillator; real case, not a soft floor)
+    - Negative → absolute value (phase-reversal already handled upstream)
+    - Any positive magnitude left unchanged (including sub-audio and
+      above-Nyquist; deterministic aliasing is allowed)
     """
     try:
         f = float(freq)
     except Exception:
-        return float(AUDIBLE_LO_HZ)
+        return 0.0
     if not math.isfinite(f):
-        return float(AUDIBLE_LO_HZ)
+        return 0.0
     if f < 0.0:
-        f = -f
-    if f < AUDIBLE_LO_HZ:
-        return float(AUDIBLE_LO_HZ)
+        return -f
     return float(f)
 
 # Frequently used integer powers: M^0 ... M^35.
@@ -194,6 +190,8 @@ def audible_hz(freq, sample_rate=None):
 # further and further up in pitch. Wrapping the exponent into a symmetric
 # 12-slot window (-6..+5, one "octave" of Meum-steps) keeps the same per-index
 # color/identity but centers it around the base frequency instead of climbing.
+PHI = 1.6180339887
+PHI_INV = 0.6180339887
 MEUM_POWERS_36 = tuple(MEUM ** ((i % 12) - 6) for i in range(36))
 # FREE_PARTIAL_2026: partial budget is no longer a hard low ceiling.
 # Each slot still has a deterministic base derived from MEUM/PHI so adjacent
@@ -212,8 +210,6 @@ INSTRUMENT_PARTIAL_CAP_48 = INSTRUMENT_PARTIAL_BASE_48
 MEUM_IDENTITY_LHS = (MEUM_MINUS_1 * MEUM) + (MEUM_MINUS_1 * MEUM_INV)
 MEUM_IDENTITY_RHS = MEUM_TWO_POW_OVER_SQ - MEUM
 MEUM_IDENTITY_RESIDUAL = MEUM_IDENTITY_LHS - MEUM_IDENTITY_RHS
-PHI = 1.6180339887
-PHI_INV = 0.6180339887
 E_IRR = math.e
 PI_IRR = math.pi
 SQRT2 = math.sqrt(2.0)
@@ -1439,7 +1435,7 @@ class DeterministicPanelManager:
     def get_channel_overrides(self, channel_id: int, ctx: float) -> dict:
         """Computes invariant-mapped parameter overrides for a given channel."""
         return {
-            "gain": float(np.clip(self.MEUM_NORM * 0.5 + (self.PHI - 1.0) * ctx * channel_id, 0.0, 1.0)),
+            "gain": float(self.MEUM_NORM * PHI_INV + (self.PHI - 1.0) * ctx * channel_id),
             "modulation_skew": float(math.fmod(channel_id * self.PHI, 1.0)),
             "phase_offset": float(math.tau * ((channel_id * self.MEUM_NORM * (self.PHI - 1.0)) % 1.0))
         }
@@ -1453,7 +1449,7 @@ class DeterministicPanelOverride:
 
     def compute_override(self, channel_id, ctx):
         return {
-            "gain": float(np.clip(self.MEUM_NORM * 0.5 + (self.PHI - 1.0) * ctx * channel_id, 0.0, 1.0)),
+            "gain": float(self.MEUM_NORM * PHI_INV + (self.PHI - 1.0) * ctx * channel_id),
             "modulation_skew": float(math.fmod(channel_id * self.PHI, 1.0))
         }
 
@@ -1562,12 +1558,21 @@ def _meum_advance_phase(
 ):
     """Advance oscillator phase using instantaneous FM frequency.
     Syntax: f_inst = f*(1 + depth*(LFO + MeumField)); phase += 2π*f_inst/SR.
-    Frequency is clamped below Nyquist so the deterministic transform cannot
-    create an invalid sample-rate-dependent identity.
+    FREE_SPECTRUM_2026: no Nyquist clamp — above-Nyquist is deterministic aliasing.
     """
-
-    sr = max(float(sample_rate), 1.0)
-    frequency = max(float(frequency), 0.0)
+    # Real case: zero/invalid sample rate → no phase advance.
+    try:
+        sr = float(sample_rate)
+    except Exception:
+        sr = 0.0
+    if sr == 0.0 or not math.isfinite(sr):
+        return float(phase)
+    try:
+        frequency = float(frequency)
+    except Exception:
+        frequency = 0.0
+    if not math.isfinite(frequency):
+        frequency = 0.0
 
     field = meum_phase_field(
         t,
@@ -1585,11 +1590,7 @@ def _meum_advance_phase(
     instantaneous_frequency = frequency * (
         1.0 + float(fm_depth) * modulation
     )
-
-    instantaneous_frequency = max(
-        0.0,
-        min(sr * 0.45, instantaneous_frequency),
-    )
+    # No spectral clamp. Negative instantaneous frequency reverses phase travel.
 
     return (
         phase
@@ -3329,16 +3330,19 @@ def canonical_visual_instrument(slot, ctx, flags):
     _tfr = _tpos - int(_tpos)
     _pow = (MEUM_POWERS_36[_tlo] * (1.0 - _tfr) + MEUM_POWERS_36[_thi] * _tfr)
     # Union collapses pitch/identity; otherwise the per-slot lattice drives it.
+    # START_PHASE_2026: every instrument begins at phase 0 and phase_shift 0.
+    # No per-slot offset, no INSTRUMENT_PHASE_LOCK spread at generation time.
+    # Phase-lock engine may still *modulate* phase during playback; it must
+    # not pre-bias the starting phase of the track.
     if fu:
         bf = base
         sr = ratio
         ent = float(entropy_draw_0_1(s_abs, s_frac, s_int, 0))
-        phase0 = 0.0
     else:
         bf = base * _pow
         sr = float(_seed_to_pitch_ratio(seedv, i, i))
         ent = float(entropy_draw_0_1(s_abs, s_frac, s_int, i))
-        phase0 = float(INSTRUMENT_PHASE_LOCK_48[i % 48])
+    phase0 = 0.0
     # Symmetric equal-influence engine channels (each active = k5*0.5, else 0).
     ch_rnd = (0.5 if eng.get("randomizer") else 0.0) * k5   # spread axis
     ch_ph = (0.5 if eng.get("phase_lock") else 0.0) * k5    # twist axis
@@ -3346,8 +3350,9 @@ def canonical_visual_instrument(slot, ctx, flags):
     ch_seed = (0.5 if eng.get("seeded") else 0.0) * k5      # scale axis
     ch_goa = (0.5 if eng.get("goava") else 0.0) * k5        # hue axis
     # FREE_MOD_2026: no clamps on modulation depths or rates.
+    # phase_shift is always 0 at generation — start of track is phase-aligned.
     mod = {
-        "phase_shift": (0.0 if fu else float(math.tau * ((i * MEUM_NORM * PHI_INV) % 1.0))),
+        "phase_shift": 0.0,
         "mod_rate": MEUM_NORM + PHI_INV * ent,
         "fm_depth": 0.22 + 0.38 * (ch_rnd - ch_ph),
         "fm_rate": MEUM_NORM + MEUM * _pow,
@@ -4000,7 +4005,7 @@ def canonical_macro_defaults(ctx, i):
         "drive": float(MEUM_NORM * PHI_INV + MEUM_NORM * ctx),
         "amplitude": float(MEUM_INV * PHI_INV + MEUM_NORM * ctx),
         "duration": float(MEUM_NORM + MEUM_INV * (1.0 - ctx)),
-        "phase_shift": float(math.tau * ((i * MEUM_NORM * PHI_INV) % 1.0)),
+        "phase_shift": 0.0,  # START_PHASE_2026: no default phase offset
         "am_depth": float(MEUM_NORM * PHI_INV + MEUM_NORM * ctx * PHI_INV),
         "am_rate": float(MEUM_NORM + MEUM * ctx),
         "fm_depth": float(MEUM_NORM * PHI_INV + MEUM_NORM * ctx * PHI_INV),
@@ -21036,11 +21041,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             for c in getattr(self, 'patch_connections', []) or []:
                 if c.get("origin") == "additive_optimizer":
                     # Keep optimizer cables; nudge weight gently
-                    c["weight"] = float(np.clip(c.get("weight", 0.5) * (0.85 + 0.3 * drive), 0.1, 1.0))
+                    c["weight"] = float(c.get("weight", MEUM_NORM) * (MEUM_NORM + PHI_INV * drive))
             for c in getattr(GLOBAL_BUS, 'global_cables', []) or []:
                 if "gain" in c:
                     base = float(c.get("gain", 1.0))
-                    c["gain"] = float(np.clip(base * (0.9 + 0.2 * drive), 0.1, 2.0))
+                    c["gain"] = float(base * (MEUM_NORM + PHI_INV * drive))
             GLOBAL_BUS.broadcast_update()
         except Exception:
             pass
@@ -27026,11 +27031,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # route, never the final master waveform.  The legacy ot_master_transform
         # remains available to explicit scripts but is not an implicit DSP stage.
         #
-        # MASTER_HARDCLIP_2026: the rendered buffer is stored *pre* volume so
-        # the live slider can still trim.  Hard-clip-with-factors is applied
-        # at playback and at export (see `_master_hardclip`).  We do NOT peak-
-        # normalize here — that would hide the warning the 50% default is for.
-        return master.astype(np.float32), sample_rate
+        # FREE_SPECTRUM_2026: buffer stored pre-volume; no peak normalize.
+        # START_AMP_2026: first sample is always silence.
+        master = master.astype(np.float32)
+        if master.size > 0:
+            master[0] = 0.0
+        return master, sample_rate
 
     def _master_hardclip(self, master, sample_rate=None, *, apply_master_vol=True):
         """MASTER BUS = volume × factors → HARD CLIP. Nothing else.
@@ -27079,8 +27085,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
             except Exception:
                 vol = 0.5
         scaled = m32 * np.float32(vol * drive)
-        # HARD CLIP — the only ceiling.  No peak rescale afterward.
-        out = np.clip(scaled, -1.0, 1.0).astype(np.float32)
+        # FREE_SPECTRUM_2026: no hard clip.  Peaks that carry high-frequency
+        # content are left intact.  Float32 export / the host can interleave
+        # as-is; any format-required bound is the player's responsibility.
+        out = scaled.astype(np.float32)
+        # START_AMP_2026: amplitude is always 0 at the very first sample of
+        # the track so instruments begin from silence, not a phase-biased hit.
+        if out.size > 0:
+            out[0] = 0.0
         dens_before = float(np.mean(np.abs(m32) > 0.99)) if n else 0.0
         dens_after = float(np.mean(np.abs(out) >= 0.999)) if n else 0.0
         try:
@@ -27092,7 +27104,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
         self._clipgain_report = {
-            "mode": "hardclip",
+            "mode": "free",
             "ratio_pct": ratio_pct,
             "drive": drive,
             "vol": vol,
