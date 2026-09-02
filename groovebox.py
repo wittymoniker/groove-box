@@ -16372,7 +16372,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # Build a small pitched-sine chord (root + 5th + octave) from the
             # same centered ratio so each seed numeric entry becomes a chord
             # rather than a single partial.
-            chord_ratios = [1.0, 1.5, 2.0]
+            chord_ratios = [1.0, 1.1975807353, 1.5]
             chord_freqs = [float(hz) * r for r in chord_ratios]
             chord_amps = [0.3333333, .1975807343, 0.05479]
             events.append({
