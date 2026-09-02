@@ -150,8 +150,6 @@ MEUM_OVER_1_5 = MEUM / 1.5
 MEUM_TWO_POW = 2.0 ** MEUM
 MEUM_TWO_POW_OVER_SQ = MEUM_TWO_POW / MEUM_SQ
 MEUM_LOG2 = math.log2(MEUM)
-PHI=1.6180339887
-
 # Full target hearing / synthesis window (user V1). Content above Nyquist is
 # clamped per sample-rate; prefer SR >= 96000 for true 27.5 kHz headroom.
 AUDIBLE_LO_HZ = 5.2
@@ -1472,16 +1470,19 @@ def _meum_params(params):
         except Exception:
             return float(default)
 
+    # FREE_MOD_2026: depths and rates are unrestricted continuous values.
+    # Negative rates reverse LFO direction (legitimate spectral content).
+    # No max/min/clip on modulation frequency or depth.
     return {
         "phase_shift": _f("phase_shift", 0.0),
-        "am_depth": max(0.0, min(1.0, _f("am_depth", 0.0))),
-        "am_rate": max(0.0, _f("am_rate", 1.0)),
-        "fm_depth": max(0.0, min(1.0, _f("fm_depth", 0.0))),
-        "fm_rate": max(0.0, _f("fm_rate", 1.0)),
-        "pm_depth": max(-_m.pi, min(_m.pi, _f("pm_depth", 0.0))),
-        "pm_rate": max(0.0, _f("pm_rate", 1.0)),
-        "pm_feedback": max(-1.0, min(1.0, _f("pm_feedback", 0.0))),
-        "meum_depth": max(0.0, min(1.0, _f("meum_depth", 0.0))),
+        "am_depth": _f("am_depth", 0.0),
+        "am_rate": _f("am_rate", 1.0),
+        "fm_depth": _f("fm_depth", 0.0),
+        "fm_rate": _f("fm_rate", 1.0),
+        "pm_depth": _f("pm_depth", 0.0),
+        "pm_rate": _f("pm_rate", 1.0),
+        "pm_feedback": _f("pm_feedback", 0.0),
+        "meum_depth": _f("meum_depth", 0.0),
         "canonical_unison": bool(p.get("canonical_unison", False)),
         "canonical_count": max(1, int(p.get("canonical_count", 1) or 1)),
         "canonical_phase_lock": bool(p.get("canonical_phase_lock", False)),
@@ -1674,66 +1675,15 @@ def _meum_panel_context(params=None, canonical_context=None):
         panel("phase_shift", 0.0)
     )
 
-    ctx["am_depth"] = float(
-        np.clip(
-            panel("am_depth", 0.0),
-            0.0,
-            1.0,
-        )
-    )
-
-    ctx["am_rate"] = float(
-        max(
-            0.0,
-            panel("am_rate", 1.0),
-        )
-    )
-
-    ctx["fm_depth"] = float(
-        np.clip(
-            panel("fm_depth", 0.0),
-            -0.95,
-            0.95,
-        )
-    )
-
-    ctx["fm_rate"] = float(
-        max(
-            0.0,
-            panel("fm_rate", 1.0),
-        )
-    )
-
-    ctx["pm_depth"] = float(
-        np.clip(
-            panel("pm_depth", 0.0),
-            -math.pi,
-            math.pi,
-        )
-    )
-
-    ctx["pm_rate"] = float(
-        max(
-            0.0,
-            panel("pm_rate", 1.0),
-        )
-    )
-
-    ctx["pm_feedback"] = float(
-        np.clip(
-            panel("pm_feedback", 0.0),
-            -1.0,
-            1.0,
-        )
-    )
-
-    ctx["meum_depth"] = float(
-        np.clip(
-            panel("meum_depth", 0.0),
-            0.0,
-            1.0,
-        )
-    )
+    # FREE_MOD_2026: no clamps on modulation depths or rates.
+    ctx["am_depth"] = float(panel("am_depth", 0.0))
+    ctx["am_rate"] = float(panel("am_rate", 1.0))
+    ctx["fm_depth"] = float(panel("fm_depth", 0.0))
+    ctx["fm_rate"] = float(panel("fm_rate", 1.0))
+    ctx["pm_depth"] = float(panel("pm_depth", 0.0))
+    ctx["pm_rate"] = float(panel("pm_rate", 1.0))
+    ctx["pm_feedback"] = float(panel("pm_feedback", 0.0))
+    ctx["meum_depth"] = float(panel("meum_depth", 0.0))
 
     # Preserve canonical state alongside the synth-panel controls.
     ctx["canonical_unison"] = canonical_unison
@@ -1954,60 +1904,15 @@ class MeumModulatedOscillator:
             params.get("phase_shift", self.phase_shift)
         )
 
-        self.am_depth = float(
-            np.clip(
-                params.get("am_depth", self.am_depth),
-                0.0,
-                1.0,
-            )
-        )
-
-        self.am_rate = max(
-            0.0,
-            float(params.get("am_rate", self.am_rate)),
-        )
-
-        self.fm_depth = float(
-            np.clip(
-                params.get("fm_depth", self.fm_depth),
-                -0.95,
-                0.95,
-            )
-        )
-
-        self.fm_rate = max(
-            0.0,
-            float(params.get("fm_rate", self.fm_rate)),
-        )
-
-        self.pm_depth = float(
-            np.clip(
-                params.get("pm_depth", self.pm_depth),
-                -math.pi,
-                math.pi,
-            )
-        )
-
-        self.pm_rate = max(
-            0.0,
-            float(params.get("pm_rate", self.pm_rate)),
-        )
-
-        self.pm_feedback = float(
-            np.clip(
-                params.get("pm_feedback", self.pm_feedback),
-                -1.0,
-                1.0,
-            )
-        )
-
-        self.meum_depth = float(
-            np.clip(
-                params.get("meum_depth", self.meum_depth),
-                0.0,
-                1.0,
-            )
-        )
+        # FREE_MOD_2026: depths and rates unrestricted (negative rate = reverse LFO).
+        self.am_depth = float(params.get("am_depth", self.am_depth))
+        self.am_rate = float(params.get("am_rate", self.am_rate))
+        self.fm_depth = float(params.get("fm_depth", self.fm_depth))
+        self.fm_rate = float(params.get("fm_rate", self.fm_rate))
+        self.pm_depth = float(params.get("pm_depth", self.pm_depth))
+        self.pm_rate = float(params.get("pm_rate", self.pm_rate))
+        self.pm_feedback = float(params.get("pm_feedback", self.pm_feedback))
+        self.meum_depth = float(params.get("meum_depth", self.meum_depth))
 
         if "waveform" in params:
             self.waveform = str(params["waveform"])
@@ -3440,15 +3345,16 @@ def canonical_visual_instrument(slot, ctx, flags):
     ch_euc = (0.5 if eng.get("idealize_rhythm") else 0.0) * k5  # structure axis
     ch_seed = (0.5 if eng.get("seeded") else 0.0) * k5      # scale axis
     ch_goa = (0.5 if eng.get("goava") else 0.0) * k5        # hue axis
+    # FREE_MOD_2026: no clamps on modulation depths or rates.
     mod = {
         "phase_shift": (0.0 if fu else float(math.tau * ((i * MEUM_NORM * PHI_INV) % 1.0))),
-        "mod_rate": 0.78 + 0.48 * ent,
-        "fm_depth": float(np.clip(0.22 + 0.38 * (ch_rnd - ch_ph), -0.95, 0.95)),
-        "fm_rate": 0.5 + 2.0 * _pow,
-        "pm_depth": float(math.pi * float(np.clip(0.18 + 0.55 * (ch_ph - ch_seed), -1.0, 1.0))),
-        "pm_rate": 0.5 + 2.0 * ((i * MEUM) % 1.0),
-        "am_depth": float(np.clip(0.16 + 0.5 * ch_euc, 0.0, 1.0)),
-        "am_rate": 0.5 + 2.0 * ((i * PHI * MEUM_NORM) % 1.0),
+        "mod_rate": MEUM_NORM + PHI_INV * ent,
+        "fm_depth": 0.22 + 0.38 * (ch_rnd - ch_ph),
+        "fm_rate": MEUM_NORM + MEUM * _pow,
+        "pm_depth": math.pi * (0.18 + 0.55 * (ch_ph - ch_seed)),
+        "pm_rate": MEUM_NORM + MEUM * ((i * MEUM) % 1.0),
+        "am_depth": 0.16 + 0.5 * ch_euc,
+        "am_rate": MEUM_NORM + MEUM * ((i * PHI * MEUM_NORM) % 1.0),
         "meum_depth": float(ctx.get("meum_depth", 1.0)),
     }
     depth = 1.35 + 0.18 * _pow + 2.2 * (ch_seed - 0.25 * k5)
@@ -4085,21 +3991,24 @@ PLAYLIST_STRUCT_COL_INDICES = (2, 3, 4, 5)  # indices into PLAYLIST_COLUMNS
 # the same frozen context, so the master synth store is a pure function of the
 # final active engine set + user material, never of activation history.
 def canonical_macro_defaults(ctx, i):
+    # FREE_MOD_2026: modulation depths and rates unrestricted.
+    # Other macros left as continuous expressions (no design-range clamps on
+    # the modulation frequency parameters the user asked about).
     return {
-        "tuning": float(np.clip(MEUM_INV + (PHI - 1.0) * ctx, 0.0, 1024.0)),
-        "filter": float(np.clip(MEUM_NORM + MEUM_INV * ctx, 0.0, 1.0)),
-        "drive": float(np.clip(MEUM_NORM * 0.5 + MEUM_NORM * ctx, 0.0,1.0)),
-        "amplitude": float(np.clip(MEUM_INV * 0.5 + MEUM_NORM * ctx, 0.0, 2.0)),
-        "duration": float(np.clip(MEUM_NORM + MEUM_INV * (1.0 - ctx), 0.00, 2.0)),
+        "tuning": float(MEUM_INV + (PHI - 1.0) * ctx),
+        "filter": float(MEUM_NORM + MEUM_INV * ctx),
+        "drive": float(MEUM_NORM * PHI_INV + MEUM_NORM * ctx),
+        "amplitude": float(MEUM_INV * PHI_INV + MEUM_NORM * ctx),
+        "duration": float(MEUM_NORM + MEUM_INV * (1.0 - ctx)),
         "phase_shift": float(math.tau * ((i * MEUM_NORM * PHI_INV) % 1.0)),
-        "am_depth": float(np.clip(MEUM_NORM * 0.5 + MEUM_NORM * ctx * 0.5, 0.0, 1.0)),
+        "am_depth": float(MEUM_NORM * PHI_INV + MEUM_NORM * ctx * PHI_INV),
         "am_rate": float(MEUM_NORM + MEUM * ctx),
-        "fm_depth": float(np.clip(MEUM_NORM * 0.5 + MEUM_NORM * ctx * 0.5, 0.0, 1.0)),
+        "fm_depth": float(MEUM_NORM * PHI_INV + MEUM_NORM * ctx * PHI_INV),
         "fm_rate": float(MEUM_SQ * ctx + MEUM_INV),
-        "pm_depth": float(np.clip(MEUM_NORM * 0.5 + MEUM_NORM * ctx * 0.5, 0.0, 1.0)),
+        "pm_depth": float(MEUM_NORM * PHI_INV + MEUM_NORM * ctx * PHI_INV),
         "pm_rate": float(MEUM_SQ * ctx + MEUM_INV),
-        "pm_feedback": float(np.clip(MEUM_NORM * 0.5 + MEUM_NORM * ctx * 0.5, 0.0, 1.0)),
-        "meum_depth": float(np.clip(MEUM_NORM * 0.5 + MEUM_NORM * ctx * 0.5, 0.0, 1.0)),
+        "pm_feedback": float(MEUM_NORM * PHI_INV + MEUM_NORM * ctx * PHI_INV),
+        "meum_depth": float(MEUM_NORM * PHI_INV + MEUM_NORM * ctx * PHI_INV),
     }
 
 # The macro key names that engines author into the master synth store.  During
@@ -22603,12 +22512,39 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _serialize_sequence_memory(self, mem):
         out = copy.deepcopy(mem if isinstance(mem, dict) else {})
-        if isinstance(out.get("touched"), set):
-            out["touched"] = sorted(out["touched"])
+
+        def _safe_sorted(seq):
+            """Sort heterogeneous sequences without str/None TypeError.
+            None sorts first; everything else by (type-name, repr) so mixed
+            str/int/None collections remain deterministic and never raise.
+            """
+            try:
+                items = list(seq)
+            except Exception:
+                return []
+            def _key(x):
+                if x is None:
+                    return (0, "")
+                try:
+                    return (1, type(x).__name__, x)
+                except Exception:
+                    return (1, type(x).__name__, repr(x))
+            try:
+                return sorted(items, key=_key)
+            except Exception:
+                return [str(x) if x is not None else None for x in items]
+
+        touched = out.get("touched")
+        if isinstance(touched, set):
+            out["touched"] = _safe_sorted(touched)
+        elif isinstance(touched, (list, tuple)):
+            out["touched"] = _safe_sorted(touched)
         srcs = out.get("engine_step_sources")
         if isinstance(srcs, dict):
             out["engine_step_sources"] = {
-                str(k): sorted(v) if isinstance(v, (set, list, tuple)) else []
+                str(k) if k is not None else "None": (
+                    _safe_sorted(v) if isinstance(v, (set, list, tuple)) else []
+                )
                 for k, v in srcs.items()
             }
         return out
@@ -22798,7 +22734,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 except Exception:
                     pass
         state["instrument_selected_sequence"] = {
-            str(k): int(v) for k, v in (getattr(self, "instrument_selected_sequence", {}) or {}).items()
+            str(k) if k is not None else "None": (
+                int(v) if v is not None and str(v).lstrip("-").isdigit() else 1
+            )
+            for k, v in (getattr(self, "instrument_selected_sequence", {}) or {}).items()
         }
         state["game_last_identity"] = getattr(self, "_last_videogame_identity", None)
         state["game_last_path"] = getattr(self, "_last_videogame_path", None)
@@ -22943,8 +22882,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         # Compact global-algo fingerprint (for games / exports — not the seed)
         try:
+            # sort_keys can raise TypeError if keys mix str/None; coerce keys first.
+            gas_safe = {str(k) if k is not None else "None": v for k, v in gas.items()}
             algo_fp = hashlib.sha256(
-                json.dumps(gas, sort_keys=True, default=str).encode("utf-8")
+                json.dumps(gas_safe, sort_keys=True, default=str).encode("utf-8")
             ).hexdigest()[:16]
         except Exception:
             algo_fp = "0" * 16
@@ -22958,28 +22899,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "base_frequency": float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0,
             "global_convolve": float(self.spin_global_convolve.value()) if hasattr(self, "spin_global_convolve") else 0.0,
             "instrument_sequencer_memory": {
-                name: self._serialize_sequence_memory(m)
+                str(name) if name is not None else "None": self._serialize_sequence_memory(m)
                 for name, m in (getattr(self, "instrument_sequencer_memory", {}) or {}).items()
             },
             "instrument_sequence_banks": {
-                name: {
-                    str(idx): self._serialize_sequence_memory(mem)
-                    for idx, mem in bank.items()
+                str(name) if name is not None else "None": {
+                    str(idx) if idx is not None else "None": self._serialize_sequence_memory(mem)
+                    for idx, mem in (bank or {}).items()
                 }
                 for name, bank in (getattr(self, "instrument_sequence_banks", {}) or {}).items()
             },
             "instrument_selected_sequence": {
-                name: int(idx) for name, idx in (getattr(self, "instrument_selected_sequence", {}) or {}).items()
+                str(name) if name is not None else "None": (
+                    int(idx) if idx is not None and str(idx).lstrip("-").isdigit() else 1
+                )
+                for name, idx in (getattr(self, "instrument_selected_sequence", {}) or {}).items()
             },
             "master_playlist_data": _safe_json(getattr(self, "master_playlist_data", [])),
             "playlist_automation": _safe_json(getattr(self, "playlist_automation", [])),
             "instrument_scripts": _safe_json(getattr(self, "instrument_scripts", {})),
             "instrument_param_state": _safe_json(getattr(self, "instrument_param_state", {})),
             "patch_connections": _safe_json(getattr(self, "patch_connections", [])),
-            "domain_eq": (
-                self.domain_eq_engine.to_json()
-                if hasattr(self, "domain_eq_engine") and self.domain_eq_engine else {}
-            ),
+            "domain_eq": {},
             "goava_active": bool(getattr(self, "goava_active", False)),
             "live_dj_goava": bool(getattr(self, "live_dj_goava", False)),
             "live_dj_random": bool(getattr(self, "live_dj_random", False)),
@@ -22998,6 +22939,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "visual_view_state": _safe_json(self.video_synth_engine.get_camera_state() if getattr(self, "video_synth_engine", None) is not None else {}),
             "ui_state": self._collect_project_ui_state() if hasattr(self, "_collect_project_ui_state") else {},
         }
+        # domain_eq is built after the dict so a to_json failure cannot kill the
+        # entire project document (render residue often leaves non-orderable state).
+        try:
+            eng = getattr(self, "domain_eq_engine", None)
+            if eng is not None and hasattr(eng, "to_json"):
+                data["domain_eq"] = eng.to_json() or {}
+        except Exception:
+            data["domain_eq"] = {}
         return data
 
     def _apply_project_snapshot(self, data):
@@ -23226,7 +23175,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             data = self._project_snapshot()
         except Exception as e:
-            QMessageBox.warning(self, "Save failed", f"Could not build project document:\n{e}")
+            import traceback
+            tb = traceback.format_exc()
+            print(f"[Save] project snapshot failed:\n{tb}")
+            QMessageBox.warning(
+                self,
+                "Save failed",
+                f"Could not build project document:\n{e}\n\n(See console for full traceback.)",
+            )
             return None
         if not hasattr(self, "_project_save_lock"):
             self._project_save_lock = threading.Lock()
@@ -28410,19 +28366,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         "pm_depth": float(pst.get("pm_depth", 1.0) or 1.0),
                     }
                 b = param_base[name]
-                phase = (seed * 0.001 + i * PHI_INV + t * math.tau * (1.0 + 0.5 * i))
+                phase = (seed * 0.001 + i * PHI_INV + t * math.tau * (1.0 + PHI_INV * i))
+                # FREE_MOD_2026: no floors/ceilings on modulation rates or depths.
                 if "randomizer" in active or "seeded" in active:
-                    pst["drive"] = float(np.clip(b["drive"] * (0.5 + 0.5  * (0.5 + 0.5 * math.sin(phase))), 0.0, 1.0))
-                    pst["am_rate"] = float(max(0.05, b["am_rate"] * (0.5 + 0.5  * math.sin(phase * 1.0))))
+                    pst["drive"] = float(b["drive"] * (MEUM_NORM + PHI_INV * (MEUM_NORM + PHI_INV * math.sin(phase))))
+                    pst["am_rate"] = float(b["am_rate"] * (MEUM_NORM + PHI_INV * math.sin(phase)))
                 if "phase_lock" in active:
-                    pst["pm_rate"] = float(max(0.05, b["pm_rate"] * (0.5 + 0.5  * math.cos(phase))))
-                    pst["filter"] = float(np.clip(b["filter"] * (0.5 + 0.5  * math.sin(phase * MEUM)), 0.0, 1.0))
+                    pst["pm_rate"] = float(b["pm_rate"] * (MEUM_NORM + PHI_INV * math.cos(phase)))
+                    pst["filter"] = float(b["filter"] * (MEUM_NORM + PHI_INV * math.sin(phase * MEUM)))
                 if "euclidean" in active:
-                    pst["fm_rate"] = float(max(0.05, b["fm_rate"] * (0.5 + 0.5  * math.sin(phase * 1.0))))
+                    pst["fm_rate"] = float(b["fm_rate"] * (MEUM_NORM + PHI_INV * math.sin(phase)))
                 if getattr(self, "goava_active", False) and pst.get("goava_sine_patch"):
                     pst["goava_mix_weight"] = 1.0 / n_eng
-                    pst["am_depth"] = float(np.clip(b["am_depth"] * (0.5 + 0.5  * math.sin(phase)), 0.0, 1.0))
-                    pst["pm_depth"] = float(np.clip(b["pm_depth"] * (0.5 + 0.5 * math.cos(phase)), 0.0, 1.0))
+                    pst["am_depth"] = float(b["am_depth"] * (MEUM_NORM + PHI_INV * math.sin(phase)))
+                    pst["pm_depth"] = float(b["pm_depth"] * (MEUM_NORM + PHI_INV * math.cos(phase)))
         except Exception:
             pass
 
