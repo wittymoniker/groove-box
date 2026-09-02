@@ -1599,37 +1599,57 @@ class ScenographLite:
             ax = (phase0 * MEUM_NORM + i * MEUM_INV) % 1.0
             ent = (_residue(self.seed, "identity_entropy")
                    if self.goava else _residue(self.seed, f"entropy:{i}"))
-            conson = 1.0 if self.goava else 0.35 + 0.65 * abs(vg_cos(ax * math.tau + i * PHI))
-            pow_ = 1.5 + 10.0 * _residue(self.seed, f"pow:{i}")
-            depth = 0.55 + 1.15 * (1.0 - conson) + 0.25 * pow_ * _residue(self.seed, f"dscale:{i}")
-            # Higher shade/life floors → less wash-out, more seed divergence
-            shade = 0.55 + 0.45 * (0.5 + 0.5 * vg_sin(ax * math.tau * PHI + i))
-            life = 0.55 + 0.45 * conson * (0.30 + 0.70 * ent)
+            # Coefficients only MEUM / PHI / 1/n.
+            conson = 1.0 if self.goava else (MEUM_NORM + PHI_INV * abs(vg_cos(ax * math.tau + i * PHI)))
+            pow_ = MEUM + (1.0 / max(1, i + 1)) * 10.0 * _residue(self.seed, f"pow:{i}")
+            depth = MEUM_NORM + PHI * (1.0 - conson) + (MEUM_INV) * pow_ * _residue(self.seed, f"dscale:{i}")
+            # Continuous free parameters — MEUM/PHI only.
+            shade = MEUM_NORM + PHI_INV * (MEUM_NORM + PHI_INV * vg_sin(ax * math.tau * PHI + i))
+            life = MEUM_NORM + PHI_INV * conson * (MEUM_INV + PHI_INV * ent)
             pack = _residue(self.seed, f"pack:{i}")
             ratio = residue_to_bipolar(_residue(self.seed, f"ratio:{i}"))
-            # DECLAMP_2026: depth used to be hard-capped at 2.0 before feeding
-            # radius, which silently flattened every layer past that point to
-            # the same minimum size — an arbitrary clamp, not a real bound.
-            # Radius now scales continuously with the full depth range (depth
-            # is itself unbounded-but-typically-small, seed-derived) and only
-            # keeps a small positive floor so nothing renders at/below zero.
-            radius = max(0.12, (2.2 - depth * 0.28)) * (0.25 + 0.55 * pack)
-            # Topology-aware free positions (open-world scatter vs hub vs ring)
+            # Radius: pure continuous function of depth and pack.
+            radius = (MEUM + PHI - depth * MEUM_INV) * (MEUM_INV + MEUM_NORM * pack)
+            # Topology-aware free positions
             if self.topology in ("open_world", "sandbox", "hub_spoke"):
                 yaw = meum_angle(self.seed * PHI + i * 47 + 13 * _residue(self.seed, f"yaw:{i}"))
-                dist = 0.25 + 1.55 * _residue(self.seed, f"dist:{i}")
+                dist = MEUM_INV + (MEUM + PHI_INV) * _residue(self.seed, f"dist:{i}")
             elif self.topology in ("arena_loop", "linear"):
                 yaw = meum_angle(i * 31 + self.seed)
-                dist = 0.85 + 0.35 * _residue(self.seed, f"dist:{i}")
+                dist = MEUM_NORM + PHI_INV * _residue(self.seed, f"dist:{i}")
             else:
                 yaw = meum_angle(self.seed + i * 31)
-                dist = 0.5 + 1.0 * _residue(self.seed, f"dist:{i}")
-            # FRACTAL_OBJECT_2026: identical schema for every instrument sample.
-            # child_scale = self-similar child (same object type, smaller).
+                dist = MEUM_NORM + _residue(self.seed, f"dist:{i}")
+            # FRACTAL_VISUALIZER_2026: each layer is one sample of the fractal
+            # of all ways to visualize audio data in 1-D / 2-D / 3-D.
+            # Kind is chosen from a lattice that enumerates:
+            #   1-D : waveform, spectrum, phase-portrait, envelope, correlation
+            #   2-D : spectrogram, vectorscope, lissajous, polar, hilbert
+            #   3-D : volumetric spectrum, phase-space, spatial field, polytope
+            # The same object schema is used for every dimension; the kind
+            # selects the projection and the face topology.
+            _viz_kinds = (
+                # 1-D audio visualizers
+                "waveform_1d", "spectrum_1d", "phase_portrait_1d", "envelope_1d", "correlation_1d",
+                # 2-D audio visualizers
+                "spectrogram_2d", "vectorscope_2d", "lissajous_2d", "polar_2d", "hilbert_2d",
+                # 3-D audio visualizers
+                "volumetric_spectrum_3d", "phase_space_3d", "spatial_field_3d", "polytope_3d",
+                "fractal_shell_3d", "meum_lattice_3d",
+            )
+            kind_idx = int(_residue(self.seed, f"kind:{i}") * len(_viz_kinds)) % len(_viz_kinds)
+            viz_kind = _viz_kinds[kind_idx]
+            # Dimension tag derived from kind (for downstream placement).
+            if viz_kind.endswith("_1d"):
+                viz_dim = 1
+            elif viz_kind.endswith("_2d"):
+                viz_dim = 2
+            else:
+                viz_dim = 3
             self.layers.append({
                 "fractal_object": True,
                 "slot": i,
-                "base_freq": base if self.goava else base * (1.0 + 1.1 * abs(ratio)),
+                "base_freq": base if self.goava else base * (1.0 + MEUM * abs(ratio)),
                 "ratio": ratio,
                 "entropy": ent,
                 "conson": conson,
@@ -1638,29 +1658,21 @@ class ScenographLite:
                 "life": life,
                 "radius": radius,
                 "yaw": yaw,
-                "pitch": residue_to_bipolar(_residue(self.seed, f"pitch:{i}")) * 0.55,
+                "pitch": residue_to_bipolar(_residue(self.seed, f"pitch:{i}")) * MEUM_NORM,
                 "dist": dist,
-                "hue": (_residue(self.seed, f"hue:{i}") * 0.82 + _residue(self.seed, "hue_global") * 0.18) % 1.0,
+                "hue": (_residue(self.seed, f"hue:{i}") * MEUM_NORM + _residue(self.seed, "hue_global") * PHI_INV) % 1.0,
                 "phase0": phase0 * math.tau,
-                "child_scale": 0.45 + 0.15 * ent,
+                "child_scale": PHI_INV + MEUM_INV * ent,
                 "on": True,
-                "kind": ("panel", "filament", "polytope", "sigil_sprite",
-                         "ridge", "orb", "spoke", "glyph")[
-                    int(_residue(self.seed, f"kind:{i}") * 8) % 8
-                ],
-                # Dense, deterministic 3-D face topology.  These are real
-                # triangular/quadrilateral relationships between the same
-                # scenograph objects, not decorative grid lines.
-                "face_count": 2 + int(7 * _residue(self.seed, f"face_n:{i}")),
+                "kind": viz_kind,
+                "viz_dim": viz_dim,
+                # Dense, deterministic face topology scaled by dimension.
+                "face_count": (1 + viz_dim) + int((MEUM + PHI) * _residue(self.seed, f"face_n:{i}")),
                 "face_phase": _residue(self.seed, f"face_phase:{i}") * math.tau,
                 "face_twist": residue_to_bipolar(_residue(self.seed, f"face_twist:{i}")),
-                # Algorithm-span coordinates.  z_step is a discrete phase on
-                # the same cyclic lattice as the writer's pattern length.
-                # Linkage is therefore permitted by congruence, not merely by
-                # geometric proximity.  This keeps visual topology coupled to
-                # the written step algorithm while remaining deterministic.
+                # Algorithm-span coordinates coupled to the written step lattice.
                 "pattern_length": 16,
-                "z_step": int(i * 7 + math.floor(32.0 * _residue(self.seed, f"zstep:{i}"))),
+                "z_step": int(i * 7 + math.floor((1.0 / MEUM_INV) * _residue(self.seed, f"zstep:{i}"))),
             })
     def tick(self, dt, audio_rms=0.2):
         self.beat += dt * (BPM / 60.0)
@@ -1680,12 +1692,11 @@ class ScenographLite:
         em = getattr(self, "_engine_mask", None) or {}
         if em.get("randomizer"):
             x_spin *= 1.35
-            x_energy = min(1.0, x_energy + 0.12)
+            # FREE_2026: energy may exceed 1.0; downstream multipliers absorb it.
+            x_energy = x_energy + 0.12
         if em.get("phase_lock"):
-            # DECLAMP_2026: grid density used to hard-ceiling at 1.5,
-            # which flattened Phase-Lock's visual response once density
-            # was already close to that ceiling. No cap now beyond the
-            # natural floor of 0.0 further down the pipeline.
+            # FREE_2026: grid density unrestricted. Previous hard ceiling of
+            # 1.5 flattened Phase-Lock response; no artificial bound remains.
             x_grid = x_grid + 0.45
             x_spin *= 0.85
         if em.get("goava"):
@@ -1716,8 +1727,9 @@ class ScenographLite:
                 flags=em_flags, fractal_set=set_name)
             infl = (n_done / 12.0) * (0.4 if escaped else 1.0)
             infl *= (0.6 + 0.4 * float(mode0.get("book_set", 0.2)))
-            x_spin *= (1.0 + 0.08 * max(-1.0, min(1.0, yv * 0.01)) * infl)
-            x_hue = (x_hue + 12.0 * max(-1.0, min(1.0, yv * 0.02)) * infl) % 360.0
+            # FREE_2026: fractal influence is continuous; no artificial bipolar clamp.
+            x_spin *= (1.0 + 0.08 * (yv * 0.01) * infl)
+            x_hue = (x_hue + 12.0 * (yv * 0.02) * infl) % 360.0
             if mode0.get("near_phase_point"):
                 x_grid = x_grid + 0.15 * float(mode0.get("snap", 0))
             # Per-layer mode tags so viewport/debug can show blend state
@@ -1752,14 +1764,13 @@ class ScenographLite:
                 L["yaw"] = (L["yaw"] + dt * spin * step_drive * (0.6 + 0.9 * audio_rms + 0.35 * x_energy)) % math.tau
                 L["_sequence_step"] = int(seqc.step)
                 L["_sequence_motion"] = float(seqc.motion)
-            L["pitch"] = 0.55 * vg_sin(step_phase + self.beat * MEUM * 0.5 + x_grid * 0.4)
-            # Subtle life pulse so open-world layers feel alive
-            L["life"] = max(0.45, min(1.0, L.get("life", 0.7) + 0.04 * vg_sin(self.beat * PHI + i)))
-            # Hue tracks the cross-correlation field so a scoring arena, arcade
-            # scatter, or study lattice is chromatically distinct.
-            base_h = float(L.get("hue", 0.5))
-            L["hue"] = (base_h * 0.55 + (x_hue / 360.0) * 0.45 + 0.03 * i / max(1, self.n)) % 1.0
-            L["radius"] = float(L.get("radius", 1.0)) * (0.85 + 0.30 * x_grid) * (0.92 + 0.16 * seqc.motion * seqc.pulse)
+            L["pitch"] = MEUM_NORM * vg_sin(step_phase + self.beat * MEUM * PHI_INV + x_grid * PHI_INV)
+            # Life is an unrestricted continuous pulse (MEUM/PHI only).
+            L["life"] = float(L.get("life", MEUM_NORM)) + (MEUM_INV / max(1, i + 1)) * vg_sin(self.beat * PHI + i)
+            # Hue tracks the cross-correlation field.
+            base_h = float(L.get("hue", MEUM_NORM))
+            L["hue"] = (base_h * MEUM_NORM + (x_hue / 360.0) * PHI_INV + (MEUM_INV / max(1, self.n)) * i) % 1.0
+            L["radius"] = float(L.get("radius", 1.0)) * (MEUM_NORM + PHI_INV * x_grid) * (MEUM_NORM + MEUM_INV * seqc.motion * seqc.pulse)
         self._on_count = on_count
         return self.layers
 
@@ -1896,9 +1907,14 @@ class InstrumentAssetBridge:
         self.primitives = (self.id.get("asset_manifest") or {}).get("primitives") or ["panel", "filament", "orb"]
 
     def color_for_layer(self, layer_hue, shade=0.7):
-        """Blend instrument material hue with per-layer hue → display RGB hint."""
+        """Blend instrument material hue with per-layer hue → display RGB hint.
+        FREE_2026: saturation / value are unrestricted continuous values;
+        QColor / HSV conversion will absorb out-of-range numbers naturally.
+        """
         h = (0.55 * self.hue + 0.45 * float(layer_hue)) % 1.0
-        return h, max(0.3, min(1.0, self.sat * (0.7 + 0.3 * shade))), max(0.35, min(1.0, 0.45 + 0.55 * shade + 0.2 * self.emissive))
+        s = self.sat * (0.7 + 0.3 * float(shade))
+        v = 0.45 + 0.55 * float(shade) + 0.2 * self.emissive
+        return h, s, v
 
     def primitive_for(self, i):
         return self.primitives[i % len(self.primitives)]
@@ -3945,7 +3961,8 @@ class Game:
         """
         try:
             self.camera_yaw_target = (float(getattr(self, "camera_yaw_target", self.steer)) + float(dyaw)) % math.tau
-            self.camera_pitch_target = max(-1.15, min(1.15, float(getattr(self, "camera_pitch_target", 0.0)) + float(dpitch)))
+            # FREE_2026: pitch is unrestricted; the projection handles any value.
+            self.camera_pitch_target = float(getattr(self, "camera_pitch_target", 0.0)) + float(dpitch)
         except Exception:
             pass
 
@@ -3989,9 +4006,10 @@ class Game:
         self.camera_angular_velocity = yaw_delta * min(1.0, dt * 12.0) / max(dt, 1e-6)
         self.camera_yaw = (cur_yaw + yaw_delta * min(1.0, dt * 12.0)) % math.tau
         self.steer = self.camera_yaw
-        manual_pitch = max(-1.15, min(1.15, float(getattr(self, "camera_pitch_target", 0.0))))
+        # FREE_2026: pitch target and current value are unrestricted continuous.
+        manual_pitch = float(getattr(self, "camera_pitch_target", 0.0))
         pitch_bias = -0.34 if mode == 7 else (0.10 * math.cos(seq_phase * math.tau) if mode == 5 else 0.0)
-        target_pitch = max(-1.15, min(1.15, manual_pitch + pitch_bias))
+        target_pitch = manual_pitch + pitch_bias
         self.camera_pitch = float(getattr(self, "camera_pitch", 0.0)) + (target_pitch - float(getattr(self, "camera_pitch", 0.0))) * min(1.0, dt * 10.0)
         self.pitch = self.camera_pitch
         # Curvature banking: turning velocity produces a small physical camera roll.
@@ -4001,9 +4019,10 @@ class Game:
             curvature = (vx * dvz - vz * dvx) / max(speed * speed, 0.25)
         self._camera_prev_vx, self._camera_prev_vz = vx, vz
         roll_gain = 0.16 if mode in (3, 4, 6) else (0.24 if mode == 5 else 0.0)
-        self.camera_roll_target = max(-0.22, min(0.22, curvature * roll_gain))
+        # FREE_2026: roll and zoom are unrestricted continuous camera state.
+        self.camera_roll_target = curvature * roll_gain
         self.camera_roll += (self.camera_roll_target - float(getattr(self, "camera_roll", 0.0))) * min(1.0, dt * 8.0)
-        self.zoom = self._clamp(self.zoom, 0.35, 2.5)
+        # zoom left free (no hard floor/ceiling)
         held = getattr(self, "_held_movement", None) or {}
         if (abs(float(held.get("dx", 0.0))) + abs(float(held.get("dy", 0.0))) + abs(float(held.get("dz", 0.0)))) > 1e-9:
             self.move["dx"] = self._clamp(float(held.get("dx", 0.0)))
@@ -4029,12 +4048,12 @@ class Game:
         idx = modes.index(cm) if cm in modes else 0
         idx = max(0, min(len(modes) - 1, idx + (1 if direction >= 0 else -1)))
         self.camera_mode = modes[idx]
-        # Every camera mode is reachable/escapable: the zoom is never pinned in
-        # a way that traps the wheel from cycling back out.
+        # FREE_2026: zoom remains whatever the player/wheel left it; no mode
+        # forces a hard range. Modes only bias preferred starting points softly.
         if self.camera_mode == 1:
-            self.zoom = max(0.6, min(1.0, float(getattr(self, "zoom", 1.0))))
+            self.zoom = float(getattr(self, "zoom", 1.0)) * 0.85 + 0.8 * 0.15
         elif self.camera_mode == 2:
-            self.zoom = max(0.5, min(1.4, float(getattr(self, "zoom", 1.0)) * 1.2))
+            self.zoom = float(getattr(self, "zoom", 1.0)) * 1.05
         return self.camera_mode
 
     def _target_world(self, angle, radius):
@@ -4806,7 +4825,8 @@ class Game:
         except Exception:
             seed = 0.0
         t = float(getattr(self, "t", 0.0))
-        e = float(max(0.0, min(1.5, audio_rms)))
+        # FREE_2026: audio_rms influence unrestricted.
+        e = float(audio_rms)
         bpm = float(BPM) if BPM else 120.0
         beat = t * (bpm / 60.0)
         bar8 = beat / 32.0
@@ -4817,9 +4837,10 @@ class Game:
         roll = math.degrees(0.015 * vg_sin(t * 0.055 * MEUM_INV + s1))
         dist = float(base.get("distance", 1.0) or 1.0) * (1.0 - 0.12 * e + 0.06 * vg_sin(t * 0.07 * MEUM + s1))
         fov = float(base.get("fov_deg", 48.0) or 48.0) + 4.0 * e * vg_sin(t * 0.11 + s2)
+        # FREE_2026: distance and FOV are continuous unrestricted camera state.
         self.visual_view = {**base, "yaw_deg": float(yaw), "pitch_deg": float(pitch),
-                            "roll_deg": float(roll), "distance": max(0.55, min(1.45, dist)),
-                            "fov_deg": max(36.0, min(62.0, fov))}
+                            "roll_deg": float(roll), "distance": float(dist),
+                            "fov_deg": float(fov)}
 
     def start_audio(self):
         if not HAS_AUDIO or self.audio_stream is not None:
@@ -7212,19 +7233,27 @@ if HAS_UI:
             pts3 = []
             for i, L in enumerate(layers):
                 a = float(L.get("yaw", 0.0)); r = float(L.get("dist", 1.0))
-                dep = max(0.25, float(L.get("depth", 1.0)))
-                rad = max(0.08, float(L.get("radius", 0.35)))
-                ph = float(L.get("face_phase", 0.0)) + self.phase * (0.35 + 0.08*i)
-                # Four local 3-D corners around the canonical object center.
-                corners=[]
-                for k in range(4):
-                    th = ph + k * math.tau / 4.0 + float(L.get("face_twist",0.0))*0.45
-                    rr = r + rad * (0.34 + 0.12 * self._rng(f"mesh:r:{i}:{k}"))
-                    yy = float(L.get("pitch",0.0)) + rad * 0.42 * vg_sin(th * MEUM + k)
-                    aa = a + (rad / max(0.25,r)) * vg_sin(th) * 0.8
-                    corners.append(project(aa, rr, yy, dep + 0.12*vg_cos(th)))
-                center=project(a,r,float(L.get("pitch",0.0)),dep)
-                pts3.append((L,corners,center))
+                # Real case handling — no microscopic epsilon.
+                # depth == 0 → unit depth (identity scale).
+                # radius == 0 → skip local patch (center still used for links).
+                dep = float(L.get("depth", 1.0))
+                if dep == 0.0:
+                    dep = 1.0
+                rad = abs(float(L.get("radius", MEUM_NORM)))
+                ph = float(L.get("face_phase", 0.0)) + self.phase * (MEUM_NORM + MEUM_INV / max(1, i + 1))
+                corners = []
+                if rad > 0.0:
+                    for k in range(4):
+                        th = ph + k * math.tau / 4.0 + float(L.get("face_twist", 0.0)) * PHI_INV
+                        rr = r + rad * (MEUM_NORM + (MEUM_INV / (k + 1)) * self._rng(f"mesh:r:{i}:{k}"))
+                        yy = float(L.get("pitch", 0.0)) + rad * PHI_INV * vg_sin(th * MEUM + k)
+                        if r == 0.0:
+                            aa = a
+                        else:
+                            aa = a + (rad / abs(r)) * vg_sin(th) * MEUM_NORM
+                        corners.append(project(aa, rr, yy, dep + MEUM_INV * vg_cos(th)))
+                center = project(a, r, float(L.get("pitch", 0.0)), dep)
+                pts3.append((L, corners, center))
             # Local faces: two crossed triangles per object.  This is the
             # primary volumetric GOAVA/Meum surface signal.
             for i,(L,corners,center) in enumerate(pts3):
@@ -7276,7 +7305,10 @@ if HAS_UI:
                          (getattr(g, "id", {}) or {}).get("engine_mask", {}).get("goava", False))
             nodes=[]
             for i,L in enumerate(layers):
-                a=float(L.get("yaw",0.0)); r=float(L.get("dist",1.0)); d=max(.2,float(L.get("depth",1.0)))
+                a=float(L.get("yaw",0.0)); r=float(L.get("dist",1.0))
+                d=float(L.get("depth",1.0))
+                if d == 0.0:
+                    d = 1.0
                 x,y,z=project(a,r,float(L.get("pitch",0.0)),d)
                 nodes.append((x,y,z,float(L.get("hue",.5))*360.0,i))
             n=len(nodes)
@@ -8004,7 +8036,8 @@ if HAS_UI:
                         pass
                 else:
                     # Positive wheel = zoom in; negative = zoom out.
-                    g.zoom = max(0.35, min(2.5, float(getattr(g, "zoom", 1.0)) * (1.12 ** steps)))
+                    # FREE_2026: zoom is completely unrestricted.
+                    g.zoom = float(getattr(g, "zoom", 1.0)) * (1.12 ** steps)
                     # Optical continuity: zooming far enough naturally enters
                     # first-person; backing out restores third-person.
                     if g.zoom >= 1.72 and int(getattr(g, "camera_mode", 0)) == 0:
@@ -8080,7 +8113,12 @@ if HAS_UI:
             cx, cy = w / 2.0, h / 2.0
             # Perspective: zoom (W/S) scales the world radius; pitch (mouse aim)
             # lifts/lowers the view horizon — the fixed movement+aim contract.
-            R = min(w, h) * 0.42 * max(0.35, float(getattr(g, "zoom", 1.0)))
+            # FREE_2026: zoom scales the view radius without artificial floor.
+            # Real case: zoom == 0 → identity scale (no division by zero).
+            _z = float(getattr(g, "zoom", 1.0))
+            if _z == 0.0:
+                _z = 1.0
+            R = min(w, h) * PHI_INV * abs(_z)
             cy = cy - float(getattr(g, "pitch", 0.0)) * R * 0.35
             p.fillRect(self.rect(), QColor(bg))
             topo = str(g.id.get("topology") or "open_world")
@@ -8090,22 +8128,34 @@ if HAS_UI:
             def project(yaw, dist, pitch=0.0, depth=1.0):
                 # Canonical 3D camera projection. Object count never enters the
                 # camera transform; only the canonical view state does.
-                scale = 1.0 / max(0.35, 0.55 + 0.45 * depth)
+                # Real case handling for zero depth / zero z / zero FOV:
+                #   depth == 0 → unit depth
+                #   z2 == 0   → orthographic fallback (inv = 1)
+                #   f == 0    → unit FOV scale
+                # Coefficients use only MEUM / PHI / 1/n forms.
+                if depth == 0.0:
+                    depth = 1.0
+                scale = 1.0 / (MEUM_NORM + PHI_INV * depth)
                 _fov = float(g.visual_view.get("fov_deg", 48.0))
                 if _cam_mode == 2:
-                    # 2D top-down orthographic: planar controls transform.
-                    _f2 = math.tan(math.radians(_fov) * 0.5)
-                    _s2 = scale * 0.8 / max(_f2, 0.05)
+                    # 2D top-down orthographic.
+                    _f2 = math.tan(math.radians(_fov) * PHI_INV)
+                    if _f2 == 0.0:
+                        _s2 = scale * MEUM_NORM
+                    else:
+                        _s2 = scale * MEUM_NORM / abs(_f2)
                     _wx = dist * vg_cos(yaw) - float(getattr(g, "player_x", 0.0))
                     _wz = dist * vg_sin(yaw) - float(getattr(g, "player_z", 0.0))
-                    _x0 = _wx * _s2 * R * 0.72
-                    _y0 = -_wz * _s2 * R * 0.72 - pitch * R * 0.35
-                    _sz2 = max(2.0, (6.0 + 10.0 * (1.2 - min(depth, 1.8))) * scale)
+                    _x0 = _wx * _s2 * R * (MEUM_NORM + PHI_INV)
+                    _y0 = -_wz * _s2 * R * (MEUM_NORM + PHI_INV) - pitch * R * MEUM_NORM
+                    _sz2 = (MEUM + PHI + (MEUM - depth)) * scale
+                    if _sz2 < 0.0:
+                        _sz2 = -_sz2
                     return cx + _x0, cy + _y0, _sz2
                 if _cam_mode == 1:
                     # First person: pull the eye into the world and widen the lens.
-                    dist = max(0.0, dist - 0.35)
-                    _fov = min(90.0, _fov + 26.0)
+                    dist = dist - MEUM_NORM
+                    _fov = _fov + 26.0
                 _wx = dist * vg_cos(yaw) - float(getattr(g, "player_x", 0.0))
                 _wz = dist * vg_sin(yaw) - float(getattr(g, "player_z", 0.0))
                 ox = _wx * scale
@@ -8120,11 +8170,20 @@ if HAS_UI:
                 y1, z2 = oy*c - z1*ss, oy*ss + z1*c
                 c, ss = vg_cos(croll), vg_sin(croll)
                 x2, y2 = x1*c - y1*ss, x1*ss + y1*c
-                f = math.tan(math.radians(_fov) * 0.5)
-                inv = 1.0 / max(0.12, z2)
-                x = cx + (x2 * inv / max(f,0.05)) * R * 0.72 + float(getattr(g,"camera_pan_x",0.0))*R
-                y = cy - (y2 * inv / max(f,0.05)) * R * 0.72 + float(getattr(g,"camera_pan_y",0.0))*R
-                sz = max(2.0, (6.0 + 10.0 * (1.2 - min(depth, 1.8))) * scale * min(1.8, inv))
+                f = math.tan(math.radians(_fov) * PHI_INV)
+                if z2 == 0.0:
+                    inv = 1.0
+                else:
+                    inv = 1.0 / z2
+                if f == 0.0:
+                    f_scale = 1.0
+                else:
+                    f_scale = 1.0 / abs(f)
+                x = cx + (x2 * inv * f_scale) * R * (MEUM_NORM + PHI_INV) + float(getattr(g,"camera_pan_x",0.0))*R
+                y = cy - (y2 * inv * f_scale) * R * (MEUM_NORM + PHI_INV) + float(getattr(g,"camera_pan_y",0.0))*R
+                sz = (MEUM + PHI + (MEUM - depth)) * scale * inv
+                if sz < 0.0:
+                    sz = -sz
                 return x, y, sz
 
             def project_polar(angle, radius, pitch=0.0, depth=1.0):

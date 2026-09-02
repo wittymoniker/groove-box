@@ -150,6 +150,8 @@ MEUM_OVER_1_5 = MEUM / 1.5
 MEUM_TWO_POW = 2.0 ** MEUM
 MEUM_TWO_POW_OVER_SQ = MEUM_TWO_POW / MEUM_SQ
 MEUM_LOG2 = math.log2(MEUM)
+PHI=1.6180339887
+
 # Full target hearing / synthesis window (user V1). Content above Nyquist is
 # clamped per sample-rate; prefer SR >= 96000 for true 27.5 kHz headroom.
 AUDIBLE_LO_HZ = 5.2
@@ -166,22 +168,26 @@ except Exception:
 DEFAULT_SAMPLE_RATE = 48000  # practical default; export/render may lift to TARGET
 
 def audible_hz(freq, sample_rate=None):
-    """Clamp frequency into the audible design window and below ~0.45·Nyquist."""
+    """Return frequency with real case handling — no soft spectral clamp.
+
+    - Non-finite → design floor (AUDIBLE_LO_HZ)
+    - Negative → absolute value (phase-reversal is already handled upstream)
+    - Above Nyquist → left as-is (deterministic aliasing is allowed and
+      contributes high-frequency content the previous clamp removed)
+    - Below design floor → design floor (only to avoid literal zero/denormal
+      oscillators that produce no energy)
+    """
     try:
         f = float(freq)
     except Exception:
-        f = AUDIBLE_LO_HZ
+        return float(AUDIBLE_LO_HZ)
     if not math.isfinite(f):
-        f = AUDIBLE_LO_HZ
-    hi = AUDIBLE_HI_HZ
-    if sample_rate is not None:
-        try:
-            sr = float(sample_rate)
-            if sr > 1.0:
-                hi = min(hi, sr * 0.75)
-        except Exception:
-            pass
-    return float(max(AUDIBLE_LO_HZ, min(hi, f)))
+        return float(AUDIBLE_LO_HZ)
+    if f < 0.0:
+        f = -f
+    if f < AUDIBLE_LO_HZ:
+        return float(AUDIBLE_LO_HZ)
+    return float(f)
 
 # Frequently used integer powers: M^0 ... M^35.
 # Folded so instrument-index-driven frequency scaling stays bounded instead of
@@ -191,17 +197,19 @@ def audible_hz(freq, sample_rate=None):
 # 12-slot window (-6..+5, one "octave" of Meum-steps) keeps the same per-index
 # color/identity but centers it around the base frequency instead of climbing.
 MEUM_POWERS_36 = tuple(MEUM ** ((i % 12) - 6) for i in range(36))
-# HARDCODE_UNISON_2026: fixed, instrument-index-derived tables that replace
-# the old runtime Nyquist/frequency-based partial cap and the random-per-voice
-# phase offset. Both are pure functions of the instrument's slot in the
-# roster (like MEUM_POWERS_36 above) — never of sample_rate or the live
-# fundamental — so every voice's harmonic budget and phase anchor are fixed,
-# reproducible, and, most importantly, chosen so adjacent instrument slots
-# share compatible partial counts and evenly-spaced phase anchors instead of
-# landing at independent random points. That's what makes the ensemble blend
-# into one continuous mass instead of reading as N separate oscillators.
-INSTRUMENT_PARTIAL_CAP_48 = tuple(7 + (i % 6) for i in range(48))
+# FREE_PARTIAL_2026: partial budget is no longer a hard low ceiling.
+# Each slot still has a deterministic base derived from MEUM/PHI so adjacent
+# instruments remain phase-compatible, but the actual count used at render
+# time is allowed to grow with entropy and seed — never artificially truncated
+# to 7–12.  This restores the missing higher partials and multitimbral density
+# that the previous hard cap removed.
+INSTRUMENT_PARTIAL_BASE_48 = tuple(
+    int(12 + (i * MEUM) % 24 + (i * PHI) % 12) for i in range(48)
+)
 INSTRUMENT_PHASE_LOCK_48 = tuple((2.0 * math.pi * i) / 48.0 for i in range(48))
+# Keep the old name as an alias so any residual references still resolve,
+# but point at the richer base.
+INSTRUMENT_PARTIAL_CAP_48 = INSTRUMENT_PARTIAL_BASE_48
 
 MEUM_IDENTITY_LHS = (MEUM_MINUS_1 * MEUM) + (MEUM_MINUS_1 * MEUM_INV)
 MEUM_IDENTITY_RHS = MEUM_TWO_POW_OVER_SQ - MEUM
@@ -1808,36 +1816,52 @@ def meum_modulation_vectors(t, params=None):
     t = np.asarray(t, dtype=np.float64)
 
     phase_shift = float(p.get("phase_shift", 0.0))
-    am_depth = float(np.clip(p.get("am_depth", 0.0), 0.0, 1.0))
-    am_rate = max(0.0, float(p.get("am_rate", 1.0)))
-    fm_depth = float(np.clip(p.get("fm_depth", 0.0), -0.95, 0.95))
-    fm_rate = max(0.0, float(p.get("fm_rate", 1.0)))
-    pm_depth = float(np.clip(p.get("pm_depth", 0.0), -math.pi, math.pi))
-    pm_rate = max(0.0, float(p.get("pm_rate", 1.0)))
-    pm_feedback = float(np.clip(p.get("pm_feedback", 0.0), -1.0, 1.0))
-    meum_depth = float(np.clip(p.get("meum_depth", 0.0), 0.0, 1.0))
+    # FREE_MOD_2026: modulation depths are unrestricted continuous values.
+    # No np.clip.  Negative AM depth is allowed (phase inversion); extreme
+    # FM/PM indices produce dense sidebands — the desired multitimbral richness.
+    am_depth = float(p.get("am_depth", 0.0) or 0.0)
+    am_rate = float(p.get("am_rate", 1.0) or 1.0)
+    fm_depth = float(p.get("fm_depth", 0.0) or 0.0)
+    fm_rate = float(p.get("fm_rate", 1.0) or 1.0)
+    pm_depth = float(p.get("pm_depth", 0.0) or 0.0)
+    pm_rate = float(p.get("pm_rate", 1.0) or 1.0)
+    pm_feedback = float(p.get("pm_feedback", 0.0) or 0.0)
+    meum_depth = float(p.get("meum_depth", 0.0) or 0.0)
 
     def field(rate):
+        # Pure MEUM mixture — no arbitrary 0.5.
         a = np.sin(math.tau * t * rate)
         b = np.sin(math.tau * t * rate * MEUM_INV)
-        return 0.5 * (a + MEUM_NORM * b)
+        return MEUM_NORM * a + (1.0 - MEUM_NORM) * b
 
     # FM: instantaneous-frequency ratio (integrated into phase by the caller).
-    fm_lfo = np.sin(math.tau * t * fm_rate + phase_shift)
-    freq_ratio = 1.0 + fm_depth * (fm_lfo + meum_depth * field(fm_rate))
-    freq_ratio = np.clip(freq_ratio, 0.0, None)
+    # Real case handling for non-positive rate: treat as DC (ratio = 1).
+    if abs(fm_rate) == 0.0:
+        freq_ratio = np.ones_like(t, dtype=np.float64)
+    else:
+        fm_lfo = np.sin(math.tau * t * fm_rate + phase_shift)
+        freq_ratio = 1.0 + fm_depth * (fm_lfo + meum_depth * field(fm_rate))
+    # No clip to positive — negative instantaneous frequency is a legitimate
+    # phase-reversal event and contributes spectral content.
 
     # PM: direct phase displacement, radians (includes the static phase_shift).
-    pm_lfo = np.sin(math.tau * t * pm_rate + phase_shift)
-    phase_offset = (
-        phase_shift
-        + pm_depth * pm_lfo
-        + pm_feedback * meum_depth * field(pm_rate)
-    )
+    if abs(pm_rate) == 0.0:
+        phase_offset = np.full_like(t, phase_shift, dtype=np.float64)
+    else:
+        pm_lfo = np.sin(math.tau * t * pm_rate + phase_shift)
+        phase_offset = (
+            phase_shift
+            + pm_depth * pm_lfo
+            + pm_feedback * meum_depth * field(pm_rate)
+        )
 
-    # AM: post-waveform amplitude gain, never negative.
-    am_lfo = np.sin(math.tau * t * am_rate + phase_shift)
-    am_gain = np.clip(1.0 + am_depth * (am_lfo + meum_depth * field(am_rate)), 0.0, None)
+    # AM: post-waveform amplitude gain.  Negative values invert phase — allowed.
+    # Real case: zero rate → constant gain of 1 + am_depth * meum term.
+    if abs(am_rate) == 0.0:
+        am_gain = np.full_like(t, 1.0 + am_depth * meum_depth * MEUM_NORM, dtype=np.float64)
+    else:
+        am_lfo = np.sin(math.tau * t * am_rate + phase_shift)
+        am_gain = 1.0 + am_depth * (am_lfo + meum_depth * field(am_rate))
 
     return (
         freq_ratio.astype(np.float32),
@@ -26550,20 +26574,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             self._finalize_union_entropy()
                     except Exception:
                         pass
-                n_harm = max(1, int(2 + (1.0 - entropy) * 14 + k4 * 6))
-                # HARDCODE_UNISON_2026: partial-count ceiling used to be derived
-                # at render time from Nyquist / this voice's live fundamental
-                # (sample_rate * 0.5 divided by f0). That runtime division is
-                # exactly the kind of per-sample-rate, per-frequency "soft"
-                # dependency the ensemble should not rely on — replaced with a
-                # fixed, instrument-slot-indexed cap (INSTRUMENT_PARTIAL_CAP_48,
-                # same family as MEUM_POWERS_36) so every voice's harmonic
-                # budget is a hardcoded property of its roster position, not a
-                # runtime computation. It also keeps neighboring instrument
-                # slots' partial counts close together, which is part of what
-                # makes them blend into one mass instead of standing apart.
-                _max_partial = INSTRUMENT_PARTIAL_CAP_48[_vo % 48]
-                n_harm = max(1, min(n_harm, _max_partial))
+                # FREE_PARTIAL_2026: partial count is seed + entropy derived and
+                # no longer hard-capped at the old 7–12 range.  Base comes from
+                # the MEUM/PHI table; entropy and k4 freely expand it.  This is
+                # the primary fix for missing spectral components / multitimbral
+                # density.  No Nyquist soft division is used — high partials are
+                # allowed; if they exceed the sampling theorem they simply
+                # alias, which is a legitimate deterministic spectral event.
+                _base_partial = INSTRUMENT_PARTIAL_BASE_48[_vo % 48]
+                n_harm = max(1, int(_base_partial + entropy * 24 + k4 * 12 + (1.0 - entropy) * 8))
                 # GOAVA = hard-composed pure sine; other engines free waveform.
                 # Live mod (AM/FM/PM) still routes through phase/_am_gain for all.
                 _is_goava_voice = (
@@ -26572,61 +26591,65 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     or bool(st.get("goava_sine_patch"))
                 )
                 if _is_goava_voice:
-                    # Sinusoidal hard-composed patch; mods already in phase/_am_gain
+                    # Pure sinusoidal carrier; optional integer partials only
+                    # from live PM depth (no soft second-harmonic trick).
                     harm = np.sin(phase)
-                    # Optional soft second partial only from live mod depth
                     _pm_d = float(_meum_ctx.get("pm_depth", 0.0) or 0.0)
-                    if abs(_pm_d) > 0.05:
-                        harm = harm + 0.08 * abs(_pm_d) * np.sin(2.0 * phase)
-                    entropy = min(entropy, 0.5)  # keep GOAVA nearly pure
+                    if abs(_pm_d) > 0.0:
+                        # Real case: if PM depth is non-zero, add the integer
+                        # harmonic series scaled by |pm_depth| * MEUM_NORM.
+                        for h in range(2, max(2, int(2 + abs(_pm_d) * 8)) + 1):
+                            harm = harm + (abs(_pm_d) * MEUM_NORM / h) * np.sin(h * phase)
                 else:
-                    # Optional non-sine carrier from modular / panel waveform key.
-                    # FM+PM already folded into `phase`; AM applied later via _am_gain.
+                    # Free waveform path.  FM+PM already folded into `phase`;
+                    # AM applied later via _am_gain.  Partial amplitudes follow
+                    # pure 1/n (or MEUM/PHI scaled 1/n) so the spectrum is a
+                    # true Fourier-like series, not an aggressive power-law
+                    # roll-off that removes upper partials.
                     _wf = str(st.get("waveform", _meum_ctx.get("waveform", "isn")) or "isn").strip().lower()
-                    if _wf in ("saw", "sawtooth", "square", "pulse", "triangle", "tri", "cos", "cosine"):
+                    if _wf in ("saw", "sawtooth", "square", "pulse", "triangle", "tri", "cos", "cosine", "ics"):
                         try:
                             harm = meum_waveform_from_phase(phase, _wf)
                         except Exception:
-                            harm = np.sin(phase)
-                        for h in range(2, min(n_harm, 5) + 1):
-                            amp_h = 0.5 / h
+                            harm = isn_vec(phase) if "isn" in _wf or _wf in ("sine", "sin", "") else np.sin(phase)
+                        for h in range(2, n_harm + 1):
+                            # Pure 1/n amplitude series (classic Fourier).
+                            amp_h = MEUM_NORM / h
                             harm = harm + amp_h * meum_waveform_from_phase(phase * h, _wf)
                     else:
-                        harm = np.sin(phase)
+                        # Default Meum / isn path — full harmonic series with
+                        # deterministic MEUM/PHI detune and phase offsets.
+                        harm = isn_vec(phase) if callable(globals().get("isn_vec")) else np.sin(phase)
                         for h in range(2, n_harm + 1):
-                            roll = 1.0 + (1.0 - entropy) * 1.5
-                            amp_h = (0.35 + 0.55 * (1.0 - entropy)) / (h ** roll)
-                            det = 1.0 + 1e-4 * ((_s_int % 97) - 48) * (h - 1) * (0.5 + 0.5 * entropy)
-                            ph0 = ((_s_int * h * 13 + _vo * 7) % 1000) / 1000.0 * math.tau
+                            # Amplitude: pure 1/n scaled by MEUM_NORM so the
+                            # series remains a wavefunction, not a smoothed
+                            # power-law that erases upper partials.
+                            amp_h = MEUM_NORM / h
+                            # Deterministic micro-detune from seed + slot
+                            # (no random, no soft).  Magnitude is 1/n scale.
+                            det = 1.0 + (MEUM_INV / h) * (((_s_int % 97) - 48) / 48.0) * (PHI_INV + entropy * MEUM_NORM)
+                            ph0 = INSTRUMENT_PHASE_LOCK_48[(_vo + h) % 48] * h
                             harm = harm + amp_h * np.sin(phase * h * det + ph0)
-                n_inh = max(2, int(2 + entropy * 10 + k4 * 3))
-                # HARDCODE_UNISON_2026: same fixed, instrument-indexed cap as
-                # n_harm above (scaled down, since inharmonic ratios climb
-                # steeper) instead of a second Nyquist/f0 runtime division.
-                n_inh = max(1, min(n_inh, max(1, int(_max_partial / 1.4))))
+                # Inharmonic bank — also free count, MEUM/PHI ratios.
+                n_inh = max(1, int(_base_partial * MEUM_INV + entropy * 18 + k4 * 8))
                 inh = np.zeros_like(local_t, dtype=np.float32)
                 for h in range(1, n_inh + 1):
-                    ratio = 1.0 + h * (1.0 + 0.5 * math.sin((_s_int + h * 17) * MEUM_NORM))
-                    ratio = 1.0 + (ratio - 1.0) * (0.5 + 0.5 * entropy)
-                    amp_i = (0.5 + 0.5 * entropy) / (h ** (0.5 + 0.5 * entropy))
-                    ph0 = ((_s_int * h * 31 + _vo * 11) % 1000) / 1000.0 * math.tau
+                    # Ratio built only from MEUM / PHI / 1/n — no arbitrary 0.5.
+                    ratio = 1.0 + h * (MEUM_NORM + PHI_INV * math.sin((_s_int + h * 17) * MEUM_NORM))
+                    ratio = 1.0 + (ratio - 1.0) * (MEUM_NORM + entropy * PHI_INV)
+                    amp_i = (MEUM_NORM + entropy * PHI_INV) / h
+                    ph0 = INSTRUMENT_PHASE_LOCK_48[(_vo + h * 3) % 48]
                     inh = inh + amp_i * np.sin(phase * ratio + ph0)
-                if entropy > 0.1:
-                    fm_ratio = 1.0 + ((_s_int % 19) / 19.0) * 3.0 * entropy
-                    fm_depth = (0.05 + 0.55 * entropy) * (0.5 + 0.5 * k1)
-                    harm = harm * np.cos(fm_depth * np.sin(phase * fm_ratio))
+                # Cross-modulation term (deterministic FM-style sidebands).
+                # No soft threshold; the term is always present, scaled by entropy.
+                fm_ratio = 1.0 + (((_s_int % 19) / 19.0) * MEUM + entropy * PHI)
+                fm_depth = (MEUM_INV + entropy * PHI_INV) * (MEUM_NORM + k1 * PHI_INV)
+                harm = harm * np.cos(fm_depth * np.sin(phase * fm_ratio))
                 voice_raw = (1.0 - entropy) * harm + entropy * inh
-                # HARDCODE_UNISON_2026 / SMOOTH_OUTPUT_2026: the old high-entropy
-                # branch ran a soft tanh saturation whose knee shifted with
-                # entropy and fold_depth (a "soft" nonlinear function whose
-                # behavior depends on live signal state) plus a separate
-                # sign()*|x|**(1+entropy) soft noise waveshaper. Both are
-                # removed: no soft-clip, no soft waveshaping. Voices pass
-                # through their closed-form sum and only ever meet a fixed,
-                # hardcoded amplitude ceiling (never signal- or
-                # entropy-dependent), which is enough to keep any accidental
-                # overshoot in check without adding its own coloration.
-                voice_raw = np.clip(voice_raw, -1.5, 1.5)
+                # NO soft-clip, NO tanh, NO signal-dependent saturation.
+                # True overflow is left as-is (the master bus / export path
+                # can decide); we do not silently remove peaks that carry
+                # high-frequency content.
                 # MASTER_FX_FIX_2026: per-voice EQR additive coloring removed —
                 # the only EQR application is the master-bus tail stage below.
                 # NO_NORMALIZE / NO_SLEW: the previous stage peak-normalized
