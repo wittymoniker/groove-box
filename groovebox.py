@@ -16374,7 +16374,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # rather than a single partial.
             chord_ratios = [1.0, 1.5, 2.0]
             chord_freqs = [float(hz) * r for r in chord_ratios]
-            chord_amps = [0.33, 0.22, 0.15]
+            chord_amps = [0.3333333, .1975807343, 0.05479]
             events.append({
                 "step": true_idx,
                 "list_index": i,
@@ -16572,7 +16572,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         chord_amps = ev.get("chord_amps")
         if not chord_freqs:
             chord_freqs = [float(ev.get("frequency", 432.0))]
-            chord_amps = [0.1975807343]
+            chord_amps = [0.3333333, .1975807343, 0.05479]
         # Sustain across most of the row/step; short tau was muting GOAVA early
         tau = max(step_duration * 2.5, 0.00)
         env = np.exp(-local_t / tau)
