@@ -255,6 +255,49 @@ def check_renderer_topology_guard():
     return "PASS: renderer topology NameError guard"
 
 
+def check_character_ui_rules():
+    meta={"seed":42.0,"bpm":120,"seq_length":32,"playlist_rows":32,"n_instruments":48,"goava_active":False,"randomizer_active":False,"phase_lock_active":False}
+    root, mod = _generated_game(meta)
+    try:
+        g=mod.Game()
+        assert g.character.freedom >= 0.99
+        g.items.grant(0,1); assert g.equip_quick_slot(1)
+        assert g.items.equipped == g.quick_slots[0]
+        choices=g.interaction_items(); assert any(x["kind"]=="tool" for x in choices) and any(x["kind"]=="event" for x in choices)
+        item=g.select_zero_item(6); assert item and item["kind"] in ("tool","event","interaction")
+        assert mod.ObjectScaleRule.factor(42,"tree","a") in (0.25,1.75)
+        assert mod.ObjectScaleRule.factor(42,"orb","a") == 1.0
+        g.character.cycle_design("crest",0.2); g.tick(1/30)
+        snap=g.character.snapshot(); assert 0.0 <= snap["experience"] <= 1.0 and 0.55 <= snap["freedom"] <= 1.0
+        g.net.shutdown()
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+    return "PASS: character progression + quick slots + 0 selector + size rules"
+
+
+def check_home_starter_pack_and_panes():
+    meta={"seed":42.0,"bpm":120,"seq_length":32,"playlist_rows":32,"n_instruments":48,"goava_active":False,"randomizer_active":False,"phase_lock_active":False}
+    root, mod = _generated_game(meta)
+    try:
+        g=mod.Game()
+        lows=[d for d in g.items.defs if d.get("tier")==0]
+        assert lows and all(g.items.inventory.get(d["id"],0)>0 for d in lows)
+        assert g.home is not None and g.home.journal_priority(g) >= 0.72
+        g.player_x, g.player_z = g.home.x, g.home.z
+        assert g.home.ui_nearby(g) and g.home.nearby(g)
+        result=g.interact(); assert result == "home" and g.home.owned
+        before=sum(g.items.inventory.values())
+        out=g.refine_starter_supplies(); after=sum(g.items.inventory.values())
+        assert "CRAFTED" in out and after < before
+        binds=mod.CONTROLS["binds"]
+        expected={"Q":"quests","J":"journal","I":"inventory","K":"skills","L":"server","B":"crafting","G":"gameplay","H":"closet"}
+        assert all(binds[name]["key"]==key for key,name in expected.items())
+        g.net.shutdown()
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+    return "PASS: home proximity + starter supplies + lossy refinement + pane keyboard map"
+
+
 CHECKS = [
     ("component registry", check_component_usage),
     ("composition parity", check_composition_parity),
@@ -268,8 +311,36 @@ CHECKS = [
     ("visual determinism", check_visual_determinism),
     ("temporal seed", check_temporal_seed),
     ("renderer topology guard", check_renderer_topology_guard),
+    ("character/UI rules", check_character_ui_rules),
+    ("home/starter/panes", check_home_starter_pack_and_panes),
 ]
 
+
+    # Numeric gameplay identity → deterministic display/audio signatures
+def test_numeric_item_action_audio_identity():
+    vg = importlib.import_module("videogame_engine")
+    ident = vg.GameIdentity(
+        seed=4242, title="Numeric Audio Test", genre="open_world", camera="first_person",
+        topology="open_world", social="solo", mood="calm", online=False, host_port=33436,
+        model_sets_1d=[], model_sets_2d=[], model_sets_3d=[], ui_palette={}, gameplay_hooks=[],
+        music_variation="test", composition_fingerprint="4242424242424242"
+    )
+    ns = {}
+    exec(vg.generate_game_script(ident), ns)
+    g = ns["Game"]()
+    assert getattr(g, "actions", None) is not None
+    assert len(g.actions.actions) >= 10
+    d = g.items.defs[0]
+    assert d.get("sound", {}).get("freq", 0) > 0
+    a = g.actions.by_id("meteor")
+    assert a and a["sound"]["freq"] > 0
+    assert g.items.describe(d["id"]).find("SOUND") >= 0
+    sig = ns["_numeric_sound_signature"](4242, "meteor", (a["magnitude"], a["cost"], a["cooldown"]))
+    assert sig["freq"] > 0 and sig["duration"] > 0 and sig["harmonics"] >= 1
+    menu = g.zero_menu_text()
+    assert "Hz" in menu and "NOTHING EQUIPPED" in menu
+
+CHECKS.append(("numeric item/action/spell/event audio identity", test_numeric_item_action_audio_identity))
 
 def main():
     failures=[]; skips=[]

@@ -1205,7 +1205,7 @@ try:
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
         QPushButton, QLineEdit, QPlainTextEdit, QSpinBox, QCheckBox, QFrame,
         QSizePolicy, QGroupBox, QMessageBox, QInputDialog, QProgressBar,
-        QSplitter,
+        QSplitter, QTabWidget, QListWidget, QListWidgetItem, QDialog, QDialogButtonBox,
     )
     HAS_UI = True
 except Exception:
@@ -2106,6 +2106,152 @@ _NPC_ROLES = (
 )
 
 
+class CharacterDecorationSystem:
+    """Experience-aware avatar decoration with a population-average prior."""
+    FEATURES=("crest","mantle","trail","badge","aura","markings","silhouette","accent")
+    def __init__(self, seed):
+        self.seed=int(seed)&0x7FFFFFFF
+        self.design={k:_residue(self.seed, f"character/design:{k}") for k in self.FEATURES}
+        self.designed=True; self.observed=[]
+        self.global_prior=0.50 + 0.22*(_residue(self.seed,"character/global_average")-0.5)
+        self.external_population_average=None
+        self.experience=0.0; self.freedom=1.0; self.decoration_level=0.0
+    def record_design(self, values=None, source="local"):
+        vals=values if isinstance(values,dict) else self.design
+        score=sum(float(vals.get(k,0.5)) for k in self.FEATURES)/len(self.FEATURES)
+        self.observed.append((str(source),max(0.0,min(1.0,score))))
+        self.observed=self.observed[-64:]
+        return score
+    def update(self, game):
+        completed=sum(1 for q in getattr(game.quests,"quests",[]) if q.get("done"))
+        events=len(getattr(getattr(game,"world_events",None),"history",[]) or [])
+        self.experience=max(0.0,min(1.0,
+            .20*min(1.0,max(0.0,float(getattr(game,"level",1)-1))/12.0)+
+            .18*min(1.0,max(0.0,float(getattr(game,"score",0.0)))/80.0)+
+            .18*min(1.0,completed/8.0)+.14*min(1.0,max(0.0,float(getattr(game,"combo",0)))/12.0)+
+            .15*min(1.0,events/18.0)+.15*min(1.0,len(getattr(game,"tags",set()))/12.0)))
+        self.freedom=max(.55,1.0-.38*self.experience)
+        self.decoration_level=min(1.0,.10+.90*self.experience)
+        return self.snapshot()
+    def population_average(self):
+        vals=[v for _,v in self.observed]
+        local=max(0.0,min(1.0,(self.global_prior+(sum(vals)/len(vals) if vals else self.global_prior))/2.0))
+        if self.external_population_average is not None:
+            return max(0.0,min(1.0,0.35*local+0.65*float(self.external_population_average)))
+        return local
+    def visual(self, game, variant=0):
+        self.update(game); avg=self.population_average(); blend=.10+.30*self.experience; out={}
+        for k in self.FEATURES:
+            personal=float(self.design.get(k,.5)); pop=(avg+_residue(self.seed,f"character/pop:{k}")*.35)/1.35
+            out[k]=max(0.0,min(1.0,personal*(1.0-blend)+pop*blend))
+        out.update(density=self.decoration_level,freedom=self.freedom,population_average=avg,experience=self.experience,variant=int(variant)%7)
+        return out
+    def cycle_design(self, axis, amount=.12):
+        if axis not in self.design: axis=self.FEATURES[0]
+        self.design[axis]=(float(self.design.get(axis,.5))+float(amount))%1.0
+        self.record_design(source="local"); return self.design[axis]
+    def snapshot(self):
+        return {"design":dict(self.design),"experience":self.experience,"freedom":self.freedom,
+                "decoration_level":self.decoration_level,"population_average":self.population_average(),"designed":self.designed}
+
+class ObjectScaleRule:
+    """Player-anchored size rule: most assets are near player scale; contrast assets use 0.25x or 1.75x."""
+    CONTRAST_KINDS={"tree","rock","building","tower","crystal","beacon","portal","monolith","meteor_core","rift_seed","ancient_relay","hunt_totem","sky_shard"}
+    @staticmethod
+    def factor(seed, kind, key=""):
+        k=str(kind or "orb").lower()
+        if k not in ObjectScaleRule.CONTRAST_KINDS: return 1.0
+        return .25 if _residue(seed,f"size:{k}:{key}") < .5 else 1.75
+
+class HomeOwnershipSystem:
+    """Deterministic nearby home interface and persistent leisure anchor."""
+    def __init__(self, seed):
+        self.seed = int(seed) & 0x7FFFFFFF
+        near = _residue(self.seed, "housing/nearby") < 0.78
+        radius = (5.0 + 5.0 * _residue(self.seed, "housing/radius")) if near else (14.0 + 16.0 * _residue(self.seed, "housing/radius_far"))
+        angle = math.tau * _residue(self.seed, "housing/angle")
+        self.x, self.z = radius * math.cos(angle), radius * math.sin(angle)
+        self.interaction_radius = 4.5
+        self.ui_radius = 8.0
+        self.owned = False
+        self.visits = 0
+        self.leisure_score = 1.0
+    def distance(self, game):
+        return math.hypot(self.x-float(getattr(game,"player_x",0.0)), self.z-float(getattr(game,"player_z",0.0)))
+    def nearby(self, game): return self.distance(game) <= self.interaction_radius
+    def ui_nearby(self, game): return self.distance(game) <= self.ui_radius
+    def journal_priority(self, game):
+        return min(1.0, 0.72 + 0.28 * max(0.0, 1.0-self.distance(game)/24.0))
+    def interact(self, game):
+        d=self.distance(game)
+        if d>self.interaction_radius: return f"HOME UI is {d:.1f}m away — move closer to claim/use it."
+        self.visits += 1
+        if not self.owned:
+            self.owned=True; self.leisure_score=min(1.0,self.leisure_score+0.15)
+            game.tags.add("homeowner"); game.score += 8.0*getattr(game,"difficulty_mult",1.0)
+            try: game.world_events.player_action(game,"home_claim")
+            except Exception: pass
+            game.push_status("[HOME] House owned — persistent leisure destination added to your journal.")
+            return "HOUSE OWNED — home added to the top of your leisure journal."
+        self.leisure_score=min(1.0,self.leisure_score+0.03)
+        try: game.world_events.player_action(game,"home_leisure")
+        except Exception: pass
+        game.push_status("[HOME] Leisure session recorded.")
+        return "HOME LEISURE — your house remains a persistent world destination."
+    def snapshot(self, game=None):
+        d=self.distance(game) if game is not None else None
+        return {"x":round(self.x,4),"z":round(self.z,4),"owned":self.owned,"visits":self.visits,"leisure_score":round(self.leisure_score,4),"distance":round(d,3) if d is not None else None,"journal_priority":round(self.journal_priority(game),4) if game is not None else 0.72}
+
+
+def _numeric_sound_signature(seed, namespace, values=()):
+    """Map an item's numeric identity directly to a deterministic playable sound.
+
+    No audio samples are required: the same seed + numeric values always produce
+    the same frequency, duration, envelope and harmonic count. This makes items,
+    spells and actions easy to display and audibly recognizable.
+    """
+    seed = _safe_int_seed(seed)
+    vals = [float(v) for v in (values or ())]
+    key = str(namespace) + ":" + ":".join(f"{v:.6f}" for v in vals)
+    r1 = _residue(seed, "sound:f:" + key)
+    r2 = _residue(seed, "sound:d:" + key)
+    r3 = _residue(seed, "sound:t:" + key)
+    r4 = _residue(seed, "sound:h:" + key)
+    freq = 110.0 * (2.0 ** (4.0 * r1))
+    duration = 0.055 + 0.20 * r2
+    tone = "sine" if r3 < .34 else ("triangle" if r3 < .68 else "pulse")
+    harmonics = 1 + int(5 * r4)
+    return {"freq": round(freq, 3), "duration": round(duration, 4), "tone": tone, "harmonics": harmonics}
+
+
+def _display_numeric_audio(seed, namespace, values=()):
+    sig = _numeric_sound_signature(seed, namespace, values)
+    return f"SOUND {sig['freq']:.0f}Hz · {sig['duration']*1000:.0f}ms · {sig['tone']} · H{sig['harmonics']}"
+
+
+class ActionCatalog:
+    """Small deterministic catalog for actions/spells/events with numeric/audio identity."""
+    def __init__(self, seed):
+        self.seed = int(seed) & 0x7FFFFFFF
+        self.actions = []
+        names = ("interact", "harvest", "survey", "quest", "inspect", "pulse", "meteor", "rift", "aurora", "wake", "hunt")
+        for i, name in enumerate(names):
+            magnitude = 0.25 + 1.75 * _residue(self.seed, f"action:mag:{i}")
+            cost = int(1 + 8 * _residue(self.seed, f"action:cost:{i}"))
+            cooldown = 0.25 + 5.0 * _residue(self.seed, f"action:cool:{i}")
+            sig = _numeric_sound_signature(self.seed, "action:" + name, (magnitude, cost, cooldown))
+            self.actions.append({"id": name, "name": name.upper(), "magnitude": magnitude, "cost": cost, "cooldown": cooldown, "sound": sig})
+
+    def by_id(self, ident):
+        return next((a for a in self.actions if a["id"] == ident), None)
+
+    def describe(self, ident):
+        a = self.by_id(ident)
+        if not a: return str(ident)
+        return (f"{a['name']} · MAG {a['magnitude']:.2f} · COST {a['cost']} · CD {a['cooldown']:.2f}s · "
+                f"SOUND {a['sound']['freq']:.0f}Hz/{a['sound']['duration']*1000:.0f}ms/{a['sound']['tone']}")
+
+
 class ItemCatalog:
     """Deterministic item definitions + player inventory."""
     def __init__(self, seed, count=None):
@@ -2119,13 +2265,17 @@ class ItemCatalog:
             tag = _ITEM_TAGS[int(_residue(self.seed, f"itag:{i}") * len(_ITEM_TAGS)) % len(_ITEM_TAGS)]
             value = 1 + int(40 * _residue(self.seed, f"ival:{i}") + 10 * MEUM * _residue(self.seed, f"ival2:{i}"))
             power = 0.2 + 1.5 * _residue(self.seed, f"ipow:{i}")
+            tier = 0 if i < max(1, int(self.count * 0.55)) else (1 if i < max(2, int(self.count * 0.82)) else 2)
             self.defs.append({
                 "id": f"item_{i}",
                 "name": f"{name}-{i+1}",
                 "tag": tag,
+                "tier": tier,
+                "natural": tier == 0,
                 "value": value,
                 "power": power,
                 "stack": 1 + int(4 * _residue(self.seed, f"istack:{i}")),
+                "sound": _numeric_sound_signature(self.seed, f"item:{i}", (value, power, tier)),
             })
         self.inventory = {}
         self.equipped = None
@@ -2157,6 +2307,38 @@ class ItemCatalog:
             if d["id"] == self.equipped:
                 return float(d["power"])
         return 0.0
+
+    def grant_starter_pack(self):
+        """Give the player every low-level/natural supply at spawn."""
+        granted=[]
+        for i,d in enumerate(self.defs):
+            if int(d.get("tier",0)) != 0: continue
+            qty=1+int(_residue(self.seed,f"starter:qty:{i}")*2.0)
+            if self.grant(i,qty): granted.append((d["id"],qty))
+        return granted
+    def refine_low_level(self):
+        """Consume several natural/low-tier items for one higher-tier item."""
+        lows=[d for d in self.defs if int(d.get("tier",0))==0 and self.inventory.get(d["id"],0)>0]
+        mids=[d for d in self.defs if int(d.get("tier",0))==1 and self.inventory.get(d["id"],0)>0]
+        targets=[d for d in self.defs if int(d.get("tier",0))==2]
+        if not targets: return None,"no high-level item exists in this seed"
+        need=3+int(_residue(self.seed,"craft/refine_need")*2.0)
+        if sum(self.inventory.get(d["id"],0) for d in lows+mids)<need: return None,f"need {need} low-level supplies"
+        remaining=need; consumed=[]
+        for d in lows+mids:
+            if remaining<=0: break
+            take=min(remaining,int(self.inventory.get(d["id"],0)))
+            if take: self.inventory[d["id"]]-=take; consumed.append((d["id"],take)); remaining-=take
+        target=targets[int(_residue(self.seed,"craft/refine_target")*len(targets))%len(targets)]
+        self.inventory[target["id"]]=min(target["stack"],self.inventory.get(target["id"],0)+1)
+        return target,consumed
+
+    def describe(self, iid):
+        d = next((x for x in self.defs if x["id"] == iid), None)
+        if not d: return str(iid)
+        sig = d.get("sound") or _numeric_sound_signature(self.seed, "item:" + str(iid), (d.get("value",0), d.get("power",0), d.get("tier",0)))
+        return (f"{d['name']} · T{d['tier']} · VALUE {d['value']} · POWER {d['power']:.2f} · "
+                f"{_display_numeric_audio(self.seed, 'item:' + str(iid), (d.get('value',0), d.get('power',0), d.get('tier',0)))}")
 
     def to_dict(self):
         return {"inventory": dict(self.inventory), "equipped": self.equipped}
@@ -2822,8 +3004,13 @@ class EmergentWorldEvents:
         stage_boost={'build':0.88,'modulate':1.18,'stabilize':0.96}.get(getattr(temporal,'stage','build'),1.0)
         return max(0.0,min(.82,d.weight*(.45+.75*gate)*(1+.025*min(12,activity))*(1+.04*recent)*(0.86+0.28*tf)*stage_boost))
     def _spawn_rare(self, game, d, window):
-        x=float(getattr(game,'player_x',0))+(_residue(self.seed,f'rare:x:{d.name}:{window}')-.5)*20
-        z=float(getattr(game,'player_z',0))+(_residue(self.seed,f'rare:z:{d.name}:{window}')-.5)*20
+        # WORLD-SPACE CONTRACT: event coordinates belong to the seed/world, not
+        # to whoever happens to be looking at them.  Returning to the same
+        # coordinates reconstructs the same event anchor.
+        cell_x=int((_residue(self.seed,f'rare:cellx:{d.name}:{window}')-.5)*128)
+        cell_z=int((_residue(self.seed,f'rare:cellz:{d.name}:{window}')-.5)*128)
+        x=(cell_x + _residue(self.seed,f'rare:x:{d.name}:{window}'))*12.0
+        z=(cell_z + _residue(self.seed,f'rare:z:{d.name}:{window}'))*12.0
         obj={'id':f'{d.name}:{window}','kind':d.rare_object,'x':x,'z':z,'age':0.0,
              'life':18+24*_residue(self.seed,f'rare:life:{d.name}:{window}'),
              'event':d.name,'usable':True}
@@ -2882,8 +3069,10 @@ class MeteorEventSystem:
                 ox=(_residue(self.seed, f'meteor:x:{window}:{cell}')-.5)*28.0
                 oz=(_residue(self.seed, f'meteor:z:{window}:{cell}')-.5)*28.0
                 self.impacts.append({
-                    'window':window,'x':float(getattr(game,'player_x',0.0))+ox,
-                    'z':float(getattr(game,'player_z',0.0))+oz,
+                    # Absolute world-space meteor location: never generated from
+                    # the player's current position.
+                    'window':window,'x':(int((_residue(self.seed,f'meteor:cellx:{window}:{cell}')-.5)*128)+_residue(self.seed,f'meteor:x:{window}:{cell}'))*12.0,
+                    'z':(int((_residue(self.seed,f'meteor:cellz:{window}:{cell}')-.5)*128)+_residue(self.seed,f'meteor:z:{window}:{cell}'))*12.0,
                     'age':0.0, 'life':4.5+3.0*_residue(self.seed,f'meteor:life:{window}:{cell}'),
                     'power':0.55+0.9*_residue(self.seed,f'meteor:p:{window}:{cell}'),
                     'radius':1.0+2.4*_residue(self.seed,f'meteor:r:{window}:{cell}')})
@@ -3072,6 +3261,9 @@ class Game:
             self.waypoints = WaypointTrail(_seed)
             self.pve = PveEncounter(_seed)
         self.items = ItemCatalog(self.id["seed"])
+        self.actions = ActionCatalog(self.id["seed"])
+        self.starter_pack = self.items.grant_starter_pack()
+        self.home = HomeOwnershipSystem(self.id["seed"])
         self.quests = QuestLog(self.id["seed"])
         self.purse = CoinPurse(self.id["seed"])
         self.store = Store(self.id["seed"], self.items)
@@ -3180,7 +3372,7 @@ class Game:
         self.player_x = 0.0
         self.player_y = 0.0
         self.player_z = 0.0
-        self._held_movement = {"dx": 0.0, "dz": 0.0}
+        self._held_movement = {"dx": 0.0, "dy": 0.0, "dz": 0.0}
         # PHYSICS_FIELD_2026: explicit, inspectable kinematics. Position is
         # integrated from velocity; sequence motion is the strongest driver,
         # while damping/inertia keep movement physical rather than teleport-like.
@@ -3191,6 +3383,20 @@ class Game:
         self.acceleration_y = 0.0
         self.acceleration_z = 0.0
         self.physics_ground_y = 0.0
+        # FLIGHT_PROFILE_2026: every game permits Space-flight, but the seed
+        # decides how buoyant the world feels.  The player is never locked out
+        # of flight; some games are grounded/weighty, others hover, glide, or
+        # become strongly buoyant.
+        _flight_r = _residue(self.id["seed"], "flight/profile")
+        if _flight_r < 0.18:
+            self.flight_profile = "grounded-light"; self.fly_speed = 2.4; self.physics_gravity = -2.8; self.flight_assist = 0.08
+        elif _flight_r < 0.42:
+            self.flight_profile = "glide"; self.fly_speed = 3.1; self.physics_gravity = -0.9; self.flight_assist = 0.22
+        elif _flight_r < 0.70:
+            self.flight_profile = "hover"; self.fly_speed = 3.8; self.physics_gravity = -0.15; self.flight_assist = 0.55
+        else:
+            self.flight_profile = "buoyant"; self.fly_speed = 4.8; self.physics_gravity = 0.0; self.flight_assist = 0.88
+        self.fly_enabled = True
         self.physics_drag = 5.5
         self.physics_max_speed = 7.5
         self.physics_history = []
@@ -3213,6 +3419,7 @@ class Game:
         self.audio_lock = threading.RLock()
         # Host-only remote player state: name -> [angle, score, steer]
         self._remote_steers = {}
+        self._remote_design = {}
         # Client reconciliation state
         self.remotes = {}
         self.last_snap = {}
@@ -3220,9 +3427,15 @@ class Game:
         self.chat_log = []
         self.player_name = "Player"
         self._objective_done = False
+        self.selected_tool = "pulse"
+        self.tool_index = 0
         self._teleport_cd = 0.0
         self._npc_cd = 0.0
         self.tags = set(["starter"])  # player tags
+        self.character = CharacterDecorationSystem(self.id["seed"])
+        self.character.record_design(source="local")
+        self.quick_slots = [None] * 9
+        self.selection_index = 0
 
         # GAME_FILE_TASKS_2026: gameplay recorder (deterministic, IN/OUT files).
         self.rec = GameplayRecorder(self.id["seed"], meta={
@@ -3404,6 +3617,9 @@ class Game:
             "angle_deg": round(math.degrees(float(getattr(self, "angle", 0.0) or 0.0)) % 360.0, 1),
             "zoom": round(float(getattr(self, "zoom", 1.0) or 1.0), 3),
             "pitch": round(float(getattr(self, "pitch", 0.0) or 0.0), 3),
+            "yaw": round(float(getattr(self, "camera_yaw", 0.0) or 0.0), 3),
+            "fly_y": round(float(getattr(self, "player_y", 0.0) or 0.0), 3),
+            "vy": round(float(getattr(self, "velocity_y", 0.0) or 0.0), 3),
             "region": reg_s,
             "topology": str(self.id.get("topology") or "open_world"),
             "t": round(float(getattr(self, "t", 0.0) or 0.0), 2),
@@ -3429,14 +3645,15 @@ class Game:
         el = []
         pos = self.position_readout()
         el.append({"id": "position", "label": "Position",
-                   "value": f"θ={pos['angle_deg']}°  zoom={pos['zoom']}  pitch={pos['pitch']}  @ {pos['region']}"})
+                   "value": f"yaw={math.degrees(pos['yaw'])%360:.1f}°  pitch={math.degrees(pos['pitch']):+.1f}°  zoom={pos['zoom']}  @ {pos['region']}"})
         el.append({"id": "time", "label": "Time",
                    "value": f"t={pos['t']}s  topo={pos['topology']}"})
         el.append({"id": "temporal_seed", "label": "SEED · TIME EXPRESSION",
                    "value": _temporal_line + " · seed remains immutable; time changes expression"})
         el.append({"id": "physics", "label": "PHYSICS · movement state",
-                   "value": (f"speed={pos['speed']:.2f}  vx={pos['vx']:+.2f}  vz={pos['vz']:+.2f}  "
+                   "value": (f"speed={pos['speed']:.2f}  vx={pos['vx']:+.2f}  vy={pos['vy']:+.2f}  vz={pos['vz']:+.2f}  "
                              f"drag={float(getattr(self, 'physics_drag', 5.5)):.2f}  "
+                             f"flight={getattr(self,'flight_profile','hover')}  "
                              f"samples={len(getattr(self, 'physics_history', []) or [])}")})
         el.append({"id": "camera_director", "label": "CAMERA · rotation instrument",
                    "value": (f"mode={self.camera_mode_name()}  yaw={math.degrees(float(getattr(self,'camera_yaw',0.0)))%360:.1f}°  "
@@ -3593,7 +3810,10 @@ class Game:
 
     def readout_text(self, width=72):
         """Plain-text block for ESC menu, /status, and CLI HUD."""
-        lines = ["── STATUS ──", "ESC closes menu · F1 how-to · /status reprints this"]
+        lines = ["── STATUS / COMMAND MENU ──",
+                 "ESC closes menu · F1 how-to · /status reprints this",
+                 "CHAT COMMAND TREE: /help  /status  /world  /host  /client  /report",
+                 f"PANES: Q=quests J=journal I=inventory K=skills L=server B=crafting G=gameplay H=closet · NETWORK via L/ESC"]
         for e in self.active_elements():
             lines.append(f"  {e['label']}: {e['value']}")
         return "\n".join(lines)
@@ -3607,7 +3827,7 @@ class Game:
         self.push_status("[MENU] closed — back to world")
         return "menu closed"
 
-    # --- fixed controls (always: WASD move, mouse aim, click activate) ------
+    # --- fixed controls (always: WASD move, mouse aim, right interact, left create) ------
     @staticmethod
     def _clamp(v, lo=-1.0, hi=1.0):
         return max(lo, min(hi, float(v)))
@@ -3688,8 +3908,9 @@ class Game:
         self.camera_roll += (self.camera_roll_target - float(getattr(self, "camera_roll", 0.0))) * min(1.0, dt * 8.0)
         self.zoom = self._clamp(self.zoom, 0.35, 2.5)
         held = getattr(self, "_held_movement", None) or {}
-        if abs(float(held.get("dx", 0.0))) + abs(float(held.get("dz", 0.0))) > 1e-9:
+        if (abs(float(held.get("dx", 0.0))) + abs(float(held.get("dy", 0.0))) + abs(float(held.get("dz", 0.0)))) > 1e-9:
             self.move["dx"] = self._clamp(float(held.get("dx", 0.0)))
+            self.move["dy"] = self._clamp(float(held.get("dy", 0.0)))
             self.move["dz"] = self._clamp(float(held.get("dz", 0.0)))
         else:
             for key in ("dx", "dy", "dz"):
@@ -3726,13 +3947,30 @@ class Game:
         x, z = self._target_world(angle, radius)
         return math.hypot(x - float(self.player_x), z - float(self.player_z))
 
-    def activate(self):
-        """Activate the nearest real world object at the player's Cartesian position."""
+    def interaction_hint(self):
+        """Human-readable interaction grant for the nearest actionable object."""
+        candidates=[]
+        for k,(a,r,v) in enumerate(getattr(self.resources,"pos",[]) or []):
+            if k not in getattr(self.resources,"taken",set()): candidates.append((self._player_distance(a,r), "HARVEST RESOURCE"))
+        for k,(a,r) in enumerate(getattr(self.waypoints,"pos",[]) or []):
+            if k not in getattr(self.waypoints,"hit",set()): candidates.append((self._player_distance(a,r), "FOLLOW WAYPOINT"))
+        if getattr(self,"home",None) is not None and self.home.ui_nearby(self):
+            hd=self.home.distance(self); candidates.append((hd,"CLAIM HOUSE" if not self.home.owned else "ENTER HOME FOR LEISURE"))
+        for o in getattr(self.world_events,"rare_objects",[]) or []:
+            candidates.append((math.hypot(float(o.get("x",0))-self.player_x,float(o.get("z",0))-self.player_z), "INSPECT " + str(o.get("kind","OBJECT")).upper()))
+        if not candidates: return ""
+        d,label=min(candidates,key=lambda q:q[0])
+        return f"RIGHT CLICK · {label} · {d:.1f}m" if d <= 4.0 else ""
+
+    def interact(self):
+        """Interact with the nearest actionable world object."""
         if self.hotseat["active"]:
             return "[HOT-SEAT] clicks are chess moves while the board is open."
         hits = []
         focus = getattr(self, "primary_focus", "explore")
         reach = 0.55
+        if getattr(self,"home",None) is not None and self.home.nearby(self):
+            result=self.home.interact(self); self.send_chat("system",result); return "home"
         if focus == "sigils" and getattr(self.sigils, "count", 0) > 0:
             best = None
             for k, (a, r) in enumerate(self.sigils.pos):
@@ -3774,6 +4012,88 @@ class Game:
         except Exception: pass
         self.micro.drive(self.t)
         return f"activate {'+'.join(hits) if hits else 'miss'}"
+
+    def activate(self):
+        """Compatibility alias: activation now means right-click interaction."""
+        return self.interact()
+
+    def fire_tool(self):
+        """Left-click creative action: deterministic live event using the selected tool."""
+        tools = ("pulse", "meteor", "rift", "aurora", "wake", "hunt")
+        self.selected_tool = tools[int(getattr(self, "tool_index", 0)) % len(tools)]
+        t = float(getattr(self, "t", 0.0)); w = int(t * 8.0)
+        # Create an explicit player-caused event without replacing the autonomous event graph.
+        self.world_events.player_action(self, "tool:" + self.selected_tool)
+        if self.selected_tool == "meteor":
+            self.meteors.impacts.append({'window':w,'x':float(self.player_x)+8.0*math.cos(self.camera_yaw),
+                'z':float(self.player_z)+8.0*math.sin(self.camera_yaw),'age':0.0,'life':5.5,
+                'power':0.9,'radius':1.6})
+        else:
+            self.world_events._spawn_rare(self, next(d for d in self.world_events.DEFINITIONS if d.name == {
+                'pulse':'aurora_shift','rift':'rift_opening','aurora':'aurora_shift','wake':'ancient_wake','hunt':'wild_hunt'
+            }.get(self.selected_tool,'aurora')), w)
+        a = getattr(self, "actions", None).by_id(self.selected_tool) if getattr(self, "actions", None) else None
+        strength = float(a.get("magnitude", 1.0)) if a else 1.0
+        self.sfx.trigger("whoosh" if self.selected_tool in ("meteor","rift") else "chime", 0.45 + 0.35 * min(2.0, strength))
+        self.push_status(f"[TOOL] {self.selected_tool.upper()} created a live world event")
+        return self.selected_tool
+
+    def equip_quick_slot(self, slot):
+        try: i=max(1,min(9,int(slot)))-1
+        except Exception: return None
+        iid=self.quick_slots[i]
+        if iid is None:
+            ids=[k for k,v in self.items.inventory.items() if int(v)>0]
+            iid=ids[i] if i<len(ids) else None
+            self.quick_slots[i]=iid
+        if iid and self.items.equip(iid):
+            d=next((x for x in self.items.defs if x["id"]==iid),None)
+            name=d["name"] if d else iid; self.push_status(f"EQUIP {i+1}: {name}"); return name
+        self.push_status(f"EQUIP {i+1}: empty"); return None
+    def interaction_items(self):
+        # Slot 0 is a real inventory state: explicitly selecting it means
+        # nothing is equipped. The same 0 dialog still exposes interactions,
+        # tools, and event functions below it.
+        items=[{"kind":"inventory","id":"__none__","label":"INVENTORY · NOTHING EQUIPPED"}]
+        for a in getattr(self, "actions", ActionCatalog(self.id.get("seed",0))).actions:
+            kind = "interaction" if a["id"] in ("interact","harvest","survey","quest","inspect") else "tool"
+            items.append({"kind":kind,"id":a["id"],"label":f"{a['name']} · {a['magnitude']:.2f} · {a['sound']['freq']:.0f}Hz"})
+        items += [{"kind":"event","id":d.name,"label":f"EVENT · {d.name.upper()} · {_display_numeric_audio(self.id.get('seed',0), 'event:'+d.name, (getattr(d,'weight',0),getattr(d,'cooldown',0)))}"} for d in getattr(self.world_events,"DEFINITIONS",())]
+        return items
+    def select_zero_item(self,index):
+        items=self.interaction_items()
+        if not items: return None
+        idx=int(index)%len(items); self.selection_index=idx; item=items[idx]
+        if item["kind"]=="inventory" and item["id"]=="__none__":
+            try:
+                self.items.equipped = None
+            except Exception:
+                pass
+            self.push_status("SLOT 0: NOTHING EQUIPPED")
+            return item
+        if item["kind"]=="tool":
+            tools=("pulse","meteor","rift","aurora","wake","hunt")
+            if item["id"] in tools: self.tool_index=tools.index(item["id"]); self.selected_tool=item["id"]
+        self.push_status(f"SELECT: {item['label']} · RIGHT CLICK interact / LEFT CLICK create")
+        return item
+    def zero_menu_text(self):
+        return "\n".join(f"{i}: {x['label']}" for i,x in enumerate(self.interaction_items()))
+
+    def refine_starter_supplies(self):
+        target,detail=self.items.refine_low_level()
+        if target is None:
+            self.push_status(f"[CRAFT] refinement unavailable — {detail}"); return detail
+        consumed=", ".join(f"{iid}×{qty}" for iid,qty in detail)
+        self.tags.add("refining"); self.score += 3.0*getattr(self,"difficulty_mult",1.0)
+        self.push_status(f"[CRAFT] consumed {consumed} → {target['name']} ×1")
+        return f"CRAFTED {target['name']} ×1 from {consumed}"
+
+    def cycle_tool(self, direction=1):
+        tools=("pulse","meteor","rift","aurora","wake","hunt")
+        self.tool_index=(int(getattr(self,"tool_index",0))+int(direction))%len(tools)
+        self.selected_tool=tools[self.tool_index]
+        self.push_status(f"TOOL: {self.selected_tool.upper()} · LEFT CLICK creates")
+        return self.selected_tool
 
     def _near_angle(self, angle, target_a, radius):
         d = abs((float(target_a) - angle + math.pi) % math.tau - math.pi)
@@ -3823,7 +4143,10 @@ class Game:
         """Execute a named control action — best-fit mapping onto live systems."""
         a = str(action or "")
         out = None
-        if a == "move_forward":
+        if a == "fly_up":
+            self.perspective_move(dy=1.0)
+            out = "fly up"
+        elif a == "move_forward":
             self.perspective_move(dz=0.6)
         elif a == "move_back":
             self.perspective_move(dz=-0.6)
@@ -3854,12 +4177,32 @@ class Game:
             out = "F1 help — see HOW_TO_PLAY / /help  ·  ESC status menu  ·  /status readout"
             if panel is not None and hasattr(panel, "_how"):
                 panel._how()
+        elif a == "host_mode":
+            try:
+                self.resync_net(host_mode=True, port=int(getattr(self, "port", 0) or 0))
+                out = "HOST mode active — authoritative world"
+            except Exception as e:
+                out = f"host mode failed: {e}"
+        elif a == "client_mode":
+            try:
+                addr = str(getattr(self, "connect", "") or "127.0.0.1:" + str(int(getattr(self, "port", 27015) or 27015)))
+                self.resync_net(host_mode=False, port=int(getattr(self, "port", 27015) or 27015), connect=addr)
+                out = f"CLIENT mode active — {addr}"
+            except Exception as e:
+                out = f"client mode failed: {e}"
         elif a == "mute":
             self.sfx.trigger("click", 0.4)
             out = "mute/sfx tick"
         elif a == "sprint":
             self.perspective_move(dz=1.0)
             out = "sprint"
+        elif a in ("closet", "journal", "skills", "server", "gameplay"):
+            labels={"closet":"CLOSET","journal":"JOURNAL","skills":"SKILLS","server":"SERVER","gameplay":"GAMEPLAY"}
+            out=f"open {labels[a]} pane"
+            if panel is not None and hasattr(panel,"show_tab"): panel.show_tab(labels[a])
+        elif a == "crafting":
+            out="open CRAFTING pane"
+            if panel is not None and hasattr(panel,"show_tab"): panel.show_tab("CRAFTING")
         elif a == "inventory":
             out = f"inv {len(self.items.inventory)} coins {self.purse.coins}"
         elif a == "store":
@@ -4496,10 +4839,20 @@ class Game:
                 # sequence conductor a real physical quantity to steer.
                 target_vx = (_dx * _rx + _dz * _fx) * move_speed
                 target_vz = (_dx * _rz + _dz * _fz) * move_speed
+                _dy = float(self.move.get("dy", 0.0) or 0.0)
+                target_vy = _dy * float(getattr(self, "fly_speed", 3.8)) if bool(getattr(self, "fly_enabled", True)) else 0.0
+                # Flight profile supplies physical weight/buoyancy.  Space is
+                # still the direct lift control; releasing it lets gravity or
+                # buoyancy resolve naturally instead of snapping altitude.
+                gravity = float(getattr(self, "physics_gravity", 0.0))
+                if abs(_dy) < 1e-9:
+                    target_vy += gravity * 0.20
                 response = min(1.0, dt * (7.0 + 3.0 * float(getattr(self, "sequence_motion_factor", 1.0))))
                 self.acceleration_x = (target_vx - self.velocity_x) * response / max(dt, 1e-6)
+                self.acceleration_y = (target_vy - self.velocity_y) * response / max(dt, 1e-6)
                 self.acceleration_z = (target_vz - self.velocity_z) * response / max(dt, 1e-6)
                 self.velocity_x += self.acceleration_x * dt
+                self.velocity_y += self.acceleration_y * dt
                 self.velocity_z += self.acceleration_z * dt
                 speed = math.hypot(self.velocity_x, self.velocity_z)
                 vmax = float(getattr(self, "physics_max_speed", 7.5))
@@ -4507,7 +4860,15 @@ class Game:
                     scale = vmax / speed
                     self.velocity_x *= scale; self.velocity_z *= scale
                 self.player_x += self.velocity_x * dt
+                self.player_y += self.velocity_y * dt
                 self.player_z += self.velocity_z * dt
+                if self.player_y < self.physics_ground_y:
+                    self.player_y = self.physics_ground_y
+                    if self.velocity_y < 0.0: self.velocity_y = 0.0
+                elif abs(_dy) < 1e-9 and float(getattr(self, "flight_assist", 0.0)) > 0.0:
+                    # Gentle seed-derived hover stabilization; stronger profiles
+                    # feel like natural buoyancy rather than a hidden teleport.
+                    self.velocity_y += (-self.velocity_y) * float(getattr(self, "flight_assist", 0.0)) * dt * 1.5
                 # IMPORTANT: player position is Cartesian. Never overwrite it
                 # into the legacy radial ``angle`` field; doing so turns walking
                 # around the origin into apparent sigil rotation.
@@ -4549,14 +4910,19 @@ class Game:
                             f"({visited} regions touched — still no forced objective)"
                         )
             # Inertia/friction persists briefly after key release, then settles.
-            if abs(_dx) + abs(_dz) <= 1e-9:
+            if abs(_dx) + abs(_dy) + abs(_dz) <= 1e-9:
                 damp = math.exp(-float(getattr(self, "physics_drag", 5.5)) * dt)
                 self.acceleration_x = -self.velocity_x * float(getattr(self, "physics_drag", 5.5))
                 self.acceleration_z = -self.velocity_z * float(getattr(self, "physics_drag", 5.5))
                 self.velocity_x *= damp
                 self.velocity_z *= damp
+                self.velocity_y *= math.exp(-2.2 * dt)
                 self.player_x += self.velocity_x * dt
+                self.player_y += self.velocity_y * dt
                 self.player_z += self.velocity_z * dt
+                if self.player_y < self.physics_ground_y:
+                    self.player_y = self.physics_ground_y
+                    if self.velocity_y < 0.0: self.velocity_y = 0.0
             speed_now = math.hypot(float(getattr(self, "velocity_x", 0.0)), float(getattr(self, "velocity_z", 0.0)))
             self.physics_impulse = min(1.0, speed_now / max(0.001, float(getattr(self, "physics_max_speed", 7.5))))
             self.physics_history.append({
@@ -4723,6 +5089,7 @@ class Game:
                         for name, rec in self._remote_steers.items()
                     },
                     "visual_view": self.visual_state(),
+                    "character_design_average": round(self._character_population_average(), 4),
                     "authoritative": True,
                 })
         else:
@@ -4736,13 +5103,16 @@ class Game:
                     self.visual_view = dict(snap["visual_view"])
                     self.visual_signal_id = str(self.visual_view.get("visual_signal_id") or self.visual_signal_id)
                 self.difficulty_mult = float(snap.get("difficulty_mult", self.difficulty_mult))
+                if snap.get("character_design_average") is not None:
+                    try: self.character.external_population_average=float(snap.get("character_design_average"))
+                    except Exception: pass
                 collected = snap.get("sigils") or []
                 if isinstance(collected, list):
                     self.sigils.collected = set(int(k) for k in collected)
                 rem = snap.get("remotes")
                 self.remotes = rem if isinstance(rem, dict) else {}
             if self.net.sock is not None:
-                self.net.send({"type": "hello", "name": self.player_name, "seed": self.id["seed"]})
+                self.net.send({"type": "hello", "name": self.player_name, "seed": self.id["seed"], "design_score": round(self.character.record_design(source="network"),4)})
                 self.net.send({"type": "steer", "name": self.player_name, "t": round(self.t, 2), "angle": round(self.angle, 6), "steer": round(self.steer, 4)})
         # GAME_FILE_TASKS_2026: replay feeds recorded inputs back in — the world
         # is f(seed, t), so re-simulating the recorded steer reproduces the
@@ -4800,6 +5170,12 @@ class Game:
         self.replay_idx = 0
         return meta, len(rows)
 
+    def _character_population_average(self):
+        """Population-facing design average: local design + observed network players."""
+        vals=[self.character.record_design(source="population")] + [float(v) for v in self._remote_design.values()]
+        prior=float(self.character.global_prior)
+        return max(0.0,min(1.0,(prior + sum(vals)/max(1,len(vals))) / 2.0))
+
     def _drain_net(self):
         """Pull transport messages (chat, sys, remote steers) into game state."""
         while True:
@@ -4814,6 +5190,8 @@ class Game:
                 self.push_status(str(obj.get("text", "")))
             elif mtype == "hello" and self.net.host_mode:
                 name = str(obj.get("name") or "Player")
+                try: self._remote_design[name]=float(obj.get("design_score",0.5))
+                except Exception: self._remote_design[name]=0.5
                 if name not in self._remote_steers:
                     self._remote_steers[name] = [
                         meum_angle(_safe_int_seed(self.id["seed"]) + len(self._remote_steers) * 31),
@@ -5101,6 +5479,8 @@ class Game:
                 self.send_chat("system", f"accepted {q['title']}")
             else:
                 self.send_chat("system", "no quest available")
+        elif line in ("/refine", "/craft-refine"):
+            self.send_chat("system", self.refine_starter_supplies())
         elif line.startswith("/buy"):
             parts = line.split()
             idx = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
@@ -6674,17 +7054,24 @@ if HAS_UI:
             """
             g=self.game; px=float(getattr(g,'player_x',0.0)); pz=float(getattr(g,'player_z',0.0))
             span=8; step=2.5
+            # WORLD-SPACE TERRAIN_2026: mesh vertices are keyed to absolute
+            # world coordinates.  Camera/player motion only changes which part
+            # of the canonical terrain is visible; it never regenerates terrain
+            # around the player.
+            base_ix = math.floor(px / step)
+            base_iz = math.floor(pz / step)
             verts={}
             for iz in range(-span,span+1):
                 for ix in range(-span,span+1):
-                    wx=px+ix*step; wz=pz+iz*step; wy=self._terrain_height(wx,wz)
+                    cell_x = base_ix + ix; cell_z = base_iz + iz
+                    wx=cell_x*step; wz=cell_z*step; wy=self._terrain_height(wx,wz)
                     dx=wx-px; dz=wz-pz; rr=math.hypot(dx,dz)
                     aa=math.atan2(dz,dx)
                     verts[(ix,iz)]=project(aa,rr,wy,0.95+0.025*abs(iz))
             for iz in range(-span,span):
                 for ix in range(-span,span):
                     a=verts[(ix,iz)]; b=verts[(ix+1,iz)]; c=verts[(ix,iz+1)]; d=verts[(ix+1,iz+1)]
-                    diag = self._rng(f'tdiag:{math.floor(px/20)}:{math.floor(pz/20)}:{ix}:{iz}') > 0.5
+                    diag = self._rng(f'tdiag:{base_ix}:{base_iz}:{ix}:{iz}') > 0.5
                     tris=((a,b,d),(a,d,c)) if diag else ((a,b,c),(b,d,c))
                     for ti,(u,v,w) in enumerate(tris):
                         slope=abs(u[1]-v[1])+abs(v[1]-w[1])+abs(w[1]-u[1])
@@ -6694,15 +7081,15 @@ if HAS_UI:
                         elif q<0.30: kind='foliage'
                         else: kind='terrain'
                         hue={'water':195,'foliage':105,'rock':35,'terrain':75}[kind]
-                        alpha={'water':115,'foliage':82,'rock':105,'terrain':92}[kind]
+                        alpha={'water':205,'foliage':225,'rock':242,'terrain':238}[kind]
                         col=QColor.fromHsv(int(hue+35*self._rng(f'thue:{ix}:{iz}:{ti}'))%360,105+int(70*q),105+int(90*q),alpha)
-                        p.setPen(QPen(QColor.fromHsv(int(hue)%360,100,220,35),1)); p.setBrush(col)
+                        p.setPen(QPen(QColor.fromHsv(int(hue)%360,100,220,150),1)); p.setBrush(col)
                         p.drawPolygon(QPolygonF([QPointF(u[0],u[1]),QPointF(v[0],v[1]),QPointF(w[0],w[1])]))
                         # restrained GOAVA microfacet overlays on a subset of faces
                         if self._rng(f'tfacet:{ix}:{iz}:{ti}') > (0.30 if getattr(g.scene,'goava',False) else 0.68):
                             mx=(u[0]+v[0]+w[0])/3; my=(u[1]+v[1]+w[1])/3
                             r=max(1.0, min(8.0, abs(v[0]-u[0])*0.16))
-                            p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor.fromHsv(int(hue+70)%360,150,230,38))
+                            p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor.fromHsv(int(hue+70)%360,150,230,105))
                             p.drawPolygon(QPolygonF([QPointF(mx-r,my),QPointF(mx+r*.4,my-r*.7),QPointF(mx+r*.5,my+r*.8)]))
 
         def _draw_meum_mesh(self, p, project, cx, cy, R):
@@ -6890,6 +7277,9 @@ if HAS_UI:
             p.setPen(QPen(dark, 1))
             p.setBrush(col)
             s = max(3.0, float(size))
+            if kind != "character":
+                try: s *= ObjectScaleRule.factor(self.seed, kind, f"{round(x,1)}:{round(y,1)}")
+                except Exception: pass
             # GOAVA-style overlapping translucent micro-faces on every asset.
             # They deliberately overlap the base silhouette instead of replacing
             # it, restoring the faceted visual language without external art.
@@ -6910,11 +7300,51 @@ if HAS_UI:
                 p.setBrush(dark)
                 p.drawPolygon([QPointF(x, y-s), QPointF(x+s*.55, y), QPointF(x, y+s*.18)])
             elif kind in ("tree", "character"):
-                p.drawRect(int(x-s*.12), int(y), max(2,int(s*.24)), max(3,int(s*.8)))
-                p.drawEllipse(QPointF(x, y-s*.55), s*.62, s*.62)
-                p.setBrush(QColor.fromHsv(int(hue+80)%360, 150, 220, alpha))
-                p.drawEllipse(QPointF(x-s*.22, y-s*.72), s*.25, s*.25)
-                p.drawEllipse(QPointF(x+s*.22, y-s*.72), s*.25, s*.25)
+                if kind == "tree":
+                    p.drawRect(int(x-s*.12), int(y), max(2,int(s*.24)), max(3,int(s*.8)))
+                    p.drawEllipse(QPointF(x, y-s*.55), s*.62, s*.62)
+                    p.setBrush(QColor.fromHsv(int(hue+80)%360, 150, 220, alpha))
+                    p.drawEllipse(QPointF(x-s*.22, y-s*.72), s*.25, s*.25)
+                    p.drawEllipse(QPointF(x+s*.22, y-s*.72), s*.25, s*.25)
+                else:
+                    # Generative avatar: silhouette, crest, garment and tiny optional
+                    # face accents vary by seed. Avoid the old oversized fixed eyes.
+                    variant=int(self._rng(f"avatar:{self.seed}:{round(x,1)}:{round(y,1)}")*7.0)%7
+                    p.drawEllipse(QPointF(x, y-s*.46), s*.48, s*.58)
+                    p.drawPolygon([QPointF(x-s*.42,y-s*.02),QPointF(x+s*.42,y-s*.02),QPointF(x+s*.34,y+s*.78),QPointF(x-s*.34,y+s*.78)])
+                    p.setBrush(QColor.fromHsv(int(hue+55+variant*19)%360, 145, 220, alpha))
+                    if variant % 3 == 0:
+                        p.drawPolygon([QPointF(x,y-s*1.02),QPointF(x-s*.22,y-s*.52),QPointF(x+s*.22,y-s*.52)])
+                    elif variant % 3 == 1:
+                        p.drawEllipse(QPointF(x,y-s*.96),s*.18,s*.24)
+                    else:
+                        p.drawRect(int(x-s*.06),int(y-s*1.03),max(2,int(s*.12)),max(2,int(s*.34)))
+                    # Identity is carried by silhouette/garment/crest.  The
+                    # face is intentionally de-emphasized; the avatar should
+                    # read as a character in the world, not a pair of eyes.
+                    if variant % 3 == 0:
+                        p.setPen(QPen(QColor.fromHsv(int(hue+25)%360,120,180,alpha), max(1,int(s*.055))))
+                        p.drawLine(QPointF(x-s*.14,y-s*.46),QPointF(x+s*.14,y-s*.46))
+                    elif variant % 3 == 1:
+                        p.setBrush(QColor.fromHsv(int(hue+95)%360,135,210,alpha))
+                        p.drawEllipse(QPointF(x-s*.27,y-s*.49),s*.09,s*.05)
+                        p.drawEllipse(QPointF(x+s*.27,y-s*.49),s*.09,s*.05)
+                    else:
+                        p.setPen(QPen(QColor.fromHsv(int(hue+25)%360,100,160,alpha), max(1,int(s*.04))))
+                        p.drawLine(QPointF(x-s*.09,y-s*.42),QPointF(x+s*.09,y-s*.42))
+            # Experience-driven player decoration; the population average is a soft readability prior.
+            if kind == "character":
+                try:
+                    deco=self.game.character.visual(self.game, variant); dens=float(deco.get("density",0.0)); pop=float(deco.get("population_average",.5)); da=int((hue+70+110*pop)%360)
+                    if dens>.08:
+                        p.setBrush(QColor.fromHsv(da,160,245,max(40,int(alpha*.85))))
+                        p.drawPolygon([QPointF(x-s*.55,y+s*.28),QPointF(x-s*.82,y+s*.55),QPointF(x-s*.18,y+s*.42)])
+                        p.drawPolygon([QPointF(x+s*.55,y+s*.28),QPointF(x+s*.82,y+s*.55),QPointF(x+s*.18,y+s*.42)])
+                    if dens>.35:
+                        p.setBrush(QColor.fromHsv((da+45)%360,130,250,max(35,int(alpha*.55)))); p.drawEllipse(QPointF(x,y-s*.98),s*.13,s*.13)
+                    if dens>.62:
+                        p.setPen(QPen(QColor.fromHsv((da+90)%360,150,250,alpha),1)); p.drawEllipse(QPointF(x,y+s*.35),s*.70,s*.20)
+                except Exception: pass
             elif kind == "rock":
                 p.drawPolygon([QPointF(x-s,y+s*.35), QPointF(x-s*.55,y-s*.55), QPointF(x+s*.2,y-s*.8), QPointF(x+s,y+s*.15), QPointF(x+s*.35,y+s*.65)])
             else:
@@ -7103,6 +7533,26 @@ if HAS_UI:
                     self._draw_model(p, x, y-sz*.25, sz*1.45, hue, "beacon", 235)
                 self._draw_texture_facets(p, x, y, max(4.0, sz*1.35), max(3.0, sz*0.95), f"{ex:.2f}:{ez:.2f}", ("crystal" if et == 3 else "foliage" if et == 0 else "ruin" if et in (2,6) else "terrain"), 78)
 
+            # Persistent home interface: absolute seed-derived location, so the
+            # same house UI remains in the same world-space place after chunk reload.
+            if getattr(g, "home", None) is not None:
+                hd = g.home.distance(g)
+                if hd <= 22.0:
+                    hx, hy, hsz = world_project(g.home.x, g.home.z, 0.0, 1.0)
+                    hsz *= 0.9
+                    try: hsz *= ObjectScaleRule.factor(self.seed, "building", "home")
+                    except Exception: pass
+                    hue = 155 + int(80 * self._rng("home:hue"))
+                    self._draw_model(p, hx, hy-hsz*.25, max(7.0, hsz*1.5), hue, "beacon", 242)
+                    p.setPen(QPen(QColor.fromHsv(hue%360, 140, 235, 238), 2))
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+                    p.drawRect(QRectF(hx-hsz*.75, hy-hsz*.9, hsz*1.5, hsz*1.15))
+                    p.setPen(QPen(QColor.fromHsv((hue+40)%360, 80, 245, 245), 1))
+                    label = "HOME UI · CLAIM" if not g.home.owned else "HOME · LEISURE"
+                    p.drawText(QPointF(hx-hsz*1.7, hy-hsz*1.1), label)
+                    if hd <= g.home.ui_radius:
+                        p.drawText(QPointF(hx-hsz*1.7, hy+hsz*.65), f"RIGHT CLICK · {hd:.1f}m")
+
             # Volumetric Meum/GOAVA face network sits behind the solid props so
             # the scene reads as connected 3-D geometry instead of a line grid.
             self._draw_meum_mesh(p, project, cx, cy, R)
@@ -7288,8 +7738,10 @@ if HAS_UI:
             held = self._held_movement
             dx = (1.0 if "D" in held else 0.0) - (1.0 if "A" in held else 0.0)
             dz = (1.0 if "W" in held else 0.0) - (1.0 if "S" in held else 0.0)
-            g._held_movement = {"dx": dx, "dz": dz}
+            dy = (1.0 if "UP" in held else 0.0) - (1.0 if "DOWN" in held else 0.0)
+            g._held_movement = {"dx": dx, "dy": dy, "dz": dz}
             g.move["dx"] = dx
+            g.move["dy"] = dy
             g.move["dz"] = dz
 
         def keyPressEvent(self, e):
@@ -7300,8 +7752,45 @@ if HAS_UI:
                 self._apply_held_movement()
                 e.accept()
                 return
+            # GAME_TABS_2026: keyboard-first navigation keeps the gameplay
+            # panes connected without sacrificing the movement viewport.
+            # Q is intentionally reserved for the player's quest log now; E
+            # remains the compact tool-cycle shortcut.
+            tab_keys = {
+                Qt.Key.Key_Q: "QUESTS",
+                Qt.Key.Key_J: "JOURNAL",
+                Qt.Key.Key_I: "INVENTORY",
+                Qt.Key.Key_K: "SKILLS",
+                Qt.Key.Key_L: "SERVER",
+                Qt.Key.Key_B: "CRAFTING",
+                Qt.Key.Key_G: "GAMEPLAY",
+            }
+            if k in tab_keys:
+                try:
+                    w = self.window()
+                    if hasattr(w, "show_game_tab"):
+                        w.show_game_tab(tab_keys[k])
+                        e.accept(); return
+                except Exception:
+                    pass
+            if k == Qt.Key.Key_H:
+                try:
+                    w = self.window()
+                    if hasattr(w, "panel"):
+                        w.show_game_tab("CLOSET")
+                        e.accept(); return
+                except Exception:
+                    pass
+            if k == Qt.Key.Key_E:
+                self.game.cycle_tool(1); e.accept(); return
             if k == Qt.Key.Key_Space:
-                self.game.activate()
+                self._held_movement.add("UP")
+                self._apply_held_movement()
+                e.accept()
+                return
+            if k in (Qt.Key.Key_Control, Qt.Key.Key_C):
+                self._held_movement.add("DOWN")
+                self._apply_held_movement()
                 e.accept()
                 return
             super().keyPressEvent(e)
@@ -7313,6 +7802,10 @@ if HAS_UI:
                 self._apply_held_movement()
                 e.accept()
                 return
+            if k == Qt.Key.Key_Space:
+                self._held_movement.discard("UP"); self._apply_held_movement(); e.accept(); return
+            if k in (Qt.Key.Key_Control, Qt.Key.Key_C):
+                self._held_movement.discard("DOWN"); self._apply_held_movement(); e.accept(); return
             super().keyReleaseEvent(e)
 
         def _release_mouse_and_input(self):
@@ -7323,8 +7816,9 @@ if HAS_UI:
             """
             self._held_movement.clear()
             try:
-                self.game._held_movement = {"dx": 0.0, "dz": 0.0}
+                self.game._held_movement = {"dx": 0.0, "dy": 0.0, "dz": 0.0}
                 self.game.move["dx"] = 0.0
+                self.game.move["dy"] = 0.0
                 self.game.move["dz"] = 0.0
             except Exception:
                 pass
@@ -7362,13 +7856,11 @@ if HAS_UI:
             g=self.game
             self.setFocus(Qt.FocusReason.MouseFocusReason)
             if e.button()==Qt.MouseButton.RightButton:
-                self._set_mouse_capture(not self._mouse_captured)
-                g.push_status("MOUSE LOOK: captured" if self._mouse_captured else "MOUSE LOOK: released")
-                e.accept(); return
+                g.interact(); g.sfx.trigger("click",0.55); self.update(); e.accept(); return
             if e.button()==Qt.MouseButton.MiddleButton:
                 self._pan_drag=True; self._pan_last=e.position(); e.accept(); return
             if e.button()==Qt.MouseButton.LeftButton:
-                g.activate(); g.sfx.trigger("click",0.5); self.update()
+                g.fire_tool(); self.update()
                 if not self._mouse_captured: self._set_mouse_capture(True)
                 e.accept(); return
             super().mousePressEvent(e)
@@ -7411,6 +7903,14 @@ if HAS_UI:
                 else:
                     # Positive wheel = zoom in; negative = zoom out.
                     g.zoom = max(0.35, min(2.5, float(getattr(g, "zoom", 1.0)) * (1.12 ** steps)))
+                    # Optical continuity: zooming far enough naturally enters
+                    # first-person; backing out restores third-person.
+                    if g.zoom >= 1.72 and int(getattr(g, "camera_mode", 0)) == 0:
+                        g.camera_mode = 1
+                        g.push_status("CAMERA: FIRST PERSON · close zoom")
+                    elif g.zoom <= 1.22 and int(getattr(g, "camera_mode", 0)) == 1:
+                        g.camera_mode = 0
+                        g.push_status("CAMERA: THIRD PERSON · zoomed out")
                     try:
                         g.push_status(f"ZOOM: {g.zoom:.2f}x")
                     except Exception:
@@ -7777,6 +8277,19 @@ if HAS_UI:
             p.drawLine(10, 42, min(w-10, 300), 42)
             p.setPen(QPen(QColor(tx), 1))
             p.drawText(12, 56, f"3D WORLD · X={getattr(g,'player_x',0.0):+.2f}  Y={getattr(g,'player_y',0.0):+.2f}  Z={getattr(g,'player_z',0.0):+.2f}")
+            p.setFont(QFont("Sans", 9, QFont.Weight.Bold))
+            p.drawText(12, 72, f"AIM · YAW={math.degrees(float(getattr(g,'camera_yaw',0.0)))%360:.1f}°  PITCH={math.degrees(float(getattr(g,'camera_pitch',0.0))):+.1f}°")
+            p.drawText(12, 88, f"TOOL · {str(getattr(g,'selected_tool','pulse')).upper()}   Q/E select · LEFT FIRE/CREATE · RIGHT INTERACT · SPACE FLY · CTRL DOWN")
+            # Interaction grant: a small, persistent affordance makes simple games playable
+            # without requiring the player to discover hidden proximity rules.
+            try:
+                hint = g.interaction_hint()
+                if hint:
+                    p.setFont(QFont("Sans", 11, QFont.Weight.Bold))
+                    p.setPen(QPen(QColor(ac), 2))
+                    p.drawText(int(cx-170), int(h-52), hint)
+            except Exception:
+                pass
 
             # LIVE PHYSICS PLOT: compact plot-providing telemetry, not merely
             # a decorative graph. It exposes recent speed and sequence motion
@@ -7855,6 +8368,20 @@ if HAS_UI:
             )
             self.ident_lbl.setWordWrap(True)
             lay.addWidget(self.ident_lbl)
+            # MAIN-COMMAND-TREE_2026: the side rail is a game chat console with
+            # explicit command categories, while detailed telemetry lives in
+            # the same transcript rather than a forest of permanent panels.
+            cmdbox = QGroupBox("In-Game Command Tree")
+            cmdlay = QHBoxLayout(cmdbox)
+            self.command_tree = QComboBox()
+            self.command_tree.addItems(["CHAT", "WORLD", "PLAYER", "TOOLS", "NETWORK", "CAMERA", "PHYSICS", "HELP"])
+            self.command_tree.currentTextChanged.connect(self._command_category_changed)
+            self.command_btn = QPushButton("Run")
+            self.command_btn.clicked.connect(self._run_tree_command)
+            cmdlay.addWidget(self.command_tree)
+            cmdlay.addWidget(self.command_btn)
+            lay.addWidget(cmdbox)
+            self.tabs=QTabWidget(); lay.addWidget(self.tabs,1)
             box = QGroupBox("World")
             vb = QVBoxLayout(box)
             self.pos_lbl = QLabel("Pos θ=0°  @ open field")
@@ -7869,7 +8396,7 @@ if HAS_UI:
             self.tags_lbl = QLabel("Tags: starter")
             self.kind_lbl = QLabel(f"Kind: {g.software_kind}  (always sound+visual+UI)")
             self.fn_lbl = QLabel("Fn: —")
-            self.controls_lbl = QLabel("Controls: WASD move · mouse look · LMB interact · RMB capture/release · MMB pan · wheel zoom")
+            self.controls_lbl = QLabel("Controls: WASD move · mouse look · RMB interact · LMB create/fire · 1-9 equip · 0 select · Space fly · wheel zoom")
             self.controls_lbl.setWordWrap(True)
             self.audio_lbl = QLabel("Audio: initializing…")
             self.fn_lbl.setWordWrap(True)
@@ -7881,7 +8408,7 @@ if HAS_UI:
                         self.quest_lbl, self.tags_lbl, self.kind_lbl, self.fn_lbl, self.controls_lbl, self.audio_lbl):
                 vb.addWidget(lbl)
             vb.addWidget(self.djbar)
-            lay.addWidget(box)
+            worldtab=QWidget(); wl=QVBoxLayout(worldtab); wl.addWidget(box); self.tabs.addTab(worldtab,"WORLD")
             nbox = QGroupBox("Network")
             nb = QVBoxLayout(nbox)
             self.role_lbl = QLabel(f"Role: {self._role_text()}")
@@ -7914,14 +8441,14 @@ if HAS_UI:
             nb.addWidget(self.connect_edit)
             nb.addLayout(hr)
             nb.addWidget(btn_switch)
-            lay.addWidget(nbox)
+            nett=QWidget(); nl=QVBoxLayout(nett); nl.addWidget(nbox); self.tabs.addTab(nett,"SERVER")
             chatbox = QGroupBox("Chat")
             cb = QVBoxLayout(chatbox)
             self.chat_view = QPlainTextEdit()
             self.chat_view.setReadOnly(True)
             self.chat_view.setMaximumBlockCount(500)
             self.chat_edit = QLineEdit()
-            self.chat_edit.setPlaceholderText("/status  /menu  /report  or chat · ESC opens readout")
+            self.chat_edit.setPlaceholderText("CHAT or /command · /help shows command tree · ESC menu")
             self.chat_edit.returnPressed.connect(self._send_chat)
             btn_send = QPushButton("Send")
             btn_send.clicked.connect(self._send_chat)
@@ -7930,7 +8457,7 @@ if HAS_UI:
             cr.addWidget(btn_send)
             cb.addWidget(self.chat_view)
             cb.addLayout(cr)
-            lay.addWidget(chatbox)
+            chatt=QWidget(); cl=QVBoxLayout(chatt); cl.addWidget(chatbox); self.tabs.addTab(chatt,"CHAT")
             actions = QHBoxLayout()
             btn_reset = QPushButton("Reset World")
             btn_report = QPushButton("/report")
@@ -7941,7 +8468,7 @@ if HAS_UI:
             actions.addWidget(btn_reset)
             actions.addWidget(btn_report)
             actions.addWidget(btn_quit)
-            lay.addLayout(actions)
+            help_tab=QWidget(); hl=QVBoxLayout(help_tab); hl.addLayout(actions)
             seats = QHBoxLayout()
             btn_invite = QPushButton("Invite Friend")
             btn_how = QPushButton("How to Play")
@@ -7951,17 +8478,17 @@ if HAS_UI:
             # No permanent minigame buttons.  Activities surface only when the
             # protected gate opens (area + player state + music).  Use /chess,
             # /activity, or the live status label — never a hardcoded always-on control.
-            lay.addLayout(seats)
-            lay.addWidget(btn_how)
+            hl.addLayout(seats)
+            hl.addWidget(btn_how)
             controls_lbl = QLabel("CONTROLS: W/A/S/D = move · mouse = look/aim · wheel = zoom · Shift+wheel = camera · click = activate · ESC = menu · F1 = help")
             controls_lbl.setWordWrap(True)
-            lay.addWidget(controls_lbl)
+            hl.addWidget(controls_lbl)
             self.chess_lbl = QLabel(
                 "Activities: none live — enter a region, hold an allowing state, "
                 "and let the music numbers open a scoring/arcade/social class."
             )
             self.chess_lbl.setWordWrap(True)
-            lay.addWidget(self.chess_lbl)
+            hl.addWidget(self.chess_lbl)
             howbox = QGroupBox("How to Play (F1)")
             hb = QVBoxLayout(howbox)
             self.how_view = QPlainTextEdit()
@@ -7973,8 +8500,87 @@ if HAS_UI:
             except Exception:
                 pass
             hb.addWidget(self.how_view)
-            lay.addWidget(howbox)
-            lay.addStretch(1)
+            hl.addWidget(howbox); hl.addStretch(1); self.tabs.addTab(help_tab,"HELP")
+            pt=QWidget(); pl=QVBoxLayout(pt); self.character_lbl=QLabel(); self.character_lbl.setWordWrap(True); self.quick_lbl=QLabel(); self.quick_lbl.setWordWrap(True); pl.addWidget(QLabel("CHARACTER DECORATION")); pl.addWidget(self.character_lbl); pl.addWidget(QLabel("1-9 equip · 0 select interaction/tool/event")); pl.addWidget(self.quick_lbl); self.tabs.insertTab(0,pt,"PLAYER")
+            it=QWidget(); il=QVBoxLayout(it); self.inventory_view=QPlainTextEdit(); self.inventory_view.setReadOnly(True); il.addWidget(self.inventory_view); self.tabs.insertTab(1,it,"INVENTORY")
+            qt=QWidget(); ql=QVBoxLayout(qt); self.quest_view=QPlainTextEdit(); self.quest_view.setReadOnly(True); ql.addWidget(self.quest_view); self.tabs.insertTab(2,qt,"QUESTS")
+            st=QWidget(); sl=QVBoxLayout(st); self.spell_view=QPlainTextEdit(); self.spell_view.setReadOnly(True); sl.addWidget(self.spell_view); self.tabs.insertTab(3,st,"SPELLS / EVENTS")
+            ht=QWidget(); hl=QVBoxLayout(ht); self.closet_view=QPlainTextEdit(); self.closet_view.setReadOnly(True); hl.addWidget(self.closet_view); self.tabs.addTab(ht,"CLOSET")
+            jt=QWidget(); jl=QVBoxLayout(jt); self.journal_view=QPlainTextEdit(); self.journal_view.setReadOnly(True); jl.addWidget(self.journal_view); self.tabs.addTab(jt,"JOURNAL")
+            kt=QWidget(); kl=QVBoxLayout(kt); self.skills_view=QPlainTextEdit(); self.skills_view.setReadOnly(True); kl.addWidget(self.skills_view); self.tabs.addTab(kt,"SKILLS")
+            ct=QWidget(); cfl=QVBoxLayout(ct); self.craft_view=QPlainTextEdit(); self.craft_view.setReadOnly(True); cfl.addWidget(self.craft_view); self.refine_button=QPushButton("REFINE STARTER SUPPLIES → 1 HIGHER-LEVEL ITEM"); self.refine_button.clicked.connect(lambda: (self.append_status(self.game.refine_starter_supplies()), self.refresh())); cfl.addWidget(self.refine_button); self.tabs.addTab(ct,"CRAFTING")
+            gt=QWidget(); gl=QVBoxLayout(gt); self.gameplay_view=QPlainTextEdit(); self.gameplay_view.setReadOnly(True); gl.addWidget(self.gameplay_view); gt_note=QLabel("Q Quests · J Journal · I Inventory · K Skills · L Server · B Crafting · G Gameplay · 1-9 Equip · 0 Select"); gt_note.setWordWrap(True); gl.addWidget(gt_note); self.tabs.addTab(gt,"GAMEPLAY")
+
+        def show_tab(self, name):
+            wanted = str(name).strip().upper()
+            aliases = {"SERVER": "SERVER", "NETWORK": "SERVER", "GAMEPLAY": "GAMEPLAY"}
+            wanted = aliases.get(wanted, wanted)
+            for i in range(self.tabs.count()):
+                if self.tabs.tabText(i).strip().upper() == wanted:
+                    self.tabs.setCurrentIndex(i)
+                    return True
+            return False
+
+        def _populate_gameplay_panes(self):
+            g = self.game
+            try:
+                if hasattr(self, "inventory_view"):
+                    lines = []
+                    for i in range(10):
+                        if i == 0:
+                            eq = "NOTHING EQUIPPED" if not getattr(g.items, "equipped", None) else "reserved inventory slot"
+                            lines.append(f"0 · {eq}")
+                        else:
+                            iid = g.quick_slots[i-1]
+                            d = next((x for x in g.items.defs if x["id"] == iid), None) if iid else None
+                            lines.append(f"{i} · {d['name'] if d else '—'}")
+                    lines.append("")
+                    lines.extend(f"{g.items.describe(d['id'])} × {g.items.inventory.get(d['id'],0)}" for d in g.items.defs if g.items.inventory.get(d['id'],0))
+                    self.inventory_view.setPlainText("\n".join(lines))
+                if hasattr(self, "quest_view"):
+                    self.quest_view.setPlainText("\n".join(f"{'✓' if q.get('done') else '·'} {q['title']} {q['progress']}/{q['target']}" for q in g.quests.quests))
+                if hasattr(self, "spell_view"):
+                    self.spell_view.setPlainText(g.zero_menu_text() + "\n\nEvery listed item/action/event has a deterministic numeric sound signature; values are audibly mapped without sample files.")
+                if hasattr(self, "skills_view"):
+                    self.skills_view.setPlainText(
+                        f"LEVEL {g.level}\n\n"
+                        f"Score: {g.score:.2f}\n"
+                        f"Difficulty: {g.difficulty_mult:.2f}×\n"
+                        f"Sequence motion: {getattr(g,'sequence_motion_factor',1.0):.2f}×\n"
+                        f"Flight profile: {getattr(g,'flight_profile','—')}"
+                    )
+                if hasattr(self, "craft_view"):
+                    self.craft_view.setPlainText("CRAFTING\n\nSpawn kit: every seed-defined low-level/natural supply is present at the beginning.\n\nREFINE: consume 3–4 low-level supplies → usually 1 higher-level item.\nB opens this pane; refinement is deliberately lossy so high-level items remain valuable.")
+                if hasattr(self, "gameplay_view"):
+                    self.gameplay_view.setPlainText(HOW_TO_PLAY or "")
+                if hasattr(self,"closet_view"):
+                    cv=g.character.snapshot(); self.closet_view.setPlainText("CLOSET\n\n"+f"Experience: {cv.get('experience',0):.2f}\nDesign freedom: {cv.get('freedom',1):.2f}\nDecoration: {cv.get('decoration_level',0):.2f}\nPopulation average: {cv.get('population_average',.5):.2f}\n\nExperience and population style gently influence expression; your design remains editable.\nH = open closet.")
+                if hasattr(self, "journal_view"):
+                    hist = getattr(g, "physics_history", [])[-18:]
+                    home_line=""
+                    if getattr(g,"home",None) is not None:
+                        hd=g.home.distance(g); hs="OWNED · LEISURE" if g.home.owned else "AVAILABLE TO OWN"
+                        home_line=f"★ HOME · {hs} · {hd:.1f}m · leisure priority {g.home.journal_priority(g):.2f}\n"
+                    self.journal_view.setPlainText(home_line + ("\n".join(
+                        f"t={row.get('t',0):.1f}  pos=({row.get('x',0):.2f},{row.get('z',0):.2f})  speed={row.get('speed',0):.2f}  step={row.get('step',0)}"
+                        for row in hist
+                    ) or "Journal is waiting for gameplay history…"))
+            except Exception:
+                pass
+
+        def open_zero_menu(self):
+            g=self.game; items=g.interaction_items(); dlg=QDialog(self); dlg.setWindowTitle("0 · Select Interaction / Tool / Event"); dl=QVBoxLayout(dlg); lst=QListWidget()
+            for item in items: lst.addItem(QListWidgetItem(item["label"]))
+            if items: lst.setCurrentRow(int(getattr(g,"selection_index",0))%len(items))
+            dl.addWidget(lst); bb=QDialogButtonBox(QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel); dl.addWidget(bb); bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject)
+            if dlg.exec():
+                item=g.select_zero_item(lst.currentRow()); self.append_status(f"0 MENU → {item['label'] if item else 'none'}"); self.refresh()
+
+        def _edit_character(self):
+            axis=self.character_axis.currentText() if hasattr(self,"character_axis") else "crest"
+            value=self.game.character.cycle_design(axis, .12)
+            self.append_status(f"CHARACTER DESIGN · {axis}={value:.2f} · freedom remains {self.game.character.freedom:.2f}")
+            self.refresh()
 
         def _invite(self):
             g = self.game
@@ -8016,6 +8622,18 @@ if HAS_UI:
                     f"live={', '.join(live) or 'none'} | reg={reg_s} | topo={topo} hue={hue_s} | "
                     f"frame={fid or '—'} — area+state+music open activities; audio judges the same field."
                 )
+
+        def _command_category_changed(self, category):
+            choices = {
+                "CHAT": "/status", "WORLD": "/world", "PLAYER": "/report",
+                "TOOLS": "/help", "NETWORK": "/status", "CAMERA": "/controls", "PHYSICS": "/status", "HELP": "/help"
+            }
+            self.command_btn.setText(choices.get(str(category), "/status"))
+
+        def _run_tree_command(self):
+            cmd = self.command_btn.text().strip()
+            self.chat_edit.setText(cmd)
+            self._send_chat()
 
         def _role_text(self):
             g = self.game
@@ -8067,8 +8685,12 @@ if HAS_UI:
                     for line in str(out).splitlines():
                         self.append_status(line)
                     self.window.view.update()
-                elif text in ("/host", "/client"):
-                    self._switch_role()
+                elif text == "/host":
+                    self.game.dispatch_control("host_mode", panel=self)
+                    self._sync_chat_from_game()
+                elif text == "/client":
+                    self.game.dispatch_control("client_mode", panel=self)
+                    self._sync_chat_from_game()
                 else:
                     # The chat box is also the in-game console. Route every
                     # slash command to the same command parser as CLI so the
@@ -8096,6 +8718,19 @@ if HAS_UI:
                 g.push_status("world is host-authoritative; switch to host to reset.")
                 return
             g.reset_world()
+            try:
+                cs=g.character.snapshot(); self.character_lbl.setText(f"experience {cs['experience']:.2f} · design freedom {cs['freedom']:.2f} · decoration {cs['decoration_level']:.2f} · population average {cs['population_average']:.2f}")
+                inv=[]
+                for i in range(1,10):
+                    iid=g.quick_slots[i-1]
+                    if iid is None:
+                        ids=[k for k,v in g.items.inventory.items() if int(v)>0]; iid=ids[i-1] if i-1<len(ids) else None
+                    d=next((x for x in g.items.defs if x['id']==iid),None) if iid else None; inv.append(f"{i}:{d['name'] if d else '—'}")
+                self.quick_lbl.setText("  ".join(inv)+f"\nEquipped: {g.items.equipped or '—'}")
+                self.inventory_view.setPlainText("\n".join(f"{d['name']} × {g.items.inventory.get(d['id'],0)}" for d in g.items.defs if g.items.inventory.get(d['id'],0)))
+                self.quest_view.setPlainText("\n".join(f"{'✓' if q.get('done') else '·'} {q['title']} {q['progress']}/{q['target']}" for q in g.quests.quests))
+                self.spell_view.setPlainText(g.zero_menu_text())
+            except Exception: pass
             self.score_lbl.setText(f"Score {g.score:.2f}")
             self.level_lbl.setText(f"Level {g.level}  (x{g.difficulty_mult:.2f})")
             focus = getattr(g, "primary_focus", "explore")
@@ -8110,6 +8745,7 @@ if HAS_UI:
 
         def refresh(self):
             g = self.game
+            self._populate_gameplay_panes()
             try:
                 pos = g.position_readout()
                 self.pos_lbl.setText(
@@ -8152,7 +8788,7 @@ if HAS_UI:
                 pass
             self.djbar.setValue(max(0, min(1000, int(g.music.dj * 1000))))
             self.net_lbl.setText(g.net.status)
-            self.role_lbl.setText(f"Role: {self._role_text()}")
+            self.role_lbl.setText(f"Role: {self._role_text()} · H=Host · Server tab=connections")
             try:
                 self._refresh_chess_lbl()
             except Exception:
@@ -8220,7 +8856,25 @@ if HAS_UI:
             super().__init__()
             self.game = game
             self.setWindowTitle(f"{game.id['title']}")
-            self.resize(1040, 620)
+            # Match the main Groovebox's screen-aware footprint rather than
+            # opening a tiny secondary universe.  Still freely resizable.
+            try:
+                screen = self.screen() or QApplication.primaryScreen()
+                avail = screen.availableGeometry() if screen else None
+            except Exception:
+                avail = None
+            if avail is not None and avail.width() > 0 and avail.height() > 0:
+                self.resize(min(1600, int(avail.width()*0.92)), min(1100, int(avail.height()*0.92)))
+                self.move(avail.center().x()-self.width()//2, avail.center().y()-self.height()//2)
+            else:
+                self.resize(1300, 950)
+            pal = game.id.get("ui_palette", {})
+            self.setStyleSheet(f"""
+                QMainWindow, QWidget {{ background: {pal.get('bg','#0b1020')}; color: {pal.get('text','#e8f0ff')}; }}
+                QGroupBox {{ border: 1px solid {pal.get('accent','#3fa7ff')}; border-radius: 6px; margin-top: 8px; padding-top: 6px; }}
+                QGroupBox::title {{ subcontrol-origin: margin; left: 8px; padding: 0 4px; color: {pal.get('accent','#3fa7ff')}; }}
+                QPushButton, QComboBox, QLineEdit {{ background: {pal.get('bg','#0b1020')}; color: {pal.get('text','#e8f0ff')}; border: 1px solid {pal.get('accent','#3fa7ff')}; padding: 4px; }}
+            """)
             central = QWidget()
             self.setCentralWidget(central)
             split = QSplitter(Qt.Orientation.Horizontal, central)
@@ -8295,6 +8949,17 @@ if HAS_UI:
             self.panel.refresh()
             self.view.update()
 
+        def show_game_tab(self, name):
+            """Keyboard-connected panes: every gameplay system remains one tab graph."""
+            if hasattr(self, "panel") and self.panel is not None:
+                if self.panel.show_tab(name):
+                    self.panel.refresh()
+                    self.panel.append_status(f"TAB → {str(name).upper()}")
+                    self.panel.setFocus()
+                    self.view.setFocus(Qt.FocusReason.OtherFocusReason)
+                    return True
+            return False
+
         def keyPressEvent(self, e):
             g = self.game
             k = e.key()
@@ -8320,6 +8985,13 @@ if HAS_UI:
                     print(f"[menu] {err}")
                 self.view.update()
                 return
+            # QUICK-SLOTS_2026: 1-9 equip; 0 opens selectable interaction/tool/event list.
+            if Qt.Key.Key_1 <= k <= Qt.Key.Key_9:
+                g.equip_quick_slot(int(k-Qt.Key.Key_0)); self.panel.refresh(); return
+            if k == Qt.Key.Key_0:
+                try: self.panel.open_zero_menu()
+                except Exception: self.panel.append_status(g.zero_menu_text())
+                return
             # AUTO_CONTROLS_2026: resolve via the complexity-derived scheme first.
             try:
                 action = g.resolve_key(k, int(e.modifiers().value) if hasattr(e.modifiers(), "value") else 0)
@@ -8338,6 +9010,10 @@ if HAS_UI:
             if k == Qt.Key.Key_F1:
                 self.panel._how()
                 return
+            if k == Qt.Key.Key_H:
+                self.show_game_tab("CLOSET"); return
+            if k == Qt.Key.Key_J:
+                self.show_game_tab("JOURNAL"); return
             super().keyPressEvent(e)
 
         def keyReleaseEvent(self, e):
@@ -8638,8 +9314,7 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
-'''
+    main()'''
 
 # =============================================================================
 # THREE-PATHWAY CONTRACT_2026 — audio / visual / game are each present at
@@ -8795,9 +9470,13 @@ def build_control_scheme(identity=None) -> Dict[str, Any]:
         "aim_right": {"key": "Right", "qt": "Key_Right", "action": "aim_right", "layer": "core"},
         "aim_up": {"key": "Up", "qt": "Key_Up", "action": "aim_up", "layer": "core"},
         "aim_down": {"key": "Down", "qt": "Key_Down", "action": "aim_down", "layer": "core"},
-        "activate": {"key": "Mouse1", "qt": "MouseButton.LeftButton", "action": "activate", "layer": "core"},
-        "pause": {"key": "Space", "qt": "Key_Space", "action": "pause_toggle", "layer": "core"},
+        "interact": {"key": "Mouse2", "qt": "MouseButton.RightButton", "action": "interact", "layer": "core"},
+        "fire_create": {"key": "Mouse1", "qt": "MouseButton.LeftButton", "action": "fire_tool", "layer": "core"},
+        "fly_up": {"key": "Space", "qt": "Key_Space", "action": "fly_up", "layer": "core"},
+        "fly_down": {"key": "Ctrl", "qt": "Key_Control", "action": "fly_down", "layer": "core"},
         "help": {"key": "F1", "qt": "Key_F1", "action": "help", "layer": "core"},
+        "closet": {"key": "H", "qt": "Key_H", "action": "closet", "layer": "core"},
+        "client_mode": {"key": "J", "qt": "Key_J", "action": "client_mode", "layer": "core"},
         "mute": {"key": "M", "qt": "Key_M", "action": "mute", "layer": "core"},
         "sprint": {"key": "Shift", "qt": "Key_Shift", "action": "sprint", "layer": "core"},
     }
@@ -8805,21 +9484,17 @@ def build_control_scheme(identity=None) -> Dict[str, Any]:
     # --- layer-gated binds ---
     if layers.get("economy"):
         binds["inventory"] = {"key": "I", "qt": "Key_I", "action": "inventory", "layer": "economy"}
-        binds["store"] = {"key": "B", "qt": "Key_B", "action": "store", "layer": "economy"}
     if layers.get("quests"):
-        binds["quests"] = {"key": "J", "qt": "Key_J", "action": "quests", "layer": "quests"}
+        pass
     if layers.get("world_travel"):
-        binds["loom"] = {"key": "L", "qt": "Key_L", "action": "loom_scan", "layer": "world_travel"}
         binds["teleport"] = {"key": "T", "qt": "Key_T", "action": "teleport_hint", "layer": "world_travel"}
         binds["report"] = {"key": "R", "qt": "Key_R", "action": "report", "layer": "world_travel"}
     if layers.get("combat"):
         binds["engage"] = {"key": "F", "qt": "Key_F", "action": "engage", "layer": "combat"}
-        binds["dodge"] = {"key": "Q", "qt": "Key_Q", "action": "dodge", "layer": "combat"}
     if layers.get("social"):
         binds["chess"] = {"key": "C", "qt": "Key_C", "action": "chess_toggle", "layer": "social"}
         binds["invite"] = {"key": "Y", "qt": "Key_Y", "action": "invite", "layer": "social"}
     if layers.get("creative"):
-        binds["selfgen"] = {"key": "G", "qt": "Key_G", "action": "selfgen", "layer": "creative"}
         binds["triad"] = {"key": "V", "qt": "Key_V", "action": "triad", "layer": "creative"}
     if layers.get("cinematic"):
         binds["cam_reset"] = {"key": "Home", "qt": "Key_Home", "action": "cam_reset", "layer": "cinematic"}
@@ -8870,6 +9545,15 @@ def build_control_scheme(identity=None) -> Dict[str, Any]:
             "key": key, "qt": qt, "action": action, "layer": "macro", "label": desc,
         }
 
+    binds.update({
+        "quests": {"key":"Q","qt":"Key_Q","action":"quests","layer":"ui"},
+        "journal": {"key":"J","qt":"Key_J","action":"journal","layer":"ui"},
+        "inventory": {"key":"I","qt":"Key_I","action":"inventory","layer":"ui"},
+        "skills": {"key":"K","qt":"Key_K","action":"skills","layer":"ui"},
+        "server": {"key":"L","qt":"Key_L","action":"server","layer":"ui"},
+        "crafting": {"key":"B","qt":"Key_B","action":"crafting","layer":"ui"},
+        "gameplay": {"key":"G","qt":"Key_G","action":"gameplay","layer":"ui"},
+    })
     return {
         "version": "controls/2026.2-auto",
         "perspective": "always",
@@ -8973,8 +9657,11 @@ AUTO CONTROLS (derived from this creation — complexity {cx} / {cl})
   Active layers        :  {layers}
   Perspective movement :  {mov.get('forward', 'W')} {mov.get('back', 'S')} {mov.get('left', 'A')} {mov.get('right', 'D')}
   Aim / look           :  mouse move (+ arrow keys)
-  Activate             :  left click  (collect, harvest, talk, portal)
-  Pause / toggle       :  Space
+  Interact             :  right click (collect, harvest, inspect, enter, follow)
+  Fire / create         :  left click  (uses selected tool)
+  Fly up               :  Space       Fly down: Ctrl/C
+  Select tool           :  Q / E
+  Pause / menu          :  ESC
   Sprint               :  Shift
   Help / how-to-play   :  F1        Mute: M
   Extra binds (appear only when the layer is live on this package):
@@ -9279,12 +9966,15 @@ HOW TO PLAY
 Fixed controls, identical in every generated software:
     Perspective movement :  W S A D
     Aim / look           :  mouse move
-    Activate             :  left click
-    Pause / toggle       :  Space        Sprint: Shift
+    Interact             :  right click
+    Fire / create tool   :  left click
+    Fly up / down        :  Space / Ctrl+C
+    Select tool          :  Q / E
+    Pause / menu         :  ESC          Sprint: Shift
     How to play          :  F1           Mute: M
     Key macros           :  1..8 (orbit, vitals, quest, triad, loam scan,
                                store, sfx burst, self-gen probe)
-Chat / console commands: /help  /report  /triad  /controls  /chess  /invite
+Chat / console commands: /help  /report  /triad  /controls  /chess  /invite  /host  /client
                          /tp <name|#>  /lore  /loom  /gen <seed>  /buy  /equip
 Two-player chess (hot-seat, ONE screen): at seeded moments the game calls a
 friend over; /chess opens the board and the prompt hands the controls to
