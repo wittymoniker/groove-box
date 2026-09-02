@@ -16577,7 +16577,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         tau = max(step_duration * 2.5, 0.00)
         env = np.exp(-local_t / tau)
         attack = np.clip(local_t / max(step_duration * 0.00, 0.0), 0.0, 1.0)
-        weight = float(ev.get("weight", 1.0))
+        weight = float(ev.get("weight", 0.33333333333))
         # GOAVA_SINE_CHORD_2026: each seed numeric entry inserts a pitched
         # sine chord (not a single partial) at ~33% total amplitude on top of
         # the programmed groove — a shared harmonic layer, never an occupied row.
