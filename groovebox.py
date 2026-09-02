@@ -7513,10 +7513,13 @@ class VideoSynthViewer(QFrame):
         self._render_inflight = False
         self._render_pending = None
         self._render_generation = 0
+        self._closing = False
         self.setMouseTracking(True)
 
     def _request_async_frame(self, width=None, height=None, export=None):
         """Schedule a latest-only frame render; never block the Qt paint path."""
+        if getattr(self, "_closing", False):
+            return
         ww = max(int(width if width is not None else self.width()), 180)
         hh = max(int(height if height is not None else self.height()), 180)
         ex = self.engine.export_mode if export is None else bool(export)
@@ -7530,6 +7533,10 @@ class VideoSynthViewer(QFrame):
         self._render_pool.start(_VideoRenderTask(self.engine, ww, hh, ex, request[3], self._render_signals))
 
     def _on_async_frame_ready(self, frame, width, height, generation):
+        if getattr(self, "_closing", False):
+            self._render_inflight = False
+            self._render_pending = None
+            return
         self._render_inflight = False
         # Ignore stale frames if a newer request was made while rendering.
         if frame is not None and int(generation) == int(self._render_generation):
@@ -7545,6 +7552,21 @@ class VideoSynthViewer(QFrame):
             ww, hh, ex, gen = pending
             self._render_inflight = True
             self._render_pool.start(_VideoRenderTask(self.engine, ww, hh, ex, gen, self._render_signals))
+
+    def closeEvent(self, event):
+        self._closing = True
+        self._render_generation += 1
+        self._render_pending = None
+        try:
+            self._render_pool.clear()
+            self._render_pool.waitForDone(5000)
+        except Exception:
+            pass
+        try:
+            self._render_signals.finished.disconnect(self._on_async_frame_ready)
+        except (TypeError, RuntimeError):
+            pass
+        super().closeEvent(event)
 
     def _apply_manual_camera(self):
         """Apply the user camera angles in the full [-180°, +180°] range."""
@@ -30472,7 +30494,38 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # leave .part segments on disk for recovery
 
     def closeEvent(self, event):
-        """Ensure audio stream and PKP pad clock are torn down on close."""
+        """Shutdown GUI-owned workers before Qt destroys their QObject signals."""
+        # The video preview uses a QRunnable whose signal object is owned by
+        # this widget.  Qt may destroy that QObject while the worker is still
+        # rendering, so stop scheduling, disconnect, and drain the pool first.
+        try:
+            viewer = getattr(self, "video_synth_viewer", None)
+            if viewer is not None:
+                try:
+                    viewer._closing = True
+                    viewer._render_generation += 1
+                    viewer._render_pending = None
+                except Exception:
+                    pass
+                try:
+                    sig = getattr(viewer, "_render_signals", None)
+                    slot = getattr(viewer, "_on_async_frame_ready", None)
+                    if sig is not None and slot is not None:
+                        try:
+                            sig.finished.disconnect(slot)
+                        except (TypeError, RuntimeError):
+                            pass
+                except Exception:
+                    pass
+                try:
+                    pool = getattr(viewer, "_render_pool", None)
+                    if pool is not None:
+                        pool.clear()
+                        pool.waitForDone(5000)
+                except Exception:
+                    pass
+        except Exception:
+            pass
         try:
             self.stop_playback()
         except Exception:

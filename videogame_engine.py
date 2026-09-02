@@ -1199,8 +1199,8 @@ USER_SEED = __SEED__
 # two shared (Python / PyQt6) system dependencies.
 # ---------------------------------------------------------------------------
 try:
-    from PyQt6.QtCore import QTimer, Qt, QPointF
-    from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QBrush, QPolygonF
+    from PyQt6.QtCore import QTimer, Qt, QPointF, QRectF
+    from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QBrush, QPolygonF, QImage, QLinearGradient, QCursor, QPainterPath
     from PyQt6.QtWidgets import (
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
         QPushButton, QLineEdit, QPlainTextEdit, QSpinBox, QCheckBox, QFrame,
@@ -1210,6 +1210,12 @@ try:
     HAS_UI = True
 except Exception:
     HAS_UI = False
+try:
+    import sounddevice as sd
+    HAS_AUDIO = True
+except Exception:
+    sd = None
+    HAS_AUDIO = False
 
 
 def _mix(seed, label):
@@ -1449,6 +1455,43 @@ class TriggerSculptor:
         return _residue(self.seed, f"trig:{i}:{t}") < prob
 
 
+class SequenceInfluence:
+    """Unified step-control field shared by game movement, visual objects, and sound.
+
+    The written sequence is the dominant clock: each step creates a deterministic
+    control vector. Visual/object movement receives the strongest influence;
+    audio vibration receives a deliberately reduced 0.5 factor; secondary systems
+    receive progressively smaller factors. Nothing here creates random state.
+    """
+    FACTORS = {"movement": 1.0, "visual": 0.85, "vibration": 0.5, "secondary": 0.25}
+    def __init__(self, seed, pattern_lengths=(16,)):
+        self.seed = int(seed) & 0x7fffffff
+        self.pattern_lengths = tuple(max(1, int(x)) for x in (pattern_lengths or (16,)))
+        self.step = 0
+        self.phase = 0.0
+        self.motion = 0.0
+        self.vibration = 0.0
+        self.pulse = 0.0
+
+    def update(self, beat):
+        b = max(0.0, float(beat))
+        self.step = int(math.floor(b))
+        frac = b - math.floor(b)
+        plen = self.pattern_lengths[self.step % len(self.pattern_lengths)]
+        local = self.step % plen
+        self.phase = (local + frac) / float(plen)
+        r = _residue(self.seed, f"sequence:step:{self.step}:{plen}")
+        self.motion = self.FACTORS["movement"] * (0.55 + 0.45 * r)
+        self.vibration = self.FACTORS["vibration"] * (0.35 + 0.65 * r)
+        self.pulse = 0.5 + 0.5 * vg_sin(self.phase * math.tau)
+        return self.snapshot()
+
+    def snapshot(self):
+        return {"step": int(self.step), "phase": float(self.phase),
+                "motion": float(self.motion), "vibration": float(self.vibration),
+                "pulse": float(self.pulse)}
+
+
 class ScenographLite:
     """Game-side fractal: every layer is the SAME instrument-object type.
 
@@ -1480,6 +1523,7 @@ class ScenographLite:
         self.topology = (topology or "open_world").lower()
         self.sculptor = TriggerSculptor(self.seed, self.n)
         self.beat = 0.0
+        self.sequence_control = SequenceInfluence(self.seed, (16,))
         self.layers = []
         base = 220.0 * 2.0 ** ((round(36.0 * _residue(self.seed, "base")) - 18) / 12.0)
         for i in range(self.n):
@@ -1536,10 +1580,25 @@ class ScenographLite:
                          "ridge", "orb", "spoke", "glyph")[
                     int(_residue(self.seed, f"kind:{i}") * 8) % 8
                 ],
+                # Dense, deterministic 3-D face topology.  These are real
+                # triangular/quadrilateral relationships between the same
+                # scenograph objects, not decorative grid lines.
+                "face_count": 2 + int(7 * _residue(self.seed, f"face_n:{i}")),
+                "face_phase": _residue(self.seed, f"face_phase:{i}") * math.tau,
+                "face_twist": residue_to_bipolar(_residue(self.seed, f"face_twist:{i}")),
+                # Algorithm-span coordinates.  z_step is a discrete phase on
+                # the same cyclic lattice as the writer's pattern length.
+                # Linkage is therefore permitted by congruence, not merely by
+                # geometric proximity.  This keeps visual topology coupled to
+                # the written step algorithm while remaining deterministic.
+                "pattern_length": 16,
+                "z_step": int(i * 7 + math.floor(32.0 * _residue(self.seed, f"zstep:{i}"))),
             })
     def tick(self, dt, audio_rms=0.2):
         self.beat += dt * (BPM / 60.0)
-        step = int(self.beat)
+        self.sequence_control.update(self.beat)
+        seqc = self.sequence_control
+        step = int(seqc.step)
         # Cross-correlation bias from the unified audio/activity/visual field
         # (set by Game._refresh_activities).  Singular scenarios become visible
         # as spin rate, hue drift, and grid density — the same numbers the ear
@@ -1620,15 +1679,19 @@ class ScenographLite:
             if L["on"]:
                 on_count += 1
                 spin = (0.25 + 0.65 * MEUM * (i + 1) / max(1, self.n)) * (0.6 + 0.8 * x_spin)
-                L["yaw"] = (L["yaw"] + dt * spin * (0.6 + 0.9 * audio_rms + 0.35 * x_energy)) % math.tau
-            L["pitch"] = 0.55 * vg_sin(self.beat * MEUM + i * PHI + x_grid * 0.4)
+                step_phase = seqc.phase * math.tau + i * MEUM
+                step_drive = 0.55 + 0.90 * seqc.motion * (0.35 + 0.65 * seqc.pulse)
+                L["yaw"] = (L["yaw"] + dt * spin * step_drive * (0.6 + 0.9 * audio_rms + 0.35 * x_energy)) % math.tau
+                L["_sequence_step"] = int(seqc.step)
+                L["_sequence_motion"] = float(seqc.motion)
+            L["pitch"] = 0.55 * vg_sin(step_phase + self.beat * MEUM * 0.5 + x_grid * 0.4)
             # Subtle life pulse so open-world layers feel alive
             L["life"] = max(0.45, min(1.0, L.get("life", 0.7) + 0.04 * vg_sin(self.beat * PHI + i)))
             # Hue tracks the cross-correlation field so a scoring arena, arcade
             # scatter, or study lattice is chromatically distinct.
             base_h = float(L.get("hue", 0.5))
             L["hue"] = (base_h * 0.55 + (x_hue / 360.0) * 0.45 + 0.03 * i / max(1, self.n)) % 1.0
-            L["radius"] = float(L.get("radius", 1.0)) * (0.85 + 0.30 * x_grid)
+            L["radius"] = float(L.get("radius", 1.0)) * (0.85 + 0.30 * x_grid) * (0.92 + 0.16 * seqc.motion * seqc.pulse)
         self._on_count = on_count
         return self.layers
 
@@ -1660,6 +1723,7 @@ class MusicBed:
             1.0 + k * (0.45 + 0.55 * _residue(self.seed, f"pratio:{k}"))
             for k in range(self._n_partials)
         ]
+        self.sequence_control = SequenceInfluence(self.seed, (max(1, int(bars)),))
         self._amps = [
             (0.62 ** k) * (0.55 + 0.45 * (1.0 - self._entropy))
             for k in range(self._n_partials)
@@ -1667,6 +1731,9 @@ class MusicBed:
     def step(self, dt):
         beat = self.bpm / 60.0
         self.phase = (self.phase + dt * beat * math.tau) % math.tau
+        seqc = self.sequence_control.update(self.phase / math.tau)
+        self.sequence_step = int(seqc["step"])
+        self.sequence_vibration = float(seqc["vibration"])
         self.dj = 0.5 + 0.5 * vg_sin(self.phase * MEUM + self._dj_residue * 0.01)
         if self.dj_goava:
             self.dj = 0.5 * self.dj + 0.5 * (0.5 + 0.5 * vg_sin(self.phase * MEUM_INV))
@@ -1678,8 +1745,11 @@ class MusicBed:
         sample = 0.0
         for k in range(self._n_partials):
             sample += self._amps[k] * vg_sin(ph * self._ratios[k])
-        sample *= (0.65 + 0.55 * self.dj)
-        sample += 0.22 * g
+        # Sequence steps are dominant in movement/visuals, but sound receives
+        # only the 0.5 vibration factor so it follows rather than overwhelms.
+        vib = float(getattr(self, "sequence_vibration", 0.5))
+        sample *= (0.65 + 0.55 * self.dj) * (0.78 + 0.44 * vib)
+        sample += 0.22 * g * (0.65 + 0.70 * vib)
         # MASTER BUS (host-matching doctrine): a plain MASTER VOLUME multiplier
         # followed by a HARD CLIP to [-1, +1]. No tanh soft-clip / soft
         # normalizer anywhere — the user-controlled master volume is the
@@ -2509,6 +2579,263 @@ class NetTransport:
         self.status = "offline"
 
 
+
+class CriticalMeasureSystem:
+    """Hierarchical player-state ledger with generative audiovisual feedback.
+
+    Rank 1 is survival/progression, rank 2 is possessions/interactability,
+    rank 3 is luck/charm, and later ranks become increasingly expressive rather
+    than mandatory.  Values are bounded, deterministic, and can feed emergent
+    events without becoming hard gates.
+    """
+    DEFINITIONS = (
+        (1, "survival", "death/life/score/level"),
+        (2, "possessions", "inventory/value/interactability"),
+        (3, "fortune", "luck/charm"),
+        (4, "relations", "reputation/trust"),
+        (5, "resonance", "combo/music affinity"),
+        (6, "curiosity", "survey/discovery"),
+        (7, "influence", "world/player consequence"),
+        (8, "memory", "history/echo"),
+        (9, "strangeness", "entropy/novelty"),
+    )
+    def __init__(self, seed):
+        self.seed=int(seed)&0x7fffffff
+        self.values={name:0.0 for _,name,_ in self.DEFINITIONS}
+        self.details={}
+        self.history=[]
+        self.events=[]
+        self.asset_births=0
+        self._last_buckets={}
+        self._last_t=-1.0
+        self.deaths=0
+        self.lives=3
+        self.score=0.0
+        self.level=1
+        self.luck=0.5
+        self.charm=0.5
+
+    def _finite(self, x, default=0.0):
+        try:
+            x=float(x)
+            return x if math.isfinite(x) else default
+        except Exception:
+            return default
+
+    def _clamp(self, x):
+        return max(0.0,min(1.0,self._finite(x)))
+
+    def rarity(self, name, game=None):
+        """Deterministic rarity field; >.5 means live-generated asset."""
+        t=float(getattr(game,'t',0.0)) if game is not None else 0.0
+        bucket=int(t//3.0)
+        return _residue(self.seed, f"critical:rarity:{name}:{bucket}")
+
+    def _emit(self, game, name, value, rarity, reason):
+        bucket=int(max(0.0,min(1.0,value))*16.0)
+        key=f"{name}:{bucket}"
+        if self._last_buckets.get(name)==bucket:
+            return
+        self._last_buckets[name]=bucket
+        live=rarity>0.5
+        ev={"name":name,"value":round(value,4),"rarity":round(rarity,4),
+            "live_asset":live,"reason":reason,"t":round(float(getattr(game,'t',0.0)),3)}
+        self.events.append(ev); self.history.append(ev)
+        self.events=self.events[-24:]; self.history=self.history[-96:]
+        if live: self.asset_births+=1
+        try:
+            label=f"critical {name} {int(value*100)}%" + (" · LIVE" if live else "")
+            game.push_status(f"[CRITICAL] {label} — {reason}")
+            strength=0.08 + 0.20*value + (0.12 if live else 0.0)
+            game.sfx.trigger(f"critical:{name}:{bucket}", strength)
+        except Exception:
+            pass
+
+    def tick(self, game, dt, rms=0.0):
+        hp=self._clamp(float(getattr(game,'hp',100.0))/100.0)
+        score=max(0.0,self._finite(getattr(game,'score',0.0)))
+        level=max(1,int(getattr(game,'level',1)))
+        combo=max(0,int(getattr(game,'combo',0)))
+        inv=getattr(getattr(game,'items',None),'inventory',{}) or {}
+        inv_count=sum(max(0,int(v)) for v in inv.values())
+        try: inv_power=float(getattr(game.items,'power_bonus',lambda:0.0)())
+        except Exception: inv_power=0.0
+        coins=max(0,int(getattr(getattr(game,'purse',None),'coins',0)))
+        points=max(0,int(getattr(getattr(game,'purse',None),'points',0)))
+        interact=sum(1 for x in (getattr(game,'npcs',None).npcs if getattr(game,'npcs',None) else []) if x is not None)
+        interact += len(getattr(game,'world_events',None).rare_objects if getattr(game,'world_events',None) else [])
+        luck=self._clamp(0.50 + 0.14*math.sin(self.seed*MEUM + float(getattr(game,'t',0))*0.11) + 0.04*min(1.0,inv_power))
+        charm=self._clamp(0.5 + 0.10*min(1.0,coins/25.0) + 0.08*min(1.0,len(getattr(game,'tags',set()))/8.0))
+        recent_actions=getattr(getattr(game,'world_events',None),'action_counts',{}) or {}
+        discovery=min(1.0,(recent_actions.get('survey',0)+recent_actions.get('activate',0))/18.0)
+        relations=min(1.0,(len(getattr(game,'tags',set())) + len(getattr(getattr(game,'quests',None),'completed',[]) or []))/16.0)
+        resonance=self._clamp(0.22*min(1.0,combo/8.0)+0.55*min(1.0,abs(float(rms))*1.8)+0.23*min(1.0,float(getattr(getattr(game,'music',None),'dj',0.0))))
+        influence=self._clamp(0.25*min(1.0,score/100.0)+0.35*min(1.0,level/12.0)+0.40*min(1.0,interact/20.0))
+        memory=self._clamp(len(getattr(getattr(game,'world_events',None),'history',[]))/24.0 if getattr(game,'world_events',None) else 0.0)
+        strange=self._clamp(0.35*abs(math.sin(float(getattr(game,'t',0.0))*MEUM)) + 0.65*_residue(self.seed,f"strange:{int(float(getattr(game,'t',0.0))//5)}"))
+        self.values.update({
+            'survival':hp, 'possessions':self._clamp((inv_count/12.0)*0.55+(coins/40.0)*0.2+(points/80.0)*0.1+min(1.0,inv_power)*0.15),
+            'fortune':self._clamp(0.55*luck+0.45*charm), 'relations':relations,
+            'resonance':resonance, 'curiosity':discovery, 'influence':influence,
+            'memory':memory, 'strangeness':strange,
+        })
+        self.details={
+            'deaths':self.deaths,'lives':self.lives,'score':round(score,2),'level':level,
+            'inventory':inv_count,'coins':coins,'points':points,'interactability':interact,
+            'luck':round(luck,3),'charm':round(charm,3),'rarity_live_assets':self.asset_births,
+        }
+        # Each measure can become an audiovisual motif. Low-ranked measures are
+        # quieter and less frequent, preserving the hierarchy.
+        for rank,name,_ in self.DEFINITIONS:
+            v=self.values[name]
+            if rank==1 and v<0.22: reason='survival pressure'
+            elif rank==2 and v>0.72: reason='possession field saturated'
+            elif rank==3 and v>0.74: reason='fortunate convergence'
+            elif rank>=4 and v>0.78: reason='secondary resonance'
+            else: continue
+            rarity=self.rarity(name,game)
+            if rarity > 0.5 or rank<=3:
+                self._emit(game,name,v,rarity,reason)
+
+    def on_death(self, game):
+        self.deaths+=1
+        self.lives=max(0,self.lives-1)
+        if self.lives<=0:
+            self.lives=3
+        try:
+            game.score=max(0.0,float(game.score)*0.85)
+            game.hp=100.0
+            game.player_x=game.player_z=0.0
+            game.combo=0
+            game.push_status(f"[CRITICAL] death {self.deaths} — lives {self.lives} — respawned")
+            game.sfx.trigger("critical:death",1.0)
+        except Exception:
+            pass
+
+    def snapshot(self):
+        return {"values":dict(self.values),"details":dict(self.details),"deaths":self.deaths,"lives":self.lives,
+                "asset_births":self.asset_births}
+
+
+class WorldEventDefinition:
+    """Data-only event grammar: events emerge from world/player state.
+
+    Definitions describe what *can* happen; they do not force a world to contain
+    the event.  A deterministic field chooses whether/when the definition fires.
+    """
+    def __init__(self, name, weight=0.2, cooldown=6.0, actions=(), rare_object=None):
+        self.name=str(name); self.weight=float(weight); self.cooldown=float(cooldown)
+        self.actions=tuple(actions); self.rare_object=rare_object
+
+class EmergentWorldEvents:
+    """Deterministic event graph connecting world events, player actions and objects."""
+    DEFINITIONS=(
+        WorldEventDefinition('meteorite', .16, 8.0, ('impact','ejecta'), 'meteor_core'),
+        WorldEventDefinition('aurora_shift', .10, 14.0, ('sky','facets'), 'sky_shard'),
+        WorldEventDefinition('rift_opening', .075, 18.0, ('rift','portal'), 'rift_seed'),
+        WorldEventDefinition('ancient_wake', .045, 28.0, ('wake','echo'), 'ancient_relay'),
+        WorldEventDefinition('wild_hunt', .12, 12.0, ('spawn','track'), 'hunt_totem'),
+    )
+    def __init__(self, seed):
+        self.seed=int(seed)&0x7fffffff; self.cooldowns={}; self.active=[]; self.rare_objects=[]
+        self.action_counts={}; self.last_action_t={}
+    def player_action(self, game, action, amount=1):
+        a=str(action); self.action_counts[a]=self.action_counts.get(a,0)+int(amount)
+        self.last_action_t[a]=float(getattr(game,'t',0.0))
+        # Action history is an input to future event likelihood, not a forced event.
+    def _likelihood(self, game, d, rms):
+        region=getattr(game,'_current_region',('',0)) or ('',0)
+        name,tier=(region[0],region[1]) if isinstance(region,tuple) else ('',0)
+        gate=game.activity_gate.event_probability(d.name, region_name=name, region_tier=tier,
+            player_tags=getattr(game,'tags',set()), hp=getattr(game,'hp',100),
+            objective=getattr(game,'objective',None), free_play=getattr(game,'free_play',True),
+            audio_rms=rms, phase=float(getattr(game,'t',0.0))*MEUM,
+            energy=min(1.0,abs(float(rms))*1.8+.25))
+        # Player actions and world history modulate likelihood.  They never create
+        # an event directly; the deterministic roll still decides realization.
+        activity=sum(self.action_counts.get(k,0) for k in ('harvest','activate','combat','survey','move'))
+        recent=sum(1 for t in self.last_action_t.values() if float(getattr(game,'t',0))-t < 12.0)
+        return max(0.0,min(.82,d.weight*(.45+.75*gate)*(1+.025*min(12,activity))*(1+.04*recent)))
+    def _spawn_rare(self, game, d, window):
+        x=float(getattr(game,'player_x',0))+(_residue(self.seed,f'rare:x:{d.name}:{window}')-.5)*20
+        z=float(getattr(game,'player_z',0))+(_residue(self.seed,f'rare:z:{d.name}:{window}')-.5)*20
+        obj={'id':f'{d.name}:{window}','kind':d.rare_object,'x':x,'z':z,'age':0.0,
+             'life':18+24*_residue(self.seed,f'rare:life:{d.name}:{window}'),
+             'event':d.name,'usable':True}
+        self.rare_objects.append(obj); self.active.append({'event':d.name,'window':window,'age':0.0})
+        game.push_status(f'[EVENT] {d.name} emerged — rare object: {d.rare_object}')
+        try: game.sfx.trigger('chime',.35)
+        except Exception: pass
+    def tick(self, game, dt, rms=0.0):
+        t=float(getattr(game,'t',0.0)); window=int(t//4.0)
+        for d in self.DEFINITIONS:
+            self.cooldowns[d.name]=max(0.0,self.cooldowns.get(d.name,0.0)-float(dt))
+            if self.cooldowns[d.name]>0: continue
+            roll=_residue(self.seed,f'event:{d.name}:{window}')
+            if roll < self._likelihood(game,d,rms):
+                # One realization per definition/window; cooldown controls density.
+                self._spawn_rare(game,d,window); self.cooldowns[d.name]=d.cooldown
+        kept=[]
+        for o in self.rare_objects:
+            o['age']+=float(dt)
+            if o['age']<o['life']: kept.append(o)
+        self.rare_objects=kept[-24:]
+        self.active=[a for a in self.active if a['age']<20]
+
+class MeteorEventSystem:
+    """Deterministic world events: rare meteor strikes with visible aftermath.
+
+    Event identity comes from seed + integer event window + spatial cell.  The
+    statistical event gate controls likelihood only; it never changes player
+    controls or camera state.
+    """
+    def __init__(self, seed):
+        self.seed = int(seed) & 0x7FFFFFFF
+        self.impacts = []
+        self.last_window = -1
+        self.cooldown = 0.0
+
+    def tick(self, game, dt, audio_rms=0.0):
+        self.cooldown = max(0.0, self.cooldown - float(dt))
+        # 8-second deterministic event windows; multiple cells give spatial variety.
+        window = int(float(getattr(game, 't', 0.0)) // 8.0)
+        if window != self.last_window and self.cooldown <= 0.0:
+            self.last_window = window
+            region = getattr(game, '_current_region', ('', 0))
+            region_name = region[0] if isinstance(region, tuple) else ''
+            region_tier = region[1] if isinstance(region, tuple) and len(region)>1 else 0
+            phase = float(getattr(game, 't', 0.0)) * MEUM
+            chance = game.activity_gate.event_probability(
+                'meteorite', region_name=region_name, region_tier=region_tier,
+                player_tags=getattr(game, 'tags', set()), hp=getattr(game, 'hp',100),
+                objective=getattr(game, 'objective',None), free_play=getattr(game,'free_play',True),
+                audio_rms=audio_rms, phase=phase, energy=min(1.0, abs(float(audio_rms))*1.8+0.35))
+            for cell in range(3):
+                roll=_residue(self.seed, f'meteor:{window}:{cell}')
+                if roll >= chance * (0.22 + 0.24*cell):
+                    continue
+                ox=(_residue(self.seed, f'meteor:x:{window}:{cell}')-.5)*28.0
+                oz=(_residue(self.seed, f'meteor:z:{window}:{cell}')-.5)*28.0
+                self.impacts.append({
+                    'window':window,'x':float(getattr(game,'player_x',0.0))+ox,
+                    'z':float(getattr(game,'player_z',0.0))+oz,
+                    'age':0.0, 'life':4.5+3.0*_residue(self.seed,f'meteor:life:{window}:{cell}'),
+                    'power':0.55+0.9*_residue(self.seed,f'meteor:p:{window}:{cell}'),
+                    'radius':1.0+2.4*_residue(self.seed,f'meteor:r:{window}:{cell}')})
+                game.push_status('[EVENT] meteorite detected — impact field generated')
+                try: game.sfx.trigger('whoosh', 0.8)
+                except Exception: pass
+            self.cooldown=1.5
+        kept=[]
+        for m in self.impacts:
+            m['age'] += float(dt)
+            if m['age'] < m['life']:
+                kept.append(m)
+            elif m['age'] < m['life'] + 0.5:
+                try: game.sfx.trigger('thud', 0.7)
+                except Exception: pass
+        self.impacts=kept[-12:]
+
 class Game:
     def __init__(self, host_mode=False, port=None, connect=None):
         self.id = IDENTITY
@@ -2537,12 +2864,41 @@ class Game:
             topology=_topo,
         )
         self.scene._engine_mask = dict(self.engine_mask)
+        # Carry the writer's actual pattern-length lattice into the scenograph.
+        # Never use Python's process-salted hash for this mapping.
+        try:
+            pl = self.id.get("pattern_lengths") or {}
+            if isinstance(pl, dict):
+                vals = [max(1, int(v)) for _, v in sorted(pl.items(), key=lambda kv: str(kv[0]))]
+            elif isinstance(pl, (list, tuple)):
+                vals = [max(1, int(v)) for v in pl]
+            else:
+                vals = []
+        except Exception:
+            vals = []
+        if not vals:
+            vals = [16]
+        self.scene._algorithm_pattern_lengths = tuple(vals)
+        self.sequence_control = SequenceInfluence(self.id["seed"], self.scene._algorithm_pattern_lengths)
+        self.scene.sequence_control = self.sequence_control
+        try:
+            self.music.sequence_control.pattern_lengths = tuple(self.scene._algorithm_pattern_lengths)
+        except Exception:
+            pass
+        for _i, _layer in enumerate(self.scene.layers):
+            _plen = self.scene._algorithm_pattern_lengths[_i % len(self.scene._algorithm_pattern_lengths)]
+            _layer["pattern_length"] = _plen
+            # Scale the discrete Z phase to the writer span.  The residue is
+            # deterministic; the modulo makes it a true cyclic pattern phase.
+            _raw = int(_layer.get("z_step", 0))
+            _layer["z_step"] = _raw % _plen
+            _layer["pattern_span"] = _plen
         # Playlist / step-algo / composition fingerprints tilt which book fractal
         # set is prevalent — same pathway the host video uses.
         try:
             fp = str(self.id.get("composition_fingerprint") or "0")
             sa = str(self.id.get("world_fingerprint") or "0")
-            self.scene._playlist_hash = (hash(fp) ^ hash(sa)) & 0x7FFFFFFF
+            self.scene._playlist_hash = int(hashlib.sha256((fp+"|"+sa).encode("utf-8")).hexdigest()[:8],16) & 0x7FFFFFFF
         except Exception:
             self.scene._playlist_hash = 0
         self.music = MusicBed(
@@ -2673,6 +3029,9 @@ class Game:
             self.invites.append(e)
         _cseed = _safe_int_seed(self.id["seed"]) & 0x7FFFFFFF
         self.activity_gate = ProtectedActivityGate(_cseed)
+        self.meteors = MeteorEventSystem(_cseed)
+        self.world_events = EmergentWorldEvents(_cseed)
+        self.critical = CriticalMeasureSystem(_cseed)
         # Composition engines bias which activity classes the music-gate prefers.
         try:
             em = getattr(self, "engine_mask", {}) or {}
@@ -2729,7 +3088,15 @@ class Game:
         self.spatial_state = dict(self.id.get("spatial_state") or self.spatial_engine.snapshot(depth=3, roots=8))
         self.zoom = 1.0
         self.camera_mode = int(self.id.get("camera_mode", 0) or 0)
-        self.camera_modes = (0, 1, 2)
+        self.camera_modes = (0, 1, 2, 3, 4, 5, 6, 7)
+        # CAMERA_DIRECTOR_2026: mouse intent remains primary; these additive modes
+        # derive gentle orientation from momentum, sequence phase, and curvature.
+        self.camera_roll = 0.0
+        self.camera_roll_target = 0.0
+        self.camera_angular_velocity = 0.0
+        self._camera_prev_vx = 0.0
+        self._camera_prev_vz = 0.0
+        self._camera_orbit_phase = 0.0
         self.chess_square = None
         self.active_mini = None
         self.mini_hint = ""
@@ -2742,12 +3109,39 @@ class Game:
         # camera spin.  Keep angle as facing/region orientation, while the
         # Cartesian position is the authoritative world location.
         self.player_x = 0.0
+        self.player_y = 0.0
         self.player_z = 0.0
+        self._held_movement = {"dx": 0.0, "dz": 0.0}
+        # PHYSICS_FIELD_2026: explicit, inspectable kinematics. Position is
+        # integrated from velocity; sequence motion is the strongest driver,
+        # while damping/inertia keep movement physical rather than teleport-like.
+        self.velocity_x = 0.0
+        self.velocity_y = 0.0
+        self.velocity_z = 0.0
+        self.acceleration_x = 0.0
+        self.acceleration_y = 0.0
+        self.acceleration_z = 0.0
+        self.physics_ground_y = 0.0
+        self.physics_drag = 5.5
+        self.physics_max_speed = 7.5
+        self.physics_history = []
+        self.physics_history_max = 180
+        self.physics_impulse = 0.0
         self.score = 0.0
         self.hp = 100.0
         self.t = 0.0
         self.running = True
-        self.steer = 0.0  # player-authored orbit bias in [-1, 1] — deterministic per input
+        self.steer = 0.0
+        self.camera_yaw = 0.0
+        self.camera_yaw_target = 0.0
+        self.camera_pitch = 0.0
+        self.camera_pitch_target = 0.0
+        self.camera_pan_x = 0.0
+        self.camera_pan_y = 0.0
+        self.audio_enabled = True
+        self.audio_stream = None
+        self.audio_music = MusicBed(self.id.get("seed",0), mix=0.42, master_volume=0.95)
+        self.audio_lock = threading.RLock()
         # Host-only remote player state: name -> [angle, score, steer]
         self._remote_steers = {}
         # Client reconciliation state
@@ -2944,6 +3338,9 @@ class Game:
             "region": reg_s,
             "topology": str(self.id.get("topology") or "open_world"),
             "t": round(float(getattr(self, "t", 0.0) or 0.0), 2),
+            "speed": round(math.hypot(float(getattr(self, "velocity_x", 0.0)), float(getattr(self, "velocity_z", 0.0))), 3),
+            "vx": round(float(getattr(self, "velocity_x", 0.0)), 3),
+            "vz": round(float(getattr(self, "velocity_z", 0.0)), 3),
         }
 
     def active_elements(self):
@@ -2958,6 +3355,25 @@ class Game:
                    "value": f"θ={pos['angle_deg']}°  zoom={pos['zoom']}  pitch={pos['pitch']}  @ {pos['region']}"})
         el.append({"id": "time", "label": "Time",
                    "value": f"t={pos['t']}s  topo={pos['topology']}"})
+        el.append({"id": "physics", "label": "PHYSICS · movement state",
+                   "value": (f"speed={pos['speed']:.2f}  vx={pos['vx']:+.2f}  vz={pos['vz']:+.2f}  "
+                             f"drag={float(getattr(self, 'physics_drag', 5.5)):.2f}  "
+                             f"samples={len(getattr(self, 'physics_history', []) or [])}")})
+        el.append({"id": "camera_director", "label": "CAMERA · rotation instrument",
+                   "value": (f"mode={self.camera_mode_name()}  yaw={math.degrees(float(getattr(self,'camera_yaw',0.0)))%360:.1f}°  "
+                             f"pitch={math.degrees(float(getattr(self,'camera_pitch',0.0))):+.1f}°  "
+                             f"roll={math.degrees(float(getattr(self,'camera_roll',0.0))):+.2f}°  "
+                             f"angular_v={float(getattr(self,'camera_angular_velocity',0.0)):+.2f} rad/s")})
+        el.append({"id": "annotation", "label": "WORLD ANNOTATION",
+                   "value": "player position is integrated from velocity; sequence step drives target motion; sound follows at 0.5×"})
+        try:
+            el.append({"id": "sequence_control", "label": "Sequence conductor",
+                       "value": (f"step={int(getattr(self, 'sequence_step', 0))}  "
+                                 f"phase={float(getattr(self, 'sequence_phase', 0.0)):.3f}  "
+                                 f"movement×{float(getattr(self, 'sequence_motion_factor', 1.0)):.2f}  "
+                                 f"vibration×{float(getattr(self, 'sequence_vibration_factor', 0.5)):.2f}")})
+        except Exception:
+            pass
 
         live = sorted(getattr(self, "_live_activities", set()) or [])
         el.append({"id": "activities", "label": "Live activities",
@@ -3015,6 +3431,16 @@ class Game:
                              f"score={float(getattr(self, 'score', 0) or 0):.1f}  "
                              f"level={int(getattr(self, 'level', 1) or 1)}  "
                              f"combo={int(getattr(self, 'combo', 0) or 0)}")})
+        try:
+            c=self.critical
+            d=c.details
+            el.append({"id":"critical_1","label":"CRITICAL 1 · Survival","value":f"deaths={d.get('deaths',0)}  lives={d.get('lives',3)}  score={d.get('score',0):.1f}  level={d.get('level',1)}"})
+            el.append({"id":"critical_2","label":"CRITICAL 2 · Possessions","value":f"items={d.get('inventory',0)}  coins={d.get('coins',0)}  points={d.get('points',0)}  interactability={d.get('interactability',0)}"})
+            el.append({"id":"critical_3","label":"CRITICAL 3 · Luck + Charm","value":f"luck={d.get('luck',0.5):.3f}  charm={d.get('charm',0.5):.3f}  fortune={c.values.get('fortune',0):.3f}"})
+            el.append({"id":"critical_more","label":"Generative measures","value":"  ".join(f"{n}={c.values.get(n,0):.2f}" for _,n,_ in c.DEFINITIONS[3:])})
+            el.append({"id":"critical_assets","label":"Rare asset policy","value":f"live-generated births={c.asset_births}  rule=rarity > 0.50"})
+        except Exception:
+            pass
 
         coins = getattr(getattr(self, "purse", None), "coins", 0)
         pts = getattr(getattr(self, "purse", None), "points", 0)
@@ -3115,9 +3541,18 @@ class Game:
         self.move["dz"] = self._clamp(self.move["dz"] + float(dz), -1.0, 1.0)
 
     def aim_at(self, dyaw=0.0, dpitch=0.0):
-        """Mouse aim: contribute to the perspective yaw/pitch this tick."""
-        self.aim_in["yaw"] = self._clamp(self.aim_in["yaw"] + float(dyaw), -0.6, 0.6)
-        self.aim_in["pitch"] = self._clamp(self.aim_in["pitch"] + float(dpitch), -0.6, 0.6)
+        """Stable mouse-look: accumulate into persistent camera targets.
+
+        Mouse motion is not a transient camera impulse.  It changes a target
+        yaw/pitch, and the simulation eases toward that target.  This keeps
+        aiming usable even on high-polling mice and prevents visual jitter.
+        """
+        try:
+            self.camera_yaw_target = (float(getattr(self, "camera_yaw_target", self.steer)) + float(dyaw)) % math.tau
+            self.camera_pitch_target = max(-1.15, min(1.15, float(getattr(self, "camera_pitch_target", 0.0)) + float(dpitch)))
+        except Exception:
+            pass
+
 
     def _consume_inputs(self, dt):
         k = min(1.0, dt * 6.0)
@@ -3131,19 +3566,65 @@ class Game:
                 self.move = {"dx": 0.0, "dy": 0.0, "dz": 0.0}
                 self.aim_in = {"yaw": 0.0, "pitch": 0.0}
             return
-        # A/D and W/S are movement; arrow keys / mouse yaw are look only.
-        self.steer = self._clamp(self.steer + self.aim_in["yaw"])
-        self.pitch += self.aim_in["pitch"]
+        # A/D and W/S are movement; mouse yaw/pitch are persistent look state.
+        # No cinematic drift is mixed into the player camera during gameplay.
+        manual_yaw = float(getattr(self, "camera_yaw_target", self.steer)) % math.tau
+        cur_yaw = float(getattr(self, "camera_yaw", self.steer)) % math.tau
+        mode = int(getattr(self, "camera_mode", 0) or 0)
+        seq_phase = float(getattr(self, "sequence_phase", 0.0))
+        seq_motion = float(getattr(self, "sequence_motion_factor", 1.0))
+        vx = float(getattr(self, "velocity_x", 0.0)); vz = float(getattr(self, "velocity_z", 0.0))
+        speed = math.hypot(vx, vz)
+        # Camera rotation schemes are additive: the mouse remains the user's
+        # intent, while physical/sequence modes provide bounded secondary bias.
+        bias = 0.0
+        if mode == 3 and speed > 0.18:  # momentum-follow
+            bias = ((math.atan2(vx, vz) - manual_yaw + math.pi) % math.tau - math.pi) * min(0.32, 0.12 + speed/24.0)
+        elif mode == 4:  # momentum orbit
+            bias = 0.16 * math.sin(seq_phase * math.tau) + 0.08 * math.sin(seq_phase * math.tau * 0.5 + 1.2)
+        elif mode == 5:  # sequence visualizer
+            bias = 0.30 * math.sin(seq_phase * math.tau) * (0.65 + 0.35 * min(1.0, seq_motion))
+        elif mode == 6:  # physics lab: nearly neutral yaw, strong roll telemetry
+            bias = 0.05 * math.sin(seq_phase * math.tau)
+        elif mode == 7:  # tactical
+            bias = 0.0
+        desired_yaw = (manual_yaw + bias) % math.tau
+        yaw_delta = (desired_yaw - cur_yaw + math.pi) % math.tau - math.pi
+        self.camera_angular_velocity = yaw_delta * min(1.0, dt * 12.0) / max(dt, 1e-6)
+        self.camera_yaw = (cur_yaw + yaw_delta * min(1.0, dt * 12.0)) % math.tau
+        self.steer = self.camera_yaw
+        manual_pitch = max(-1.15, min(1.15, float(getattr(self, "camera_pitch_target", 0.0))))
+        pitch_bias = -0.34 if mode == 7 else (0.10 * math.cos(seq_phase * math.tau) if mode == 5 else 0.0)
+        target_pitch = max(-1.15, min(1.15, manual_pitch + pitch_bias))
+        self.camera_pitch = float(getattr(self, "camera_pitch", 0.0)) + (target_pitch - float(getattr(self, "camera_pitch", 0.0))) * min(1.0, dt * 10.0)
+        self.pitch = self.camera_pitch
+        # Curvature banking: turning velocity produces a small physical camera roll.
+        dvx = vx - float(getattr(self, "_camera_prev_vx", 0.0)); dvz = vz - float(getattr(self, "_camera_prev_vz", 0.0))
+        curvature = 0.0
+        if speed > 0.2:
+            curvature = (vx * dvz - vz * dvx) / max(speed * speed, 0.25)
+        self._camera_prev_vx, self._camera_prev_vz = vx, vz
+        roll_gain = 0.16 if mode in (3, 4, 6) else (0.24 if mode == 5 else 0.0)
+        self.camera_roll_target = max(-0.22, min(0.22, curvature * roll_gain))
+        self.camera_roll += (self.camera_roll_target - float(getattr(self, "camera_roll", 0.0))) * min(1.0, dt * 8.0)
         self.zoom = self._clamp(self.zoom, 0.35, 2.5)
-        for key in ("dx", "dy", "dz"):
-            self.move[key] *= max(0.0, 1.0 - k)
-        self.aim_in["yaw"] *= max(0.0, 1.0 - k)
-        self.aim_in["pitch"] *= max(0.0, 1.0 - k)
-        self.pitch *= max(0.0, 1.0 - dt * 2.0)
+        held = getattr(self, "_held_movement", None) or {}
+        if abs(float(held.get("dx", 0.0))) + abs(float(held.get("dz", 0.0))) > 1e-9:
+            self.move["dx"] = self._clamp(float(held.get("dx", 0.0)))
+            self.move["dz"] = self._clamp(float(held.get("dz", 0.0)))
+        else:
+            for key in ("dx", "dy", "dz"):
+                self.move[key] *= max(0.0, 1.0 - k)
+        # aim_in remains only as a compatibility field for older callers.
+        self.aim_in["yaw"] = 0.0
+        self.aim_in["pitch"] = 0.0
 
     def camera_mode_name(self):
-        return {0: "2.5D (third-person)", 1: "First person", 2: "2D (top-down)"}.get(
-            int(getattr(self, "camera_mode", 0) or 0), "2.5D (third-person)")
+        return {
+            0: "2.5D (third-person)", 1: "First person", 2: "2D (top-down)",
+            3: "Momentum follow", 4: "Momentum orbit", 5: "Sequence visualizer",
+            6: "Physics lab", 7: "Tactical"
+        }.get(int(getattr(self, "camera_mode", 0) or 0), "2.5D (third-person)")
 
     def cycle_camera(self, direction=1):
         modes = list(getattr(self, "camera_modes", (0, 1, 2)) or (0, 1, 2))
@@ -3201,6 +3682,8 @@ class Game:
                 self.score += 1.4 * MEUM * v * self.difficulty_mult
                 self.sfx.trigger("click", 0.8)
                 hits.append("resource")
+                try: self.world_events.player_action(self, "harvest")
+                except Exception: pass
         if not hits and getattr(self.waypoints, "count", 0) > 0:
             best = min((self._player_distance(a, r), a) for a, r in self.waypoints.pos) if self.waypoints.pos else None
             if best and best[0] <= reach and self.waypoints.advance(best[1]):
@@ -3208,6 +3691,8 @@ class Game:
                 self.sfx.trigger("chime", 0.7)
                 hits.append("waypoint")
         self.send_chat("system", "activate" + (f": {'+'.join(hits)}" if hits else " (nothing within reach)"))
+        try: self.world_events.player_action(self, "activate")
+        except Exception: pass
         self.micro.drive(self.t)
         return f"activate {'+'.join(hits) if hits else 'miss'}"
 
@@ -3794,13 +4279,8 @@ class Game:
         yaw0 = float(base.get("yaw_deg", 0.0))
         pit0 = float(base.get("pitch_deg", 0.0))
         if bool(getattr(self, "free_play", False)):
-            # No autonomous orbit/roll/FOV breathing in a sandbox.
-            yaw = yaw0 + math.degrees(float(getattr(self, "steer", 0.0) or 0.0)) * 0.35
-            pitch = pit0 + math.degrees(float(getattr(self, "pitch", 0.0) or 0.0))
-            self.visual_view = {**base, "yaw_deg": yaw, "pitch_deg": pitch,
-                                "roll_deg": 0.0,
-                                "distance": max(0.55, min(1.45, float(base.get("distance", 1.0) or 1.0))),
-                                "fov_deg": max(36.0, min(62.0, float(base.get("fov_deg", 48.0) or 48.0)))}
+            # Open-world camera is fully player-authored; do not rewrite the
+            # deterministic view with autonomous drift or audio modulation.
             return
         try:
             seed = float(self.id.get("seed", 0) or 0)
@@ -3822,10 +4302,65 @@ class Game:
                             "roll_deg": float(roll), "distance": max(0.55, min(1.45, dist)),
                             "fov_deg": max(36.0, min(62.0, fov))}
 
+    def start_audio(self):
+        if not HAS_AUDIO or self.audio_stream is not None:
+            return bool(self.audio_stream is not None)
+        try:
+            game=self
+            def callback(outdata, frames, time_info, status):
+                try:
+                    with game.audio_lock:
+                        vals=[game.audio_music.step(1.0/22050.0) for _ in range(frames)]
+                        sfx=game.sfx.mix(frames)
+                    import numpy as np
+                    arr=np.asarray(vals, dtype=np.float32)+np.asarray(sfx, dtype=np.float32)
+                    arr=np.clip(arr*0.55, -1.0, 1.0)
+                    outdata[:,0]=arr
+                    if outdata.shape[1]>1: outdata[:,1]=arr
+                except Exception:
+                    outdata.fill(0)
+            self.audio_stream=sd.OutputStream(samplerate=22050, channels=2, dtype="float32", callback=callback, blocksize=256)
+            self.audio_stream.start()
+            return True
+        except Exception:
+            self.audio_stream=None
+            self.audio_enabled=False
+            return False
+
+    def stop_audio(self):
+        st=self.audio_stream
+        self.audio_stream=None
+        if st is not None:
+            try: st.stop()
+            except Exception: pass
+            try: st.close()
+            except Exception: pass
+
     def tick(self, dt=1/30):
         sample = self.music.step(dt)
+        try:
+            seq_snapshot = self.sequence_control.update(self.scene.beat)
+            self.sequence_step = int(seq_snapshot["step"])
+            self.sequence_phase = float(seq_snapshot["phase"])
+            self.sequence_motion_factor = float(seq_snapshot["motion"])
+            self.sequence_vibration_factor = float(seq_snapshot["vibration"])
+        except Exception:
+            self.sequence_step = int(getattr(self, "sequence_step", 0))
+            self.sequence_motion_factor = float(getattr(self, "sequence_motion_factor", 1.0))
+            self.sequence_vibration_factor = float(getattr(self, "sequence_vibration_factor", 0.5))
 
         layers = self.scene.tick(dt, audio_rms=abs(sample))
+        try:
+            self.meteors.tick(self, dt, audio_rms=abs(sample))
+            self.world_events.tick(self, dt, rms=abs(sample))
+            self.critical.tick(self, dt, rms=abs(sample))
+        except Exception:
+            pass
+        try:
+            # Keep the procedural world/audio layer alive even when the window is occluded.
+            self._presentation_phase = float(getattr(self, "_presentation_phase", 0.0)) + dt
+        except Exception:
+            pass
         try:
             self.fn.tick(self.t, audio_rms=abs(sample))
         except Exception:
@@ -3840,7 +4375,15 @@ class Game:
                 pass
             return sample
         self._consume_inputs(dt)
-        self._update_cinematic_camera(dt, abs(sample))
+        try:
+            if abs(float(self.move.get("dx",0))) + abs(float(self.move.get("dz",0))) > 1e-6:
+                self.world_events.player_action(self, "move")
+        except Exception:
+            pass
+        # Open-world gameplay owns the camera. Classification/mood may influence
+        # event probabilities, but never inject camera motion while the player is driving.
+        if str(self.id.get("topology") or "") not in ("open_world", "sandbox"):
+            self._update_cinematic_camera(dt, abs(sample))
         self._fire_invites()
         self._tick_arcade(dt)
         # FREE-ROAM CONTRACT: movement is always local/player-authored, including
@@ -3852,17 +4395,37 @@ class Game:
             # every world feel like a conveyor belt toward its collectibles
             # (especially sigils).  Position changes now come only from the
             # player's steer/movement input.
-            move_speed = 2.25 + 0.55 * self.difficulty_mult
+            # Sequence step is the primary motion conductor.  Sound follows at
+            # 0.5 strength; visuals use the same step directly in ScenographLite.
+            move_speed = (2.25 + 0.55 * self.difficulty_mult) * (0.72 + 0.78 * float(getattr(self, "sequence_motion_factor", 1.0)))
             _dx = float(self.move.get("dx", 0.0) or 0.0)
             _dz = float(self.move.get("dz", 0.0) or 0.0)
             # True planar movement. A/D = strafe, W/S = forward/back
             # relative to the current look yaw. No orbit/spin motion.
             if math.isfinite(_dx) and math.isfinite(_dz):
-                _yaw = float(self.steer)
+                _yaw = float(getattr(self, "camera_yaw", self.steer))
+                _mag = math.hypot(_dx, _dz)
+                if _mag > 1.0:
+                    _dx /= _mag; _dz /= _mag
                 _fx, _fz = math.sin(_yaw), math.cos(_yaw)
                 _rx, _rz = math.cos(_yaw), -math.sin(_yaw)
-                self.player_x += (_dx * _rx + _dz * _fx) * move_speed * dt
-                self.player_z += (_dx * _rz + _dz * _fz) * move_speed * dt
+                # Semi-implicit Euler: input produces acceleration, acceleration
+                # produces velocity, velocity produces position. This gives the
+                # sequence conductor a real physical quantity to steer.
+                target_vx = (_dx * _rx + _dz * _fx) * move_speed
+                target_vz = (_dx * _rz + _dz * _fz) * move_speed
+                response = min(1.0, dt * (7.0 + 3.0 * float(getattr(self, "sequence_motion_factor", 1.0))))
+                self.acceleration_x = (target_vx - self.velocity_x) * response / max(dt, 1e-6)
+                self.acceleration_z = (target_vz - self.velocity_z) * response / max(dt, 1e-6)
+                self.velocity_x += self.acceleration_x * dt
+                self.velocity_z += self.acceleration_z * dt
+                speed = math.hypot(self.velocity_x, self.velocity_z)
+                vmax = float(getattr(self, "physics_max_speed", 7.5))
+                if speed > vmax and speed > 1e-9:
+                    scale = vmax / speed
+                    self.velocity_x *= scale; self.velocity_z *= scale
+                self.player_x += self.velocity_x * dt
+                self.player_z += self.velocity_z * dt
                 # IMPORTANT: player position is Cartesian. Never overwrite it
                 # into the legacy radial ``angle`` field; doing so turns walking
                 # around the origin into apparent sigil rotation.
@@ -3903,6 +4466,27 @@ class Game:
                             f"[EXPLORE] first visit to '{r['name']}' "
                             f"({visited} regions touched — still no forced objective)"
                         )
+            # Inertia/friction persists briefly after key release, then settles.
+            if abs(_dx) + abs(_dz) <= 1e-9:
+                damp = math.exp(-float(getattr(self, "physics_drag", 5.5)) * dt)
+                self.acceleration_x = -self.velocity_x * float(getattr(self, "physics_drag", 5.5))
+                self.acceleration_z = -self.velocity_z * float(getattr(self, "physics_drag", 5.5))
+                self.velocity_x *= damp
+                self.velocity_z *= damp
+                self.player_x += self.velocity_x * dt
+                self.player_z += self.velocity_z * dt
+            speed_now = math.hypot(float(getattr(self, "velocity_x", 0.0)), float(getattr(self, "velocity_z", 0.0)))
+            self.physics_impulse = min(1.0, speed_now / max(0.001, float(getattr(self, "physics_max_speed", 7.5))))
+            self.physics_history.append({
+                "t": float(self.t), "x": float(self.player_x), "z": float(self.player_z),
+                "vx": float(self.velocity_x), "vz": float(self.velocity_z),
+                "speed": float(speed_now), "ax": float(self.acceleration_x), "az": float(self.acceleration_z),
+                "step": int(getattr(self, "sequence_step", 0)),
+                "motion": float(getattr(self, "sequence_motion_factor", 1.0)),
+                "vibration": float(getattr(self, "sequence_vibration_factor", 0.5))
+            })
+            if len(self.physics_history) > int(getattr(self, "physics_history_max", 180)):
+                del self.physics_history[:-int(self.physics_history_max)]
             _micro = self.micro.drive(self.t)
             if _micro:
                 try:
@@ -3949,6 +4533,9 @@ class Game:
                 self.hp = max(0.0, self.hp - dmg * 12.0 * dt)
                 if _obj == "siege":
                     self.score += 0.35 * dmg * self.difficulty_mult  # risk reward
+                if self.hp <= 0.0:
+                    try: self.critical.on_death(self)
+                    except Exception: pass
             # Portals (open-world travel)
             if self._teleport_cd <= 0:
                 dest = self.portals.try_teleport(self.angle)
@@ -4659,6 +5246,7 @@ _ACTIVITY_CLASSES = (
     "trade",           # merchant / store interactions
     "quest_gate",      # objective-linked events
     "combat",          # pve / pvp encounter surfaces
+    "meteorite",       # rare environmental impact events
 )
 
 # Which loom-region tiers and player tags permit each activity class.
@@ -4673,6 +5261,7 @@ _ACTIVITY_AREA_TAGS = {
     "trade":         {"keel", "rind", "mote"},
     "quest_gate":    {"sigil", "fault", "dune"},
     "combat":        {"barb", "lobe", "vane"},
+    "meteorite":     {"fault", "dune", "vane", "whorl", "culm"},
 }
 
 _ACTIVITY_STATE_TAGS = {
@@ -4684,6 +5273,7 @@ _ACTIVITY_STATE_TAGS = {
     "trade":         {"trade", "safe", "gold"},
     "quest_gate":    {"quest", "objective"},
     "combat":        {"combat", "pve", "pvp"},
+    "meteorite":     {"explore", "movement", "survival"},
 }
 
 
@@ -4756,19 +5346,30 @@ class ProtectedActivityGate:
             return True
         return bool(tags & needed) or free_play
 
-    def is_live(self, cls, *, region_name=None, region_tier=0,
-                player_tags=None, hp=100.0, objective=None, free_play=True,
-                audio_rms=0.0, phase=0.0, energy=0.5, entropy=None):
-        """All three gates must pass.  Otherwise the activity simply does not exist."""
+    def event_probability(self, cls, *, region_name=None, region_tier=0,
+                          player_tags=None, hp=100.0, objective=None, free_play=True,
+                          audio_rms=0.0, phase=0.0, energy=0.5, entropy=None):
+        """Return only the statistical chance for an event class.
+
+        Genre/mood/topology/tags are descriptors that shape this probability;
+        they never become deterministic requirements or forced gameplay.
+        """
         if cls not in _ACTIVITY_CLASSES:
-            return False
-        if not self.area_allows(cls, region_name, region_tier):
-            return False
-        if not self.state_allows(cls, player_tags, hp, objective, free_play):
-            return False
-        if not self.music_allows(cls, audio_rms, phase, energy, entropy=entropy):
-            return False
-        return True
+            return 0.0
+        base = 0.04 + 0.28 * self.affinity.get(cls, 0.0)
+        musical = 0.22 * (0.35 * float(energy) + 0.25 * abs(math.sin(float(phase) + self.affinity.get(cls,0.0)*math.tau)))
+        if entropy is not None:
+            musical += 0.10 * (float(entropy) if cls in ("arcade","spell_cast","combat") else (1.0-float(entropy)))
+        area = 1.0 if self.area_allows(cls, region_name, region_tier) else 0.35
+        state = 1.0 if self.state_allows(cls, player_tags, hp, objective, free_play) else 0.55
+        return max(0.0, min(0.92, (base + musical) * area * state))
+
+    def is_live(self, cls, **kwargs):
+        chance = self.event_probability(cls, **kwargs)
+        # Stable deterministic sampling bucket; no event tag is a hard gate.
+        bucket = int(float(kwargs.get("phase", 0.0)) * 2.0)
+        roll = _residue(self.seed, f"event:{cls}:{bucket}")
+        return roll < chance
 
     def describe(self, cls, live, **params):
         """Straightforward text that only uses nouns/adjectives tied to real params.
@@ -5876,6 +6477,686 @@ class PokerTable:
 
 # ---------------------------------------------------------------------------
 if HAS_UI:
+    class ProceduralWorldRenderer:
+        """Deterministic pseudo-3D presentation layer for the open world.
+
+        The simulation remains seed-driven, while this layer turns its canonical
+        1D/2D parameters into a full 3D-feeling scene: X/Z world travel, Y
+        elevation, depth-sorted meshes, billboard sprites, characters, props,
+        particles, and a screen-space 2.5D overlay.  No external art assets are
+        required; every visual is generated from the world seed.
+        """
+        def __init__(self, game):
+            self.game = game
+            self.seed = int(getattr(game, "id", {}).get("seed", 0) or 0)
+            self.phase = 0.0
+            self._ambient_cd = 0.0
+            self.asset_cache = {}
+            self.startup_assets = self._generate_startup_assets()
+
+        def _generate_startup_assets(self):
+            """Generate a deterministic local asset library at game startup.
+
+            Assets are faceted GOAVA-like visual objects: layered translucent
+            polygons, recursive micro-facets and bounded alpha.  They are tied
+            to the world seed and later selected by chunk/object coordinate, so
+            the same area always reconstructs the same visual material.
+            """
+            kinds = ("terrain", "foliage", "crystal", "ruin", "water", "character", "portal", "road")
+            out = {}
+            for i, kind in enumerate(kinds):
+                key = f"startup:{kind}:{i}"
+                out[key] = self._make_asset_texture(key, 96, 96)
+            return out
+
+        def _make_asset_texture(self, key, w=96, h=96):
+            img = QImage(int(w), int(h), QImage.Format.Format_ARGB32_Premultiplied)
+            img.fill(QColor(0, 0, 0, 0))
+            pp = QPainter(img)
+            pp.setRenderHint(QPainter.RenderHint.Antialiasing)
+            r0 = self._rng(key + ":h")
+            hue = int((r0 * 360.0) % 360)
+            base = QColor.fromHsv(hue, 115 + int(90*self._rng(key+":s")), 95 + int(125*self._rng(key+":v")), 88)
+            pp.setPen(Qt.PenStyle.NoPen)
+            # Irregular material tile, never an opaque rectangle.
+            basepts=[]
+            for k in range(9):
+                aa=k*math.tau/9.0; rr=0.72+0.25*self._rng(f"{key}:base:{k}")
+                basepts.append(QPointF(w*.5+math.cos(aa)*w*.62*rr,h*.5+math.sin(aa)*h*.62*rr))
+            pp.setBrush(base); pp.drawPolygon(QPolygonF(basepts))
+            # Multi-scale GOAVA/fractal facets.
+            for layer in range(4):
+                n = 5 + layer * 3
+                for j in range(n):
+                    q = self._rng(f"{key}:facet:{layer}:{j}")
+                    x = q * w
+                    y = self._rng(f"{key}:fy:{layer}:{j}") * h
+                    rad = (0.10 + 0.18*self._rng(f"{key}:fr:{layer}:{j}")) * min(w,h) / (1+0.45*layer)
+                    hh = (hue + int(80*self._rng(f"{key}:fh:{layer}:{j}"))) % 360
+                    cc = QColor.fromHsv(hh, 120 + int(100*self._rng(f"{key}:fs:{layer}:{j}")), 110 + int(120*self._rng(f"{key}:fv:{layer}:{j}")), 32 + layer*18)
+                    pts = [QPointF(x + math.cos(k*math.tau/5.0 + q)*rad, y + math.sin(k*math.tau/5.0 + q)*rad) for k in range(5)]
+                    pp.setBrush(cc); pp.drawPolygon(pts)
+            pp.setPen(QPen(QColor(255,255,255,45), 1))
+            for j in range(7):
+                y = (j+1)*h/8.0
+                pp.drawLine(QPointF(0,y), QPointF(w,h-y))
+            pp.end()
+            return img
+
+        def _asset(self, key, kind="terrain"):
+            k = f"{kind}:{key}"
+            if k not in self.asset_cache:
+                self.asset_cache[k] = self._make_asset_texture(k)
+            return self.asset_cache[k]
+
+        def _draw_texture_facets(self, p, x, y, sx, sy, key, kind, alpha=70):
+            img = self._asset(key, kind)
+            p.save()
+            p.setOpacity(max(0.0, min(1.0, alpha / 255.0)))
+            p.drawImage(QRectF(x-sx, y-sy, sx*2.0, sy*2.0), img)
+            p.restore()
+
+        def _rng(self, tag):
+            return _residue(self.seed, "presentation:" + str(tag))
+
+        def _world_point(self, angle, radius, y=0.0):
+            return (float(radius) * vg_cos(float(angle)), float(y),
+                    float(radius) * vg_sin(float(angle)))
+
+        def _terrain_height(self, wx, wz):
+            # Multi-octave deterministic heightfield. Shared samples ensure adjacent
+            # cells meet exactly, giving true connected terrain rather than tiles.
+            x=float(wx); z=float(wz); h=0.0; amp=1.0; freq=0.055
+            for o in range(4):
+                gx=math.floor(x*freq); gz=math.floor(z*freq)
+                fx=x*freq-gx; fz=z*freq-gz
+                def v(ix,iz): return self._rng(f'th:{o}:{gx+ix}:{gz+iz}')*2.0-1.0
+                def sm(t): return t*t*(3.0-2.0*t)
+                a=v(0,0); b=v(1,0); c=v(0,1); d=v(1,1)
+                vx=(a+(b-a)*sm(fx)) + ((c+(d-c)*sm(fx))-(a+(b-a)*sm(fx)))*sm(fz)
+                h += vx*amp
+                amp*=0.48; freq*=1.92
+            return h*1.15
+
+        def _draw_layered_terrain(self, p, project, cx, cy, R):
+            """Connected terrain topology: shared heightfield vertices + triangular faces.
+
+            The mesh is deterministic and chunk-addressed.  Each cell shares its
+            vertex heights with neighbors, while diagonal selection and material
+            facets vary by seed so the ground has continuous topology instead of
+            a collection of rectangles.
+            """
+            g=self.game; px=float(getattr(g,'player_x',0.0)); pz=float(getattr(g,'player_z',0.0))
+            span=8; step=2.5
+            verts={}
+            for iz in range(-span,span+1):
+                for ix in range(-span,span+1):
+                    wx=px+ix*step; wz=pz+iz*step; wy=self._terrain_height(wx,wz)
+                    dx=wx-px; dz=wz-pz; rr=math.hypot(dx,dz)
+                    aa=math.atan2(dz,dx)
+                    verts[(ix,iz)]=project(aa,rr,wy,0.95+0.025*abs(iz))
+            for iz in range(-span,span):
+                for ix in range(-span,span):
+                    a=verts[(ix,iz)]; b=verts[(ix+1,iz)]; c=verts[(ix,iz+1)]; d=verts[(ix+1,iz+1)]
+                    diag = self._rng(f'tdiag:{math.floor(px/20)}:{math.floor(pz/20)}:{ix}:{iz}') > 0.5
+                    tris=((a,b,d),(a,d,c)) if diag else ((a,b,c),(b,d,c))
+                    for ti,(u,v,w) in enumerate(tris):
+                        slope=abs(u[1]-v[1])+abs(v[1]-w[1])+abs(w[1]-u[1])
+                        q=self._rng(f'tmat:{ix}:{iz}:{ti}')
+                        if slope>18: kind='rock'
+                        elif q<0.12: kind='water'
+                        elif q<0.30: kind='foliage'
+                        else: kind='terrain'
+                        hue={'water':195,'foliage':105,'rock':35,'terrain':75}[kind]
+                        alpha={'water':115,'foliage':82,'rock':105,'terrain':92}[kind]
+                        col=QColor.fromHsv(int(hue+35*self._rng(f'thue:{ix}:{iz}:{ti}'))%360,105+int(70*q),105+int(90*q),alpha)
+                        p.setPen(QPen(QColor.fromHsv(int(hue)%360,100,220,35),1)); p.setBrush(col)
+                        p.drawPolygon(QPolygonF([QPointF(u[0],u[1]),QPointF(v[0],v[1]),QPointF(w[0],w[1])]))
+                        # restrained GOAVA microfacet overlays on a subset of faces
+                        if self._rng(f'tfacet:{ix}:{iz}:{ti}') > (0.30 if getattr(g.scene,'goava',False) else 0.68):
+                            mx=(u[0]+v[0]+w[0])/3; my=(u[1]+v[1]+w[1])/3
+                            r=max(1.0, min(8.0, abs(v[0]-u[0])*0.16))
+                            p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor.fromHsv(int(hue+70)%360,150,230,38))
+                            p.drawPolygon(QPolygonF([QPointF(mx-r,my),QPointF(mx+r*.4,my-r*.7),QPointF(mx+r*.5,my+r*.8)]))
+
+        def _draw_meum_mesh(self, p, project, cx, cy, R):
+            """Render connected 3-D scenograph faces, not just lines/grids.
+
+            Each active Meum object contributes a small local polyhedral patch;
+            deterministic cross-links then join nearby objects into triangular
+            faces.  GOAVA increases face density/transparency, while ordinary
+            seeds still receive a substantial baseline so the scenograph reads
+            as volumetric geometry.
+            """
+            g = self.game
+            layers = [L for L in getattr(g.scene, "layers", []) if L.get("on", True)]
+            if not layers:
+                return
+            goava = bool((getattr(g, "scene", None) and getattr(g.scene, "goava", False)) or
+                         (getattr(g, "id", {}) or {}).get("goava_active", False) or
+                         (getattr(g, "id", {}) or {}).get("engine_mask", {}).get("goava", False))
+            pts3 = []
+            for i, L in enumerate(layers):
+                a = float(L.get("yaw", 0.0)); r = float(L.get("dist", 1.0))
+                dep = max(0.25, float(L.get("depth", 1.0)))
+                rad = max(0.08, float(L.get("radius", 0.35)))
+                ph = float(L.get("face_phase", 0.0)) + self.phase * (0.35 + 0.08*i)
+                # Four local 3-D corners around the canonical object center.
+                corners=[]
+                for k in range(4):
+                    th = ph + k * math.tau / 4.0 + float(L.get("face_twist",0.0))*0.45
+                    rr = r + rad * (0.34 + 0.12 * self._rng(f"mesh:r:{i}:{k}"))
+                    yy = float(L.get("pitch",0.0)) + rad * 0.42 * vg_sin(th * MEUM + k)
+                    aa = a + (rad / max(0.25,r)) * vg_sin(th) * 0.8
+                    corners.append(project(aa, rr, yy, dep + 0.12*vg_cos(th)))
+                center=project(a,r,float(L.get("pitch",0.0)),dep)
+                pts3.append((L,corners,center))
+            # Local faces: two crossed triangles per object.  This is the
+            # primary volumetric GOAVA/Meum surface signal.
+            for i,(L,corners,center) in enumerate(pts3):
+                hue=float(L.get("hue",0.5))*360.0
+                fc=max(2,int(L.get("face_count",4)))
+                for f in range(fc):
+                    a=corners[(f*2)%4]; b=corners[(f*2+1)%4]; c=corners[(f*2+2)%4]
+                    if goava or f < 3 or self._rng(f"mesh:keep:{i}:{f}") > 0.42:
+                        alpha=(32 if not goava else 48) + int(18*float(L.get("life",0.7)))
+                        col=QColor.fromHsv(int(hue + 18*f + 25*self._rng(f"mesh:h:{i}:{f}"))%360,
+                                           150 + int(70*self._rng(f"mesh:s:{i}:{f}")),
+                                           130 + int(100*self._rng(f"mesh:v:{i}:{f}")), alpha)
+                        p.setPen(QPen(QColor.fromHsv(int(hue+45)%360,130,235,65 if goava else 38),1))
+                        p.setBrush(col)
+                        p.drawPolygon(QPolygonF([QPointF(a[0],a[1]),QPointF(b[0],b[1]),QPointF(c[0],c[1])]))
+            # Cross-object triangular faces. Deterministic pseudo-random skips
+            # prevent a regular lattice and produce the requested irregular
+            # faceted/GOAVA topology.
+            n=len(pts3)
+            density=0.78 if goava else 0.46
+            for i in range(n):
+                for j in range(i+1,min(n,i+6)):
+                    if self._rng(f"mesh:edge:{i}:{j}") > density:
+                        continue
+                    k=i+1+int(self._rng(f"mesh:tri:{i}:{j}")*max(1,n-i-1))
+                    if k>=n or k==j:
+                        k=(j+1)%n
+                    pa=pts3[i][2]; pb=pts3[j][2]; pc=pts3[k][2]
+                    hue=(float(pts3[i][0].get("hue",0.5))*360.0 + 35*j) % 360.0
+                    alpha=26 if not goava else 42
+                    p.setPen(QPen(QColor.fromHsv(int(hue)%360,160,240,55 if goava else 35),1))
+                    p.setBrush(QColor.fromHsv(int(hue)%360,145,205,alpha))
+                    p.drawPolygon(QPolygonF([QPointF(pa[0],pa[1]),QPointF(pb[0],pb[1]),QPointF(pc[0],pc[1])]))
+
+        def _draw_volumetric_linkages(self, p, project, cx, cy, R):
+            """Dense but bounded deterministic 3-D linkage field.
+
+            This deliberately adds *filled* triangular/quadrilateral faces plus
+            sparse line segments.  The probability field is seed-derived, so
+            the apparent randomness is repeatable and the linkage density can
+            rise with GOAVA without becoming a uniform wireframe.
+            """
+            g = self.game
+            layers = [L for L in getattr(g.scene, "layers", []) if L.get("on", True)]
+            if not layers:
+                return
+            goava = bool((getattr(g, "scene", None) and getattr(g.scene, "goava", False)) or
+                         (getattr(g, "id", {}) or {}).get("goava_active", False) or
+                         (getattr(g, "id", {}) or {}).get("engine_mask", {}).get("goava", False))
+            nodes=[]
+            for i,L in enumerate(layers):
+                a=float(L.get("yaw",0.0)); r=float(L.get("dist",1.0)); d=max(.2,float(L.get("depth",1.0)))
+                x,y,z=project(a,r,float(L.get("pitch",0.0)),d)
+                nodes.append((x,y,z,float(L.get("hue",.5))*360.0,i))
+            n=len(nodes)
+            meta = []
+            for i, L in enumerate(layers):
+                plen = max(1, int(L.get("pattern_length", 16) or 16))
+                zstep = int(L.get("z_step", i * 7)) % plen
+                meta.append((plen, zstep))
+
+            def _z_congruent(i, j, tolerance=0):
+                """Return whether two written algorithm phases may be linked.
+
+                The congruence is evaluated on the greatest-common-divisor
+                lattice.  Different pattern lengths therefore share links only
+                at compatible Z phases; longer algorithm spans do not erase the
+                phase relationship.  A small deterministic tolerance is used for
+                faces spanning three different pattern lengths.
+                """
+                pi, zi = meta[i]; pj, zj = meta[j]
+                g = math.gcd(pi, pj)
+                if ((zi - zj) % g) <= tolerance:
+                    return True
+                # Scale to the common algorithm span.  This second test permits
+                # exact rational phase correspondence when lengths differ.
+                return ((zi * pj - zj * pi) % math.lcm(pi, pj)) == 0
+
+            def _link_score(i, j):
+                pi, zi = meta[i]; pj, zj = meta[j]
+                span = math.lcm(pi, pj)
+                congr = 1.0 if _z_congruent(i, j) else 0.0
+                # Near phases on a shared span get a softer chance, while a
+                # broken congruence remains genuinely breakable.
+                dz = abs((zi * pj - zj * pi) % span)
+                dz = min(dz, span - dz)
+                phase = 1.0 - (dz / max(1.0, span * 0.5))
+                return 0.72 * congr + 0.28 * max(0.0, phase)
+
+            # Sparse stochastic-looking strokes: long, medium and micro links.
+            # Their existence is filtered by algorithmic Z-step congruence.
+            seg_prob = 0.30 if not goava else 0.54
+            for i in range(n):
+                max_j=min(n,i+9)
+                for j in range(i+1,max_j):
+                    q=self._rng(f"link:segment:{i}:{j}")
+                    compat = _link_score(i, j)
+                    # Congruence is a gate, not decoration: incompatible Z-step
+                    # phases are broken before geometric drawing is considered.
+                    if not _z_congruent(i, j):
+                        continue
+                    if q > seg_prob * (0.55 + 0.45 * compat):
+                        continue
+                    a=nodes[i]; b=nodes[j]
+                    bend=(self._rng(f"link:bend:{i}:{j}")-.5)*R*.055
+                    mx=(a[0]+b[0])*.5; my=(a[1]+b[1])*.5+bend
+                    hue=(a[3]+b[3])*.5
+                    alpha=26+int(32*self._rng(f"link:alpha:{i}:{j}"))
+                    if goava: alpha += 18
+                    p.setPen(QPen(QColor.fromHsv(int(hue)%360,155,235,min(110,alpha)),
+                                  1 if q>.62 else 2))
+                    p.drawLine(QPointF(a[0],a[1]),QPointF(mx,my))
+                    if self._rng(f"link:tail:{i}:{j}") > .38:
+                        p.drawLine(QPointF(mx,my),QPointF(b[0],b[1]))
+            # Volumetric faces: likelihood is distance/depth weighted so some
+            # connections become visible surfaces instead of a wireframe.
+            face_prob = 0.26 if not goava else 0.52
+            for i in range(n):
+                for j in range(i+1,min(n,i+6)):
+                    for k in range(j+1,min(n,j+5)):
+                        q=self._rng(f"link:face:{i}:{j}:{k}")
+                        congr = (_z_congruent(i, j) and _z_congruent(j, k) and _z_congruent(i, k))
+                        if not congr:
+                            continue
+                        compat = (_link_score(i, j) + _link_score(j, k) + _link_score(i, k)) / 3.0
+                        if q > face_prob * (0.52 + 0.48 * compat):
+                            continue
+                        a,b,c=nodes[i],nodes[j],nodes[k]
+                        area=abs((b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0]))
+                        if area < 7.0 or area > R*R*.42:
+                            continue
+                        hue=(a[3]+b[3]+c[3])/3.0
+                        alpha=(22+int(25*self._rng(f"link:facealpha:{i}:{j}:{k}")))
+                        if goava: alpha += 18
+                        col=QColor.fromHsv(int(hue)%360,130+int(70*self._rng(f"link:s:{i}:{j}:{k}")),
+                                            150+int(85*self._rng(f"link:v:{i}:{j}:{k}")),min(92,alpha))
+                        p.setPen(Qt.PenStyle.NoPen); p.setBrush(col)
+                        p.drawPolygon(QPolygonF([QPointF(a[0],a[1]),QPointF(b[0],b[1]),QPointF(c[0],c[1])]))
+                        # A small probability of a fourth point creates a
+                        # faceted tetra-like silhouette rather than only triangles.
+                        if n > 4 and self._rng(f"link:quad:{i}:{j}:{k}") > .72:
+                            m=(k+1+int(self._rng(f"link:qidx:{i}:{j}:{k}")*max(1,n-k-1)))%n
+                            d=nodes[m]
+                            p.setBrush(QColor.fromHsv(int((hue+28)%360),135,205,min(60,alpha)))
+                            p.drawPolygon(QPolygonF([QPointF(a[0],a[1]),QPointF(b[0],b[1]),QPointF(d[0],d[1]),QPointF(c[0],c[1])]))
+
+        def _draw_model(self, p, x, y, size, hue, kind="orb", alpha=230):
+            # Small procedural meshes: pyramid, crystal, tree, rock, beacon.
+            col = QColor.fromHsv(int(hue) % 360, 180, 235, alpha)
+            dark = QColor.fromHsv(int(hue + 25) % 360, 180, 100, alpha)
+            p.setPen(QPen(dark, 1))
+            p.setBrush(col)
+            s = max(3.0, float(size))
+            # GOAVA-style overlapping translucent micro-faces on every asset.
+            # They deliberately overlap the base silhouette instead of replacing
+            # it, restoring the faceted visual language without external art.
+            for fi in range(4):
+                fq=self._rng(f"model:{kind}:{round(x,1)}:{round(y,1)}:{fi}")
+                ang=fi*math.tau/4.0 + fq*math.tau
+                rr=s*(0.22+0.25*self._rng(f"model:r:{kind}:{fi}"))
+                qx=x+math.cos(ang)*rr; qy=y+math.sin(ang)*rr
+                pts=[QPointF(x,y), QPointF(qx+math.cos(ang+0.9)*s*.55,qy+math.sin(ang+0.9)*s*.55),
+                     QPointF(qx+math.cos(ang-0.9)*s*.45,qy+math.sin(ang-0.9)*s*.45)]
+                fc=QColor.fromHsv(int(hue+fi*37)%360,175,235,max(18,min(65,int(alpha*.22))))
+                p.setPen(Qt.PenStyle.NoPen); p.setBrush(fc); p.drawPolygon(QPolygonF(pts))
+            p.setPen(QPen(dark, 1))
+            p.setBrush(col)
+            if kind in ("crystal", "sigil", "beacon"):
+                pts = [QPointF(x, y-s), QPointF(x+s*.55, y), QPointF(x, y+s), QPointF(x-s*.55, y)]
+                p.drawPolygon(pts)
+                p.setBrush(dark)
+                p.drawPolygon([QPointF(x, y-s), QPointF(x+s*.55, y), QPointF(x, y+s*.18)])
+            elif kind in ("tree", "character"):
+                p.drawRect(int(x-s*.12), int(y), max(2,int(s*.24)), max(3,int(s*.8)))
+                p.drawEllipse(QPointF(x, y-s*.55), s*.62, s*.62)
+                p.setBrush(QColor.fromHsv(int(hue+80)%360, 150, 220, alpha))
+                p.drawEllipse(QPointF(x-s*.22, y-s*.72), s*.25, s*.25)
+                p.drawEllipse(QPointF(x+s*.22, y-s*.72), s*.25, s*.25)
+            elif kind == "rock":
+                p.drawPolygon([QPointF(x-s,y+s*.35), QPointF(x-s*.55,y-s*.55), QPointF(x+s*.2,y-s*.8), QPointF(x+s,y+s*.15), QPointF(x+s*.35,y+s*.65)])
+            else:
+                p.drawEllipse(QPointF(x, y), s, s)
+                p.setBrush(dark)
+                p.drawEllipse(QPointF(x-s*.3, y-s*.3), s*.3, s*.3)
+
+        def _draw_ground(self, p, project, R, cx, cy):
+            # 3D ground grid / horizon establishes depth and Y as the vertical axis.
+            tx = QColor(self.game.id.get("ui_palette", {}).get("text", "#e8f0ff"))
+            tx.setAlpha(24)
+            p.setPen(QPen(tx, 1))
+            for z in (0.5, 1.0, 1.5, 2.0, 3.0, 4.0):
+                last = None
+                for i in range(25):
+                    xw = -4.0 + i * 8.0 / 24.0
+                    yaw = math.atan2(z, max(0.001, xw))
+                    rr = math.hypot(xw, z)
+                    x, y, _ = project(yaw, rr, 0.0, 1.0)
+                    if last is not None:
+                        p.drawLine(QPointF(last[0], last[1]), QPointF(x, y))
+                    last = (x,y)
+            for xw in (-3,-2,-1,0,1,2,3):
+                last=None
+                for z in (0.35,0.6,1.0,1.6,2.5,4.0):
+                    yaw=math.atan2(z,xw if abs(xw)>1e-5 else 1e-5)
+                    rr=math.hypot(xw,z)
+                    x,y,_=project(yaw,rr,0.0,1.0)
+                    if last is not None: p.drawLine(QPointF(last[0],last[1]),QPointF(x,y))
+                    last=(x,y)
+
+        def draw(self, p, project, cx, cy, R):
+            g = self.game
+            self.phase += 0.01
+            pal = g.id.get("ui_palette", {})
+            tx = QColor(pal.get("text", "#e8f0ff"))
+            ac = QColor(pal.get("accent", "#3fa7ff"))
+            # Sky bands: deterministic 3D environment backdrop.
+            bg = QColor(pal.get("bg", "#0b1020"))
+            p.fillRect(0, 0, int(p.viewport().width()), int(p.viewport().height()), bg)
+            horizon = int(cy + R * 0.12)
+            sky = QColor.fromHsv((self.seed * 17) % 360, 92, 78, 255)
+            grad = QLinearGradient(0, 0, 0, max(1, horizon))
+            grad.setColorAt(0.0, QColor.fromHsv((self.seed * 17) % 360, 105, 48, 255))
+            grad.setColorAt(0.55, sky)
+            grad.setColorAt(1.0, QColor.fromHsv((self.seed * 17 + 38) % 360, 115, 62, 255))
+            p.fillRect(0, 0, int(p.viewport().width()), horizon, grad)
+            # Layered atmospheric texture, not a pair of flat rectangles.
+            for j in range(28):
+                q = self._rng(f"sky:{j}")
+                sx = q * p.viewport().width()
+                sy = (0.12 + 0.72*self._rng(f"sky:y:{j}")) * horizon
+                rr = 3 + 22*self._rng(f"sky:r:{j}")
+                cc = QColor.fromHsv((int(210 + 90*self._rng(f"sky:h:{j}")) % 360), 55, 175, 18 + int(28*self._rng(f"sky:a:{j}")))
+                p.setPen(Qt.PenStyle.NoPen); p.setBrush(cc); p.drawEllipse(QPointF(sx,sy),rr,rr*0.45)
+            self._draw_ground(p, project, R, cx, cy)
+            # True connected layered terrain topology.
+            self._draw_layered_terrain(p, project, cx, cy, R)
+
+            # Height-aware terrain quilt: overlapping irregular polygons create
+            # actual land masses rather than a flat rectangle/grid.
+            tw, th = p.viewport().width(), p.viewport().height()
+            for j in range(34):
+                q=self._rng(f"land:{j}")
+                ang=(q*2.0-1.0)*1.55
+                dist=0.75+6.5*self._rng(f"land:d:{j}")
+                depth=0.55+1.2*self._rng(f"land:z:{j}")
+                x,y,sz=project(ang,dist,0.0,depth)
+                n=6+int(self._rng(f"land:n:{j}")*4)
+                pts=[]
+                for k in range(n):
+                    aa=k*math.tau/n
+                    rr=sz*(1.0+0.38*self._rng(f"land:r:{j}:{k}"))
+                    lift=sz*0.22*(self._rng(f"land:h:{j}:{k}")-0.5)
+                    pts.append(QPointF(x+math.cos(aa)*rr, y+math.sin(aa)*rr*0.42+lift))
+                hue=int((self.seed*17+90*self._rng(f"land:hue:{j}"))%360)
+                c=QColor.fromHsv(hue,95+int(55*self._rng(f"land:s:{j}")),95+int(75*self._rng(f"land:v:{j}")),85)
+                p.setPen(QPen(QColor.fromHsv(hue,120,190,45),1)); p.setBrush(c); p.drawPolygon(QPolygonF(pts))
+                # clipped micro-facets over the land mass
+                p.save(); path=QPainterPath(); path.addPolygon(QPolygonF(pts)); p.setClipPath(path)
+                self._draw_texture_facets(p,x,y,sz*1.2,sz*.65,f"landtex:{j}","terrain",95); p.restore()
+
+            # Broad faceted terrain sheets create the continuous textured floor.
+            for j in range(48):
+                q = self._rng(f"terrain:{j}")
+                ang = (q*2.0-1.0) * 1.35
+                dist = 0.9 + 5.2*self._rng(f"terrain:d:{j}")
+                x,y,sz = project(ang, dist, 0.0, 0.8 + 0.8*self._rng(f"terrain:z:{j}"))
+                self._draw_texture_facets(p, x, y+sz*0.6, sz*2.6, sz*1.2, f"terrain:{j}", "terrain", 52)
+
+            # Deterministic environmental set: large readable 3D landmarks,
+            # generated directly from the world seed. These are independent of
+            # the old radial UI markers so the open world reads as a place.
+            def world_project(wx, wz, wy=0.0, depth=1.0):
+                dx = float(wx) - float(getattr(g, "player_x", 0.0))
+                dz = float(wz) - float(getattr(g, "player_z", 0.0))
+                rr = math.hypot(dx, dz)
+                if rr < 1e-5:
+                    aa = float(getattr(g, "steer", 0.0))
+                    rr = 1e-5
+                else:
+                    aa = math.atan2(dz, dx)
+                return project(aa, rr, wy, depth)
+
+            # Infinite-feeling deterministic streaming world.  Geometry is
+            # generated from integer chunk coordinates, so moving never reaches
+            # an authored boundary and the same seed always produces the same
+            # landscape.  Only nearby chunks are presented each frame.
+            env = []
+            px = float(getattr(g, "player_x", 0.0))
+            pz = float(getattr(g, "player_z", 0.0))
+            chunk_size = 12.0
+            ccx = math.floor(px / chunk_size)
+            ccz = math.floor(pz / chunk_size)
+            for gx in range(int(ccx) - 2, int(ccx) + 3):
+                for gz in range(int(ccz) - 2, int(ccz) + 3):
+                    for j in range(18):
+                        tag = f"chunk:{gx}:{gz}:{j}"
+                        rx = self._rng(tag + ":x")
+                        rz = self._rng(tag + ":z")
+                        ex = (gx + rx) * chunk_size
+                        ez = (gz + rz) * chunk_size
+                        # Keep the immediate player area readable.
+                        if math.hypot(ex - px, ez - pz) < 1.8:
+                            continue
+                        et = int(self._rng(tag + ":type") * 8.0) % 8
+                        env.append((ex, ez, et, self._rng(tag + ":scale")))
+            env.sort(key=lambda q: -(math.hypot(q[0] - px, q[1] - pz)))
+            for ex, ez, et, escale in env:
+                x, y, sz = world_project(ex, ez, 0.0, 1.0)
+                sz *= 0.72 + 0.72 * float(escale)
+                if x < -120 or x > self.width if hasattr(self, "width") else False:
+                    pass
+                hue = 35 + et * 55
+                if et == 0:
+                    # tree: trunk + canopy with ground shadow
+                    p.setPen(QPen(QColor(30, 22, 18, 230), 1))
+                    p.setBrush(QColor(100, 70, 40, 230))
+                    p.drawRect(QRectF(x-sz*.12, y-sz*.15, sz*.24, sz*1.0))
+                    p.setBrush(QColor.fromHsv(hue, 170, 190, 235))
+                    p.drawEllipse(QPointF(x, y-sz*.65), sz*.72, sz*.62)
+                elif et == 1:
+                    self._draw_model(p, x, y, sz*1.6, hue, "rock", 235)
+                elif et == 2:
+                    # building/tower silhouette
+                    p.setPen(QPen(QColor(40,45,60,240), 2))
+                    p.setBrush(QColor.fromHsv(hue, 100, 150, 240))
+                    p.drawPolygon([QPointF(x-sz, y+sz*.5), QPointF(x-sz*.75,y-sz*1.0), QPointF(x+sz*.55,y-sz*1.0), QPointF(x+sz,y+sz*.5)])
+                    p.setBrush(QColor(230,210,120,230))
+                    for wy in (-.55,-.1,.35): p.drawRect(QRectF(x-sz*.45, y+sz*wy, sz*.22, sz*.16))
+                elif et == 3:
+                    # crystal cluster
+                    for j in range(3): self._draw_model(p, x+(j-1)*sz*.45, y-j*sz*.12, sz*(.75+.15*j), hue+j*25, "crystal", 230)
+                elif et == 4:
+                    # camp / market cluster
+                    p.setPen(QPen(QColor(55,38,28,235), 1))
+                    p.setBrush(QColor(125,82,48,235))
+                    p.drawPolygon([QPointF(x-sz*.8,y+sz*.45), QPointF(x,y-sz*.35), QPointF(x+sz*.8,y+sz*.45)])
+                    p.setBrush(QColor(210,175,90,220))
+                    p.drawEllipse(QPointF(x,y+sz*.15), sz*.16, sz*.16)
+                elif et == 5:
+                    # bridge / road marker
+                    p.setPen(QPen(QColor(95,86,70,230), max(2,int(sz*.12))))
+                    p.drawLine(QPointF(x-sz*1.1,y+sz*.45), QPointF(x+sz*1.1,y+sz*.45))
+                    p.setPen(QPen(QColor(170,145,90,180), 1))
+                    p.drawLine(QPointF(x-sz*.8,y), QPointF(x+sz*.8,y))
+                elif et == 6:
+                    # large ancient monolith
+                    p.setPen(QPen(QColor(42,48,62,245), 2))
+                    p.setBrush(QColor(72,78,95,240))
+                    p.drawPolygon([QPointF(x-sz*.55,y+sz*.65), QPointF(x-sz*.42,y-sz*1.2), QPointF(x+sz*.35,y-sz*.95), QPointF(x+sz*.58,y+sz*.65)])
+                    p.setBrush(QColor.fromHsv((hue+180)%360,130,220,220))
+                    p.drawEllipse(QPointF(x,y-sz*.3), sz*.16, sz*.16)
+                else:
+                    # beacon/portal landmark
+                    self._draw_model(p, x, y-sz*.25, sz*1.45, hue, "beacon", 235)
+                self._draw_texture_facets(p, x, y, max(4.0, sz*1.35), max(3.0, sz*0.95), f"{ex:.2f}:{ez:.2f}", ("crystal" if et == 3 else "foliage" if et == 0 else "ruin" if et in (2,6) else "terrain"), 78)
+
+            # Volumetric Meum/GOAVA face network sits behind the solid props so
+            # the scene reads as connected 3-D geometry instead of a line grid.
+            self._draw_meum_mesh(p, project, cx, cy, R)
+            # Additional probabilistic linkage layer: deliberately independent
+            # of the regular grid so the scenograph reads as a volume.
+            self._draw_volumetric_linkages(p, project, cx, cy, R)
+
+            # Deterministic atmospheric motes and distant volumetric specks add
+            # depth without introducing frame-to-frame randomness.
+            for mi in range(34 if topo == "open_world" else 18):
+                q=self._rng(f"mote:{mi}")
+                a=q*math.tau
+                r=0.8+4.8*self._rng(f"mote:r:{mi}")
+                yy=-0.25+0.9*self._rng(f"mote:y:{mi}")
+                x,y,sz=project(a,r,yy,0.45+1.2*self._rng(f"mote:d:{mi}"))
+                mc=QColor.fromHsv(int(180+120*self._rng(f"mote:h:{mi}"))%360,90,225,
+                                  22+int(38*self._rng(f"mote:a:{mi}")))
+                p.setPen(Qt.PenStyle.NoPen); p.setBrush(mc)
+                p.drawEllipse(QPointF(x,y),max(1.0,sz*.28),max(1.0,sz*.28))
+
+            drawables=[]
+            # Fractal scene models.
+            for L in getattr(g.scene, "layers", []):
+                if not L.get("on", True): continue
+                drawables.append((float(L.get("dist",1.0)), "model", L))
+            # Characters / creatures / props from gameplay systems.
+            for n in getattr(g.npcs, "npcs", []): drawables.append((float(n.get("radius",1.0)), "npc", n))
+            for m in getattr(g.pve, "mobs", []):
+                if m.get("alive", True): drawables.append((float(m.get("radius",1.0)), "mob", m))
+            for k,(a,r,v) in enumerate(getattr(g.resources,"pos",[])):
+                if k not in getattr(g.resources,"taken",set()): drawables.append((float(r),"resource",(a,r,v,k)))
+            for k,(a,r) in enumerate(getattr(g.waypoints,"pos",[])):
+                if k not in getattr(g.waypoints,"hit",set()): drawables.append((float(r),"waypoint",(a,r,k)))
+            for a1,a2,r in getattr(g.portals,"gates",[]): drawables.append((float(r),"portal",(a1,a2,r)))
+
+            # Far-to-near painter ordering.
+            drawables.sort(key=lambda q:q[0], reverse=True)
+            for dist, typ, obj in drawables:
+                if typ == "model":
+                    a=float(obj.get("yaw",0.0)); r=float(obj.get("dist",1.0)); dep=float(obj.get("depth",1.0))
+                    x,y,sz=project(a,r,float(obj.get("pitch",0.0)),dep)
+                    hue=float(obj.get("hue",0.5))*360.0
+                    self._draw_model(p,x,y+sz*.25,max(4,sz*1.7),hue,obj.get("kind","orb"),190)
+                    # child mesh / fractal detail
+                    self._draw_model(p,x+sz*.55,y-sz*.35,max(2,sz*.55),hue+35,obj.get("kind","orb"),150)
+                elif typ == "npc":
+                    a=float(obj.get("angle",0)); r=float(obj.get("radius",1))
+                    x,y,sz=project(a,r,0.25,0.9); self._draw_model(p,x,y,sz*1.7,self._rng(obj.get("name"))*360,"character",245)
+                    p.setPen(QPen(tx,1)); p.drawText(int(x+sz),int(y-sz),str(obj.get("name","NPC"))[:12])
+                elif typ == "mob":
+                    a=float(obj.get("angle",0)); r=float(obj.get("radius",1)); x,y,sz=project(a,r,-0.1,1.0)
+                    self._draw_model(p,x,y,sz*1.25,10,"rock",230)
+                elif typ == "resource":
+                    a,r,v,k=obj; x,y,sz=project(a,r,0.05,0.8); self._draw_model(p,x,y,sz*1.15,125,"crystal",220)
+                elif typ == "waypoint":
+                    a,r,k=obj; x,y,sz=project(a,r,0.15,0.75); self._draw_model(p,x,y,sz*1.3,50,"beacon",235)
+                elif typ == "portal":
+                    a1,a2,r=obj; x,y,sz=project(a1,r,0.0,0.7); self._draw_model(p,x,y,sz*2.0,280,"beacon",220)
+
+            # Emergent rare objects: persistent consequences/anchors generated by events.
+            for o in getattr(g, 'world_events', None).rare_objects if getattr(g, 'world_events', None) else []:
+                xw,zw=float(o.get('x',0)),float(o.get('z',0)); ox,oy,os=world_project(xw,zw,0.0,0.86)
+                age=float(o.get('age',0)); pulse=.65+.35*math.sin(age*2.1)
+                kind=str(o.get('kind','rare'))
+                hue={'meteor_core':28,'sky_shard':195,'rift_seed':285,'ancient_relay':48,'hunt_totem':8}.get(kind,160)
+                p.setPen(QPen(QColor.fromHsv(int(hue)%360,170,245,190),max(1,int(os*.09))))
+                p.setBrush(QColor.fromHsv(int(hue)%360,150,225,int(95+55*pulse)))
+                poly=[]
+                for q in range(7):
+                    aa=math.tau*q/7.0 + .13*self._rng(f'rare:{o.get("id")}:a:{q}')
+                    rr=os*(.65+.45*self._rng(f'rare:{o.get("id")}:r:{q}'))
+                    poly.append(QPointF(ox+math.cos(aa)*rr, oy+math.sin(aa)*rr*.55))
+                p.drawPolygon(poly)
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                for q in range(3):
+                    p.drawEllipse(QPointF(ox,oy),max(2,os*(.18+.12*q)),max(2,os*(.08+.06*q)))
+
+            # Deterministic meteorite events: incoming trail + impact crater + ejecta facets.
+            for m in getattr(g, 'meteors', None).impacts if getattr(g, 'meteors', None) else []:
+                dx=m['x']-float(getattr(g,'player_x',0.0)); dz=m['z']-float(getattr(g,'player_z',0.0))
+                aa=math.atan2(dz,dx); rr=math.hypot(dx,dz); x,y,sz=world_project(m['x'],m['z'],0.0,0.82)
+                age=float(m['age']); life=float(m['life']); pulse=max(0.0,1.0-age/max(life,0.1))
+                # descending projectile path in screen space
+                tx=x-(0.9+1.5*pulse)*sz; ty=y-(3.0+5.0*pulse)*sz
+                p.setPen(QPen(QColor(255,190,80,90+int(110*pulse)), max(2,int(sz*.16))))
+                p.drawLine(QPointF(tx,ty),QPointF(x,y))
+                p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor(255,95,35,130+int(80*pulse)))
+                p.drawEllipse(QPointF(tx,ty),max(2,sz*.32),max(2,sz*.32))
+                p.setBrush(QColor(55,42,35,110)); p.drawEllipse(QPointF(x,y+sz*.18),max(3,sz*m['radius']*.75),max(2,sz*m['radius']*.26))
+                for ej in range(7):
+                    ea=self._rng(f'eject:{m["window"]}:{ej}')*math.tau; er=(0.3+1.2*self._rng(f'eject:r:{m["window"]}:{ej}'))*sz*m['radius']
+                    ex=x+math.cos(ea)*er; ey=y+math.sin(ea)*er*.35
+                    p.setBrush(QColor.fromHsv(int(25+55*self._rng(f'eject:h:{m["window"]}:{ej}'))%360,170,220,75))
+                    p.drawEllipse(QPointF(ex,ey),max(1,sz*.08),max(1,sz*.05))
+
+            # Critical measures become audiovisual geometry.  Common measures use
+            # compact deterministic primitives; rarity > .50 deliberately bypasses
+            # the startup asset cache and synthesizes a fresh faceted asset for this
+            # frame/event bucket, so rare states feel born rather than retrieved.
+            try:
+                c=getattr(g,'critical',None)
+                if c is not None:
+                    cv=c.values
+                    center=(cx,cy-ps*.55) if 'ps' in locals() else (cx,cy-18)
+                    rings=(('survival',28),('possessions',125),('fortune',205),('relations',280),
+                           ('resonance',45),('curiosity',175),('influence',315),('memory',95),('strangeness',345))
+                    for ri,(name,hue) in enumerate(rings):
+                        val=float(cv.get(name,0.0)); rarity=c.rarity(name,g)
+                        if val<0.08 and ri>2: continue
+                        rad=10+ri*3+val*24
+                        alpha=28+int(70*val)
+                        p.setPen(QPen(QColor.fromHsv(hue,170,240,alpha),1 if ri>2 else 2))
+                        p.setBrush(Qt.BrushStyle.NoBrush)
+                        p.drawEllipse(QPointF(center[0],center[1]),rad,rad*.42)
+                        # Live generation for rare measures: no cache lookup.
+                        if rarity>0.5 and val>0.25:
+                            img=self._make_asset_texture(f"LIVE:{name}:{int(g.t*6)}:{round(val,3)}",48+ri*4,48+ri*4)
+                            p.save(); p.setOpacity(min(0.75,0.18+0.5*val))
+                            p.drawImage(QRectF(center[0]-rad*.35,center[1]-rad*.35,rad*.7,rad*.7),img); p.restore()
+                            for q in range(3):
+                                aa=float(g.t)*(0.4+0.07*ri)+q*math.tau/3
+                                rr=rad*(0.65+0.12*q)
+                                p.setPen(QPen(QColor.fromHsv((hue+55*q)%360,180,250,90),1))
+                                p.drawLine(QPointF(center[0]+math.cos(aa)*rr,center[1]+math.sin(aa)*rr*.42),QPointF(center[0]+math.cos(aa+.35)*rr*1.12,center[1]+math.sin(aa+.35)*rr*.42))
+            except Exception:
+                pass
+
+            # Player avatar: centered, with a 3D shadow and facing marker.
+            ps=max(7.0,8.0*math.sqrt(max(.35,float(getattr(g,"zoom",1.0)))))
+            p.setPen(QPen(QColor(0,0,0,130),2)); p.setBrush(QColor(0,0,0,100)); p.drawEllipse(QPointF(cx,cy+ps*.8),ps*1.2,ps*.35)
+            self._draw_model(p,cx,cy,ps*1.25,180,"character",255)
+
+        def ambient_audio(self, dt):
+            self._ambient_cd -= float(dt)
+            if self._ambient_cd > 0: return
+            self._ambient_cd = 1.75 + 2.0*self._rng("audio")
+            try:
+                g=self.game
+                # Existing LiveSFX system becomes the world soundscape: footsteps
+                # follow movement, while distant world events remain deterministic.
+                moving=abs(float(g.move.get("dx",0)))+abs(float(g.move.get("dz",0)))>1e-6
+                if moving: g.sfx.trigger("click",0.12)
+                elif self._rng(f"amb:{int(g.t*2)}") > 0.72: g.sfx.trigger("chime",0.08)
+                c=getattr(g,"critical",None)
+                if c is not None and c.events:
+                    ev=c.events[-1]
+                    if ev.get("live_asset") and self._rng(f"critical:amb:{int(g.t*2)}")>0.62:
+                        g.sfx.trigger("critical:rare",0.10+0.12*float(ev.get("value",0)))
+            except Exception: pass
+
     class SceneViewport(QWidget):
         def __init__(self, game, parent=None):
             super().__init__(parent)
@@ -5885,7 +7166,13 @@ if HAS_UI:
             self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             self.setFocus()
             self._last_mouse = None
+            self._held_movement = set()
+            self._mouse_captured = False
+            self._pan_drag = False
+            self._pan_last = None
             self.setMouseTracking(True)
+            self.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
+            self.world_renderer = ProceduralWorldRenderer(game)
 
         def _cell_at(self, pos):
             w, h = self.width(), self.height()
@@ -5900,34 +7187,86 @@ if HAS_UI:
                 return r, c
             return None
 
-        def mousePressEvent(self, e):
+        def _apply_held_movement(self):
             g = self.game
+            held = self._held_movement
+            dx = (1.0 if "D" in held else 0.0) - (1.0 if "A" in held else 0.0)
+            dz = (1.0 if "W" in held else 0.0) - (1.0 if "S" in held else 0.0)
+            g._held_movement = {"dx": dx, "dz": dz}
+            g.move["dx"] = dx
+            g.move["dz"] = dz
+
+        def keyPressEvent(self, e):
+            k = e.key()
+            if k in (Qt.Key.Key_W, Qt.Key.Key_A, Qt.Key.Key_S, Qt.Key.Key_D):
+                self.setFocus(Qt.FocusReason.OtherFocusReason)
+                self._held_movement.add({Qt.Key.Key_W:"W", Qt.Key.Key_A:"A", Qt.Key.Key_S:"S", Qt.Key.Key_D:"D"}[k])
+                self._apply_held_movement()
+                e.accept()
+                return
+            if k == Qt.Key.Key_Space:
+                self.game.activate()
+                e.accept()
+                return
+            super().keyPressEvent(e)
+
+        def keyReleaseEvent(self, e):
+            k = e.key()
+            if k in (Qt.Key.Key_W, Qt.Key.Key_A, Qt.Key.Key_S, Qt.Key.Key_D):
+                self._held_movement.discard({Qt.Key.Key_W:"W", Qt.Key.Key_A:"A", Qt.Key.Key_S:"S", Qt.Key.Key_D:"D"}[k])
+                self._apply_held_movement()
+                e.accept()
+                return
+            super().keyReleaseEvent(e)
+
+        def _set_mouse_capture(self, enabled):
+            self._mouse_captured = bool(enabled)
+            if self._mouse_captured:
+                self.setCursor(Qt.CursorShape.BlankCursor)
+                self.setMouseTracking(True)
+                center=self.mapToGlobal(self.rect().center())
+                QCursor.setPos(center)
+                self._last_mouse=self.rect().center()
+            else:
+                self.unsetCursor()
+                self._last_mouse=None
+
+        def mousePressEvent(self, e):
+            g=self.game
             self.setFocus(Qt.FocusReason.MouseFocusReason)
-            if e.button() == Qt.MouseButton.LeftButton:
-                if getattr(g, "hotseat", {}).get("active") and hasattr(g, "chess"):
-                    sq = self._cell_at(e.position())
-                    if sq is not None:
-                        g.chess_click(sq)
-                        self.update()
-                        return
-                g.activate()
-                g.sfx.trigger("click", 0.5)
-                self.update()
+            if e.button()==Qt.MouseButton.RightButton:
+                self._set_mouse_capture(not self._mouse_captured)
+                g.push_status("MOUSE LOOK: captured" if self._mouse_captured else "MOUSE LOOK: released")
+                e.accept(); return
+            if e.button()==Qt.MouseButton.MiddleButton:
+                self._pan_drag=True; self._pan_last=e.position(); e.accept(); return
+            if e.button()==Qt.MouseButton.LeftButton:
+                g.activate(); g.sfx.trigger("click",0.5); self.update()
+                if not self._mouse_captured: self._set_mouse_capture(True)
+                e.accept(); return
             super().mousePressEvent(e)
 
         def mouseMoveEvent(self, e):
-            g = self.game
-            now = e.position()
-            if self._last_mouse is not None:
-                dx = float(now.x() - self._last_mouse.x())
-                dy = float(now.y() - self._last_mouse.y())
-                g.aim_at(dyaw=dx * 0.003, dpitch=dy * 0.002)
-            self._last_mouse = now
-            self.update()
-            super().mouseMoveEvent(e)
+            g=self.game; now=e.position()
+            if self._pan_drag and self._pan_last is not None:
+                dx=float(now.x()-self._pan_last.x()); dy=float(now.y()-self._pan_last.y())
+                g.camera_pan_x=max(-0.8,min(0.8,float(getattr(g,'camera_pan_x',0.0))+dx/max(1.0,self.width())*1.6))
+                g.camera_pan_y=max(-0.6,min(0.6,float(getattr(g,'camera_pan_y',0.0))+dy/max(1.0,self.height())*1.2))
+                self._pan_last=now; self.update(); e.accept(); return
+            if self._mouse_captured:
+                dx=float(now.x()-self._last_mouse.x()) if self._last_mouse is not None else 0.0
+                dy=float(now.y()-self._last_mouse.y()) if self._last_mouse is not None else 0.0
+                if abs(dx)+abs(dy)>0.0:
+                    g.aim_at(dyaw=dx*0.0018, dpitch=dy*0.0012)
+                    QCursor.setPos(self.mapToGlobal(self.rect().center()))
+                    self._last_mouse=self.rect().center()
+            else:
+                self._last_mouse=now
+            self.update(); super().mouseMoveEvent(e)
 
-        def mouseReleaseEvent(self, e):
-            self._last_mouse = None
+        def mouseReleaseEvent(self,e):
+            if e.button()==Qt.MouseButton.MiddleButton:
+                self._pan_drag=False; self._pan_last=None; e.accept(); return
             super().mouseReleaseEvent(e)
 
         def wheelEvent(self, e):
@@ -6043,9 +7382,9 @@ if HAS_UI:
                 ox = _wx * scale
                 oy = pitch * scale
                 oz = _wz * scale + 1.0
-                cyaw = math.radians(float(g.visual_view.get("yaw_deg",0.0))) + float(g.aim_in.get("yaw",0.0))
-                cpit = math.radians(float(g.visual_view.get("pitch_deg",0.0))) + float(g.aim_in.get("pitch",0.0))
-                croll = math.radians(float(g.visual_view.get("roll_deg",0.0)))
+                cyaw = float(getattr(g, "camera_yaw", 0.0))
+                cpit = float(getattr(g, "camera_pitch", 0.0))
+                croll = math.radians(float(g.visual_view.get("roll_deg",0.0)) + float(getattr(g, "camera_roll", 0.0)) * 57.29577951308232)
                 c, ss = vg_cos(cyaw), vg_sin(cyaw)
                 x1, z1 = ox*c - oz*ss, ox*ss + oz*c
                 c, ss = vg_cos(cpit), vg_sin(cpit)
@@ -6054,8 +7393,8 @@ if HAS_UI:
                 x2, y2 = x1*c - y1*ss, x1*ss + y1*c
                 f = math.tan(math.radians(_fov) * 0.5)
                 inv = 1.0 / max(0.12, z2)
-                x = cx + (x2 * inv / max(f,0.05)) * R * 0.72
-                y = cy - (y2 * inv / max(f,0.05)) * R * 0.72
+                x = cx + (x2 * inv / max(f,0.05)) * R * 0.72 + float(getattr(g,"camera_pan_x",0.0))*R
+                y = cy - (y2 * inv / max(f,0.05)) * R * 0.72 + float(getattr(g,"camera_pan_y",0.0))*R
                 sz = max(2.0, (6.0 + 10.0 * (1.2 - min(depth, 1.8))) * scale * min(1.8, inv))
                 return x, y, sz
 
@@ -6117,7 +7456,7 @@ if HAS_UI:
                     p.drawEllipse(QPointF(x, y), sz, sz * 0.72)
 
             # Soft world ring (less dominant in open_world)
-            ring_a = 90 if topo in ("open_world", "hub_spoke") else 180
+            ring_a = 0 if topo == "open_world" else (90 if topo == "hub_spoke" else 180)
             ring_col = QColor(tx)
             ring_col.setAlpha(ring_a)
             p.setPen(QPen(ring_col, 1))
@@ -6232,24 +7571,12 @@ if HAS_UI:
                 p.setPen(QPen(QColor(tx), 1))
                 p.drawText(int(x + 6), int(y - 2), n["name"][:10])
 
-            # The player is the camera origin in every view. Do not draw the
-            # avatar on the old radial ``angle`` ring.
-            _ps = max(7.0, 8.0 * math.sqrt(max(0.35, float(getattr(g, "zoom", 1.0)))))
-            p.setPen(QPen(QColor(ac), 2))
-            p.setBrush(QColor(ac))
-            p.drawEllipse(QPointF(cx, cy), _ps, _ps)
-            p.drawLine(QPointF(cx, cy), QPointF(cx + _ps * math.sin(float(g.steer)), cy - _ps * math.cos(float(g.steer))))
+            # Full open-world presentation: procedural 3D-feeling models, sprites,
+            # characters, props and depth, followed by the screen-space overlay.
+            self.world_renderer.draw(p, project, cx, cy, R)
+            self.world_renderer.ambient_audio(0.033)
             p.setPen(QPen(QColor(tx), 1))
-            p.drawText(int(cx + _ps + 3), int(cy - _ps - 4), str(g.player_name or "You")[:12])
-            for name, rec in sorted((g.remotes or {}).items()):
-                draw_face(name, float(rec.get("angle", 0.0)), QColor(dg), 6)
-
-            _ay = cx + math.sin(float(g.steer)) * R * 0.18
-            _ax = cy - math.cos(float(g.steer)) * R * 0.18
-            _ac = QColor("#ffcc66")
-            _ac.setAlpha(120)
-            p.setPen(QPen(_ac, 1))
-            p.drawLine(QPointF(cx, cy), QPointF(_ay, _ax))
+            p.drawText(int(cx + 12), int(cy - 12), str(g.player_name or "You")[:12])
 
             # ── Persistent HUD overlay: always know what you're doing ──
             try:
@@ -6316,6 +7643,43 @@ if HAS_UI:
                     p.drawText(w - 306, ry, line[:56])
                     ry += 15
 
+            # 2.5D OVERLAY CONTRACT: screen-space UI owns dimensions 1/2 while
+            # the world renderer owns X/Y/Z.  It never changes world coordinates.
+            ov = QColor(ac); ov.setAlpha(90)
+            p.setPen(QPen(ov, 1))
+            p.drawLine(10, 42, min(w-10, 300), 42)
+            p.setPen(QPen(QColor(tx), 1))
+            p.drawText(12, 56, f"3D WORLD · X={getattr(g,'player_x',0.0):+.2f}  Y={getattr(g,'player_y',0.0):+.2f}  Z={getattr(g,'player_z',0.0):+.2f}")
+
+            # LIVE PHYSICS PLOT: compact plot-providing telemetry, not merely
+            # a decorative graph. It exposes recent speed and sequence motion
+            # so the player can see exactly how inputs become movement.
+            hist = list(getattr(g, "physics_history", []) or [])[-90:]
+            if len(hist) >= 2 and w > 520 and h > 300:
+                px0, py0, pw, ph = 12, h - 108, 250, 68
+                bgp = QColor(bg); bgp.setAlpha(185); p.fillRect(px0, py0, pw, ph, bgp)
+                p.setPen(QPen(QColor(ac), 1)); p.drawRect(px0, py0, pw, ph)
+                p.setFont(QFont("Sans", 7)); p.drawText(px0 + 5, py0 + 10, "PHYSICS TRACE · speed / sequence motion")
+                vals = [max(0.0, min(1.0, float(r.get("speed", 0.0)) / max(0.001, float(getattr(g, "physics_max_speed", 7.5))))) for r in hist]
+                pts = []
+                for i, v in enumerate(vals):
+                    xx = px0 + 5 + (pw - 10) * i / max(1, len(vals)-1)
+                    yy = py0 + ph - 7 - (ph - 20) * v
+                    pts.append(QPointF(xx, yy))
+                for a,b in zip(pts, pts[1:]):
+                    p.drawLine(a, b)
+                cur = hist[-1]
+                p.setPen(QPen(QColor(tx), 1))
+                p.drawText(px0 + 5, py0 + ph - 7,
+                           f"v={float(cur.get('speed',0)):.2f}  a=({float(cur.get('ax',0)):+.2f},{float(cur.get('az',0)):+.2f})  step={int(cur.get('step',0))}")
+
+            # World annotation near the player: explicit cause/effect labels.
+            p.setFont(QFont("Sans", 8, QFont.Weight.Bold))
+            p.setPen(QPen(QColor(tx), 1))
+            p.drawText(12, h - 118,
+                       f"PLAYER PHYSICS: velocity=({float(getattr(g,'velocity_x',0)):+.2f}, {float(getattr(g,'velocity_z',0)):+.2f})  "
+                       f"sequence step={int(getattr(g,'sequence_step',0))}  movement×{float(getattr(g,'sequence_motion_factor',1.0)):.2f}")
+
             # ── ESC menu: full active-element readout ──
             if getattr(g, "menu_open", False):
                 overlay = QColor(bg)
@@ -6378,13 +7742,16 @@ if HAS_UI:
             self.tags_lbl = QLabel("Tags: starter")
             self.kind_lbl = QLabel(f"Kind: {g.software_kind}  (always sound+visual+UI)")
             self.fn_lbl = QLabel("Fn: —")
+            self.controls_lbl = QLabel("Controls: WASD move · mouse look · LMB interact · RMB capture/release · MMB pan · wheel zoom")
+            self.controls_lbl.setWordWrap(True)
+            self.audio_lbl = QLabel("Audio: initializing…")
             self.fn_lbl.setWordWrap(True)
             self.djbar = QProgressBar()
             self.djbar.setRange(0, 1000)
             self.djbar.setValue(0)
             self.djbar.setTextVisible(False)
             for lbl in (self.pos_lbl, self.act_lbl, self.score_lbl, self.level_lbl, self.sigil_lbl, self.eco_lbl,
-                        self.quest_lbl, self.tags_lbl, self.kind_lbl, self.fn_lbl):
+                        self.quest_lbl, self.tags_lbl, self.kind_lbl, self.fn_lbl, self.controls_lbl, self.audio_lbl):
                 vb.addWidget(lbl)
             vb.addWidget(self.djbar)
             lay.addWidget(box)
@@ -6743,6 +8110,9 @@ if HAS_UI:
             self.timer.timeout.connect(self._tick)
             self.timer.start()
             self._last = time.monotonic()
+            audio_ok = bool(getattr(game, "start_audio", lambda: False)())
+            try: self.panel.audio_lbl.setText("Audio: LIVE" if audio_ok else "Audio: unavailable (install sounddevice/PortAudio)")
+            except Exception: pass
             if game.online:
                 name, ok = QInputDialog.getText(self, "Player name", "Name on the orbit:", text="Player")
                 if ok and name.strip():
@@ -6752,6 +8122,13 @@ if HAS_UI:
                 self.panel.append_status(f"[{entry['t']:.1f}] {entry['sender']}: {entry['text']}")
             self._splash_active = False
             self._splash_until = 0.0
+
+        def closeEvent(self, event):
+            try: self.timer.stop()
+            except Exception: pass
+            try: self.game.stop_audio()
+            except Exception: pass
+            super().closeEvent(event)
 
         def run_splash(self):
             """Visible splash: composition bed plays while a title overlay is shown."""
