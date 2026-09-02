@@ -27075,19 +27075,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 ratio_pct = float(self.spin_clip_ratio.value())
         except Exception:
             pass
-        r = float(np.clip(ratio_pct / 100.0, 0.0, 1.0))
-        # Linear drive into the clipper — not a soft curve, not a compressor.
-        drive = float(1.0 + 1.5 * r)  # 1.0 .. 2.5
+        # FREE_SPECTRUM_2026: Master Volume only. No drive, no clip, no EQ,
+        # no limiter, no normalizer, no alias transform.
+        drive = 1.0  # retained in report for compatibility; never applied
         vol = 1.0
         if apply_master_vol:
             try:
                 vol = float(getattr(self, "master_volume", 0.5) or 0.5)
             except Exception:
                 vol = 0.5
-        scaled = m32 * np.float32(vol * drive)
-        # FREE_SPECTRUM_2026: no hard clip.  Peaks that carry high-frequency
-        # content are left intact.  Float32 export / the host can interleave
-        # as-is; any format-required bound is the player's responsibility.
+        scaled = m32 * np.float32(vol)
         out = scaled.astype(np.float32)
         # START_AMP_2026: amplitude is always 0 at the very first sample of
         # the track so instruments begin from silence, not a phase-biased hit.
@@ -28379,13 +28376,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     }
                 b = param_base[name]
                 phase = (seed * 0.001 + i * PHI_INV + t * math.tau * (1.0 + PHI_INV * i))
-                # FREE_MOD_2026: no floors/ceilings on modulation rates or depths.
+                # FREE_MOD_2026: rates/depths free; drive/filter are NOT applied
+                # to the audio path (no EQ, no drive, no attenuation stage).
                 if "randomizer" in active or "seeded" in active:
-                    pst["drive"] = float(b["drive"] * (MEUM_NORM + PHI_INV * (MEUM_NORM + PHI_INV * math.sin(phase))))
                     pst["am_rate"] = float(b["am_rate"] * (MEUM_NORM + PHI_INV * math.sin(phase)))
                 if "phase_lock" in active:
                     pst["pm_rate"] = float(b["pm_rate"] * (MEUM_NORM + PHI_INV * math.cos(phase)))
-                    pst["filter"] = float(b["filter"] * (MEUM_NORM + PHI_INV * math.sin(phase * MEUM)))
                 if "euclidean" in active:
                     pst["fm_rate"] = float(b["fm_rate"] * (MEUM_NORM + PHI_INV * math.sin(phase)))
                 if getattr(self, "goava_active", False) and pst.get("goava_sine_patch"):

@@ -32,10 +32,16 @@ import shutil
 import stat
 import struct
 import tempfile
+import threading
 import wave
 import zipfile
 from dataclasses import dataclass, asdict, field
 from typing import Any, Dict, List, Optional, Tuple
+try:
+    from concurrent.futures import ThreadPoolExecutor, Future
+except Exception:  # pragma: no cover
+    ThreadPoolExecutor = None  # type: ignore
+    Future = None  # type: ignore
 
 from visual_determinism import fibonacci_view, select_views, visual_signal_id, composition_fingerprint as visual_composition_fingerprint
 from fractal_spatial_engine import FractalSpatialEngine, build_spatial_state
@@ -47,6 +53,172 @@ MEUM_NORM = (MEUM - 1.0) / MEUM
 
 PHI = 1.618033988749895
 PHI_INV = PHI - 1.0
+
+# ---------------------------------------------------------------------------
+# WORLD CHUNK STREAMER (WoW-scale LODs, multithreaded, residue-only far field)
+# ---------------------------------------------------------------------------
+class WorldChunkStreamer:
+    """Deterministic chunk streaming with LOD ladders.
+
+    Near chunks: full prop lists (still pure residue math, no assets).
+    Mid chunks: sparse silhouettes.
+    Far chunks: single residual height/color sample (billboard cost).
+
+    Generation runs on a small worker pool so the game tick never blocks on
+    far-field expansion. All results are pure functions of (seed, cx, cz, lod).
+    """
+
+    CHUNK = 16.0          # world units per chunk edge
+    NEAR_R = 2            # chunks (Chebyshev) for full detail
+    MID_R = 5
+    FAR_R = 10
+    MAX_CACHED = 220
+
+    def __init__(self, seed: int, workers: int = 2):
+        self.seed = int(seed) & 0x7FFFFFFF
+        self._cache: Dict[Tuple[int, int, int], dict] = {}
+        self._inflight: Dict[Tuple[int, int, int], Any] = {}
+        self._lock = threading.Lock()
+        n = max(1, min(4, int(workers)))
+        self._pool = ThreadPoolExecutor(max_workers=n, thread_name_prefix="chunk") if ThreadPoolExecutor else None
+
+    @staticmethod
+    def world_to_chunk(x: float, z: float) -> Tuple[int, int]:
+        return int(math.floor(x / WorldChunkStreamer.CHUNK)), int(math.floor(z / WorldChunkStreamer.CHUNK))
+
+    def _residue(self, cx: int, cz: int, tag: str) -> float:
+        h = hashlib.blake2b(f"{self.seed}|{cx}|{cz}|{tag}".encode("utf-8"), digest_size=8).digest()
+        return int.from_bytes(h, "big") / 18446744073709551616.0
+
+    def _build_chunk(self, cx: int, cz: int, lod: int) -> dict:
+        """Pure function — safe to call on a worker thread."""
+        base_x = (cx + 0.5) * self.CHUNK
+        base_z = (cz + 0.5) * self.CHUNK
+        elev = self._residue(cx, cz, "elev")
+        biome = self._residue(cx, cz, "biome")
+        hue = (self._residue(cx, cz, "hue") * 360.0) % 360.0
+        props = []
+        if lod <= 0:
+            # Full detail: a handful of deterministic props
+            n = 3 + int(self._residue(cx, cz, "nprop") * 6)
+            for i in range(n):
+                px = base_x + (self._residue(cx, cz, f"px{i}") - 0.5) * self.CHUNK * 0.9
+                pz = base_z + (self._residue(cx, cz, f"pz{i}") - 0.5) * self.CHUNK * 0.9
+                kind = ("tree", "rock", "ruin", "crystal", "beacon")[int(self._residue(cx, cz, f"pk{i}") * 5) % 5]
+                props.append({
+                    "x": px, "z": pz,
+                    "kind": kind,
+                    "scale": 0.4 + self._residue(cx, cz, f"ps{i}") * 1.6,
+                    "hue": (hue + self._residue(cx, cz, f"ph{i}") * 40.0) % 360.0,
+                })
+        elif lod == 1:
+            # Mid: 1-2 silhouettes
+            n = 1 + int(self._residue(cx, cz, "midn") * 2)
+            for i in range(n):
+                props.append({
+                    "x": base_x + (self._residue(cx, cz, f"mx{i}") - 0.5) * self.CHUNK * 0.6,
+                    "z": base_z + (self._residue(cx, cz, f"mz{i}") - 0.5) * self.CHUNK * 0.6,
+                    "kind": "silhouette",
+                    "scale": 0.8 + self._residue(cx, cz, f"ms{i}"),
+                    "hue": hue,
+                })
+        # lod >= 2: residue-only — no props, just elev/hue for far billboard
+        return {
+            "cx": cx, "cz": cz, "lod": lod,
+            "base_x": base_x, "base_z": base_z,
+            "elev": elev, "biome": biome, "hue": hue,
+            "props": props,
+        }
+
+    def _lod_for(self, cx: int, cz: int, pcx: int, pcz: int) -> int:
+        d = max(abs(cx - pcx), abs(cz - pcz))
+        if d <= self.NEAR_R:
+            return 0
+        if d <= self.MID_R:
+            return 1
+        return 2
+
+    def request_around(self, player_x: float, player_z: float) -> List[dict]:
+        """Return ready chunks around the player; schedule missing ones async."""
+        pcx, pcz = self.world_to_chunk(player_x, player_z)
+        ready: List[dict] = []
+        needed = []
+        for dx in range(-self.FAR_R, self.FAR_R + 1):
+            for dz in range(-self.FAR_R, self.FAR_R + 1):
+                cx, cz = pcx + dx, pcz + dz
+                lod = self._lod_for(cx, cz, pcx, pcz)
+                if max(abs(dx), abs(dz)) > self.FAR_R:
+                    continue
+                key = (cx, cz, lod)
+                if self._lock:
+                    with self._lock:
+                        ch = self._cache.get(key)
+                else:
+                    ch = self._cache.get(key)
+                if ch is not None:
+                    ready.append(ch)
+                else:
+                    needed.append(key)
+        # Schedule builds (prefer near first)
+        needed.sort(key=lambda k: max(abs(k[0] - pcx), abs(k[1] - pcz)))
+        for key in needed[:24]:  # budget per frame
+            self._schedule(key)
+        # Collect finished futures
+        self._collect_futures()
+        # Evict if cache is huge
+        if self._lock:
+            with self._lock:
+                if len(self._cache) > self.MAX_CACHED:
+                    # drop farthest
+                    items = sorted(self._cache.items(), key=lambda kv: max(abs(kv[0][0] - pcx), abs(kv[0][1] - pcz)), reverse=True)
+                    for k, _ in items[: len(self._cache) - self.MAX_CACHED]:
+                        self._cache.pop(k, None)
+        return ready
+
+    def _schedule(self, key: Tuple[int, int, int]) -> None:
+        if key in self._inflight or (self._lock and key in self._cache):
+            return
+        cx, cz, lod = key
+        if self._pool is None:
+            ch = self._build_chunk(cx, cz, lod)
+            if self._lock:
+                with self._lock:
+                    self._cache[key] = ch
+            else:
+                self._cache[key] = ch
+            return
+        if key in self._inflight:
+            return
+        fut = self._pool.submit(self._build_chunk, cx, cz, lod)
+        self._inflight[key] = fut
+
+    def _collect_futures(self) -> None:
+        done = []
+        for key, fut in list(self._inflight.items()):
+            if getattr(fut, "done", lambda: True)():
+                try:
+                    ch = fut.result()
+                except Exception:
+                    ch = None
+                if ch is not None:
+                    if self._lock:
+                        with self._lock:
+                            self._cache[key] = ch
+                    else:
+                        self._cache[key] = ch
+                done.append(key)
+        for k in done:
+            self._inflight.pop(k, None)
+
+    def shutdown(self) -> None:
+        if self._pool is not None:
+            try:
+                self._pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                try:
+                    self._pool.shutdown(wait=False)
+                except Exception:
+                    pass
 
 # ---------------------------------------------------------------------------
 # ESKI BOOK FRACTAL SETS (p.26) — game / package path
@@ -1089,9 +1261,14 @@ def classify_from_composition(
 # ---------------------------------------------------------------------------
 
 _GAME_TEMPLATE = r'''#!/usr/bin/env python3
-# Auto-generated by Groovebox Video-Game Generator
+# Groovebox Video-Game Package
 # Deterministic unique non-redundant game from composition seed __SEED__
 # Fingerprint: __FINGERPRINT__
+# Equations (proof of concept — same lattice as host audio/visual):
+#   M = Meum, Phi = golden ratio, r(s,k) = unit residue from blake2b(s|k)
+#   audio: y = sum_h (Mn/h) W(phi * h) * AM * (1+FM) with free rates/depths
+#   visual: Pi(r(s,.), kind_i, X_audio) — pure camera projection, no visual RNG
+#   chunks: (s,cx,cz,lod) -> props | silhouette | residual billboard
 # This package ships a PyQt6 control panel and, for every multiplayer game,
 # simultaneous host/client networking (stdlib socket + threads). The host is
 # authoritative; clients connect, stream orbit steering + chat, and reconcile
@@ -1690,18 +1867,20 @@ class ScenographLite:
         # Host composition engines (Randomizer / Phase-lock / GOAVA) control
         # scenograph motion the same way they control the mix.
         em = getattr(self, "_engine_mask", None) or {}
-        if em.get("randomizer"):
-            x_spin *= 1.35
-            # FREE_2026: energy may exceed 1.0; downstream multipliers absorb it.
-            x_energy = x_energy + 0.12
-        if em.get("phase_lock"):
-            # FREE_2026: grid density unrestricted. Previous hard ceiling of
-            # 1.5 flattened Phase-Lock response; no artificial bound remains.
-            x_grid = x_grid + 0.45
-            x_spin *= 0.85
-        if em.get("goava"):
-            x_hue = (x_hue + 28.0) % 360.0
-            x_spin *= 1.12
+        # Continuous playlist attenuation weights (default 1 when mask is on)
+        att = getattr(self, "_engine_attenuation", None) or {}
+        a_rnd = float(att.get("randomizer", 1.0 if em.get("randomizer") else 0.0) or 0.0)
+        a_pl = float(att.get("phase_lock", 1.0 if em.get("phase_lock") else 0.0) or 0.0)
+        a_go = float(att.get("goava", 1.0 if em.get("goava") else 0.0) or 0.0)
+        if a_rnd:
+            x_spin *= (1.0 + 0.35 * a_rnd)
+            x_energy = x_energy + 0.12 * a_rnd
+        if a_pl:
+            x_grid = x_grid + 0.45 * a_pl
+            x_spin *= (1.0 - 0.15 * a_pl) if a_pl < 1.0 else 0.85
+        if a_go:
+            x_hue = (x_hue + 28.0 * a_go) % 360.0
+            x_spin *= (1.0 + 0.12 * a_go)
         # Book fractal set (p.26): same expression under OT; arithmetic nature
         # flips with the host OT toggle.  Playlist/algo hash tilts which set.
         try:
@@ -2267,20 +2446,52 @@ class HomeOwnershipSystem:
     def journal_priority(self, game):
         return min(1.0, 0.72 + 0.28 * max(0.0, 1.0-self.distance(game)/24.0))
     def interact(self, game):
-        d=self.distance(game)
-        if d>self.interaction_radius: return f"HOME UI is {d:.1f}m away — move closer to claim/use it."
-        self.visits += 1
+        """Claim or leisure-use the house. Never blocks the game loop."""
+        try:
+            d = self.distance(game)
+        except Exception:
+            d = 999.0
+        if d > self.interaction_radius:
+            return f"HOME UI is {d:.1f}m away — move closer to claim/use it."
+        self.visits = int(getattr(self, "visits", 0) or 0) + 1
         if not self.owned:
-            self.owned=True; self.leisure_score=min(1.0,self.leisure_score+0.15)
-            game.tags.add("homeowner"); game.score += 8.0*getattr(game,"difficulty_mult",1.0)
-            try: game.world_events.player_action(game,"home_claim")
-            except Exception: pass
-            game.push_status("[HOME] House owned — persistent leisure destination added to your journal.")
+            self.owned = True
+            self.leisure_score = float(getattr(self, "leisure_score", 1.0) or 1.0) + 0.15
+            try:
+                tags = getattr(game, "tags", None)
+                if isinstance(tags, set):
+                    tags.add("homeowner")
+                elif isinstance(tags, list):
+                    if "homeowner" not in tags:
+                        tags.append("homeowner")
+            except Exception:
+                pass
+            try:
+                game.score = float(getattr(game, "score", 0.0) or 0.0) + 8.0 * float(getattr(game, "difficulty_mult", 1.0) or 1.0)
+            except Exception:
+                pass
+            try:
+                we = getattr(game, "world_events", None)
+                if we is not None and hasattr(we, "player_action"):
+                    we.player_action(game, "home_claim")
+            except Exception:
+                pass
+            try:
+                game.push_status("[HOME] House owned — persistent leisure destination added to your journal.")
+            except Exception:
+                pass
             return "HOUSE OWNED — home added to the top of your leisure journal."
-        self.leisure_score=min(1.0,self.leisure_score+0.03)
-        try: game.world_events.player_action(game,"home_leisure")
-        except Exception: pass
-        game.push_status("[HOME] Leisure session recorded.")
+        self.leisure_score = float(getattr(self, "leisure_score", 1.0) or 1.0) + 0.03
+        try:
+            we = getattr(game, "world_events", None)
+            if we is not None and hasattr(we, "player_action"):
+                we.player_action(game, "home_leisure")
+        except Exception:
+            pass
+        try:
+            game.push_status("[HOME] Leisure session recorded.")
+        except Exception:
+            pass
         return "HOME LEISURE — your house remains a persistent world destination."
     def snapshot(self, game=None):
         d=self.distance(game) if game is not None else None
@@ -3442,6 +3653,20 @@ class Game:
         self.region_state = {}
         self._last_region_index = None
         self.sandbox_mode = True
+        # WoW-scale chunk streamer (multithreaded far LODs)
+        try:
+            self.chunks = WorldChunkStreamer(self.id["seed"], workers=2)
+        except Exception:
+            self.chunks = None
+        self._visible_chunks: List[dict] = []
+        # Playlist → engine-mask attenuation (goals of each canonical engine)
+        self.engine_attenuation = {
+            "randomizer": 1.0,   # goal: spectral scatter / density
+            "phase_lock": 1.0,   # goal: phase congruence / grid
+            "goava": 1.0,        # goal: pure-tone / lattice identity
+            "euclidean": 1.0,    # goal: rhythmic structure
+            "seeded": 1.0,       # goal: seed-authored variation
+        }
         self.hotseat = {"active": False, "games": 0, "friend_called": 0}
         self.move = {"dx": 0.0, "dy": 0.0, "dz": 0.0}
         self.aim_in = {"yaw": 0.0, "pitch": 0.0}
@@ -4080,6 +4305,75 @@ class Game:
         d,label=min(candidates,key=lambda q:q[0])
         return f"RIGHT CLICK · {label} · {d:.1f}m" if d <= 4.0 else ""
 
+    def _apply_engine_attenuation(self):
+        """Playlist-compose attenuation toward each canonical engine's goal.
+
+        attenuation[engine] ∈ ℝ (free) scales how strongly that engine colors
+        scenograph motion / field. Boolean mask stays the gate; attenuation is
+        the continuous weight from playlist composition state.
+        """
+        att = getattr(self, "engine_attenuation", None) or {}
+        em = dict(getattr(self, "engine_mask", {}) or {})
+        # Publish continuous weights for the scenograph
+        weighted = {
+            "randomizer": bool(em.get("randomizer")) * float(att.get("randomizer", 1.0) or 0.0),
+            "phase_lock": bool(em.get("phase_lock")) * float(att.get("phase_lock", 1.0) or 0.0),
+            "goava": bool(em.get("goava")) * float(att.get("goava", 1.0) or 0.0),
+            "euclidean": bool(em.get("euclidean")) * float(att.get("euclidean", 1.0) or 0.0),
+            "seeded": bool(em.get("seeded")) * float(att.get("seeded", 1.0) or 0.0),
+        }
+        try:
+            self.scene._engine_mask = dict(em)
+            self.scene._engine_attenuation = weighted
+        except Exception:
+            pass
+        self._engine_attenuation_live = weighted
+
+    def set_engine_attenuation(self, name: str, value: float) -> None:
+        if not hasattr(self, "engine_attenuation") or not isinstance(self.engine_attenuation, dict):
+            self.engine_attenuation = {}
+        self.engine_attenuation[str(name)] = float(value)
+
+    def _resolve_solid_collisions(self, dt=1.0/30.0):
+        """Keep the player outside solid footprints and dezoom the camera if it
+        would clip through geometry (house, dense scenograph nodes).
+        """
+        # Home footprint (axis-aligned circle in XZ)
+        home = getattr(self, "home", None)
+        if home is not None:
+            hx = float(getattr(home, "x", 0.0))
+            hz = float(getattr(home, "z", 0.0))
+            solid_r = 2.2  # physical wall radius
+            dx = float(self.player_x) - hx
+            dz = float(self.player_z) - hz
+            dist = math.hypot(dx, dz)
+            if dist < solid_r and dist > 1e-9:
+                # Push player to the surface
+                nx, nz = dx / dist, dz / dist
+                self.player_x = hx + nx * solid_r
+                self.player_z = hz + nz * solid_r
+                # Kill inward velocity
+                vn = self.velocity_x * nx + self.velocity_z * nz
+                if vn < 0.0:
+                    self.velocity_x -= vn * nx
+                    self.velocity_z -= vn * nz
+            # Camera dezoom acceleration when looking into the solid
+            cam_dist = float(getattr(self, "zoom", 1.0) or 1.0)
+            # If player is near the house and zoomed in, push zoom out
+            if dist < solid_r + 3.0 and cam_dist < 1.15:
+                # Accelerating dezoom (not a hard clamp) — zoom grows toward safe
+                target = 1.25
+                accel = (target - cam_dist) * 6.0 * max(dt, 1e-4)
+                self.zoom = cam_dist + max(0.0, accel)
+        # Soft world bounds so the player cannot walk into void forever
+        bound = 48.0
+        for axis in ("player_x", "player_z"):
+            v = float(getattr(self, axis, 0.0))
+            if v > bound:
+                setattr(self, axis, bound)
+            elif v < -bound:
+                setattr(self, axis, -bound)
+
     def interact(self):
         """Interact with the nearest actionable world object."""
         if self.hotseat["active"]:
@@ -4087,8 +4381,26 @@ class Game:
         hits = []
         focus = getattr(self, "primary_focus", "explore")
         reach = 0.55
-        if getattr(self,"home",None) is not None and self.home.nearby(self):
-            result=self.home.interact(self); self.send_chat("system",result); return "home"
+        # House interaction is isolated so a bad tag/event never freezes the game.
+        try:
+            if getattr(self, "home", None) is not None and self.home.nearby(self):
+                # Ensure the OS cursor is visible while the player deals with UI.
+                try:
+                    self._ui_cursor_wanted = True
+                except Exception:
+                    pass
+                result = self.home.interact(self)
+                try:
+                    self.send_chat("system", str(result))
+                except Exception:
+                    self.push_status(str(result))
+                return "home"
+        except Exception as _home_exc:
+            try:
+                self.push_status(f"[HOME] interaction failed: {_home_exc}")
+            except Exception:
+                pass
+            return "home-error"
         if focus == "sigils" and getattr(self.sigils, "count", 0) > 0:
             best = None
             for k, (a, r) in enumerate(self.sigils.pos):
@@ -4939,60 +5251,78 @@ class Game:
         # network clients.  Authority controls shared-world simulation, not whether
         # the local player can walk.
         if not self.hotseat["active"]:
-            # PLAYER-MOTION CONTRACT: never synthesize forward/orbit motion.
-            # The previous default advanced ``angle`` every tick, which made
-            # every world feel like a conveyor belt toward its collectibles
-            # (especially sigils).  Position changes now come only from the
-            # player's steer/movement input.
-            # Sequence step is the primary motion conductor.  Sound follows at
-            # 0.5 strength; visuals use the same step directly in ScenographLite.
-            move_speed = (2.25 + 0.55 * self.difficulty_mult) * (0.72 + 0.78 * float(getattr(self, "sequence_motion_factor", 1.0)))
+            # PLAYER-CONTROL CONTRACT: position changes ONLY from WASD / Space /
+            # Ctrl input. Sequence motion may scale *responsiveness* of intentional
+            # input, never invent velocity when the player is idle.
+            move_speed = 3.2 + 0.6 * float(getattr(self, "difficulty_mult", 1.0))
             _dx = float(self.move.get("dx", 0.0) or 0.0)
             _dz = float(self.move.get("dz", 0.0) or 0.0)
-            # True planar movement. A/D = strafe, W/S = forward/back
-            # relative to the current look yaw. No orbit/spin motion.
-            if math.isfinite(_dx) and math.isfinite(_dz):
-                _yaw = float(getattr(self, "camera_yaw", self.steer))
-                _mag = math.hypot(_dx, _dz)
-                if _mag > 1.0:
-                    _dx /= _mag; _dz /= _mag
-                _fx, _fz = math.sin(_yaw), math.cos(_yaw)
-                _rx, _rz = math.cos(_yaw), -math.sin(_yaw)
-                # Semi-implicit Euler: input produces acceleration, acceleration
-                # produces velocity, velocity produces position. This gives the
-                # sequence conductor a real physical quantity to steer.
-                target_vx = (_dx * _rx + _dz * _fx) * move_speed
-                target_vz = (_dx * _rz + _dz * _fz) * move_speed
-                _dy = float(self.move.get("dy", 0.0) or 0.0)
-                target_vy = _dy * float(getattr(self, "fly_speed", 3.8)) if bool(getattr(self, "fly_enabled", True)) else 0.0
-                # Flight profile supplies physical weight/buoyancy.  Space is
-                # still the direct lift control; releasing it lets gravity or
-                # buoyancy resolve naturally instead of snapping altitude.
-                gravity = float(getattr(self, "physics_gravity", 0.0))
-                if abs(_dy) < 1e-9:
-                    target_vy += gravity * 0.20
-                response = min(1.0, dt * (7.0 + 3.0 * float(getattr(self, "sequence_motion_factor", 1.0))))
-                self.acceleration_x = (target_vx - self.velocity_x) * response / max(dt, 1e-6)
-                self.acceleration_y = (target_vy - self.velocity_y) * response / max(dt, 1e-6)
-                self.acceleration_z = (target_vz - self.velocity_z) * response / max(dt, 1e-6)
-                self.velocity_x += self.acceleration_x * dt
-                self.velocity_y += self.acceleration_y * dt
-                self.velocity_z += self.acceleration_z * dt
-                speed = math.hypot(self.velocity_x, self.velocity_z)
-                vmax = float(getattr(self, "physics_max_speed", 7.5))
-                if speed > vmax and speed > 1e-9:
-                    scale = vmax / speed
-                    self.velocity_x *= scale; self.velocity_z *= scale
-                self.player_x += self.velocity_x * dt
-                self.player_y += self.velocity_y * dt
-                self.player_z += self.velocity_z * dt
-                if self.player_y < self.physics_ground_y:
-                    self.player_y = self.physics_ground_y
-                    if self.velocity_y < 0.0: self.velocity_y = 0.0
-                elif abs(_dy) < 1e-9 and float(getattr(self, "flight_assist", 0.0)) > 0.0:
-                    # Gentle seed-derived hover stabilization; stronger profiles
-                    # feel like natural buoyancy rather than a hidden teleport.
-                    self.velocity_y += (-self.velocity_y) * float(getattr(self, "flight_assist", 0.0)) * dt * 1.5
+            _dy = float(self.move.get("dy", 0.0) or 0.0)
+            if not (math.isfinite(_dx) and math.isfinite(_dz) and math.isfinite(_dy)):
+                _dx = _dz = _dy = 0.0
+            _yaw = float(getattr(self, "camera_yaw", self.steer))
+            _mag = math.hypot(_dx, _dz)
+            if _mag > 1.0:
+                _dx /= _mag; _dz /= _mag
+            _fx, _fz = math.sin(_yaw), math.cos(_yaw)
+            _rx, _rz = math.cos(_yaw), -math.sin(_yaw)
+            target_vx = (_dx * _rx + _dz * _fx) * move_speed
+            target_vz = (_dx * _rz + _dz * _fz) * move_speed
+            target_vy = _dy * float(getattr(self, "fly_speed", 3.8)) if bool(getattr(self, "fly_enabled", True)) else 0.0
+            # Gravity only while airborne and not holding lift/descend.
+            if abs(_dy) < 1e-9 and float(getattr(self, "player_y", 0.0)) > float(getattr(self, "physics_ground_y", 0.0)) + 1e-4:
+                target_vy += float(getattr(self, "physics_gravity", -2.8)) * 0.15
+            # Fast response when keys held; strong damping when idle so the
+            # player never drifts from residual velocity or sequence factors.
+            holding = (abs(_dx) + abs(_dz) + abs(_dy)) > 1e-9
+            if holding:
+                response = min(1.0, dt * 14.0)
+            else:
+                response = min(1.0, dt * 18.0)  # hard stop when keys released
+            if dt <= 0.0:
+                dt = 1.0 / 60.0
+            self.acceleration_x = (target_vx - self.velocity_x) * response / dt
+            self.acceleration_y = (target_vy - self.velocity_y) * response / dt
+            self.acceleration_z = (target_vz - self.velocity_z) * response / dt
+            self.velocity_x += self.acceleration_x * dt
+            self.velocity_y += self.acceleration_y * dt
+            self.velocity_z += self.acceleration_z * dt
+            if not holding:
+                # Snap residual planar velocity so the avatar never "walks itself".
+                self.velocity_x *= max(0.0, 1.0 - dt * 20.0)
+                self.velocity_z *= max(0.0, 1.0 - dt * 20.0)
+                if abs(self.velocity_x) < 1e-4: self.velocity_x = 0.0
+                if abs(self.velocity_z) < 1e-4: self.velocity_z = 0.0
+            speed = math.hypot(self.velocity_x, self.velocity_z)
+            vmax = float(getattr(self, "physics_max_speed", 9.0))
+            if speed > vmax and speed > 1e-9:
+                scale = vmax / speed
+                self.velocity_x *= scale; self.velocity_z *= scale
+            self.player_x += self.velocity_x * dt
+            self.player_y += self.velocity_y * dt
+            self.player_z += self.velocity_z * dt
+            # Simple solid collision: keep player outside the home footprint
+            # and push the camera out (dezoom) if it would clip the house.
+            try:
+                self._resolve_solid_collisions(dt)
+            except Exception:
+                pass
+            # Chunk stream (async): refresh visible LOD set around the player
+            try:
+                if getattr(self, "chunks", None) is not None:
+                    self._visible_chunks = self.chunks.request_around(
+                        float(self.player_x), float(self.player_z)
+                    )
+            except Exception:
+                self._visible_chunks = []
+            # Apply playlist→engine attenuation onto scenograph mask
+            try:
+                self._apply_engine_attenuation()
+            except Exception:
+                pass
+            if self.player_y < self.physics_ground_y:
+                self.player_y = self.physics_ground_y
+                if self.velocity_y < 0.0: self.velocity_y = 0.0
                 # IMPORTANT: player position is Cartesian. Never overwrite it
                 # into the legacy radial ``angle`` field; doing so turns walking
                 # around the origin into apparent sigil rotation.
@@ -7405,6 +7735,88 @@ if HAS_UI:
                             p.setBrush(QColor.fromHsv(int((hue+28)%360),135,205,min(60,alpha)))
                             p.drawPolygon(QPolygonF([QPointF(a[0],a[1]),QPointF(b[0],b[1]),QPointF(d[0],d[1]),QPointF(c[0],c[1])]))
 
+        def _draw_streamed_chunks(self, p, world_project, project, cx, cy, R):
+            """Draw LOD chunks from the multithreaded streamer (CPU-cheap)."""
+            g = self.game
+            chunks = getattr(g, "_visible_chunks", None) or []
+            if not chunks:
+                return
+            # Cap draw budget so far field never dominates a frame
+            budget = 80
+            drawn = 0
+            for ch in chunks:
+                if drawn >= budget:
+                    break
+                lod = int(ch.get("lod", 2))
+                if lod >= 2:
+                    # Far: single residual billboard
+                    hx, hy, hsz = world_project(ch["base_x"], ch["base_z"], 0.0, 0.6 + 0.8 * float(ch.get("elev", 0.5)))
+                    col = QColor.fromHsv(int(ch.get("hue", 180)) % 360, 60, 160, 40)
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setBrush(col)
+                    p.drawEllipse(QPointF(hx, hy), max(1.0, hsz * 0.15), max(1.0, hsz * 0.1))
+                    drawn += 1
+                    continue
+                for prop in ch.get("props") or []:
+                    if drawn >= budget:
+                        break
+                    px, pz = float(prop["x"]), float(prop["z"])
+                    sc = float(prop.get("scale", 1.0))
+                    hue = float(prop.get("hue", 180))
+                    kind = str(prop.get("kind", "rock"))
+                    x, y, sz = world_project(px, pz, 0.0, 0.7 + 0.5 * sc)
+                    if kind == "silhouette":
+                        p.setPen(Qt.PenStyle.NoPen)
+                        p.setBrush(QColor.fromHsv(int(hue) % 360, 50, 120, 70))
+                        p.drawEllipse(QPointF(x, y), max(2.0, sz * 0.35 * sc), max(1.5, sz * 0.2 * sc))
+                    else:
+                        try:
+                            self._draw_model(p, x, y, max(4.0, sz * sc), hue, kind, 200)
+                        except Exception:
+                            p.setBrush(QColor.fromHsv(int(hue) % 360, 140, 200, 180))
+                            p.setPen(Qt.PenStyle.NoPen)
+                            p.drawEllipse(QPointF(x, y), max(2.0, sz * 0.25), max(2.0, sz * 0.25))
+                    drawn += 1
+
+        def _draw_textured_building(self, p, x, y, size, hue, owned=False):
+            """WoW-scale house: O(1) filled polys + deterministic window grid.
+            No image assets, no per-pixel loops — pure geometry from seed RNG.
+            """
+            s = max(8.0, float(size))
+            body = QColor.fromHsv(int(hue) % 360, 120 + int(40 * self._rng("home:sat")),
+                                 140 + int(60 * self._rng("home:val")), 230)
+            roof = QColor.fromHsv(int(hue + 30) % 360, 160, 100 + int(40 * self._rng("home:roof")), 240)
+            trim = QColor.fromHsv(int(hue + 50) % 360, 80, 220, 250)
+            # Body
+            p.setPen(QPen(trim, 1))
+            p.setBrush(body)
+            p.drawRect(QRectF(x - s * 0.75, y - s * 0.85, s * 1.5, s * 1.1))
+            # Roof triangle
+            p.setBrush(roof)
+            p.drawPolygon(QPolygonF([
+                QPointF(x - s * 0.85, y - s * 0.85),
+                QPointF(x + s * 0.85, y - s * 0.85),
+                QPointF(x, y - s * 1.45),
+            ]))
+            # Window grid (deterministic 2x2) — reads as texture without cost
+            win = QColor.fromHsv(45, 40, 240 if owned else 160, 200)
+            p.setBrush(win)
+            p.setPen(QPen(trim, 1))
+            for wi in range(2):
+                for wj in range(2):
+                    wx = x - s * 0.35 + wi * s * 0.45
+                    wy = y - s * 0.55 + wj * s * 0.35
+                    p.drawRect(QRectF(wx, wy, s * 0.22, s * 0.2))
+            # Door
+            door = QColor.fromHsv(int(hue + 80) % 360, 140, 90, 240)
+            p.setBrush(door)
+            p.drawRect(QRectF(x - s * 0.12, y + s * 0.05, s * 0.24, s * 0.35))
+            # Owned flag
+            if owned:
+                p.setPen(QPen(QColor(255, 220, 80, 240), 2))
+                p.setBrush(QColor(255, 200, 40, 180))
+                p.drawEllipse(QPointF(x + s * 0.55, y - s * 1.2), s * 0.12, s * 0.12)
+
         def _draw_model(self, p, x, y, size, hue, kind="orb", alpha=230):
             # Small procedural meshes: pyramid, crystal, tree, rock, beacon.
             col = QColor.fromHsv(int(hue) % 360, 180, 235, alpha)
@@ -7678,16 +8090,31 @@ if HAS_UI:
                     try: hsz *= ObjectScaleRule.factor(self.seed, "building", "home")
                     except Exception: pass
                     hue = 155 + int(80 * self._rng("home:hue"))
-                    self._draw_model(p, hx, hy-hsz*.25, max(7.0, hsz*1.5), hue, "beacon", 242)
-                    p.setPen(QPen(QColor.fromHsv(hue%360, 140, 235, 238), 2))
-                    p.setBrush(Qt.BrushStyle.NoBrush)
-                    p.drawRect(QRectF(hx-hsz*.75, hy-hsz*.9, hsz*1.5, hsz*1.15))
+                    # Cheap procedural facade texture (WoW-scale: O(1) polys, no images)
+                    try:
+                        self._draw_textured_building(p, hx, hy, hsz, hue, owned=bool(g.home.owned))
+                    except Exception:
+                        self._draw_model(p, hx, hy-hsz*.25, max(7.0, hsz*1.5), hue, "beacon", 242)
+                        p.setPen(QPen(QColor.fromHsv(hue%360, 140, 235, 238), 2))
+                        p.setBrush(Qt.BrushStyle.NoBrush)
+                        p.drawRect(QRectF(hx-hsz*.75, hy-hsz*.9, hsz*1.5, hsz*1.15))
                     p.setPen(QPen(QColor.fromHsv((hue+40)%360, 80, 245, 245), 1))
                     label = "HOME UI · CLAIM" if not g.home.owned else "HOME · LEISURE"
                     p.drawText(QPointF(hx-hsz*1.7, hy-hsz*1.1), label)
                     if hd <= g.home.ui_radius:
                         p.drawText(QPointF(hx-hsz*1.7, hy+hsz*.65), f"RIGHT CLICK · {hd:.1f}m")
+                        # Visible cursor affordance while in UI radius
+                        try: g._ui_cursor_wanted = True
+                        except Exception: pass
+                    else:
+                        try: g._ui_cursor_wanted = False
+                        except Exception: pass
 
+            # Streamed world chunks (LOD): near props, mid silhouettes, far dots
+            try:
+                self._draw_streamed_chunks(p, world_project, project, cx, cy, R)
+            except Exception:
+                pass
             # Volumetric Meum/GOAVA face network sits behind the solid props so
             # the scene reads as connected 3-D geometry instead of a line grid.
             self._draw_meum_mesh(p, project, cx, cy, R)
@@ -7881,8 +8308,14 @@ if HAS_UI:
 
         def keyPressEvent(self, e):
             k = e.key()
+            # Always reclaim focus so WASD works after clicking the side panel.
+            if k in (Qt.Key.Key_W, Qt.Key.Key_A, Qt.Key.Key_S, Qt.Key.Key_D,
+                     Qt.Key.Key_Space, Qt.Key.Key_Control):
+                try:
+                    self.setFocus(Qt.FocusReason.OtherFocusReason)
+                except Exception:
+                    pass
             if k in (Qt.Key.Key_W, Qt.Key.Key_A, Qt.Key.Key_S, Qt.Key.Key_D):
-                self.setFocus(Qt.FocusReason.OtherFocusReason)
                 self._held_movement.add({Qt.Key.Key_W:"W", Qt.Key.Key_A:"A", Qt.Key.Key_S:"S", Qt.Key.Key_D:"D"}[k])
                 self._apply_held_movement()
                 e.accept()
@@ -7977,27 +8410,56 @@ if HAS_UI:
             if not enabled:
                 self._release_mouse_and_input()
                 return
+            # Near home / menu / explicit UI request → keep the OS cursor visible
+            # so the player can aim at the house UI without a blank cursor.
+            ui_cursor = bool(getattr(self.game, "_ui_cursor_wanted", False))
+            try:
+                if getattr(self.game, "menu_open", False):
+                    ui_cursor = True
+                home = getattr(self.game, "home", None)
+                if home is not None and home.ui_nearby(self.game):
+                    ui_cursor = True
+            except Exception:
+                pass
             self._mouse_captured = True
-            if self._mouse_captured:
-                self.setCursor(Qt.CursorShape.BlankCursor)
-                self.setMouseTracking(True)
-                center=self.mapToGlobal(self.rect().center())
-                QCursor.setPos(center)
-                self._last_mouse=self.rect().center()
+            self.setMouseTracking(True)
+            if ui_cursor:
+                self.setCursor(Qt.CursorShape.ArrowCursor)
             else:
-                self.unsetCursor()
-                self._last_mouse=None
+                self.setCursor(Qt.CursorShape.BlankCursor)
+                try:
+                    center = self.mapToGlobal(self.rect().center())
+                    QCursor.setPos(center)
+                    self._last_mouse = self.rect().center()
+                except Exception:
+                    self._last_mouse = None
 
         def mousePressEvent(self, e):
-            g=self.game
+            g = self.game
             self.setFocus(Qt.FocusReason.MouseFocusReason)
-            if e.button()==Qt.MouseButton.RightButton:
-                g.interact(); g.sfx.trigger("click",0.55); self.update(); e.accept(); return
-            if e.button()==Qt.MouseButton.MiddleButton:
-                self._pan_drag=True; self._pan_last=e.position(); e.accept(); return
-            if e.button()==Qt.MouseButton.LeftButton:
-                g.fire_tool(); self.update()
-                if not self._mouse_captured: self._set_mouse_capture(True)
+            if e.button() == Qt.MouseButton.RightButton:
+                # Interacting with world UI always restores a visible cursor.
+                try:
+                    g._ui_cursor_wanted = True
+                    self.setCursor(Qt.CursorShape.ArrowCursor)
+                except Exception:
+                    pass
+                try:
+                    g.interact()
+                except Exception as _ix:
+                    try: g.push_status(f"[interact] {_ix}")
+                    except Exception: pass
+                try: g.sfx.trigger("click", 0.55)
+                except Exception: pass
+                self.update(); e.accept(); return
+            if e.button() == Qt.MouseButton.MiddleButton:
+                self._pan_drag = True; self._pan_last = e.position(); e.accept(); return
+            if e.button() == Qt.MouseButton.LeftButton:
+                try: g.fire_tool()
+                except Exception: pass
+                self.update()
+                if not self._mouse_captured:
+                    self._set_mouse_capture(True)
                 e.accept(); return
             super().mousePressEvent(e)
 
@@ -8754,6 +9216,53 @@ if HAS_UI:
             kt=QWidget(); kl=QVBoxLayout(kt); self.skills_view=QPlainTextEdit(); self.skills_view.setReadOnly(True); kl.addWidget(self.skills_view); self.tabs.addTab(kt,"SKILLS")
             ct=QWidget(); cfl=QVBoxLayout(ct); self.craft_view=QPlainTextEdit(); self.craft_view.setReadOnly(True); cfl.addWidget(self.craft_view); self.refine_button=QPushButton("REFINE STARTER SUPPLIES → 1 HIGHER-LEVEL ITEM"); self.refine_button.clicked.connect(lambda: (self.append_status(self.game.refine_starter_supplies()), self.refresh())); cfl.addWidget(self.refine_button); self.tabs.addTab(ct,"CRAFTING")
             gt=QWidget(); gl=QVBoxLayout(gt); self.gameplay_view=QPlainTextEdit(); self.gameplay_view.setReadOnly(True); gl.addWidget(self.gameplay_view); gt_note=QLabel("Q Quests · J Journal · I Inventory · K Skills · L Server · B Crafting · G Gameplay · 1-9 Equip · 0 Select"); gt_note.setWordWrap(True); gl.addWidget(gt_note); self.tabs.addTab(gt,"GAMEPLAY")
+            # ENGINE tab: playlist → engine-mask attenuation graph
+            et = QWidget(); el = QVBoxLayout(et)
+            el.addWidget(QLabel("Playlist → Engine attenuation (canonical goals)"))
+            el.addWidget(QLabel("RND scatter · PL phase grid · GOAVA pure lattice · EUC rhythm · SEED variation"))
+            self._eng_sliders = {}
+            self._eng_mask_checks = {}
+            for eng, goal in (
+                ("randomizer", "spectral scatter / density"),
+                ("phase_lock", "phase congruence / grid"),
+                ("goava", "pure-tone / lattice identity"),
+                ("euclidean", "rhythmic structure"),
+                ("seeded", "seed-authored variation"),
+            ):
+                row = QHBoxLayout()
+                chk = QCheckBox(eng)
+                chk.setChecked(bool((getattr(g, "engine_mask", {}) or {}).get(eng, False)))
+                def _tog(on, name=eng):
+                    try:
+                        g.engine_mask[name] = bool(on)
+                        g._apply_engine_attenuation()
+                    except Exception:
+                        pass
+                chk.toggled.connect(_tog)
+                self._eng_mask_checks[eng] = chk
+                row.addWidget(chk)
+                row.addWidget(QLabel(goal), 1)
+                sp = QSpinBox()
+                sp.setRange(0, 200)
+                sp.setValue(int(float((getattr(g, "engine_attenuation", {}) or {}).get(eng, 1.0)) * 100))
+                sp.setSuffix("%")
+                def _att(v, name=eng):
+                    try:
+                        g.set_engine_attenuation(name, float(v) / 100.0)
+                        g._apply_engine_attenuation()
+                    except Exception:
+                        pass
+                sp.valueChanged.connect(_att)
+                self._eng_sliders[eng] = sp
+                row.addWidget(sp)
+                el.addLayout(row)
+            self.engine_graph_lbl = QLabel("live: —")
+            self.engine_graph_lbl.setWordWrap(True)
+            el.addWidget(self.engine_graph_lbl)
+            self.chunk_lbl = QLabel("chunks: —")
+            el.addWidget(self.chunk_lbl)
+            el.addStretch(1)
+            self.tabs.addTab(et, "ENGINE")
 
         def show_tab(self, name):
             wanted = str(name).strip().upper()
@@ -9048,6 +9557,22 @@ if HAS_UI:
                     fov = float(vv.get("fov_deg", 48.0) or 48.0)
                     z = float(getattr(g, "zoom", 1.0) or 1.0)
                     self.fov_lbl.setText(f"FOV {fov:.0f}°  Zoom {z:.2f}x")
+            except Exception:
+                pass
+            # Engine attenuation graph + chunk streamer status
+            try:
+                if hasattr(self, "engine_graph_lbl"):
+                    live = getattr(g, "_engine_attenuation_live", {}) or {}
+                    parts = [f"{k}={float(v):.2f}" for k, v in live.items()]
+                    self.engine_graph_lbl.setText("live: " + (", ".join(parts) if parts else "—"))
+                if hasattr(self, "chunk_lbl"):
+                    n = len(getattr(g, "_visible_chunks", []) or [])
+                    cache = 0
+                    try:
+                        cache = len(getattr(g.chunks, "_cache", {}) or {})
+                    except Exception:
+                        pass
+                    self.chunk_lbl.setText(f"chunks visible={n}  cache={cache}")
             except Exception:
                 pass
             try:
@@ -10186,6 +10711,23 @@ Input contract: {input_schema}
 World:  objective={objective}  difficulty={difficulty}  level={level_type}
         sigils={sigil_count}  world_fingerprint={world_fingerprint}
 Fingerprint: {composition_fingerprint}
+
+EQUATIONS / PROOF OF CONCEPT
+----------------------------
+Constants: M = Meum (~1.19758), Phi = golden ratio, Mn = (M-1)/M.
+Unit residue: r(s,k) = blake2b(s|k) / 2^64 in [0,1) — order-independent.
+Audio closed form:
+  y(t) = sum_h (Mn/h) * W(phi(t)*h) * (1 + d_AM * L_AM) with free FM/PM;
+  phase0 = 0 at track start; sample 0 amplitude = 0;
+  no filters, EQ, drive, limiter, normalizer, or soft Nyquist clamp.
+Visual closed form:
+  visual(s,i,t,X) = Pi(r(s,.), kind_i, X_audio) — pure trigonometric projection.
+Chunk LODs: pure function of (s, cx, cz, lod); far field = residual billboard only.
+Engine attenuation: w_e = mask_e * a_e scales scenograph spin/grid/hue toward
+  randomizer (scatter), phase_lock (grid), goava (lattice), euclidean (rhythm),
+  seeded (variation).
+Determinism check: same seed + same inputs => same composition_fingerprint and
+  reproducible world; networking only transports player inputs and host snapshots.
 
 MULTIMODAL CONTRACT (always on)
 -------------------------------
