@@ -484,6 +484,42 @@ def _safe_int_seed(value) -> int:
     return int.from_bytes(h[:4], "big") & 0x7FFFFFFF
 
 
+class GOAVASeedRandomizer:
+    """Authoritative stateless seed-scribed randomization API."""
+    VERSION = "goava-scribe/1"
+    def __init__(self, seed): self.seed = _safe_int_seed(seed) & 0x7FFFFFFF
+    def label(self, namespace, key=None, op="value"): return f"{namespace}|{'' if key is None else key}|{op}"
+    def residue(self, namespace, key=None, op="value"): return float(meum_game_residue(self.seed, self.label(namespace,key,op)))
+    def value(self, namespace, key=None, lo=0.0, hi=1.0, op="value"):
+        a,b=float(lo),float(hi)
+        if not (math.isfinite(a) and math.isfinite(b)): a,b=0.0,1.0
+        if b<a: a,b=b,a
+        return a+(b-a)*self.residue(namespace,key,op)
+    def index(self, namespace, key, size, op="index"):
+        n=max(0,int(size)); return 0 if n<=1 else min(n-1,int(self.residue(namespace,key,op)*n))
+    def choose(self, namespace, key, options, op="choose"):
+        vals=list(options or []); return None if not vals else vals[self.index(namespace,key,len(vals),op)]
+    def weighted(self, namespace, key, options, op="weighted"):
+        vals=list(options or [])
+        if not vals: return None
+        clean=[]; total=0.0
+        for item in vals:
+            try: weight=max(0.0,float(item[1]))
+            except Exception: weight=0.0
+            clean.append((item[0],weight)); total+=weight
+        if total<=0.0: return clean[self.index(namespace,key,len(clean),op)][0]
+        x=self.residue(namespace,key,op)*total
+        for item,weight in clean:
+            x-=weight
+            if x<0.0: return item
+        return clean[-1][0]
+    def signed(self, namespace, key, magnitude=1.0, op="signed"):
+        return (self.residue(namespace,key,op)*2.0-1.0)*abs(float(magnitude))
+    def scribe(self, namespace, key, operation, result):
+        return {"version":self.VERSION,"seed":self.seed,"namespace":str(namespace),"key":str(key),"operation":str(operation),"label":self.label(namespace,key,operation),"result":result}
+
+def goava(seed): return GOAVASeedRandomizer(seed)
+
 def _mix(seed: int, label: str) -> int:
     """Deterministic avalanche mix — unique non-redundant residue per label."""
     blob = f"{seed}|{label}|{MEUM:.12f}".encode("utf-8")
@@ -1238,6 +1274,37 @@ def _residue(seed, label):
     blob = f"{seed}|{label}|{MEUM:.12f}".encode("utf-8")
     i = int.from_bytes(hashlib.sha256(blob).digest()[:8], "big")
     return (i % 10_000_000) / 10_000_000.0
+
+class GOAVASeedRandomizer:
+    VERSION = "goava-scribe/1"
+    def __init__(self, seed): self.seed=_safe_int_seed(seed)&0x7FFFFFFF
+    def label(self, namespace, key=None, op="value"): return f"{namespace}|{'' if key is None else key}|{op}"
+    def residue(self, namespace, key=None, op="value"): return float(_residue(self.seed,self.label(namespace,key,op)))
+    def value(self, namespace, key=None, lo=0.0, hi=1.0, op="value"):
+        a,b=float(lo),float(hi)
+        if not(math.isfinite(a) and math.isfinite(b)): a,b=0.0,1.0
+        if b<a: a,b=b,a
+        return a+(b-a)*self.residue(namespace,key,op)
+    def index(self, namespace, key, size, op="index"):
+        n=max(0,int(size)); return 0 if n<=1 else min(n-1,int(self.residue(namespace,key,op)*n))
+    def choose(self, namespace, key, options, op="choose"):
+        vals=list(options or []); return None if not vals else vals[self.index(namespace,key,len(vals),op)]
+    def weighted(self, namespace, key, options, op="weighted"):
+        vals=list(options or []); clean=[]; total=0.0
+        for item in vals:
+            try: w=max(0.0,float(item[1]))
+            except Exception: w=0.0
+            clean.append((item[0],w)); total+=w
+        if not clean: return None
+        if total<=0: return clean[self.index(namespace,key,len(clean),op)][0]
+        x=self.residue(namespace,key,op)*total
+        for item,w in clean:
+            x-=w
+            if x<0: return item
+        return clean[-1][0]
+    def signed(self, namespace, key, magnitude=1.0, op="signed"): return (self.residue(namespace,key,op)*2.0-1.0)*abs(float(magnitude))
+    def scribe(self, namespace, key, operation, result): return {"version":self.VERSION,"seed":self.seed,"namespace":str(namespace),"key":str(key),"operation":str(operation),"label":self.label(namespace,key,operation),"result":result}
+def goava(seed): return GOAVASeedRandomizer(seed)
 
 def meum_angle(k):
     """Collision-free angle packing on the circle (OT-gated, p.78/49-50).
@@ -9659,20 +9726,15 @@ def build_micro_lexicon(seed) -> Dict[str, Any]:
         "seam", "fold", "loom", "foam", "dial", "grip", "drift", "node",
         "hull", "keel", "sift", "tilt", "hum", "shade", "vernier", "chime",
     ]
-    import random as _random
-    r = _random.Random(seeds)
-    n_tokens = 96 + int(48 * meum_game_residue(seeds, "micro/count"))
+    rng = goava(seeds)
+    n_tokens = 96 + int(48 * rng.residue("micro", "count", "count"))
     sched = []
     for i in range(n_tokens):
-        op = ops[i % len(ops)] if i % 11 != 0 else ops[r.randrange(len(ops))]
-        sched.append([
-            i,
-            op,
-            round(r.random(), 4),
-            round(r.random(), 4),
-            round(r.random(), 4),
-        ])
-    return {"version": "micro/2026.1", "ops": ops, "schedule": sched}
+        op = ops[i % len(ops)] if i % 11 != 0 else rng.choose("micro", i, ops, "choose-op")
+        sched.append([i, op, round(rng.value("micro", i, 0.0, 1.0, "x"), 4),
+                      round(rng.value("micro", i, 0.0, 1.0, "y"), 4),
+                      round(rng.value("micro", i, 0.0, 1.0, "z"), 4)])
+    return {"version":"micro/2026.1", "ops":ops, "schedule":sched, "seed_scribed":True, "goava_version":rng.VERSION}
 
 
 def build_how_to_play(identity, triad=None, controls=None) -> str:

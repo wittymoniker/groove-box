@@ -298,6 +298,20 @@ def check_home_starter_pack_and_panes():
     return "PASS: home proximity + starter supplies + lossy refinement + pane keyboard map"
 
 
+def check_goava_seed_scribing():
+    import videogame_engine as vge
+    a=vge.goava(42); b=vge.goava(42); c=vge.goava(43)
+    opts=["a","b","c","d"]
+    first=a.choose("item","alpha",opts)
+    _=a.choose("item","unrelated",opts)
+    assert first==a.choose("item","alpha",opts)==b.choose("item","alpha",opts)
+    rec=a.scribe("item","alpha","choose",first)
+    assert rec["seed"]==42 and rec["label"]=="item|alpha|choose" and rec["result"]==first
+    assert a.value("x","a",0,1)==b.value("x","a",0,1)
+    assert vge.build_micro_lexicon(42)==vge.build_micro_lexicon(42)
+    assert vge.build_micro_lexicon(42)["seed_scribed"] is True
+    return "PASS: GOAVA semantic choices are seed-scribed and call-order independent"
+
 CHECKS = [
     ("component registry", check_component_usage),
     ("composition parity", check_composition_parity),
@@ -313,6 +327,7 @@ CHECKS = [
     ("renderer topology guard", check_renderer_topology_guard),
     ("character/UI rules", check_character_ui_rules),
     ("home/starter/panes", check_home_starter_pack_and_panes),
+    ("GOAVA seed scribing", check_goava_seed_scribing),
 ]
 
 
