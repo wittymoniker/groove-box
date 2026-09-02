@@ -299,3 +299,13 @@ def test_visualizer_nonfinite_audio_guard():
     assert "np.nan_to_num(raw, nan=0.0, posinf=0.0, neginf=0.0)" in src
     assert "np.nan_to_num(self.track_overview, nan=0.0, posinf=0.0, neginf=0.0)" in src
     assert "if math.isfinite(y0) and math.isfinite(y1):" in src
+
+
+def test_escape_releases_mouse_capture():
+    """Regression: ESC/menu must release hidden cursor capture and held movement."""
+    src = Path(__file__).with_name("videogame_engine.py").read_text(encoding="utf-8")
+    assert "def _release_mouse_and_input(self):" in src
+    assert "self._mouse_captured = False" in src
+    assert "self.unsetCursor()" in src
+    assert "self._held_movement.clear()" in src
+    assert "self.view._release_mouse_and_input()" in src

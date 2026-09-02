@@ -7315,8 +7315,39 @@ if HAS_UI:
                 return
             super().keyReleaseEvent(e)
 
+        def _release_mouse_and_input(self):
+            """ESC/menu safety: release OS cursor capture and clear held movement.
+
+            The menu must always be usable without a hidden/recentered cursor.
+            Re-entry is explicit: left click captures mouse-look again.
+            """
+            self._held_movement.clear()
+            try:
+                self.game._held_movement = {"dx": 0.0, "dz": 0.0}
+                self.game.move["dx"] = 0.0
+                self.game.move["dz"] = 0.0
+            except Exception:
+                pass
+            self._pan_drag = False
+            self._pan_last = None
+            self._mouse_captured = False
+            self.unsetCursor()
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            self._last_mouse = None
+            try:
+                self.clearFocus()
+            except Exception:
+                pass
+            try:
+                QCursor.setPos(self.mapToGlobal(self.rect().center()))
+            except Exception:
+                pass
+
         def _set_mouse_capture(self, enabled):
-            self._mouse_captured = bool(enabled)
+            if not enabled:
+                self._release_mouse_and_input()
+                return
+            self._mouse_captured = True
             if self._mouse_captured:
                 self.setCursor(Qt.CursorShape.BlankCursor)
                 self.setMouseTracking(True)
@@ -8269,6 +8300,17 @@ if HAS_UI:
             k = e.key()
             # ESC always opens/closes the status menu (active-element readout).
             if k == Qt.Key.Key_Escape:
+                # ESC is an unconditional mouse/input escape hatch.  Release
+                # cursor capture BEFORE toggling the menu so the pointer is
+                # visibly free even if menu/status rendering raises.
+                try:
+                    self.view._release_mouse_and_input()
+                except Exception:
+                    pass
+                try:
+                    self.view.setFocus(Qt.FocusReason.OtherFocusReason)
+                except Exception:
+                    pass
                 try:
                     out = g.toggle_menu()
                     if hasattr(self, "panel") and self.panel is not None:
