@@ -1206,6 +1206,7 @@ try:
         QPushButton, QLineEdit, QPlainTextEdit, QSpinBox, QCheckBox, QFrame,
         QSizePolicy, QGroupBox, QMessageBox, QInputDialog, QProgressBar,
         QSplitter, QTabWidget, QListWidget, QListWidgetItem, QDialog, QDialogButtonBox,
+        QComboBox,
     )
     HAS_UI = True
 except Exception:
@@ -2537,6 +2538,34 @@ class NPCRoster:
         }
 
 
+class NPCActivitySystem:
+    """Deterministic living-NPC schedules for an MMO-like world."""
+    ACTIVITIES=(('work','WORK',.22),('trade','TRADE',.15),('craft','CRAFT',.14),('train','TRAIN',.12),('socialize','SOCIALIZE',.12),('travel','TRAVEL',.10),('patrol','PATROL',.08),('rest','REST',.07))
+    def __init__(self,seed,roster):
+        self.seed=int(seed)&0x7fffffff; self.roster=roster; self.day_length=240.0; self.history=[]
+        for i,n in enumerate(roster.npcs):
+            n['activity']='rest'; n['activity_label']='REST'; n['activity_target']='home'; n['activity_progress']=0.0
+            n['activity_seed']=_residue(self.seed,f'npcactivity:{i}')
+    def _choose(self,n,slot):
+        x=_residue(self.seed,f"npcact:{n.get('id')}:{slot}")*sum(w for _,_,w in self.ACTIVITIES)
+        for key,label,w in self.ACTIVITIES:
+            x-=w
+            if x<=0: return key,label
+        return self.ACTIVITIES[-1][0],self.ACTIVITIES[-1][1]
+    def tick(self,game,dt):
+        t=float(getattr(game,'t',0.0)); phase=(t%self.day_length)/self.day_length; slot=int(t//18.0)
+        for i,n in enumerate(self.roster.npcs):
+            key,label=self._choose(n,slot); role=str(n.get('role',''))
+            if role in ('merchant','trader') and .22<phase<.70: key,label='trade','TRADE'
+            elif role in ('blacksmith','artisan') and .28<phase<.78: key,label='craft','CRAFT'
+            elif role in ('guard','ranger') and (phase<.22 or phase>.70): key,label='patrol','PATROL'
+            n['activity']=key; n['activity_label']=label; n['activity_progress']=(t%18.0)/18.0
+            n['activity_target']={'trade':'market','craft':'workshop','train':'training yard','patrol':'patrol route','socialize':'town square','travel':'road','work':'worksite','rest':'home'}[key]
+        if self.roster.npcs and int(t*2.0)%18==0:
+            n=self.roster.npcs[int(t*2.0/18)%len(self.roster.npcs)]
+            self.history.append({'t':round(t,2),'npc':n['name'],'activity':n['activity'],'target':n['activity_target']}); self.history=self.history[-96:]
+
+
 class PveEncounter:
     """Ambient PvE threats — defeat for coins/points (seed density)."""
     def __init__(self, seed, count=None):
@@ -3268,6 +3297,7 @@ class Game:
         self.purse = CoinPurse(self.id["seed"])
         self.store = Store(self.id["seed"], self.items)
         self.npcs = NPCRoster(self.id["seed"])
+        self.npc_activity = NPCActivitySystem(self.id["seed"], self.npcs)
         self.pvp = PvpArena(self.id["seed"])
         self.assets = InstrumentAssetBridge(self.id)
         self.sfx = self.assets.sfx
@@ -3813,7 +3843,7 @@ class Game:
         lines = ["── STATUS / COMMAND MENU ──",
                  "ESC closes menu · F1 how-to · /status reprints this",
                  "CHAT COMMAND TREE: /help  /status  /world  /host  /client  /report",
-                 f"PANES: Q=quests J=journal I=inventory K=skills L=server B=crafting G=gameplay H=closet · NETWORK via L/ESC"]
+                 f"PANES: Q=quests J=journal I=inventory K=skills L=server B=crafting G=gameplay N=npc-life H=closet · NETWORK via L/ESC"]
         for e in self.active_elements():
             lines.append(f"  {e['label']}: {e['value']}")
         return "\n".join(lines)
@@ -4788,6 +4818,10 @@ class Game:
             pass
         try:
             self.fn.tick(self.t, audio_rms=abs(sample))
+        except Exception:
+            pass
+        try:
+            self.npc_activity.tick(self, dt)
         except Exception:
             pass
         self._drain_net()
@@ -7764,6 +7798,7 @@ if HAS_UI:
                 Qt.Key.Key_L: "SERVER",
                 Qt.Key.Key_B: "CRAFTING",
                 Qt.Key.Key_G: "GAMEPLAY",
+                Qt.Key.Key_N: "NPC LIFE",
             }
             if k in tab_keys:
                 try:
@@ -8382,6 +8417,8 @@ if HAS_UI:
             cmdlay.addWidget(self.command_btn)
             lay.addWidget(cmdbox)
             self.tabs=QTabWidget(); lay.addWidget(self.tabs,1)
+            self.tabs.tabBar().setVisible(False)
+            self.tabs.setDocumentMode(True)
             box = QGroupBox("World")
             vb = QVBoxLayout(box)
             self.pos_lbl = QLabel("Pos θ=0°  @ open field")
@@ -8505,6 +8542,7 @@ if HAS_UI:
             it=QWidget(); il=QVBoxLayout(it); self.inventory_view=QPlainTextEdit(); self.inventory_view.setReadOnly(True); il.addWidget(self.inventory_view); self.tabs.insertTab(1,it,"INVENTORY")
             qt=QWidget(); ql=QVBoxLayout(qt); self.quest_view=QPlainTextEdit(); self.quest_view.setReadOnly(True); ql.addWidget(self.quest_view); self.tabs.insertTab(2,qt,"QUESTS")
             st=QWidget(); sl=QVBoxLayout(st); self.spell_view=QPlainTextEdit(); self.spell_view.setReadOnly(True); sl.addWidget(self.spell_view); self.tabs.insertTab(3,st,"SPELLS / EVENTS")
+            nt=QWidget(); nl=QVBoxLayout(nt); self.npc_view=QPlainTextEdit(); self.npc_view.setReadOnly(True); nl.addWidget(self.npc_view); self.tabs.addTab(nt,"NPC LIFE")
             ht=QWidget(); hl=QVBoxLayout(ht); self.closet_view=QPlainTextEdit(); self.closet_view.setReadOnly(True); hl.addWidget(self.closet_view); self.tabs.addTab(ht,"CLOSET")
             jt=QWidget(); jl=QVBoxLayout(jt); self.journal_view=QPlainTextEdit(); self.journal_view.setReadOnly(True); jl.addWidget(self.journal_view); self.tabs.addTab(jt,"JOURNAL")
             kt=QWidget(); kl=QVBoxLayout(kt); self.skills_view=QPlainTextEdit(); self.skills_view.setReadOnly(True); kl.addWidget(self.skills_view); self.tabs.addTab(kt,"SKILLS")
@@ -8539,6 +8577,12 @@ if HAS_UI:
                     self.inventory_view.setPlainText("\n".join(lines))
                 if hasattr(self, "quest_view"):
                     self.quest_view.setPlainText("\n".join(f"{'✓' if q.get('done') else '·'} {q['title']} {q['progress']}/{q['target']}" for q in g.quests.quests))
+                if hasattr(self, "npc_view"):
+                    lines=["NPC LIFE · LIVING WORLD ROUTINES"]
+                    for n in getattr(getattr(g,"npcs",None),"npcs",[])[:12]:
+                        lines.append(f"{n.get('name','NPC')} · {n.get('role','citizen')} · {n.get('activity_label','REST')} → {n.get('activity_target','home')}")
+                    lines.append("\nNPC activity can feed quests, trade, crafting, training, patrols, companions and social encounters.")
+                    self.npc_view.setPlainText("\n".join(lines))
                 if hasattr(self, "spell_view"):
                     self.spell_view.setPlainText(g.zero_menu_text() + "\n\nEvery listed item/action/event has a deterministic numeric sound signature; values are audibly mapped without sample files.")
                 if hasattr(self, "skills_view"):
@@ -8884,6 +8928,7 @@ if HAS_UI:
             split.addWidget(self.panel)
             split.setStretchFactor(0, 3)
             split.setStretchFactor(1, 0)
+            self.panel.setVisible(False)
             hv = QVBoxLayout(central)
             hv.addWidget(split)
             self.timer = QTimer(self)
@@ -8953,9 +8998,11 @@ if HAS_UI:
             """Keyboard-connected panes: every gameplay system remains one tab graph."""
             if hasattr(self, "panel") and self.panel is not None:
                 if self.panel.show_tab(name):
+                    if not bool(getattr(self.game,"menu_open",False)):
+                        self.game.toggle_menu()
+                    self.panel.setVisible(True)
                     self.panel.refresh()
-                    self.panel.append_status(f"TAB → {str(name).upper()}")
-                    self.panel.setFocus()
+                    self.panel.append_status(f"MENU → {str(name).upper()}")
                     self.view.setFocus(Qt.FocusReason.OtherFocusReason)
                     return True
             return False
@@ -8979,6 +9026,8 @@ if HAS_UI:
                 try:
                     out = g.toggle_menu()
                     if hasattr(self, "panel") and self.panel is not None:
+                        self.panel.setVisible(bool(getattr(g,"menu_open",False)))
+                        if getattr(g,"menu_open",False): self.panel.refresh()
                         for line in str(out).splitlines():
                             self.panel.append_status(line)
                 except Exception as err:
