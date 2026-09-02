@@ -2727,6 +2727,65 @@ class WorldEventDefinition:
         self.name=str(name); self.weight=float(weight); self.cooldown=float(cooldown)
         self.actions=tuple(actions); self.rare_object=rare_object
 
+class TemporalSeedDynamics:
+    """Deterministic time-domain expression of a seed.
+
+    The seed itself never changes.  Instead, elapsed *simulation time* changes
+    how that fixed seed is expressed: an initial BUILD phase gathers energy, a
+    MODULATE phase reshapes the field, and a STABILIZE phase returns toward the
+    seed's baseline.  The cycle repeats on a deterministic epoch so long-running
+    sessions continue to evolve without becoming non-reproducible.
+    """
+    BUILD=14.0
+    MODULATE=34.0
+    STABILIZE=16.0
+    EPOCH=BUILD+MODULATE+STABILIZE
+    def __init__(self, seed):
+        self.seed=int(seed)&0x7fffffff
+        self.t=0.0
+        self.stage='build'
+        self.phase=0.0
+        self.intensity=0.0
+        self.stability=0.0
+        self.history=[]
+
+    def _clamp(self,x):
+        return max(0.0,min(1.0,float(x)))
+
+    def update(self,t):
+        self.t=max(0.0,float(t))
+        local=self.t%self.EPOCH
+        if local < self.BUILD:
+            self.stage='build'; u=local/self.BUILD
+            self.phase=u; self.intensity=0.25+0.75*u; self.stability=0.12*u
+        elif local < self.BUILD+self.MODULATE:
+            self.stage='modulate'; u=(local-self.BUILD)/self.MODULATE
+            self.phase=u; self.intensity=1.0; self.stability=0.12+0.38*u
+        else:
+            self.stage='stabilize'; u=(local-self.BUILD-self.MODULATE)/self.STABILIZE
+            self.phase=u; self.intensity=1.0-0.65*u; self.stability=0.50+0.50*u
+        self.history.append((round(self.t,4),self.stage,round(self.intensity,4),round(self.stability,4)))
+        self.history=self.history[-120:]
+        return self.snapshot()
+
+    def field(self, domain, t=None, amplitude=1.0):
+        if t is not None:
+            self.update(t)
+        base=_residue(self.seed, f'temporal:base:{domain}')
+        epoch=int(self.t//self.EPOCH)
+        moving=_residue(self.seed, f'temporal:move:{domain}:{epoch}:{self.stage}')
+        wave=0.5+0.5*vg_sin(self.phase*math.tau + _residue(self.seed,f'temporal:phase:{domain}')*math.tau)
+        # Stable baseline + time-varying seed expression.  At stabilization the
+        # modulation contracts rather than leaving the world permanently drifting.
+        expr=base*(1.0-self.intensity*0.42) + moving*(self.intensity*0.42)
+        expr=expr*(0.72+0.28*wave)
+        return self._clamp(expr*float(amplitude))
+
+    def snapshot(self):
+        return {'t':self.t,'stage':self.stage,'phase':self.phase,
+                'intensity':self.intensity,'stability':self.stability,
+                'epoch':int(self.t//self.EPOCH)}
+
 class EmergentWorldEvents:
     """Deterministic event graph connecting world events, player actions and objects."""
     DEFINITIONS=(
@@ -2755,7 +2814,13 @@ class EmergentWorldEvents:
         # an event directly; the deterministic roll still decides realization.
         activity=sum(self.action_counts.get(k,0) for k in ('harvest','activate','combat','survey','move'))
         recent=sum(1 for t in self.last_action_t.values() if float(getattr(game,'t',0))-t < 12.0)
-        return max(0.0,min(.82,d.weight*(.45+.75*gate)*(1+.025*min(12,activity))*(1+.04*recent)))
+        # Temporal seed expression makes event likelihood build, modulate, then
+        # stabilize. It shapes probability only; the deterministic roll still
+        # decides whether an event actually materializes.
+        temporal=getattr(game,'temporal_seed',None)
+        tf=temporal.field('event:'+d.name, getattr(game,'t',0.0), amplitude=1.0) if temporal else 0.5
+        stage_boost={'build':0.88,'modulate':1.18,'stabilize':0.96}.get(getattr(temporal,'stage','build'),1.0)
+        return max(0.0,min(.82,d.weight*(.45+.75*gate)*(1+.025*min(12,activity))*(1+.04*recent)*(0.86+0.28*tf)*stage_boost))
     def _spawn_rare(self, game, d, window):
         x=float(getattr(game,'player_x',0))+(_residue(self.seed,f'rare:x:{d.name}:{window}')-.5)*20
         z=float(getattr(game,'player_z',0))+(_residue(self.seed,f'rare:z:{d.name}:{window}')-.5)*20
@@ -2849,6 +2914,10 @@ class Game:
         _goava = bool(self.id.get("goava_active") or ("hook_live_dj_goava" in (self.id.get("gameplay_hooks") or [])))
         _rnd = bool(self.id.get("randomizer_active") or ("hook_randomizer_field" in (self.id.get("gameplay_hooks") or [])))
         _pl = bool(self.id.get("phase_lock_active") or ("hook_phase_lock_rings" in (self.id.get("gameplay_hooks") or [])))
+        # TEMPORAL_SEED_2026: the seed is immutable; elapsed simulation time
+        # changes its expression through build -> modulate -> stabilize phases.
+        self.temporal_seed = TemporalSeedDynamics(self.id["seed"])
+        self.temporal_seed.update(0.0)
         # Engine mask: Randomizer / Phase-lock / GOAVA control the game world
         # the same way they control composition — not instrument count.
         self.engine_mask = {
@@ -3343,18 +3412,28 @@ class Game:
             "vz": round(float(getattr(self, "velocity_z", 0.0)), 3),
         }
 
+    def temporal_seed_readout(self):
+        ts=getattr(self, "temporal_seed", None)
+        if ts is None:
+            return "SEED TIME FIELD: static"
+        return (f"SEED TIME FIELD: {ts.stage.upper()} · epoch {int(ts.t//ts.EPOCH)} · "
+                f"expression {ts.intensity:.2f} · stability {ts.stability:.2f}")
+
     def active_elements(self):
         """List every currently relevant feature with a short readout value.
 
         Used by the ESC menu and the viewport overlay so the player always
         sees what is live and what data it is manipulating.
         """
+        _temporal_line = self.temporal_seed_readout()
         el = []
         pos = self.position_readout()
         el.append({"id": "position", "label": "Position",
                    "value": f"θ={pos['angle_deg']}°  zoom={pos['zoom']}  pitch={pos['pitch']}  @ {pos['region']}"})
         el.append({"id": "time", "label": "Time",
                    "value": f"t={pos['t']}s  topo={pos['topology']}"})
+        el.append({"id": "temporal_seed", "label": "SEED · TIME EXPRESSION",
+                   "value": _temporal_line + " · seed remains immutable; time changes expression"})
         el.append({"id": "physics", "label": "PHYSICS · movement state",
                    "value": (f"speed={pos['speed']:.2f}  vx={pos['vx']:+.2f}  vz={pos['vz']:+.2f}  "
                              f"drag={float(getattr(self, 'physics_drag', 5.5)):.2f}  "
@@ -4337,6 +4416,9 @@ class Game:
             except Exception: pass
 
     def tick(self, dt=1/30):
+        # Simulation time is the only temporal input to seed expression.  This
+        # preserves replayability: same seed + same input timeline = same world.
+        self.temporal_seed.update(float(getattr(self, "t", 0.0)))
         sample = self.music.step(dt)
         try:
             seq_snapshot = self.sequence_control.update(self.scene.beat)
@@ -4699,6 +4781,10 @@ class Game:
         if _capture_audio:
             self._audio_samples.append(float(sample))
         self.t += dt
+        try:
+            self.temporal_seed.update(self.t)
+        except Exception:
+            pass
         return sample, layers
 
     def save_recording(self, path, make_wav=False):
@@ -6862,7 +6948,15 @@ if HAS_UI:
 
         def draw(self, p, project, cx, cy, R):
             g = self.game
-            self.phase += 0.01
+            topo = str(g.id.get("topology") or "open_world")
+            temporal = getattr(g, "temporal_seed", None)
+            if temporal is not None:
+                temporal.update(float(getattr(g, "t", 0.0)))
+                # Time-expression is a subtle visual phase, never a replacement
+                # for player camera control.
+                self.phase += 0.008 + 0.006 * temporal.intensity
+            else:
+                self.phase += 0.01
             pal = g.id.get("ui_palette", {})
             tx = QColor(pal.get("text", "#e8f0ff"))
             ac = QColor(pal.get("accent", "#3fa7ff"))
@@ -6870,11 +6964,13 @@ if HAS_UI:
             bg = QColor(pal.get("bg", "#0b1020"))
             p.fillRect(0, 0, int(p.viewport().width()), int(p.viewport().height()), bg)
             horizon = int(cy + R * 0.12)
-            sky = QColor.fromHsv((self.seed * 17) % 360, 92, 78, 255)
+            temporal_h = temporal.field('sky_hue', getattr(g,'t',0.0), amplitude=1.0) if temporal else 0.5
+            sky_shift = int(42.0 * (temporal_h - 0.5))
+            sky = QColor.fromHsv((self.seed * 17 + sky_shift) % 360, 92, 78, 255)
             grad = QLinearGradient(0, 0, 0, max(1, horizon))
-            grad.setColorAt(0.0, QColor.fromHsv((self.seed * 17) % 360, 105, 48, 255))
+            grad.setColorAt(0.0, QColor.fromHsv((self.seed * 17 + sky_shift) % 360, 105, 48, 255))
             grad.setColorAt(0.55, sky)
-            grad.setColorAt(1.0, QColor.fromHsv((self.seed * 17 + 38) % 360, 115, 62, 255))
+            grad.setColorAt(1.0, QColor.fromHsv((self.seed * 17 + 38 + sky_shift) % 360, 115, 62, 255))
             p.fillRect(0, 0, int(p.viewport().width()), horizon, grad)
             # Layered atmospheric texture, not a pair of flat rectangles.
             for j in range(28):
