@@ -2794,13 +2794,55 @@ def _normalize_seed_script_text(seed_text):
     return text.strip()
 
 
+def _seed_script_has_assignments(raw):
+    """True when `raw` looks like a genuine multi-statement script — i.e. it
+    defines intermediate names (r = ..., theta = ...) that a later line/return
+    depends on — rather than a single expression or a comma/newline list of
+    expressions.
+
+    PARAMETRIC_ASSIGNMENT_DETECTION: this exists because
+    `_normalize_seed_script_text` (strategy 1) greedily extracts only the
+    text of the LAST `return ...` line (or last non-comment line) and throws
+    away every assignment line above it. For a plain expression that is
+    harmless. But for a natural parametric/polar script such as:
+
+        r = 1 + 0.5*sin(4*t)
+        theta = t
+        x = r*cos(theta)
+        y = r*sin(theta)
+        return [x, y]
+
+    strategy 1 would previously evaluate just the fragment "[x, y]" against
+    the base env — where `x` and `y` are only ever the placeholder defaults
+    (`x=t`, `y=0.0`) — and silently "succeed" with numbers that have nothing
+    to do with the script the user actually wrote. Detecting real assignment
+    lines lets the caller try the exec-based strategy (which runs the
+    assignments) BEFORE the single-expression shortcut, so a script that
+    defines variables is evaluated the way it reads.
+    """
+    for ln in raw.splitlines():
+        s = ln.split("#", 1)[0].strip()
+        if not s:
+            continue
+        if re.match(r"^[A-Za-z_]\w*\s*=(?!=)", s) and not s.lower().startswith("return"):
+            return True
+    return False
+
+
 def _eval_seed_python(seed_text, t_value=0.0, canonical_context=None, allow_scrape=True):
     """Evaluate seed text as a numeric-Python subset; return list of finite floats.
 
     Strategy (first success wins):
+      0. (Only when the text contains real assignment statements) multi-line
+         exec: assignments + final expression / return — tried FIRST so a
+         script that builds `x`/`y` from intermediate names like `r`/`theta`
+         is evaluated with those assignments in effect. See
+         _seed_script_has_assignments.
       1. Normalized single expression (if/elif → ternary, return stripped)
       2. Parenthesis-aware comma/newline list of expressions
-      3. Multi-line exec: assignments + final expression / return
+      3. Multi-line exec: assignments + final expression / return (retried
+         here for text that didn't qualify for step 0, or where step 0
+         raised)
       4. Scrape plain numeric tokens from the text (only if allow_scrape)
 
     Non-numeric results are ignored; only attributable finite numbers remain.
@@ -2809,7 +2851,7 @@ def _eval_seed_python(seed_text, t_value=0.0, canonical_context=None, allow_scra
     sitting in the raw text — it does not evaluate the script at all. A
     script that is well-formed but hits a domain error at one exact instant
     (e.g. "sqrt(t - 1) * 100" at t=0.0, "100/tan(t)" at t=0.0) throws in
-    steps 1-3, and step 4 would then silently return whichever literal
+    steps 0-3, and step 4 would then silently return whichever literal
     numbers happen to appear in the source ("1", "100", ...) — values that
     have nothing to do with what the formula actually computes and that
     ignore the real time-varying/conditional behavior entirely. Callers
@@ -2833,6 +2875,48 @@ def _eval_seed_python(seed_text, t_value=0.0, canonical_context=None, allow_scra
         t_scalar = 0.0
 
     env = _seed_script_env(t_scalar=t_scalar, canonical_context=canonical_context)
+
+    def _try_exec_form():
+        """Multi-line exec: assignments + if/elif/else blocks + final
+        expression or return. Extracted so it can be tried either before or
+        after the single-expression shortcut (see _seed_script_has_assignments)."""
+        try:
+            lines = []
+            for ln in raw.splitlines():
+                s = ln.strip()
+                if not s or s.startswith("#"):
+                    continue
+                lines.append(ln)
+            if not lines:
+                return None
+            body = "\n".join(lines)
+            last = lines[-1].strip()
+            if not _re.match(r"^(return|if|elif|else|for|while|def|class|with)\b", last) and "=" not in last.split("#")[0]:
+                body = "\n".join(lines[:-1] + [f"_result = ({last})"])
+            elif last.lower().startswith("return "):
+                body = "\n".join(lines[:-1] + [f"_result = ({last[7:].strip()})"])
+            local = dict(env)
+            local["_result"] = None
+            tree = ast.parse(body, mode="exec")
+            exec(compile(tree, "<groovebox-seed-exec>", "exec"), local, local)
+            if local.get("_result") is not None:
+                nums = _coerce_numeric_values(local["_result"])
+                if nums:
+                    return nums
+            for k, v in local.items():
+                if k.startswith("_") or k in env:
+                    continue
+                nums = _coerce_numeric_values(v)
+                if nums:
+                    return nums
+        except Exception:
+            return None
+        return None
+
+    if _seed_script_has_assignments(raw):
+        nums = _try_exec_form()
+        if nums:
+            return nums
 
     def _try_expr(expr):
         expr = str(expr or "").strip()
