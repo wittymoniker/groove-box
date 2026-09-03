@@ -32,16 +32,10 @@ import shutil
 import stat
 import struct
 import tempfile
-import threading
 import wave
 import zipfile
 from dataclasses import dataclass, asdict, field
 from typing import Any, Dict, List, Optional, Tuple
-try:
-    from concurrent.futures import ThreadPoolExecutor, Future
-except Exception:  # pragma: no cover
-    ThreadPoolExecutor = None  # type: ignore
-    Future = None  # type: ignore
 
 from visual_determinism import fibonacci_view, select_views, visual_signal_id, composition_fingerprint as visual_composition_fingerprint
 from fractal_spatial_engine import FractalSpatialEngine, build_spatial_state
@@ -53,172 +47,6 @@ MEUM_NORM = (MEUM - 1.0) / MEUM
 
 PHI = 1.618033988749895
 PHI_INV = PHI - 1.0
-
-# ---------------------------------------------------------------------------
-# WORLD CHUNK STREAMER (WoW-scale LODs, multithreaded, residue-only far field)
-# ---------------------------------------------------------------------------
-class WorldChunkStreamer:
-    """Deterministic chunk streaming with LOD ladders.
-
-    Near chunks: full prop lists (still pure residue math, no assets).
-    Mid chunks: sparse silhouettes.
-    Far chunks: single residual height/color sample (billboard cost).
-
-    Generation runs on a small worker pool so the game tick never blocks on
-    far-field expansion. All results are pure functions of (seed, cx, cz, lod).
-    """
-
-    CHUNK = 16.0          # world units per chunk edge
-    NEAR_R = 2            # chunks (Chebyshev) for full detail
-    MID_R = 5
-    FAR_R = 10
-    MAX_CACHED = 220
-
-    def __init__(self, seed: int, workers: int = 2):
-        self.seed = int(seed) & 0x7FFFFFFF
-        self._cache: Dict[Tuple[int, int, int], dict] = {}
-        self._inflight: Dict[Tuple[int, int, int], Any] = {}
-        self._lock = threading.Lock()
-        n = max(1, min(4, int(workers)))
-        self._pool = ThreadPoolExecutor(max_workers=n, thread_name_prefix="chunk") if ThreadPoolExecutor else None
-
-    @staticmethod
-    def world_to_chunk(x: float, z: float) -> Tuple[int, int]:
-        return int(math.floor(x / WorldChunkStreamer.CHUNK)), int(math.floor(z / WorldChunkStreamer.CHUNK))
-
-    def _residue(self, cx: int, cz: int, tag: str) -> float:
-        h = hashlib.blake2b(f"{self.seed}|{cx}|{cz}|{tag}".encode("utf-8"), digest_size=8).digest()
-        return int.from_bytes(h, "big") / 18446744073709551616.0
-
-    def _build_chunk(self, cx: int, cz: int, lod: int) -> dict:
-        """Pure function — safe to call on a worker thread."""
-        base_x = (cx + 0.5) * self.CHUNK
-        base_z = (cz + 0.5) * self.CHUNK
-        elev = self._residue(cx, cz, "elev")
-        biome = self._residue(cx, cz, "biome")
-        hue = (self._residue(cx, cz, "hue") * 360.0) % 360.0
-        props = []
-        if lod <= 0:
-            # Full detail: a handful of deterministic props
-            n = 3 + int(self._residue(cx, cz, "nprop") * 6)
-            for i in range(n):
-                px = base_x + (self._residue(cx, cz, f"px{i}") - 0.5) * self.CHUNK * 0.9
-                pz = base_z + (self._residue(cx, cz, f"pz{i}") - 0.5) * self.CHUNK * 0.9
-                kind = ("tree", "rock", "ruin", "crystal", "beacon")[int(self._residue(cx, cz, f"pk{i}") * 5) % 5]
-                props.append({
-                    "x": px, "z": pz,
-                    "kind": kind,
-                    "scale": 0.4 + self._residue(cx, cz, f"ps{i}") * 1.6,
-                    "hue": (hue + self._residue(cx, cz, f"ph{i}") * 40.0) % 360.0,
-                })
-        elif lod == 1:
-            # Mid: 1-2 silhouettes
-            n = 1 + int(self._residue(cx, cz, "midn") * 2)
-            for i in range(n):
-                props.append({
-                    "x": base_x + (self._residue(cx, cz, f"mx{i}") - 0.5) * self.CHUNK * 0.6,
-                    "z": base_z + (self._residue(cx, cz, f"mz{i}") - 0.5) * self.CHUNK * 0.6,
-                    "kind": "silhouette",
-                    "scale": 0.8 + self._residue(cx, cz, f"ms{i}"),
-                    "hue": hue,
-                })
-        # lod >= 2: residue-only — no props, just elev/hue for far billboard
-        return {
-            "cx": cx, "cz": cz, "lod": lod,
-            "base_x": base_x, "base_z": base_z,
-            "elev": elev, "biome": biome, "hue": hue,
-            "props": props,
-        }
-
-    def _lod_for(self, cx: int, cz: int, pcx: int, pcz: int) -> int:
-        d = max(abs(cx - pcx), abs(cz - pcz))
-        if d <= self.NEAR_R:
-            return 0
-        if d <= self.MID_R:
-            return 1
-        return 2
-
-    def request_around(self, player_x: float, player_z: float) -> List[dict]:
-        """Return ready chunks around the player; schedule missing ones async."""
-        pcx, pcz = self.world_to_chunk(player_x, player_z)
-        ready: List[dict] = []
-        needed = []
-        for dx in range(-self.FAR_R, self.FAR_R + 1):
-            for dz in range(-self.FAR_R, self.FAR_R + 1):
-                cx, cz = pcx + dx, pcz + dz
-                lod = self._lod_for(cx, cz, pcx, pcz)
-                if max(abs(dx), abs(dz)) > self.FAR_R:
-                    continue
-                key = (cx, cz, lod)
-                if self._lock:
-                    with self._lock:
-                        ch = self._cache.get(key)
-                else:
-                    ch = self._cache.get(key)
-                if ch is not None:
-                    ready.append(ch)
-                else:
-                    needed.append(key)
-        # Schedule builds (prefer near first)
-        needed.sort(key=lambda k: max(abs(k[0] - pcx), abs(k[1] - pcz)))
-        for key in needed[:24]:  # budget per frame
-            self._schedule(key)
-        # Collect finished futures
-        self._collect_futures()
-        # Evict if cache is huge
-        if self._lock:
-            with self._lock:
-                if len(self._cache) > self.MAX_CACHED:
-                    # drop farthest
-                    items = sorted(self._cache.items(), key=lambda kv: max(abs(kv[0][0] - pcx), abs(kv[0][1] - pcz)), reverse=True)
-                    for k, _ in items[: len(self._cache) - self.MAX_CACHED]:
-                        self._cache.pop(k, None)
-        return ready
-
-    def _schedule(self, key: Tuple[int, int, int]) -> None:
-        if key in self._inflight or (self._lock and key in self._cache):
-            return
-        cx, cz, lod = key
-        if self._pool is None:
-            ch = self._build_chunk(cx, cz, lod)
-            if self._lock:
-                with self._lock:
-                    self._cache[key] = ch
-            else:
-                self._cache[key] = ch
-            return
-        if key in self._inflight:
-            return
-        fut = self._pool.submit(self._build_chunk, cx, cz, lod)
-        self._inflight[key] = fut
-
-    def _collect_futures(self) -> None:
-        done = []
-        for key, fut in list(self._inflight.items()):
-            if getattr(fut, "done", lambda: True)():
-                try:
-                    ch = fut.result()
-                except Exception:
-                    ch = None
-                if ch is not None:
-                    if self._lock:
-                        with self._lock:
-                            self._cache[key] = ch
-                    else:
-                        self._cache[key] = ch
-                done.append(key)
-        for k in done:
-            self._inflight.pop(k, None)
-
-    def shutdown(self) -> None:
-        if self._pool is not None:
-            try:
-                self._pool.shutdown(wait=False, cancel_futures=True)
-            except Exception:
-                try:
-                    self._pool.shutdown(wait=False)
-                except Exception:
-                    pass
 
 # ---------------------------------------------------------------------------
 # ESKI BOOK FRACTAL SETS (p.26) — game / package path
@@ -656,42 +484,6 @@ def _safe_int_seed(value) -> int:
     return int.from_bytes(h[:4], "big") & 0x7FFFFFFF
 
 
-class GOAVASeedRandomizer:
-    """Authoritative stateless seed-scribed randomization API."""
-    VERSION = "goava-scribe/1"
-    def __init__(self, seed): self.seed = _safe_int_seed(seed) & 0x7FFFFFFF
-    def label(self, namespace, key=None, op="value"): return f"{namespace}|{'' if key is None else key}|{op}"
-    def residue(self, namespace, key=None, op="value"): return float(meum_game_residue(self.seed, self.label(namespace,key,op)))
-    def value(self, namespace, key=None, lo=0.0, hi=1.0, op="value"):
-        a,b=float(lo),float(hi)
-        if not (math.isfinite(a) and math.isfinite(b)): a,b=0.0,1.0
-        if b<a: a,b=b,a
-        return a+(b-a)*self.residue(namespace,key,op)
-    def index(self, namespace, key, size, op="index"):
-        n=max(0,int(size)); return 0 if n<=1 else min(n-1,int(self.residue(namespace,key,op)*n))
-    def choose(self, namespace, key, options, op="choose"):
-        vals=list(options or []); return None if not vals else vals[self.index(namespace,key,len(vals),op)]
-    def weighted(self, namespace, key, options, op="weighted"):
-        vals=list(options or [])
-        if not vals: return None
-        clean=[]; total=0.0
-        for item in vals:
-            try: weight=max(0.0,float(item[1]))
-            except Exception: weight=0.0
-            clean.append((item[0],weight)); total+=weight
-        if total<=0.0: return clean[self.index(namespace,key,len(clean),op)][0]
-        x=self.residue(namespace,key,op)*total
-        for item,weight in clean:
-            x-=weight
-            if x<0.0: return item
-        return clean[-1][0]
-    def signed(self, namespace, key, magnitude=1.0, op="signed"):
-        return (self.residue(namespace,key,op)*2.0-1.0)*abs(float(magnitude))
-    def scribe(self, namespace, key, operation, result):
-        return {"version":self.VERSION,"seed":self.seed,"namespace":str(namespace),"key":str(key),"operation":str(operation),"label":self.label(namespace,key,operation),"result":result}
-
-def goava(seed): return GOAVASeedRandomizer(seed)
-
 def _mix(seed: int, label: str) -> int:
     """Deterministic avalanche mix — unique non-redundant residue per label."""
     blob = f"{seed}|{label}|{MEUM:.12f}".encode("utf-8")
@@ -1042,6 +834,7 @@ def classify_from_composition(
     randomizer_active: bool = False,
     phase_lock_active: bool = False,
     live_parametrics: Optional[str] = None,
+    seed_script: Optional[str] = None,
     global_algo_fingerprint: Optional[str] = None,
     global_algo: Optional[Dict[str, Any]] = None,
     step_algorithm_fingerprint: Optional[str] = None,
@@ -1077,6 +870,8 @@ def classify_from_composition(
     )
     if live_parametrics:
         fp_src += f"|lp={str(live_parametrics)[:120]}"
+    if seed_script:
+        fp_src += "|ss=" + hashlib.sha256(str(seed_script).encode("utf-8", "replace")).hexdigest()[:16]
     fingerprint = hashlib.sha256(fp_src.encode("utf-8")).hexdigest()[:16]
 
     g = GENRES[_mix(s, "genre") % len(GENRES)]
@@ -1182,10 +977,7 @@ def classify_from_composition(
     objective = OBJECTIVES[_res_idx(s, f"objective|{world_fp}", len(OBJECTIVES))]
     difficulty = DIFFICULTIES[_res_idx(s, f"difficulty|{world_fp}", len(DIFFICULTIES))]
     level_type = LEVEL_TYPES[_res_idx(s, f"level|{world_fp}", len(LEVEL_TYPES))]
-    # Sigils are a world mechanic, not a universal game skin.  Keep a
-    # deterministic count available for Nexus worlds, but non-Nexus worlds
-    # instantiate zero sigils unless explicitly opted in.
-    sigil_count = 5 + _res_idx(s, f"sigils|{world_fp}", 8)  # 5..12 for Nexus
+    sigil_count = 5 + _res_idx(s, f"sigils|{world_fp}", 8)  # 5..12
     world_fp = hashlib.sha256(
         f"{world_fp}|ob={objective}|df={difficulty}|lv={level_type}|s={sigil_count}"
         .encode("utf-8")
@@ -1261,14 +1053,9 @@ def classify_from_composition(
 # ---------------------------------------------------------------------------
 
 _GAME_TEMPLATE = r'''#!/usr/bin/env python3
-# Groovebox Video-Game Package
+# Auto-generated by Groovebox Video-Game Generator
 # Deterministic unique non-redundant game from composition seed __SEED__
 # Fingerprint: __FINGERPRINT__
-# Equations (proof of concept — same lattice as host audio/visual):
-#   M = Meum, Phi = golden ratio, r(s,k) = unit residue from blake2b(s|k)
-#   audio: y = sum_h (Mn/h) W(phi * h) * AM * (1+FM) with free rates/depths
-#   visual: Pi(r(s,.), kind_i, X_audio) — pure camera projection, no visual RNG
-#   chunks: (s,cx,cz,lod) -> props | silhouette | residual billboard
 # This package ships a PyQt6 control panel and, for every multiplayer game,
 # simultaneous host/client networking (stdlib socket + threads). The host is
 # authoritative; clients connect, stream orbit steering + chat, and reconcile
@@ -1404,6 +1191,60 @@ HOTSEAT_INVITES = json.loads(__INVITES_JSON__)
 HOW_TO_PLAY = __HOWTO_TEXT__
 USER_SEED = __SEED__
 
+def seed_script_channels(seed_script, t=0.0):
+    import ast as _ast, re as _re
+    raw = str(seed_script or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    env = {k: getattr(math, k) for k in dir(math) if not k.startswith("_")}
+    env.update({
+        "zeta": lambda q: sum(1.0/(k**max(1.000001,float(q))) for k in range(1,65)),
+        "eta": lambda q: sum(((-1.0)**(k-1))/(k**max(0.05,float(q))) for k in range(1,97)),
+        "dirichlet_l": lambda q, mod=3: sum((0.0 if k%max(2,int(abs(mod)))==0 else (1.0 if (k%max(2,int(abs(mod))))%2 else -1.0))/(k**max(0.05,float(q))) for k in range(1,97)),
+        "lfunction": lambda q, mod=3: sum((0.0 if k%max(2,int(abs(mod)))==0 else (1.0 if (k%max(2,int(abs(mod))))%2 else -1.0))/(k**max(0.05,float(q))) for k in range(1,97)),
+    })
+    env.update({"t": float(t), "MEUM": MEUM, "PHI": PHI, "pi": math.pi, "tau": math.tau, "abs": abs, "min": min, "max": max, "sum": sum, "range": range})
+    env.update({
+        "zeta": lambda q: sum(1.0/(k**max(1.000001,float(q))) for k in range(1,65)),
+        "eta": lambda q: sum(((-1.0)**(k-1))/(k**max(0.05,float(q))) for k in range(1,97)),
+        "dirichlet_l": lambda q, mod=3: sum((0.0 if k%max(2,int(abs(mod)))==0 else (1.0 if (k%max(2,int(abs(mod))))%2 else -1.0))/(k**max(0.05,float(q))) for k in range(1,97)),
+        "lfunction": lambda q, mod=3: sum((0.0 if k%max(2,int(abs(mod)))==0 else (1.0 if (k%max(2,int(abs(mod))))%2 else -1.0))/(k**max(0.05,float(q))) for k in range(1,97)),
+    })
+    env.update({
+        "zeta": lambda q: sum(1.0/(k**max(1.000001,float(q))) for k in range(1,65)),
+        "eta": lambda q: sum(((-1.0)**(k-1))/(k**max(0.05,float(q))) for k in range(1,97)),
+        "dirichlet_l": lambda q, mod=3: sum((0.0 if k%max(2,int(abs(mod)))==0 else (1.0 if (k%max(2,int(abs(mod))))%2 else -1.0))/(k**max(0.05,float(q))) for k in range(1,97)),
+        "lfunction": lambda q, mod=3: sum((0.0 if k%max(2,int(abs(mod)))==0 else (1.0 if (k%max(2,int(abs(mod))))%2 else -1.0))/(k**max(0.05,float(q))) for k in range(1,97)),
+    })
+    env.update({"cartesian": lambda x,y,z=0.0:(float(x),float(y),float(z)), "parametric": lambda x,y,z=0.0:(float(x),float(y),float(z)), "polar": lambda r,th:(float(r)*math.cos(float(th)),float(r)*math.sin(float(th))), "cylindrical": lambda r,th,z=0.0:(float(r)*math.cos(float(th)),float(r)*math.sin(float(th)),float(z)), "spherical": lambda r,th,ph:(float(r)*math.sin(float(ph))*math.cos(float(th)),float(r)*math.sin(float(ph))*math.sin(float(th)),float(r)*math.cos(float(ph)))})
+    env.update({
+        "cartesian": lambda x,y,z=0.0: (float(x),float(y),float(z)),
+        "parametric": lambda x,y,z=0.0: (float(x),float(y),float(z)),
+        "polar": lambda r,th: (float(r)*math.cos(float(th)), float(r)*math.sin(float(th))),
+        "cylindrical": lambda r,th,z=0.0: (float(r)*math.cos(float(th)), float(r)*math.sin(float(th)),float(z)),
+        "spherical": lambda r,th,ph: (float(r)*math.sin(float(ph))*math.cos(float(th)), float(r)*math.sin(float(ph))*math.sin(float(th)), float(r)*math.cos(float(ph))),
+    })
+    lines = [ln for ln in raw.splitlines() if ln.strip() and not ln.strip().startswith("#")]
+    try:
+        last = lines[-1].strip(); body = list(lines)
+        if last.lower().startswith("return "): body[-1] = f"_result = ({last[7:].strip()})"
+        elif not _re.match(r"^(if|elif|else|for|while|def|class|with|try|except|finally)\b", last) and not _re.match(r"^[A-Za-z_]\w*\s*(?:\+=|-=|\*=|/=|%=|=)(?!=)", last): body[-1] = f"_result = ({last})"
+        local = dict(env); local["_result"] = None
+        exec(compile(_ast.parse("\n".join(body), mode="exec"), "<game-seed>", "exec"), {"__builtins__": {}}, local)
+        result = local.get("_result"); vals = list(result) if isinstance(result, (list, tuple)) else ([result] if isinstance(result, (int, float)) else [])
+        vals = [float(v) for v in vals if isinstance(v,(int,float)) and math.isfinite(float(v))]
+        x,y,z = local.get("x"),local.get("y"),local.get("z")
+        if x is None and local.get("r") is not None and local.get("theta") is not None: x=local["r"]*math.cos(local["theta"]); y=local["r"]*math.sin(local["theta"])
+        if x is None and len(vals)>=2: x,y=vals[0],vals[1]; z=vals[2] if len(vals)>=3 else z
+        x,y,z=float(x or 0),float(y or 0),float(z or 0)
+        scalar=(0.50*x+0.35*y+0.15*z)/(1+0.50*abs(x)+0.35*abs(y)+0.15*abs(z)) if (x or y or z) else (float(vals[0]) if vals else 0.0)
+        channels={"radial":math.sqrt(x*x+y*y+z*z),"angle":math.atan2(y,x),"orbit":0.0,"escape":1.0,"zeta":0.0,"eta":0.0,"lfunction":0.0,"curvature":math.tanh(abs(x*y+y*z+z*x)),"energy":math.tanh(0.5*(x*x+y*y+z*z)),"phase":math.fmod(float(t)+math.atan2(y,x),math.tau)}
+        # Every user variable remains routable, not just x/y/z.
+        for k,vv in vars_.items():
+            channels[k]=float(vv)
+        channels["variables"]=sum(math.tanh(vv) for kk,vv in vars_.items() if kk not in ("x","y","z"))/max(1,len(vars_))
+        return {"scalar":scalar,"x":x,"y":y,"z":z,"values":vals,"vars":vars_,"channels":channels}
+    except Exception:
+        return {"scalar":0.0,"x":0.0,"y":0.0,"z":0.0,"values":[]}
+
 # ---------------------------------------------------------------------------
 # Optional UI framework (scene viewport + control panel). Only the standard
 # library is required to *run* a session: without PyQt6 the game plays the
@@ -1412,24 +1253,17 @@ USER_SEED = __SEED__
 # two shared (Python / PyQt6) system dependencies.
 # ---------------------------------------------------------------------------
 try:
-    from PyQt6.QtCore import QTimer, Qt, QPointF, QRectF
-    from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QBrush, QPolygonF, QImage, QLinearGradient, QCursor, QPainterPath
+    from PyQt6.QtCore import QTimer, Qt, QPointF
+    from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QBrush, QPolygonF
     from PyQt6.QtWidgets import (
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
         QPushButton, QLineEdit, QPlainTextEdit, QSpinBox, QCheckBox, QFrame,
         QSizePolicy, QGroupBox, QMessageBox, QInputDialog, QProgressBar,
-        QSplitter, QTabWidget, QListWidget, QListWidgetItem, QDialog, QDialogButtonBox,
-        QComboBox,
+        QSplitter,
     )
     HAS_UI = True
 except Exception:
     HAS_UI = False
-try:
-    import sounddevice as sd
-    HAS_AUDIO = True
-except Exception:
-    sd = None
-    HAS_AUDIO = False
 
 
 def _mix(seed, label):
@@ -1451,37 +1285,6 @@ def _residue(seed, label):
     blob = f"{seed}|{label}|{MEUM:.12f}".encode("utf-8")
     i = int.from_bytes(hashlib.sha256(blob).digest()[:8], "big")
     return (i % 10_000_000) / 10_000_000.0
-
-class GOAVASeedRandomizer:
-    VERSION = "goava-scribe/1"
-    def __init__(self, seed): self.seed=_safe_int_seed(seed)&0x7FFFFFFF
-    def label(self, namespace, key=None, op="value"): return f"{namespace}|{'' if key is None else key}|{op}"
-    def residue(self, namespace, key=None, op="value"): return float(_residue(self.seed,self.label(namespace,key,op)))
-    def value(self, namespace, key=None, lo=0.0, hi=1.0, op="value"):
-        a,b=float(lo),float(hi)
-        if not(math.isfinite(a) and math.isfinite(b)): a,b=0.0,1.0
-        if b<a: a,b=b,a
-        return a+(b-a)*self.residue(namespace,key,op)
-    def index(self, namespace, key, size, op="index"):
-        n=max(0,int(size)); return 0 if n<=1 else min(n-1,int(self.residue(namespace,key,op)*n))
-    def choose(self, namespace, key, options, op="choose"):
-        vals=list(options or []); return None if not vals else vals[self.index(namespace,key,len(vals),op)]
-    def weighted(self, namespace, key, options, op="weighted"):
-        vals=list(options or []); clean=[]; total=0.0
-        for item in vals:
-            try: w=max(0.0,float(item[1]))
-            except Exception: w=0.0
-            clean.append((item[0],w)); total+=w
-        if not clean: return None
-        if total<=0: return clean[self.index(namespace,key,len(clean),op)][0]
-        x=self.residue(namespace,key,op)*total
-        for item,w in clean:
-            x-=w
-            if x<0: return item
-        return clean[-1][0]
-    def signed(self, namespace, key, magnitude=1.0, op="signed"): return (self.residue(namespace,key,op)*2.0-1.0)*abs(float(magnitude))
-    def scribe(self, namespace, key, operation, result): return {"version":self.VERSION,"seed":self.seed,"namespace":str(namespace),"key":str(key),"operation":str(operation),"label":self.label(namespace,key,operation),"result":result}
-def goava(seed): return GOAVASeedRandomizer(seed)
 
 def meum_angle(k):
     """Collision-free angle packing on the circle (OT-gated, p.78/49-50).
@@ -1700,43 +1503,6 @@ class TriggerSculptor:
         return _residue(self.seed, f"trig:{i}:{t}") < prob
 
 
-class SequenceInfluence:
-    """Unified step-control field shared by game movement, visual objects, and sound.
-
-    The written sequence is the dominant clock: each step creates a deterministic
-    control vector. Visual/object movement receives the strongest influence;
-    audio vibration receives a deliberately reduced 0.5 factor; secondary systems
-    receive progressively smaller factors. Nothing here creates random state.
-    """
-    FACTORS = {"movement": 1.0, "visual": 0.85, "vibration": 0.5, "secondary": 0.25}
-    def __init__(self, seed, pattern_lengths=(16,)):
-        self.seed = int(seed) & 0x7fffffff
-        self.pattern_lengths = tuple(max(1, int(x)) for x in (pattern_lengths or (16,)))
-        self.step = 0
-        self.phase = 0.0
-        self.motion = 0.0
-        self.vibration = 0.0
-        self.pulse = 0.0
-
-    def update(self, beat):
-        b = max(0.0, float(beat))
-        self.step = int(math.floor(b))
-        frac = b - math.floor(b)
-        plen = self.pattern_lengths[self.step % len(self.pattern_lengths)]
-        local = self.step % plen
-        self.phase = (local + frac) / float(plen)
-        r = _residue(self.seed, f"sequence:step:{self.step}:{plen}")
-        self.motion = self.FACTORS["movement"] * (0.55 + 0.45 * r)
-        self.vibration = self.FACTORS["vibration"] * (0.35 + 0.65 * r)
-        self.pulse = 0.5 + 0.5 * vg_sin(self.phase * math.tau)
-        return self.snapshot()
-
-    def snapshot(self):
-        return {"step": int(self.step), "phase": float(self.phase),
-                "motion": float(self.motion), "vibration": float(self.vibration),
-                "pulse": float(self.pulse)}
-
-
 class ScenographLite:
     """Game-side fractal: every layer is the SAME instrument-object type.
 
@@ -1768,7 +1534,6 @@ class ScenographLite:
         self.topology = (topology or "open_world").lower()
         self.sculptor = TriggerSculptor(self.seed, self.n)
         self.beat = 0.0
-        self.sequence_control = SequenceInfluence(self.seed, (16,))
         self.layers = []
         base = 220.0 * 2.0 ** ((round(36.0 * _residue(self.seed, "base")) - 18) / 12.0)
         for i in range(self.n):
@@ -1776,57 +1541,37 @@ class ScenographLite:
             ax = (phase0 * MEUM_NORM + i * MEUM_INV) % 1.0
             ent = (_residue(self.seed, "identity_entropy")
                    if self.goava else _residue(self.seed, f"entropy:{i}"))
-            # Coefficients only MEUM / PHI / 1/n.
-            conson = 1.0 if self.goava else (MEUM_NORM + PHI_INV * abs(vg_cos(ax * math.tau + i * PHI)))
-            pow_ = MEUM + (1.0 / max(1, i + 1)) * 10.0 * _residue(self.seed, f"pow:{i}")
-            depth = MEUM_NORM + PHI * (1.0 - conson) + (MEUM_INV) * pow_ * _residue(self.seed, f"dscale:{i}")
-            # Continuous free parameters — MEUM/PHI only.
-            shade = MEUM_NORM + PHI_INV * (MEUM_NORM + PHI_INV * vg_sin(ax * math.tau * PHI + i))
-            life = MEUM_NORM + PHI_INV * conson * (MEUM_INV + PHI_INV * ent)
+            conson = 1.0 if self.goava else 0.35 + 0.65 * abs(vg_cos(ax * math.tau + i * PHI))
+            pow_ = 1.5 + 10.0 * _residue(self.seed, f"pow:{i}")
+            depth = 0.55 + 1.15 * (1.0 - conson) + 0.25 * pow_ * _residue(self.seed, f"dscale:{i}")
+            # Higher shade/life floors → less wash-out, more seed divergence
+            shade = 0.55 + 0.45 * (0.5 + 0.5 * vg_sin(ax * math.tau * PHI + i))
+            life = 0.55 + 0.45 * conson * (0.30 + 0.70 * ent)
             pack = _residue(self.seed, f"pack:{i}")
             ratio = residue_to_bipolar(_residue(self.seed, f"ratio:{i}"))
-            # Radius: pure continuous function of depth and pack.
-            radius = (MEUM + PHI - depth * MEUM_INV) * (MEUM_INV + MEUM_NORM * pack)
-            # Topology-aware free positions
+            # DECLAMP_2026: depth used to be hard-capped at 2.0 before feeding
+            # radius, which silently flattened every layer past that point to
+            # the same minimum size — an arbitrary clamp, not a real bound.
+            # Radius now scales continuously with the full depth range (depth
+            # is itself unbounded-but-typically-small, seed-derived) and only
+            # keeps a small positive floor so nothing renders at/below zero.
+            radius = max(0.12, (2.2 - depth * 0.28)) * (0.25 + 0.55 * pack)
+            # Topology-aware free positions (open-world scatter vs hub vs ring)
             if self.topology in ("open_world", "sandbox", "hub_spoke"):
                 yaw = meum_angle(self.seed * PHI + i * 47 + 13 * _residue(self.seed, f"yaw:{i}"))
-                dist = MEUM_INV + (MEUM + PHI_INV) * _residue(self.seed, f"dist:{i}")
+                dist = 0.25 + 1.55 * _residue(self.seed, f"dist:{i}")
             elif self.topology in ("arena_loop", "linear"):
                 yaw = meum_angle(i * 31 + self.seed)
-                dist = MEUM_NORM + PHI_INV * _residue(self.seed, f"dist:{i}")
+                dist = 0.85 + 0.35 * _residue(self.seed, f"dist:{i}")
             else:
                 yaw = meum_angle(self.seed + i * 31)
-                dist = MEUM_NORM + _residue(self.seed, f"dist:{i}")
-            # FRACTAL_VISUALIZER_2026: each layer is one sample of the fractal
-            # of all ways to visualize audio data in 1-D / 2-D / 3-D.
-            # Kind is chosen from a lattice that enumerates:
-            #   1-D : waveform, spectrum, phase-portrait, envelope, correlation
-            #   2-D : spectrogram, vectorscope, lissajous, polar, hilbert
-            #   3-D : volumetric spectrum, phase-space, spatial field, polytope
-            # The same object schema is used for every dimension; the kind
-            # selects the projection and the face topology.
-            _viz_kinds = (
-                # 1-D audio visualizers
-                "waveform_1d", "spectrum_1d", "phase_portrait_1d", "envelope_1d", "correlation_1d",
-                # 2-D audio visualizers
-                "spectrogram_2d", "vectorscope_2d", "lissajous_2d", "polar_2d", "hilbert_2d",
-                # 3-D audio visualizers
-                "volumetric_spectrum_3d", "phase_space_3d", "spatial_field_3d", "polytope_3d",
-                "fractal_shell_3d", "meum_lattice_3d",
-            )
-            kind_idx = int(_residue(self.seed, f"kind:{i}") * len(_viz_kinds)) % len(_viz_kinds)
-            viz_kind = _viz_kinds[kind_idx]
-            # Dimension tag derived from kind (for downstream placement).
-            if viz_kind.endswith("_1d"):
-                viz_dim = 1
-            elif viz_kind.endswith("_2d"):
-                viz_dim = 2
-            else:
-                viz_dim = 3
+                dist = 0.5 + 1.0 * _residue(self.seed, f"dist:{i}")
+            # FRACTAL_OBJECT_2026: identical schema for every instrument sample.
+            # child_scale = self-similar child (same object type, smaller).
             self.layers.append({
                 "fractal_object": True,
                 "slot": i,
-                "base_freq": base if self.goava else base * (1.0 + MEUM * abs(ratio)),
+                "base_freq": base if self.goava else base * (1.0 + 1.1 * abs(ratio)),
                 "ratio": ratio,
                 "entropy": ent,
                 "conson": conson,
@@ -1835,27 +1580,20 @@ class ScenographLite:
                 "life": life,
                 "radius": radius,
                 "yaw": yaw,
-                "pitch": residue_to_bipolar(_residue(self.seed, f"pitch:{i}")) * MEUM_NORM,
+                "pitch": residue_to_bipolar(_residue(self.seed, f"pitch:{i}")) * 0.55,
                 "dist": dist,
-                "hue": (_residue(self.seed, f"hue:{i}") * MEUM_NORM + _residue(self.seed, "hue_global") * PHI_INV) % 1.0,
+                "hue": (_residue(self.seed, f"hue:{i}") * 0.82 + _residue(self.seed, "hue_global") * 0.18) % 1.0,
                 "phase0": phase0 * math.tau,
-                "child_scale": PHI_INV + MEUM_INV * ent,
+                "child_scale": 0.45 + 0.15 * ent,
                 "on": True,
-                "kind": viz_kind,
-                "viz_dim": viz_dim,
-                # Dense, deterministic face topology scaled by dimension.
-                "face_count": (1 + viz_dim) + int((MEUM + PHI) * _residue(self.seed, f"face_n:{i}")),
-                "face_phase": _residue(self.seed, f"face_phase:{i}") * math.tau,
-                "face_twist": residue_to_bipolar(_residue(self.seed, f"face_twist:{i}")),
-                # Algorithm-span coordinates coupled to the written step lattice.
-                "pattern_length": 16,
-                "z_step": int(i * 7 + math.floor((1.0 / MEUM_INV) * _residue(self.seed, f"zstep:{i}"))),
+                "kind": ("panel", "filament", "polytope", "sigil_sprite",
+                         "ridge", "orb", "spoke", "glyph")[
+                    int(_residue(self.seed, f"kind:{i}") * 8) % 8
+                ],
             })
     def tick(self, dt, audio_rms=0.2):
         self.beat += dt * (BPM / 60.0)
-        self.sequence_control.update(self.beat)
-        seqc = self.sequence_control
-        step = int(seqc.step)
+        step = int(self.beat)
         # Cross-correlation bias from the unified audio/activity/visual field
         # (set by Game._refresh_activities).  Singular scenarios become visible
         # as spin rate, hue drift, and grid density — the same numbers the ear
@@ -1867,20 +1605,19 @@ class ScenographLite:
         # Host composition engines (Randomizer / Phase-lock / GOAVA) control
         # scenograph motion the same way they control the mix.
         em = getattr(self, "_engine_mask", None) or {}
-        # Continuous playlist attenuation weights (default 1 when mask is on)
-        att = getattr(self, "_engine_attenuation", None) or {}
-        a_rnd = float(att.get("randomizer", 1.0 if em.get("randomizer") else 0.0) or 0.0)
-        a_pl = float(att.get("phase_lock", 1.0 if em.get("phase_lock") else 0.0) or 0.0)
-        a_go = float(att.get("goava", 1.0 if em.get("goava") else 0.0) or 0.0)
-        if a_rnd:
-            x_spin *= (1.0 + 0.35 * a_rnd)
-            x_energy = x_energy + 0.12 * a_rnd
-        if a_pl:
-            x_grid = x_grid + 0.45 * a_pl
-            x_spin *= (1.0 - 0.15 * a_pl) if a_pl < 1.0 else 0.85
-        if a_go:
-            x_hue = (x_hue + 28.0 * a_go) % 360.0
-            x_spin *= (1.0 + 0.12 * a_go)
+        if em.get("randomizer"):
+            x_spin *= 1.35
+            x_energy = min(1.0, x_energy + 0.12)
+        if em.get("phase_lock"):
+            # DECLAMP_2026: grid density used to hard-ceiling at 1.5,
+            # which flattened Phase-Lock's visual response once density
+            # was already close to that ceiling. No cap now beyond the
+            # natural floor of 0.0 further down the pipeline.
+            x_grid = x_grid + 0.45
+            x_spin *= 0.85
+        if em.get("goava"):
+            x_hue = (x_hue + 28.0) % 360.0
+            x_spin *= 1.12
         # Book fractal set (p.26): same expression under OT; arithmetic nature
         # flips with the host OT toggle.  Playlist/algo hash tilts which set.
         try:
@@ -1906,9 +1643,8 @@ class ScenographLite:
                 flags=em_flags, fractal_set=set_name)
             infl = (n_done / 12.0) * (0.4 if escaped else 1.0)
             infl *= (0.6 + 0.4 * float(mode0.get("book_set", 0.2)))
-            # FREE_2026: fractal influence is continuous; no artificial bipolar clamp.
-            x_spin *= (1.0 + 0.08 * (yv * 0.01) * infl)
-            x_hue = (x_hue + 12.0 * (yv * 0.02) * infl) % 360.0
+            x_spin *= (1.0 + 0.08 * max(-1.0, min(1.0, yv * 0.01)) * infl)
+            x_hue = (x_hue + 12.0 * max(-1.0, min(1.0, yv * 0.02)) * infl) % 360.0
             if mode0.get("near_phase_point"):
                 x_grid = x_grid + 0.15 * float(mode0.get("snap", 0))
             # Per-layer mode tags so viewport/debug can show blend state
@@ -1938,18 +1674,15 @@ class ScenographLite:
             if L["on"]:
                 on_count += 1
                 spin = (0.25 + 0.65 * MEUM * (i + 1) / max(1, self.n)) * (0.6 + 0.8 * x_spin)
-                step_phase = seqc.phase * math.tau + i * MEUM
-                step_drive = 0.55 + 0.90 * seqc.motion * (0.35 + 0.65 * seqc.pulse)
-                L["yaw"] = (L["yaw"] + dt * spin * step_drive * (0.6 + 0.9 * audio_rms + 0.35 * x_energy)) % math.tau
-                L["_sequence_step"] = int(seqc.step)
-                L["_sequence_motion"] = float(seqc.motion)
-            L["pitch"] = MEUM_NORM * vg_sin(step_phase + self.beat * MEUM * PHI_INV + x_grid * PHI_INV)
-            # Life is an unrestricted continuous pulse (MEUM/PHI only).
-            L["life"] = float(L.get("life", MEUM_NORM)) + (MEUM_INV / max(1, i + 1)) * vg_sin(self.beat * PHI + i)
-            # Hue tracks the cross-correlation field.
-            base_h = float(L.get("hue", MEUM_NORM))
-            L["hue"] = (base_h * MEUM_NORM + (x_hue / 360.0) * PHI_INV + (MEUM_INV / max(1, self.n)) * i) % 1.0
-            L["radius"] = float(L.get("radius", 1.0)) * (MEUM_NORM + PHI_INV * x_grid) * (MEUM_NORM + MEUM_INV * seqc.motion * seqc.pulse)
+                L["yaw"] = (L["yaw"] + dt * spin * (0.6 + 0.9 * audio_rms + 0.35 * x_energy)) % math.tau
+            L["pitch"] = 0.55 * vg_sin(self.beat * MEUM + i * PHI + x_grid * 0.4)
+            # Subtle life pulse so open-world layers feel alive
+            L["life"] = max(0.45, min(1.0, L.get("life", 0.7) + 0.04 * vg_sin(self.beat * PHI + i)))
+            # Hue tracks the cross-correlation field so a scoring arena, arcade
+            # scatter, or study lattice is chromatically distinct.
+            base_h = float(L.get("hue", 0.5))
+            L["hue"] = (base_h * 0.55 + (x_hue / 360.0) * 0.45 + 0.03 * i / max(1, self.n)) % 1.0
+            L["radius"] = float(L.get("radius", 1.0)) * (0.85 + 0.30 * x_grid)
         self._on_count = on_count
         return self.layers
 
@@ -1981,7 +1714,6 @@ class MusicBed:
             1.0 + k * (0.45 + 0.55 * _residue(self.seed, f"pratio:{k}"))
             for k in range(self._n_partials)
         ]
-        self.sequence_control = SequenceInfluence(self.seed, (max(1, int(bars)),))
         self._amps = [
             (0.62 ** k) * (0.55 + 0.45 * (1.0 - self._entropy))
             for k in range(self._n_partials)
@@ -1989,25 +1721,32 @@ class MusicBed:
     def step(self, dt):
         beat = self.bpm / 60.0
         self.phase = (self.phase + dt * beat * math.tau) % math.tau
-        seqc = self.sequence_control.update(self.phase / math.tau)
-        self.sequence_step = int(seqc["step"])
-        self.sequence_vibration = float(seqc["vibration"])
         self.dj = 0.5 + 0.5 * vg_sin(self.phase * MEUM + self._dj_residue * 0.01)
         if self.dj_goava:
             self.dj = 0.5 * self.dj + 0.5 * (0.5 + 0.5 * vg_sin(self.phase * MEUM_INV))
         if self.dj_random:
             self.dj = (self.dj + 0.15 * vg_sin(self.phase * PHI + self._algo_spin)) % 1.0
-        g = self.mix * vg_sin(self.phase * (1.0 + self._algo_spin) * MEUM)
+        try:
+            _scm = seed_script_channels(COMPOSITION_META.get("seed_script", ""), self.phase / math.tau)
+            _seed_drive = float(_scm["scalar"])
+            _chm = dict(_scm.get("channels") or {})
+            _math_drive = (0.10*math.tanh(float(_chm.get("orbit",0.0))) + 0.08*math.tanh(float(_chm.get("curvature",0.0))) + 0.06*math.tanh(float(_chm.get("zeta",0.0))) + 0.06*math.tanh(float(_chm.get("lfunction",0.0))))
+        except Exception:
+            _seed_drive = 0.0; _math_drive = 0.0
+        # Named seed variables are direct cross-media controls.
+        _pitch_route = float(_chm.get("pitch", 0.0) or 0.0)
+        _amp_route = float(_chm.get("amplitude", 0.0) or 0.0)
+        _rate_route = float(_chm.get("rate", 0.0) or 0.0)
+        g = self.mix * vg_sin(self.phase * (1.0 + self._algo_spin + 0.15*math.tanh(_rate_route)) * MEUM)
         # Harmonic lattice: phase0-offset fundamental + entropy-scaled partials
-        ph = self.phase + self._phase0
+        ph = self.phase * (1.0 + 0.12*math.tanh(_rate_route)) + self._phase0
         sample = 0.0
         for k in range(self._n_partials):
             sample += self._amps[k] * vg_sin(ph * self._ratios[k])
-        # Sequence steps are dominant in movement/visuals, but sound receives
-        # only the 0.5 vibration factor so it follows rather than overwhelms.
-        vib = float(getattr(self, "sequence_vibration", 0.5))
-        sample *= (0.65 + 0.55 * self.dj) * (0.78 + 0.44 * vib)
-        sample += 0.22 * g * (0.65 + 0.70 * vib)
+        sample *= (0.65 + 0.55 * self.dj)
+        sample += 0.22 * g
+        sample *= (1.0 + 0.16 * _seed_drive + _math_drive)
+        sample *= max(0.0, 1.0 + 0.22*math.tanh(_amp_route))
         # MASTER BUS (host-matching doctrine): a plain MASTER VOLUME multiplier
         # followed by a HARD CLIP to [-1, +1]. No tanh soft-clip / soft
         # normalizer anywhere — the user-controlled master volume is the
@@ -2086,14 +1825,9 @@ class InstrumentAssetBridge:
         self.primitives = (self.id.get("asset_manifest") or {}).get("primitives") or ["panel", "filament", "orb"]
 
     def color_for_layer(self, layer_hue, shade=0.7):
-        """Blend instrument material hue with per-layer hue → display RGB hint.
-        FREE_2026: saturation / value are unrestricted continuous values;
-        QColor / HSV conversion will absorb out-of-range numbers naturally.
-        """
+        """Blend instrument material hue with per-layer hue → display RGB hint."""
         h = (0.55 * self.hue + 0.45 * float(layer_hue)) % 1.0
-        s = self.sat * (0.7 + 0.3 * float(shade))
-        v = 0.45 + 0.55 * float(shade) + 0.2 * self.emissive
-        return h, s, v
+        return h, max(0.3, min(1.0, self.sat * (0.7 + 0.3 * shade))), max(0.35, min(1.0, 0.45 + 0.55 * shade + 0.2 * self.emissive))
 
     def primitive_for(self, i):
         return self.primitives[i % len(self.primitives)]
@@ -2369,184 +2103,6 @@ _NPC_ROLES = (
 )
 
 
-class CharacterDecorationSystem:
-    """Experience-aware avatar decoration with a population-average prior."""
-    FEATURES=("crest","mantle","trail","badge","aura","markings","silhouette","accent")
-    def __init__(self, seed):
-        self.seed=int(seed)&0x7FFFFFFF
-        self.design={k:_residue(self.seed, f"character/design:{k}") for k in self.FEATURES}
-        self.designed=True; self.observed=[]
-        self.global_prior=0.50 + 0.22*(_residue(self.seed,"character/global_average")-0.5)
-        self.external_population_average=None
-        self.experience=0.0; self.freedom=1.0; self.decoration_level=0.0
-    def record_design(self, values=None, source="local"):
-        vals=values if isinstance(values,dict) else self.design
-        score=sum(float(vals.get(k,0.5)) for k in self.FEATURES)/len(self.FEATURES)
-        self.observed.append((str(source),max(0.0,min(1.0,score))))
-        self.observed=self.observed[-64:]
-        return score
-    def update(self, game):
-        completed=sum(1 for q in getattr(game.quests,"quests",[]) if q.get("done"))
-        events=len(getattr(getattr(game,"world_events",None),"history",[]) or [])
-        self.experience=max(0.0,min(1.0,
-            .20*min(1.0,max(0.0,float(getattr(game,"level",1)-1))/12.0)+
-            .18*min(1.0,max(0.0,float(getattr(game,"score",0.0)))/80.0)+
-            .18*min(1.0,completed/8.0)+.14*min(1.0,max(0.0,float(getattr(game,"combo",0)))/12.0)+
-            .15*min(1.0,events/18.0)+.15*min(1.0,len(getattr(game,"tags",set()))/12.0)))
-        self.freedom=max(.55,1.0-.38*self.experience)
-        self.decoration_level=min(1.0,.10+.90*self.experience)
-        return self.snapshot()
-    def population_average(self):
-        vals=[v for _,v in self.observed]
-        local=max(0.0,min(1.0,(self.global_prior+(sum(vals)/len(vals) if vals else self.global_prior))/2.0))
-        if self.external_population_average is not None:
-            return max(0.0,min(1.0,0.35*local+0.65*float(self.external_population_average)))
-        return local
-    def visual(self, game, variant=0):
-        self.update(game); avg=self.population_average(); blend=.10+.30*self.experience; out={}
-        for k in self.FEATURES:
-            personal=float(self.design.get(k,.5)); pop=(avg+_residue(self.seed,f"character/pop:{k}")*.35)/1.35
-            out[k]=max(0.0,min(1.0,personal*(1.0-blend)+pop*blend))
-        out.update(density=self.decoration_level,freedom=self.freedom,population_average=avg,experience=self.experience,variant=int(variant)%7)
-        return out
-    def cycle_design(self, axis, amount=.12):
-        if axis not in self.design: axis=self.FEATURES[0]
-        self.design[axis]=(float(self.design.get(axis,.5))+float(amount))%1.0
-        self.record_design(source="local"); return self.design[axis]
-    def snapshot(self):
-        return {"design":dict(self.design),"experience":self.experience,"freedom":self.freedom,
-                "decoration_level":self.decoration_level,"population_average":self.population_average(),"designed":self.designed}
-
-class ObjectScaleRule:
-    """Player-anchored size rule: most assets are near player scale; contrast assets use 0.25x or 1.75x."""
-    CONTRAST_KINDS={"tree","rock","building","tower","crystal","beacon","portal","monolith","meteor_core","rift_seed","ancient_relay","hunt_totem","sky_shard"}
-    @staticmethod
-    def factor(seed, kind, key=""):
-        k=str(kind or "orb").lower()
-        if k not in ObjectScaleRule.CONTRAST_KINDS: return 1.0
-        return .25 if _residue(seed,f"size:{k}:{key}") < .5 else 1.75
-
-class HomeOwnershipSystem:
-    """Deterministic nearby home interface and persistent leisure anchor."""
-    def __init__(self, seed):
-        self.seed = int(seed) & 0x7FFFFFFF
-        near = _residue(self.seed, "housing/nearby") < 0.78
-        radius = (5.0 + 5.0 * _residue(self.seed, "housing/radius")) if near else (14.0 + 16.0 * _residue(self.seed, "housing/radius_far"))
-        angle = math.tau * _residue(self.seed, "housing/angle")
-        self.x, self.z = radius * math.cos(angle), radius * math.sin(angle)
-        self.interaction_radius = 4.5
-        self.ui_radius = 8.0
-        self.owned = False
-        self.visits = 0
-        self.leisure_score = 1.0
-    def distance(self, game):
-        return math.hypot(self.x-float(getattr(game,"player_x",0.0)), self.z-float(getattr(game,"player_z",0.0)))
-    def nearby(self, game): return self.distance(game) <= self.interaction_radius
-    def ui_nearby(self, game): return self.distance(game) <= self.ui_radius
-    def journal_priority(self, game):
-        return min(1.0, 0.72 + 0.28 * max(0.0, 1.0-self.distance(game)/24.0))
-    def interact(self, game):
-        """Claim or leisure-use the house. Never blocks the game loop."""
-        try:
-            d = self.distance(game)
-        except Exception:
-            d = 999.0
-        if d > self.interaction_radius:
-            return f"HOME UI is {d:.1f}m away — move closer to claim/use it."
-        self.visits = int(getattr(self, "visits", 0) or 0) + 1
-        if not self.owned:
-            self.owned = True
-            self.leisure_score = float(getattr(self, "leisure_score", 1.0) or 1.0) + 0.15
-            try:
-                tags = getattr(game, "tags", None)
-                if isinstance(tags, set):
-                    tags.add("homeowner")
-                elif isinstance(tags, list):
-                    if "homeowner" not in tags:
-                        tags.append("homeowner")
-            except Exception:
-                pass
-            try:
-                game.score = float(getattr(game, "score", 0.0) or 0.0) + 8.0 * float(getattr(game, "difficulty_mult", 1.0) or 1.0)
-            except Exception:
-                pass
-            try:
-                we = getattr(game, "world_events", None)
-                if we is not None and hasattr(we, "player_action"):
-                    we.player_action(game, "home_claim")
-            except Exception:
-                pass
-            try:
-                game.push_status("[HOME] House owned — persistent leisure destination added to your journal.")
-            except Exception:
-                pass
-            return "HOUSE OWNED — home added to the top of your leisure journal."
-        self.leisure_score = float(getattr(self, "leisure_score", 1.0) or 1.0) + 0.03
-        try:
-            we = getattr(game, "world_events", None)
-            if we is not None and hasattr(we, "player_action"):
-                we.player_action(game, "home_leisure")
-        except Exception:
-            pass
-        try:
-            game.push_status("[HOME] Leisure session recorded.")
-        except Exception:
-            pass
-        return "HOME LEISURE — your house remains a persistent world destination."
-    def snapshot(self, game=None):
-        d=self.distance(game) if game is not None else None
-        return {"x":round(self.x,4),"z":round(self.z,4),"owned":self.owned,"visits":self.visits,"leisure_score":round(self.leisure_score,4),"distance":round(d,3) if d is not None else None,"journal_priority":round(self.journal_priority(game),4) if game is not None else 0.72}
-
-
-def _numeric_sound_signature(seed, namespace, values=()):
-    """Map an item's numeric identity directly to a deterministic playable sound.
-
-    No audio samples are required: the same seed + numeric values always produce
-    the same frequency, duration, envelope and harmonic count. This makes items,
-    spells and actions easy to display and audibly recognizable.
-    """
-    seed = _safe_int_seed(seed)
-    vals = [float(v) for v in (values or ())]
-    key = str(namespace) + ":" + ":".join(f"{v:.6f}" for v in vals)
-    r1 = _residue(seed, "sound:f:" + key)
-    r2 = _residue(seed, "sound:d:" + key)
-    r3 = _residue(seed, "sound:t:" + key)
-    r4 = _residue(seed, "sound:h:" + key)
-    freq = 110.0 * (2.0 ** (4.0 * r1))
-    duration = 0.055 + 0.20 * r2
-    tone = "sine" if r3 < .34 else ("triangle" if r3 < .68 else "pulse")
-    harmonics = 1 + int(5 * r4)
-    return {"freq": round(freq, 3), "duration": round(duration, 4), "tone": tone, "harmonics": harmonics}
-
-
-def _display_numeric_audio(seed, namespace, values=()):
-    sig = _numeric_sound_signature(seed, namespace, values)
-    return f"SOUND {sig['freq']:.0f}Hz · {sig['duration']*1000:.0f}ms · {sig['tone']} · H{sig['harmonics']}"
-
-
-class ActionCatalog:
-    """Small deterministic catalog for actions/spells/events with numeric/audio identity."""
-    def __init__(self, seed):
-        self.seed = int(seed) & 0x7FFFFFFF
-        self.actions = []
-        names = ("interact", "harvest", "survey", "quest", "inspect", "pulse", "meteor", "rift", "aurora", "wake", "hunt")
-        for i, name in enumerate(names):
-            magnitude = 0.25 + 1.75 * _residue(self.seed, f"action:mag:{i}")
-            cost = int(1 + 8 * _residue(self.seed, f"action:cost:{i}"))
-            cooldown = 0.25 + 5.0 * _residue(self.seed, f"action:cool:{i}")
-            sig = _numeric_sound_signature(self.seed, "action:" + name, (magnitude, cost, cooldown))
-            self.actions.append({"id": name, "name": name.upper(), "magnitude": magnitude, "cost": cost, "cooldown": cooldown, "sound": sig})
-
-    def by_id(self, ident):
-        return next((a for a in self.actions if a["id"] == ident), None)
-
-    def describe(self, ident):
-        a = self.by_id(ident)
-        if not a: return str(ident)
-        return (f"{a['name']} · MAG {a['magnitude']:.2f} · COST {a['cost']} · CD {a['cooldown']:.2f}s · "
-                f"SOUND {a['sound']['freq']:.0f}Hz/{a['sound']['duration']*1000:.0f}ms/{a['sound']['tone']}")
-
-
 class ItemCatalog:
     """Deterministic item definitions + player inventory."""
     def __init__(self, seed, count=None):
@@ -2560,17 +2116,13 @@ class ItemCatalog:
             tag = _ITEM_TAGS[int(_residue(self.seed, f"itag:{i}") * len(_ITEM_TAGS)) % len(_ITEM_TAGS)]
             value = 1 + int(40 * _residue(self.seed, f"ival:{i}") + 10 * MEUM * _residue(self.seed, f"ival2:{i}"))
             power = 0.2 + 1.5 * _residue(self.seed, f"ipow:{i}")
-            tier = 0 if i < max(1, int(self.count * 0.55)) else (1 if i < max(2, int(self.count * 0.82)) else 2)
             self.defs.append({
                 "id": f"item_{i}",
                 "name": f"{name}-{i+1}",
                 "tag": tag,
-                "tier": tier,
-                "natural": tier == 0,
                 "value": value,
                 "power": power,
                 "stack": 1 + int(4 * _residue(self.seed, f"istack:{i}")),
-                "sound": _numeric_sound_signature(self.seed, f"item:{i}", (value, power, tier)),
             })
         self.inventory = {}
         self.equipped = None
@@ -2602,38 +2154,6 @@ class ItemCatalog:
             if d["id"] == self.equipped:
                 return float(d["power"])
         return 0.0
-
-    def grant_starter_pack(self):
-        """Give the player every low-level/natural supply at spawn."""
-        granted=[]
-        for i,d in enumerate(self.defs):
-            if int(d.get("tier",0)) != 0: continue
-            qty=1+int(_residue(self.seed,f"starter:qty:{i}")*2.0)
-            if self.grant(i,qty): granted.append((d["id"],qty))
-        return granted
-    def refine_low_level(self):
-        """Consume several natural/low-tier items for one higher-tier item."""
-        lows=[d for d in self.defs if int(d.get("tier",0))==0 and self.inventory.get(d["id"],0)>0]
-        mids=[d for d in self.defs if int(d.get("tier",0))==1 and self.inventory.get(d["id"],0)>0]
-        targets=[d for d in self.defs if int(d.get("tier",0))==2]
-        if not targets: return None,"no high-level item exists in this seed"
-        need=3+int(_residue(self.seed,"craft/refine_need")*2.0)
-        if sum(self.inventory.get(d["id"],0) for d in lows+mids)<need: return None,f"need {need} low-level supplies"
-        remaining=need; consumed=[]
-        for d in lows+mids:
-            if remaining<=0: break
-            take=min(remaining,int(self.inventory.get(d["id"],0)))
-            if take: self.inventory[d["id"]]-=take; consumed.append((d["id"],take)); remaining-=take
-        target=targets[int(_residue(self.seed,"craft/refine_target")*len(targets))%len(targets)]
-        self.inventory[target["id"]]=min(target["stack"],self.inventory.get(target["id"],0)+1)
-        return target,consumed
-
-    def describe(self, iid):
-        d = next((x for x in self.defs if x["id"] == iid), None)
-        if not d: return str(iid)
-        sig = d.get("sound") or _numeric_sound_signature(self.seed, "item:" + str(iid), (d.get("value",0), d.get("power",0), d.get("tier",0)))
-        return (f"{d['name']} · T{d['tier']} · VALUE {d['value']} · POWER {d['power']:.2f} · "
-                f"{_display_numeric_audio(self.seed, 'item:' + str(iid), (d.get('value',0), d.get('power',0), d.get('tier',0)))}")
 
     def to_dict(self):
         return {"inventory": dict(self.inventory), "equipped": self.equipped}
@@ -2830,34 +2350,6 @@ class NPCRoster:
             "tags": list(npc["tags"]),
             "line": f"{npc['name']} [{npc['role']}] tags={','.join(npc['tags'][:3])}",
         }
-
-
-class NPCActivitySystem:
-    """Deterministic living-NPC schedules for an MMO-like world."""
-    ACTIVITIES=(('work','WORK',.22),('trade','TRADE',.15),('craft','CRAFT',.14),('train','TRAIN',.12),('socialize','SOCIALIZE',.12),('travel','TRAVEL',.10),('patrol','PATROL',.08),('rest','REST',.07))
-    def __init__(self,seed,roster):
-        self.seed=int(seed)&0x7fffffff; self.roster=roster; self.day_length=240.0; self.history=[]
-        for i,n in enumerate(roster.npcs):
-            n['activity']='rest'; n['activity_label']='REST'; n['activity_target']='home'; n['activity_progress']=0.0
-            n['activity_seed']=_residue(self.seed,f'npcactivity:{i}')
-    def _choose(self,n,slot):
-        x=_residue(self.seed,f"npcact:{n.get('id')}:{slot}")*sum(w for _,_,w in self.ACTIVITIES)
-        for key,label,w in self.ACTIVITIES:
-            x-=w
-            if x<=0: return key,label
-        return self.ACTIVITIES[-1][0],self.ACTIVITIES[-1][1]
-    def tick(self,game,dt):
-        t=float(getattr(game,'t',0.0)); phase=(t%self.day_length)/self.day_length; slot=int(t//18.0)
-        for i,n in enumerate(self.roster.npcs):
-            key,label=self._choose(n,slot); role=str(n.get('role',''))
-            if role in ('merchant','trader') and .22<phase<.70: key,label='trade','TRADE'
-            elif role in ('blacksmith','artisan') and .28<phase<.78: key,label='craft','CRAFT'
-            elif role in ('guard','ranger') and (phase<.22 or phase>.70): key,label='patrol','PATROL'
-            n['activity']=key; n['activity_label']=label; n['activity_progress']=(t%18.0)/18.0
-            n['activity_target']={'trade':'market','craft':'workshop','train':'training yard','patrol':'patrol route','socialize':'town square','travel':'road','work':'worksite','rest':'home'}[key]
-        if self.roster.npcs and int(t*2.0)%18==0:
-            n=self.roster.npcs[int(t*2.0/18)%len(self.roster.npcs)]
-            self.history.append({'t':round(t,2),'npc':n['name'],'activity':n['activity'],'target':n['activity_target']}); self.history=self.history[-96:]
 
 
 class PveEncounter:
@@ -3084,335 +2576,6 @@ class NetTransport:
         self.status = "offline"
 
 
-
-class CriticalMeasureSystem:
-    """Hierarchical player-state ledger with generative audiovisual feedback.
-
-    Rank 1 is survival/progression, rank 2 is possessions/interactability,
-    rank 3 is luck/charm, and later ranks become increasingly expressive rather
-    than mandatory.  Values are bounded, deterministic, and can feed emergent
-    events without becoming hard gates.
-    """
-    DEFINITIONS = (
-        (1, "survival", "death/life/score/level"),
-        (2, "possessions", "inventory/value/interactability"),
-        (3, "fortune", "luck/charm"),
-        (4, "relations", "reputation/trust"),
-        (5, "resonance", "combo/music affinity"),
-        (6, "curiosity", "survey/discovery"),
-        (7, "influence", "world/player consequence"),
-        (8, "memory", "history/echo"),
-        (9, "strangeness", "entropy/novelty"),
-    )
-    def __init__(self, seed):
-        self.seed=int(seed)&0x7fffffff
-        self.values={name:0.0 for _,name,_ in self.DEFINITIONS}
-        self.details={}
-        self.history=[]
-        self.events=[]
-        self.asset_births=0
-        self._last_buckets={}
-        self._last_t=-1.0
-        self.deaths=0
-        self.lives=3
-        self.score=0.0
-        self.level=1
-        self.luck=0.5
-        self.charm=0.5
-
-    def _finite(self, x, default=0.0):
-        try:
-            x=float(x)
-            return x if math.isfinite(x) else default
-        except Exception:
-            return default
-
-    def _clamp(self, x):
-        return max(0.0,min(1.0,self._finite(x)))
-
-    def rarity(self, name, game=None):
-        """Deterministic rarity field; >.5 means live-generated asset."""
-        t=float(getattr(game,'t',0.0)) if game is not None else 0.0
-        bucket=int(t//3.0)
-        return _residue(self.seed, f"critical:rarity:{name}:{bucket}")
-
-    def _emit(self, game, name, value, rarity, reason):
-        bucket=int(max(0.0,min(1.0,value))*16.0)
-        key=f"{name}:{bucket}"
-        if self._last_buckets.get(name)==bucket:
-            return
-        self._last_buckets[name]=bucket
-        live=rarity>0.5
-        ev={"name":name,"value":round(value,4),"rarity":round(rarity,4),
-            "live_asset":live,"reason":reason,"t":round(float(getattr(game,'t',0.0)),3)}
-        self.events.append(ev); self.history.append(ev)
-        self.events=self.events[-24:]; self.history=self.history[-96:]
-        if live: self.asset_births+=1
-        try:
-            label=f"critical {name} {int(value*100)}%" + (" · LIVE" if live else "")
-            game.push_status(f"[CRITICAL] {label} — {reason}")
-            strength=0.08 + 0.20*value + (0.12 if live else 0.0)
-            game.sfx.trigger(f"critical:{name}:{bucket}", strength)
-        except Exception:
-            pass
-
-    def tick(self, game, dt, rms=0.0):
-        hp=self._clamp(float(getattr(game,'hp',100.0))/100.0)
-        score=max(0.0,self._finite(getattr(game,'score',0.0)))
-        level=max(1,int(getattr(game,'level',1)))
-        combo=max(0,int(getattr(game,'combo',0)))
-        inv=getattr(getattr(game,'items',None),'inventory',{}) or {}
-        inv_count=sum(max(0,int(v)) for v in inv.values())
-        try: inv_power=float(getattr(game.items,'power_bonus',lambda:0.0)())
-        except Exception: inv_power=0.0
-        coins=max(0,int(getattr(getattr(game,'purse',None),'coins',0)))
-        points=max(0,int(getattr(getattr(game,'purse',None),'points',0)))
-        interact=sum(1 for x in (getattr(game,'npcs',None).npcs if getattr(game,'npcs',None) else []) if x is not None)
-        interact += len(getattr(game,'world_events',None).rare_objects if getattr(game,'world_events',None) else [])
-        luck=self._clamp(0.50 + 0.14*math.sin(self.seed*MEUM + float(getattr(game,'t',0))*0.11) + 0.04*min(1.0,inv_power))
-        charm=self._clamp(0.5 + 0.10*min(1.0,coins/25.0) + 0.08*min(1.0,len(getattr(game,'tags',set()))/8.0))
-        recent_actions=getattr(getattr(game,'world_events',None),'action_counts',{}) or {}
-        discovery=min(1.0,(recent_actions.get('survey',0)+recent_actions.get('activate',0))/18.0)
-        relations=min(1.0,(len(getattr(game,'tags',set())) + len(getattr(getattr(game,'quests',None),'completed',[]) or []))/16.0)
-        resonance=self._clamp(0.22*min(1.0,combo/8.0)+0.55*min(1.0,abs(float(rms))*1.8)+0.23*min(1.0,float(getattr(getattr(game,'music',None),'dj',0.0))))
-        influence=self._clamp(0.25*min(1.0,score/100.0)+0.35*min(1.0,level/12.0)+0.40*min(1.0,interact/20.0))
-        memory=self._clamp(len(getattr(getattr(game,'world_events',None),'history',[]))/24.0 if getattr(game,'world_events',None) else 0.0)
-        strange=self._clamp(0.35*abs(math.sin(float(getattr(game,'t',0.0))*MEUM)) + 0.65*_residue(self.seed,f"strange:{int(float(getattr(game,'t',0.0))//5)}"))
-        self.values.update({
-            'survival':hp, 'possessions':self._clamp((inv_count/12.0)*0.55+(coins/40.0)*0.2+(points/80.0)*0.1+min(1.0,inv_power)*0.15),
-            'fortune':self._clamp(0.55*luck+0.45*charm), 'relations':relations,
-            'resonance':resonance, 'curiosity':discovery, 'influence':influence,
-            'memory':memory, 'strangeness':strange,
-        })
-        self.details={
-            'deaths':self.deaths,'lives':self.lives,'score':round(score,2),'level':level,
-            'inventory':inv_count,'coins':coins,'points':points,'interactability':interact,
-            'luck':round(luck,3),'charm':round(charm,3),'rarity_live_assets':self.asset_births,
-        }
-        # Each measure can become an audiovisual motif. Low-ranked measures are
-        # quieter and less frequent, preserving the hierarchy.
-        for rank,name,_ in self.DEFINITIONS:
-            v=self.values[name]
-            if rank==1 and v<0.22: reason='survival pressure'
-            elif rank==2 and v>0.72: reason='possession field saturated'
-            elif rank==3 and v>0.74: reason='fortunate convergence'
-            elif rank>=4 and v>0.78: reason='secondary resonance'
-            else: continue
-            rarity=self.rarity(name,game)
-            if rarity > 0.5 or rank<=3:
-                self._emit(game,name,v,rarity,reason)
-
-    def on_death(self, game):
-        self.deaths+=1
-        self.lives=max(0,self.lives-1)
-        if self.lives<=0:
-            self.lives=3
-        try:
-            game.score=max(0.0,float(game.score)*0.85)
-            game.hp=100.0
-            game.player_x=game.player_z=0.0
-            game.combo=0
-            game.push_status(f"[CRITICAL] death {self.deaths} — lives {self.lives} — respawned")
-            game.sfx.trigger("critical:death",1.0)
-        except Exception:
-            pass
-
-    def snapshot(self):
-        return {"values":dict(self.values),"details":dict(self.details),"deaths":self.deaths,"lives":self.lives,
-                "asset_births":self.asset_births}
-
-
-class WorldEventDefinition:
-    """Data-only event grammar: events emerge from world/player state.
-
-    Definitions describe what *can* happen; they do not force a world to contain
-    the event.  A deterministic field chooses whether/when the definition fires.
-    """
-    def __init__(self, name, weight=0.2, cooldown=6.0, actions=(), rare_object=None):
-        self.name=str(name); self.weight=float(weight); self.cooldown=float(cooldown)
-        self.actions=tuple(actions); self.rare_object=rare_object
-
-class TemporalSeedDynamics:
-    """Deterministic time-domain expression of a seed.
-
-    The seed itself never changes.  Instead, elapsed *simulation time* changes
-    how that fixed seed is expressed: an initial BUILD phase gathers energy, a
-    MODULATE phase reshapes the field, and a STABILIZE phase returns toward the
-    seed's baseline.  The cycle repeats on a deterministic epoch so long-running
-    sessions continue to evolve without becoming non-reproducible.
-    """
-    BUILD=14.0
-    MODULATE=34.0
-    STABILIZE=16.0
-    EPOCH=BUILD+MODULATE+STABILIZE
-    def __init__(self, seed):
-        self.seed=int(seed)&0x7fffffff
-        self.t=0.0
-        self.stage='build'
-        self.phase=0.0
-        self.intensity=0.0
-        self.stability=0.0
-        self.history=[]
-
-    def _clamp(self,x):
-        return max(0.0,min(1.0,float(x)))
-
-    def update(self,t):
-        self.t=max(0.0,float(t))
-        local=self.t%self.EPOCH
-        if local < self.BUILD:
-            self.stage='build'; u=local/self.BUILD
-            self.phase=u; self.intensity=0.25+0.75*u; self.stability=0.12*u
-        elif local < self.BUILD+self.MODULATE:
-            self.stage='modulate'; u=(local-self.BUILD)/self.MODULATE
-            self.phase=u; self.intensity=1.0; self.stability=0.12+0.38*u
-        else:
-            self.stage='stabilize'; u=(local-self.BUILD-self.MODULATE)/self.STABILIZE
-            self.phase=u; self.intensity=1.0-0.65*u; self.stability=0.50+0.50*u
-        self.history.append((round(self.t,4),self.stage,round(self.intensity,4),round(self.stability,4)))
-        self.history=self.history[-120:]
-        return self.snapshot()
-
-    def field(self, domain, t=None, amplitude=1.0):
-        if t is not None:
-            self.update(t)
-        base=_residue(self.seed, f'temporal:base:{domain}')
-        epoch=int(self.t//self.EPOCH)
-        moving=_residue(self.seed, f'temporal:move:{domain}:{epoch}:{self.stage}')
-        wave=0.5+0.5*vg_sin(self.phase*math.tau + _residue(self.seed,f'temporal:phase:{domain}')*math.tau)
-        # Stable baseline + time-varying seed expression.  At stabilization the
-        # modulation contracts rather than leaving the world permanently drifting.
-        expr=base*(1.0-self.intensity*0.42) + moving*(self.intensity*0.42)
-        expr=expr*(0.72+0.28*wave)
-        return self._clamp(expr*float(amplitude))
-
-    def snapshot(self):
-        return {'t':self.t,'stage':self.stage,'phase':self.phase,
-                'intensity':self.intensity,'stability':self.stability,
-                'epoch':int(self.t//self.EPOCH)}
-
-class EmergentWorldEvents:
-    """Deterministic event graph connecting world events, player actions and objects."""
-    DEFINITIONS=(
-        WorldEventDefinition('meteorite', .16, 8.0, ('impact','ejecta'), 'meteor_core'),
-        WorldEventDefinition('aurora_shift', .10, 14.0, ('sky','facets'), 'sky_shard'),
-        WorldEventDefinition('rift_opening', .075, 18.0, ('rift','portal'), 'rift_seed'),
-        WorldEventDefinition('ancient_wake', .045, 28.0, ('wake','echo'), 'ancient_relay'),
-        WorldEventDefinition('wild_hunt', .12, 12.0, ('spawn','track'), 'hunt_totem'),
-    )
-    def __init__(self, seed):
-        self.seed=int(seed)&0x7fffffff; self.cooldowns={}; self.active=[]; self.rare_objects=[]
-        self.action_counts={}; self.last_action_t={}
-    def player_action(self, game, action, amount=1):
-        a=str(action); self.action_counts[a]=self.action_counts.get(a,0)+int(amount)
-        self.last_action_t[a]=float(getattr(game,'t',0.0))
-        # Action history is an input to future event likelihood, not a forced event.
-    def _likelihood(self, game, d, rms):
-        region=getattr(game,'_current_region',('',0)) or ('',0)
-        name,tier=(region[0],region[1]) if isinstance(region,tuple) else ('',0)
-        gate=game.activity_gate.event_probability(d.name, region_name=name, region_tier=tier,
-            player_tags=getattr(game,'tags',set()), hp=getattr(game,'hp',100),
-            objective=getattr(game,'objective',None), free_play=getattr(game,'free_play',True),
-            audio_rms=rms, phase=float(getattr(game,'t',0.0))*MEUM,
-            energy=min(1.0,abs(float(rms))*1.8+.25))
-        # Player actions and world history modulate likelihood.  They never create
-        # an event directly; the deterministic roll still decides realization.
-        activity=sum(self.action_counts.get(k,0) for k in ('harvest','activate','combat','survey','move'))
-        recent=sum(1 for t in self.last_action_t.values() if float(getattr(game,'t',0))-t < 12.0)
-        # Temporal seed expression makes event likelihood build, modulate, then
-        # stabilize. It shapes probability only; the deterministic roll still
-        # decides whether an event actually materializes.
-        temporal=getattr(game,'temporal_seed',None)
-        tf=temporal.field('event:'+d.name, getattr(game,'t',0.0), amplitude=1.0) if temporal else 0.5
-        stage_boost={'build':0.88,'modulate':1.18,'stabilize':0.96}.get(getattr(temporal,'stage','build'),1.0)
-        return max(0.0,min(.82,d.weight*(.45+.75*gate)*(1+.025*min(12,activity))*(1+.04*recent)*(0.86+0.28*tf)*stage_boost))
-    def _spawn_rare(self, game, d, window):
-        # WORLD-SPACE CONTRACT: event coordinates belong to the seed/world, not
-        # to whoever happens to be looking at them.  Returning to the same
-        # coordinates reconstructs the same event anchor.
-        cell_x=int((_residue(self.seed,f'rare:cellx:{d.name}:{window}')-.5)*128)
-        cell_z=int((_residue(self.seed,f'rare:cellz:{d.name}:{window}')-.5)*128)
-        x=(cell_x + _residue(self.seed,f'rare:x:{d.name}:{window}'))*12.0
-        z=(cell_z + _residue(self.seed,f'rare:z:{d.name}:{window}'))*12.0
-        obj={'id':f'{d.name}:{window}','kind':d.rare_object,'x':x,'z':z,'age':0.0,
-             'life':18+24*_residue(self.seed,f'rare:life:{d.name}:{window}'),
-             'event':d.name,'usable':True}
-        self.rare_objects.append(obj); self.active.append({'event':d.name,'window':window,'age':0.0})
-        game.push_status(f'[EVENT] {d.name} emerged — rare object: {d.rare_object}')
-        try: game.sfx.trigger('chime',.35)
-        except Exception: pass
-    def tick(self, game, dt, rms=0.0):
-        t=float(getattr(game,'t',0.0)); window=int(t//4.0)
-        for d in self.DEFINITIONS:
-            self.cooldowns[d.name]=max(0.0,self.cooldowns.get(d.name,0.0)-float(dt))
-            if self.cooldowns[d.name]>0: continue
-            roll=_residue(self.seed,f'event:{d.name}:{window}')
-            if roll < self._likelihood(game,d,rms):
-                # One realization per definition/window; cooldown controls density.
-                self._spawn_rare(game,d,window); self.cooldowns[d.name]=d.cooldown
-        kept=[]
-        for o in self.rare_objects:
-            o['age']+=float(dt)
-            if o['age']<o['life']: kept.append(o)
-        self.rare_objects=kept[-24:]
-        self.active=[a for a in self.active if a['age']<20]
-
-class MeteorEventSystem:
-    """Deterministic world events: rare meteor strikes with visible aftermath.
-
-    Event identity comes from seed + integer event window + spatial cell.  The
-    statistical event gate controls likelihood only; it never changes player
-    controls or camera state.
-    """
-    def __init__(self, seed):
-        self.seed = int(seed) & 0x7FFFFFFF
-        self.impacts = []
-        self.last_window = -1
-        self.cooldown = 0.0
-
-    def tick(self, game, dt, audio_rms=0.0):
-        self.cooldown = max(0.0, self.cooldown - float(dt))
-        # 8-second deterministic event windows; multiple cells give spatial variety.
-        window = int(float(getattr(game, 't', 0.0)) // 8.0)
-        if window != self.last_window and self.cooldown <= 0.0:
-            self.last_window = window
-            region = getattr(game, '_current_region', ('', 0))
-            region_name = region[0] if isinstance(region, tuple) else ''
-            region_tier = region[1] if isinstance(region, tuple) and len(region)>1 else 0
-            phase = float(getattr(game, 't', 0.0)) * MEUM
-            chance = game.activity_gate.event_probability(
-                'meteorite', region_name=region_name, region_tier=region_tier,
-                player_tags=getattr(game, 'tags', set()), hp=getattr(game, 'hp',100),
-                objective=getattr(game, 'objective',None), free_play=getattr(game,'free_play',True),
-                audio_rms=audio_rms, phase=phase, energy=min(1.0, abs(float(audio_rms))*1.8+0.35))
-            for cell in range(3):
-                roll=_residue(self.seed, f'meteor:{window}:{cell}')
-                if roll >= chance * (0.22 + 0.24*cell):
-                    continue
-                ox=(_residue(self.seed, f'meteor:x:{window}:{cell}')-.5)*28.0
-                oz=(_residue(self.seed, f'meteor:z:{window}:{cell}')-.5)*28.0
-                self.impacts.append({
-                    # Absolute world-space meteor location: never generated from
-                    # the player's current position.
-                    'window':window,'x':(int((_residue(self.seed,f'meteor:cellx:{window}:{cell}')-.5)*128)+_residue(self.seed,f'meteor:x:{window}:{cell}'))*12.0,
-                    'z':(int((_residue(self.seed,f'meteor:cellz:{window}:{cell}')-.5)*128)+_residue(self.seed,f'meteor:z:{window}:{cell}'))*12.0,
-                    'age':0.0, 'life':4.5+3.0*_residue(self.seed,f'meteor:life:{window}:{cell}'),
-                    'power':0.55+0.9*_residue(self.seed,f'meteor:p:{window}:{cell}'),
-                    'radius':1.0+2.4*_residue(self.seed,f'meteor:r:{window}:{cell}')})
-                game.push_status('[EVENT] meteorite detected — impact field generated')
-                try: game.sfx.trigger('whoosh', 0.8)
-                except Exception: pass
-            self.cooldown=1.5
-        kept=[]
-        for m in self.impacts:
-            m['age'] += float(dt)
-            if m['age'] < m['life']:
-                kept.append(m)
-            elif m['age'] < m['life'] + 0.5:
-                try: game.sfx.trigger('thud', 0.7)
-                except Exception: pass
-        self.impacts=kept[-12:]
-
 class Game:
     def __init__(self, host_mode=False, port=None, connect=None):
         self.id = IDENTITY
@@ -3426,10 +2589,6 @@ class Game:
         _goava = bool(self.id.get("goava_active") or ("hook_live_dj_goava" in (self.id.get("gameplay_hooks") or [])))
         _rnd = bool(self.id.get("randomizer_active") or ("hook_randomizer_field" in (self.id.get("gameplay_hooks") or [])))
         _pl = bool(self.id.get("phase_lock_active") or ("hook_phase_lock_rings" in (self.id.get("gameplay_hooks") or [])))
-        # TEMPORAL_SEED_2026: the seed is immutable; elapsed simulation time
-        # changes its expression through build -> modulate -> stabilize phases.
-        self.temporal_seed = TemporalSeedDynamics(self.id["seed"])
-        self.temporal_seed.update(0.0)
         # Engine mask: Randomizer / Phase-lock / GOAVA control the game world
         # the same way they control composition — not instrument count.
         self.engine_mask = {
@@ -3445,41 +2604,12 @@ class Game:
             topology=_topo,
         )
         self.scene._engine_mask = dict(self.engine_mask)
-        # Carry the writer's actual pattern-length lattice into the scenograph.
-        # Never use Python's process-salted hash for this mapping.
-        try:
-            pl = self.id.get("pattern_lengths") or {}
-            if isinstance(pl, dict):
-                vals = [max(1, int(v)) for _, v in sorted(pl.items(), key=lambda kv: str(kv[0]))]
-            elif isinstance(pl, (list, tuple)):
-                vals = [max(1, int(v)) for v in pl]
-            else:
-                vals = []
-        except Exception:
-            vals = []
-        if not vals:
-            vals = [16]
-        self.scene._algorithm_pattern_lengths = tuple(vals)
-        self.sequence_control = SequenceInfluence(self.id["seed"], self.scene._algorithm_pattern_lengths)
-        self.scene.sequence_control = self.sequence_control
-        try:
-            self.music.sequence_control.pattern_lengths = tuple(self.scene._algorithm_pattern_lengths)
-        except Exception:
-            pass
-        for _i, _layer in enumerate(self.scene.layers):
-            _plen = self.scene._algorithm_pattern_lengths[_i % len(self.scene._algorithm_pattern_lengths)]
-            _layer["pattern_length"] = _plen
-            # Scale the discrete Z phase to the writer span.  The residue is
-            # deterministic; the modulo makes it a true cyclic pattern phase.
-            _raw = int(_layer.get("z_step", 0))
-            _layer["z_step"] = _raw % _plen
-            _layer["pattern_span"] = _plen
         # Playlist / step-algo / composition fingerprints tilt which book fractal
         # set is prevalent — same pathway the host video uses.
         try:
             fp = str(self.id.get("composition_fingerprint") or "0")
             sa = str(self.id.get("world_fingerprint") or "0")
-            self.scene._playlist_hash = int(hashlib.sha256((fp+"|"+sa).encode("utf-8")).hexdigest()[:8],16) & 0x7FFFFFFF
+            self.scene._playlist_hash = (hash(fp) ^ hash(sa)) & 0x7FFFFFFF
         except Exception:
             self.scene._playlist_hash = 0
         self.music = MusicBed(
@@ -3523,13 +2653,10 @@ class Game:
         # ------------------------------------------------------------------
         _obj0 = str(self.objective or "survey").lower()
         _hooks = list(self.id.get("gameplay_hooks") or [])
-        # Sigils are an explicit Nexus mechanic only.  A genre hook may mention
-        # sigils as vocabulary/visual grammar, but that must never silently turn
-        # the whole game into a sigil-collection game.  An explicit manifest
-        # opt-in can still request them for a custom exported game.
-        # SIGIL_OPT_IN_2026: sigils are never a default spawn/lock mechanic.
-        # They exist only when an exported identity explicitly opts in.
-        _want_sigils = bool(self.id.get("force_sigils", False))
+        _want_sigils = (
+            (not self.free_play and _obj0 == "nexus")
+            or any("sigil" in str(h).lower() for h in _hooks)
+        )
         _sigil_n = int(self.id.get("sigil_count", 8) or 8) if _want_sigils else 0
         self.sigils = SigilRing(self.id["seed"], count=max(0, _sigil_n))
         self.primary_focus = (
@@ -3584,14 +2711,10 @@ class Game:
             self.waypoints = WaypointTrail(_seed)
             self.pve = PveEncounter(_seed)
         self.items = ItemCatalog(self.id["seed"])
-        self.actions = ActionCatalog(self.id["seed"])
-        self.starter_pack = self.items.grant_starter_pack()
-        self.home = HomeOwnershipSystem(self.id["seed"])
         self.quests = QuestLog(self.id["seed"])
         self.purse = CoinPurse(self.id["seed"])
         self.store = Store(self.id["seed"], self.items)
         self.npcs = NPCRoster(self.id["seed"])
-        self.npc_activity = NPCActivitySystem(self.id["seed"], self.npcs)
         self.pvp = PvpArena(self.id["seed"])
         self.assets = InstrumentAssetBridge(self.id)
         self.sfx = self.assets.sfx
@@ -3614,9 +2737,6 @@ class Game:
             self.invites.append(e)
         _cseed = _safe_int_seed(self.id["seed"]) & 0x7FFFFFFF
         self.activity_gate = ProtectedActivityGate(_cseed)
-        self.meteors = MeteorEventSystem(_cseed)
-        self.world_events = EmergentWorldEvents(_cseed)
-        self.critical = CriticalMeasureSystem(_cseed)
         # Composition engines bias which activity classes the music-gate prefers.
         try:
             em = getattr(self, "engine_mask", {}) or {}
@@ -3653,20 +2773,6 @@ class Game:
         self.region_state = {}
         self._last_region_index = None
         self.sandbox_mode = True
-        # WoW-scale chunk streamer (multithreaded far LODs)
-        try:
-            self.chunks = WorldChunkStreamer(self.id["seed"], workers=2)
-        except Exception:
-            self.chunks = None
-        self._visible_chunks: List[dict] = []
-        # Playlist → engine-mask attenuation (goals of each canonical engine)
-        self.engine_attenuation = {
-            "randomizer": 1.0,   # goal: spectral scatter / density
-            "phase_lock": 1.0,   # goal: phase congruence / grid
-            "goava": 1.0,        # goal: pure-tone / lattice identity
-            "euclidean": 1.0,    # goal: rhythmic structure
-            "seeded": 1.0,       # goal: seed-authored variation
-        }
         self.hotseat = {"active": False, "games": 0, "friend_called": 0}
         self.move = {"dx": 0.0, "dy": 0.0, "dz": 0.0}
         self.aim_in = {"yaw": 0.0, "pitch": 0.0}
@@ -3687,15 +2793,7 @@ class Game:
         self.spatial_state = dict(self.id.get("spatial_state") or self.spatial_engine.snapshot(depth=3, roots=8))
         self.zoom = 1.0
         self.camera_mode = int(self.id.get("camera_mode", 0) or 0)
-        self.camera_modes = (0, 1, 2, 3, 4, 5, 6, 7)
-        # CAMERA_DIRECTOR_2026: mouse intent remains primary; these additive modes
-        # derive gentle orientation from momentum, sequence phase, and curvature.
-        self.camera_roll = 0.0
-        self.camera_roll_target = 0.0
-        self.camera_angular_velocity = 0.0
-        self._camera_prev_vx = 0.0
-        self._camera_prev_vz = 0.0
-        self._camera_orbit_phase = 0.0
+        self.camera_modes = (0, 1, 2)
         self.chess_square = None
         self.active_mini = None
         self.mini_hint = ""
@@ -3703,61 +2801,13 @@ class Game:
         self.combo = 0
         self.level = 1
         self.angle = meum_angle(_safe_int_seed(self.id["seed"]) * MEUM_INV)
-        # PLAYER_POSITION_2026: A/D and W/S are true planar movement, not orbit
-        # steering.  The old radial-angle control made left/right look like a
-        # camera spin.  Keep angle as facing/region orientation, while the
-        # Cartesian position is the authoritative world location.
-        self.player_x = 0.0
-        self.player_y = 0.0
-        self.player_z = 0.0
-        self._held_movement = {"dx": 0.0, "dy": 0.0, "dz": 0.0}
-        # PHYSICS_FIELD_2026: explicit, inspectable kinematics. Position is
-        # integrated from velocity; sequence motion is the strongest driver,
-        # while damping/inertia keep movement physical rather than teleport-like.
-        self.velocity_x = 0.0
-        self.velocity_y = 0.0
-        self.velocity_z = 0.0
-        self.acceleration_x = 0.0
-        self.acceleration_y = 0.0
-        self.acceleration_z = 0.0
-        self.physics_ground_y = 0.0
-        # FLIGHT_PROFILE_2026: every game permits Space-flight, but the seed
-        # decides how buoyant the world feels.  The player is never locked out
-        # of flight; some games are grounded/weighty, others hover, glide, or
-        # become strongly buoyant.
-        _flight_r = _residue(self.id["seed"], "flight/profile")
-        if _flight_r < 0.18:
-            self.flight_profile = "grounded-light"; self.fly_speed = 2.4; self.physics_gravity = -2.8; self.flight_assist = 0.08
-        elif _flight_r < 0.42:
-            self.flight_profile = "glide"; self.fly_speed = 3.1; self.physics_gravity = -0.9; self.flight_assist = 0.22
-        elif _flight_r < 0.70:
-            self.flight_profile = "hover"; self.fly_speed = 3.8; self.physics_gravity = -0.15; self.flight_assist = 0.55
-        else:
-            self.flight_profile = "buoyant"; self.fly_speed = 4.8; self.physics_gravity = 0.0; self.flight_assist = 0.88
-        self.fly_enabled = True
-        self.physics_drag = 5.5
-        self.physics_max_speed = 7.5
-        self.physics_history = []
-        self.physics_history_max = 180
-        self.physics_impulse = 0.0
         self.score = 0.0
         self.hp = 100.0
         self.t = 0.0
         self.running = True
-        self.steer = 0.0
-        self.camera_yaw = 0.0
-        self.camera_yaw_target = 0.0
-        self.camera_pitch = 0.0
-        self.camera_pitch_target = 0.0
-        self.camera_pan_x = 0.0
-        self.camera_pan_y = 0.0
-        self.audio_enabled = True
-        self.audio_stream = None
-        self.audio_music = MusicBed(self.id.get("seed",0), mix=0.42, master_volume=0.95)
-        self.audio_lock = threading.RLock()
+        self.steer = 0.0  # player-authored orbit bias in [-1, 1] — deterministic per input
         # Host-only remote player state: name -> [angle, score, steer]
         self._remote_steers = {}
-        self._remote_design = {}
         # Client reconciliation state
         self.remotes = {}
         self.last_snap = {}
@@ -3765,15 +2815,9 @@ class Game:
         self.chat_log = []
         self.player_name = "Player"
         self._objective_done = False
-        self.selected_tool = "pulse"
-        self.tool_index = 0
         self._teleport_cd = 0.0
         self._npc_cd = 0.0
         self.tags = set(["starter"])  # player tags
-        self.character = CharacterDecorationSystem(self.id["seed"])
-        self.character.record_design(source="local")
-        self.quick_slots = [None] * 9
-        self.selection_index = 0
 
         # GAME_FILE_TASKS_2026: gameplay recorder (deterministic, IN/OUT files).
         self.rec = GameplayRecorder(self.id["seed"], meta={
@@ -3955,23 +2999,10 @@ class Game:
             "angle_deg": round(math.degrees(float(getattr(self, "angle", 0.0) or 0.0)) % 360.0, 1),
             "zoom": round(float(getattr(self, "zoom", 1.0) or 1.0), 3),
             "pitch": round(float(getattr(self, "pitch", 0.0) or 0.0), 3),
-            "yaw": round(float(getattr(self, "camera_yaw", 0.0) or 0.0), 3),
-            "fly_y": round(float(getattr(self, "player_y", 0.0) or 0.0), 3),
-            "vy": round(float(getattr(self, "velocity_y", 0.0) or 0.0), 3),
             "region": reg_s,
             "topology": str(self.id.get("topology") or "open_world"),
             "t": round(float(getattr(self, "t", 0.0) or 0.0), 2),
-            "speed": round(math.hypot(float(getattr(self, "velocity_x", 0.0)), float(getattr(self, "velocity_z", 0.0))), 3),
-            "vx": round(float(getattr(self, "velocity_x", 0.0)), 3),
-            "vz": round(float(getattr(self, "velocity_z", 0.0)), 3),
         }
-
-    def temporal_seed_readout(self):
-        ts=getattr(self, "temporal_seed", None)
-        if ts is None:
-            return "SEED TIME FIELD: static"
-        return (f"SEED TIME FIELD: {ts.stage.upper()} · epoch {int(ts.t//ts.EPOCH)} · "
-                f"expression {ts.intensity:.2f} · stability {ts.stability:.2f}")
 
     def active_elements(self):
         """List every currently relevant feature with a short readout value.
@@ -3979,35 +3010,12 @@ class Game:
         Used by the ESC menu and the viewport overlay so the player always
         sees what is live and what data it is manipulating.
         """
-        _temporal_line = self.temporal_seed_readout()
         el = []
         pos = self.position_readout()
         el.append({"id": "position", "label": "Position",
-                   "value": f"yaw={math.degrees(pos['yaw'])%360:.1f}°  pitch={math.degrees(pos['pitch']):+.1f}°  zoom={pos['zoom']}  @ {pos['region']}"})
+                   "value": f"θ={pos['angle_deg']}°  zoom={pos['zoom']}  pitch={pos['pitch']}  @ {pos['region']}"})
         el.append({"id": "time", "label": "Time",
                    "value": f"t={pos['t']}s  topo={pos['topology']}"})
-        el.append({"id": "temporal_seed", "label": "SEED · TIME EXPRESSION",
-                   "value": _temporal_line + " · seed remains immutable; time changes expression"})
-        el.append({"id": "physics", "label": "PHYSICS · movement state",
-                   "value": (f"speed={pos['speed']:.2f}  vx={pos['vx']:+.2f}  vy={pos['vy']:+.2f}  vz={pos['vz']:+.2f}  "
-                             f"drag={float(getattr(self, 'physics_drag', 5.5)):.2f}  "
-                             f"flight={getattr(self,'flight_profile','hover')}  "
-                             f"samples={len(getattr(self, 'physics_history', []) or [])}")})
-        el.append({"id": "camera_director", "label": "CAMERA · rotation instrument",
-                   "value": (f"mode={self.camera_mode_name()}  yaw={math.degrees(float(getattr(self,'camera_yaw',0.0)))%360:.1f}°  "
-                             f"pitch={math.degrees(float(getattr(self,'camera_pitch',0.0))):+.1f}°  "
-                             f"roll={math.degrees(float(getattr(self,'camera_roll',0.0))):+.2f}°  "
-                             f"angular_v={float(getattr(self,'camera_angular_velocity',0.0)):+.2f} rad/s")})
-        el.append({"id": "annotation", "label": "WORLD ANNOTATION",
-                   "value": "player position is integrated from velocity; sequence step drives target motion; sound follows at 0.5×"})
-        try:
-            el.append({"id": "sequence_control", "label": "Sequence conductor",
-                       "value": (f"step={int(getattr(self, 'sequence_step', 0))}  "
-                                 f"phase={float(getattr(self, 'sequence_phase', 0.0)):.3f}  "
-                                 f"movement×{float(getattr(self, 'sequence_motion_factor', 1.0)):.2f}  "
-                                 f"vibration×{float(getattr(self, 'sequence_vibration_factor', 0.5)):.2f}")})
-        except Exception:
-            pass
 
         live = sorted(getattr(self, "_live_activities", set()) or [])
         el.append({"id": "activities", "label": "Live activities",
@@ -4065,16 +3073,6 @@ class Game:
                              f"score={float(getattr(self, 'score', 0) or 0):.1f}  "
                              f"level={int(getattr(self, 'level', 1) or 1)}  "
                              f"combo={int(getattr(self, 'combo', 0) or 0)}")})
-        try:
-            c=self.critical
-            d=c.details
-            el.append({"id":"critical_1","label":"CRITICAL 1 · Survival","value":f"deaths={d.get('deaths',0)}  lives={d.get('lives',3)}  score={d.get('score',0):.1f}  level={d.get('level',1)}"})
-            el.append({"id":"critical_2","label":"CRITICAL 2 · Possessions","value":f"items={d.get('inventory',0)}  coins={d.get('coins',0)}  points={d.get('points',0)}  interactability={d.get('interactability',0)}"})
-            el.append({"id":"critical_3","label":"CRITICAL 3 · Luck + Charm","value":f"luck={d.get('luck',0.5):.3f}  charm={d.get('charm',0.5):.3f}  fortune={c.values.get('fortune',0):.3f}"})
-            el.append({"id":"critical_more","label":"Generative measures","value":"  ".join(f"{n}={c.values.get(n,0):.2f}" for _,n,_ in c.DEFINITIONS[3:])})
-            el.append({"id":"critical_assets","label":"Rare asset policy","value":f"live-generated births={c.asset_births}  rule=rarity > 0.50"})
-        except Exception:
-            pass
 
         coins = getattr(getattr(self, "purse", None), "coins", 0)
         pts = getattr(getattr(self, "purse", None), "points", 0)
@@ -4148,10 +3146,7 @@ class Game:
 
     def readout_text(self, width=72):
         """Plain-text block for ESC menu, /status, and CLI HUD."""
-        lines = ["── STATUS / COMMAND MENU ──",
-                 "ESC closes menu · F1 how-to · /status reprints this",
-                 "CHAT COMMAND TREE: /help  /status  /world  /host  /client  /report",
-                 f"PANES: Q=quests J=journal I=inventory K=skills L=server B=crafting G=gameplay N=npc-life H=closet · NETWORK via L/ESC"]
+        lines = ["── STATUS ──", "ESC closes menu · F1 how-to · /status reprints this"]
         for e in self.active_elements():
             lines.append(f"  {e['label']}: {e['value']}")
         return "\n".join(lines)
@@ -4165,7 +3160,7 @@ class Game:
         self.push_status("[MENU] closed — back to world")
         return "menu closed"
 
-    # --- fixed controls (always: WASD move, mouse aim, right interact, left create) ------
+    # --- fixed controls (always: WASD move, mouse aim, click activate) ------
     @staticmethod
     def _clamp(v, lo=-1.0, hi=1.0):
         return max(lo, min(hi, float(v)))
@@ -4178,21 +3173,9 @@ class Game:
         self.move["dz"] = self._clamp(self.move["dz"] + float(dz), -1.0, 1.0)
 
     def aim_at(self, dyaw=0.0, dpitch=0.0):
-        """Stable mouse-look: accumulate into persistent camera targets.
-
-        Mouse motion is not a transient camera impulse.  It changes a target
-        yaw/pitch, and the simulation eases toward that target.  This keeps
-        aiming usable even on high-polling mice and prevents visual jitter.
-        look_sensitivity (default 0.35) scales both axes continuously.
-        """
-        try:
-            s = float(getattr(self, "look_sensitivity", 0.35) or 0.35)
-            self.camera_yaw_target = (float(getattr(self, "camera_yaw_target", self.steer)) + float(dyaw) * s) % math.tau
-            # FREE_2026: pitch is unrestricted; the projection handles any value.
-            self.camera_pitch_target = float(getattr(self, "camera_pitch_target", 0.0)) + float(dpitch) * s
-        except Exception:
-            pass
-
+        """Mouse aim: contribute to the perspective yaw/pitch this tick."""
+        self.aim_in["yaw"] = self._clamp(self.aim_in["yaw"] + float(dyaw), -0.6, 0.6)
+        self.aim_in["pitch"] = self._clamp(self.aim_in["pitch"] + float(dpitch), -0.6, 0.6)
 
     def _consume_inputs(self, dt):
         k = min(1.0, dt * 6.0)
@@ -4206,68 +3189,18 @@ class Game:
                 self.move = {"dx": 0.0, "dy": 0.0, "dz": 0.0}
                 self.aim_in = {"yaw": 0.0, "pitch": 0.0}
             return
-        # A/D and W/S are movement; mouse yaw/pitch are persistent look state.
-        # No cinematic drift is mixed into the player camera during gameplay.
-        manual_yaw = float(getattr(self, "camera_yaw_target", self.steer)) % math.tau
-        cur_yaw = float(getattr(self, "camera_yaw", self.steer)) % math.tau
-        mode = int(getattr(self, "camera_mode", 0) or 0)
-        seq_phase = float(getattr(self, "sequence_phase", 0.0))
-        seq_motion = float(getattr(self, "sequence_motion_factor", 1.0))
-        vx = float(getattr(self, "velocity_x", 0.0)); vz = float(getattr(self, "velocity_z", 0.0))
-        speed = math.hypot(vx, vz)
-        # Camera rotation schemes are additive: the mouse remains the user's
-        # intent, while physical/sequence modes provide bounded secondary bias.
-        bias = 0.0
-        if mode == 3 and speed > 0.18:  # momentum-follow
-            bias = ((math.atan2(vx, vz) - manual_yaw + math.pi) % math.tau - math.pi) * min(0.32, 0.12 + speed/24.0)
-        elif mode == 4:  # momentum orbit
-            bias = 0.16 * math.sin(seq_phase * math.tau) + 0.08 * math.sin(seq_phase * math.tau * 0.5 + 1.2)
-        elif mode == 5:  # sequence visualizer
-            bias = 0.30 * math.sin(seq_phase * math.tau) * (0.65 + 0.35 * min(1.0, seq_motion))
-        elif mode == 6:  # physics lab: nearly neutral yaw, strong roll telemetry
-            bias = 0.05 * math.sin(seq_phase * math.tau)
-        elif mode == 7:  # tactical
-            bias = 0.0
-        desired_yaw = (manual_yaw + bias) % math.tau
-        yaw_delta = (desired_yaw - cur_yaw + math.pi) % math.tau - math.pi
-        self.camera_angular_velocity = yaw_delta * min(1.0, dt * 12.0) / max(dt, 1e-6)
-        self.camera_yaw = (cur_yaw + yaw_delta * min(1.0, dt * 12.0)) % math.tau
-        self.steer = self.camera_yaw
-        # FREE_2026: pitch target and current value are unrestricted continuous.
-        manual_pitch = float(getattr(self, "camera_pitch_target", 0.0))
-        pitch_bias = -0.34 if mode == 7 else (0.10 * math.cos(seq_phase * math.tau) if mode == 5 else 0.0)
-        target_pitch = manual_pitch + pitch_bias
-        self.camera_pitch = float(getattr(self, "camera_pitch", 0.0)) + (target_pitch - float(getattr(self, "camera_pitch", 0.0))) * min(1.0, dt * 10.0)
-        self.pitch = self.camera_pitch
-        # Curvature banking: turning velocity produces a small physical camera roll.
-        dvx = vx - float(getattr(self, "_camera_prev_vx", 0.0)); dvz = vz - float(getattr(self, "_camera_prev_vz", 0.0))
-        curvature = 0.0
-        if speed > 0.2:
-            curvature = (vx * dvz - vz * dvx) / max(speed * speed, 0.25)
-        self._camera_prev_vx, self._camera_prev_vz = vx, vz
-        roll_gain = 0.16 if mode in (3, 4, 6) else (0.24 if mode == 5 else 0.0)
-        # FREE_2026: roll and zoom are unrestricted continuous camera state.
-        self.camera_roll_target = curvature * roll_gain
-        self.camera_roll += (self.camera_roll_target - float(getattr(self, "camera_roll", 0.0))) * min(1.0, dt * 8.0)
-        # zoom left free (no hard floor/ceiling)
-        held = getattr(self, "_held_movement", None) or {}
-        if (abs(float(held.get("dx", 0.0))) + abs(float(held.get("dy", 0.0))) + abs(float(held.get("dz", 0.0)))) > 1e-9:
-            self.move["dx"] = self._clamp(float(held.get("dx", 0.0)))
-            self.move["dy"] = self._clamp(float(held.get("dy", 0.0)))
-            self.move["dz"] = self._clamp(float(held.get("dz", 0.0)))
-        else:
-            for key in ("dx", "dy", "dz"):
-                self.move[key] *= max(0.0, 1.0 - k)
-        # aim_in remains only as a compatibility field for older callers.
-        self.aim_in["yaw"] = 0.0
-        self.aim_in["pitch"] = 0.0
+        self.steer = self._clamp(self.steer + self.move["dx"] + self.aim_in["yaw"])
+        self.pitch += self.aim_in["pitch"]
+        self.zoom = self._clamp(self.zoom + self.move["dz"] * dt * 0.25, 0.35, 2.5)
+        for key in ("dx", "dy", "dz"):
+            self.move[key] *= max(0.0, 1.0 - k)
+        self.aim_in["yaw"] *= max(0.0, 1.0 - k)
+        self.aim_in["pitch"] *= max(0.0, 1.0 - k)
+        self.pitch *= max(0.0, 1.0 - dt * 2.0)
 
     def camera_mode_name(self):
-        return {
-            0: "2.5D (third-person)", 1: "First person", 2: "2D (top-down)",
-            3: "Momentum follow", 4: "Momentum orbit", 5: "Sequence visualizer",
-            6: "Physics lab", 7: "Tactical"
-        }.get(int(getattr(self, "camera_mode", 0) or 0), "2.5D (third-person)")
+        return {0: "2.5D (third-person)", 1: "First person", 2: "2D (top-down)"}.get(
+            int(getattr(self, "camera_mode", 0) or 0), "2.5D (third-person)")
 
     def cycle_camera(self, direction=1):
         modes = list(getattr(self, "camera_modes", (0, 1, 2)) or (0, 1, 2))
@@ -4275,255 +3208,53 @@ class Game:
         idx = modes.index(cm) if cm in modes else 0
         idx = max(0, min(len(modes) - 1, idx + (1 if direction >= 0 else -1)))
         self.camera_mode = modes[idx]
-        # FREE_2026: zoom remains whatever the player/wheel left it; no mode
-        # forces a hard range. Modes only bias preferred starting points softly.
+        # Every camera mode is reachable/escapable: the zoom is never pinned in
+        # a way that traps the wheel from cycling back out.
         if self.camera_mode == 1:
-            self.zoom = float(getattr(self, "zoom", 1.0)) * 0.85 + 0.8 * 0.15
+            self.zoom = max(0.6, min(1.0, float(getattr(self, "zoom", 1.0))))
         elif self.camera_mode == 2:
-            self.zoom = float(getattr(self, "zoom", 1.0)) * 1.05
+            self.zoom = max(0.5, min(1.4, float(getattr(self, "zoom", 1.0)) * 1.2))
         return self.camera_mode
 
-    def _target_world(self, angle, radius):
-        return float(radius) * math.cos(float(angle)), float(radius) * math.sin(float(angle))
-
-    def _player_distance(self, angle, radius):
-        x, z = self._target_world(angle, radius)
-        return math.hypot(x - float(self.player_x), z - float(self.player_z))
-
-    def interaction_hint(self):
-        """Human-readable interaction grant for the nearest actionable object."""
-        candidates=[]
-        for k,(a,r,v) in enumerate(getattr(self.resources,"pos",[]) or []):
-            if k not in getattr(self.resources,"taken",set()): candidates.append((self._player_distance(a,r), "HARVEST RESOURCE"))
-        for k,(a,r) in enumerate(getattr(self.waypoints,"pos",[]) or []):
-            if k not in getattr(self.waypoints,"hit",set()): candidates.append((self._player_distance(a,r), "FOLLOW WAYPOINT"))
-        if getattr(self,"home",None) is not None and self.home.ui_nearby(self):
-            hd=self.home.distance(self); candidates.append((hd,"CLAIM HOUSE" if not self.home.owned else "ENTER HOME FOR LEISURE"))
-        for o in getattr(self.world_events,"rare_objects",[]) or []:
-            candidates.append((math.hypot(float(o.get("x",0))-self.player_x,float(o.get("z",0))-self.player_z), "INSPECT " + str(o.get("kind","OBJECT")).upper()))
-        if not candidates: return ""
-        d,label=min(candidates,key=lambda q:q[0])
-        return f"RIGHT CLICK · {label} · {d:.1f}m" if d <= 4.0 else ""
-
-    def _apply_engine_attenuation(self):
-        """Playlist-compose attenuation toward each canonical engine's goal.
-
-        attenuation[engine] ∈ ℝ (free) scales how strongly that engine colors
-        scenograph motion / field. Boolean mask stays the gate; attenuation is
-        the continuous weight from playlist composition state.
-        """
-        att = getattr(self, "engine_attenuation", None) or {}
-        em = dict(getattr(self, "engine_mask", {}) or {})
-        # Publish continuous weights for the scenograph
-        weighted = {
-            "randomizer": bool(em.get("randomizer")) * float(att.get("randomizer", 1.0) or 0.0),
-            "phase_lock": bool(em.get("phase_lock")) * float(att.get("phase_lock", 1.0) or 0.0),
-            "goava": bool(em.get("goava")) * float(att.get("goava", 1.0) or 0.0),
-            "euclidean": bool(em.get("euclidean")) * float(att.get("euclidean", 1.0) or 0.0),
-            "seeded": bool(em.get("seeded")) * float(att.get("seeded", 1.0) or 0.0),
-        }
-        try:
-            self.scene._engine_mask = dict(em)
-            self.scene._engine_attenuation = weighted
-        except Exception:
-            pass
-        self._engine_attenuation_live = weighted
-
-    def set_engine_attenuation(self, name: str, value: float) -> None:
-        if not hasattr(self, "engine_attenuation") or not isinstance(self.engine_attenuation, dict):
-            self.engine_attenuation = {}
-        self.engine_attenuation[str(name)] = float(value)
-
-    def _resolve_solid_collisions(self, dt=1.0/30.0):
-        """Keep the player outside solid footprints and dezoom the camera if it
-        would clip through geometry (house, dense scenograph nodes).
-        """
-        # Home footprint (axis-aligned circle in XZ)
-        home = getattr(self, "home", None)
-        if home is not None:
-            hx = float(getattr(home, "x", 0.0))
-            hz = float(getattr(home, "z", 0.0))
-            solid_r = 2.2  # physical wall radius
-            dx = float(self.player_x) - hx
-            dz = float(self.player_z) - hz
-            dist = math.hypot(dx, dz)
-            if dist < solid_r and dist > 1e-9:
-                # Push player to the surface
-                nx, nz = dx / dist, dz / dist
-                self.player_x = hx + nx * solid_r
-                self.player_z = hz + nz * solid_r
-                # Kill inward velocity
-                vn = self.velocity_x * nx + self.velocity_z * nz
-                if vn < 0.0:
-                    self.velocity_x -= vn * nx
-                    self.velocity_z -= vn * nz
-            # Camera dezoom acceleration when looking into the solid
-            cam_dist = float(getattr(self, "zoom", 1.0) or 1.0)
-            # If player is near the house and zoomed in, push zoom out
-            if dist < solid_r + 3.0 and cam_dist < 1.15:
-                # Accelerating dezoom (not a hard clamp) — zoom grows toward safe
-                target = 1.25
-                accel = (target - cam_dist) * 6.0 * max(dt, 1e-4)
-                self.zoom = cam_dist + max(0.0, accel)
-        # Soft world bounds so the player cannot walk into void forever
-        bound = 48.0
-        for axis in ("player_x", "player_z"):
-            v = float(getattr(self, axis, 0.0))
-            if v > bound:
-                setattr(self, axis, bound)
-            elif v < -bound:
-                setattr(self, axis, -bound)
-
-    def interact(self):
-        """Interact with the nearest actionable world object."""
+    def activate(self):
+        """Click : primary — routes to the nearest target for the *primary focus*
+        of this world (sigils only when nexus; otherwise resources/waypoints/…)."""
         if self.hotseat["active"]:
             return "[HOT-SEAT] clicks are chess moves while the board is open."
         hits = []
         focus = getattr(self, "primary_focus", "explore")
-        reach = 0.55
-        # House interaction is isolated so a bad tag/event never freezes the game.
-        try:
-            if getattr(self, "home", None) is not None and self.home.nearby(self):
-                # Ensure the OS cursor is visible while the player deals with UI.
-                try:
-                    self._ui_cursor_wanted = True
-                except Exception:
-                    pass
-                result = self.home.interact(self)
-                try:
-                    self.send_chat("system", str(result))
-                except Exception:
-                    self.push_status(str(result))
-                return "home"
-        except Exception as _home_exc:
-            try:
-                self.push_status(f"[HOME] interaction failed: {_home_exc}")
-            except Exception:
-                pass
-            return "home-error"
+        # Prefer the focus type, then fall through to other present elements
         if focus == "sigils" and getattr(self.sigils, "count", 0) > 0:
-            best = None
-            for k, (a, r) in enumerate(self.sigils.pos):
-                if k in self.sigils.collected:
-                    continue
-                d = self._player_distance(a, r)
-                if d <= reach and (best is None or d < best[0]):
-                    best = (d, k, r)
-            if best is not None:
-                _, k, r = best
-                self.sigils.collected.add(k)
-                self.score += MEUM * r * max(1, self.combo) * self.difficulty_mult
-                self.sfx.trigger("chime", 1.0)
-                hits.append("sigil")
+            for _k, (_a, _r) in enumerate(self.sigils.pos):
+                if _k not in self.sigils.collected and self._near_angle(self.angle, _a, _r):
+                    self.sigils.collected.add(_k)
+                    self.score += MEUM * _r * max(1, self.combo) * self.difficulty_mult
+                    self.sfx.trigger("chime", 1.0)
+                    hits.append("sigil")
+                    break
         if not hits and getattr(self.resources, "count", 0) > 0:
-            best = None
-            for k, (a, r, v) in enumerate(self.resources.pos):
-                if k in self.resources.taken:
-                    continue
-                d = self._player_distance(a, r)
-                if d <= reach and (best is None or d < best[0]):
-                    best = (d, k, v)
-            if best is not None:
-                _, k, v = best
-                self.resources.taken.add(k)
-                self.score += 1.4 * MEUM * v * self.difficulty_mult
-                self.sfx.trigger("click", 0.8)
-                hits.append("resource")
-                try: self.world_events.player_action(self, "harvest")
-                except Exception: pass
+            for _k, (_a, _r, _v) in enumerate(self.resources.pos):
+                if _k not in self.resources.taken and self._near_angle(self.angle, _a, _r):
+                    self.resources.taken.add(_k)
+                    self.score += 1.4 * MEUM * _v * self.difficulty_mult
+                    self.sfx.trigger("click", 0.8)
+                    hits.append("resource")
+                    break
         if not hits and getattr(self.waypoints, "count", 0) > 0:
-            best = min((self._player_distance(a, r), a) for a, r in self.waypoints.pos) if self.waypoints.pos else None
-            if best and best[0] <= reach and self.waypoints.advance(best[1]):
+            if self.waypoints.advance(self.angle):
                 self.score += 2.0 * MEUM * self.difficulty_mult
                 self.sfx.trigger("chime", 0.7)
                 hits.append("waypoint")
+        if not hits and getattr(self.sigils, "count", 0) > 0 and focus != "sigils":
+            for _k, (_a, _r) in enumerate(self.sigils.pos):
+                if _k not in self.sigils.collected and self._near_angle(self.angle, _a, _r):
+                    self.sigils.collected.add(_k)
+                    self.score += MEUM * _r * self.difficulty_mult
+                    hits.append("sigil")
+                    break
         self.send_chat("system", "activate" + (f": {'+'.join(hits)}" if hits else " (nothing within reach)"))
-        try: self.world_events.player_action(self, "activate")
-        except Exception: pass
         self.micro.drive(self.t)
         return f"activate {'+'.join(hits) if hits else 'miss'}"
-
-    def activate(self):
-        """Compatibility alias: activation now means right-click interaction."""
-        return self.interact()
-
-    def fire_tool(self):
-        """Left-click creative action: deterministic live event using the selected tool."""
-        tools = ("pulse", "meteor", "rift", "aurora", "wake", "hunt")
-        self.selected_tool = tools[int(getattr(self, "tool_index", 0)) % len(tools)]
-        t = float(getattr(self, "t", 0.0)); w = int(t * 8.0)
-        # Create an explicit player-caused event without replacing the autonomous event graph.
-        self.world_events.player_action(self, "tool:" + self.selected_tool)
-        if self.selected_tool == "meteor":
-            self.meteors.impacts.append({'window':w,'x':float(self.player_x)+8.0*math.cos(self.camera_yaw),
-                'z':float(self.player_z)+8.0*math.sin(self.camera_yaw),'age':0.0,'life':5.5,
-                'power':0.9,'radius':1.6})
-        else:
-            self.world_events._spawn_rare(self, next(d for d in self.world_events.DEFINITIONS if d.name == {
-                'pulse':'aurora_shift','rift':'rift_opening','aurora':'aurora_shift','wake':'ancient_wake','hunt':'wild_hunt'
-            }.get(self.selected_tool,'aurora')), w)
-        a = getattr(self, "actions", None).by_id(self.selected_tool) if getattr(self, "actions", None) else None
-        strength = float(a.get("magnitude", 1.0)) if a else 1.0
-        self.sfx.trigger("whoosh" if self.selected_tool in ("meteor","rift") else "chime", 0.45 + 0.35 * min(2.0, strength))
-        self.push_status(f"[TOOL] {self.selected_tool.upper()} created a live world event")
-        return self.selected_tool
-
-    def equip_quick_slot(self, slot):
-        try: i=max(1,min(9,int(slot)))-1
-        except Exception: return None
-        iid=self.quick_slots[i]
-        if iid is None:
-            ids=[k for k,v in self.items.inventory.items() if int(v)>0]
-            iid=ids[i] if i<len(ids) else None
-            self.quick_slots[i]=iid
-        if iid and self.items.equip(iid):
-            d=next((x for x in self.items.defs if x["id"]==iid),None)
-            name=d["name"] if d else iid; self.push_status(f"EQUIP {i+1}: {name}"); return name
-        self.push_status(f"EQUIP {i+1}: empty"); return None
-    def interaction_items(self):
-        # Slot 0 is a real inventory state: explicitly selecting it means
-        # nothing is equipped. The same 0 dialog still exposes interactions,
-        # tools, and event functions below it.
-        items=[{"kind":"inventory","id":"__none__","label":"INVENTORY · NOTHING EQUIPPED"}]
-        for a in getattr(self, "actions", ActionCatalog(self.id.get("seed",0))).actions:
-            kind = "interaction" if a["id"] in ("interact","harvest","survey","quest","inspect") else "tool"
-            items.append({"kind":kind,"id":a["id"],"label":f"{a['name']} · {a['magnitude']:.2f} · {a['sound']['freq']:.0f}Hz"})
-        items += [{"kind":"event","id":d.name,"label":f"EVENT · {d.name.upper()} · {_display_numeric_audio(self.id.get('seed',0), 'event:'+d.name, (getattr(d,'weight',0),getattr(d,'cooldown',0)))}"} for d in getattr(self.world_events,"DEFINITIONS",())]
-        return items
-    def select_zero_item(self,index):
-        items=self.interaction_items()
-        if not items: return None
-        idx=int(index)%len(items); self.selection_index=idx; item=items[idx]
-        if item["kind"]=="inventory" and item["id"]=="__none__":
-            try:
-                self.items.equipped = None
-            except Exception:
-                pass
-            self.push_status("SLOT 0: NOTHING EQUIPPED")
-            return item
-        if item["kind"]=="tool":
-            tools=("pulse","meteor","rift","aurora","wake","hunt")
-            if item["id"] in tools: self.tool_index=tools.index(item["id"]); self.selected_tool=item["id"]
-        self.push_status(f"SELECT: {item['label']} · RIGHT CLICK interact / LEFT CLICK create")
-        return item
-    def zero_menu_text(self):
-        return "\n".join(f"{i}: {x['label']}" for i,x in enumerate(self.interaction_items()))
-
-    def refine_starter_supplies(self):
-        target,detail=self.items.refine_low_level()
-        if target is None:
-            self.push_status(f"[CRAFT] refinement unavailable — {detail}"); return detail
-        consumed=", ".join(f"{iid}×{qty}" for iid,qty in detail)
-        self.tags.add("refining"); self.score += 3.0*getattr(self,"difficulty_mult",1.0)
-        self.push_status(f"[CRAFT] consumed {consumed} → {target['name']} ×1")
-        return f"CRAFTED {target['name']} ×1 from {consumed}"
-
-    def cycle_tool(self, direction=1):
-        tools=("pulse","meteor","rift","aurora","wake","hunt")
-        self.tool_index=(int(getattr(self,"tool_index",0))+int(direction))%len(tools)
-        self.selected_tool=tools[self.tool_index]
-        self.push_status(f"TOOL: {self.selected_tool.upper()} · LEFT CLICK creates")
-        return self.selected_tool
 
     def _near_angle(self, angle, target_a, radius):
         d = abs((float(target_a) - angle + math.pi) % math.tau - math.pi)
@@ -4573,10 +3304,7 @@ class Game:
         """Execute a named control action — best-fit mapping onto live systems."""
         a = str(action or "")
         out = None
-        if a == "fly_up":
-            self.perspective_move(dy=1.0)
-            out = "fly up"
-        elif a == "move_forward":
+        if a == "move_forward":
             self.perspective_move(dz=0.6)
         elif a == "move_back":
             self.perspective_move(dz=-0.6)
@@ -4607,32 +3335,12 @@ class Game:
             out = "F1 help — see HOW_TO_PLAY / /help  ·  ESC status menu  ·  /status readout"
             if panel is not None and hasattr(panel, "_how"):
                 panel._how()
-        elif a == "host_mode":
-            try:
-                self.resync_net(host_mode=True, port=int(getattr(self, "port", 0) or 0))
-                out = "HOST mode active — authoritative world"
-            except Exception as e:
-                out = f"host mode failed: {e}"
-        elif a == "client_mode":
-            try:
-                addr = str(getattr(self, "connect", "") or "127.0.0.1:" + str(int(getattr(self, "port", 27015) or 27015)))
-                self.resync_net(host_mode=False, port=int(getattr(self, "port", 27015) or 27015), connect=addr)
-                out = f"CLIENT mode active — {addr}"
-            except Exception as e:
-                out = f"client mode failed: {e}"
         elif a == "mute":
             self.sfx.trigger("click", 0.4)
             out = "mute/sfx tick"
         elif a == "sprint":
             self.perspective_move(dz=1.0)
             out = "sprint"
-        elif a in ("closet", "journal", "skills", "server", "gameplay"):
-            labels={"closet":"CLOSET","journal":"JOURNAL","skills":"SKILLS","server":"SERVER","gameplay":"GAMEPLAY"}
-            out=f"open {labels[a]} pane"
-            if panel is not None and hasattr(panel,"show_tab"): panel.show_tab(labels[a])
-        elif a == "crafting":
-            out="open CRAFTING pane"
-            if panel is not None and hasattr(panel,"show_tab"): panel.show_tab("CRAFTING")
         elif a == "inventory":
             out = f"inv {len(self.items.inventory)} coins {self.purse.coins}"
         elif a == "store":
@@ -4901,7 +3609,12 @@ class Game:
         field = snap.get("field") or {}
         # Sequential numeric inputs: seed + composition fingerprint residues
         # stand in when a live host seed list is unavailable in the package.
+        try:
+            _sc = seed_script_channels((self.meta or {}).get("seed_script", ""), float(getattr(self, "t", 0.0) or 0.0))
+        except Exception:
+            _sc = {"x": 0.0, "y": 0.0, "z": 0.0, "scalar": 0.0}
         seq = [
+            float(_sc.get("x", 0.0)), float(_sc.get("y", 0.0)), float(_sc.get("z", 0.0)), float(_sc.get("scalar", 0.0)),
             float(self.id.get("seed", 0.0) or 0.0),
             float(int(str(self.id.get("composition_fingerprint", "0") or "0")[:8], 16) % 10000)
             if str(self.id.get("composition_fingerprint", "") or "").isalnum() else 0.0,
@@ -4923,6 +3636,7 @@ class Game:
             software_kind=str(self.id.get("software_kind") or "videogame"),
             sequential_nums=seq,
             engine_mask=dict(getattr(self, "engine_mask", {}) or {}),
+            seed_script=str((self.meta or {}).get("seed_script", "") or ""),
         )
         self._last_frame = frame
         return frame
@@ -5131,16 +3845,20 @@ class Game:
         yaw0 = float(base.get("yaw_deg", 0.0))
         pit0 = float(base.get("pitch_deg", 0.0))
         if bool(getattr(self, "free_play", False)):
-            # Open-world camera is fully player-authored; do not rewrite the
-            # deterministic view with autonomous drift or audio modulation.
+            # No autonomous orbit/roll/FOV breathing in a sandbox.
+            yaw = yaw0 + math.degrees(float(getattr(self, "steer", 0.0) or 0.0)) * 0.35
+            pitch = pit0 + math.degrees(float(getattr(self, "pitch", 0.0) or 0.0))
+            self.visual_view = {**base, "yaw_deg": yaw, "pitch_deg": pitch,
+                                "roll_deg": 0.0,
+                                "distance": max(0.55, min(1.45, float(base.get("distance", 1.0) or 1.0))),
+                                "fov_deg": max(36.0, min(62.0, float(base.get("fov_deg", 48.0) or 48.0)))}
             return
         try:
             seed = float(self.id.get("seed", 0) or 0)
         except Exception:
             seed = 0.0
         t = float(getattr(self, "t", 0.0))
-        # FREE_2026: audio_rms influence unrestricted.
-        e = float(audio_rms)
+        e = float(max(0.0, min(1.5, audio_rms)))
         bpm = float(BPM) if BPM else 120.0
         beat = t * (bpm / 60.0)
         bar8 = beat / 32.0
@@ -5151,79 +3869,16 @@ class Game:
         roll = math.degrees(0.015 * vg_sin(t * 0.055 * MEUM_INV + s1))
         dist = float(base.get("distance", 1.0) or 1.0) * (1.0 - 0.12 * e + 0.06 * vg_sin(t * 0.07 * MEUM + s1))
         fov = float(base.get("fov_deg", 48.0) or 48.0) + 4.0 * e * vg_sin(t * 0.11 + s2)
-        # FREE_2026: distance and FOV are continuous unrestricted camera state.
         self.visual_view = {**base, "yaw_deg": float(yaw), "pitch_deg": float(pitch),
-                            "roll_deg": float(roll), "distance": float(dist),
-                            "fov_deg": float(fov)}
-
-    def start_audio(self):
-        if not HAS_AUDIO or self.audio_stream is not None:
-            return bool(self.audio_stream is not None)
-        try:
-            game=self
-            def callback(outdata, frames, time_info, status):
-                try:
-                    with game.audio_lock:
-                        vals=[game.audio_music.step(1.0/22050.0) for _ in range(frames)]
-                        sfx=game.sfx.mix(frames)
-                    import numpy as np
-                    arr=np.asarray(vals, dtype=np.float32)+np.asarray(sfx, dtype=np.float32)
-                    arr=np.clip(arr*0.55, -1.0, 1.0)
-                    outdata[:,0]=arr
-                    if outdata.shape[1]>1: outdata[:,1]=arr
-                except Exception:
-                    outdata.fill(0)
-            self.audio_stream=sd.OutputStream(samplerate=22050, channels=2, dtype="float32", callback=callback, blocksize=256)
-            self.audio_stream.start()
-            return True
-        except Exception:
-            self.audio_stream=None
-            self.audio_enabled=False
-            return False
-
-    def stop_audio(self):
-        st=self.audio_stream
-        self.audio_stream=None
-        if st is not None:
-            try: st.stop()
-            except Exception: pass
-            try: st.close()
-            except Exception: pass
+                            "roll_deg": float(roll), "distance": max(0.55, min(1.45, dist)),
+                            "fov_deg": max(36.0, min(62.0, fov))}
 
     def tick(self, dt=1/30):
-        # Simulation time is the only temporal input to seed expression.  This
-        # preserves replayability: same seed + same input timeline = same world.
-        self.temporal_seed.update(float(getattr(self, "t", 0.0)))
         sample = self.music.step(dt)
-        try:
-            seq_snapshot = self.sequence_control.update(self.scene.beat)
-            self.sequence_step = int(seq_snapshot["step"])
-            self.sequence_phase = float(seq_snapshot["phase"])
-            self.sequence_motion_factor = float(seq_snapshot["motion"])
-            self.sequence_vibration_factor = float(seq_snapshot["vibration"])
-        except Exception:
-            self.sequence_step = int(getattr(self, "sequence_step", 0))
-            self.sequence_motion_factor = float(getattr(self, "sequence_motion_factor", 1.0))
-            self.sequence_vibration_factor = float(getattr(self, "sequence_vibration_factor", 0.5))
 
         layers = self.scene.tick(dt, audio_rms=abs(sample))
         try:
-            self.meteors.tick(self, dt, audio_rms=abs(sample))
-            self.world_events.tick(self, dt, rms=abs(sample))
-            self.critical.tick(self, dt, rms=abs(sample))
-        except Exception:
-            pass
-        try:
-            # Keep the procedural world/audio layer alive even when the window is occluded.
-            self._presentation_phase = float(getattr(self, "_presentation_phase", 0.0)) + dt
-        except Exception:
-            pass
-        try:
             self.fn.tick(self.t, audio_rms=abs(sample))
-        except Exception:
-            pass
-        try:
-            self.npc_activity.tick(self, dt)
         except Exception:
             pass
         self._drain_net()
@@ -5236,165 +3891,62 @@ class Game:
                 pass
             return sample
         self._consume_inputs(dt)
-        try:
-            if abs(float(self.move.get("dx",0))) + abs(float(self.move.get("dz",0))) > 1e-6:
-                self.world_events.player_action(self, "move")
-        except Exception:
-            pass
-        # Open-world gameplay owns the camera. Classification/mood may influence
-        # event probabilities, but never inject camera motion while the player is driving.
-        if str(self.id.get("topology") or "") not in ("open_world", "sandbox"):
-            self._update_cinematic_camera(dt, abs(sample))
+        self._update_cinematic_camera(dt, abs(sample))
         self._fire_invites()
         self._tick_arcade(dt)
-        # FREE-ROAM CONTRACT: movement is always local/player-authored, including
-        # network clients.  Authority controls shared-world simulation, not whether
-        # the local player can walk.
-        if not self.hotseat["active"]:
-            # PLAYER-CONTROL CONTRACT: position changes ONLY from WASD / Space /
-            # Ctrl input. Sequence motion may scale *responsiveness* of intentional
-            # input, never invent velocity when the player is idle.
-            move_speed = 3.2 + 0.6 * float(getattr(self, "difficulty_mult", 1.0))
-            _dx = float(self.move.get("dx", 0.0) or 0.0)
-            _dz = float(self.move.get("dz", 0.0) or 0.0)
-            _dy = float(self.move.get("dy", 0.0) or 0.0)
-            if not (math.isfinite(_dx) and math.isfinite(_dz) and math.isfinite(_dy)):
-                _dx = _dz = _dy = 0.0
-            _yaw = float(getattr(self, "camera_yaw", self.steer))
-            _mag = math.hypot(_dx, _dz)
-            if _mag > 1.0:
-                _dx /= _mag; _dz /= _mag
-            _fx, _fz = math.sin(_yaw), math.cos(_yaw)
-            _rx, _rz = math.cos(_yaw), -math.sin(_yaw)
-            target_vx = (_dx * _rx + _dz * _fx) * move_speed
-            target_vz = (_dx * _rz + _dz * _fz) * move_speed
-            target_vy = _dy * float(getattr(self, "fly_speed", 3.8)) if bool(getattr(self, "fly_enabled", True)) else 0.0
-            # Gravity only while airborne and not holding lift/descend.
-            if abs(_dy) < 1e-9 and float(getattr(self, "player_y", 0.0)) > float(getattr(self, "physics_ground_y", 0.0)) + 1e-4:
-                target_vy += float(getattr(self, "physics_gravity", -2.8)) * 0.15
-            # Fast response when keys held; strong damping when idle so the
-            # player never drifts from residual velocity or sequence factors.
-            holding = (abs(_dx) + abs(_dz) + abs(_dy)) > 1e-9
-            if holding:
-                response = min(1.0, dt * 14.0)
-            else:
-                response = min(1.0, dt * 18.0)  # hard stop when keys released
-            if dt <= 0.0:
-                dt = 1.0 / 60.0
-            self.acceleration_x = (target_vx - self.velocity_x) * response / dt
-            self.acceleration_y = (target_vy - self.velocity_y) * response / dt
-            self.acceleration_z = (target_vz - self.velocity_z) * response / dt
-            self.velocity_x += self.acceleration_x * dt
-            self.velocity_y += self.acceleration_y * dt
-            self.velocity_z += self.acceleration_z * dt
-            if not holding:
-                # Snap residual planar velocity so the avatar never "walks itself".
-                self.velocity_x *= max(0.0, 1.0 - dt * 20.0)
-                self.velocity_z *= max(0.0, 1.0 - dt * 20.0)
-                if abs(self.velocity_x) < 1e-4: self.velocity_x = 0.0
-                if abs(self.velocity_z) < 1e-4: self.velocity_z = 0.0
-            speed = math.hypot(self.velocity_x, self.velocity_z)
-            vmax = float(getattr(self, "physics_max_speed", 9.0))
-            if speed > vmax and speed > 1e-9:
-                scale = vmax / speed
-                self.velocity_x *= scale; self.velocity_z *= scale
-            self.player_x += self.velocity_x * dt
-            self.player_y += self.velocity_y * dt
-            self.player_z += self.velocity_z * dt
-            # Simple solid collision: keep player outside the home footprint
-            # and push the camera out (dezoom) if it would clip the house.
-            try:
-                self._resolve_solid_collisions(dt)
-            except Exception:
-                pass
-            # Chunk stream (async): refresh visible LOD set around the player
-            try:
-                if getattr(self, "chunks", None) is not None:
-                    self._visible_chunks = self.chunks.request_around(
-                        float(self.player_x), float(self.player_z)
-                    )
-            except Exception:
-                self._visible_chunks = []
-            # Apply playlist→engine attenuation onto scenograph mask
-            try:
-                self._apply_engine_attenuation()
-            except Exception:
-                pass
-            if self.player_y < self.physics_ground_y:
-                self.player_y = self.physics_ground_y
-                if self.velocity_y < 0.0: self.velocity_y = 0.0
-                # IMPORTANT: player position is Cartesian. Never overwrite it
-                # into the legacy radial ``angle`` field; doing so turns walking
-                # around the origin into apparent sigil rotation.
-                if abs(_dx) + abs(_dz) > 1e-9:
-                    # Compatibility angle changes only because the player moved.
-                    # It is never used as the player's physical position.
-                    self.angle = (float(self.angle) + math.hypot(_dx, _dz) * dt * 1.5) % math.tau
-            # THREE-PATHWAY: procedural-on-demand — rare functions are only
-            # computed/rendered when the perspective arrives (spatial
-            # activation) or via /tp /lore /gen.
-            entered = self.loom.pulse(self.angle, reach=0.30)
-            for _r in entered:
-                self.sfx.trigger("chime", 0.6)
-                self.push_status(
-                    f"[LOOM] region '{_r['name']}' materialized on arrival — computed on demand")
-            # Region context follows the player continuously, but never
-            # controls position.  Sandbox edits live in this region state.
-            ridx = self._region_index_at(self.angle)
-            if ridx is not None:
-                r = self.loom.regions[ridx]
-                self._current_region = (r["name"], r["tier"])
-                rst = self._ensure_region_state(ridx)
-                if self._last_region_index != ridx:
-                    rst["visits"] += 1
-                    self._last_region_index = ridx
-                    self.push_status(f"[REGION] {r['name']} — free roam")
-                    # Free-play milestone (NOT a win condition): visiting
-                    # distinct regions is the natural substitute for the
-                    # old "clear the sigils" dopamine loop. Soft score only.
-                    if bool(getattr(self, "free_play", False)) and rst["visits"] == 1:
-                        self.score += 5.0 * MEUM
-                        self.tags.add("explorer")
-                        visited = sum(
-                            1 for st in (getattr(self, "region_state", {}) or {}).values()
-                            if int(st.get("visits", 0) or 0) > 0
-                        )
-                        self.push_status(
-                            f"[EXPLORE] first visit to '{r['name']}' "
-                            f"({visited} regions touched — still no forced objective)"
-                        )
-            # Inertia/friction persists briefly after key release, then settles.
-            if abs(_dx) + abs(_dy) + abs(_dz) <= 1e-9:
-                damp = math.exp(-float(getattr(self, "physics_drag", 5.5)) * dt)
-                self.acceleration_x = -self.velocity_x * float(getattr(self, "physics_drag", 5.5))
-                self.acceleration_z = -self.velocity_z * float(getattr(self, "physics_drag", 5.5))
-                self.velocity_x *= damp
-                self.velocity_z *= damp
-                self.velocity_y *= math.exp(-2.2 * dt)
-                self.player_x += self.velocity_x * dt
-                self.player_y += self.velocity_y * dt
-                self.player_z += self.velocity_z * dt
-                if self.player_y < self.physics_ground_y:
-                    self.player_y = self.physics_ground_y
-                    if self.velocity_y < 0.0: self.velocity_y = 0.0
-            speed_now = math.hypot(float(getattr(self, "velocity_x", 0.0)), float(getattr(self, "velocity_z", 0.0)))
-            self.physics_impulse = min(1.0, speed_now / max(0.001, float(getattr(self, "physics_max_speed", 7.5))))
-            self.physics_history.append({
-                "t": float(self.t), "x": float(self.player_x), "z": float(self.player_z),
-                "vx": float(self.velocity_x), "vz": float(self.velocity_z),
-                "speed": float(speed_now), "ax": float(self.acceleration_x), "az": float(self.acceleration_z),
-                "step": int(getattr(self, "sequence_step", 0)),
-                "motion": float(getattr(self, "sequence_motion_factor", 1.0)),
-                "vibration": float(getattr(self, "sequence_vibration_factor", 0.5))
-            })
-            if len(self.physics_history) > int(getattr(self, "physics_history_max", 180)):
-                del self.physics_history[:-int(self.physics_history_max)]
-            _micro = self.micro.drive(self.t)
-            if _micro:
-                try:
-                    self.music.dj = max(0.0, min(1.0, self.music.dj + _micro[0] * 0.05))
-                except Exception:
-                    pass
+        if self.authoritative:
+            # FREE-ROAM CONTRACT: movement is player-authored only.  Never
+            # auto-advance the player's world position/orbit; that old behavior
+            # made sigils feel like spinning cages and violated sandbox play.
+            if not self.hotseat["active"]:
+                # PLAYER-MOTION CONTRACT: never synthesize forward/orbit motion.
+                # The previous default advanced ``angle`` every tick, which made
+                # every world feel like a conveyor belt toward its collectibles
+                # (especially sigils).  Position changes now come only from the
+                # player's steer/movement input.
+                move_speed = 0.95 + 0.35 * self.difficulty_mult
+                player_motion = float(self.steer) + 0.35 * float(self.move["dz"])
+                if math.isfinite(player_motion) and abs(player_motion) > 1e-12:
+                    self.angle = (self.angle + dt * move_speed * player_motion) % math.tau
+                # THREE-PATHWAY: procedural-on-demand — rare functions are only
+                # computed/rendered when the perspective arrives (spatial
+                # activation) or via /tp /lore /gen.
+                entered = self.loom.pulse(self.angle, reach=0.30)
+                for _r in entered:
+                    self.sfx.trigger("chime", 0.6)
+                    self.push_status(
+                        f"[LOOM] region '{_r['name']}' materialized on arrival — computed on demand")
+                # Region context follows the player continuously, but never
+                # controls position.  Sandbox edits live in this region state.
+                ridx = self._region_index_at(self.angle)
+                if ridx is not None:
+                    r = self.loom.regions[ridx]
+                    self._current_region = (r["name"], r["tier"])
+                    rst = self._ensure_region_state(ridx)
+                    if self._last_region_index != ridx:
+                        rst["visits"] += 1
+                        self._last_region_index = ridx
+                        self.push_status(f"[REGION] {r['name']} — free roam")
+                        # Free-play milestone (NOT a win condition): visiting
+                        # distinct regions is the natural substitute for the
+                        # old "clear the sigils" dopamine loop. Soft score only.
+                        if bool(getattr(self, "free_play", False)) and rst["visits"] == 1:
+                            self.score += 5.0 * MEUM
+                            self.tags.add("explorer")
+                            visited = sum(
+                                1 for st in (getattr(self, "region_state", {}) or {}).values()
+                                if int(st.get("visits", 0) or 0) > 0
+                            )
+                            self.push_status(
+                                f"[EXPLORE] first visit to '{r['name']}' "
+                                f"({visited} regions touched — still no forced objective)"
+                            )
+                _micro = self.micro.drive(self.t)
+                if _micro:
+                    try:
+                        self.music.dj = max(0.0, min(1.0, self.music.dj + _micro[0] * 0.05))
+                    except Exception:
+                        pass
             # Re-evaluate protected activities every tick: area + state + music.
             try:
                 self._refresh_activities(audio_rms=abs(sample))
@@ -5415,10 +3967,14 @@ class Game:
             }.get(_obj, 1.0)
             if abs(sample) > 0.55:
                 self.score += MEUM * abs(sample) * self.difficulty_mult * (0.7 if _obj == "harvest" else 1.0)
-            # SIGIL_INTERACTION_2026: never auto-collect from player angle.
-            # Sigils, when explicitly enabled, require the normal click/activate
-            # interaction. This prevents spawning on a target from feeling like
-            # the player is physically trapped inside a sigil.
+            # Sigils — only when the world actually has them (nexus / explicit hook)
+            if getattr(self.sigils, "count", 0) > 0:
+                for _k, r in self.sigils.collect(self.angle):
+                    self.combo += 1
+                    self.score += MEUM * r * self.difficulty_mult * self.combo * _obj_mult
+                    self._reward_quests("collect", 1)
+                    self.purse.earn(1, "sigil")
+                    self.sfx.trigger("chime", 0.9)
             # Resources (open-world harvest)
             for _k, v in self.resources.harvest(self.angle):
                 self.combo += 1
@@ -5435,9 +3991,6 @@ class Game:
                 self.hp = max(0.0, self.hp - dmg * 12.0 * dt)
                 if _obj == "siege":
                     self.score += 0.35 * dmg * self.difficulty_mult  # risk reward
-                if self.hp <= 0.0:
-                    try: self.critical.on_death(self)
-                    except Exception: pass
             # Portals (open-world travel)
             if self._teleport_cd <= 0:
                 dest = self.portals.try_teleport(self.angle)
@@ -5489,14 +4042,13 @@ class Game:
             # (collect/harvest already happened above — progress those quests)
             for name, rec in list(self._remote_steers.items()):
                 rec[0] = (rec[0] + dt * MEUM * math.tau * (1.0 + 0.35 * rec[2])) % math.tau
-                if getattr(self, "primary_focus", "explore") == "sigils" and getattr(self.sigils, "count", 0) > 0:
-                    for k, (a, r) in enumerate(self.sigils.pos):
-                        if k in self.sigils.collected:
-                            continue
-                        d = abs((a - rec[0] + math.pi) % math.tau - math.pi)
-                        if d <= 0.31 * max(0.25, r):
-                            self.sigils.collected.add(k)
-                            rec[1] += MEUM * r * self.difficulty_mult * _obj_mult
+                for k, (a, r) in enumerate(self.sigils.pos):
+                    if k in self.sigils.collected:
+                        continue
+                    d = abs((a - rec[0] + math.pi) % math.tau - math.pi)
+                    if d <= 0.31 * max(0.25, r):
+                        self.sigils.collected.add(k)
+                        rec[1] += MEUM * r * self.difficulty_mult * _obj_mult
             threshold = 5 + self.level + int(MEUM * self.level)
             if _obj == "pilgrimage":
                 threshold = max(3, threshold - 2)
@@ -5543,7 +4095,6 @@ class Game:
                         for name, rec in self._remote_steers.items()
                     },
                     "visual_view": self.visual_state(),
-                    "character_design_average": round(self._character_population_average(), 4),
                     "authoritative": True,
                 })
         else:
@@ -5557,16 +4108,13 @@ class Game:
                     self.visual_view = dict(snap["visual_view"])
                     self.visual_signal_id = str(self.visual_view.get("visual_signal_id") or self.visual_signal_id)
                 self.difficulty_mult = float(snap.get("difficulty_mult", self.difficulty_mult))
-                if snap.get("character_design_average") is not None:
-                    try: self.character.external_population_average=float(snap.get("character_design_average"))
-                    except Exception: pass
                 collected = snap.get("sigils") or []
                 if isinstance(collected, list):
                     self.sigils.collected = set(int(k) for k in collected)
                 rem = snap.get("remotes")
                 self.remotes = rem if isinstance(rem, dict) else {}
             if self.net.sock is not None:
-                self.net.send({"type": "hello", "name": self.player_name, "seed": self.id["seed"], "design_score": round(self.character.record_design(source="network"),4)})
+                self.net.send({"type": "hello", "name": self.player_name, "seed": self.id["seed"]})
                 self.net.send({"type": "steer", "name": self.player_name, "t": round(self.t, 2), "angle": round(self.angle, 6), "steer": round(self.steer, 4)})
         # GAME_FILE_TASKS_2026: replay feeds recorded inputs back in — the world
         # is f(seed, t), so re-simulating the recorded steer reproduces the
@@ -5605,10 +4153,6 @@ class Game:
         if _capture_audio:
             self._audio_samples.append(float(sample))
         self.t += dt
-        try:
-            self.temporal_seed.update(self.t)
-        except Exception:
-            pass
         return sample, layers
 
     def save_recording(self, path, make_wav=False):
@@ -5624,12 +4168,6 @@ class Game:
         self.replay_idx = 0
         return meta, len(rows)
 
-    def _character_population_average(self):
-        """Population-facing design average: local design + observed network players."""
-        vals=[self.character.record_design(source="population")] + [float(v) for v in self._remote_design.values()]
-        prior=float(self.character.global_prior)
-        return max(0.0,min(1.0,(prior + sum(vals)/max(1,len(vals))) / 2.0))
-
     def _drain_net(self):
         """Pull transport messages (chat, sys, remote steers) into game state."""
         while True:
@@ -5644,8 +4182,6 @@ class Game:
                 self.push_status(str(obj.get("text", "")))
             elif mtype == "hello" and self.net.host_mode:
                 name = str(obj.get("name") or "Player")
-                try: self._remote_design[name]=float(obj.get("design_score",0.5))
-                except Exception: self._remote_design[name]=0.5
                 if name not in self._remote_steers:
                     self._remote_steers[name] = [
                         meum_angle(_safe_int_seed(self.id["seed"]) + len(self._remote_steers) * 31),
@@ -5933,8 +4469,6 @@ class Game:
                 self.send_chat("system", f"accepted {q['title']}")
             else:
                 self.send_chat("system", "no quest available")
-        elif line in ("/refine", "/craft-refine"):
-            self.send_chat("system", self.refine_starter_supplies())
         elif line.startswith("/buy"):
             parts = line.split()
             idx = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
@@ -6166,7 +4700,6 @@ _ACTIVITY_CLASSES = (
     "trade",           # merchant / store interactions
     "quest_gate",      # objective-linked events
     "combat",          # pve / pvp encounter surfaces
-    "meteorite",       # rare environmental impact events
 )
 
 # Which loom-region tiers and player tags permit each activity class.
@@ -6181,7 +4714,6 @@ _ACTIVITY_AREA_TAGS = {
     "trade":         {"keel", "rind", "mote"},
     "quest_gate":    {"sigil", "fault", "dune"},
     "combat":        {"barb", "lobe", "vane"},
-    "meteorite":     {"fault", "dune", "vane", "whorl", "culm"},
 }
 
 _ACTIVITY_STATE_TAGS = {
@@ -6193,7 +4725,6 @@ _ACTIVITY_STATE_TAGS = {
     "trade":         {"trade", "safe", "gold"},
     "quest_gate":    {"quest", "objective"},
     "combat":        {"combat", "pve", "pvp"},
-    "meteorite":     {"explore", "movement", "survival"},
 }
 
 
@@ -6266,30 +4797,19 @@ class ProtectedActivityGate:
             return True
         return bool(tags & needed) or free_play
 
-    def event_probability(self, cls, *, region_name=None, region_tier=0,
-                          player_tags=None, hp=100.0, objective=None, free_play=True,
-                          audio_rms=0.0, phase=0.0, energy=0.5, entropy=None):
-        """Return only the statistical chance for an event class.
-
-        Genre/mood/topology/tags are descriptors that shape this probability;
-        they never become deterministic requirements or forced gameplay.
-        """
+    def is_live(self, cls, *, region_name=None, region_tier=0,
+                player_tags=None, hp=100.0, objective=None, free_play=True,
+                audio_rms=0.0, phase=0.0, energy=0.5, entropy=None):
+        """All three gates must pass.  Otherwise the activity simply does not exist."""
         if cls not in _ACTIVITY_CLASSES:
-            return 0.0
-        base = 0.04 + 0.28 * self.affinity.get(cls, 0.0)
-        musical = 0.22 * (0.35 * float(energy) + 0.25 * abs(math.sin(float(phase) + self.affinity.get(cls,0.0)*math.tau)))
-        if entropy is not None:
-            musical += 0.10 * (float(entropy) if cls in ("arcade","spell_cast","combat") else (1.0-float(entropy)))
-        area = 1.0 if self.area_allows(cls, region_name, region_tier) else 0.35
-        state = 1.0 if self.state_allows(cls, player_tags, hp, objective, free_play) else 0.55
-        return max(0.0, min(0.92, (base + musical) * area * state))
-
-    def is_live(self, cls, **kwargs):
-        chance = self.event_probability(cls, **kwargs)
-        # Stable deterministic sampling bucket; no event tag is a hard gate.
-        bucket = int(float(kwargs.get("phase", 0.0)) * 2.0)
-        roll = _residue(self.seed, f"event:{cls}:{bucket}")
-        return roll < chance
+            return False
+        if not self.area_allows(cls, region_name, region_tier):
+            return False
+        if not self.state_allows(cls, player_tags, hp, objective, free_play):
+            return False
+        if not self.music_allows(cls, audio_rms, phase, energy, entropy=entropy):
+            return False
+        return True
 
     def describe(self, cls, live, **params):
         """Straightforward text that only uses nouns/adjectives tied to real params.
@@ -6411,7 +4931,7 @@ def instant_video_frame(seed, t=0.0, w=320, h=180, *,
                         live_activities=None, region_name=None, region_tier=0,
                         audio_rms=0.0, music_entropy=0.5, music_phase=0.0,
                         goava_active=False, software_kind="videogame",
-                        sequential_nums=None, engine_mask=None):
+                        sequential_nums=None, engine_mask=None, seed_script=None):
     """Pure instantaneous RGB frame — same fractal object path as host video.
 
     Prevalence (most → least relevant to what appears):
@@ -6451,6 +4971,12 @@ def instant_video_frame(seed, t=0.0, w=320, h=180, *,
     # Book fractal set field (prevalent geometry from sequential nums / playlist)
     try:
         _seq = list(sequential_nums or []) or [float(seed)]
+        try:
+            _sc = seed_script_channels(seed_script if seed_script is not None else (COMPOSITION_META.get("seed_script", "") if "COMPOSITION_META" in globals() else ""), t)
+            _chv = dict(_sc.get("channels") or {})
+            _seq = [float(_sc["x"]), float(_sc["y"]), float(_sc["z"]), float(_sc["scalar"])] + [float(_chv.get(k,0.0)) for k in ("radial","angle","orbit","escape","zeta","eta","lfunction","curvature","energy","phase","pitch","amplitude","density","rate","depth","warp","hue","zoom","scale","rotation","feedback","roughness","fractal","variables")] + _seq
+        except Exception:
+            pass
         _ph = 0
         _set = eski_fractal_pick(int(seed) & 0x7FFFFFFF, sequential_nums=_seq, playlist_hash=_ph)
         _c = float((_seq[0] * MEUM_INV) % 2.0 - 1.0)
@@ -6466,8 +4992,9 @@ def instant_video_frame(seed, t=0.0, w=320, h=180, *,
     rr = _np.sqrt(xx * xx + yy * yy) + 1e-6
     ang = _np.arctan2(yy, xx)
     wave = _np.sin(ang * (2.0 + 3.0 * grid) + float(t) * spin * math.tau
-                   + field["u"] * math.tau + float(_yf)) * 0.5 + 0.5
-    ring = _np.exp(-((rr - (0.35 + 0.25 * field["rho"])) ** 2) / (0.08 + 0.12 * field["energy"]))
+                   + field["u"] * math.tau + float(_yf) + 0.7*float(_mc_now.get("phase",0.0)) + 0.45*float(_mc_now.get("lfunction",0.0))) * 0.5 + 0.5
+    ring_center = 0.35 + 0.25 * field["rho"] + 0.08*math.tanh(float(_mc_now.get("radial",0.0)))
+    ring = _np.exp(-((rr - ring_center) ** 2) / (0.08 + 0.12 * field["energy"]))
     # Activity-class lattice overlay
     lat = _np.sin(xx * (6.0 + 8.0 * grid) + float(t) * 0.7) * _np.sin(yy * (6.0 + 8.0 * grid) - float(t) * 0.5)
     lat = (lat * 0.5 + 0.5) * (0.25 + 0.55 * grid)
@@ -6481,15 +5008,25 @@ def instant_video_frame(seed, t=0.0, w=320, h=180, *,
     _fy = yy * (3.0 + 3.0 * grid) - _c
     fractal_bands = _np.abs(_np.sin(_fx + _fy * PHI + float(_yf) * math.tau + float(t) * 0.15 * spin))
     fractal_bands = fractal_bands ** 0.5  # widen/brighten the bright bands
+    # Named mathematical controls: the same variables that drive the music
+    # also drive camera/field density, zoom, warp, feedback and hue.
+    _depth = float(_chv.get("depth", 0.0) or 0.0)
+    _warp = float(_chv.get("warp", 0.0) or 0.0)
+    _zoom = float(_chv.get("zoom", 0.0) or 0.0)
+    _density = float(_chv.get("density", 0.0) or 0.0)
+    _feedback = float(_chv.get("feedback", 0.0) or 0.0)
+    _hue = float(_chv.get("hue", 0.0) or 0.0)
+    wave = _np.sin(ang * (2.0 + 3.0 * grid + 1.5*math.tanh(_density)) + float(t) * spin * math.tau + field["u"] * math.tau + float(_yf) + 0.7*float(_mc_now.get("phase",0.0)) + 0.45*float(_mc_now.get("lfunction",0.0)) + 0.6*math.tanh(_warp)) * 0.5 + 0.5
+    fractal_bands = fractal_bands * (0.75 + 0.35*math.tanh(abs(_depth)))
     val = _np.clip(
         0.15 + 0.55 * wave * field["energy"] + 0.45 * ring + 0.25 * lat
         + 0.35 * fractal_bands,
         0.0, 1.0,
     )
     # HSV → RGB (lightweight)
-    h_norm = ((hue0 / 360.0) + 0.08 * wave + 0.05 * field["u"] + 0.10 * fractal_bands) % 1.0
+    h_norm = ((hue0 / 360.0) + 0.08 * wave + 0.05 * field["u"] + 0.10 * fractal_bands + 0.08*math.tanh(_hue)) % 1.0
     s_norm = _np.clip(0.45 + 0.40 * field["rho"] + 0.15 * rms_safe(audio_rms) + 0.15 * fractal_bands, 0.0, 1.0)
-    v_norm = val
+    v_norm = _np.clip(val * (1.0 + 0.12*math.tanh(_feedback)), 0.0, 1.0)
     i = _np.floor(h_norm * 6.0).astype(_np.int32)
     f = h_norm * 6.0 - i
     p = v_norm * (1.0 - s_norm)
@@ -7397,890 +5934,15 @@ class PokerTable:
 
 # ---------------------------------------------------------------------------
 if HAS_UI:
-    class ProceduralWorldRenderer:
-        """Deterministic pseudo-3D presentation layer for the open world.
-
-        The simulation remains seed-driven, while this layer turns its canonical
-        1D/2D parameters into a full 3D-feeling scene: X/Z world travel, Y
-        elevation, depth-sorted meshes, billboard sprites, characters, props,
-        particles, and a screen-space 2.5D overlay.  No external art assets are
-        required; every visual is generated from the world seed.
-        """
-        def __init__(self, game):
-            self.game = game
-            self.seed = int(getattr(game, "id", {}).get("seed", 0) or 0)
-            self.phase = 0.0
-            self._ambient_cd = 0.0
-            self.asset_cache = {}
-            self.startup_assets = self._generate_startup_assets()
-
-        def _generate_startup_assets(self):
-            """Generate a deterministic local asset library at game startup.
-
-            Assets are faceted GOAVA-like visual objects: layered translucent
-            polygons, recursive micro-facets and bounded alpha.  They are tied
-            to the world seed and later selected by chunk/object coordinate, so
-            the same area always reconstructs the same visual material.
-            """
-            kinds = ("terrain", "foliage", "crystal", "ruin", "water", "character", "portal", "road")
-            out = {}
-            for i, kind in enumerate(kinds):
-                key = f"startup:{kind}:{i}"
-                out[key] = self._make_asset_texture(key, 96, 96)
-            return out
-
-        def _make_asset_texture(self, key, w=96, h=96):
-            img = QImage(int(w), int(h), QImage.Format.Format_ARGB32_Premultiplied)
-            img.fill(QColor(0, 0, 0, 0))
-            pp = QPainter(img)
-            pp.setRenderHint(QPainter.RenderHint.Antialiasing)
-            r0 = self._rng(key + ":h")
-            hue = int((r0 * 360.0) % 360)
-            base = QColor.fromHsv(hue, 115 + int(90*self._rng(key+":s")), 95 + int(125*self._rng(key+":v")), 88)
-            pp.setPen(Qt.PenStyle.NoPen)
-            # Irregular material tile, never an opaque rectangle.
-            basepts=[]
-            for k in range(9):
-                aa=k*math.tau/9.0; rr=0.72+0.25*self._rng(f"{key}:base:{k}")
-                basepts.append(QPointF(w*.5+math.cos(aa)*w*.62*rr,h*.5+math.sin(aa)*h*.62*rr))
-            pp.setBrush(base); pp.drawPolygon(QPolygonF(basepts))
-            # Multi-scale GOAVA/fractal facets.
-            for layer in range(4):
-                n = 5 + layer * 3
-                for j in range(n):
-                    q = self._rng(f"{key}:facet:{layer}:{j}")
-                    x = q * w
-                    y = self._rng(f"{key}:fy:{layer}:{j}") * h
-                    rad = (0.10 + 0.18*self._rng(f"{key}:fr:{layer}:{j}")) * min(w,h) / (1+0.45*layer)
-                    hh = (hue + int(80*self._rng(f"{key}:fh:{layer}:{j}"))) % 360
-                    cc = QColor.fromHsv(hh, 120 + int(100*self._rng(f"{key}:fs:{layer}:{j}")), 110 + int(120*self._rng(f"{key}:fv:{layer}:{j}")), 32 + layer*18)
-                    pts = [QPointF(x + math.cos(k*math.tau/5.0 + q)*rad, y + math.sin(k*math.tau/5.0 + q)*rad) for k in range(5)]
-                    pp.setBrush(cc); pp.drawPolygon(pts)
-            pp.setPen(QPen(QColor(255,255,255,45), 1))
-            for j in range(7):
-                y = (j+1)*h/8.0
-                pp.drawLine(QPointF(0,y), QPointF(w,h-y))
-            pp.end()
-            return img
-
-        def _asset(self, key, kind="terrain"):
-            k = f"{kind}:{key}"
-            if k not in self.asset_cache:
-                self.asset_cache[k] = self._make_asset_texture(k)
-            return self.asset_cache[k]
-
-        def _draw_texture_facets(self, p, x, y, sx, sy, key, kind, alpha=70):
-            img = self._asset(key, kind)
-            p.save()
-            p.setOpacity(max(0.0, min(1.0, alpha / 255.0)))
-            p.drawImage(QRectF(x-sx, y-sy, sx*2.0, sy*2.0), img)
-            p.restore()
-
-        def _rng(self, tag):
-            return _residue(self.seed, "presentation:" + str(tag))
-
-        def _world_point(self, angle, radius, y=0.0):
-            return (float(radius) * vg_cos(float(angle)), float(y),
-                    float(radius) * vg_sin(float(angle)))
-
-        def _terrain_height(self, wx, wz):
-            # Multi-octave deterministic heightfield. Shared samples ensure adjacent
-            # cells meet exactly, giving true connected terrain rather than tiles.
-            x=float(wx); z=float(wz); h=0.0; amp=1.0; freq=0.055
-            for o in range(4):
-                gx=math.floor(x*freq); gz=math.floor(z*freq)
-                fx=x*freq-gx; fz=z*freq-gz
-                def v(ix,iz): return self._rng(f'th:{o}:{gx+ix}:{gz+iz}')*2.0-1.0
-                def sm(t): return t*t*(3.0-2.0*t)
-                a=v(0,0); b=v(1,0); c=v(0,1); d=v(1,1)
-                vx=(a+(b-a)*sm(fx)) + ((c+(d-c)*sm(fx))-(a+(b-a)*sm(fx)))*sm(fz)
-                h += vx*amp
-                amp*=0.48; freq*=1.92
-            return h*1.15
-
-        def _draw_layered_terrain(self, p, project, cx, cy, R):
-            """Connected terrain topology: shared heightfield vertices + triangular faces.
-
-            The mesh is deterministic and chunk-addressed.  Each cell shares its
-            vertex heights with neighbors, while diagonal selection and material
-            facets vary by seed so the ground has continuous topology instead of
-            a collection of rectangles.
-            """
-            g=self.game; px=float(getattr(g,'player_x',0.0)); pz=float(getattr(g,'player_z',0.0))
-            span=8; step=2.5
-            # WORLD-SPACE TERRAIN_2026: mesh vertices are keyed to absolute
-            # world coordinates.  Camera/player motion only changes which part
-            # of the canonical terrain is visible; it never regenerates terrain
-            # around the player.
-            base_ix = math.floor(px / step)
-            base_iz = math.floor(pz / step)
-            verts={}
-            for iz in range(-span,span+1):
-                for ix in range(-span,span+1):
-                    cell_x = base_ix + ix; cell_z = base_iz + iz
-                    wx=cell_x*step; wz=cell_z*step; wy=self._terrain_height(wx,wz)
-                    dx=wx-px; dz=wz-pz; rr=math.hypot(dx,dz)
-                    aa=math.atan2(dz,dx)
-                    verts[(ix,iz)]=project(aa,rr,wy,0.95+0.025*abs(iz))
-            for iz in range(-span,span):
-                for ix in range(-span,span):
-                    a=verts[(ix,iz)]; b=verts[(ix+1,iz)]; c=verts[(ix,iz+1)]; d=verts[(ix+1,iz+1)]
-                    diag = self._rng(f'tdiag:{base_ix}:{base_iz}:{ix}:{iz}') > 0.5
-                    tris=((a,b,d),(a,d,c)) if diag else ((a,b,c),(b,d,c))
-                    for ti,(u,v,w) in enumerate(tris):
-                        slope=abs(u[1]-v[1])+abs(v[1]-w[1])+abs(w[1]-u[1])
-                        q=self._rng(f'tmat:{ix}:{iz}:{ti}')
-                        if slope>18: kind='rock'
-                        elif q<0.12: kind='water'
-                        elif q<0.30: kind='foliage'
-                        else: kind='terrain'
-                        hue={'water':195,'foliage':105,'rock':35,'terrain':75}[kind]
-                        alpha={'water':205,'foliage':225,'rock':242,'terrain':238}[kind]
-                        col=QColor.fromHsv(int(hue+35*self._rng(f'thue:{ix}:{iz}:{ti}'))%360,105+int(70*q),105+int(90*q),alpha)
-                        p.setPen(QPen(QColor.fromHsv(int(hue)%360,100,220,150),1)); p.setBrush(col)
-                        p.drawPolygon(QPolygonF([QPointF(u[0],u[1]),QPointF(v[0],v[1]),QPointF(w[0],w[1])]))
-                        # restrained GOAVA microfacet overlays on a subset of faces
-                        if self._rng(f'tfacet:{ix}:{iz}:{ti}') > (0.30 if getattr(g.scene,'goava',False) else 0.68):
-                            mx=(u[0]+v[0]+w[0])/3; my=(u[1]+v[1]+w[1])/3
-                            r=max(1.0, min(8.0, abs(v[0]-u[0])*0.16))
-                            p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor.fromHsv(int(hue+70)%360,150,230,105))
-                            p.drawPolygon(QPolygonF([QPointF(mx-r,my),QPointF(mx+r*.4,my-r*.7),QPointF(mx+r*.5,my+r*.8)]))
-
-        def _draw_meum_mesh(self, p, project, cx, cy, R):
-            """Render connected 3-D scenograph faces, not just lines/grids.
-
-            Each active Meum object contributes a small local polyhedral patch;
-            deterministic cross-links then join nearby objects into triangular
-            faces.  GOAVA increases face density/transparency, while ordinary
-            seeds still receive a substantial baseline so the scenograph reads
-            as volumetric geometry.
-            """
-            g = self.game
-            layers = [L for L in getattr(g.scene, "layers", []) if L.get("on", True)]
-            if not layers:
-                return
-            goava = bool((getattr(g, "scene", None) and getattr(g.scene, "goava", False)) or
-                         (getattr(g, "id", {}) or {}).get("goava_active", False) or
-                         (getattr(g, "id", {}) or {}).get("engine_mask", {}).get("goava", False))
-            pts3 = []
-            for i, L in enumerate(layers):
-                a = float(L.get("yaw", 0.0)); r = float(L.get("dist", 1.0))
-                # Real case handling — no microscopic epsilon.
-                # depth == 0 → unit depth (identity scale).
-                # radius == 0 → skip local patch (center still used for links).
-                dep = float(L.get("depth", 1.0))
-                if dep == 0.0:
-                    dep = 1.0
-                rad = abs(float(L.get("radius", MEUM_NORM)))
-                ph = float(L.get("face_phase", 0.0)) + self.phase * (MEUM_NORM + MEUM_INV / max(1, i + 1))
-                corners = []
-                if rad > 0.0:
-                    for k in range(4):
-                        th = ph + k * math.tau / 4.0 + float(L.get("face_twist", 0.0)) * PHI_INV
-                        rr = r + rad * (MEUM_NORM + (MEUM_INV / (k + 1)) * self._rng(f"mesh:r:{i}:{k}"))
-                        yy = float(L.get("pitch", 0.0)) + rad * PHI_INV * vg_sin(th * MEUM + k)
-                        if r == 0.0:
-                            aa = a
-                        else:
-                            aa = a + (rad / abs(r)) * vg_sin(th) * MEUM_NORM
-                        corners.append(project(aa, rr, yy, dep + MEUM_INV * vg_cos(th)))
-                center = project(a, r, float(L.get("pitch", 0.0)), dep)
-                pts3.append((L, corners, center))
-            # Local faces: two crossed triangles per object.  This is the
-            # primary volumetric GOAVA/Meum surface signal.
-            for i,(L,corners,center) in enumerate(pts3):
-                hue=float(L.get("hue",0.5))*360.0
-                fc=max(2,int(L.get("face_count",4)))
-                for f in range(fc):
-                    a=corners[(f*2)%4]; b=corners[(f*2+1)%4]; c=corners[(f*2+2)%4]
-                    if goava or f < 3 or self._rng(f"mesh:keep:{i}:{f}") > 0.42:
-                        alpha=(32 if not goava else 48) + int(18*float(L.get("life",0.7)))
-                        col=QColor.fromHsv(int(hue + 18*f + 25*self._rng(f"mesh:h:{i}:{f}"))%360,
-                                           150 + int(70*self._rng(f"mesh:s:{i}:{f}")),
-                                           130 + int(100*self._rng(f"mesh:v:{i}:{f}")), alpha)
-                        p.setPen(QPen(QColor.fromHsv(int(hue+45)%360,130,235,65 if goava else 38),1))
-                        p.setBrush(col)
-                        p.drawPolygon(QPolygonF([QPointF(a[0],a[1]),QPointF(b[0],b[1]),QPointF(c[0],c[1])]))
-            # Cross-object triangular faces. Deterministic pseudo-random skips
-            # prevent a regular lattice and produce the requested irregular
-            # faceted/GOAVA topology.
-            n=len(pts3)
-            density=0.78 if goava else 0.46
-            for i in range(n):
-                for j in range(i+1,min(n,i+6)):
-                    if self._rng(f"mesh:edge:{i}:{j}") > density:
-                        continue
-                    k=i+1+int(self._rng(f"mesh:tri:{i}:{j}")*max(1,n-i-1))
-                    if k>=n or k==j:
-                        k=(j+1)%n
-                    pa=pts3[i][2]; pb=pts3[j][2]; pc=pts3[k][2]
-                    hue=(float(pts3[i][0].get("hue",0.5))*360.0 + 35*j) % 360.0
-                    alpha=26 if not goava else 42
-                    p.setPen(QPen(QColor.fromHsv(int(hue)%360,160,240,55 if goava else 35),1))
-                    p.setBrush(QColor.fromHsv(int(hue)%360,145,205,alpha))
-                    p.drawPolygon(QPolygonF([QPointF(pa[0],pa[1]),QPointF(pb[0],pb[1]),QPointF(pc[0],pc[1])]))
-
-        def _draw_volumetric_linkages(self, p, project, cx, cy, R):
-            """Dense but bounded deterministic 3-D linkage field.
-
-            This deliberately adds *filled* triangular/quadrilateral faces plus
-            sparse line segments.  The probability field is seed-derived, so
-            the apparent randomness is repeatable and the linkage density can
-            rise with GOAVA without becoming a uniform wireframe.
-            """
-            g = self.game
-            layers = [L for L in getattr(g.scene, "layers", []) if L.get("on", True)]
-            if not layers:
-                return
-            goava = bool((getattr(g, "scene", None) and getattr(g.scene, "goava", False)) or
-                         (getattr(g, "id", {}) or {}).get("goava_active", False) or
-                         (getattr(g, "id", {}) or {}).get("engine_mask", {}).get("goava", False))
-            nodes=[]
-            for i,L in enumerate(layers):
-                a=float(L.get("yaw",0.0)); r=float(L.get("dist",1.0))
-                d=float(L.get("depth",1.0))
-                if d == 0.0:
-                    d = 1.0
-                x,y,z=project(a,r,float(L.get("pitch",0.0)),d)
-                nodes.append((x,y,z,float(L.get("hue",.5))*360.0,i))
-            n=len(nodes)
-            meta = []
-            for i, L in enumerate(layers):
-                plen = max(1, int(L.get("pattern_length", 16) or 16))
-                zstep = int(L.get("z_step", i * 7)) % plen
-                meta.append((plen, zstep))
-
-            def _z_congruent(i, j, tolerance=0):
-                """Return whether two written algorithm phases may be linked.
-
-                The congruence is evaluated on the greatest-common-divisor
-                lattice.  Different pattern lengths therefore share links only
-                at compatible Z phases; longer algorithm spans do not erase the
-                phase relationship.  A small deterministic tolerance is used for
-                faces spanning three different pattern lengths.
-                """
-                pi, zi = meta[i]; pj, zj = meta[j]
-                g = math.gcd(pi, pj)
-                if ((zi - zj) % g) <= tolerance:
-                    return True
-                # Scale to the common algorithm span.  This second test permits
-                # exact rational phase correspondence when lengths differ.
-                return ((zi * pj - zj * pi) % math.lcm(pi, pj)) == 0
-
-            def _link_score(i, j):
-                pi, zi = meta[i]; pj, zj = meta[j]
-                span = math.lcm(pi, pj)
-                congr = 1.0 if _z_congruent(i, j) else 0.0
-                # Near phases on a shared span get a softer chance, while a
-                # broken congruence remains genuinely breakable.
-                dz = abs((zi * pj - zj * pi) % span)
-                dz = min(dz, span - dz)
-                phase = 1.0 - (dz / max(1.0, span * 0.5))
-                return 0.72 * congr + 0.28 * max(0.0, phase)
-
-            # Sparse stochastic-looking strokes: long, medium and micro links.
-            # Their existence is filtered by algorithmic Z-step congruence.
-            seg_prob = 0.30 if not goava else 0.54
-            for i in range(n):
-                max_j=min(n,i+9)
-                for j in range(i+1,max_j):
-                    q=self._rng(f"link:segment:{i}:{j}")
-                    compat = _link_score(i, j)
-                    # Congruence is a gate, not decoration: incompatible Z-step
-                    # phases are broken before geometric drawing is considered.
-                    if not _z_congruent(i, j):
-                        continue
-                    if q > seg_prob * (0.55 + 0.45 * compat):
-                        continue
-                    a=nodes[i]; b=nodes[j]
-                    bend=(self._rng(f"link:bend:{i}:{j}")-.5)*R*.055
-                    mx=(a[0]+b[0])*.5; my=(a[1]+b[1])*.5+bend
-                    hue=(a[3]+b[3])*.5
-                    alpha=26+int(32*self._rng(f"link:alpha:{i}:{j}"))
-                    if goava: alpha += 18
-                    p.setPen(QPen(QColor.fromHsv(int(hue)%360,155,235,min(110,alpha)),
-                                  1 if q>.62 else 2))
-                    p.drawLine(QPointF(a[0],a[1]),QPointF(mx,my))
-                    if self._rng(f"link:tail:{i}:{j}") > .38:
-                        p.drawLine(QPointF(mx,my),QPointF(b[0],b[1]))
-            # Volumetric faces: likelihood is distance/depth weighted so some
-            # connections become visible surfaces instead of a wireframe.
-            face_prob = 0.26 if not goava else 0.52
-            for i in range(n):
-                for j in range(i+1,min(n,i+6)):
-                    for k in range(j+1,min(n,j+5)):
-                        q=self._rng(f"link:face:{i}:{j}:{k}")
-                        congr = (_z_congruent(i, j) and _z_congruent(j, k) and _z_congruent(i, k))
-                        if not congr:
-                            continue
-                        compat = (_link_score(i, j) + _link_score(j, k) + _link_score(i, k)) / 3.0
-                        if q > face_prob * (0.52 + 0.48 * compat):
-                            continue
-                        a,b,c=nodes[i],nodes[j],nodes[k]
-                        area=abs((b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0]))
-                        if area < 7.0 or area > R*R*.42:
-                            continue
-                        hue=(a[3]+b[3]+c[3])/3.0
-                        alpha=(22+int(25*self._rng(f"link:facealpha:{i}:{j}:{k}")))
-                        if goava: alpha += 18
-                        col=QColor.fromHsv(int(hue)%360,130+int(70*self._rng(f"link:s:{i}:{j}:{k}")),
-                                            150+int(85*self._rng(f"link:v:{i}:{j}:{k}")),min(92,alpha))
-                        p.setPen(Qt.PenStyle.NoPen); p.setBrush(col)
-                        p.drawPolygon(QPolygonF([QPointF(a[0],a[1]),QPointF(b[0],b[1]),QPointF(c[0],c[1])]))
-                        # A small probability of a fourth point creates a
-                        # faceted tetra-like silhouette rather than only triangles.
-                        if n > 4 and self._rng(f"link:quad:{i}:{j}:{k}") > .72:
-                            m=(k+1+int(self._rng(f"link:qidx:{i}:{j}:{k}")*max(1,n-k-1)))%n
-                            d=nodes[m]
-                            p.setBrush(QColor.fromHsv(int((hue+28)%360),135,205,min(60,alpha)))
-                            p.drawPolygon(QPolygonF([QPointF(a[0],a[1]),QPointF(b[0],b[1]),QPointF(d[0],d[1]),QPointF(c[0],c[1])]))
-
-        def _draw_streamed_chunks(self, p, world_project, project, cx, cy, R):
-            """Draw LOD chunks from the multithreaded streamer (CPU-cheap)."""
-            g = self.game
-            chunks = getattr(g, "_visible_chunks", None) or []
-            if not chunks:
-                return
-            # Cap draw budget so far field never dominates a frame
-            budget = 80
-            drawn = 0
-            for ch in chunks:
-                if drawn >= budget:
-                    break
-                lod = int(ch.get("lod", 2))
-                if lod >= 2:
-                    # Far: single residual billboard
-                    hx, hy, hsz = world_project(ch["base_x"], ch["base_z"], 0.0, 0.6 + 0.8 * float(ch.get("elev", 0.5)))
-                    col = QColor.fromHsv(int(ch.get("hue", 180)) % 360, 60, 160, 40)
-                    p.setPen(Qt.PenStyle.NoPen)
-                    p.setBrush(col)
-                    p.drawEllipse(QPointF(hx, hy), max(1.0, hsz * 0.15), max(1.0, hsz * 0.1))
-                    drawn += 1
-                    continue
-                for prop in ch.get("props") or []:
-                    if drawn >= budget:
-                        break
-                    px, pz = float(prop["x"]), float(prop["z"])
-                    sc = float(prop.get("scale", 1.0))
-                    hue = float(prop.get("hue", 180))
-                    kind = str(prop.get("kind", "rock"))
-                    x, y, sz = world_project(px, pz, 0.0, 0.7 + 0.5 * sc)
-                    if kind == "silhouette":
-                        p.setPen(Qt.PenStyle.NoPen)
-                        p.setBrush(QColor.fromHsv(int(hue) % 360, 50, 120, 70))
-                        p.drawEllipse(QPointF(x, y), max(2.0, sz * 0.35 * sc), max(1.5, sz * 0.2 * sc))
-                    else:
-                        try:
-                            self._draw_model(p, x, y, max(4.0, sz * sc), hue, kind, 200)
-                        except Exception:
-                            p.setBrush(QColor.fromHsv(int(hue) % 360, 140, 200, 180))
-                            p.setPen(Qt.PenStyle.NoPen)
-                            p.drawEllipse(QPointF(x, y), max(2.0, sz * 0.25), max(2.0, sz * 0.25))
-                    drawn += 1
-
-        def _draw_textured_building(self, p, x, y, size, hue, owned=False):
-            """WoW-scale house: O(1) filled polys + deterministic window grid.
-            No image assets, no per-pixel loops — pure geometry from seed RNG.
-            """
-            s = max(8.0, float(size))
-            body = QColor.fromHsv(int(hue) % 360, 120 + int(40 * self._rng("home:sat")),
-                                 140 + int(60 * self._rng("home:val")), 230)
-            roof = QColor.fromHsv(int(hue + 30) % 360, 160, 100 + int(40 * self._rng("home:roof")), 240)
-            trim = QColor.fromHsv(int(hue + 50) % 360, 80, 220, 250)
-            # Body
-            p.setPen(QPen(trim, 1))
-            p.setBrush(body)
-            p.drawRect(QRectF(x - s * 0.75, y - s * 0.85, s * 1.5, s * 1.1))
-            # Roof triangle
-            p.setBrush(roof)
-            p.drawPolygon(QPolygonF([
-                QPointF(x - s * 0.85, y - s * 0.85),
-                QPointF(x + s * 0.85, y - s * 0.85),
-                QPointF(x, y - s * 1.45),
-            ]))
-            # Window grid (deterministic 2x2) — reads as texture without cost
-            win = QColor.fromHsv(45, 40, 240 if owned else 160, 200)
-            p.setBrush(win)
-            p.setPen(QPen(trim, 1))
-            for wi in range(2):
-                for wj in range(2):
-                    wx = x - s * 0.35 + wi * s * 0.45
-                    wy = y - s * 0.55 + wj * s * 0.35
-                    p.drawRect(QRectF(wx, wy, s * 0.22, s * 0.2))
-            # Door
-            door = QColor.fromHsv(int(hue + 80) % 360, 140, 90, 240)
-            p.setBrush(door)
-            p.drawRect(QRectF(x - s * 0.12, y + s * 0.05, s * 0.24, s * 0.35))
-            # Owned flag
-            if owned:
-                p.setPen(QPen(QColor(255, 220, 80, 240), 2))
-                p.setBrush(QColor(255, 200, 40, 180))
-                p.drawEllipse(QPointF(x + s * 0.55, y - s * 1.2), s * 0.12, s * 0.12)
-
-        def _draw_model(self, p, x, y, size, hue, kind="orb", alpha=230):
-            # Small procedural meshes: pyramid, crystal, tree, rock, beacon.
-            col = QColor.fromHsv(int(hue) % 360, 180, 235, alpha)
-            dark = QColor.fromHsv(int(hue + 25) % 360, 180, 100, alpha)
-            p.setPen(QPen(dark, 1))
-            p.setBrush(col)
-            s = max(3.0, float(size))
-            if kind != "character":
-                try: s *= ObjectScaleRule.factor(self.seed, kind, f"{round(x,1)}:{round(y,1)}")
-                except Exception: pass
-            # GOAVA-style overlapping translucent micro-faces on every asset.
-            # They deliberately overlap the base silhouette instead of replacing
-            # it, restoring the faceted visual language without external art.
-            for fi in range(4):
-                fq=self._rng(f"model:{kind}:{round(x,1)}:{round(y,1)}:{fi}")
-                ang=fi*math.tau/4.0 + fq*math.tau
-                rr=s*(0.22+0.25*self._rng(f"model:r:{kind}:{fi}"))
-                qx=x+math.cos(ang)*rr; qy=y+math.sin(ang)*rr
-                pts=[QPointF(x,y), QPointF(qx+math.cos(ang+0.9)*s*.55,qy+math.sin(ang+0.9)*s*.55),
-                     QPointF(qx+math.cos(ang-0.9)*s*.45,qy+math.sin(ang-0.9)*s*.45)]
-                fc=QColor.fromHsv(int(hue+fi*37)%360,175,235,max(18,min(65,int(alpha*.22))))
-                p.setPen(Qt.PenStyle.NoPen); p.setBrush(fc); p.drawPolygon(QPolygonF(pts))
-            p.setPen(QPen(dark, 1))
-            p.setBrush(col)
-            if kind in ("crystal", "sigil", "beacon"):
-                pts = [QPointF(x, y-s), QPointF(x+s*.55, y), QPointF(x, y+s), QPointF(x-s*.55, y)]
-                p.drawPolygon(pts)
-                p.setBrush(dark)
-                p.drawPolygon([QPointF(x, y-s), QPointF(x+s*.55, y), QPointF(x, y+s*.18)])
-            elif kind in ("tree", "character"):
-                if kind == "tree":
-                    p.drawRect(int(x-s*.12), int(y), max(2,int(s*.24)), max(3,int(s*.8)))
-                    p.drawEllipse(QPointF(x, y-s*.55), s*.62, s*.62)
-                    p.setBrush(QColor.fromHsv(int(hue+80)%360, 150, 220, alpha))
-                    p.drawEllipse(QPointF(x-s*.22, y-s*.72), s*.25, s*.25)
-                    p.drawEllipse(QPointF(x+s*.22, y-s*.72), s*.25, s*.25)
-                else:
-                    # Generative avatar: silhouette, crest, garment and tiny optional
-                    # face accents vary by seed. Avoid the old oversized fixed eyes.
-                    variant=int(self._rng(f"avatar:{self.seed}:{round(x,1)}:{round(y,1)}")*7.0)%7
-                    p.drawEllipse(QPointF(x, y-s*.46), s*.48, s*.58)
-                    p.drawPolygon([QPointF(x-s*.42,y-s*.02),QPointF(x+s*.42,y-s*.02),QPointF(x+s*.34,y+s*.78),QPointF(x-s*.34,y+s*.78)])
-                    p.setBrush(QColor.fromHsv(int(hue+55+variant*19)%360, 145, 220, alpha))
-                    if variant % 3 == 0:
-                        p.drawPolygon([QPointF(x,y-s*1.02),QPointF(x-s*.22,y-s*.52),QPointF(x+s*.22,y-s*.52)])
-                    elif variant % 3 == 1:
-                        p.drawEllipse(QPointF(x,y-s*.96),s*.18,s*.24)
-                    else:
-                        p.drawRect(int(x-s*.06),int(y-s*1.03),max(2,int(s*.12)),max(2,int(s*.34)))
-                    # Identity is carried by silhouette/garment/crest.  The
-                    # face is intentionally de-emphasized; the avatar should
-                    # read as a character in the world, not a pair of eyes.
-                    if variant % 3 == 0:
-                        p.setPen(QPen(QColor.fromHsv(int(hue+25)%360,120,180,alpha), max(1,int(s*.055))))
-                        p.drawLine(QPointF(x-s*.14,y-s*.46),QPointF(x+s*.14,y-s*.46))
-                    elif variant % 3 == 1:
-                        p.setBrush(QColor.fromHsv(int(hue+95)%360,135,210,alpha))
-                        p.drawEllipse(QPointF(x-s*.27,y-s*.49),s*.09,s*.05)
-                        p.drawEllipse(QPointF(x+s*.27,y-s*.49),s*.09,s*.05)
-                    else:
-                        p.setPen(QPen(QColor.fromHsv(int(hue+25)%360,100,160,alpha), max(1,int(s*.04))))
-                        p.drawLine(QPointF(x-s*.09,y-s*.42),QPointF(x+s*.09,y-s*.42))
-            # Experience-driven player decoration; the population average is a soft readability prior.
-            if kind == "character":
-                try:
-                    deco=self.game.character.visual(self.game, variant); dens=float(deco.get("density",0.0)); pop=float(deco.get("population_average",.5)); da=int((hue+70+110*pop)%360)
-                    if dens>.08:
-                        p.setBrush(QColor.fromHsv(da,160,245,max(40,int(alpha*.85))))
-                        p.drawPolygon([QPointF(x-s*.55,y+s*.28),QPointF(x-s*.82,y+s*.55),QPointF(x-s*.18,y+s*.42)])
-                        p.drawPolygon([QPointF(x+s*.55,y+s*.28),QPointF(x+s*.82,y+s*.55),QPointF(x+s*.18,y+s*.42)])
-                    if dens>.35:
-                        p.setBrush(QColor.fromHsv((da+45)%360,130,250,max(35,int(alpha*.55)))); p.drawEllipse(QPointF(x,y-s*.98),s*.13,s*.13)
-                    if dens>.62:
-                        p.setPen(QPen(QColor.fromHsv((da+90)%360,150,250,alpha),1)); p.drawEllipse(QPointF(x,y+s*.35),s*.70,s*.20)
-                except Exception: pass
-            elif kind == "rock":
-                p.drawPolygon([QPointF(x-s,y+s*.35), QPointF(x-s*.55,y-s*.55), QPointF(x+s*.2,y-s*.8), QPointF(x+s,y+s*.15), QPointF(x+s*.35,y+s*.65)])
-            else:
-                p.drawEllipse(QPointF(x, y), s, s)
-                p.setBrush(dark)
-                p.drawEllipse(QPointF(x-s*.3, y-s*.3), s*.3, s*.3)
-
-        def _draw_ground(self, p, project, R, cx, cy):
-            # 3D ground grid / horizon establishes depth and Y as the vertical axis.
-            tx = QColor(self.game.id.get("ui_palette", {}).get("text", "#e8f0ff"))
-            tx.setAlpha(24)
-            p.setPen(QPen(tx, 1))
-            for z in (0.5, 1.0, 1.5, 2.0, 3.0, 4.0):
-                last = None
-                for i in range(25):
-                    xw = -4.0 + i * 8.0 / 24.0
-                    yaw = math.atan2(z, max(0.001, xw))
-                    rr = math.hypot(xw, z)
-                    x, y, _ = project(yaw, rr, 0.0, 1.0)
-                    if last is not None:
-                        p.drawLine(QPointF(last[0], last[1]), QPointF(x, y))
-                    last = (x,y)
-            for xw in (-3,-2,-1,0,1,2,3):
-                last=None
-                for z in (0.35,0.6,1.0,1.6,2.5,4.0):
-                    yaw=math.atan2(z,xw if abs(xw)>1e-5 else 1e-5)
-                    rr=math.hypot(xw,z)
-                    x,y,_=project(yaw,rr,0.0,1.0)
-                    if last is not None: p.drawLine(QPointF(last[0],last[1]),QPointF(x,y))
-                    last=(x,y)
-
-        def draw(self, p, project, cx, cy, R):
-            g = self.game
-            topo = str(g.id.get("topology") or "open_world")
-            temporal = getattr(g, "temporal_seed", None)
-            if temporal is not None:
-                temporal.update(float(getattr(g, "t", 0.0)))
-                # Time-expression is a subtle visual phase, never a replacement
-                # for player camera control.
-                self.phase += 0.008 + 0.006 * temporal.intensity
-            else:
-                self.phase += 0.01
-            pal = g.id.get("ui_palette", {})
-            tx = QColor(pal.get("text", "#e8f0ff"))
-            ac = QColor(pal.get("accent", "#3fa7ff"))
-            # Sky bands: deterministic 3D environment backdrop.
-            bg = QColor(pal.get("bg", "#0b1020"))
-            p.fillRect(0, 0, int(p.viewport().width()), int(p.viewport().height()), bg)
-            horizon = int(cy + R * 0.12)
-            temporal_h = temporal.field('sky_hue', getattr(g,'t',0.0), amplitude=1.0) if temporal else 0.5
-            sky_shift = int(42.0 * (temporal_h - 0.5))
-            sky = QColor.fromHsv((self.seed * 17 + sky_shift) % 360, 92, 78, 255)
-            grad = QLinearGradient(0, 0, 0, max(1, horizon))
-            grad.setColorAt(0.0, QColor.fromHsv((self.seed * 17 + sky_shift) % 360, 105, 48, 255))
-            grad.setColorAt(0.55, sky)
-            grad.setColorAt(1.0, QColor.fromHsv((self.seed * 17 + 38 + sky_shift) % 360, 115, 62, 255))
-            p.fillRect(0, 0, int(p.viewport().width()), horizon, grad)
-            # Layered atmospheric texture, not a pair of flat rectangles.
-            for j in range(28):
-                q = self._rng(f"sky:{j}")
-                sx = q * p.viewport().width()
-                sy = (0.12 + 0.72*self._rng(f"sky:y:{j}")) * horizon
-                rr = 3 + 22*self._rng(f"sky:r:{j}")
-                cc = QColor.fromHsv((int(210 + 90*self._rng(f"sky:h:{j}")) % 360), 55, 175, 18 + int(28*self._rng(f"sky:a:{j}")))
-                p.setPen(Qt.PenStyle.NoPen); p.setBrush(cc); p.drawEllipse(QPointF(sx,sy),rr,rr*0.45)
-            self._draw_ground(p, project, R, cx, cy)
-            # True connected layered terrain topology.
-            self._draw_layered_terrain(p, project, cx, cy, R)
-
-            # Height-aware terrain quilt: overlapping irregular polygons create
-            # actual land masses rather than a flat rectangle/grid.
-            tw, th = p.viewport().width(), p.viewport().height()
-            for j in range(34):
-                q=self._rng(f"land:{j}")
-                ang=(q*2.0-1.0)*1.55
-                dist=0.75+6.5*self._rng(f"land:d:{j}")
-                depth=0.55+1.2*self._rng(f"land:z:{j}")
-                x,y,sz=project(ang,dist,0.0,depth)
-                n=6+int(self._rng(f"land:n:{j}")*4)
-                pts=[]
-                for k in range(n):
-                    aa=k*math.tau/n
-                    rr=sz*(1.0+0.38*self._rng(f"land:r:{j}:{k}"))
-                    lift=sz*0.22*(self._rng(f"land:h:{j}:{k}")-0.5)
-                    pts.append(QPointF(x+math.cos(aa)*rr, y+math.sin(aa)*rr*0.42+lift))
-                hue=int((self.seed*17+90*self._rng(f"land:hue:{j}"))%360)
-                c=QColor.fromHsv(hue,95+int(55*self._rng(f"land:s:{j}")),95+int(75*self._rng(f"land:v:{j}")),85)
-                p.setPen(QPen(QColor.fromHsv(hue,120,190,45),1)); p.setBrush(c); p.drawPolygon(QPolygonF(pts))
-                # clipped micro-facets over the land mass
-                p.save(); path=QPainterPath(); path.addPolygon(QPolygonF(pts)); p.setClipPath(path)
-                self._draw_texture_facets(p,x,y,sz*1.2,sz*.65,f"landtex:{j}","terrain",95); p.restore()
-
-            # Broad faceted terrain sheets create the continuous textured floor.
-            for j in range(48):
-                q = self._rng(f"terrain:{j}")
-                ang = (q*2.0-1.0) * 1.35
-                dist = 0.9 + 5.2*self._rng(f"terrain:d:{j}")
-                x,y,sz = project(ang, dist, 0.0, 0.8 + 0.8*self._rng(f"terrain:z:{j}"))
-                self._draw_texture_facets(p, x, y+sz*0.6, sz*2.6, sz*1.2, f"terrain:{j}", "terrain", 52)
-
-            # Deterministic environmental set: large readable 3D landmarks,
-            # generated directly from the world seed. These are independent of
-            # the old radial UI markers so the open world reads as a place.
-            def world_project(wx, wz, wy=0.0, depth=1.0):
-                dx = float(wx) - float(getattr(g, "player_x", 0.0))
-                dz = float(wz) - float(getattr(g, "player_z", 0.0))
-                rr = math.hypot(dx, dz)
-                if rr < 1e-5:
-                    aa = float(getattr(g, "steer", 0.0))
-                    rr = 1e-5
-                else:
-                    aa = math.atan2(dz, dx)
-                return project(aa, rr, wy, depth)
-
-            # Infinite-feeling deterministic streaming world.  Geometry is
-            # generated from integer chunk coordinates, so moving never reaches
-            # an authored boundary and the same seed always produces the same
-            # landscape.  Only nearby chunks are presented each frame.
-            env = []
-            px = float(getattr(g, "player_x", 0.0))
-            pz = float(getattr(g, "player_z", 0.0))
-            chunk_size = 12.0
-            ccx = math.floor(px / chunk_size)
-            ccz = math.floor(pz / chunk_size)
-            for gx in range(int(ccx) - 2, int(ccx) + 3):
-                for gz in range(int(ccz) - 2, int(ccz) + 3):
-                    for j in range(18):
-                        tag = f"chunk:{gx}:{gz}:{j}"
-                        rx = self._rng(tag + ":x")
-                        rz = self._rng(tag + ":z")
-                        ex = (gx + rx) * chunk_size
-                        ez = (gz + rz) * chunk_size
-                        # Keep the immediate player area readable.
-                        if math.hypot(ex - px, ez - pz) < 1.8:
-                            continue
-                        et = int(self._rng(tag + ":type") * 8.0) % 8
-                        env.append((ex, ez, et, self._rng(tag + ":scale")))
-            env.sort(key=lambda q: -(math.hypot(q[0] - px, q[1] - pz)))
-            for ex, ez, et, escale in env:
-                x, y, sz = world_project(ex, ez, 0.0, 1.0)
-                sz *= 0.72 + 0.72 * float(escale)
-                if x < -120 or x > self.width if hasattr(self, "width") else False:
-                    pass
-                hue = 35 + et * 55
-                if et == 0:
-                    # tree: trunk + canopy with ground shadow
-                    p.setPen(QPen(QColor(30, 22, 18, 230), 1))
-                    p.setBrush(QColor(100, 70, 40, 230))
-                    p.drawRect(QRectF(x-sz*.12, y-sz*.15, sz*.24, sz*1.0))
-                    p.setBrush(QColor.fromHsv(hue, 170, 190, 235))
-                    p.drawEllipse(QPointF(x, y-sz*.65), sz*.72, sz*.62)
-                elif et == 1:
-                    self._draw_model(p, x, y, sz*1.6, hue, "rock", 235)
-                elif et == 2:
-                    # building/tower silhouette
-                    p.setPen(QPen(QColor(40,45,60,240), 2))
-                    p.setBrush(QColor.fromHsv(hue, 100, 150, 240))
-                    p.drawPolygon([QPointF(x-sz, y+sz*.5), QPointF(x-sz*.75,y-sz*1.0), QPointF(x+sz*.55,y-sz*1.0), QPointF(x+sz,y+sz*.5)])
-                    p.setBrush(QColor(230,210,120,230))
-                    for wy in (-.55,-.1,.35): p.drawRect(QRectF(x-sz*.45, y+sz*wy, sz*.22, sz*.16))
-                elif et == 3:
-                    # crystal cluster
-                    for j in range(3): self._draw_model(p, x+(j-1)*sz*.45, y-j*sz*.12, sz*(.75+.15*j), hue+j*25, "crystal", 230)
-                elif et == 4:
-                    # camp / market cluster
-                    p.setPen(QPen(QColor(55,38,28,235), 1))
-                    p.setBrush(QColor(125,82,48,235))
-                    p.drawPolygon([QPointF(x-sz*.8,y+sz*.45), QPointF(x,y-sz*.35), QPointF(x+sz*.8,y+sz*.45)])
-                    p.setBrush(QColor(210,175,90,220))
-                    p.drawEllipse(QPointF(x,y+sz*.15), sz*.16, sz*.16)
-                elif et == 5:
-                    # bridge / road marker
-                    p.setPen(QPen(QColor(95,86,70,230), max(2,int(sz*.12))))
-                    p.drawLine(QPointF(x-sz*1.1,y+sz*.45), QPointF(x+sz*1.1,y+sz*.45))
-                    p.setPen(QPen(QColor(170,145,90,180), 1))
-                    p.drawLine(QPointF(x-sz*.8,y), QPointF(x+sz*.8,y))
-                elif et == 6:
-                    # large ancient monolith
-                    p.setPen(QPen(QColor(42,48,62,245), 2))
-                    p.setBrush(QColor(72,78,95,240))
-                    p.drawPolygon([QPointF(x-sz*.55,y+sz*.65), QPointF(x-sz*.42,y-sz*1.2), QPointF(x+sz*.35,y-sz*.95), QPointF(x+sz*.58,y+sz*.65)])
-                    p.setBrush(QColor.fromHsv((hue+180)%360,130,220,220))
-                    p.drawEllipse(QPointF(x,y-sz*.3), sz*.16, sz*.16)
-                else:
-                    # beacon/portal landmark
-                    self._draw_model(p, x, y-sz*.25, sz*1.45, hue, "beacon", 235)
-                self._draw_texture_facets(p, x, y, max(4.0, sz*1.35), max(3.0, sz*0.95), f"{ex:.2f}:{ez:.2f}", ("crystal" if et == 3 else "foliage" if et == 0 else "ruin" if et in (2,6) else "terrain"), 78)
-
-            # Persistent home interface: absolute seed-derived location, so the
-            # same house UI remains in the same world-space place after chunk reload.
-            if getattr(g, "home", None) is not None:
-                hd = g.home.distance(g)
-                if hd <= 22.0:
-                    hx, hy, hsz = world_project(g.home.x, g.home.z, 0.0, 1.0)
-                    hsz *= 0.9
-                    try: hsz *= ObjectScaleRule.factor(self.seed, "building", "home")
-                    except Exception: pass
-                    hue = 155 + int(80 * self._rng("home:hue"))
-                    # Cheap procedural facade texture (WoW-scale: O(1) polys, no images)
-                    try:
-                        self._draw_textured_building(p, hx, hy, hsz, hue, owned=bool(g.home.owned))
-                    except Exception:
-                        self._draw_model(p, hx, hy-hsz*.25, max(7.0, hsz*1.5), hue, "beacon", 242)
-                        p.setPen(QPen(QColor.fromHsv(hue%360, 140, 235, 238), 2))
-                        p.setBrush(Qt.BrushStyle.NoBrush)
-                        p.drawRect(QRectF(hx-hsz*.75, hy-hsz*.9, hsz*1.5, hsz*1.15))
-                    p.setPen(QPen(QColor.fromHsv((hue+40)%360, 80, 245, 245), 1))
-                    label = "HOME UI · CLAIM" if not g.home.owned else "HOME · LEISURE"
-                    p.drawText(QPointF(hx-hsz*1.7, hy-hsz*1.1), label)
-                    if hd <= g.home.ui_radius:
-                        p.drawText(QPointF(hx-hsz*1.7, hy+hsz*.65), f"RIGHT CLICK · {hd:.1f}m")
-                        # Visible cursor affordance while in UI radius
-                        try: g._ui_cursor_wanted = True
-                        except Exception: pass
-                    else:
-                        try: g._ui_cursor_wanted = False
-                        except Exception: pass
-
-            # Streamed world chunks (LOD): near props, mid silhouettes, far dots
-            try:
-                self._draw_streamed_chunks(p, world_project, project, cx, cy, R)
-            except Exception:
-                pass
-            # Volumetric Meum/GOAVA face network sits behind the solid props so
-            # the scene reads as connected 3-D geometry instead of a line grid.
-            self._draw_meum_mesh(p, project, cx, cy, R)
-            # Additional probabilistic linkage layer: deliberately independent
-            # of the regular grid so the scenograph reads as a volume.
-            self._draw_volumetric_linkages(p, project, cx, cy, R)
-
-            # Deterministic atmospheric motes and distant volumetric specks add
-            # depth without introducing frame-to-frame randomness.
-            for mi in range(34 if topo == "open_world" else 18):
-                q=self._rng(f"mote:{mi}")
-                a=q*math.tau
-                r=0.8+4.8*self._rng(f"mote:r:{mi}")
-                yy=-0.25+0.9*self._rng(f"mote:y:{mi}")
-                x,y,sz=project(a,r,yy,0.45+1.2*self._rng(f"mote:d:{mi}"))
-                mc=QColor.fromHsv(int(180+120*self._rng(f"mote:h:{mi}"))%360,90,225,
-                                  22+int(38*self._rng(f"mote:a:{mi}")))
-                p.setPen(Qt.PenStyle.NoPen); p.setBrush(mc)
-                p.drawEllipse(QPointF(x,y),max(1.0,sz*.28),max(1.0,sz*.28))
-
-            drawables=[]
-            # Fractal scene models.
-            for L in getattr(g.scene, "layers", []):
-                if not L.get("on", True): continue
-                drawables.append((float(L.get("dist",1.0)), "model", L))
-            # Characters / creatures / props from gameplay systems.
-            for n in getattr(g.npcs, "npcs", []): drawables.append((float(n.get("radius",1.0)), "npc", n))
-            for m in getattr(g.pve, "mobs", []):
-                if m.get("alive", True): drawables.append((float(m.get("radius",1.0)), "mob", m))
-            for k,(a,r,v) in enumerate(getattr(g.resources,"pos",[])):
-                if k not in getattr(g.resources,"taken",set()): drawables.append((float(r),"resource",(a,r,v,k)))
-            for k,(a,r) in enumerate(getattr(g.waypoints,"pos",[])):
-                if k not in getattr(g.waypoints,"hit",set()): drawables.append((float(r),"waypoint",(a,r,k)))
-            for a1,a2,r in getattr(g.portals,"gates",[]): drawables.append((float(r),"portal",(a1,a2,r)))
-
-            # Far-to-near painter ordering.
-            drawables.sort(key=lambda q:q[0], reverse=True)
-            for dist, typ, obj in drawables:
-                if typ == "model":
-                    a=float(obj.get("yaw",0.0)); r=float(obj.get("dist",1.0)); dep=float(obj.get("depth",1.0))
-                    x,y,sz=project(a,r,float(obj.get("pitch",0.0)),dep)
-                    hue=float(obj.get("hue",0.5))*360.0
-                    self._draw_model(p,x,y+sz*.25,max(4,sz*1.7),hue,obj.get("kind","orb"),190)
-                    # child mesh / fractal detail
-                    self._draw_model(p,x+sz*.55,y-sz*.35,max(2,sz*.55),hue+35,obj.get("kind","orb"),150)
-                elif typ == "npc":
-                    a=float(obj.get("angle",0)); r=float(obj.get("radius",1))
-                    x,y,sz=project(a,r,0.25,0.9); self._draw_model(p,x,y,sz*1.7,self._rng(obj.get("name"))*360,"character",245)
-                    p.setPen(QPen(tx,1)); p.drawText(int(x+sz),int(y-sz),str(obj.get("name","NPC"))[:12])
-                elif typ == "mob":
-                    a=float(obj.get("angle",0)); r=float(obj.get("radius",1)); x,y,sz=project(a,r,-0.1,1.0)
-                    self._draw_model(p,x,y,sz*1.25,10,"rock",230)
-                elif typ == "resource":
-                    a,r,v,k=obj; x,y,sz=project(a,r,0.05,0.8); self._draw_model(p,x,y,sz*1.15,125,"crystal",220)
-                elif typ == "waypoint":
-                    a,r,k=obj; x,y,sz=project(a,r,0.15,0.75); self._draw_model(p,x,y,sz*1.3,50,"beacon",235)
-                elif typ == "portal":
-                    a1,a2,r=obj; x,y,sz=project(a1,r,0.0,0.7); self._draw_model(p,x,y,sz*2.0,280,"beacon",220)
-
-            # Emergent rare objects: persistent consequences/anchors generated by events.
-            for o in getattr(g, 'world_events', None).rare_objects if getattr(g, 'world_events', None) else []:
-                xw,zw=float(o.get('x',0)),float(o.get('z',0)); ox,oy,os=world_project(xw,zw,0.0,0.86)
-                age=float(o.get('age',0)); pulse=.65+.35*math.sin(age*2.1)
-                kind=str(o.get('kind','rare'))
-                hue={'meteor_core':28,'sky_shard':195,'rift_seed':285,'ancient_relay':48,'hunt_totem':8}.get(kind,160)
-                p.setPen(QPen(QColor.fromHsv(int(hue)%360,170,245,190),max(1,int(os*.09))))
-                p.setBrush(QColor.fromHsv(int(hue)%360,150,225,int(95+55*pulse)))
-                poly=[]
-                for q in range(7):
-                    aa=math.tau*q/7.0 + .13*self._rng(f'rare:{o.get("id")}:a:{q}')
-                    rr=os*(.65+.45*self._rng(f'rare:{o.get("id")}:r:{q}'))
-                    poly.append(QPointF(ox+math.cos(aa)*rr, oy+math.sin(aa)*rr*.55))
-                p.drawPolygon(poly)
-                p.setBrush(Qt.BrushStyle.NoBrush)
-                for q in range(3):
-                    p.drawEllipse(QPointF(ox,oy),max(2,os*(.18+.12*q)),max(2,os*(.08+.06*q)))
-
-            # Deterministic meteorite events: incoming trail + impact crater + ejecta facets.
-            for m in getattr(g, 'meteors', None).impacts if getattr(g, 'meteors', None) else []:
-                dx=m['x']-float(getattr(g,'player_x',0.0)); dz=m['z']-float(getattr(g,'player_z',0.0))
-                aa=math.atan2(dz,dx); rr=math.hypot(dx,dz); x,y,sz=world_project(m['x'],m['z'],0.0,0.82)
-                age=float(m['age']); life=float(m['life']); pulse=max(0.0,1.0-age/max(life,0.1))
-                # descending projectile path in screen space
-                tx=x-(0.9+1.5*pulse)*sz; ty=y-(3.0+5.0*pulse)*sz
-                p.setPen(QPen(QColor(255,190,80,90+int(110*pulse)), max(2,int(sz*.16))))
-                p.drawLine(QPointF(tx,ty),QPointF(x,y))
-                p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor(255,95,35,130+int(80*pulse)))
-                p.drawEllipse(QPointF(tx,ty),max(2,sz*.32),max(2,sz*.32))
-                p.setBrush(QColor(55,42,35,110)); p.drawEllipse(QPointF(x,y+sz*.18),max(3,sz*m['radius']*.75),max(2,sz*m['radius']*.26))
-                for ej in range(7):
-                    ea=self._rng(f'eject:{m["window"]}:{ej}')*math.tau; er=(0.3+1.2*self._rng(f'eject:r:{m["window"]}:{ej}'))*sz*m['radius']
-                    ex=x+math.cos(ea)*er; ey=y+math.sin(ea)*er*.35
-                    p.setBrush(QColor.fromHsv(int(25+55*self._rng(f'eject:h:{m["window"]}:{ej}'))%360,170,220,75))
-                    p.drawEllipse(QPointF(ex,ey),max(1,sz*.08),max(1,sz*.05))
-
-            # Critical measures become audiovisual geometry.  Common measures use
-            # compact deterministic primitives; rarity > .50 deliberately bypasses
-            # the startup asset cache and synthesizes a fresh faceted asset for this
-            # frame/event bucket, so rare states feel born rather than retrieved.
-            try:
-                c=getattr(g,'critical',None)
-                if c is not None:
-                    cv=c.values
-                    center=(cx,cy-ps*.55) if 'ps' in locals() else (cx,cy-18)
-                    rings=(('survival',28),('possessions',125),('fortune',205),('relations',280),
-                           ('resonance',45),('curiosity',175),('influence',315),('memory',95),('strangeness',345))
-                    for ri,(name,hue) in enumerate(rings):
-                        val=float(cv.get(name,0.0)); rarity=c.rarity(name,g)
-                        if val<0.08 and ri>2: continue
-                        rad=10+ri*3+val*24
-                        alpha=28+int(70*val)
-                        p.setPen(QPen(QColor.fromHsv(hue,170,240,alpha),1 if ri>2 else 2))
-                        p.setBrush(Qt.BrushStyle.NoBrush)
-                        p.drawEllipse(QPointF(center[0],center[1]),rad,rad*.42)
-                        # Live generation for rare measures: no cache lookup.
-                        if rarity>0.5 and val>0.25:
-                            img=self._make_asset_texture(f"LIVE:{name}:{int(g.t*6)}:{round(val,3)}",48+ri*4,48+ri*4)
-                            p.save(); p.setOpacity(min(0.75,0.18+0.5*val))
-                            p.drawImage(QRectF(center[0]-rad*.35,center[1]-rad*.35,rad*.7,rad*.7),img); p.restore()
-                            for q in range(3):
-                                aa=float(g.t)*(0.4+0.07*ri)+q*math.tau/3
-                                rr=rad*(0.65+0.12*q)
-                                p.setPen(QPen(QColor.fromHsv((hue+55*q)%360,180,250,90),1))
-                                p.drawLine(QPointF(center[0]+math.cos(aa)*rr,center[1]+math.sin(aa)*rr*.42),QPointF(center[0]+math.cos(aa+.35)*rr*1.12,center[1]+math.sin(aa+.35)*rr*.42))
-            except Exception:
-                pass
-
-            # Player avatar: centered, with a 3D shadow and facing marker.
-            ps=max(7.0,8.0*math.sqrt(max(.35,float(getattr(g,"zoom",1.0)))))
-            p.setPen(QPen(QColor(0,0,0,130),2)); p.setBrush(QColor(0,0,0,100)); p.drawEllipse(QPointF(cx,cy+ps*.8),ps*1.2,ps*.35)
-            self._draw_model(p,cx,cy,ps*1.25,180,"character",255)
-
-        def ambient_audio(self, dt):
-            self._ambient_cd -= float(dt)
-            if self._ambient_cd > 0: return
-            self._ambient_cd = 1.75 + 2.0*self._rng("audio")
-            try:
-                g=self.game
-                # Existing LiveSFX system becomes the world soundscape: footsteps
-                # follow movement, while distant world events remain deterministic.
-                moving=abs(float(g.move.get("dx",0)))+abs(float(g.move.get("dz",0)))>1e-6
-                if moving: g.sfx.trigger("click",0.12)
-                elif self._rng(f"amb:{int(g.t*2)}") > 0.72: g.sfx.trigger("chime",0.08)
-                c=getattr(g,"critical",None)
-                if c is not None and c.events:
-                    ev=c.events[-1]
-                    if ev.get("live_asset") and self._rng(f"critical:amb:{int(g.t*2)}")>0.62:
-                        g.sfx.trigger("critical:rare",0.10+0.12*float(ev.get("value",0)))
-            except Exception: pass
-
     class SceneViewport(QWidget):
         def __init__(self, game, parent=None):
             super().__init__(parent)
             self.game = game
             self.setMinimumSize(460, 460)
             self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-            self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-            self.setFocus()
+            self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             self._last_mouse = None
-            self._held_movement = set()
-            self._mouse_captured = False
-            self._pan_drag = False
-            self._pan_last = None
             self.setMouseTracking(True)
-            self.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
-            self.world_renderer = ProceduralWorldRenderer(game)
 
         def _cell_at(self, pos):
             w, h = self.width(), self.height()
@@ -8295,227 +5957,46 @@ if HAS_UI:
                 return r, c
             return None
 
-        def _apply_held_movement(self):
-            g = self.game
-            held = self._held_movement
-            dx = (1.0 if "D" in held else 0.0) - (1.0 if "A" in held else 0.0)
-            dz = (1.0 if "W" in held else 0.0) - (1.0 if "S" in held else 0.0)
-            dy = (1.0 if "UP" in held else 0.0) - (1.0 if "DOWN" in held else 0.0)
-            g._held_movement = {"dx": dx, "dy": dy, "dz": dz}
-            g.move["dx"] = dx
-            g.move["dy"] = dy
-            g.move["dz"] = dz
-
-        def keyPressEvent(self, e):
-            k = e.key()
-            # Always reclaim focus so WASD works after clicking the side panel.
-            if k in (Qt.Key.Key_W, Qt.Key.Key_A, Qt.Key.Key_S, Qt.Key.Key_D,
-                     Qt.Key.Key_Space, Qt.Key.Key_Control):
-                try:
-                    self.setFocus(Qt.FocusReason.OtherFocusReason)
-                except Exception:
-                    pass
-            if k in (Qt.Key.Key_W, Qt.Key.Key_A, Qt.Key.Key_S, Qt.Key.Key_D):
-                self._held_movement.add({Qt.Key.Key_W:"W", Qt.Key.Key_A:"A", Qt.Key.Key_S:"S", Qt.Key.Key_D:"D"}[k])
-                self._apply_held_movement()
-                e.accept()
-                return
-            # GAME_TABS_2026: keyboard-first navigation keeps the gameplay
-            # panes connected without sacrificing the movement viewport.
-            # Q is intentionally reserved for the player's quest log now; E
-            # remains the compact tool-cycle shortcut.
-            tab_keys = {
-                Qt.Key.Key_Q: "QUESTS",
-                Qt.Key.Key_J: "JOURNAL",
-                Qt.Key.Key_I: "INVENTORY",
-                Qt.Key.Key_K: "SKILLS",
-                Qt.Key.Key_L: "SERVER",
-                Qt.Key.Key_B: "CRAFTING",
-                Qt.Key.Key_G: "GAMEPLAY",
-                Qt.Key.Key_N: "NPC LIFE",
-            }
-            if k in tab_keys:
-                try:
-                    w = self.window()
-                    if hasattr(w, "show_game_tab"):
-                        w.show_game_tab(tab_keys[k])
-                        e.accept(); return
-                except Exception:
-                    pass
-            if k == Qt.Key.Key_H:
-                try:
-                    w = self.window()
-                    if hasattr(w, "panel"):
-                        w.show_game_tab("CLOSET")
-                        e.accept(); return
-                except Exception:
-                    pass
-            if k == Qt.Key.Key_E:
-                self.game.cycle_tool(1); e.accept(); return
-            if k == Qt.Key.Key_Space:
-                self._held_movement.add("UP")
-                self._apply_held_movement()
-                e.accept()
-                return
-            if k in (Qt.Key.Key_Control, Qt.Key.Key_C):
-                self._held_movement.add("DOWN")
-                self._apply_held_movement()
-                e.accept()
-                return
-            super().keyPressEvent(e)
-
-        def keyReleaseEvent(self, e):
-            k = e.key()
-            if k in (Qt.Key.Key_W, Qt.Key.Key_A, Qt.Key.Key_S, Qt.Key.Key_D):
-                self._held_movement.discard({Qt.Key.Key_W:"W", Qt.Key.Key_A:"A", Qt.Key.Key_S:"S", Qt.Key.Key_D:"D"}[k])
-                self._apply_held_movement()
-                e.accept()
-                return
-            if k == Qt.Key.Key_Space:
-                self._held_movement.discard("UP"); self._apply_held_movement(); e.accept(); return
-            if k in (Qt.Key.Key_Control, Qt.Key.Key_C):
-                self._held_movement.discard("DOWN"); self._apply_held_movement(); e.accept(); return
-            super().keyReleaseEvent(e)
-
-        def _release_mouse_and_input(self):
-            """ESC/menu safety: release OS cursor capture and clear held movement.
-
-            The menu must always be usable without a hidden/recentered cursor.
-            Re-entry is explicit: left click captures mouse-look again.
-            """
-            self._held_movement.clear()
-            try:
-                self.game._held_movement = {"dx": 0.0, "dy": 0.0, "dz": 0.0}
-                self.game.move["dx"] = 0.0
-                self.game.move["dy"] = 0.0
-                self.game.move["dz"] = 0.0
-            except Exception:
-                pass
-            self._pan_drag = False
-            self._pan_last = None
-            self._mouse_captured = False
-            self.unsetCursor()
-            self.setCursor(Qt.CursorShape.ArrowCursor)
-            self._last_mouse = None
-            try:
-                self.clearFocus()
-            except Exception:
-                pass
-            try:
-                QCursor.setPos(self.mapToGlobal(self.rect().center()))
-            except Exception:
-                pass
-
-        def _set_mouse_capture(self, enabled):
-            if not enabled:
-                self._release_mouse_and_input()
-                return
-            # Near home / menu / explicit UI request → keep the OS cursor visible
-            # so the player can aim at the house UI without a blank cursor.
-            ui_cursor = bool(getattr(self.game, "_ui_cursor_wanted", False))
-            try:
-                if getattr(self.game, "menu_open", False):
-                    ui_cursor = True
-                home = getattr(self.game, "home", None)
-                if home is not None and home.ui_nearby(self.game):
-                    ui_cursor = True
-            except Exception:
-                pass
-            self._mouse_captured = True
-            self.setMouseTracking(True)
-            if ui_cursor:
-                self.setCursor(Qt.CursorShape.ArrowCursor)
-            else:
-                self.setCursor(Qt.CursorShape.BlankCursor)
-                try:
-                    center = self.mapToGlobal(self.rect().center())
-                    QCursor.setPos(center)
-                    self._last_mouse = self.rect().center()
-                except Exception:
-                    self._last_mouse = None
-
         def mousePressEvent(self, e):
             g = self.game
-            self.setFocus(Qt.FocusReason.MouseFocusReason)
-            if e.button() == Qt.MouseButton.RightButton:
-                # Interacting with world UI always restores a visible cursor.
-                try:
-                    g._ui_cursor_wanted = True
-                    self.setCursor(Qt.CursorShape.ArrowCursor)
-                except Exception:
-                    pass
-                try:
-                    g.interact()
-                except Exception as _ix:
-                    try: g.push_status(f"[interact] {_ix}")
-                    except Exception: pass
-                try: g.sfx.trigger("click", 0.55)
-                except Exception: pass
-                self.update(); e.accept(); return
-            if e.button() == Qt.MouseButton.MiddleButton:
-                self._pan_drag = True; self._pan_last = e.position(); e.accept(); return
             if e.button() == Qt.MouseButton.LeftButton:
-                try: g.fire_tool()
-                except Exception: pass
+                if getattr(g, "hotseat", {}).get("active") and hasattr(g, "chess"):
+                    sq = self._cell_at(e.position())
+                    if sq is not None:
+                        g.chess_click(sq)
+                        self.update()
+                        return
+                g.activate()
+                g.steer = max(-1.0, min(1.0, g.steer + 0.25))
+                g.sfx.trigger("click", 0.5)
                 self.update()
-                if not self._mouse_captured:
-                    self._set_mouse_capture(True)
-                e.accept(); return
             super().mousePressEvent(e)
 
         def mouseMoveEvent(self, e):
-            g=self.game; now=e.position()
-            if self._pan_drag and self._pan_last is not None:
-                dx=float(now.x()-self._pan_last.x()); dy=float(now.y()-self._pan_last.y())
-                g.camera_pan_x=max(-0.8,min(0.8,float(getattr(g,'camera_pan_x',0.0))+dx/max(1.0,self.width())*1.6))
-                g.camera_pan_y=max(-0.6,min(0.6,float(getattr(g,'camera_pan_y',0.0))+dy/max(1.0,self.height())*1.2))
-                self._pan_last=now; self.update(); e.accept(); return
-            if self._mouse_captured:
-                dx=float(now.x()-self._last_mouse.x()) if self._last_mouse is not None else 0.0
-                dy=float(now.y()-self._last_mouse.y()) if self._last_mouse is not None else 0.0
-                if abs(dx)+abs(dy)>0.0:
-                    g.aim_at(dyaw=dx*0.0018, dpitch=dy*0.0012)
-                    QCursor.setPos(self.mapToGlobal(self.rect().center()))
-                    self._last_mouse=self.rect().center()
-            else:
-                self._last_mouse=now
-            self.update(); super().mouseMoveEvent(e)
+            g = self.game
+            now = e.position()
+            if self._last_mouse is not None:
+                dx = float(now.x() - self._last_mouse.x())
+                dy = float(now.y() - self._last_mouse.y())
+                g.aim_at(dyaw=dx * 0.003, dpitch=dy * 0.002)
+            self._last_mouse = now
+            self.update()
+            super().mouseMoveEvent(e)
 
-        def mouseReleaseEvent(self,e):
-            if e.button()==Qt.MouseButton.MiddleButton:
-                self._pan_drag=False; self._pan_last=None; e.accept(); return
+        def mouseReleaseEvent(self, e):
+            self._last_mouse = None
             super().mouseReleaseEvent(e)
 
         def wheelEvent(self, e):
             g = self.game
-            steps = float(e.angleDelta().y()) / 120.0
-            if abs(steps) > 0.0:
-                # Mouse wheel is real zoom.  Shift+wheel is the explicit camera-mode switch.
-                mods = e.modifiers()
-                if mods & Qt.KeyboardModifier.ShiftModifier:
-                    g.cycle_camera(direction=1 if steps > 0 else -1)
-                    try:
-                        g.push_status(f"CAMERA: {g.camera_mode_name()} (mode {int(g.camera_mode)})")
-                    except Exception:
-                        pass
-                else:
-                    # Positive wheel = zoom in; negative = zoom out.
-                    # FREE_2026: zoom is completely unrestricted.
-                    g.zoom = float(getattr(g, "zoom", 1.0)) * (1.12 ** steps)
-                    # Optical continuity: zooming far enough naturally enters
-                    # first-person; backing out restores third-person.
-                    if g.zoom >= 1.72 and int(getattr(g, "camera_mode", 0)) == 0:
-                        g.camera_mode = 1
-                        g.push_status("CAMERA: FIRST PERSON · close zoom")
-                    elif g.zoom <= 1.22 and int(getattr(g, "camera_mode", 0)) == 1:
-                        g.camera_mode = 0
-                        g.push_status("CAMERA: THIRD PERSON · zoomed out")
-                    try:
-                        g.push_status(f"ZOOM: {g.zoom:.2f}x")
-                    except Exception:
-                        pass
+            d = 1.0 if e.angleDelta().y() > 0 else -1.0
+            g.cycle_camera(direction=d)
+            try:
+                g.push_status(f"CAMERA: {g.camera_mode_name()} (mode {int(g.camera_mode)})")
+            except Exception:
+                pass
             self.update()
-            e.accept()
+            super().wheelEvent(e)
 
         def _draw_chess(self, p, g):
             w, h = self.width(), self.height()
@@ -8577,12 +6058,7 @@ if HAS_UI:
             cx, cy = w / 2.0, h / 2.0
             # Perspective: zoom (W/S) scales the world radius; pitch (mouse aim)
             # lifts/lowers the view horizon — the fixed movement+aim contract.
-            # FREE_2026: zoom scales the view radius without artificial floor.
-            # Real case: zoom == 0 → identity scale (no division by zero).
-            _z = float(getattr(g, "zoom", 1.0))
-            if _z == 0.0:
-                _z = 1.0
-            R = min(w, h) * PHI_INV * abs(_z)
+            R = min(w, h) * 0.42 * max(0.35, float(getattr(g, "zoom", 1.0)))
             cy = cy - float(getattr(g, "pitch", 0.0)) * R * 0.35
             p.fillRect(self.rect(), QColor(bg))
             topo = str(g.id.get("topology") or "open_world")
@@ -8592,68 +6068,38 @@ if HAS_UI:
             def project(yaw, dist, pitch=0.0, depth=1.0):
                 # Canonical 3D camera projection. Object count never enters the
                 # camera transform; only the canonical view state does.
-                # Real case handling for zero depth / zero z / zero FOV:
-                #   depth == 0 → unit depth
-                #   z2 == 0   → orthographic fallback (inv = 1)
-                #   f == 0    → unit FOV scale
-                # Coefficients use only MEUM / PHI / 1/n forms.
-                if depth == 0.0:
-                    depth = 1.0
-                scale = 1.0 / (MEUM_NORM + PHI_INV * depth)
+                scale = 1.0 / max(0.35, 0.55 + 0.45 * depth)
                 _fov = float(g.visual_view.get("fov_deg", 48.0))
                 if _cam_mode == 2:
-                    # 2D top-down orthographic.
-                    _f2 = math.tan(math.radians(_fov) * PHI_INV)
-                    if _f2 == 0.0:
-                        _s2 = scale * MEUM_NORM
-                    else:
-                        _s2 = scale * MEUM_NORM / abs(_f2)
-                    _wx = dist * vg_cos(yaw) - float(getattr(g, "player_x", 0.0))
-                    _wz = dist * vg_sin(yaw) - float(getattr(g, "player_z", 0.0))
-                    _x0 = _wx * _s2 * R * (MEUM_NORM + PHI_INV)
-                    _y0 = -_wz * _s2 * R * (MEUM_NORM + PHI_INV) - pitch * R * MEUM_NORM
-                    _sz2 = (MEUM + PHI + (MEUM - depth)) * scale
-                    if _sz2 < 0.0:
-                        _sz2 = -_sz2
+                    # 2D top-down orthographic: planar controls transform.
+                    _f2 = math.tan(math.radians(_fov) * 0.5)
+                    _s2 = scale * 0.8 / max(_f2, 0.05)
+                    _x0 = dist * vg_cos(yaw) * _s2 * R * 0.72
+                    _y0 = -dist * vg_sin(yaw) * _s2 * R * 0.72 - pitch * R * 0.35
+                    _sz2 = max(2.0, (6.0 + 10.0 * (1.2 - min(depth, 1.8))) * scale)
                     return cx + _x0, cy + _y0, _sz2
                 if _cam_mode == 1:
                     # First person: pull the eye into the world and widen the lens.
-                    dist = dist - MEUM_NORM
-                    _fov = _fov + 26.0
-                _wx = dist * vg_cos(yaw) - float(getattr(g, "player_x", 0.0))
-                _wz = dist * vg_sin(yaw) - float(getattr(g, "player_z", 0.0))
-                ox = _wx * scale
+                    dist = max(0.0, dist - 0.35)
+                    _fov = min(90.0, _fov + 26.0)
+                ox = dist * vg_cos(yaw) * scale
                 oy = pitch * scale
-                oz = _wz * scale + 1.0
-                cyaw = float(getattr(g, "camera_yaw", 0.0))
-                cpit = float(getattr(g, "camera_pitch", 0.0))
-                croll = math.radians(float(g.visual_view.get("roll_deg",0.0)) + float(getattr(g, "camera_roll", 0.0)) * 57.29577951308232)
+                oz = dist * vg_sin(yaw) * scale + 1.0
+                cyaw = math.radians(float(g.visual_view.get("yaw_deg",0.0))) + float(g.aim_in.get("yaw",0.0))
+                cpit = math.radians(float(g.visual_view.get("pitch_deg",0.0))) + float(g.aim_in.get("pitch",0.0))
+                croll = math.radians(float(g.visual_view.get("roll_deg",0.0)))
                 c, ss = vg_cos(cyaw), vg_sin(cyaw)
                 x1, z1 = ox*c - oz*ss, ox*ss + oz*c
                 c, ss = vg_cos(cpit), vg_sin(cpit)
                 y1, z2 = oy*c - z1*ss, oy*ss + z1*c
                 c, ss = vg_cos(croll), vg_sin(croll)
                 x2, y2 = x1*c - y1*ss, x1*ss + y1*c
-                f = math.tan(math.radians(_fov) * PHI_INV)
-                if z2 == 0.0:
-                    inv = 1.0
-                else:
-                    inv = 1.0 / z2
-                if f == 0.0:
-                    f_scale = 1.0
-                else:
-                    f_scale = 1.0 / abs(f)
-                x = cx + (x2 * inv * f_scale) * R * (MEUM_NORM + PHI_INV) + float(getattr(g,"camera_pan_x",0.0))*R
-                y = cy - (y2 * inv * f_scale) * R * (MEUM_NORM + PHI_INV) + float(getattr(g,"camera_pan_y",0.0))*R
-                sz = (MEUM + PHI + (MEUM - depth)) * scale * inv
-                if sz < 0.0:
-                    sz = -sz
+                f = math.tan(math.radians(_fov) * 0.5)
+                inv = 1.0 / max(0.12, z2)
+                x = cx + (x2 * inv / max(f,0.05)) * R * 0.72
+                y = cy - (y2 * inv / max(f,0.05)) * R * 0.72
+                sz = max(2.0, (6.0 + 10.0 * (1.2 - min(depth, 1.8))) * scale * min(1.8, inv))
                 return x, y, sz
-
-            def project_polar(angle, radius, pitch=0.0, depth=1.0):
-                # Convert deterministic polar world content into Cartesian world
-                # coordinates, then subtract the actual player position.
-                return project(float(angle), float(radius), pitch, depth)
 
             # Depth-sorted layers for proper 2.5D occlusion
             on_layers = [L for L in g.scene.layers if L.get("on")]
@@ -8708,7 +6154,7 @@ if HAS_UI:
                     p.drawEllipse(QPointF(x, y), sz, sz * 0.72)
 
             # Soft world ring (less dominant in open_world)
-            ring_a = 0 if topo == "open_world" else (90 if topo == "hub_spoke" else 180)
+            ring_a = 90 if topo in ("open_world", "hub_spoke") else 180
             ring_col = QColor(tx)
             ring_col.setAlpha(ring_a)
             p.setPen(QPen(ring_col, 1))
@@ -8787,7 +6233,7 @@ if HAS_UI:
                 p.drawText(int(x + 6), int(y - 4), str(k + 1))
 
             # Sigils — only when this world actually placed them (nexus / sigil hook)
-            if getattr(g, "primary_focus", "explore") == "sigils" and getattr(g.sigils, "count", 0) > 0:
+            if getattr(g.sigils, "count", 0) > 0:
                 for k, (a, r) in enumerate(g.sigils.pos):
                     if k in getattr(g.sigils, "collected", set()):
                         continue
@@ -8795,9 +6241,9 @@ if HAS_UI:
                     col.setAlpha(240)
                     p.setPen(QPen(col, 1))
                     p.setBrush(col)
-                    x, y, _sz = project(a, r, 0.0, 1.0)
-                    _sr = max(4, int((4 + r * 8) * max(0.7, min(1.5, float(getattr(g, "zoom", 1.0))))))
-                    p.drawEllipse(QPointF(x, y), _sr, _sr)
+                    x = cx + vg_cos(a) * r * R
+                    y = cy + vg_sin(a) * r * R
+                    p.drawEllipse(QPointF(x, y), 4 + int(r * 8), 4 + int(r * 8))
 
             # PvE mobs
             for m in getattr(g, "pve", PveEncounter(0)).mobs:
@@ -8823,12 +6269,25 @@ if HAS_UI:
                 p.setPen(QPen(QColor(tx), 1))
                 p.drawText(int(x + 6), int(y - 2), n["name"][:10])
 
-            # Full open-world presentation: procedural 3D-feeling models, sprites,
-            # characters, props and depth, followed by the screen-space overlay.
-            self.world_renderer.draw(p, project, cx, cy, R)
-            self.world_renderer.ambient_audio(0.033)
-            p.setPen(QPen(QColor(tx), 1))
-            p.drawText(int(cx + 12), int(cy - 12), str(g.player_name or "You")[:12])
+            def draw_face(name, angle, color, size):
+                x = cx + vg_cos(angle) * R * 0.92
+                y = cy + vg_sin(angle) * R * 0.92
+                p.setPen(QPen(color, 2))
+                p.setBrush(QColor(color))
+                p.drawEllipse(QPointF(x, y), size, size)
+                p.drawLine(QPointF(x - size, y + size * 0.6), QPointF(x + size * 0.8, y - size * 0.9))
+                p.setPen(QPen(QColor(tx), 1))
+                p.drawText(int(x - size), int(y - size - 4), str(name)[:12])
+            draw_face(g.player_name or "You", g.angle, QColor(ac), 8)
+            for name, rec in sorted((g.remotes or {}).items()):
+                draw_face(name, float(rec.get("angle", 0.0)), QColor(dg), 6)
+
+            _ay = cx + vg_cos(g.angle) * R * 0.98
+            _ax = cy + vg_sin(g.angle) * R * 0.98
+            _ac = QColor("#ffcc66")
+            _ac.setAlpha(120)
+            p.setPen(QPen(_ac, 1))
+            p.drawLine(QPointF(cx, cy), QPointF(_ay, _ax))
 
             # ── Persistent HUD overlay: always know what you're doing ──
             try:
@@ -8895,56 +6354,6 @@ if HAS_UI:
                     p.drawText(w - 306, ry, line[:56])
                     ry += 15
 
-            # 2.5D OVERLAY CONTRACT: screen-space UI owns dimensions 1/2 while
-            # the world renderer owns X/Y/Z.  It never changes world coordinates.
-            ov = QColor(ac); ov.setAlpha(90)
-            p.setPen(QPen(ov, 1))
-            p.drawLine(10, 42, min(w-10, 300), 42)
-            p.setPen(QPen(QColor(tx), 1))
-            p.drawText(12, 56, f"3D WORLD · X={getattr(g,'player_x',0.0):+.2f}  Y={getattr(g,'player_y',0.0):+.2f}  Z={getattr(g,'player_z',0.0):+.2f}")
-            p.setFont(QFont("Sans", 9, QFont.Weight.Bold))
-            p.drawText(12, 72, f"AIM · YAW={math.degrees(float(getattr(g,'camera_yaw',0.0)))%360:.1f}°  PITCH={math.degrees(float(getattr(g,'camera_pitch',0.0))):+.1f}°")
-            p.drawText(12, 88, f"TOOL · {str(getattr(g,'selected_tool','pulse')).upper()}   Q/E select · LEFT FIRE/CREATE · RIGHT INTERACT · SPACE FLY · CTRL DOWN")
-            # Interaction grant: a small, persistent affordance makes simple games playable
-            # without requiring the player to discover hidden proximity rules.
-            try:
-                hint = g.interaction_hint()
-                if hint:
-                    p.setFont(QFont("Sans", 11, QFont.Weight.Bold))
-                    p.setPen(QPen(QColor(ac), 2))
-                    p.drawText(int(cx-170), int(h-52), hint)
-            except Exception:
-                pass
-
-            # LIVE PHYSICS PLOT: compact plot-providing telemetry, not merely
-            # a decorative graph. It exposes recent speed and sequence motion
-            # so the player can see exactly how inputs become movement.
-            hist = list(getattr(g, "physics_history", []) or [])[-90:]
-            if len(hist) >= 2 and w > 520 and h > 300:
-                px0, py0, pw, ph = 12, h - 108, 250, 68
-                bgp = QColor(bg); bgp.setAlpha(185); p.fillRect(px0, py0, pw, ph, bgp)
-                p.setPen(QPen(QColor(ac), 1)); p.drawRect(px0, py0, pw, ph)
-                p.setFont(QFont("Sans", 7)); p.drawText(px0 + 5, py0 + 10, "PHYSICS TRACE · speed / sequence motion")
-                vals = [max(0.0, min(1.0, float(r.get("speed", 0.0)) / max(0.001, float(getattr(g, "physics_max_speed", 7.5))))) for r in hist]
-                pts = []
-                for i, v in enumerate(vals):
-                    xx = px0 + 5 + (pw - 10) * i / max(1, len(vals)-1)
-                    yy = py0 + ph - 7 - (ph - 20) * v
-                    pts.append(QPointF(xx, yy))
-                for a,b in zip(pts, pts[1:]):
-                    p.drawLine(a, b)
-                cur = hist[-1]
-                p.setPen(QPen(QColor(tx), 1))
-                p.drawText(px0 + 5, py0 + ph - 7,
-                           f"v={float(cur.get('speed',0)):.2f}  a=({float(cur.get('ax',0)):+.2f},{float(cur.get('az',0)):+.2f})  step={int(cur.get('step',0))}")
-
-            # World annotation near the player: explicit cause/effect labels.
-            p.setFont(QFont("Sans", 8, QFont.Weight.Bold))
-            p.setPen(QPen(QColor(tx), 1))
-            p.drawText(12, h - 118,
-                       f"PLAYER PHYSICS: velocity=({float(getattr(g,'velocity_x',0)):+.2f}, {float(getattr(g,'velocity_z',0)):+.2f})  "
-                       f"sequence step={int(getattr(g,'sequence_step',0))}  movement×{float(getattr(g,'sequence_motion_factor',1.0)):.2f}")
-
             # ── ESC menu: full active-element readout ──
             if getattr(g, "menu_open", False):
                 overlay = QColor(bg)
@@ -8993,22 +6402,6 @@ if HAS_UI:
             )
             self.ident_lbl.setWordWrap(True)
             lay.addWidget(self.ident_lbl)
-            # MAIN-COMMAND-TREE_2026: the side rail is a game chat console with
-            # explicit command categories, while detailed telemetry lives in
-            # the same transcript rather than a forest of permanent panels.
-            cmdbox = QGroupBox("In-Game Command Tree")
-            cmdlay = QHBoxLayout(cmdbox)
-            self.command_tree = QComboBox()
-            self.command_tree.addItems(["CHAT", "WORLD", "PLAYER", "TOOLS", "NETWORK", "CAMERA", "PHYSICS", "HELP"])
-            self.command_tree.currentTextChanged.connect(self._command_category_changed)
-            self.command_btn = QPushButton("Run")
-            self.command_btn.clicked.connect(self._run_tree_command)
-            cmdlay.addWidget(self.command_tree)
-            cmdlay.addWidget(self.command_btn)
-            lay.addWidget(cmdbox)
-            self.tabs=QTabWidget(); lay.addWidget(self.tabs,1)
-            self.tabs.tabBar().setVisible(False)
-            self.tabs.setDocumentMode(True)
             box = QGroupBox("World")
             vb = QVBoxLayout(box)
             self.pos_lbl = QLabel("Pos θ=0°  @ open field")
@@ -9023,19 +6416,16 @@ if HAS_UI:
             self.tags_lbl = QLabel("Tags: starter")
             self.kind_lbl = QLabel(f"Kind: {g.software_kind}  (always sound+visual+UI)")
             self.fn_lbl = QLabel("Fn: —")
-            self.controls_lbl = QLabel("Controls: WASD move · mouse look · RMB interact · LMB create/fire · 1-9 equip · 0 select · Space fly · wheel zoom")
-            self.controls_lbl.setWordWrap(True)
-            self.audio_lbl = QLabel("Audio: initializing…")
             self.fn_lbl.setWordWrap(True)
             self.djbar = QProgressBar()
             self.djbar.setRange(0, 1000)
             self.djbar.setValue(0)
             self.djbar.setTextVisible(False)
             for lbl in (self.pos_lbl, self.act_lbl, self.score_lbl, self.level_lbl, self.sigil_lbl, self.eco_lbl,
-                        self.quest_lbl, self.tags_lbl, self.kind_lbl, self.fn_lbl, self.controls_lbl, self.audio_lbl):
+                        self.quest_lbl, self.tags_lbl, self.kind_lbl, self.fn_lbl):
                 vb.addWidget(lbl)
             vb.addWidget(self.djbar)
-            worldtab=QWidget(); wl=QVBoxLayout(worldtab); wl.addWidget(box); self.tabs.addTab(worldtab,"WORLD")
+            lay.addWidget(box)
             nbox = QGroupBox("Network")
             nb = QVBoxLayout(nbox)
             self.role_lbl = QLabel(f"Role: {self._role_text()}")
@@ -9068,14 +6458,14 @@ if HAS_UI:
             nb.addWidget(self.connect_edit)
             nb.addLayout(hr)
             nb.addWidget(btn_switch)
-            nett=QWidget(); nl=QVBoxLayout(nett); nl.addWidget(nbox); self.tabs.addTab(nett,"SERVER")
+            lay.addWidget(nbox)
             chatbox = QGroupBox("Chat")
             cb = QVBoxLayout(chatbox)
             self.chat_view = QPlainTextEdit()
             self.chat_view.setReadOnly(True)
             self.chat_view.setMaximumBlockCount(500)
             self.chat_edit = QLineEdit()
-            self.chat_edit.setPlaceholderText("CHAT or /command · /help shows command tree · ESC menu")
+            self.chat_edit.setPlaceholderText("/status  /menu  /report  or chat · ESC opens readout")
             self.chat_edit.returnPressed.connect(self._send_chat)
             btn_send = QPushButton("Send")
             btn_send.clicked.connect(self._send_chat)
@@ -9084,85 +6474,7 @@ if HAS_UI:
             cr.addWidget(btn_send)
             cb.addWidget(self.chat_view)
             cb.addLayout(cr)
-            chatt=QWidget(); cl=QVBoxLayout(chatt); cl.addWidget(chatbox); self.tabs.addTab(chatt,"CHAT")
-            # ── MODERN CONTROL STRIP (2026) ──────────────────────────────
-            # Compact, always-visible game-feel controls: camera, sensitivity,
-            # reticle, minimap, FOV readout.  Pure UI — does not alter the
-            # free modulator / scenograph math.
-            ctrl_box = QGroupBox("Modern Controls")
-            ctrl_lay = QVBoxLayout(ctrl_box)
-            # Row 1: camera mode + cycle
-            cam_row = QHBoxLayout()
-            self.cam_mode_lbl = QLabel("Camera: 2.5D")
-            btn_cam = QPushButton("Cycle Cam")
-            btn_cam.setToolTip("Cycle camera modes (Shift+wheel also works)")
-            btn_cam.clicked.connect(lambda: (g.cycle_camera(1), self.refresh()))
-            cam_row.addWidget(self.cam_mode_lbl, 1)
-            cam_row.addWidget(btn_cam)
-            ctrl_lay.addLayout(cam_row)
-            # Row 2: look sensitivity
-            sens_row = QHBoxLayout()
-            sens_row.addWidget(QLabel("Look sens"))
-            self.sens_spin = QSpinBox()
-            self.sens_spin.setRange(1, 100)
-            self.sens_spin.setValue(int(float(getattr(g, "look_sensitivity", 0.35)) * 100) if hasattr(g, "look_sensitivity") else 35)
-            self.sens_spin.setSuffix("%")
-            self.sens_spin.setToolTip("Mouse-look sensitivity (1–100%)")
-            def _set_sens(v):
-                try:
-                    g.look_sensitivity = max(0.01, float(v) / 100.0)
-                except Exception:
-                    pass
-            self.sens_spin.valueChanged.connect(_set_sens)
-            if not hasattr(g, "look_sensitivity"):
-                g.look_sensitivity = 0.35
-            sens_row.addWidget(self.sens_spin)
-            ctrl_lay.addLayout(sens_row)
-            # Row 3: toggles (reticle / minimap / vignette / hold-to-sprint)
-            tog_row = QHBoxLayout()
-            self.chk_reticle = QCheckBox("Reticle")
-            self.chk_reticle.setChecked(bool(getattr(g, "show_reticle", True)))
-            self.chk_reticle.toggled.connect(lambda on: setattr(g, "show_reticle", bool(on)))
-            self.chk_minimap = QCheckBox("Minimap")
-            self.chk_minimap.setChecked(bool(getattr(g, "show_minimap", True)))
-            self.chk_minimap.toggled.connect(lambda on: setattr(g, "show_minimap", bool(on)))
-            self.chk_vignette = QCheckBox("Vignette")
-            self.chk_vignette.setChecked(bool(getattr(g, "show_vignette", False)))
-            self.chk_vignette.toggled.connect(lambda on: setattr(g, "show_vignette", bool(on)))
-            for w in (self.chk_reticle, self.chk_minimap, self.chk_vignette):
-                tog_row.addWidget(w)
-            ctrl_lay.addLayout(tog_row)
-            # Row 4: FOV / zoom readout + reset view
-            fov_row = QHBoxLayout()
-            self.fov_lbl = QLabel("FOV —  Zoom —")
-            btn_reset_view = QPushButton("Reset View")
-            btn_reset_view.setToolTip("Reset yaw/pitch/zoom to identity")
-            def _reset_view():
-                try:
-                    g.camera_yaw_target = 0.0
-                    g.camera_pitch_target = 0.0
-                    g.camera_yaw = 0.0
-                    g.camera_pitch = 0.0
-                    g.zoom = 1.0
-                    g.push_status("VIEW reset")
-                    self.refresh()
-                except Exception:
-                    pass
-            btn_reset_view.clicked.connect(_reset_view)
-            fov_row.addWidget(self.fov_lbl, 1)
-            fov_row.addWidget(btn_reset_view)
-            ctrl_lay.addLayout(fov_row)
-            # Row 5: quick actions
-            qa_row = QHBoxLayout()
-            for label, cmd in (("Interact", "activate"), ("Inventory", "inventory"),
-                               ("Map", "map"), ("Photo", "photo")):
-                b = QPushButton(label)
-                b.setToolTip(f"/{cmd}")
-                b.clicked.connect(lambda _=False, c=cmd: (g.push_status(f"/{c}"), getattr(g, c, lambda: None)() if callable(getattr(g, c, None)) else None, self.refresh()))
-                qa_row.addWidget(b)
-            ctrl_lay.addLayout(qa_row)
-            lay.addWidget(ctrl_box)
-
+            lay.addWidget(chatbox)
             actions = QHBoxLayout()
             btn_reset = QPushButton("Reset World")
             btn_report = QPushButton("/report")
@@ -9173,7 +6485,7 @@ if HAS_UI:
             actions.addWidget(btn_reset)
             actions.addWidget(btn_report)
             actions.addWidget(btn_quit)
-            help_tab=QWidget(); hl=QVBoxLayout(help_tab); hl.addLayout(actions)
+            lay.addLayout(actions)
             seats = QHBoxLayout()
             btn_invite = QPushButton("Invite Friend")
             btn_how = QPushButton("How to Play")
@@ -9183,17 +6495,14 @@ if HAS_UI:
             # No permanent minigame buttons.  Activities surface only when the
             # protected gate opens (area + player state + music).  Use /chess,
             # /activity, or the live status label — never a hardcoded always-on control.
-            hl.addLayout(seats)
-            hl.addWidget(btn_how)
-            controls_lbl = QLabel("CONTROLS: W/A/S/D = move · mouse = look/aim · wheel = zoom · Shift+wheel = camera · click = activate · ESC = menu · F1 = help")
-            controls_lbl.setWordWrap(True)
-            hl.addWidget(controls_lbl)
+            lay.addLayout(seats)
+            lay.addWidget(btn_how)
             self.chess_lbl = QLabel(
                 "Activities: none live — enter a region, hold an allowing state, "
                 "and let the music numbers open a scoring/arcade/social class."
             )
             self.chess_lbl.setWordWrap(True)
-            hl.addWidget(self.chess_lbl)
+            lay.addWidget(self.chess_lbl)
             howbox = QGroupBox("How to Play (F1)")
             hb = QVBoxLayout(howbox)
             self.how_view = QPlainTextEdit()
@@ -9205,141 +6514,8 @@ if HAS_UI:
             except Exception:
                 pass
             hb.addWidget(self.how_view)
-            hl.addWidget(howbox); hl.addStretch(1); self.tabs.addTab(help_tab,"HELP")
-            pt=QWidget(); pl=QVBoxLayout(pt); self.character_lbl=QLabel(); self.character_lbl.setWordWrap(True); self.quick_lbl=QLabel(); self.quick_lbl.setWordWrap(True); pl.addWidget(QLabel("CHARACTER DECORATION")); pl.addWidget(self.character_lbl); pl.addWidget(QLabel("1-9 equip · 0 select interaction/tool/event")); pl.addWidget(self.quick_lbl); self.tabs.insertTab(0,pt,"PLAYER")
-            it=QWidget(); il=QVBoxLayout(it); self.inventory_view=QPlainTextEdit(); self.inventory_view.setReadOnly(True); il.addWidget(self.inventory_view); self.tabs.insertTab(1,it,"INVENTORY")
-            qt=QWidget(); ql=QVBoxLayout(qt); self.quest_view=QPlainTextEdit(); self.quest_view.setReadOnly(True); ql.addWidget(self.quest_view); self.tabs.insertTab(2,qt,"QUESTS")
-            st=QWidget(); sl=QVBoxLayout(st); self.spell_view=QPlainTextEdit(); self.spell_view.setReadOnly(True); sl.addWidget(self.spell_view); self.tabs.insertTab(3,st,"SPELLS / EVENTS")
-            nt=QWidget(); nl=QVBoxLayout(nt); self.npc_view=QPlainTextEdit(); self.npc_view.setReadOnly(True); nl.addWidget(self.npc_view); self.tabs.addTab(nt,"NPC LIFE")
-            ht=QWidget(); hl=QVBoxLayout(ht); self.closet_view=QPlainTextEdit(); self.closet_view.setReadOnly(True); hl.addWidget(self.closet_view); self.tabs.addTab(ht,"CLOSET")
-            jt=QWidget(); jl=QVBoxLayout(jt); self.journal_view=QPlainTextEdit(); self.journal_view.setReadOnly(True); jl.addWidget(self.journal_view); self.tabs.addTab(jt,"JOURNAL")
-            kt=QWidget(); kl=QVBoxLayout(kt); self.skills_view=QPlainTextEdit(); self.skills_view.setReadOnly(True); kl.addWidget(self.skills_view); self.tabs.addTab(kt,"SKILLS")
-            ct=QWidget(); cfl=QVBoxLayout(ct); self.craft_view=QPlainTextEdit(); self.craft_view.setReadOnly(True); cfl.addWidget(self.craft_view); self.refine_button=QPushButton("REFINE STARTER SUPPLIES → 1 HIGHER-LEVEL ITEM"); self.refine_button.clicked.connect(lambda: (self.append_status(self.game.refine_starter_supplies()), self.refresh())); cfl.addWidget(self.refine_button); self.tabs.addTab(ct,"CRAFTING")
-            gt=QWidget(); gl=QVBoxLayout(gt); self.gameplay_view=QPlainTextEdit(); self.gameplay_view.setReadOnly(True); gl.addWidget(self.gameplay_view); gt_note=QLabel("Q Quests · J Journal · I Inventory · K Skills · L Server · B Crafting · G Gameplay · 1-9 Equip · 0 Select"); gt_note.setWordWrap(True); gl.addWidget(gt_note); self.tabs.addTab(gt,"GAMEPLAY")
-            # ENGINE tab: playlist → engine-mask attenuation graph
-            et = QWidget(); el = QVBoxLayout(et)
-            el.addWidget(QLabel("Playlist → Engine attenuation (canonical goals)"))
-            el.addWidget(QLabel("RND scatter · PL phase grid · GOAVA pure lattice · EUC rhythm · SEED variation"))
-            self._eng_sliders = {}
-            self._eng_mask_checks = {}
-            for eng, goal in (
-                ("randomizer", "spectral scatter / density"),
-                ("phase_lock", "phase congruence / grid"),
-                ("goava", "pure-tone / lattice identity"),
-                ("euclidean", "rhythmic structure"),
-                ("seeded", "seed-authored variation"),
-            ):
-                row = QHBoxLayout()
-                chk = QCheckBox(eng)
-                chk.setChecked(bool((getattr(g, "engine_mask", {}) or {}).get(eng, False)))
-                def _tog(on, name=eng):
-                    try:
-                        g.engine_mask[name] = bool(on)
-                        g._apply_engine_attenuation()
-                    except Exception:
-                        pass
-                chk.toggled.connect(_tog)
-                self._eng_mask_checks[eng] = chk
-                row.addWidget(chk)
-                row.addWidget(QLabel(goal), 1)
-                sp = QSpinBox()
-                sp.setRange(0, 200)
-                sp.setValue(int(float((getattr(g, "engine_attenuation", {}) or {}).get(eng, 1.0)) * 100))
-                sp.setSuffix("%")
-                def _att(v, name=eng):
-                    try:
-                        g.set_engine_attenuation(name, float(v) / 100.0)
-                        g._apply_engine_attenuation()
-                    except Exception:
-                        pass
-                sp.valueChanged.connect(_att)
-                self._eng_sliders[eng] = sp
-                row.addWidget(sp)
-                el.addLayout(row)
-            self.engine_graph_lbl = QLabel("live: —")
-            self.engine_graph_lbl.setWordWrap(True)
-            el.addWidget(self.engine_graph_lbl)
-            self.chunk_lbl = QLabel("chunks: —")
-            el.addWidget(self.chunk_lbl)
-            el.addStretch(1)
-            self.tabs.addTab(et, "ENGINE")
-
-        def show_tab(self, name):
-            wanted = str(name).strip().upper()
-            aliases = {"SERVER": "SERVER", "NETWORK": "SERVER", "GAMEPLAY": "GAMEPLAY"}
-            wanted = aliases.get(wanted, wanted)
-            for i in range(self.tabs.count()):
-                if self.tabs.tabText(i).strip().upper() == wanted:
-                    self.tabs.setCurrentIndex(i)
-                    return True
-            return False
-
-        def _populate_gameplay_panes(self):
-            g = self.game
-            try:
-                if hasattr(self, "inventory_view"):
-                    lines = []
-                    for i in range(10):
-                        if i == 0:
-                            eq = "NOTHING EQUIPPED" if not getattr(g.items, "equipped", None) else "reserved inventory slot"
-                            lines.append(f"0 · {eq}")
-                        else:
-                            iid = g.quick_slots[i-1]
-                            d = next((x for x in g.items.defs if x["id"] == iid), None) if iid else None
-                            lines.append(f"{i} · {d['name'] if d else '—'}")
-                    lines.append("")
-                    lines.extend(f"{g.items.describe(d['id'])} × {g.items.inventory.get(d['id'],0)}" for d in g.items.defs if g.items.inventory.get(d['id'],0))
-                    self.inventory_view.setPlainText("\n".join(lines))
-                if hasattr(self, "quest_view"):
-                    self.quest_view.setPlainText("\n".join(f"{'✓' if q.get('done') else '·'} {q['title']} {q['progress']}/{q['target']}" for q in g.quests.quests))
-                if hasattr(self, "npc_view"):
-                    lines=["NPC LIFE · LIVING WORLD ROUTINES"]
-                    for n in getattr(getattr(g,"npcs",None),"npcs",[])[:12]:
-                        lines.append(f"{n.get('name','NPC')} · {n.get('role','citizen')} · {n.get('activity_label','REST')} → {n.get('activity_target','home')}")
-                    lines.append("\nNPC activity can feed quests, trade, crafting, training, patrols, companions and social encounters.")
-                    self.npc_view.setPlainText("\n".join(lines))
-                if hasattr(self, "spell_view"):
-                    self.spell_view.setPlainText(g.zero_menu_text() + "\n\nEvery listed item/action/event has a deterministic numeric sound signature; values are audibly mapped without sample files.")
-                if hasattr(self, "skills_view"):
-                    self.skills_view.setPlainText(
-                        f"LEVEL {g.level}\n\n"
-                        f"Score: {g.score:.2f}\n"
-                        f"Difficulty: {g.difficulty_mult:.2f}×\n"
-                        f"Sequence motion: {getattr(g,'sequence_motion_factor',1.0):.2f}×\n"
-                        f"Flight profile: {getattr(g,'flight_profile','—')}"
-                    )
-                if hasattr(self, "craft_view"):
-                    self.craft_view.setPlainText("CRAFTING\n\nSpawn kit: every seed-defined low-level/natural supply is present at the beginning.\n\nREFINE: consume 3–4 low-level supplies → usually 1 higher-level item.\nB opens this pane; refinement is deliberately lossy so high-level items remain valuable.")
-                if hasattr(self, "gameplay_view"):
-                    self.gameplay_view.setPlainText(HOW_TO_PLAY or "")
-                if hasattr(self,"closet_view"):
-                    cv=g.character.snapshot(); self.closet_view.setPlainText("CLOSET\n\n"+f"Experience: {cv.get('experience',0):.2f}\nDesign freedom: {cv.get('freedom',1):.2f}\nDecoration: {cv.get('decoration_level',0):.2f}\nPopulation average: {cv.get('population_average',.5):.2f}\n\nExperience and population style gently influence expression; your design remains editable.\nH = open closet.")
-                if hasattr(self, "journal_view"):
-                    hist = getattr(g, "physics_history", [])[-18:]
-                    home_line=""
-                    if getattr(g,"home",None) is not None:
-                        hd=g.home.distance(g); hs="OWNED · LEISURE" if g.home.owned else "AVAILABLE TO OWN"
-                        home_line=f"★ HOME · {hs} · {hd:.1f}m · leisure priority {g.home.journal_priority(g):.2f}\n"
-                    self.journal_view.setPlainText(home_line + ("\n".join(
-                        f"t={row.get('t',0):.1f}  pos=({row.get('x',0):.2f},{row.get('z',0):.2f})  speed={row.get('speed',0):.2f}  step={row.get('step',0)}"
-                        for row in hist
-                    ) or "Journal is waiting for gameplay history…"))
-            except Exception:
-                pass
-
-        def open_zero_menu(self):
-            g=self.game; items=g.interaction_items(); dlg=QDialog(self); dlg.setWindowTitle("0 · Select Interaction / Tool / Event"); dl=QVBoxLayout(dlg); lst=QListWidget()
-            for item in items: lst.addItem(QListWidgetItem(item["label"]))
-            if items: lst.setCurrentRow(int(getattr(g,"selection_index",0))%len(items))
-            dl.addWidget(lst); bb=QDialogButtonBox(QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel); dl.addWidget(bb); bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject)
-            if dlg.exec():
-                item=g.select_zero_item(lst.currentRow()); self.append_status(f"0 MENU → {item['label'] if item else 'none'}"); self.refresh()
-
-        def _edit_character(self):
-            axis=self.character_axis.currentText() if hasattr(self,"character_axis") else "crest"
-            value=self.game.character.cycle_design(axis, .12)
-            self.append_status(f"CHARACTER DESIGN · {axis}={value:.2f} · freedom remains {self.game.character.freedom:.2f}")
-            self.refresh()
+            lay.addWidget(howbox)
+            lay.addStretch(1)
 
         def _invite(self):
             g = self.game
@@ -9381,18 +6557,6 @@ if HAS_UI:
                     f"live={', '.join(live) or 'none'} | reg={reg_s} | topo={topo} hue={hue_s} | "
                     f"frame={fid or '—'} — area+state+music open activities; audio judges the same field."
                 )
-
-        def _command_category_changed(self, category):
-            choices = {
-                "CHAT": "/status", "WORLD": "/world", "PLAYER": "/report",
-                "TOOLS": "/help", "NETWORK": "/status", "CAMERA": "/controls", "PHYSICS": "/status", "HELP": "/help"
-            }
-            self.command_btn.setText(choices.get(str(category), "/status"))
-
-        def _run_tree_command(self):
-            cmd = self.command_btn.text().strip()
-            self.chat_edit.setText(cmd)
-            self._send_chat()
 
         def _role_text(self):
             g = self.game
@@ -9444,12 +6608,8 @@ if HAS_UI:
                     for line in str(out).splitlines():
                         self.append_status(line)
                     self.window.view.update()
-                elif text == "/host":
-                    self.game.dispatch_control("host_mode", panel=self)
-                    self._sync_chat_from_game()
-                elif text == "/client":
-                    self.game.dispatch_control("client_mode", panel=self)
-                    self._sync_chat_from_game()
+                elif text in ("/host", "/client"):
+                    self._switch_role()
                 else:
                     # The chat box is also the in-game console. Route every
                     # slash command to the same command parser as CLI so the
@@ -9477,19 +6637,6 @@ if HAS_UI:
                 g.push_status("world is host-authoritative; switch to host to reset.")
                 return
             g.reset_world()
-            try:
-                cs=g.character.snapshot(); self.character_lbl.setText(f"experience {cs['experience']:.2f} · design freedom {cs['freedom']:.2f} · decoration {cs['decoration_level']:.2f} · population average {cs['population_average']:.2f}")
-                inv=[]
-                for i in range(1,10):
-                    iid=g.quick_slots[i-1]
-                    if iid is None:
-                        ids=[k for k,v in g.items.inventory.items() if int(v)>0]; iid=ids[i-1] if i-1<len(ids) else None
-                    d=next((x for x in g.items.defs if x['id']==iid),None) if iid else None; inv.append(f"{i}:{d['name'] if d else '—'}")
-                self.quick_lbl.setText("  ".join(inv)+f"\nEquipped: {g.items.equipped or '—'}")
-                self.inventory_view.setPlainText("\n".join(f"{d['name']} × {g.items.inventory.get(d['id'],0)}" for d in g.items.defs if g.items.inventory.get(d['id'],0)))
-                self.quest_view.setPlainText("\n".join(f"{'✓' if q.get('done') else '·'} {q['title']} {q['progress']}/{q['target']}" for q in g.quests.quests))
-                self.spell_view.setPlainText(g.zero_menu_text())
-            except Exception: pass
             self.score_lbl.setText(f"Score {g.score:.2f}")
             self.level_lbl.setText(f"Level {g.level}  (x{g.difficulty_mult:.2f})")
             focus = getattr(g, "primary_focus", "explore")
@@ -9504,7 +6651,6 @@ if HAS_UI:
 
         def refresh(self):
             g = self.game
-            self._populate_gameplay_panes()
             try:
                 pos = g.position_readout()
                 self.pos_lbl.setText(
@@ -9547,34 +6693,7 @@ if HAS_UI:
                 pass
             self.djbar.setValue(max(0, min(1000, int(g.music.dj * 1000))))
             self.net_lbl.setText(g.net.status)
-            self.role_lbl.setText(f"Role: {self._role_text()} · H=Host · Server tab=connections")
-            # Modern control strip readouts
-            try:
-                if hasattr(self, "cam_mode_lbl"):
-                    self.cam_mode_lbl.setText(f"Camera: {g.camera_mode_name()}")
-                if hasattr(self, "fov_lbl"):
-                    vv = getattr(g, "visual_view", {}) or {}
-                    fov = float(vv.get("fov_deg", 48.0) or 48.0)
-                    z = float(getattr(g, "zoom", 1.0) or 1.0)
-                    self.fov_lbl.setText(f"FOV {fov:.0f}°  Zoom {z:.2f}x")
-            except Exception:
-                pass
-            # Engine attenuation graph + chunk streamer status
-            try:
-                if hasattr(self, "engine_graph_lbl"):
-                    live = getattr(g, "_engine_attenuation_live", {}) or {}
-                    parts = [f"{k}={float(v):.2f}" for k, v in live.items()]
-                    self.engine_graph_lbl.setText("live: " + (", ".join(parts) if parts else "—"))
-                if hasattr(self, "chunk_lbl"):
-                    n = len(getattr(g, "_visible_chunks", []) or [])
-                    cache = 0
-                    try:
-                        cache = len(getattr(g.chunks, "_cache", {}) or {})
-                    except Exception:
-                        pass
-                    self.chunk_lbl.setText(f"chunks visible={n}  cache={cache}")
-            except Exception:
-                pass
+            self.role_lbl.setText(f"Role: {self._role_text()}")
             try:
                 self._refresh_chess_lbl()
             except Exception:
@@ -9642,25 +6761,7 @@ if HAS_UI:
             super().__init__()
             self.game = game
             self.setWindowTitle(f"{game.id['title']}")
-            # Match the main Groovebox's screen-aware footprint rather than
-            # opening a tiny secondary universe.  Still freely resizable.
-            try:
-                screen = self.screen() or QApplication.primaryScreen()
-                avail = screen.availableGeometry() if screen else None
-            except Exception:
-                avail = None
-            if avail is not None and avail.width() > 0 and avail.height() > 0:
-                self.resize(min(1600, int(avail.width()*0.92)), min(1100, int(avail.height()*0.92)))
-                self.move(avail.center().x()-self.width()//2, avail.center().y()-self.height()//2)
-            else:
-                self.resize(1300, 950)
-            pal = game.id.get("ui_palette", {})
-            self.setStyleSheet(f"""
-                QMainWindow, QWidget {{ background: {pal.get('bg','#0b1020')}; color: {pal.get('text','#e8f0ff')}; }}
-                QGroupBox {{ border: 1px solid {pal.get('accent','#3fa7ff')}; border-radius: 6px; margin-top: 8px; padding-top: 6px; }}
-                QGroupBox::title {{ subcontrol-origin: margin; left: 8px; padding: 0 4px; color: {pal.get('accent','#3fa7ff')}; }}
-                QPushButton, QComboBox, QLineEdit {{ background: {pal.get('bg','#0b1020')}; color: {pal.get('text','#e8f0ff')}; border: 1px solid {pal.get('accent','#3fa7ff')}; padding: 4px; }}
-            """)
+            self.resize(1040, 620)
             central = QWidget()
             self.setCentralWidget(central)
             split = QSplitter(Qt.Orientation.Horizontal, central)
@@ -9670,7 +6771,6 @@ if HAS_UI:
             split.addWidget(self.panel)
             split.setStretchFactor(0, 3)
             split.setStretchFactor(1, 0)
-            self.panel.setVisible(False)
             hv = QVBoxLayout(central)
             hv.addWidget(split)
             self.timer = QTimer(self)
@@ -9678,9 +6778,6 @@ if HAS_UI:
             self.timer.timeout.connect(self._tick)
             self.timer.start()
             self._last = time.monotonic()
-            audio_ok = bool(getattr(game, "start_audio", lambda: False)())
-            try: self.panel.audio_lbl.setText("Audio: LIVE" if audio_ok else "Audio: unavailable (install sounddevice/PortAudio)")
-            except Exception: pass
             if game.online:
                 name, ok = QInputDialog.getText(self, "Player name", "Name on the orbit:", text="Player")
                 if ok and name.strip():
@@ -9690,13 +6787,6 @@ if HAS_UI:
                 self.panel.append_status(f"[{entry['t']:.1f}] {entry['sender']}: {entry['text']}")
             self._splash_active = False
             self._splash_until = 0.0
-
-        def closeEvent(self, event):
-            try: self.timer.stop()
-            except Exception: pass
-            try: self.game.stop_audio()
-            except Exception: pass
-            super().closeEvent(event)
 
         def run_splash(self):
             """Visible splash: composition bed plays while a title overlay is shown."""
@@ -9736,52 +6826,19 @@ if HAS_UI:
             self.panel.refresh()
             self.view.update()
 
-        def show_game_tab(self, name):
-            """Keyboard-connected panes: every gameplay system remains one tab graph."""
-            if hasattr(self, "panel") and self.panel is not None:
-                if self.panel.show_tab(name):
-                    if not bool(getattr(self.game,"menu_open",False)):
-                        self.game.toggle_menu()
-                    self.panel.setVisible(True)
-                    self.panel.refresh()
-                    self.panel.append_status(f"MENU → {str(name).upper()}")
-                    self.view.setFocus(Qt.FocusReason.OtherFocusReason)
-                    return True
-            return False
-
         def keyPressEvent(self, e):
             g = self.game
             k = e.key()
             # ESC always opens/closes the status menu (active-element readout).
             if k == Qt.Key.Key_Escape:
-                # ESC is an unconditional mouse/input escape hatch.  Release
-                # cursor capture BEFORE toggling the menu so the pointer is
-                # visibly free even if menu/status rendering raises.
-                try:
-                    self.view._release_mouse_and_input()
-                except Exception:
-                    pass
-                try:
-                    self.view.setFocus(Qt.FocusReason.OtherFocusReason)
-                except Exception:
-                    pass
                 try:
                     out = g.toggle_menu()
                     if hasattr(self, "panel") and self.panel is not None:
-                        self.panel.setVisible(bool(getattr(g,"menu_open",False)))
-                        if getattr(g,"menu_open",False): self.panel.refresh()
                         for line in str(out).splitlines():
                             self.panel.append_status(line)
                 except Exception as err:
                     print(f"[menu] {err}")
                 self.view.update()
-                return
-            # QUICK-SLOTS_2026: 1-9 equip; 0 opens selectable interaction/tool/event list.
-            if Qt.Key.Key_1 <= k <= Qt.Key.Key_9:
-                g.equip_quick_slot(int(k-Qt.Key.Key_0)); self.panel.refresh(); return
-            if k == Qt.Key.Key_0:
-                try: self.panel.open_zero_menu()
-                except Exception: self.panel.append_status(g.zero_menu_text())
                 return
             # AUTO_CONTROLS_2026: resolve via the complexity-derived scheme first.
             try:
@@ -9801,29 +6858,7 @@ if HAS_UI:
             if k == Qt.Key.Key_F1:
                 self.panel._how()
                 return
-            if k == Qt.Key.Key_H:
-                self.show_game_tab("CLOSET"); return
-            if k == Qt.Key.Key_J:
-                self.show_game_tab("JOURNAL"); return
             super().keyPressEvent(e)
-
-        def keyReleaseEvent(self, e):
-            g = self.game
-            k = e.key()
-            # Release the movement impulse so one key press never becomes a
-            # sticky orbit/spin state. Look controls remain momentary too.
-            try:
-                action = g.resolve_key(k, int(e.modifiers().value) if hasattr(e.modifiers(), "value") else 0)
-            except Exception:
-                action = None
-            release = {"move_forward": {"dz": -0.6}, "move_back": {"dz": 0.6},
-                       "move_left": {"dx": 0.6}, "move_right": {"dx": -0.6}}
-            if action in release:
-                vals = release[action]
-                g.perspective_move(**vals)
-                self.view.update()
-                return
-            super().keyReleaseEvent(e)
 
         def closeEvent(self, e):
             self.timer.stop()
@@ -10105,7 +7140,8 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()'''
+    main()
+'''
 
 # =============================================================================
 # THREE-PATHWAY CONTRACT_2026 — audio / visual / game are each present at
@@ -10261,13 +7297,9 @@ def build_control_scheme(identity=None) -> Dict[str, Any]:
         "aim_right": {"key": "Right", "qt": "Key_Right", "action": "aim_right", "layer": "core"},
         "aim_up": {"key": "Up", "qt": "Key_Up", "action": "aim_up", "layer": "core"},
         "aim_down": {"key": "Down", "qt": "Key_Down", "action": "aim_down", "layer": "core"},
-        "interact": {"key": "Mouse2", "qt": "MouseButton.RightButton", "action": "interact", "layer": "core"},
-        "fire_create": {"key": "Mouse1", "qt": "MouseButton.LeftButton", "action": "fire_tool", "layer": "core"},
-        "fly_up": {"key": "Space", "qt": "Key_Space", "action": "fly_up", "layer": "core"},
-        "fly_down": {"key": "Ctrl", "qt": "Key_Control", "action": "fly_down", "layer": "core"},
+        "activate": {"key": "Mouse1", "qt": "MouseButton.LeftButton", "action": "activate", "layer": "core"},
+        "pause": {"key": "Space", "qt": "Key_Space", "action": "pause_toggle", "layer": "core"},
         "help": {"key": "F1", "qt": "Key_F1", "action": "help", "layer": "core"},
-        "closet": {"key": "H", "qt": "Key_H", "action": "closet", "layer": "core"},
-        "client_mode": {"key": "J", "qt": "Key_J", "action": "client_mode", "layer": "core"},
         "mute": {"key": "M", "qt": "Key_M", "action": "mute", "layer": "core"},
         "sprint": {"key": "Shift", "qt": "Key_Shift", "action": "sprint", "layer": "core"},
     }
@@ -10275,17 +7307,21 @@ def build_control_scheme(identity=None) -> Dict[str, Any]:
     # --- layer-gated binds ---
     if layers.get("economy"):
         binds["inventory"] = {"key": "I", "qt": "Key_I", "action": "inventory", "layer": "economy"}
+        binds["store"] = {"key": "B", "qt": "Key_B", "action": "store", "layer": "economy"}
     if layers.get("quests"):
-        pass
+        binds["quests"] = {"key": "J", "qt": "Key_J", "action": "quests", "layer": "quests"}
     if layers.get("world_travel"):
+        binds["loom"] = {"key": "L", "qt": "Key_L", "action": "loom_scan", "layer": "world_travel"}
         binds["teleport"] = {"key": "T", "qt": "Key_T", "action": "teleport_hint", "layer": "world_travel"}
         binds["report"] = {"key": "R", "qt": "Key_R", "action": "report", "layer": "world_travel"}
     if layers.get("combat"):
         binds["engage"] = {"key": "F", "qt": "Key_F", "action": "engage", "layer": "combat"}
+        binds["dodge"] = {"key": "Q", "qt": "Key_Q", "action": "dodge", "layer": "combat"}
     if layers.get("social"):
         binds["chess"] = {"key": "C", "qt": "Key_C", "action": "chess_toggle", "layer": "social"}
         binds["invite"] = {"key": "Y", "qt": "Key_Y", "action": "invite", "layer": "social"}
     if layers.get("creative"):
+        binds["selfgen"] = {"key": "G", "qt": "Key_G", "action": "selfgen", "layer": "creative"}
         binds["triad"] = {"key": "V", "qt": "Key_V", "action": "triad", "layer": "creative"}
     if layers.get("cinematic"):
         binds["cam_reset"] = {"key": "Home", "qt": "Key_Home", "action": "cam_reset", "layer": "cinematic"}
@@ -10336,15 +7372,6 @@ def build_control_scheme(identity=None) -> Dict[str, Any]:
             "key": key, "qt": qt, "action": action, "layer": "macro", "label": desc,
         }
 
-    binds.update({
-        "quests": {"key":"Q","qt":"Key_Q","action":"quests","layer":"ui"},
-        "journal": {"key":"J","qt":"Key_J","action":"journal","layer":"ui"},
-        "inventory": {"key":"I","qt":"Key_I","action":"inventory","layer":"ui"},
-        "skills": {"key":"K","qt":"Key_K","action":"skills","layer":"ui"},
-        "server": {"key":"L","qt":"Key_L","action":"server","layer":"ui"},
-        "crafting": {"key":"B","qt":"Key_B","action":"crafting","layer":"ui"},
-        "gameplay": {"key":"G","qt":"Key_G","action":"gameplay","layer":"ui"},
-    })
     return {
         "version": "controls/2026.2-auto",
         "perspective": "always",
@@ -10401,15 +7428,20 @@ def build_micro_lexicon(seed) -> Dict[str, Any]:
         "seam", "fold", "loom", "foam", "dial", "grip", "drift", "node",
         "hull", "keel", "sift", "tilt", "hum", "shade", "vernier", "chime",
     ]
-    rng = goava(seeds)
-    n_tokens = 96 + int(48 * rng.residue("micro", "count", "count"))
+    import random as _random
+    r = _random.Random(seeds)
+    n_tokens = 96 + int(48 * meum_game_residue(seeds, "micro/count"))
     sched = []
     for i in range(n_tokens):
-        op = ops[i % len(ops)] if i % 11 != 0 else rng.choose("micro", i, ops, "choose-op")
-        sched.append([i, op, round(rng.value("micro", i, 0.0, 1.0, "x"), 4),
-                      round(rng.value("micro", i, 0.0, 1.0, "y"), 4),
-                      round(rng.value("micro", i, 0.0, 1.0, "z"), 4)])
-    return {"version":"micro/2026.1", "ops":ops, "schedule":sched, "seed_scribed":True, "goava_version":rng.VERSION}
+        op = ops[i % len(ops)] if i % 11 != 0 else ops[r.randrange(len(ops))]
+        sched.append([
+            i,
+            op,
+            round(r.random(), 4),
+            round(r.random(), 4),
+            round(r.random(), 4),
+        ])
+    return {"version": "micro/2026.1", "ops": ops, "schedule": sched}
 
 
 def build_how_to_play(identity, triad=None, controls=None) -> str:
@@ -10443,11 +7475,8 @@ AUTO CONTROLS (derived from this creation — complexity {cx} / {cl})
   Active layers        :  {layers}
   Perspective movement :  {mov.get('forward', 'W')} {mov.get('back', 'S')} {mov.get('left', 'A')} {mov.get('right', 'D')}
   Aim / look           :  mouse move (+ arrow keys)
-  Interact             :  right click (collect, harvest, inspect, enter, follow)
-  Fire / create         :  left click  (uses selected tool)
-  Fly up               :  Space       Fly down: Ctrl/C
-  Select tool           :  Q / E
-  Pause / menu          :  ESC
+  Activate             :  left click  (collect, harvest, talk, portal)
+  Pause / toggle       :  Space
   Sprint               :  Shift
   Help / how-to-play   :  F1        Mute: M
   Extra binds (appear only when the layer is live on this package):
@@ -10499,6 +7528,83 @@ Every game carries major seed functions and may regenerate itself:
 The final one on report() is the  self-gen  note listing which seed functions
 were live this session.
 """
+
+
+def seed_mandelbrot(cx, cy=0.0, n=32):
+    zx=zy=0.0; nn=max(1,min(256,int(n)))
+    for k in range(1,nn+1):
+        zx,zy=zx*zx-zy*zy+float(cx),2*zx*zy+float(cx)*0.0+float(cy)
+        if zx*zx+zy*zy>16.0: return float(k)/nn
+    return 1.0
+
+def seed_math_channels(t=0.0, x=0.0, y=0.0, z=0.0, values=None):
+    """Shared finite math channel bank for game/video/audio consumers."""
+    x,y,z=float(x or 0),float(y or 0),float(z or 0); vals=list(values or [])
+    radial=math.sqrt(x*x+y*y+z*z); angle=math.atan2(y,x); zx=zy=total=0.0; escaped=0
+    for k in range(1,25):
+        zx,zy=zx*zx-zy*zy+x,2*zx*zy+y; m=zx*zx+zy*zy; total+=math.tanh(math.sqrt(m))
+        if m>16: escaped=k; break
+    s=max(1.000001,abs(float(vals[0] if vals else x))+2.0); q=3
+    return {"radial":radial,"angle":angle,"orbit":max(0,min(1,total/24)),"escape":escaped/24 if escaped else 1.0,
+            "zeta":sum(1/(k**s) for k in range(1,65)),"eta":sum(((-1)**(k-1))/(k**s) for k in range(1,97)),
+            "lfunction":sum((0 if k%q==0 else (1 if (k%q)%2 else -1))/(k**s) for k in range(1,97)),
+            "curvature":math.tanh(abs(x*y+y*z+z*x)),"energy":math.tanh(.5*(x*x+y*y+z*z)),"phase":math.fmod(float(t)+angle,math.tau)}
+
+def seed_script_state(seed_script, t=0.0):
+    """Evaluate a seed program into numeric variables and a returned vector."""
+    import ast as _ast
+    import re as _re
+    raw = str(seed_script or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    raw = _re.sub(r"(?m)^(\s*)(x|y|z|r|theta|phi)\s*\(\s*t\s*\)\s*=", r"\1\2 =", raw)
+    if not raw:
+        return {"values": [], "vars": {}}
+    env = {k: getattr(math, k) for k in dir(math) if not k.startswith("_")}
+    env.update({"t": float(t), "MEUM": MEUM, "PHI": PHI, "pi": math.pi, "tau": math.tau, "abs": abs, "min": min, "max": max, "sum": sum, "range": range})
+    env.update({"sum": sum, "range": range, "gamma": math.gamma, "lgamma": math.lgamma, "erf": math.erf, "erfc": math.erfc,
+                "sinc": lambda q: 1.0 if abs(float(q)) < 1e-12 else math.sin(float(q))/float(q), "mandelbrot": seed_mandelbrot})
+    env.update({
+        "zeta": lambda q: sum(1.0/(k**max(1.000001,float(q))) for k in range(1,65)),
+        "eta": lambda q: sum(((-1.0)**(k-1))/(k**max(0.05,float(q))) for k in range(1,97)),
+        "dirichlet_l": lambda q, mod=3: sum((0.0 if k%max(2,int(abs(mod)))==0 else (1.0 if (k%max(2,int(abs(mod))))%2 else -1.0))/(k**max(0.05,float(q))) for k in range(1,97)),
+        "lfunction": lambda q, mod=3: sum((0.0 if k%max(2,int(abs(mod)))==0 else (1.0 if (k%max(2,int(abs(mod))))%2 else -1.0))/(k**max(0.05,float(q))) for k in range(1,97)),
+    })
+    lines = [ln for ln in raw.splitlines() if ln.strip() and not ln.strip().startswith("#")]
+    try:
+        last = lines[-1].strip(); body = list(lines)
+        if last.lower().startswith("return "):
+            body[-1] = f"_result = ({last[7:].strip()})"
+        elif not _re.match(r"^(if|elif|else|for|while|def|class|with|try|except|finally)\b", last) and not _re.match(r"^[A-Za-z_]\w*\s*(?:\+=|-=|\*=|/=|%=|=)(?!=)", last):
+            body[-1] = f"_result = ({last})"
+        local = dict(env); local["_result"] = None
+        tree = _ast.parse("\n".join(body), mode="exec")
+        exec(compile(tree, "<game-seed>", "exec"), local, local)
+        result = local.get("_result"); vals = list(result) if isinstance(result, (list, tuple)) else ([result] if isinstance(result, (int, float)) else [])
+        vals = [float(v) for v in vals if isinstance(v, (int, float)) and math.isfinite(float(v))]
+        vars_ = {k: float(v) for k,v in local.items() if not k.startswith("_") and k not in env and isinstance(v,(int,float)) and math.isfinite(float(v))}
+        x0=vars_.get("x", vals[0] if len(vals)>0 else 0.0); y0=vars_.get("y", vals[1] if len(vals)>1 else 0.0); z0=vars_.get("z", vals[2] if len(vals)>2 else 0.0)
+        if x0 is None and vars_.get("r") is not None and vars_.get("theta") is not None:
+            x0=vars_["r"]*math.cos(vars_["theta"]); y0=vars_["r"]*math.sin(vars_["theta"])
+        _ch=seed_math_channels(t,x0,y0,z0,vals)
+        for kk,vv in vars_.items(): _ch[kk]=float(vv)
+        _ch["variables"]=sum(math.tanh(vv) for kk,vv in vars_.items() if kk not in ("x","y","z"))/max(1,len(vars_))
+        return {"values": vals, "vars": vars_, "channels": _ch}
+    except Exception:
+        return {"values": [], "vars": {}}
+
+
+def seed_script_channels(seed_script, t=0.0):
+    """Map arbitrary seed variables to shared scalar/x/y/z channels."""
+    st = seed_script_state(seed_script, t); v = st["vars"]; vals = st["values"]
+    x, y, z = v.get("x"), v.get("y"), v.get("z")
+    if x is None and v.get("r") is not None and v.get("theta") is not None:
+        x = v["r"] * math.cos(v["theta"]); y = v["r"] * math.sin(v["theta"])
+    if x is None and len(vals) >= 2:
+        x, y = vals[0], vals[1]; z = vals[2] if len(vals) >= 3 else z
+    x, y, z = float(x or 0.0), float(y or 0.0), float(z or 0.0)
+    scalar = (0.50*x + 0.35*y + 0.15*z) / (1.0 + 0.50*abs(x) + 0.35*abs(y) + 0.15*abs(z)) if (x or y or z) else (float(vals[0]) if vals else 0.0)
+    if v:
+        scalar += 0.08 * sum(math.tanh(float(vv)) for kk,vv in v.items() if kk not in ("x","y","z")) / max(1,len(v))
+    return {"scalar": float(scalar), "x": x, "y": y, "z": z, "values": vals, "vars": v, "channels": dict(st.get("channels") or seed_math_channels(t,x,y,z,vals))}
 
 
 def triad_of(seed, identity=None) -> Dict[str, Any]:
@@ -10712,23 +7818,6 @@ World:  objective={objective}  difficulty={difficulty}  level={level_type}
         sigils={sigil_count}  world_fingerprint={world_fingerprint}
 Fingerprint: {composition_fingerprint}
 
-EQUATIONS / PROOF OF CONCEPT
-----------------------------
-Constants: M = Meum (~1.19758), Phi = golden ratio, Mn = (M-1)/M.
-Unit residue: r(s,k) = blake2b(s|k) / 2^64 in [0,1) — order-independent.
-Audio closed form:
-  y(t) = sum_h (Mn/h) * W(phi(t)*h) * (1 + d_AM * L_AM) with free FM/PM;
-  phase0 = 0 at track start; sample 0 amplitude = 0;
-  no filters, EQ, drive, limiter, normalizer, or soft Nyquist clamp.
-Visual closed form:
-  visual(s,i,t,X) = Pi(r(s,.), kind_i, X_audio) — pure trigonometric projection.
-Chunk LODs: pure function of (s, cx, cz, lod); far field = residual billboard only.
-Engine attenuation: w_e = mask_e * a_e scales scenograph spin/grid/hue toward
-  randomizer (scatter), phase_lock (grid), goava (lattice), euclidean (rhythm),
-  seeded (variation).
-Determinism check: same seed + same inputs => same composition_fingerprint and
-  reproducible world; networking only transports player inputs and host snapshots.
-
 MULTIMODAL CONTRACT (always on)
 -------------------------------
 Every package ships SOUND (MusicBed + LiveSFX), VISUAL (ScenographLite 2.5D),
@@ -10769,15 +7858,12 @@ HOW TO PLAY
 Fixed controls, identical in every generated software:
     Perspective movement :  W S A D
     Aim / look           :  mouse move
-    Interact             :  right click
-    Fire / create tool   :  left click
-    Fly up / down        :  Space / Ctrl+C
-    Select tool          :  Q / E
-    Pause / menu         :  ESC          Sprint: Shift
+    Activate             :  left click
+    Pause / toggle       :  Space        Sprint: Shift
     How to play          :  F1           Mute: M
     Key macros           :  1..8 (orbit, vitals, quest, triad, loam scan,
                                store, sfx burst, self-gen probe)
-Chat / console commands: /help  /report  /triad  /controls  /chess  /invite  /host  /client
+Chat / console commands: /help  /report  /triad  /controls  /chess  /invite
                          /tp <name|#>  /lore  /loom  /gen <seed>  /buy  /equip
 Two-player chess (hot-seat, ONE screen): at seeded moments the game calls a
 friend over; /chess opens the board and the prompt hands the controls to
