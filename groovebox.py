@@ -9833,13 +9833,10 @@ class ReadmeGuideDialog(QDialog):
 
     HELP_TEXT = r"""
 ================================================================================
-  EQR GROOVEBOX — Mathematician's / Scientist's Groovebox
+  ESKI's GROOVEBOX — Mathematician's / Scientist's Groovebox
   Full Documentation, Scripting Syntax & Design Philosophy
 ================================================================================
-  Credits: core EQR design — project author; Grok (xAI), Gemini (Google),
-  Claude (Anthropic), ChatGPT (OpenAI), Mistral.ai (Mistral), Meta AI (Meta),
-  GitHub Copilot (GitHub), Cursor Grok 4.6, and opencode (anomalyco).
-
+  Credits: core EQR design — ESKI/NOAH G. KING (programmer and vibecoder);
 --------------------------------------------------------------------------------
 1. GOAL OF THE SOFTWARE
 --------------------------------------------------------------------------------
@@ -9903,6 +9900,26 @@ generative structure, and mathematically guided composition.
   cleanly for composition state, several time samples, and all instrument
   indices are inserted (invalid candidates are retried, never emitted).
   Edits remain fully user-owned. See also README.md in the project root.
+
+  PARAMETRIC / COORDINATE SEED DSL
+  ---------------------------------
+  The seed field also accepts mathematical coordinate relationships. These are
+  evaluated in the same restricted numeric environment as ordinary seed math:
+
+      x(t) = sin(t * MEUM)
+      y(t) = cos(t * PHI)
+
+  or compact constructor forms:
+      parametric(sin(t), cos(t))
+      cartesian(sin(t), cos(t), sin(t * MEUM))
+      polar(1 + 0.25*sin(t), MEUM*t)
+      cylindrical(1, MEUM*t, sin(t))
+      spherical(1, MEUM*t, pi/2 + 0.25*sin(t))
+
+  Multi-axis curves expose their components as the seed list (per-instrument
+  indexing remains deterministic). During Play / Export, the curve is reduced
+  to its Euclidean magnitude for the scalar T-axis seed, so closed curves do
+  not arbitrarily privilege x over y.
 
   COMPOSITION vs TIME-AXIS EVALUATION
   -----------------------------------
