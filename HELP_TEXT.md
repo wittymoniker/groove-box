@@ -22,12 +22,12 @@
 14. [Hybrid build and runtime dependencies](#14-hybrid-build-and-runtime-dependencies)
 15. [First-launch provisioning](#15-first-launch-provisioning)
 16. [Project layout](#16-project-layout)
-17. [Optimization policy](#17-optimization-policy)
-18. [Troubleshooting](#18-troubleshooting)
-19. [Deprecated/removed behavior](#19-deprecatedremoved-behavior)
-20. [OpenCode merge / release contract](#20-opencode-merge--release-contract)
-21. [Extended verification checklist](#21-extended-verification-checklist)
-22. [Final verification checklist](#22-final-verification-checklist)
+17. [How to use the mathematical layer](#17-how-to-use-the-mathematical-layer--from-pad-to-canonical-generation)
+18. [Meum calculus](#18-meum-calculus--definitions-operations-and-examples)
+19. [Operator Theory (OT)](#19-operator-theory-ot--complete-project-math-reference)
+20. [Canonical number-theory and congruence claims](#20-canonical-number-theory--congruence-claims--what-claimed-exact-means)
+21. [Unison master transform](#21-unison-master-transform--formula-and-practical-example)
+22. [Verification, redistribution, and numerical boundaries](#22-verification-redistribution-and-numerical-boundaries)
 
 ---
 
@@ -452,116 +452,403 @@ C++ and Julia are intentionally **not** stored in a separate source tree: all th
 
 ---
 
-## 17. Optimization policy
+## 17. HOW TO USE THE MATHEMATICAL LAYER — FROM PAD TO CANONICAL GENERATION
 
-The next optimizations should improve throughput without changing canonical output:
+This section is the practical path for using the mathematics without needing to
+understand the implementation first.
 
-- reuse NumPy/C++ output buffers;
-- reduce Python↔C++ boundary crossings by batching voices;
-- vectorize C++ transcendental-heavy paths only when output equivalence is tested;
-- keep Julia for batch analysis and candidate optimization;
-- avoid materializing large tensor matrices when a contraction can be streamed;
-- cache invariant seed/identity features per render;
-- use deterministic per-voice buffers for parallelism;
-- reduce visual geometry density rather than lowering mathematical fidelity;
-- keep DJ effects on a separate live bus;
-- use partitioned offline rendering to bound peak memory.
+### 17.1 The shortest useful workflow
 
-**Do not optimize by deleting mathematical structure merely because a visual or audio effect is expensive.** Optimize the representation of the same function.
+1. Choose BPM and sequence length.
+2. Choose an instrument and turn on a few pads.
+3. Leave Seed blank/zero for ordinary authoring, or enter a non-zero numeric seed.
+4. Press **Play** and listen to the carrier.
+5. Enable **Phase-Lock**, **Randomize**, **Seeded**, **GOAVA**, or **Operator Theory** one at a time.
+6. Open Playlist when you want the generated structure written into arrangement rows.
+7. Use Domain Equations for time/space functions and Instrument Scripts for per-instrument rules.
+8. Save the project before experimenting with a new mathematical recipe.
 
----
+### 17.2 First scripting examples
 
-## 18. Troubleshooting
+```python
+# A simple two-frequency carrier
+sin(2*pi*t*2) + 0.5*cos(2*pi*t*3)
 
-### Audio sounds filtered/resonant
+# Meum phase field
+sin(t*MEUM) * cos(t*PHI)
 
-The final master path intentionally does not run the former EQR/PKP/PED spectral/amplitude stack. Check per-voice filter/resonator/formant parameters, Harmonic Lattice, and DJ effects first.
+# Seed-dependent motion
+sin(t*MEUM + seed) * (0.5 + 0.5*cos(t*PHI))
 
-### Visualizer has too many lines
+# The project's isn / ics forms
+isn(t*MEUM) * 0.6 + ics(t*PHI) * 0.4
 
-Use sparse projection mode. Geometry density should be bounded by canonical energy/entropy, not by a fixed “draw everything” rule.
+# A multivariate domain expression
+sin(x*MEUM + y*PHI + z*pi)
 
-### Game has too much GOAVA
+# Function-style script
+return isn(t*MEUM) + 0.25*ics(t*PHI)
+```
 
-GOAVA should be treated as one canonical feature among several. It should modulate topology/tempo/events where useful, not dominate every visual primitive.
+`sin`, `cos`, `isn`, `ics`, `MEUM`, `PHI`, `pi`, `e`, `tau`, `seed`, `x`, `y`,
+`z`, and the public reference constants are available to the appropriate
+script evaluators. Use the Help panel as the authoritative list for the build
+being run.
 
-### ffmpeg missing
+### 17.3 How generated math reaches sound
 
-Launchers attempt local/system detection and provisioning. A manually supplied static build can always be placed in `./bin/`.
+The canonical pipeline is conceptually:
 
-### Julia missing
+`seed → canonical context → instrument lattice → operator/sequence transforms → voice parameters → mix`
 
-The application remains functional with Python+C++. Julia is a numerical/reference layer and is not required for basic realtime operation.
+The seed is therefore an input to a deterministic construction, not an assertion
+that every generated result is a theorem of number theory. When a canonical
+fingerprint is identical, the implementation is intended to regenerate the same
+canonical state.
 
----
+## 18. MEUM CALCULUS — DEFINITIONS, OPERATIONS, AND EXAMPLES
 
-## 19. Deprecated/removed behavior
+**MEUM CALCULUS — CLAIMED EXACT.** In this project, “Meum calculus” means the
+project-defined family of transformations built from the constant `MEUM`, its
+reciprocals/powers, phase rotations, modular coordinates, and derived normalized
+weights. “Claimed exact” describes the project's internal symbolic contract: the
+same stored inputs and formulas are intended to give the same canonical result.
+It is **not** a claim that Meum calculus is an independently established branch
+of mathematics or that its special constant has been proved irrational here.
 
-The v3[final] documentation intentionally removes or de-emphasizes obsolete architecture claims:
+### 18.1 Public constants
 
-- no separate legacy master-bus “secret filter” is part of the canonical export path;
-- no hard-coded 16-part limit should be treated as a design invariant;
-- no claim that GOAVA/audio/visual/game already form one mathematically proven tensor unless a regression test exists;
-- no `-ffast-math` canonical build;
-- no RNG calls in the realtime canonical callback;
-- no requirement that Julia be a realtime process;
-- no final-bus normalizer/limiter/EQ silently inserted after canonical composition.
+The canonical Meum value is stored as
 
-Legacy OT scalar helpers remain available for explicit compatibility/scripts, but the shared equivalence path should preserve canonical scalar results where that is the stated contract.
+`M = MEUM = 1.1975807343385265188`
 
----
+with the public reference inverse
 
-## 20. OpenCode merge / release contract
+`M⁻¹ = MEUM_INV = 0.83501677283773394333148276154833054143874793150691`.
 
-The v3[final] release incorporates the useful OpenCode work without regressing the established DSP contract:
+Important derived values include:
 
-- dependency-aware desktop/mobile launchers;
-- local `bin/` ffmpeg/ffprobe resolution and first-launch provisioning;
-- broader seed-language demonstrations, including parametric, cylindrical, multivariate, loop-based, and finite L-function-style samples;
-- mathematical channel routing for additional seed variables;
-- expanded game/video provenance and deterministic testing;
-- additional audit/probe/test utilities;
-- native C++ and Julia source references kept beside the Python application.
+- `M² = 1.43419961525880442984053780233084675344`
+- `M³ = 1.7175698284296712120687451889540584671690563022583`
+- `M⁴ = 2.0569285364085026523421673878967788864920989745683`
+- `(M−1)/M = 0.16498322716226605666851723845166945856125206849309`
+- `2^M = 2.2935474173287805635918286442792609595802586606571`
+- `log₂(M) = 0.26012291784344212146116471128795687966817094961902`
 
-**Explicit non-regression rule:** the merge must not restore the historical stacked master-bus envelope layering. DJ/per-voice FX are preserved. The distinction is intentional: an effect that the user explicitly enables or routes is a real effect; an unconditional master envelope multiplier is not.
+Reference constants are also exposed as `PI_IRR`, `E_IRR`, `PHI`, `PHI_INV`,
+`SQRT2`, `SQRT3`, and `SILVER`.
 
-## 21. Extended verification checklist
+### 18.2 Meum power lattice
 
-In addition to the numerical checklist below, release tests should exercise:
+For instrument slot `i`, the canonical power table is generated from
 
-- [ ] launch from a clean directory with no system ffmpeg;
-- [ ] local `bin/` creation and ffmpeg/ffprobe discovery;
-- [ ] Python-only fallback when Julia is absent;
-- [ ] C++ acceleration with reference fallback;
-- [ ] WAV render with 1, 2, 4, 8, 16, and larger part counts;
-- [ ] DJ Boost Hit remains audible when explicitly enabled;
-- [ ] GOAVA Pair Morph remains reversible and deterministic;
-- [ ] per-voice filter/resonator settings survive save/load;
-- [ ] no unconditional master EQR/PKP/PED envelope stage appears in the final waveform path;
-- [ ] imported media is accepted according to ffmpeg decoder capability;
-- [ ] initial track-step offset survives canonical fingerprinting and project reload.
+`P_j = M^(j−6),   j = 0,…,35`
 
-## 22. Final verification checklist
+and the slot coordinate uses the dense project-defined phase position
 
-Before shipping an export-ready build:
+`u_i = (3 i M) mod 36`.
 
-- [ ] Python syntax passes.
-- [ ] C++ shared library builds on the target OS.
-- [ ] Native symbols load.
-- [ ] Native/reference audio tests match.
-- [ ] OT tensor-equivalence tests match.
-- [ ] Seed normalizer tests pass.
-- [ ] Partitioned WAV render concatenates bit-identically to the unpartitioned reference.
-- [ ] Partitioned video preserves frame order and final duration.
-- [ ] ffmpeg + ffprobe are discoverable locally.
-- [ ] Media import accepts codec-supported formats.
-- [ ] Initial track offset is serialized and restored.
-- [ ] Game record/replay reproduces canonical world identity.
-- [ ] Provenance/fingerprint survives export/import.
-- [ ] Fresh-launch provisioning creates `bin/` and native directories without manual debugging.
+If `j = floor(u_i)` and `r = u_i − j`, the interpolated lattice factor is
+
+`L_i = (1−r) P_j + r P_(j+1 mod 36)`.
+
+This is a deterministic geometric mapping. “Dense” here means the use of a
+non-rational-looking project constant is intended to avoid a short visual
+period; it should not be read as a proof of equidistribution.
+
+### 18.3 Meum normalization
+
+The standard normalized weight is
+
+`N_M = (M−1)/M`.
+
+A Meum-weighted pair can be written
+
+`F_M(a,b) = N_M a + (1−N_M)b`.
+
+The canonical `isn` implementation uses this style of Meum blending in its EQR
+execution path; the exact implementation should be consulted when auditing a
+specific version.
+
+### 18.4 Meum phase rotation
+
+A slot phase reference is
+
+`φ_i = 2π i / 48`.
+
+A second deterministic phase coordinate used by the canonical translator is
+
+`ψ_i = τ ((i N_M Φ⁻¹) mod 1)`.
+
+These are coordinates, not random numbers. They are reproducible from `i` and
+the public constants.
+
+### 18.5 GOAVA irrational-sampling example
+
+For continuous time `t`, base frequency `f_b`, and channel `c`, the project uses
+
+`s(t) = 0.5 f_b M⁻¹ t`.
+
+A seed-list contribution has the form
+
+`C_v(t) = [1 + cos(β_v + (π/2)(|v|+|n|)s(t))] / (N + |n−v|)`
+
+with the zero-valued seed entry receiving the additional `s(t)` term in its
+base phase. The stream is then formed from the note/reference difference and a
+fixed Meum-family gain. The important user-facing property is that the stream is
+seeded and continuous in `t`; it is not an RNG call in the audio callback.
+
+## 19. OPERATOR THEORY (OT) — COMPLETE PROJECT MATH REFERENCE
+
+**OT THEORY — CLAIMED EXACT.** Operator Theory is the project's alternative
+arithmetic vocabulary. In canonical paths it is primarily an execution/notation
+layer around deterministic scalar operations. The word “exact” means “exact
+according to the project's stated OT rules and regression contract,” not a claim
+that these rules replace ordinary arithmetic in established mathematics.
+
+### 19.1 OT band function
+
+For `x`, let `a=|x|`. The project's band selector is
+
+`B(x) = 1,  if a≤1;  2, if 1<a≤2;  3, if 2<a≤3;  1, if a>3.`
+
+### 19.2 OT addition and subtraction
+
+Let `b` be the band of the operand with the greater magnitude. Then
+
+`OT_ADD(n,v) = n+v + 0.5 B`, when `n+v ≥ 0`,
+
+and
+
+`OT_ADD(n,v) = n+v − 0.5 B`, when `n+v < 0`.
+
+Subtraction is defined by the project's directional rule; otherwise it routes
+through `OT_ADD(n,−v)`.
+
+### 19.3 OT multiplication
+
+Magnitude is ordinary multiplication:
+
+`|OT_MUL(a,b)| = |a b|`.
+
+The project's sign rule is intentionally nonstandard. **The implementation is
+the authoritative definition**: positive×positive returns `+|ab|`; negative×negative
+returns `−|ab|`; unlike signs return `−|ab|`. The special identity is `OT_MUL(0,0)=1`, while zero with a nonzero
+operand returns `0`.
+
+### 19.4 OT powers and roots
+
+For power,
+
+`OT_POW(b,e) = s |b|^|e|`,
+
+where `s=+1` when `b` and `e` have the same sign convention and `s=−1`
+otherwise. This is a project-defined signed-power rule.
+
+Roots use ordinary magnitude roots with the project's real-sign convention.
+Undefined real-domain cases remain undefined rather than being silently
+reinterpreted as ordinary positive magnitudes.
+
+### 19.5 OT division and zero
+
+For nonzero denominator,
+
+`|OT_DIV(a,b)| = |a|/|b|`, with the sign taken from `a`.
+
+The project defines `0/0 = 1` in OT mode. Division by zero for nonzero `a` uses
+the project's large finite sentinel convention. This is a compatibility rule,
+not ordinary field arithmetic.
+
+### 19.6 OT phase operator
+
+The integer phase marker is
+
+`OT_I_PHASE(x,k) = −x` for even `k`, and `+x` for odd `k`.
+
+It is used as a symbolic orientation marker and is not intended to introduce a
+new complex-valued audio stream by itself.
+
+### 19.7 `isn` and `ics`
+
+The canonical book-form definitions are
+
+`isn(θ) = 2 sin(θ/2)`
+
+`isn⁻¹(y) = 2 arcsin(y/2)` on the real principal domain, and
+
+`ics(θ) = 2 cos(θ/2)`
+
+`ics⁻¹(y) = 2 arccos(y/2)` on the real principal domain.
+
+The inverse functions necessarily have a real-domain requirement `|y/2|≤1`.
+That mathematical domain restriction is not a claim about audio clipping; it is
+the domain of the inverse function.
+
+### 19.8 EQR reality tensor
+
+The project uses the following documented EQR form for sequences indexed by `n`:
+
+`P = (1/k) Σ[n=0..k] isn⁻¹((isn(d_n)+isn(t))/2)`
+
+`E = (1/k) Σ[n=0..k] isn(θ_n)/d_n`
+
+`D = (1/k) Σ[n=0..k] isn⁻¹(isn(θ_n) E/(I P))`
+
+`Z = P E + D`
+
+with the project constant `I = 134964356` as its finite-infinity reference.
+
+These equations describe the project's model. They do not establish a physical
+law or a mathematically proven theory of reality.
+
+## 20. CANONICAL NUMBER-THEORY / CONGRUENCE CLAIMS — WHAT “CLAIMED EXACT” MEANS
+
+The project may label a canonical generation **CLAIMED EXACT** when the claim is
+restricted to the following reproducible implementation contract:
+
+1. The same canonical inputs are serialized in the same order.
+2. The same public constants are used.
+3. The same deterministic formulas and integer/index rules are applied.
+4. The same canonical state fingerprint is regenerated.
+5. Regression tests compare the resulting canonical records or buffers.
+
+This supports a claim of **implementation-level deterministic correctness under
+the tested contract**. It does not justify the stronger statement that the
+software has proved new number theory, proved that MEUM is irrational, or proved
+perfect congruence for all possible future inputs.
+
+For modular indexing, the ordinary congruence notation is
+
+`a ≡ b (mod n)  ⇔  n | (a−b)`.
+
+For a cyclic slot permutation
+
+`p(i) = (a i + b) mod n`,
+
+a sufficient condition for a bijection over the residue classes is
+
+`gcd(a,n)=1`.
+
+This is an established finite-number-theory fact and can be used as a real
+correctness statement when the implementation follows it. A project-specific
+lattice built from MEUM should instead be described as a deterministic mapping
+unless a separate proof establishes stronger properties.
+
+### Reference-only scripting constants
+
+The following names are intentionally exposed for inspection and scripting:
+
+`MEUM`, `MEUM_CONSTANT`, `MEUM_INV`, `MEUM_MINUS_1`, `MEUM_SQ`, `MEUM_CUBE`,
+`MEUM_FOURTH`, `MEUM_NORM`, `MEUM_OVER_1_5`, `MEUM_TWO_POW`,
+`MEUM_TWO_POW_OVER_SQ`, `MEUM_LOG2`, `MEUM_UNISON_STEP_FACTOR`, `MEUM_POWERS_36`,
+`INSTRUMENT_PHASE_LOCK_48`, `PHI`, `PHI_INV`, `PI_IRR`, `E_IRR`, `SQRT2`,
+`SQRT3`, and `SILVER`.
+
+They are reference values, not hidden controls. Scripts should read them rather
+than duplicating rounded literals when reproducibility matters.
+
+## 21. UNISON MASTER TRANSFORM — FORMULA AND PRACTICAL EXAMPLE
+
+The canonical full-unison idea is identity cancellation: every active voice is
+translated from the same shared context rather than receiving an independent
+random identity.
+
+A useful abstract form is
+
+`U_i = T(C, i, E)`
+
+where `C=(seed, base, ratio, s_int, sequential_nums)` is the canonical context,
+`i` is the roster slot, and `E` is the set of active engine flags.
+
+Outside full unison, the pitch carrier uses the lattice factor `L_i`:
+
+`f_i = base · L_i · r_i`.
+
+Inside full unison, the canonical translator uses the shared base and ratio:
+
+`f_i = base · ratio`.
+
+The shared entropy coordinate is derived from the canonical entropy function;
+the phase reference is shared rather than independently randomized. The result
+is intended to be an ensemble identity rather than 48 unrelated oscillators.
+
+### A reference scripting recipe
+
+```python
+# Inspect the canonical constants
+M = MEUM
+invM = MEUM_INV
+phi = PHI
+
+# Reproduce the unison step coordinate for slot i
+u = (3*i*M) % 36
+
+# Continuous GOAVA coordinate
+s = 0.5 * base_frequency * invM * t
+
+# A compact master modulation
+master = isn(t*M) * (M - 1) / M + ics(t*phi) * (1 - (M - 1)/M)
+return master
+```
+
+The recipe is for reference and experimentation. It does not promise that a
+user script reproduces every internal voice parameter unless it uses the same
+canonical function and state inputs as the implementation.
+
+## 22. VERIFICATION, REDISTRIBUTION, AND NUMERICAL BOUNDARIES
+
+### 22.1 What should be verified before redistribution
+
+- Python syntax compiles.
+- The root `groovebox.py`, `README.md`, and `HELP_TEXT.md` contain the same
+  mathematical documentation where duplication is intentional.
+- Public constants are present in the script namespace and reference evaluator.
+- Canonical generation is deterministic for fixed serialized input.
+- Canonical fingerprints remain stable across save/load.
+- Python/reference and native implementations agree where the release contract
+  requires parity.
+- Nested redistribution archives contain the refreshed files.
+
+### 22.2 No hidden canonical clamp
+
+The canonical frequency-reference helper is intentionally transparent: it does
+not silently force a requested mathematical frequency into a fixed audible
+interval. Explicit instrument/effect constraints are separate from the
+reference transform.
+
+A file-format conversion can still impose a representation limit. For example,
+integer PCM encoding has a finite numeric range. That is a property of the target
+file representation, not a hidden mathematical clamp in the canonical transform.
+
+Likewise, an inverse such as `arcsin(y/2)` has a mathematical domain. A caller
+that supplies an out-of-domain value has supplied an undefined real input; this
+must not be described as evidence that the canonical forward transform is
+clamping its output.
+
+### 22.3 Redistribution rule
+
+Every nested archive included in a redistribution package is a distribution
+artifact, not a separate source of truth. When source documentation or
+`groovebox.py` changes, refresh every nested ZIP/TAR.GZ that contains those files
+and verify that its contents match the outer package.
+
+The release phrase **CLAIMED EXACT** therefore means:
+
+> exact with respect to the project's declared formulas, constants, serialization,
+> and tested deterministic implementation contract; approximate/potential with
+> respect to broader mathematical or physical truth.
+
+That distinction should remain in public documentation so users can reproduce
+results without mistaking a project claim for an independently proved theorem.
 
 ---
 
 ## License / project policy
 
-Keep the project-specific license and attribution files supplied with the distribution. This README describes implementation behavior; it is not a scientific claim that the mathematical metaphors used by the project constitute established mathematics. Where a result is called “proven,” the project should include a reproducible numerical test and raw-output comparison.
+Keep the project-specific license and attribution files supplied with the distribution.
+This README describes implementation behavior and project-defined mathematics. It
+must not be read as a scientific claim that Meum calculus or Operator Theory is an
+established mathematical theory. Established number-theory statements should be
+limited to statements that follow from ordinary definitions and proofs; project
+specific claims should remain explicitly labeled **CLAIMED EXACT** and tied to a
+reproducible test contract.
