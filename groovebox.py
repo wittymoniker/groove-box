@@ -409,7 +409,16 @@ def eqr_tensor_audio(sample, d_char, theta_char, t=0.0):
         Z = P·E + D
 
     Same identities as the book; O(1) per sample after one sliding-window pass.
+    Hybrid: Julia acceleration when available.
     """
+    try:
+        from julia_bridge import jl_eqr_tensor_audio, julia_available
+        if julia_available():
+            r = jl_eqr_tensor_audio(sample, d_char, theta_char, t)
+            if r is not None:
+                return r
+    except Exception:
+        pass
     d = abs(float(d_char)) + 1e-9
     th = float(theta_char)
     tt = float(t)
@@ -2218,6 +2227,7 @@ class MeumModulatedOscillator:
         Render a continuous block.
 
         Phase is persistent across calls.
+        Hybrid: prefer Julia Meum kernel when GROOVEBOX_JULIA=1 and available.
         """
 
         n = int(num_samples)
@@ -2227,6 +2237,20 @@ class MeumModulatedOscillator:
                 0,
                 dtype=np.float32,
             )
+
+        # --- Julia hybrid fast path ---
+        try:
+            from julia_bridge import render_meum_oscillator, julia_available, set_julia_operator_theory
+            if julia_available():
+                set_julia_operator_theory(bool(OP_THEORY_ENABLED))
+                jl_out = render_meum_oscillator(
+                    self, n, amplitude=amplitude, frequency=frequency
+                )
+                if jl_out is not None:
+                    return jl_out
+        except Exception:
+            pass
+        # --- pure Python fallback ---
 
         if frequency is not None:
             self.frequency = max(
@@ -20018,6 +20042,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.update()  # Trigger repaint
         self._scope_update_timer.setInterval(33)
         self._scope_update_timer.timeout.connect(self._update_scope_from_playhead)
+        # Always-on UI monitor timer: scenograph + spectrum stay live while
+        # programming, BOOST BEATS, and keyboard hits — not only during PLAY.
+        self._live_monitor_dirty = False
+        self._live_monitor_timer = QTimer(self)
+        self._live_monitor_timer.setInterval(50)  # ~20 FPS idle/live activity
+        self._live_monitor_timer.timeout.connect(self._update_live_monitors_always)
+        self._live_monitor_timer.start()
         QTimer.singleShot(0, self._sync_square_visuals)
         QTimer.singleShot(120, self._sync_square_visuals)
         self._last_scope_chunk = np.zeros(100, dtype=np.float32)
@@ -20413,6 +20444,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
             outdata.fill(0.0)
             outdata[:, 0] = mix
+            # Keep monitors in sync with live boost/keyboard poly stream
+            try:
+                if frames >= 64:
+                    self._last_scope_chunk = mix[::max(1, frames // 100)][:100].copy()
+                    self._live_monitor_dirty = True
+                elif frames > 0:
+                    pad = np.zeros(100, dtype=np.float32)
+                    pad[: min(100, frames)] = mix[: min(100, frames)]
+                    self._last_scope_chunk = pad
+                    self._live_monitor_dirty = True
+            except Exception:
+                pass
         except Exception:
             outdata.fill(0.0)
 
@@ -20454,7 +20497,46 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception as e:
             print(f"[PKP Poly64] stream error: {e}")
 
+
+    def _feed_live_monitors(self, wave_data, status_text=None, playhead=None):
+        """Push any live audio activity to scope, Meum Spectrum, and Scenograph.
+
+        Used by transport playback, BOOST BEATS, keyboard hits, and Trigger All
+        so the monitors stay live outside of full audiovisual playback.
+        """
+        try:
+            if wave_data is None:
+                return
+            arr = np.asarray(wave_data, dtype=np.float32).ravel()
+            if arr.size == 0:
+                return
+            # Keep a compact 100-sample window for meters + scenograph.
+            if arr.size >= 100:
+                chunk = arr[::max(1, arr.size // 100)][:100].copy()
+            else:
+                chunk = np.zeros(100, dtype=np.float32)
+                chunk[:arr.size] = arr
+            self._last_scope_chunk = chunk
+            self._live_monitor_dirty = True
+            if isinstance(getattr(self, "visual_oscilloscope", None), VisualOscilloscope):
+                self.visual_oscilloscope.update_waveform(chunk)
+            if getattr(self, "spectrum_analyzer", None) is not None:
+                try:
+                    self.spectrum_analyzer.update_spectrum(arr if arr.size >= 64 else chunk)
+                except Exception:
+                    pass
+            if getattr(self, "video_synth_viewer", None) is not None:
+                try:
+                    self.video_synth_viewer.update_from_audio(chunk, playhead=playhead)
+                except Exception:
+                    pass
+            if status_text and hasattr(self, "scope_status_label"):
+                self.scope_status_label.setText(str(status_text))
+        except Exception:
+            pass
+
     def _pkp_fire_step_hit(self, inst_name, step_idx, amp=1.0):
+
         """Generate a short percussive hit for the active pad and push it to scope (+ optional audio)."""
         try:
             sr = 44100
@@ -20552,14 +20634,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 hit *= target_rms / hit_rms
             hit *= float(getattr(self, 'master_volume', 1.0))
 
-            # Scope preview
-            if isinstance(getattr(self, 'visual_oscilloscope', None), VisualOscilloscope):
-                idx = np.linspace(0, len(hit) - 1, 100).astype(int)
-                self.visual_oscilloscope.update_waveform(hit[idx])
-                if hasattr(self, 'scope_status_label'):
-                    self.scope_status_label.setText(
-                        f"📊 PKP Hit  ·  {inst_name[:18]}  STEP {step_idx+1}  ·  {freq:.1f} Hz"
-                    )
+            # Live monitors: waveform + Meum Spectrum + scenograph (not only during PLAY)
+            self._feed_live_monitors(
+                hit,
+                status_text=f"📊 PKP Hit  ·  {inst_name[:18]}  STEP {step_idx+1}  ·  {freq:.1f} Hz",
+            )
 
             # Dedicated polyphonic audition stream: never replace an existing note.
             if HAS_SOUNDDEVICE:
@@ -23524,9 +23603,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 freq = 44.0 * MEUM_POWERS_36[i % 36]
                 env = np.exp(-t / 0.03)
                 mix += (0.15 * env * np.sin(2 * np.pi * freq * t)).astype(np.float32)
-            if isinstance(getattr(self, 'visual_oscilloscope', None), VisualOscilloscope):
-                idx = np.linspace(0, len(mix) - 1, 100).astype(int)
-                self.visual_oscilloscope.update_waveform(mix[idx])
+            self._feed_live_monitors(
+                mix,
+                status_text="📊 Trigger All — global instrument hit",
+            )
             if HAS_SOUNDDEVICE:
                 sd.play(mix, sr, blocking=False)
             print("[DJ] Trigger All — global instrument hit")
@@ -28603,7 +28683,49 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self._transport_finished = True
                 self._composition_generation_guard = False
                 return
+
+    def _update_live_monitors_always(self):
+        """UI-thread: keep Meum Spectrum + Scenograph live while programming.
+
+        - During PLAY the transport scope timer owns the high-rate path.
+        - Otherwise, refresh from the latest activity chunk (boost / keyboard /
+          trigger-all / poly mix) and keep the scenograph animating so it stays
+          visible and responsive while editing the UI.
+        """
+        try:
+            if getattr(self, "is_playing", False):
+                return  # transport path owns monitors during playback
+            chunk = getattr(self, "_last_scope_chunk", None)
+            if chunk is None:
+                return
+            # Spectrum + scenograph when there was recent audio activity
+            dirty = bool(getattr(self, "_live_monitor_dirty", False))
+            if dirty:
+                self._live_monitor_dirty = False
+                if getattr(self, "spectrum_analyzer", None) is not None:
+                    try:
+                        self.spectrum_analyzer.update_spectrum(chunk)
+                    except Exception:
+                        pass
+                if isinstance(getattr(self, "visual_oscilloscope", None), VisualOscilloscope):
+                    try:
+                        self.visual_oscilloscope.update_waveform(chunk)
+                    except Exception:
+                        pass
+            # Scenograph always ticks so geometry stays live while programming
+            if getattr(self, "video_synth_viewer", None) is not None:
+                try:
+                    # Re-push last wave (or zeros) so engine time advances / frames refresh
+                    self.video_synth_viewer.update_from_audio(chunk)
+                except Exception:
+                    pass
+            # Keep square layout healthy if the user is resizing / docking panels
+            # (cheap no-op when sizes are unchanged)
+        except Exception:
+            pass
+
     def _update_scope_from_playhead(self):
+
         """UI-thread timer: feed waveform, scenograph, and FFT spectrum during live play."""
         if not self.is_playing:
             if not getattr(self, "_stop_requested", False):
