@@ -1195,19 +1195,7 @@ def seed_script_channels(seed_script, t=0.0):
     import ast as _ast, re as _re
     raw = str(seed_script or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     env = {k: getattr(math, k) for k in dir(math) if not k.startswith("_")}
-    env.update({
-        "zeta": lambda q: sum(1.0/(k**max(1.000001,float(q))) for k in range(1,65)),
-        "eta": lambda q: sum(((-1.0)**(k-1))/(k**max(0.05,float(q))) for k in range(1,97)),
-        "dirichlet_l": lambda q, mod=3: sum((0.0 if k%max(2,int(abs(mod)))==0 else (1.0 if (k%max(2,int(abs(mod))))%2 else -1.0))/(k**max(0.05,float(q))) for k in range(1,97)),
-        "lfunction": lambda q, mod=3: sum((0.0 if k%max(2,int(abs(mod)))==0 else (1.0 if (k%max(2,int(abs(mod))))%2 else -1.0))/(k**max(0.05,float(q))) for k in range(1,97)),
-    })
     env.update({"t": float(t), "MEUM": MEUM, "PHI": PHI, "pi": math.pi, "tau": math.tau, "abs": abs, "min": min, "max": max, "sum": sum, "range": range})
-    env.update({
-        "zeta": lambda q: sum(1.0/(k**max(1.000001,float(q))) for k in range(1,65)),
-        "eta": lambda q: sum(((-1.0)**(k-1))/(k**max(0.05,float(q))) for k in range(1,97)),
-        "dirichlet_l": lambda q, mod=3: sum((0.0 if k%max(2,int(abs(mod)))==0 else (1.0 if (k%max(2,int(abs(mod))))%2 else -1.0))/(k**max(0.05,float(q))) for k in range(1,97)),
-        "lfunction": lambda q, mod=3: sum((0.0 if k%max(2,int(abs(mod)))==0 else (1.0 if (k%max(2,int(abs(mod))))%2 else -1.0))/(k**max(0.05,float(q))) for k in range(1,97)),
-    })
     env.update({
         "zeta": lambda q: sum(1.0/(k**max(1.000001,float(q))) for k in range(1,65)),
         "eta": lambda q: sum(((-1.0)**(k-1))/(k**max(0.05,float(q))) for k in range(1,97)),
@@ -1236,12 +1224,7 @@ def seed_script_channels(seed_script, t=0.0):
         if x is None and len(vals)>=2: x,y=vals[0],vals[1]; z=vals[2] if len(vals)>=3 else z
         x,y,z=float(x or 0),float(y or 0),float(z or 0)
         scalar=(0.50*x+0.35*y+0.15*z)/(1+0.50*abs(x)+0.35*abs(y)+0.15*abs(z)) if (x or y or z) else (float(vals[0]) if vals else 0.0)
-        channels={"radial":math.sqrt(x*x+y*y+z*z),"angle":math.atan2(y,x),"orbit":0.0,"escape":1.0,"zeta":0.0,"eta":0.0,"lfunction":0.0,"curvature":math.tanh(abs(x*y+y*z+z*x)),"energy":math.tanh(0.5*(x*x+y*y+z*z)),"phase":math.fmod(float(t)+math.atan2(y,x),math.tau)}
-        # Every user variable remains routable, not just x/y/z.
-        for k,vv in vars_.items():
-            channels[k]=float(vv)
-        channels["variables"]=sum(math.tanh(vv) for kk,vv in vars_.items() if kk not in ("x","y","z"))/max(1,len(vars_))
-        return {"scalar":scalar,"x":x,"y":y,"z":z,"values":vals,"vars":vars_,"channels":channels}
+        return {"scalar":scalar,"x":x,"y":y,"z":z,"values":vals}
     except Exception:
         return {"scalar":0.0,"x":0.0,"y":0.0,"z":0.0,"values":[]}
 
@@ -1727,26 +1710,18 @@ class MusicBed:
         if self.dj_random:
             self.dj = (self.dj + 0.15 * vg_sin(self.phase * PHI + self._algo_spin)) % 1.0
         try:
-            _scm = seed_script_channels(COMPOSITION_META.get("seed_script", ""), self.phase / math.tau)
-            _seed_drive = float(_scm["scalar"])
-            _chm = dict(_scm.get("channels") or {})
-            _math_drive = (0.10*math.tanh(float(_chm.get("orbit",0.0))) + 0.08*math.tanh(float(_chm.get("curvature",0.0))) + 0.06*math.tanh(float(_chm.get("zeta",0.0))) + 0.06*math.tanh(float(_chm.get("lfunction",0.0))))
+            _seed_drive = float(seed_script_channels(COMPOSITION_META.get("seed_script", ""), self.phase / math.tau)["scalar"])
         except Exception:
-            _seed_drive = 0.0; _math_drive = 0.0
-        # Named seed variables are direct cross-media controls.
-        _pitch_route = float(_chm.get("pitch", 0.0) or 0.0)
-        _amp_route = float(_chm.get("amplitude", 0.0) or 0.0)
-        _rate_route = float(_chm.get("rate", 0.0) or 0.0)
-        g = self.mix * vg_sin(self.phase * (1.0 + self._algo_spin + 0.15*math.tanh(_rate_route)) * MEUM)
+            _seed_drive = 0.0
+        g = self.mix * vg_sin(self.phase * (1.0 + self._algo_spin) * MEUM)
         # Harmonic lattice: phase0-offset fundamental + entropy-scaled partials
-        ph = self.phase * (1.0 + 0.12*math.tanh(_rate_route)) + self._phase0
+        ph = self.phase + self._phase0
         sample = 0.0
         for k in range(self._n_partials):
             sample += self._amps[k] * vg_sin(ph * self._ratios[k])
         sample *= (0.65 + 0.55 * self.dj)
         sample += 0.22 * g
-        sample *= (1.0 + 0.16 * _seed_drive + _math_drive)
-        sample *= max(0.0, 1.0 + 0.22*math.tanh(_amp_route))
+        sample *= (1.0 + 0.16 * _seed_drive)
         # MASTER BUS (host-matching doctrine): a plain MASTER VOLUME multiplier
         # followed by a HARD CLIP to [-1, +1]. No tanh soft-clip / soft
         # normalizer anywhere — the user-controlled master volume is the
@@ -2578,6 +2553,7 @@ class NetTransport:
 
 class Game:
     def __init__(self, host_mode=False, port=None, connect=None):
+        self.meta = dict(COMPOSITION_META or {}) if isinstance(COMPOSITION_META, dict) else {}
         self.id = IDENTITY
         self.online = bool(self.id.get("online"))
         self.host_mode = bool(host_mode) and self.online
@@ -4973,8 +4949,7 @@ def instant_video_frame(seed, t=0.0, w=320, h=180, *,
         _seq = list(sequential_nums or []) or [float(seed)]
         try:
             _sc = seed_script_channels(seed_script if seed_script is not None else (COMPOSITION_META.get("seed_script", "") if "COMPOSITION_META" in globals() else ""), t)
-            _chv = dict(_sc.get("channels") or {})
-            _seq = [float(_sc["x"]), float(_sc["y"]), float(_sc["z"]), float(_sc["scalar"])] + [float(_chv.get(k,0.0)) for k in ("radial","angle","orbit","escape","zeta","eta","lfunction","curvature","energy","phase","pitch","amplitude","density","rate","depth","warp","hue","zoom","scale","rotation","feedback","roughness","fractal","variables")] + _seq
+            _seq = [float(_sc["x"]), float(_sc["y"]), float(_sc["z"]), float(_sc["scalar"])] + _seq
         except Exception:
             pass
         _ph = 0
@@ -4992,9 +4967,8 @@ def instant_video_frame(seed, t=0.0, w=320, h=180, *,
     rr = _np.sqrt(xx * xx + yy * yy) + 1e-6
     ang = _np.arctan2(yy, xx)
     wave = _np.sin(ang * (2.0 + 3.0 * grid) + float(t) * spin * math.tau
-                   + field["u"] * math.tau + float(_yf) + 0.7*float(_mc_now.get("phase",0.0)) + 0.45*float(_mc_now.get("lfunction",0.0))) * 0.5 + 0.5
-    ring_center = 0.35 + 0.25 * field["rho"] + 0.08*math.tanh(float(_mc_now.get("radial",0.0)))
-    ring = _np.exp(-((rr - ring_center) ** 2) / (0.08 + 0.12 * field["energy"]))
+                   + field["u"] * math.tau + float(_yf)) * 0.5 + 0.5
+    ring = _np.exp(-((rr - (0.35 + 0.25 * field["rho"])) ** 2) / (0.08 + 0.12 * field["energy"]))
     # Activity-class lattice overlay
     lat = _np.sin(xx * (6.0 + 8.0 * grid) + float(t) * 0.7) * _np.sin(yy * (6.0 + 8.0 * grid) - float(t) * 0.5)
     lat = (lat * 0.5 + 0.5) * (0.25 + 0.55 * grid)
@@ -5008,25 +4982,15 @@ def instant_video_frame(seed, t=0.0, w=320, h=180, *,
     _fy = yy * (3.0 + 3.0 * grid) - _c
     fractal_bands = _np.abs(_np.sin(_fx + _fy * PHI + float(_yf) * math.tau + float(t) * 0.15 * spin))
     fractal_bands = fractal_bands ** 0.5  # widen/brighten the bright bands
-    # Named mathematical controls: the same variables that drive the music
-    # also drive camera/field density, zoom, warp, feedback and hue.
-    _depth = float(_chv.get("depth", 0.0) or 0.0)
-    _warp = float(_chv.get("warp", 0.0) or 0.0)
-    _zoom = float(_chv.get("zoom", 0.0) or 0.0)
-    _density = float(_chv.get("density", 0.0) or 0.0)
-    _feedback = float(_chv.get("feedback", 0.0) or 0.0)
-    _hue = float(_chv.get("hue", 0.0) or 0.0)
-    wave = _np.sin(ang * (2.0 + 3.0 * grid + 1.5*math.tanh(_density)) + float(t) * spin * math.tau + field["u"] * math.tau + float(_yf) + 0.7*float(_mc_now.get("phase",0.0)) + 0.45*float(_mc_now.get("lfunction",0.0)) + 0.6*math.tanh(_warp)) * 0.5 + 0.5
-    fractal_bands = fractal_bands * (0.75 + 0.35*math.tanh(abs(_depth)))
     val = _np.clip(
         0.15 + 0.55 * wave * field["energy"] + 0.45 * ring + 0.25 * lat
         + 0.35 * fractal_bands,
         0.0, 1.0,
     )
     # HSV → RGB (lightweight)
-    h_norm = ((hue0 / 360.0) + 0.08 * wave + 0.05 * field["u"] + 0.10 * fractal_bands + 0.08*math.tanh(_hue)) % 1.0
+    h_norm = ((hue0 / 360.0) + 0.08 * wave + 0.05 * field["u"] + 0.10 * fractal_bands) % 1.0
     s_norm = _np.clip(0.45 + 0.40 * field["rho"] + 0.15 * rms_safe(audio_rms) + 0.15 * fractal_bands, 0.0, 1.0)
-    v_norm = _np.clip(val * (1.0 + 0.12*math.tanh(_feedback)), 0.0, 1.0)
+    v_norm = val
     i = _np.floor(h_norm * 6.0).astype(_np.int32)
     f = h_norm * 6.0 - i
     p = v_norm * (1.0 - s_norm)
@@ -7530,26 +7494,6 @@ were live this session.
 """
 
 
-def seed_mandelbrot(cx, cy=0.0, n=32):
-    zx=zy=0.0; nn=max(1,min(256,int(n)))
-    for k in range(1,nn+1):
-        zx,zy=zx*zx-zy*zy+float(cx),2*zx*zy+float(cx)*0.0+float(cy)
-        if zx*zx+zy*zy>16.0: return float(k)/nn
-    return 1.0
-
-def seed_math_channels(t=0.0, x=0.0, y=0.0, z=0.0, values=None):
-    """Shared finite math channel bank for game/video/audio consumers."""
-    x,y,z=float(x or 0),float(y or 0),float(z or 0); vals=list(values or [])
-    radial=math.sqrt(x*x+y*y+z*z); angle=math.atan2(y,x); zx=zy=total=0.0; escaped=0
-    for k in range(1,25):
-        zx,zy=zx*zx-zy*zy+x,2*zx*zy+y; m=zx*zx+zy*zy; total+=math.tanh(math.sqrt(m))
-        if m>16: escaped=k; break
-    s=max(1.000001,abs(float(vals[0] if vals else x))+2.0); q=3
-    return {"radial":radial,"angle":angle,"orbit":max(0,min(1,total/24)),"escape":escaped/24 if escaped else 1.0,
-            "zeta":sum(1/(k**s) for k in range(1,65)),"eta":sum(((-1)**(k-1))/(k**s) for k in range(1,97)),
-            "lfunction":sum((0 if k%q==0 else (1 if (k%q)%2 else -1))/(k**s) for k in range(1,97)),
-            "curvature":math.tanh(abs(x*y+y*z+z*x)),"energy":math.tanh(.5*(x*x+y*y+z*z)),"phase":math.fmod(float(t)+angle,math.tau)}
-
 def seed_script_state(seed_script, t=0.0):
     """Evaluate a seed program into numeric variables and a returned vector."""
     import ast as _ast
@@ -7560,8 +7504,6 @@ def seed_script_state(seed_script, t=0.0):
         return {"values": [], "vars": {}}
     env = {k: getattr(math, k) for k in dir(math) if not k.startswith("_")}
     env.update({"t": float(t), "MEUM": MEUM, "PHI": PHI, "pi": math.pi, "tau": math.tau, "abs": abs, "min": min, "max": max, "sum": sum, "range": range})
-    env.update({"sum": sum, "range": range, "gamma": math.gamma, "lgamma": math.lgamma, "erf": math.erf, "erfc": math.erfc,
-                "sinc": lambda q: 1.0 if abs(float(q)) < 1e-12 else math.sin(float(q))/float(q), "mandelbrot": seed_mandelbrot})
     env.update({
         "zeta": lambda q: sum(1.0/(k**max(1.000001,float(q))) for k in range(1,65)),
         "eta": lambda q: sum(((-1.0)**(k-1))/(k**max(0.05,float(q))) for k in range(1,97)),
@@ -7577,17 +7519,11 @@ def seed_script_state(seed_script, t=0.0):
             body[-1] = f"_result = ({last})"
         local = dict(env); local["_result"] = None
         tree = _ast.parse("\n".join(body), mode="exec")
-        exec(compile(tree, "<game-seed>", "exec"), local, local)
+        exec(compile(tree, "<game-seed>", "exec"), {"__builtins__": {}}, local)
         result = local.get("_result"); vals = list(result) if isinstance(result, (list, tuple)) else ([result] if isinstance(result, (int, float)) else [])
         vals = [float(v) for v in vals if isinstance(v, (int, float)) and math.isfinite(float(v))]
         vars_ = {k: float(v) for k,v in local.items() if not k.startswith("_") and k not in env and isinstance(v,(int,float)) and math.isfinite(float(v))}
-        x0=vars_.get("x", vals[0] if len(vals)>0 else 0.0); y0=vars_.get("y", vals[1] if len(vals)>1 else 0.0); z0=vars_.get("z", vals[2] if len(vals)>2 else 0.0)
-        if x0 is None and vars_.get("r") is not None and vars_.get("theta") is not None:
-            x0=vars_["r"]*math.cos(vars_["theta"]); y0=vars_["r"]*math.sin(vars_["theta"])
-        _ch=seed_math_channels(t,x0,y0,z0,vals)
-        for kk,vv in vars_.items(): _ch[kk]=float(vv)
-        _ch["variables"]=sum(math.tanh(vv) for kk,vv in vars_.items() if kk not in ("x","y","z"))/max(1,len(vars_))
-        return {"values": vals, "vars": vars_, "channels": _ch}
+        return {"values": vals, "vars": vars_}
     except Exception:
         return {"values": [], "vars": {}}
 
@@ -7602,9 +7538,23 @@ def seed_script_channels(seed_script, t=0.0):
         x, y = vals[0], vals[1]; z = vals[2] if len(vals) >= 3 else z
     x, y, z = float(x or 0.0), float(y or 0.0), float(z or 0.0)
     scalar = (0.50*x + 0.35*y + 0.15*z) / (1.0 + 0.50*abs(x) + 0.35*abs(y) + 0.15*abs(z)) if (x or y or z) else (float(vals[0]) if vals else 0.0)
-    if v:
-        scalar += 0.08 * sum(math.tanh(float(vv)) for kk,vv in v.items() if kk not in ("x","y","z")) / max(1,len(v))
-    return {"scalar": float(scalar), "x": x, "y": y, "z": z, "values": vals, "vars": v, "channels": dict(st.get("channels") or seed_math_channels(t,x,y,z,vals))}
+    radial = math.sqrt(x*x + y*y + z*z)
+    angle = math.atan2(y, x)
+    s_q = max(1.000001, abs(float(vals[0] if vals else x)) + 2.0)
+    mod = 3
+    channels = {
+        "radial": radial, "angle": angle,
+        "energy": math.tanh(0.5*(x*x+y*y+z*z)),
+        "curvature": math.tanh(abs(x*y+y*z+z*x)),
+        "phase": math.fmod(float(t)+angle, math.tau),
+        "zeta": sum(1.0/(k**s_q) for k in range(1,65)),
+        "eta": sum(((-1.0)**(k-1))/(k**s_q) for k in range(1,97)),
+        "lfunction": sum((0.0 if k%mod==0 else (1.0 if (k%mod)%2 else -1.0))/(k**s_q) for k in range(1,97)),
+    }
+    for key, value in v.items():
+        channels[key] = float(value)
+    channels["variables"] = sum(math.tanh(value) for key, value in v.items() if key not in ("x", "y", "z")) / max(1, len([key for key in v if key not in ("x", "y", "z")]))
+    return {"scalar": float(scalar), "x": x, "y": y, "z": z, "values": vals, "vars": v, "channels": channels}
 
 
 def triad_of(seed, identity=None) -> Dict[str, Any]:
