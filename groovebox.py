@@ -38,6 +38,7 @@ import math
 import ast
 import hashlib
 import copy
+from canonical_engine_bridge import project as _canonical_algo_project, game_payload as _canonical_game_payload
 import wave
 import time
 import json
@@ -4934,14 +4935,19 @@ class InstrumentVisualObject:
         pitch = float(np.clip(seq.get("pitch_mean", 1.0) / 2.0, 0.0, 1.0))
         ent = float(np.clip(c.get("entropy", 0.5), 0.0, 1.0))
         ratio = float(np.clip(abs(c.get("ratio", 1.0)) / 4.0, 0.0, 1.0))
+        gp = self.schema.get("global_algorithm", {}) or {}
+        ga = float(np.clip(gp.get("value", 0.0), -1.0, 1.0))
+        gam = float(np.clip(gp.get("mix", 0.0), 0.0, 1.0))
         return dict(morph=morph, hf=hf, chaos=chaos, fold=fold, lattice=lattice,
-                    steps=steps, amp=amp, pitch=pitch, ent=ent, ratio=ratio)
+                    steps=steps, amp=amp, pitch=pitch, ent=ent, ratio=ratio,
+                    global_algo=ga, global_algo_mix=gam)
 
     def color(self, phase, energy):
         v = self.vector()
         # Bright continuous spectrum: identity selects the hue family; harmonic
         # frequency/lattice/phase sweep within it; energy controls luminance.
-        hue = (360.0 * (self.identity + 0.31*v["hf"] + 0.17*v["lattice"] + phase / math.tau)) % 360.0
+        hue = (360.0 * (self.identity + 0.31*v["hf"] + 0.17*v["lattice"] + phase / math.tau
+                        + 0.08 * v["global_algo"] * v["global_algo_mix"])) % 360.0
         sat = float(np.clip(0.58 + 0.30*v["chaos"] + 0.08*v["lattice"], 0.0, 1.0))
         val = float(np.clip(0.62 + 0.32*energy + 0.06*v["ent"], 0.0, 1.0))
         return self.engine._hsv(hue, sat, val)
@@ -4953,6 +4959,7 @@ class InstrumentVisualObject:
         radial = 0.5 + 0.5 * math.sqrt(self.identity)
         angle0 = math.tau*self.identity + float(c.get("yaw", 0.0))
         phase = self.phase0 + t*(0.5 + 0.5*v["morph"] + 0.5*v["steps"])
+        phase += 0.45 * v["global_algo"] * v["global_algo_mix"]
         wobble = (0.0 + 0.5*v["chaos"]) * vg_sin(t*(0.5+2.0*v["fold"]) + self.identity*math.tau)
         cx = w*0.5 + vg_cos(angle0 + 0.5*vg_sin(t*0.5))*radial*w*0.70
         cy = h*0.5 + vg_sin(angle0*MEUM_INV + 0.5*vg_cos(t*0.5))*radial*h*0.5
@@ -4960,6 +4967,7 @@ class InstrumentVisualObject:
         harmonic_count = max(3, min(18, 3 + int(round(12*v["lattice"] + 4*v["fold"]))))
         band = float(bands[self.master_slot % len(bands)]) if len(bands) else 0.0
         scale *= 0.72 + 0.5*band + 0.5*abs(vg_sin(phase))
+        scale *= 1.0 + 0.12 * v["global_algo"] * v["global_algo_mix"]
         return cx, cy, max(2.0, scale), phase, harmonic_count, v, wobble
 
     def draw(self, img, w, h, t, energy, bands):
@@ -5870,7 +5878,13 @@ class VideoSynthEngine:
                 self._line(img, pts[k][0], pts[k][1], pts[(k + 1) % len(pts)][0], pts[(k + 1) % len(pts)][1], col, alpha)
 
     def _live_instrument_visual_schema(self, i, name, canonical):
-        """Resolve the complete live composition record for one instrument."""
+        """Resolve the complete live composition record for one instrument.
+
+        The Global Play algorithm is a canonical definition, not per-engine state.
+        When its scope is local-instrument, expose only the deterministic projection
+        for this instrument so the visual engine follows the same canonical source
+        as audio without duplicating the algorithm into visual state.
+        """
         app = getattr(self, "app", None)
         state = dict((getattr(app, "instrument_param_state", {}) or {}).get(name, {}) or {}) if app else {}
         seq = {}
@@ -5887,9 +5901,31 @@ class VideoSynthEngine:
         for row in playlist:
             if isinstance(row, dict) and str(row.get("operator", "")).strip() == str(name):
                 active_rows.append(row)
+        global_projection = {}
+        try:
+            if app is not None and hasattr(app, "_resolve_global_algo_for_instrument"):
+                gp = app._resolve_global_algo_for_instrument(name)
+                if gp and bool(gp.get("enabled", True)):
+                    times = np.asarray([float(getattr(self, "t", 0.0))], dtype=float)
+                    script = str(gp.get("script") or "")
+                    if script and bool((gp.get("params") or {}).get("enable_script", True)):
+                        val = float(app._evaluate_global_algo_curve(script, times, int(i))[0])
+                    else:
+                        val = 0.0
+                    mix = float((gp.get("params") or {}).get("mix", 0.35))
+                    amount = float((gp.get("params") or {}).get("script_amount", 1.0))
+                    global_projection = {
+                        "active": True, "value": float(np.clip(val, -1.0, 1.0)),
+                        "mix": float(np.clip(mix * amount, 0.0, 1.0)),
+                        "context_mode": str(gp.get("context_mode") or "instrument"),
+                        "canonical_ref": "global_algo_state",
+                    }
+        except Exception:
+            global_projection = {}
         return {
             "seed": float(self._canonical_ctx.get("seed", 0.0)),
             "phase": float(canonical.get("phase0", 0.0)),
+            "global_algorithm": global_projection,
             "patch": {
                 "morph": float(state.get("morph", 1.0)),
                 "harmonic_freq": float(state.get("harmonic_freq", canonical.get("base_freq", 432.0))),
@@ -6251,6 +6287,17 @@ class VideoSynthEngine:
         ctx = {"seed": seed, "base": base, "ratio": ratio, "s_int": s_int,
                "full_unison": fu, "n_inst": CANONICAL_MASTER_SLOTS,
                "meum_depth": 1.0, "sequential_nums": list(seq)}
+        try:
+            gas = (getattr(self.app, "global_algo_state", {}) or {}) if self.app is not None else {}
+            if isinstance(gas, dict):
+                ctx["global_algorithm"] = {
+                    "scope": str(gas.get("scope") or "global"),
+                    "context_mode": str(gas.get("context_mode") or "instrument"),
+                    "apply_enabled": bool(gas.get("apply_enabled", False)),
+                    "fingerprint": hashlib.sha256(json.dumps(gas, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16],
+                }
+        except Exception:
+            pass
         self._canonical_ctx = ctx
         self._canonical_flags = flags
         # Build the complete seed identity once.  Live Instrument Count later
@@ -7170,6 +7217,15 @@ class VideoSynthEngine:
         for i,p in enumerate(getattr(self, "_canonical", []) or []):
             objects.append({"id":i,"type":"instrument","x":p.get("x",0.0),"y":p.get("y",0.0),"z":p.get("z",0.0),"scale":p.get("pack",1.0),"rotation":p.get("yaw",0.0),"depth":p.get("depth",0.0),"role":"canonical_instrument"})
         seed=self._canonical_ctx.get("seed",0.0) if isinstance(getattr(self,"_canonical_ctx",None),dict) else 0.0
+        try:
+            ga = (getattr(self, "_canonical_ctx", {}) or {}).get("global_algorithm") or {}
+            if ga.get("apply_enabled") and ga.get("scope") == "local_instrument":
+                objects.append({"id":"global-local-canonical", "type":"canonical_algorithm",
+                                "role":"global_play_local_instrument",
+                                "scope":ga.get("scope"), "context_mode":ga.get("context_mode"),
+                                "fingerprint":ga.get("fingerprint")})
+        except Exception:
+            pass
         return _visual_composition_fingerprint(objects, seed=seed, abstraction="structural")
 
     def composition_snapshot(self, t=None):
@@ -15756,6 +15812,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "wire": [],
             "params": {"mix": 0.35, "enable_script": True, "enable_domain": True, "enable_wire": True, "script_amount": 1.0, "domain_amount": 1.0, "wire_amount": 1.0},
             "apply_enabled": False,
+            "scope": "global",
+            "context_mode": "ensemble",
+            "canonical_write": True,
             "user_data": True,
             "canonical_superwrite": True,
         }
@@ -19218,6 +19277,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
         apply_row.addWidget(self.btn_apply_algo_master, 1)
         gp_outer.addLayout(apply_row)
 
+        # CANONICAL_LOCAL_CONTEXT_2026 — one canonical algorithm can project
+        # into the active instrument without materializing 48 independent
+        # modulation/domain objects.
+        scope_row = QHBoxLayout()
+        scope_row.setSpacing(8)
+        scope_row.addWidget(QLabel("Canonical scope"))
+        self.gp_scope_combo = QComboBox()
+        self.gp_scope_combo.addItem("Global / Ensemble", "global")
+        self.gp_scope_combo.addItem("Local Instrument", "local_instrument")
+        self.gp_scope_combo.setCurrentIndex(1 if self.global_algo_state.get("scope") == "local_instrument" else 0)
+        self.gp_scope_combo.setToolTip("Global keeps one ensemble projection. Local Instrument resolves the same canonical algorithm against the active instrument context.")
+        scope_row.addWidget(self.gp_scope_combo, 1)
+        scope_row.addWidget(QLabel("Context"))
+        self.gp_context_combo = QComboBox()
+        self.gp_context_combo.addItem("Instrument", "instrument")
+        self.gp_context_combo.addItem("Instrument + Sequence", "instrument_sequence")
+        self.gp_context_combo.addItem("Canonical", "canonical")
+        self.gp_context_combo.setCurrentIndex({"instrument":0,"instrument_sequence":1,"canonical":2}.get(self.global_algo_state.get("context_mode","instrument"), 0))
+        self.gp_context_combo.setToolTip("Selects the local context used when resolving the canonical algorithm.")
+        scope_row.addWidget(self.gp_context_combo, 1)
+        gp_outer.addLayout(scope_row)
+
         # Script Algo — multi-line text
         gp_outer.addWidget(QLabel("Script Algo"))
         self.gp_script_field = QTextEdit()
@@ -19295,6 +19376,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             params["script_amount"] = self.gp_script_slider.value() / 100.0
             params["domain_amount"] = self.gp_domain_slider.value() / 100.0
             params["wire_amount"] = self.gp_wire_slider.value() / 100.0
+            self.global_algo_state["scope"] = self.gp_scope_combo.currentData() if hasattr(self, "gp_scope_combo") else self.global_algo_state.get("scope", "global")
+            self.global_algo_state["context_mode"] = self.gp_context_combo.currentData() if hasattr(self, "gp_context_combo") else self.global_algo_state.get("context_mode", "instrument")
+            self.global_algo_state["canonical_write"] = True
             self.global_algo_state["script"] = self.gp_script_field.toPlainText()
             self.global_algo_state["domain"] = self.gp_domain_field.text()
             hint_text = self._global_domain_hints(self.gp_domain_field.text())
@@ -19304,6 +19388,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.global_algo_state["apply_enabled"] = bool(self.btn_apply_algo_master.isChecked())
             self.global_algo_state["user_data"] = True
             self.global_algo_state["canonical_superwrite"] = True
+
+        def _refresh_algo_scope_ui(*_args):
+            local = hasattr(self, "gp_scope_combo") and self.gp_scope_combo.currentData() == "local_instrument"
+            self.btn_apply_algo_master.setText("▶ Apply Canonical Algo to Local Instrument" if local else "▶ Apply Algo to Master Mix")
+        if hasattr(self, "gp_scope_combo"):
+            self.gp_scope_combo.currentIndexChanged.connect(_refresh_algo_scope_ui)
+            _refresh_algo_scope_ui()
 
         def _apply_master_algo(checked=True):
             # PROJECT_UNDO_2026: applying/unapplying the Global Play algo is a
@@ -26461,6 +26552,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 _meum_ctx = _meum_ctx_raw if isinstance(_meum_ctx_raw, dict) else st
                 _fm_ratio, _pm_offset, _am_gain = meum_modulation_vectors(local_t, _meum_ctx)
 
+                # CANONICAL_LOCAL_CONTEXT_2026: resolve one canonical Global Play
+                # algorithm against the current instrument only. Nothing is copied
+                # into the modulation graph; the curve is a render-time projection.
+                try:
+                    _gas = getattr(self, "global_algo_state", {}) or {}
+                    if (str(_gas.get("scope") or "global") == "local_instrument"
+                            and bool(_gas.get("apply_enabled", False))):
+                        _ctx_mode = str(_gas.get("context_mode") or "instrument")
+                        _local_curve_n = min(256, max(16, len(local_t) // 64))
+                        _local_grid = np.linspace(float(local_t[0]) if len(local_t) else 0.0,
+                                                   float(local_t[-1]) if len(local_t) else 1.0,
+                                                   _local_curve_n)
+                        _script = str(_gas.get("script") or "")
+                        if _script and bool((_gas.get("params") or {}).get("enable_script", True)):
+                            _curve = self._evaluate_global_algo_curve(_script, _local_grid, op_idx)
+                            _curve = np.interp(local_t, _local_grid, _curve).astype(np.float32)
+                            _amt = float((_gas.get("params") or {}).get("script_amount", 1.0))
+                            _mix = float((_gas.get("params") or {}).get("mix", 0.35))
+                            _am_gain = _am_gain * (1.0 + 0.20 * max(0.0, min(1.0, _mix * _amt)) * _curve)
+                except Exception:
+                    pass
+
                 # FM: integrate the modulated instantaneous frequency into phase
                 # (canonical order is FM -> phase accumulator -> PM -> waveform).
                 _dt = float(local_t[1] - local_t[0]) if local_t.size > 1 else 0.0
@@ -29941,6 +30054,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Instrument count is recorded for UI only; classify ignores it.
         rnd_on = bool(getattr(self, "btn_local_randomize", None) and self.btn_local_randomize.isChecked())
         pl_on = bool(getattr(self, "btn_local_phase_lock", None) and self.btn_local_phase_lock.isChecked())
+        try:
+            local_projection = _canonical_game_payload(
+                gas, list(getattr(self, "instrument_names_48", []) or [])
+            ).get("local_projections", [])
+        except Exception:
+            local_projection = []
         return {
             "bpm": float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0,
             "seq_length": int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else 16,
@@ -29954,6 +30073,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "goava_group_phase": bool(getattr(self, "goava_active", False)),
             "global_algo": gas,
             "global_algo_fingerprint": algo_fp,
+            "global_algo_local_projection": local_projection,
             "step_algorithms": step_rows,
             "step_algorithm_fingerprint": step_algo_fingerprint,
             "live_dj_goava": bool(getattr(self, "live_dj_goava", False)),
@@ -30580,7 +30700,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             pass
         main = QVBoxLayout(window)
         banner = QLabel(
-            f"<b>{title}</b> — global-only · applies to <b>every instrument in parallel</b><br>"
+            f"<b>{title}</b> — canonical algorithm · global or local-context projection<br>"
             "<i>Does not read or write the composition seed.</i>"
         )
         banner.setWordWrap(True)
@@ -30634,10 +30754,23 @@ class MathematiciansGrooveboxApp(QMainWindow):
             names = list(getattr(self, "instrument_names_48", []) or [])
             src_box.addItems(names)
             tgt_box.addItems(names)
+            tgt_box.addItem("Script Variable…", "__script_variable__")
             detector_box = QComboBox()
             detector_box.addItems(["phase", "energy", "spectrum", "rms", "onset", "harmonic", "seed", "domain", "pair"])
-            question_edit = QLineEdit()
-            question_edit.setPlaceholderText("algorithmic question / target")
+            question_box = QComboBox()
+            question_box.addItems([
+                "How should canonical unison redistribute harmonic detail?",
+                "How should phase respond to energy?",
+                "How should domain shape the target?",
+                "What should this instrument emphasize?",
+                "Script Variable…",
+            ])
+            question_script_edit = QLineEdit()
+            question_script_edit.setPlaceholderText("script variable / expression")
+            question_script_edit.setVisible(False)
+            target_script_edit = QLineEdit()
+            target_script_edit.setPlaceholderText("script variable / expression")
+            target_script_edit.setVisible(False)
             subject_edit = QLineEdit()
             subject_edit.setPlaceholderText("algorithmic subject")
             weight = QDoubleSpinBox()
@@ -30655,9 +30788,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
             main.addLayout(form)
             sem = QHBoxLayout()
             sem.addWidget(QLabel("Detector")); sem.addWidget(detector_box, 1)
-            sem.addWidget(QLabel("Question")); sem.addWidget(question_edit, 2)
+            sem.addWidget(QLabel("Question")); sem.addWidget(question_box, 2)
+            sem.addWidget(question_script_edit, 2)
             sem.addWidget(QLabel("Subject")); sem.addWidget(subject_edit, 2)
             main.addLayout(sem)
+
+            target_var_row = QHBoxLayout()
+            target_var_row.addWidget(QLabel("Target variable")); target_var_row.addWidget(target_script_edit, 1)
+            target_var_row.addStretch(1)
+            main.addLayout(target_var_row)
+
+            def _toggle_question_script(idx):
+                question_script_edit.setVisible(question_box.currentText() == "Script Variable…")
+            def _toggle_target_script(idx):
+                target_script_edit.setVisible(tgt_box.currentData() == "__script_variable__")
+            question_box.currentIndexChanged.connect(_toggle_question_script)
+            tgt_box.currentIndexChanged.connect(_toggle_target_script)
             log = QTextEdit()
             log.setReadOnly(True)
             wires = self.global_algo_state.get("wire") or []
@@ -30679,15 +30825,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
             def _add():
                 self.global_algo_state.setdefault("wire", []).append({
                     "source": src_box.currentText(),
-                    "target": tgt_box.currentText(),
+                    "target": target_script_edit.text() if tgt_box.currentData() == "__script_variable__" else tgt_box.currentText(),
+                    "target_mode": "script_variable" if tgt_box.currentData() == "__script_variable__" else "instrument",
                     "weight": float(weight.value()),
                     "detector": detector_box.currentText(),
-                    "question": question_edit.text(),
+                    "question": question_script_edit.text() if question_box.currentText() == "Script Variable…" else question_box.currentText(),
+                    "question_mode": "script_variable" if question_box.currentText() == "Script Variable…" else "preset",
                     "subject": subject_edit.text(),
                     "origin": "global_player",
                     "user_defined": True,
                     "user_data": True,
-                    "apply_enabled": bool(gas.get("apply_enabled", False)),
+                    "apply_enabled": bool(self.global_algo_state.get("apply_enabled", False)),
                 })
                 _refresh_log()
             def _clear():
@@ -30775,6 +30923,59 @@ class MathematiciansGrooveboxApp(QMainWindow):
             hints.append("coordinate transmutor")
         return hints
 
+    def _resolve_global_algo_for_instrument(self, instrument_name=None, sequence_id=None):
+        """Resolve the single canonical Global Play algorithm into local context.
+
+        This is intentionally a pure projection descriptor: no per-instrument copy
+        of the algorithm is created. The modulation/render layer can evaluate the
+        descriptor against the selected instrument/sequence when needed.
+        """
+        gas = getattr(self, "global_algo_state", {}) or {}
+        if str(gas.get("scope") or "global") != "local_instrument":
+            return None
+        name = instrument_name or (self._current_instrument_name() if hasattr(self, "_current_instrument_name") else "")
+        return {
+            "canonical_ref": "global_algo_state",
+            "instrument": name,
+            "sequence": sequence_id if sequence_id is not None else (self._current_sequence_index(name) if name and hasattr(self, "_current_sequence_index") else None),
+            "context_mode": str(gas.get("context_mode") or "instrument"),
+            "script": str(gas.get("script") or ""),
+            "domain": str(gas.get("domain") or ""),
+            "wire": copy.deepcopy(gas.get("wire") or []),
+            "params": copy.deepcopy(gas.get("params") or {}),
+            "enabled": bool(gas.get("apply_enabled", False)),
+            "projection": _canonical_algo_project(gas, 0, name, sequence_id),
+        }
+
+    def _evaluate_global_algo_curve(self, script_text, times, instrument_index=0):
+        """Evaluate a Global Play return-expression on a time control grid.
+
+        Global scripts are intentionally reduced to their numeric return expression
+        and evaluated through the existing safe seed-expression kernel. This keeps
+        local canonical projections deterministic and prevents arbitrary Python
+        execution in the audio path.
+        """
+        import re as _re
+        raw = str(script_text or "")
+        matches = _re.findall(r"\breturn\s+(.+)", raw, flags=_re.I)
+        expr = matches[-1].strip() if matches else raw.strip()
+        if not expr or expr.startswith("#"):
+            return np.zeros(len(times), dtype=np.float32)
+        vals = []
+        for _t in np.asarray(times, dtype=float):
+            try:
+                ctx = {"instrument_index": int(instrument_index), "i": int(instrument_index)}
+                vals.append(float(evaluate_seed_expression_at_time(expr, float(_t), ctx)))
+            except Exception:
+                vals.append(0.0)
+        arr = np.asarray(vals, dtype=np.float32)
+        if arr.size and np.any(np.isfinite(arr)):
+            arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+            peak = float(np.max(np.abs(arr)))
+            if peak > 1e-9:
+                arr = arr / peak
+        return arr
+
     def _unapply_global_algo_from_ensemble(self):
         """Remove only the global-algo overlay, leaving user/canonical material intact."""
         try:
@@ -30784,6 +30985,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     st.pop("global_algo_mix", None)
                     st.pop("global_algo_user_data", None)
                     st.pop("global_algo_apply_enabled", None)
+                    st.pop("canonical_local_algo", None)
             engine = getattr(self, "domain_eq_engine", None)
             if engine is not None:
                 engine.domains = [d for d in (getattr(engine, "domains", []) or [])
@@ -30817,6 +31019,36 @@ class MathematiciansGrooveboxApp(QMainWindow):
         amount = float(params.get(amount_key, 1.0)) if amount_key else 1.0
         mix = max(0.0, min(1.0, mix * max(0.0, min(1.0, amount))))
         n_touched = 0
+        scope = str(gas.get("scope") or "global")
+        context_mode = str(gas.get("context_mode") or "instrument")
+
+        # Local Instrument scope is a canonical projection, not a fan-out write.
+        # Keep the canonical algorithm in one place and attach only a lightweight
+        # resolver descriptor to the active instrument. This leaves the modulation
+        # engine responsible for execution rather than duplicating algorithm state.
+        if scope == "local_instrument":
+            active_name = self._current_instrument_name() if hasattr(self, "_current_instrument_name") else (names[0] if names else "")
+            if active_name:
+                st = (getattr(self, "instrument_param_state", {}) or {}).setdefault(active_name, {})
+                if isinstance(st, dict):
+                    local = st.setdefault("canonical_local_algo", {})
+                    local[which] = {
+                        "canonical_ref": "global_algo_state",
+                        "context_mode": context_mode,
+                        "mix": mix,
+                        "enabled": bool(gas.get("apply_enabled", False)),
+                    }
+                    n_touched = 1
+            for _row in (getattr(self, "master_playlist_data", []) or []):
+                if isinstance(_row, dict):
+                    _row["global_algorithm_scope"] = "local_instrument"
+                    _row["global_algorithm_applied"] = True
+                    _kinds = list(_row.get("global_algorithm_kinds") or [])
+                    if which not in _kinds: _kinds.append(which)
+                    _row["global_algorithm_kinds"] = _kinds
+            if hasattr(self, "scope_status_label"):
+                self.scope_status_label.setText(f"◉ Local {which} canonical projection → {active_name} · {context_mode}")
+            return n_touched
 
         # Playlist rows are the visible global composition surface. Mark every
         # global row so Save/Load/autosave and the canonical fingerprint retain
