@@ -216,6 +216,12 @@ PI_IRR = 3.1415926535897932384626433832795028841971693993751
 SQRT2 = 1.4142135623730950488016887242096980785696718753769
 SQRT3 = 1.7320508075688772935274463415058723669428052538104
 SILVER = 2.4142135623730950488016887242096980785696718753769                          # silver ratio δ_s
+IRRATIONAL_SEED_DEFINITIONS = {
+    "pi": PI_IRR, "e": E_IRR, "phi": PHI, "phi_inv": PHI_INV,
+    "sqrt2": SQRT2, "sqrt3": SQRT3, "silver": SILVER, "meum": MEUM,
+    "meum_inv": MEUM_INV, "meum_log2": MEUM_LOG2,
+    "meum_two_pow": MEUM_TWO_POW, "meum_norm": MEUM_NORM,
+}
 
 # ---------------------------------------------------------------------------
 # EQUATION OF REALITY — EQR reality-tensor (book p.78 LaTeX, faithful).
@@ -15987,6 +15993,38 @@ class LayeredPanelHost(QWidget):
 
 
 class MathematiciansGrooveboxApp(QMainWindow):
+    def _randomize_everything_as_userdata(self):
+        """Randomize all user-facing controls and sequence data as userdata."""
+        if not getattr(self, "_undo_in_flight", False): self._push_undo("Randomize Everything")
+        rng = random.Random(time.time_ns() ^ _safe_int_seed(identity_unit("randomize_everything") * 2**32))
+        terms=list(IRRATIONAL_SEED_DEFINITIONS.items())
+        coeffs=[rng.uniform(-9,9) for _ in terms]
+        if hasattr(self,"input_seed_val"):
+            self.input_seed_val.setPlainText(" + ".join(f"({c:.16g})*{k}" for c,(k,_) in zip(coeffs,terms)))
+        for w,lo,hi in ((getattr(self,"spin_bpm",None),70,180),(getattr(self,"spin_seq_length",None),1,64),(getattr(self,"spin_playlist_length",None),1,128),(getattr(self,"spin_base_frequency",None),80,880)):
+            if w: w.setValue(rng.randint(lo,hi))
+        for w,lo,hi in ((getattr(self,"slider_eqr",None),0,100),(getattr(self,"slider_fractalizer",None),0,100),(getattr(self,"slider_pkp_decay",None),1,1000),(getattr(self,"spin_global_convolve",None),0,100)):
+            if w: w.setValue(rng.randint(int(lo),int(hi)))
+        for w,lo,hi in ((getattr(self,"spin_initial_track_offset",None),-16,16),(getattr(self,"spin_import_pitch",None),-24,24),(getattr(self,"spin_import_volume",None),0,2)):
+            if w: w.setValue(rng.uniform(lo,hi))
+        if getattr(self,"spin_export_parts",None): self.spin_export_parts.setValue(rng.randint(1,32))
+        for name in getattr(self,"instrument_names_48",[]):
+            p=getattr(self,"instrument_param_state",{}).setdefault(name,{})
+            p.update(tuning_ratio=2**(rng.uniform(-24,24)/12), volume=rng.uniform(.2,1.5), tuning_user_locked=True, volume_user_locked=True)
+            for _,mem in self._iter_sequence_mems(name):
+                if mem.get("user_owned"): continue
+                n=int(mem.get("pattern_length",len(mem.get("steps",[])) or 16)); self._ensure_seq_mem_length(mem,n)
+                for i in range(n):
+                    mem["steps"][i]=rng.random()>.35; mem["pitches"][i]=2**(rng.uniform(-24,24)/12); mem["amplitudes"][i]=rng.uniform(.05,1)
+                mem["userdata_randomized"]=True
+        # Randomize the remaining user-facing toggles as userdata, excluding transport/save/export actions.
+        for attr in ("chk_global_playlist","chk_convolve_fit","chk_speed_scrub","btn_local_randomize","btn_local_phase_lock","btn_goava","btn_live_dj_goava","btn_live_dj_random","btn_operator_theory"):
+            w=getattr(self,attr,None)
+            if w is not None and hasattr(w,"setChecked"):
+                try: w.setChecked(bool(rng.getrandbits(1)))
+                except Exception: pass
+        self._sync_instrument_mix_controls(); self._on_live_source_changed(); self._refresh_canonical_fingerprint()
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Groovebox")
@@ -19022,6 +19060,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # since it is a different kind of composition source (numerical-seed).
         _pair_color = "#12e0c4"
         _pair_color2 = "#41ada2"
+        self.btn_randomize_everything = _make_global_operator_button(
+            "🎲 RANDOMIZE EVERYTHING",
+            "Randomize all user controls and sequence data as user data, then rerender the track.",
+            checkable=False
+        )
+        self.btn_randomize_everything.clicked.connect(self._randomize_everything_as_userdata)
+        self.top_layout_row2.addWidget(self.btn_randomize_everything)
         self.btn_local_randomize = _make_global_operator_button(
             "RANDOMIZE",
             "Toggle global randomization; ON paints the generated pattern into Playlist.",
@@ -19170,6 +19215,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         )
         local_context_layout = QHBoxLayout(local_context_group)
         local_context_layout.setSpacing(10)
+        self.lbl_inst_tuning = QLabel("Tune:")
+        self.spin_inst_tuning = QDoubleSpinBox(); self.spin_inst_tuning.setRange(0.03125,32.0); self.spin_inst_tuning.setDecimals(4); self.spin_inst_tuning.setValue(1.0); self.spin_inst_tuning.setFixedWidth(84)
+        self.lbl_inst_volume = QLabel("Vol:")
+        self.spin_inst_volume = QDoubleSpinBox(); self.spin_inst_volume.setRange(0.0,2.0); self.spin_inst_volume.setDecimals(3); self.spin_inst_volume.setValue(1.0); self.spin_inst_volume.setFixedWidth(76)
+        local_context_layout.addWidget(self.lbl_inst_tuning); local_context_layout.addWidget(self.spin_inst_tuning)
+        local_context_layout.addWidget(self.lbl_inst_volume); local_context_layout.addWidget(self.spin_inst_volume)
+        self.spin_inst_tuning.valueChanged.connect(self._on_instrument_mix_control_changed)
+        self.spin_inst_volume.valueChanged.connect(self._on_instrument_mix_control_changed)
 
         self.btn_edit_synth = self._make_local_context_button("EDIT\nSYNTH", "Edit synth settings and wavetable for the active instrument")
         self.btn_script_inst = self._make_local_context_button("WRITE\nSCRIPT", "Edit the script attached to the active instrument")
@@ -19223,7 +19276,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.top_layout_row2.addWidget(self.lbl_playlist_length_caption)
         self.spin_playlist_length = QSpinBox()
         self.spin_playlist_length.setRange(1, 1024)
-        self.spin_playlist_length.setValue(64)
+        self.spin_playlist_length.setValue(32)
         self.spin_playlist_length.setMinimumHeight(38)
         self.spin_playlist_length.setMinimumWidth(96)
         self.spin_playlist_length.setStyleSheet("font-size: 12pt; font-weight: 700; padding: 4px 6px;")
@@ -19243,6 +19296,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         )
         self.spin_row_beats.setStyleSheet("font-size: 11pt; font-weight: 700; padding: 4px 6px;")
         self.top_layout_row2.addWidget(self.spin_row_beats)
+        self.top_layout_row2.addWidget(QLabel("Initial offset (beats):"))
+        self.spin_initial_track_offset = QDoubleSpinBox()
+        self.spin_initial_track_offset.setRange(-4096.0, 4096.0)
+        self.spin_initial_track_offset.setDecimals(3)
+        self.spin_initial_track_offset.setSingleStep(0.25)
+        self.spin_initial_track_offset.setValue(0.0)
+        self.spin_initial_track_offset.setFixedWidth(110)
+        self.top_layout_row2.addWidget(self.spin_initial_track_offset)
         self.top_layout_row2.addWidget(QLabel("Global Convolve:"))
         self.spin_global_convolve = QDoubleSpinBox()
         self.spin_global_convolve.setRange(0.0, 100.0)
@@ -19253,6 +19314,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_global_convolve.setToolTip("Cross-convolve the structural wave result; user-edited material remains protected.")
         self.top_layout_row2.addWidget(self.spin_global_convolve)
         self.slider_global_convolve = self.spin_global_convolve  # compatibility alias
+        self.top_layout_row2.addWidget(QLabel("Export parts:"))
+        self.spin_export_parts = QSpinBox()
+        self.spin_export_parts.setRange(1, 128)
+        self.spin_export_parts.setValue(16)
+        self.spin_export_parts.setFixedWidth(72)
+        self.top_layout_row2.addWidget(self.spin_export_parts)
 
         # =====================================================================
         # CONVOLVE_FIT_FEATURE — global WAV carrier + adaptive spectral fitting
@@ -19344,6 +19411,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.lbl_speed_scrub.setStyleSheet("color: #f5d97d;")
         import_speed_row.addWidget(self.lbl_speed_scrub)
         import_speed_row.addStretch(1)
+        carrier_fx_row = QHBoxLayout()
+        carrier_fx_row.addWidget(QLabel("Carrier Pitch (st):"))
+        self.spin_import_pitch = QDoubleSpinBox(); self.spin_import_pitch.setRange(-48.0,48.0); self.spin_import_pitch.setDecimals(2); self.spin_import_pitch.setValue(0.0); self.spin_import_pitch.setFixedWidth(90)
+        carrier_fx_row.addWidget(self.spin_import_pitch)
+        carrier_fx_row.addWidget(QLabel("Carrier Vol:"))
+        self.spin_import_volume = QDoubleSpinBox(); self.spin_import_volume.setRange(0.0,2.0); self.spin_import_volume.setDecimals(3); self.spin_import_volume.setValue(1.0); self.spin_import_volume.setFixedWidth(82)
+        carrier_fx_row.addWidget(self.spin_import_volume); carrier_fx_row.addStretch(1)
+        self._media_carrier_fx_row = carrier_fx_row
         self._media_speed_row = import_speed_row  # consumed just above visual_pair, left column
         self._media_import_row = media_import_row  # consumed just above visual_pair, left column
 
@@ -19443,6 +19518,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_remove_sequence = QPushButton("− Remove sequence")
         self.btn_add_sequence.clicked.connect(self.add_sequence)
         self.btn_remove_sequence.clicked.connect(self.remove_sequence)
+        self.btn_randomize_sequence = QPushButton("🎲 Randomize sequence")
+        self.btn_randomize_sequence.setToolTip("Randomize only the selected sequence. 'As user data' keeps the result user-owned and protected from canonical repaint.")
+        self.btn_randomize_sequence.clicked.connect(self._randomize_selected_sequence)
+        self.chk_randomize_sequence_userdata = QCheckBox("As user data")
+        self.chk_randomize_sequence_userdata.setChecked(True)
 
         # PKP lives beside the synth → script → patch → domain buttons.
         # The sequencer options below intentionally occupy their own full-width row.
@@ -19502,6 +19582,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         for b in (self.btn_edit_synth, self.btn_script_inst, self.btn_view_patchbay, self.btn_domain_eq):
             local_context_layout.addWidget(b)
+        local_context_layout.addWidget(self.btn_randomize_sequence); local_context_layout.addWidget(self.chk_randomize_sequence_userdata)
         local_context_layout.addWidget(self.btn_edit_panels_per_sequence)
         pkp_and_game_col = QVBoxLayout()
         pkp_and_game_col.setContentsMargins(0, 0, 0, 0)
@@ -20108,6 +20189,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 col.addLayout(self._media_import_row)
             if widget is self.visual_oscilloscope and getattr(self, "_media_speed_row", None) is not None:
                 col.addLayout(self._media_speed_row)
+            if widget is self.visual_oscilloscope and getattr(self, "_media_carrier_fx_row", None) is not None:
+                col.addLayout(self._media_carrier_fx_row)
             if is_square:
                 widget.setMinimumSize(260, 260)
                 widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -21504,6 +21587,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_pattern_length.blockSignals(False)
         self.btn_remove_sequence.setEnabled(len(bank) > 1)
 
+    def _randomize_selected_sequence(self):
+        if not getattr(self, "_undo_in_flight", False): self._push_undo("Randomize sequence")
+        name=self._current_instrument_name(); sid=self._current_sequence_index(name)
+        mem=(getattr(self,"instrument_sequence_banks",{}).get(name,{}) or {}).get(sid)
+        if not isinstance(mem,dict): return
+        rng=random.Random(time.time_ns() ^ _safe_int_seed(identity_unit(name,sid,"sequence_randomize")*2**32))
+        n=int(mem.get("pattern_length",len(mem.get("steps",[])) or 16)); self._ensure_seq_mem_length(mem,n)
+        for i in range(n):
+            mem["steps"][i]=rng.random()>.35; mem["gates"][i]=rng.random()>.05
+            mem["probabilities"][i]=rng.randint(55,100); mem["pitches"][i]=2**(rng.uniform(-24,24)/12); mem["amplitudes"][i]=rng.uniform(.1,1)
+        if getattr(self,"chk_randomize_sequence_userdata",None) and self.chk_randomize_sequence_userdata.isChecked():
+            mem["user_owned"]=True; mem["canonical_owner"]=None; mem["userdata_randomized"]=True
+            mem.setdefault("touched",set()).update(range(n))
+        self.instrument_sequencer_memory[name]=mem
+        self.reload_active_instrument_sequencer_ui(); self._on_live_source_changed(); self._refresh_canonical_fingerprint()
+
     def add_sequence(self):
         name = self._current_instrument_name()
         bank = getattr(self, "instrument_sequence_banks", {}).setdefault(name, {})
@@ -21534,6 +21633,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._refresh_sequence_selector()
         self.reload_active_instrument_sequencer_ui()
         self._on_live_source_changed()
+
+    def _on_instrument_mix_control_changed(self, _value=None):
+        name = self._current_instrument_name()
+        if not name: return
+        p = getattr(self, "instrument_param_state", {}).setdefault(name, {})
+        p["tuning_ratio"] = float(self.spin_inst_tuning.value())
+        p["volume"] = float(self.spin_inst_volume.value())
+        p["tuning_user_locked"] = True
+        p["volume_user_locked"] = True
+        if not getattr(self, "_undo_in_flight", False): self._push_undo("Instrument tuning/volume")
+        self._on_live_source_changed()
+
+    def _sync_instrument_mix_controls(self):
+        try:
+            name = self._current_instrument_name()
+            p = (getattr(self, "instrument_param_state", {}) or {}).get(name, {}) or {}
+            for w,v in ((self.spin_inst_tuning,p.get("tuning_ratio",1.0)),(self.spin_inst_volume,p.get("volume",1.0))):
+                w.blockSignals(True); w.setValue(float(v)); w.blockSignals(False)
+        except Exception: pass
 
     # =====================================================================
     # EDIT_PANELS_PER_SEQUENCE — sequence-local synth/script/patch/domain
@@ -21785,6 +21903,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return
         self.instrument_selected_sequence[name] = idx
         self.instrument_sequencer_memory[name] = bank[idx]
+        self._sync_instrument_mix_controls()
         seq_len = int(bank[idx].get("pattern_length", 16))
         self.spin_seq_length.blockSignals(True)
         self.spin_seq_length.setValue(seq_len)
@@ -23266,7 +23385,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "seed": self._seed_text() if hasattr(self, "input_seed_val") else "",
             "bpm": float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0,
             "seq_length": int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else 16,
-            "playlist_rows": int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else 64,
+            "playlist_rows": int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else 32,
+            "initial_track_offset_beats": float(self.spin_initial_track_offset.value()) if hasattr(self, "spin_initial_track_offset") else 0.0,
+            "export_parts": int(self.spin_export_parts.value()) if hasattr(self, "spin_export_parts") else 16,
+            "import_pitch_semitones": float(self.spin_import_pitch.value()) if hasattr(self, "spin_import_pitch") else 0.0,
+            "import_volume": float(self.spin_import_volume.value()) if hasattr(self, "spin_import_volume") else 1.0,
             "base_frequency": float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0,
             "global_convolve": float(self.spin_global_convolve.value()) if hasattr(self, "spin_global_convolve") else 0.0,
             "instrument_sequencer_memory": {
@@ -23329,6 +23452,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             ("spin_playlist_length", "playlist_rows"),
             ("spin_base_frequency", "base_frequency"),
             ("spin_global_convolve", "global_convolve"),
+            ("spin_initial_track_offset", "initial_track_offset_beats"),
+            ("spin_export_parts", "export_parts"),
+            ("spin_import_pitch", "import_pitch_semitones"),
+            ("spin_import_volume", "import_volume"),
         ):
             w = getattr(self, spin, None)
             if w is not None and key in data:
@@ -24932,6 +25059,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # the output length stays target_len. s == 1.0 keeps the byte-exact
         # legacy path so nothing changes when the new control is untouched.
         import_speed = 1.0
+        try: import_pitch_ratio = 2.0 ** (float(self.spin_import_pitch.value()) / 12.0) if hasattr(self, "spin_import_pitch") else 1.0
+        except Exception: import_pitch_ratio = 1.0
         isp = getattr(self, "spin_import_speed", None)
         if isp is not None:
             try:
@@ -24996,7 +25125,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 _m0 = _mults[_row_sel]
                 _m1 = _mults[np.clip(_row_sel + 1, 0, _rows - 1)]
                 _speed_curve = (_m0 + (_m1 - _m0) * _f0).astype(np.float64)
-                advance = (import_speed * D0) / float(target_len)
+                advance = (import_speed * import_pitch_ratio * D0) / float(target_len)
                 step = np.maximum(advance * _speed_curve, 1e-9)
                 pos = np.cumsum(step) - step[0]
                 need = max(D0, int(np.ceil(np.max(pos))) + 2)
@@ -25010,7 +25139,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if src.size < need:
                     src = np.tile(src, int(np.ceil(need / max(src.size, 1e-9))))
                 src = src[:need]
-                pos = np.arange(target_len, dtype=np.float64) * (import_speed * D0) / float(target_len)
+                pos = np.arange(target_len, dtype=np.float64) * (import_speed * import_pitch_ratio * D0) / float(target_len)
                 idx = np.arange(need, dtype=np.float64)
                 src = np.interp(pos, idx, src).astype(np.float32)
         # Seed-responsive carrier gain (composition-state evaluation)
@@ -25023,6 +25152,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 src = (src * scale).astype(np.float32)
         except Exception:
             pass
+        try: carrier_volume = float(self.spin_import_volume.value()) if hasattr(self, "spin_import_volume") else 1.0
+        except Exception: carrier_volume = 1.0
+        src = (src * np.clip(carrier_volume, 0.0, 2.0)).astype(np.float32)
         return src
 
     def _spectral_fit_voice(self, voice, target, amount=1.0):
@@ -26337,9 +26469,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             beats_per_row = 4.0
         beats_per_row = max(0.002, min(64.0, float(beats_per_row)))
         row_duration = seconds_per_beat * beats_per_row
+        initial_offset_beats = float(self.spin_initial_track_offset.value()) if hasattr(self, "spin_initial_track_offset") else 0.0
+        initial_offset_sec = initial_offset_beats * seconds_per_beat
         # Reference 16th for engines/UI that still speak in "grid steps"
         step_duration = seconds_per_beat / 4.0
-        total_duration = max(0.002, rows * row_duration)
+        total_duration = max(0.002, rows * row_duration + max(0.0, initial_offset_sec))
 
         n_samples = int(sample_rate * total_duration)
         t = np.linspace(0.0, total_duration, n_samples, endpoint=False)
@@ -26379,7 +26513,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             master += imported_carrier * (0.85 if convolve_fit_enabled else 0.60)
 
         for row_idx in range(rows):
-            start_time = row_idx * row_duration
+            start_time = initial_offset_sec + row_idx * row_duration
             end_time = start_time + row_duration
             mask = (t >= start_time) & (t < end_time)
             if not np.any(mask):
@@ -27049,6 +27183,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     voice_gain = self._canonical_voice_gain(
                         op_name, user_voice_count, canonical_count, len(active_cluster)
                     )
+                    try:
+                        ip = (getattr(self, "instrument_param_state", {}) or {}).get(op_name, {}) or {}
+                        voice_gain *= float(np.clip(ip.get("volume", 1.0), 0.0, 2.0))
+                    except Exception: pass
                     # ROW_SPARSE_MASK_2026: gate voices outside this row's
                     # deterministic subgroup.  Applied after the voice is fully
                     # synthesized so every oscillator's phase carry still advances
@@ -29070,6 +29208,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if not getattr(self, "_undo_in_flight", False): self._push_undo("Apply step algorithm")
                 touched = 0
                 seen = set()
+                # GLOBAL_ZLATTICE_2026: global means every sequence that already
+                # exists in every instrument bank, not merely sequences currently
+                # referenced by playlist rows. Future canonical sequences remain
+                # free to be generated after this transaction.
+                for op, bank in (getattr(self, "instrument_sequence_banks", {}) or {}).items():
+                    if not isinstance(bank, dict): continue
+                    for sid, mem in bank.items():
+                        try: sid_i = int(sid)
+                        except Exception: continue
+                        key=f"global:{op}:{sid_i}"
+                        if key in self._nt_lattice_snapshot: continue
+                        if isinstance(mem,dict):
+                            apply_mem(mem,key); seen.add(key); touched += 1
                 for r, entry in enumerate(getattr(self, "master_playlist_data", []) or []):
                     if not isinstance(entry, dict): continue
                     refs = entry.get("sequence_refs") or []
@@ -29113,7 +29264,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             self._sync_playlist_paint_table_from_memory()
         except Exception: pass
-        try: self._on_live_source_changed()
+        # Do not trigger a canonical regeneration here: the point of GLOBAL
+        # scope is to paint the sequences that exist now. A later canonical
+        # transaction is allowed to create additional sequences normally.
+        try: self._refresh_canonical_fingerprint()
         except Exception: pass
         self._sync_nt_lattice_button_state()
 
@@ -30059,6 +30213,33 @@ class MathematiciansGrooveboxApp(QMainWindow):
         box.setStandardButtons(QMessageBox.StandardButton.Ok)
         box.exec()
 
+    def _export_part_count(self):
+        try: return max(1, min(128, int(self.spin_export_parts.value())))
+        except Exception: return 16
+
+    def _write_audio_parts(self, master, sample_rate, out_path, audio_format, parts):
+        """Write deterministic contiguous audio segments; one file for one part."""
+        parts=max(1,int(parts)); total=len(master)
+        if parts <= 1:
+            return [out_path]
+        root,ext=os.path.splitext(out_path)
+        paths=[]
+        ffmpeg=self._resolve_ffmpeg_binary()
+        if audio_format != "wav" and not ffmpeg: raise RuntimeError("FFmpeg required for multi-part compressed audio export.")
+        for i in range(parts):
+            a=(total*i)//parts; b=(total*(i+1))//parts
+            pp=f"{root}.part{i:02d}{ext}"; paths.append(pp)
+            pcm=(np.clip(master[a:b],-1,1)*32767).astype(np.int16)
+            tmp=pp if audio_format=="wav" else os.path.join(self._exports_dir(),f".audio_part_{os.getpid()}_{i}.wav")
+            _write_wav_with_provenance(tmp,sample_rate,pcm)
+            if audio_format!="wav":
+                codec={"flac":["-c:a","flac"],"ogg":["-c:a","libvorbis","-q:a","6"],"aiff":["-c:a","pcm_s16be"],"mp3":["-c:a","libmp3lame","-q:a","2"],"opus":["-c:a","libopus","-b:a","192k"],"caf":["-c:a","pcm_s16le"]}[audio_format]
+                proc=subprocess.run([ffmpeg,"-y","-hide_banner","-loglevel","error","-i",tmp,*codec,pp],capture_output=True,text=True,timeout=120)
+                try: os.remove(tmp)
+                except OSError: pass
+                if proc.returncode: raise RuntimeError(proc.stderr or "FFmpeg audio part export failed")
+        return paths
+
     def export_mixdown_dialog(self, audio_format="wav"):
         """Export the same canonical master mix in WAV/FLAC/OGG/AIFF/MP3/OPUS/CAF.
 
@@ -30100,6 +30281,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
             master, _ = self._master_hardclip(master, sample_rate, apply_master_vol=True)
             pcm = (np.clip(master, -1.0, 1.0) * 32767.0).astype(np.int16)
             provenance = self._export_provenance_payload()
+            part_count = self._export_part_count()
+            if part_count > 1:
+                paths = self._write_audio_parts(master, sample_rate, file_path, audio_format, part_count)
+                self.export_counter += 1
+                if hasattr(self, 'scope_status_label'): self.scope_status_label.setText(f"📊 Export complete → {len(paths)} parts")
+                return
             if audio_format == "wav":
                 _write_wav_with_provenance(file_path, sample_rate, pcm, provenance.encode("utf-8"))
             else:
@@ -30548,7 +30735,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
         stem = os.path.splitext(os.path.basename(out_path))[0]
-        N_PARTS = 16
+        N_PARTS = self._export_part_count()
 
         if hasattr(self, 'scope_status_label'):
             mode = "Video + Audio" if include_audio else "Video only"
