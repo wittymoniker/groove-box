@@ -19484,8 +19484,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_seq_length.setValue(int(self._current_sequence_mem().get('pattern_length', 16)))
         self.spin_seq_length.blockSignals(False)
         self.rebuild_sequencer_steps(self._current_sequence_mem().get('pattern_length', self.spin_seq_length.value()))
+        # Sequence length is a direct live-edit control.  Do NOT feed it into the
+        # canonical-engine transaction: doing so lets the engine reset/reconcile
+        # the selected sequence immediately after the user's edit, which made the
+        # control appear to work once before engines were enabled and then become
+        # effectively locked while engines were running.  _on_sequence_length_changed
+        # owns the live rerender path instead.
         self.spin_seq_length.valueChanged.connect(self._on_sequence_length_changed)
-        self.spin_seq_length.valueChanged.connect(self._on_live_source_changed)
         self.spin_playlist_length.valueChanged.connect(self._resize_playlist_memory)
         self.spin_playlist_length.valueChanged.connect(self._on_live_source_changed)
         if hasattr(self, "spin_row_beats"):
@@ -21244,11 +21249,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         return bank
 
     def add_sequence(self):
+        """Add a persistent user sequence, including while engines are running."""
         name = self._current_instrument_name()
         bank = self._sequence_bank_numeric(name)
+        ids = sorted(int(k) for k in bank.keys())
         src_idx = self._current_sequence_index(name)
-        src = copy.deepcopy(bank.get(src_idx, next(iter(bank.values()))))
-        new_idx = max(bank.keys(), default=0) + 1
+        src = copy.deepcopy(bank.get(src_idx, bank[ids[0]]))
+        new_idx = (max(ids) + 1) if ids else 1
         src["sequence_id"] = new_idx
         src["user_owned"] = True
         src["user_length_locked"] = True
@@ -21259,11 +21266,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
         bank[new_idx] = src
         self.instrument_selected_sequence[name] = new_idx
         self.instrument_sequencer_memory[name] = src
-        self._refresh_sequence_selector()
-        self.reload_active_instrument_sequencer_ui()
-        self._on_live_source_changed()
+        # Update the pristine user-bank store so a later canonical transaction
+        # cannot erase this newly created sequence.
+        try:
+            if not isinstance(getattr(self, "_canonical_panels_user_store", None), dict):
+                self._canonical_panels_user_store = copy.deepcopy(self.instrument_sequence_banks)
+            self._canonical_panels_user_store.setdefault(name, {})[new_idx] = copy.deepcopy(src)
+        except Exception:
+            pass
+        self._refresh_sequence_dependent_panels()
+        self._request_live_sequence_rerender()
 
     def remove_sequence(self):
+        """Remove the selected user sequence, preserving live transport."""
         name = self._current_instrument_name()
         bank = self._sequence_bank_numeric(name)
         if len(bank) <= 1:
@@ -21278,9 +21293,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
         new_idx = ids[max(0, min(remove_pos - 1, len(ids) - 1))]
         self.instrument_selected_sequence[name] = new_idx
         self.instrument_sequencer_memory[name] = bank[new_idx]
-        self._refresh_sequence_selector()
-        self.reload_active_instrument_sequencer_ui()
-        self._on_live_source_changed()
+        # Mirror deletion into the pristine user-bank store.  Otherwise the next
+        # engine transaction can resurrect the removed sequence from its snapshot.
+        try:
+            snap = getattr(self, "_canonical_panels_user_store", None)
+            if isinstance(snap, dict) and isinstance(snap.get(name), dict):
+                snap[name].pop(idx, None)
+        except Exception:
+            pass
+        self._refresh_sequence_dependent_panels()
+        self._request_live_sequence_rerender()
 
     # =====================================================================
     # EDIT_PANELS_PER_SEQUENCE — sequence-local synth/script/patch/domain
@@ -21573,7 +21595,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.rebuild_sequencer_steps(n)
         self._refresh_sequence_selector()
         self._refresh_sequence_dependent_panels()
-        self._on_live_source_changed()
+        # A length edit is a surgical user edit. Do NOT route it through
+        # perfect-unison/canonical reconciliation: live engines must continue
+        # running while the selected sequence is resized.
+        self._request_live_sequence_rerender()
 
     def _refresh_sequence_dependent_panels(self):
         """One authoritative refresh path for sequence selection/resize."""
@@ -21853,6 +21878,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Canonical engines may fill/resize untouched sequences, but must never
         # silently take control of a length the user explicitly set.
         if bool(mem.get("user_length_locked", False)):
+            return True
+        # User-owned sequences and explicit length edits are immutable to
+        # canonical/live-engine resize passes. This is deliberately independent
+        # of the transport state, so edits remain authoritative while playing.
+        if bool(mem.get("user_owned", False)) or bool(mem.get("user_length_locked", False)):
             return True
         touched = mem.get("touched") or set()
         try:
@@ -27431,6 +27461,41 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if label.text() != text:
                 label.setText(text)
 
+    def _request_live_sequence_rerender(self):
+        """Queue a safe live-buffer rebuild for surgical sequence edits.
+
+        Sequence length/add/remove edits must not invoke canonical reconciliation
+        while transport is running. The composition data is already authoritative;
+        only the rendered playback buffer needs refreshing.
+        """
+        if getattr(self, "_live_sequence_rerender_pending", False):
+            return
+        self._live_sequence_rerender_pending = True
+        QTimer.singleShot(0, self._flush_live_sequence_rerender)
+
+    def _flush_live_sequence_rerender(self):
+        self._live_sequence_rerender_pending = False
+        try:
+            buf, sr = self._render_mixdown_buffer()
+            if not isinstance(buf, np.ndarray) or buf.size == 0:
+                return
+            was_playing = bool(getattr(self, "is_playing", False))
+            old_buf = getattr(self, "play_buffer", None)
+            old_pos = int(getattr(self, "play_cursor", 0) or 0)
+            old_len = len(old_buf) if old_buf is not None else 0
+            # Preserve musical position when possible instead of jumping to zero.
+            frac = (old_pos / max(1, old_len)) if was_playing and old_len else 0.0
+            new_pos = min(len(buf), max(0, int(round(frac * len(buf)))))
+            with self.play_lock:
+                self.play_buffer = buf.astype(np.float32, copy=False)
+                self.play_sample_rate = sr
+                if was_playing:
+                    self.play_cursor = new_pos
+                elif old_buf is None:
+                    self.play_cursor = 0
+        except Exception as exc:
+            print(f"[LiveSeqEdit] buffer refresh skipped: {exc}")
+
     def _on_live_source_changed(self, *args):
         """Coalesce seed/seq-length changes into one deferred composition transaction."""
         if getattr(self, "_composition_generation_guard", False):
@@ -27711,10 +27776,27 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         _banks_snap = getattr(self, "_canonical_panels_user_store", None)
         banks = getattr(self, "instrument_sequence_banks", {}) or {}
+        # User sequence banks are live userdata.  Preserve them across the
+        # canonical engine reset; restoring the old pristine snapshot wholesale
+        # was the reason Add/Remove and live length edits reverted as soon as an
+        # engine transaction ran.  Canonical-owned entries are still regenerated.
+        _live_user_bank = {}
+        for _bname, _bank in list(banks.items()):
+            if not isinstance(_bank, dict):
+                continue
+            _live_user_bank[_bname] = {
+                int(_sid): copy.deepcopy(_mem)
+                for _sid, _mem in _bank.items()
+                if isinstance(_mem, dict) and self._sequence_is_user_locked(_mem)
+            }
         if isinstance(_banks_snap, dict):
             for _bname, _bank in list(banks.items()):
                 if _bname in _banks_snap:
                     banks[_bname] = copy.deepcopy(_banks_snap[_bname])
+            for _bname, _ubank in _live_user_bank.items():
+                if _bname not in banks:
+                    banks[_bname] = {}
+                banks[_bname].update(_ubank)
         else:
             for name, bank in banks.items():
                 if not isinstance(bank, dict):
@@ -27801,11 +27883,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if isinstance(_pat_snap, dict):
             _mem = getattr(self, "instrument_sequencer_memory", None)
             if isinstance(_mem, dict):
+                _live_user_mem = {
+                    _k: copy.deepcopy(_v)
+                    for _k, _v in _mem.items()
+                    if isinstance(_v, dict) and self._sequence_is_user_locked(_v)
+                }
                 _ordered = list(_mem.keys())
                 for _k in _ordered:
                     if _k not in _pat_snap:
                         continue
                     _mem[_k] = copy.deepcopy(_pat_snap[_k])
+                _mem.update(_live_user_mem)
 
         # ORDER-INDEPENDENCE_2026: the master macro store must return to the
         # pre-canonical core BEFORE the freeze. Engines only ever setdefault the
