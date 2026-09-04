@@ -21215,47 +21215,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_pattern_length.blockSignals(False)
         self.btn_remove_sequence.setEnabled(len(bank) > 1)
 
-    def _sequence_bank_numeric(self, name):
-        """Normalize sequence-bank keys to integer IDs without losing data."""
-        banks = getattr(self, "instrument_sequence_banks", None)
-        if not isinstance(banks, dict):
-            self.instrument_sequence_banks = {}
-            banks = self.instrument_sequence_banks
-        bank0 = banks.setdefault(name, {})
-        bank = {}
-        for key, mem in list(bank0.items()):
-            try:
-                sid = int(key)
-            except (TypeError, ValueError):
-                continue
-            if isinstance(mem, dict):
-                mem["sequence_id"] = sid
-                bank[sid] = mem
-        if bank != bank0:
-            banks[name] = bank
-        if not bank:
-            mem = self.instrument_sequencer_memory.setdefault(name, {
-                "steps": [False] * 16, "gates": [True] * 16,
-                "amplitudes": [1.0] * 16, "pitches": [1.0] * 16,
-                "probabilities": [100] * 16, "offsets": [0.0] * 16,
-                "pattern_length": 16, "sequence_id": 1,
-            })
-            bank[1] = mem
-        return bank
-
     def add_sequence(self):
         name = self._current_instrument_name()
-        bank = self._sequence_bank_numeric(name)
+        bank = getattr(self, "instrument_sequence_banks", {}).setdefault(name, {})
         src_idx = self._current_sequence_index(name)
-        src = copy.deepcopy(bank.get(src_idx, next(iter(bank.values()))))
-        new_idx = max(bank.keys(), default=0) + 1
-        src["sequence_id"] = new_idx
+        src = copy.deepcopy(bank.get(src_idx, self.instrument_sequencer_memory[name]))
+        src["sequence_id"] = max(bank.keys(), default=0) + 1
         src["user_owned"] = True
-        src["user_length_locked"] = True
         src["canonical_owner"] = None
-        src["touched"] = set(src.get("touched") or set())
-        src["pattern_length"] = max(1, min(1024, int(src.get("pattern_length", len(src.get("steps", [])) or 16))))
-        self._ensure_seq_mem_length(src, src["pattern_length"])
+        new_idx = max(bank.keys(), default=0) + 1
+        src["pattern_length"] = int(src.get("pattern_length", len(src.get("steps", [])) or 16))
         bank[new_idx] = src
         self.instrument_selected_sequence[name] = new_idx
         self.instrument_sequencer_memory[name] = src
@@ -21265,17 +21234,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def remove_sequence(self):
         name = self._current_instrument_name()
-        bank = self._sequence_bank_numeric(name)
+        bank = getattr(self, "instrument_sequence_banks", {}).setdefault(name, {})
         if len(bank) <= 1:
             return
-        ids = sorted(bank)
         idx = self._current_sequence_index(name)
-        if idx not in bank:
-            idx = ids[-1]
-        remove_pos = ids.index(idx)
         bank.pop(idx, None)
-        ids = sorted(bank)
-        new_idx = ids[max(0, min(remove_pos - 1, len(ids) - 1))]
+        new_idx = sorted(bank)[max(0, sorted(bank).index(idx) - 1)] if bank else 1
         self.instrument_selected_sequence[name] = new_idx
         self.instrument_sequencer_memory[name] = bank[new_idx]
         self._refresh_sequence_selector()
@@ -21554,9 +21518,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._push_undo(f"Pattern resize → {int(value)}")
         mem = self._current_sequence_mem()
         n = max(1, min(1024, int(value)))
-        # Explicit length edits belong to the user, not the canonical resize lane.
-        mem["user_length_locked"] = True
-        mem["user_owned"] = True
         mem["pattern_length"] = n
         self._ensure_seq_mem_length(mem, n)
         # Keep the hidden compatibility alias synchronized without a second UI concept.
@@ -21849,11 +21810,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """True only when a human has edited at least one step of this sequence."""
         if not isinstance(mem, dict):
             return False
-        # A user-selected sequence length is itself protected user data.
-        # Canonical engines may fill/resize untouched sequences, but must never
-        # silently take control of a length the user explicitly set.
-        if bool(mem.get("user_length_locked", False)):
-            return True
         touched = mem.get("touched") or set()
         try:
             return len(touched) > 0
