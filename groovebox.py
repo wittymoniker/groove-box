@@ -16251,6 +16251,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Revert: remove this state block and the MEDIA_IMPORT_FEATURE methods/UI.
         self.imported_video_path = ""
         self.imported_video_meta = {}
+        # Per-instrument sample slot: selected instrument only.
+        self.instrument_sample_slots = {}
 
         self.playlist_automation = []
         # State lock for playlist memory; Qt widgets must still be touched only on the UI thread.
@@ -18812,7 +18814,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.transport_layout.addWidget(QLabel("Active Operator:"))
         self.transport_layout.addWidget(self.instrument_selector_dropdown)
         self.transport_layout.addWidget(self.btn_keyboard)
-        self.transport_layout.addWidget(self.btn_trigger_all)
         self.transport_layout.addStretch(1)
 
         # LAYOUT_WRAP_FIX: this row used to hold every remaining transport
@@ -18840,6 +18841,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "border-radius:3px; padding:4px 8px; font-weight:bold; }"
             "QPushButton:disabled { color:#5a5f6e; }"
         )
+        self.btn_randomize_everything = QPushButton(
+            "🎲 RANDOMIZE EVERYTHING")
+        self.btn_randomize_everything.clicked.connect(self._randomize_everything_as_userdata)
         self.btn_undo.clicked.connect(self._do_undo)
         self.transport_layout_row2.addWidget(self.btn_undo)
         self.btn_redo = QPushButton("↩ Redo")
@@ -18849,8 +18853,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_redo.clicked.connect(self._do_redo)
         self.transport_layout_row2.addWidget(self.btn_redo)
         self.transport_layout_row2.addStretch(1)
+        # RANDOMIZE_ALL_LAYOUT_2026: Trigger All and Randomize Everything share
+        # the layer immediately above Clear Memory, with Randomize to the right.
         self.transport_layout_row2.addWidget(self.btn_save_project)
         self.transport_layout_row2.addWidget(self.btn_load_project)
+        self.transport_layout_row2.addWidget(self.btn_trigger_all)
+        self.transport_layout.addWidget(self.btn_randomize_everything)
         self.transport_layout_row2.addWidget(self.btn_clear_memory)
 
         # Live engine timers
@@ -19060,13 +19068,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # since it is a different kind of composition source (numerical-seed).
         _pair_color = "#12e0c4"
         _pair_color2 = "#41ada2"
-        self.btn_randomize_everything = _make_global_operator_button(
-            "🎲 RANDOMIZE EVERYTHING",
-            "Randomize all user controls and sequence data as user data, then rerender the track.",
-            checkable=False
-        )
-        self.btn_randomize_everything.clicked.connect(self._randomize_everything_as_userdata)
-        self.top_layout_row2.addWidget(self.btn_randomize_everything)
+
         self.btn_local_randomize = _make_global_operator_button(
             "RANDOMIZE",
             "Toggle global randomization; ON paints the generated pattern into Playlist.",
@@ -19215,12 +19217,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         )
         local_context_layout = QHBoxLayout(local_context_group)
         local_context_layout.setSpacing(10)
-        self.lbl_inst_tuning = QLabel("Tune:")
+        self.lbl_inst_tuning = QLabel("Selected Operator Tune:")
         self.spin_inst_tuning = QDoubleSpinBox(); self.spin_inst_tuning.setRange(0.03125,32.0); self.spin_inst_tuning.setDecimals(4); self.spin_inst_tuning.setValue(1.0); self.spin_inst_tuning.setFixedWidth(84)
-        self.lbl_inst_volume = QLabel("Vol:")
+        self.lbl_inst_volume = QLabel("Selected Operator Vol:")
         self.spin_inst_volume = QDoubleSpinBox(); self.spin_inst_volume.setRange(0.0,2.0); self.spin_inst_volume.setDecimals(3); self.spin_inst_volume.setValue(1.0); self.spin_inst_volume.setFixedWidth(76)
-        local_context_layout.addWidget(self.lbl_inst_tuning); local_context_layout.addWidget(self.spin_inst_tuning)
-        local_context_layout.addWidget(self.lbl_inst_volume); local_context_layout.addWidget(self.spin_inst_volume)
         self.spin_inst_tuning.valueChanged.connect(self._on_instrument_mix_control_changed)
         self.spin_inst_volume.valueChanged.connect(self._on_instrument_mix_control_changed)
 
@@ -19314,12 +19314,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_global_convolve.setToolTip("Cross-convolve the structural wave result; user-edited material remains protected.")
         self.top_layout_row2.addWidget(self.spin_global_convolve)
         self.slider_global_convolve = self.spin_global_convolve  # compatibility alias
-        self.top_layout_row2.addWidget(QLabel("Export parts:"))
+        self.lbl_export_parts = QLabel("Export parts:")
         self.spin_export_parts = QSpinBox()
         self.spin_export_parts.setRange(1, 128)
         self.spin_export_parts.setValue(16)
         self.spin_export_parts.setFixedWidth(72)
-        self.top_layout_row2.addWidget(self.spin_export_parts)
+        self.spin_export_parts.setToolTip("Number of parts for audio/video exports. 1 exports a single file.")
 
         # =====================================================================
         # CONVOLVE_FIT_FEATURE — global WAV carrier + adaptive spectral fitting
@@ -19339,11 +19339,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # MEDIA_IMPORT_FEATURE — WAV/video carrier import row, relocated so it
         # floats directly above the left-hand oscilloscope pane (see
         # `media_import_row` insertion beside visual_pair below).
-        self.btn_load_wav = QPushButton("📂 Load WAV Carrier")
-        self.btn_load_wav.setToolTip("Load a WAV file as the global carrier/reference waveform.")
+        self.btn_load_wav = QPushButton("🌐 Global Load Sample")
+        self.btn_load_wav.setToolTip("Load a WAV sample globally. The global sample is mixed at 50% contribution across the rendered instrument mix.")
         self.btn_load_wav.clicked.connect(self.load_wav_carrier_dialog)
 
-        self.lbl_wav_carrier = QLabel("WAV: none")
+        self.lbl_wav_carrier = QLabel("Global sample: none")
         self.lbl_wav_carrier.setMinimumWidth(130)
 
         self.btn_load_media = QPushButton("🎞 Load WAV / Video")
@@ -19352,6 +19352,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "the video stream can be blended back into the final MP4 export."
         )
         self.btn_load_media.clicked.connect(self.load_media_dialog)
+
+        # LOCAL_SAMPLE_2026: selected-instrument sample slot. This is separate
+        # from the global sample/carrier and follows the active instrument only.
+        self.btn_load_instrument_sample = QPushButton("🎹 Load Sample to Instrument")
+        self.btn_load_instrument_sample.setToolTip("Load a WAV sample for the currently selected instrument only. It is rendered as a 50% local sample contribution and is saved by path.")
+        self.btn_load_instrument_sample.clicked.connect(self.load_instrument_sample_dialog)
+        self.lbl_instrument_sample = QLabel("Instrument: operator")
+        self.lbl_instrument_sample.setMinimumWidth(150)
 
         media_import_row = QHBoxLayout()
         media_import_row.setContentsMargins(0, 0, 0, 4)
@@ -19419,8 +19427,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_import_volume = QDoubleSpinBox(); self.spin_import_volume.setRange(0.0,2.0); self.spin_import_volume.setDecimals(3); self.spin_import_volume.setValue(1.0); self.spin_import_volume.setFixedWidth(82)
         carrier_fx_row.addWidget(self.spin_import_volume); carrier_fx_row.addStretch(1)
         self._media_carrier_fx_row = carrier_fx_row
-        self._media_speed_row = import_speed_row  # consumed just above visual_pair, left column
-        self._media_import_row = media_import_row  # consumed just above visual_pair, left column
+        self._media_speed_row = import_speed_row
+        self._media_import_row = media_import_row
 
         # Per-sequence length is the single sequencer length control.
         # `spin_pattern_length` remains a compatibility alias but is no longer
@@ -19580,9 +19588,44 @@ class MathematiciansGrooveboxApp(QMainWindow):
         live_game_row = QHBoxLayout()
         live_game_row.addWidget(self.btn_play_videogame, 1)
 
+        # LOCAL_SYNTH_LAYOUT_2026:
+        #   top    = instrument Tune/Vol + media import
+        #   middle = the four synth-panel launch buttons
+        #   bottom = carrier pitch/volume + import speed/scrub
+        # This keeps the synth controls visually attached to the four panel
+        # launchers without changing their underlying state/rendering paths.
+        synth_top_row = QHBoxLayout()
+        synth_top_row.setContentsMargins(0, 0, 0, 0)
+        synth_top_row.setSpacing(8)
+        synth_top_row.addWidget(self.lbl_inst_tuning)
+        synth_top_row.addWidget(self.spin_inst_tuning)
+        synth_top_row.addWidget(self.lbl_inst_volume)
+        synth_top_row.addWidget(self.spin_inst_volume)
+        synth_top_row.addStretch(1)
+        synth_top_row.addWidget(self.btn_load_instrument_sample)
+        synth_top_row.addWidget(self.lbl_instrument_sample)
+        synth_control_stack = QVBoxLayout()
+        synth_control_stack.setContentsMargins(0, 0, 0, 0)
+        synth_control_stack.setSpacing(5)
+
+
+        synth_launch_row = QHBoxLayout()
+        synth_launch_row.setContentsMargins(0, 0, 0, 0)
+        synth_launch_row.setSpacing(8)
         for b in (self.btn_edit_synth, self.btn_script_inst, self.btn_view_patchbay, self.btn_domain_eq):
-            local_context_layout.addWidget(b)
-        local_context_layout.addWidget(self.btn_randomize_sequence); local_context_layout.addWidget(self.chk_randomize_sequence_userdata)
+            synth_launch_row.addWidget(b, 1)
+        synth_control_stack.addLayout(synth_launch_row)
+
+        # The media rows are reused here rather than in the oscilloscope column.
+        # A horizontal row is preferable to embedding the old standalone rows
+        # because it keeps all carrier controls immediately around the synth UI.
+        synth_bottom_row = QHBoxLayout()
+        synth_bottom_row.setContentsMargins(0, 0, 0, 0)
+        synth_bottom_row.setSpacing(8)
+
+        synth_control_stack.addLayout(synth_bottom_row)
+        local_context_layout.addLayout(synth_control_stack, 2)
+
         local_context_layout.addWidget(self.btn_edit_panels_per_sequence)
         pkp_and_game_col = QVBoxLayout()
         pkp_and_game_col.setContentsMargins(0, 0, 0, 0)
@@ -19833,6 +19876,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         seq_controls.addWidget(self.btn_remove_sequence)
         seq_controls.addWidget(QLabel("Sequence length:"))
         seq_controls.addWidget(self.spin_seq_length)
+        seq_controls.addWidget(self.btn_randomize_sequence)
+        seq_controls.addWidget(self.chk_randomize_sequence_userdata)
         seq_controls.addStretch(1)
         seq_inner.addLayout(seq_controls)
 
@@ -19958,7 +20003,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         master_vol_row.addStretch(1)
 
-        master_vol_row.addWidget(QLabel("Clip/Gain:"))
+        master_vol_row.addWidget(QLabel("Master Clip/Gain:"))
         self.spin_clip_ratio = QDoubleSpinBox()
         self.spin_clip_ratio.setRange(0.0, 100.0)
         self.spin_clip_ratio.setDecimals(1)
@@ -19979,7 +20024,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.lbl_clip_gain_status.setStyleSheet("color: #7fd9a0;")
         master_vol_row.addWidget(self.lbl_clip_gain_status)
 
-        self.chk_sparse_mask = QCheckBox("Row Sparse")
+        self.chk_sparse_mask = QCheckBox("Master Row Sparse")
         self.chk_sparse_mask.setChecked(False)
         self.chk_sparse_mask.setToolTip("Per-row instrument subgroup from (seed, row). Off-canonical.")
         self.chk_sparse_mask.toggled.connect(self._on_sparse_mask_toggled)
@@ -19998,14 +20043,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.lbl_sparse_density.setStyleSheet("color: #f5d97d;")
         master_vol_row.addWidget(self.lbl_sparse_density)
 
-        master_vol_row.addWidget(QLabel("Peak:"))
+        master_vol_row.addWidget(QLabel("Master Peak:"))
         self.lbl_peak_hold = QLabel("-∞ dBFS")
         self.lbl_peak_hold.setStyleSheet("color: #f5d97d;")
         master_vol_row.addWidget(self.lbl_peak_hold)
         self.lbl_eqr_bands = QLabel("")
         self.lbl_eqr_bands.setVisible(False)
-
+        seq_inner.addLayout(synth_top_row)
         seq_inner.addLayout(master_vol_row)
+
 
         # UI_LAYOUT_2026: Wave/Scope + Spectrum/Geometry dropdowns are built here
         # but deliberately NOT added to seq_inner — they are laid into
@@ -20014,6 +20060,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # they control instead of being separated from them by the whole
         # sequencer + global composition/FX block.
         vis_row = QHBoxLayout()
+
         vis_row.addWidget(QLabel("Wave / Scope:"))
         self.viz_mode_combo = QComboBox()
         self.viz_mode_combo.addItems([
@@ -20156,6 +20203,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         scope_bar.addWidget(self.btn_audio_only, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
         scope_bar.addWidget(self.btn_stop, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
         scope_bar.addSpacing(10)
+        scope_bar.addWidget(self.lbl_export_parts, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
+        scope_bar.addWidget(self.spin_export_parts, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
+        scope_bar.addSpacing(8)
         scope_bar.addWidget(self.btn_export, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
         try:
             QTimer.singleShot(0, self._refresh_canonical_fingerprint)
@@ -20183,14 +20233,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
             #lbl = QLabel(label)
             #lbl.setStyleSheet("color: #8ab4c8; font-size: 8pt; font-weight: 800;")
             #col.addWidget(lbl)
-            # UI_LAYOUT_2026: the WAV/video carrier import controls float
-            # directly above the left-hand oscilloscope pane specifically.
-            if widget is self.visual_oscilloscope and getattr(self, "_media_import_row", None) is not None:
-                col.addLayout(self._media_import_row)
-            if widget is self.visual_oscilloscope and getattr(self, "_media_speed_row", None) is not None:
-                col.addLayout(self._media_speed_row)
-            if widget is self.visual_oscilloscope and getattr(self, "_media_carrier_fx_row", None) is not None:
-                col.addLayout(self._media_carrier_fx_row)
             if is_square:
                 widget.setMinimumSize(260, 260)
                 widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -20207,8 +20249,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # to the actual lower-region height, preventing bottom clipping.
             visual_pair.addLayout(col, stretch=(2 if is_square else 1))
         visual_container = QWidget()
-        visual_container.setLayout(visual_pair)
-        visual_container.setMinimumHeight(280)
+        visual_container_layout = QVBoxLayout(visual_container)
+        visual_container_layout.setContentsMargins(0, 0, 0, 0)
+        visual_container_layout.setSpacing(4)
+        # MEDIA_BOTTOM_2026: all global media/carrier controls live with the
+        # visualizers at the bottom of the render deck.
+        media_bottom = QHBoxLayout()
+        media_bottom.setContentsMargins(0, 0, 0, 0)
+        media_bottom.setSpacing(6)
+
+        media_bottom.addLayout(import_speed_row, 1)
+        media_bottom.addLayout(carrier_fx_row, 1)
+
+        visual_container_layout.addLayout(visual_pair, 1)
+        visual_container.setMinimumHeight(320)
         visual_container.setMinimumWidth(720)
         visual_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._visual_container = visual_container
@@ -20243,9 +20297,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         bottom_layout = QVBoxLayout(bottom_content)
         bottom_layout.setContentsMargins(6, 6, 6, 6)
         bottom_layout.setSpacing(4)
+        bottom_layout.addLayout(media_import_row, 1)
+        bottom_layout.addLayout(carrier_fx_row, 2)
+        bottom_layout.addLayout(import_speed_row, 3)
         bottom_layout.addLayout(scope_bar)
         bottom_layout.addLayout(vis_row)
         bottom_layout.addWidget(visual_container, 1)
+        bottom_layout.addLayout(media_bottom)
         bottom_content.setMinimumWidth(760)
         bottom_scroll = QScrollArea()
         bottom_scroll.setWidgetResizable(True)
@@ -23153,6 +23211,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.imported_wav_path = ""
         self.imported_video_path = ""
         self.imported_video_meta = {}
+        self.instrument_sample_slots = {}
 
         # Global seed script: user-controlled field, reset to empty (no seed).
         if hasattr(self, "input_seed_val"):
@@ -23424,6 +23483,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "media_carrier": {
                 "wav_path": str(getattr(self, "imported_wav_path", "") or ""),
                 "video_path": str(getattr(self, "imported_video_path", "") or ""),
+                "instrument_samples": {
+                    str(name): str(slot.get("path", ""))
+                    for name, slot in (getattr(self, "instrument_sample_slots", {}) or {}).items()
+                    if isinstance(slot, dict) and slot.get("path")
+                },
             },
             "global_algo": _safe_json(gas),
             "global_algo_fingerprint": algo_fp,
@@ -23532,6 +23596,36 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     self._load_video_path(vid_p)
         except Exception as _mc_exc:
             print(f"[Load] media carrier: {_mc_exc}")
+        # Restore per-instrument sample slots from saved paths when available.
+        try:
+            mc = data.get("media_carrier")
+            slots = mc.get("instrument_samples", {}) if isinstance(mc, dict) else {}
+            self.instrument_sample_slots = {}
+            for _name, _path in (slots or {}).items():
+                if _path and os.path.isfile(_path):
+                    # Reuse the WAV decoding path without changing the global slot.
+                    _arr = None; _sr = 44100
+                    if wavfile is not None:
+                        _sr, _arr = wavfile.read(_path)
+                    else:
+                        with wave.open(_path, "rb") as wf:
+                            _sr = wf.getframerate(); _ch = wf.getnchannels(); _w = wf.getsampwidth(); _raw = wf.readframes(wf.getnframes())
+                            if _w == 1: _arr = (np.frombuffer(_raw, dtype=np.uint8).astype(np.float32)-128.0)/128.0
+                            elif _w == 2: _arr = np.frombuffer(_raw, dtype=np.int16).astype(np.float32)/32768.0
+                            elif _w == 4: _arr = np.frombuffer(_raw, dtype=np.int32).astype(np.float32)/2147483648.0
+                            if _ch > 1: _arr = _arr.reshape(-1, _ch).mean(axis=1)
+                    _arr = np.asarray(_arr)
+                    if _arr.ndim > 1: _arr = _arr.mean(axis=1)
+                    if np.issubdtype(_arr.dtype, np.integer):
+                        _info = np.iinfo(_arr.dtype); _arr = _arr.astype(np.float32)/float(max(abs(_info.min), _info.max) or 1)
+                    else: _arr = _arr.astype(np.float32, copy=False)
+                    _arr = np.nan_to_num(_arr.ravel(), nan=0.0, posinf=0.0, neginf=0.0)
+                    _pk = float(np.max(np.abs(_arr))) if _arr.size else 0.0
+                    if _pk > 1e-9: _arr /= _pk
+                    self.instrument_sample_slots[str(_name)] = {"waveform": _arr, "sample_rate": int(_sr), "path": _path}
+            self._update_instrument_sample_ui()
+        except Exception as _is_exc:
+            print(f"[Load] instrument samples: {_is_exc}")
         self.goava_active = bool(data.get("goava_active", False))
         self.live_dj_goava = bool(data.get("live_dj_goava", False))
         self.live_dj_random = bool(data.get("live_dj_random", False))
@@ -24869,6 +24963,73 @@ class MathematiciansGrooveboxApp(QMainWindow):
     # =====================================================================
     # CONVOLVE_FIT_FEATURE — WAV carrier loading and spectral-fit helpers
     # =====================================================================
+    def load_instrument_sample_dialog(self):
+        """Load a WAV sample into the currently selected instrument slot."""
+        try:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, "Load Sample to Instrument", "",
+                "WAV Audio Files (*.wav);;All Files (*)"
+            )
+            if not file_path:
+                return
+            data = None
+            sample_rate = None
+            if wavfile is not None:
+                sample_rate, data = wavfile.read(file_path)
+            else:
+                with wave.open(file_path, "rb") as wf:
+                    sample_rate = wf.getframerate()
+                    channels = wf.getnchannels()
+                    width = wf.getsampwidth()
+                    raw = wf.readframes(wf.getnframes())
+                    if width == 1:
+                        data = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+                    elif width == 2:
+                        data = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+                    elif width == 4:
+                        data = np.frombuffer(raw, dtype=np.int32).astype(np.float32) / 2147483648.0
+                    else:
+                        raise RuntimeError("Unsupported PCM WAV sample width without scipy.")
+                    if channels > 1:
+                        data = data.reshape(-1, channels).mean(axis=1)
+            arr = np.asarray(data)
+            if arr.ndim > 1:
+                arr = arr.mean(axis=1)
+            if np.issubdtype(arr.dtype, np.integer):
+                info = np.iinfo(arr.dtype)
+                arr = arr.astype(np.float32) / float(max(abs(info.min), info.max) or 1)
+            else:
+                arr = arr.astype(np.float32, copy=False)
+            arr = np.nan_to_num(arr.ravel(), nan=0.0, posinf=0.0, neginf=0.0)
+            if arr.size == 0:
+                raise RuntimeError("The selected WAV contains no audio samples.")
+            peak = float(np.max(np.abs(arr)))
+            if peak > 1e-9:
+                arr /= peak
+            name = str(getattr(self, "instrument_selector_dropdown", None).currentText() if getattr(self, "instrument_selector_dropdown", None) else "")
+            if not name:
+                name = str(getattr(self, "current_instrument", "") or (self.instrument_names_48[0] if self.instrument_names_48 else "Instrument 1"))
+            self.instrument_sample_slots[name] = {"waveform": arr, "sample_rate": int(sample_rate), "path": file_path}
+            self._update_instrument_sample_ui()
+            self._refresh_after_file_input(reason="instrument_sample")
+        except Exception as e:
+            print(f"[Instrument Sample] Load failed: {e}")
+            QMessageBox.critical(self, "Instrument Sample Error", str(e))
+
+    def _update_instrument_sample_ui(self):
+        try:
+            name = self.instrument_selector_dropdown.currentText() if getattr(self, "instrument_selector_dropdown", None) else ""
+            slot = (getattr(self, "instrument_sample_slots", {}) or {}).get(name)
+            if slot:
+                text = os.path.basename(str(slot.get("path", "")))
+                self.lbl_instrument_sample.setText(f"Instrument sample: {text[:22]}")
+                self.lbl_instrument_sample.setToolTip(str(slot.get("path", "")))
+            else:
+                self.lbl_instrument_sample.setText("Instrument: operator")
+                self.lbl_instrument_sample.setToolTip("")
+        except Exception:
+            pass
+
     def load_wav_carrier_dialog(self):
         """Load a WAV file as the global carrier/reference waveform."""
         try:
@@ -26510,7 +26671,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         )
         if imported_carrier is not None:
             # Carrier is additive; it never replaces the programmed groove.
-            master += imported_carrier * (0.85 if convolve_fit_enabled else 0.60)
+            master += imported_carrier * 0.50
 
         for row_idx in range(rows):
             start_time = initial_offset_sec + row_idx * row_duration
@@ -27180,6 +27341,27 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         except Exception:
                             pass
 
+                    # LOCAL_SAMPLE_2026: selected-instrument sample contributes at
+                    # a fixed 50% mix, while the global sample above contributes 50%
+                    # across the full mix. Both use the same carrier pitch/speed/volume
+                    # controls for deterministic export/play parity.
+                    try:
+                        _local_slot = (getattr(self, "instrument_sample_slots", {}) or {}).get(op_name)
+                        _local_wave = _local_slot.get("waveform") if isinstance(_local_slot, dict) else None
+                        if _local_wave is not None and getattr(_local_wave, "size", 0):
+                            _lw = np.asarray(_local_wave, dtype=np.float32).ravel()
+                            _idx = (np.arange(local_t.size, dtype=np.float64) * max(0.2, float(getattr(self, "spin_import_speed", None).value() if getattr(self, "spin_import_speed", None) else 1.0))) % max(1, _lw.size)
+                            _i0 = np.floor(_idx).astype(np.int64)
+                            _i1 = (_i0 + 1) % max(1, _lw.size)
+                            _frac = (_idx - _i0).astype(np.float32)
+                            _ls = ((1.0 - _frac) * _lw[_i0] + _frac * _lw[_i1]).astype(np.float32)
+                            _ls *= float(getattr(self, "spin_import_volume", None).value() if getattr(self, "spin_import_volume", None) else 1.0)
+                            _pitch = float(getattr(self, "spin_import_pitch", None).value() if getattr(self, "spin_import_pitch", None) else 0.0)
+                            _ls *= float(2.0 ** (_pitch / 12.0))
+                            if _ls.shape == voice.shape:
+                                voice = (voice * 0.50 + _ls * gate * 0.50).astype(np.float32)
+                    except Exception:
+                        pass
                     voice_gain = self._canonical_voice_gain(
                         op_name, user_voice_count, canonical_count, len(active_cluster)
                     )
