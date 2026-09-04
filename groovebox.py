@@ -9684,13 +9684,14 @@ class ReadmeGuideDialog(QDialog):
 
     HELP_TEXT = r"""
 ================================================================================
-  EQR GROOVEBOX — Mathematician's / Scientist's Groovebox
+  Mathematician's GROOVEBOX — Mathematician's / Scientist's Groovebox
   Full Documentation, Scripting Syntax & Design Philosophy
 ================================================================================
-  Credits: core EQR design — project author; Grok (xAI), Gemini (Google),
+  Credits: Main editor and author - Noah Girouard King (Eski); Grok (xAI), Gemini (Google),
   Claude (Anthropic), ChatGPT (OpenAI), Mistral.ai (Mistral), Meta AI (Meta),
   GitHub Copilot (GitHub), Cursor Grok 4.6, and opencode (anomalyco).
-
+  This Engine uses simplified Calculus, Trigonometry and Number/Operator Theory
+  from the book Scientific Theories and Inventions by the main editor and author.
 --------------------------------------------------------------------------------
 1. GOAL OF THE SOFTWARE
 --------------------------------------------------------------------------------
