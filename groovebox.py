@@ -29888,6 +29888,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
             file_path, _ = QFileDialog.getSaveFileName(self, "Save Mixdown Audio", default_filename, filters[audio_format])
             if not file_path:
                 return
+            # AUDIO_BITRATE_DIALOG_2026: compressed audio bitrate is user-controlled.
+            if audio_format in {"mp3", "opus", "ogg"}:
+                bitrate, ok = QInputDialog.getItem(
+                    self, "Audio Bitrate", "Bitrate:",
+                    ["64 kbps", "96 kbps", "128 kbps", "160 kbps", "192 kbps", "256 kbps", "320 kbps"],
+                    4 if audio_format != "mp3" else 4, False,
+                )
+                if not ok:
+                    return
+                audio_bitrate = bitrate.split()[0] + "k"
+            else:
+                audio_bitrate = None
             if not file_path.lower().endswith(ext):
                 file_path += ext
             if hasattr(self, 'scope_status_label'):
@@ -29921,10 +29933,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 _write_wav_with_provenance(tmp, sample_rate, pcm)
                 codec_args = {
                     "flac": ["-c:a", "flac"],
-                    "ogg": ["-c:a", "libvorbis", "-q:a", "6"],
+                    "ogg": ["-c:a", "libvorbis", "-b:a", audio_bitrate or "192k"],
                     "aiff": ["-c:a", "pcm_s16be"],
-                    "mp3": ["-c:a", "libmp3lame", "-q:a", "2"],
-                    "opus": ["-c:a", "libopus", "-b:a", "192k"],
+                    "mp3": ["-c:a", "libmp3lame", "-b:a", audio_bitrate or "192k"],
+                    "opus": ["-c:a", "libopus", "-b:a", audio_bitrate or "192k"],
                     "caf": ["-c:a", "pcm_s16le"],
                 }[audio_format]
                 proc = subprocess.run(
@@ -30323,7 +30335,24 @@ class MathematiciansGrooveboxApp(QMainWindow):
         spin_h = QSpinBox(); spin_h.setRange(120, 4320); spin_h.setSingleStep(2); spin_h.setValue(int(def_h))
         form.addRow("Width (px)", spin_w)
         form.addRow("Height (px)", spin_h)
-        info = QLabel("Size estimate appears after you choose the output path.")
+        spin_fps = QSpinBox(); spin_fps.setRange(1, 120); spin_fps.setSingleStep(1); spin_fps.setValue(24)
+        form.addRow("Render FPS", spin_fps)
+        audio_bitrate_combo = QComboBox()
+        audio_bitrate_combo.addItems(["64 kbps", "96 kbps", "128 kbps", "160 kbps", "192 kbps", "256 kbps", "320 kbps"])
+        audio_bitrate_combo.setCurrentText("192 kbps")
+        audio_bitrate_combo.setEnabled(bool(include_audio))
+        form.addRow("Audio bitrate", audio_bitrate_combo)
+        spin_video_parts = QSpinBox(); spin_video_parts.setRange(1, 128); spin_video_parts.setValue(16)
+        form.addRow("Video export parts", spin_video_parts)
+        spin_audio_parts = QSpinBox(); spin_audio_parts.setRange(1, 128); spin_audio_parts.setValue(16)
+        spin_audio_parts.setEnabled(bool(include_audio))
+        form.addRow("Audio export parts", spin_audio_parts)
+        stitch_audio = QCheckBox("Stitch audio parts together")
+        stitch_audio.setChecked(True)
+        stitch_audio.setEnabled(bool(include_audio))
+        stitch_audio.setToolTip("Write visible audio .part WAV files while video renders, then stitch them into the final video's audio track.")
+        form.addRow(stitch_audio)
+        info = QLabel("Render begins before the size/time notice is shown.")
         info.setWordWrap(True)
         form.addRow(info)
 
@@ -30344,7 +30373,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if res_dlg.exec() != QDialog.DialogCode.Accepted:
             return
         w = int(spin_w.value()); h = int(spin_h.value())
+        fps = int(spin_fps.value())
+        audio_bitrate = audio_bitrate_combo.currentText().split()[0] + "k"
+        N_PARTS = int(spin_video_parts.value())
+        N_AUDIO_PARTS = int(spin_audio_parts.value()) if include_audio else 0
         stitch_parts_enabled = bool(stitch_parts.isChecked())
+        stitch_audio_enabled = bool(stitch_audio.isChecked()) if include_audio else False
+        # Replace encoder-default audio bitrate with the dialog selection for lossy codecs.
+        if include_audio and acodec not in ("pcm_s16le", "pcm_s16be"):
+            cleaned_aargs = []
+            i = 0
+            while i < len(aargs):
+                if aargs[i] == "-b:a" and i + 1 < len(aargs):
+                    i += 2
+                    continue
+                cleaned_aargs.append(aargs[i]); i += 1
+            aargs = cleaned_aargs + ["-b:a", audio_bitrate]
         w -= w % 2; h -= h % 2
         w = max(160, w); h = max(120, h)
 
@@ -30371,7 +30415,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
         stem = os.path.splitext(os.path.basename(out_path))[0]
-        N_PARTS = 16
 
         if hasattr(self, 'scope_status_label'):
             mode = "Video + Audio" if include_audio else "Video only"
@@ -30382,41 +30425,38 @@ class MathematiciansGrooveboxApp(QMainWindow):
         master = np.nan_to_num(np.asarray(master, dtype=np.float32), nan=0.0, posinf=1.0, neginf=-1.0)
         master = self._bake_dj_write(master, sr)
         provenance = self._export_provenance_payload()
-        fps = 24
         frame_samples = max(1, int(sr / fps))
         n_frames = max(1, int(np.ceil(len(master) / frame_samples)))
         n_frames = min(n_frames, fps * 60 * 30)  # soft 30 min ceiling
         duration_s = n_frames / float(fps)
 
-        # --- size prediction ---
-        # Rough final-video estimate: ~CRF18 ~0.15–0.35 bits/pixel/frame + audio.
+        # --- post-start estimate (informational only; never blocks render start) ---
         bpp = 0.22
         est_video_bytes = int(n_frames * w * h * bpp / 8.0)
-        est_audio_bytes = int(duration_s * 192000 / 8.0) if include_audio else 0
-        # Peak intermediate: one part's frames as PNG (~0.4 of raw RGB) + that part video
+        est_audio_bytes = int(duration_s * (int(audio_bitrate.rstrip("k")) * 1000) / 8.0) if include_audio else 0
         frames_per_part = (n_frames + N_PARTS - 1) // N_PARTS
         est_peak_part_png = int(frames_per_part * w * h * 3 * 0.35)
-        est_peak = est_peak_part_png + (est_video_bytes // N_PARTS) + est_audio_bytes
+        est_peak = est_peak_part_png + (est_video_bytes // max(N_PARTS, 1)) + est_audio_bytes
         def _fmt(n):
             for unit, div in (("GB", 1<<30), ("MB", 1<<20), ("KB", 1<<10)):
                 if n >= div:
                     return f"{n / div:.2f} {unit}"
             return f"{n} B"
-        size_msg = (
+        est_seconds = max(1.0, n_frames * (w * h) / 2500000.0)
+        est_time = f"~{est_seconds/60.0:.1f} min" if est_seconds >= 60 else f"~{est_seconds:.0f} sec"
+        # The notice is intentionally emitted only after render/part processing has officially started.
+        render_started_notice = (
+            f"Render officially started.\n\n"
             f"Resolution: {w}×{h} @ {fps} fps\n"
-            f"Frames: {n_frames}  (~{duration_s:.1f}s)  in {N_PARTS} parts\n"
+            f"Frames: {n_frames} (~{duration_s:.1f}s)\n"
+            f"Video parts: {N_PARTS}\n"
+            f"Audio parts: {N_AUDIO_PARTS if include_audio else 0}\n"
+            f"Audio bitrate: {audio_bitrate if include_audio else 'N/A'}\n"
             f"Predicted final size: ~{_fmt(est_video_bytes + est_audio_bytes)}\n"
-            f"Predicted peak temp (1 part): ~{_fmt(est_peak)}\n"
-            f"Part files will be written under:\n{dest_dir}\n\nContinue?"
+            f"Predicted peak temp: ~{_fmt(est_peak)}\n"
+            f"Estimated render time: {est_time}\n\n"
+            f"Part files are being written visibly under:\n{dest_dir}"
         )
-        reply = QMessageBox.question(
-            self, "Export size prediction", size_msg,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-
         # Recovery: reuse completed part videos if present and non-empty
         part_paths = []
         for pi in range(N_PARTS):
@@ -30448,22 +30488,26 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         pass
 
         audio_path = None
+        audio_part_paths = []
         if include_audio:
-            audio_path = os.path.join(dest_dir, f".{stem}.audio.part.wav")
             n_audio = min(len(master), int(round(duration_s * sr)))
-            audio_clip = master[:max(1, n_audio)]
-            pcm = (np.clip(audio_clip, -1, 1) * 32767).astype(np.int16)
-            try:
-                if wavfile is not None:
-                    wavfile.write(audio_path, sr, pcm)
-                else:
-                    with wave.open(audio_path, 'wb') as wf:
-                        wf.setnchannels(1)
-                        wf.setsampwidth(2)
-                        wf.setframerate(int(sr))
-                        wf.writeframes(pcm.tobytes())
-            except Exception as e:
-                raise RuntimeError(f"Could not write audio temp: {e}")
+            for ai in range(N_AUDIO_PARTS):
+                a0 = (ai * n_audio) // N_AUDIO_PARTS
+                a1 = ((ai + 1) * n_audio) // N_AUDIO_PARTS
+                audio_path_i = os.path.join(dest_dir, f"{stem}.audio.part{ai:02d}.wav")
+                audio_part_paths.append(audio_path_i)
+                audio_clip = master[a0:max(a0 + 1, a1)]
+                pcm = (np.clip(audio_clip, -1, 1) * 32767).astype(np.int16)
+                try:
+                    if wavfile is not None:
+                        wavfile.write(audio_path_i, sr, pcm)
+                    else:
+                        with wave.open(audio_path_i, 'wb') as wf:
+                            wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(int(sr)); wf.writeframes(pcm.tobytes())
+                except Exception as e:
+                    raise RuntimeError(f"Could not write audio part {ai+1}: {e}")
+            # Keep the old variable as a compatibility alias for code below.
+            audio_path = audio_part_paths[0] if audio_part_paths else None
 
         _aim = getattr(self, 'active_instrument_memory', None)
         _nmem = len(_aim) if hasattr(_aim, '__len__') else int(getattr(self, 'synth_count', 48) or 48)
@@ -30513,6 +30557,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         if frame.dtype != np.uint8:
                             frame = np.asarray(frame, dtype=np.uint8)
                         proc.stdin.write(np.ascontiguousarray(frame).tobytes())
+                        if pi == 0 and local_count == 1:
+                            if hasattr(self, 'scope_status_label'):
+                                self.scope_status_label.setText("🎬 Render officially started…")
+                            QApplication.processEvents()
+                            QMessageBox.information(self, "Render started", render_started_notice)
                         if local_count % 8 == 0 and hasattr(self, 'scope_status_label'):
                             self.scope_status_label.setText(
                                 f"🎬 Part {pi+1}/{N_PARTS}  frames {local_count}/{f1-f0}…"
@@ -30569,11 +30618,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # Same issue as the per-part encode: final_tmp ends in ".part", so
             # ffmpeg can't infer the output muxer from the extension — set it
             # explicitly via -f, matching the target container.
-            if include_audio and audio_path and os.path.isfile(audio_path):
+            audio_concat_path = None
+            if include_audio and audio_part_paths:
+                audio_concat_path = os.path.join(dest_dir, f".{stem}.audio.concat.txt")
+                with open(audio_concat_path, "w", encoding="utf-8") as alf:
+                    for app in audio_part_paths:
+                        if not os.path.isfile(app):
+                            raise RuntimeError(f"Missing audio part: {app}")
+                        alf.write("file '" + app.replace("'", "'\\''") + "'\n")
+            if include_audio and audio_concat_path and stitch_audio_enabled:
                 cmd = [
                     ffmpeg, "-y",
                     "-f", "concat", "-safe", "0", "-i", list_path,
-                    "-i", audio_path,
+                    "-f", "concat", "-safe", "0", "-i", audio_concat_path,
                     "-map", "0:v:0", "-map", "1:a:0",
                     "-t", f"{duration_s:.6f}",
                     "-c:v", "copy",
@@ -30645,10 +30702,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     os.remove(list_path)
             except Exception:
                 pass
-            if audio_path:
+            if stitch_audio_enabled:
+                for app in audio_part_paths:
+                    try:
+                        if os.path.isfile(app):
+                            os.remove(app)
+                    except Exception:
+                        pass
                 try:
-                    if os.path.isfile(audio_path):
-                        os.remove(audio_path)
+                    if audio_concat_path and os.path.isfile(audio_concat_path):
+                        os.remove(audio_concat_path)
                 except Exception:
                     pass
             self.export_counter += 1
