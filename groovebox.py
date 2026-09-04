@@ -5133,6 +5133,11 @@ class VideoSynthEngine:
         self._peak = 0.0
         self._video_hue_shift = 0.0
         self._video_energy = 0.0
+        # MEDIA_VIDEO_LAYER_2026: lazy imported-video decoder and explicit visual mix.
+        self._media_video_proc = None
+        self._media_video_key = None
+        self._media_video_next_frame = -1
+        self.media_video_mix = 0.5
         self.width = 0.0
         self.height = 0.0
         self.center_x = self.width / 2.0
@@ -7334,6 +7339,62 @@ class VideoSynthEngine:
         except Exception:
             pass
 
+    def _close_media_video_decoder(self):
+        proc = getattr(self, "_media_video_proc", None)
+        self._media_video_proc = None
+        self._media_video_key = None
+        self._media_video_next_frame = -1
+        if proc is not None:
+            try:
+                if proc.stdout: proc.stdout.close()
+            except Exception: pass
+            try: proc.kill()
+            except Exception: pass
+            try: proc.wait(timeout=0.5)
+            except Exception: pass
+
+    def _imported_video_frame(self, w, h, frame_index):
+        """Decode one imported-video frame for direct composition into render_frame."""
+        app = self.app
+        path = str(getattr(app, "imported_video_path", "") or "") if app is not None else ""
+        if not path or not os.path.isfile(path):
+            self._close_media_video_decoder(); return None
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg: return None
+        try:
+            meta = getattr(app, "imported_video_meta", {}) or {}
+            fps = float(meta.get("fps", 0.0) or 0.0) or 24.0
+            fi = max(0, int(frame_index))
+            key = (path, int(w), int(h), round(fps, 6))
+            # Export/live calls normally advance one frame at a time. For a seek,
+            # start a one-frame decoder at the exact requested timestamp.
+            self._close_media_video_decoder()
+            start_s = fi / fps
+            vf = f"scale={int(w)}:{int(h)}:force_original_aspect_ratio=decrease,pad={int(w)}:{int(h)}:(ow-iw)/2:(oh-ih)/2"
+            cmd = [ffmpeg, "-v", "error", "-ss", f"{start_s:.9f}", "-i", path,
+                   "-an", "-sn", "-dn", "-vf", vf, "-frames:v", "1",
+                   "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            expected = int(w) * int(h) * 3
+            if proc.returncode != 0 or len(proc.stdout) != expected:
+                return None
+            return np.frombuffer(proc.stdout, dtype=np.uint8).reshape((int(h), int(w), 3)).astype(np.float32)
+        except Exception:
+            return None
+
+    def _blend_imported_video_layer(self, img, w, h, frame_index):
+        """Blend imported movie pixels as a first-class unison composition layer."""
+        try:
+            mix = float(np.clip(float(getattr(self.app, "media_video_mix", getattr(self, "media_video_mix", 0.5))), 0.0, 1.0))
+            if mix <= 0.0: return img
+            frame = self._imported_video_frame(w, h, frame_index)
+            if frame is None: return img
+            # Same final image buffer as every generated object: the carrier is
+            # mixed into the composition before the final uint8 gamut clamp.
+            return img * (1.0 - mix) + frame * mix
+        except Exception:
+            return img
+
     def render_frame(self, w=640, h=360, export=False, frame_index=None):
         """Composite all Meum subscenes. export=True skips UI-only overlays.
 
@@ -7455,6 +7516,12 @@ class VideoSynthEngine:
             col = self._hsv((q*30 + self._video_hue_shift + self._canonical_ctx.get("seed",0.0)*0.17)%360, 0.45, 0.82)
             self._dot(img,x,y,col,0.10+0.08*self._rms,r=1)
 
+        # MEDIA_VIDEO_LAYER_2026: imported video participates in the actual
+        # final frame pixels, after the generated unison/scenograph object stack.
+        try:
+            img = self._blend_imported_video_layer(img, w, h, self._render_frame_index)
+        except Exception:
+            pass
         return np.clip(img, 0, 255).astype(np.uint8)
 
 
@@ -7839,6 +7906,15 @@ class SynthRackUnitWidget(QFrame):
         header_layout.addWidget(title_lbl)
         header_layout.addStretch()
 
+        # PER_INSTRUMENT_SAMPLE_2026: sample assignment belongs to the individual instrument.
+        self.sample_btn = QPushButton("📂 Import Instrument Sample")
+        self.sample_btn.setToolTip("Load a WAV sample for this instrument. The sample is stored with this instrument and used as its deterministic wavetable voice.")
+        self.sample_btn.clicked.connect(self._import_instrument_sample)
+        header_layout.addWidget(self.sample_btn)
+        self.sample_label = QLabel("sample: none")
+        self.sample_label.setStyleSheet("color:#f5d97d; border:none; font-size:9px;")
+        header_layout.addWidget(self.sample_label)
+
         # Synth panel modes dropdown deprecated: the panel is now parameter-driven.
         layout.addLayout(header_layout)
 
@@ -7871,6 +7947,12 @@ class SynthRackUnitWidget(QFrame):
             except Exception:
                 pass
         self._load_state()
+
+    def _import_instrument_sample(self):
+        app = self.app_ref
+        if app is None or not hasattr(app, "import_instrument_sample_dialog"):
+            return
+        app.import_instrument_sample_dialog(self.synth_name, self.sample_label)
 
     def _state_dict(self):
         return {
@@ -10166,8 +10248,408 @@ DEPENDENCIES (install last — same list as project README.md)
 
   Run:
     ./launch_desktop.sh
-    # or: python3 groovebox.py
+    or: python3 groovebox.py
 
+    17. HOW TO USE THE MATHEMATICAL LAYER — FROM PAD TO CANONICAL GENERATION
+
+This section is the practical path for using the mathematics without needing to
+understand the implementation first.
+
+    17.1 The shortest useful workflow
+
+1. Choose BPM and sequence length.
+2. Choose an instrument and turn on a few pads.
+3. Leave Seed blank/zero for ordinary authoring, or enter a non-zero numeric seed.
+4. Press **Play** and listen to the carrier.
+5. Enable **Phase-Lock**, **Randomize**, **Seeded**, **GOAVA**, or **Operator Theory** one at a time.
+6. Open Playlist when you want the generated structure written into arrangement rows.
+7. Use Domain Equations for time/space functions and Instrument Scripts for per-instrument rules.
+8. Save the project before experimenting with a new mathematical recipe.
+
+    17.2 First scripting examples
+
+```python
+  A simple two-frequency carrier
+sin(2*pi*t*2) + 0.5*cos(2*pi*t*3)
+
+  Meum phase field
+sin(t*MEUM) * cos(t*PHI)
+
+  Seed-dependent motion
+sin(t*MEUM + seed) * (0.5 + 0.5*cos(t*PHI))
+
+  The project's isn / ics forms
+isn(t*MEUM) * 0.6 + ics(t*PHI) * 0.4
+
+  A multivariate domain expression
+sin(x*MEUM + y*PHI + z*pi)
+
+  Function-style script
+return isn(t*MEUM) + 0.25*ics(t*PHI)
+```
+
+`sin`, `cos`, `isn`, `ics`, `MEUM`, `PHI`, `pi`, `e`, `tau`, `seed`, `x`, `y`,
+`z`, and the public reference constants are available to the appropriate
+script evaluators. Use the Help panel as the authoritative list for the build
+being run.
+
+    17.3 How generated math reaches sound
+
+The canonical pipeline is conceptually:
+
+`seed → canonical context → instrument lattice → operator/sequence transforms → voice parameters → mix`
+
+The seed is therefore an input to a deterministic construction, not an assertion
+that every generated result is a theorem of number theory. When a canonical
+fingerprint is identical, the implementation is intended to regenerate the same
+canonical state.
+
+   18. MEUM CALCULUS — DEFINITIONS, OPERATIONS, AND EXAMPLES
+
+**MEUM CALCULUS — CLAIMED EXACT.** In this project, “Meum calculus” means the
+project-defined family of transformations built from the constant `MEUM`, its
+reciprocals/powers, phase rotations, modular coordinates, and derived normalized
+weights. “Claimed exact” describes the project's internal symbolic contract: the
+same stored inputs and formulas are intended to give the same canonical result.
+It is **not** a claim that Meum calculus is an independently established branch
+of mathematics or that its special constant has been proved irrational here.
+
+    18.1 Public constants
+
+The canonical Meum value is stored as
+
+`M = MEUM = 1.1975807343385265188`
+
+with the public reference inverse
+
+`M⁻¹ = MEUM_INV = 0.83501677283773394333148276154833054143874793150691`.
+
+Important derived values include:
+
+- `M² = 1.43419961525880442984053780233084675344`
+- `M³ = 1.7175698284296712120687451889540584671690563022583`
+- `M⁴ = 2.0569285364085026523421673878967788864920989745683`
+- `(M−1)/M = 0.16498322716226605666851723845166945856125206849309`
+- `2^M = 2.2935474173287805635918286442792609595802586606571`
+- `log₂(M) = 0.26012291784344212146116471128795687966817094961902`
+
+Reference constants are also exposed as `PI_IRR`, `E_IRR`, `PHI`, `PHI_INV`,
+`SQRT2`, `SQRT3`, and `SILVER`.
+
+    18.2 Meum power lattice
+
+For instrument slot `i`, the canonical power table is generated from
+
+`P_j = M^(j−6),   j = 0,…,35`
+
+and the slot coordinate uses the dense project-defined phase position
+
+`u_i = (3 i M) mod 36`.
+
+If `j = floor(u_i)` and `r = u_i − j`, the interpolated lattice factor is
+
+`L_i = (1−r) P_j + r P_(j+1 mod 36)`.
+
+This is a deterministic geometric mapping. “Dense” here means the use of a
+non-rational-looking project constant is intended to avoid a short visual
+period; it should not be read as a proof of equidistribution.
+
+    18.3 Meum normalization
+
+The standard normalized weight is
+
+`N_M = (M−1)/M`.
+
+A Meum-weighted pair can be written
+
+`F_M(a,b) = N_M a + (1−N_M)b`.
+
+The canonical `isn` implementation uses this style of Meum blending in its EQR
+execution path; the exact implementation should be consulted when auditing a
+specific version.
+
+    18.4 Meum phase rotation
+
+A slot phase reference is
+
+`φ_i = 2π i / 48`.
+
+A second deterministic phase coordinate used by the canonical translator is
+
+`ψ_i = τ ((i N_M Φ⁻¹) mod 1)`.
+
+These are coordinates, not random numbers. They are reproducible from `i` and
+the public constants.
+
+    18.5 GOAVA irrational-sampling example
+
+For continuous time `t`, base frequency `f_b`, and channel `c`, the project uses
+
+`s(t) = 0.5 f_b M⁻¹ t`.
+
+A seed-list contribution has the form
+
+`C_v(t) = [1 + cos(β_v + (π/2)(|v|+|n|)s(t))] / (N + |n−v|)`
+
+with the zero-valued seed entry receiving the additional `s(t)` term in its
+base phase. The stream is then formed from the note/reference difference and a
+fixed Meum-family gain. The important user-facing property is that the stream is
+seeded and continuous in `t`; it is not an RNG call in the audio callback.
+
+   19. OPERATOR THEORY (OT) — COMPLETE PROJECT MATH REFERENCE
+
+**OT THEORY — CLAIMED EXACT.** Operator Theory is the project's alternative
+arithmetic vocabulary. In canonical paths it is primarily an execution/notation
+layer around deterministic scalar operations. The word “exact” means “exact
+according to the project's stated OT rules and regression contract,” not a claim
+that these rules replace ordinary arithmetic in established mathematics.
+
+    19.1 OT band function
+
+For `x`, let `a=|x|`. The project's band selector is
+
+`B(x) = 1,  if a≤1;  2, if 1<a≤2;  3, if 2<a≤3;  1, if a>3.`
+
+    19.2 OT addition and subtraction
+
+Let `b` be the band of the operand with the greater magnitude. Then
+
+`OT_ADD(n,v) = n+v + 0.5 B`, when `n+v ≥ 0`,
+
+and
+
+`OT_ADD(n,v) = n+v − 0.5 B`, when `n+v < 0`.
+
+Subtraction is defined by the project's directional rule; otherwise it routes
+through `OT_ADD(n,−v)`.
+
+    19.3 OT multiplication
+
+Magnitude is ordinary multiplication:
+
+`|OT_MUL(a,b)| = |a b|`.
+
+The project's sign rule is intentionally nonstandard. **The implementation is
+the authoritative definition**: positive×positive returns `+|ab|`; negative×negative
+returns `−|ab|`; unlike signs return `−|ab|`. The special identity is `OT_MUL(0,0)=1`, while zero with a nonzero
+operand returns `0`.
+
+    19.4 OT powers and roots
+
+For power,
+
+`OT_POW(b,e) = s |b|^|e|`,
+
+where `s=+1` when `b` and `e` have the same sign convention and `s=−1`
+otherwise. This is a project-defined signed-power rule.
+
+Roots use ordinary magnitude roots with the project's real-sign convention.
+Undefined real-domain cases remain undefined rather than being silently
+reinterpreted as ordinary positive magnitudes.
+
+    19.5 OT division and zero
+
+For nonzero denominator,
+
+`|OT_DIV(a,b)| = |a|/|b|`, with the sign taken from `a`.
+
+The project defines `0/0 = 1` in OT mode. Division by zero for nonzero `a` uses
+the project's large finite sentinel convention. This is a compatibility rule,
+not ordinary field arithmetic.
+
+    19.6 OT phase operator
+
+The integer phase marker is
+
+`OT_I_PHASE(x,k) = −x` for even `k`, and `+x` for odd `k`.
+
+It is used as a symbolic orientation marker and is not intended to introduce a
+new complex-valued audio stream by itself.
+
+    19.7 `isn` and `ics`
+
+The canonical book-form definitions are
+
+`isn(θ) = 2 sin(θ/2)`
+
+`isn⁻¹(y) = 2 arcsin(y/2)` on the real principal domain, and
+
+`ics(θ) = 2 cos(θ/2)`
+
+`ics⁻¹(y) = 2 arccos(y/2)` on the real principal domain.
+
+The inverse functions necessarily have a real-domain requirement `|y/2|≤1`.
+That mathematical domain restriction is not a claim about audio clipping; it is
+the domain of the inverse function.
+
+    19.8 EQR reality tensor
+
+The project uses the following documented EQR form for sequences indexed by `n`:
+
+`P = (1/k) Σ[n=0..k] isn⁻¹((isn(d_n)+isn(t))/2)`
+
+`E = (1/k) Σ[n=0..k] isn(θ_n)/d_n`
+
+`D = (1/k) Σ[n=0..k] isn⁻¹(isn(θ_n) E/(I P))`
+
+`Z = P E + D`
+
+with the project constant `I = 134964356` as its finite-infinity reference.
+
+These equations describe the project's model. They do not establish a physical
+law or a mathematically proven theory of reality.
+
+   20. CANONICAL NUMBER-THEORY / CONGRUENCE CLAIMS — WHAT “CLAIMED EXACT” MEANS
+
+The project may label a canonical generation **CLAIMED EXACT** when the claim is
+restricted to the following reproducible implementation contract:
+
+1. The same canonical inputs are serialized in the same order.
+2. The same public constants are used.
+3. The same deterministic formulas and integer/index rules are applied.
+4. The same canonical state fingerprint is regenerated.
+5. Regression tests compare the resulting canonical records or buffers.
+
+This supports a claim of **implementation-level deterministic correctness under
+the tested contract**. It does not justify the stronger statement that the
+software has proved new number theory, proved that MEUM is irrational, or proved
+perfect congruence for all possible future inputs.
+
+For modular indexing, the ordinary congruence notation is
+
+`a ≡ b (mod n)  ⇔  n | (a−b)`.
+
+For a cyclic slot permutation
+
+`p(i) = (a i + b) mod n`,
+
+a sufficient condition for a bijection over the residue classes is
+
+`gcd(a,n)=1`.
+
+This is an established finite-number-theory fact and can be used as a real
+correctness statement when the implementation follows it. A project-specific
+lattice built from MEUM should instead be described as a deterministic mapping
+unless a separate proof establishes stronger properties.
+
+    Reference-only scripting constants
+
+The following names are intentionally exposed for inspection and scripting:
+
+`MEUM`, `MEUM_CONSTANT`, `MEUM_INV`, `MEUM_MINUS_1`, `MEUM_SQ`, `MEUM_CUBE`,
+`MEUM_FOURTH`, `MEUM_NORM`, `MEUM_OVER_1_5`, `MEUM_TWO_POW`,
+`MEUM_TWO_POW_OVER_SQ`, `MEUM_LOG2`, `MEUM_UNISON_STEP_FACTOR`, `MEUM_POWERS_36`,
+`INSTRUMENT_PHASE_LOCK_48`, `PHI`, `PHI_INV`, `PI_IRR`, `E_IRR`, `SQRT2`,
+`SQRT3`, and `SILVER`.
+
+They are reference values, not hidden controls. Scripts should read them rather
+than duplicating rounded literals when reproducibility matters.
+
+   21. UNISON MASTER TRANSFORM — FORMULA AND PRACTICAL EXAMPLE
+
+The canonical full-unison idea is identity cancellation: every active voice is
+translated from the same shared context rather than receiving an independent
+random identity.
+
+A useful abstract form is
+
+`U_i = T(C, i, E)`
+
+where `C=(seed, base, ratio, s_int, sequential_nums)` is the canonical context,
+`i` is the roster slot, and `E` is the set of active engine flags.
+
+Outside full unison, the pitch carrier uses the lattice factor `L_i`:
+
+`f_i = base · L_i · r_i`.
+
+Inside full unison, the canonical translator uses the shared base and ratio:
+
+`f_i = base · ratio`.
+
+The shared entropy coordinate is derived from the canonical entropy function;
+the phase reference is shared rather than independently randomized. The result
+is intended to be an ensemble identity rather than 48 unrelated oscillators.
+
+    A reference scripting recipe
+
+```python
+  Inspect the canonical constants
+M = MEUM
+invM = MEUM_INV
+phi = PHI
+
+  Reproduce the unison step coordinate for slot i
+u = (3*i*M) % 36
+
+  Continuous GOAVA coordinate
+s = 0.5 * base_frequency * invM * t
+
+  A compact master modulation
+master = isn(t*M) * (M - 1) / M + ics(t*phi) * (1 - (M - 1)/M)
+return master
+```
+
+The recipe is for reference and experimentation. It does not promise that a
+user script reproduces every internal voice parameter unless it uses the same
+canonical function and state inputs as the implementation.
+
+   22. VERIFICATION, REDISTRIBUTION, AND NUMERICAL BOUNDARIES
+
+    22.1 What should be verified before redistribution
+
+- Python syntax compiles.
+- The root `groovebox.py`, `README.md`, and `HELP_TEXT.md` contain the same
+  mathematical documentation where duplication is intentional.
+- Public constants are present in the script namespace and reference evaluator.
+- Canonical generation is deterministic for fixed serialized input.
+- Canonical fingerprints remain stable across save/load.
+- Python/reference and native implementations agree where the release contract
+  requires parity.
+- Nested redistribution archives contain the refreshed files.
+
+    22.2 No hidden canonical clamp
+
+The canonical frequency-reference helper is intentionally transparent: it does
+not silently force a requested mathematical frequency into a fixed audible
+interval. Explicit instrument/effect constraints are separate from the
+reference transform.
+
+A file-format conversion can still impose a representation limit. For example,
+integer PCM encoding has a finite numeric range. That is a property of the target
+file representation, not a hidden mathematical clamp in the canonical transform.
+
+Likewise, an inverse such as `arcsin(y/2)` has a mathematical domain. A caller
+that supplies an out-of-domain value has supplied an undefined real input; this
+must not be described as evidence that the canonical forward transform is
+clamping its output.
+
+    22.3 Redistribution rule
+
+Every nested archive included in a redistribution package is a distribution
+artifact, not a separate source of truth. When source documentation or
+`groovebox.py` changes, refresh every nested ZIP/TAR.GZ that contains those files
+and verify that its contents match the outer package.
+
+The release phrase **CLAIMED EXACT** therefore means:
+
+> exact with respect to the project's declared formulas, constants, serialization,
+> and tested deterministic implementation contract; approximate/potential with
+> respect to broader mathematical or physical truth.
+
+That distinction should remain in public documentation so users can reproduce
+results without mistaking a project claim for an independently proved theorem.
+
+---
+
+   License / project policy
+
+Keep the project-specific license and attribution files supplied with the distribution.
+This README describes implementation behavior and project-defined mathematics. It
+must not be read as a scientific claim that Meum calculus or Operator Theory is an
+established mathematical theory. Established number-theory statements should be
+limited to statements that follow from ordinary definitions and proofs; project
+specific claims should remain explicitly labeled **CLAIMED EXACT** and tied to a
+reproducible test contract.
 --------------------------------------------------------------------------------
   End of Help — Groovebox
   Credits: Grok (xAI), Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI),
@@ -15920,11 +16402,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # =====================================================================
         self.imported_waveform = None
         self.imported_sample_rate = 44100
+        # PER_INSTRUMENT_SAMPLE_2026: user-assigned sample/wavetable per instrument.
+        self.instrument_sample_paths = {}
+        self.instrument_sample_buffers = {}
+        self.instrument_sample_rates = {}
         self.imported_wav_path = ""
         # MEDIA_IMPORT_FEATURE: optional video carrier + parsed stream metadata.
         # Revert: remove this state block and the MEDIA_IMPORT_FEATURE methods/UI.
         self.imported_video_path = ""
         self.imported_video_meta = {}
+        self.media_video_mix = 0.5
 
         self.playlist_automation = []
         # State lock for playlist memory; Qt widgets must still be touched only on the UI thread.
@@ -19003,6 +19490,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         media_import_row.addWidget(self.btn_load_wav)
         media_import_row.addWidget(self.lbl_wav_carrier)
         media_import_row.addWidget(self.btn_load_media)
+        # RANDOMIZE_ALL_2026: keep the full composition randomizer directly visible in the main window.
+        self.btn_randomize_everything_main = QPushButton("🎲 RANDOMIZE ALL")
+        self.btn_randomize_everything_main.setToolTip("Randomize composition-authoring surfaces while preserving timing and export settings.")
+        self.btn_randomize_everything_main.setStyleSheet("font-weight:bold; padding:4px 8px;")
+        self.btn_randomize_everything_main.clicked.connect(self._randomize_everything_scoped)
+        media_import_row.addWidget(self.btn_randomize_everything_main)
         media_import_row.addStretch(1)
         # IMPORT_SPEED_2026: varispeed pitch/speed shift for the loaded
         # WAV/video carrier. One import then yields alternate voicings without
@@ -22834,6 +23327,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         self.imported_waveform = None
         self.imported_sample_rate = 44100
+        # PER_INSTRUMENT_SAMPLE_2026: user-assigned sample/wavetable per instrument.
+        self.instrument_sample_paths = {}
+        self.instrument_sample_buffers = {}
+        self.instrument_sample_rates = {}
         self.imported_wav_path = ""
         self.imported_video_path = ""
         self.imported_video_meta = {}
@@ -23133,6 +23630,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "playlist_automation": _safe_json(getattr(self, "playlist_automation", [])),
             "instrument_scripts": _safe_json(getattr(self, "instrument_scripts", {})),
             "instrument_param_state": _safe_json(getattr(self, "instrument_param_state", {})),
+            "instrument_sample_paths": _safe_json(getattr(self, "instrument_sample_paths", {})),
             "patch_connections": _safe_json(getattr(self, "patch_connections", [])),
             "domain_eq": (
                 self.domain_eq_engine.to_json()
@@ -23147,6 +23645,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "media_carrier": {
                 "wav_path": str(getattr(self, "imported_wav_path", "") or ""),
                 "video_path": str(getattr(self, "imported_video_path", "") or ""),
+                "video_mix": float(getattr(self, "media_video_mix", 0.5)),
             },
             "global_algo": _safe_json(gas),
             "global_algo_fingerprint": algo_fp,
@@ -23217,6 +23716,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             ("playlist_automation", "playlist_automation"),
             ("instrument_scripts", "instrument_scripts"),
             ("instrument_param_state", "instrument_param_state"),
+            ("instrument_sample_paths", "instrument_sample_paths"),
             ("patch_connections", "patch_connections"),
         ):
             if key in data:
@@ -23245,6 +23745,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if isinstance(mc, dict):
                 wav_p = str(mc.get("wav_path") or "")
                 vid_p = str(mc.get("video_path") or "")
+                try:
+                    self.media_video_mix = float(np.clip(float(mc.get("video_mix", 0.5)), 0.0, 1.0))
+                except Exception:
+                    self.media_video_mix = 0.5
                 if wav_p and os.path.isfile(wav_p) and hasattr(self, "_load_wav_path"):
                     self._load_wav_path(wav_p)
                 elif vid_p and os.path.isfile(vid_p) and hasattr(self, "_load_video_path"):
@@ -24588,6 +25092,95 @@ class MathematiciansGrooveboxApp(QMainWindow):
     # =====================================================================
     # CONVOLVE_FIT_FEATURE — WAV carrier loading and spectral-fit helpers
     # =====================================================================
+    def _instrument_sample_for(self, instrument_name):
+        """Return the normalized per-instrument sample/wavetable, loading it lazily from its saved path."""
+        name = str(instrument_name or "")
+        buffers = getattr(self, "instrument_sample_buffers", {}) or {}
+        arr = buffers.get(name)
+        if arr is not None and np.asarray(arr).size:
+            return np.asarray(arr, dtype=np.float32).ravel()
+        path = str((getattr(self, "instrument_sample_paths", {}) or {}).get(name, "") or "")
+        if not path or not os.path.isfile(path):
+            return None
+        try:
+            data = None
+            sr = None
+            if wavfile is not None:
+                sr, data = wavfile.read(path)
+            else:
+                with wave.open(path, "rb") as wf:
+                    sr = wf.getframerate(); ch = wf.getnchannels(); width = wf.getsampwidth(); raw = wf.readframes(wf.getnframes())
+                    if width == 1: data = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32)-128.0)/128.0
+                    elif width == 2: data = np.frombuffer(raw, dtype=np.int16).astype(np.float32)/32768.0
+                    elif width == 4: data = np.frombuffer(raw, dtype=np.int32).astype(np.float32)/2147483648.0
+                    else: return None
+                    if ch > 1: data = data.reshape(-1, ch).mean(axis=1)
+            a = np.asarray(data)
+            if a.ndim > 1: a = a.mean(axis=1)
+            if np.issubdtype(a.dtype, np.integer):
+                info=np.iinfo(a.dtype); a=a.astype(np.float32)/(float(max(abs(info.min), info.max)) or 1.0)
+            else: a=a.astype(np.float32, copy=False)
+            a=np.nan_to_num(a.ravel(), nan=0.0, posinf=0.0, neginf=0.0)
+            if a.size == 0: return None
+            peak=float(np.max(np.abs(a)))
+            if peak > 1e-9: a=a/peak
+            buffers[name]=a
+            if not hasattr(self, "instrument_sample_buffers"): self.instrument_sample_buffers={}
+            self.instrument_sample_buffers[name]=a
+            if not hasattr(self, "instrument_sample_rates"): self.instrument_sample_rates={}
+            self.instrument_sample_rates[name]=int(sr or 44100)
+            return a
+        except Exception as exc:
+            print(f"[InstrumentSample] lazy load failed for {name}: {exc}")
+            return None
+
+    def import_instrument_sample_dialog(self, instrument_name, label=None):
+        """Assign a WAV sample to one instrument without replacing the global carrier."""
+        try:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, f"Import Instrument Sample — {instrument_name}", "",
+                "WAV Audio (*.wav);;AIFF Audio (*.aiff *.aif);;All Files (*)"
+            )
+            if not file_path: return
+            # Reuse the robust WAV loader, then copy its normalized array into the instrument slot.
+            data = None; sr = None
+            if wavfile is not None:
+                sr, data = wavfile.read(file_path)
+            else:
+                with wave.open(file_path, "rb") as wf:
+                    sr=wf.getframerate(); ch=wf.getnchannels(); width=wf.getsampwidth(); raw=wf.readframes(wf.getnframes())
+                    if width == 1: data=(np.frombuffer(raw,dtype=np.uint8).astype(np.float32)-128.0)/128.0
+                    elif width == 2: data=np.frombuffer(raw,dtype=np.int16).astype(np.float32)/32768.0
+                    elif width == 4: data=np.frombuffer(raw,dtype=np.int32).astype(np.float32)/2147483648.0
+                    else: raise RuntimeError("Unsupported PCM sample width without scipy.")
+                    if ch > 1: data=data.reshape(-1,ch).mean(axis=1)
+            a=np.asarray(data)
+            if a.ndim > 1: a=a.mean(axis=1)
+            if np.issubdtype(a.dtype, np.integer):
+                info=np.iinfo(a.dtype); a=a.astype(np.float32)/(float(max(abs(info.min),info.max)) or 1.0)
+            else: a=a.astype(np.float32, copy=False)
+            a=np.nan_to_num(a.ravel(), nan=0.0, posinf=0.0, neginf=0.0)
+            if a.size == 0: raise RuntimeError("The selected sample contains no audio samples.")
+            peak=float(np.max(np.abs(a)))
+            if peak > 1e-9: a/=peak
+            name=str(instrument_name)
+            self.instrument_sample_paths[name]=file_path
+            self.instrument_sample_buffers[name]=a
+            self.instrument_sample_rates[name]=int(sr or 44100)
+            st=(getattr(self,"instrument_param_state",{}) or {}).setdefault(name,{})
+            st["sample_path"]=file_path
+            st["sample_enabled"]=True
+            st["sample_mode"]="wavetable"
+            if label is not None: label.setText(f"sample: {os.path.basename(file_path)[:24]}")
+            if hasattr(self,"scope_status_label"): self.scope_status_label.setText(f"📂 Instrument sample loaded · {name} · {os.path.basename(file_path)}")
+            try: self._refresh_after_file_input(reason="instrument_sample")
+            except Exception: pass
+            try: self._push_undo("Import Instrument Sample")
+            except Exception: pass
+        except Exception as exc:
+            print(f"[InstrumentSample] Load failed: {exc}")
+            QMessageBox.critical(self,"Instrument Sample Load Error",str(exc))
+
     def load_wav_carrier_dialog(self):
         """Load a WAV file as the global carrier/reference waveform."""
         try:
@@ -26746,6 +27339,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # makes them blend into one mass instead of standing apart.
                 _max_partial = INSTRUMENT_PARTIAL_CAP_48[_vo % 48]
                 n_harm = max(1, min(n_harm, _max_partial))
+                # PER_INSTRUMENT_SAMPLE_2026: an explicitly assigned instrument sample
+                # is a first-class voice source. It is not the global carrier and does not
+                # overwrite any other instrument. The imported waveform is read as a
+                # deterministic periodic wavetable at the current instrument frequency.
+                _sample_voice = None
+                try:
+                    if bool(st.get("sample_enabled", False)) or op_name in (getattr(self, "instrument_sample_paths", {}) or {}):
+                        _sample_voice = self._instrument_sample_for(op_name)
+                except Exception:
+                    _sample_voice = None
+
                 # GOAVA = hard-composed pure sine; other engines free waveform.
                 # Live mod (AM/FM/PM) still routes through phase/_am_gain for all.
                 _is_goava_voice = (
@@ -26753,7 +27357,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     or "goava" in str(mem.get("engine_source", "")).lower()
                     or bool(st.get("goava_sine_patch"))
                 )
-                if _is_goava_voice:
+                if _sample_voice is not None and np.asarray(_sample_voice).size >= 2:
+                    # Table lookup makes the assigned sample a real instrument voice;
+                    # phase controls pitch while preserving the imported waveform shape.
+                    tab = np.asarray(_sample_voice, dtype=np.float32).ravel()
+                    phase01 = (phase / math.tau) % 1.0
+                    pos = phase01 * float(tab.size - 1)
+                    i0 = np.floor(pos).astype(np.int64)
+                    i1 = np.minimum(i0 + 1, tab.size - 1)
+                    frac = (pos - i0).astype(np.float32)
+                    harm = tab[i0] * (1.0 - frac) + tab[i1] * frac
+                    # A few harmonics are intentionally omitted: the sample itself is
+                    # the harmonic content, avoiding a second synthetic spectrum stack.
+                elif _is_goava_voice:
                     # Sinusoidal hard-composed patch; mods already in phase/_am_gain
                     harm = np.sin(phase)
                     # Optional soft second partial only from live mod depth
