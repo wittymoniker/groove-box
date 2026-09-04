@@ -852,3 +852,26 @@ established mathematical theory. Established number-theory statements should be
 limited to statements that follow from ordinary definitions and proofs; project
 specific claims should remain explicitly labeled **CLAIMED EXACT** and tied to a
 reproducible test contract.
+
+
+## Planetary flight kernel (2026-09-04)
+
+The game world uses a deterministic 3-D planetary gravity model rather than a
+flat terrain-only world. Each seed produces a solar-system layout, planets have
+mass/radius/orbit/inclination, and the player is integrated with gravity plus
+player thrust. Flight is continuous: orbit, escape, transfer, approach and
+landing are physical state changes. Portals remain as visual/navigation
+landmarks but do not teleport the player in planetary mode.
+
+The camera uses a gravity-relative frame every tick: its forward/look axis is
+perpendicular to the instantaneous gravity acceleration, with screen-up aligned
+against gravity. This keeps the horizon/camera stable while flying around a
+planet or transitioning into deep space.
+
+### Finite sprite vocabulary, unbounded game composition
+
+`SpriteGrammar` composes a small deterministic vocabulary (`core`, `ring`,
+`panel`, `wing`, `engine`, `crystal`, `antenna`, `window`, `spike`, `orb`) into
+seeded entities. This lets sectors, encounters, stations, creatures and props
+be generated from finite helper sprite parts instead of requiring one asset file
+per game object.

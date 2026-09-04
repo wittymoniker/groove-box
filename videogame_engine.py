@@ -48,6 +48,253 @@ MEUM_NORM = (MEUM - 1.0) / MEUM
 PHI = 1.618033988749895
 PHI_INV = PHI - 1.0
 
+
+# ---------------------------------------------------------------------------
+# PLANETARY WORLD KERNEL 2026
+# Deterministic N-body-lite gameplay: finite seed -> an unbounded stream of
+# planets, moons, stations and encounters.  The player is integrated in metres
+# with semi-implicit Verlet-style stepping; no flat terrain is required.
+# ---------------------------------------------------------------------------
+def _vadd(a,b): return (a[0]+b[0], a[1]+b[1], a[2]+b[2])
+def _vsub(a,b): return (a[0]-b[0], a[1]-b[1], a[2]-b[2])
+def _vmul(a,k): return (a[0]*k, a[1]*k, a[2]*k)
+def _vdot(a,b): return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]
+def _vlen(a): return math.sqrt(max(0.0,_vdot(a,a)))
+def _vnorm(a):
+    n=_vlen(a)
+    return (a[0]/n,a[1]/n,a[2]/n) if n>1e-12 else (0.0,1.0,0.0)
+def _vcross(a,b): return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
+
+class PlanetaryWorld:
+    """Seeded infinite-ish solar system with gravity, transfer travel and local frames."""
+    G = 0.00042
+    def __init__(self, seed):
+        self.seed=int(seed)&0x7fffffff
+        self.planets=[]
+        # A finite descriptor generates an infinite deterministic catalogue on demand.
+        for i in range(9):
+            a=math.tau*meum_game_residue(self.seed,f'planet:a:{i}')
+            orbit=260.0 + i*i*115.0 + 900.0*meum_game_residue(self.seed,f'planet:r:{i}')
+            mass=6000.0 + 90000.0*meum_game_residue(self.seed,f'planet:m:{i}')
+            radius=18.0 + 70.0*meum_game_residue(self.seed,f'planet:size:{i}')
+            inc=(-0.25+0.5*meum_game_residue(self.seed,f'planet:i:{i}'))
+            self.planets.append({'id':f'P{i}','orbit':orbit,'angle':a,'mass':mass,'radius':radius,'inclination':inc})
+        self.t=0.0
+        self.pos=_vadd(self._planet_pos(self.planets[0],0.0),(0.0,self.planets[0]['radius']+7.0,0.0))
+        # Tangential launch: stable enough for gameplay, then gravity takes over.
+        p=self._planet_pos(self.planets[0],0.0); radial=_vnorm(_vsub(self.pos,p));
+        tangent=_vnorm(_vcross((0.0,1.0,0.0),radial))
+        if _vlen(tangent)<1e-5: tangent=(1.0,0.0,0.0)
+        self.vel=_vmul(tangent, math.sqrt(self.G*self.planets[0]['mass']/max(1.0,self.planets[0]['radius']+7.0))*0.86)
+        self.thrust=0.0
+        self.accel=(0.0,0.0,0.0)
+        self.gravity=(0.0,0.0,0.0)
+        self.current_planet=0
+        self.landed=True
+        self.sector=(0,0,0)
+        self.travel_log=[]
+        self.gravity,self.current_planet=self.acceleration_at(self.pos)
+
+    def _planet_pos(self,p,t):
+        ang=p['angle'] + t*math.sqrt(self.G*7000.0/max(1.0,p['orbit']**3))
+        x=p['orbit']*math.cos(ang); z=p['orbit']*math.sin(ang)
+        y=math.sin(ang*0.7)*p['orbit']*p['inclination']*0.12
+        return (x,y,z)
+
+    def bodies_near(self, pos, radius=2200.0):
+        out=[]
+        for i,p in enumerate(self.planets):
+            pp=self._planet_pos(p,self.t); d=_vlen(_vsub(pp,pos))
+            if d<=radius: out.append((i,p,pp,d))
+        return out
+
+    def acceleration_at(self,pos):
+        g=(0.0,0.0,0.0); strongest=None; best=1e99
+        for i,p,pp,_d0 in self.bodies_near(pos, radius=5000.0):
+            r=_vsub(self._planet_pos(p,self.t),pos); d=max(2.0,_vlen(r))
+            a=self.G*p['mass']/(d*d)
+            g=_vadd(g,_vmul(_vnorm(r),a))
+            if d<best: best=d; strongest=i
+        return g,strongest
+
+    def step(self,dt, thrust_vector=(0.0,0.0,0.0)):
+        dt=max(0.001,min(0.1,float(dt))); self.t+=dt
+        self.gravity,self.current_planet=self.acceleration_at(self.pos)
+        thrust=_vmul(thrust_vector, 8.0)
+        self.accel=_vadd(self.gravity,thrust)
+        # Semi-implicit integration conserves the useful orbital feel better than
+        # position-first Euler and remains deterministic across platforms.
+        self.vel=_vadd(self.vel,_vmul(self.accel,dt))
+        self.pos=_vadd(self.pos,_vmul(self.vel,dt))
+        if self.current_planet is not None:
+            pp=self._planet_pos(self.planets[self.current_planet],self.t)
+            d=_vlen(_vsub(self.pos,pp)); r=self.planets[self.current_planet]['radius']
+            self.landed=d<=r+2.0
+            if self.landed and _vlen(self.vel)<2.5:
+                n=_vnorm(_vsub(self.pos,pp)); self.pos=_vadd(pp,_vmul(n,r+1.5))
+        self.sector=tuple(int(math.floor(c/2500.0)) for c in self.pos)
+
+    def local_frame(self):
+        """Camera frame whose image plane is perpendicular to gravity.
+        Up is opposite gravity; forward is velocity projected into the tangent plane."""
+        up=_vnorm(_vmul(self.gravity,-1.0)) if _vlen(self.gravity)>1e-8 else (0.0,1.0,0.0)
+        forward=_vsub(self.vel,_vmul(up,_vdot(self.vel,up)))
+        if _vlen(forward)<1e-8: forward=(0.0,0.0,1.0)
+        forward=_vnorm(forward)
+        right=_vnorm(_vcross(forward,up))
+        forward=_vnorm(_vcross(up,right))
+        return right,up,forward
+
+    def target_planet(self):
+        best=None; bd=1e99
+        for i,p,pp,d in self.bodies_near(self.pos,10000.0):
+            if i==self.current_planet: continue
+            if d<bd: best=(i,p,pp,d); bd=d
+        return best
+
+    def to_dict(self):
+        return {'t':round(self.t,6),'pos':[round(x,6) for x in self.pos],
+                'vel':[round(x,6) for x in self.vel],'gravity':[round(x,6) for x in self.gravity],
+                'accel':[round(x,6) for x in self.accel],'planet':self.current_planet,
+                'landed':self.landed,'sector':list(self.sector)}
+
+class SpriteGrammar:
+    """Finite helper-sprite vocabulary -> unlimited deterministic composite entities."""
+    PARTS=('core','ring','panel','wing','engine','crystal','antenna','window','spike','orb')
+    def __init__(self,seed): self.seed=int(seed)&0x7fffffff
+    def entity(self,kind,index=0):
+        n=3+int(5*meum_game_residue(self.seed,f'sprite:n:{kind}:{index}'))
+        return {'kind':kind,'parts':[self.PARTS[int(meum_game_residue(self.seed,f'sprite:{kind}:{index}:{j}')*len(self.PARTS))%len(self.PARTS)] for j in range(n)],
+                'scale':0.5+2.5*meum_game_residue(self.seed,f'sprite:s:{kind}:{index}'),
+                'phase':math.tau*meum_game_residue(self.seed,f'sprite:p:{kind}:{index}')}
+    def encounter(self,index):
+        # Composition of the same finite parts gives an effectively unbounded
+        # content space without shipping one sprite file per creature/object.
+        return self.entity(f'encounter_{index%17}',index)
+
+
+# ---------------------------------------------------------------------------
+# PLANETARY WORLD KERNEL 2026
+# Deterministic N-body-lite gameplay: finite seed -> an unbounded stream of
+# planets, moons, stations and encounters.  The player is integrated in metres
+# with semi-implicit Verlet-style stepping; no flat terrain is required.
+# ---------------------------------------------------------------------------
+def _vadd(a,b): return (a[0]+b[0], a[1]+b[1], a[2]+b[2])
+def _vsub(a,b): return (a[0]-b[0], a[1]-b[1], a[2]-b[2])
+def _vmul(a,k): return (a[0]*k, a[1]*k, a[2]*k)
+def _vdot(a,b): return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]
+def _vlen(a): return math.sqrt(max(0.0,_vdot(a,a)))
+def _vnorm(a):
+    n=_vlen(a)
+    return (a[0]/n,a[1]/n,a[2]/n) if n>1e-12 else (0.0,1.0,0.0)
+def _vcross(a,b): return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
+
+class PlanetaryWorld:
+    """Seeded infinite-ish solar system with gravity, transfer travel and local frames."""
+    G = 0.00042
+    def __init__(self, seed):
+        self.seed=int(seed)&0x7fffffff
+        self.planets=[]
+        # A finite descriptor generates an infinite deterministic catalogue on demand.
+        for i in range(9):
+            a=math.tau*meum_game_residue(self.seed,f'planet:a:{i}')
+            orbit=260.0 + i*i*115.0 + 900.0*meum_game_residue(self.seed,f'planet:r:{i}')
+            mass=6000.0 + 90000.0*meum_game_residue(self.seed,f'planet:m:{i}')
+            radius=18.0 + 70.0*meum_game_residue(self.seed,f'planet:size:{i}')
+            inc=(-0.25+0.5*meum_game_residue(self.seed,f'planet:i:{i}'))
+            self.planets.append({'id':f'P{i}','orbit':orbit,'angle':a,'mass':mass,'radius':radius,'inclination':inc})
+        self.t=0.0
+        self.pos=_vadd(self._planet_pos(self.planets[0],0.0),(0.0,self.planets[0]['radius']+7.0,0.0))
+        # Tangential launch: stable enough for gameplay, then gravity takes over.
+        p=self._planet_pos(self.planets[0],0.0); radial=_vnorm(_vsub(self.pos,p));
+        tangent=_vnorm(_vcross((0.0,1.0,0.0),radial))
+        if _vlen(tangent)<1e-5: tangent=(1.0,0.0,0.0)
+        self.vel=_vmul(tangent, math.sqrt(self.G*self.planets[0]['mass']/max(1.0,self.planets[0]['radius']+7.0))*0.86)
+        self.thrust=0.0
+        self.accel=(0.0,0.0,0.0)
+        self.gravity=(0.0,0.0,0.0)
+        self.current_planet=0
+        self.landed=True
+        self.sector=(0,0,0)
+        self.travel_log=[]
+
+    def _planet_pos(self,p,t):
+        ang=p['angle'] + t*math.sqrt(self.G*7000.0/max(1.0,p['orbit']**3))
+        x=p['orbit']*math.cos(ang); z=p['orbit']*math.sin(ang)
+        y=math.sin(ang*0.7)*p['orbit']*p['inclination']*0.12
+        return (x,y,z)
+
+    def bodies_near(self, pos, radius=2200.0):
+        out=[]
+        for i,p in enumerate(self.planets):
+            pp=self._planet_pos(p,self.t); d=_vlen(_vsub(pp,pos))
+            if d<=radius: out.append((i,p,pp,d))
+        return out
+
+    def acceleration_at(self,pos):
+        g=(0.0,0.0,0.0); strongest=None; best=1e99
+        for i,p,pp,_d0 in self.bodies_near(pos, radius=5000.0):
+            r=_vsub(self._planet_pos(p,self.t),pos); d=max(2.0,_vlen(r))
+            a=self.G*p['mass']/(d*d)
+            g=_vadd(g,_vmul(_vnorm(r),a))
+            if d<best: best=d; strongest=i
+        return g,strongest
+
+    def step(self,dt, thrust_vector=(0.0,0.0,0.0)):
+        dt=max(0.001,min(0.1,float(dt))); self.t+=dt
+        self.gravity,self.current_planet=self.acceleration_at(self.pos)
+        thrust=_vmul(thrust_vector, 8.0)
+        self.accel=_vadd(self.gravity,thrust)
+        # Semi-implicit integration conserves the useful orbital feel better than
+        # position-first Euler and remains deterministic across platforms.
+        self.vel=_vadd(self.vel,_vmul(self.accel,dt))
+        self.pos=_vadd(self.pos,_vmul(self.vel,dt))
+        if self.current_planet is not None:
+            pp=self._planet_pos(self.planets[self.current_planet],self.t)
+            d=_vlen(_vsub(self.pos,pp)); r=self.planets[self.current_planet]['radius']
+            self.landed=d<=r+2.0
+            if self.landed and _vlen(self.vel)<2.5:
+                n=_vnorm(_vsub(self.pos,pp)); self.pos=_vadd(pp,_vmul(n,r+1.5))
+        self.sector=tuple(int(math.floor(c/2500.0)) for c in self.pos)
+
+    def local_frame(self):
+        """Camera frame whose image plane is perpendicular to gravity.
+        Up is opposite gravity; forward is velocity projected into the tangent plane."""
+        up=_vnorm(_vmul(self.gravity,-1.0)) if _vlen(self.gravity)>1e-8 else (0.0,1.0,0.0)
+        forward=_vsub(self.vel,_vmul(up,_vdot(self.vel,up)))
+        if _vlen(forward)<1e-8: forward=(0.0,0.0,1.0)
+        forward=_vnorm(forward)
+        right=_vnorm(_vcross(forward,up))
+        forward=_vnorm(_vcross(up,right))
+        return right,up,forward
+
+    def target_planet(self):
+        best=None; bd=1e99
+        for i,p,pp,d in self.bodies_near(self.pos,10000.0):
+            if i==self.current_planet: continue
+            if d<bd: best=(i,p,pp,d); bd=d
+        return best
+
+    def to_dict(self):
+        return {'t':round(self.t,6),'pos':[round(x,6) for x in self.pos],
+                'vel':[round(x,6) for x in self.vel],'gravity':[round(x,6) for x in self.gravity],
+                'accel':[round(x,6) for x in self.accel],'planet':self.current_planet,
+                'landed':self.landed,'sector':list(self.sector)}
+
+class SpriteGrammar:
+    """Finite helper-sprite vocabulary -> unlimited deterministic composite entities."""
+    PARTS=('core','ring','panel','wing','engine','crystal','antenna','window','spike','orb')
+    def __init__(self,seed): self.seed=int(seed)&0x7fffffff
+    def entity(self,kind,index=0):
+        n=3+int(5*meum_game_residue(self.seed,f'sprite:n:{kind}:{index}'))
+        return {'kind':kind,'parts':[self.PARTS[int(meum_game_residue(self.seed,f'sprite:{kind}:{index}:{j}')*len(self.PARTS))%len(self.PARTS)] for j in range(n)],
+                'scale':0.5+2.5*meum_game_residue(self.seed,f'sprite:s:{kind}:{index}'),
+                'phase':math.tau*meum_game_residue(self.seed,f'sprite:p:{kind}:{index}')}
+    def encounter(self,index):
+        # Composition of the same finite parts gives an effectively unbounded
+        # content space without shipping one sprite file per creature/object.
+        return self.entity(f'encounter_{index%17}',index)
+
 # ---------------------------------------------------------------------------
 # ESKI BOOK FRACTAL SETS (p.26) — game / package path
 # Same expressions under OT and non-OT; only arithmetic nature changes.
@@ -2601,6 +2848,12 @@ class Game:
         # Procedural level geometry from seed + level_type (generative, not fixed mesh)
         self.level_geometry = self._generate_level_geometry(
             _safe_int_seed(self.id["seed"]) & 0x7FFFFFFF, self.level_type)
+        self.planetary = PlanetaryWorld(_safe_int_seed(self.id["seed"]))
+        self.sprite_grammar = SpriteGrammar(_safe_int_seed(self.id["seed"]))
+        self.physics_mode = "planetary_gravity"
+        self.planetary = PlanetaryWorld(_safe_int_seed(self.id["seed"]))
+        self.sprite_grammar = SpriteGrammar(_safe_int_seed(self.id["seed"]))
+        self.physics_mode = "planetary_gravity"
         # FREE_PLAY_2026: open_world / sandbox topologies (and any genre whose
         # hook is the free-roam hook) are genuinely open — no forced objective
         # completion loop. This is what "open world" is supposed to mean; it
@@ -2970,7 +3223,8 @@ class Game:
         """Where you are — angle, zoom, pitch, region, topology."""
         reg = self._current_region
         reg_s = f"{reg[0]} tier={reg[1]}" if reg else "open field"
-        return {
+        pp=getattr(self,"planetary",None)
+        out={
             "angle_rad": round(float(getattr(self, "angle", 0.0) or 0.0), 4),
             "angle_deg": round(math.degrees(float(getattr(self, "angle", 0.0) or 0.0)) % 360.0, 1),
             "zoom": round(float(getattr(self, "zoom", 1.0) or 1.0), 3),
@@ -2978,7 +3232,13 @@ class Game:
             "region": reg_s,
             "topology": str(self.id.get("topology") or "open_world"),
             "t": round(float(getattr(self, "t", 0.0) or 0.0), 2),
+            "physics_mode": getattr(self,"physics_mode","planetary_gravity"),
+            "position_xyz": [round(float(x),2) for x in pp.pos] if pp else [0.0,0.0,0.0],
+            "velocity_xyz": [round(float(x),2) for x in pp.vel] if pp else [0.0,0.0,0.0],
+            "gravity_xyz": [round(float(x),4) for x in pp.gravity] if pp else [0.0,0.0,0.0],
+            "camera_forward_perpendicular_to_gravity": True,
         }
+        return out
 
     def active_elements(self):
         """List every currently relevant feature with a short readout value.
@@ -3821,6 +4081,13 @@ class Game:
         yaw0 = float(base.get("yaw_deg", 0.0))
         pit0 = float(base.get("pitch_deg", 0.0))
         if bool(getattr(self, "free_play", False)):
+            # Camera-perpendicular-to-gravity contract: the view plane is tangent
+            # to the local gravitational field; roll is derived, never arbitrary.
+            try:
+                _r,_u,_f=self.planetary.local_frame()
+                self.visual_view = {**base, "gravity_up": _u, "gravity_right": _r,
+                                    "gravity_forward": _f, "physics_mode":"planetary_gravity"}
+            except Exception: pass
             # No autonomous orbit/roll/FOV breathing in a sandbox.
             yaw = yaw0 + math.degrees(float(getattr(self, "steer", 0.0) or 0.0)) * 0.35
             pitch = pit0 + math.degrees(float(getattr(self, "pitch", 0.0) or 0.0))
@@ -3880,10 +4147,16 @@ class Game:
                 # every world feel like a conveyor belt toward its collectibles
                 # (especially sigils).  Position changes now come only from the
                 # player's steer/movement input.
-                move_speed = 0.95 + 0.35 * self.difficulty_mult
-                player_motion = float(self.steer) + 0.35 * float(self.move["dz"])
-                if math.isfinite(player_motion) and abs(player_motion) > 1e-12:
-                    self.angle = (self.angle + dt * move_speed * player_motion) % math.tau
+                # PLANETARY_FLIGHT: movement is now real 3-D flight under gravity.
+                # Input is interpreted in the instantaneous gravity-relative camera
+                # frame, so pitch/yaw never silently fight the local down vector.
+                _right,_up,_forward = self.planetary.local_frame()
+                _th = _vadd(_vmul(_right,float(self.move["dx"])),
+                            _vadd(_vmul(_forward,float(self.move["dz"])),_vmul(_up,float(self.move["dy"]))))
+                self.planetary.step(dt,_th)
+                # Legacy angle remains as a deterministic compatibility signal for
+                # existing quests/network consumers; it is no longer world motion.
+                self.angle = math.atan2(self.planetary.pos[2],self.planetary.pos[0]) % math.tau
                 # THREE-PATHWAY: procedural-on-demand — rare functions are only
                 # computed/rendered when the perspective arrives (spatial
                 # activation) or via /tp /lore /gen.
@@ -3967,8 +4240,9 @@ class Game:
                 self.hp = max(0.0, self.hp - dmg * 12.0 * dt)
                 if _obj == "siege":
                     self.score += 0.35 * dmg * self.difficulty_mult  # risk reward
-            # Portals (open-world travel)
-            if self._teleport_cd <= 0:
+            # Portals remain as spatial landmarks in planetary mode; travel is
+            # physical thrust/orbit transfer, never an invisible teleport.
+            if self._teleport_cd <= 0 and getattr(self, "physics_mode", "") != "planetary_gravity":
                 dest = self.portals.try_teleport(self.angle)
                 if dest is not None:
                     self.angle = dest
@@ -4059,6 +4333,7 @@ class Game:
                     "type": "snap",
                     "t": round(self.t, 3),
                     "angle": round(self.angle, 6),
+                    "physics": self.planetary.to_dict(),
                     "score": round(self.score, 3),
                     "level": self.level,
                     "combo": self.combo,
@@ -4077,6 +4352,17 @@ class Game:
             snap = self.last_snap
             if snap:
                 self.angle = float(snap.get("angle", self.angle))
+                _ph=snap.get("physics") or {}
+                if isinstance(_ph,dict):
+                    try:
+                        self.planetary.t=float(_ph.get("t",self.planetary.t))
+                        self.planetary.pos=tuple(float(x) for x in _ph.get("pos",self.planetary.pos))
+                        self.planetary.vel=tuple(float(x) for x in _ph.get("vel",self.planetary.vel))
+                        self.planetary.gravity=tuple(float(x) for x in _ph.get("gravity",self.planetary.gravity))
+                        self.planetary.accel=tuple(float(x) for x in _ph.get("accel",self.planetary.accel))
+                        self.planetary.current_planet=_ph.get("planet",self.planetary.current_planet)
+                        self.planetary.landed=bool(_ph.get("landed",self.planetary.landed))
+                    except Exception: pass
                 self.score = float(snap.get("score", self.score))
                 self.level = int(snap.get("level", self.level))
                 self.combo = int(snap.get("combo", self.combo))
@@ -4185,6 +4471,7 @@ class Game:
         self.level = 1
         self.score = 0.0
         self.angle = meum_angle(_safe_int_seed(self.id["seed"]) * MEUM_INV)
+        self.planetary = PlanetaryWorld(_safe_int_seed(self.id["seed"]))
         self.difficulty_mult = {
             "tutorial": 0.5, "standard": 1.0, "master": 1.7, "meum_insane": 2.4,
         }.get(self.difficulty, 1.0)
@@ -6027,6 +6314,50 @@ if HAS_UI:
             p.fillRect(self.rect(), QColor(bg))
             topo = str(g.id.get("topology") or "open_world")
 
+            # Planetary 3-D view. The projection basis is rebuilt from gravity
+            # every frame: screen space is tangent to the local gravitational field.
+            def project_planet(v):
+                try:
+                    right, up, forward = g.planetary.local_frame()
+                    rel = _vsub(v, g.planetary.pos)
+                    x = _vdot(rel, right); y = _vdot(rel, up); z = _vdot(rel, forward)
+                    z += 180.0
+                    f = math.tan(math.radians(float(g.visual_view.get("fov_deg",48.0)))*0.5)
+                    inv = 1.0/max(25.0,z)
+                    return cx + x*inv*R*0.42, cy - y*inv*R*0.42, max(2.0, 900.0*inv)
+                except Exception:
+                    return cx,cy,3.0
+
+            if hasattr(g, "planetary"):
+                # Deep-space field is deliberately sparse; complexity comes from
+                # deterministic body composition, not a giant prebuilt map.
+                for i, body, bp, bd in g.planetary.bodies_near(g.planetary.pos, 5200.0):
+                    x,y,sz=project_planet(bp)
+                    col=QColor(ac if i==g.planetary.current_planet else tx)
+                    col.setAlpha(230 if bd<2600 else 150)
+                    p.setPen(QPen(col,1)); p.setBrush(col)
+                    rad=max(3.0, min(42.0, body["radius"]*max(0.04,sz/18.0)))
+                    p.drawEllipse(QPointF(x,y),rad,rad)
+                    if i==g.planetary.current_planet:
+                        p.setPen(QPen(QColor(ac),1)); p.setBrush(Qt.BrushStyle.NoBrush)
+                        p.drawEllipse(QPointF(x,y),rad+7,rad+7)
+                    if bd<3200:
+                        p.setPen(QPen(QColor(tx),1)); p.drawText(int(x+rad+4),int(y),body["id"])
+                # Flight vector / gravity vector. These make orbital intuition
+                # visible even with helper-sprite-only content.
+                try:
+                    _,up,forward=g.planetary.local_frame()
+                    gx,gy,_=project_planet(_vadd(g.planetary.pos,_vmul(g.planetary.gravity,900.0)))
+                    vx,vy,_=project_planet(_vadd(g.planetary.pos,_vmul(forward,700.0)))
+                    gp=QColor(dg); gp.setAlpha(170); p.setPen(QPen(gp,2)); p.drawLine(QPointF(cx,cy),QPointF(gx,gy))
+                    vp=QColor(ac); vp.setAlpha(170); p.setPen(QPen(vp,2)); p.drawLine(QPointF(cx,cy),QPointF(vx,vy))
+                except Exception: pass
+                # Player craft is always centered; its attitude is defined by the
+                # gravity-relative frame rather than the old flat-world angle.
+                cp=QColor(ac); cp.setAlpha(255); p.setPen(QPen(cp,2)); p.setBrush(cp)
+                p.drawEllipse(QPointF(cx,cy),7,7)
+                p.drawLine(QPointF(cx-13,cy),QPointF(cx+13,cy))
+
             _cam_mode = int(getattr(g, "camera_mode", 0) or 0)
 
             def project(yaw, dist, pitch=0.0, depth=1.0):
@@ -6295,6 +6626,14 @@ if HAS_UI:
             if getattr(g.waypoints, "count", 0) > 0:
                 world_bits.append(f"wp={g.waypoints.remaining()}")
             world_bits.append(f"pve={g.pve.remaining()}")
+            try:
+                pp=g.planetary
+                p.drawText(8, int(h)-40, f"GRAVITY { _vlen(pp.gravity):.3f}  ALT {(_vlen(_vsub(pp.pos, pp._planet_pos(pp.planets[pp.current_planet],pp.t))) - pp.planets[pp.current_planet]['radius']):.1f}  SECTOR {pp.sector}")
+            except Exception: pass
+            try:
+                pp=g.planetary
+                p.drawText(8, int(h)-40, f"GRAVITY { _vlen(pp.gravity):.3f}  ALT {(_vlen(_vsub(pp.pos, pp._planet_pos(pp.planets[pp.current_planet],pp.t))) - pp.planets[pp.current_planet]['radius']):.1f}  SECTOR {pp.sector}")
+            except Exception: pass
             p.drawText(8, int(h) - 24,
                        f"{g.id.get('title', '')}  t={g.t:.1f}s  " + "  ".join(world_bits))
             p.drawText(8, int(h) - 10,
