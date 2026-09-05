@@ -1,24 +1,3 @@
-# Groovebox Performance Box
-
-`Media Hub` is now **Performance**. Performance owns media browsing, playlist execution, deterministic geometric/phaselocked cutups, live replay, device routing, LAN/Wi-Fi-TV delivery, game-state broadcast, and batch rendering. Groovebox remains the canonical composition authority.
-
-## Appliance target
-- HDMI/DisplayPort/VGA-via-adapter/OS-exposed USB displays
-- PipeWire/Pulse audio sinks including USB, HDMI and already-paired Bluetooth
-- mpv for responsive playback and live rate control
-- FFmpeg/ffprobe for render, cutup, normalization and compatibility transcodes
-- Ethernet/Wi-Fi HTTP output and token-gated remote control
-- optional Chromecast handoff through `catt`
-
-## Architecture
-`seed + canonical clock -> CanonicalEditList -> audio | video | game -> Device Manager -> local / LAN / TV / record`
-
-Routing must not alter the canonical composition. Performance keeps old `pi_media_hub` imports as compatibility aliases.
-
-
----
-
-# CURRENT V3 ROLLOUT APPENDIX
 # Mathematician's Groovebox V3 — Current Feature, Math, Hardware & Networking Guide
 
 **Rollout date:** 2026-09-05  
@@ -178,6 +157,48 @@ Generated games already contain an authoritative TCP transport. This rollout exp
 
 The regression suite checks deterministic composition behavior, instrument→visual determinism, media-cutup routing, media-output helpers, and sequence→game influence. A generated-game localhost smoke test also ran a real host and client together; the host accepted one remote and both sessions advanced. GUI interaction and specific physical devices still require real-machine testing because the build environment used to assemble this package does not provide the full PyQt6/hardware stack.
 
+## Program Identity + portable .MG artifacts (2026-09-05)
+
+### Read Program → ID
+`⌬ Read Program → ID` computes two separate identities:
+- **Program ID**: semantic/structural identity. Python is normalized through its AST so ordinary whitespace, comments, and docstrings do not create a new Program ID; meaningful executable/code-structure changes do.
+- **Exact source SHA-256**: byte-for-byte identity for verification and archival comparison.
+ZIP packages are fingerprinted from normalized member content, so repacking/path changes do not automatically redefine the semantic program.
+
+### .MG Project / Synth / Profile
+Groovebox can export and load three portable artifact kinds:
+- `.MGproject` → full project snapshot, loaded into the Main project state.
+- `.MGsynth` → one selected synth/instrument snapshot, loaded into the currently selected instrument slot while preserving the artifact's own stable identity/provenance separately from the slot name/index.
+- `.MGprofile` → reusable Performance/global/reference settings profile, loaded into the relevant Performance/global settings state.
+
+Each .MG carries an **Artifact ID**, Program ID provenance, Composition ID provenance, integrity digest, tags, and a separate mutable analytics ledger. The artifact identity is derived from saved content; longitudinal statistics do **not** change the Artifact ID.
+
+### Longitudinal use + related results
+The analytics ledger may accumulate load/use counts, first/last-use times, companion/co-use counts, and outcome summaries. The software can scan Projects/Samples/Exports and rank related .MG artifacts from:
+1. shared Program ID,
+2. shared Composition ID,
+3. tag/math/provenance overlap,
+4. numeric parameter similarity,
+5. repeated co-use / companion history.
+The score is advisory and non-destructive. It never silently rewrites canonical/user data or artifact identity.
+
+Performance includes **⌬ .MG Related**, which scans the library, displays longitudinal statistics, loads a selected artifact into its appropriate slot, and surfaces related/common-result candidates.
+
+
+## GOAVA Radio responsive UI + LAN radio (2026-09-05)
+
+- The configurable Radio identity header sits **above GLOBAL PROCESSOR CONTROLS**. Station name and logo are stored in Groovebox application data (`radio_identity.json` plus a copied `radio_logo.*`), so changing radio branding does not alter Program ID, Composition ID, or `.MG` artifact identity.
+- GLOBAL PLAY remains red and LOCAL CONTEXT remains white, but the selector footprint is reduced by about 17% from the earlier oversized playtest control.
+- PLAYLIST, RANDOMIZE, PHASE-LOCK and GOAVA are equal-footprint primary canonical controls designed to expand across the available row.
+- Performance uses a softer rounded control palette and a vertical tab/navigation rail so tabs do not overflow the right margin.
+- Performance → Live Broadcast can start **GOAVA LAN Radio**. The station serves a browser page and a continuous **192 kbps MP3** stream on TCP 8780; it cycles local project/render/sample audio and emits low-level 432-Hz-family bleeps when no suitable audio exists.
+- Nearby Groovebox radios announce/listen over local UDP discovery; discovered station names and web URLs are shown in-app and on the station web page. Discovery works only across network segments that permit local broadcast; Wi-Fi radio range alone is not sufficient unless devices are associated with the same reachable LAN.
+- For an appliance where `http://device/` is desired, `DEPLOYMENT_KIT/enable_radio_port80.sh` (installed as `groovebox-radio-port80`) can create a root-owned TCP/80 redirect to the unprivileged radio service. This avoids running the GUI as root.
+
+## OS hardware dependency preflight
+
+`DEPLOYMENT_KIT/bin/groovebox-hardware-preflight` reports Wi-Fi, Bluetooth, ALSA/PipeWire, MIDI, touch/input, USB, video/VLC and Python runtime readiness. `DEPLOYMENT_KIT/install_detected_hardware.sh` installs common host packages when Internet access is available and falls back to an offline report when it is not. The normal existing-Linux appliance installer invokes this best-effort preflight automatically.
+
 
 ## 2026-09-05 — Meum + Operator Theory + Isosceles-Trig integration
 
@@ -203,3 +224,15 @@ Items, actions, events and starter-world elements now receive deterministic nume
 
 ### Source framing
 The in-app math help preserves the terminology and claims of the author's supplied papers as author-defined/theoretical material. Groovebox uses these ideas as deterministic compositional and geometric transforms; this software implementation is not itself an external proof of the broader mathematical or physical claims.
+
+## Universal Field / part-count invariance (2026-09-05)
+Groovebox now computes a `Universal Field` before instrument, visual-object, game-object, or export-part decomposition.  A part count N is an additive factorization of the same field: each part receives exact rational weight `1/N`; reconstruction uses compensated summation and must reproduce the same upstream coordinates within floating-point precision.  Rational anchors (0, 1/2, 1) are used for identity, symmetry, and partitioning.  Irrational ratios (M−1, 1/M, 2−M, (M−1)/M, √2−1, φ−1, e−2, π−3) are used for traversal, phase coverage, and secondary indexing rather than identity partition weights.
+
+The visualizer and game are sibling projections of this field.  The game does not generate visual identity.  Twenty selectable projections are registered: Canonical Geometry, Meum Field, Isosceles/ISN Scope, OT Transform Graph, Phase Torus, Lissajous/Harmonic Orbit, Spectrogram, Partial Constellation, Canonical Delta, Sequence Geometry, Playlist Timeline Terrain, Number-Theory Scope, Fractal/L-System, Complex Plane/Riemann, Wave Surface, Vector/Flow Field, Seed Fingerprint, Network Radio Constellation, Game World Map, and A/V/G Correspondence.  Every projection stores both selected coordinates and the complementary coordinates, so the split is selective/subtractive rather than a new random generation path.
+
+Game logic consumes a game-only projection of the same field for event density, NPC temporal variation, remote/world motion scaling, lighting/activity metadata, terrain/map state, and A/V/G correspondence.  None of these values accept instrument count as an identity input.
+
+`.MG` history maintenance now includes Export History (JSON/CSV/HTML) as well as Compress History and Clear History.  Export is read-only and includes Artifact ID, Program ID, Composition ID, timestamps, aggregates, companion/co-use data, outcomes, and compression/clear metadata without changing the source artifact or Artifact ID.
+
+## Total Correspondence / Self-Procedure
+The Universal Field now emits a self-procedure plan and a five-domain correspondence manifest (audio, visual, game, UI, network). Representation counts are downstream work/detail choices and are explicitly excluded from canonical field identity. A greedy visual projection cover minimizes redundant display dimensions while each selective/subtractive projection retains an exact complement. Correspondence diagnostics distinguish exact shared identity/provenance from lossy-domain invertibility.

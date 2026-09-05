@@ -61,12 +61,12 @@ from visual_determinism import (
 from fractal_spatial_engine import FractalSpatialEngine
 
 from dj_effects import CommutativePairSpace, LiveDJEffects
-from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer, QObject, QEvent, pyqtSignal, QRunnable, QThreadPool
+from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer, QObject, pyqtSignal, QRunnable, QThreadPool
 from dataclasses import dataclass
 import composition_state as _composition_state
 from PyQt6.QtGui import (
     QPainter, QPen, QColor, QPainterPath, QLinearGradient, QRadialGradient, QBrush, QFont, QPolygonF,
-    QAction, QPalette, QKeyEvent, QKeySequence, QImage, QPixmap, QIcon
+    QAction, QPalette, QKeyEvent, QKeySequence, QImage
 )
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QVBoxLayout,
@@ -144,15 +144,6 @@ try:
     import videogame_engine as _vge
 except Exception:
     _vge = None  # optional companion — video-game generator
-
-try:
-    from universal_field import (canonical_field as _universal_field, projection as _universal_projection,
-                                self_procedure as _universal_self_procedure,
-                                correspondence_manifest as _universal_correspondence,
-                                PROJECTION_TYPES as UNIVERSAL_PROJECTION_TYPES)
-except Exception:
-    _universal_field = _universal_projection = _universal_self_procedure = _universal_correspondence = None
-    UNIVERSAL_PROJECTION_TYPES = ()
 
 # POWER_V3_MEUM_CORE — canonical Meum spatial-dynamic constant.
 # M = 1.19758073433... is treated as an invariant mathematical constant,
@@ -4341,74 +4332,11 @@ PLAYLIST_STRUCT_COL_INDICES = (2, 3, 4, 5)  # indices into PLAYLIST_COLUMNS
 # authoritative. The adjacent Full-Unison OFF fallback remains 0.55.
 CANONICAL_RESONANCE_DEFAULT = 1.00
 CANONICAL_CONVOLVE_DEFAULT_PCT = 50.0
-CANONICAL_SEED_WEIGHT_DEFAULT = math.e - 2.0
+CANONICAL_SEED_WEIGHT_DEFAULT = 0.72
 CANONICAL_ADHERENCE_FALLBACK = 0.55
 EQR_DEFAULT = 0.4014
 FRACTALLIZER_DEFAULT = 0.5995
 PKP_ENVELOPE_DEFAULT = 0.5000
-
-# IRRATIONAL_MODULATION_BASIS_2026: compact analytic vocabulary for secondary
-# indexing/traversal. Identity/midpoint/off retain exact 1/0.5/0 semantics;
-# irrational defaults are reserved for non-authoritative propagation layers.
-IRRATIONAL_MODULATION_BASIS = {
-    "meum_minus_1": MEUM - 1.0,
-    "meum_inverse": 1.0 / MEUM,
-    "meum_complement": 2.0 - MEUM,
-    "meum_normalized": (MEUM - 1.0) / MEUM,
-    "sqrt2_minus_1": math.sqrt(2.0) - 1.0,
-    "phi_minus_1": PHI - 1.0,
-    "e_minus_2": math.e - 2.0,
-    "pi_minus_3": math.pi - 3.0,
-}
-
-def simplify_scalar_transforms(transforms, *, phase_cycle=None):
-    """Canonicalize common scalar transforms before evaluating them once.
-
-    Input items are (op, value) pairs where op is mul/add/phase. Multipliers
-    collapse into one product, additions into one sum, and phase offsets into
-    one modulo-cycle offset. Near-identity/no-op results are removed. This makes
-    reversible writer/modulator results independent of activation order and
-    avoids repeated floating-point mutation of the signal.
-    """
-    mul = 1.0
-    add = 0.0
-    phase = 0.0
-    extras = []
-    for item in transforms or ():
-        try:
-            op, value = item
-            v = float(value)
-        except Exception:
-            extras.append(item)
-            continue
-        if not math.isfinite(v):
-            continue
-        op = str(op).lower().strip()
-        if op in ("mul", "multiply", "scale", "gain"):
-            mul *= v
-        elif op in ("add", "offset", "translate"):
-            add += v
-        elif op in ("phase", "phase_add", "phase_offset"):
-            phase += v
-        else:
-            extras.append((op, v))
-    eps = 1e-12
-    out = []
-    if abs(mul - 1.0) > eps:
-        out.append(("mul", mul))
-    if abs(add) > eps:
-        out.append(("add", add))
-    if phase_cycle is not None:
-        try:
-            cyc = abs(float(phase_cycle))
-            if cyc > eps:
-                phase = math.fmod(phase, cyc)
-        except Exception:
-            pass
-    if abs(phase) > eps:
-        out.append(("phase", phase))
-    out.extend(extras)
-    return out
 
 # CANONICAL_MACRO_DEFAULTS_2026: single source of truth for the engine-authored
 # macro defaults. Both the generative writer (_mark_generated_synth_context) and
@@ -4888,10 +4816,6 @@ class VisualOscilloscope(QFrame):
         # full env-follow symmetry as the DSP pathway.
         self.operator_theory = True  # match global OT default ON
         self.follow_env = None
-        self._universal_field_state = None
-        self._universal_projection_state = None
-        self._universal_self_procedure_state = None
-        self._universal_correspondence_state = None
 
     def set_operator_theory(self, on):
         self.operator_theory = bool(on)
@@ -4910,11 +4834,6 @@ class VisualOscilloscope(QFrame):
 
     def set_mode(self, mode_idx):
         self.mode = int(mode_idx)
-        if self.mode >= 6 and _universal_projection is not None and self._universal_field_state and UNIVERSAL_PROJECTION_TYPES:
-            try:
-                self._universal_projection_state = _universal_projection(self._universal_field_state, UNIVERSAL_PROJECTION_TYPES[(self.mode-6) % len(UNIVERSAL_PROJECTION_TYPES)])
-            except Exception:
-                self._universal_projection_state = None
         self.update()
 
     def set_seed_hud(self, seed_values=None, ensemble_voices=0, canonical_flags=None, engine_params=None):
@@ -4942,17 +4861,6 @@ class VisualOscilloscope(QFrame):
         elif isinstance(engine_params, (list, tuple)):
             lines = [str(x)[:28] for x in engine_params[:16]]
         self.engine_param_lines = lines
-        if _universal_field is not None:
-            try:
-                _seed = self.seed_values[0] if self.seed_values else 0.0
-                self._universal_field_state = _universal_field(_seed, "live-visual", sequential_nums=self.seed_values, feature_vector=[self._rms, self._peak])
-                self._universal_self_procedure_state = _universal_self_procedure(self._universal_field_state) if _universal_self_procedure else None
-                self._universal_correspondence_state = _universal_correspondence(self._universal_field_state) if _universal_correspondence else None
-                if self.mode >= 6 and UNIVERSAL_PROJECTION_TYPES:
-                    self._universal_projection_state = _universal_projection(self._universal_field_state, UNIVERSAL_PROJECTION_TYPES[(self.mode-6) % len(UNIVERSAL_PROJECTION_TYPES)])
-            except Exception:
-                self._universal_field_state = self._universal_projection_state = None
-                self._universal_self_procedure_state = self._universal_correspondence_state = None
         self.update()
 
     def update_waveform(self, new_data, overview=None, playhead=None, follow_env=None):
@@ -5062,47 +4970,7 @@ class VisualOscilloscope(QFrame):
             path.closeSubpath()
             return path
 
-        if self.mode >= 6:
-            # UNIVERSAL_VISUAL_FIELD_2026: all extended views are selective /
-            # subtractive projections of one count-independent canonical field.
-            pr = self._universal_projection_state or {}
-            vals = list((pr.get("selected") or {}).values())
-            comp = list((pr.get("complement") or {}).values())
-            vals = vals or comp or [0.5]
-            kind = str(pr.get("kind") or "universal")
-            painter.setPen(QPen(c, 2))
-            cx, cy = w*0.5, (det_top+h-16)*0.5
-            rad = max(18.0, min(w, h-det_top-16)*0.38)
-            pts=[]
-            for j,v in enumerate(vals):
-                a=math.tau*(j/max(1,len(vals))) + float(v)*math.tau*(MEUM_MINUS_1)
-                rr=rad*(0.25+0.75*float(v))
-                pts.append(QPointF(cx+math.cos(a)*rr, cy-math.sin(a)*rr))
-            if any(x in kind for x in ("graph","constellation","correspondence","map")):
-                for j,p0 in enumerate(pts):
-                    for k in range(j+1,min(len(pts),j+3)):
-                        painter.drawLine(p0,pts[k])
-                    painter.drawEllipse(p0,2.5,2.5)
-            elif any(x in kind for x in ("terrain","surface","spectrogram","flow")):
-                for j in range(max(2,len(vals)*3)):
-                    x0=(j/max(1,len(vals)*3-1))*(w-1)
-                    v=float(vals[j%len(vals)])
-                    y0=cy-math.sin(j*(MEUM_MINUS_1)+v*math.tau)*rad*(0.2+0.8*v)
-                    if j: painter.drawLine(prev,QPointF(x0,y0))
-                    prev=QPointF(x0,y0)
-            else:
-                if pts:
-                    for j in range(len(pts)): painter.drawLine(pts[j],pts[(j+1)%len(pts)])
-            painter.setFont(QFont("Segoe UI",7,QFont.Weight.Bold))
-            painter.setPen(QColor(220,255,240,210))
-            painter.drawText(8, max(det_top+10, 30), kind.replace("_"," ").upper())
-            _sp = self._universal_self_procedure_state or {}
-            _co = self._universal_correspondence_state or {}
-            _pc = (_sp.get("visual_projection_cover") or {}).get("projection_count", 0)
-            _score = float(_co.get("correspondence_score", 0.0) or 0.0)
-            painter.setFont(QFont("Segoe UI",6))
-            painter.drawText(8, max(det_top+21, 41), f"SELF {int(_pc)}P · CORR {_score*100:.1f}% · FIELD {str((_sp or {}).get('field_id',''))[:8]}")
-        elif self.mode == 4:
+        if self.mode == 4:
             # LISSAJOUS / XY VECTOR SCOPE: a genuinely different geometry, not
             # a hue-shifted copy of the amplitude-vs-time plot above. Plots
             # the live sample against a short-delayed copy of itself
@@ -5352,31 +5220,7 @@ class SpectrumAnalyzer(QFrame):
         peak_i = int(np.argmax(self.mags)) if n else 0
         floor = h - 16
 
-        if self.mode >= 6:
-            # Same Universal Field projection family, rendered from spectral
-            # measurements rather than from game state.  N changes sampling
-            # density only; the projection kind remains upstream-defined.
-            kind = UNIVERSAL_PROJECTION_TYPES[(self.mode-6) % len(UNIVERSAL_PROJECTION_TYPES)] if UNIVERSAL_PROJECTION_TYPES else "universal"
-            vals=[float(x) for x in self.mags]
-            cx,cy=w*0.5, top+(h-top-18)*0.5
-            r=max(10.0,min(w,h-top-18)*0.34)
-            pts=[]
-            stride=max(1,len(vals)//24)
-            for j,v in enumerate(vals[::stride]):
-                a=math.tau*(j/max(1,len(vals[::stride]))) + v*(MEUM_MINUS_1)*math.tau
-                rr=r*(0.3+0.8*v)
-                pts.append(QPointF(cx+math.cos(a)*rr,cy+math.sin(a)*rr))
-            painter.setPen(QPen(QColor.fromHsv(int(self.seed_hue)%360,200,240),1.5))
-            if any(x in kind for x in ("graph","constellation","correspondence","map")):
-                for j,p0 in enumerate(pts):
-                    painter.drawEllipse(p0,2,2)
-                    if j: painter.drawLine(pts[j-1],p0)
-            else:
-                for j in range(len(pts)-1): painter.drawLine(pts[j],pts[j+1])
-                if len(pts)>2: painter.drawLine(pts[-1],pts[0])
-            painter.setFont(QFont("Segoe UI",7,QFont.Weight.Bold))
-            painter.drawText(8,h-5,kind.replace("_"," ").upper())
-        elif self.mode == 4:
+        if self.mode == 4:
             # SPECTROGRAM WATERFALL: history of magnitude frames scrolling
             # downward, brightness = magnitude. A genuinely different
             # (time x frequency) view rather than a re-tinted bar chart.
@@ -6540,7 +6384,7 @@ class VideoSynthEngine:
                 "harmonic_lattice": float(state.get("harmonic_lattice", state.get("fractalizer", 0.5))),
             },
             "sequence": {
-                "length": int(seq.get("pattern_length", len(steps) or 8)),
+                "length": int(seq.get("pattern_length", len(steps) or 16)),
                 "steps_on": sum(1 for x in steps if x),
                 "amp_mean": float(sum(float(x) for x in amps)/len(amps)) if amps else 0.0,
                 "pitch_mean": float(sum(float(x) for x in pitches)/len(pitches)) if pitches else 1.0,
@@ -10299,15 +10143,13 @@ class ReadmeGuideDialog(QDialog):
     """Full Help / Readme: philosophy, workflow, scripting syntax, disclaimer."""
 
     HELP_TEXT = r"""
-
 ================================================================================
-  GROOVEBOX — Mathematician's / Scientist's Groovebox
+  EQR GROOVEBOX — Mathematician's / Scientist's Groovebox
   Full Documentation, Scripting Syntax & Design Philosophy
 ================================================================================
-  Main editor and author: Noah Girouard King (Eski)
-  Credits: Grok (xAI), Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI),
-  Mistral.ai (Mistral), Meta AI (Meta), GitHub Copilot (GitHub),
-  Cursor Grok 4.6, jcode(1jehuang), and opencode (anomalyco).
+  Credits: core EQR design — project author; Grok (xAI), Gemini (Google),
+  Claude (Anthropic), ChatGPT (OpenAI), Mistral.ai (Mistral), Meta AI (Meta),
+  GitHub Copilot (GitHub), Cursor Grok 4.6, and opencode (anomalyco).
 
 --------------------------------------------------------------------------------
 1. GOAL OF THE SOFTWARE
@@ -10372,6 +10214,26 @@ generative structure, and mathematically guided composition.
   cleanly for composition state, several time samples, and all instrument
   indices are inserted (invalid candidates are retried, never emitted).
   Edits remain fully user-owned. See also README.md in the project root.
+
+  PARAMETRIC / COORDINATE SEED DSL
+  ---------------------------------
+  The seed field also accepts mathematical coordinate relationships. These are
+  evaluated in the same restricted numeric environment as ordinary seed math:
+
+      x(t) = sin(t * MEUM)
+      y(t) = cos(t * PHI)
+
+  or compact constructor forms:
+      parametric(sin(t), cos(t))
+      cartesian(sin(t), cos(t), sin(t * MEUM))
+      polar(1 + 0.25*sin(t), MEUM*t)
+      cylindrical(1, MEUM*t, sin(t))
+      spherical(1, MEUM*t, pi/2 + 0.25*sin(t))
+
+  Multi-axis curves expose their components as the seed list (per-instrument
+  indexing remains deterministic). During Play / Export, the curve is reduced
+  to its Euclidean magnitude for the scalar T-axis seed, so closed curves do
+  not arbitrarily privilege x over y.
 
   COMPOSITION vs TIME-AXIS EVALUATION
   -----------------------------------
@@ -10440,31 +10302,26 @@ generative structure, and mathematically guided composition.
 
 --------------------------------------------------------------------------------
 5. BOOTSTRAP (missing seed and/or program)
-
 --------------------------------------------------------------------------------
-
 Runs automatically before Euclidean lock / Seeded randomizer.
 
   Program = net-effect data only (playlist-effective instruments with audible steps).
 
   Case A — no seed AND no program (system is free to assign):
-
       50% → BOTH: random kit seed + kit program parameters
       25% → SEED ONLY: random kit seed; pads/playlist left empty
       25% → PROGRAM ONLY: kit program parameters; seed field stays empty
 
   Case B — program present, no seed:
-
       Derive seed from fingerprint of net-effect steps (simplifies playlist superwrite)
 
   Case C — non-zero seed present, no program:
-
       Provide seed-derived program parameters on pads + blank playlist fields only
 
   Case D — non-zero seed AND program:
-
       No bootstrap changes
 
+--------------------------------------------------------------------------------
 6. NET-EFFECT USER INPUT (INCLUDING DEPENDENCIES)
 --------------------------------------------------------------------------------
 Protected "user" data must be able to change the mix at some playlist time t:
@@ -10594,7 +10451,7 @@ Transport
   💾 Save & Export .wav
 
 Macros
-  EQR Mod, Fractalizer, PKP Decay, PKP Envelope Follower, Tuning
+  EQR Mod, Fractalizer, PKP Envelope, PKP Envelope Follower, Tuning
   Master Vol (beside oscilloscope)
 
 PKP Pad Bank (toggle)
@@ -10629,13 +10486,41 @@ Windows
   engine uses these same numerical values as geometry seeds, while Meum calculus
   values modulate scale, rotation, density, depth, and temporal activation.
 
---------------------------------------------------------------------------------
-PLAYLIST ROWS / ROW BEATS
--------------------------
-  Playlist Rows controls how many arrangement rows exist. Row beats controls the
-  wall-clock duration of each playlist row. These are arrangement timing controls,
-  not automation-step selectors; automation has its own Length and Step controls.
 
+--------------------------------------------------------------------------------
+V13.1 UI + SIGNAL CONVERSION MONITOR
+--------------------------------------------------------------------------------
+  SEQUENCER and AUTOMATOR STEPS interaction text is green. Sequencer ON cells are
+  gold; OFF cells are dark blue. Automator ON cells are brown-red and move toward
+  red on hover; OFF cells remain dark blue.
+
+  Edit Synth Per Seq is the brown sequence-local editing switch. When ON, the
+  synth/script/patch/domain editors target the active sequence addon state; the
+  master instrument remains the carrier and is never silently replaced.
+
+  Automator first-click selection teleports Operator, Sequence #, and Offset ±
+  to the selected automation point. The teleport inspector is a top-level popup
+  positioned above the selected cell when screen space permits.
+
+  MASTER VECTOR SYNTH
+    • User XYZ direction and deterministic canonical XYZ direction are blended 50/50.
+    • Drive controls bounded resonant conversion strength.
+    • VECTOR CONVERT enables/disables the explicit conversion stage.
+    • Signal Guard preserves finite/nonzero support when the bounded field is active.
+    • SAFE VECTOR = Convert ON + Guard ON + Drive 50%.
+    • RESET VECTOR zeros only user XYZ direction; canonical direction remains active.
+
+  SIGNAL CONVERSION MONITOR is read-only telemetry for the post-vector render: RMS,
+  peak, headroom, finite status, and signal presence. It is not a second canonical
+  state and cannot silently rewrite the composition.
+
+  PATH PARITY
+    • Project JSON save/load carries master_vector_state.
+    • Export provenance carries XYZ, Drive, enabled/guard, and the fixed 50/50 weights.
+    • Live Play and audio/video export share _render_mixdown_buffer, so vector conversion
+      is applied on the same render path before final master hard clipping.
+
+--------------------------------------------------------------------------------
 AUTOMATION STEP EDITOR — SEQUENCER-STYLE CONTROL
 --------------------------------------------------------------------------------
   The automation strip is a second step sequencer directly under the main
@@ -10643,15 +10528,13 @@ AUTOMATION STEP EDITOR — SEQUENCER-STYLE CONTROL
 
   • Length controls how many automation steps are shown. The orange strip grows
     or scrolls horizontally to match that count.
-  • Sequence Attack and Sequence Release default to 50% each and remain directly
-    controllable per sequence by the canonical composition state.
   • First click on an automation step = SELECT + TELEPORT. The Step, Operator,
     Sequence, and Offset ± controls above immediately show that step's state.
   • Second click on the SAME automation step = toggle ON/OFF. ON steps are bright
     orange; OFF steps are dim orange/brown. The selected step has a bright outline.
   • Operator chooses the instrument/operator for that automation step.
   • Sequence chooses the sequence bank used at that step.
-  • Offset ± is the per-note sequence-step offset.
+  • Offset ± is the per-note sequence-step offset; Track Offset is the per-sequence/per-instrument row timing offset.
   • Changing Operator, Sequence, or Offset ± edits the currently selected step
     immediately; there is no POINT/apply button.
   • There is no automation-points counter and no playlist-row selector here.
@@ -10662,12 +10545,6 @@ AUTOMATION STEP EDITOR — SEQUENCER-STYLE CONTROL
     composition state (including synth pitch/amp and sequence/pattern envelopes),
     never the final Master Volume.
   • CLEAR removes all direct automation steps.
-  • RANDOMIZE AUTOMATION IN SEQUENCE randomizes only the currently selected
-    Operator / Sequence automation lane. It does not alter other sequences or
-    Master Volume.
-  • RANDOMIZE ALL SEQ rebuilds automation across every
-    instrument and sequence. It changes automation only; Master Volume remains
-    untouched. Both randomizers create one undoable edit.
 
   Typical use:
       1. Set Length (for example 16).
@@ -10678,29 +10555,55 @@ AUTOMATION STEP EDITOR — SEQUENCER-STYLE CONTROL
          when you want it ON.
 
   The automation state is written through the canonical composition boundary and
-  participates in Live Play / Audio Export / Video Export. Disabled automation steps do not drive the
-  render. The Automator popup is a UI-only teleport indicator; Operator, Sequence,
-  and Offset edits are written to the selected automation point.
+  participates in Play / Export. Disabled automation steps do not drive the
+  render.
+
+--------------------------------------------------------------------------------
+V15 MEDIA + USERDATA CANONICAL MORPH BRIDGE
+--------------------------------------------------------------------------------
+  • Load Carrier accepts common audio and video containers through the media decoder.
+  • Load Sample → Selected Operator accepts audio OR video and attaches its decoded
+    audio stream to the selected operator as user-owned sample data.
+  • Per-operator video samples are retained by path and source kind; their audio
+    stream is used by the audio renderer while the original video remains available
+    as project media.
+  • PRE-CANONICAL SAMPLE MORPH applies synth parameters, script identity, incident
+    patch gains/topology, and domain definition to the transformed branch only.
+  • The local sample bridge is exactly 50% untouched user waveform + up to 50%
+    deterministic transformed waveform. Therefore user sample data has a hard 50%
+    minimum contribution to the local sample morph.
+  • Adaptive Fit and Phase Lock change the transformed branch, never ownership.
+  • FINITE / DC / PEAK GUARD prevents invalid values and excessive transformed peaks.
+  • These controls are not a second canonical authority; canonical composition still
+    owns the final sequence/operator arrangement and downstream render identity.
+
+  PATH PARITY
+    • Project Save stores media paths/source kinds and sample-morph settings; raw
+      waveform arrays remain derived runtime data and are decoded again on Load.
+    • Project Load restores the same media paths and recomputes decoded samples.
+    • Live Play and Audio/Video Export share _render_mixdown_buffer, so the same
+      pre-canonical sample morph, canonical composition, vector conversion, and
+      final master path are used by every compatible output.
+    • Export provenance records operator media references, sample-morph settings,
+      and Master Vector settings.
 
 --------------------------------------------------------------------------------
 14. AUDIO
 --------------------------------------------------------------------------------
-  Realtime: sounddevice OutputStream callback consumes the same shared rendered buffer used by export.
-  Export: shared _render_mixdown_buffer → WAV; 2.5D MP4 includes the same rendered audio.
-  Master Vector Synth runs in that shared render path, so Live Play and Export see the same vector conversion.
-  Signal Conversion Monitor observes the post-vector buffer; it does not silently rewrite canonical data.
+  Realtime: sounddevice OutputStream callback; master volume live
+  Export: shared _render_mixdown_buffer → WAV; 2.5D MP4 includes rendered audio
   PKP hits: non-blocking sd.play blips when pad bank is armed
   (Install / dependencies are listed at the bottom of this guide.)
 
 --------------------------------------------------------------------------------
-15. 48 OPERATORS
+14. 48 OPERATORS
 --------------------------------------------------------------------------------
 Families span topological wave-folding, multivector/phase-space, quantum/soliton,
 stochastic/entropic, spatial/spectral effects, and dynamic resonators.
 Each has sequencer memory (steps, amplitudes, gates, probabilities) and optional script.
 
 --------------------------------------------------------------------------------
-16. RECOMMENDED WORKFLOW
+15. RECOMMENDED WORKFLOW
 --------------------------------------------------------------------------------
   A. Sketch carrier pads on one or more instruments
   B. Paint playlist rows if arranging over time
@@ -10713,7 +10616,7 @@ Each has sequencer memory (steps, amplitudes, gates, probabilities) and optional
 ================================================================================
 
 --------------------------------------------------------------------------------
-17. SEQUENCER AMP / PITCH & LIVE ENGINES
+16. SEQUENCER AMP / PITCH & LIVE ENGINES
 --------------------------------------------------------------------------------
   Step pads: click once = select (Amp/Vel + Pitch sliders). Click again = toggle on/off.
   Amp = velocity / step-trigger blend. Pitch = frequency ratio (automation param for steps).
@@ -10847,1325 +10750,211 @@ DEPENDENCIES (install last — same list as project README.md)
 
 --------------------------------------------------------------------------------
 
-# 17. CANONICAL CROSS-MEDIA COMPOSITION
-Groovebox v13 uses one readable/writable canonical composition document as the source of truth at every engine, save/load, import, and export boundary. Sequencer steps, gates, pitch, amplitude, probability, operator timing offsets, instrument parameters, instrument samples, playlist arrangement, patchbay connections, modulation/routing state, global algorithms, mathematical controls, imported media references, seeds, timing, and engine toggles are represented on the same composition surface.
+--------------------------------------------------------------------------------
+V23 — MULTI-TARGET BLEND / TIME-OFFSET / CARRIER PROOF
+--------------------------------------------------------------------------------
+  Playlist Paint may retain multiple blend_targets with normalized blend_weights.
+  Numeric synth parameters use a weighted multi-target blend; structure cells keep
+  the participating Script / Domain / Synth / Patch identities visible.
 
-The canonical authority exposes explicit READ and WRITE operations. UI controls write to the canonical surface; legacy engine attributes are compatibility mirrors synchronized from it. Audio, video, and videogame consumers read the canonical document rather than maintaining separate authoritative composition copies.
+  Time offsets:
+    operator_time_offsets = authoritative per-operator seconds offsets.
+    blend_time_offsets   = offsets retained for blended targets.
+    These offsets are independent of Wrap/Schedule and Paint Tempo mapping.
 
-The rendered music wave additionally contributes deterministic waveform analysis: RMS, peak, energy envelope, zero-crossing rate, spectral centroid, spectral flatness, and normalized spectrum. Visual/game behavior can therefore be derived from the actual musical wave as well as the event-level composition that generated it.
+  Imported carrier role:
+    • Global Input XMOD reference
+    • 50% phase-reference steering
+    • optional Global Convolve kernel
+    • carrier-aware canonical seed/context
+  The carrier is NOT a third uncontrolled additive bus.
 
-# 18. SAVE/LOAD + IMPORT/EXPORT PARITY
-Project save/load is a canonical read/write loop. Save serializes the authoritative canonical document; load restores that document through the canonical authority and then rebuilds the compatibility mirrors used by older engine code. Imported WAV/audio, instrument samples, and imported video are canonical media references and are restored when possible.
+  Linear composition proof at the composition boundary:
+      M0 = 0.50*C + 0.50*U
+      C >= 0.50 coefficient
+      U >= 0.50 coefficient
+      C + U = 1.00
+  U includes bounded carrier-derived modulation when a carrier is loaded. This is
+  a source-coefficient proof, not an RMS/energy theorem after nonlinear effects.
+  EQR, vector conversion, and hard clipping may change measured amplitude later.
+  The canonical_user_blend_ledger and export provenance record this distinction.
 
-Audio exports, video exports, and videogame packages carry the canonical authority version/revision/fingerprint together with the cross-media fingerprint/provenance. Thus every exported medium can be traced to the same project state. Import handlers also write their new media references into the canonical surface before the next engine/export boundary.
+  Save / Load / Export parity includes blend targets/weights, all time offsets,
+  sequence mapping, Paint Tempo, canonical control strategy/overlays, carrier refs,
+  samples, automation, scripts, domains, patching, Master Vector, notes, and UI state.
 
-Re-rendering audio refreshes waveform analysis; video and game generation then read that refreshed canonical cross-media state.
 
-# 19. MUSIC-WAVE → VIDEO → VIDEOGAME
-The cross-media rule is: one canonical musical source, multiple deterministic expressions. Beat/note/sequence timing, waveform energy, spectral information, phase, arrangement, mathematical parameters, and canonical routing can drive corresponding visual and game events. A strong transient can become a visual pulse and a game event; a sequence transition can become a visual scene/state transition; pitch and spectral changes can influence geometry, world parameters, or gameplay values.
+  
+  V30 — MEUM CALCULUS 50% → 100% PROOF + COMPLETE INPUT/UI AUDIT
+  
+  50% → 100% proof:
+    canonical authority range: 0.50 <= S <= 1.00.
+    Seeded Baseline = 50%.
+    Engine Stack = 50–100%, reaching 100% at five active canonical engines.
+    Full Canonical = 100%.
+    Coverage Adaptive = 50–100% through measured canonical coverage.
+  
+  The source-coefficient boundary remains:
+    M0 = 0.50*C + 0.50*U
+    C coefficient >= 0.50
+    U coefficient >= 0.50
+    C + U = 1.00
+  This is a linear source-coefficient proof, not a post-nonlinear RMS/energy theorem.
+  Master Volume remains final user gain and is outside canonical authority.
+  
+  MEUM CALCULUS / SPATIAL ACTIVITY:
+    x = temporal coordinate
+    y = normalized user amplitude/activity
+    z = normalized local gradient
+    local propagation = (left + center + right) / 3
+    activity modulus = L1(canonical) / (L1(canonical) + L1(user))
+  When canonical L1 is below user L1, the canonical branch is structurally expanded
+  to the user activity level before the fixed 50/50 boundary. This is a deterministic
+  procedural Meum field mechanism, not a physical Navier–Stokes solver.
+  A deterministic 2048-sample proof vector measures approximately 64.516% canonical
+  activity modulus. The runtime ledger records the measured modulus and geometric loss.
+  
+  100% SHARED FEATURE COMPLETENESS:
+    time, rhythm, pitch, envelope, phase, modulation, tempo, AM, FM, PM,
+    wavetable_vector, playlist_mapping
+  The ledger records 12 features and shared_feature_completeness = 1.0.
+  
+  AUTOMATOR TELEPORT EDITOR:
+    first click = select + teleport
+    second click = ON/OFF
+    editable Target Operator, Target Sequence 1–128, Morph 0–100%,
+    Sequence Attack 0–100%, Sequence Release 0–100%, Offset −1024…+1024.
+    The target sequence is the synth/panel and envelope morph destination.
+    The inspector is a top-level static popup and does not chase the horizontal scroller.
+  The main Step Sequencer popup is likewise static after explicit selection and no longer
+  uses ensureWidgetVisible() during popup positioning.
+  
+  TRACK OFFSET:
+    Per-instrument/per-sequence −16…+16 row-unit offset. Persisted and applied in the
+    render timeline before per-step offset. Save/load/export provenance retains it.
+  
+  MULTIFORMAT MEDIA / INSTRUMENT VIDEO INPUTS:
+    Audio: WAV, MP3, FLAC, OGG/OGA, M4A, AAC, AIFF/AIF, OPUS, CAF, ALAC, WMA, APE, WV.
+    Video: MP4, MOV, MKV, WEBM, AVI, M4V, MPEG/MPG, FLV, TS/M2TS/MTS, 3GP/3G2, OGV, VOB.
+    FFmpeg decodes non-WAV audio and video audio streams. Each selected instrument may
+    retain an audio or video source with source_kind, video_path and video_input_enabled.
+    User-owned sample material enters the 50/50 local sample morph before canonical gain.
+  
+  UI / COLOR AUDIT:
+    Generic white/grey control defaults were removed from the main application stylesheet.
+    Sliders, spin boxes, combo boxes, labels, tables, headers, buttons, progress bars and
+    text fields use semantic amber/cyan/teal/violet/green/red-brown colors.
+    Master Volume is intentionally prominent: 24pt yellorange/amber title and value, wider
+    slider, taller groove and enlarged handle.
+    Global Seed is top-anchored so Random Seed Script and README/Help remain visible.
+    Canonical Morph Bridge occupies a three-row expanding lower-deck workspace.
+  
+  V31 — VERIFIED 50%→100% FEATURE CHAIN:
+    Meum Spatial Activity; canonical 50–100% strategies; autonomous continuation; 12 shared
+    features; Algorithm XMOD local/global; Edit Algorithm Per Sequence; Wrap/Schedule and
+    Paint Tempo; multi-target playlist blend/time offsets; carrier modulation/reference;
+    50/50 user sample morph; Wavetable Projector; Master Vector Synth; sequence attack/release
+    follow; canonical pitch/amp/phase/trigger/chord material; static Step/Automator teleports;
+    Track Offset; multiformat media; per-instrument audio/video inputs; save/load; export provenance.
+  
 
-The videogame receives the same canonical document and waveform-analysis contract used by the audiovisual side, not an independently authored game-only state. Video likewise reads the same canonical composition and wave-derived projection. This is the v13 single-source-of-truth rule: if a parameter changes the composition, it is canonical and readable/writable by the authority; if it is only a local display preference, it stays outside the composition.
+--------------------------------------------------------------------------------
+V31 VERIFIED 50%→100% / MEUM CALCULUS / UI AUDIT
+--------------------------------------------------------------------------------
+  Canonical authority S is bounded by 0.50 ≤ S ≤ 1.00.
+  Seeded Baseline = 0.50. Engine Stack = min(1.00, 0.50 + 0.10 n).
+  Five active canonical engines reach 1.00; Full Canonical requests 1.00 exactly.
+  The independent linear source boundary remains M0 = 0.50*C + 0.50*U.
+  This proves control/authority bounds, not post-nonlinear RMS energy equality.
 
-The videogame package receives the canonical composition plus waveform-analysis contract rather than only a seed and a few UI settings. The generated game therefore has access to the same musical identity used by the audio/video side. Exported audio, video, and game artifacts carry compatible fingerprints for cross-verification.
+  Meum Calculus spatial resolution uses direct X/Y/Z field coordinates, local
+  neighbor propagation, geometric loss, and an L1 activity modulus. When needed,
+  the canonical branch is structurally expanded to the user activity level before
+  the fixed 50/50 boundary. No final-output clamp is introduced by this mechanism.
 
-The design target is:
-    CANONICAL MUSIC → ACTUAL WAVE + MUSICAL EVENTS
-                         ↓
-                  CROSS-MEDIA CONTRACT
-                    ↙           ↘
-                 VIDEO          GAME
+  Track Offset is persisted per instrument/sequence and applied in playlist time.
+  Multiformat audio/video inputs use FFmpeg; each instrument may retain its own
+  audio or video source and video metadata.
 
-No separate hidden music, video, or game composition should become authoritative. A new control belongs in the canonical document when it changes the composition; otherwise it remains a local UI/render preference.
+  RANDOMIZE ALL SEQ is the main complete sequence/automation randomizer label.
+  Master Volume is 24pt yellorange/amber. White/grey generic control defaults are
+  replaced by semantic project colors. Step and Automator teleport windows are
+  independent static Tool windows and may remain visible together without chasing
+  the scroller. Canonical Morph Bridge is arranged across three responsive rows.
+
+--------------------------------------------------------------------------------
+V35 — MASTER VECTOR / WAVETABLE / XMOD / AUTOMATOR PLAYLIST ROUTING
+--------------------------------------------------------------------------------
+Under canonical authority, Master Vector Synth, Global Wavetable Projector,
+Global/Input XMOD, Algorithm XMOD, and Canonical Resonance are first-class
+playlist + Automator destinations. They share blend, modular-patch, and algo
+routing with Script / Domain / Synth / Patch structure columns.
+
+PLAYLIST AUTO TARGET NAMES (column "Auto Target")
+  master_vector_x | master_vector_y | master_vector_z | master_vector_drive
+  wavetable_frame | wavetable_phase | wavetable_curvature | wavetable_twist | wavetable_fold
+  global_xmod | global_input_xmod
+  algorithm_xmod_local | algorithm_xmod_global
+  canonical_resonance
+  synth_panel_mod | patch_mod | script_mod | domain_mod
+  plus classic macros: eqr, fractalizer, pkp_envelope, filter, drive, pitch
+
+Coverage scales depth; Direction Vector sets sign; Blend Partner / multi-target
+blend_weights mix several instruments on the same row. Modular Patch column
+remains the edge list; Algo XMOD local/global depth the sequence algorithms.
+
+AUTOMATOR SEQUENCE (full path)
+  1) Paint or toggle Automator steps (orange strip) — Wrap or Syncopate timing.
+  2) First click teleports Operator / Sequence # / Offset; second click toggles.
+  3) Popup can set morph, attack/release, and any numeric param including the
+     Master Vector / Wavetable / XMOD / Resonance names above.
+  4) Lanes interpolate longitudinally between enabled steps; length may lock
+     to Sequencer or run polymetric via SYNC OFF + syncopate delta.
+  5) apply_playlist_automation_to_ui pushes the same targets onto live UI and
+     canonical state so Live Play, Export, Video, and Game see one surface.
+
+SCRIPTING DIRECTIONS (seed script + live parametrics)
+  • Seed field is a full script panel. Names: t, x, y, z, pi, e, tau, PHI, MEUM,
+    MEUM_NORM, MEUM_INV, isn, ics, clamp, lerp, choose, …
+  • Example — drive resonance activity from time without hard clamps:
+        return lerp(0.50, 1.50, 0.5 + 0.5 * sin(t * MEUM))
+  • Example — vector-ish direction token for live_parametrics / notes:
+        return sin(t), cos(t * MEUM), sin(t * PHI_INV)
+  • Playlist Live Parametrics cell may carry a one-phase predicted blob that
+    engines read alongside Script Tag / Domain Tag / Synth Snapshot / Modular Patch.
+  • Wavetable Synth (engine combo) + freehand WavetableCanvas shapes are stored
+    per instrument; Global Wavetable Projector (1D/2D/3D) feeds Master Vector
+    conversion on the shared render path (50/50 user/canonical guide).
+
+TRACK OFFSET (user-owned)
+  Global TrackOffset and per-sequence track_offset are user-set timing controls
+  in playlist-row units (same ownership model as Canonical Resonance amount):
+  audio, video, and game engines all respond, but canonical engines do not treat
+  them as modification handles and do not rewrite them. Negative = earlier;
+  positive = later. Mirrored into composition_snapshot / game meta for consumers.
+
+RESONANCE — 50–150% vs 0–200%
+  Canonical Resonance / Activity is an activity/continuation drive (not Master
+  Volume, not the 50/50 C/U mix). Its legal band depends on User Data Overwrite:
+
+  • Protect ON (default — "Canonical: skip overwrite user composition" checked):
+      50–150%. User locks respected. 50% floor with active userdata; up to 150%
+      autonomous continuation when user activity is low.
+
+  • User Data Overwrite ON (protect unchecked / Canonical Overwrite):
+      0–200%. Userdata is snapshotted then locks wiped so engines may rewrite
+      the composition. 0% = no autonomous canonical activity; 200% = maximum
+      continuation drive under overwrite.
+
+  The Resonance spin range and status label (… · 50–150% PROTECT / 0–200% OVERWRITE)
+  follow the protect toggle. Playlist automation of canonical_resonance uses the
+  same active band.
 
   End of Help — Groovebox
   Credits: Grok (xAI), Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI),
   Mistral.ai (Mistral), Meta AI (Meta), GitHub Copilot (GitHub),
   Cursor Grok 4.6, jcode(1jehuang) and opencode (anomalyco).
 ================================================================================
-
---------------------------------------------------------------------------------
-18. HOW TO USE THE MATHEMATICAL LAYER — FROM PAD TO CANONICAL GENERATION
---------------------------------------------------------------------------------
-This section is the practical path for using the mathematics without needing to
-understand the implementation first.
-
-CANONICAL COMPOSITION ENGINE — ONE SOURCE, ALL MEDIA
-
-Groovebox uses a canonical composition model so that the same musical composition
-can drive audio, video, and videogame generation without creating separate or
-contradictory versions of the project.
-
-The canonical composition contains the musical information that defines the work,
-including:
-
-• Sequence banks and sequence lengths
-• Per-step pitch, amplitude, gate, probability, and timing
-• Instrument and effect parameters
-• Instrument sample assignments
-• Operator timing offsets and predictive timing information
-• Playlist structure and arrangement
-• Global algorithms and mathematical parameters
-• Modulation and routing information
-• Master patchbay relationships
-• Composition-matrix relationships
-• Performance/macroscopic controls
-• Randomization state and deterministic seeds
-• Tempo, timing, phase, and synchronization information
-• Imported audio/media references and their composition roles
-• Game-generation metadata derived from the composition
-
-The canonical state is the authoritative representation of the project.
-
-Audio rendering reads this state to produce the musical waveform.
-
-Video rendering reads the same state to determine visual timing, motion,
-transformations, procedural geometry, modulation, synchronization, and
-imported-video behavior.
-
-Videogame generation reads the same state to determine the game's world
-parameters, objects, timing, procedural behavior, musical synchronization,
-and composition-derived game metadata.
-
-The conceptual model is:
-
-    CANONICAL COMPOSITION
-             │
-       ┌─────┼─────────────┐
-       │     │             │
-       ▼     ▼             ▼
-     AUDIO  VIDEO       VIDEOGAME
-       │     │             │
-       ▼     ▼             ▼
-      WAV    MP4       GAME DATA/ENGINE
-
-Changes made through the Master Patchbay, Composition Matrix, Modulation Routing,
-Sequencer, Instruments, Playlist, or other canonical controls should propagate
-through every compatible output engine.
-
-The objective is deterministic correspondence: if a musical parameter changes,
-every generated medium that depends upon that parameter should receive the same
-underlying information.
-
---------------------------------------------------------------------------------
-19. PROJECT SAVE/LOAD AND IMPORT/EXPORT PARITY
---------------------------------------------------------------------------------
-Project save/load is based on the canonical composition rather than isolated
-copies of individual editor controls.
-
-A saved project should preserve enough information to reconstruct the composition
-and its relationships across all supported media.
-
-Project state includes, where applicable:
-
-• Complete sequence information
-• Instrument parameter state
-• Instrument sample paths and sample configuration
-• Playlist/arrangement information
-• Operator time offsets
-• Global synthesis and algorithm settings
-• Modulation and patchbay routing
-• Composition Matrix relationships
-• Imported audio references
-• Imported video references
-• Imported-media metadata
-• Video composition parameters
-• Game-generation metadata
-• Randomization state and deterministic seeds
-• Rendering/export configuration when applicable
-
-External media files are referenced by path or project-relative location rather
-than assuming that a temporary decoded buffer is itself the project.
-
-When a project is loaded, Groovebox attempts to restore the referenced media and
-reconstructs the canonical composition before rebuilding dependent audio, video,
-and game representations.
-
-Import and export operations remain subordinate to the canonical composition.
-Audio import can become part of the musical composition, including use as an
-imported waveform, carrier, convolution source, or instrument sample where
-supported. Video import can become part of the visual composition while retaining
-its relationship to the musical timeline.
-
-The intended persistence loop is:
-
-    SAVE → LOAD → RENDER AUDIO
-                    │
-                    ├── RENDER VIDEO
-                    │
-                    └── GENERATE GAME
-
-Missing external media should be reported rather than silently replaced with
-unrelated content. Where a deterministic procedural fallback is supported, that
-fallback should preserve the composition's mathematical and timing structure.
-
---------------------------------------------------------------------------------
-20. MUSIC-DERIVED VIDEO AND VIDEOGAME GENERATION
---------------------------------------------------------------------------------
-Groovebox treats the musical waveform and its canonical generating parameters as
-sources of information for the other media engines.
-
-Derived media should not merely react to final audio amplitude. The complete
-composition contains substantially more information than amplitude alone.
-
-Video and videogame generation can derive behavior from:
-
-• Waveform amplitude
-• Frequency and spectral characteristics
-• Rhythmic events
-• Beat and subdivision timing
-• Note/pitch information
-• Gate events
-• Probability events
-• Sequence transitions
-• Instrument identity
-• Instrument parameters
-• Modulation values
-• Operator offsets
-• Playlist/arrangement changes
-• Mathematical algorithms
-• Phase relationships
-• Deterministic randomization
-• Imported-media relationships
-
-For example:
-
-    KICK EVENT
-       ↓
-    musical event
-       ├── audio transient
-       ├── visual pulse
-       └── game event
-
-    PITCH CHANGE
-       ↓
-    canonical note information
-       ├── oscillator frequency
-       ├── visual frequency/geometry parameter
-       └── game-world parameter
-
-    SEQUENCE CHANGE
-       ↓
-    canonical arrangement event
-       ├── audio pattern change
-       ├── visual scene/state change
-       └── game-state transition
-
-    OPERATOR TIME OFFSET
-       ↓
-    canonical timing relationship
-       ├── audio timing
-       ├── synchronized visual timing
-       └── synchronized game timing
-
-The intended system is:
-
-             MUSICAL COMPOSITION
-                     │
-         ┌───────────┼───────────┐
-         │           │           │
-      waveform    events     parameters
-         │           │           │
-         └───────────┼───────────┘
-                     ▼
-            COMPOSITION ANALYSIS
-                     │
-          ┌──────────┼──────────┐
-          ▼          ▼          ▼
-         AUDIO      VIDEO      GAME
-          │          │          │
-          ▼          ▼          ▼
-       waveform   frames    world/state
-
-Imported video should participate in the canonical visual layer rather than
-existing as an unrelated background asset. Imported audio should remain capable
-of participating in the canonical audio/composition pipeline.
-
-Generated videogames receive composition metadata describing the musical
-structure that drives them, including timing, arrangement, instrument-related
-information, algorithmic parameters, and other supported canonical controls.
-
-The intended result is one mathematical composition expressed through multiple
-media:
-
-    ONE COMPOSITION = SOUND + IMAGE + INTERACTION
-
-Whenever a new control is added, ask:
-
-    Does this control modify the canonical composition?
-
-If YES: expose its state through the canonical composition, save/load it with the
-project, and make it available to every output engine for which it has a meaningful
-interpretation.
-
-If NO: keep it as a local UI/rendering preference and do not duplicate it into
-unrelated composition engines.
-
---------------------------------------------------------------------------------
-21. THE SHORTEST USEFUL WORKFLOW
---------------------------------------------------------------------------------
-1. Choose BPM and sequence length.
-2. Choose an instrument and turn on a few pads.
-3. Leave Seed blank/zero for ordinary authoring, or enter a non-zero numeric seed.
-4. Press Play and listen to the carrier.
-5. Enable Phase-Lock, Randomize, Seeded, GOAVA, or Operator Theory one at a time.
-6. Open Playlist when you want generated structure written into arrangement rows.
-7. Use Domain Equations for time/space functions and Instrument Scripts for
-   per-instrument rules.
-8. Save the project before experimenting with a new mathematical recipe.
-
---------------------------------------------------------------------------------
-22. FIRST SCRIPTING EXAMPLES
---------------------------------------------------------------------------------
-A simple two-frequency carrier:
-    sin(2*pi*t*2) + 0.5*cos(2*pi*t*3)
-
-Meum phase field:
-    sin(t*MEUM) * cos(t*PHI)
-
-Seed-dependent motion:
-    sin(t*MEUM + seed) * (0.5 + 0.5*cos(t*PHI))
-
-The project's isn / ics forms:
-    isn(t*MEUM) * 0.6 + ics(t*PHI) * 0.4
-
-A multivariate domain expression:
-    sin(x*MEUM + y*PHI + z*pi)
-
-Function-style script:
-    return isn(t*MEUM) + 0.25*ics(t*PHI)
-
-sin, cos, isn, ics, MEUM, PHI, pi, e, tau, seed, x, y, z, and public reference
-constants are available to the appropriate script evaluators. Use the Help panel
-as the authoritative list for the build being run.
-
---------------------------------------------------------------------------------
-23. HOW GENERATED MATH REACHES SOUND
---------------------------------------------------------------------------------
-The canonical pipeline is conceptually:
-
-    seed → canonical context → instrument lattice → operator/sequence transforms
-         → voice parameters → mix
-
-The seed is therefore an input to a deterministic construction, not an assertion
-that every generated result is a theorem of number theory. When a canonical
-fingerprint is identical, the implementation is intended to regenerate the same
-canonical state.
-
---------------------------------------------------------------------------------
-24. MEUM CALCULUS — PROJECT DEFINITIONS, OPERATIONS, AND EXAMPLES
---------------------------------------------------------------------------------
-MEUM CALCULUS — PROJECT MATHEMATICAL FRAMEWORK
-
-Meum Calculus is the mathematical framework developed and documented by Noah
-Girouard King (Eski) in connection with Scientific Theories and Inventions and
-related works. Groovebox implements the project's stated constants,
-transformations, operators, coordinate systems, and derived quantities as a
-reproducible computational system.
-
-CLAIMED EXACT means exact according to the project's declared definitions,
-formulas, constants, serialization rules, and tested implementation contract.
-It does not by itself assert that a project-defined result constitutes an
-independently established theorem of mathematics or physics.
-
-PUBLIC CONSTANTS
-
-The canonical Meum value is:
-    M = MEUM = 1.1975807343385265188
-
-Public reference inverse:
-    M⁻¹ = MEUM_INV = 0.83501677283773394333148276154833054143874793150691
-
-Important derived values:
-    M² = 1.43419961525880442984053780233084675344
-    M³ = 1.7175698284296712120687451889540584671690563022583
-    M⁴ = 2.0569285364085026523421673878967788864920989745683
-    (M−1)/M = 0.16498322716226605666851723845166945856125206849309
-    2^M = 2.2935474173287805635918286442792609595802586606571
-    log₂(M) = 0.26012291784344212146116471128795687966817094961902
-
-Reference constants are also exposed as PI_IRR, E_IRR, PHI, PHI_INV, SQRT2,
-SQRT3, and SILVER.
-
-MEUM POWER LATTICE
-
-For instrument slot i, the canonical power table is generated from:
-    P_j = M^(j−6), j = 0,…,35
-
-The slot coordinate uses the dense project-defined phase position:
-    u_i = (3 i M) mod 36
-
-If j = floor(u_i) and r = u_i − j, the interpolated lattice factor is:
-    L_i = (1−r) P_j + r P_(j+1 mod 36)
-
-This is a deterministic geometric mapping. “Dense” means the use of a
-non-rational-looking project constant is intended to avoid a short visual period;
-it is not a proof of equidistribution.
-
-MEUM NORMALIZATION
-
-The standard normalized weight is:
-    N_M = (M−1)/M
-
-A Meum-weighted pair can be written:
-    F_M(a,b) = N_M a + (1−N_M)b
-
-The canonical isn implementation uses this style of Meum blending in its EQR
-execution path; the exact implementation should be consulted when auditing a
-specific release.
-
-MEUM PHASE ROTATION
-
-A slot phase reference is:
-    φ_i = 2π i / 48
-
-A second deterministic phase coordinate is:
-    ψ_i = τ ((i N_M Φ⁻¹) mod 1)
-
-These are coordinates, not random numbers. They are reproducible from i and the
-public constants.
-
-GOAVA IRRATIONAL-SAMPLING EXAMPLE
-
-For continuous time t, base frequency f_b, and channel c, the project uses:
-    s(t) = 0.5 f_b M⁻¹ t
-
-A seed-list contribution has the form:
-    C_v(t) = [1 + cos(β_v + (π/2)(|v|+|n|)s(t))] /
-             (N + |n−v|)
-
-with the zero-valued seed entry receiving the additional s(t) term in its base
-phase. The stream is seeded and continuous in t; it is not an RNG call in the
-audio callback.
-
---------------------------------------------------------------------------------
-25. OPERATOR THEORY (OT) — COMPLETE PROJECT MATH REFERENCE
---------------------------------------------------------------------------------
-OT THEORY — PROJECT DEFINITION
-
-Operator Theory is the project's alternative arithmetic vocabulary. In canonical
-paths it is primarily an execution/notation layer around deterministic scalar
-operations. “Exact” means exact according to the project's stated OT rules and
-regression contract, not a claim that these rules replace ordinary arithmetic in
-established mathematics.
-
-OT BAND FUNCTION
-    B(x) = 1, if |x|≤1
-         = 2, if 1<|x|≤2
-         = 3, if 2<|x|≤3
-         = 1, if |x|>3
-
-OT ADDITION AND SUBTRACTION
-
-Let b be the band of the operand with the greater magnitude. Then:
-    OT_ADD(n,v) = n+v + 0.5B, when n+v ≥ 0
-    OT_ADD(n,v) = n+v − 0.5B, when n+v < 0
-
-Subtraction follows the project's directional rule; otherwise it routes through
-OT_ADD(n,−v).
-
-OT MULTIPLICATION
-
-Magnitude is ordinary multiplication:
-    |OT_MUL(a,b)| = |ab|
-
-The project's sign rule is intentionally nonstandard:
-positive×positive returns +|ab|; negative×negative returns −|ab|; unlike signs
-return −|ab|. The special identity is OT_MUL(0,0)=1, while zero with a nonzero
-operand returns 0.
-
-OT POWERS AND ROOTS
-
-Power is defined by:
-    OT_POW(b,e) = s |b|^|e|
-
-where s follows the project's signed-power convention. Roots use ordinary
-magnitude roots with the project's real-sign convention. Undefined real-domain
-cases remain undefined rather than being silently reinterpreted as positive
-magnitudes.
-
-OT DIVISION AND ZERO
-
-For a nonzero denominator:
-    |OT_DIV(a,b)| = |a|/|b|
-
-with sign taken from a. The project defines 0/0 = 1 in OT mode. Division by zero
-for nonzero a uses the project's large finite sentinel convention. These are
-compatibility rules, not ordinary field arithmetic.
-
-OT PHASE OPERATOR
-    OT_I_PHASE(x,k) = −x for even k, and +x for odd k.
-
-It is a symbolic orientation marker and is not intended to introduce a new
-complex-valued audio stream by itself.
-
-isn AND ics
-
-The canonical book-form definitions are:
-    isn(θ) = 2 sin(θ/2)
-    isn⁻¹(y) = 2 arcsin(y/2)
-    ics(θ) = 2 cos(θ/2)
-    ics⁻¹(y) = 2 arccos(y/2)
-
-The inverse functions require |y/2|≤1 on the real principal domain. This is a
-mathematical domain restriction, not a claim about audio clipping.
-
---------------------------------------------------------------------------------
-26. EQR REALITY TENSOR
---------------------------------------------------------------------------------
-The documented EQR form for sequences indexed by n is:
-
-    P = (1/k) Σ[n=0..k] isn⁻¹((isn(d_n)+isn(t))/2)
-
-    E = (1/k) Σ[n=0..k] isn(θ_n)/d_n
-
-    D = (1/k) Σ[n=0..k] isn⁻¹(isn(θ_n) E/(I P))
-
-    Z = P E + D
-
-with the project constant I = 134964356 as its finite-infinity reference.
-
-These equations describe the project's model. They do not establish a physical
-law or a mathematically proven theory of reality.
-
---------------------------------------------------------------------------------
-27. CANONICAL NUMBER-THEORY / CONGRUENCE CLAIMS
---------------------------------------------------------------------------------
-The project may label a canonical generation CLAIMED EXACT when the claim is
-restricted to this reproducible implementation contract:
-
-1. The same canonical inputs are serialized in the same order.
-2. The same public constants are used.
-3. The same deterministic formulas and integer/index rules are applied.
-4. The same canonical state fingerprint is regenerated.
-5. Regression tests compare the resulting canonical records or buffers.
-
-This supports a claim of implementation-level deterministic correctness under
-the tested contract. It does not prove new number theory, prove that MEUM is
-irrational, or prove perfect congruence for all possible future inputs.
-
-For modular indexing:
-    a ≡ b (mod n)  ⇔  n | (a−b)
-
-For a cyclic slot permutation:
-    p(i) = (a i + b) mod n
-
-a sufficient condition for a bijection over residue classes is:
-    gcd(a,n)=1
-
-That is an established finite-number-theory fact when the implementation follows
-it. A project-specific lattice built from MEUM should instead be described as a
-deterministic mapping unless a separate proof establishes stronger properties.
-
-REFERENCE-ONLY SCRIPTING CONSTANTS
-
-MEUM, MEUM_CONSTANT, MEUM_INV, MEUM_MINUS_1, MEUM_SQ, MEUM_CUBE,
-MEUM_FOURTH, MEUM_NORM, MEUM_OVER_1_5, MEUM_TWO_POW,
-MEUM_TWO_POW_OVER_SQ, MEUM_LOG2, MEUM_UNISON_STEP_FACTOR, MEUM_POWERS_36,
-INSTRUMENT_PHASE_LOCK_48, PHI, PHI_INV, PI_IRR, E_IRR, SQRT2, SQRT3, SILVER.
-
-These are reference values, not hidden controls. Scripts should read them rather
-than duplicating rounded literals when reproducibility matters.
-
---------------------------------------------------------------------------------
-28. UNISON MASTER TRANSFORM — FORMULA AND PRACTICAL EXAMPLE
---------------------------------------------------------------------------------
-The canonical full-unison idea is identity cancellation: every active voice is
-translated from the same shared context rather than receiving an independent
-random identity.
-
-    U_i = T(C, i, E)
-
-where C=(seed, base, ratio, s_int, sequential_nums), i is the roster slot, and E
-is the set of active engine flags.
-
-Outside full unison, the pitch carrier uses the lattice factor L_i:
-    f_i = base · L_i · r_i
-
-Inside full unison, the canonical translator uses the shared base and ratio:
-    f_i = base · ratio
-
-The shared entropy coordinate is derived from the canonical entropy function;
-the phase reference is shared rather than independently randomized. The result is
-intended to be an ensemble identity rather than 48 unrelated oscillators.
-
-Reference scripting recipe:
-    M = MEUM
-    invM = MEUM_INV
-    phi = PHI
-    u = (3*i*M) % 36
-    s = 0.5 * base_frequency * invM * t
-    master = isn(t*M) * (M - 1) / M + ics(t*phi) * (1 - (M - 1)/M)
-    return master
-
-The recipe is for reference and experimentation. It does not promise that a user
-script reproduces every internal voice parameter unless it uses the same canonical
-function and state inputs as the implementation.
-
---------------------------------------------------------------------------------
-29. VERIFICATION, REDISTRIBUTION, AND NUMERICAL BOUNDARIES
---------------------------------------------------------------------------------
-WHAT SHOULD BE VERIFIED BEFORE REDISTRIBUTION
-
-- Python syntax compiles.
-- groovebox.py, README.md, and HELP_TEXT.md contain the same mathematical
-documentation where duplication is intentional.
-- Public constants are present in the script namespace and reference evaluator.
-- Canonical generation is deterministic for fixed serialized input.
-- Canonical fingerprints remain stable across save/load.
-- Python/reference and native implementations agree where the release contract
-requires parity.
-- Nested redistribution archives contain the refreshed files.
-
-NO HIDDEN CANONICAL CLAMP
-
-The canonical frequency-reference helper is intentionally transparent: it does
-not silently force a requested mathematical frequency into a fixed audible
-interval. Explicit instrument/effect constraints are separate from the reference
-transform.
-
-A file-format conversion can still impose a representation limit. Integer PCM,
-for example, has a finite numeric range. That is a property of the target file
-representation, not a hidden mathematical clamp in the canonical transform.
-
-Likewise, an inverse such as arcsin(y/2) has a mathematical domain. An out-of-domain
-real input is undefined; it must not be described as evidence that the canonical
-forward transform is clamping its output.
-
-REDISTRIBUTION RULE
-
-Every nested archive included in a redistribution package is a distribution
-artifact, not a separate source of truth. When source documentation or
-groovebox.py changes, refresh every nested ZIP/TAR.GZ that contains those files and
-verify that its contents match the outer package.
-
-The release phrase CLAIMED EXACT therefore means:
-
-    exact with respect to the project's declared formulas, constants, serialization,
-    and tested deterministic implementation contract;
-    approximate/potential with respect to broader mathematical or physical truth.
-
-This distinction should remain in public documentation so users can reproduce
-results without mistaking a project claim for an independently proved theorem.
-
---------------------------------------------------------------------------------
-30. IMPLEMENTATION AUTHORITY AND DOCUMENTATION POLICY
---------------------------------------------------------------------------------
-The Help/README documents the intended mathematical and software specification of
-Groovebox. When auditing a particular release, the released source code and its
-regression tests are the final implementation authority.
-
-A discrepancy between prose and implementation should be treated as a
-documentation defect to be corrected, not silently interpreted as a new rule.
-
-The canonical authority is the project's single-source composition model. Legacy
-engine attributes may exist as compatibility mirrors, but canonical save/load,
-export, provenance, and cross-media boundaries must remain synchronized through
-the canonical authority layer.
-
---------------------------------------------------------------------------------
-31. OFFICIAL PROJECT TERMINOLOGY
---------------------------------------------------------------------------------
-Official software names:
-    Groovebox
-    Mathematicians Groovebox
-
-Primary mathematical framework:
-    Meum Calculus
-
-Related project-defined arithmetic/operator framework:
-    Operator Theory (OT)
-
-Reference work:
-    Scientific Theories and Inventions — Noah Girouard King (Eski)
-
-These names should be used consistently in the application, Help, README,
-project archives, and release documentation.
-
---------------------------------------------------------------------------------
-32. CREDITS AND ATTRIBUTION
---------------------------------------------------------------------------------
-Main editor and author:
-    Noah Girouard King (Eski)
-
-Development and research assistance credited by the project:
-    Grok (xAI)
-    Gemini (Google)
-    Claude (Anthropic)
-    ChatGPT (OpenAI)
-    Mistral.ai (Mistral)
-    Meta AI (Meta)
-    GitHub Copilot (GitHub)
-    Cursor Grok 4.6
-    jcode(1jehuang)
-    opencode (anomalyco)
-
-Credits describe project contributions and tooling/assistance; they do not imply
-endorsement, ownership, authorship, or scientific validation by those services.
-
---------------------------------------------------------------------------------
-33. LICENSE / PROJECT POLICY
---------------------------------------------------------------------------------
-Keep the project-specific license and attribution files supplied with the
-distribution.
-
-This documentation describes implementation behavior and project-defined
-mathematics. It must not be read as a scientific claim that Meum Calculus or
-Operator Theory is an established mathematical theory.
-
-Established number-theory statements should be limited to statements that follow
-from ordinary definitions and proofs. Project-specific claims should remain
-explicitly labeled CLAIMED EXACT and tied to a reproducible test contract.
-
---------------------------------------------------------------------------------
-34. FINAL RELEASE PRINCIPLE
---------------------------------------------------------------------------------
-Groovebox is intended to be one mathematical composition environment rather than
-three disconnected programs.
-
-    ONE CANONICAL COMPOSITION
-             │
-       ┌─────┼─────┐
-       ▼     ▼     ▼
-     AUDIO VIDEO  GAME
-
-The purpose of the canonical model is correspondence, reproducibility, and
-creative control: the musician/researcher authors a composition once, and each
-compatible engine interprets that same canonical information in its own medium.
-
-The mathematical framework is part of the creative and computational identity of
-the project. The reproducibility contract is part of its engineering identity.
-The distinction between project-defined mathematics and independently established
-mathematical or physical truth is part of its documentation standard.
-
-================================================================================
-  End of Help — Groovebox / Mathematicians Groovebox
-  Main editor and author: Noah Girouard King (Eski)
-================================================================================
-
-
-### v15 User Media + Canonical Morph Bridge
-- **Load Carrier** accepts common audio and video containers. Audio is decoded as the carrier; video audio becomes the carrier while the original video path remains available to the audiovisual export path.
-- **Load Sample → Selected Operator** accepts audio and video files per operator. Video samples are represented as user-owned per-operator media; their decoded audio stream participates in the selected operator's render path.
-- **PRE-CANONICAL SAMPLE MORPH** uses the selected operator's synth parameter state, script, incident patch topology/gains, and domain definition to shape a transformed sample branch.
-- The local sample bridge is explicitly **50% untouched user waveform + 50% transformed branch**, so user sample material has a minimum 50% local contribution. Adaptive Fit and Phase Lock only shape the transformed branch.
-- **FINITE / DC / PEAK GUARD** keeps the transformed branch finite and bounded without silently replacing the user sample.
-- Project save/load stores media references and sample-morph settings; decoded waveform arrays are runtime-derived and re-decoded from the saved paths.
-- Live Play and Audio/Video Export share `_render_mixdown_buffer`, so sample morph, canonical composition, and Master Vector conversion stay on the same render transaction.
-- Export provenance records operator media references and sample-morph settings in addition to Master Vector state.
-
-### v15 UI / Teleport Reliability
-- Main Sequencer step editor is a top-level anchored popup, clamped to the physical display rather than the scrolling viewport.
-- Automator teleport inspector is also top-level and repositions when its horizontal scroll bar moves, preventing the inspector from remaining over an old cell.
-- `Edit Synth\nPer Seq` is the sequence-local synth/panel editing control.
-- `MATH GROOVEBOX.` is enlarged in the Global Processor Controls header.
-- Master Vector Synth is stacked above the Play Video Game and Live DJ controls, making the conversion layer visually upstream of those performance surfaces.
-
-
-V16 UI / automation update: Randomize Automation + Sequence now randomizes automation values together with reference operator, reference sequence number, and per-step offset. Local mode scopes by source instrument/sequence; global mode covers all instrument/sequence banks. Track Offset is persisted per sequence and applied before per-step offset. Global XMOD and Input XMOD plus 0–200% Synth Panel / Mod Patch / Write Script / Calc Domain modulation weights are saved in project/export provenance. Media carrier/sample controls are in the upper control deck, and visualizers have bidirectional scrolling with scalable monitor sizes.
-
-
-## MEUM SPATIAL EQUATION FORMS — GROOVEBOX CANONICAL MATH
-
-Groovebox uses the following stripped-down spatial forms as an implementation language for its mathematical audio/composition pathways. They are **not presented as replacements for the established physical theories**; they are compact computational forms used by the Groovebox engine. Operator Theory (OT) changes expression/method routing only; it does not select a different mathematical output model.
-
-### 1. Spatial Curvature & Metric Evaluation
-
-Accepted reference form:
-
-$$G_{\mu\nu} + \Lambda g_{\mu\nu} = \frac{8\pi G}{c^4}T_{\mu\nu}$$
-
-Groovebox / Meum spatial form:
-
-$$\nabla^2\Psi(x,y,z)=S(x,y,z)$$
-
-The engine treats this as a direct scalar-field relation over the x/y/z computational field rather than constructing a full spacetime metric.
-
-### 2. Field Potential & Attenuation
-
-Accepted electrostatic reference form:
-
-$$\Phi(r)=\frac{q}{4\pi\epsilon_0r}$$
-
-Groovebox / Meum spatial form:
-
-$$\Phi(x,y,z)=\frac{q}{\sqrt{x^2+y^2+z^2}}$$
-
-The form supplies a compact geometric distance/potential expression for bounded computational fields.
-
-### 3. Wave Propagation & Transform Mapping
-
-Accepted Fourier reference form:
-
-$$\psi(k)=\frac{1}{\sqrt{2\pi}}\int_{-\infty}^{\infty}\psi(x)e^{-ikx}dx$$
-
-Groovebox / Meum bounded spatial form:
-
-$$\psi(x,y,z)=\sum A_n\sin\left(\frac{n\pi x}{L_x}\right)\sin\left(\frac{m\pi y}{L_y}\right)\sin\left(\frac{k\pi z}{L_z}\right)$$
-
-The renderer uses bounded harmonic fields and Meum phase fields for its procedural wave/modulation calculations.
-
-### 4. Dynamic State Transition
-
-Accepted perturbative reference form:
-
-$$E_n=E_n^{(0)}+\langle n|H'|n\rangle+\sum_{k\ne n}\frac{|\langle k|H'|n\rangle|^2}{E_n^{(0)}-E_k^{(0)}}+\cdots$$
-
-Groovebox / Meum state-transition form:
-
-$$S_{t+1}(x,y,z)=\sum_{\mathrm{neighbors}}S_t(x\pm\Delta x,y\pm\Delta y,z\pm\Delta z)\cdot W_{geometry}$$
-
-This is used as a deterministic state-propagation pattern for computational fields and effect/context generation.
-
-### Default canonical operating point
-
-- Adaptive Fit = **50%**
-- Phase Lock = **50%**
-- Pre-Canonical Sample Morph = **ON**
-- Finite/Peak Guard = **ON**
-- Global XMOD = **100%**
-- Global Input XMOD = **100%**
-- Synth/Mod Patch/Write Script/Calc Domain window modulation = **100%**
-- User sample branch remains at least **50%** of the local sample-morph blend.
-
-The five Synth Rack controls (Morph, Harmonic Frequency, Chaos, Fold Depth, Harmonic Lattice) are canonical projections when a canonical composition engine is active. The canonical state remains the authoritative project state for save/load/live playback/export.
-
-
-## V17 MEUM DIRECT SPATIAL MATH
-The audio engine includes a bounded Meum spatial effect using direct x,y,z potential, standing-wave, and neighboring-state expressions. OT ON and OT OFF use the same mathematical expressions and numerically equivalent execution handles; the OT switch does not retune this effect. Factory defaults are Adaptive Fit 50%, Phase Lock 50%, sample morph ON, guard ON, and all global/window modulation depths 100%.
-
-
---------------------------------------------------------------------------------
-PARAMETRIC MATH BACKGROUND — 12 MEUM EQUATION CELLS
---------------------------------------------------------------------------------
-The ParametricMathBackground draws exactly 12 compact equation cells at a time.
-They are a visual index of the mathematical vocabulary used by Groovebox, not a
-separate audio calculation path. The displayed direct forms are:
-
-  1. Φ(x,y,z) = q / √(x²+y²+z²)
-  2. ψ(x,y,z) = Σ Aₙ sin(nπx/Lₓ) sin(mπy/Lᵧ) sin(kπz/L_z)
-  3. Sₜ₊₁(x,y,z) = Σ_neighbors Sₜ(x±Δx,y±Δy,z±Δz) · W_g
-  4. ∇²Ψ(x,y,z) = S(x,y,z)
-  5. isn(x) = 2·sin(x/2)
-  6. ics(x) = 2·cos(x/2)
-  7. isn⁻¹(y) = 2·asin(y/2)
-  8. ics⁻¹(y) = 2·acos(y/2)
-  9. F_M(x,y,z,t) = isn(M·t+x)·ics(M⁻¹·t+y)+z
- 10. uₙ = sin(nπx/Lₓ)·sin(mπy/Lᵧ)·sin(kπz/L_z)
- 11. W_g = 1/(1+√(Δx²+Δy²+Δz²))
- 12. r = √(x²+y²+z²)
-
-The engine's existing book-derived isn/ics family remains executable and the
-ParametricMathBackground is intentionally display-only. Operator Theory can
-select an equivalent execution route for supported operations without changing
-the displayed Meum expression or its declared mathematical role.
-
-If the user's source book is supplied as a file, additional exact book equations
-can be incorporated into the indexed 12-cell vocabulary.
-
-
-## Canonical signal control — never below 50%
-
-The canonical signal-control contract is always **50–100%**, with or without a carrier. This is separate from the user-data survival floor. User-owned data is never rewritten or downmixed merely because program space is full. Canonicals can instead materialize their own sequence, automation, attack/release, AM, FM, PM, phase, patch, script, domain, or global-effect layer.
-
-### Sequence → Playlist mapping
-
-Each selected sequence has an editable **Wrap to Playlist** / **Schedule Across Playlist** mode. Wrap restarts/fits the sequence inside each playlist row. Schedule keeps the sequence on the playlist clock and permits a sequence whose length does not match the playlist grid to cross or be cut by row boundaries.
-
-Playlist Paint adds **Auto (sequence)**, **Force Wrap**, and **Force Schedule**. These are routing/mapping controls; they do not rewrite the sequence's user-authored steps.
-
-## V20 — CANONICAL CONTROL OPTIONS / PAINT TEMPO
-
-Canonical signal control is always 50–100%. The percentage is earned by a selectable strategy, not merely clamped: Coverage Adaptive, Engine Stack, Full Canonical, or Seeded Baseline. The canonical system may materialize sequence, automation, pitch, amp, phase, trigger, AM, FM, PM, and effect-layer structures in canonical-owned runtime overlays when user program space is full. It does not rewrite a user parameter to make room.
-
-Paint Tempo modes are Row Loop · Wrap, Center Snap · Schedule, Retrigger Rows · Schedule, and Canonical Cut · Row Boundaries. Wrap repeats a sequence for the complete BPM-derived row duration and cuts at the row end. Schedule can align to the row grid, center a sequence, retrigger at row starts, or permit boundary cuts. Explicit Force Wrap / Force Schedule controls remain higher priority than canonical automatic scheduling.
-
-Canonical-owned synth slots expose direct canonical amp, pitch, phase and trigger values and can render simultaneous deterministic chord ratios. User-owned program slots remain readable and are not downmixed solely to increase canonical authority.
-
-
-## V23 — MULTI-TARGET BLEND / TIME-OFFSET / CARRIER PROOF
-
-### Multi-target Playlist Paint
-
-Playlist overlap is no longer limited conceptually to one primary + one secondary. A painted row can retain `blend_targets` and normalized `blend_weights` for multiple secondary instruments. Numeric synth parameters use the multi-target weighted blend primitive; Script, Domain, Synth, and Patch identities remain represented in the playlist consensus.
-
-### Time offsets
-
-Operator-specific `operator_time_offsets` are authoritative render offsets in seconds. Blended targets also retain `blend_time_offsets`, so multiple targets may enter the same playlist row at different absolute offsets. Sequence mapping (Wrap/Schedule) and Paint Tempo remain independent of those offsets.
-
-### Carrier is a modulation/reference source
-
-An imported WAV or video-derived audio carrier is not treated as an uncontrolled third additive bus. It can contribute as:
-
-  • Global Input XMOD modulation reference
-  • 50% phase-reference steering of synthesized voices
-  • optional Global Convolve kernel source
-  • carrier-aware seed/context information
-
-The carrier therefore modulates/steers the composition rather than bypassing the canonical/user blend contract.
-
-### 50% linear composition proof
-
-At the explicit composition boundary, Groovebox uses the source-coefficient invariant:
-
-    M0 = 0.50 · C + 0.50 · U
-
-where `C` is the canonical-engine contribution and `U` is the user-data contribution after any bounded carrier-derived modulation. Therefore:
-
-    canonical coefficient >= 0.50
-    user-data coefficient >= 0.50
-    canonical coefficient + user-data coefficient = 1.00
-
-This is a **coefficient proof**, not an energy/RMS theorem. Later nonlinear operations such as EQR, vector conversion, and hard clipping can change measured amplitude and can destroy a literal 50/50 energy decomposition. The exported provenance records the contract and the measured pre-effect branch ledger so the distinction is auditable.
-
-### Save / Load / Export parity
-
-Project save/load preserves playlist blend targets, blend weights, time offsets, Paint Tempo, sequence mapping, canonical control strategy, canonical runtime overlays, carrier references, sample-morph state, global modulation state, Master Vector state, automation, sequence banks, scripts, patch connections, domain equations, notes, UI controls, and the canonical blend ledger. Audio/video/game exports use the same canonical snapshot/fingerprint and carry the blend-contract provenance.
-
-
-### v24 UI / Canonical additions — Wavetable Projector & Automator anchoring
-
-The global Canonical Morph Bridge now lives directly beneath GLOBAL · COMPOSITION CANONICALS in the upper-right canonical deck. Global XMOD, Input XMOD, and the four editor-window modulation depths are kept in the lower editor deck and do not control Master Volume.
-
-The new **GLOBAL WAVETABLE PROJECTOR** provides 1D Wave, 2D Field, and 3D Resonance-inspired representations with phase, curvature, twist, and fold shaping. It is a global wavetable guide for the Master Vector Synth. User field and deterministic canonical guide are blended 50/50; the projector does not replace canonical composition or Master Volume. Its state is project-save/load persistent and is included in the same render/export pathway.
-
-The Automator teleport inspector is anchored at the selected cell's lower boundary midpoint, with Operator, Sequence, and Offset controls remaining attached to the selected automation step.
-
-
-**Automator timing:** the automation strip now has an explicit **Wrap / Syncopate** mode. Wrap tracks the active Sequencer length and cycles its control points; Syncopate permits an independent polymetric length using the existing ± syncopation control. The selected mode is saved with the project and restored before live rendering/export.
-
-
-## CANONICAL ACTIVITY HANDOFF — 2026
-
-Groovebox now treats the 50% requirement as an activity/continuation architecture, not a post-mix clamp. Canonical continuation maintains an autonomous mathematical stream after user input ceases. Shared user/canonical coordinates include time, rhythm, pitch, envelope, phase, and modulation. The canonical activity ledger records coverage separately from the 0.50/0.50 composition coefficients. The imported carrier remains a modulation/reference source rather than an uncontrolled third additive bus.
-
-The project snapshot persists canonical continuation state and its activity ledger so save/load/export provenance retains the same model. The activity metric is not a claim of 50% final RMS after nonlinear processing; clipping and nonlinear effects can change energy.
-
-
-## Algorithm XMOD + Per-Sequence Algorithm Editing (2026)
-- **Edit Algorithm Per Sequence** forces the number-theoretic step algorithm to address only the selected instrument and selected sequence.
-- **Algorithm XMOD Local 0–200%** controls algorithmic cross-modulation for the active local instrument/sequence.
-- **Algorithm XMOD Global 0–200%** controls the global algorithmic cross-modulation depth across the composition.
-- The two controls are independent and saved/restored with the project; 100% is neutral.
-- The existing global/user XMOD and imported-carrier Input XMOD remain separate from Algorithm XMOD.
-- The Global Wavetable Projector is a shared 1D/2D/3D guide feeding Master Vector; its user/canonical guide remains a 50/50 structural blend.
-
-
-### Meum Spatial Activity Resolution (v28)
-
-Groovebox now includes a direct X/Y/Z activity-field resolver between the canonical and user buses. The resolver uses explicit orthogonal coordinates and local neighbor propagation as a deterministic composition mechanism. It compares canonical and user activity with an L1 activity modulus and structurally expands the canonical branch to the user activity modulus when needed before the fixed 50/50 composition boundary. This is an algorithmic signal-activity invariant, not a final-output limiter.
-
-Shared user/canonical features are tracked across 12 coordinates: time, rhythm, pitch, envelope, phase, modulation, tempo, AM, FM, PM, wavetable/vector, and playlist mapping.
-
-`Edit Algorithm Per Sequence` forces the number-theoretic step algorithm to write only the currently selected instrument + selected sequence. `Algorithm XMOD Local 0–200%` and `Algorithm XMOD Global 0–200%` independently control the local/global algorithmic cross-modulation depth.
-
-
---------------------------------------------------------------------------------
-V34 — 50%→100% VERIFIED RANGE / MEUM CALCULUS
---------------------------------------------------------------------------------
-
-The canonical authority range is a real bounded control interval, not a label:
-
-  S ∈ [0.50, 1.00]
-
-  Seeded Baseline       = 0.50
-  Engine Stack (n)      = min(1.00, 0.50 + 0.10 n)
-  Coverage Adaptive     = 0.50 … 1.00
-  Full Canonical        = 1.00 exactly
-
-Therefore five active canonical engines reach the 1.00 ceiling, while the
-minimum remains 0.50 even with no carrier. The source-composition boundary is
-independently fixed as:
-
-  M0 = 0.50 C + 0.50 U
-
-so canonical and userdata each retain a 50% source coefficient at the linear
-composition boundary. The 100% maximum refers to canonical control/authority;
-it is NOT a claim of 100% post-effect RMS energy after nonlinear processing.
-
-MEUM CALCULUS / SPATIAL ACTIVITY
-  Direct X/Y/Z coordinates track temporal position, normalized user activity,
-  and local gradient. Neighbor propagation uses a deterministic six-neighbor-like
-  temporal reduction; the canonical field is expanded to at least the user L1
-  activity when necessary before the 50/50 boundary. This gives a measurable
-  activity modulus of at least 0.50 without a final-output clamp. It is a
-  procedural Meum field construction, not a physical Navier–Stokes solver.
-
-SHARED FEATURE COMPLETENESS = 100%
-  time, rhythm, pitch, envelope, phase, modulation, tempo, AM, FM, PM,
-  wavetable_vector, playlist_mapping
-
-MEDIA / TIMELINE IMPLEMENTATION
-  Track Offset: per-instrument/per-sequence −16…+16 playlist-row units,
-  persisted and applied before per-step offsets.
-  Audio inputs: WAV, MP3, FLAC, OGG/OGA, M4A, AAC, AIFF/AIF, OPUS, CAF,
-  ALAC, WMA, APE, WV.
-  Video inputs: MP4, MOV, MKV, WEBM, AVI, M4V, MPEG/MPG, FLV, TS/M2TS/MTS,
-  3GP/3G2, OGV, VOB. Each instrument may retain its own media source; video
-  sources retain video_path/source_kind/video_input_enabled and their audio
-  stream can enter the user sample/canonical morph path.
-
-UI AUDIT V34
-  Master Volume title/value = 24pt yellorange/amber. Generic white/grey control
-  defaults were removed from the main palette. Sliders use amber/teal rails and
-  handles; spin boxes and combos use blue/teal fields; action states use green,
-  amber, violet, cyan, and red-brown semantics. Canonical Morph Bridge is a
-  three-row responsive panel. Instrument selection is width-capped so the main
-  editor does not become a giant Instrument Windows column.
-  Main action text: RANDOMIZE ALL SEQ.
-  Step and Automator teleport inspectors are independent top-level Tool windows
-  with fixed screen anchors; neither follows the horizontal scroller, and both
-  may remain visible simultaneously.
-
-
---------------------------------------------------------------------------------
-V34 — AUTOMATOR PARAMETER TELEPORT / UI RE-ARCHITECTURE
---------------------------------------------------------------------------------
-  The Automator teleport now uses the same two-click selection model as the Step
-  Sequencer: first click selects/teleports; second click toggles ON/OFF. The
-  inspector is a top-level, non-activating Tool window with an independent screen
-  anchor. Two inspectors may remain visible simultaneously and neither follows a
-  horizontal scrollbar.
-
-  Editable teleport destination:
-    Operator; Sequence 1–128; Morph 0–100%; Sequence Attack 0–100%;
-    Sequence Release 0–100%; Offset −1024…+1024; Synth Param; Param Value.
-  The source instrument/sequence is frozen at selection, while the destination
-  operator/sequence is the morph target. Synth parameter edits are written into
-  the selected destination sequence panel, and envelope edits are written into
-  that sequence's envelope state.
-
-  UI color audit: white/grey defaults in the main application controls were
-  replaced with the Groovebox semantic palette. Amber/yellorange identifies
-  master/seed authority, green identifies randomization/active canonical action,
-  cyan/teal identifies signal and media pathways, violet identifies Operator
-  Theory/math controls, and red-brown identifies Automator state.
-  Master Volume remains 24pt yellorange/amber with an enlarged control.
-  Instrument context is width-capped and responsive so the editor does not become
-  an oversized Instrument Windows panel.
-
-
-## V34 Stability / Canonical Control Update
-
-- **Canonical Signal Control:** defaults to **100% Full Canonical**. The control remains a 50–100% authority mechanism, separate from final mix gain.
-- **Self-correcting canonical coverage:** when required canonical sequence/automation/AM/FM/PM/effect lanes are absent, canonical runtime overlays are materialized instead of lowering authority or overwriting user-owned sequence data.
-- **Canonical Resonance / Activity:** independently adjustable **50–150%**. Full user activity targets the 50% floor; user inactivity ramps autonomous canonical activity toward the selected ceiling, with a smoothed handoff.
-- **Canonical→Instrument Convolve:** new bounded **0–100%** control. At 100%, canonical material is the full convolution reference, while the transformed user branch retains a direct 50% user component; the fixed `M0 = 0.50*C + 0.50*U` boundary remains intact.
-- **Maximum instruments:** increased from 64 to **128** for the active synth/visual ensemble and canonical master identity lattice.
-- **Default playlist row length:** **8 beats**.
-- **UI initialization:** Master Volume value is now constructed before stylesheet/object-name access, eliminating the `lbl_master_vol` startup AttributeError.
-
-CANONICAL RESONANCE / 50–150% STABILITY PASS (V34)
-
-  • Canonical resonance/activity is an independent 50–150% continuation-drive control; it is not master volume and does not alter the fixed 0.50*C + 0.50*U composition coefficients.
-  • Full Canonical signal authority defaults to 100%. Missing canonical lanes are materialized in canonical-owned runtime overlays instead of weakening authority or rewriting user-owned data.
-  • 100% canonical→instrument convolution is bounded as a normalized influence transform; the transformed user branch retains a direct 50% user component.
-  • Playlist row length defaults to 8 beats; Playlist Rows remains the separate arrangement-row count control.
-  • Instrument Count supports 2–128 active instruments; the canonical identity lattice remains 128 slots.
-  • V34 removes several direct zero-denominator bypasses and uses explicit invalid/zero cases instead of epsilon values where those cases can occur in live/export paths.
-  • Save/load restores canonical resonance and 100% Full Canonical defaults correctly.
-
-
-## V34 UI / Stability Pass
-- Qt stylesheet alpha values use Qt-compatible integer alpha channels; the prior decimal `rgba(...,0.xx)` forms were removed to prevent QPushButton stylesheet parse warnings.
-- UI construction order is dependency-safe for the seed panel and master-volume widgets.
-- Synth/window launchers, LIVE DJ, and GLOBAL PLAY PATCHER share one horizontal performance deck.
-- Automator controls use a compact two-row grid so the controls fit the sequencer window without forcing horizontal overflow.
-- Canonical authority defaults to Full Canonical / 100%; missing canonical lanes self-materialize in canonical-owned runtime overlays without rewriting user memory.
-- Canonical resonance/activity is independently driven from 50% to 150%, with smooth user-activity handoff and explicit zero cases rather than epsilon denominator bypasses.
-- Canonical→Instrument Convolve is independently bounded 0–100%; zero canonical/user inputs are handled explicitly.
-- Maximum live instrument capacity is 128; default playlist row duration is 8 beats.
-
-
-## V35 Canonical Command — Wavetable, Automator, Playlist Routing
-
-Under canonical authority, **Master Vector Synth**, **Global Wavetable Projector**,
-**Global / Input XMOD**, **Algorithm XMOD**, and **Canonical Resonance** are
-first-class destinations for playlist Auto Target, Automator sequence params,
-modular patch targets, and algo routing — the same blend/coverage surface as
-Script Tag / Domain Tag / Synth Snapshot / Modular Patch.
-
-### Playlist Auto Target names
-- `master_vector_x` | `master_vector_y` | `master_vector_z` | `master_vector_drive`
-- `wavetable_frame` | `wavetable_phase` | `wavetable_curvature` | `wavetable_twist` | `wavetable_fold`
-- `global_xmod` | `global_input_xmod`
-- `algorithm_xmod_local` | `algorithm_xmod_global`
-- `canonical_resonance`
-- `synth_panel_mod` | `patch_mod` | `script_mod` | `domain_mod`
-- classic macros remain: `eqr`, `fractalizer`, `pkp_envelope`, `filter`, `drive`, `pitch`
-
-Coverage scales depth; Direction Vector sets sign; Blend Partner and multi-target
-`blend_weights` mix instruments on one row. Modular Patch stays the edge list.
-Algo XMOD local/global depth sequence algorithms.
-
-### Automator sequence (end-to-end)
-1. Paint/toggle Automator steps (orange strip). Timing: **Wrap** or **Syncopate**.
-2. First click teleports Operator / Sequence # / Offset; second click toggles ON/OFF.
-3. Popup sets morph, attack/release, and any numeric param including Master Vector,
-   Wavetable, XMOD, and Resonance names above.
-4. Lanes interpolate longitudinally between enabled steps; length may lock to the
-   Sequencer or run polymetric (SYNC OFF + syncopate delta).
-5. `apply_playlist_automation_to_ui` pushes those targets onto live UI + canonical
-   state so Live Play, Export, Video, and Game share one command surface.
-
-### Scripting directions
-- Seed field is a full script panel. Names: `t`, `x`, `y`, `z`, `pi`, `e`, `tau`,
-  `PHI`, `MEUM`, `MEUM_NORM`, `MEUM_INV`, `isn`, `ics`, `clamp`, `lerp`, `choose`, …
-- Example — resonance activity from time (natural 50–150% band):
-  `return lerp(0.50, 1.50, 0.5 + 0.5 * sin(t * MEUM))`
-- Example — vector-like live_parametrics token:
-  `return sin(t), cos(t * MEUM), sin(t * PHI_INV)`
-- Playlist **Live Parametrics** may carry a one-phase predicted blob read with
-  Script / Domain / Synth / Patch structure columns.
-- **Wavetable Synth** (engine combo) + freehand `WavetableCanvas` shapes are
-  per-instrument; **Global Wavetable Projector** (1D Wave / 2D Field / 3D Resonance)
-  feeds Master Vector conversion on the shared render path (50/50 user/canonical guide).
-
-### Resonance — 50–150% vs 0–200%
-Canonical Resonance / Activity is **activity / continuation drive** (not Master
-Volume, not the 50/50 C/U mix). The legal band follows User Data Overwrite:
-
-| Mode | Control | Range |
-|------|---------|-------|
-| **Protect ON** (default) | `Canonical: skip overwrite user composition` checked | **50–150%** |
-| **User Data Overwrite ON** | Protect unchecked | **0–200%** |
-
-- Protect ON: user locks kept; 50% floor with active userdata; up to 150% when user activity is low.
-- Overwrite ON: userdata snapshotted, locks wiped; 0% = silent autonomous activity; 200% = maximum continuation while engines may rewrite the composition.
-
-The Resonance spin and status label switch with the protect toggle.
-
-### Automation pattern library (playlist combo)
-Additional lanes: Master Vector X/Y/Z sweeps, Wavetable Frame Morph / Phase,
-Global XMOD Depth, Canonical Resonance Drive, Algo XMOD Local Sweep — selectable
-from the playlist automation pattern combo alongside classic filter/resonance ramps.
-
-
-### TrackOffset (user-owned)
-Global TrackOffset and per-sequence `track_offset` are user-set timing controls
-in playlist-row units — same ownership model as Canonical Resonance amount.
-Audio, video, and game engines respond to them; canonical engines do **not**
-treat them as modification handles and do not rewrite them. Negative starts
-earlier; positive later. Values are mirrored into `composition_snapshot` and
-game composition meta for all consumers.
-
-
----
-
-# CURRENT V3 ROLLOUT APPENDIX
-# Mathematician's Groovebox V3 — Current Feature, Math, Hardware & Networking Guide
-
-**Rollout date:** 2026-09-05
-**Design split:** Main Window = precise/scientific Operation Station. Performance = live/touch-friendly GOAVA Radio workspace.
-
-## 1. Canonical zero-state and current defaults
-
-Fresh boot, Clear Memory, and new sequence memory use the same zero-state unless a saved project explicitly supplies another value.
-
-- Playlist / sequence row count: **32**.
-- Row length: **8**.
-- Step envelope fallback: **50%**.
-- Sequence Attack / Release: **50% / 50%**.
-- Canonical Resonance: **1.0 = 100%**.
-- Canonical→Instrument Convolve: **0.5 = 50%**.
-- FullWeight Seed: **ON**, with exact internal dynamic fallback **e−2 = 0.718281828459045…** (the earlier 0.72 operating value refined to an irrational equivalent).
-- Canonical adherence / unison fallback: **0.55**; Full Unison ON remains authoritative at unity without destroying the stored fallback.
-- EQR: **0.4014**.
-- Fractallizer: **0.5995**.
-- PKP Envelope: **0.5**.
-
-Meaningful identities remain exact: **0 = off**, **0.5 = symmetric midpoint**, **1 = identity/full unity**. Irrational values are used as secondary modulation/indexing fallbacks only when they reduce short-cycle coincidence or improve phase/traversal coverage without redefining canonical identity.
-
-Useful secondary basis:
-
-- `M−1 = 0.1975807343385265…`
-- `1/M = 0.8350167728377339…`
-- `2−M = 0.8024192656614735…`
-- `(M−1)/M = 0.1649832271622660…`
-- `sqrt(2)−1 = 0.4142135623730950…`
-- `phi−1 = 0.6180339887498948…`
-- `e−2 = 0.7182818284590452…`
-- `pi−3 = 0.1415926535897932…`
-
-These do **not** prove that irrational defaults contain more information about a seed. Their engineering role is non-short-period phase/index coverage and deterministic secondary differentiation.
-
-## 2. Reversible writer theorem / implementation contract
-
-All **writing** controls are modeled as independently addressable deterministic contributions rather than destructive cumulative mutations.
-
-`CURRENT = ZERO/USER STATE ⊕ SIMPLIFY(ACTIVE WRITER CONTRIBUTIONS)`
-
-where `⊕` means the appropriate deterministic composition law for the affected state. The operational requirements are:
-
-1. Every writer is a visible ON/OFF toggle.
-2. Turning a writer OFF removes **only its own** contribution.
-3. Toggle order must not change the final state for the same set of active writers.
-4. Turning every writer OFF returns the exact zero/user state from any activation pathway.
-5. GLOBAL and LOCAL heuristic scope are mutually exclusive. Switching scope first removes/restores the active writer state, then applies the other scope.
-6. Derived writer state is not userdata. Only an explicit Bake / Commit / Scribe-as-User-Data action is allowed to make it user-owned.
-7. Common transforms are simplified before evaluation: inverse scale pairs cancel, offsets combine, phase offsets reduce modulo cycle, and compatible multiplicative weights collapse to one factor. Provenance remains separate from the simplified numerical transform.
-
-This is a software determinism contract, not an independently established mathematical theorem.
-
-## 3. Heuristic composition
-
-The single **HEURISTIC WRITE** control has GLOBAL / LOCAL scope and reversible ON/OFF state.
-
-- **GLOBAL:** transcribes the selected seed-derived heuristic across the applicable sequence and automation space.
-- **LOCAL:** writes only to the selected instrument + selected sequence + its automation.
-- Families include ℤ-Lattice, Prime/Modular, Farey/Fraction, Tree/Ratio, Geometric, Harmonic, Seed Function, and Hybrid.
-- Biases include Balanced, Sparse, Dense, Self-Similar, and T-Independent.
-- Continuous heuristic outputs become editable automation; discrete values become deterministic sequence structure.
-
-## 4. Draw / Signal Lab
-
-Performance includes a real **Draw / Signal Lab** rather than only the synth-editor wavetable canvas.
-
-- **Carrier:** draw a literal audio carrier waveform.
-- **Sample:** draw/save literal sample audio.
-- **Program:** draw explicit mapped control data.
-- **Tuning:** draw derived tuning/modulation data; it remains non-userdata unless explicitly baked.
-- Save drawn audio to WAV.
-- Send a derived carrier globally or to the selected instrument.
-- Analyze a selected reference with the reverse-engineering descriptor engine.
-- Detect a candidate **Fundamental Loop**.
-- Derive non-destructive **Sounds Like**, **Harmonic Complement**, and **Opposite** transforms.
-
-The original per-instrument freehand WavetableCanvas remains available in Edit Synth.
-
-## 5. GOAVA and Meum framework
-
-The project defines the Meum constant as:
-
-`M = 1.1975807343385265188…`
-
-with project-use forms including `M−1`, `1/M`, powers of M, normalized ratios, Meum phase fields, and the user-defined `isn` / `ics` family. In the current implementation/documentation:
-
-- `isn(theta) = 2 sin(theta/2)`
-- `isn^-1(y) = 2 asin(y/2)` on its real-domain branch
-- `ics(theta) = 2 cos(theta/2)`
-- `ics^-1(y) = 2 acos(y/2)` on its real-domain branch
-
-The user's Equation-of-Reality / P-E-D framework, operator-theory mappings, ℤ-Lattice language, GOAVA numeric transduction, and Meum calculus are **project-defined mathematical hypotheses/frameworks**. Where the UI/help uses terms such as “claimed exact,” that means exact **under the project's stated definitions and implementation contract**, not a claim of independent mathematical or physical validation.
-
-GOAVA uses numeric seed structure as a deterministic composition/modulation source shared across audio, visuals, and game-state fingerprints. The implementation seeks seed-to-signal congruence and deterministic replay; numerical tests verify software invariants, not universal number-theory truth.
-
-## 6. Main GUI and GOAVA Radio identity
-
-The GUI now uses a coherent dark scientific palette with cyan signal accents, gold mathematical/GOAVA identity, red for GLOBAL editing authority, white/light styling for LOCAL context, and symbols on performance/navigation controls. A generated **GOAVA Radio** visual identity is packaged in `assets/` and used by the Main Window and Performance workspace.
-
-- GLOBAL PLAY / ALL INSTRUMENTS is intentionally large and red.
-- LOCAL CONTEXT / SELECTED INSTRUMENT is intentionally large and white/light.
-- Global Processor Controls typography is enlarged.
-- Value rollers/spin boxes/dropdowns are guarded against accidental mouse-wheel changes while the containing page is being scrolled; deliberate focus/editing still permits value changes.
-- Performance is non-modal and can be docked/floated while the scientific editor remains active.
-
-## 7. Hardware / Groovebox OS contract
-
-Groovebox OS is **not touch-only**. Keyboard, mouse/trackpad and touchscreen coexist.
-
-Performance → **Hardware** reports OS-visible input devices, displays, audio devices, MIDI inputs, USB entries, connected Bluetooth devices and key system tools. Device discovery is read-only and cannot alter canonical composition identity.
-
-Hardware layers supported when the underlying OS exposes them:
-
-- USB/Bluetooth keyboards and mice/trackpads.
-- Touchscreens/digitizers through Qt + the Linux input stack.
-- Gamepads/joysticks/controllers exposed through the OS/game runtime.
-- HDMI/VGA/USB displays; DisplayLink-class devices work when their OS driver exposes a display.
-- PipeWire/Pulse/default audio targets, USB audio, HDMI audio, already-paired Bluetooth audio.
-- Microphone/audio input through the app's sounddevice-compatible paths where available.
-- MIDI input when the optional MIDI backend is installed and the OS exposes the device.
-- Local FFmpeg/ffprobe and mpv/VLC/ffplay playback helpers.
-
-Hot-plugging/routing is deliberately separated from canonical math: reconnecting a display, controller, audio sink, or network interface does not change the seed/composition fingerprint.
-
-## 8. Performance media and VLC
-
-External-player launch prefers mpv, then VLC, then ffplay. VLC is launched with an independent-instance mode instead of `--play-and-exit`; loop playback uses VLC's loop option. A deferred process check reports immediate launch failure rather than silently hiding it.
-
-Performance includes mixed-media playlist playback, cutups, pitch normalization, deterministic beat/file cutting, live parametric remix, Draw/Signal Lab, device routing, Wi-Fi/LAN TV output, Drive/Clone transport, box-mode readiness, and batch re-rendering.
-
-## 9. Local Wi-Fi / Ethernet game networking
-
-Generated games already contain an authoritative TCP transport. This rollout exposes it directly in **Performance → Game / Wi-Fi** and in the Main Window live-game launcher.
-
-- **Solo** — local game only.
-- **Host on local network** — bind a selected TCP port and authoritatively broadcast player/world snapshots.
-- **Join local network** — connect to `host-ip:port` on the same Wi-Fi/Ethernet network.
-- `--host --port=N` and `--connect=HOST:PORT` remain supported by exported launchers.
-- Host/join can be forced even if a seed originally classified the social mode as single-player; requesting network mode makes the runtime network-capable for that session.
-- This is live synchronized game state, not merely game-ZIP sharing.
-- Internet play may require router/firewall configuration; ordinary same-LAN play does not require a public server.
-
-## 10. Practical first-run workflow
-
-1. Start Groovebox and choose **GLOBAL PLAY** for project-wide work or **LOCAL CONTEXT** for the selected instrument/sequence.
-2. Enter a seed/script. Fresh startup uses 32 rows × 8 steps with 50% step envelopes and 50/50 sequence attack/release.
-3. Press Play/Render for the canonical result. Secondary engines are identity-preserving/derived unless explicitly committed.
-4. Use HEURISTIC WRITE in GLOBAL or LOCAL scope; toggle it back OFF to recover the underlying state exactly.
-5. Open **Performance · GOAVA Radio** for playlist/media, live cutups, Draw/Signal Lab, hardware, output routing, Drive/Clone and game networking.
-6. In Game / Wi-Fi choose Solo, Host, or Join. The host machine displays/uses its LAN address; clients enter that address and port.
-7. Use Device Manager / Hardware to confirm HDMI/audio/touch/keyboard/controller visibility before installation deployment.
-8. Save the project to preserve explicit userdata/project state. Derived transient modulation is regenerated deterministically from its seed/state rather than silently becoming userdata.
-
-## 11. Verification scope
-
-The regression suite checks deterministic composition behavior, instrument→visual determinism, media-cutup routing, media-output helpers, and sequence→game influence. A generated-game localhost smoke test also ran a real host and client together; the host accepted one remote and both sessions advanced. GUI interaction and specific physical devices still require real-machine testing because the build environment used to assemble this package does not provide the full PyQt6/hardware stack.
-
-PROGRAM ID + .MG PORTABLE SAVES
--------------------------------
-Use **⌬ Read Program → ID** to read a Python source or ZIP and compute a semantic Program ID plus an exact SHA-256. The semantic Python ID ignores comments, whitespace and docstrings but changes when executable structure changes.
-
-Use **⬆ Export .MG** for Project / Synth / Profile:
-- Project restores the complete project/canonical workspace.
-- Synth restores into the currently selected instrument slot.
-- Profile restores reusable Performance/global/reference settings.
-
-Use **⬇ Load .MG** from Main or **Performance → ⌬ .MG Related**. Every artifact has its own content-derived Artifact ID. Slot names/indexes do not redefine it. Usage history is tracked separately and can include use/load counts, first/last use, common companions, and outcomes. Related results are ranked from Program/Composition provenance, shared parameters/math/tags and longitudinal co-use; recommendations remain derived/advisory and never overwrite userdata by themselves.
-
-
-## GOAVA Radio responsive UI + LAN radio (2026-09-05)
-
-- The configurable Radio identity header sits **above GLOBAL PROCESSOR CONTROLS**. Station name and logo are stored in Groovebox application data (`radio_identity.json` plus a copied `radio_logo.*`), so changing radio branding does not alter Program ID, Composition ID, or `.MG` artifact identity.
-- GLOBAL PLAY remains red and LOCAL CONTEXT remains white, but the selector footprint is reduced by about 17% from the earlier oversized playtest control.
-- PLAYLIST, RANDOMIZE, PHASE-LOCK and GOAVA are equal-footprint primary canonical controls designed to expand across the available row.
-- Performance uses a softer rounded control palette and a vertical tab/navigation rail so tabs do not overflow the right margin.
-- Performance → Live Broadcast can start **GOAVA LAN Radio**. The station serves a browser page and a continuous **192 kbps MP3** stream on TCP 8780; it cycles local project/render/sample audio and emits low-level 432-Hz-family bleeps when no suitable audio exists.
-- Nearby Groovebox radios announce/listen over local UDP discovery; discovered station names and web URLs are shown in-app and on the station web page. Discovery works only across network segments that permit local broadcast; Wi-Fi radio range alone is not sufficient unless devices are associated with the same reachable LAN.
-- For an appliance where `http://device/` is desired, `DEPLOYMENT_KIT/enable_radio_port80.sh` (installed as `groovebox-radio-port80`) can create a root-owned TCP/80 redirect to the unprivileged radio service. This avoids running the GUI as root.
-
-## OS hardware dependency preflight
-
-`DEPLOYMENT_KIT/bin/groovebox-hardware-preflight` reports Wi-Fi, Bluetooth, ALSA/PipeWire, MIDI, touch/input, USB, video/VLC and Python runtime readiness. `DEPLOYMENT_KIT/install_detected_hardware.sh` installs common host packages when Internet access is available and falls back to an offline report when it is not. The normal existing-Linux appliance installer invokes this best-effort preflight automatically.
-
-
-## 2026-09-05 — Meum + Operator Theory + Isosceles-Trig integration
-
-Groovebox now treats the author's mathematical writing as a **selectable creative/analytic dialect** for deterministic indexing. It does not silently redefine ordinary Python/IEEE arithmetic. The implementation is designed so these transforms can be inspected, disabled, simplified and reversed.
-
-### Meum basis
-The principal constant used by the engine is `M = 1.1975807343…`. The default modulation vocabulary includes `M-1`, `1/M`, `2-M`, `(M-1)/M`, plus independent irrational traversals `e-2`, `phi-1`, `sqrt(2)-1`, and `pi-3`. Meaningful identity values `0`, `0.5`, and `1` remain unchanged when they mean OFF, symmetry, or unity.
-
-### Isosceles trigonometry
-The book defines inverse isosceles sine as `isn^-1(x) = 2 asin(x/2)`. Groovebox also exposes the inverse-pair coordinate `isn(theta)=2 sin(theta/2)` for bounded seed phase mapping. `ics/ics^-1` are kept as handedness-aware complementary coordinates for spatial/game modulation. These functions are used for *indexing and geometry*; they do not overwrite ordinary `sin/cos` globally.
-
-### Operator Theory (OT)
-For reversible transforms, Groovebox implements the book's stated symbolic inverse pairing: add↔subtract, multiply↔divide, power↔root, with operation order reversed for an inverse path. This is especially useful for the writer-toggle zero-state rule: active transforms are collected, simplified to one canonical transform, evaluated once, and their provenance is preserved separately.
-
-### Temporal Seed Dynamics
-Generated games now include deterministic **Build → Modulate → Stabilize** epochs. Their boundaries use Meum-derived proportions and their field values use the isosceles phase mapping. This adds evolving seed character without activation-history dependence.
-
-### Numerical gameplay identity
-Items, actions, events and starter-world elements now receive deterministic numeric sound signatures from seed + semantic label + Meum/isosceles indexing. Frequencies, durations and harmonic counts are inspectable, repeatable and tied to the generated identity instead of random sound assignment.
-
-### Longitudinal .MG history
-`.MGproject`, `.MGsynth` and `.MGprofile` analytics remain separate from Artifact ID. History may now be **compressed** (retain strongest companion relations and summaries) or **cleared** without changing the saved program/synth/profile identity. Clearing can preserve aggregate totals so long-term statistics can be retained without carrying detailed co-use history.
-
-### Source framing
-The in-app math help preserves the terminology and claims of the author's supplied papers as author-defined/theoretical material. Groovebox uses these ideas as deterministic compositional and geometric transforms; this software implementation is not itself an external proof of the broader mathematical or physical claims.
-
-TOTAL CORRESPONDENCE / SELF-PROCEDURE
-Groovebox can derive Audio, Visual, Game, UI, and Network manifestations from the same Universal Field ID. Representation part/object counts are chosen after identity and may be raised or lowered without changing the canonical source. Extended visualizer modes display the field prefix, selected projection-cover size, and correspondence score. Correspondence means shared canonical identity/provenance; it does not mean a lossy file format can always be inverted exactly.
-
 """
 
     def __init__(self, parent=None):
@@ -17625,14 +16414,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Mathematician's Groovebox V3 — Operation Station")
-        # BRAND_2026: generated GOAVA radio motif is a real application asset.
-        try:
-            _asset_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
-            _icon_path = os.path.join(_asset_dir, "goava_radio_icon.png")
-            if os.path.isfile(_icon_path):
-                self.setWindowIcon(QIcon(_icon_path))
-        except Exception:
-            pass
         self.setMinimumSize(0, 0)
         self.setMaximumSize(16777215, 16777215)
         # UI_AUDIT_V34: semantic colors, compact instrument context, and responsive lower deck.
@@ -17952,13 +16733,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._stop_requested = False
         self._default_integrity_report = {}
         self._run_default_integrity_check()
-        # Reversible derived-writer registry. Each writer owns its own snapshots
-        # and is removed independently of activation order.
-        self._derived_writer_layers = {}
-        self._heuristic_writer_snapshot = {}
-        self._heuristic_writer_scope = None
         self.init_ui_components()
-        self._install_scroll_value_guards()
         # V3_OPERATION_STATION_BASELINE: fresh boot must be numerically identical
         # to Clear Memory before any playlist/canonical runtime writer observes UI.
         self._apply_v3_canonical_baseline(notify=False)
@@ -17992,68 +16767,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
             QShortcut(QKeySequence("Ctrl+Y"), self, activated=self._do_redo)
         except Exception:
             pass
-    def _install_scroll_value_guards(self):
-        """Prevent accidental roller/dropdown edits while the user scrolls.
-
-        Spin boxes accept wheel changes only while deliberately focused. Combo
-        boxes accept wheel navigation only while their popup is actually open.
-        Otherwise the wheel delta is forwarded to the nearest scroll area.
-        Leaving a numeric editor releases its focus so page scrolling resumes.
-        """
-        try:
-            widgets = list(self.findChildren((QSpinBox, QDoubleSpinBox, QComboBox)))
-        except Exception:
-            widgets = []
-        for w in widgets:
-            try:
-                w.installEventFilter(self)
-                w.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-            except Exception:
-                pass
-
-    def _forward_wheel_to_scroll_area(self, obj, event):
-        try:
-            p = obj.parentWidget() if hasattr(obj, "parentWidget") else None
-            while p is not None:
-                if isinstance(p, QScrollArea):
-                    delta = int(event.angleDelta().y())
-                    bar = p.verticalScrollBar()
-                    if bar is not None and bar.maximum() > bar.minimum():
-                        step = max(bar.singleStep() * 3, 24)
-                        bar.setValue(bar.value() - (step if delta > 0 else -step))
-                        return True
-                    hbar = p.horizontalScrollBar()
-                    if hbar is not None and hbar.maximum() > hbar.minimum():
-                        step = max(hbar.singleStep() * 3, 24)
-                        hbar.setValue(hbar.value() - (step if delta > 0 else -step))
-                        return True
-                p = p.parentWidget() if hasattr(p, "parentWidget") else None
-        except Exception:
-            pass
-        return False
-
-    def eventFilter(self, obj, event):
-        try:
-            if isinstance(obj, (QSpinBox, QDoubleSpinBox, QComboBox)):
-                if event.type() == QEvent.Type.Leave:
-                    if isinstance(obj, (QSpinBox, QDoubleSpinBox)):
-                        obj.clearFocus()
-                elif event.type() == QEvent.Type.Wheel:
-                    allow = False
-                    if isinstance(obj, QComboBox):
-                        try:
-                            allow = bool(obj.view().isVisible())
-                        except Exception:
-                            allow = False
-                    else:
-                        allow = bool(obj.hasFocus())
-                    if not allow:
-                        self._forward_wheel_to_scroll_area(obj, event)
-                        return True
-        except Exception:
-            pass
-        return super().eventFilter(obj, event)
-
     def _sync_square_visuals(self):
         """Layout: large square scenograph filling ALL free height (plus as much
         width as a square allows) + rectangular side meters.
@@ -18627,10 +17340,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if isinstance(_mem, dict) and str(_mem.get("canonical_owner", "")) == "canonical:goava":
                     bank.pop(_sid, None)
             if not bank:
-                bank[1] = {"sequence_id": 1, "pattern_length": 8,
-                           "steps": [False]*8, "gates": [True]*8,
-                           "amplitudes": [1.0]*8, "pitches": [1.0]*8,
-                           "probabilities": [100]*8, "offsets": [0.0]*8,
+                bank[1] = {"sequence_id": 1, "pattern_length": 16,
+                           "steps": [False]*16, "gates": [True]*16,
+                           "amplitudes": [1.0]*16, "pitches": [1.0]*16,
+                           "probabilities": [100]*16, "offsets": [0.0]*16,
                            "sequence_envelope_attack": 0.5, "sequence_envelope_release": 0.5,
                            "user_owned": True}
 
@@ -19757,7 +18470,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 _owned = [sid for sid in _ids if isinstance(_bank.get(sid), dict) and _bank[sid].get("canonical_owner") == _owner]
                 pool = _owned or _ids
                 _sid = pool[(r + int(seed) + source_hash) % len(pool)]
-                _plen = int((_bank.get(_sid, {}) or {}).get("pattern_length", 8))
+                _plen = int((_bank.get(_sid, {}) or {}).get("pattern_length", 16))
                 _phase = int((r * (1 + (_sid % 5)) + (seed & 0xFFFF)) % max(_plen, 1))
                 sequence_refs.append(f"{_op}#S{_sid}")
                 phase_offsets[_op] = _phase
@@ -20204,7 +18917,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             QGroupBox#fxGroup::title { color: #7ce7ff; }
             QGroupBox#contextGroup::title { color: #8ff2dd; }
 
-            QLabel#panelTitle { color: #ffc857; font-size: 15pt; font-weight: 900; }
+            QLabel#panelTitle { color: #ffc857; font-size: 12pt; font-weight: 900; }
             QLabel#canonicalFp { color: #b3c6ff; font-weight: 900; font-size: 10pt; }
 
             QPushButton#transportPlay {
@@ -20416,12 +19129,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         )
         self.btn_save_project = QPushButton("💾 Save Project")
         self.btn_load_project = QPushButton("📂 Load Project")
-        self.btn_read_program_id = QPushButton("⌬ Read Program → ID")
-        self.btn_read_program_id.setToolTip("Read Python/program/package structure and compute a stable semantic Program ID plus exact source SHA-256.")
-        self.btn_export_mg = QPushButton("⬆ Export .MG")
-        self.btn_export_mg.setToolTip("Export portable .MG Project / Synth / Profile with stable artifact identity and provenance.")
-        self.btn_load_mg = QPushButton("⬇ Load .MG")
-        self.btn_load_mg.setToolTip("Load a .MG Project into the project, Synth into selected instrument, or Profile into Performance/global settings.")
         self.btn_keyboard = QPushButton("🎹 Keyboard / Test")
         self.btn_trigger_all = QPushButton("⚡ Trigger All")
 
@@ -20609,7 +19316,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_nt_depth.setValue(5)
         self.spin_nt_depth.setToolTip("Farey order / Stern–Brocot depth.")
         nt_row.addWidget(self.spin_nt_depth)
-        self.btn_nt_apply = QPushButton("HEURISTIC STEP WRITE · OFF")
+        self.btn_nt_apply = QPushButton("Apply step algorithm")
         self.btn_nt_apply.setCheckable(True)
         self.btn_nt_apply.setToolTip(
             "Write the selected number-theoretic mask into the active instrument steps.\n"
@@ -20620,9 +19327,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "QPushButton { background-color: #102030; color: #9fd4ff; font-weight: bold; }\n"
             "QPushButton:checked { background-color:#3a6aaa; color:#b8f7e6; }"
         )
-        self.btn_nt_apply.toggled.connect(self._on_nt_lattice_apply)
+        self.btn_nt_apply.clicked.connect(self._on_nt_lattice_apply)
         nt_row.addWidget(self.btn_nt_apply)
-        self.chk_edit_algorithm_per_sequence = QCheckBox("LOCAL selected sequence")
+        self.chk_edit_algorithm_per_sequence = QCheckBox("Edit Algorithm Per Sequence")
         self.chk_edit_algorithm_per_sequence.setChecked(False)
         self.chk_edit_algorithm_per_sequence.setToolTip("When ON, Apply step algorithm writes only the selected instrument + selected sequence. When OFF, the existing local/global scope behavior is used.")
         self.chk_edit_algorithm_per_sequence.toggled.connect(lambda v: setattr(self, "edit_algorithm_per_sequence", bool(v)))
@@ -20675,19 +19382,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_heuristic_span.setToolTip("Number of sequence/automation steps to transcribe.")
         heur_row.addWidget(self.spin_heuristic_span)
         self.combo_heuristic_scope = QComboBox()
-        self.combo_heuristic_scope.addItems(["GLOBAL", "LOCAL"])
-        self.combo_heuristic_scope.setMinimumHeight(34)
-        self.combo_heuristic_scope.setMinimumWidth(110)
-        self.combo_heuristic_scope.setToolTip("Mutually exclusive heuristic scope. GLOBAL = applicable project sequences; LOCAL = selected instrument + selected sequence.")
+        self.combo_heuristic_scope.addItems(["Selected Sequence", "All Active Sequences"])
         heur_row.addWidget(self.combo_heuristic_scope)
-        self.btn_heuristic_transcribe = QPushButton("HEURISTIC WRITE · OFF")
-        self.btn_heuristic_transcribe.setCheckable(True)
-        self.btn_heuristic_transcribe.setMinimumHeight(38)
+        self.btn_heuristic_transcribe = QPushButton("Transcribe → Sequence + Automation")
         self.btn_heuristic_transcribe.setToolTip(
-            "Reversible deterministic heuristic writer. ON applies exactly one GLOBAL or LOCAL derived layer to Sequence + Automation; OFF removes only this writer and restores its exact pre-write zero-state. Scope changes while ON first unapply the previous scope, then apply the new scope."
+            "Evaluate the chosen deterministic heuristic over the requested span and write "
+            "its discrete decisions to sequence steps while continuous values become an "
+            "automation lane. The transcription is concrete/editable after writing."
         )
-        self.btn_heuristic_transcribe.toggled.connect(self._on_heuristic_transcribe)
-        self.combo_heuristic_scope.currentIndexChanged.connect(self._on_heuristic_scope_changed)
+        self.btn_heuristic_transcribe.clicked.connect(self._on_heuristic_transcribe)
         heur_row.addWidget(self.btn_heuristic_transcribe)
         heur_row.addStretch(1)
         seed_panel.addLayout(heur_row)
@@ -20730,8 +19433,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         eng_row.addWidget(seed_w_lbl)
         self.spin_engine_strength = QDoubleSpinBox()
         self.spin_engine_strength.setRange(0.15, 1.0)
-        self.spin_engine_strength.setSingleStep(0.001)
-        self.spin_engine_strength.setDecimals(6)
+        self.spin_engine_strength.setSingleStep(0.05)
+        self.spin_engine_strength.setDecimals(2)
         self.spin_engine_strength.setValue(CANONICAL_SEED_WEIGHT_DEFAULT)
         self.spin_engine_strength.setMinimumHeight(34)
         self.spin_engine_strength.setMinimumWidth(90)
@@ -20740,7 +19443,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "border-radius:4px; padding:4px 6px; font-weight:900; font-size:12pt; }"
         )
         self.spin_engine_strength.setToolTip(
-            "Canonical seed-transduction weight (0.15–1.0). Default e−2 ≈ 0.718282 with FullWeight ON: "
+            "Canonical seed-transduction weight (0.15–1.0). Default 0.72 with FullWeight ON: "
             "the seed remains authoritative while retaining dynamic headroom for seed-guided secondary structure. "
             "Turn FullWeight OFF only when deliberately asking for a more effect-biased path."
         )
@@ -20821,7 +19524,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         _proc_title_row = QHBoxLayout()
         _proc_title = QLabel("GLOBAL PROCESSOR CONTROLS")
         _proc_title.setObjectName("panelTitle")
-        _proc_title.setStyleSheet("color:#eaf8ff; font-size:19pt; font-weight:900; letter-spacing:1.2px; padding:4px 2px;")
         _proc_title_row.addWidget(_proc_title)
         _proc_title_row.addStretch(1)
         self.lbl_math_groovebox_logo = QLabel("MATHEMATICIAN'S GROOVEBOX")
@@ -20885,57 +19587,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         _logo_perf_stack = QVBoxLayout()
         _logo_perf_stack.setContentsMargins(0, 0, 0, 0)
         _logo_perf_stack.setSpacing(4)
-        self.lbl_goava_radio_brand = QLabel()
-        self.lbl_goava_radio_brand.setToolTip("GOAVA Radio — seed-shaped broadcast identity for Mathematician's Groovebox")
-        try:
-            _brand_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "goava_radio_brand.png")
-            _pm = QPixmap(_brand_path)
-            if not _pm.isNull():
-                self.lbl_goava_radio_brand.setPixmap(_pm.scaled(620, 138, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-                self.lbl_goava_radio_brand.setMinimumSize(360, 104)
-        except Exception:
-            pass
-        self.lbl_goava_radio_brand.setStyleSheet("background:#050b12; border:1px solid #9a7b2f; border-radius:8px; padding:2px;")
         _logo_perf_stack.addWidget(self.lbl_math_groovebox_logo, 0, Qt.AlignmentFlag.AlignRight)
         _logo_perf_stack.addWidget(self.btn_media_hub, 0, Qt.AlignmentFlag.AlignRight)
         _proc_title_row.addLayout(_logo_perf_stack)
 
-        # GOAVA_RADIO_HEADER_V38: station identity owns a full-width row ABOVE
-        # Global Processor Controls. This prevents the previous right-edge crop.
-        _radio_row = QHBoxLayout()
-        _radio_row.setSpacing(10)
-        self.lbl_goava_radio_brand.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.lbl_goava_radio_brand.setMinimumHeight(104)
-        self.lbl_goava_radio_brand.setMaximumHeight(148)
-        _radio_row.addWidget(self.lbl_goava_radio_brand, 2)
-        try:
-            from radio_station import load_identity
-            _rid = load_identity()
-        except Exception:
-            _rid = {"name":"GOAVA Radio", "logo":""}
-        self.lbl_radio_station_name = QLabel(str(_rid.get("name") or "GOAVA Radio"))
-        self.lbl_radio_station_name.setStyleSheet("color:#f1ce68; font-size:18pt; font-weight:900; padding:8px 12px; background:#0c1822; border:1px solid #8b6b2c; border-radius:12px;")
-        self.lbl_radio_station_name.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        _radio_row.addWidget(self.lbl_radio_station_name, 1)
-        self.btn_edit_radio_identity = QPushButton("✦ EDIT RADIO NAME / LOGO")
-        self.btn_edit_radio_identity.setMinimumHeight(54)
-        self.btn_edit_radio_identity.setStyleSheet("QPushButton{background:#172a39;color:#d9f7ff;border:1px solid #4d8199;border-radius:10px;padding:8px 12px;font-weight:800;} QPushButton:hover{background:#21445a;border-color:#79d6e8;}")
-        def _edit_radio_identity():
-            try:
-                from radio_station import load_identity, save_identity
-                cur = load_identity()
-                name, ok = QInputDialog.getText(self, "GOAVA Radio Identity", "Station name:", text=str(cur.get("name") or "GOAVA Radio"))
-                if not ok: return
-                logo, _ = QFileDialog.getOpenFileName(self, "Choose Radio Logo", str(cur.get("logo") or ""), "Images (*.png *.jpg *.jpeg *.webp *.bmp);;All files (*)")
-                data = save_identity(name, logo if logo else str(cur.get("logo") or ""))
-                self.lbl_radio_station_name.setText(data.get("name", "GOAVA Radio"))
-                pm = QPixmap(data.get("logo", ""))
-                if not pm.isNull(): self.lbl_goava_radio_brand.setPixmap(pm.scaled(620, 138, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-            except Exception as e:
-                QMessageBox.warning(self, "Radio Identity", str(e))
-        self.btn_edit_radio_identity.clicked.connect(_edit_radio_identity)
-        _radio_row.addWidget(self.btn_edit_radio_identity, 0)
-        self.global_controls_side.addLayout(_radio_row)
         self.global_controls_side.addLayout(_proc_title_row)
         self.global_geometry_layout.addLayout(self.global_controls_side, 1)
         self.global_geometry_layout.setAlignment(self.global_controls_side, Qt.AlignmentFlag.AlignTop)
@@ -20950,9 +19605,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_restore_userdata.clicked.connect(self._on_restore_userdata_clicked)
         self.btn_save_project.clicked.connect(self.save_project_dialog)
         self.btn_load_project.clicked.connect(self.load_project_dialog)
-        self.btn_read_program_id.clicked.connect(self.read_program_to_id_dialog)
-        self.btn_export_mg.clicked.connect(self.export_mg_dialog)
-        self.btn_load_mg.clicked.connect(self.load_mg_dialog)
         self.btn_keyboard.clicked.connect(self.open_keyboard_test_window)
         self.btn_trigger_all.clicked.connect(self.trigger_all_instruments_hit)
         self.btn_clear_memory.clicked.connect(self._on_clear_memory_clicked)
@@ -21005,9 +19657,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.transport_layout_row2.addSpacing(8)
         self.transport_layout_row2.addWidget(self.btn_save_project)
         self.transport_layout_row2.addWidget(self.btn_load_project)
-        self.transport_layout_row2.addWidget(self.btn_read_program_id)
-        self.transport_layout_row2.addWidget(self.btn_export_mg)
-        self.transport_layout_row2.addWidget(self.btn_load_mg)
         self.transport_layout_row2.addWidget(self.btn_clear_memory)
 
         # Live engine timers
@@ -21041,22 +19690,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # two stacked rows instead.
         self.top_layout_row2 = QHBoxLayout()
         self.mode_combo = QComboBox()
-        # Global / local is an important edit-scope state, so make it obvious at a
-        # glance and touch-friendly. Red = GLOBAL, white = LOCAL.
-        self.mode_combo.addItems(["GLOBAL PLAY · ALL INSTRUMENTS", "LOCAL CONTEXT · SELECTED INSTRUMENT"])
+        # Global / all instruments active is the default
+        self.mode_combo.addItems(["Mode: Cross-Loaded Ecosystem (Global)", "Mode: Single Instrument"])
         self.mode_combo.setCurrentIndex(0)
-        self.mode_combo.setMinimumHeight(40)
-        self.mode_combo.setMinimumWidth(282)
-        self.mode_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.mode_combo.setToolTip("GLOBAL PLAY (red): project-wide writers/canonicals. LOCAL CONTEXT (white): selected instrument/sequence only. Wheel scrolling does not change this selector unless deliberately opened.")
-        def _style_mode_combo(_idx=0):
-            _global = self.mode_combo.currentIndex() == 0
-            if _global:
-                self.mode_combo.setStyleSheet("QComboBox { background:#b00020; color:white; border:3px solid #ff6070; border-radius:7px; padding:6px 11px; font-size:12pt; font-weight:900; } QComboBox::drop-down { min-width:30px; } QAbstractItemView { font-size:12pt; min-height:34px; }")
-            else:
-                self.mode_combo.setStyleSheet("QComboBox { background:white; color:#111; border:3px solid #d8d8d8; border-radius:7px; padding:6px 11px; font-size:12pt; font-weight:900; } QComboBox::drop-down { min-width:30px; } QAbstractItemView { background:white; color:#111; font-size:12pt; min-height:34px; }")
-        self.mode_combo.currentIndexChanged.connect(lambda _idx: (self._sync_nt_lattice_button_state(), _style_mode_combo(_idx)))
-        _style_mode_combo(0)
+        self.mode_combo.currentIndexChanged.connect(lambda _idx: self._sync_nt_lattice_button_state())
 
         # Global Playlist Switch added to main layout
         self.chk_global_playlist = QCheckBox("🌐 Global Playlist Arrangement Drive")
@@ -21197,20 +19834,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # while still reading as primary controls.
 
 
-            # Primary canonical controls share one responsive footprint.
-            b.setMinimumHeight(52)
-            b.setMinimumWidth(168)
+            if text=="PLAYLIST":
+                b.setMinimumHeight(36)
+                b.setMaximumHeight(48)
+                b.setMinimumWidth(120)
+                b.setMaximumWidth(160)
+            else:
+                b.setMinimumHeight(40)
+                b.setMinimumWidth(120)
             b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             b.setCheckable(bool(checkable))
             if checkable:
                 b.setStyleSheet(
-                    "QPushButton { background-color:#121212; color:#f5d97d; border:2px solid #f5d97d; border-radius:9px; padding:8px 12px; font-weight:800; font-size:11pt; } "
+                    "QPushButton { background-color:#121212; color:#f5d97d; border:2px solid #f5d97d; border-radius:6px; padding:5px 8px; font-weight:bold; } "
                     f"QPushButton:checked {{ background-color:{active_color}; color:#101010; border:2px solid {active_color}; }} "
                     "QPushButton:hover { background-color:#282018; } QPushButton:pressed { background-color:#ff6b00; color:#101010; }"
                 )
             else:
                 b.setStyleSheet(
-                    "QPushButton { background-color:#121212; color:#f5d97d; border:2px solid #f5d97d; border-radius:9px; padding:8px 12px; font-weight:800; font-size:11pt; } "
+                    "QPushButton { background-color:#121212; color:#f5d97d; border:2px solid #f5d97d; border-radius:6px; padding:5px 8px; font-weight:bold; } "
                     "QPushButton:hover { background-color:#282018; } QPushButton:pressed { background-color:#ff6b00; color:#101010; }"
                 )
             return b
@@ -21318,10 +19960,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         global_context_layout.setSpacing(10)
         global_context_group.setMinimumHeight(52)
 
-        global_context_layout.addWidget(self.btn_view_playlist, 1)
-        global_context_layout.addWidget(self.btn_local_randomize, 1)
-        global_context_layout.addWidget(self.btn_local_phase_lock, 1)
-        global_context_layout.addWidget(self.btn_goava, 1)
+        self.top_layout_row2.addWidget(self.btn_view_playlist,2)
+
+        global_context_layout.addWidget(self.btn_local_randomize)
+        global_context_layout.addWidget(self.btn_local_phase_lock)
+        global_context_layout.addWidget(self.btn_goava)
+        global_context_layout.addStretch(1)
         # UNION_ENTROPY_2026 live fixed-point badge: mean of the shared draw at
         # 0.5 (input-invariant) with the realized per-seed min..max range shown,
         # proving "some seeds genuinely entropic, others not — and the centre
@@ -21512,7 +20156,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.top_layout_row2.addWidget(self.lbl_playlist_length_caption)
         self.spin_playlist_length = QSpinBox()
         self.spin_playlist_length.setRange(1, 1024)
-        self.spin_playlist_length.setValue(32)
+        self.spin_playlist_length.setValue(64)
         self.spin_playlist_length.setMinimumHeight(38)
         self.spin_playlist_length.setMinimumWidth(96)
         self.spin_playlist_length.setStyleSheet("font-size: 12pt; font-weight: 700; padding: 4px 6px;")
@@ -21523,11 +20167,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_row_beats.setRange(0.25, 64.0)
         self.spin_row_beats.setDecimals(2)
         self.spin_row_beats.setSingleStep(0.25)
-        self.spin_row_beats.setValue(8.0)  # V3 playtest default playlist row length = 8 beats
+        self.spin_row_beats.setValue(16.0)  # V34 default playlist row length = 16 beats
         self.spin_row_beats.setMinimumHeight(38)
         self.spin_row_beats.setMinimumWidth(88)
         self.spin_row_beats.setToolTip(
-            "Playlist row length in beats (BPM-relative). Default: 8 beats. Every instrument "
+            "Playlist row length in beats (BPM-relative). Default: 16 beats. Every instrument "
             "pattern — any step count — is scaled to fit this interval."
         )
         self.spin_row_beats.setStyleSheet("font-size: 11pt; font-weight: 700; padding: 4px 6px;")
@@ -21667,7 +20311,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         self.spin_seq_length = QSpinBox()
         self.spin_seq_length.setRange(1, 1024)
-        self.spin_seq_length.setValue(8)
+        self.spin_seq_length.setValue(16)
 
         sizing_layout.addStretch(1)
         sizing_container = QWidget()
@@ -21760,7 +20404,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         self.spin_pattern_length = QSpinBox()
         self.spin_pattern_length.setRange(1, 1024)
-        self.spin_pattern_length.setValue(8)
+        self.spin_pattern_length.setValue(16)
         self.spin_pattern_length.setToolTip("Compatibility alias for the selected sequence length.")
         self.spin_pattern_length.setVisible(False)
         self.spin_pattern_length.valueChanged.connect(self._on_pattern_length_changed)
@@ -22067,15 +20711,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         )
         global_player_group.setStyleSheet(
             "QGroupBox { color:#8fe8ff; background-color:#12161c; border:1px solid #3d5264; "
-            "border-radius:7px; margin-top:6px; padding-top:12px; font-weight:bold; font-size:11pt; }"
+            "border-radius:7px; margin-top:6px; padding-top:12px; font-weight:bold; font-size:8pt; }"
             "QGroupBox::title { subcontrol-origin:margin; left:10px; padding:0 6px; background-color:#12161c; }"
-            "QLabel { color:#d0e0f0; background: transparent; font-size:10pt; font-weight:800; }"
+            "QLabel { color:#d0e0f0; background: transparent; font-size:8pt; font-weight:700; }"
             "QLineEdit, QTextEdit { background-color:#0a0d12; color:#b8f7e6; border:1px solid #46566a; "
             "border-radius:4px; padding:3px 5px; font-size:8pt; }"
             "QSlider::groove:horizontal { background:#313a45; height:6px; border-radius:3px; }"
             "QSlider::handle:horizontal { background:#00e6c3; width:14px; margin:-4px 0; border-radius:7px; }"
             "QPushButton { background-color:#111820; color:#00f0d0; border:1px solid #00cdb5; "
-            "border-radius:4px; padding:4px 7px; font-weight:bold; font-size:10pt; }"
+            "border-radius:4px; padding:4px 7px; font-weight:bold; font-size:8pt; }"
             "QPushButton:hover { background-color:#1b2830; }"
             "QPushButton:checked { background-color:#00cdb5; color:#0a1014; }"
             "QCheckBox { color:#f5d97d; font-weight:bold; font-size:8pt; background: transparent; }"
@@ -22378,7 +21022,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
         self.spin_seq_length.blockSignals(True)
-        self.spin_seq_length.setValue(int(self._current_sequence_mem().get('pattern_length', 8)))
+        self.spin_seq_length.setValue(int(self._current_sequence_mem().get('pattern_length', 16)))
         self.spin_seq_length.blockSignals(False)
         self.rebuild_sequencer_steps(self._current_sequence_mem().get('pattern_length', self.spin_seq_length.value()))
         self.spin_seq_length.valueChanged.connect(self._on_sequence_length_changed)
@@ -22812,14 +21456,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "Per-Instrument Activity",
             "Lissajous / XY Vector Scope",
             "Phosphor Persistence Scope",
-            "Canonical Geometry", "Meum Field", "Isosceles / ISN Scope", "OT Transform Graph",
-            "Phase Topology / Torus", "Lissajous / Harmonic Orbit", "Spectrogram Projection",
-            "Partial Constellation", "Canonical Delta", "Sequence Geometry", "Playlist Timeline Terrain",
-            "Number-Theory Scope", "Fractal / L-System", "Complex Plane / Riemann", "Wave Surface",
-            "Vector / Flow Field", "Seed Fingerprint", "Network Radio Constellation", "Game World Map",
-            "A/V/G Correspondence",
         ])
-        self.viz_mode_combo.setMinimumWidth(180); self.viz_mode_combo.setMaximumWidth(260)
+        self.viz_mode_combo.setFixedWidth(180)
         self.viz_mode_combo.currentIndexChanged.connect(self._on_viz_mode_changed)
         vis_row.addWidget(self.viz_mode_combo)
         vis_row.addWidget(QLabel("  Spectrum / Geometry:"))
@@ -22831,14 +21469,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "Activity Spectrum",
             "Spectrogram Waterfall",
             "Radial Spectrum",
-            "Canonical Geometry", "Meum Field", "Isosceles / ISN Scope", "OT Transform Graph",
-            "Phase Topology / Torus", "Lissajous / Harmonic Orbit", "Spectrogram Projection",
-            "Partial Constellation", "Canonical Delta", "Sequence Geometry", "Playlist Timeline Terrain",
-            "Number-Theory Scope", "Fractal / L-System", "Complex Plane / Riemann", "Wave Surface",
-            "Vector / Flow Field", "Seed Fingerprint", "Network Radio Constellation", "Game World Map",
-            "A/V/G Correspondence",
         ])
-        self.spectrum_mode_combo.setMinimumWidth(160); self.spectrum_mode_combo.setMaximumWidth(240)
+        self.spectrum_mode_combo.setFixedWidth(160)
         self.spectrum_mode_combo.currentIndexChanged.connect(self._on_spectrum_mode_changed)
         vis_row.addWidget(self.spectrum_mode_combo)
         vis_row.addStretch(1)
@@ -23277,7 +21909,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return
         curr_inst = self.instrument_selector_dropdown.currentText()
         mem = self._current_sequence_mem(curr_inst) if hasattr(self, '_current_sequence_mem') else self.instrument_sequencer_memory[curr_inst]
-        count = int(mem.get('pattern_length', len(self.seq_step_buttons) or 8))
+        count = int(mem.get('pattern_length', len(self.seq_step_buttons) or 16))
         self._ensure_seq_mem_length(mem, count)
         if len(self.seq_step_buttons) != count:
             self.rebuild_sequencer_steps(count)
@@ -24201,7 +22833,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if not bank:
             mem = self.instrument_sequencer_memory.setdefault(name, {
                 "steps": [], "gates": [], "amplitudes": [], "pitches": [],
-                "probabilities": [], "offsets": [], "pattern_length": 8,
+                "probabilities": [], "offsets": [], "pattern_length": 16,
                 "track_offset": 0.0,
                 "sequence_playlist_mode": "wrap",
                 "sequence_force_wrap": False, "sequence_force_schedule": False,
@@ -24525,7 +23157,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if not bank:
             mem = self.instrument_sequencer_memory.setdefault(name, {
                 "steps": [], "gates": [], "amplitudes": [], "pitches": [],
-                "probabilities": [], "offsets": [], "pattern_length": 8,
+                "probabilities": [], "offsets": [], "pattern_length": 16,
                 "track_offset": 0.0,
                 "sequence_envelope_attack": 0.5, "sequence_envelope_release": 0.5
             })
@@ -24555,7 +23187,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         pos = max(0, sorted(bank).index(selected)) if selected in bank else 0
         self.sequence_selector.setCurrentIndex(pos)
         self.sequence_selector.blockSignals(False)
-        seq_len = int(bank[selected].get("pattern_length", 8)) if selected in bank else 8
+        seq_len = int(bank[selected].get("pattern_length", 16)) if selected in bank else 16
         self.spin_seq_length.blockSignals(True)
         self.spin_seq_length.setValue(seq_len)
         self.spin_seq_length.blockSignals(False)
@@ -24573,7 +23205,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         src["user_owned"] = True
         src["canonical_owner"] = None
         new_idx = max(bank.keys(), default=0) + 1
-        src["pattern_length"] = int(src.get("pattern_length", len(src.get("steps", [])) or 8))
+        src["pattern_length"] = int(src.get("pattern_length", len(src.get("steps", [])) or 16))
         bank[new_idx] = src
         self.instrument_selected_sequence[name] = new_idx
         self.instrument_sequencer_memory[name] = src
@@ -25111,7 +23743,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return
         self.instrument_selected_sequence[name] = idx
         self.instrument_sequencer_memory[name] = bank[idx]
-        seq_len = int(bank[idx].get("pattern_length", 8))
+        seq_len = int(bank[idx].get("pattern_length", 16))
         self.spin_seq_length.blockSignals(True)
         self.spin_seq_length.setValue(seq_len)
         self.spin_seq_length.blockSignals(False)
@@ -25703,10 +24335,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             bank = banks.setdefault(name, {})
             if not bank:
                 bank[1] = copy.deepcopy(self.instrument_sequencer_memory.get(name, {}) or
-                                        {"pattern_length": 8, "steps": [False]*8,
-                                         "gates": [True]*8, "amplitudes": [1.0]*8,
-                                         "pitches": [1.0]*8, "probabilities": [100]*8,
-                                         "offsets": [0.0]*8, "sequence_envelope_attack": 0.5, "sequence_envelope_release": 0.5})
+                                        {"pattern_length": 16, "steps": [False]*16,
+                                         "gates": [True]*16, "amplitudes": [1.0]*16,
+                                         "pitches": [1.0]*16, "probabilities": [100]*16,
+                                         "offsets": [0.0]*16, "sequence_envelope_attack": 0.5, "sequence_envelope_release": 0.5})
 
             # Preserve user-owned/non-canonical IDs exactly.  Canonical IDs occupy a
             # deterministic contiguous range after the highest user sequence ID.
@@ -25715,10 +24347,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                               and not str(v.get("canonical_owner", "")).startswith("canonical:"))
             if not user_ids:
                 user_ids = [1]
-                bank.setdefault(1, {"sequence_id": 1, "pattern_length": 8,
-                                     "steps": [False]*8, "gates": [True]*8,
-                                     "amplitudes": [1.0]*8, "pitches": [1.0]*8,
-                                     "probabilities": [100]*8, "offsets": [0.0]*8,
+                bank.setdefault(1, {"sequence_id": 1, "pattern_length": 16,
+                                     "steps": [False]*16, "gates": [True]*16,
+                                     "amplitudes": [1.0]*16, "pitches": [1.0]*16,
+                                     "probabilities": [100]*16, "offsets": [0.0]*16,
                                      "user_owned": True})
             # During ensemble resize, preserve canonical sequence objects for every
             # surviving instrument/source pair.  Their exact steps, offsets, amplitudes
@@ -25779,7 +24411,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # derives its own length from the same seed/instrument factors it
                 # uses to place steps and pitches; phase_lock still tracks the
                 # established user grid on purpose (it is meant to lock to it).
-                base_len = int(bank.get(user_ids[0], {}).get("pattern_length", 8) or 8)
+                base_len = int(bank.get(user_ids[0], {}).get("pattern_length", 16) or 16)
                 if source == "euclidean":
                     stride = max(2, int(2 + (inst_seed_i % 5)))
                     reps = max(1, 2 + (inst_seed_i // 5) % 6)
@@ -26018,7 +24650,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if not isinstance(bank, dict):
                 continue
             canon_ns = [
-                max(1, int(m.get("pattern_length", 8) or 8))
+                max(1, int(m.get("pattern_length", 16) or 16))
                 for m in bank.values()
                 if isinstance(m, dict) and str(m.get("canonical_owner", "")).startswith("canonical:")
             ]
@@ -26039,7 +24671,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             mem = self._current_sequence_mem()
             if mem and not self._sequence_is_user_locked(mem) and hasattr(self, "spin_seq_length"):
-                n = max(1, int(mem.get("pattern_length", 8) or 8))
+                n = max(1, int(mem.get("pattern_length", 16) or 16))
                 if int(self.spin_seq_length.value()) != n:
                     self.spin_seq_length.blockSignals(True)
                     self.spin_seq_length.setValue(n)
@@ -26458,7 +25090,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         self.instrument_selected_sequence[inst] = sid
                         self.instrument_sequencer_memory[inst] = target_bank[sid]
                     self._load_sequence_envelope_controls(target_bank.get(sid, {}))
-                    self.rebuild_sequencer_steps(int(target_bank[sid].get("pattern_length", 8)))
+                    self.rebuild_sequencer_steps(int(target_bank[sid].get("pattern_length", 16)))
         except Exception:
             pass
         if hasattr(self, "lbl_automator_teleport"):
@@ -26734,7 +25366,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             name = str(self.auto_to_instrument.currentText())
             sid = int(self.spin_auto_to_sequence.value())
             bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(name, {})
-            n = max(1, min(1024, int(getattr(self, "spin_auto_point_length", None).value() if hasattr(self, "spin_auto_point_length") else ((bank.get(sid) or {}).get("pattern_length", 8)))))
+            n = max(1, min(1024, int(getattr(self, "spin_auto_point_length", None).value() if hasattr(self, "spin_auto_point_length") else ((bank.get(sid) or {}).get("pattern_length", 16)))))
             seed = _safe_int_seed(self.get_numeric_seed()) ^ int.from_bytes(hashlib.sha256(f"{name}:{sid}".encode()).digest()[:4], "little")
             rng = np.random.default_rng(seed)
             # Fill the selected sequence itself — not just the automation references.
@@ -26806,7 +25438,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 for sid, mem in (bank or {}).items():
                     if not isinstance(mem, dict):
                         continue
-                    n = max(1, min(1024, int(mem.get("pattern_length", 8) or 8)))
+                    n = max(1, min(1024, int(mem.get("pattern_length", 16) or 16)))
                     self._ensure_seq_mem_length(mem, n)
                     mem["pattern_length"] = n
                     mem["steps"] = [bool(rng.random() > 0.50) for _ in range(n)]
@@ -26826,7 +25458,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             for name, bank in banks.items():
                 for sid, mem in (bank or {}).items():
                     if not isinstance(mem, dict): continue
-                    sid = int(sid); n = max(1, min(1024, int(mem.get("pattern_length", 8) or 8)))
+                    sid = int(sid); n = max(1, min(1024, int(mem.get("pattern_length", 16) or 16)))
                     for step in range(1, n+1):
                         if float(rng.random()) < 0.55:
                             ref_op = str(rng.choice(roster)) if roster else str(name)
@@ -27831,7 +26463,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         This is deliberately shared by startup values and Clear Memory semantics:
         resonance unity (100%), canonical convolve midpoint (50%), seed transduction
-        weight e−2 ≈ 0.718282, FullWeight + Full Unison ON, canonical protection ON, and no user-touched
+        weight 0.72, FullWeight + Full Unison ON, canonical protection ON, and no user-touched
         canonical-field residue. It does not enable optional stochastic/remix engines.
         """
         self.canonical_resonance_factor = CANONICAL_RESONANCE_DEFAULT
@@ -27889,7 +26521,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             pass
         if notify and hasattr(self, "scope_status_label"):
             self.scope_status_label.setText(
-                "📊 V3 canonical baseline — Resonance 100% · Convolve 50% · Seed Weight e−2≈71.8282% · Adherence fallback 55%"
+                "📊 V3 canonical baseline — Resonance 100% · Convolve 50% · Seed Weight 72% · Adherence fallback 55%"
             )
 
     def _on_clear_memory_clicked(self):
@@ -28947,143 +27579,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 print(f"[Recovery] restored project from {newest}")
         except Exception:
             pass
-
-    def _current_program_identity(self):
-        try:
-            from program_identity import identify
-            info = identify(os.path.abspath(__file__))
-            self._program_identity = info
-            return info
-        except Exception:
-            return {}
-
-    def _composition_id_for_artifact(self):
-        try:
-            return str(self._canonical_fingerprint() or "")
-        except Exception:
-            return ""
-
-    def read_program_to_id_dialog(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Read Program → ID", os.path.dirname(os.path.abspath(__file__)),
-            "Programs / packages (*.py *.zip);;All files (*)")
-        if not path:
-            return
-        try:
-            from program_identity import identify
-            info = identify(path)
-            self._program_identity = info
-            QMessageBox.information(
-                self, "Program Identity",
-                f"Program ID: {info.get('program_id')}\n"
-                f"Method: {info.get('method')}\n"
-                f"Semantic SHA-256: {info.get('semantic_sha256')}\n"
-                f"Exact source SHA-256: {info.get('source_sha256')}\n\n"
-                "Program ID follows executable/structural content; exact SHA follows bytes.")
-        except Exception as e:
-            QMessageBox.warning(self, "Program ID failed", str(e))
-
-    def _selected_synth_snapshot_for_mg(self):
-        from user_synth_library import synth_snapshot
-        name = self.instrument_selector_dropdown.currentText() if hasattr(self, 'instrument_selector_dropdown') else self.instrument_names_48[0]
-        return synth_snapshot(self, str(name))
-
-    def _performance_profile_snapshot_for_mg(self):
-        def val(name, default=None):
-            w=getattr(self,name,None)
-            try:
-                if hasattr(w,'value'): return w.value()
-                if hasattr(w,'isChecked'): return bool(w.isChecked())
-                if hasattr(w,'currentIndex'): return int(w.currentIndex())
-            except Exception: pass
-            return default
-        return {
-            'profile_version': 1,
-            'mode_index': val('mode_combo',0),
-            'bpm': val('spin_bpm',120.0),
-            'canonical_resonance': val('slider_canonical_resonance',100),
-            'canonical_convolve_pct': val('slider_canonical_convolve',50),
-            'full_weight_enabled': val('chk_full_weight_seed',True),
-            'full_weight': float(getattr(self,'canonical_seed_weight',0.718281828459045)),
-            'full_unison': val('chk_full_unison',True),
-            'eqr': val('eqr_slider',4014),
-            'fractallizer': val('fractallizer_slider',5995),
-            'pkp_envelope': val('pkp_envelope_slider',5000),
-            'global_track_offset': val('spin_global_track_offset',0.0),
-            'reference_profile': copy.deepcopy(getattr(self,'_signal_lab_reference_profile',None)),
-            'performance_profile': copy.deepcopy(getattr(self,'_performance_profile_state',{})),
-        }
-
-    def _mg_roots(self):
-        roots=[]
-        for fn in ('_projects_dir','_samples_dir','_exports_dir'):
-            try: roots.append(getattr(self,fn)())
-            except Exception: pass
-        return [r for r in roots if r]
-
-    def export_mg_dialog(self):
-        from mg_artifacts import make, save, EXTENSIONS
-        kinds=['Project','Synth','Profile']
-        kind_text, ok = QInputDialog.getItem(self, "Export .MG", "Artifact type:", kinds, 0, False)
-        if not ok: return
-        kind=kind_text.lower()
-        if kind=='project': payload=self._project_snapshot()
-        elif kind=='synth': payload=self._selected_synth_snapshot_for_mg()
-        else: payload=self._performance_profile_snapshot_for_mg()
-        pgm=(getattr(self,'_program_identity',None) or self._current_program_identity()).get('program_id','')
-        comp=self._composition_id_for_artifact()
-        doc=make(kind,payload,program_id=pgm,composition_id=comp,title=f"{kind_text} · {comp[:12] or 'unfingerprinted'}")
-        default=os.path.join(self._projects_dir() if kind=='project' else self._samples_dir(), f"groovebox_{kind}{EXTENSIONS[kind]}")
-        path,_=QFileDialog.getSaveFileName(self,f"Export .MG {kind_text}",default,f"MG {kind_text} (*{EXTENSIONS[kind]});;All .MG (*.MG*)")
-        if not path: return
-        final=save(path,doc)
-        QMessageBox.information(self,".MG exported",f"{final}\n\nArtifact ID: {doc['artifact_id']}\nProgram ID: {pgm}\nComposition ID: {comp}")
-
-    def _apply_mg_synth_payload(self, snap):
-        name = str(self.instrument_selector_dropdown.currentText()) if hasattr(self,'instrument_selector_dropdown') else str(snap.get('name','Instrument 1'))
-        self.instrument_param_state[name]=copy.deepcopy(snap.get('params',{}))
-        self.instrument_sequencer_memory[name]=copy.deepcopy(snap.get('sequence',{}))
-        if hasattr(self,'instrument_sequence_banks'): self.instrument_sequence_banks[name]=copy.deepcopy(snap.get('banks',{}))
-        if hasattr(self,'instrument_selected_sequence'): self.instrument_selected_sequence[name]=copy.deepcopy(snap.get('selected_sequence',1))
-        if hasattr(self,'instrument_scripts'): self.instrument_scripts[name]=copy.deepcopy(snap.get('script',''))
-        if hasattr(self,'instrument_media_samples'): self.instrument_media_samples[name]=copy.deepcopy(snap.get('sample',None))
-        ids=getattr(self,'_loaded_mg_synth_ids',{}); ids[name]=snap.get('stable_id') or snap.get('artifact_id'); self._loaded_mg_synth_ids=ids
-        try: self.reload_active_instrument_sequencer_ui()
-        except Exception: pass
-
-    def _apply_mg_profile_payload(self, payload):
-        setters=(('mode_combo','setCurrentIndex','mode_index'),('spin_bpm','setValue','bpm'),('slider_canonical_resonance','setValue','canonical_resonance'),('slider_canonical_convolve','setValue','canonical_convolve_pct'),('spin_global_track_offset','setValue','global_track_offset'))
-        for obj,method,key in setters:
-            try:
-                if key in payload: getattr(getattr(self,obj),method)(payload[key])
-            except Exception: pass
-        self.canonical_seed_weight=float(payload.get('full_weight',getattr(self,'canonical_seed_weight',0.718281828459045)))
-        self._signal_lab_reference_profile=copy.deepcopy(payload.get('reference_profile'))
-        self._performance_profile_state=copy.deepcopy(payload.get('performance_profile',{}))
-
-    def _load_mg_path(self,path,expected_kind=None):
-        from mg_artifacts import load
-        doc=load(path,expected_kind=expected_kind,record_use=True)
-        kind=doc.get('kind'); payload=doc.get('payload')
-        if kind=='project': self._apply_project_snapshot(payload)
-        elif kind=='synth': self._apply_mg_synth_payload(payload)
-        elif kind=='profile': self._apply_mg_profile_payload(payload)
-        self._last_mg_artifact_path=path
-        try: self._refresh_canonical_fingerprint()
-        except Exception: pass
-        return doc
-
-    def load_mg_dialog(self):
-        path,_=QFileDialog.getOpenFileName(self,"Load .MG Artifact",self._projects_dir(),"MG Artifacts (*.MGproject *.MGsynth *.MGprofile *.MG);;All files (*)")
-        if not path: return
-        try:
-            doc=self._load_mg_path(path)
-            from mg_artifacts import find_related
-            related=find_related(path,self._mg_roots(),limit=5)
-            rel='\n'.join(f"{r['score']:.3f} · {r['kind']} · {r['title']}" for r in related) or 'None yet'
-            QMessageBox.information(self,".MG loaded",f"Loaded {doc.get('kind')}: {doc.get('artifact_id')}\n\nRelated/common results:\n{rel}")
-        except Exception as e:
-            QMessageBox.warning(self,".MG load failed",str(e))
 
     def save_project_dialog(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save Mathematician's Groovebox Project", self._projects_dir(), "Mathematician's Groovebox Project (*.mgpr)")
@@ -31116,7 +29611,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # consult an ambient ``mem`` variable: that was undefined on the
             # reconciled-ref path and caused toggle-time crashes.
             selected_mem = bank.get(sid, {}) if isinstance(bank, dict) else {}
-            plen = max(1, int((selected_mem or {}).get("pattern_length", 8) or 8))
+            plen = max(1, int((selected_mem or {}).get("pattern_length", 16) or 16))
             phase = (r + (sid - 1)) % plen
             ref = f"{op}#S{sid}"
 
@@ -32128,7 +30623,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # remain readable; canonical-owned slots receive a deterministic polyphonic chord.
         try:
             mem = self._current_sequence_mem(instrument_name)
-            user_owned = bool(mem.get("user_owned", False)) or any(self._step_has_net_effect(mem, i) for i in range(int(mem.get("pattern_length", 8) or 8)) if hasattr(self, "_step_has_net_effect"))
+            user_owned = bool(mem.get("user_owned", False)) or any(self._step_has_net_effect(mem, i) for i in range(int(mem.get("pattern_length", 16) or 16)) if hasattr(self, "_step_has_net_effect"))
             if not user_owned:
                 st["canonical_amp"] = float(np.clip(generated.get("amp", generated.get("amplitude", 1.0)), 0.0, 2.0))
                 st["canonical_pitch"] = float(generated.get("pitch", generated.get("frequency_ratio", 1.0)))
@@ -34902,7 +33397,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 for sid, mem in (bank or {}).items():
                     if not isinstance(mem, dict):
                         continue
-                    n = max(1, min(1024, int(mem.get("pattern_length", 8) or 8)))
+                    n = max(1, min(1024, int(mem.get("pattern_length", 16) or 16)))
                     mem["steps"] = [bool(rng.random() > 0.55) for _ in range(n)]
                     mem["gates"] = [True] * n
                     mem["amplitudes"] = [float(rng.uniform(0.35, 1.0)) for _ in range(n)]
@@ -35628,7 +34123,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             QMessageBox.critical(self, "Playback Error", str(e))
 
 
-    def _on_nt_lattice_apply(self, checked=False):
+    def _on_nt_lattice_apply(self):
         """Apply the ℤ-Lattice step algorithm at the selected global/local scope.
 
         Global mode walks every playlist row and applies the mask to each
@@ -35647,7 +34142,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         mode_alg = mode_map.get(mode_ui, "primes")
         mod = int(self.spin_nt_modulus.value()) if hasattr(self, "spin_nt_modulus") else 12
         depth = int(self.spin_nt_depth.value()) if hasattr(self, "spin_nt_depth") else 5
-        is_local = bool(hasattr(self, "mode_combo") and self.mode_combo.currentIndex() == 1)
+        is_local = bool(hasattr(self, "mode_combo") and "Single Instrument" in self.mode_combo.currentText())
         if bool(getattr(self, "edit_algorithm_per_sequence", False)):
             is_local = True
         self._nt_lattice_scope = "local" if is_local else "global"
@@ -35662,7 +34157,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             prior = self._nt_lattice_snapshot.get(key)
             if prior is not None:
                 return
-            length = max(1, min(128, int(mem.get("pattern_length", len(mem.get("steps") or []) or 8))))
+            length = max(1, min(128, int(mem.get("pattern_length", len(mem.get("steps") or []) or 16))))
             steps = list(mem.get("steps") or [])
             amps = list(mem.get("amplitudes") or [])
             pitches = list(mem.get("pitches") or [])
@@ -35777,10 +34272,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try: self._on_live_source_changed()
         except Exception: pass
         self._sync_nt_lattice_button_state()
-        try:
-            self.btn_nt_apply.setText("HEURISTIC STEP WRITE · ON" if bool(checked) else "HEURISTIC STEP WRITE · OFF")
-        except Exception:
-            pass
 
     def _heuristic_values(self, family, bias, n, seed_value=None):
         """Return deterministic [0,1] structural values for the Heuristic Composer.
@@ -35886,92 +34377,35 @@ class MathematiciansGrooveboxApp(QMainWindow):
         )
         return mem
 
-    def _heuristic_target_list(self, scope=None):
-        scope = str(scope if scope is not None else (self.combo_heuristic_scope.currentText() if hasattr(self, "combo_heuristic_scope") else "LOCAL")).upper()
+    def _on_heuristic_transcribe(self):
+        """Decisively scribe the heuristic into sequence + automation data."""
+        if not getattr(self, "_undo_in_flight", False):
+            self._push_undo("Transcribe heuristic to sequence + automation")
+        family = str(self.combo_heuristic_family.currentText()) if hasattr(self, "combo_heuristic_family") else "ℤ-Lattice"
+        bias = str(self.combo_heuristic_bias.currentText()) if hasattr(self, "combo_heuristic_bias") else "Balanced"
+        n = int(self.spin_heuristic_span.value()) if hasattr(self, "spin_heuristic_span") else 16
+        values = self._heuristic_values(family, bias, n)
+        scope = str(self.combo_heuristic_scope.currentText()) if hasattr(self, "combo_heuristic_scope") else "Selected Sequence"
         targets = []
-        if scope == "GLOBAL":
+        if scope == "All Active Sequences":
             for name in list(getattr(self, "instrument_names_48", []) or []):
                 bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(name, {})
-                if isinstance(bank, dict) and bank:
-                    for sid in sorted(int(x) for x in bank.keys()): targets.append((name, sid))
-                else:
-                    targets.append((name, int((getattr(self, "instrument_selected_sequence", {}) or {}).get(name, 1))))
+                sids = sorted(int(x) for x in bank.keys()) if isinstance(bank, dict) and bank else [int((getattr(self, "instrument_selected_sequence", {}) or {}).get(name, 1))]
+                for sid in sids:
+                    targets.append((name, sid))
         else:
             name = str(self.instrument_selector_dropdown.currentText()) if hasattr(self, "instrument_selector_dropdown") else (list(getattr(self, "instrument_names_48", []) or ["Operator"])[0])
             sid = int(self.sequence_selector.currentData() or 1) if hasattr(self, "sequence_selector") and self.sequence_selector.currentData() is not None else int((getattr(self, "instrument_selected_sequence", {}) or {}).get(name, 1))
             targets = [(name, sid)]
-        return targets
-
-    def _heuristic_restore(self):
-        """Remove only the currently-applied heuristic writer layer."""
-        snap = getattr(self, "_heuristic_writer_snapshot", None)
-        if not isinstance(snap, dict): return
-        for key, prior in (snap.get("memories") or {}).items():
-            try:
-                name, sid = key
-                bank = (getattr(self, "instrument_sequence_banks", {}) or {}).setdefault(name, {})
-                bank[int(sid)] = copy.deepcopy(prior)
-                if int((getattr(self, "instrument_selected_sequence", {}) or {}).get(name, 1)) == int(sid):
-                    self.instrument_sequencer_memory[name] = bank[int(sid)]
-            except Exception: pass
-        # Restore only automation scopes touched by this writer; unrelated/user
-        # automation survives regardless of toggle order.
-        scopes = set(tuple(x) for x in (snap.get("scopes") or []))
-        current = []
-        for point in list(getattr(self, "sequencer_automation_points", []) or []):
-            if not isinstance(point, dict): continue
-            sc=(str(point.get("from_instrument") or point.get("instrument") or ""), int(point.get("from_sequence", 1) or 1))
-            if sc in scopes: continue
-            current.append(point)
-        current.extend(copy.deepcopy(snap.get("automation") or []))
-        self.sequencer_automation_points = current
-        self._heuristic_writer_snapshot = None
-
-    def _on_heuristic_scope_changed(self, _index=0):
-        if not hasattr(self, "btn_heuristic_transcribe") or not self.btn_heuristic_transcribe.isChecked(): return
-        # Scope is mutually exclusive. Rebuild from the exact zero-state of the
-        # previous scope rather than stacking GLOBAL and LOCAL writes.
-        self._heuristic_restore()
-        self._heuristic_apply_current_scope()
-
-    def _heuristic_apply_current_scope(self):
-        family = str(self.combo_heuristic_family.currentText()) if hasattr(self, "combo_heuristic_family") else "ℤ-Lattice"
-        bias = str(self.combo_heuristic_bias.currentText()) if hasattr(self, "combo_heuristic_bias") else "Balanced"
-        n = int(self.spin_heuristic_span.value()) if hasattr(self, "spin_heuristic_span") else 16
-        scope = str(self.combo_heuristic_scope.currentText()) if hasattr(self, "combo_heuristic_scope") else "LOCAL"
-        targets = self._heuristic_target_list(scope)
-        values = self._heuristic_values(family, bias, n)
-        memories={}; scopes=[]; automation=[]
-        all_points=list(getattr(self, "sequencer_automation_points", []) or [])
-        for name,sid in targets:
-            bank=(getattr(self,"instrument_sequence_banks",{}) or {}).setdefault(name,{})
-            mem=bank.get(int(sid))
-            if not isinstance(mem,dict): mem=copy.deepcopy((getattr(self,"instrument_sequencer_memory",{}) or {}).get(name,{})); bank[int(sid)]=mem
-            memories[(name,int(sid))]=copy.deepcopy(mem); scopes.append((name,int(sid)))
-            for point in all_points:
-                if not isinstance(point,dict): continue
-                sc=(str(point.get("from_instrument") or point.get("instrument") or ""), int(point.get("from_sequence",1) or 1))
-                if sc==(name,int(sid)): automation.append(copy.deepcopy(point))
-        self._heuristic_writer_snapshot={"scope":scope,"memories":memories,"scopes":scopes,"automation":automation}
-        for idx,(name,sid) in enumerate(targets):
-            vv=list(values)
-            if idx and vv:
-                rot=int(identity_unit(name,"heuristic_rotation")*len(vv))%len(vv); vv=vv[rot:]+vv[:rot]
-            self._transcribe_heuristic_into_sequence(name,sid,vv,family,bias)
-        if hasattr(self,"scope_status_label"):
-            self.scope_status_label.setText(f"Heuristic {scope} ON · {family} · {bias} · {len(targets)} sequence(s) · {n} steps")
-
-    def _on_heuristic_transcribe(self, checked=False):
-        """True reversible heuristic writer toggle: ON adds one derived layer; OFF removes it."""
-        if not getattr(self, "_undo_in_flight", False): self._push_undo("Toggle heuristic writer")
-        if bool(checked):
-            self._heuristic_restore()  # protects against stale prior application
-            self._heuristic_apply_current_scope()
-            self.btn_heuristic_transcribe.setText(f"HEURISTIC WRITE · {self.combo_heuristic_scope.currentText()} · ON")
-        else:
-            self._heuristic_restore()
-            self.btn_heuristic_transcribe.setText("HEURISTIC WRITE · OFF")
-            if hasattr(self,"scope_status_label"): self.scope_status_label.setText("Heuristic writer OFF · zero-state restored")
+        for idx, (name, sid) in enumerate(targets):
+            # Same structural rule, stable operator-specific phase rotation. This
+            # prevents redundant copies without introducing stochastic state.
+            if idx:
+                rot = int(identity_unit(name, "heuristic_rotation") * len(values)) % max(1, len(values))
+                vv = values[rot:] + values[:rot]
+            else:
+                vv = list(values)
+            self._transcribe_heuristic_into_sequence(name, sid, vv, family, bias)
         try: self.reload_active_instrument_sequencer_ui()
         except Exception: pass
         try: self._refresh_sequencer_automation_row()
@@ -35980,6 +34414,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception: pass
         try: self._on_live_source_changed()
         except Exception: pass
+        if hasattr(self, "scope_status_label"):
+            self.scope_status_label.setText(f"Heuristic transcribed · {family} · {bias} · {len(targets)} sequence(s) · {n} steps")
 
     def _on_nt_to_seed(self):
         """Emit a seed script that number-theorists will recognize as structured.
@@ -37652,25 +36088,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
             f"Splash will play the composition bed for <b>{identity.splash_bars}</b> sequence steps "
             f"@ {meta['bpm']:.0f} BPM before the start screen."
         ))
-        # LAN_GAME_UI_2026: expose the engine's existing authoritative TCP
-        # transport for every generated identity. --host/--connect force LAN
-        # networking even when the seed classified the social mode as solo.
-        net_group = QGroupBox("📶 Local Wi‑Fi / Ethernet")
-        net_form = QFormLayout(net_group)
-        net_mode = QComboBox()
-        net_mode.addItems(["Solo", "Host on local network", "Join local network"])
-        try: net_mode.setCurrentIndex(max(0, min(2, int(getattr(self, "_preferred_game_net_mode", 0)))))
-        except Exception: pass
-        net_form.addRow("Mode", net_mode)
-        port_spin = QSpinBox(); port_spin.setRange(1024, 65535)
-        port_spin.setValue(int(getattr(self, "_preferred_game_net_port", identity.host_port) or identity.host_port))
-        net_form.addRow("Port", port_spin)
-        connect_edit = QLineEdit(); connect_edit.setPlaceholderText("192.168.1.42:27777")
-        connect_edit.setText(str(getattr(self, "_preferred_game_connect", "") or ""))
-        net_form.addRow("Join address", connect_edit)
-        lan_note = QLabel("Host and Join synchronize live game state over the same local Wi‑Fi/LAN. Router port forwarding is only needed for Internet play.")
-        lan_note.setWordWrap(True); net_form.addRow(lan_note)
-        lay.addWidget(net_group)
+        host_chk = QCheckBox("Host mode (online)")
+        host_chk.setEnabled(bool(identity.online))
+        host_chk.setChecked(False)
+        lay.addWidget(host_chk)
+        port_row = QHBoxLayout()
+        port_row.addWidget(QLabel("Server port:"))
+        port_spin = QSpinBox()
+        port_spin.setRange(1024, 65535)
+        port_spin.setValue(int(identity.host_port))
+        port_spin.setEnabled(bool(identity.online))
+        port_row.addWidget(port_spin)
+        port_row.addStretch(1)
+        lay.addLayout(port_row)
         status = QLabel("Ready to build live test copy.")
         lay.addWidget(status)
         btn_row = QHBoxLayout()
@@ -37690,16 +36120,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 script = _vge.export_game_files(identity, td, meta, {"provenance.mgpr": json.loads(self._export_provenance_payload())})
                 self._last_videogame_path = script
                 args = [_sys.executable, script]
-                mode = int(net_mode.currentIndex())
-                if mode == 1:
-                    args += ["--host", f"--port={int(port_spin.value())}"]
-                elif mode == 2:
-                    addr = connect_edit.text().strip()
-                    if not addr:
-                        raise RuntimeError("Enter the host IP:port before joining a local-network game.")
-                    if ":" not in addr:
-                        addr = f"{addr}:{int(port_spin.value())}"
-                    args.append(f"--connect={addr}")
+                if host_chk.isChecked() and identity.online:
+                    args.append("--host")
+                    args.append(f"--port={int(port_spin.value())}")
                 status.setText(f"Launching:\n{script}")
                 subprocess.Popen(args, cwd=td)
             except Exception as e:

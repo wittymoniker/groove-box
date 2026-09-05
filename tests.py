@@ -312,6 +312,22 @@ def check_goava_seed_scribing():
     assert vge.build_micro_lexicon(42)["seed_scribed"] is True
     return "PASS: GOAVA semantic choices are seed-scribed and call-order independent"
 
+
+
+def check_total_correspondence():
+    from universal_field import (canonical_field, self_procedure, correspondence_manifest,
+                                 correspondence_verify, partition_field, reconstruct_parts)
+    f=canonical_field(1.1975807343,"unified-correspondence",sequential_nums=[1,2,3,5,8,13],feature_vector=[.25,.5,.75])
+    plan=self_procedure(f); assert plan["invariant"] and plan["field_id"]==f["field_id"]
+    for n in (1,2,3,4,7,8,16,31,64,127):
+        rec=reconstruct_parts(partition_field(f,n))
+        assert max(abs(float(f["coords"][k])-rec[k]) for k in f["coords"])<=1e-12
+    m=correspondence_manifest(f,{"event_id":"unified"}); v=correspondence_verify(f,m)
+    assert m["identity_correspondence"] and v["pass"] and v["max_projection_error"]<=1e-12
+    bad={**m,"domains":{**m["domains"],"ui":{**m["domains"]["ui"],"source_field_id":"tampered"}}}
+    assert not correspondence_verify(f,bad)["pass"]
+    return f"PASS: total correspondence + self-procedure ({plan['visual_projection_cover']['projection_count']} projection cover)"
+
 CHECKS = [
     ("component registry", check_component_usage),
     ("composition parity", check_composition_parity),
@@ -328,6 +344,7 @@ CHECKS = [
     ("character/UI rules", check_character_ui_rules),
     ("home/starter/panes", check_home_starter_pack_and_panes),
     ("GOAVA seed scribing", check_goava_seed_scribing),
+    ("total correspondence", check_total_correspondence),
 ]
 
 

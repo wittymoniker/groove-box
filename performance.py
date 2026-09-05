@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtGui import QColor, QFont, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -47,6 +47,7 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -153,7 +154,7 @@ def _find_player() -> Optional[List[str]]:
             if cand == "mpv":
                 return [p, "--force-window=yes", "--keep-open=yes"]
             if cand == "vlc":
-                return [p, "--play-and-exit"]
+                return [p, "--no-one-instance", "--no-video-title-show"]
             return [p, "-autoexit", "-nodisp"]
     return None
 
@@ -173,7 +174,7 @@ def _player_cmd_with_volume(volume_pct: int, want_video: bool = True) -> Optiona
         if cand == "mpv":
             return [p, "--force-window=yes", "--keep-open=yes", f"--volume={vol}"]
         if cand == "vlc":
-            return [p, "--play-and-exit", f"--gain={vol / 100.0:.2f}"]
+            return [p, "--no-one-instance", "--no-video-title-show", f"--gain={vol / 100.0:.2f}"]
         # ffplay
         args = [p, "-autoexit", "-volume", str(min(100, vol))]
         if not want_video:
@@ -281,6 +282,18 @@ class Performance(QDialog):
         super().__init__(parent or host)
         self.host = host
         self.setWindowTitle("Groovebox Performance — Media · Devices · Cutups · Game · Broadcast · Batch")
+        self.setStyleSheet("""
+            QDialog { background:#071019; color:#d9edf5; }
+            QGroupBox { border:1px solid #284c62; border-radius:7px; margin-top:8px; padding-top:7px; font-weight:700; }
+            QGroupBox::title { color:#f1ce68; subcontrol-origin:margin; left:9px; padding:0 4px; }
+            QPushButton { background:#102838; color:#d9f7ff; border:1px solid #39708a; border-radius:11px; padding:8px 11px; font-weight:700; }
+            QPushButton:hover { background:#17405a; border-color:#62bfd0; }
+            QComboBox,QSpinBox,QDoubleSpinBox,QLineEdit { background:#08141e; color:#e6f8ff; border:1px solid #335b70; border-radius:8px; padding:6px; }
+            QTabWidget::pane { border:1px solid #24495e; }
+            QTabBar::tab { background:#0c1b28; color:#b9d5df; padding:10px 12px; margin:2px; border:1px solid #24495e; border-radius:9px; min-width:42px; }
+            QTabBar::tab:hover { background:#122c3e; border-color:#4b879f; }
+            QTabBar::tab:selected { background:#17354a; color:#f6d46d; border-color:#6ca6ba; }
+        """)
         self.resize(920, 640)
         self.setMinimumSize(720, 480)
         self._player_proc: Optional[subprocess.Popen] = None
@@ -328,6 +341,10 @@ class Performance(QDialog):
         self._last_shared_game_url = None
         self._clone_share_server = None
         self._last_clone_bundle = None
+        self._goava_radio_service = None
+        self._radio_peer_timer = QTimer(self)
+        self._radio_peer_timer.setInterval(1800)
+        self._radio_peer_timer.timeout.connect(self._refresh_radio_peers)
 
         # Fine-grained (audio/video/av) stream-kind cache, keyed by path:
         # (mtime, size, kind) so a probe is only redone if the file changed.
@@ -365,6 +382,20 @@ class Performance(QDialog):
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
+        brand_row = QHBoxLayout()
+        self.lbl_perf_brand = QLabel()
+        try:
+            bp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "goava_radio_brand.png")
+            pm = QPixmap(bp)
+            if not pm.isNull():
+                self.lbl_perf_brand.setPixmap(pm.scaled(310, 100, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        except Exception:
+            pass
+        self.lbl_perf_brand.setStyleSheet("background:#030a10; border:1px solid #8b6b2c; border-radius:7px; padding:2px;")
+        brand_row.addWidget(self.lbl_perf_brand)
+        brand_title = QLabel("<b style='font-size:16pt;color:#f1ce68'>GOAVA RADIO · PERFORMANCE</b><br><span style='color:#77d8ef'>Live seeds · media · hardware · networked game state</span>")
+        brand_row.addWidget(brand_title, 1)
+        root.addLayout(brand_row)
 
         # --- top bar: path + roots ---
         top = QHBoxLayout()
@@ -435,14 +466,25 @@ class Performance(QDialog):
 
         # --- right: tabs ---
         right = QTabWidget()
-        right.addTab(self._build_playlist_tab(), "Playlist")
-        right.addTab(self._build_game_tab(), "Game Player")
-        right.addTab(self._build_remix_tab(), "Parametric Remix")
-        right.addTab(self._build_cutup_tab(), "Cutup Lab")
-        right.addTab(self._build_performance_tab(), "Live Broadcast")
-        right.addTab(self._build_outputs_tab(), "Device Manager")
-        right.addTab(self._build_transfer_tab(), "Drive / Clone")
-        right.addTab(self._build_box_tab(), "Box Mode")
+        # PERFORMANCE_NAV_V38: vertical rail prevents tabs from running beyond margins.
+        right.setTabPosition(QTabWidget.TabPosition.West)
+        right.setUsesScrollButtons(True)
+        right.tabBar().setExpanding(False)
+        right.addTab(self._build_playlist_tab(), "♫ Playlist")
+        right.addTab(self._build_game_tab(), "🎮 Game / Wi‑Fi")
+        right.addTab(self._build_remix_tab(), "∿ Parametric Remix")
+        right.addTab(self._build_cutup_tab(), "✂ Cutup Lab")
+        try:
+            from signal_lab import SignalLab
+            right.addTab(SignalLab(self.host, self), "✎ Draw / Signal Lab")
+        except Exception as e:
+            fallback = QWidget(); fl = QVBoxLayout(fallback); msg = QLabel(f"Signal Lab unavailable: {e}"); msg.setWordWrap(True); fl.addWidget(msg); fl.addStretch(1); right.addTab(fallback, "✎ Draw / Signal Lab")
+        right.addTab(self._build_performance_tab(), "◉ Live Broadcast")
+        right.addTab(self._build_outputs_tab(), "▣ Device Manager")
+        right.addTab(self._build_hardware_tab(), "⌨ Hardware")
+        right.addTab(self._build_transfer_tab(), "⇄ Drive / Clone")
+        right.addTab(self._build_mg_library_tab(), "⌬ .MG Related")
+        right.addTab(self._build_box_tab(), "⚙ Box Mode")
         right.addTab(self._build_batch_tab(), "Batch Re-render")
         right.addTab(self._build_info_tab(), "Info")
         split.addWidget(right)
@@ -856,6 +898,14 @@ class Performance(QDialog):
             self.lbl_status.setText(f"External play: {os.path.basename(path)} @{volume_pct}% · {self._live_speed:.2f}×")
         except Exception as e:
             QMessageBox.warning(self, "Play failed", str(e))
+
+    def _check_player_launch(self, proc, path: str):
+        try:
+            rc = proc.poll()
+            if rc is not None and proc is getattr(self, "_player_proc", None):
+                self.lbl_status.setText(f"Player exited immediately (code {rc}): {os.path.basename(path)}")
+        except Exception:
+            pass
 
     def _play_wav_on_host(self, path: str):
         import numpy as np
@@ -1297,35 +1347,34 @@ class Performance(QDialog):
 
     # ------------------------------------------------------------------ game tab
     def _build_game_tab(self) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        lay.addWidget(QLabel("<b>Built-in game player</b>"))
-        self.cmb_game_status = QLabel("Uses live composition identity, or a packaged .zip game.")
-        self.cmb_game_status.setWordWrap(True)
-        lay.addWidget(self.cmb_game_status)
+        w = QWidget(); lay = QVBoxLayout(w)
+        lay.addWidget(QLabel("<b>🎮 Built-in game player · local Wi‑Fi multiplayer</b>"))
+        self.cmb_game_status = QLabel("Uses live composition identity, or a packaged .zip game. LAN mode can be forced even when the seed classified the game as single-player.")
+        self.cmb_game_status.setWordWrap(True); lay.addWidget(self.cmb_game_status)
         row = QHBoxLayout()
-        btn_live = QPushButton("▶ Play Live Composition Game")
-        btn_live.clicked.connect(self._play_live_game)
-        btn_pkg = QPushButton("🕹 Play Selected Package")
-        btn_pkg.clicked.connect(self._play_selected_game)
-        row.addWidget(btn_live)
-        row.addWidget(btn_pkg)
-        lay.addLayout(row)
-        self.chk_game_host = QCheckBox("Host mode (online games only)")
-        lay.addWidget(self.chk_game_host)
-        hint = QLabel(
-            "Live game builds a temporary script from the current seed/engines. "
-            "Packages are .zip exports from EXPORT → Video Game Scripts."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color:#8ab4c8; font-size:9pt;")
-        lay.addWidget(hint)
-        lay.addStretch(1)
-        return w
+        btn_live = QPushButton("▶ Play Live Composition Game"); btn_live.clicked.connect(self._play_live_game)
+        btn_pkg = QPushButton("🕹 Play Selected Package"); btn_pkg.clicked.connect(self._play_selected_game)
+        row.addWidget(btn_live); row.addWidget(btn_pkg); lay.addLayout(row)
+
+        net = QGroupBox("📶 Local Wi‑Fi / Ethernet game session")
+        nf = QFormLayout(net)
+        self.cmb_game_net_mode = QComboBox(); self.cmb_game_net_mode.addItems(["Solo", "Host on local network", "Join local network"]); nf.addRow("Mode", self.cmb_game_net_mode)
+        self.spin_game_port = QSpinBox(); self.spin_game_port.setRange(1024,65535); self.spin_game_port.setValue(27777); nf.addRow("Port", self.spin_game_port)
+        self.edit_game_connect = QLineEdit(); self.edit_game_connect.setPlaceholderText("host-ip:port  e.g. 192.168.1.42:27777"); nf.addRow("Join address", self.edit_game_connect)
+        self.lbl_game_lan = QLabel(f"This box: {self._lan_ip()} · same Wi‑Fi/LAN required unless your router/firewall forwards the port.")
+        self.lbl_game_lan.setWordWrap(True); self.lbl_game_lan.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse); nf.addRow("Local address", self.lbl_game_lan)
+        lay.addWidget(net)
+        hint = QLabel("Host and Join use the game engine's authoritative TCP snapshot/input transport. This is live game-state networking—not merely sharing a .zip. Keyboard, mouse/gamepad and touch input remain local on each machine.")
+        hint.setWordWrap(True); hint.setStyleSheet("color:#8ab4c8; font-size:9pt;"); lay.addWidget(hint)
+        lay.addStretch(1); return w
 
     def _play_live_game(self):
         if hasattr(self.host, "_on_play_videogame"):
             try:
+                mode = self.cmb_game_net_mode.currentIndex() if hasattr(self, "cmb_game_net_mode") else 0
+                setattr(self.host, "_preferred_game_net_mode", int(mode))
+                setattr(self.host, "_preferred_game_net_port", int(self.spin_game_port.value()) if hasattr(self, "spin_game_port") else 27777)
+                setattr(self.host, "_preferred_game_connect", self.edit_game_connect.text().strip() if hasattr(self, "edit_game_connect") else "")
                 self.host._on_play_videogame()
                 self.lbl_status.setText("Live game dialog opened.")
             except Exception as e:
@@ -1365,8 +1414,17 @@ class Performance(QDialog):
             if not script:
                 raise RuntimeError("No Python game script found inside the package.")
             args = [sys.executable, script]
-            if self.chk_game_host.isChecked():
-                args.append("--host")
+            mode = self.cmb_game_net_mode.currentIndex() if hasattr(self, "cmb_game_net_mode") else 0
+            port = int(self.spin_game_port.value()) if hasattr(self, "spin_game_port") else 27777
+            if mode == 1:
+                args += ["--host", f"--port={port}"]
+            elif mode == 2:
+                addr = self.edit_game_connect.text().strip() if hasattr(self, "edit_game_connect") else ""
+                if not addr:
+                    raise RuntimeError("Enter the host IP:port before joining a local-network game.")
+                if ":" not in addr:
+                    addr = f"{addr}:{port}"
+                args.append(f"--connect={addr}")
             subprocess.Popen(args, cwd=os.path.dirname(script))
             self.lbl_status.setText(f"Game launched: {os.path.basename(path)}")
             self.cmb_game_status.setText(f"Running: {os.path.basename(path)}")
@@ -1937,7 +1995,51 @@ class Performance(QDialog):
         self.spin_remote_port = QSpinBox(); self.spin_remote_port.setRange(1024, 65535); self.spin_remote_port.setValue(8765); nf.addRow("Port", self.spin_remote_port)
         self.lbl_remote = QLabel("Stopped"); self.lbl_remote.setWordWrap(True); nf.addRow("Status", self.lbl_remote)
         nr = QHBoxLayout(); bon = QPushButton("Start LAN host"); bon.clicked.connect(self._start_remote_server); boff = QPushButton("Stop LAN host"); boff.clicked.connect(self._stop_remote_server); nr.addWidget(bon); nr.addWidget(boff); nf.addRow(nr)
-        lay.addWidget(net); lay.addStretch(1); return w
+        lay.addWidget(net)
+        radio = QGroupBox("◉ GOAVA LAN Radio · 192 kbps MP3")
+        rf = QVBoxLayout(radio)
+        self.lbl_radio_status = QLabel("Radio stopped")
+        self.lbl_radio_status.setWordWrap(True); rf.addWidget(self.lbl_radio_status)
+        rr = QHBoxLayout()
+        rstart = QPushButton("▶ Start Radio + discovery"); rstart.clicked.connect(self._start_goava_radio)
+        rstop = QPushButton("■ Stop Radio"); rstop.clicked.connect(self._stop_goava_radio)
+        rrefresh = QPushButton("↻ Nearby Radios"); rrefresh.clicked.connect(self._refresh_radio_peers)
+        rr.addWidget(rstart); rr.addWidget(rstop); rr.addWidget(rrefresh); rf.addLayout(rr)
+        self.lst_radio_peers = QListWidget(); self.lst_radio_peers.setMaximumHeight(132); rf.addWidget(self.lst_radio_peers)
+        hint = QLabel("OS/appliance helper can redirect TCP/80 → Radio :8780 so nearby devices can open http://device/ directly.")
+        hint.setWordWrap(True); hint.setStyleSheet("color:#8ab4c8;font-size:9pt;"); rf.addWidget(hint)
+        lay.addWidget(radio); lay.addStretch(1); return w
+
+    def _start_goava_radio(self):
+        try:
+            from radio_station import RadioStationService
+            if self._goava_radio_service is None:
+                roots = [self._host_projects_dir(), self._host_exports_dir(), self._host_samples_dir()]
+                self._goava_radio_service = RadioStationService(roots=roots, port=8780)
+            url = self._goava_radio_service.start()
+            self.lbl_radio_status.setText(f"Broadcasting: {url} · 192 kbps MP3")
+            self._radio_peer_timer.start(); self._refresh_radio_peers()
+        except Exception as e:
+            QMessageBox.warning(self, "GOAVA Radio", str(e))
+
+    def _stop_goava_radio(self):
+        try:
+            if self._goava_radio_service is not None: self._goava_radio_service.stop()
+        except Exception: pass
+        self._goava_radio_service = None
+        self._radio_peer_timer.stop()
+        if hasattr(self, "lbl_radio_status"): self.lbl_radio_status.setText("Radio stopped")
+
+    def _refresh_radio_peers(self):
+        if not hasattr(self, "lst_radio_peers"): return
+        self.lst_radio_peers.clear()
+        svc = self._goava_radio_service
+        peers = svc.peer_list() if svc is not None else []
+        if not peers:
+            self.lst_radio_peers.addItem("No nearby Groovebox radios discovered yet.")
+            return
+        for p in peers:
+            self.lst_radio_peers.addItem(f"{p.get('name','Radio')}  ·  {p.get('url','')}")
 
     def _start_performance(self, media_path: Optional[str] = None, loop: bool = True):
         if not self._cutup_events:
@@ -1949,11 +2051,18 @@ class Performance(QDialog):
             self._stop_player()
             cmd = _find_player()
             if cmd:
-                if os.path.basename(cmd[0]).lower().startswith("mpv") and loop:
+                player_name = os.path.basename(cmd[0]).lower()
+                if player_name.startswith("mpv") and loop:
                     cmd = list(cmd) + ["--loop-file=inf"]
+                elif player_name.startswith("vlc") and loop:
+                    cmd = list(cmd) + ["--loop"]
                 try:
                     cmd, penv = self._routed_player(cmd, want_video=(os.path.splitext(media_path)[1].lower() in VIDEO_EXT))
                     self._player_proc = subprocess.Popen(cmd + [media_path], env=penv)
+                    # VLC can otherwise hand a file to an existing instance and make
+                    # the child disappear immediately. --no-one-instance above avoids
+                    # that; a short deferred poll still surfaces real launch failures.
+                    QTimer.singleShot(450, lambda p=self._player_proc, mp=media_path: self._check_player_launch(p, mp))
                     try:
                         if self._media_share_server is not None:
                             self._media_share_server.set_current(media_path)
@@ -2270,6 +2379,30 @@ class Performance(QDialog):
             dest=self.cmb_clone_mount.currentText().strip(); out=copy_bundle(self._last_clone_bundle,dest); self.lbl_status.setText(f"Clone copied: {out}")
         except Exception as e: QMessageBox.warning(self,"Copy clone",str(e))
 
+    # ------------------------------------------------------------------ hardware
+    def _build_hardware_tab(self) -> QWidget:
+        w=QWidget(); lay=QVBoxLayout(w)
+        lay.addWidget(QLabel("<b>⌨ Hardware · keyboard · touch · controllers · audio · MIDI</b>"))
+        intro=QLabel("Groovebox OS is intentionally dual-input: keyboard/mouse and touchscreen work together. This scanner reports the OS-visible devices; it never changes canonical composition state.")
+        intro.setWordWrap(True); lay.addWidget(intro)
+        self.txt_hardware=QTextEdit(); self.txt_hardware.setReadOnly(True); lay.addWidget(self.txt_hardware,1)
+        row=QHBoxLayout(); b=QPushButton("↻ Rescan hardware"); b.clicked.connect(self._refresh_hardware); row.addWidget(b)
+        b2=QPushButton("▣ Refresh media outputs"); b2.clicked.connect(self._refresh_output_devices); row.addWidget(b2); row.addStretch(1); lay.addLayout(row)
+        QTimer.singleShot(0,self._refresh_hardware); return w
+
+    def _refresh_hardware(self):
+        try:
+            from hardware_hub import scan, summary
+            r=scan(); lines=[summary(r), "", "INPUT DEVICES"] + [f"  • {x}" for x in r.get("input_names",[])]
+            lines += ["", "DISPLAYS"] + [f"  • {x}" for x in r.get("display_summary",[])]
+            lines += ["", "AUDIO"] + [f"  • {x}" for x in r.get("audio_devices",[])[:24]]
+            lines += ["", "MIDI"] + [f"  • {x}" for x in r.get("midi_inputs",[])[:24]]
+            lines += ["", "BLUETOOTH"] + [f"  • {x}" for x in r.get("bluetooth_connected",[])[:24]]
+            lines += ["", "TOOLS", "  " + " · ".join(f"{k}={'yes' if v else 'no'}" for k,v in r.get("tools",{}).items())]
+            self.txt_hardware.setPlainText("\n".join(lines))
+        except Exception as e:
+            self.txt_hardware.setPlainText(f"Hardware scan failed: {e}")
+
     # ------------------------------------------------------------------ box mode
     def _build_box_tab(self) -> QWidget:
         w = QWidget(); lay = QVBoxLayout(w)
@@ -2492,6 +2625,133 @@ class Performance(QDialog):
         self._batch_log(f"  wrote {out}")
 
     # ------------------------------------------------------------------ info tab
+    def _mg_library_roots(self):
+        roots=[]
+        for fn in (self._host_projects_dir,self._host_samples_dir,self._host_exports_dir):
+            try:
+                p=fn()
+                if p and p not in roots: roots.append(p)
+            except Exception: pass
+        return roots
+
+    def _scan_mg_paths(self):
+        out=[]
+        for root in self._mg_library_roots():
+            if not root or not os.path.isdir(root): continue
+            for base,_,files in os.walk(root):
+                for fn in files:
+                    if fn.lower().endswith(('.mgproject','.mgsynth','.mgprofile','.mg')):
+                        out.append(os.path.join(base,fn))
+        return sorted(set(out),key=lambda x:os.path.basename(x).lower())
+
+    def _build_mg_library_tab(self) -> QWidget:
+        w=QWidget(); lay=QVBoxLayout(w)
+        hdr=QLabel("<b style='color:#f1ce68'>.MG ID + Relationship Library</b><br>Project · Synth · Profile artifacts keep stable IDs while usage statistics and software-discovered relationships evolve separately.")
+        hdr.setWordWrap(True); lay.addWidget(hdr)
+        self.mg_list=QListWidget(); lay.addWidget(self.mg_list,1)
+        row=QHBoxLayout()
+        b_refresh=QPushButton("↻ Scan .MG"); b_refresh.clicked.connect(self._refresh_mg_library); row.addWidget(b_refresh)
+        b_load=QPushButton("⬇ Load to relevant slot"); b_load.clicked.connect(self._load_selected_mg); row.addWidget(b_load)
+        b_rel=QPushButton("⌬ Find Related"); b_rel.clicked.connect(self._show_related_mg); row.addWidget(b_rel)
+        b_exp=QPushButton("⇧ Export History"); b_exp.setToolTip("Export .MG provenance and analytics as JSON, CSV, or HTML without changing the artifact."); b_exp.clicked.connect(self._export_selected_mg_history); row.addWidget(b_exp)
+        b_cmp=QPushButton("⇣ Compress History"); b_cmp.setToolTip("Keep longitudinal totals and strongest companion relationships while reducing detailed history."); b_cmp.clicked.connect(self._compress_selected_mg_history); row.addWidget(b_cmp)
+        b_clr=QPushButton("⌫ Clear History"); b_clr.setToolTip("Clear mutable use/co-use/outcome history without changing the .MG Artifact ID or payload."); b_clr.clicked.connect(self._clear_selected_mg_history); row.addWidget(b_clr)
+        lay.addLayout(row)
+        self.mg_info=QTextEdit(); self.mg_info.setReadOnly(True); self.mg_info.setMaximumHeight(180); lay.addWidget(self.mg_info)
+        self.mg_list.itemSelectionChanged.connect(self._mg_selection_changed)
+        QTimer.singleShot(0,self._refresh_mg_library)
+        return w
+
+    def _refresh_mg_library(self):
+        if not hasattr(self,'mg_list'): return
+        self.mg_list.clear()
+        try:
+            from mg_artifacts import load
+            for path in self._scan_mg_paths():
+                try:
+                    d=load(path,record_use=False); a=d.get('analytics',{}) or {}
+                    text=f"{d.get('kind','?').upper()} · {d.get('title') or os.path.basename(path)} · uses {int(a.get('use_count',0))} · {d.get('artifact_id','')}"
+                    it=QListWidgetItem(text); it.setData(Qt.ItemDataRole.UserRole,path); self.mg_list.addItem(it)
+                except Exception: pass
+            self.mg_info.setPlainText(f"{self.mg_list.count()} .MG artifact(s) found across Projects / Samples / Exports.")
+        except Exception as e: self.mg_info.setPlainText(str(e))
+
+    def _selected_mg_path(self):
+        its=self.mg_list.selectedItems() if hasattr(self,'mg_list') else []
+        return str(its[0].data(Qt.ItemDataRole.UserRole)) if its else ''
+
+    def _mg_selection_changed(self):
+        path=self._selected_mg_path()
+        if not path: return
+        try:
+            from mg_artifacts import load
+            d=load(path,record_use=False); a=d.get('analytics',{}) or {}; p=d.get('provenance',{}) or {}
+            self.mg_info.setPlainText(
+                f"{path}\nArtifact ID: {d.get('artifact_id')}\nProgram ID: {p.get('program_id')}\nComposition ID: {p.get('composition_id')}\n"
+                f"uses: {a.get('use_count',0)} · loads: {a.get('load_count',0)} · saves: {a.get('save_count',0)}\n"
+                f"first used: {a.get('first_used')} · last used: {a.get('last_used')}\ncompanions: {json.dumps(a.get('companions',{}),sort_keys=True)}")
+        except Exception as e: self.mg_info.setPlainText(str(e))
+
+    def _load_selected_mg(self):
+        path=self._selected_mg_path()
+        if not path: return
+        try:
+            fn=getattr(self.host,'_load_mg_path',None)
+            if not callable(fn): raise RuntimeError('Host .MG loader unavailable')
+            d=fn(path); self.lbl_status.setText(f"Loaded .MG {d.get('kind')} → relevant slot")
+            self._refresh_mg_library(); self._show_related_mg()
+        except Exception as e: QMessageBox.warning(self,".MG load failed",str(e))
+
+    def _show_related_mg(self):
+        path=self._selected_mg_path() or str(getattr(self.host,'_last_mg_artifact_path','') or '')
+        if not path or not os.path.isfile(path): return
+        try:
+            from mg_artifacts import find_related
+            rel=find_related(path,self._mg_library_roots(),limit=12)
+            if not rel: self.mg_info.append("\nRelated: no comparable history yet."); return
+            lines=["\nRelated / common results:"]
+            for r in rel:
+                a=r.get('analytics',{}) or {}
+                lines.append(f"{r['score']:.3f} · {r['kind']} · {r['title']} · uses {a.get('use_count',0)} · {os.path.basename(r['path'])}")
+            self.mg_info.append("\n".join(lines))
+        except Exception as e: self.mg_info.append(f"\nRelated error: {e}")
+
+    def _export_selected_mg_history(self):
+        path=self._selected_mg_path()
+        if not path: return
+        base=os.path.splitext(os.path.basename(path))[0] + "_history"
+        out,flt=QFileDialog.getSaveFileName(self,"Export .MG History",os.path.join(os.path.dirname(path),base+".json"),"JSON (*.json);;CSV (*.csv);;HTML (*.html)")
+        if not out: return
+        low=out.lower(); fmt='csv' if low.endswith('.csv') else ('html' if low.endswith(('.html','.htm')) else 'json')
+        if not low.endswith(('.json','.csv','.html','.htm')): out += '.'+fmt
+        try:
+            from mg_artifacts import export_history
+            final=export_history(path,out,fmt)
+            self.mg_info.append(f"\nHistory exported: {final}")
+        except Exception as e: QMessageBox.warning(self,"History export failed",str(e))
+
+    def _compress_selected_mg_history(self):
+        path=self._selected_mg_path()
+        if not path: return
+        try:
+            from mg_artifacts import compress_history
+            result=compress_history(path)
+            self.mg_info.append(f"\nHistory compressed; Artifact ID unchanged: {result.get('artifact_id')}")
+            self._refresh_mg_library()
+        except Exception as e: QMessageBox.warning(self,"History compression failed",str(e))
+
+    def _clear_selected_mg_history(self):
+        path=self._selected_mg_path()
+        if not path: return
+        ans=QMessageBox.question(self,"Clear .MG History","Clear detailed usage/co-use/outcome history?\n\nThe .MG payload and Artifact ID will not change.")
+        if ans != QMessageBox.StandardButton.Yes: return
+        try:
+            from mg_artifacts import clear_history
+            result=clear_history(path,preserve_totals=True)
+            self.mg_info.append(f"\nHistory cleared; Artifact ID unchanged: {result.get('artifact_id')}")
+            self._refresh_mg_library()
+        except Exception as e: QMessageBox.warning(self,"History clear failed",str(e))
+
     def _build_info_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
@@ -2508,6 +2768,8 @@ class Performance(QDialog):
         return w
 
     def closeEvent(self, event):
+        try: self._stop_goava_radio()
+        except Exception: pass
         try: self._stop_performance()
         except Exception: pass
         try: self._stop_remote_server()

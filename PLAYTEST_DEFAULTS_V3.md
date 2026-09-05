@@ -1,19 +1,20 @@
-# Groovebox Performance Box
+# V3 Dynamic Canonical Playtest Defaults
 
-`Media Hub` is now **Performance**. Performance owns media browsing, playlist execution, deterministic geometric/phaselocked cutups, live replay, device routing, LAN/Wi-Fi-TV delivery, game-state broadcast, and batch rendering. Groovebox remains the canonical composition authority.
+Authoritative playtest startup / Clear Memory baseline:
 
-## Appliance target
-- HDMI/DisplayPort/VGA-via-adapter/OS-exposed USB displays
-- PipeWire/Pulse audio sinks including USB, HDMI and already-paired Bluetooth
-- mpv for responsive playback and live rate control
-- FFmpeg/ffprobe for render, cutup, normalization and compatibility transcodes
-- Ethernet/Wi-Fi HTTP output and token-gated remote control
-- optional Chromecast handoff through `catt`
+- FullWeight Seed: ON
+- Seed transduction weight: 0.72
+- Full Unison: ON
+- Canonical adherence / unison fallback when Full Unison is OFF: 0.55
+- Canonical Resonance: 1.00 (100% unity)
+- Canonical -> Instrument Convolve: 0.50 (50% midpoint)
+- EQR: 0.4014
+- Fractallizer: 0.5995
+- PKP Envelope: 0.5000
 
-## Architecture
-`seed + canonical clock -> CanonicalEditList -> audio | video | game -> Device Manager -> local / LAN / TV / record`
+Design rule: non-unity secondary values provide dynamic/spectral headroom but remain downstream of canonical identity. Disabling a secondary removes its contribution; these values must not act as hidden always-on authorities or write derived state into userdata.
 
-Routing must not alter the canonical composition. Performance keeps old `pi_media_hub` imports as compatibility aliases.
+EQR and Fractallizer use high-resolution percentage spin controls so 0.4014 and 0.5995 are represented exactly as 40.14% and 59.95% rather than rounded integer sliders.
 
 
 ---
@@ -177,29 +178,3 @@ Generated games already contain an authoritative TCP transport. This rollout exp
 ## 11. Verification scope
 
 The regression suite checks deterministic composition behavior, instrument→visual determinism, media-cutup routing, media-output helpers, and sequence→game influence. A generated-game localhost smoke test also ran a real host and client together; the host accepted one remote and both sessions advanced. GUI interaction and specific physical devices still require real-machine testing because the build environment used to assemble this package does not provide the full PyQt6/hardware stack.
-
-
-## 2026-09-05 — Meum + Operator Theory + Isosceles-Trig integration
-
-Groovebox now treats the author's mathematical writing as a **selectable creative/analytic dialect** for deterministic indexing. It does not silently redefine ordinary Python/IEEE arithmetic. The implementation is designed so these transforms can be inspected, disabled, simplified and reversed.
-
-### Meum basis
-The principal constant used by the engine is `M = 1.1975807343…`. The default modulation vocabulary includes `M-1`, `1/M`, `2-M`, `(M-1)/M`, plus independent irrational traversals `e-2`, `phi-1`, `sqrt(2)-1`, and `pi-3`. Meaningful identity values `0`, `0.5`, and `1` remain unchanged when they mean OFF, symmetry, or unity.
-
-### Isosceles trigonometry
-The book defines inverse isosceles sine as `isn^-1(x) = 2 asin(x/2)`. Groovebox also exposes the inverse-pair coordinate `isn(theta)=2 sin(theta/2)` for bounded seed phase mapping. `ics/ics^-1` are kept as handedness-aware complementary coordinates for spatial/game modulation. These functions are used for *indexing and geometry*; they do not overwrite ordinary `sin/cos` globally.
-
-### Operator Theory (OT)
-For reversible transforms, Groovebox implements the book's stated symbolic inverse pairing: add↔subtract, multiply↔divide, power↔root, with operation order reversed for an inverse path. This is especially useful for the writer-toggle zero-state rule: active transforms are collected, simplified to one canonical transform, evaluated once, and their provenance is preserved separately.
-
-### Temporal Seed Dynamics
-Generated games now include deterministic **Build → Modulate → Stabilize** epochs. Their boundaries use Meum-derived proportions and their field values use the isosceles phase mapping. This adds evolving seed character without activation-history dependence.
-
-### Numerical gameplay identity
-Items, actions, events and starter-world elements now receive deterministic numeric sound signatures from seed + semantic label + Meum/isosceles indexing. Frequencies, durations and harmonic counts are inspectable, repeatable and tied to the generated identity instead of random sound assignment.
-
-### Longitudinal .MG history
-`.MGproject`, `.MGsynth` and `.MGprofile` analytics remain separate from Artifact ID. History may now be **compressed** (retain strongest companion relations and summaries) or **cleared** without changing the saved program/synth/profile identity. Clearing can preserve aggregate totals so long-term statistics can be retained without carrying detailed co-use history.
-
-### Source framing
-The in-app math help preserves the terminology and claims of the author's supplied papers as author-defined/theoretical material. Groovebox uses these ideas as deterministic compositional and geometric transforms; this software implementation is not itself an external proof of the broader mathematical or physical claims.
