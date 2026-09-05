@@ -8,6 +8,7 @@ canonical scene/view tuple.
 from __future__ import annotations
 import hashlib, json, math
 from typing import Iterable, Mapping, Sequence
+from universal_field import canonical_field, partition_field, reconstruct_parts, projection as universal_projection, all_projections, invariant_report
 
 PHI = (1.0 + math.sqrt(5.0)) / 2.0
 GOLDEN_ANGLE = 2.0 * math.pi * (1.0 - 1.0 / PHI)
@@ -138,6 +139,10 @@ def instruments_handler(index: int, count: int, seed=0, sequential_nums=()):
     # Continuous sample coordinate is fixed to the master lattice; N is only
     # allowed to alter weight, never phase, hue, geometry, or identity.
     phase = 2.0 * math.pi * identity + 2.0 * math.pi * numeric_unit
+    # UNIVERSAL_FIELD_2026: part count is factorization only. The underlying
+    # field is computed without N; each part carries exactly 1/N of it.
+    _uf = canonical_field(seed, "visual-instrument-map", sequential_nums=sequential_nums)
+    _upart = partition_field(_uf, n)[i]
     return {
         "index": i,
         "count": n,
@@ -146,6 +151,9 @@ def instruments_handler(index: int, count: int, seed=0, sequential_nums=()):
         "numeric_unit": numeric_unit,
         "compensation": compensation,
         "phase": phase,
+        "universal_field_id": _uf["field_id"],
+        "universal_share": _upart["weight"],
+        "universal_coords": _upart["coords"],
     }
 
 
@@ -208,3 +216,14 @@ def composition_fingerprint(objects: Iterable[Mapping], seed=0, abstraction="str
 def visual_signal_id(seed, composition_fp, view):
     payload={"seed":_seed_int(seed),"composition":str(composition_fp),"view":_canon(view)}
     return hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()[:24]
+
+
+def universal_visual_field(seed=0, composition_fp="0", sequential_nums=(), feature_vector=()):
+    """Public visualizer entry point. It does not depend on instrument count."""
+    return canonical_field(seed, composition_fp, sequential_nums, feature_vector)
+
+def universal_visual_projection(seed=0, composition_fp="0", kind="canonical_geometry", sequential_nums=(), feature_vector=()):
+    return universal_projection(universal_visual_field(seed, composition_fp, sequential_nums, feature_vector), kind)
+
+def universal_visual_invariance(seed=0, composition_fp="0", sequential_nums=(), feature_vector=(), counts=(1,2,4,8,16,32,64)):
+    return invariant_report(universal_visual_field(seed, composition_fp, sequential_nums, feature_vector), counts)
