@@ -29813,7 +29813,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         rows = max(1, min(1024, int(rows)))
         data = getattr(self, "master_playlist_data", []) or []
         auto = getattr(self, "playlist_automation", []) or []
-        overflow = getattr(self, "_playlist_overflow_rows", {})
+        # getattr default only applies when the attribute is missing. If undo/restore
+        # (or any prior path) ever set _playlist_overflow_rows = None, getattr returns
+        # None and the subsequent overflow[i] = ... raises TypeError.
+        overflow = getattr(self, "_playlist_overflow_rows", None) or {}
+        if not isinstance(overflow, dict):
+            overflow = {}
         if rows < len(data):
             for i in range(rows, len(data)):
                 # DATA_KEEP_2026: preserve EVERY dropped row (user, engine-drawn,
