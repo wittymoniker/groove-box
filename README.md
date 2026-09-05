@@ -3,7 +3,9 @@
 
 - Reversible randomizer toggle contract: ON captures a full project baseline and generates a fresh variation; OFF restores the exact pre-randomize state; each subsequent ON cycle rerandomizes and shifts the control color palette.
 - Canonical Signal Control defaults to Full Canonical / 100% authority and self-heals missing canonical coverage through canonical-owned runtime overlays without rewriting user data.
-- Canonical Resonance / Activity is 50–150%, independent of the 50/50 source coefficients; 150% is activity/continuation drive, not output volume.
+- Canonical Resonance / Activity:
+  - **Protect ON** (default, User Data Overwrite OFF): **50–150%** band. Respects userdata locks; activity/continuation drive only (not Master Volume, not the 50/50 C/U mix).
+  - **User Data Overwrite ON** (Canonical protect OFF): **0–200%** band. 0% = no autonomous canonical activity; 200% = maximum continuation while locks are wiped and engines may rewrite the composition.
 - Canonical→Instrument convolution influence is 0–100%.
 - Maximum active instruments: 128. Default playlist row duration: 16 beats.
 - ParametricMathBackground is integrated with a deep navy gradient field.
@@ -16,8 +18,37 @@
 - **Wavetable Synth** + Global Wavetable Projector participate in the same command surface; freehand tables remain per-instrument.
 - **Automator sequence** is end-to-end: steps → teleport popup (including MV/WT/XMOD/Resonance params) → longitudinal interpolation → playlist automation push to live UI/canonical state.
 - Playlist **Auto Target** / automation patterns expose Master Vector axes, Wavetable frame/phase, XMOD depths, Algo XMOD, and Canonical Resonance with blend, modular-patch, and algo routing alongside Script/Domain/Synth/Patch columns.
-- Resonance operates in the **50–150%** band by design (activity drive, not volume); live engines do not force-clamp mid-stream.
+- Resonance: **50–150%** with protect ON; **0–200%** with User Data Overwrite ON (protect OFF). Activity drive, not volume.
 - HELP_TEXT (in-app + HELP_TEXT.md) documents scripting directions and routing names.
+
+
+## Performance (PERF_2026)
+
+- Live composition updates debounce ~75ms (seed typing / spins no longer re-run full unison every keystroke).
+- Scope meters ~20 fps (50ms); background decor tick slightly slower.
+- Live Euclid / Seeded engine re-apply intervals lengthened slightly.
+- Canonical fingerprint refreshes once per coalesced update, not on every intermediate event.
+
+## Project save / load coverage
+
+Persisted in the unified project document:
+
+- `master_playlist_data` (playlist rows / paintbrush cells / new items)
+- `playlist_automation`
+- `sequencer_automation_points` (Automator sequence points)
+- `automation_patterns` (named automation curves + custom lanes)
+- Sequence banks (including per-sequence `automation_lane` / `track_offset`)
+- Master Vector, Wavetable Projector, XMOD, Resonance, TrackOffset, scripts, patches, domains, notes, UI state
+
+## Canonical Resonance bands (Protect vs User Data Overwrite)
+
+| Mode | Control | Resonance range | Meaning |
+|------|---------|-----------------|--------|
+| **Protect ON** (default) | `Canonical: skip overwrite user composition` checked | **50–150%** | User locks kept. 50% floor with active user data; up to 150% autonomous continuation when user activity is low. |
+| **User Data Overwrite ON** | Protect **unchecked** | **0–200%** | Userdata snapshotted then locks wiped. 0% = silent autonomous activity; 200% = maximum continuation drive while engines may rewrite the whole composition. |
+
+Resonance is always **activity / continuation drive**, never Master Volume and never a change to the fixed `0.50*C + 0.50*U` source coefficients. The Resonance spin and status label switch range and mode text when protect is toggled.
+
 
 # Groovebox — Mathematicians Groovebox
 
@@ -329,7 +360,13 @@ All seed forms must be folded into the same canonical identity path. A syntactic
 
 ## 10. Rendering, partitions, and recovery
 
-All long renders expose a **Part Count** setting rather than hard-code 16. Recommended range: `1–128`, with a default chosen from render duration and available memory. The setting is independently applicable to WAV/audio, video, and video+audio jobs.
+All long renders expose a **Part Count** selector (`1–128`) rather than a hard-coded 16.
+
+- **Audio-only** (WAV/FLAC/MP3/…): dialog after the save path; writes `<stem>.partNN.wav` when count > 1, then the final audio file.
+- **Video-only**: Part Count on the Resolution & Parts dialog; writes `<stem>.partNN.<container>`.
+- **Video + Audio**: same Part Count; writes **video** `<stem>.partNN.<container>` **and** **audio** `<stem>.audio.partNN.wav` (plus a full mux WAV used for the final join).
+
+Default is chosen from last used value or render duration. Completed parts can be resumed after a crash.
 
 The partition count applies independently to:
 

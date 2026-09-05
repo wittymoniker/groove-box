@@ -129,6 +129,17 @@ MEUM_MINUS_1 = MEUM - 1.0
 MEUM_INV = 1.0 / MEUM
 
 
+def _safe_json(obj):
+    """Deep-copy JSON-ish structures for snapshots/provenance; never raise."""
+    try:
+        return copy.deepcopy(obj)
+    except Exception:
+        try:
+            return json.loads(json.dumps(obj, default=str))
+        except Exception:
+            return None
+
+
 def identity_unit(*key_parts) -> float:
     """Deterministic fraction in [0,1) from arbitrary identity parts (name,
     field, index, ...). Same canonical-hash approach as CommutativePairSpace's
@@ -1462,7 +1473,7 @@ def group_orbit_index(index, order, seed, goava=False):
 # UI design tokens derived from M (self-similar spacing / translucency)
 UI_OPACITY = max(1.0, min(0.0, MEUM_NORM * PHI))          # pane glass
 UI_RADIUS = max(4, int(round(3.0 * MEUM)))                    # corner radius
-UI_TICK_MS = max(28, int(round(1000.0 / (MEUM_TWO_POW * 8.0))))  # decor frame period
+UI_TICK_MS = max(48, int(round(1000.0 / (MEUM_TWO_POW * 5.0))))  # decor frame period (perf: fewer background paints)
 UI_DRIFT = MEUM_NORM * PHI_INV                                  # caption micro-wiggle scale
 PAINT_RATE_HZ = 2.395                                           # max single-cell stack rate
 PAINT_PERIOD_S = 1.0 / PAINT_RATE_HZ                            # ~0.418 s between stacks
@@ -10830,10 +10841,22 @@ TRACK OFFSET (user-owned)
   them as modification handles and do not rewrite them. Negative = earlier;
   positive = later. Mirrored into composition_snapshot / game meta for consumers.
 
-RESONANCE
-  Canonical Resonance / Activity operates in the 50–150% band by design
-  (activity/continuation drive, not Master Volume). Values are not force-clamped
-  mid-engine; the control surface and playlist automation stay inside that band.
+RESONANCE — 50–150% vs 0–200%
+  Canonical Resonance / Activity is an activity/continuation drive (not Master
+  Volume, not the 50/50 C/U mix). Its legal band depends on User Data Overwrite:
+
+  • Protect ON (default — "Canonical: skip overwrite user composition" checked):
+      50–150%. User locks respected. 50% floor with active userdata; up to 150%
+      autonomous continuation when user activity is low.
+
+  • User Data Overwrite ON (protect unchecked / Canonical Overwrite):
+      0–200%. Userdata is snapshotted then locks wiped so engines may rewrite
+      the composition. 0% = no autonomous canonical activity; 200% = maximum
+      continuation drive under overwrite.
+
+  The Resonance spin range and status label (… · 50–150% PROTECT / 0–200% OVERWRITE)
+  follow the protect toggle. Playlist automation of canonical_resonance uses the
+  same active band.
 
   End of Help — Groovebox
   Credits: Grok (xAI), Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI),
@@ -13114,9 +13137,11 @@ class GranularFXPage(QWidget):
 # TAB 4: FULLY ACTIVATED AUTOMATION & STEP SEQUENCER SUITE
 # -------------------------------------------------------------------------
 class AutomationCurveCanvas(QWidget):
-    def __init__(self, points_list, parent=None):
+    def __init__(self, points_list, parent=None, pattern_name="", on_changed=None):
         super().__init__(parent)
-        self.points_list = points_list
+        self.points_list = list(points_list) if points_list is not None else [0.0, 50.0, 100.0]
+        self.pattern_name = str(pattern_name or "")
+        self.on_changed = on_changed
         self.setMinimumHeight(120)
         self.setStyleSheet("background-color: #0b0f15; border: 1px solid #30363d; border-radius: 4px;")
 
@@ -13134,8 +13159,12 @@ class AutomationCurveCanvas(QWidget):
             path = QPainterPath()
             pts = []
             for i, val in enumerate(self.points_list):
+                try:
+                    v = float(val)
+                except Exception:
+                    v = 0.0
                 px = i * step_w
-                py = self.height() - (val / 100.0) * (self.height() - 20) - 10
+                py = self.height() - (v / 100.0) * (self.height() - 20) - 10
                 pts.append(QPointF(px, py))
 
             path.moveTo(pts[0])
@@ -13155,10 +13184,18 @@ class AutomationCurveCanvas(QWidget):
             pos = event.position()
             n = len(self.points_list)
             if n > 0:
-                idx = min(n - 1, max(0, int(round((pos.x() / self.width()) * (n - 1)))))
-                val = max(0.0, min(100.0, round((self.height() - pos.y() - 10) / (self.height() - 20) * 100.0, 1)))
+                idx = min(n - 1, max(0, int(round((pos.x() / max(1, self.width())) * (n - 1)))))
+                val = max(0.0, min(100.0, round((self.height() - pos.y() - 10) / max(1, (self.height() - 20)) * 100.0, 1)))
                 self.points_list[idx] = val
                 self.update()
+                if callable(self.on_changed):
+                    try:
+                        self.on_changed(self.pattern_name, list(self.points_list))
+                    except Exception:
+                        pass
+    def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            self.mousePressEvent(event)
 
 
 class AutomationPatternPage(QWidget):
@@ -13201,6 +13238,38 @@ class AutomationPatternPage(QWidget):
         self.scroll.setWidget(self.container)
         layout.addWidget(self.scroll)
 
+    def _on_pattern_curve_changed(self, pattern_name, points):
+        """Persist edited curve and activate Automator tiles from the written pattern."""
+        try:
+            name = str(pattern_name or "")
+            pts = [float(x) for x in (points or [])]
+            if name and hasattr(self.engine, "automation_patterns"):
+                self.engine.automation_patterns[name] = pts
+            host = getattr(self, "app", None)
+            if host is None:
+                host = getattr(self, "parent_page", None)
+            # Walk Qt parents for the main MathematiciansGrooveboxApp window.
+            if host is None or not hasattr(host, "_bake_automation_pattern_to_tiles"):
+                w = self
+                for _ in range(12):
+                    w = w.parent() if hasattr(w, "parent") else None
+                    if w is None:
+                        break
+                    if hasattr(w, "_bake_automation_pattern_to_tiles"):
+                        host = w
+                        break
+                    if hasattr(w, "app") and hasattr(getattr(w, "app", None), "_bake_automation_pattern_to_tiles"):
+                        host = w.app
+                        break
+            if host is not None and hasattr(host, "automation_patterns") and name:
+                host.automation_patterns[name] = list(pts)
+            if host is not None and hasattr(host, "_bake_automation_pattern_to_tiles"):
+                host._bake_automation_pattern_to_tiles(pts, pattern_name=name, activate=True)
+            else:
+                print("[Automation] no host to bake tiles — pattern stored on engine only")
+        except Exception as exc:
+            print(f"[Automation] pattern curve write failed: {exc}")
+
     def _refresh_automation_panels(self):
         while self.grid.count():
             item = self.grid.takeAt(0)
@@ -13208,24 +13277,41 @@ class AutomationPatternPage(QWidget):
                 item.widget().deleteLater()
 
         total_idx = 0
-        for pat_name, points in self.engine.automation_patterns.items():
-            self.w = QWidget(self); w.setStyleSheet("background-color: #0d1117;")
+        for pat_name, points in list((getattr(self.engine, "automation_patterns", {}) or {}).items()):
+            w = QWidget(self)
+            w.setStyleSheet("background-color: #0d1117;")
             l = QVBoxLayout(w)
 
             lbl = QLabel(f"Automation & Step Sequencer Lane: '{pat_name}' (Active Automation Curve)")
             lbl.setStyleSheet("color: #00ffcc; font-weight: bold; background: transparent;")
             l.addWidget(lbl)
 
-            canvas = AutomationCurveCanvas(points)
+            canvas = AutomationCurveCanvas(
+                points,
+                parent=w,
+                pattern_name=str(pat_name),
+                on_changed=self._on_pattern_curve_changed,
+            )
             l.addWidget(canvas)
+
+            # Activate tiles from this pattern so the Automator strip lights up.
+            activate_btn = QPushButton(f"▶ Activate tiles · {pat_name}")
+            activate_btn.setStyleSheet(
+                "background-color:#1f242c; color:#f5d97d; font-weight:bold; border:1px solid #f5d97d; padding:4px;"
+            )
+            activate_btn.clicked.connect(
+                lambda checked=False, n=str(pat_name), pts=list(points): self._on_pattern_curve_changed(n, pts)
+            )
+            l.addWidget(activate_btn)
 
             panel = ResizableWorkspacePanel(f"Sequencer / Automation: {pat_name}", w)
             panel.show()
             self.grid.addWidget(panel, total_idx // 2, total_idx % 2)
             total_idx += 1
 
-        for seq_mod_name in self.engine.active_sequencer_modules:
-            self.w = QWidget(self); w.setStyleSheet("background-color: #0d1117;")
+        for seq_mod_name in getattr(self.engine, "active_sequencer_modules", []) or []:
+            w = QWidget(self)
+            w.setStyleSheet("background-color: #0d1117;")
             l = QVBoxLayout(w)
 
             seq_header = QHBoxLayout()
@@ -13273,7 +13359,20 @@ class AutomationPatternPage(QWidget):
 
     def _add_automation_pattern(self):
         pat_name = f"Custom Sequencer Lane {len(self.engine.automation_patterns) + 1}"
-        self.engine.automation_patterns[pat_name] = [0.0, 50.0, 100.0, 50.0, 25.0, 80.0, 100.0, 0.0]
+        curve = [0.0, 50.0, 100.0, 50.0, 25.0, 80.0, 100.0, 0.0]
+        self.engine.automation_patterns[pat_name] = curve
+        # Mirror into the host app so project save/load keeps written patterns,
+        # and activate Automator tiles for the new curve.
+        try:
+            self._on_pattern_curve_changed(pat_name, curve)
+        except Exception:
+            try:
+                host = getattr(self, "app", None) or getattr(self, "parent_page", None)
+                host = getattr(host, "app", host) if host is not None else None
+                if host is not None and hasattr(host, "automation_patterns"):
+                    host.automation_patterns = dict(self.engine.automation_patterns)
+            except Exception:
+                pass
         self._refresh_automation_panels()
         QMessageBox.information(self, "Sequencer Lane Created", f"New modular step/automation envelope '{pat_name}' successfully added.")
 
@@ -16466,6 +16565,24 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # links a composition step to two saved instrument/sequence panel states.
         self.sequencer_automation_points = []
         self.sequencer_automation_enabled = True
+        # Shared library of named automation curves (playlist Auto combo + custom lanes).
+        # Mirrored into project save/load so written patterns survive reload.
+        self.automation_patterns = {
+            "Default Filter Sweep": [0.0, 25.0, 50.0, 85.0, 100.0, 75.0, 40.0, 10.0],
+            "Resonance Pulse": [10.0, 90.0, 10.0, 90.0, 50.0, 50.0, 100.0, 0.0],
+            "Exponential Pitch Ramp": [0.0, 12.0, 24.0, 36.0, 48.0, 60.0, 80.0, 100.0],
+            "Chaotic LFO Modulation": [15.0, 85.0, 45.0, 95.0, 10.0, 60.0, 30.0, 90.0],
+            "Harmonic Stepped Envelope": [0.0, 33.0, 33.0, 66.0, 66.0, 100.0, 50.0, 25.0],
+            "Stochastic Micro-Drift": [50.0, 52.0, 48.0, 55.0, 45.0, 58.0, 42.0, 50.0],
+            "Master Vector X Sweep": [0.0, 25.0, 50.0, 75.0, 100.0, 75.0, 50.0, 0.0],
+            "Master Vector Y Orbit": [50.0, 70.0, 90.0, 70.0, 50.0, 30.0, 10.0, 30.0],
+            "Master Vector Z Fold": [20.0, 40.0, 60.0, 80.0, 100.0, 80.0, 40.0, 20.0],
+            "Wavetable Frame Morph": [0.0, 20.0, 40.0, 60.0, 80.0, 100.0, 60.0, 20.0],
+            "Wavetable Projector Phase": [0.0, 12.0, 25.0, 37.0, 50.0, 62.0, 75.0, 100.0],
+            "Global XMOD Depth": [50.0, 60.0, 75.0, 100.0, 85.0, 70.0, 55.0, 50.0],
+            "Canonical Resonance Drive": [50.0, 75.0, 100.0, 125.0, 150.0, 125.0, 100.0, 75.0],
+            "Algo XMOD Local Sweep": [25.0, 50.0, 75.0, 100.0, 125.0, 150.0, 100.0, 50.0],
+        }
         self.sequence_phase_lock_always_on = True
         self._sequencer_automation_popup = None
         # State lock for playlist memory; Qt widgets must still be touched only on the UI thread.
@@ -18851,9 +18968,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.chk_canonical_protect.setToolTip(
             "ON (default): protect user-painted cells; seed is a one-in-one stochastic "
             "modifier and unison mimics without wiping your locks.\n"
-            "OFF (Canonical Overwrite): snapshot userdata, then wipe locks so engines "
-            "can fill the entire composition in unison — 100% unrecognizable coverage "
-            "at the DATA level.\n"
+            "Canonical Resonance stays in the 50–150% activity band.\n"
+            "OFF (User Data Overwrite / Canonical Overwrite): snapshot userdata, then "
+            "wipe locks so engines can fill the entire composition in unison — 100% "
+            "unrecognizable coverage at the DATA level.\n"
+            "Canonical Resonance opens to the 0–200% band (0% = silent autonomous "
+            "activity, 200% = maximum continuation drive under overwrite).\n"
             "Phase note: signal-level fusion (no distinguishable instruments) already "
             "comes from the unison's shared phase shift + FM/PM/AM tracking, with or "
             "without this flag; this toggle only decides whether locked cells may also "
@@ -19334,10 +19454,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         # Live engine timers
         self._live_euclid_timer = QTimer(self)
-        self._live_euclid_timer.setInterval(2000)
+        self._live_euclid_timer.setInterval(3000)
         self._live_euclid_timer.timeout.connect(lambda: self._live_engine_tick("euclidean"))
         self._live_seeded_timer = QTimer(self)
-        self._live_seeded_timer.setInterval(2500)
+        self._live_seeded_timer.setInterval(3500)
         self._live_seeded_timer.timeout.connect(lambda: None)
         self._live_engine_signatures = {}
         self._live_engine_update_guard = False
@@ -20579,9 +20699,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_canonical_resonance.setSuffix("%")
         self.spin_canonical_resonance.setValue(150.0)
         self.spin_canonical_resonance.setMinimumWidth(100)
-        self.spin_canonical_resonance.setToolTip(
-            "Canonical continuation resonance/activity: 50–150%. This controls autonomous canonical activity, not volume or the 50/50 source coefficients."
-        )
+        self.spin_canonical_resonance.setToolTip(self._canonical_resonance_tooltip())
         canonical_resonance_row.addWidget(self.spin_canonical_resonance)
         self.lbl_canonical_resonance = QLabel("CANONICAL RESONANCE: 150% CEILING")
         self.lbl_canonical_resonance.setStyleSheet("color:#ffd75e; font-weight:900; padding:2px 4px;")
@@ -21406,7 +21524,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.master_volume = 0.50  # 50% default = intentional warning
         self._scope_update_timer = QTimer(self)
         self.update()  # Trigger repaint
-        self._scope_update_timer.setInterval(33)
+        # PERF_2026: ~20 fps scopes is enough for playhead feedback; 33ms was a
+        # constant paint tax even when the wave barely changed.
+        self._scope_update_timer.setInterval(50)
         self._scope_update_timer.timeout.connect(self._update_scope_from_playhead)
         QTimer.singleShot(0, self._sync_square_visuals)
         QTimer.singleShot(120, self._sync_square_visuals)
@@ -23440,25 +23560,143 @@ class MathematiciansGrooveboxApp(QMainWindow):
         return missing
 
     def _materialize_canonical_coverage(self, instrument_name=None, row_idx=0):
-        """Create canonical-only structures without consuming or rewriting a user slot."""
+        """Create canonical-only structures without consuming or rewriting a user slot.
+
+        Automation is mirrored into sequencer_automation_points + sequence
+        automation_lane so the Automator strip and render path actually see data
+        (overlays alone were invisible to the UI).
+        """
         name = instrument_name or (getattr(self, "instrument_names_48", []) or ["Operator"])[0]
+        try:
+            name = str(name)
+        except Exception:
+            name = "Operator"
         overlays = getattr(self, "canonical_runtime_overlays", None)
         if not isinstance(overlays, dict):
             overlays = self.canonical_runtime_overlays = {}
         key = f"{name}:{int(row_idx)}"
         overlay = overlays.setdefault(key, {})
+        try:
+            auto_len = int(self.spin_auto_point_length.value()) if hasattr(self, "spin_auto_point_length") else 16
+        except Exception:
+            auto_len = 16
+        auto_len = max(1, min(1024, int(auto_len) or 16))
+        try:
+            sid = int(self._current_sequence_index(name)) if hasattr(self, "_current_sequence_index") else 1
+        except Exception:
+            sid = 1
         overlay.setdefault("sequence", {
-            "pattern_length": 16,
-            "steps": [((i + int(row_idx)) % 2 == 0) for i in range(16)],
-            "amplitudes": [1.0] * 16, "pitches": [1.0] * 16,
-            "offsets": [0.0] * 16, "canonical_owner": "canonical:coverage"
+            "pattern_length": auto_len,
+            "steps": [((i + int(row_idx)) % 2 == 0) for i in range(auto_len)],
+            "amplitudes": [1.0] * auto_len, "pitches": [1.0] * auto_len,
+            "offsets": [0.0] * auto_len, "canonical_owner": "canonical:coverage"
         })
-        overlay.setdefault("automation", [{"step": i, "value": 0.5 + 0.5 * math.sin(i * MEUM_NORM)} for i in range(16)])
+        auto_vals = [{"step": i + 1, "value": 0.5 + 0.5 * math.sin((i + 1) * MEUM_NORM + int(row_idx) * 0.17)} for i in range(auto_len)]
+        overlay.setdefault("automation", auto_vals)
         overlay.setdefault("modulation", {"am_depth": 0.35, "fm_depth": 0.25, "pm_depth": 0.25, "trigger_phase": 0.0})
         overlay.setdefault("effect_layer", {"source": "canonical_seed_default", "active": True})
         overlay["canonical_owner"] = True
         overlay["row_idx"] = int(row_idx)
         overlay["instrument"] = name
+
+        # Push canonical automation into the live Automator surface when the
+        # active instrument/sequence has no user-owned points yet.
+        try:
+            points = list(getattr(self, "sequencer_automation_points", []) or [])
+            def _is_user_point(p):
+                if not isinstance(p, dict):
+                    return False
+                owner = str(p.get("canonical_owner") or "")
+                return owner.startswith("user:") or bool(p.get("user_owned"))
+
+            scoped = [
+                p for p in points
+                if isinstance(p, dict)
+                and str(p.get("from_instrument") or p.get("instrument") or "") == name
+                and int(p.get("from_sequence", 1) or 1) == int(sid)
+            ]
+            has_user = any(_is_user_point(p) for p in scoped)
+            if not has_user:
+                # Drop prior canonical-only points for this scope, then rewrite.
+                points = [
+                    p for p in points
+                    if not (
+                        isinstance(p, dict)
+                        and str(p.get("from_instrument") or p.get("instrument") or "") == name
+                        and int(p.get("from_sequence", 1) or 1) == int(sid)
+                        and not _is_user_point(p)
+                    )
+                ]
+                for i, av in enumerate(overlay.get("automation") or auto_vals):
+                    step = int(av.get("step", i + 1) if isinstance(av, dict) else (i + 1))
+                    val = float(av.get("value", 0.5) if isinstance(av, dict) else 0.5)
+                    if not math.isfinite(val):
+                        val = 0.5
+                    points.append({
+                        "step": step,
+                        "from_instrument": name,
+                        "from_sequence": int(sid),
+                        "to_instrument": name,
+                        "to_sequence": int(sid),
+                        "instrument": name,
+                        "morph": float(np.clip(val, 0.0, 1.0)),
+                        "step_offset": 0,
+                        "playlist_row": int(row_idx) + 1,
+                        "composition_blend": 0.5,
+                        "canonical_owner": "canonical:coverage",
+                        "length": auto_len,
+                        "reference_offsets": {},
+                        "enabled": True,
+                        "synth_param": "morph",
+                        "value": val,
+                    })
+                self.sequencer_automation_points = points
+                if hasattr(self, "_canonical_write_sequencer_automation_state"):
+                    self._canonical_write_sequencer_automation_state()
+                if hasattr(self, "_refresh_sequencer_automation_row"):
+                    self._refresh_sequencer_automation_row()
+
+            # Per-sequence automation_lane (render path) when empty / non-user.
+            mem = None
+            try:
+                banks = getattr(self, "instrument_sequence_banks", {}) or {}
+                bank = banks.get(name, {}) if isinstance(banks, dict) else {}
+                mem = bank.get(int(sid)) if isinstance(bank, dict) else None
+                if mem is None and hasattr(self, "_current_sequence_mem"):
+                    mem = self._current_sequence_mem(name)
+            except Exception:
+                mem = None
+            if isinstance(mem, dict):
+                lane = mem.get("automation_lane")
+                lane_has_user = False
+                if isinstance(lane, list):
+                    for p in lane:
+                        if isinstance(p, dict) and (
+                            str(p.get("canonical_owner") or "").startswith("user:")
+                            or bool(p.get("user_owned"))
+                        ):
+                            lane_has_user = True
+                            break
+                if not lane_has_user:
+                    mem["automation_lane"] = [
+                        {
+                            "step": int(av.get("step", i + 1) if isinstance(av, dict) else (i + 1)),
+                            "value": float(av.get("value", 0.5) if isinstance(av, dict) else 0.5),
+                            "enabled": True,
+                            "playlist_row": int(row_idx) + 1,
+                            "instrument": name,
+                            "from_instrument": name,
+                            "from_sequence": int(sid),
+                            "to_instrument": name,
+                            "to_sequence": int(sid),
+                            "morph": float(av.get("value", 0.5) if isinstance(av, dict) else 0.5),
+                            "canonical_owner": "canonical:coverage",
+                        }
+                        for i, av in enumerate(overlay.get("automation") or auto_vals)
+                    ]
+                    mem["automation_lane_length"] = auto_len
+        except Exception as _exc:
+            print(f"[Canonical] automation materialize surface sync failed: {_exc}")
         return overlay
 
     def _update_canonical_signal_control(self, instrument_name=None, row_idx=0):
@@ -23488,48 +23726,149 @@ class MathematiciansGrooveboxApp(QMainWindow):
             pass
         return self.canonical_signal_control
 
-    def _on_canonical_resonance_changed(self, value):
-        """Set the manual 50–150% canonical resonance/activity ceiling."""
+    def _user_data_overwrite_on(self):
+        """True when Canonical protect is OFF — User Data Overwrite mode."""
         try:
-            self.canonical_resonance_factor = float(np.clip(float(value) / 100.0, 0.50, 1.50))
+            if hasattr(self, "_canonical_protect_user"):
+                return not bool(self._canonical_protect_user())
+        except Exception:
+            pass
+        chk = getattr(self, "chk_canonical_protect", None)
+        if chk is not None:
+            try:
+                return not bool(chk.isChecked())
+            except Exception:
+                pass
+        return False
+
+    def _canonical_resonance_range(self):
+        """Return (lo, hi) as fractions of 1.0 for the active resonance band.
+
+        Protect ON (default): 50–150% — safe activity/continuation band that
+        respects the user carrier and the 50/50 source coefficients.
+
+        User Data Overwrite ON (protect OFF): 0–200% — full overwrite band so
+        canonical activity can go silent (0%) or drive up to 200% when userdata
+        locks are wiped and engines may rewrite the composition.
+        """
+        if self._user_data_overwrite_on():
+            return (0.0, 2.0)
+        return (0.50, 1.50)
+
+    def _canonical_resonance_tooltip(self):
+        if self._user_data_overwrite_on():
+            return (
+                "Canonical Resonance / Activity — User Data Overwrite ON\n"
+                "Range: 0–200%.\n"
+                "0% = no autonomous canonical activity; 200% = maximum continuation drive\n"
+                "while userdata locks are wiped and engines may rewrite the composition.\n"
+                "This is activity/continuation drive, not Master Volume and not the 50/50\n"
+                "C/U source coefficients.\n"
+                "Turn protect ON (skip overwrite) to return to the 50–150% band."
+            )
+        return (
+            "Canonical Resonance / Activity — User Data Overwrite OFF (protect ON)\n"
+            "Range: 50–150%.\n"
+            "50% floor with active user data; up to 150% autonomous continuation when\n"
+            "user activity is low. Respects protected userdata; does not wipe locks.\n"
+            "Activity/continuation drive only — not Master Volume, not the 50/50 C/U mix.\n"
+            "Turn protect OFF (User Data Overwrite) to open the 0–200% band."
+        )
+
+    def _sync_canonical_resonance_ui_range(self):
+        """Expand/contract the resonance spin to match protect / overwrite mode."""
+        lo, hi = self._canonical_resonance_range()
+        lo_pct, hi_pct = lo * 100.0, hi * 100.0
+        spin = getattr(self, "spin_canonical_resonance", None)
+        if spin is not None:
+            try:
+                cur = float(spin.value())
+                spin.blockSignals(True)
+                spin.setRange(lo_pct, hi_pct)
+                # Keep current value if still legal; otherwise clamp into the new band.
+                if cur < lo_pct:
+                    cur = lo_pct
+                elif cur > hi_pct:
+                    cur = hi_pct
+                spin.setValue(cur)
+                spin.blockSignals(False)
+                spin.setToolTip(self._canonical_resonance_tooltip())
+            except Exception:
+                try:
+                    spin.blockSignals(False)
+                except Exception:
+                    pass
+        try:
+            self.canonical_resonance_factor_min = lo
+            self.canonical_resonance_factor_max = hi
+            factor = float(getattr(self, "canonical_resonance_factor", 1.0) or 1.0)
+            if not math.isfinite(factor):
+                factor = 1.0
+            factor = float(np.clip(factor, lo, hi))
+            self.canonical_resonance_factor = factor
+            mode = "0–200% OVERWRITE" if self._user_data_overwrite_on() else "50–150% PROTECT"
+            if hasattr(self, "lbl_canonical_resonance"):
+                self.lbl_canonical_resonance.setText(
+                    f"CANONICAL RESONANCE: {factor * 100:.0f}%  ·  {mode}"
+                )
+        except Exception:
+            pass
+
+    def _on_canonical_resonance_changed(self, value):
+        """Set the manual canonical resonance/activity ceiling for the active band."""
+        lo, hi = self._canonical_resonance_range()
+        try:
+            self.canonical_resonance_factor = float(np.clip(float(value) / 100.0, lo, hi))
             self.canonical_resonance_handoff = self.canonical_resonance_factor
         except Exception:
-            self.canonical_resonance_factor = 1.50
-            self.canonical_resonance_handoff = 1.50
+            self.canonical_resonance_factor = 1.50 if not self._user_data_overwrite_on() else 1.0
+            self.canonical_resonance_handoff = self.canonical_resonance_factor
         try:
+            mode = "0–200% OVERWRITE" if self._user_data_overwrite_on() else "50–150% PROTECT"
             self.lbl_canonical_resonance.setText(
-                f"CANONICAL RESONANCE: {self.canonical_resonance_factor * 100:.0f}%"
+                f"CANONICAL RESONANCE: {self.canonical_resonance_factor * 100:.0f}%  ·  {mode}"
             )
         except Exception:
             pass
 
     def _canonical_resonance_for_activity(self, user_activity):
-        """Return a smoothed 50–150% canonical activity factor.
+        """Return a smoothed canonical activity factor in the active band.
 
-        Full user activity targets 50%; zero user activity targets 150%. The
-        coefficient is applied only to the autonomous canonical continuation
-        branch. It never changes the 0.50*C + 0.50*U source coefficients.
+        Protect ON (50–150%): full user activity targets the 50% floor; zero user
+        activity targets up to the manual ceiling (≤150%).
+
+        User Data Overwrite ON (0–200%): full user activity can target 0%; zero
+        user activity targets up to the manual ceiling (≤200%).
+
+        Applied only to the autonomous canonical continuation branch — never
+        changes the fixed 0.50*C + 0.50*U source coefficients.
         """
+        lo, hi = self._canonical_resonance_range()
         try:
             ua = float(np.clip(float(user_activity), 0.0, 1.0))
         except Exception:
             ua = 0.0
-        target = 0.50 + (1.00 * (1.0 - ua))
-        ceiling_raw = getattr(self, "canonical_resonance_factor", 1.50)
+        # Map user activity into [lo, hi]: high activity → lo, low activity → hi.
+        target = lo + (hi - lo) * (1.0 - ua)
+        ceiling_raw = getattr(self, "canonical_resonance_factor", hi)
         try:
             ceiling = float(ceiling_raw)
         except (TypeError, ValueError):
-            ceiling = 1.50
+            ceiling = hi
         if not math.isfinite(ceiling):
-            ceiling = 1.50
-        ceiling = float(np.clip(ceiling, 0.50, 1.50))
-        # Manual control is a ceiling/reference, while the autonomous handoff
-        # can always descend to the 50% floor. This preserves the full range.
-        target = float(np.clip(target, 0.50, ceiling))
-        current = float(np.clip(getattr(self, "canonical_resonance_handoff", 1.00), 0.50, 1.50))
-        rate = float(np.clip(getattr(self, "canonical_resonance_handoff_rate", 0.20), 0.01, 1.0))
+            ceiling = hi
+        ceiling = float(np.clip(ceiling, lo, hi))
+        target = float(np.clip(target, lo, ceiling))
+        current = float(getattr(self, "canonical_resonance_handoff", 1.00) or 1.00)
+        if not math.isfinite(current):
+            current = lo + 0.5 * (hi - lo)
+        current = float(np.clip(current, lo, hi))
+        rate = float(getattr(self, "canonical_resonance_handoff_rate", 0.20) or 0.20)
+        if not math.isfinite(rate):
+            rate = 0.20
+        rate = float(np.clip(rate, 0.01, 1.0))
         current += rate * (target - current)
-        current = float(np.clip(current, 0.50, ceiling))
+        current = float(np.clip(current, lo, ceiling))
         self.canonical_resonance_handoff = current
         return current
 
@@ -24269,8 +24608,35 @@ class MathematiciansGrooveboxApp(QMainWindow):
             elif isinstance(point, dict):
                 target = str(point.get("instrument", "__all__") or "__all__")
                 prow = int(point.get("playlist_row", 0) or 0)
-                if target in ("__all__", "", str(instrument_name)) and prow in (0, int(row_idx) + 1):
+                src = str(point.get("from_instrument") or point.get("instrument") or "")
+                if (target in ("__all__", "", str(instrument_name)) or src in ("", str(instrument_name))) and prow in (0, int(row_idx) + 1):
                     candidates.append(point)
+        # Fallback: canonical runtime overlay automation (when points/lane empty)
+        if not candidates:
+            try:
+                ov = (getattr(self, "canonical_runtime_overlays", {}) or {}).get(f"{instrument_name}:{int(row_idx)}")
+                auto = ov.get("automation") if isinstance(ov, dict) else None
+                if isinstance(auto, list) and auto:
+                    for i, av in enumerate(auto):
+                        if not isinstance(av, dict):
+                            continue
+                        candidates.append({
+                            "step": int(av.get("step", i + 1) or (i + 1)),
+                            "value": float(av.get("value", 0.5) or 0.5),
+                            "morph": float(av.get("value", 0.5) or 0.5),
+                            "enabled": True,
+                            "instrument": str(instrument_name),
+                            "from_instrument": str(instrument_name),
+                            "to_instrument": str(instrument_name),
+                            "from_sequence": 1,
+                            "to_sequence": 1,
+                            "playlist_row": int(row_idx) + 1,
+                            "canonical_owner": "canonical:coverage",
+                            "composition_blend": 0.5,
+                            "step_offset": 0,
+                        })
+            except Exception:
+                pass
         if not candidates:
             return None
 
@@ -24501,19 +24867,29 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._selected_automation_step = step
         point = self._automation_point_for_step(step)
         if point is None:
+            # SOURCE scope = active sequencer instrument/sequence (matches row filter).
+            # DESTINATION = Automator Operator/Sequence selectors.
+            _src_inst = str(self.instrument_selector_dropdown.currentText()) if hasattr(self, "instrument_selector_dropdown") else (
+                str(self.auto_to_instrument.currentText()) if hasattr(self, "auto_to_instrument") else ""
+            )
+            _src_sid = int(self.sequence_selector.currentData() or 1) if hasattr(self, "sequence_selector") and self.sequence_selector.currentData() is not None else (
+                int(self.spin_auto_to_sequence.value()) if hasattr(self, "spin_auto_to_sequence") else 1
+            )
+            _dst_inst = str(self.auto_to_instrument.currentText()) if hasattr(self, "auto_to_instrument") else _src_inst
+            _dst_sid = int(self.spin_auto_to_sequence.value()) if hasattr(self, "spin_auto_to_sequence") else _src_sid
             point = {
                 "step": step,
-                "from_instrument": str(self.auto_to_instrument.currentText()),
-                "from_sequence": int(self.spin_auto_to_sequence.value()),
-                "to_instrument": str(self.auto_to_instrument.currentText()),
-                "to_sequence": int(self.spin_auto_to_sequence.value()),
-                "instrument": str(self.auto_to_instrument.currentText()),
+                "from_instrument": _src_inst,
+                "from_sequence": _src_sid,
+                "to_instrument": _dst_inst,
+                "to_sequence": _dst_sid,
+                "instrument": _src_inst,
                 "morph": 1.0,
                 "step_offset": 0,
                 "playlist_row": 0,
                 "composition_blend": 0.5,
                 "canonical_owner": "user:sequencer_automation",
-                "length": int(self.spin_auto_point_length.value()),
+                "length": int(self.spin_auto_point_length.value()) if hasattr(self, "spin_auto_point_length") else 16,
                 "reference_offsets": {},
                 "enabled": False,
             }
@@ -24558,6 +24934,136 @@ class MathematiciansGrooveboxApp(QMainWindow):
             point["from_sequence"] = int(self.sequence_selector.currentData() or 1) if hasattr(self, "sequence_selector") else 1
         self._canonical_write_sequencer_automation_state()
         self._refresh_sequencer_automation_row()
+
+    def _bake_automation_pattern_to_tiles(self, points, pattern_name="", activate=True, instrument_name=None, sequence_id=None):
+        """Write a named automation curve into Automator tiles and refresh the strip.
+
+        points: sequence of 0–100 values (one per step). Each step becomes an
+        enabled sequencer_automation_points entry in the active instrument scope
+        so tiles light ON and carry morph/value data for playback.
+        """
+        try:
+            pts = [float(x) for x in (points or [])]
+        except Exception:
+            pts = []
+        if not pts:
+            return
+        try:
+            name = str(
+                instrument_name
+                if instrument_name is not None
+                else (
+                    self.instrument_selector_dropdown.currentText()
+                    if hasattr(self, "instrument_selector_dropdown")
+                    else (getattr(self, "instrument_names_48", ["Operator"]) or ["Operator"])[0]
+                )
+            )
+        except Exception:
+            name = "Operator"
+        try:
+            if sequence_id is not None:
+                sid = int(sequence_id)
+            elif hasattr(self, "sequence_selector") and self.sequence_selector.currentData() is not None:
+                sid = int(self.sequence_selector.currentData())
+            else:
+                sid = int(self._current_sequence_index(name)) if hasattr(self, "_current_sequence_index") else 1
+        except Exception:
+            sid = 1
+        n = max(1, min(1024, len(pts)))
+        if hasattr(self, "spin_auto_point_length"):
+            try:
+                self.spin_auto_point_length.blockSignals(True)
+                self.spin_auto_point_length.setValue(n)
+                self.spin_auto_point_length.blockSignals(False)
+                if hasattr(self, "spin_auto_point_step"):
+                    self.spin_auto_point_step.setRange(1, n)
+            except Exception:
+                pass
+        existing = list(getattr(self, "sequencer_automation_points", []) or [])
+        kept = []
+        for p in existing:
+            if not isinstance(p, dict):
+                continue
+            p_inst = str(p.get("from_instrument") or p.get("instrument") or "")
+            p_sid = int(p.get("from_sequence", 1) or 1)
+            owner = str(p.get("canonical_owner") or "")
+            # Replace prior pattern/canonical tiles for this scope; keep user-owned.
+            if p_inst == name and p_sid == sid and not owner.startswith("user:"):
+                continue
+            kept.append(p)
+        for i, val in enumerate(pts):
+            step = i + 1
+            try:
+                v = float(val)
+            except Exception:
+                v = 50.0
+            if not math.isfinite(v):
+                v = 50.0
+            morph = float(np.clip(v / 100.0, 0.0, 1.0))
+            kept.append({
+                "step": step,
+                "from_instrument": name,
+                "from_sequence": int(sid),
+                "to_instrument": name,
+                "to_sequence": int(sid),
+                "instrument": name,
+                "morph": morph,
+                "value": morph,
+                "step_offset": 0,
+                "playlist_row": 0,
+                "composition_blend": 0.5,
+                "canonical_owner": ("pattern:%s" % pattern_name) if pattern_name else "pattern:written",
+                "pattern_name": str(pattern_name or ""),
+                "length": n,
+                "reference_offsets": {},
+                "enabled": bool(activate),
+                "synth_param": "morph",
+            })
+        self.sequencer_automation_points = kept
+        try:
+            banks = getattr(self, "instrument_sequence_banks", {}) or {}
+            bank = banks.setdefault(name, {})
+            mem = bank.get(int(sid))
+            if not isinstance(mem, dict):
+                mem = self._current_sequence_mem(name) if hasattr(self, "_current_sequence_mem") else {}
+                bank[int(sid)] = mem
+            mem["automation_lane"] = [
+                {
+                    "step": i + 1,
+                    "value": float(np.clip(float(pts[i]) / 100.0, 0.0, 1.0)),
+                    "morph": float(np.clip(float(pts[i]) / 100.0, 0.0, 1.0)),
+                    "enabled": bool(activate),
+                    "instrument": name,
+                    "from_instrument": name,
+                    "from_sequence": int(sid),
+                    "to_instrument": name,
+                    "to_sequence": int(sid),
+                    "canonical_owner": ("pattern:%s" % pattern_name) if pattern_name else "pattern:written",
+                    "pattern_name": str(pattern_name or ""),
+                }
+                for i in range(n)
+            ]
+            mem["automation_lane_length"] = n
+        except Exception as _lane_exc:
+            print("[Automation] lane bake failed: %s" % _lane_exc)
+        try:
+            if hasattr(self, "_canonical_write_sequencer_automation_state"):
+                self._canonical_write_sequencer_automation_state()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "_refresh_sequencer_automation_row"):
+                self._refresh_sequencer_automation_row()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "scope_status_label", None) is not None:
+                on_n = sum(1 for p in kept if isinstance(p, dict) and p.get("enabled") and str(p.get("from_instrument") or "") == name)
+                self.scope_status_label.setText(
+                    "Automation tiles · %s · %d/%d ON · %s / Q%d" % (pattern_name or "pattern", on_n, n, name, sid)
+                )
+        except Exception:
+            pass
 
     def _canonical_write_sequencer_automation_state(self):
         try:
@@ -24900,6 +25406,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
         _ui_inst = str(self.instrument_selector_dropdown.currentText()) if hasattr(self, "instrument_selector_dropdown") else (str(self.auto_to_instrument.currentText()) if hasattr(self, "auto_to_instrument") else "")
         _ui_sid = int(self.sequence_selector.currentData() or 1) if hasattr(self, "sequence_selector") and self.sequence_selector.currentData() is not None else (int(self.spin_auto_to_sequence.value()) if hasattr(self, "spin_auto_to_sequence") else 1)
         scoped_points = [p for p in points if isinstance(p, dict) and str(p.get("from_instrument") or p.get("instrument") or "") == _ui_inst and int(p.get("from_sequence", 1) or 1) == _ui_sid]
+        # Self-heal: Full Canonical with empty Automator scope materializes coverage
+        # into live points so the strip is never a dead blank under canonical authority.
+        if not scoped_points and str(getattr(self, "canonical_control_strategy", "Full Canonical")) != "Seeded Baseline":
+            if not getattr(self, "_automator_materialize_guard", False):
+                try:
+                    self._automator_materialize_guard = True
+                    if hasattr(self, "_materialize_canonical_coverage") and _ui_inst:
+                        self._materialize_canonical_coverage(_ui_inst, 0)
+                        points = getattr(self, "sequencer_automation_points", []) or []
+                        scoped_points = [p for p in points if isinstance(p, dict) and str(p.get("from_instrument") or p.get("instrument") or "") == _ui_inst and int(p.get("from_sequence", 1) or 1) == _ui_sid]
+                except Exception:
+                    pass
+                finally:
+                    self._automator_materialize_guard = False
         by_step = {int(p.get("step", 1) or 1): p for p in scoped_points}
         selected = getattr(self, "_selected_automation_step", None)
         for step in range(1, max(1, length) + 1):
@@ -25586,15 +26106,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # canonicals from that recovered baseline so OFF->ON cannot retain
                 # the overwritten playlist tail or a single GOAVA identity.
                 if hasattr(self, "scope_status_label"):
-                    self.scope_status_label.setText("📊 Canonical protect ON — rebuilding from restored user baseline")
+                    self.scope_status_label.setText("📊 Canonical protect ON — rebuilding from restored user baseline · Resonance 50–150%")
                 if hasattr(self, "_canonical_rebuild_guard") and not self._canonical_rebuild_guard:
                     self._rebuild_active_canonical_playlist("canonical_protect_on")
             else:
                 self._wipe_user_composition_flags(take_snapshot=True)
                 if hasattr(self, "scope_status_label"):
-                    self.scope_status_label.setText("📊 Canonical Overwrite — rebuilding complete unison")
+                    self.scope_status_label.setText("📊 Canonical Overwrite (User Data Overwrite ON) — Resonance 0–200%")
                 if hasattr(self, "_canonical_rebuild_guard") and not self._canonical_rebuild_guard:
                     self._rebuild_active_canonical_playlist("canonical_overwrite_on")
+            # Resonance band follows protect / User Data Overwrite mode.
+            if hasattr(self, "_sync_canonical_resonance_ui_range"):
+                self._sync_canonical_resonance_ui_range()
         finally:
             self._canonical_protect_toggle_guard = False
 
@@ -25963,6 +26486,79 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
 
 
+
+    def _collect_automation_patterns(self):
+        """Gather named automation curves from app + open playlist engine."""
+        patterns = {}
+        base = getattr(self, "automation_patterns", None)
+        if isinstance(base, dict):
+            patterns.update(base)
+        try:
+            pw = getattr(self, "playlist_window", None)
+            eng = getattr(pw, "engine", None) if pw is not None else None
+            if eng is not None and isinstance(getattr(eng, "automation_patterns", None), dict):
+                patterns.update(eng.automation_patterns)
+        except Exception:
+            pass
+        # Prefer live GrooveboxEngine if one is attached on self
+        try:
+            eng2 = getattr(self, "engine", None)
+            if eng2 is not None and isinstance(getattr(eng2, "automation_patterns", None), dict):
+                patterns.update(eng2.automation_patterns)
+        except Exception:
+            pass
+        return patterns
+
+    def _apply_automation_patterns(self, patterns):
+        """Restore named automation curves to app + open playlist engine/UI."""
+        if not isinstance(patterns, dict) or not patterns:
+            return
+        clean = {}
+        for k, v in patterns.items():
+            try:
+                name = str(k)
+                if isinstance(v, (list, tuple)):
+                    clean[name] = [float(x) for x in v]
+                else:
+                    continue
+            except Exception:
+                continue
+        if not clean:
+            return
+        self.automation_patterns = dict(clean)
+        try:
+            eng = getattr(self, "engine", None)
+            if eng is not None and hasattr(eng, "automation_patterns"):
+                eng.automation_patterns = dict(clean)
+        except Exception:
+            pass
+        try:
+            pw = getattr(self, "playlist_window", None)
+            eng = getattr(pw, "engine", None) if pw is not None else None
+            if eng is not None and hasattr(eng, "automation_patterns"):
+                eng.automation_patterns = dict(clean)
+            combo = getattr(pw, "playlist_auto_combo", None) if pw is not None else None
+            if combo is not None:
+                cur = combo.currentText()
+                combo.blockSignals(True)
+                combo.clear()
+                combo.addItems(list(clean.keys()))
+                idx = combo.findText(cur)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+                combo.blockSignals(False)
+        except Exception:
+            pass
+        # If Automator tiles are empty for the active scope, bake the first pattern
+        # so load/restore visibly activates the strip.
+        try:
+            pts_existing = getattr(self, "sequencer_automation_points", []) or []
+            if not pts_existing:
+                first_name = next(iter(clean.keys()))
+                self._bake_automation_pattern_to_tiles(clean[first_name], pattern_name=first_name, activate=True)
+        except Exception:
+            pass
+
     def _project_snapshot(self):
         """Single canonical project document for save / export / game interpreter.
 
@@ -26046,6 +26642,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             },
             "playlist_automation": _safe_json(getattr(self, "playlist_automation", [])),
             "sequencer_automation_points": _safe_json(getattr(self, "sequencer_automation_points", [])),
+            "automation_patterns": _safe_json(self._collect_automation_patterns() if hasattr(self, "_collect_automation_patterns") else getattr(self, "automation_patterns", {})),
             "canonical_sequence_runtime": _safe_json(getattr(self, "_canonical_composition_document", {}).get("canonical_sequence_runtime", {})),
             "canonical_synth_pitch_amp": _safe_json({
                 str(name): {
@@ -26209,6 +26806,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.canonical_runtime_overlays = copy.deepcopy(data.get("canonical_runtime_overlays") or {})
             except Exception:
                 self.canonical_runtime_overlays = {}
+        # If overlays exist but Automator points were empty/stale, re-materialize
+        # the live surface so canonical automation is visible after load.
+        try:
+            if not getattr(self, "sequencer_automation_points", None) and getattr(self, "canonical_runtime_overlays", None):
+                name = None
+                if hasattr(self, "instrument_selector_dropdown"):
+                    name = str(self.instrument_selector_dropdown.currentText() or "")
+                if not name:
+                    name = (getattr(self, "instrument_names_48", []) or ["Operator"])[0]
+                if hasattr(self, "_materialize_canonical_coverage"):
+                    self._materialize_canonical_coverage(name, 0)
+        except Exception:
+            pass
         if "canonical_control_strategy" in data:
             try:
                 self.canonical_control_strategy = str(data.get("canonical_control_strategy") or "Full Canonical")
@@ -26230,14 +26840,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         if "canonical_resonance_factor" in data:
             try:
-                self.canonical_resonance_factor = float(np.clip(float(data.get("canonical_resonance_factor", 1.50)), 0.50, 1.50))
-                self.canonical_resonance_handoff = float(np.clip(float(data.get("canonical_resonance_handoff", 1.00)), 0.50, self.canonical_resonance_factor))
-                if hasattr(self, "spin_canonical_resonance"):
+                # Accept full 0–200% from file; active protect/overwrite mode then
+                # syncs the spin range and clamps into the legal band.
+                raw = float(data.get("canonical_resonance_factor", 1.50) or 1.50)
+                if not math.isfinite(raw):
+                    raw = 1.50
+                self.canonical_resonance_factor = float(np.clip(raw, 0.0, 2.0))
+                hand = float(data.get("canonical_resonance_handoff", self.canonical_resonance_factor) or self.canonical_resonance_factor)
+                if not math.isfinite(hand):
+                    hand = self.canonical_resonance_factor
+                self.canonical_resonance_handoff = float(np.clip(hand, 0.0, 2.0))
+                if hasattr(self, "_sync_canonical_resonance_ui_range"):
+                    self._sync_canonical_resonance_ui_range()
+                elif hasattr(self, "spin_canonical_resonance"):
                     self.spin_canonical_resonance.blockSignals(True)
                     self.spin_canonical_resonance.setValue(self.canonical_resonance_factor * 100.0)
                     self.spin_canonical_resonance.blockSignals(False)
-                if hasattr(self, "lbl_canonical_resonance"):
-                    self.lbl_canonical_resonance.setText(f"CANONICAL RESONANCE: {self.canonical_resonance_factor * 100:.0f}%")
             except Exception:
                 self.canonical_resonance_factor = 1.50
                 self.canonical_resonance_handoff = 1.00
@@ -26375,6 +26993,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self._refresh_sequencer_automation_row()
             except Exception:
                 pass
+        if "automation_patterns" in data and isinstance(data.get("automation_patterns"), dict):
+            try:
+                self._apply_automation_patterns(data.get("automation_patterns"))
+            except Exception as _ap_exc:
+                print(f"[Load] automation_patterns: {_ap_exc}")
         if "domain_eq" in data and hasattr(self, "domain_eq_engine") and self.domain_eq_engine:
             try:
                 self.domain_eq_engine.from_json(data["domain_eq"])
@@ -31477,11 +32100,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if getattr(self, "_live_source_update_pending", False):
             return
         self._live_source_update_pending = True
-        QTimer.singleShot(0, self._flush_live_source_update)
-        try:
-            self._refresh_canonical_fingerprint()
-        except Exception:
-            pass
+        # PERF_2026: debounce ~75ms so typing seed / dragging spins does not
+        # re-run perfect-unison every keystroke. Fingerprint refreshes once
+        # inside the flush, not on every intermediate event.
+        QTimer.singleShot(75, self._flush_live_source_update)
 
         # =========================================================================
 
@@ -32538,6 +33160,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Use perfect unison instead of individual processing
         self._ensure_perfect_unison()
 
+        try:
+            self._refresh_canonical_fingerprint()
+        except Exception:
+            pass
+
         # Also handle the live engine timers if needed
         if (hasattr(self, "btn_idealize_rhythm") and
             self.btn_idealize_rhythm.isChecked()):
@@ -33443,6 +34070,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
         window is a simple parameter copy — and re-rendering with these values
         reproduces the exact artifact.  Device-independent (no timestamps).
         """
+        # Local helper — export must never fail with NameError on _safe_json
+        # (was previously only defined inside _project_snapshot).
+        def _safe_json(obj):
+            try:
+                return copy.deepcopy(obj)
+            except Exception:
+                try:
+                    return json.loads(json.dumps(obj, default=str))
+                except Exception:
+                    return None
+
         def _num(widget, default=0.0):
             w = getattr(self, widget, None)
             if w is not None and hasattr(w, "value"):
@@ -34246,7 +34884,164 @@ class MathematiciansGrooveboxApp(QMainWindow):
         box.setStandardButtons(QMessageBox.StandardButton.Ok)
         box.exec()
 
+    def _default_export_part_count(self, duration_s=None):
+        """Heuristic default part count in 1–128 from duration (and prior choice)."""
+        prev = int(getattr(self, "_last_export_part_count", 0) or 0)
+        if 1 <= prev <= 128:
+            return prev
+        try:
+            d = float(duration_s) if duration_s is not None else 0.0
+        except Exception:
+            d = 0.0
+        if d <= 30:
+            return 4
+        if d <= 120:
+            return 8
+        if d <= 600:
+            return 16
+        if d <= 1800:
+            return 32
+        return 64
+
+    def _export_part_count_dialog(self, title="Export Parts", default=16, hint=""):
+        """Modal Part Count selector (1–128) for all long export jobs.
+
+        Returns int part count, or None if the user cancels.
+        """
+        try:
+            default = int(default)
+        except Exception:
+            default = 16
+        default = max(1, min(128, default))
+        dlg = QDialog(self)
+        dlg.setWindowTitle(str(title or "Export Parts"))
+        try:
+            dlg.setStyleSheet(getattr(self, "styleSheet", lambda: "")() or "")
+        except Exception:
+            pass
+        form = QFormLayout(dlg)
+        spin = QSpinBox()
+        spin.setRange(1, 128)
+        spin.setSingleStep(1)
+        spin.setValue(default)
+        spin.setToolTip(
+            "How many recoverable .part segments to write.\n"
+            "1 = single file (no partition). 16 is the classic default.\n"
+            "Higher counts lower peak temp disk and improve crash resume."
+        )
+        form.addRow("Part Count (1–128)", spin)
+        note = QLabel(
+            (hint or "")
+            + ("\n" if hint else "")
+            + "Parts are written next to the final file as "
+            "<stem>.partNN.<ext> (and <stem>.audio.partNN.wav for A/V). "
+            "Completed parts can be resumed after a crash."
+        )
+        note.setWordWrap(True)
+        form.addRow(note)
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        form.addRow(btns)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        n = max(1, min(128, int(spin.value())))
+        self._last_export_part_count = n
+        return n
+
+    def _write_audio_parts_and_final(
+        self,
+        file_path,
+        sample_rate,
+        pcm_int16,
+        n_parts=1,
+        provenance_bytes=None,
+        audio_format="wav",
+    ):
+        """Write optional audio .partNN files, then the final audio artifact.
+
+        Returns (final_path, list_of_part_paths).
+        """
+        pcm = np.asarray(pcm_int16, dtype=np.int16).reshape(-1)
+        n_parts = max(1, min(128, int(n_parts or 1)))
+        dest_dir = os.path.dirname(os.path.abspath(file_path)) or self._exports_dir()
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+        except Exception:
+            pass
+        stem = os.path.splitext(os.path.basename(file_path))[0]
+        total = int(pcm.shape[0])
+        if total < 1:
+            raise RuntimeError("No audio samples to export.")
+
+        part_paths = []
+        if n_parts > 1:
+            # Even split with remainder on the last part.
+            base = total // n_parts
+            rem = total % n_parts
+            offset = 0
+            for pi in range(n_parts):
+                take = base + (1 if pi < rem else 0)
+                take = max(1, take) if offset < total else 0
+                chunk = pcm[offset:offset + take] if take else pcm[0:1]
+                offset += take
+                part_path = os.path.join(dest_dir, f"{stem}.part{pi:02d}.wav")
+                _write_wav_with_provenance(
+                    part_path,
+                    sample_rate,
+                    chunk,
+                    provenance_bytes if pi == 0 else None,
+                )
+                part_paths.append(part_path)
+                if hasattr(self, "scope_status_label"):
+                    self.scope_status_label.setText(
+                        f"📊 Audio part {pi + 1}/{n_parts} → {os.path.basename(part_path)}"
+                    )
+                    QApplication.processEvents()
+
+        audio_format = str(audio_format or "wav").lower().lstrip(".")
+        if audio_format == "wav":
+            _write_wav_with_provenance(file_path, sample_rate, pcm, provenance_bytes)
+        else:
+            ffmpeg = self._resolve_ffmpeg_binary()
+            if not ffmpeg:
+                raise RuntimeError(f"FFmpeg is required for {audio_format.upper()} audio export.")
+            tmp = os.path.join(
+                dest_dir, f".groovebox_audio_tmp_{os.getpid()}_{getattr(self, 'export_counter', 0)}.wav"
+            )
+            _write_wav_with_provenance(tmp, sample_rate, pcm)
+            codec_args = {
+                "flac": ["-c:a", "flac"],
+                "ogg": ["-c:a", "libvorbis", "-q:a", "6"],
+                "aiff": ["-c:a", "pcm_s16be"],
+                "mp3": ["-c:a", "libmp3lame", "-q:a", "2"],
+                "opus": ["-c:a", "libopus", "-b:a", "192k"],
+                "caf": ["-c:a", "pcm_s16le"],
+            }.get(audio_format, ["-c:a", "flac"])
+            meta = []
+            if provenance_bytes:
+                try:
+                    meta = ["-metadata", f"comment={provenance_bytes.decode('utf-8')}"]
+                except Exception:
+                    meta = []
+            proc = subprocess.run(
+                [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", tmp, *codec_args, *meta, file_path],
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            if proc.returncode != 0:
+                raise RuntimeError(proc.stderr or f"FFmpeg failed for {audio_format.upper()}")
+        return file_path, part_paths
+
     def export_mixdown_dialog(self, audio_format="wav"):
+
         """Export the same canonical master mix in WAV/FLAC/OGG/AIFF/MP3/OPUS/CAF.
 
         Pathway (all formats share this — no alternate soft bus):
@@ -34277,8 +35072,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 return
             if not file_path.lower().endswith(ext):
                 file_path += ext
+            n_parts = self._export_part_count_dialog(
+                title=f"Audio Export Parts — {audio_format.upper()}",
+                default=self._default_export_part_count(),
+                hint=f"Final file: {os.path.basename(file_path)}",
+            )
+            if n_parts is None:
+                return
             if hasattr(self, 'scope_status_label'):
-                self.scope_status_label.setText(f"📊 Rendering canonical master mix → {audio_format.upper()}…")
+                self.scope_status_label.setText(
+                    f"📊 Rendering canonical master mix → {audio_format.upper()} ({n_parts} part{'s' if n_parts != 1 else ''})…"
+                )
             QApplication.processEvents()
             master, sample_rate = self._render_mixdown_buffer()
             master = np.nan_to_num(np.asarray(master, dtype=np.float32), nan=0.0, posinf=1.0, neginf=-1.0)
@@ -34287,33 +35091,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
             master, _ = self._master_hardclip(master, sample_rate, apply_master_vol=True)
             pcm = (np.clip(master, -1.0, 1.0) * 32767.0).astype(np.int16)
             provenance = self._export_provenance_payload()
-            if audio_format == "wav":
-                _write_wav_with_provenance(file_path, sample_rate, pcm, provenance.encode("utf-8"))
-            else:
-                ffmpeg = self._resolve_ffmpeg_binary()
-                if not ffmpeg:
-                    raise RuntimeError(f"FFmpeg is required for {audio_format.upper()} audio export.")
-                tmp = os.path.join(self._exports_dir(), f".groovebox_audio_tmp_{os.getpid()}_{self.export_counter}.wav")
-                _write_wav_with_provenance(tmp, sample_rate, pcm)
-                codec_args = {
-                    "flac": ["-c:a", "flac"],
-                    "ogg": ["-c:a", "libvorbis", "-q:a", "6"],
-                    "aiff": ["-c:a", "pcm_s16be"],
-                    "mp3": ["-c:a", "libmp3lame", "-q:a", "2"],
-                    "opus": ["-c:a", "libopus", "-b:a", "192k"],
-                    "caf": ["-c:a", "pcm_s16le"],
-                }[audio_format]
-                proc = subprocess.run(
-                    [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", tmp,
-                     *codec_args, "-metadata", f"comment={provenance}", file_path],
-                    capture_output=True, text=True, timeout=120,
+            prov_bytes = provenance.encode("utf-8") if isinstance(provenance, str) else provenance
+            file_path, audio_parts = self._write_audio_parts_and_final(
+                file_path, sample_rate, pcm, n_parts=n_parts,
+                provenance_bytes=prov_bytes, audio_format=audio_format,
+            )
+            if audio_parts and hasattr(self, "scope_status_label"):
+                self.scope_status_label.setText(
+                    f"📊 Wrote {len(audio_parts)} audio .part file(s) + final {audio_format.upper()}"
                 )
-                try:
-                    os.remove(tmp)
-                except OSError:
-                    pass
-                if proc.returncode != 0:
-                    raise RuntimeError(proc.stderr or f"FFmpeg failed for {audio_format.upper()}")
             if isinstance(getattr(self, 'visual_oscilloscope', None), VisualOscilloscope):
                 prev = master[:min(len(master), sample_rate // 2)]
                 if len(prev):
@@ -34724,14 +35510,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             def_w, def_h = 1280, 720
         res_dlg = QDialog(self)
-        res_dlg.setWindowTitle("Video Export — Resolution & Size")
+        res_dlg.setWindowTitle(
+            "Video + Audio Export — Resolution & Parts" if include_audio else "Video Export — Resolution & Parts"
+        )
         res_dlg.setStyleSheet(getattr(self, "styleSheet", lambda: "")() or "")
         form = QFormLayout(res_dlg)
         spin_w = QSpinBox(); spin_w.setRange(160, 7680); spin_w.setSingleStep(2); spin_w.setValue(int(def_w))
         spin_h = QSpinBox(); spin_h.setRange(120, 4320); spin_h.setSingleStep(2); spin_h.setValue(int(def_h))
         form.addRow("Width (px)", spin_w)
         form.addRow("Height (px)", spin_h)
-        info = QLabel("Size estimate appears after you choose the output path.")
+        spin_parts = QSpinBox()
+        spin_parts.setRange(1, 128)
+        spin_parts.setSingleStep(1)
+        spin_parts.setValue(int(self._default_export_part_count()))
+        spin_parts.setToolTip(
+            "Recoverable .part segments (1–128). Video writes <stem>.partNN.<container>; "
+            "with audio, also <stem>.audio.partNN.wav. Completed parts can resume after a crash."
+        )
+        form.addRow("Part Count (1–128)", spin_parts)
+        info = QLabel(
+            "Video parts and (when enabled) matching audio parts are written next to the final file. "
+            "Size estimate appears after you choose the output path."
+        )
         info.setWordWrap(True)
         form.addRow(info)
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -34743,6 +35543,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         w = int(spin_w.value()); h = int(spin_h.value())
         w -= w % 2; h -= h % 2
         w = max(160, w); h = max(120, h)
+        N_PARTS = max(1, min(128, int(spin_parts.value())))
+        self._last_export_part_count = N_PARTS
 
         default_name = os.path.join(
             self._exports_dir(), f"groovebox_video_{self.export_counter:03d}.{container}"
@@ -34767,7 +35569,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
         stem = os.path.splitext(os.path.basename(out_path))[0]
-        N_PARTS = 16
+        # N_PARTS already chosen in the resolution/parts dialog above.
 
         if hasattr(self, 'scope_status_label'):
             mode = "Video + Audio" if include_audio else "Video only"
@@ -34800,8 +35602,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return f"{n} B"
         size_msg = (
             f"Resolution: {w}×{h} @ {fps} fps\n"
-            f"Frames: {n_frames}  (~{duration_s:.1f}s)  in {N_PARTS} parts\n"
-            f"Predicted final size: ~{_fmt(est_video_bytes + est_audio_bytes)}\n"
+            f"Frames: {n_frames}  (~{duration_s:.1f}s)  in {N_PARTS} video part(s)\n"
+            + (
+                f"Audio: {N_PARTS} × {stem}.audio.partNN.wav (plus full mux WAV)\n"
+                if include_audio else "Audio: none (video only)\n"
+            )
+            + f"Predicted final size: ~{_fmt(est_video_bytes + est_audio_bytes)}\n"
             f"Predicted peak temp (1 part): ~{_fmt(est_peak)}\n"
             f"Part files will be written under:\n{dest_dir}\n\nContinue?"
         )
@@ -34844,22 +35650,40 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         pass
 
         audio_path = None
+        audio_part_paths = []
         if include_audio:
-            audio_path = os.path.join(dest_dir, f".{stem}.audio.part.wav")
             n_audio = min(len(master), int(round(duration_s * sr)))
             audio_clip = master[:max(1, n_audio)]
             pcm = (np.clip(audio_clip, -1, 1) * 32767).astype(np.int16)
+            # Full mux source (kept for final concat with video).
+            audio_path = os.path.join(dest_dir, f".{stem}.audio.full.part.wav")
             try:
-                if wavfile is not None:
-                    wavfile.write(audio_path, sr, pcm)
-                else:
-                    with wave.open(audio_path, 'wb') as wf:
-                        wf.setnchannels(1)
-                        wf.setsampwidth(2)
-                        wf.setframerate(int(sr))
-                        wf.writeframes(pcm.tobytes())
+                _write_wav_with_provenance(audio_path, sr, pcm)
             except Exception as e:
                 raise RuntimeError(f"Could not write audio temp: {e}")
+            # Matching recoverable audio .partNN files alongside video parts.
+            total = int(pcm.shape[0])
+            base = max(1, total // max(1, N_PARTS))
+            rem = total % max(1, N_PARTS)
+            offset = 0
+            for pi in range(N_PARTS):
+                take = base + (1 if pi < rem else 0)
+                if offset >= total:
+                    chunk = pcm[-1:]
+                else:
+                    chunk = pcm[offset:offset + max(1, take)]
+                    offset += max(1, take)
+                ap = os.path.join(dest_dir, f"{stem}.audio.part{pi:02d}.wav")
+                try:
+                    _write_wav_with_provenance(ap, sr, chunk)
+                    audio_part_paths.append(ap)
+                except Exception as e:
+                    print(f"[Export] audio part {pi}: {e}")
+            if hasattr(self, "scope_status_label"):
+                self.scope_status_label.setText(
+                    f"🎬 Wrote {len(audio_part_paths)} audio .part file(s) + full mux WAV"
+                )
+                QApplication.processEvents()
 
         _aim = getattr(self, 'active_instrument_memory', None)
         _nmem = len(_aim) if hasattr(_aim, '__len__') else int(getattr(self, 'synth_count', 48) or 48)
@@ -35041,7 +35865,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 f"Saved:\n{out_path}\n\n"
                 f"Encoder: {vcodec}"
                 + (f" + {acodec}" if include_audio else " (video only)")
-                + f"\nResolution: {w}×{h}  ·  {n_frames} frames in {N_PARTS} parts"
+                + f"\nResolution: {w}×{h}  ·  {n_frames} frames in {N_PARTS} video part(s)"
+                + (
+                    f"\nAudio parts: {len(audio_part_paths)} × {stem}.audio.partNN.wav"
+                    if include_audio and audio_part_paths else ""
+                )
             )
         except Exception as e:
             print(f"[Video] export error: {e}")

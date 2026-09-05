@@ -1630,11 +1630,19 @@ Algo XMOD local/global depth sequence algorithms.
   per-instrument; **Global Wavetable Projector** (1D Wave / 2D Field / 3D Resonance)
   feeds Master Vector conversion on the shared render path (50/50 user/canonical guide).
 
-### Resonance
-Canonical Resonance / Activity operates in the **50–150%** band by design
-(activity/continuation drive, not Master Volume). Live engine paths do not
-force-clamp mid-stream; the control surface and playlist automation keep values
-in that operating band.
+### Resonance — 50–150% vs 0–200%
+Canonical Resonance / Activity is **activity / continuation drive** (not Master
+Volume, not the 50/50 C/U mix). The legal band follows User Data Overwrite:
+
+| Mode | Control | Range |
+|------|---------|-------|
+| **Protect ON** (default) | `Canonical: skip overwrite user composition` checked | **50–150%** |
+| **User Data Overwrite ON** | Protect unchecked | **0–200%** |
+
+- Protect ON: user locks kept; 50% floor with active userdata; up to 150% when user activity is low.
+- Overwrite ON: userdata snapshotted, locks wiped; 0% = silent autonomous activity; 200% = maximum continuation while engines may rewrite the composition.
+
+The Resonance spin and status label switch with the protect toggle.
 
 ### Automation pattern library (playlist combo)
 Additional lanes: Master Vector X/Y/Z sweeps, Wavetable Frame Morph / Phase,
