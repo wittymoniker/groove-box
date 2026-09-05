@@ -1,15 +1,4 @@
 
-## V34 Stability Pass
-
-- Reversible randomizer toggle contract: ON captures a full project baseline and generates a fresh variation; OFF restores the exact pre-randomize state; each subsequent ON cycle rerandomizes and shifts the control color palette.
-- Canonical Signal Control defaults to Full Canonical / 100% authority and self-heals missing canonical coverage through canonical-owned runtime overlays without rewriting user data.
-- Canonical Resonance / Activity is 50–150%, independent of the 50/50 source coefficients; 150% is activity/continuation drive, not output volume.
-- Canonical→Instrument convolution influence is 0–100%.
-- Maximum active instruments: 128. Default playlist row duration: 16 beats.
-- ParametricMathBackground is integrated with a deep navy gradient field.
-- Performance controls are consolidated into one horizontal deck; Automator controls are compacted into a multi-row grid.
-- UI initialization order and Qt stylesheet declarations were hardened; division-by-zero-sensitive paths use explicit degenerate-case handling rather than epsilon denominators where practical.
-
 ================================================================================
   GROOVEBOX — Mathematician's / Scientist's Groovebox
   Full Documentation, Scripting Syntax & Design Philosophy

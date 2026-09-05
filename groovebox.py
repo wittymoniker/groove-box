@@ -75,7 +75,7 @@ from PyQt6.QtWidgets import (
     QGridLayout, QLayout, QFileDialog, QSplitter, QGroupBox, QTextEdit, QMenu,
     QMessageBox, QTableWidget, QTableWidgetItem, QCheckBox, QDial, QMenuBar,
     QDialog, QInputDialog, QHeaderView, QProgressBar, QSizePolicy, QToolButton,
-    QDialogButtonBox,
+    QDialogButtonBox, QDockWidget,
 )  # QToolButton is required by the global EXPORT menu control.
 
 
@@ -112,6 +112,33 @@ try:
 except ImportError:
     sd = None
     HAS_SOUNDDEVICE = False
+
+# PERF_2026: optional C++ accel (voice synth / hardclip / meum vectors).
+# Loaded once; missing library is fine — pure NumPy paths remain authoritative.
+_GB_ACCEL = None
+_GB_ACCEL_FUNCS = {}
+try:
+    import ctypes as _ctypes_accel
+    from pathlib import Path as _Path_accel
+    _here_accel = _Path_accel(__file__).resolve().parent
+    for _cand in (
+        _here_accel / "native" / "libgroovebox_accel.so",
+        _here_accel / "cpp" / "libgroovebox_accel.so",
+        _here_accel / "libgroovebox_accel.so",
+    ):
+        if _cand.is_file():
+            _GB_ACCEL = _ctypes_accel.CDLL(str(_cand))
+            break
+    if _GB_ACCEL is not None:
+        _P_f = _ctypes_accel.POINTER(_ctypes_accel.c_float)
+        _GB_ACCEL.gb_hardclip_f32.argtypes = [
+            _P_f, _P_f, _ctypes_accel.c_size_t, _ctypes_accel.c_float, _P_f
+        ]
+        _GB_ACCEL.gb_hardclip_f32.restype = None
+        _GB_ACCEL_FUNCS["hardclip"] = _GB_ACCEL.gb_hardclip_f32
+except Exception:
+    _GB_ACCEL = None
+    _GB_ACCEL_FUNCS = {}
 
 try:
     import videogame_engine as _vge
@@ -9154,6 +9181,35 @@ def _ensure_single_math_background(app, host):
     return bg
 
 
+def _low_power_mode() -> bool:
+    """True on hardware where full-effort decorative rendering causes lag.
+
+    Checked once per paint tick (cheap: just an env lookup + platform string
+    match), so a user can flip GROOVEBOX_LOW_POWER without restarting.
+    Auto-detects common single-board-computer / mini-PC ARM targets
+    (Raspberry Pi, Orange Pi, and other aarch64/armv7 boards) since the
+    animated math background is by far the heaviest per-frame QPainter cost
+    in the app and isn't needed for audio/DJ/game functionality.
+    """
+    override = os.environ.get("GROOVEBOX_LOW_POWER")
+    if override is not None:
+        return override.strip().lower() not in ("0", "false", "no", "")
+    try:
+        import platform
+        machine = platform.machine().lower()
+        if machine.startswith(("arm", "aarch64")):
+            return True
+    except Exception:
+        pass
+    try:
+        import os as _os
+        if (_os.cpu_count() or 8) <= 4:
+            return True
+    except Exception:
+        pass
+    return False
+
+
 class ParametricMathBackground(QWidget):
     """Lightweight animated mathematical background behind the global controls.
 
@@ -9162,6 +9218,14 @@ class ParametricMathBackground(QWidget):
     size — the visual field mirrors the Meum identity lattice, not a 1:1
     instrument sprite list (which caused replication above 24).
     Mouse-transparent; never participates in the audio path.
+
+    PERF_2026: this is the single most expensive per-frame paint in the app
+    (up to 24 waves + 24 shapes + equation cells, antialiased, ~20x/sec, per
+    open window). On Pi/Orange-Pi-class hardware that's enough to make the
+    whole UI feel laggy even though it never touches audio. `_low_power_mode()`
+    trims instance counts, drops antialiasing, and slows the timer; a hidden
+    or minimized host window stops ticking entirely instead of painting
+    off-screen.
     """
     MAX_INSTANCES = 24  # global per-family hard ceiling across all live instances
     WAVE_COUNT = 24
@@ -9183,7 +9247,7 @@ class ParametricMathBackground(QWidget):
         self._cycle = 0
         self._started = time.monotonic()
         self._timer = QTimer(self)
-        self._timer.setInterval(int(UI_TICK_MS))
+        self._timer.setInterval(int(UI_TICK_MS) * (3 if _low_power_mode() else 1))
         self._timer.timeout.connect(self._advance)
         self._timer.start()
         self._param_cache = ("", (), 0)
@@ -9194,6 +9258,11 @@ class ParametricMathBackground(QWidget):
         self._instances.add(self)
 
     def _advance(self):
+        # PERF_2026: a minimized/hidden host window (or one fully covered by
+        # a modal dialog) still received timer ticks before this check,
+        # painting work nobody could see. Skip entirely when not visible.
+        if not self.isVisible():
+            return
         elapsed = time.monotonic() - self._started
         new_cycle = int(elapsed / (MEUM * PHI + 1.0))
         if new_cycle != self._cycle:
@@ -9443,9 +9512,10 @@ class ParametricMathBackground(QWidget):
     def paintEvent(self, event):
         if self.width() < 10 or self.height() < 10:
             return
+        _lp = _low_power_mode()
         painter = QPainter(self)
         try:
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, not _lp)
             # NAVY_GRADIENT_MATH_FIELD_V34: the mathematical background is
             # integrated into the control surface instead of floating on a flat
             # transparent layer. The gradient remains subtle enough for labels.
@@ -9466,17 +9536,20 @@ class ParametricMathBackground(QWidget):
             w, h = self.width(), self.height()
             # Strict process-wide family budget. If several decorated windows
             # exist, their local caps divide the same 24 slots; total visual
-            # instances can never grow as 24 per window.
+            # instances can never grow as 24 per window. Low-power hardware
+            # gets a much smaller shared budget on top of that division.
             _live = max(1, len(self._instances))
-            _cap = max(1, int(getattr(self, "MAX_INSTANCES", 24)) // _live)
+            _budget = 8 if _lp else int(getattr(self, "MAX_INSTANCES", 24))
+            _cap = max(1, _budget // _live)
             _wave_cap = min(int(self.WAVE_COUNT), _cap)
             _shape_cap = min(int(self.SHAPE_COUNT), _cap)
             for i in range(_wave_cap):
                 self._paint_wave(painter, i, w, h, scalars, phase)
             for i in range(_shape_cap):
                 self._paint_shape(painter, i, w, h, scalars, phase)
-            self._paint_meum_equation_cells(painter, w, h, phase)
-            self._paint_meum_blocks(painter, w, h, scalars, phase, max_blocks=min(_cap, 12))
+            if not _lp:
+                self._paint_meum_equation_cells(painter, w, h, phase)
+            self._paint_meum_blocks(painter, w, h, scalars, phase, max_blocks=min(_cap, 12) if not _lp else min(_cap, 3))
         finally:
             if painter.isActive():
                 painter.end()
@@ -13800,7 +13873,7 @@ class MasterControlPatchbayPage(QWidget):
         QMessageBox.information(self, "Song & Patchbay Randomizer", "Successfully randomized song arrangement, synth wiring, effects modules, and global cross-tab patch cables!")
 
     def _save_project(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Save Project File", "", "EQ爾 Groovebox Files (*.mgpr)")
+        path, _ = QFileDialog.getSaveFileName(self, "Save Project File", self._projects_dir(), "EQ爾 Groovebox Files (*.mgpr)")
         if path:
             # SAVE_EXT_2026: enforce the .mgpr suffix so the second save with the
             # canonical-protect toggle can never fail on a bare extension.
@@ -13814,7 +13887,7 @@ class MasterControlPatchbayPage(QWidget):
             QMessageBox.information(self, "Project Saved", f"Project successfully saved to:\n{path}")
 
     def _load_project(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Open Project File", "", "EQ爾 Groovebox Files (*.mgpr)")
+        path, _ = QFileDialog.getOpenFileName(self, "Open Project File", self._projects_dir(), "EQ爾 Groovebox Files (*.mgpr)")
         if path:
             self.engine.deserialize_project(path)
             self.bpm_slider.setValue(int(self.engine.global_bpm * 10))
@@ -13838,7 +13911,7 @@ class MasterControlPatchbayPage(QWidget):
             else:
                 self.instrument_param_state = {}
     def _export_audio(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Export Master WAV Audio", "", "WAV Audio Files (*.wav)")
+        path, _ = QFileDialog.getSaveFileName(self, "Export Master WAV Audio", self._exports_dir(), "WAV Audio Files (*.wav)")
         if path:
             self.engine.export_audio(path)
             QMessageBox.information(self, "Audio Exported", f"Master audio successfully rendered and exported to:\n{path}")
@@ -16281,7 +16354,7 @@ class WavetableProjector(QWidget):
 class MathematiciansGrooveboxApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Groovebox")
+        self.setWindowTitle("Mathematician's Groovebox V3 — Operation Station")
         self.setMinimumSize(0, 0)
         self.setMaximumSize(16777215, 16777215)
         # UI_AUDIT_V34: semantic colors, compact instrument context, and responsive lower deck.
@@ -21380,11 +21453,53 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "QPushButton:hover { background-color:#1f4228; }"
                 "QPushButton:pressed { background-color:#0c1f10; }"
             )
+        # PERF_2026: live preview length (0 = full playlist) + UI-lite during play.
+        self.lbl_preview_rows = QLabel("Preview rows:")
+        self.lbl_preview_rows.setStyleSheet("color:#8ab4c8; font-size:9pt; font-weight:700;")
+        self.spin_preview_rows = QSpinBox()
+        self.spin_preview_rows.setRange(0, 1024)
+        self.spin_preview_rows.setValue(0)
+        self.spin_preview_rows.setMinimumWidth(72)
+        self.spin_preview_rows.setMinimumHeight(32)
+        self.spin_preview_rows.setToolTip(
+            "PERF: limit live Play / Audio-only mixdown to the first N playlist rows "
+            "(0 = full playlist). Export always uses the full composition."
+        )
+        self.spin_preview_rows.setStyleSheet(
+            "QSpinBox { background-color:#121820; color:#b8f7e6; border:1px solid #3a5a6a; "
+            "border-radius:4px; padding:2px 4px; font-weight:700; }"
+        )
+        self.chk_ui_lite = QCheckBox("UI lite")
+        self.chk_ui_lite.setChecked(True)
+        self.chk_ui_lite.setToolTip(
+            "PERF: during live play, update scope + spectrum every tick but throttle "
+            "the heavy scenograph / video viewer to every 3rd tick (or skip when audio-only)."
+        )
+        self.chk_ui_lite.setStyleSheet("color:#8ab4c8; font-size:9pt; font-weight:700;")
+        self._scope_tick_counter = 0
+        scope_bar.addWidget(self.lbl_preview_rows, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
+        scope_bar.addWidget(self.spin_preview_rows, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
+        scope_bar.addWidget(self.chk_ui_lite, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
+        scope_bar.addSpacing(8)
         scope_bar.addWidget(self.btn_play, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
         scope_bar.addWidget(self.btn_audio_only, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
         scope_bar.addWidget(self.btn_stop, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
         scope_bar.addSpacing(10)
         scope_bar.addWidget(self.btn_export, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
+        # PI_MEDIA_HUB_2026: in-app browser / playlist / game / remix / batch re-render.
+        self.btn_media_hub = QPushButton("🎛 Performance")
+        self.btn_media_hub.setMinimumHeight(40)
+        self.btn_media_hub.setMinimumWidth(120)
+        self.btn_media_hub.setToolTip(
+            "Performance: media, devices, geometric cutups, playlist automation, game/broadcast, and batch rendering."
+        )
+        self.btn_media_hub.setStyleSheet(
+            "QPushButton { background-color:#1a2a3a; color:#b8f7e6; border:2px solid #4a90a4; "
+            "border-radius:8px; padding:8px 12px; font-weight:900; font-size:11pt; }"
+            "QPushButton:hover { background-color:#243848; }"
+        )
+        self.btn_media_hub.clicked.connect(self._open_performance)
+        scope_bar.addWidget(self.btn_media_hub, stretch=0, alignment=Qt.AlignmentFlag.AlignRight)
         # UI_LAYOUT_V36: PLAY VIDEO GAME belongs with the bottom export/output
         # controls, not between Reset Window Mods and the editor launchers.
         self.btn_play_videogame.setMinimumHeight(40)
@@ -21526,7 +21641,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.update()  # Trigger repaint
         # PERF_2026: ~20 fps scopes is enough for playhead feedback; 33ms was a
         # constant paint tax even when the wave barely changed.
-        self._scope_update_timer.setInterval(50)
+        self._scope_update_timer.setInterval(150 if _low_power_mode() else 50)
         self._scope_update_timer.timeout.connect(self._update_scope_from_playhead)
         QTimer.singleShot(0, self._sync_square_visuals)
         QTimer.singleShot(120, self._sync_square_visuals)
@@ -27089,7 +27204,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def export_project_json(self):
         """Export the unified project snapshot (same document as Save)."""
-        path, _ = QFileDialog.getSaveFileName(self, "Export Project JSON", "", "Mathematician's Groovebox Project (*.mgpr)")
+        path, _ = QFileDialog.getSaveFileName(self, "Export Project JSON", self._projects_dir(), "Mathematician's Groovebox Project (*.mgpr)")
         if not path:
             return
         self._save_project_document(path)
@@ -27120,16 +27235,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
             print(f"[Load] visual view state: {e}")
 
     def _projects_dir(self):
-        base = os.path.join(os.path.expanduser("~"), ".groovebox", "projects")
-        try:
-            os.makedirs(base, exist_ok=True)
-        except Exception:
-            base = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0] or "groovebox.py")), "groovebox_projects")
-            try:
-                os.makedirs(base, exist_ok=True)
-            except Exception:
-                pass
-        return base
+        import groovebox_paths
+        return groovebox_paths.projects_dir()
+
+    def _games_dir(self):
+        import groovebox_paths
+        return groovebox_paths.games_dir()
+
+    def _samples_dir(self):
+        import groovebox_paths
+        return groovebox_paths.samples_dir()
 
     def _atomic_write_document(self, path, data):
         """Write a full project document atomically via a .part file.
@@ -27241,11 +27356,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
             pass
 
     def save_project_dialog(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Save Mathematician's Groovebox Project", "", "Mathematician's Groovebox Project (*.mgpr)")
+        path, _ = QFileDialog.getSaveFileName(self, "Save Mathematician's Groovebox Project", self._projects_dir(), "Mathematician's Groovebox Project (*.mgpr)")
         if not path:
             return
         path = self._ensure_project_extension(path)
         self._save_project_document(path)
+        self._current_project_path = path
 
     def load_project_dialog(self):
         """Load a unified project document back onto the live surface.
@@ -27260,7 +27376,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         canonical fingerprint ⇒ identical exports/play as the saved session.
         """
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load Mathematician's Groovebox Project", "",
+            self, "Load Mathematician's Groovebox Project", self._projects_dir(),
             "Mathematician's Groovebox Project (*.mgpr *.mgpr.part);;All files (*)",
         )
         if not path:
@@ -27279,6 +27395,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             with open(load_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             self._apply_project_snapshot(data)
+            self._current_project_path = load_path if load_path.lower().endswith(".mgpr") else path
             try:
                 self.reload_active_instrument_sequencer_ui()
             except Exception:
@@ -28389,7 +28506,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def load_sample_to_selected_operator(self):
         """Attach an audio/video-derived user sample to the active operator."""
         try:
-            path, _ = QFileDialog.getOpenFileName(self, "Load Sample to Selected Operator", "", self._media_file_filter())
+            path, _ = QFileDialog.getOpenFileName(self, "Load Sample to Selected Operator", self._samples_dir(), self._media_file_filter())
             if not path:
                 return
             arr, sr = self._decode_media_audio(path)
@@ -28495,7 +28612,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """Load a WAV file as the global carrier/reference waveform."""
         try:
             file_path, _ = QFileDialog.getOpenFileName(
-                self, "Load Audio/Video Carrier", "",
+                self, "Load Audio/Video Carrier", self._samples_dir(),
                 "Media Files (*.wav *.mp3 *.flac *.ogg *.oga *.m4a *.aac *.aiff *.aif *.opus *.caf *.alac *.wma *.ape *.wv *.mp4 *.mov *.mkv *.webm *.avi *.m4v *.mpeg *.mpg *.flv *.ts *.m2ts *.mts *.3gp *.3g2 *.ogv *.vob);;Audio Files (*.wav *.mp3 *.flac *.ogg *.oga *.m4a *.aac *.aiff *.aif *.opus *.caf *.alac *.wma *.ape *.wv);;Video Files (*.mp4 *.mov *.mkv *.webm *.avi *.m4v *.mpeg *.mpg *.flv *.ts *.m2ts *.mts *.3gp *.3g2 *.ogv *.vob);;All Files (*)"
             )
             if not file_path:
@@ -28513,7 +28630,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """Load WAV audio or a video file and parse its usable streams."""
         try:
             file_path, _ = QFileDialog.getOpenFileName(
-                self, "Load WAV / Video Carrier", "",
+                self, "Load WAV / Video Carrier", self._samples_dir(),
                 "Media Files (*.wav *.mp3 *.flac *.ogg *.oga *.m4a *.aac *.aiff *.aif *.opus *.caf *.alac *.wma *.ape *.wv *.mp4 *.mov *.mkv *.webm *.avi *.m4v *.mpeg *.mpg *.flv *.ts *.m2ts *.mts *.3gp *.3g2 *.ogv *.vob);;"
                 "Audio Files (*.wav *.mp3 *.flac *.ogg *.oga *.m4a *.aac *.aiff *.aif *.opus *.caf *.alac *.wma *.ape *.wv);;Video Files (*.mp4 *.mov *.mkv *.webm *.avi *.m4v *.mpeg *.mpg *.flv *.ts *.m2ts *.mts *.3gp *.3g2 *.ogv *.vob);;"
                 "All Files (*)"
@@ -31947,7 +32064,26 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 vol = 0.5
         scaled = m32 * np.float32(vol * drive)
         # HARD CLIP — the only ceiling.  No peak rescale afterward.
-        out = np.clip(scaled, -1.0, 1.0).astype(np.float32)
+        # PERF_2026: prefer C++ gb_hardclip_f32 when the accel library is loaded.
+        out = None
+        _hc = _GB_ACCEL_FUNCS.get("hardclip") if isinstance(_GB_ACCEL_FUNCS, dict) else None
+        if _hc is not None and n >= 256:
+            try:
+                import ctypes as _ct
+                out = np.empty(n, dtype=np.float32)
+                metrics = np.zeros(3, dtype=np.float32)
+                # gain=1.0: volume×drive already applied in `scaled`.
+                _hc(
+                    scaled.ctypes.data_as(_ct.POINTER(_ct.c_float)),
+                    out.ctypes.data_as(_ct.POINTER(_ct.c_float)),
+                    _ct.c_size_t(n),
+                    _ct.c_float(1.0),
+                    metrics.ctypes.data_as(_ct.POINTER(_ct.c_float)),
+                )
+            except Exception:
+                out = None
+        if out is None:
+            out = np.clip(scaled, -1.0, 1.0).astype(np.float32)
         dens_before = float(np.mean(np.abs(m32) > 0.99)) if n else 0.0
         dens_after = float(np.mean(np.abs(out) >= 0.999)) if n else 0.0
         try:
@@ -33590,17 +33726,26 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.scope_status_label.setText(
                     f"📊 Meum monitors LIVE  {pct}%  ·  Vol {int(self.master_volume*100)}%"
                 )
-        # UI monitors kept (oscilloscope + FFT) — scenograph is pure geometry
+        # UI monitors: scope every tick; heavy scenograph throttled when UI lite.
+        self._scope_tick_counter = int(getattr(self, "_scope_tick_counter", 0) or 0) + 1
+        _lite = bool(getattr(self, "chk_ui_lite", None) and self.chk_ui_lite.isChecked())
         if isinstance(getattr(self, 'visual_oscilloscope', None), VisualOscilloscope):
             self.visual_oscilloscope.update_waveform(chunk, overview=overview, playhead=playhead)
-        if hasattr(self, 'video_synth_viewer'):
-            self.video_synth_viewer.update_from_audio(chunk, playhead=playhead)
         if hasattr(self, 'spectrum_analyzer') and self.spectrum_analyzer is not None:
             self.spectrum_analyzer.update_spectrum(chunk)
-        try:
-            self._push_visualizer_seed_hud()
-        except Exception:
-            pass
+        # PERF_2026: scenograph / video viewer is the expensive paint; every 3rd tick
+        # under UI lite keeps playhead feedback without constant full-frame work.
+        if hasattr(self, 'video_synth_viewer'):
+            if (not _lite) or (self._scope_tick_counter % 3 == 0):
+                try:
+                    self.video_synth_viewer.update_from_audio(chunk, playhead=playhead)
+                except Exception:
+                    pass
+        if (not _lite) or (self._scope_tick_counter % 3 == 0):
+            try:
+                self._push_visualizer_seed_hud()
+            except Exception:
+                pass
         # EQR_Z_READOUT_2026: UI-thread refresh of the master EQR z-value
         # readout (single-point reality-tensor P·E+D) + peak-hold meter (tied
         # to the Clip/Gain report).  Offline z value comes from the last
@@ -33621,6 +33766,24 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
 
+
+    def _live_preview_max_rows(self):
+        """PERF_2026: optional row cap for live Play only (export stays full).
+
+        spin_preview_rows == 0 → None (full playlist).
+        Otherwise clamp to [1, current playlist length].
+        """
+        try:
+            n = int(self.spin_preview_rows.value()) if hasattr(self, "spin_preview_rows") else 0
+        except Exception:
+            n = 0
+        if n <= 0:
+            return None
+        try:
+            plen = int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else 64
+        except Exception:
+            plen = 64
+        return max(1, min(int(n), max(1, plen)))
 
     def toggle_playback(self):
         """Unified PLAY/PAUSE/RESUME transport over the rendered audiovisual data stream."""
@@ -33691,10 +33854,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if not HAS_SOUNDDEVICE:
             QMessageBox.warning(self, "Audio Engine", "sounddevice is not available. Install with: pip install sounddevice")
         try:
+            _prev = self._live_preview_max_rows()
             if hasattr(self, 'scope_status_label'):
-                self.scope_status_label.setText("📊 Rendering Audiovisual Track…")
+                if _prev is not None:
+                    self.scope_status_label.setText(
+                        f"📊 Rendering Audiovisual Track (preview {_prev} rows)…"
+                    )
+                else:
+                    self.scope_status_label.setText("📊 Rendering Audiovisual Track…")
             QApplication.processEvents()
-            buf, sr = self._render_mixdown_buffer()
+            buf, sr = self._render_mixdown_buffer(max_rows=_prev)
             with self.play_lock:
                 self.play_buffer = buf
                 self.play_sample_rate = sr
@@ -33717,9 +33886,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.audio_stream.start()
             self.btn_play.setText("⏸ PAUSE Audiovisual Track")
             self.btn_play.setStyleSheet("background-color: #00aa55; color: #101010; font-weight: bold;")
+            self._scope_tick_counter = 0
             self._scope_update_timer.start()
             if hasattr(self, 'scope_status_label'):
-                self.scope_status_label.setText("📊 Audiovisual Track  |  LIVE")
+                _tag = f" preview {_prev}r" if _prev is not None else ""
+                self.scope_status_label.setText(f"📊 Audiovisual Track  |  LIVE{_tag}")
         except Exception as e:
             self.is_playing = False
             self.is_paused = False
@@ -33925,10 +34096,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
             else:
                 return
         try:
+            _prev = self._live_preview_max_rows()
             if hasattr(self, "scope_status_label"):
-                self.scope_status_label.setText("🔊 Rendering Audio Track…")
+                if _prev is not None:
+                    self.scope_status_label.setText(
+                        f"🔊 Rendering Audio Track (preview {_prev} rows)…"
+                    )
+                else:
+                    self.scope_status_label.setText("🔊 Rendering Audio Track…")
             QApplication.processEvents()
-            buf, sr = self._render_mixdown_buffer()
+            buf, sr = self._render_mixdown_buffer(max_rows=_prev)
             with self.play_lock:
                 self.play_buffer = buf
                 self.play_sample_rate = sr
@@ -33957,7 +34134,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             )
             self.btn_play.setText("▶ PLAY Audiovisual Track")
             if hasattr(self, "scope_status_label"):
-                self.scope_status_label.setText("🔊 Audio Track  |  LIVE")
+                _tag = f" preview {_prev}r" if _prev is not None else ""
+                self.scope_status_label.setText(f"🔊 Audio Track  |  LIVE{_tag}")
+            self._scope_tick_counter = 0
             self._scope_update_timer.start()
         except Exception as e:
             self.is_playing = False
@@ -34048,13 +34227,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._stop_requested = False
 
     def _exports_dir(self):
-        """Default export root: ./renders/ next to CWD (created on demand)."""
-        root = os.path.join(os.getcwd(), "renders")
-        try:
-            os.makedirs(root, exist_ok=True)
-        except Exception:
-            root = os.getcwd()
-        return root
+        """Default export/render root: <groovebox root>/renders/"""
+        import groovebox_paths
+        return groovebox_paths.renders_dir()
 
     def _export_frame_size(self):
         """Video resolution = main window size at export time (even dims for yuv420p)."""
@@ -34118,6 +34293,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         manifest = {
             "doc": "eqr_export_manifest_v1",
             "fingerprint": None,
+            # PI_MEDIA_HUB_2026: absolute project path so batch re-render can
+            # reopen the linked .mgpr and re-export at new FPS/bitrate.
+            "source_project_path": str(getattr(self, "_current_project_path", "") or "") or None,
             "seed": _txt("input_seed_val", ""),
             "bpm": _num("spin_bpm", 120.0),
             "seq_length": _num("spin_seq_length", 16.0),
@@ -34464,7 +34642,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         artifact; the restored canonical fingerprint is shown for comparison.
         """
         filter_all = "Exports (*.wav *.flac *.mp3 *.ogg *.opus *.caf *.aiff *.mp4 *.webm *.avi *.zip);;All files (*)"
-        file_path, _ = QFileDialog.getOpenFileName(self, "Reconvert Export → Main Window", "", filter_all)
+        file_path, _ = QFileDialog.getOpenFileName(self, "Reconvert Export → Main Window", self._exports_dir(), filter_all)
         if not file_path:
             return
         payload = self._extract_provenance_from_file(file_path)
@@ -34633,7 +34811,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         to a folder.  REVERSE_ENGINEERING: the export is the inverse of export.
         """
         filter_all = "Exports / Packages (*.zip);;All files (*)"
-        path, _ = QFileDialog.getOpenFileName(self, "Reverse-Engineer Program from .zip", "", filter_all)
+        path, _ = QFileDialog.getOpenFileName(self, "Reverse-Engineer Program from .zip", self._games_dir(), filter_all)
         if not path:
             return
         bundle = self._recover_program_bundle(path)
@@ -34709,7 +34887,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         def _save():
             out_dir = QFileDialog.getExistingDirectory(
-                self, "Save recovered program bundle to", os.path.expanduser("~")
+                self, "Save recovered program bundle to", self._games_dir()
             )
             if not out_dir:
                 return
@@ -34786,7 +34964,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         is verified in the sample domain, not just the fingerprint domain.
         """
         filter_all = "Exports (*.wav *.flac *.mp3 *.ogg *.opus *.caf *.aiff *.mp4 *.webm *.avi *.zip);;All files (*)"
-        file_path, _ = QFileDialog.getOpenFileName(self, "Bake & Compare Export", "", filter_all)
+        file_path, _ = QFileDialog.getOpenFileName(self, "Bake & Compare Export", self._exports_dir(), filter_all)
         if not file_path:
             return
         target = self._extract_provenance_from_file(file_path)
@@ -34964,8 +35142,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         n_parts=1,
         provenance_bytes=None,
         audio_format="wav",
+        audio_bitrate_kbps=None,
     ):
         """Write optional audio .partNN files, then the final audio artifact.
+
+        audio_bitrate_kbps: optional target bitrate for lossy formats (mp3/opus/ogg).
+        WAV/FLAC/AIFF/CAF ignore it (lossless / PCM).
 
         Returns (final_path, list_of_part_paths).
         """
@@ -35007,6 +35189,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     QApplication.processEvents()
 
         audio_format = str(audio_format or "wav").lower().lstrip(".")
+        try:
+            br = int(audio_bitrate_kbps) if audio_bitrate_kbps is not None else None
+        except Exception:
+            br = None
+        if br is not None:
+            br = max(32, min(512, br))
+
         if audio_format == "wav":
             _write_wav_with_provenance(file_path, sample_rate, pcm, provenance_bytes)
         else:
@@ -35017,14 +35206,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 dest_dir, f".groovebox_audio_tmp_{os.getpid()}_{getattr(self, 'export_counter', 0)}.wav"
             )
             _write_wav_with_provenance(tmp, sample_rate, pcm)
-            codec_args = {
-                "flac": ["-c:a", "flac"],
-                "ogg": ["-c:a", "libvorbis", "-q:a", "6"],
-                "aiff": ["-c:a", "pcm_s16be"],
-                "mp3": ["-c:a", "libmp3lame", "-q:a", "2"],
-                "opus": ["-c:a", "libopus", "-b:a", "192k"],
-                "caf": ["-c:a", "pcm_s16le"],
-            }.get(audio_format, ["-c:a", "flac"])
+            # Bitrate-aware codec args for lossy formats; lossless stay fixed.
+            if audio_format == "mp3":
+                if br is not None:
+                    codec_args = ["-c:a", "libmp3lame", "-b:a", f"{br}k"]
+                else:
+                    codec_args = ["-c:a", "libmp3lame", "-q:a", "2"]
+            elif audio_format == "opus":
+                codec_args = ["-c:a", "libopus", "-b:a", f"{br or 192}k"]
+            elif audio_format == "ogg":
+                # libvorbis prefers quality scale; approximate from bitrate when set.
+                if br is not None:
+                    # ~64kbps→q2 … ~320kbps→q9
+                    q = max(0, min(10, int(round((br - 64) / 28.0))))
+                    codec_args = ["-c:a", "libvorbis", "-q:a", str(q)]
+                else:
+                    codec_args = ["-c:a", "libvorbis", "-q:a", "6"]
+            else:
+                codec_args = {
+                    "flac": ["-c:a", "flac"],
+                    "aiff": ["-c:a", "pcm_s16be"],
+                    "caf": ["-c:a", "pcm_s16le"],
+                }.get(audio_format, ["-c:a", "flac"])
             meta = []
             if provenance_bytes:
                 try:
@@ -35077,16 +35280,51 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 return
             if not file_path.lower().endswith(ext):
                 file_path += ext
-            n_parts = self._export_part_count_dialog(
-                title=f"Audio Export Parts — {audio_format.upper()}",
-                default=self._default_export_part_count(),
-                hint=f"Final file: {os.path.basename(file_path)}",
+            # Parts + optional bitrate (lossy formats only).
+            opts_dlg = QDialog(self)
+            opts_dlg.setWindowTitle(f"Audio Export — {audio_format.upper()}")
+            opts_form = QFormLayout(opts_dlg)
+            spin_parts = QSpinBox()
+            spin_parts.setRange(1, 128)
+            spin_parts.setValue(int(self._default_export_part_count()))
+            spin_parts.setToolTip("Recoverable .part segments (1–128).")
+            opts_form.addRow("Part Count (1–128)", spin_parts)
+            lossy = audio_format in {"mp3", "opus", "ogg"}
+            spin_br = QSpinBox()
+            spin_br.setRange(32, 512)
+            spin_br.setSingleStep(16)
+            try:
+                spin_br.setValue(int(getattr(self, "_last_audio_bitrate_kbps", 192) or 192))
+            except Exception:
+                spin_br.setValue(192)
+            spin_br.setSuffix(" kbps")
+            spin_br.setToolTip(
+                "Target audio bitrate for lossy formats (mp3 / opus / ogg). "
+                "WAV / FLAC / AIFF / CAF ignore this (lossless or PCM)."
             )
-            if n_parts is None:
+            spin_br.setEnabled(lossy)
+            opts_form.addRow("Bitrate", spin_br)
+            if not lossy:
+                opts_form.addRow(QLabel("Bitrate applies to MP3 / Opus / OGG only."))
+            opts_form.addRow(QLabel(f"Final file: {os.path.basename(file_path)}"))
+            opts_btns = QDialogButtonBox(
+                QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+            )
+            opts_btns.accepted.connect(opts_dlg.accept)
+            opts_btns.rejected.connect(opts_dlg.reject)
+            opts_form.addRow(opts_btns)
+            if opts_dlg.exec() != QDialog.DialogCode.Accepted:
                 return
+            n_parts = max(1, min(128, int(spin_parts.value())))
+            self._last_export_part_count = n_parts
+            audio_bitrate_kbps = int(spin_br.value()) if lossy else None
+            if audio_bitrate_kbps is not None:
+                self._last_audio_bitrate_kbps = audio_bitrate_kbps
             if hasattr(self, 'scope_status_label'):
+                _br_tag = f" @ {audio_bitrate_kbps}k" if audio_bitrate_kbps else ""
                 self.scope_status_label.setText(
-                    f"📊 Rendering canonical master mix → {audio_format.upper()} ({n_parts} part{'s' if n_parts != 1 else ''})…"
+                    f"📊 Rendering canonical master mix → {audio_format.upper()}{_br_tag} "
+                    f"({n_parts} part{'s' if n_parts != 1 else ''})…"
                 )
             QApplication.processEvents()
             master, sample_rate = self._render_mixdown_buffer()
@@ -35100,6 +35338,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             file_path, audio_parts = self._write_audio_parts_and_final(
                 file_path, sample_rate, pcm, n_parts=n_parts,
                 provenance_bytes=prov_bytes, audio_format=audio_format,
+                audio_bitrate_kbps=audio_bitrate_kbps,
             )
             if audio_parts and hasattr(self, "scope_status_label"):
                 self.scope_status_label.setText(
@@ -35363,7 +35602,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             QMessageBox.warning(self, "Video Game", str(e))
             return
         default_name = os.path.join(
-            os.path.expanduser("~"), f"game_{identity.composition_fingerprint}.zip"
+            self._games_dir(), f"game_{identity.composition_fingerprint}.zip"
         )
         path, _filter = QFileDialog.getSaveFileName(
             self, "Export Video Game Package", default_name,
@@ -35391,6 +35630,55 @@ class MathematiciansGrooveboxApp(QMainWindow):
             )
         except Exception as e:
             QMessageBox.warning(self, "Export failed", str(e))
+
+    def _open_performance(self):
+        """Open/toggle the live Performance workspace inside the main editor.
+
+        Performance is deliberately non-modal: transport, fullscreen playback and
+        the scientific editor remain live while the same host engine is manipulated.
+        The dock can float on a second display/tablet-style layout or remain tabbed
+        with other Qt docks.  Reopening the button toggles the existing instance.
+        """
+        try:
+            dock = getattr(self, "_performance_dock", None)
+            if dock is not None:
+                dock.setVisible(not dock.isVisible())
+                if dock.isVisible():
+                    dock.raise_()
+                return dock
+
+            from performance import Performance
+            panel = Performance(self, parent=self)
+            # Embed the QDialog as an ordinary dock widget instead of executing it
+            # modally. Qt accepts this once the window flag is changed to Widget.
+            panel.setWindowFlags(Qt.WindowType.Widget)
+            panel.setModal(False)
+
+            dock = QDockWidget("Performance — Live Operation Station", self)
+            dock.setObjectName("groovebox_performance_dock")
+            dock.setAllowedAreas(
+                Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea |
+                Qt.DockWidgetArea.TopDockWidgetArea | Qt.DockWidgetArea.BottomDockWidgetArea
+            )
+            dock.setFeatures(
+                QDockWidget.DockWidgetFeature.DockWidgetMovable |
+                QDockWidget.DockWidgetFeature.DockWidgetFloatable |
+                QDockWidget.DockWidgetFeature.DockWidgetClosable
+            )
+            dock.setWidget(panel)
+            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+            self._performance_panel = panel
+            self._performance_dock = dock
+            dock.show()
+            dock.raise_()
+            return dock
+        except Exception as e:
+            QMessageBox.warning(self, "Performance", f"Could not open Performance:\n{e}")
+            return None
+
+    # Compatibility for project scripts that still call the old method.
+    def _open_pi_media_hub(self):
+        return self._open_performance()
 
     def _on_play_videogame(self):
         """Build a live game .py from the composition and open the start UI (splash + options)."""
@@ -35516,7 +35804,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             def_w, def_h = 1280, 720
         res_dlg = QDialog(self)
         res_dlg.setWindowTitle(
-            "Video + Audio Export — Resolution & Parts" if include_audio else "Video Export — Resolution & Parts"
+            "Video + Audio Export — Resolution, FPS & Parts" if include_audio else "Video Export — Resolution, FPS & Parts"
         )
         res_dlg.setStyleSheet(getattr(self, "styleSheet", lambda: "")() or "")
         form = QFormLayout(res_dlg)
@@ -35524,6 +35812,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
         spin_h = QSpinBox(); spin_h.setRange(120, 4320); spin_h.setSingleStep(2); spin_h.setValue(int(def_h))
         form.addRow("Width (px)", spin_w)
         form.addRow("Height (px)", spin_h)
+        spin_fps = QSpinBox()
+        spin_fps.setRange(1, 120)
+        spin_fps.setSingleStep(1)
+        try:
+            spin_fps.setValue(int(getattr(self, "_last_export_fps", 24) or 24))
+        except Exception:
+            spin_fps.setValue(24)
+        spin_fps.setToolTip(
+            "Export frame rate (1–120 fps). Higher FPS = more frames, longer encode, smoother motion."
+        )
+        form.addRow("FPS", spin_fps)
+        spin_audio_br = QSpinBox()
+        spin_audio_br.setRange(32, 512)
+        spin_audio_br.setSingleStep(16)
+        try:
+            spin_audio_br.setValue(int(getattr(self, "_last_audio_bitrate_kbps", 192) or 192))
+        except Exception:
+            spin_audio_br.setValue(192)
+        spin_audio_br.setSuffix(" kbps")
+        spin_audio_br.setEnabled(bool(include_audio))
+        spin_audio_br.setToolTip("Audio bitrate for the muxed track (when Video + Audio is selected).")
+        form.addRow("Audio bitrate", spin_audio_br)
         spin_parts = QSpinBox()
         spin_parts.setRange(1, 128)
         spin_parts.setSingleStep(1)
@@ -35550,6 +35860,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         w = max(160, w); h = max(120, h)
         N_PARTS = max(1, min(128, int(spin_parts.value())))
         self._last_export_part_count = N_PARTS
+        export_fps = max(1, min(120, int(spin_fps.value())))
+        self._last_export_fps = export_fps
+        if include_audio:
+            self._last_audio_bitrate_kbps = max(32, min(512, int(spin_audio_br.value())))
+            # Override encoder audio bitrate args for this export.
+            aargs = ["-b:a", f"{int(self._last_audio_bitrate_kbps)}k"]
 
         default_name = os.path.join(
             self._exports_dir(), f"groovebox_video_{self.export_counter:03d}.{container}"
@@ -35585,7 +35901,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         master = np.nan_to_num(np.asarray(master, dtype=np.float32), nan=0.0, posinf=1.0, neginf=-1.0)
         master = self._bake_dj_write(master, sr)
         provenance = self._export_provenance_payload()
-        fps = 24
+        fps = int(getattr(self, "_last_export_fps", 24) or 24)
+        fps = max(1, min(120, fps))
         frame_samples = max(1, int(sr / fps))
         n_frames = max(1, int(np.ceil(len(master) / frame_samples)))
         n_frames = min(n_frames, fps * 60 * 30)  # soft 30 min ceiling
