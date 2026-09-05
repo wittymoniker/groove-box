@@ -5728,6 +5728,17 @@ class VideoSynthEngine:
         snap = self._live_snap()
         ph = self.playhead
         t = self.t
+        # USER_TRACK_OFFSET_2026: user-set global track offset shifts visual time
+        # the same way audio schedules shift — not a canonical rewrite handle.
+        try:
+            gto = float(snap.get("global_track_offset", snap.get("track_offset", 0.0)) or 0.0)
+            if not math.isfinite(gto):
+                gto = 0.0
+            # Offset is in playlist-row units; map a fraction of a cycle into phase.
+            t = float(t) + gto
+            ph = (float(ph) + gto * 0.125) % 1.0
+        except Exception:
+            pass
         # Base identities
         u = MEUM_NORM * vg_sin(MEUM * t + ph * math.tau) + MEUM_INV * self._centroid
         # Dimensional expand/contract: insert/remove powers based on engines
@@ -5767,10 +5778,51 @@ class VideoSynthEngine:
         line_d = MEUM_LOG2 * (0.5 + 0.5 * (snap["bpm"] / 140.0)) * (0.4 + 0.6 * snap["fractal"])
         if snap.get("canonical_count"):
             line_d *= 1.0 + 0.08 * float(snap["canonical_count"])
+        # CANONICAL_COMMAND_2026: master vector / xmod / resonance drive the
+        # visual engine under canonical authority. Resonance is always 50–150%.
+        resonance = 1.0
+        master_vector = (0.0, 0.0, 0.0)
+        master_drive = 0.5
+        xmod = 1.0
+        try:
+            if self.app is not None:
+                # Natural operating band is 50–150%; do not hard-clamp live values.
+                resonance = float(getattr(self.app, "canonical_resonance_factor", 1.50) or 1.50)
+                if not math.isfinite(resonance):
+                    resonance = 1.50
+                if hasattr(self.app, "_master_vector_effective"):
+                    mv = self.app._master_vector_effective()
+                    master_vector = (float(mv[0]), float(mv[1]), float(mv[2]))
+                st = getattr(self.app, "master_vector_state", None) or {}
+                master_drive = float(np.clip(st.get("drive", 0.50), 0.0, 1.0)) if bool(st.get("enabled", True)) else 0.0
+                gms = getattr(self.app, "global_mod_state", None) or {}
+                xmod = float(np.clip(gms.get("xmod", 1.0), 0.0, 2.0))
+            # Apply resonance as activity/continuation drive (not volume)
+            form = float(np.clip(form * (0.70 + 0.30 * resonance), 0.05, 1.5))
+            rho = float(np.clip(rho * (0.80 + 0.20 * resonance), 0.05, 2.0))
+            line_d = float(np.clip(line_d * (0.85 + 0.15 * resonance), 0.05, 2.0))
+            # Master vector XYZ tilts formation and scale
+            if master_drive > 1e-6:
+                vx, vy, vz = master_vector
+                form = float(np.clip(form * (1.0 + 0.12 * master_drive * vx), 0.05, 1.5))
+                rho = float(np.clip(rho * (1.0 + 0.10 * master_drive * vy), 0.05, 2.0))
+                vol_s = float(np.clip(vol_s * (1.0 + 0.08 * master_drive * vz), 0.05, 2.0))
+            # Global XMOD deepens cross-modulation of the scenograph
+            form = float(np.clip(form * (0.85 + 0.15 * xmod), 0.05, 1.5))
+            eps = float(np.clip(eps * (0.90 + 0.10 * xmod), 0.0, 1.0))
+        except Exception:
+            resonance = 1.0
+            master_vector = (0.0, 0.0, 0.0)
+            master_drive = 0.5
+            xmod = 1.0
         return {
             "u": u, "rho": rho, "form": form, "vol_s": vol_s, "line_d": line_d,
             "eps": eps, "k_pow": k_pow, "snap": snap, "ph": ph,
             "group_order": ensemble_n, "group_step": orbit_step, "group_phase": group_phase,
+            "canonical_resonance_factor": resonance,
+            "master_vector": master_vector,
+            "master_vector_drive": master_drive,
+            "global_xmod": xmod,
         }
 
     def _live_snap(self):
@@ -5831,6 +5883,28 @@ class VideoSynthEngine:
             snap["struct"] = min(1.0, active / 24.0)
             if active:
                 snap["ensemble"] = max(snap["ensemble"], min(48, max(1, active // 2)))
+            # CANONICAL_COMMAND_2026: surface master vector / xmod / resonance
+            # so every visual path under canonical authority sees them.
+            try:
+                snap["canonical_resonance_factor"] = float(getattr(app, "canonical_resonance_factor", 1.50) or 1.50)
+                gms = getattr(app, "global_mod_state", None) or {}
+                snap["global_xmod"] = float(np.clip(gms.get("xmod", 1.0), 0.0, 2.0))
+                snap["global_input_xmod"] = float(np.clip(gms.get("input_xmod", 1.0), 0.0, 2.0))
+                if hasattr(app, "_master_vector_effective"):
+                    mv = app._master_vector_effective()
+                    snap["master_vector"] = (float(mv[0]), float(mv[1]), float(mv[2]))
+                st = getattr(app, "master_vector_state", None) or {}
+                snap["master_vector_drive"] = float(np.clip(st.get("drive", 0.50), 0.0, 1.0))
+                snap["master_vector_enabled"] = bool(st.get("enabled", True))
+                # User-owned TrackOffset — engines respond; canonical does not own it
+                try:
+                    snap["global_track_offset"] = float(getattr(app, "global_track_offset", 0.0) or 0.0)
+                    snap["track_offset"] = snap["global_track_offset"]
+                except Exception:
+                    snap["global_track_offset"] = 0.0
+                    snap["track_offset"] = 0.0
+            except Exception:
+                pass
         except Exception:
             pass
         return snap
@@ -7567,6 +7641,34 @@ class VideoSynthEngine:
             xyz = compositional_xyz(seed, sequential_nums=seq, t=t, slot=i)
             ph = float(c.get("phase0", 0.0) or 0.0) + t * (0.30 + 0.70 * float(c.get("entropy", 0.5) or 0.5))
             modes.append(instrument_geometry_mode(i, ph, xyz, flags=flags, fractal_set=set_name))
+        # MASTER_VECTOR_XMOD_RESONANCE_2026: video + game engines must respond to
+        # the same master-vector / xmod / resonance controls that drive audio,
+        # all under canonical authority. Resonance is clamped 50–150% at all times.
+        master_vector = (0.0, 0.0, 0.0)
+        master_vector_drive = 0.50
+        master_vector_enabled = True
+        global_xmod = 1.0
+        global_input_xmod = 1.0
+        global_mod = {"xmod": 1.0, "input_xmod": 1.0, "synth": 1.0, "patch": 1.0, "script": 1.0, "domain": 1.0}
+        resonance = 1.50
+        try:
+            if self.app is not None:
+                if hasattr(self.app, "_master_vector_effective"):
+                    mv = self.app._master_vector_effective()
+                    master_vector = (float(mv[0]), float(mv[1]), float(mv[2]))
+                st = getattr(self.app, "master_vector_state", None) or {}
+                master_vector_drive = float(np.clip(st.get("drive", 0.50), 0.0, 1.0))
+                master_vector_enabled = bool(st.get("enabled", True))
+                gms = getattr(self.app, "global_mod_state", None) or {}
+                global_xmod = float(np.clip(gms.get("xmod", 1.0), 0.0, 2.0))
+                global_input_xmod = float(np.clip(gms.get("input_xmod", 1.0), 0.0, 2.0))
+                global_mod = {k: float(np.clip(gms.get(k, 1.0), 0.0, 2.0)) for k in ("xmod", "input_xmod", "synth", "patch", "script", "domain")}
+                # Natural operating band is 50–150%; do not hard-clamp live values.
+                resonance = float(getattr(self.app, "canonical_resonance_factor", 1.50) or 1.50)
+                if not math.isfinite(resonance):
+                    resonance = 1.50
+        except Exception:
+            pass
         return {
             "t": t,
             "seed": seed,
@@ -7587,6 +7689,23 @@ class VideoSynthEngine:
             "fingerprint": self.visual_composition_fingerprint(),
             # identity ignores instrument/object count by design
             "identity_note": "N-independent: same seed+flags+seq → same visual/game geometry",
+            # Canonical command surface for video + videogame engines
+            "master_vector": master_vector,
+            "master_vector_drive": master_vector_drive,
+            "master_vector_enabled": master_vector_enabled,
+            "global_xmod": global_xmod,
+            "global_input_xmod": global_input_xmod,
+            "global_mod_state": global_mod,
+            "canonical_resonance_factor": resonance,
+            "resonance_min": 0.50,
+            "resonance_max": 1.50,
+            "wavetable_projector": dict(getattr(self.app, "wavetable_projector_state", {}) or {}) if self.app is not None else {},
+            "automator_timing_mode": str(getattr(self.app, "automator_timing_mode", "wrap") if self.app is not None else "wrap"),
+            "algorithm_xmod_local": float(getattr(self.app, "local_algorithm_xmod", 1.0) if self.app is not None else 1.0),
+            "algorithm_xmod_global": float(getattr(self.app, "global_algorithm_xmod", 1.0) if self.app is not None else 1.0),
+            # User-owned TrackOffset (not a canonical modification handle)
+            "global_track_offset": float(getattr(self.app, "global_track_offset", 0.0) if self.app is not None else 0.0),
+            "track_offset": float(getattr(self.app, "global_track_offset", 0.0) if self.app is not None else 0.0),
         }
 
     def composition_readout_lines(self, t=None):
@@ -10660,6 +10779,62 @@ V31 VERIFIED 50%→100% / MEUM CALCULUS / UI AUDIT
   independent static Tool windows and may remain visible together without chasing
   the scroller. Canonical Morph Bridge is arranged across three responsive rows.
 
+--------------------------------------------------------------------------------
+V35 — MASTER VECTOR / WAVETABLE / XMOD / AUTOMATOR PLAYLIST ROUTING
+--------------------------------------------------------------------------------
+Under canonical authority, Master Vector Synth, Global Wavetable Projector,
+Global/Input XMOD, Algorithm XMOD, and Canonical Resonance are first-class
+playlist + Automator destinations. They share blend, modular-patch, and algo
+routing with Script / Domain / Synth / Patch structure columns.
+
+PLAYLIST AUTO TARGET NAMES (column "Auto Target")
+  master_vector_x | master_vector_y | master_vector_z | master_vector_drive
+  wavetable_frame | wavetable_phase | wavetable_curvature | wavetable_twist | wavetable_fold
+  global_xmod | global_input_xmod
+  algorithm_xmod_local | algorithm_xmod_global
+  canonical_resonance
+  synth_panel_mod | patch_mod | script_mod | domain_mod
+  plus classic macros: eqr, fractalizer, pkp_envelope, filter, drive, pitch
+
+Coverage scales depth; Direction Vector sets sign; Blend Partner / multi-target
+blend_weights mix several instruments on the same row. Modular Patch column
+remains the edge list; Algo XMOD local/global depth the sequence algorithms.
+
+AUTOMATOR SEQUENCE (full path)
+  1) Paint or toggle Automator steps (orange strip) — Wrap or Syncopate timing.
+  2) First click teleports Operator / Sequence # / Offset; second click toggles.
+  3) Popup can set morph, attack/release, and any numeric param including the
+     Master Vector / Wavetable / XMOD / Resonance names above.
+  4) Lanes interpolate longitudinally between enabled steps; length may lock
+     to Sequencer or run polymetric via SYNC OFF + syncopate delta.
+  5) apply_playlist_automation_to_ui pushes the same targets onto live UI and
+     canonical state so Live Play, Export, Video, and Game see one surface.
+
+SCRIPTING DIRECTIONS (seed script + live parametrics)
+  • Seed field is a full script panel. Names: t, x, y, z, pi, e, tau, PHI, MEUM,
+    MEUM_NORM, MEUM_INV, isn, ics, clamp, lerp, choose, …
+  • Example — drive resonance activity from time without hard clamps:
+        return lerp(0.50, 1.50, 0.5 + 0.5 * sin(t * MEUM))
+  • Example — vector-ish direction token for live_parametrics / notes:
+        return sin(t), cos(t * MEUM), sin(t * PHI_INV)
+  • Playlist Live Parametrics cell may carry a one-phase predicted blob that
+    engines read alongside Script Tag / Domain Tag / Synth Snapshot / Modular Patch.
+  • Wavetable Synth (engine combo) + freehand WavetableCanvas shapes are stored
+    per instrument; Global Wavetable Projector (1D/2D/3D) feeds Master Vector
+    conversion on the shared render path (50/50 user/canonical guide).
+
+TRACK OFFSET (user-owned)
+  Global TrackOffset and per-sequence track_offset are user-set timing controls
+  in playlist-row units (same ownership model as Canonical Resonance amount):
+  audio, video, and game engines all respond, but canonical engines do not treat
+  them as modification handles and do not rewrite them. Negative = earlier;
+  positive = later. Mirrored into composition_snapshot / game meta for consumers.
+
+RESONANCE
+  Canonical Resonance / Activity operates in the 50–150% band by design
+  (activity/continuation drive, not Master Volume). Values are not force-clamped
+  mid-engine; the control surface and playlist automation stay inside that band.
+
   End of Help — Groovebox
   Credits: Grok (xAI), Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI),
   Mistral.ai (Mistral), Meta AI (Meta), GitHub Copilot (GitHub),
@@ -11780,7 +11955,16 @@ class GrooveboxEngine:
             "Exponential Pitch Ramp": [0.0, 12.0, 24.0, 36.0, 48.0, 60.0, 80.0, 100.0],
             "Chaotic LFO Modulation": [15.0, 85.0, 45.0, 95.0, 10.0, 60.0, 30.0, 90.0],
             "Harmonic Stepped Envelope": [0.0, 33.0, 33.0, 66.0, 66.0, 100.0, 50.0, 25.0],
-            "Stochastic Micro-Drift": [50.0, 52.0, 48.0, 55.0, 45.0, 58.0, 42.0, 50.0]
+            "Stochastic Micro-Drift": [50.0, 52.0, 48.0, 55.0, 45.0, 58.0, 42.0, 50.0],
+            # Playlist / Automator routable lanes under canonical command
+            "Master Vector X Sweep": [0.0, 25.0, 50.0, 75.0, 100.0, 75.0, 50.0, 0.0],
+            "Master Vector Y Orbit": [50.0, 70.0, 90.0, 70.0, 50.0, 30.0, 10.0, 30.0],
+            "Master Vector Z Fold": [20.0, 40.0, 60.0, 80.0, 100.0, 80.0, 40.0, 20.0],
+            "Wavetable Frame Morph": [0.0, 20.0, 40.0, 60.0, 80.0, 100.0, 60.0, 20.0],
+            "Wavetable Projector Phase": [0.0, 12.0, 25.0, 37.0, 50.0, 62.0, 75.0, 100.0],
+            "Global XMOD Depth": [50.0, 60.0, 75.0, 100.0, 85.0, 70.0, 55.0, 50.0],
+            "Canonical Resonance Drive": [50.0, 75.0, 100.0, 125.0, 150.0, 125.0, 100.0, 75.0],
+            "Algo XMOD Local Sweep": [25.0, 50.0, 75.0, 100.0, 125.0, 150.0, 100.0, 50.0],
         }
 
         self.available_patterns = [
@@ -12244,7 +12428,9 @@ class PatchableKnob(QWidget):
         self.target_combo.setStyleSheet("background-color: #161b22; color: #00ffcc; font-size: 8px; border: 1px solid #30363d;")
         self.target_combo.addItems([
             "Master Audio Sum", "Filter Cutoff", "Resonance Mod",
-            "Granular Scatter", "Amplitude Envelope", "Phase Distortion"
+            "Granular Scatter", "Amplitude Envelope", "Phase Distortion",
+            "Master Vector X", "Master Vector Y", "Master Vector Z", "Master Vector Drive",
+            "Wavetable Frame", "Wavetable Phase", "Global XMOD", "Canonical Resonance",
         ])
         self.target_combo.currentIndexChanged.connect(self._on_target_changed)
         target_row.addWidget(self.target_combo)
@@ -14599,6 +14785,16 @@ class PaintbrushTable(QWidget):
                     "drive",
                     "pitch",
                 ]
+            # Canonical command surface: always offer Master Vector / Wavetable /
+            # XMOD / Resonance / Algo routings in playlist Auto Target + blend.
+            for extra in (
+                "master_vector_x", "master_vector_y", "master_vector_z", "master_vector_drive",
+                "wavetable_frame", "wavetable_phase", "wavetable_curvature", "wavetable_twist", "wavetable_fold",
+                "global_xmod", "global_input_xmod", "algorithm_xmod_local", "algorithm_xmod_global",
+                "canonical_resonance", "synth_panel_mod", "patch_mod", "script_mod", "domain_mod",
+            ):
+                if extra not in params:
+                    params.append(extra)
 
             if mode == self.MODE_RANDOM_PARAMETERS:
                 k = int(
@@ -16255,6 +16451,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.automator_timing_mode = "wrap"
         # GLOBAL_XMOD_2026: persisted explicit modulation-depth controls.
         self.global_mod_state = {"xmod": 1.0, "input_xmod": 1.0, "synth": 1.0, "patch": 1.0, "script": 1.0, "domain": 1.0}
+        # CANONICAL_FIELD_TOUCHED_2026: tracks which longitudinal-composition
+        # fields the user has actually adjusted away from their UI default.
+        # Canonical share for a field is 50% once the user has touched it,
+        # 100% while it remains untouched -- see _canonical_field_share().
+        self._canonical_field_touched = set()
         self.global_track_offset = 0.0
         self.local_algorithm_xmod = 1.0
         self.global_algorithm_xmod = 1.0
@@ -16561,6 +16762,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         cap.setToolTip(tooltip)
         def _changed(v, k=key, lab=cap):
             self.global_mod_state[k] = float(v) / 100.0
+            if hasattr(self, "_canonical_field_touched"):
+                self._canonical_field_touched.add(f"mod:{k}")
             lab.setText(f"{label}: {int(v)}%")
             try: self._on_live_source_changed()
             except Exception: pass
@@ -17862,7 +18065,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._ensure_sequence_banks_after_resize()
         table = getattr(self, 'active_paint_table', None)
         painted = 0
-        source_code = {"randomizer":"R", "phase-lock":"P", "midpoint":"M", "euclidean":"E", "seeded":"S"}.get(source, "G")
+        source_code = {"randomizer":"R", "phase_lock":"P", "midpoint":"M", "euclidean":"E", "seeded":"S"}.get(source, "G")
 
         def user_tokens(cell):
             return [p.strip() for p in str(cell or '').split(',') if '@u:' in p]
@@ -17955,7 +18158,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 n_inst, idxs = 1, [0]
             eng_ops = [names[i] for i in idxs]
             tag = f"@e:{source[:4]}:{seed & 0xFFFFF:05x}:{r:03d}"
-            t_off = (r * (0.125 + 0.031 * MEUM_NORM) + float(rr.uniform(-0.045, 0.045)))
+            # PLAYLIST_MODE_WIRING_2026: manual per-cell paint (see the
+            # chk_snap_grid branch above, ~line 14229) has always honored
+            # Snap to Grid vs free-time when placing a cell; engine-authored
+            # rows never consulted the same checkbox and always wrote a
+            # jittered free-time offset, so toggling Snap to Grid silently
+            # had no effect on Randomizer/Phase-Lock/Euclidean/Seeded output.
+            snap = bool(getattr(self, "chk_snap_grid", None) and self.chk_snap_grid.isChecked())
+            if snap:
+                # Quantized: land exactly on the row's grid slot, no jitter.
+                t_off = r * (0.125 + 0.031 * MEUM_NORM)
+            else:
+                t_off = (r * (0.125 + 0.031 * MEUM_NORM) + float(rr.uniform(-0.045, 0.045)))
             if not active:
                 t_off = r * (0.125 + 0.031 * MEUM_NORM)
             velocity = 1.0 if active else 0.0  # no implicit row/time amplitude field
@@ -18007,7 +18221,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 sequence_refs.append(f"{_op}#S{_sid}")
                 phase_offsets[_op] = _phase
             multi_seq = ", ".join(sequence_refs or eng_ops)
-            position = f"e:{t_off:.4f}s"
+            position = f"e:q:{r}" if snap else f"e:{t_off:.4f}s"
             fields = {
                 'time_marker': position,
                 'operator': (users[0] if users else (eng_ops[0] if eng_ops else '')),
@@ -18751,7 +18965,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_global_track_offset.setSingleStep(3)
         self.spin_global_track_offset.setValue(float(getattr(self, "global_track_offset", 0.0)))
         self.spin_global_track_offset.setFixedSize(18,86)
-        self.spin_global_track_offset.setToolTip("Global timing offset applied to every track/sequence in playlist-row units. Negative starts earlier; positive starts later.")
+        self.spin_global_track_offset.setToolTip(
+            "Global TrackOffset (user-owned, like Canonical Resonance amount).\n"
+            "Applied to every track/sequence in playlist-row units so audio, video,\n"
+            "and game timing all respond. Negative starts earlier; positive later.\n"
+            "Not a handle for canonical modification — engines read it; they do not rewrite it."
+        )
         self.spin_global_track_offset.setStyleSheet(
             "QDoubleSpinBox { background:rgba(126,70,20,185); color:#ffb45e; border:1px solid #d9822b; "
             "border-radius:3px; padding:1px 2px; font-weight:900; font-size:9pt; }"
@@ -22462,6 +22681,94 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
 
+        # CANONICAL_COMMAND_PLAYLIST_ROUTING_2026:
+        # Playlist Auto Target / Automator lanes can steer Master Vector,
+        # Wavetable Projector, Global XMOD, Algo XMOD, and Resonance.
+        # Coverage/blend/direction from the playlist row already scaled `amt`.
+        try:
+            st = getattr(self, "master_vector_state", None)
+            if isinstance(st, dict):
+                for axis, key in (("master_vector_x", "x"), ("master_vector_y", "y"), ("master_vector_z", "z")):
+                    if weights.get(axis, 0) > 1e-9:
+                        # Map normalized 0..1 influence to -1..+1 vector axis
+                        st[key] = float(np.clip((_norm(axis, 0.5) - 0.5) * 2.0, -1.0, 1.0))
+                        if hasattr(self, "_canonical_field_touched"):
+                            self._canonical_field_touched.add(f"master_vector:{key}")
+                if weights.get("master_vector_drive", 0) > 1e-9:
+                    st["drive"] = float(np.clip(_norm("master_vector_drive", 0.5), 0.0, 1.0))
+                    if hasattr(self, "slider_master_vector_drive"):
+                        self.slider_master_vector_drive.blockSignals(True)
+                        self.slider_master_vector_drive.setValue(int(st["drive"] * 100))
+                        self.slider_master_vector_drive.blockSignals(False)
+                self.master_vector_state = st
+                if hasattr(self, "_master_vector_effective"):
+                    self._master_vector_effective()
+
+            wt = getattr(self, "wavetable_projector_state", None)
+            if isinstance(wt, dict):
+                for src, dst in (
+                    ("wavetable_frame", "fold"),
+                    ("wavetable_phase", "phase"),
+                    ("wavetable_curvature", "curvature"),
+                    ("wavetable_twist", "twist"),
+                    ("wavetable_fold", "fold"),
+                ):
+                    if weights.get(src, 0) > 1e-9:
+                        wt[dst] = float(np.clip(_norm(src, float(wt.get(dst, 0.5))), 0.0, 1.0 if dst != "phase" else 1.0))
+                self.wavetable_projector_state = wt
+                if hasattr(self, "_update_wavetable_projector"):
+                    self._update_wavetable_projector()
+
+            gms = getattr(self, "global_mod_state", None)
+            if isinstance(gms, dict):
+                for src, dst in (
+                    ("global_xmod", "xmod"),
+                    ("global_input_xmod", "input_xmod"),
+                    ("synth_panel_mod", "synth"),
+                    ("patch_mod", "patch"),
+                    ("script_mod", "script"),
+                    ("domain_mod", "domain"),
+                ):
+                    if weights.get(src, 0) > 1e-9:
+                        # 0..1 norm -> 0..2 depth (100% center)
+                        gms[dst] = float(np.clip(_norm(src, 0.5) * 2.0, 0.0, 2.0))
+                self.global_mod_state = gms
+                if hasattr(self, "global_xmod_slider") and weights.get("global_xmod", 0) > 1e-9:
+                    self.global_xmod_slider.blockSignals(True)
+                    self.global_xmod_slider.setValue(int(gms.get("xmod", 1.0) * 100))
+                    self.global_xmod_slider.blockSignals(False)
+                if hasattr(self, "global_input_xmod_slider") and weights.get("global_input_xmod", 0) > 1e-9:
+                    self.global_input_xmod_slider.blockSignals(True)
+                    self.global_input_xmod_slider.setValue(int(gms.get("input_xmod", 1.0) * 100))
+                    self.global_input_xmod_slider.blockSignals(False)
+
+            if weights.get("algorithm_xmod_local", 0) > 1e-9:
+                self.local_algorithm_xmod = float(np.clip(_norm("algorithm_xmod_local", 0.5) * 2.0, 0.0, 2.0))
+                if hasattr(self, "local_algorithm_xmod_slider"):
+                    self.local_algorithm_xmod_slider.blockSignals(True)
+                    self.local_algorithm_xmod_slider.setValue(int(self.local_algorithm_xmod * 100))
+                    self.local_algorithm_xmod_slider.blockSignals(False)
+            if weights.get("algorithm_xmod_global", 0) > 1e-9:
+                self.global_algorithm_xmod = float(np.clip(_norm("algorithm_xmod_global", 0.5) * 2.0, 0.0, 2.0))
+                if hasattr(self, "global_algorithm_xmod_slider"):
+                    self.global_algorithm_xmod_slider.blockSignals(True)
+                    self.global_algorithm_xmod_slider.setValue(int(self.global_algorithm_xmod * 100))
+                    self.global_algorithm_xmod_slider.blockSignals(False)
+
+            if weights.get("canonical_resonance", 0) > 1e-9:
+                # Natural 50–150% operating band from playlist automation.
+                self.canonical_resonance_factor = 0.50 + _norm("canonical_resonance", 0.5) * 1.0
+                if hasattr(self, "spin_canonical_resonance"):
+                    self.spin_canonical_resonance.blockSignals(True)
+                    self.spin_canonical_resonance.setValue(self.canonical_resonance_factor * 100.0)
+                    self.spin_canonical_resonance.blockSignals(False)
+                if hasattr(self, "lbl_canonical_resonance"):
+                    self.lbl_canonical_resonance.setText(
+                        f"CANONICAL RESONANCE: {self.canonical_resonance_factor * 100:.0f}%"
+                    )
+        except Exception:
+            pass
+
     # =====================================================================
     # SEQUENCE_BANK_V6
     # =====================================================================
@@ -22559,25 +22866,80 @@ class MathematiciansGrooveboxApp(QMainWindow):
     # EDIT_PANELS_PER_SEQUENCE — sequence-local synth/script/patch/domain
     # =====================================================================
     def _canonical_wavetable_guide(self):
-        """Deterministic global wavetable guide derived from canonical state."""
+        """Deterministic global wavetable guide derived from canonical state.
+
+        Interpolates from a fixed seed-only baseline toward a fixed seed-only
+        target, scaled by a saturating function of how many engines are
+        active. This guarantees more active engines can only push the guide
+        further from baseline (never back toward it via phase wraparound)
+        and never past the target."""
         try: seed = _safe_int_seed(self.get_numeric_seed())
         except Exception: seed = 0
-        a = float(math.sin(seed * 0.00011 + PHI_INV) * 0.5 + 0.5)
-        b = float(math.cos(seed * 0.00017 + MEUM) * 0.5 + 0.5)
-        c = float(math.sin(seed * 0.00023 + PHI * MEUM) * 0.5 + 0.5)
-        return (a,b,c)
+        active = self._get_active_engine_set() if hasattr(self, "_get_active_engine_set") else set()
+        mask = sum((i + 1) * (1 if name in active else 0) for i, name in enumerate(("goava", "randomizer", "phase_lock", "euclidean", "seeded")))
+        base = (
+            math.sin(seed * 0.00011 + PHI_INV) * 0.5 + 0.5,
+            math.cos(seed * 0.00017 + MEUM) * 0.5 + 0.5,
+            math.sin(seed * 0.00023 + PHI * MEUM) * 0.5 + 0.5,
+        )
+        target = (
+            math.sin(seed * 0.00011 + PHI_INV + PHI) * 0.5 + 0.5,
+            math.cos(seed * 0.00017 + MEUM + PHI) * 0.5 + 0.5,
+            math.sin(seed * 0.00023 + PHI * MEUM + PHI) * 0.5 + 0.5,
+        )
+        growth = 1.0 - math.exp(-mask / 3.0)
+        return tuple(float(b + (t - b) * growth) for b, t in zip(base, target))
 
     def _effective_wavetable_field(self):
         st=getattr(self,"wavetable_projector_state",{}) or {}; user=np.asarray([float(st.get(k,0.5)) for k in ("x","y","z")],dtype=float); can=np.asarray(self._canonical_wavetable_guide(),dtype=float)
-        eff=0.5*user+0.5*can
+        # No UI control ever writes wavetable x/y/z (WavetableProjector is
+        # display-only) -- these fields are never "adjusted by the user",
+        # so canonical share is always 100% per _canonical_field_share.
+        shares = np.asarray([self._canonical_field_share(f"wavetable:{k}") for k in ("x", "y", "z")], dtype=np.float64)
+        eff=(1.0-shares)*user+shares*can
+        st["canonical_share"] = float(shares.mean())
         return eff,can
 
     def _update_wavetable_projector(self):
         eff,can=self._effective_wavetable_field()
-        st=self.wavetable_projector_state; st["canonical_share"]=0.50
+        st=self.wavetable_projector_state
         if hasattr(self,"wavetable_projector_viz"):
             self.wavetable_projector_viz.set_fields([st.get("x",.5),st.get("y",.5),st.get("z",.5)],can)
             self.wavetable_projector_viz.set_shape(mode=int(st.get("mode",1)),phase=float(st.get("phase",0.0)),curvature=float(st.get("curvature",.5)),twist=float(st.get("twist",.5)),fold=float(st.get("fold",.2)))
+        return eff
+
+    def _canonical_field_share(self, field_key):
+        """50% on a value the user has adjusted; 100% on a value they haven't."""
+        touched = getattr(self, "_canonical_field_touched", None) or set()
+        return 0.5 if field_key in touched else 1.0
+
+    def _canonical_mod_state(self):
+        """Deterministic canonical counterpart to the XMOD sliders. Same
+        baseline-to-target saturating growth as the wavetable guide, so more
+        active engines can only increase disturbance from baseline, never
+        wrap back toward it."""
+        try: seed = _safe_int_seed(self.get_numeric_seed())
+        except Exception: seed = 0
+        active = self._get_active_engine_set() if hasattr(self, "_get_active_engine_set") else set()
+        mask = sum((i + 1) * (1 if name in active else 0) for i, name in enumerate(("goava", "randomizer", "phase_lock", "euclidean", "seeded")))
+        growth = 1.0 - math.exp(-mask / 3.0)
+        out = {}
+        for j, k in enumerate(("xmod", "input_xmod", "synth", "patch", "script", "domain")):
+            base_phase = seed * 0.00013 * (j + 1)
+            base = 1.0 + math.sin(base_phase) * 0.9
+            target = 1.0 + math.sin(base_phase + PHI) * 0.9
+            out[k] = float(np.clip(base + (target - base) * growth, 0.0, 2.0))
+        return out
+
+    def _effective_mod_state(self):
+        user = getattr(self, "global_mod_state", {}) or {}
+        canonical = self._canonical_mod_state()
+        eff = {}
+        for k in ("xmod", "input_xmod", "synth", "patch", "script", "domain"):
+            u = float(user.get(k, 1.0))
+            c = float(canonical.get(k, 1.0))
+            share = self._canonical_field_share(f"mod:{k}")
+            eff[k] = float(np.clip((1.0 - share) * u + share * c, 0.0, 2.0))
         return eff
 
     def _canonical_master_vector(self):
@@ -22599,9 +22961,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         st = getattr(self, "master_vector_state", {}) or {}
         user = np.asarray([float(st.get(k, 0.0) or 0.0) for k in ("x", "y", "z")], dtype=np.float64)
         canonical = np.asarray(self._canonical_master_vector(), dtype=np.float64)
-        # Canonical influence is deliberately fixed at 50%; Drive controls the
-        # strength of the final bounded transform, not canonical ownership.
-        effective = 0.5 * user + 0.5 * canonical
+        shares = np.asarray([self._canonical_field_share(f"master_vector:{k}") for k in ("x", "y", "z")], dtype=np.float64)
+        effective = (1.0 - shares) * user + shares * canonical
         self.master_vector_canonical = tuple(float(v) for v in canonical)
         if hasattr(self, "master_vector_viz"):
             self.master_vector_viz.set_vectors(effective, canonical)
@@ -22611,6 +22972,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         st = getattr(self, "master_vector_state", {})
         st[key] = float(np.clip(float(value) / 100.0, -1.0, 1.0))
         self.master_vector_state = st
+        if hasattr(self, "_canonical_field_touched"):
+            self._canonical_field_touched.add(f"master_vector:{key}")
         if key in getattr(self, "master_vector_sliders", {}):
             self.master_vector_sliders[key][1].setText(f"{st[key]:+.2f}")
         self._master_vector_effective()
@@ -22644,11 +23007,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._master_vector_effective(); self._on_live_source_changed()
 
     def _reset_user_vector_direction(self):
-        """Neutralize user XYZ direction; canonical direction remains 50%."""
+        """Neutralize user XYZ direction and hand it back to canonical (100%) --
+        an explicit reset is 'un-adjusting' the field, not a 50% adjustment."""
         self.master_vector_state.update({"x": 0.0, "y": 0.0, "z": 0.0})
         for key in ("x", "y", "z"):
             if key in getattr(self, "master_vector_sliders", {}):
                 sl, lab = self.master_vector_sliders[key]; sl.setValue(0); lab.setText("0.00")
+            if hasattr(self, "_canonical_field_touched"):
+                self._canonical_field_touched.discard(f"master_vector:{key}")
         self._master_vector_effective(); self._on_live_source_changed()
 
     def _update_signal_monitor(self, master):
@@ -23252,9 +23618,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._on_live_source_changed()
 
     def _on_global_track_offset_changed(self, value):
-        """Persist the prominent global track timing offset."""
+        """Persist the prominent global track timing offset.
+
+        User-owned control (like Canonical Resonance amount): engines respond to
+        it, but it is not a handle for canonical modification/overwrite.
+        """
         try:
-            self.global_track_offset = float(np.clip(float(value), -64.0, 64.0))
+            v = float(value)
+            if not math.isfinite(v):
+                v = 0.0
+            self.global_track_offset = v
             self._on_live_source_changed()
         except Exception as exc:
             print(f"[Global Track Offset] update failed: {exc}")
@@ -23263,7 +23636,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """Load the legacy selected-sequence offset if its control still exists."""
         mem = mem if isinstance(mem, dict) else {}
         try:
-            value = float(np.clip(float(mem.get("track_offset", 0.0) or 0.0), -16.0, 16.0))
+            value = float(mem.get("track_offset", 0.0) or 0.0)
+            if not math.isfinite(value):
+                value = 0.0
         except Exception:
             value = 0.0
         if hasattr(self, "spin_track_offset"):
@@ -23272,11 +23647,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.spin_track_offset.blockSignals(False)
 
     def _on_track_offset_changed(self, value):
-        """Persist the selected sequence's track offset and refresh canonical schedule state."""
+        """Persist the selected sequence's track offset.
+
+        Per-sequence TrackOffset is user-owned (like resonance amount): the
+        runtime schedule is refreshed so audio/video/game respond, but canonical
+        engines must not treat this field as a writable modification handle.
+        """
         try:
             mem = self._current_sequence_mem()
-            mem["track_offset"] = float(value)
-            self._canonical_write_sequence_runtime()
+            v = float(value)
+            if not math.isfinite(v):
+                v = 0.0
+            mem["track_offset"] = v
+            # Refresh schedule mirrors only — do not hand ownership to canonical.
+            if hasattr(self, "_canonical_write_sequence_runtime"):
+                self._canonical_write_sequence_runtime()
             self._on_live_source_changed()
         except Exception as exc:
             print(f"[Track Offset] update failed: {exc}")
@@ -24370,6 +24755,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if not isinstance(synth, dict) or not synth:
             synth = (getattr(self, "instrument_param_state", {}) or {}).get(inst, {}) or {}
         numeric_params = [str(k) for k,v in synth.items() if isinstance(v, (int,float,np.number)) and not isinstance(v,bool)]
+        # Automator sequence can route the full canonical command surface:
+        # Master Vector, Wavetable Projector, XMOD windows, Algo XMOD, Resonance.
+        for extra in (
+            "master_vector_x", "master_vector_y", "master_vector_z", "master_vector_drive",
+            "wavetable_frame", "wavetable_phase", "wavetable_curvature", "wavetable_twist", "wavetable_fold",
+            "global_xmod", "global_input_xmod", "algorithm_xmod_local", "algorithm_xmod_global",
+            "canonical_resonance", "synth_panel_mod", "patch_mod", "script_mod", "domain_mod", "morph",
+        ):
+            if extra not in numeric_params:
+                numeric_params.append(extra)
         if hasattr(self, "popup_auto_param"):
             self.popup_auto_param.blockSignals(True); self.popup_auto_param.clear(); self.popup_auto_param.addItems(numeric_params or ["morph"]); self.popup_auto_param.blockSignals(False)
             chosen = str(point.get("synth_param", numeric_params[0] if numeric_params else "morph"))
@@ -25887,7 +26282,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if isinstance(data.get("global_mod_state"), dict):
             self.global_mod_state.update({k: float(data["global_mod_state"][k]) for k in ("xmod", "input_xmod", "synth", "patch", "script", "domain") if k in data["global_mod_state"]})
         try:
-            self.global_track_offset = float(np.clip(float(data.get("global_track_offset", 0.0) or 0.0), -64.0, 64.0))
+            try:
+                self.global_track_offset = float(data.get("global_track_offset", 0.0) or 0.0)
+                if not math.isfinite(self.global_track_offset):
+                    self.global_track_offset = 0.0
+            except Exception:
+                self.global_track_offset = 0.0
             if hasattr(self, "spin_global_track_offset"):
                 self.spin_global_track_offset.blockSignals(True)
                 self.spin_global_track_offset.setValue(self.global_track_offset)
@@ -30286,7 +30686,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # deterministic from the four editor-state signatures and never
                 # replaces the canonical voice or the user-owned sample branch.
                 try:
-                    gm = getattr(self, "global_mod_state", {}) or {}
+                    gm = self._effective_mod_state() if hasattr(self, "_effective_mod_state") else (getattr(self, "global_mod_state", {}) or {})
                     gx = float(np.clip(gm.get("xmod", 1.0), 0.0, 2.0))
                     gi = float(np.clip(gm.get("input_xmod", 1.0), 0.0, 2.0))
                     ws = float(np.clip(gm.get("synth", 1.0), 0.0, 2.0))
@@ -31628,7 +32028,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """Deterministic randomizer application"""
         self.apply_seeded_harmonic_randomization()
         if hasattr(self, "_canonical_playlist_paint"):
-            self._canonical_playlist_paint(rng=rng, mode="randomize", strength=0.55)
+            self._canonical_playlist_paint(rng=rng, mode="randomizer", strength=0.55)
 
     def _apply_phase_lock_deterministically(self, seed, rng):
         """Deterministic phase-lock application"""
@@ -31824,6 +32224,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
             sid = int(sequence_id or self._current_sequence_index(name))
             mem = copy.deepcopy(self._current_sequence_mem(name))
             synth = copy.deepcopy((getattr(self, "instrument_param_state", {}) or {}).get(name, {}) or {})
+            # track_offset is mirrored for consumers only — user-owned, not a
+            # canonical modification handle (same ownership model as resonance amount).
+            try:
+                _user_track_off = float(mem.get("track_offset", 0.0) or 0.0)
+                if not math.isfinite(_user_track_off):
+                    _user_track_off = 0.0
+            except Exception:
+                _user_track_off = 0.0
+            try:
+                _user_global_track_off = float(getattr(self, "global_track_offset", 0.0) or 0.0)
+                if not math.isfinite(_user_global_track_off):
+                    _user_global_track_off = 0.0
+            except Exception:
+                _user_global_track_off = 0.0
             seq_payload = {
                 "instrument": name,
                 "sequence_id": sid,
@@ -31845,6 +32259,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "canonical_control_strategy": str(getattr(self, "canonical_control_strategy", "Full Canonical")),
                 "canonical_signal_control": float(getattr(self, "canonical_signal_control", 0.50)),
                 "canonical_lanes": ["sequence", "automation", "pitch", "amp", "phase", "trigger", "AM", "FM", "PM", "effect_layer"],
+                "track_offset": _user_track_off,
+                "global_track_offset": _user_global_track_off,
+                "track_offset_user_owned": True,
             }
             doc = getattr(self, "_canonical_composition_document", None)
             if not isinstance(doc, dict):
@@ -34060,6 +34477,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Instrument count is recorded for UI only; classify ignores it.
         rnd_on = bool(getattr(self, "btn_local_randomize", None) and self.btn_local_randomize.isChecked())
         pl_on = bool(getattr(self, "btn_local_phase_lock", None) and self.btn_local_phase_lock.isChecked())
+        # CANONICAL_COMMAND_2026: master vector, xmods, synth features and
+        # resonance (always 50–150%) travel with the game under canonical authority.
+        master_vector = (0.0, 0.0, 0.0)
+        try:
+            if hasattr(self, "_master_vector_effective"):
+                mv = self._master_vector_effective()
+                master_vector = (float(mv[0]), float(mv[1]), float(mv[2]))
+        except Exception:
+            pass
+        st = getattr(self, "master_vector_state", None) or {}
+        gms = getattr(self, "global_mod_state", None) or {}
+        resonance = float(getattr(self, "canonical_resonance_factor", 1.50) or 1.50)
+        if not math.isfinite(resonance):
+            resonance = 1.50
         return {
             "bpm": float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0,
             "seq_length": int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else 16,
@@ -34081,6 +34512,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "live_dj_goava": bool(getattr(self, "live_dj_goava", False)),
             "live_dj_random": bool(getattr(self, "live_dj_random", False)),
             "project_notes": notes,
+            "master_vector": master_vector,
+            "master_vector_drive": float(st.get("drive", 0.50) or 0.50),
+            "master_vector_enabled": bool(st.get("enabled", True)),
+            "global_xmod": float(gms.get("xmod", 1.0) or 1.0),
+            "global_input_xmod": float(gms.get("input_xmod", 1.0) or 1.0),
+            "global_mod_state": {k: float(gms.get(k, 1.0) or 1.0) for k in ("xmod", "input_xmod", "synth", "patch", "script", "domain")},
+            "canonical_resonance_factor": resonance,
+            "resonance_min": 0.50,
+            "resonance_max": 1.50,
+            "wavetable_projector": dict(getattr(self, "wavetable_projector_state", {}) or {}),
+            "automator_timing_mode": str(getattr(self, "automator_timing_mode", "wrap")),
+            "sequencer_automation_points": list(getattr(self, "sequencer_automation_points", []) or [])[:256],
+            # User-owned TrackOffset (engines respond; not a canonical write handle)
+            "global_track_offset": float(getattr(self, "global_track_offset", 0.0) or 0.0),
+            "track_offset": float(getattr(self, "global_track_offset", 0.0) or 0.0),
         }
 
     def _classify_live_game(self):

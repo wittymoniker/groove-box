@@ -1848,6 +1848,41 @@ class ScenographLite:
         if em.get("goava"):
             x_hue = (x_hue + 28.0) % 360.0
             x_spin *= 1.12
+        # CANONICAL_COMMAND_2026: video-game engine responds to master vector
+        # xmods, resonance, and user-owned TrackOffset.
+        try:
+            meta = getattr(self, "_composition_meta", None) or {}
+            # User TrackOffset (playlist-row units) — same ownership model as
+            # resonance amount: engines respond, canonical does not rewrite it.
+            try:
+                gto = float(meta.get("global_track_offset", meta.get("track_offset", getattr(self, "global_track_offset", 0.0))) or 0.0)
+                if gto != gto:
+                    gto = 0.0
+                self.global_track_offset = gto
+                self.beat = float(getattr(self, "beat", 0.0) or 0.0) + gto * 0.125
+            except Exception:
+                pass
+            resonance = float(meta.get("canonical_resonance_factor", getattr(self, "canonical_resonance_factor", 1.50)) or 1.50)
+            # Natural 50–150% operating band; no hard mid-stream clamp.
+            if not (resonance == resonance):  # NaN guard
+                resonance = 1.50
+            self.canonical_resonance_factor = resonance
+            x_energy = min(1.5, x_energy * (0.70 + 0.30 * resonance))
+            x_spin *= (0.85 + 0.15 * resonance)
+            x_grid = x_grid * (0.90 + 0.10 * resonance)
+            mv = meta.get("master_vector") or getattr(self, "master_vector", (0.0, 0.0, 0.0))
+            if isinstance(mv, (list, tuple)) and len(mv) >= 3:
+                drive = float(meta.get("master_vector_drive", getattr(self, "master_vector_drive", 0.50)) or 0.50)
+                if bool(meta.get("master_vector_enabled", True)):
+                    x_spin *= (1.0 + 0.10 * drive * float(mv[0]))
+                    x_hue = (x_hue + 18.0 * drive * float(mv[1])) % 360.0
+                    x_grid = x_grid * (1.0 + 0.08 * drive * float(mv[2]))
+            xmod = float(meta.get("global_xmod", getattr(self, "global_xmod", 1.0)) or 1.0)
+            xmod = max(0.0, min(2.0, xmod))
+            x_spin *= (0.90 + 0.10 * xmod)
+            x_energy = min(1.5, x_energy * (0.90 + 0.10 * xmod))
+        except Exception:
+            pass
         # Book fractal set (p.26): same expression under OT; arithmetic nature
         # flips with the host OT toggle.  Playlist/algo hash tilts which set.
         try:
@@ -2827,6 +2862,19 @@ class Game:
             topology=_topo,
         )
         self.scene._engine_mask = dict(self.engine_mask)
+        # CANONICAL_COMMAND_2026: pass master vector / xmod / resonance so the
+        # scenograph always responds under canonical authority (50–150%).
+        self.scene._composition_meta = dict(self.meta)
+        try:
+            rf = float(self.meta.get("canonical_resonance_factor", 1.50) or 1.50)
+            self.scene.canonical_resonance_factor = rf
+            self.scene.master_vector = tuple(self.meta.get("master_vector") or (0.0, 0.0, 0.0))
+            self.scene.master_vector_drive = float(self.meta.get("master_vector_drive", 0.50) or 0.50)
+            self.scene.global_xmod = float(self.meta.get("global_xmod", 1.0) or 1.0)
+            self.scene.global_track_offset = float(self.meta.get("global_track_offset", self.meta.get("track_offset", 0.0)) or 0.0)
+            self.global_track_offset = self.scene.global_track_offset
+        except Exception:
+            pass
         # Playlist / step-algo / composition fingerprints tilt which book fractal
         # set is prevalent — same pathway the host video uses.
         try:

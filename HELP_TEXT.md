@@ -1584,3 +1584,68 @@ CANONICAL RESONANCE / 50–150% STABILITY PASS (V34)
 - Canonical resonance/activity is independently driven from 50% to 150%, with smooth user-activity handoff and explicit zero cases rather than epsilon denominator bypasses.
 - Canonical→Instrument Convolve is independently bounded 0–100%; zero canonical/user inputs are handled explicitly.
 - Maximum live instrument capacity is 128; default playlist row duration is 16 beats.
+
+
+## V35 Canonical Command — Wavetable, Automator, Playlist Routing
+
+Under canonical authority, **Master Vector Synth**, **Global Wavetable Projector**,
+**Global / Input XMOD**, **Algorithm XMOD**, and **Canonical Resonance** are
+first-class destinations for playlist Auto Target, Automator sequence params,
+modular patch targets, and algo routing — the same blend/coverage surface as
+Script Tag / Domain Tag / Synth Snapshot / Modular Patch.
+
+### Playlist Auto Target names
+- `master_vector_x` | `master_vector_y` | `master_vector_z` | `master_vector_drive`
+- `wavetable_frame` | `wavetable_phase` | `wavetable_curvature` | `wavetable_twist` | `wavetable_fold`
+- `global_xmod` | `global_input_xmod`
+- `algorithm_xmod_local` | `algorithm_xmod_global`
+- `canonical_resonance`
+- `synth_panel_mod` | `patch_mod` | `script_mod` | `domain_mod`
+- classic macros remain: `eqr`, `fractalizer`, `pkp_envelope`, `filter`, `drive`, `pitch`
+
+Coverage scales depth; Direction Vector sets sign; Blend Partner and multi-target
+`blend_weights` mix instruments on one row. Modular Patch stays the edge list.
+Algo XMOD local/global depth sequence algorithms.
+
+### Automator sequence (end-to-end)
+1. Paint/toggle Automator steps (orange strip). Timing: **Wrap** or **Syncopate**.
+2. First click teleports Operator / Sequence # / Offset; second click toggles ON/OFF.
+3. Popup sets morph, attack/release, and any numeric param including Master Vector,
+   Wavetable, XMOD, and Resonance names above.
+4. Lanes interpolate longitudinally between enabled steps; length may lock to the
+   Sequencer or run polymetric (SYNC OFF + syncopate delta).
+5. `apply_playlist_automation_to_ui` pushes those targets onto live UI + canonical
+   state so Live Play, Export, Video, and Game share one command surface.
+
+### Scripting directions
+- Seed field is a full script panel. Names: `t`, `x`, `y`, `z`, `pi`, `e`, `tau`,
+  `PHI`, `MEUM`, `MEUM_NORM`, `MEUM_INV`, `isn`, `ics`, `clamp`, `lerp`, `choose`, …
+- Example — resonance activity from time (natural 50–150% band):
+  `return lerp(0.50, 1.50, 0.5 + 0.5 * sin(t * MEUM))`
+- Example — vector-like live_parametrics token:
+  `return sin(t), cos(t * MEUM), sin(t * PHI_INV)`
+- Playlist **Live Parametrics** may carry a one-phase predicted blob read with
+  Script / Domain / Synth / Patch structure columns.
+- **Wavetable Synth** (engine combo) + freehand `WavetableCanvas` shapes are
+  per-instrument; **Global Wavetable Projector** (1D Wave / 2D Field / 3D Resonance)
+  feeds Master Vector conversion on the shared render path (50/50 user/canonical guide).
+
+### Resonance
+Canonical Resonance / Activity operates in the **50–150%** band by design
+(activity/continuation drive, not Master Volume). Live engine paths do not
+force-clamp mid-stream; the control surface and playlist automation keep values
+in that operating band.
+
+### Automation pattern library (playlist combo)
+Additional lanes: Master Vector X/Y/Z sweeps, Wavetable Frame Morph / Phase,
+Global XMOD Depth, Canonical Resonance Drive, Algo XMOD Local Sweep — selectable
+from the playlist automation pattern combo alongside classic filter/resonance ramps.
+
+
+### TrackOffset (user-owned)
+Global TrackOffset and per-sequence `track_offset` are user-set timing controls
+in playlist-row units — same ownership model as Canonical Resonance amount.
+Audio, video, and game engines respond to them; canonical engines do **not**
+treat them as modification handles and do not rewrite them. Negative starts
+earlier; positive later. Values are mirrored into `composition_snapshot` and
+game composition meta for all consumers.

@@ -10,6 +10,15 @@
 - Performance controls are consolidated into one horizontal deck; Automator controls are compacted into a multi-row grid.
 - UI initialization order and Qt stylesheet declarations were hardened; division-by-zero-sensitive paths use explicit degenerate-case handling rather than epsilon denominators where practical.
 
+## V35 Canonical Command — Video, Game, Wavetable, Automator, Playlist
+
+- Video engines (`VideoSynthEngine`) and video-game engines respond continuously to Master Vector, Global/Input XMOD, Wavetable Projector, Algo XMOD, and Resonance under canonical authority.
+- **Wavetable Synth** + Global Wavetable Projector participate in the same command surface; freehand tables remain per-instrument.
+- **Automator sequence** is end-to-end: steps → teleport popup (including MV/WT/XMOD/Resonance params) → longitudinal interpolation → playlist automation push to live UI/canonical state.
+- Playlist **Auto Target** / automation patterns expose Master Vector axes, Wavetable frame/phase, XMOD depths, Algo XMOD, and Canonical Resonance with blend, modular-patch, and algo routing alongside Script/Domain/Synth/Patch columns.
+- Resonance operates in the **50–150%** band by design (activity drive, not volume); live engines do not force-clamp mid-stream.
+- HELP_TEXT (in-app + HELP_TEXT.md) documents scripting directions and routing names.
+
 # Groovebox — Mathematicians Groovebox
 
 > **Modern architecture:** Python + C++17 + Julia, sharing one deterministic canonical state model.
