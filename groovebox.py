@@ -51,6 +51,12 @@ import colorsys
 import re
 import weakref
 import numpy as np
+from meum_constants import (
+    MEUM, M, MEUM_DECIMAL, MEUM_MINUS_1, MEUM_INV, MEUM_TWO_MINUS,
+    MEUM_NORM, MEUM_SQ, MEUM_CUBE, MEUM_FOURTH, MEUM_TWO_POW, MEUM_LOG2,
+    MEUM_POWERS_36 as _MEUM_POWERS_36_CANON, PHI, PHI_INV, E_IRR, PI_IRR, SQRT2, SQRT3, SILVER,
+    meum_power, meum_precision_report,
+)
 
 # VISUAL_DETERMINISM_2026: canonical seed/view-space kernel.
 from visual_determinism import (
@@ -136,6 +142,70 @@ try:
         ]
         _GB_ACCEL.gb_hardclip_f32.restype = None
         _GB_ACCEL_FUNCS["hardclip"] = _GB_ACCEL.gb_hardclip_f32
+        # PERF_NATIVE_20260905: wire the kernels that were already compiled but
+        # previously never exposed to Python.  Missing symbols are tolerated so
+        # older packaged libraries still fall back to the authoritative NumPy path.
+        try:
+            _P_d = _ctypes_accel.POINTER(_ctypes_accel.c_double)
+            _GB_ACCEL.gb_meum_modulation_f32.argtypes = [
+                _P_d, _ctypes_accel.c_size_t,
+                _ctypes_accel.c_double, _ctypes_accel.c_double,
+                _ctypes_accel.c_double, _ctypes_accel.c_double, _ctypes_accel.c_double,
+                _ctypes_accel.c_double, _ctypes_accel.c_double, _ctypes_accel.c_double,
+                _ctypes_accel.c_double, _ctypes_accel.c_double, _ctypes_accel.c_double,
+                _ctypes_accel.c_double, _P_f, _P_f, _P_f
+            ]
+            _GB_ACCEL.gb_meum_modulation_f32.restype = None
+            _GB_ACCEL_FUNCS["meum_mod"] = _GB_ACCEL.gb_meum_modulation_f32
+        except Exception:
+            pass
+        try:
+            _GB_ACCEL.gb_voice_synth_f32.argtypes = [
+                _P_d, _ctypes_accel.c_size_t,
+                _ctypes_accel.c_double, _ctypes_accel.c_double, _ctypes_accel.c_double,
+                _ctypes_accel.c_double, _ctypes_accel.c_int, _ctypes_accel.c_int,
+                _ctypes_accel.c_int, _ctypes_accel.c_int, _ctypes_accel.c_double,
+                _ctypes_accel.c_longlong, _ctypes_accel.c_int, _ctypes_accel.c_double,
+                _ctypes_accel.c_double, _P_f
+            ]
+            _GB_ACCEL.gb_voice_synth_f32.restype = None
+            _GB_ACCEL_FUNCS["voice"] = _GB_ACCEL.gb_voice_synth_f32
+        except Exception:
+            pass
+        try:
+            _GB_ACCEL.gb_phase_build_f64.argtypes = [
+                _P_f, _P_f, _ctypes_accel.c_size_t,
+                _ctypes_accel.c_double, _ctypes_accel.c_double, _ctypes_accel.c_double,
+                _ctypes_accel.c_double, _ctypes_accel.c_double, _ctypes_accel.c_double, _P_d
+            ]
+            _GB_ACCEL.gb_phase_build_f64.restype = _ctypes_accel.c_double
+            _GB_ACCEL_FUNCS["phase_build"] = _GB_ACCEL.gb_phase_build_f64
+        except Exception:
+            pass
+        try:
+            _GB_ACCEL.gb_accumulate_f32.argtypes = [_P_f, _P_f, _ctypes_accel.c_size_t, _ctypes_accel.c_float]
+            _GB_ACCEL.gb_accumulate_f32.restype = None
+            _GB_ACCEL_FUNCS["accumulate"] = _GB_ACCEL.gb_accumulate_f32
+        except Exception:
+            pass
+        try:
+            _GB_ACCEL.gb_ot_div_f64.argtypes = [_P_d, _P_d, _ctypes_accel.c_size_t, _ctypes_accel.c_int, _ctypes_accel.c_double, _P_d]
+            _GB_ACCEL.gb_ot_div_f64.restype = None
+            _GB_ACCEL_FUNCS["ot_div"] = _GB_ACCEL.gb_ot_div_f64
+        except Exception:
+            pass
+        try:
+            _GB_ACCEL.gb_meum_space_f64.argtypes = [_ctypes_accel.c_size_t, _ctypes_accel.c_size_t, _ctypes_accel.c_double, _P_d, _P_d, _P_d, _P_d]
+            _GB_ACCEL.gb_meum_space_f64.restype = None
+            _GB_ACCEL_FUNCS["meum_space"] = _GB_ACCEL.gb_meum_space_f64
+            _GB_ACCEL.gb_ot_apply_f64.argtypes = [_P_d, _P_d, _ctypes_accel.c_size_t, _ctypes_accel.c_int, _ctypes_accel.c_int, _ctypes_accel.c_double, _P_d]
+            _GB_ACCEL.gb_ot_apply_f64.restype = None
+            _GB_ACCEL_FUNCS["ot_apply"] = _GB_ACCEL.gb_ot_apply_f64
+            _GB_ACCEL.gb_meum_trig_f64.argtypes = [_P_d, _ctypes_accel.c_size_t, _ctypes_accel.c_int, _P_d]
+            _GB_ACCEL.gb_meum_trig_f64.restype = None
+            _GB_ACCEL_FUNCS["meum_trig"] = _GB_ACCEL.gb_meum_trig_f64
+        except Exception:
+            pass
 except Exception:
     _GB_ACCEL = None
     _GB_ACCEL_FUNCS = {}
@@ -155,14 +225,10 @@ except Exception:
     UNIVERSAL_PROJECTION_TYPES = ()
 
 # POWER_V3_MEUM_CORE — canonical Meum spatial-dynamic constant.
-# M = 1.19758073433... is treated as an invariant mathematical constant,
-# not as an arbitrary synth-control percentage. Derived values below are
-# reusable shortcuts so the DSP/visualizer/context engines do not repeatedly
-# re-encode the same Meum arithmetic.
-MEUM = 1.1975807343385265188
+# The root and hot derived values come from meum_constants.py, which stores a
+# 100+ digit decimal reference plus exact IEEE-754 binary64 hex constants. This
+# prevents module-to-module drift from independently truncated decimal literals.
 MEUM_CONSTANT = MEUM  # backwards-compatible alias used throughout the codebase
-MEUM_MINUS_1 = MEUM - 1.0
-MEUM_INV = 1.0 / MEUM
 
 
 def _safe_json(obj):
@@ -189,14 +255,10 @@ def identity_unit(*key_parts) -> float:
     return int.from_bytes(h, "big") / 18446744073709551616.0
 
 
-MEUM_SQ = MEUM * MEUM
-MEUM_CUBE = MEUM_SQ * MEUM
-MEUM_FOURTH = MEUM_SQ * MEUM_SQ
-MEUM_NORM = MEUM_MINUS_1 * MEUM_INV          # (M-1)/M
+# Major Meum powers/inverse/normalization are hardcoded in meum_constants.py
+# from high-precision evaluation. Only project-specific composites live here.
 MEUM_OVER_1_5 = MEUM / 1.5
-MEUM_TWO_POW = 2.0 ** MEUM
 MEUM_TWO_POW_OVER_SQ = MEUM_TWO_POW / MEUM_SQ
-MEUM_LOG2 = math.log2(MEUM)
 # Full target hearing / synthesis window (user V1). Content above Nyquist is
 # clamped per sample-rate; prefer SR >= 96000 for true 27.5 kHz headroom.
 AUDIBLE_LO_HZ = 5.2
@@ -247,7 +309,7 @@ def audible_hz(freq, sample_rate=None):
 # further and further up in pitch. Wrapping the exponent into a symmetric
 # 12-slot window (-6..+5, one "octave" of Meum-steps) keeps the same per-index
 # color/identity but centers it around the base frequency instead of climbing.
-MEUM_POWERS_36 = tuple(MEUM ** ((i % 12) - 6) for i in range(36))
+MEUM_POWERS_36 = _MEUM_POWERS_36_CANON  # imported high-precision-rounded table
 # HARDCODE_UNISON_2026: fixed, instrument-index-derived tables that replace
 # the old runtime Nyquist/frequency-based partial cap and the random-per-voice
 # phase offset. Both are pure functions of the instrument's slot in the
@@ -263,13 +325,7 @@ INSTRUMENT_PHASE_LOCK_48 = tuple((2.0 * math.pi * i) / 48.0 for i in range(48))
 MEUM_IDENTITY_LHS = (MEUM_MINUS_1 * MEUM) + (MEUM_MINUS_1 * MEUM_INV)
 MEUM_IDENTITY_RHS = MEUM_TWO_POW_OVER_SQ - MEUM
 MEUM_IDENTITY_RESIDUAL = MEUM_IDENTITY_LHS - MEUM_IDENTITY_RHS
-PHI = 1.6180339887
-PHI_INV = 0.6180339887
-E_IRR = math.e
-PI_IRR = math.pi
-SQRT2 = math.sqrt(2.0)
-SQRT3 = math.sqrt(3.0)
-SILVER = 1.0 + SQRT2                          # silver ratio δ_s
+# PHI / irrational reference constants are centralized in meum_constants.py.
 
 # ---------------------------------------------------------------------------
 # MEUM SPATIAL PRIMITIVES — compact x/y/z computational forms
@@ -356,22 +412,74 @@ def eqr_ics(x):
     return a * MEUM_NORM + b * (1.0 - MEUM_NORM)
 
 
-def isn_vec(x):
-    """Vectorized Meum-normalized odd sinusoid with OT-equivalent execution."""
-    x = np.asarray(x, dtype=np.float64)
-    a = np.sin(x)
-    b = np.sin(x * MEUM)
-    # Vectorized DSP keeps the exact canonical expression; OT is the internal
-    # operator route represented by the same scalar operations.
-    return (a * MEUM_NORM + b * (1.0 - MEUM_NORM)).astype(np.float32)
+def _native_meum_trig_vec(x, mode):
+    """Contiguous native Meum/book trig; None means use authoritative NumPy fallback."""
+    fn = _GB_ACCEL_FUNCS.get("meum_trig") if isinstance(_GB_ACCEL_FUNCS, dict) else None
+    a = np.ascontiguousarray(np.asarray(x, dtype=np.float64))
+    if fn is None or a.size < 64:
+        return None
+    out = np.empty_like(a)
+    try:
+        fn(a.ctypes.data_as(_P_d), _ctypes_accel.c_size_t(a.size),
+           _ctypes_accel.c_int(int(mode)), out.ctypes.data_as(_P_d))
+        return out
+    except Exception:
+        return None
 
+def isn_vec(x):
+    """Vectorized Meum-normalized odd sinusoid; native OT/Meum path is default when available."""
+    x = np.asarray(x, dtype=np.float64)
+    out = _native_meum_trig_vec(x, 0)
+    if out is None:
+        out = np.sin(x) * MEUM_NORM + np.sin(x * MEUM) * (1.0 - MEUM_NORM)
+    return np.asarray(out, dtype=np.float32)
 
 def ics_vec(x):
-    """Vectorized Meum-normalized even cosinusoid with OT-equivalent execution."""
+    """Vectorized Meum-normalized even cosinusoid; native OT/Meum path is default when available."""
     x = np.asarray(x, dtype=np.float64)
-    a = np.cos(x)
-    b = np.cos(x * MEUM)
-    return (a * MEUM_NORM + b * (1.0 - MEUM_NORM)).astype(np.float32)
+    out = _native_meum_trig_vec(x, 1)
+    if out is None:
+        out = np.cos(x) * MEUM_NORM + np.cos(x * MEUM) * (1.0 - MEUM_NORM)
+    return np.asarray(out, dtype=np.float32)
+
+
+def ot_sin_vec_equiv(x):
+    """Conventional sin semantics through the book isn identity when OT is enabled.
+
+    For contiguous arrays this uses the native book-isn kernel:
+        sin(x) = isn(2x) / 2,  isn(t)=2*sin(t/2).
+    Scalar/small inputs stay on libm/NumPy because crossing the native ABI would
+    cost more than the arithmetic.  Numeric meaning is conventional sine; this
+    is an execution-route optimization, not a retuning of geometry or DSP.
+    """
+    a = np.asarray(x, dtype=np.float64)
+    if a.ndim == 0:
+        return math.sin(float(a))
+    if OP_THEORY_ENABLED:
+        doubled = np.ascontiguousarray(a * 2.0)
+        out = _native_meum_trig_vec(doubled, 2)
+        if out is not None:
+            out *= 0.5
+            return out
+    return np.sin(a)
+
+
+def ot_cos_vec_equiv(x):
+    """Conventional cos semantics through the book ics identity when profitable.
+
+    cos(x) = ics(2x) / 2,  ics(t)=2*cos(t/2).
+    See :func:`ot_sin_vec_equiv` for the scalar/ABI policy.
+    """
+    a = np.asarray(x, dtype=np.float64)
+    if a.ndim == 0:
+        return math.cos(float(a))
+    if OP_THEORY_ENABLED:
+        doubled = np.ascontiguousarray(a * 2.0)
+        out = _native_meum_trig_vec(doubled, 3)
+        if out is not None:
+            out *= 0.5
+            return out
+    return np.cos(a)
 
 
 def isn_scalar(x):
@@ -434,8 +542,8 @@ def book_isn_inv(y):
 
 def book_isn_vec(x):
     x = np.asarray(x, dtype=np.float64)
-    # Vector path keeps the same canonical formula; OT is the execution route.
-    return (2.0 * np.sin(0.5 * x)).astype(np.float64)
+    out = _native_meum_trig_vec(x, 2)
+    return out if out is not None else (2.0 * ot_sin_vec_equiv(0.5 * x)).astype(np.float64)
 
 
 def book_ics(x):
@@ -608,6 +716,45 @@ def ot_pow(b, e):
     return r if same_hand else -r
 
 
+def _division_zero_result(a, policy="zero", equation_result=None):
+    """Resolve an intentional zero denominator without hidden epsilon/clamping.
+
+    Policies are chosen by the owning operation, not globally:
+      zero       -> 0
+      one        -> 1
+      inf        -> signed infinity
+      numerator  -> n / carry the numerator
+      equation   -> an explicitly supplied x/y-equivalent solved value
+
+    This keeps divide-by-zero semantics visible and useful while preventing
+    accidental ZeroDivisionError in realtime/audio/control paths.
+    """
+    try:
+        a = float(a)
+    except Exception:
+        a = 0.0
+    pol = str(policy or "zero").strip().lower()
+    if pol in {"one", "1", "unity"}:
+        return 1.0
+    if pol in {"inf", "infinity", "∞"}:
+        return math.copysign(math.inf, a if a != 0.0 else 1.0)
+    if pol in {"numerator", "n", "carry"}:
+        return a
+    if pol in {"equation", "solved", "x/y"}:
+        try:
+            return float(equation_result)
+        except Exception:
+            return a
+    return 0.0
+
+def safe_divide(a, b, *, zero_policy="zero", equation_result=None):
+    """Context-selectable divide with exact nonzero division and explicit zero policy."""
+    a = float(a); b = float(b)
+    if b == 0.0:
+        return _division_zero_result(a, zero_policy, equation_result)
+    return a / b
+
+
 def ot_div(a, b):
     a = float(a)
     b = float(b)
@@ -615,7 +762,7 @@ def ot_div(a, b):
         return 1.0
     ab = math.fabs(b)
     if ab == 0.0:
-        return math.copysign(1.0, a) * 1e9
+        return _division_zero_result(a, "inf")
     if a == 0.0:
         return 0.0
     mag = math.fabs(a) / ab
@@ -654,9 +801,7 @@ def ot_equiv_mul(a, b):
 def ot_equiv_div(a, b):
     a = float(a)
     b = float(b)
-    if b == 0.0:
-        return 0.0
-    return a / b
+    return safe_divide(a, b, zero_policy="zero")
 
 
 def ot_equiv_pow(b, e):
@@ -841,10 +986,7 @@ def math_div(a, b):
     """Composition division — OT uses book ot_div (0/0→1 rule)."""
     if OP_THEORY_ENABLED:
         return ot_div(a, b)
-    b = float(b)
-    if b == 0.0:
-        return 0.0
-    return float(a) / b
+    return safe_divide(a, b, zero_policy="zero")
 
 
 def math_pow(b, e):
@@ -1523,9 +1665,9 @@ class DeterministicPanelManager:
     """
     def __init__(self, channels: int = 4) -> None:
         self.channels = channels
-        self.MEUM_NORM = 1.19758073433
-        self.MEUM_INV = 1.0 / self.MEUM_NORM
-        self.PHI = 1.61803398875
+        self.MEUM_NORM = MEUM
+        self.MEUM_INV = MEUM_INV
+        self.PHI = PHI
 
     def get_channel_overrides(self, channel_id: int, ctx: float) -> dict:
         """Computes invariant-mapped parameter overrides for a given channel."""
@@ -1539,8 +1681,8 @@ class DeterministicPanelManager:
 class DeterministicPanelOverride:
     def __init__(self, channels=4):
         self.channels = channels
-        self.MEUM_NORM = 1.19758073433
-        self.PHI = 1.61803398875
+        self.MEUM_NORM = MEUM
+        self.PHI = PHI
 
     def compute_override(self, channel_id, ctx):
         return {
@@ -1690,7 +1832,7 @@ def _meum_handle_mul(a, b):
     return ot_equiv_mul(a, b) if OP_THEORY_ENABLED else float(a) * float(b)
 
 def _meum_handle_div(a, b):
-    return ot_equiv_div(a, b) if OP_THEORY_ENABLED else (0.0 if float(b) == 0.0 else float(a) / float(b))
+    return ot_equiv_div(a, b) if OP_THEORY_ENABLED else safe_divide(a, b, zero_policy="zero")
 
 def meum_spatial_operator_field(x, y, z):
     """Direct Meum x,y,z field used by the EQR spatial effect.
@@ -1699,8 +1841,8 @@ def meum_spatial_operator_field(x, y, z):
     merely supplies equivalent arithmetic handles when enabled.
     """
     x, y, z = float(x), float(y), float(z)
-    r = math.sqrt(max(0.0, x*x + y*y + z*z)) + 1e-9
-    potential = _meum_handle_div(1.0, r)
+    r = math.sqrt(max(0.0, x*x + y*y + z*z))
+    potential = safe_divide(1.0, r, zero_policy="one")
     wave = math.sin(math.pi*x) * math.sin(math.pi*y) * math.sin(math.pi*z)
     state = (math.sin(2.0*math.pi*(x+1.0/3.0)) + math.sin(2.0*math.pi*(y+1.0/3.0)) + math.sin(2.0*math.pi*(z+1.0/3.0))) / 3.0
     return float(_meum_handle_add(_meum_handle_add(0.34*potential, 0.33*wave), 0.33*state))
@@ -1709,7 +1851,7 @@ def meum_spatial_audio_effect(signal, strength=0.025, phase=0.0):
     arr=np.asarray(signal,dtype=np.float32).ravel()
     if arr.size==0: return arr
     t=np.linspace(0.0,1.0,arr.size,endpoint=False)
-    x=2.0*t-1.0; y=np.sin(2.0*math.pi*t+float(phase)); z=np.cos(2.0*math.pi*t+float(phase))
+    x=2.0*t-1.0; y=ot_sin_vec_equiv(2.0*math.pi*t+float(phase)); z=ot_cos_vec_equiv(2.0*math.pi*t+float(phase))
     field=np.asarray([meum_spatial_operator_field(a,b,c) for a,b,c in zip(x,y,z)],dtype=np.float32)
     return (arr*(1.0+np.float32(np.clip(float(strength),0.0,0.08))*field)).astype(np.float32)
 
@@ -1946,26 +2088,49 @@ def meum_modulation_vectors(t, params=None):
     meum_depth = float(np.clip(p.get("meum_depth", 0.0), 0.0, 1.0))
 
     def field(rate):
-        a = np.sin(math.tau * t * rate)
-        b = np.sin(math.tau * t * rate * MEUM_INV)
+        a = ot_sin_vec_equiv(math.tau * t * rate)
+        b = ot_sin_vec_equiv(math.tau * t * rate * MEUM_INV)
         return 0.5 * (a + MEUM_NORM * b)
 
+    # PERF_NATIVE_20260905: native modulation is allocation-light and avoids
+    # three repeated NumPy trig passes per voice.  Preserve the exact Python
+    # path as fallback and for tiny buffers where ctypes overhead dominates.
+    _nm = _GB_ACCEL_FUNCS.get("meum_mod") if isinstance(_GB_ACCEL_FUNCS, dict) else None
+    if _nm is not None and t.size >= 256 and t.flags.c_contiguous:
+        try:
+            import ctypes as _ct
+            fr = np.empty(t.shape, dtype=np.float32)
+            po = np.empty(t.shape, dtype=np.float32)
+            ag = np.empty(t.shape, dtype=np.float32)
+            _nm(
+                t.ctypes.data_as(_ct.POINTER(_ct.c_double)), _ct.c_size_t(t.size),
+                _ct.c_double(MEUM_NORM), _ct.c_double(MEUM_INV),
+                _ct.c_double(phase_shift), _ct.c_double(am_depth), _ct.c_double(am_rate),
+                _ct.c_double(fm_depth), _ct.c_double(fm_rate), _ct.c_double(pm_depth),
+                _ct.c_double(pm_rate), _ct.c_double(pm_feedback), _ct.c_double(meum_depth),
+                fr.ctypes.data_as(_ct.POINTER(_ct.c_float)),
+                po.ctypes.data_as(_ct.POINTER(_ct.c_float)),
+                ag.ctypes.data_as(_ct.POINTER(_ct.c_float)),
+            )
+            return fr, po, ag
+        except Exception:
+            pass
+
     # FM: instantaneous-frequency ratio (integrated into phase by the caller).
-    fm_lfo = np.sin(math.tau * t * fm_rate + phase_shift)
+    fm_lfo = ot_sin_vec_equiv(math.tau * t * fm_rate + phase_shift)
     freq_ratio = 1.0 + fm_depth * (fm_lfo + meum_depth * field(fm_rate))
-    freq_ratio = np.clip(freq_ratio, 0.0, None)
 
     # PM: direct phase displacement, radians (includes the static phase_shift).
-    pm_lfo = np.sin(math.tau * t * pm_rate + phase_shift)
+    pm_lfo = ot_sin_vec_equiv(math.tau * t * pm_rate + phase_shift)
     phase_offset = (
         phase_shift
         + pm_depth * pm_lfo
         + pm_feedback * meum_depth * field(pm_rate)
     )
 
-    # AM: post-waveform amplitude gain, never negative.
-    am_lfo = np.sin(math.tau * t * am_rate + phase_shift)
-    am_gain = np.clip(1.0 + am_depth * (am_lfo + meum_depth * field(am_rate)), 0.0, None)
+    # AM: post-waveform amplitude gain. Negative values are phase inversion, not clipped.
+    am_lfo = ot_sin_vec_equiv(math.tau * t * am_rate + phase_shift)
+    am_gain = 1.0 + am_depth * (am_lfo + meum_depth * field(am_rate))
 
     return (
         freq_ratio.astype(np.float32),
@@ -3360,11 +3525,11 @@ def goava_irrational_stream(t_values, numbers, base_frequency=432.0, channel=0):
         else:
             base_ph = 1.0 + abs((math.pi / 2.0) * num)
         if note is None:
-            note = (1.0 + np.cos(base_ph + (math.pi / 2.0) * ((abs(value) + abs(num)) * step))) / denom
-            ref = (1.0 + np.cos(base_ph + (math.pi / 2.0) * ((abs(value) + abs(num)) * ref_step))) / denom
+            note = (1.0 + ot_cos_vec_equiv(base_ph + (math.pi / 2.0) * ((abs(value) + abs(num)) * step))) / denom
+            ref = (1.0 + ot_cos_vec_equiv(base_ph + (math.pi / 2.0) * ((abs(value) + abs(num)) * ref_step))) / denom
         else:
-            note = note + (1.0 + np.cos(base_ph + (math.pi / 2.0) * ((abs(value) + abs(num)) * step))) / denom
-            ref = ref + (1.0 + np.cos(base_ph + (math.pi / 2.0) * ((abs(value) + abs(num)) * ref_step))) / denom
+            note = note + (1.0 + ot_cos_vec_equiv(base_ph + (math.pi / 2.0) * ((abs(value) + abs(num)) * step))) / denom
+            ref = ref + (1.0 + ot_cos_vec_equiv(base_ph + (math.pi / 2.0) * ((abs(value) + abs(num)) * ref_step))) / denom
     if note is None:
         return np.zeros(tarr.shape, dtype=np.float32)
     # Closed-form, input-independent normalization: the oscillation amplitude is
@@ -4351,10 +4516,10 @@ PKP_ENVELOPE_DEFAULT = 0.5000
 # indexing/traversal. Identity/midpoint/off retain exact 1/0.5/0 semantics;
 # irrational defaults are reserved for non-authoritative propagation layers.
 IRRATIONAL_MODULATION_BASIS = {
-    "meum_minus_1": MEUM - 1.0,
-    "meum_inverse": 1.0 / MEUM,
-    "meum_complement": 2.0 - MEUM,
-    "meum_normalized": (MEUM - 1.0) / MEUM,
+    "meum_minus_1": MEUM_MINUS_1,
+    "meum_inverse": MEUM_INV,
+    "meum_complement": MEUM_TWO_MINUS,
+    "meum_normalized": MEUM_NORM,
     "sqrt2_minus_1": math.sqrt(2.0) - 1.0,
     "phi_minus_1": PHI - 1.0,
     "e_minus_2": math.e - 2.0,
@@ -4833,8 +4998,8 @@ class FormulaModulatorWidget(QWidget):
         layout.addWidget(QLabel("<b>Dynamic Coordinate Formula Inputs</b>"))
 
         # Formula Inputs
-        self.x_input = self.create_formula_row(layout, "X-Axis Expr:", "np.sin(time * 2.0) + base_x")
-        self.y_input = self.create_formula_row(layout, "Y-Axis Expr:", "np.cos(time * 1.5) * base_y")
+        self.x_input = self.create_formula_row(layout, "X-Axis Expr:", "ot_sin_vec_equiv(time * 2.0) + base_x")
+        self.y_input = self.create_formula_row(layout, "Y-Axis Expr:", "ot_cos_vec_equiv(time * 1.5) * base_y")
         self.z_input = self.create_formula_row(layout, "Z-Axis Expr:", "abs(x + y) - time")
 
         # Compile Button
@@ -5305,7 +5470,7 @@ class SpectrumAnalyzer(QFrame):
         n = min(len(x), 512)
         x = x[:n]
         tw = np.linspace(0, 1, n, endpoint=False)
-        win = MEUM_NORM + (1.0 - MEUM_NORM) * 0.5 * (1.0 - np.cos(2 * np.pi * tw))
+        win = MEUM_NORM + (1.0 - MEUM_NORM) * 0.5 * (1.0 - ot_cos_vec_equiv(2 * np.pi * tw))
         x = x * win.astype(np.float32)
         nfft = 1
         while nfft < n:
@@ -5638,16 +5803,16 @@ class VideoSynthEngine:
         self.height = 0.0
         self.center_x = self.width / 2.0
         self.center_y = self.height / 2.0
-        self.MEUM_INV = 1.0 / 1.19758073433
-        self.PHI = 1.61803398875
+        self.MEUM_INV = MEUM_INV
+        self.PHI = PHI
         # Fixed-input scenograph mesh: width/height/resolution/ctx never vary
         # frame-to-frame, so compute it once here instead of re-instantiating
         # MeumScenographController and recomputing the same mesh every
         # render_frame() call (its result was previously discarded unused).
         _t = np.linspace(0.0, math.tau, 64)
-        _sx = np.sin(_t * PHI + 0.4759) * np.cos(_t * MEUM_INV)
-        _sy = np.cos(_t * PHI + 0.4759) * np.sin(_t * MEUM_INV)
-        _sz = np.sin(_t * MEUM_INV * 2.0)
+        _sx = ot_sin_vec_equiv(_t * PHI + 0.4759) * ot_cos_vec_equiv(_t * MEUM_INV)
+        _sy = ot_cos_vec_equiv(_t * PHI + 0.4759) * ot_sin_vec_equiv(_t * MEUM_INV)
+        _sz = ot_sin_vec_equiv(_t * MEUM_INV * 2.0)
         _depth = 1.0 / (1.0 + _sz * 0.1 * MEUM_INV)
         self._scenograph_points = [(float(400.0 + x * 512.0 * d), float(400.0 + y * 512.0 * d)) for x,y,d in zip(_sx,_sy,_depth)]
         # One visual object is created per live instrument. No independent
@@ -5745,8 +5910,8 @@ class VideoSynthEngine:
                 "i": i,
                 "distance": depth,
                 "yaw": (i * PHI * MEUM_NORM) % (2 * np.pi),
-                "pitch": 0.12 * np.sin(i * MEUM),
-                "roll": 0.09 * np.cos(i * MEUM_INV),
+                "pitch": 0.12 * ot_sin_vec_equiv(i * MEUM),
+                "roll": 0.09 * ot_cos_vec_equiv(i * MEUM_INV),
                 "hue": int((i * 360 / max(self.n, 1) + i * 7) % 360),
                 "life": 0.3,
                 "family": i // 8,
@@ -5816,8 +5981,8 @@ class VideoSynthEngine:
                     "i": i,
                     "distance": depth,
                     "yaw": (i * PHI * MEUM_NORM) % (2 * np.pi),
-                    "pitch": 0.12 * np.sin(i * MEUM),
-                    "roll": 0.09 * np.cos(i * MEUM_INV),
+                    "pitch": 0.12 * ot_sin_vec_equiv(i * MEUM),
+                    "roll": 0.09 * ot_cos_vec_equiv(i * MEUM_INV),
                     "hue": int((i * 360 / max(target, 1) + i * 7) % 360),
                     "life": 0.0,
                     "family": i // 8,
@@ -6448,14 +6613,14 @@ class VideoSynthEngine:
         # composition quantity; there are no purely decorative random fields.
         r = np.sqrt(xn*xn + yn*yn)
         a = np.arctan2(yn, xn)
-        f1 = np.sin(a * (3.0 + 5.0*b1) + r * (7.0 + 9.0*b2) + ph + atom_angle)
-        f2 = np.cos(r * (11.0 + 8.0*centroid) - t*(0.07 + 0.13*e) + seed*0.0017)
-        f3 = np.sin((xn*vg_cos(atom_phase) + yn*vg_sin(atom_phase)) * (8.0 + 12.0*b0) + ph*2.0)
-        f4 = np.cos((xn-yn) * (5.0 + 7.0*atom_tex) + t*0.11 + seed*0.0009)
+        f1 = ot_sin_vec_equiv(a * (3.0 + 5.0*b1) + r * (7.0 + 9.0*b2) + ph + atom_angle)
+        f2 = ot_cos_vec_equiv(r * (11.0 + 8.0*centroid) - t*(0.07 + 0.13*e) + seed*0.0017)
+        f3 = ot_sin_vec_equiv((xn*vg_cos(atom_phase) + yn*vg_sin(atom_phase)) * (8.0 + 12.0*b0) + ph*2.0)
+        f4 = ot_cos_vec_equiv((xn-yn) * (5.0 + 7.0*atom_tex) + t*0.11 + seed*0.0009)
         # Harmonic cross-modulation: multiplicative interaction prevents the
         # image from being a sum of unrelated overlays.
         field = 0.5 + 0.5*f1 + 0.5*f2 + 0.5*f3 + 0.5*f4 + 0.5*f1*f3
-        field *= 0.5 + 0.5*np.clip(0.5 + 0.5*np.cos((r + ph)*math.tau), 0.0, 1.0)
+        field *= 0.5 + 0.5*np.clip(0.5 + 0.5*ot_cos_vec_equiv((r + ph)*math.tau), 0.0, 1.0)
         field = np.clip(field, 0.0, 1.0)
         hue = (DEFAULT_SHIFTS.hue_shift_base_image_synthesis + 170.0*centroid + 70.0*b2 + math.degrees(atom_phase)*0.5 + self._video_hue_shift + ph*55.0) % 360.0
         # Vectorized continuous RGB basis.  The three channels are phase-shifted
@@ -6463,9 +6628,9 @@ class VideoSynthEngine:
         # of being an unrelated decorative palette.
         c = field * (0.5 + 0.30*e)
         ang = hue / 60.0 + f1*0.5 + f3*0.5
-        rr = np.clip(c * (0.5 + 0.5*np.cos(ang)), 0, 1)
-        gg = np.clip(c * (0.5 + 0.5*np.cos(ang - 2)), 0, 1)
-        bb = np.clip(c * (0.5 + 0.5*np.cos(ang - 4)), 0, 1)
+        rr = np.clip(c * (0.5 + 0.5*ot_cos_vec_equiv(ang)), 0, 1)
+        gg = np.clip(c * (0.5 + 0.5*ot_cos_vec_equiv(ang - 2)), 0, 1)
+        bb = np.clip(c * (0.5 + 0.5*ot_cos_vec_equiv(ang - 4)), 0, 1)
         field_rgb = np.stack([rr,gg,bb], axis=-1) * 255.0
         alpha = 0.5 * (e + op)
         img[:] = img * (1.0-alpha) + field_rgb.astype(np.float32) * alpha
@@ -7022,7 +7187,7 @@ class VideoSynthEngine:
                             txx = np.linspace(0.0, 0.30 + 0.55 * (hz / 260.0), 14)
                             stream = goava_irrational_stream(txx, numbers, base_frequency=hz, channel=j % len(numbers))
                         except Exception:
-                            stream = np.sin(np.linspace(0.0, math.tau * 2.0, 14))
+                            stream = ot_sin_vec_equiv(np.linspace(0.0, math.tau * 2.0, 14))
                         cx, cy = w * DEFAULT_SHIFTS.horizontal_center_math_roses, h * DEFAULT_SHIFTS.vertical_center_math_roses
                         rad = float(min(w, h)) * (0.16 + 0.30 * float(self._visual_entropy)) * chg
                         pts = []
@@ -9251,7 +9416,7 @@ class AdvancedDSPEngine:
                     # isn-based carrier + isn sub-modulator (no sin/tanh)
                     raw = isn_vec(2 * np.pi * freq * sub_t + p1 * isn_vec(2 * np.pi * freq * 2 * sub_t))
 
-                    env = np.sin(np.pi * sub_t / note_dur) * (1.0 + p2 * 0.5)
+                    env = ot_sin_vec_equiv(np.pi * sub_t / note_dur) * (1.0 + p2 * 0.5)
                     drive = 1.0 + p1 * 2.0
                     # Dual-mode gain, no soft-clip saturation.
                     if operator_theory_enabled():
@@ -9277,11 +9442,11 @@ class MathEngine:
     """
     @staticmethod
     def isn(val):
-        return np.sin(val) / (1.0 + np.abs(np.cos(val)))
+        return ot_sin_vec_equiv(val) / (1.0 + np.abs(ot_cos_vec_equiv(val)))
 
     @staticmethod
     def ics(val):
-        return np.cos(val) / (1.0 + np.abs(np.sin(val)))
+        return ot_cos_vec_equiv(val) / (1.0 + np.abs(ot_sin_vec_equiv(val)))
 
     @staticmethod
     def _mul(a, b):
@@ -9306,7 +9471,7 @@ class MathEngine:
         return (
             MathEngine._mul(MathEngine.isn(x), y),
             MathEngine._mul(MathEngine.ics(y), z),
-            np.sin(x * y * z),
+            ot_sin_vec_equiv(x * y * z),
         )
 
     @staticmethod
@@ -9796,8 +9961,8 @@ class PhaseLockedWavefieldEngine:
                     euc[s] = True
             t = np.linspace(0, 1, count, endpoint=False)
             # Continuous envelopes — any float decimal
-            env = 0.5 + 0.5 * np.sin(2 * np.pi * t * MEUM + i * 0.5 + inst_seed * 0.0)
-            har = 0.5 + 0.5 * np.sin(2 * np.pi * t * MEUM_LOG2 + i * 0.5 + inst_seed * 0.0)
+            env = 0.5 + 0.5 * ot_sin_vec_equiv(2 * np.pi * t * MEUM + i * 0.5 + inst_seed * 0.0)
+            har = 0.5 + 0.5 * ot_sin_vec_equiv(2 * np.pi * t * MEUM_LOG2 + i * 0.5 + inst_seed * 0.0)
             self.wavefield[name] = {
                 "euclidean": euc,
                 "envelope": env.astype(float).tolist(),
@@ -10300,6 +10465,17 @@ class ReadmeGuideDialog(QDialog):
 
     HELP_TEXT = r"""
 
+## V34 Stability Pass
+
+- Reversible randomizer toggle contract: ON captures a full project baseline and generates a fresh variation; OFF restores the exact pre-randomize state; each subsequent ON cycle rerandomizes and shifts the control color palette.
+- Canonical Signal Control defaults to Full Canonical / 100% authority and self-heals missing canonical coverage through canonical-owned runtime overlays without rewriting user data.
+- Canonical Resonance / Activity is 50–150%, independent of the 50/50 source coefficients; 150% is activity/continuation drive, not output volume.
+- Canonical→Instrument convolution influence is 0–100%.
+- Maximum active instruments: 128. Default playlist row duration: 16 beats.
+- ParametricMathBackground is integrated with a deep navy gradient field.
+- Performance controls are consolidated into one horizontal deck; Automator controls are compacted into a multi-row grid.
+- UI initialization order and Qt stylesheet declarations were hardened; division-by-zero-sensitive paths use explicit degenerate-case handling rather than epsilon denominators where practical.
+
 ================================================================================
   GROOVEBOX — Mathematician's / Scientist's Groovebox
   Full Documentation, Scripting Syntax & Design Philosophy
@@ -10324,11 +10500,21 @@ ease:
 
 Design pillars:
   1) User data is the *carrier wave* — engines add around it; they do not wipe it.
-  2) Seeds (irrationals: pi, e, Meum ≈ 1.1975807343, …) are geometric anchors.
+  2) Seeds/constants (including pi, e, and Meum) are geometric anchors. Project theorem MEUM-T1 proves the mathematical Meum root irrational; finite IEEE-754 runtime values remain approximations.
   3) Empty slots are for convergent harmonic fill, not noise dumps.
   4) Redundant definitions are simplified first so fill engines have free capacity.
   5) Only inputs with *net effect* on the playlist timeline are treated as
      protected user data; silent or off-timeline data may be reshaped.
+
+USER NOTE — WHY THE AUTHOR'S MATHEMATICS IS USEFUL HERE
+The project author's work is not merely decorative notation. In Groovebox it supplies
+a stable vocabulary for deterministic identity, phase/traversal, reversible transforms,
+and cross-domain correspondence. That structure has practical engineering value:
+repeatable seeds can be cached; the same canonical state can feed audio/visual/game/UI/
+network projections; rational partition weights can conserve an upstream identity while
+irrational or irrational-candidate traversals can be reserved for ordering and coverage.
+The benefit comes from the structure and invariants, not from a claim that one constant
+makes a CPU intrinsically faster.
 
 --------------------------------------------------------------------------------
 2. DISCLAIMER — ADVANCED INSTRUMENT
@@ -11201,6 +11387,41 @@ This is a deterministic geometric mapping. “Dense” means the use of a
 non-rational-looking project constant is intended to avoid a short visual period;
 it is not a proof of equidistribution.
 
+PRACTICAL NOTE — WHAT MEUM CONTRIBUTES TO GROOVEBOX
+Meum gives the software a compact family of related coordinates (M, M−1, 1/M, 2−M,
+(M−1)/M and powers of M) that can be precomputed once and reused. This is logically
+useful for deterministic phase indexing, modulation vocabulary, spatial traversal,
+procedural placement, canonical fingerprints, and progressive refinement. Reuse makes
+these paths cache-friendly and permits fused/native implementations instead of repeatedly
+reconstructing equivalent relationships in Python. The useful property is reproducible
+structure. Whether Meum is superior to phi, sqrt(2), or other low-discrepancy choices is
+an empirical question and should be benchmarked rather than assumed.
+
+MEUM-T1 — EXISTENCE, UNIQUENESS, AND IRRATIONALITY
+The project formally defines mathematical Meum as the unique root M in (1,2) of
+    2^M = M^4 + M^2 - M,
+or F(x)=2^x-x^4-x^2+x=0.
+
+Existence: F is continuous, F(1)=1>0, and F(2)=-14<0, so the Intermediate
+Value Theorem gives at least one root in (1,2).
+
+Uniqueness: F'(x)=2^x ln(2)-4x^3-2x+1 and
+F''(x)=2^x(ln 2)^2-12x^2-2. On [1,2], 2^x(ln2)^2<2 while
+12x^2+2>=14, hence F''<0. Therefore F' is strictly decreasing; since
+F'(1)=2 ln2-5<0, F'<0 throughout [1,2]. F is strictly decreasing and its
+root there is unique.
+
+Irrationality: if M=p/q in lowest terms, then M^4+M^2-M is rational, so
+2^(p/q) must be rational. Writing 2^(p/q)=a/b in lowest terms and raising
+to q gives a^q=2^p b^q. Unique prime factorization forces b=1 and q|p;
+with p/q reduced, q=1. Thus every rational solution would be an integer,
+but the unique Meum root lies strictly between 1 and 2. Hence M is irrational.
+
+Groovebox stores the long decimal reference and a correctly-rounded binary64 value.
+The finite machine value is necessarily rational, but every subsystem now receives the
+same binary64 representation and pre-rounded derived constants rather than separately
+truncated decimal copies.
+
 MEUM NORMALIZATION
 
 The standard normalized weight is:
@@ -11285,12 +11506,19 @@ magnitudes.
 
 OT DIVISION AND ZERO
 
+ENGINEERING NOTE — WHY OT IS USEFUL IN THIS APPLICATION
+Operator Theory gives Groovebox an explicit reversible-operation vocabulary rather than
+hiding inverse behavior in ad-hoc cleanup code. Add↔subtract, multiply↔divide and
+power↔root pairings are useful for writer toggles, provenance, zero-state restoration,
+transform simplification, and inspection. The contextual zero-division policy also lets
+the owning operation deliberately select 0, 1, signed infinity, numerator n, a solved
+ratio, or a fallback instead of silently injecting an epsilon. OT remains project-defined
+mathematics; its engineering value here is that its rules are explicit and testable.
+
 For a nonzero denominator:
     |OT_DIV(a,b)| = |a|/|b|
 
-with sign taken from a. The project defines 0/0 = 1 in OT mode. Division by zero
-for nonzero a uses the project's large finite sentinel convention. These are
-compatibility rules, not ordinary field arithmetic.
+with sign taken from a. The project defines 0/0 = 1 in OT mode. Division by zero for nonzero a uses signed infinity in OT mode. Ordinary/DSP compatibility paths choose an explicit context policy (0, 1, signed infinity, numerator/n, or an explicitly solved x/y-equivalent value) rather than adding a hidden epsilon. These are project compatibility rules, not ordinary field arithmetic.
 
 OT PHASE OPERATOR
     OT_I_PHASE(x,k) = −x for even k, and +x for odd k.
@@ -11954,7 +12182,7 @@ game composition meta for all consumers.
 # CURRENT V3 ROLLOUT APPENDIX
 # Mathematician's Groovebox V3 — Current Feature, Math, Hardware & Networking Guide
 
-**Rollout date:** 2026-09-05
+**Rollout date:** 2026-09-05  
 **Design split:** Main Window = precise/scientific Operation Station. Performance = live/touch-friendly GOAVA Radio workspace.
 
 ## 1. Canonical zero-state and current defaults
@@ -12048,6 +12276,14 @@ with project-use forms including `M−1`, `1/M`, powers of M, normalized ratios,
 The user's Equation-of-Reality / P-E-D framework, operator-theory mappings, ℤ-Lattice language, GOAVA numeric transduction, and Meum calculus are **project-defined mathematical hypotheses/frameworks**. Where the UI/help uses terms such as “claimed exact,” that means exact **under the project's stated definitions and implementation contract**, not a claim of independent mathematical or physical validation.
 
 GOAVA uses numeric seed structure as a deterministic composition/modulation source shared across audio, visuals, and game-state fingerprints. The implementation seeks seed-to-signal congruence and deterministic replay; numerical tests verify software invariants, not universal number-theory truth.
+
+APPLICATION NOTE — GOAVA / NUMERIC TRANSDUCTION
+Treating numbers and semantic labels as deterministic compositional inputs gives the app a
+repeatable alternative to opaque random assignment. The same numeric identity can be
+translated into notes, timing, visual geometry, game signatures and metadata while keeping
+provenance. This makes renders reproducible, comparisons meaningful, and regression tests
+possible. It does not prove that a generated composition is mathematically optimal; it
+does make the generation rule inspectable and repeatable.
 
 ## 6. Main GUI and GOAVA Radio identity
 
@@ -12146,7 +12382,10 @@ Groovebox now treats the author's mathematical writing as a **selectable creativ
 The principal constant used by the engine is `M = 1.1975807343…`. The default modulation vocabulary includes `M-1`, `1/M`, `2-M`, `(M-1)/M`, plus independent irrational traversals `e-2`, `phi-1`, `sqrt(2)-1`, and `pi-3`. Meaningful identity values `0`, `0.5`, and `1` remain unchanged when they mean OFF, symmetry, or unity.
 
 ### Isosceles trigonometry
-The book defines inverse isosceles sine as `isn^-1(x) = 2 asin(x/2)`. Groovebox also exposes the inverse-pair coordinate `isn(theta)=2 sin(theta/2)` for bounded seed phase mapping. `ics/ics^-1` are kept as handedness-aware complementary coordinates for spatial/game modulation. These functions are used for *indexing and geometry*; they do not overwrite ordinary `sin/cos` globally.
+The book defines inverse isosceles sine as `isn^-1(x) = 2 asin(x/2)`. Groovebox also exposes the inverse-pair coordinate `isn(theta)=2 sin(theta/2)` and the complementary `ics(theta)=2 cos(theta/2)` family.  Operator Theory is enabled by default.  Conventional trig semantics are routed through these identities in hot contiguous native-array paths when that is profitable (`sin(x)=isn(2x)/2`, `cos(x)=ics(2x)/2`); scalar/libm calls remain direct when an extra dispatch would be slower.  Explicit Meum-normalized isn/ics transforms are used where the composition asks for the Meum coordinate rather than conventional sine/cosine.
+
+ENGINEERING NOTE — WHY THE ISOSCELES TRIG PAIR IS USEFUL
+The isn/isn^-1 and ics/ics^-1 pairs provide bounded, invertible-on-branch coordinate mappings and a common expression language for audio, visual and game projections.  The implementation separates **meaning** from **execution route**: ordinary DSP/Euclidean trig keeps its conventional numerical meaning, while the same operation can be executed through the project's isn/ics identities and native C++ kernels.  This preserves interoperability while still letting the author's formulas collapse repeated coordinate transforms, share kernels across domains, and remain independently testable.
 
 ### Operator Theory (OT)
 For reversible transforms, Groovebox implements the book's stated symbolic inverse pairing: add↔subtract, multiply↔divide, power↔root, with operation order reversed for an inverse path. This is especially useful for the writer-toggle zero-state rule: active transforms are collected, simplified to one canonical transform, evaluated once, and their provenance is preserved separately.
@@ -12166,45 +12405,57 @@ The in-app math help preserves the terminology and claims of the author's suppli
 TOTAL CORRESPONDENCE / SELF-PROCEDURE
 Groovebox can derive Audio, Visual, Game, UI, and Network manifestations from the same Universal Field ID. Representation part/object counts are chosen after identity and may be raised or lowered without changing the canonical source. Extended visualizer modes display the field prefix, selected projection-cover size, and correspondence score. Correspondence means shared canonical identity/provenance; it does not mean a lossy file format can always be inverted exactly.
 
-"""
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Groovebox — Help, Readme & Scripting Guide")
-        self.resize(900, 680)
-        self.setStyleSheet(DAW_STYLE)
-        layout = QVBoxLayout(self)
+## Research note — what the Meum/OT work is actually buying Groovebox
 
-        layout.addWidget(QLabel(
-            "<h3>📖 Groovebox — Full Documentation</h3>"
-            "<p style='color:#aaa;'>Mathematician's / Scientist's groovebox · "
-            "maximize harmonic diversity · same ease for simple or complex projects</p>"
-        ))
+Groovebox now treats the author's Meum/Operator-Theory work as a **computational architecture**, not merely as decorative constants.  The practical advantages are measurable engineering properties: one canonical mathematical identity can be cached and projected into audio/visual/game/UI/network views; Meum-family traversals can be advanced by deterministic modular recurrence instead of rebuilt from an RNG; rational anchors remain available for exact conservation/partitioning; OT keeps inverse/write operations explicit; and the `isn/ics` family provides a compact coordinate vocabulary that can be fused into native array kernels.  These properties reduce recomputation, stabilize cache keys, simplify reversible state transitions, and make Python/C++ parity easier to test.
 
-        text_view = QTextEdit()
-        text_view.setReadOnly(True)
-        text_view.setPlainText(self.HELP_TEXT)
-        text_view.setStyleSheet(
-            "background-color: #0d1117; color: #00ffcc; font-family: 'Consolas', monospace; font-size: 11px;"
-        )
-        layout.addWidget(text_view)
+### MEUM-T1 — existence, uniqueness and irrationality
 
-        close_btn = QPushButton("Close Guide")
-        close_btn.clicked.connect(self.accept)
-        layout.addWidget(close_btn)
+For the project's formal definition, let `M` be the root in `(1,2)` of
 
+`2^M = M^4 + M^2 - M`, equivalently `F(x)=2^x-x^4-x^2+x=0`.
 
-# ==========================================
-# SCRIPT PANEL DIALOG
-# ==========================================
-class MusicFractallizer:
-    """Contextual sub/superharmonic Fractallizer (time-variant).
+`F(1)=1>0` and `F(2)=-14<0`, so continuity gives at least one root.  On `[1,2]`,
 
-    Reads local subpeaks and subtroughs of the wave (relativistic context
-    around each sample), synthesizes matching subharmonics (½, ⅓) and
-    superharmonics (2×, 3×) as an isn-shaped contextual companion wave, and
-    appends them to every existing partial at up to 50% mix.  No spectral
-    peak-renorm / equalizer stage.
+`F''(x)=2^x(ln 2)^2-12x^2-2 < 4(ln 2)^2-14 < 0`,
+
+therefore `F'` is strictly decreasing; because `F'(1)=2 ln 2-5<0`, `F'<0` throughout the interval, so the root is unique.  If that root were rational, `M=p/q` in lowest terms, then the polynomial side would be rational and hence `2^(p/q)` would be rational.  Unique prime factorization forces `q=1`; but no integer lies in `(1,2)`.  Thus the mathematically defined root is irrational.  Runtime IEEE-754 values are, as always, finite rational approximations of that mathematical value.
+
+### Trigonometric execution model
+
+Operator Theory is enabled by default.  Groovebox distinguishes **semantic trig** from **execution trig**.  Where conventional sine/cosine meaning is required, the result must remain conventional; hot contiguous arrays may nevertheless be evaluated through the project's identities
+
+`sin(x) = isn(2x)/2`, `cos(x) = ics(2x)/2`, with `isn(t)=2 sin(t/2)` and `ics(t)=2 cos(t/2)`,
+
+using the native C++ kernel.  Scalar calls stay on ordinary libm when that is faster, because adding a Python/ABI layer merely to rename the same operation would be a regression.  Where the composition explicitly asks for the Meum-normalized `isn/ics` family, the Meum transform itself is used rather than an equivalence route.  This lets the project apply the author's formulas broadly **without silently retuning conventional DSP, Euclidean geometry, or reference mathematics**.
+
+### What is established, what is empirical
+
+The theorem above establishes the irrationality of the formally defined Meum root.  It also implies that nonzero integer multiples of `M`, `M-1`, `1/M`, and `2-M` cannot form an exact finite rational phase cycle modulo 1.  It does **not** by itself prove that Meum is universally more even than every other irrational sequence, nor does software behavior prove a physical-energy theorem.  Groovebox therefore treats spectral entropy, discrepancy, autocorrelation, collision rate, spatial coverage, cache cost and render cost as benchmarkable questions.  This separation is deliberate: it makes positive results reproducible and gives mathematicians/physicists something concrete to inspect rather than requiring them to accept an application claim first.
+
+### Invitation to review / falsify
+
+The project is intentionally inspectable.  Researchers are invited to challenge the formal Meum definition and proof, compare Meum-family traversals against `phi-1`, `sqrt(2)-1`, `e-2`, `pi-3`, rational controls and seeded pseudorandom controls, and attempt to break Universal-Field reconstruction, part-count invariance, Python/native parity, writer reversibility, or cross-domain identity.  A counterexample is useful: the implementation and documentation should be corrected rather than protected from falsification.
+
+## 2026-09-05 — Full OT-adapted vector trig routing
+
+Groovebox now routes the remaining **NumPy vector sine/cosine call sites in the main runtime** through the OT-compatible trig adapters whenever Operator Theory is enabled (the default). The adapters preserve ordinary sine/cosine semantics through the book identities
+
+\[
+\sin(x)=\tfrac12\,\operatorname{isn}(2x),\qquad
+\cos(x)=\tfrac12\,\operatorname{ics}(2x),
+\]
+
+with `isn(t)=2 sin(t/2)` and `ics(t)=2 cos(t/2)`. Large contiguous arrays can therefore enter the native C++ book-isn/book-ics kernel instead of building extra NumPy trig temporaries. Small/scalar operations retain the conventional libm path where crossing the native ABI would cost more than the arithmetic.
+
+This is an **equivalence-preserving execution rewrite**, not a claim that every Euclidean identity has been replaced by a different geometry. It lets the project use the author's trig vocabulary as an optimization layer while keeping reference DSP/geometry results testable against their conventional definitions. The unified regression suite remains `19 passed / 1 optional PyQt6 skip / 0 failed` after the broader routing pass.
+
+### Research invitation
+
+Groovebox is also an executable research artifact. Mathematicians, physicists, DSP/numerical programmers, generative artists, and simulation developers are invited to test the Meum root theorem, OT equivalence routes, `isn`/`ics` transforms, Universal Field decomposition invariance, traversal distributions, native/reference parity, and performance claims. Useful contributions include proofs or counterexamples, reproducible benchmarks, profiling results, alternative constants/bases, and simpler equivalent formulations.
+
+The project distinguishes: (1) proved statements under its declared definitions, (2) implementation invariants backed by tests, and (3) empirical hypotheses such as whether coupled Meum-family traversal outperforms other irrational or low-discrepancy bases in a particular audio/visual/game workload.
     """
     def __init__(self, dimensions=('x', 'y', 'z'), survival_mode=True, sample_rate=44100):
         self.dimensions = dimensions
@@ -13577,9 +13828,9 @@ class GrooveboxEngine:
 
                 for freq, pt_amp in resolved_pairs:
                     adjusted_freq = freq * pitch_multiplier * layer_detune
-                    tempo_mod_factor = 1.0 + 0.15 * np.sin(2.0 * np.pi * (self.global_bpm / 112.0) * t * 0.05 + phase_offset)
-                    gate = 0.5 * (1 + np.sin(2 * np.pi * (self.global_bpm / 60.0) * t * tempo_mod_factor + phase_offset + np.sin(t * 0.1) * 0.05))
-                    wave_data += bank_amp * pt_amp * 0.08 * gate * np.sin(2 * np.pi * (adjusted_freq * tempo_mod_factor) * t + phase_offset)
+                    tempo_mod_factor = 1.0 + 0.15 * ot_sin_vec_equiv(2.0 * np.pi * (self.global_bpm / 112.0) * t * 0.05 + phase_offset)
+                    gate = 0.5 * (1 + ot_sin_vec_equiv(2 * np.pi * (self.global_bpm / 60.0) * t * tempo_mod_factor + phase_offset + ot_sin_vec_equiv(t * 0.1) * 0.05))
+                    wave_data += bank_amp * pt_amp * 0.08 * gate * ot_sin_vec_equiv(2 * np.pi * (adjusted_freq * tempo_mod_factor) * t + phase_offset)
 
                 bank_index += 1
 
@@ -17624,11 +17875,11 @@ class WavetableProjector(QWidget):
 class MathematiciansGrooveboxApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Mathematician's Groovebox V3 — Operation Station")
+        self.setWindowTitle("Mathematician's Groovebox")
         # BRAND_2026: generated GOAVA radio motif is a real application asset.
         try:
             _asset_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
-            _icon_path = os.path.join(_asset_dir, "goava_radio_icon.png")
+            _icon_path = os.path.join(_asset_dir, "logo.png")
             if os.path.isfile(_icon_path):
                 self.setWindowIcon(QIcon(_icon_path))
         except Exception:
@@ -17774,7 +18025,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         self.active_instrument_memory = self.instrument_sequencer_memory[self.instrument_names_48[0]]
         self.instrument_scripts = {
-            name: f"# Script workspace for {name} based on operator rules\ndef evaluate_wave(x, y, z):\n    return np.sin(x * {1 + int(identity_unit(name, 'default_script_k') * 12)}.0) * np.cos(y) - z"
+            name: f"# Script workspace for {name} based on operator rules\ndef evaluate_wave(x, y, z):\n    return ot_sin_vec_equiv(x * {1 + int(identity_unit(name, 'default_script_k') * 12)}.0) * ot_cos_vec_equiv(y) - z"
             for name in self.instrument_names_48
         }
 
@@ -18807,7 +19058,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if not math.isfinite(f) or f <= 0.0:
                 continue
             ph = 2.0 * np.pi * float(f) * local_t
-            tone += np.sin(ph) * float(a)
+            tone += ot_sin_vec_equiv(ph) * float(a)
         return (tone * env * attack * weight).astype(np.float32)
 
     def _paint_generated_parameters(self, rng=None, rows=None, source='context'):
@@ -19716,7 +19967,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             velocity = 1.0 if active else 0.0  # no implicit row/time amplitude field
             target = ("eqr", "fractalizer", "pkp_envelope", "filter", "drive")[int(rr.integers(0, 5))] if active else "none"
             amount = float(np.clip(0.22 + 0.62 * rr.random(), 0.0, 0.95)) if active else 0.0
-            direction = float(np.sin((r + 1) * MEUM_INV + (seed % 991) * 0.013)) if active else 0.0
+            direction = float(ot_sin_vec_equiv((r + 1) * MEUM_INV + (seed % 991) * 0.013)) if active else 0.0
             coverage_map = {op: float(np.clip(0.30 + 0.55 * rr.random(), 0.0, 1.0)) for op in eng_ops}
             coverage = "|".join(f"{k}:{v:.0%}" for k, v in coverage_map.items()) if active else "0%"
             partner = eng_ops[1] if active and len(eng_ops) > 1 else ""
@@ -19911,7 +20162,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 'direction': 1.0 if direction >= 0 else -1.0,
                 'coverage': float(np.mean(list(coverage_map.values()))) if coverage_map else 0.0,
                 'overlap': float(min(coverage_map.values())) if len(coverage_map) > 1 else 0.0,
-                'blend_percent': float(np.clip(50.0 + 35.0 * np.sin((r + 1) * MEUM_NORM + seed * 0.001), 0.0, 100.0)),
+                'blend_percent': float(np.clip(50.0 + 35.0 * ot_sin_vec_equiv((r + 1) * MEUM_NORM + seed * 0.001), 0.0, 100.0)),
                 'partner': partner,
                 'mode': f"engine:{source}",
                 'position': position,
@@ -21055,7 +21306,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.mode_combo.setStyleSheet("QComboBox { background:#b00020; color:white; border:3px solid #ff6070; border-radius:7px; padding:6px 11px; font-size:12pt; font-weight:900; } QComboBox::drop-down { min-width:30px; } QAbstractItemView { font-size:12pt; min-height:34px; }")
             else:
                 self.mode_combo.setStyleSheet("QComboBox { background:white; color:#111; border:3px solid #d8d8d8; border-radius:7px; padding:6px 11px; font-size:12pt; font-weight:900; } QComboBox::drop-down { min-width:30px; } QAbstractItemView { background:white; color:#111; font-size:12pt; min-height:34px; }")
-        self.mode_combo.currentIndexChanged.connect(lambda _idx: (self._sync_nt_lattice_button_state(), _style_mode_combo(_idx)))
+        self.mode_combo.currentIndexChanged.connect(lambda _idx: (self._on_context_scope_changed(_idx), _style_mode_combo(_idx)))
         _style_mode_combo(0)
 
         # Global Playlist Switch added to main layout
@@ -21588,6 +21839,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.lbl_operator_sample.setMinimumWidth(135)
         self.lbl_operator_sample.setToolTip("Selected operator's user-owned sample source. Synth knobs, script, patch and domain shape its 50% morph contribution.")
         media_import_row.addWidget(self.lbl_operator_sample)
+        self.btn_draw_wave_matrix = QPushButton("✎ Draw Wave Matrix")
+        self.btn_draw_wave_matrix.setToolTip("Open the Draw / Signal Lab directly from the Main Window; send the drawn carrier globally or to the selected operator.")
+        self.btn_draw_wave_matrix.clicked.connect(self._open_main_signal_lab)
+        media_import_row.addWidget(self.btn_draw_wave_matrix)
+        self.btn_record_audio_global = QPushButton("🎙 Record Global")
+        self.btn_record_audio_global.setToolTip("Record microphone/input audio asynchronously into the global carrier slot.")
+        self.btn_record_audio_global.clicked.connect(lambda: self._record_audio_to_slot(local=False))
+        media_import_row.addWidget(self.btn_record_audio_global)
+        self.btn_record_audio_operator = QPushButton("🎙 Record → Operator")
+        self.btn_record_audio_operator.setToolTip("Record microphone/input audio asynchronously into the selected operator sample slot.")
+        self.btn_record_audio_operator.clicked.connect(lambda: self._record_audio_to_slot(local=True))
+        media_import_row.addWidget(self.btn_record_audio_operator)
         media_import_row.addStretch(1)
         # IMPORT_SPEED_2026: varispeed pitch/speed shift for the loaded
         # WAV/video carrier. One import then yields alternate voicings without
@@ -22505,7 +22768,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.auto_to_instrument.addItems(list(self.instrument_names_48))
         self.auto_to_instrument.setMinimumWidth(95)
         self.auto_to_instrument.setMaximumWidth(150)
-        self.auto_to_instrument.setToolTip("Operator assigned to the selected automation step.")
+        self.auto_to_instrument.setToolTip("Operator assigned to the selected automation step. Defaults to the currently selected operator; Z-Pinch is never injected into unrelated lanes.")
+        try:
+            _sel_auto_op = str(self.instrument_selector_dropdown.currentText())
+            _sel_auto_idx = self.auto_to_instrument.findText(_sel_auto_op)
+            if _sel_auto_idx >= 0:
+                self.auto_to_instrument.setCurrentIndex(_sel_auto_idx)
+        except Exception:
+            pass
         _auto_add(self.auto_to_instrument)
 
         _auto_add(QLabel("Sequence # ↗"))
@@ -23239,6 +23509,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 pass
 
     def on_instrument_switched(self, idx):
+        # LOCAL_CONTEXT_ROUTING_2026: the visible instrument dropdown is the
+        # authoritative destination for a blank/new automation lane in local mode.
+        try:
+            if self._is_local_context() and hasattr(self, "auto_to_instrument"):
+                selected = str(self.instrument_selector_dropdown.currentText())
+                ai = self.auto_to_instrument.findText(selected)
+                if ai >= 0:
+                    self.auto_to_instrument.blockSignals(True)
+                    self.auto_to_instrument.setCurrentIndex(ai)
+                    self.auto_to_instrument.blockSignals(False)
+        except Exception:
+            pass
         if not (0 <= idx < len(self.instrument_names_48)):
             return
         inst_name = self.instrument_names_48[idx]
@@ -23503,7 +23785,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 env = np.exp(-t / decay_den)
             else:
                 env = np.ones_like(t)
-            v=np.sin(2*np.pi*freq*t)*a*pr*env
+            v=ot_sin_vec_equiv(2*np.pi*freq*t)*a*pr*env
             total += float(np.mean(v*v))
         return float(np.sqrt(total))
 
@@ -23665,12 +23947,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     _boost_freq = float(base_freq) * _pitch * _boost_pitch_ratio
                     _boost_amount = float(getattr(self, "pkp_boost_amount", 1.0))
                     if math.isfinite(_boost_freq) and _boost_freq > 0.0:
-                        boost_voice = np.sin(2 * np.pi * _boost_freq * t) * env * float(amp) * float(_boost_amount)
+                        boost_voice = ot_sin_vec_equiv(2 * np.pi * _boost_freq * t) * env * float(amp) * float(_boost_amount)
                 except Exception:
                     boost_voice = None
 
             # PKP-style: fast decay sine + soft click transient
-            body = np.sin(2 * np.pi * freq * t)
+            body = ot_sin_vec_equiv(2 * np.pi * freq * t)
             # Keep PKP hits strictly pitched; omit the click/transient component.
             hit = body * env * float(amp)
             # Wave insertion: the n+1 boost-copy voice is layered into the mix
@@ -24493,8 +24775,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     self.global_algorithm_xmod_slider.blockSignals(False)
 
             if weights.get("canonical_resonance", 0) > 1e-9:
-                # Natural 50–150% operating band from playlist automation.
-                self.canonical_resonance_factor = 0.50 + _norm("canonical_resonance", 0.5) * 1.0
+                # Automation follows the currently active protection domain.
+                # Protect OFF exposes the complete 0–200% lane; protect ON 50–150%.
+                _rlo, _rhi = self._canonical_resonance_range()
+                self.canonical_resonance_factor = _rlo + _norm("canonical_resonance", 0.5) * (_rhi - _rlo)
                 if hasattr(self, "spin_canonical_resonance"):
                     self.spin_canonical_resonance.blockSignals(True)
                     self.spin_canonical_resonance.setValue(self.canonical_resonance_factor * 100.0)
@@ -24796,10 +25080,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             phase = idx / max(1.0, float(arr.size)) * math.tau
             wt, _wtc = self._effective_wavetable_field() if hasattr(self, "wavetable_projector_state") else (np.array([0.5,0.5,0.5]), np.array([0.5,0.5,0.5]))
             wt = (wt - 0.5) * 2.0
-            resonant = (0.55 * vn[0] * np.sin(phase) +
-                        0.30 * vn[1] * np.sin(phase * MEUM) +
-                        0.15 * vn[2] * np.cos(phase * PHI_INV))
-            resonant += 0.08 * (wt[0] * np.sin(phase * MEUM) + wt[1] * np.cos(phase * PHI_INV) + wt[2] * np.sin(phase * PHI))
+            resonant = (0.55 * vn[0] * ot_sin_vec_equiv(phase) +
+                        0.30 * vn[1] * ot_sin_vec_equiv(phase * MEUM) +
+                        0.15 * vn[2] * ot_cos_vec_equiv(phase * PHI_INV))
+            resonant += 0.08 * (wt[0] * ot_sin_vec_equiv(phase * MEUM) + wt[1] * ot_cos_vec_equiv(phase * PHI_INV) + wt[2] * ot_sin_vec_equiv(phase * PHI))
             out = arr.astype(np.float64) * (1.0 + 0.18 * drive * resonant)
             out = np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
             if bool(st.get("guard", True)):
@@ -25392,6 +25676,30 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "Turn protect OFF (User Data Overwrite) to open the 0–200% band."
         )
 
+    def _validated_canonical_resonance(self, value, *, fallback=None):
+        """Return an exact legal resonance value without np.clip/saturation.
+
+        Values inside the active 0–200% or 50–150% domain pass through bit-for-bit
+        as Python floats. Out-of-domain/non-finite external data is rejected to the
+        supplied fallback rather than silently flattened onto an endpoint.
+        """
+        lo, hi = self._canonical_resonance_range()
+        if fallback is None:
+            fallback = CANONICAL_RESONANCE_DEFAULT
+        try:
+            v = float(value)
+        except Exception:
+            return float(fallback)
+        if not math.isfinite(v) or v < lo or v > hi:
+            try:
+                f = float(fallback)
+            except Exception:
+                f = CANONICAL_RESONANCE_DEFAULT
+            if not math.isfinite(f) or f < lo or f > hi:
+                f = lo + 0.5 * (hi - lo)
+            return float(f)
+        return v
+
     def _sync_canonical_resonance_ui_range(self):
         """Expand/contract the resonance spin to match protect / overwrite mode."""
         lo, hi = self._canonical_resonance_range()
@@ -25402,11 +25710,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 cur = float(spin.value())
                 spin.blockSignals(True)
                 spin.setRange(lo_pct, hi_pct)
-                # Keep current value if still legal; otherwise clamp into the new band.
-                if cur < lo_pct:
-                    cur = lo_pct
-                elif cur > hi_pct:
-                    cur = hi_pct
+                # The widget owns the legal UI domain. Preserve every legal interior
+                # value exactly; when switching protection domains use unity rather
+                # than silently saturating onto an endpoint.
+                if cur < lo_pct or cur > hi_pct or not math.isfinite(cur):
+                    cur = CANONICAL_RESONANCE_DEFAULT * 100.0
                 spin.setValue(cur)
                 spin.blockSignals(False)
                 spin.setToolTip(self._canonical_resonance_tooltip())
@@ -25418,10 +25726,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             self.canonical_resonance_factor_min = lo
             self.canonical_resonance_factor_max = hi
-            factor = float(getattr(self, "canonical_resonance_factor", 1.0) or 1.0)
-            if not math.isfinite(factor):
-                factor = 1.0
-            factor = float(np.clip(factor, lo, hi))
+            factor = self._validated_canonical_resonance(
+                getattr(self, "canonical_resonance_factor", CANONICAL_RESONANCE_DEFAULT),
+                fallback=CANONICAL_RESONANCE_DEFAULT,
+            )
             self.canonical_resonance_factor = factor
             mode = "0–200% OVERWRITE" if self._user_data_overwrite_on() else "50–150% PROTECT"
             if hasattr(self, "lbl_canonical_resonance"):
@@ -25435,7 +25743,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """Set the manual canonical resonance/activity ceiling for the active band."""
         lo, hi = self._canonical_resonance_range()
         try:
-            self.canonical_resonance_factor = float(np.clip(float(value) / 100.0, lo, hi))
+            self.canonical_resonance_factor = self._validated_canonical_resonance(
+                float(value) / 100.0, fallback=getattr(self, "canonical_resonance_factor", CANONICAL_RESONANCE_DEFAULT)
+            )
             self.canonical_resonance_handoff = self.canonical_resonance_factor
         except Exception:
             self.canonical_resonance_factor = CANONICAL_RESONANCE_DEFAULT
@@ -25474,19 +25784,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
             ceiling = hi
         if not math.isfinite(ceiling):
             ceiling = hi
-        ceiling = float(np.clip(ceiling, lo, hi))
-        target = float(np.clip(target, lo, ceiling))
-        current = float(getattr(self, "canonical_resonance_handoff", 1.00) or 1.00)
-        if not math.isfinite(current):
-            current = lo + 0.5 * (hi - lo)
-        current = float(np.clip(current, lo, hi))
+        ceiling = self._validated_canonical_resonance(ceiling, fallback=hi)
+        # target is algebraically inside [lo,hi]; ceiling is a user-selected cap.
+        # No saturation is applied to legal resonance values.
+        if target > ceiling:
+            target = ceiling
+        current = self._validated_canonical_resonance(
+            getattr(self, "canonical_resonance_handoff", CANONICAL_RESONANCE_DEFAULT),
+            fallback=CANONICAL_RESONANCE_DEFAULT,
+        )
         rate = float(getattr(self, "canonical_resonance_handoff_rate", 0.20) or 0.20)
         if not math.isfinite(rate):
             rate = 0.20
         rate = float(np.clip(rate, 0.01, 1.0))
         current += rate * (target - current)
-        current = float(np.clip(current, lo, ceiling))
-        self.canonical_resonance_handoff = current
+        # Convex interpolation of legal values remains legal; preserve it exactly.
+        self.canonical_resonance_handoff = float(current)
         return current
 
     def _ensure_canonical_control_integrity(self, instrument_name=None, row_idx=0):
@@ -26492,7 +26805,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             _src_sid = int(self.sequence_selector.currentData() or 1) if hasattr(self, "sequence_selector") and self.sequence_selector.currentData() is not None else (
                 int(self.spin_auto_to_sequence.value()) if hasattr(self, "spin_auto_to_sequence") else 1
             )
-            _dst_inst = str(self.auto_to_instrument.currentText()) if hasattr(self, "auto_to_instrument") else _src_inst
+            _dst_inst = (
+                _src_inst if self._is_local_context() else
+                (str(self.auto_to_instrument.currentText()) if hasattr(self, "auto_to_instrument") else _src_inst)
+            )
             _dst_sid = int(self.spin_auto_to_sequence.value()) if hasattr(self, "spin_auto_to_sequence") else _src_sid
             point = {
                 "step": step,
@@ -27201,7 +27517,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 row_seed = float(self.get_numeric_seed() or 0.0)
             # Seed/phase field: smooth, deterministic, with optional random perturbation.
             phase = (i / max(rows, 1)) * 2.0 * np.pi + (abs(row_seed) % 100000) * 0.000013
-            field = 0.5 + 0.5 * np.sin(phase * MEUM_CONSTANT + row_seed * 0.0000017)
+            field = 0.5 + 0.5 * ot_sin_vec_equiv(phase * MEUM_CONSTANT + row_seed * 0.0000017)
             field = 0.5 * field + 0.5 * self._contextual_numerology(step=i, row=i) if hasattr(self, "_contextual_numerology") else field
             target = 0.25 + 0.75 * field
             if randomize:
@@ -27955,7 +28271,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         }
         self.instrument_selected_sequence = {name: 1 for name in self.instrument_names_48}
         self.instrument_scripts = {
-            name: f"# Script workspace for {name} based on operator rules\ndef evaluate_wave(x, y, z):\n    return np.sin(x * {1 + int(identity_unit(name, 'default_script_k') * 12)}.0) * np.cos(y) - z"
+            name: f"# Script workspace for {name} based on operator rules\ndef evaluate_wave(x, y, z):\n    return ot_sin_vec_equiv(x * {1 + int(identity_unit(name, 'default_script_k') * 12)}.0) * ot_cos_vec_equiv(y) - z"
             for i, name in enumerate(self.instrument_names_48)
         }
         self.instrument_param_state = {}
@@ -28553,11 +28869,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 raw = float(data.get("canonical_resonance_factor", CANONICAL_RESONANCE_DEFAULT) or CANONICAL_RESONANCE_DEFAULT)
                 if not math.isfinite(raw):
                     raw = CANONICAL_RESONANCE_DEFAULT
-                self.canonical_resonance_factor = float(np.clip(raw, 0.0, 2.0))
+                self.canonical_resonance_factor = self._validated_canonical_resonance(raw, fallback=CANONICAL_RESONANCE_DEFAULT)
                 hand = float(data.get("canonical_resonance_handoff", self.canonical_resonance_factor) or self.canonical_resonance_factor)
-                if not math.isfinite(hand):
-                    hand = self.canonical_resonance_factor
-                self.canonical_resonance_handoff = float(np.clip(hand, 0.0, 2.0))
+                self.canonical_resonance_handoff = self._validated_canonical_resonance(hand, fallback=self.canonical_resonance_factor)
                 if hasattr(self, "_sync_canonical_resonance_ui_range"):
                     self._sync_canonical_resonance_ui_range()
                 elif hasattr(self, "spin_canonical_resonance"):
@@ -29187,7 +29501,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             for i, name in enumerate(self.instrument_names_48):
                 freq = 44.0 * MEUM_POWERS_36[i % 36]
                 env = np.exp(-t / 0.03)
-                mix += (0.15 * env * np.sin(2 * np.pi * freq * t)).astype(np.float32)
+                mix += (0.15 * env * ot_sin_vec_equiv(2 * np.pi * freq * t)).astype(np.float32)
             if isinstance(getattr(self, 'visual_oscilloscope', None), VisualOscilloscope):
                 idx = np.linspace(0, len(mix) - 1, 100).astype(int)
                 self.visual_oscilloscope.update_waveform(mix[idx])
@@ -29664,7 +29978,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     if user_mask[s]:
                         # Preserve user step; may only gently raise amp toward phase-lock envelope
                         preserved += 1
-                        lock_env = 0.5 + 0.5 * abs(np.sin(s * np.pi / count))
+                        lock_env = 0.5 + 0.5 * abs(ot_sin_vec_equiv(s * np.pi / count))
                         mem["amplitudes"][s] = float(max(mem["amplitudes"][s], lock_env * 1.0))
                         mem["probabilities"][s] = max(int(mem["probabilities"][s]), 100)
                         continue
@@ -29678,7 +29992,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     if is_eucl or complement:
                         mem["steps"][s] = True
                         mem.setdefault("engine_step_sources", {}).setdefault(int(s), set()).add(getattr(self, "_active_engine_write_source", "euclidean"))
-                        base_amp = 0.55 + 0.35 * abs(np.sin(s * np.pi / count + i * 0.1))
+                        base_amp = 0.55 + 0.35 * abs(ot_sin_vec_equiv(s * np.pi / count + i * 0.1))
                         if complement:
                             base_amp *= 0.45  # softer opposite
                         mem["amplitudes"][s] = float(np.clip(base_amp, 0.15, 1.0))
@@ -29739,7 +30053,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 continue  # user lane present — leave alone
             if rng.random() > 0.35:
                 continue
-            op = names[(r + int(seed)) % len(names)] if names else "Operator"
+            row_entry = (getattr(self, "master_playlist_data", []) or [])[r] if r < len(getattr(self, "master_playlist_data", []) or []) else {}
+            row_op = str(row_entry.get("operator", "") or "").strip() if isinstance(row_entry, dict) else ""
+            # Automation stays on its owning row/operator by default. Z-Pinch can
+            # only appear here when this row is actually a Z-Pinch row.
+            op = row_op or (str(self.instrument_selector_dropdown.currentText()) if self._is_local_context() and hasattr(self, "instrument_selector_dropdown") else (names[(r + int(seed)) % len(names)] if names else "Operator"))
             param = params[(r + (0 if source == "seeded" else 2)) % len(params)]
             amt = float(0.35 + 0.5 * rng.random())
             self.playlist_automation[r] = {
@@ -29912,7 +30230,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             f"# (additive — user carrier preserved; fractal fill only)\n"
                             f"def evaluate_wave(x, y, z):\n"
                             f"    m = {harmonic_multiplier}\n"
-                            f"    return np.sin(x * m) * np.cos(y / m) - isn(z * 0.5)"
+                            f"    return ot_sin_vec_equiv(x * m) * ot_cos_vec_equiv(y / m) - isn(z * 0.5)"
                         )
                         scripts_written += 1
 
@@ -30213,6 +30531,104 @@ class MathematiciansGrooveboxApp(QMainWindow):
     # =====================================================================
     # CONVOLVE_FIT_FEATURE — WAV carrier loading and spectral-fit helpers
     # =====================================================================
+    def _open_main_signal_lab(self):
+        """Open the same Draw / Signal Lab used by Performance from the Main Window."""
+        try:
+            from signal_lab import SignalLab
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Mathematician's Groovebox — Draw Wave Matrix")
+            dlg.resize(920, 760)
+            lay = QVBoxLayout(dlg)
+            lab = SignalLab(self, dlg)
+            lay.addWidget(lab)
+            dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+            self._main_signal_lab_dialog = dlg
+            dlg.show()
+            dlg.raise_()
+        except Exception as exc:
+            QMessageBox.warning(self, "Draw Wave Matrix", f"Could not open Signal Lab:\n{exc}")
+
+    def _record_audio_to_slot(self, local=False):
+        """Asynchronously capture input audio and route it to global or selected slot."""
+        if getattr(self, "_record_audio_job", None):
+            QMessageBox.information(self, "Record Audio", "A recording is already in progress.")
+            return
+        try:
+            from PyQt6.QtWidgets import QInputDialog
+            duration, ok = QInputDialog.getDouble(
+                self, "Record Audio", "Duration (seconds):",
+                float(getattr(self, "_last_record_duration", 8.0) or 8.0), 0.1, 600.0, 2
+            )
+            if not ok:
+                return
+            self._last_record_duration = float(duration)
+            sr = 48000
+            name = self._current_instrument_name() if local else "GLOBAL"
+            import tempfile, wave as _wave
+            out_dir = self._samples_dir() if hasattr(self, "_samples_dir") else tempfile.gettempdir()
+            os.makedirs(out_dir, exist_ok=True)
+            tag = "operator" if local else "global"
+            out_path = os.path.join(out_dir, f"recorded_{tag}_{int(time.time())}.wav")
+            job = {"done": False, "error": None, "path": out_path, "name": name, "local": bool(local), "sr": sr}
+            self._record_audio_job = job
+            if hasattr(self, "scope_status_label"):
+                self.scope_status_label.setText(f"🎙 Recording {name} for {duration:.2f}s…")
+
+            def _worker():
+                try:
+                    import sounddevice as sd
+                    frames = max(1, int(round(float(duration) * sr)))
+                    arr = sd.rec(frames, samplerate=sr, channels=1, dtype="float32")
+                    sd.wait()
+                    arr = np.asarray(arr, dtype=np.float32).reshape(-1)
+                    finite = np.isfinite(arr)
+                    if not bool(np.all(finite)):
+                        arr = np.where(finite, arr, 0.0).astype(np.float32)
+                    pcm = np.rint(np.maximum(-1.0, np.minimum(1.0, arr)) * 32767.0).astype("<i2")
+                    with _wave.open(out_path, "wb") as wf:
+                        wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr); wf.writeframes(pcm.tobytes())
+                    job["waveform"] = arr
+                except Exception as exc:
+                    job["error"] = str(exc)
+                finally:
+                    job["done"] = True
+
+            threading.Thread(target=_worker, daemon=True, name="GrooveboxInputRecord").start()
+
+            def _poll():
+                if not job.get("done"):
+                    QTimer.singleShot(100, _poll)
+                    return
+                self._record_audio_job = None
+                if job.get("error"):
+                    if hasattr(self, "scope_status_label"):
+                        self.scope_status_label.setText(f"🎙 Record error: {job['error']}")
+                    QMessageBox.warning(self, "Record Audio", job["error"])
+                    return
+                arr = np.asarray(job.get("waveform", []), dtype=np.float32)
+                rec = {"path": out_path, "sample_rate": sr, "waveform": arr, "user_owned": True, "source_kind": "recorded_audio"}
+                if local:
+                    self.instrument_media_samples[name] = rec
+                    self._refresh_operator_sample_ui()
+                else:
+                    self.global_media_sample = rec
+                    self._global_carrier_path = out_path
+                    self.wav_carrier_path = out_path
+                    self.wav_carrier_sr = sr
+                    self.wav_carrier = arr
+                    if hasattr(self, "lbl_wav_carrier"):
+                        self.lbl_wav_carrier.setText(f"Carrier: {os.path.basename(out_path)[:20]}")
+                try:
+                    self._on_live_source_changed()
+                except Exception:
+                    pass
+                if hasattr(self, "scope_status_label"):
+                    self.scope_status_label.setText(f"🎙 Recorded → {name}")
+            QTimer.singleShot(100, _poll)
+        except Exception as exc:
+            self._record_audio_job = None
+            QMessageBox.warning(self, "Record Audio", str(exc))
+
     def _media_file_filter(self):
         return ("Media Files (*.wav *.mp3 *.flac *.ogg *.oga *.m4a *.aac *.aiff *.aif *.opus *.caf *.alac *.wma *.ape *.wv "
                 "*.mp4 *.mov *.mkv *.webm *.avi *.m4v *.mpeg *.mpg *.flv *.ts *.m2ts *.mts *.3gp *.3g2 *.ogv *.vob);;Audio Files (*.wav *.mp3 *.flac *.ogg *.oga *.m4a *.aac *.aiff *.aif *.opus *.caf *.alac *.wma *.ape *.wv);;"
@@ -30309,7 +30725,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         fit = float(np.clip(morph_cfg.get("adaptive_fit", 0.50), 0.0, 1.0))
         depth = (0.08 + 0.20*u[1]) * (0.25 + 0.75*fit)
         tilt = (-0.25 + 0.50*u[2]) * (0.25 + 0.75*fit)
-        mod = 0.50 + 0.50*np.sin(math.tau*(1.0 + 3.0*u[3])*y + phase)
+        mod = 0.50 + 0.50*ot_sin_vec_equiv(math.tau*(1.0 + 3.0*u[3])*y + phase)
         transformed = base * (1.0 + depth*(2.0*mod-1.0))
         if abs(tilt) > 1e-6 and n > 8:
             spec = np.fft.rfft(transformed)
@@ -30876,7 +31292,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.instrument_scripts[name] = (
                     f"# Script workspace for {name}\n"
                     f"def evaluate_wave(x, y, z):\n"
-                    f"    return np.sin(x * {((i) % 12) + 1}.0) * np.cos(y) - z"
+                    f"    return ot_sin_vec_equiv(x * {((i) % 12) + 1}.0) * ot_cos_vec_equiv(y) - z"
                 )
         # Update dropdown
         if hasattr(self, "instrument_selector_dropdown"):
@@ -30938,7 +31354,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if carrier is None:
             t = np.arange(512, dtype=np.float64) / 44100.0
             base = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
-            carrier = (np.sin(2*np.pi*base*t) + 0.5*np.sin(2*np.pi*base*MEUM*t)).astype(np.float32)
+            carrier = (ot_sin_vec_equiv(2*np.pi*base*t) + 0.5*ot_sin_vec_equiv(2*np.pi*base*MEUM*t)).astype(np.float32)
         spec = np.abs(np.fft.rfft(carrier * np.hanning(carrier.size)))
         norm = float(np.max(spec) + 1e-9)
         for i, name in enumerate(final_names):
@@ -31839,7 +32255,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             env_phase = np.full(lt.shape, seed * 0.01, dtype=np.float64)
         else:
             env_phase = 2.0 * math.pi * lt / duration + seed * 0.01
-        env = 0.65 + 0.35 * (0.5 + 0.5 * np.sin(env_phase))
+        env = 0.65 + 0.35 * (0.5 + 0.5 * ot_sin_vec_equiv(env_phase))
         if user_gate is not None and np.asarray(user_gate).size == lt.size and np.any(user_gate):
             ug = np.asarray(user_gate, dtype=bool)
             # Shared user/canonical activity: every user-active sample receives a
@@ -31851,15 +32267,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
             step = max(1, lt.size // 16)
             gate = ((np.arange(lt.size) // step + int(row_idx)) % 2) == 0
         # Small deterministic modulation derived from the shared phase field.
-        mod = 0.82 + 0.18 * np.sin(phase * 0.125 + seed * 0.003)
+        mod = 0.82 + 0.18 * ot_sin_vec_equiv(phase * 0.125 + seed * 0.003)
         rf = float(np.clip(resonance_factor, 0.50, 1.50))
         # Activity-first scaling: increase canonical presence before allowing
         # resonance amplitude to rise. This keeps 150% from behaving like 150% volume.
         amp_scale = 0.88 + 0.12 * (rf / 1.50)
         if rf > 1.0:
             phase_gate = ((np.arange(lt.size) // step + int(row_idx) + 1) % 3) == 0
-            gate = gate | (phase_gate & (np.sin(phase * 0.25) > -0.15))
-        wave = (0.32 * amp_scale * env * mod * np.sin(phase)).astype(np.float32)
+            gate = gate | (phase_gate & (ot_sin_vec_equiv(phase * 0.25) > -0.15))
+        wave = (0.32 * amp_scale * env * mod * ot_sin_vec_equiv(phase)).astype(np.float32)
         return wave, gate
 
     def _meum_spatial_resolve_activity(self, canonical_wave, user_wave, row_idx=0, seed_value=0.0):
@@ -31926,7 +32342,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if c_l1 == 0.0 or not math.isfinite(c_l1):
             seed = float(seed_value or 0.0)
             freq = 1.0 + (abs(seed) % 17.0)
-            spatial = 0.20 * np.sin(2.0 * math.pi * freq * np.linspace(0.0, 1.0, n, endpoint=False) + row_idx * PHI)
+            spatial = 0.20 * ot_sin_vec_equiv(2.0 * math.pi * freq * np.linspace(0.0, 1.0, n, endpoint=False) + row_idx * PHI)
             c_l1 = float(np.sum(np.abs(spatial)))
         if u_l1 > c_l1 and c_l1 > 0.0 and math.isfinite(c_l1):
             spatial *= (u_l1 / c_l1)
@@ -32945,7 +33361,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     try:
                         _canonical_ratios = [float(r) for r in _canonical_ratios if float(r) > 0.0][:4]
                         if _canonical_ratios:
-                            _chord_seed = sum(np.sin(2.0 * np.pi * f0 * r * local_t) / max(1, len(_canonical_ratios)) for r in _canonical_ratios)
+                            _chord_seed = sum(ot_sin_vec_equiv(2.0 * np.pi * f0 * r * local_t) / max(1, len(_canonical_ratios)) for r in _canonical_ratios)
                         else:
                             _chord_seed = None
                     except Exception:
@@ -32965,7 +33381,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # FM: integrate the modulated instantaneous frequency into phase
                 # (canonical order is FM -> phase accumulator -> PM -> waveform).
                 _dt = float(local_t[1] - local_t[0]) if local_t.size > 1 else 0.0
-                _inst_freq = f0 * _fm_ratio * (1.0 + _voice_detune)
+                # PERF_NATIVE_PHASE_20260905: fuse instantaneous-frequency scaling,
+                # cumulative integration and PM/static offsets into one native pass.
+                # The fallback below remains algebraically authoritative.
+                _phase_native = _GB_ACCEL_FUNCS.get("phase_build") if isinstance(_GB_ACCEL_FUNCS, dict) else None
                 # ROW_PHASE_CONTINUITY_FIX_2026: this cumsum used to start fresh
                 # at 0 for every row/block, for every voice, with no memory of
                 # where the previous row's phase ended. That is a hard phase
@@ -32979,17 +33398,33 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if not hasattr(self, "_voice_phase_carry"):
                     self._voice_phase_carry = {}
                 _phase_carry_in = float(self._voice_phase_carry.get(op_name, 0.0))
-                _phase_unwrapped = 2.0 * np.pi * np.cumsum(_inst_freq) * _dt
-                phase = _phase_unwrapped + _phase_carry_in
-                if phase.size > 0:
-                    # Store only the fractional carry (mod 2π) — keeps the
-                    # stored value bounded, same reasoning as the oscillator
-                    # phase-wrap fix above (avoids precision loss over a long
-                    # session of many rows).
-                    self._voice_phase_carry[op_name] = float(phase[-1] % math.tau)
-
-                # PM: direct phase displacement plus voice-specific initial phase.
-                phase = phase + _pm_offset + _voice_phase0 + _canonical_phase
+                phase = None
+                if _phase_native is not None and local_t.size >= 256:
+                    try:
+                        import ctypes as _ct
+                        _fr32 = np.ascontiguousarray(_fm_ratio, dtype=np.float32)
+                        _pm32 = np.ascontiguousarray(_pm_offset, dtype=np.float32)
+                        _phase64 = np.empty(local_t.shape, dtype=np.float64)
+                        _carry_out = _phase_native(
+                            _fr32.ctypes.data_as(_ct.POINTER(_ct.c_float)),
+                            _pm32.ctypes.data_as(_ct.POINTER(_ct.c_float)),
+                            _ct.c_size_t(_fr32.size), _ct.c_double(float(f0)),
+                            _ct.c_double(float(_voice_detune)), _ct.c_double(_dt),
+                            _ct.c_double(_phase_carry_in), _ct.c_double(float(_voice_phase0)),
+                            _ct.c_double(float(_canonical_phase)),
+                            _phase64.ctypes.data_as(_ct.POINTER(_ct.c_double)),
+                        )
+                        phase = _phase64
+                        self._voice_phase_carry[op_name] = float(_carry_out)
+                    except Exception:
+                        phase = None
+                if phase is None:
+                    _inst_freq = f0 * _fm_ratio * (1.0 + _voice_detune)
+                    _phase_unwrapped = 2.0 * np.pi * np.cumsum(_inst_freq) * _dt
+                    phase = _phase_unwrapped + _phase_carry_in
+                    if phase.size > 0:
+                        self._voice_phase_carry[op_name] = float(phase[-1] % math.tau)
+                    phase = phase + _pm_offset + _voice_phase0 + _canonical_phase
 
                 _sv = float(_voice_seed)
                 _s_abs = abs(_sv) + 1e-9
@@ -33056,64 +33491,91 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     or "goava" in str(mem.get("engine_source", "")).lower()
                     or bool(st.get("goava_sine_patch"))
                 )
+                _wf = str(st.get("waveform", _meum_ctx.get("waveform", "isn")) or "isn").strip().lower()
+                _pm_d = float(_meum_ctx.get("pm_depth", 0.0) or 0.0)
                 if _is_goava_voice:
-                    # Sinusoidal hard-composed patch; mods already in phase/_am_gain
-                    harm = np.sin(phase)
-                    # Optional soft second partial only from live mod depth
-                    _pm_d = float(_meum_ctx.get("pm_depth", 0.0) or 0.0)
-                    if abs(_pm_d) > 0.05:
-                        harm = harm + 0.08 * abs(_pm_d) * np.sin(2.0 * phase)
                     entropy = min(entropy, 0.12)  # keep GOAVA nearly pure
-                else:
-                    # Optional non-sine carrier from modular / panel waveform key.
-                    # FM+PM already folded into `phase`; AM applied later via _am_gain.
-                    _wf = str(st.get("waveform", _meum_ctx.get("waveform", "isn")) or "isn").strip().lower()
-                    if _wf in ("saw", "sawtooth", "square", "pulse", "triangle", "tri", "cos", "cosine"):
-                        try:
-                            harm = meum_waveform_from_phase(phase, _wf)
-                        except Exception:
-                            harm = np.sin(phase)
-                        for h in range(2, min(n_harm, 5) + 1):
-                            amp_h = 0.12 / h
-                            harm = harm + amp_h * meum_waveform_from_phase(phase * h, _wf)
-                    else:
-                        harm = np.sin(phase)
-                        for h in range(2, n_harm + 1):
-                            roll = 1.0 + (1.0 - entropy) * 1.2
-                            amp_h = (0.35 + 0.55 * (1.0 - entropy)) / (h ** roll)
-                            det = 1.0 + 1e-4 * ((_s_int % 97) - 48) * (h - 1) * (0.3 + 0.7 * entropy)
-                            ph0 = ((_s_int * h * 13 + _vo * 7) % 1000) / 1000.0 * math.tau
-                            harm = harm + amp_h * np.sin(phase * h * det + ph0)
                 n_inh = max(2, int(2 + entropy * 10 + k4 * 3))
                 # HARDCODE_UNISON_2026: same fixed, instrument-indexed cap as
                 # n_harm above (scaled down, since inharmonic ratios climb
                 # steeper) instead of a second Nyquist/f0 runtime division.
                 n_inh = max(1, min(n_inh, max(1, int(_max_partial / 1.4))))
-                inh = np.zeros_like(local_t, dtype=np.float32)
-                for h in range(1, n_inh + 1):
-                    ratio = 1.0 + h * (1.0 + 0.37 * math.sin((_s_int + h * 17) * MEUM_NORM))
-                    ratio = 1.0 + (ratio - 1.0) * (0.4 + 0.6 * entropy)
-                    amp_i = (0.25 + 0.6 * entropy) / (h ** (0.9 + 0.4 * entropy))
-                    ph0 = ((_s_int * h * 31 + _vo * 11) % 1000) / 1000.0 * math.tau
-                    inh = inh + amp_i * np.sin(phase * ratio + ph0)
-                if entropy > 0.1:
-                    fm_ratio = 1.0 + ((_s_int % 19) / 19.0) * 3.0 * entropy
-                    fm_depth = (0.05 + 0.55 * entropy) * (0.5 + 0.5 * k1)
-                    harm = harm * np.cos(fm_depth * np.sin(phase * fm_ratio))
-                voice_raw = (1.0 - entropy) * harm + entropy * inh
+
+                # PERF_NATIVE_20260905: the harmonic + inharmonic oscillator bank
+                # was one of the largest remaining Python/NumPy hot loops.  The
+                # C++ kernel is algebraically equivalent and writes directly into
+                # one float32 buffer.  Tiny buffers and unsupported inverse
+                # waveforms stay on the reference Python path.
+                voice_raw = None
+                _voice_native = _GB_ACCEL_FUNCS.get("voice") if isinstance(_GB_ACCEL_FUNCS, dict) else None
+                _wf_code = {
+                    "saw": 1, "sawtooth": 1, "square": 2, "pulse": 2,
+                    "triangle": 3, "tri": 3, "ics": 4, "cos": 4, "cosine": 4,
+                }.get(_wf, 0)
+                _native_ok = _wf not in ("arcisn", "isn_inv", "isn_inverse", "arcics", "ics_inv", "ics_inverse")
+                # Native voice is AUTO by default for substantial buffers. Set
+                # GROOVEBOX_NATIVE_VOICE=0/off to force NumPy reference mode.
+                # OpenMP makes the kernel useful on modern business tablets/mini PCs.
+                _nv_policy = os.environ.get("GROOVEBOX_NATIVE_VOICE", "auto").strip().lower()
+                _native_voice_enabled = _nv_policy not in ("0", "false", "no", "off", "numpy")
+                if _native_voice_enabled and _voice_native is not None and _native_ok and phase.size >= 4096:
+                    try:
+                        import ctypes as _ct
+                        _ph64 = np.ascontiguousarray(phase, dtype=np.float64)
+                        _vr = np.empty(_ph64.shape, dtype=np.float32)
+                        _voice_native(
+                            _ph64.ctypes.data_as(_ct.POINTER(_ct.c_double)), _ct.c_size_t(_ph64.size),
+                            _ct.c_double(entropy), _ct.c_double(k1), _ct.c_double(k3), _ct.c_double(k4),
+                            _ct.c_int(n_harm), _ct.c_int(n_inh), _ct.c_int(_wf_code),
+                            _ct.c_int(1 if _is_goava_voice else 0), _ct.c_double(_pm_d),
+                            _ct.c_longlong(int(_s_int)), _ct.c_int(int(_vo)),
+                            _ct.c_double(MEUM), _ct.c_double(MEUM_NORM),
+                            _vr.ctypes.data_as(_ct.POINTER(_ct.c_float)),
+                        )
+                        voice_raw = _vr
+                    except Exception:
+                        voice_raw = None
+
+                if voice_raw is None:
+                    if _is_goava_voice:
+                        harm = ot_sin_vec_equiv(phase)
+                        if abs(_pm_d) > 0.05:
+                            harm = harm + 0.08 * abs(_pm_d) * ot_sin_vec_equiv(2.0 * phase)
+                    else:
+                        if _wf in ("saw", "sawtooth", "square", "pulse", "triangle", "tri", "ics", "cos", "cosine"):
+                            try:
+                                harm = meum_waveform_from_phase(phase, _wf)
+                            except Exception:
+                                harm = ot_sin_vec_equiv(phase)
+                            for h in range(2, min(n_harm, 5) + 1):
+                                amp_h = 0.12 / h
+                                harm = harm + amp_h * meum_waveform_from_phase(phase * h, _wf)
+                        else:
+                            harm = ot_sin_vec_equiv(phase)
+                            for h in range(2, n_harm + 1):
+                                roll = 1.0 + (1.0 - entropy) * 1.2
+                                amp_h = (0.35 + 0.55 * (1.0 - entropy)) / (h ** roll)
+                                det = 1.0 + 1e-4 * ((_s_int % 97) - 48) * (h - 1) * (0.3 + 0.7 * entropy)
+                                ph0 = ((_s_int * h * 13 + _vo * 7) % 1000) / 1000.0 * math.tau
+                                harm = harm + amp_h * ot_sin_vec_equiv(phase * h * det + ph0)
+                    inh = np.zeros_like(local_t, dtype=np.float32)
+                    for h in range(1, n_inh + 1):
+                        ratio = 1.0 + h * (1.0 + 0.37 * math.sin((_s_int + h * 17) * MEUM_NORM))
+                        ratio = 1.0 + (ratio - 1.0) * (0.4 + 0.6 * entropy)
+                        amp_i = (0.25 + 0.6 * entropy) / (h ** (0.9 + 0.4 * entropy))
+                        ph0 = ((_s_int * h * 31 + _vo * 11) % 1000) / 1000.0 * math.tau
+                        inh = inh + amp_i * ot_sin_vec_equiv(phase * ratio + ph0)
+                    if entropy > 0.1:
+                        fm_ratio = 1.0 + ((_s_int % 19) / 19.0) * 3.0 * entropy
+                        fm_depth = (0.05 + 0.55 * entropy) * (0.5 + 0.5 * k1)
+                        harm = harm * ot_cos_vec_equiv(fm_depth * ot_sin_vec_equiv(phase * fm_ratio))
+                    voice_raw = (1.0 - entropy) * harm + entropy * inh
                 if _chord_seed is not None:
                     voice_raw = 0.72 * voice_raw + 0.28 * _chord_seed
-                # HARDCODE_UNISON_2026 / SMOOTH_OUTPUT_2026: the old high-entropy
-                # branch ran a soft tanh saturation whose knee shifted with
-                # entropy and fold_depth (a "soft" nonlinear function whose
-                # behavior depends on live signal state) plus a separate
-                # sign()*|x|**(1+entropy) soft noise waveshaper. Both are
-                # removed: no soft-clip, no soft waveshaping. Voices pass
-                # through their closed-form sum and only ever meet a fixed,
-                # hardcoded amplitude ceiling (never signal- or
-                # entropy-dependent), which is enough to keep any accidental
-                # overshoot in check without adding its own coloration.
-                voice_raw = np.clip(voice_raw, -1.5, 1.5)
+                # NO_HIDDEN_VOICE_CLAMP_20260905: preserve the closed-form voice
+                # amplitude exactly. Safety limiting is owned only by the explicit
+                # master hard-clip stage; canonical resonance 0–200% therefore
+                # remains distinguishable all the way to that declared boundary.
                 # MASTER_FX_FIX_2026: per-voice EQR additive coloring removed —
                 # the only EQR application is the master-bus tail stage below.
                 # NO_NORMALIZE / NO_SLEW: the previous stage peak-normalized
@@ -33174,7 +33636,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     _depth = 0.0125 * (gx + 0.25*(ws+wp+wsc+wd))
                     _rate = 1.0 + 5.0*_mu[0]
                     _phase_m = math.tau*_mu[1]
-                    _cross = np.sin(local_t * math.tau * _rate + _phase_m)
+                    _cross = ot_sin_vec_equiv(local_t * math.tau * _rate + _phase_m)
                     if imported_carrier is not None and np.any(np.abs(voice) > 1e-9):
                         _seg = imported_carrier[mask]
                         if _seg.shape == voice.shape:
@@ -33401,8 +33863,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # shared phase: tail crosses 1→0 (cos), head crosses 0→1 (sin), so
             # the net transition is continuous and click-free.
             _fade_phase = np.linspace(0.0, np.pi / 2.0, _fade_n, dtype=np.float64)
-            _fade_out = np.cos(_fade_phase).astype(np.float32)
-            _fade_in = np.sin(_fade_phase).astype(np.float32)
+            _fade_out = ot_cos_vec_equiv(_fade_phase).astype(np.float32)
+            _fade_in = ot_sin_vec_equiv(_fade_phase).astype(np.float32)
             for row_idx in range(1, rows):
                 boundary = int(round(row_idx * row_duration * sample_rate))
                 lo = boundary - _fade_n
@@ -33533,7 +33995,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             print(f"[ENV] shared follow envelope skipped: {_env_exc}")
             _t_tmp = np.arange(len(master), dtype=np.float32) / float(sample_rate)
             _sw_tmp = float(np.clip(0.45 * (1.0 - 0.7 * _shared_pkp_d), 0.045, 0.45))
-            _shared_env = (0.55 + _sw_tmp * np.cos(2.0 * np.pi * (float(bpm) / 60.0) * _t_tmp)).astype(np.float32)
+            _shared_env = (0.55 + _sw_tmp * ot_cos_vec_equiv(2.0 * np.pi * (float(bpm) / 60.0) * _t_tmp)).astype(np.float32)
             self._last_master_env = _shared_env[:: max(1, len(_shared_env) // 512)][:512]
             self._last_master_env_norm = np.clip(self._last_master_env, 0.0, 1.0)
             self._last_master_env_db = float(np.mean(np.abs(master)) + 1e-9)
@@ -33553,8 +34015,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         kernel = np.pad(kernel, (0, klen - kernel.size), mode="wrap")
                 else:
                     gf = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
-                    kernel = (np.sin(2*np.pi*(gf/ max(sample_rate,1))*np.arange(klen)) +
-                              0.5*np.sin(2*np.pi*(gf*MEUM_CONSTANT/max(sample_rate,1))*np.arange(klen)))
+                    kernel = (ot_sin_vec_equiv(2*np.pi*(gf/ max(sample_rate,1))*np.arange(klen)) +
+                              0.5*ot_sin_vec_equiv(2*np.pi*(gf*MEUM_CONSTANT/max(sample_rate,1))*np.arange(klen)))
                     kernel = kernel.astype(np.float32)
                 kn = np.linalg.norm(kernel)
                 if kn > 1e-9:
@@ -33690,7 +34152,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 _potential_weight = np.clip(_phi / (1.0 + _phi), 0.0, 1.0)
                 # Bounded wave mechanics supplies a deterministic xyz standing-wave term.
                 _xx = np.arange(len(_x), dtype=np.float64) / max(1, len(_x)-1)
-                _wave = np.sin(np.pi * _xx) * np.sin(np.pi * _local) * np.sin(np.pi * ((_z + 1.0) * 0.5))
+                _wave = ot_sin_vec_equiv(np.pi * _xx) * ot_sin_vec_equiv(np.pi * _local) * ot_sin_vec_equiv(np.pi * ((_z + 1.0) * 0.5))
                 _spatial_raw = _x * (0.5 + 0.5 * _potential_weight) + MEUM_INV * _wave
                 # Direct Meum x,y,z expression is also sampled explicitly here;
                 # this keeps the named field/potential/wave/state forms in the
@@ -34083,7 +34545,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 f"# engines={engine_expr}\n"
                 f"# composition={sig:08x}\n"
                 "def global_script(t, name, i):\n"
-                f"    return np.sin((t + {phase:.9f}) * MEUM) * np.cos((i + 1) * {0.125 + 0.5*phase:.9f})\n"
+                f"    return ot_sin_vec_equiv((t + {phase:.9f}) * MEUM) * ot_cos_vec_equiv((i + 1) * {0.125 + 0.5*phase:.9f})\n"
             )
             gas["domain"] = (
                 'equation = "sin((t + %.9f) * MEUM) + cos(x * %.9f)"\n'
@@ -34218,7 +34680,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         cleaned = (
                             f"# Script workspace for {name} based on operator rules\n"
                             f"def evaluate_wave(x, y, z):\n"
-                            f"    return np.sin(x * {1 + int(identity_unit(name, 'default_script_k') * 12)}.0) * np.cos(y) - z"
+                            f"    return ot_sin_vec_equiv(x * {1 + int(identity_unit(name, 'default_script_k') * 12)}.0) * ot_cos_vec_equiv(y) - z"
                         )
                     except Exception:
                         cleaned = f"# Script workspace for {name} based on operator rules"
@@ -35421,7 +35883,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self._composition_generation_guard = False
                 return
     def _update_scope_from_playhead(self):
-        """UI-thread timer: feed waveform, scenograph, and FFT spectrum during live play."""
+        """UI-thread timer with adaptive visual backpressure during live play."""
+        _scope_t0 = time.perf_counter()
         if not self.is_playing:
             if not getattr(self, "_stop_requested", False):
                 self._transport_finished = True
@@ -35456,22 +35919,24 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.scope_status_label.setText(
                     f"📊 Meum monitors LIVE  {pct}%  ·  Vol {int(self.master_volume*100)}%"
                 )
-        # UI monitors: scope every tick; heavy scenograph throttled when UI lite.
+        # UI monitors: the waveform stays responsive, while FFT/scenograph/HUD
+        # use adaptive backpressure so graphics can never monopolize the UI thread.
         self._scope_tick_counter = int(getattr(self, "_scope_tick_counter", 0) or 0) + 1
         _lite = bool(getattr(self, "chk_ui_lite", None) and self.chk_ui_lite.isChecked())
+        _stride = max(1, min(6, int(getattr(self, "_scope_heavy_stride", 1) or 1)))
+        if _lite:
+            _stride = max(_stride, 3)
+        _heavy_tick = (self._scope_tick_counter % _stride == 0)
         if isinstance(getattr(self, 'visual_oscilloscope', None), VisualOscilloscope):
             self.visual_oscilloscope.update_waveform(chunk, overview=overview, playhead=playhead)
-        if hasattr(self, 'spectrum_analyzer') and self.spectrum_analyzer is not None:
+        if _heavy_tick and hasattr(self, 'spectrum_analyzer') and self.spectrum_analyzer is not None:
             self.spectrum_analyzer.update_spectrum(chunk)
-        # PERF_2026: scenograph / video viewer is the expensive paint; every 3rd tick
-        # under UI lite keeps playhead feedback without constant full-frame work.
-        if hasattr(self, 'video_synth_viewer'):
-            if (not _lite) or (self._scope_tick_counter % 3 == 0):
-                try:
-                    self.video_synth_viewer.update_from_audio(chunk, playhead=playhead)
-                except Exception:
-                    pass
-        if (not _lite) or (self._scope_tick_counter % 3 == 0):
+        if _heavy_tick and hasattr(self, 'video_synth_viewer'):
+            try:
+                self.video_synth_viewer.update_from_audio(chunk, playhead=playhead)
+            except Exception:
+                pass
+        if _heavy_tick:
             try:
                 self._push_visualizer_seed_hud()
             except Exception:
@@ -35493,6 +35958,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 _pk = float(getattr(self, "_live_peak", 0.0) or 0.0)
                 _db = 20.0 * math.log10(max(max(_ph, _pk), 1e-9)) if max(_ph, _pk) > 1e-9 else -120.0
                 self.lbl_peak_hold.setText(f"{_db:.1f} dBFS  (hold {100.0 * _ph:.0f}%)" if _ph > 1e-9 else f"{max(_db, -120.0):.1f} dBFS")
+        except Exception:
+            pass
+        # PERF_BACKPRESSURE_2026: learn from actual paint cost. If this callback
+        # approaches the timer budget, render heavy monitors less often; recover
+        # automatically when there is headroom. Audio processing is untouched.
+        try:
+            _elapsed = time.perf_counter() - _scope_t0
+            _budget = max(0.010, float(self._scope_update_timer.interval()) / 1000.0)
+            _cur = max(1, min(6, int(getattr(self, "_scope_heavy_stride", 1) or 1)))
+            if _elapsed > _budget * 0.72:
+                _cur = min(6, _cur + 1)
+            elif _elapsed < _budget * 0.28 and self._scope_tick_counter % 20 == 0:
+                _cur = max(1, _cur - 1)
+            self._scope_heavy_stride = _cur
         except Exception:
             pass
 
@@ -37076,6 +37555,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         provenance_bytes=None,
         audio_format="wav",
         audio_bitrate_kbps=None,
+        stitch_parts=True,
     ):
         """Write optional audio .partNN files, then the final audio artifact.
 
@@ -37129,8 +37609,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if br is not None:
             br = max(32, min(512, br))
 
+        # Default-on STITCH contract: final output is reconstructed from the
+        # just-written part WAVs, proving the parts themselves are sufficient.
+        stitch_pcm = pcm
+        if n_parts > 1 and bool(stitch_parts):
+            import wave as _wave
+            chunks = []
+            for pp in part_paths:
+                with _wave.open(pp, "rb") as wf:
+                    if wf.getnchannels() != 1 or wf.getsampwidth() != 2 or wf.getframerate() != int(sample_rate):
+                        raise RuntimeError(f"Incompatible audio part for stitch: {pp}")
+                    chunks.append(np.frombuffer(wf.readframes(wf.getnframes()), dtype="<i2").copy())
+            stitch_pcm = np.concatenate(chunks).astype(np.int16, copy=False) if chunks else pcm
+            if stitch_pcm.shape[0] != pcm.shape[0] or not np.array_equal(stitch_pcm, pcm):
+                raise RuntimeError("Audio .part stitch verification failed; final output was not written.")
+        elif n_parts > 1 and not bool(stitch_parts):
+            return file_path, part_paths
+
         if audio_format == "wav":
-            _write_wav_with_provenance(file_path, sample_rate, pcm, provenance_bytes)
+            _write_wav_with_provenance(file_path, sample_rate, stitch_pcm, provenance_bytes)
         else:
             ffmpeg = self._resolve_ffmpeg_binary()
             if not ffmpeg:
@@ -37138,7 +37635,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             tmp = os.path.join(
                 dest_dir, f".groovebox_audio_tmp_{os.getpid()}_{getattr(self, 'export_counter', 0)}.wav"
             )
-            _write_wav_with_provenance(tmp, sample_rate, pcm)
+            _write_wav_with_provenance(tmp, sample_rate, stitch_pcm)
             # Bitrate-aware codec args for lossy formats; lossless stay fixed.
             if audio_format == "mp3":
                 if br is not None:
@@ -37222,6 +37719,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             spin_parts.setValue(int(self._default_export_part_count()))
             spin_parts.setToolTip("Recoverable .part segments (1–128).")
             opts_form.addRow("Part Count (1–128)", spin_parts)
+            chk_stitch = QCheckBox("Stitch .part files into final output")
+            chk_stitch.setChecked(bool(getattr(self, "_last_stitch_parts", True)))
+            chk_stitch.setToolTip("Default ON: the final artifact is reconstructed from the written .part files. OFF leaves the recoverable part files only.")
+            opts_form.addRow(chk_stitch)
             lossy = audio_format in {"mp3", "opus", "ogg"}
             spin_br = QSpinBox()
             spin_br.setRange(32, 512)
@@ -37249,6 +37750,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if opts_dlg.exec() != QDialog.DialogCode.Accepted:
                 return
             n_parts = max(1, min(128, int(spin_parts.value())))
+            stitch_parts = bool(chk_stitch.isChecked())
+            self._last_stitch_parts = stitch_parts
             self._last_export_part_count = n_parts
             audio_bitrate_kbps = int(spin_br.value()) if lossy else None
             if audio_bitrate_kbps is not None:
@@ -37271,11 +37774,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
             file_path, audio_parts = self._write_audio_parts_and_final(
                 file_path, sample_rate, pcm, n_parts=n_parts,
                 provenance_bytes=prov_bytes, audio_format=audio_format,
-                audio_bitrate_kbps=audio_bitrate_kbps,
+                audio_bitrate_kbps=audio_bitrate_kbps, stitch_parts=stitch_parts,
             )
             if audio_parts and hasattr(self, "scope_status_label"):
                 self.scope_status_label.setText(
-                    f"📊 Wrote {len(audio_parts)} audio .part file(s) + final {audio_format.upper()}"
+                    (f"📊 Wrote {len(audio_parts)} audio .part file(s) + stitched final {audio_format.upper()}"
+                     if stitch_parts else
+                     f"📊 Wrote {len(audio_parts)} audio .part file(s) · stitching OFF")
                 )
             if isinstance(getattr(self, 'visual_oscilloscope', None), VisualOscilloscope):
                 prev = master[:min(len(master), sample_rate // 2)]
@@ -37284,7 +37789,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     self.visual_oscilloscope.update_waveform(prev[idx])
             self.export_counter += 1
             if hasattr(self, 'scope_status_label'):
-                self.scope_status_label.setText(f"📊 Export complete → {os.path.basename(file_path)}")
+                if n_parts > 1 and not stitch_parts:
+                    self.scope_status_label.setText(f"📊 Export parts complete · {n_parts} files · stitching OFF")
+                else:
+                    self.scope_status_label.setText(f"📊 Export complete → {os.path.basename(file_path)}")
         except Exception as e:
             print(f"[System] Export error: {e}")
             if hasattr(self, 'scope_status_label'):
@@ -37700,8 +38208,27 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     if ":" not in addr:
                         addr = f"{addr}:{int(port_spin.value())}"
                     args.append(f"--connect={addr}")
+                prior = getattr(self, "_solo_game_process", None)
+                if prior is not None and prior.poll() is None:
+                    status.setText("A Groovebox game instance is already running.")
+                    QMessageBox.information(dlg, "Game already running", "Close the existing generated game before launching another test copy.")
+                    return
                 status.setText(f"Launching:\n{script}")
-                subprocess.Popen(args, cwd=td)
+                popen_kw = {"cwd": td}
+                if os.name != "nt":
+                    popen_kw["start_new_session"] = True
+                else:
+                    try:
+                        popen_kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+                    except Exception:
+                        pass
+                self._solo_game_process = subprocess.Popen(args, **popen_kw)
+                self._solo_game_workdir = td
+                status.setText(f"Running (PID {self._solo_game_process.pid}). You may close this launcher.")
+                # The generated game is independent of this dialog; dismissing the
+                # launcher never terminates it, while the tracked process protects
+                # the one-game-at-a-time rule.
+                QTimer.singleShot(120, dlg.accept)
             except Exception as e:
                 status.setText(f"Error: {e}")
                 QMessageBox.warning(dlg, "Run failed", str(e))
@@ -37789,6 +38316,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "with audio, also <stem>.audio.partNN.wav. Completed parts can resume after a crash."
         )
         form.addRow("Part Count (1–128)", spin_parts)
+        chk_stitch_video = QCheckBox("Stitch .part files into final output")
+        chk_stitch_video.setChecked(bool(getattr(self, "_last_stitch_parts", True)))
+        chk_stitch_video.setToolTip("Default ON: concatenate rendered video parts into the selected final file. OFF leaves the recoverable part files only.")
+        form.addRow(chk_stitch_video)
         info = QLabel(
             "Video parts and (when enabled) matching audio parts are written next to the final file. "
             "Size estimate appears after you choose the output path."
@@ -37805,6 +38336,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         w -= w % 2; h -= h % 2
         w = max(160, w); h = max(120, h)
         N_PARTS = max(1, min(128, int(spin_parts.value())))
+        stitch_video_parts = bool(chk_stitch_video.isChecked())
+        self._last_stitch_parts = stitch_video_parts
         self._last_export_part_count = N_PARTS
         export_fps = max(1, min(120, int(spin_fps.value())))
         self._last_export_fps = export_fps
@@ -37868,24 +38401,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if n >= div:
                     return f"{n / div:.2f} {unit}"
             return f"{n} B"
+        _spf = float(getattr(self, "_video_render_seconds_per_frame", 0.0) or 0.0)
+        _eta = (n_frames * _spf) if _spf > 0.0 else None
         size_msg = (
-            f"Resolution: {w}×{h} @ {fps} fps\n"
-            f"Frames: {n_frames}  (~{duration_s:.1f}s)  in {N_PARTS} video part(s)\n"
-            + (
-                f"Audio: {N_PARTS} × {stem}.audio.partNN.wav (plus full mux WAV)\n"
-                if include_audio else "Audio: none (video only)\n"
-            )
-            + f"Predicted final size: ~{_fmt(est_video_bytes + est_audio_bytes)}\n"
-            f"Predicted peak temp (1 part): ~{_fmt(est_peak)}\n"
-            f"Part files will be written under:\n{dest_dir}\n\nContinue?"
+            f"~{_fmt(est_video_bytes + est_audio_bytes)} final · ~{_fmt(est_peak)} peak temp"
+            + (f" · ETA ~{_eta:.0f}s" if _eta is not None else " · ETA calibrating")
         )
-        reply = QMessageBox.question(
-            self, "Export size prediction", size_msg,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
+        # Non-blocking estimate: Save already means GO. Rendering starts immediately;
+        # the status bar carries size/time information instead of a modal Yes gate.
+        if hasattr(self, "scope_status_label"):
+            self.scope_status_label.setText(f"🎬 Rendering {w}×{h}@{fps} · {N_PARTS} parts · {size_msg}")
+        QApplication.processEvents()
+        _render_wall_start = time.perf_counter()
 
         # Recovery: reuse completed part videos if present and non-empty
         part_paths = []
@@ -38026,6 +38553,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     raise RuntimeError(f"Part {pi+1}/{N_PARTS} encode failed:\\n{err}")
                 os.replace(part_tmp, part_out)
 
+            if not stitch_video_parts:
+                elapsed = max(1e-9, time.perf_counter() - _render_wall_start)
+                self._video_render_seconds_per_frame = elapsed / max(1, n_frames)
+                if hasattr(self, "scope_status_label"):
+                    self.scope_status_label.setText(f"🎬 Parts complete ({elapsed:.1f}s) · stitching OFF · {len(part_paths)} files kept")
+                return
+
             # Build concat list
             list_path = os.path.join(dest_dir, f".{stem}.concat.part.txt")
             with open(list_path, "w", encoding="utf-8") as lf:
@@ -38102,6 +38636,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     raise RuntimeError(f"Final mux failed:\n{err}\n(earlier copy attempt: {err1})")
 
             os.replace(final_tmp, out_path)
+            try:
+                _elapsed = max(1e-9, time.perf_counter() - _render_wall_start)
+                self._video_render_seconds_per_frame = _elapsed / max(1, n_frames)
+            except Exception:
+                pass
 
             # success: remove part segments + staging (optional keep for recovery —
             # user asked for .part in render dest; leave them unless clean succeeds)
@@ -39189,11 +39728,44 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.scope_status_label.setText("↩ Seed reverted")
         return True
 
+    def _is_local_context(self):
+        """Authoritative GLOBAL/LOCAL selector: index 1 is selected-instrument context."""
+        try:
+            return bool(self.mode_combo.currentIndex() == 1)
+        except Exception:
+            return False
+
+    def _on_context_scope_changed(self, _idx=None):
+        """Make every local editor follow the visible GLOBAL/LOCAL dropdown.
+
+        In LOCAL CONTEXT the active instrument dropdown is authoritative, including
+        the Automator destination selector. This prevents the first roster entry
+        (Z-Pinch Resonator) from leaking into unrelated automation lanes.
+        """
+        try:
+            self._sync_nt_lattice_button_state()
+        except Exception:
+            pass
+        if self._is_local_context():
+            try:
+                selected = str(self.instrument_selector_dropdown.currentText())
+                if selected and hasattr(self, "auto_to_instrument"):
+                    idx = self.auto_to_instrument.findText(selected)
+                    if idx >= 0:
+                        self.auto_to_instrument.blockSignals(True)
+                        self.auto_to_instrument.setCurrentIndex(idx)
+                        self.auto_to_instrument.blockSignals(False)
+            except Exception:
+                pass
+        try:
+            self._refresh_operator_sample_ui()
+        except Exception:
+            pass
+
     def _sync_nt_lattice_button_state(self):
         """Reflect the apply/unapply state for the current global/local scope."""
         try:
-            mode = str(self.mode_combo.currentText()) if hasattr(self, "mode_combo") else "Global"
-            is_local = "Single Instrument" in mode
+            is_local = self._is_local_context()
             self._nt_lattice_scope = "local" if is_local else "global"
             name = self.instrument_selector_dropdown.currentText() if hasattr(self, "instrument_selector_dropdown") else None
             if is_local:
@@ -39219,6 +39791,18 @@ assert all(sym is not None for sym in _REQUIRED_QT_SYMBOLS), "Required PyQt6 UI 
 if __name__ == "__main__":
     import sys
     app = QApplication(sys.argv)
+    app.setApplicationName("Mathematician's Groovebox")
+    app.setApplicationDisplayName("Mathematician's Groovebox")
+    try:
+        app.setDesktopFileName("mathematicians-groovebox")
+    except Exception:
+        pass
+    try:
+        _logo = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "logo.png")
+        if os.path.isfile(_logo):
+            app.setWindowIcon(QIcon(_logo))
+    except Exception:
+        pass
     player = MathematiciansGrooveboxApp()
     player.show()
     sys.exit(app.exec())

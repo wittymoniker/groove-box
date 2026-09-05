@@ -4,6 +4,7 @@ Derived operations never overwrite canonical/userdata unless the user explicitly
 """
 from __future__ import annotations
 import json, math, os, wave
+from meum_constants import M, PHI, MEUM_MINUS_1, MEUM_INV, MEUM_TWO_MINUS, MEUM_NORM
 from pathlib import Path
 from typing import Optional
 import numpy as np
@@ -12,8 +13,7 @@ from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabel,QPushButton,QComboBox,
     QDoubleSpinBox,QSpinBox,QFileDialog,QMessageBox,QPlainTextEdit,QSlider,QGroupBox)
 
-M = 1.1975807343
-IRR_TRAVERSAL_DEFAULT = M - 1.0
+IRR_TRAVERSAL_DEFAULT = MEUM_MINUS_1
 IRR_PHASE_DEFAULT = math.sqrt(2.0) - 1.0
 
 class DrawSignalCanvas(QWidget):

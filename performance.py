@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import json
 import math
+from meum_constants import MEUM, MEUM_MINUS_1, MEUM_INV, PHI, PHI_INV
 import os
 import random
 import re
@@ -34,7 +35,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPixmap
+from PyQt6.QtGui import QColor, QFont, QPixmap, QPainter, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -75,6 +76,46 @@ KIND_VIDEO = "video"        # video container with NO audio track ("audioless vi
 KIND_AV = "av"              # video container WITH an audio track ("both")
 KIND_UNKNOWN = "unknown"    # couldn't probe (no ffprobe, or read error)
 KIND_PENDING = "pending"    # probe queued/in flight; always shown regardless of filter
+
+
+class _PerformanceMathBackground(QWidget):
+    """Very light deterministic ParametricMathBackground for Performance.
+
+    Paint cost is intentionally tiny: a sparse Meum/phi lattice with two curves.
+    It never consumes host/game state and therefore cannot feed back into identity.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self._phase = 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(180)  # ~5.5 fps: visual ambience, not a render surface
+        self._timer.timeout.connect(self._advance)
+        self._timer.start()
+    def _advance(self):
+        if self.isVisible():
+            self._phase = (self._phase + 0.04759) % math.tau
+            self.update()
+    def paintEvent(self, event):
+        w,h=self.width(),self.height()
+        if w < 2 or h < 2: return
+        q=QPainter(self); q.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        q.setPen(QPen(QColor(68, 145, 174, 42), 1))
+        step=max(48, min(w,h)//9)
+        ox=int((self._phase/math.tau)*step)
+        for x in range(-step+ox, w, step): q.drawLine(x,0,x,h)
+        for y in range(-step+ox, h, step): q.drawLine(0,y,w,y)
+        q.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        q.setPen(QPen(QColor(245, 211, 109, 58), 1))
+        pts=[]
+        for i in range(0, max(2,w), max(6,w//180 or 6)):
+            t=i/max(1,w-1)
+            y=h*(0.50 + 0.16*math.sin(math.tau*(MEUM*t)+self._phase)
+                 +0.08*math.sin(math.tau*PHI*t-self._phase*PHI_INV))
+            pts.append((i,int(y)))
+        for a,b in zip(pts,pts[1:]): q.drawLine(a[0],a[1],b[0],b[1])
+        q.end()
 
 
 def _probe_media_kind_sync(path: str) -> str:
@@ -283,19 +324,22 @@ class Performance(QDialog):
         self.host = host
         self.setWindowTitle("Groovebox Performance — Media · Devices · Cutups · Game · Broadcast · Batch")
         self.setStyleSheet("""
-            QDialog { background:#071019; color:#d9edf5; }
+            QDialog { background:rgba(7,16,25,232); color:#d9edf5; }
             QGroupBox { border:1px solid #284c62; border-radius:7px; margin-top:8px; padding-top:7px; font-weight:700; }
             QGroupBox::title { color:#f1ce68; subcontrol-origin:margin; left:9px; padding:0 4px; }
             QPushButton { background:#102838; color:#d9f7ff; border:1px solid #39708a; border-radius:11px; padding:8px 11px; font-weight:700; }
             QPushButton:hover { background:#17405a; border-color:#62bfd0; }
             QComboBox,QSpinBox,QDoubleSpinBox,QLineEdit { background:#08141e; color:#e6f8ff; border:1px solid #335b70; border-radius:8px; padding:6px; }
-            QTabWidget::pane { border:1px solid #24495e; }
-            QTabBar::tab { background:#0c1b28; color:#b9d5df; padding:10px 12px; margin:2px; border:1px solid #24495e; border-radius:9px; min-width:42px; }
+            QTabWidget::pane { background:rgba(7,16,25,232); border:2px solid rgba(59,113,140,245); }
+            QTabBar::tab { background:rgba(12,27,40,248); color:#b9d5df; padding:10px 12px; margin:2px; border:2px solid rgba(53,103,127,250); border-radius:9px; min-width:42px; }
             QTabBar::tab:hover { background:#122c3e; border-color:#4b879f; }
             QTabBar::tab:selected { background:#17354a; color:#f6d46d; border-color:#6ca6ba; }
         """)
         self.resize(920, 640)
         self.setMinimumSize(720, 480)
+        # PERFORMANCE_MATH_BG_20260905: ambient, sparse, low-refresh background.
+        self._math_background = _PerformanceMathBackground(self)
+        self._math_background.lower()
         self._player_proc: Optional[subprocess.Popen] = None
         self._playlist: List[Dict[str, Any]] = []
         self._playlist_index = -1
@@ -395,6 +439,10 @@ class Performance(QDialog):
         brand_row.addWidget(self.lbl_perf_brand)
         brand_title = QLabel("<b style='font-size:16pt;color:#f1ce68'>GOAVA RADIO · PERFORMANCE</b><br><span style='color:#77d8ef'>Live seeds · media · hardware · networked game state</span>")
         brand_row.addWidget(brand_title, 1)
+        self.lbl_engine_qos = QLabel("⚡ Engine QoS: AUTO")
+        self.lbl_engine_qos.setToolTip("Audio has priority; expensive Performance visuals are low-rate and may drop frames. Native C++ kernels are used when available.")
+        self.lbl_engine_qos.setStyleSheet("background:rgba(5,18,24,245);color:#9dffb0;border:1px solid #4f8799;border-radius:8px;padding:6px;font-weight:800;")
+        brand_row.addWidget(self.lbl_engine_qos)
         root.addLayout(brand_row)
 
         # --- top bar: path + roots ---
@@ -504,6 +552,14 @@ class Performance(QDialog):
         root.addLayout(close_row)
 
         self.refresh()
+
+    def resizeEvent(self, event):
+        try:
+            self._math_background.setGeometry(self.rect())
+            self._math_background.lower()
+        except Exception:
+            pass
+        return super().resizeEvent(event)
 
     # ------------------------------------------------------------------ host paths
     def _host_projects_dir(self) -> str:
@@ -1991,6 +2047,15 @@ class Performance(QDialog):
         bstart = QPushButton("▶ Start current cutup broadcast"); bstart.clicked.connect(lambda: self._start_performance(self._performance_media_path, self.chk_perf_loop.isChecked()))
         bstop = QPushButton("■ Stop broadcast"); bstop.clicked.connect(self._stop_performance)
         row.addWidget(bstart); row.addWidget(bstop); lay.addLayout(row)
+        qos = QGroupBox("Live quality / canonical projection")
+        qf = QFormLayout(qos)
+        self.cmb_perf_qos = QComboBox(); self.cmb_perf_qos.addItems(["Auto (recommended)", "Low-latency", "Full detail"]); qf.addRow("Performance QoS", self.cmb_perf_qos)
+        self.chk_relativity = QCheckBox("Relativity projection (downstream; preserves canonical ID)"); self.chk_relativity.setChecked(False); qf.addRow(self.chk_relativity)
+        self.spin_relativity_beta = QDoubleSpinBox(); self.spin_relativity_beta.setRange(-0.99,0.99); self.spin_relativity_beta.setDecimals(4); self.spin_relativity_beta.setSingleStep(0.01); self.spin_relativity_beta.setValue(0.0); qf.addRow("β = v/c", self.spin_relativity_beta)
+        self.spin_relativity_amount = QDoubleSpinBox(); self.spin_relativity_amount.setRange(0.0,8.0); self.spin_relativity_amount.setDecimals(3); self.spin_relativity_amount.setValue(1.0); qf.addRow("Projection amount", self.spin_relativity_amount)
+        self.lbl_relativity_credit = QLabel("Standard SR math · NASA Trick/cFS/CML credited as simulation-engineering inspiration · no NASA code copied")
+        self.lbl_relativity_credit.setWordWrap(True); self.lbl_relativity_credit.setStyleSheet("color:#91b9c9;font-size:8pt;"); qf.addRow(self.lbl_relativity_credit)
+        lay.addWidget(qos)
         net = QGroupBox("Ethernet host"); nf = QFormLayout(net)
         self.spin_remote_port = QSpinBox(); self.spin_remote_port.setRange(1024, 65535); self.spin_remote_port.setValue(8765); nf.addRow("Port", self.spin_remote_port)
         self.lbl_remote = QLabel("Stopped"); self.lbl_remote.setWordWrap(True); nf.addRow("Status", self.lbl_remote)
@@ -2090,6 +2155,18 @@ class Performance(QDialog):
             "source_duration_s": float(ev.duration_s), "seed": int(self.spin_cutup_seed.value()),
             "bpm": float(self.spin_cutup_bpm.value()), "timestamp": time.time(),
         }
+        if getattr(self, "chk_relativity", None) is not None and self.chk_relativity.isChecked():
+            try:
+                from relativity_projection import project_event
+                state = project_event(state, self.spin_relativity_beta.value(), self.spin_relativity_amount.value())
+            except Exception as exc:
+                state["relativity_error"] = str(exc)
+        # QoS is representational only; receivers may skip expensive visuals, never audio/state.
+        try:
+            _q = self.cmb_perf_qos.currentText() if hasattr(self, "cmb_perf_qos") else "Auto (recommended)"
+            state["performance_qos"] = "low" if _q.startswith("Low") else ("full" if _q.startswith("Full") else "auto")
+        except Exception:
+            state["performance_qos"] = "auto"
         self._broadcast_state = state
         if getattr(self, "chk_perf_game", None) is None or self.chk_perf_game.isChecked():
             try:
@@ -2653,6 +2730,7 @@ class Performance(QDialog):
         b_refresh=QPushButton("↻ Scan .MG"); b_refresh.clicked.connect(self._refresh_mg_library); row.addWidget(b_refresh)
         b_load=QPushButton("⬇ Load to relevant slot"); b_load.clicked.connect(self._load_selected_mg); row.addWidget(b_load)
         b_rel=QPushButton("⌬ Find Related"); b_rel.clicked.connect(self._show_related_mg); row.addWidget(b_rel)
+        b_share=QPushButton("⇪ Share Identity"); b_share.setToolTip("Export a tiny portable identity/provenance card for another Groovebox user; the original .MG remains unchanged."); b_share.clicked.connect(self._share_selected_mg_identity); row.addWidget(b_share)
         b_exp=QPushButton("⇧ Export History"); b_exp.setToolTip("Export .MG provenance and analytics as JSON, CSV, or HTML without changing the artifact."); b_exp.clicked.connect(self._export_selected_mg_history); row.addWidget(b_exp)
         b_cmp=QPushButton("⇣ Compress History"); b_cmp.setToolTip("Keep longitudinal totals and strongest companion relationships while reducing detailed history."); b_cmp.clicked.connect(self._compress_selected_mg_history); row.addWidget(b_cmp)
         b_clr=QPushButton("⌫ Clear History"); b_clr.setToolTip("Clear mutable use/co-use/outcome history without changing the .MG Artifact ID or payload."); b_clr.clicked.connect(self._clear_selected_mg_history); row.addWidget(b_clr)
@@ -2691,6 +2769,26 @@ class Performance(QDialog):
                 f"uses: {a.get('use_count',0)} · loads: {a.get('load_count',0)} · saves: {a.get('save_count',0)}\n"
                 f"first used: {a.get('first_used')} · last used: {a.get('last_used')}\ncompanions: {json.dumps(a.get('companions',{}),sort_keys=True)}")
         except Exception as e: self.mg_info.setPlainText(str(e))
+
+    def _share_selected_mg_identity(self):
+        path=self._selected_mg_path()
+        if not path: return
+        try:
+            from mg_artifacts import load
+            d=load(path,record_use=False); prov=d.get('provenance',{}) or {}
+            card={
+                'format':'MG-share-card-v1', 'kind':d.get('kind'), 'title':d.get('title'),
+                'artifact_id':d.get('artifact_id'), 'program_id':prov.get('program_id'),
+                'composition_id':prov.get('composition_id'), 'source_filename':os.path.basename(path),
+                'payload_fingerprint':d.get('payload_fingerprint') or prov.get('payload_fingerprint'),
+            }
+            default=os.path.splitext(path)[0]+'.MGshare.json'
+            out,_=QFileDialog.getSaveFileName(self,'Share .MG Identity',default,'Groovebox share card (*.MGshare.json);;JSON (*.json)')
+            if not out: return
+            with open(out,'w',encoding='utf-8') as f: json.dump(card,f,indent=2,sort_keys=True)
+            self.lbl_status.setText(f"Shared identity card → {os.path.basename(out)}")
+        except Exception as e:
+            QMessageBox.warning(self,'Share identity failed',str(e))
 
     def _load_selected_mg(self):
         path=self._selected_mg_path()

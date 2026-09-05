@@ -9,9 +9,7 @@ from __future__ import annotations
 import hashlib, json, math
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Tuple
-
-MEUM = 1.1975807343385265
-PHI = 1.618033988749895
+from meum_constants import MEUM, PHI, MEUM_MINUS_1, MEUM_INV, MEUM_TWO_MINUS, MEUM_NORM
 GOLDEN_ANGLE = math.tau * (1.0 - 1.0 / PHI)
 
 

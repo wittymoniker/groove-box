@@ -51,6 +51,7 @@ import colorsys
 import re
 import weakref
 import numpy as np
+from meum_constants import MEUM, MEUM_MINUS_1, MEUM_INV
 
 # VISUAL_DETERMINISM_2026: canonical seed/view-space kernel.
 from visual_determinism import (
@@ -123,10 +124,7 @@ except Exception:
 # not as an arbitrary synth-control percentage. Derived values below are
 # reusable shortcuts so the DSP/visualizer/context engines do not repeatedly
 # re-encode the same Meum arithmetic.
-MEUM = 1.1975807343385265188
-MEUM_CONSTANT = MEUM  # backwards-compatible alias used throughout the codebase
-MEUM_MINUS_1 = MEUM - 1.0
-MEUM_INV = 1.0 / MEUM
+MEUM_CONSTANT = MEUM  # centralized canonical Meum value
 
 
 def identity_unit(*key_parts) -> float:

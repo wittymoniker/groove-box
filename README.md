@@ -738,9 +738,7 @@ For nonzero denominator,
 
 `|OT_DIV(a,b)| = |a|/|b|`, with the sign taken from `a`.
 
-The project defines `0/0 = 1` in OT mode. Division by zero for nonzero `a` uses
-the project's large finite sentinel convention. This is a compatibility rule,
-not ordinary field arithmetic.
+The project defines `0/0 = 1` in OT mode. Division by zero for nonzero `a` uses signed infinity in OT mode. Ordinary/DSP compatibility paths choose an explicit context policy (0, 1, signed infinity, numerator/n, or an explicitly solved x/y-equivalent value) rather than adding a hidden epsilon. These are project compatibility rules, not ordinary field arithmetic.
 
 ### 19.6 OT phase operator
 
@@ -1738,3 +1736,56 @@ The in-app math help preserves the terminology and claims of the author's suppli
 
 ## Total Correspondence + Self-Procedure (2026-09-05)
 Audio, Visual, Game, UI, and Network are sibling projections of one count-independent Universal Field. `self_procedure()` selects a downstream representation resolution from intrinsic field structure, while `correspondence_manifest()`/`correspondence_verify()` prove that all domain manifests still trace to the same field identity. More or fewer part objects remain alternate factorizations of the same source. See `TOTAL_CORRESPONDENCE_SELF_PROCEDURE_ROLLOUT.md`.
+
+
+## Research note — what the Meum/OT work is actually buying Groovebox
+
+Groovebox now treats the author's Meum/Operator-Theory work as a **computational architecture**, not merely as decorative constants.  The practical advantages are measurable engineering properties: one canonical mathematical identity can be cached and projected into audio/visual/game/UI/network views; Meum-family traversals can be advanced by deterministic modular recurrence instead of rebuilt from an RNG; rational anchors remain available for exact conservation/partitioning; OT keeps inverse/write operations explicit; and the `isn/ics` family provides a compact coordinate vocabulary that can be fused into native array kernels.  These properties reduce recomputation, stabilize cache keys, simplify reversible state transitions, and make Python/C++ parity easier to test.
+
+### MEUM-T1 — existence, uniqueness and irrationality
+
+For the project's formal definition, let `M` be the root in `(1,2)` of
+
+`2^M = M^4 + M^2 - M`, equivalently `F(x)=2^x-x^4-x^2+x=0`.
+
+`F(1)=1>0` and `F(2)=-14<0`, so continuity gives at least one root.  On `[1,2]`,
+
+`F''(x)=2^x(ln 2)^2-12x^2-2 < 4(ln 2)^2-14 < 0`,
+
+therefore `F'` is strictly decreasing; because `F'(1)=2 ln 2-5<0`, `F'<0` throughout the interval, so the root is unique.  If that root were rational, `M=p/q` in lowest terms, then the polynomial side would be rational and hence `2^(p/q)` would be rational.  Unique prime factorization forces `q=1`; but no integer lies in `(1,2)`.  Thus the mathematically defined root is irrational.  Runtime IEEE-754 values are, as always, finite rational approximations of that mathematical value.
+
+### Trigonometric execution model
+
+Operator Theory is enabled by default.  Groovebox distinguishes **semantic trig** from **execution trig**.  Where conventional sine/cosine meaning is required, the result must remain conventional; hot contiguous arrays may nevertheless be evaluated through the project's identities
+
+`sin(x) = isn(2x)/2`, `cos(x) = ics(2x)/2`, with `isn(t)=2 sin(t/2)` and `ics(t)=2 cos(t/2)`,
+
+using the native C++ kernel.  Scalar calls stay on ordinary libm when that is faster, because adding a Python/ABI layer merely to rename the same operation would be a regression.  Where the composition explicitly asks for the Meum-normalized `isn/ics` family, the Meum transform itself is used rather than an equivalence route.  This lets the project apply the author's formulas broadly **without silently retuning conventional DSP, Euclidean geometry, or reference mathematics**.
+
+### What is established, what is empirical
+
+The theorem above establishes the irrationality of the formally defined Meum root.  It also implies that nonzero integer multiples of `M`, `M-1`, `1/M`, and `2-M` cannot form an exact finite rational phase cycle modulo 1.  It does **not** by itself prove that Meum is universally more even than every other irrational sequence, nor does software behavior prove a physical-energy theorem.  Groovebox therefore treats spectral entropy, discrepancy, autocorrelation, collision rate, spatial coverage, cache cost and render cost as benchmarkable questions.  This separation is deliberate: it makes positive results reproducible and gives mathematicians/physicists something concrete to inspect rather than requiring them to accept an application claim first.
+
+### Invitation to review / falsify
+
+The project is intentionally inspectable.  Researchers are invited to challenge the formal Meum definition and proof, compare Meum-family traversals against `phi-1`, `sqrt(2)-1`, `e-2`, `pi-3`, rational controls and seeded pseudorandom controls, and attempt to break Universal-Field reconstruction, part-count invariance, Python/native parity, writer reversibility, or cross-domain identity.  A counterexample is useful: the implementation and documentation should be corrected rather than protected from falsification.
+
+## 2026-09-05 — Full OT-adapted vector trig routing
+
+Groovebox now routes the remaining **NumPy vector sine/cosine call sites in the main runtime** through the OT-compatible trig adapters whenever Operator Theory is enabled (the default). The adapters preserve ordinary sine/cosine semantics through the book identities
+
+\[
+\sin(x)=\tfrac12\,\operatorname{isn}(2x),\qquad
+\cos(x)=\tfrac12\,\operatorname{ics}(2x),
+\]
+
+with `isn(t)=2 sin(t/2)` and `ics(t)=2 cos(t/2)`. Large contiguous arrays can therefore enter the native C++ book-isn/book-ics kernel instead of building extra NumPy trig temporaries. Small/scalar operations retain the conventional libm path where crossing the native ABI would cost more than the arithmetic.
+
+This is an **equivalence-preserving execution rewrite**, not a claim that every Euclidean identity has been replaced by a different geometry. It lets the project use the author's trig vocabulary as an optimization layer while keeping reference DSP/geometry results testable against their conventional definitions. The unified regression suite remains `19 passed / 1 optional PyQt6 skip / 0 failed` after the broader routing pass.
+
+### Research invitation
+
+Groovebox is also an executable research artifact. Mathematicians, physicists, DSP/numerical programmers, generative artists, and simulation developers are invited to test the Meum root theorem, OT equivalence routes, `isn`/`ics` transforms, Universal Field decomposition invariance, traversal distributions, native/reference parity, and performance claims. Useful contributions include proofs or counterexamples, reproducible benchmarks, profiling results, alternative constants/bases, and simpler equivalent formulations.
+
+The project distinguishes: (1) proved statements under its declared definitions, (2) implementation invariants backed by tests, and (3) empirical hypotheses such as whether coupled Meum-family traversal outperforms other irrational or low-discrepancy bases in a particular audio/visual/game workload.
+

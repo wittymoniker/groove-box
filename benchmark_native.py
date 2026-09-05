@@ -1,6 +1,7 @@
 import ctypes, time, math
 from pathlib import Path
 import numpy as np
+from meum_constants import MEUM as M, MEUM_NORM as MN
 
 ROOT = Path(__file__).resolve().parent
 LIB = ROOT / 'native' / 'libgroovebox_accel.so'
@@ -17,7 +18,7 @@ def bench_clip(n=9_600_000):
 
 def bench_voice(n=960_000):
     phase=np.linspace(0,2*math.pi*64,n,dtype=np.float64); out=np.empty(n,np.float32)
-    M=1.1975807343385265; MN=(M-1)/M; e=.63; k1=.71; k3=.4; k4=.9; nh=12; ni=5; seed=12345; vo=7
+    e=.63; k1=.71; k3=.4; k4=.9; nh=12; ni=5; seed=12345; vo=7
     t=time.perf_counter();
     harm=np.sin(phase)
     for h in range(2,nh+1):

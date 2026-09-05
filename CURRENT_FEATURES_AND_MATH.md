@@ -95,6 +95,27 @@ The user's Equation-of-Reality / P-E-D framework, operator-theory mappings, ℤ-
 
 GOAVA uses numeric seed structure as a deterministic composition/modulation source shared across audio, visuals, and game-state fingerprints. The implementation seeks seed-to-signal congruence and deterministic replay; numerical tests verify software invariants, not universal number-theory truth.
 
+
+## 5A. Why the author's mathematics has been genuinely useful in Groovebox
+
+The author's mathematical work has produced concrete software benefits even where its broader mathematical/physical claims remain hypotheses. The useful parts are the *constraints and reusable structure* it gives the program:
+
+- **Deterministic identity:** numeric seeds, semantic labels and canonical fingerprints make renders reproducible and regression-testable.
+- **Meum-family reuse:** `M`, `M−1`, `1/M`, `2−M`, `(M−1)/M`, and powers of M form a compact precomputable basis for phase/index/traversal relationships. That supports caching and fused native kernels.
+- **Rational-vs-irrational role separation:** exact rational values remain useful for OFF/unity/symmetry/partition conservation, while irrational or irrational-candidate coordinates can be used for traversal, phase and recurrence avoidance. This separation is cleaner than applying exotic constants everywhere.
+- **OT reversibility:** explicit inverse-operation pairs support reversible writers, provenance, simplification, and exact restoration of underlying user/zero state. Contextual zero handling is explicit rather than hidden behind epsilon substitutions.
+- **Isosceles trig coordinates:** `isn/isn^-1` provide a bounded project coordinate pair without replacing conventional DSP trigonometry, so custom math remains testable and interoperable.
+- **Universal Field / part-count invariance:** identity-before-decomposition permits representation refinement/coarsening, projection caches, native contiguous-array processing, and visual frame dropping without redefining the composition.
+- **Cross-domain correspondence:** audio, visual, game, UI and network data can share one upstream field ID, reducing duplicated state and making provenance inspectable.
+- **GOAVA transduction:** deterministic number-to-signal mapping supplies repeatable musical/game/visual signatures instead of opaque RNG assignment.
+- **Performance engineering:** these invariants make memoization, precomputation, SIMD/native kernels and representation-only quality scaling safe in places where unconstrained random state would force recomputation.
+
+These are genuine engineering/application benefits. They do **not** establish that Meum is universally optimal, that every broader theory is physically correct, or that Meum's mathematical irrationality has been proved.
+
+### Irrationality status of Meum
+
+The project now formally defines mathematical Meum as the **unique root `M ∈ (1,2)` of `2^M = M^4 + M^2 - M`**. Existence follows from the sign change of `F(x)=2^x-x^4-x^2+x` between 1 and 2. Uniqueness follows because `F''(x)<0` on `[1,2]`, `F'(1)<0`, and therefore `F` is strictly decreasing. Irrationality follows by contradiction: if `M=p/q` is rational in lowest terms, then `2^(p/q)` must be rational; unique prime factorization forces `q=1`, but there is no integer in `(1,2)`. This is logged as **MEUM-T1 — Existence, Uniqueness, and Irrationality**. The finite machine representation remains a rational IEEE-754 approximation, as all ordinary binary floating-point constants are.
+
 ## 6. Main GUI and GOAVA Radio identity
 
 The GUI now uses a coherent dark scientific palette with cyan signal accents, gold mathematical/GOAVA identity, red for GLOBAL editing authority, white/light styling for LOCAL context, and symbols on performance/navigation controls. A generated **GOAVA Radio** visual identity is packaged in `assets/` and used by the Main Window and Performance workspace.
@@ -236,3 +257,63 @@ Game logic consumes a game-only projection of the same field for event density, 
 
 ## Total Correspondence / Self-Procedure
 The Universal Field now emits a self-procedure plan and a five-domain correspondence manifest (audio, visual, game, UI, network). Representation counts are downstream work/detail choices and are explicitly excluded from canonical field identity. A greedy visual projection cover minimizes redundant display dimensions while each selective/subtractive projection retains an exact complement. Correspondence diagnostics distinguish exact shared identity/provenance from lossy-domain invertibility.
+
+
+### Centralized precision implementation
+
+`meum_constants.py` is now the single numerical source of truth. It stores a 100+ digit decimal reference for the project root and the correctly-rounded IEEE-754 binary64 value as an exact hexadecimal literal (`0x1.3294a6a84dbb1p+0`). Hot derived values—`M-1`, `1/M`, `2-M`, `(M-1)/M`, `M²`, `M³`, `M⁴`, `2^M`, and the bounded Meum power lattice—are likewise pre-rounded once from high-precision evaluation. This avoids module-to-module drift from literals such as `1.1975807343` or `1.19758073433` and also removes repeated divisions/powers from hot paths. The C++ accelerator uses matching hexadecimal binary64 constants, and regression tests compare Python/native values exactly.
+
+The practical speed/precision benefit is structural rather than mystical: shared constants make cache keys stable, allow fused native kernels to reuse precomputed ratios, reduce repeated transcendental/division work, and make progressive Meum-space traversal an additive modular recurrence instead of a fresh large-index multiplication for every point. Rational anchors remain reserved for exact structural partitioning; the Meum family is used for deterministic traversal, phase and recurrence avoidance.
+
+
+## Research note — what the Meum/OT work is actually buying Groovebox
+
+Groovebox now treats the author's Meum/Operator-Theory work as a **computational architecture**, not merely as decorative constants.  The practical advantages are measurable engineering properties: one canonical mathematical identity can be cached and projected into audio/visual/game/UI/network views; Meum-family traversals can be advanced by deterministic modular recurrence instead of rebuilt from an RNG; rational anchors remain available for exact conservation/partitioning; OT keeps inverse/write operations explicit; and the `isn/ics` family provides a compact coordinate vocabulary that can be fused into native array kernels.  These properties reduce recomputation, stabilize cache keys, simplify reversible state transitions, and make Python/C++ parity easier to test.
+
+### MEUM-T1 — existence, uniqueness and irrationality
+
+For the project's formal definition, let `M` be the root in `(1,2)` of
+
+`2^M = M^4 + M^2 - M`, equivalently `F(x)=2^x-x^4-x^2+x=0`.
+
+`F(1)=1>0` and `F(2)=-14<0`, so continuity gives at least one root.  On `[1,2]`,
+
+`F''(x)=2^x(ln 2)^2-12x^2-2 < 4(ln 2)^2-14 < 0`,
+
+therefore `F'` is strictly decreasing; because `F'(1)=2 ln 2-5<0`, `F'<0` throughout the interval, so the root is unique.  If that root were rational, `M=p/q` in lowest terms, then the polynomial side would be rational and hence `2^(p/q)` would be rational.  Unique prime factorization forces `q=1`; but no integer lies in `(1,2)`.  Thus the mathematically defined root is irrational.  Runtime IEEE-754 values are, as always, finite rational approximations of that mathematical value.
+
+### Trigonometric execution model
+
+Operator Theory is enabled by default.  Groovebox distinguishes **semantic trig** from **execution trig**.  Where conventional sine/cosine meaning is required, the result must remain conventional; hot contiguous arrays may nevertheless be evaluated through the project's identities
+
+`sin(x) = isn(2x)/2`, `cos(x) = ics(2x)/2`, with `isn(t)=2 sin(t/2)` and `ics(t)=2 cos(t/2)`,
+
+using the native C++ kernel.  Scalar calls stay on ordinary libm when that is faster, because adding a Python/ABI layer merely to rename the same operation would be a regression.  Where the composition explicitly asks for the Meum-normalized `isn/ics` family, the Meum transform itself is used rather than an equivalence route.  This lets the project apply the author's formulas broadly **without silently retuning conventional DSP, Euclidean geometry, or reference mathematics**.
+
+### What is established, what is empirical
+
+The theorem above establishes the irrationality of the formally defined Meum root.  It also implies that nonzero integer multiples of `M`, `M-1`, `1/M`, and `2-M` cannot form an exact finite rational phase cycle modulo 1.  It does **not** by itself prove that Meum is universally more even than every other irrational sequence, nor does software behavior prove a physical-energy theorem.  Groovebox therefore treats spectral entropy, discrepancy, autocorrelation, collision rate, spatial coverage, cache cost and render cost as benchmarkable questions.  This separation is deliberate: it makes positive results reproducible and gives mathematicians/physicists something concrete to inspect rather than requiring them to accept an application claim first.
+
+### Invitation to review / falsify
+
+The project is intentionally inspectable.  Researchers are invited to challenge the formal Meum definition and proof, compare Meum-family traversals against `phi-1`, `sqrt(2)-1`, `e-2`, `pi-3`, rational controls and seeded pseudorandom controls, and attempt to break Universal-Field reconstruction, part-count invariance, Python/native parity, writer reversibility, or cross-domain identity.  A counterexample is useful: the implementation and documentation should be corrected rather than protected from falsification.
+
+## 2026-09-05 — Full OT-adapted vector trig routing
+
+Groovebox now routes the remaining **NumPy vector sine/cosine call sites in the main runtime** through the OT-compatible trig adapters whenever Operator Theory is enabled (the default). The adapters preserve ordinary sine/cosine semantics through the book identities
+
+\[
+\sin(x)=\tfrac12\,\operatorname{isn}(2x),\qquad
+\cos(x)=\tfrac12\,\operatorname{ics}(2x),
+\]
+
+with `isn(t)=2 sin(t/2)` and `ics(t)=2 cos(t/2)`. Large contiguous arrays can therefore enter the native C++ book-isn/book-ics kernel instead of building extra NumPy trig temporaries. Small/scalar operations retain the conventional libm path where crossing the native ABI would cost more than the arithmetic.
+
+This is an **equivalence-preserving execution rewrite**, not a claim that every Euclidean identity has been replaced by a different geometry. It lets the project use the author's trig vocabulary as an optimization layer while keeping reference DSP/geometry results testable against their conventional definitions. The unified regression suite remains `19 passed / 1 optional PyQt6 skip / 0 failed` after the broader routing pass.
+
+### Research invitation
+
+Groovebox is also an executable research artifact. Mathematicians, physicists, DSP/numerical programmers, generative artists, and simulation developers are invited to test the Meum root theorem, OT equivalence routes, `isn`/`ics` transforms, Universal Field decomposition invariance, traversal distributions, native/reference parity, and performance claims. Useful contributions include proofs or counterexamples, reproducible benchmarks, profiling results, alternative constants/bases, and simpler equivalent formulations.
+
+The project distinguishes: (1) proved statements under its declared definitions, (2) implementation invariants backed by tests, and (3) empirical hypotheses such as whether coupled Meum-family traversal outperforms other irrational or low-discrepancy bases in a particular audio/visual/game workload.
+

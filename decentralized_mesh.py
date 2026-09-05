@@ -14,10 +14,10 @@ import base64, hashlib, json, os, random, threading, time, urllib.request, urlli
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-M = 1.1975807343
+from meum_constants import M, MEUM_MINUS_1, MEUM_TWO_MINUS
 MAX_PAYLOAD = 256 * 1024
-DEFAULT_GOSSIP_INTERVAL = 61.0 / (M - 1.0)  # slow, deterministic-ish ~309s
-RARE_RETRY_SECONDS = 3600.0 / (2.0 - M)    # ~74.8 min
+DEFAULT_GOSSIP_INTERVAL = 61.0 / MEUM_MINUS_1  # slow, deterministic-ish ~309s
+RARE_RETRY_SECONDS = 3600.0 / MEUM_TWO_MINUS    # ~74.8 min
 
 
 def _base_dir() -> Path:

@@ -374,6 +374,64 @@ def test_numeric_item_action_audio_identity():
 
 CHECKS.append(("numeric item/action/spell/event audio identity", test_numeric_item_action_audio_identity))
 
+def check_relativity_projection():
+    from relativity_projection import lorentz_gamma, longitudinal_doppler, project_event
+    assert abs(lorentz_gamma(0.0) - 1.0) < 1e-15
+    assert abs(longitudinal_doppler(0.0) - 1.0) < 1e-15
+    ev={"event_id":"same-canonical", "rate":1.0, "pitch_semitones":0.0}
+    neutral=project_event(ev, 0.4, 0.0)
+    assert neutral["event_id"] == ev["event_id"] and abs(neutral["rate"]-1.0) < 1e-12
+    projected=project_event(ev, 0.4, 1.0)
+    assert projected["event_id"] == ev["event_id"]
+    assert projected["rate"] > 1.0 and projected["relativity"]["identity_preserved"]
+    return "PASS: downstream relativity projection preserves canonical event identity"
+
+CHECKS.append(("relativity projection", check_relativity_projection))
+
+def check_native_accel_v2():
+    import ctypes
+    import numpy as np
+    libpath = ROOT / "native" / "libgroovebox_accel.so"
+    if not libpath.exists():
+        return "SKIP: native accelerator not built for this platform"
+    lib=ctypes.CDLL(str(libpath)); Pf=ctypes.POINTER(ctypes.c_float); Pd=ctypes.POINTER(ctypes.c_double)
+    lib.gb_phase_build_f64.argtypes=[Pf,Pf,ctypes.c_size_t,ctypes.c_double,ctypes.c_double,ctypes.c_double,ctypes.c_double,ctypes.c_double,ctypes.c_double,Pd]
+    lib.gb_phase_build_f64.restype=ctypes.c_double
+    n=8192; fr=(1.0+0.4*np.sin(np.linspace(0,12,n))).astype(np.float32); pm=(0.2*np.cos(np.linspace(0,7,n))).astype(np.float32)
+    out=np.empty(n,np.float64); f0=432.0; det=0.001; dt=1.0/96000.0; carry=.37; vp=.2; cp=.4
+    got=lib.gb_phase_build_f64(fr.ctypes.data_as(Pf),pm.ctypes.data_as(Pf),n,f0,det,dt,carry,vp,cp,out.ctypes.data_as(Pd))
+    step=math.tau*f0*(1.0+det)*dt
+    ref=np.cumsum(fr.astype(np.float64))*step+carry+pm.astype(np.float64)+vp+cp
+    assert float(np.max(np.abs(out-ref))) < 1e-9
+    cref=float((np.cumsum(fr.astype(np.float64))*step+carry)[-1] % math.tau)
+    assert abs(got-cref) < 1e-9
+    lib.gb_ot_div_f64.argtypes=[Pd,Pd,ctypes.c_size_t,ctypes.c_int,ctypes.c_double,Pd]
+    a=np.array([0.,2.,-3.,4.],np.float64); b=np.array([0.,0.,0.,2.],np.float64); o=np.empty(4,np.float64)
+    lib.gb_ot_div_f64(a.ctypes.data_as(Pd),b.ctypes.data_as(Pd),4,2,0.0,o.ctypes.data_as(Pd))
+    assert o[0] == 1.0 and math.isinf(o[1]) and o[1] > 0 and math.isinf(o[2]) and o[2] < 0 and o[3] == 2.0
+    return "PASS: native phase fusion + explicit OT zero-division policies"
+
+CHECKS.append(("native accel v2", check_native_accel_v2))
+
+def check_meum_precision():
+    import ctypes
+    from meum_constants import (MEUM, MEUM_MINUS_1, MEUM_INV, MEUM_TWO_MINUS, MEUM_NORM,
+                                MEUM_SQ, MEUM_CUBE, MEUM_FOURTH, MEUM_TWO_POW,
+                                MEUM_D, MEUM_INV_D, MEUM_NORM_D, meum_equation_residual)
+    assert MEUM.hex() == "0x1.3294a6a84dbb1p+0"
+    assert float(MEUM_D)==MEUM and float(MEUM_INV_D)==MEUM_INV and float(MEUM_NORM_D)==MEUM_NORM
+    assert abs(meum_equation_residual()) <= 2e-15
+    libpath=ROOT/"native"/"libgroovebox_accel.so"
+    if not libpath.exists(): return "SKIP: native Meum constant parity library not built for this platform"
+    lib=ctypes.CDLL(str(libpath)); Pd=ctypes.POINTER(ctypes.c_double)
+    lib.gb_meum_constants_f64.argtypes=[Pd,ctypes.c_size_t]; lib.gb_meum_constants_f64.restype=ctypes.c_size_t
+    n=lib.gb_meum_constants_f64(None,0); arr=(ctypes.c_double*n)(); lib.gb_meum_constants_f64(arr,n)
+    expected=[MEUM,MEUM_MINUS_1,MEUM_INV,MEUM_TWO_MINUS,MEUM_NORM,MEUM_SQ,MEUM_CUBE,MEUM_FOURTH,MEUM_TWO_POW]
+    assert list(arr)==expected
+    return "PASS: centralized high-precision Meum constants + exact native parity"
+
+CHECKS.append(("Meum precision/native parity", check_meum_precision))
+
 def main():
     failures=[]; skips=[]
     print("=== Groovebox Unified Test Suite ===")

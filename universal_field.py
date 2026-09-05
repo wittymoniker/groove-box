@@ -12,18 +12,19 @@ selection.
 """
 from __future__ import annotations
 import hashlib, json, math
+from functools import lru_cache
 from typing import Any, Dict, Iterable, Mapping, Sequence
-
-M = 1.1975807343
-PHI = (1.0 + math.sqrt(5.0)) / 2.0
+from meum_constants import (
+    M, PHI, MEUM_MINUS_1, MEUM_INV, MEUM_TWO_MINUS, MEUM_NORM,
+)
 SCALE_BASIS = {
     "zero": 0.0,
     "half": 0.5,
     "unity": 1.0,
-    "M-1": M - 1.0,
-    "1/M": 1.0 / M,
-    "2-M": 2.0 - M,
-    "(M-1)/M": (M - 1.0) / M,
+    "M-1": MEUM_MINUS_1,
+    "1/M": MEUM_INV,
+    "2-M": MEUM_TWO_MINUS,
+    "(M-1)/M": MEUM_NORM,
     "sqrt2-1": math.sqrt(2.0) - 1.0,
     "phi-1": PHI - 1.0,
     "e-2": math.e - 2.0,
@@ -76,14 +77,14 @@ def canonical_field(seed: Any, composition_fingerprint: str = "0", sequential_nu
     payload={"seed":str(seed),"composition":str(composition_fingerprint),"seq":[round(v,14) for v in seq],"features":[round(v,14) for v in feat]}
     source_hash=hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
     vals: Dict[str,float]={}
-    scale_cycle=(1.0, 0.5, M-1.0, 1.0/M, 2.0-M, (M-1.0)/M, math.sqrt(2)-1, PHI-1, math.e-2, math.pi-3)
+    scale_cycle=(1.0, 0.5, MEUM_MINUS_1, MEUM_INV, MEUM_TWO_MINUS, MEUM_NORM, math.sqrt(2)-1, PHI-1, math.e-2, math.pi-3)
     seq_mean=sum(seq)/len(seq) if seq else 0.0
     feat_mean=sum(feat)/len(feat) if feat else 0.0
     for i,name in enumerate(_FIELD_NAMES):
         base=_u(source_hash, name)
         # Irrational scale rotates coverage; rational 1/2 and 1 remain anchors.
         s=scale_cycle[i % len(scale_cycle)]
-        coupled=(base + (seq_mean*(M-1.0) + feat_mean*(PHI-1.0))*s) % 1.0
+        coupled=(base + (seq_mean*MEUM_MINUS_1 + feat_mean*(PHI-1.0))*s) % 1.0
         vals[name]=coupled
     # exact structural anchors, kept distinct from traversal coordinates
     vals["identity"] = _u(source_hash, "identity")
@@ -91,6 +92,62 @@ def canonical_field(seed: Any, composition_fingerprint: str = "0", sequential_nu
     field={"version":"universal-field-v1","source_hash":source_hash,"composition_fingerprint":str(composition_fingerprint),"seed":str(seed),"scales":dict(SCALE_BASIS),"coords":vals}
     field["field_id"]=hashlib.sha256(json.dumps(_canon(field),sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()[:24]
     return field
+
+
+@lru_cache(maxsize=1)
+def _load_native_meum_space():
+    """Load the optional canonical C++ Meum traversal kernel once."""
+    try:
+        import ctypes
+        from pathlib import Path
+        root=Path(__file__).resolve().parent
+        candidates=(
+            root/'native'/'libgroovebox_accel.so', root/'cpp'/'libgroovebox_accel.so',
+            root/'native'/'groovebox_accel.dll', root/'native'/'libgroovebox_accel.dylib',
+        )
+        libpath=next((p for p in candidates if p.is_file()), None)
+        if libpath is None: return None
+        lib=ctypes.CDLL(str(libpath)); Pd=ctypes.POINTER(ctypes.c_double)
+        fn=lib.gb_meum_space_f64
+        fn.argtypes=[ctypes.c_size_t,ctypes.c_size_t,ctypes.c_double,Pd,Pd,Pd,Pd]
+        fn.restype=None
+        return fn
+    except Exception:
+        return None
+
+
+def _meum_space_python_reference(start: int, count: int) -> Dict[str, list[float]]:
+    """Portable multiplication reference used when no native kernel is present."""
+    basis=(MEUM_MINUS_1,MEUM_INV,PHI-1.0,math.sqrt(2.0)-1.0)
+    cols=[ [((i*b) % 1.0) for i in range(start,start+count)] for b in basis ]
+    return dict(zip(("meum_minus_1","meum_inverse","phi_minus_1","sqrt2_minus_1"),cols))
+
+
+def meum_space(start: int, count: int) -> Dict[str, list[float]]:
+    """Deterministic irrational traversal; identity/conservation remain rational.
+
+    Large traversals use the optional C++ recurrence kernel: the starting phase is
+    formed once at long-double precision and subsequent points advance additively.
+    This is both faster and less vulnerable to large-index multiply precision loss.
+    The portable multiplication reference remains authoritative when native code is
+    unavailable, so generated/project identity never depends on having the library.
+    """
+    start=max(0,int(start)); count=max(0,int(count))
+    if count == 0:
+        return {k:[] for k in ("meum_minus_1","meum_inverse","phi_minus_1","sqrt2_minus_1")}
+    fn=_load_native_meum_space() if count >= 128 else None
+    if fn is not None:
+        try:
+            import ctypes
+            import numpy as np
+            Pd=ctypes.POINTER(ctypes.c_double)
+            cols=[np.empty(count,dtype=np.float64) for _ in range(4)]
+            fn(start,count,M,*[a.ctypes.data_as(Pd) for a in cols])
+            return dict(zip(("meum_minus_1","meum_inverse","phi_minus_1","sqrt2_minus_1"),
+                            [a.tolist() for a in cols]))
+        except Exception:
+            pass
+    return _meum_space_python_reference(start,count)
 
 
 def partition_field(field: Mapping[str,Any], count: int) -> list[Dict[str,Any]]:
@@ -118,6 +175,12 @@ def decomposition_error(field: Mapping[str,Any], count: int) -> float:
     return max([abs(original[k]-rec.get(k,0.0)) for k in original] or [0.0])
 
 
+_PROJECTION_CACHE: Dict[tuple, Dict[str,Any]] = {}
+
+def clear_projection_cache() -> None:
+    """Drop representation caches without changing any canonical identity."""
+    _PROJECTION_CACHE.clear()
+
 def projection(field: Mapping[str,Any], kind: str) -> Dict[str,Any]:
     """Selective/subtractive projection of one invariant field.
 
@@ -126,18 +189,28 @@ def projection(field: Mapping[str,Any], kind: str) -> Dict[str,Any]:
     """
     kind=str(kind).strip().lower()
     if kind not in PROJECTION_TYPES: raise ValueError(f"unknown projection: {kind}")
+    fid=str(field.get("field_id", ""))
+    key=(fid, kind)
+    cached=_PROJECTION_CACHE.get(key)
+    if cached is not None:
+        return cached
     coords={k:float(v) for k,v in (field.get("coords") or {}).items()}
     selected={}; complement={}
     for name,v in coords.items():
         # Stable 2/3-ish selection using a Meum-indexed hash. No mutable RNG.
         gate=_u(field.get("field_id","0"), f"{kind}|{name}")
-        if gate < 1.0/M: selected[name]=v
+        if gate < MEUM_INV: selected[name]=v
         else: complement[name]=v
     if not selected and coords:
         k=sorted(coords)[0]; selected[k]=coords[k]; complement.pop(k,None)
     pid=hashlib.sha256(f"{field.get('field_id')}|{kind}".encode()).hexdigest()[:24]
-    return {"kind":kind,"projection_id":pid,"field_id":field.get("field_id"),"selected":selected,"complement":complement,
-            "selected_scale":M-1.0,"complement_scale":2.0-M}
+    result={"kind":kind,"projection_id":pid,"field_id":field.get("field_id"),"selected":selected,"complement":complement,
+            "selected_scale":MEUM_MINUS_1,"complement_scale":MEUM_TWO_MINUS}
+    # Representation cache only: never enters field_id or correspondence identity.
+    if len(_PROJECTION_CACHE) >= 512:
+        _PROJECTION_CACHE.pop(next(iter(_PROJECTION_CACHE)))
+    _PROJECTION_CACHE[key]=result
+    return result
 
 
 def all_projections(field: Mapping[str,Any]) -> Dict[str,Dict[str,Any]]:

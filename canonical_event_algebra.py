@@ -13,9 +13,7 @@ from __future__ import annotations
 import hashlib, json, math
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, Mapping, MutableMapping, Sequence
-
-M = 1.1975807343
-PHI = (1.0 + math.sqrt(5.0)) / 2.0
+from meum_constants import M, PHI, MEUM_MINUS_1, MEUM_INV, MEUM_TWO_MINUS, MEUM_NORM
 
 REPRESENTATION_ONLY_KEYS = {
     "parts", "part_count", "object_count", "render_count", "instrument_count",
@@ -189,14 +187,14 @@ def interaction_ui(event: CanonicalEvent) -> Dict[str, Any]:
     n = len(controls)
     cols = max(1, int(math.ceil(math.sqrt(n))))
     rows = max(1, int(math.ceil(n / cols)))
-    phase = (M - 1.0) * _u(event.event_id, "ui-phase")
+    phase = MEUM_MINUS_1 * _u(event.event_id, "ui-phase")
     ordered = sorted(controls, key=lambda p: ((_u(event.event_id, "order|" + p) + phase) % 1.0, p))
     cells = []
     for i, p in enumerate(ordered):
         cells.append({
             "primitive": p, "row": i // cols, "column": i % cols,
             "row_share": 1.0 / rows, "column_share": 1.0 / cols,
-            "phase": ((i * (M - 1.0)) + phase) % 1.0,
+            "phase": ((i * MEUM_MINUS_1) + phase) % 1.0,
             "weight": 1.0 / n,
         })
     ui_id = hashlib.sha256((event.event_id + "|ui-v1").encode()).hexdigest()[:24]
@@ -204,7 +202,7 @@ def interaction_ui(event: CanonicalEvent) -> Dict[str, Any]:
         "version": "interaction-ui-algebra-v1", "ui_id": ui_id, "event_id": event.event_id,
         "class_id": event.class_id, "operation": event.operation,
         "layout": {"rows": rows, "columns": cols, "rational_partition": True},
-        "controls": cells, "irrational_traversal": {"M-1": M - 1.0, "phase": phase},
+        "controls": cells, "irrational_traversal": {"M-1": MEUM_MINUS_1, "phase": phase},
     }
 
 
@@ -219,11 +217,11 @@ class ExperienceLedger:
         x = max(0.0, self.total if total is None else float(total))
         # Geometric Meum progression. There is no hard maximum level.
         if x <= 0.0: return 1
-        return max(1, int(math.floor(math.log(1.0 + x * (M - 1.0), M))) + 1)
+        return max(1, int(math.floor(math.log(1.0 + x * MEUM_MINUS_1, M))) + 1)
 
     def threshold_for_level(self, level: int) -> float:
         l = max(1, int(level))
-        return ((M ** max(0, l - 1)) - 1.0) / (M - 1.0)
+        return ((M ** max(0, l - 1)) - 1.0) / MEUM_MINUS_1
 
     def award(self, event: CanonicalEvent) -> Dict[str, Any]:
         exact_seen = int(self.event_counts.get(event.event_id, 0))
@@ -234,8 +232,8 @@ class ExperienceLedger:
         # Irrational scales affect progression/differentiation, not event identity.
         gain = recurrence * (
             1.0
-            + (M - 1.0) * event.complexity
-            + (1.0 / M) * event.rarity
+            + MEUM_MINUS_1 * event.complexity
+            + MEUM_INV * event.rarity
             + (PHI - 1.0) * class_novelty
         )
         before = self.total

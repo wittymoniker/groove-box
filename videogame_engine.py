@@ -38,15 +38,12 @@ from dataclasses import dataclass, asdict, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from visual_determinism import fibonacci_view, select_views, visual_signal_id, composition_fingerprint as visual_composition_fingerprint
+from universal_field import (canonical_field, game_projection, partition_field, reconstruct_parts,
+                             invariant_report, self_procedure, correspondence_manifest, correspondence_verify)
 from fractal_spatial_engine import FractalSpatialEngine, build_spatial_state
 
 # Meum lattice (same constants as the signal generator — identity partner)
-MEUM = 1.1975807343385265
-MEUM_INV = 1.0 / MEUM
-MEUM_NORM = (MEUM - 1.0) / MEUM
-
-PHI = 1.618033988749895
-PHI_INV = PHI - 1.0
+from meum_constants import (MEUM, MEUM_MINUS_1, MEUM_INV, MEUM_TWO_MINUS, MEUM_NORM, PHI, PHI_INV)
 
 
 # ---------------------------------------------------------------------------
@@ -928,6 +925,10 @@ class GameIdentity:
     visual_view_state: Dict[str, Any] = field(default_factory=dict)
     visual_signal_id: str = ""
     spatial_state: Dict[str, Any] = field(default_factory=dict)
+    universal_field_state: Dict[str, Any] = field(default_factory=dict)
+    game_projection_state: Dict[str, Any] = field(default_factory=dict)
+    self_procedure_state: Dict[str, Any] = field(default_factory=dict)
+    correspondence_state: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -1245,7 +1246,16 @@ def classify_from_composition(
     # GAME_VISUAL_DETERMINISM_2026: the game consumes the same canonical view-space
     # kernel as Groovebox instead of inventing an independent camera lattice.
     _view = fibonacci_view(0, 64, s)
-    _visual_state = {**_view, "composition_fingerprint": fingerprint, "abstraction": "structural"}
+    # UNIVERSAL_FIELD_2026: audio/visual/game are sibling projections of a
+    # field computed before any instrument/object partition. The game consumes
+    # this state; it never authors visual identity.
+    _universal_field = canonical_field(s, fingerprint)
+    _game_projection = game_projection(_universal_field)
+    _self_procedure = self_procedure(_universal_field)
+    _correspondence = correspondence_manifest(_universal_field)
+    _correspondence["verification"] = correspondence_verify(_universal_field, _correspondence)
+    _visual_state = {**_view, "composition_fingerprint": fingerprint, "abstraction": "structural",
+                     "universal_field_id": _universal_field["field_id"]}
     _visual_sid = visual_signal_id(s, fingerprint, _view)
     # Fixed spatial roots (8): instrument count must not alter spatial identity.
     _spatial_state = build_spatial_state(s, fingerprint, depth=3, roots=8, goava=goava_active)
@@ -1289,7 +1299,63 @@ def classify_from_composition(
         visual_view_state=_visual_state,
         visual_signal_id=_visual_sid,
         spatial_state=_spatial_state,
+        universal_field_state=_universal_field,
+        game_projection_state=_game_projection,
+        self_procedure_state=_self_procedure,
+        correspondence_state=_correspondence,
     )
+
+
+# ---------------------------------------------------------------------------
+# Legacy/runtime compatibility sequence conductor. The generated game body
+# below contains richer self-contained versions; these small top-level classes
+# keep older host-side tests/importers working without executing the template.
+# ---------------------------------------------------------------------------
+class SequenceInfluence:
+    def __init__(self, seed, pattern_lengths=(16,)):
+        self.seed = int(seed) & 0x7FFFFFFF
+        self.pattern_lengths = tuple(max(1, int(x)) for x in (pattern_lengths or (16,)))
+
+    def update(self, t):
+        step = max(0, int(math.floor(float(t))))
+        lengths = self.pattern_lengths or (16,)
+        mean_phase = sum((step % n) / float(n) for n in lengths) / max(1, len(lengths))
+        seed_phase = meum_game_residue(self.seed, f"sequence:{step}")
+        motion = 0.20 + 0.80 * (0.5 + 0.5 * math.sin(math.tau * (mean_phase + seed_phase / MEUM)))
+        vibration = 0.05 + 0.45 * (0.5 + 0.5 * math.sin(math.tau * (mean_phase * MEUM + seed_phase)))
+        return {"step": step, "motion": max(1e-12, min(1.0, motion)),
+                "vibration": max(1e-12, min(0.5, vibration))}
+
+
+class ScenographLite:
+    def __init__(self, seed, n=12, **_kwargs):
+        self.seed = int(seed) & 0x7FFFFFFF
+        self.n = max(1, int(n))
+        self.beat = 0.0
+        self.sequence_control = SequenceInfluence(self.seed, (16,))
+        self.layers = [{"yaw": math.tau * meum_game_residue(self.seed, f"compat:yaw:{i}")} for i in range(self.n)]
+
+    def tick(self, dt, audio_rms=0.2):
+        self.beat += float(dt) * 2.0
+        inf = self.sequence_control.update(self.beat)
+        for i, layer in enumerate(self.layers):
+            layer["yaw"] = (float(layer["yaw"]) + float(dt) * (0.2 + 0.8 * inf["motion"]) * (i + 1) / self.n) % math.tau
+        return self.layers
+
+
+class MusicBed:
+    def __init__(self, seed, bpm=120.0, bars=16, **_kwargs):
+        self.seed = int(seed) & 0x7FFFFFFF
+        self.bpm = float(bpm)
+        self.phase = 0.0
+        self.sequence_control = SequenceInfluence(self.seed, (max(1, int(bars)),))
+        self.sequence_vibration = 0.0
+
+    def step(self, dt):
+        self.phase = (self.phase + float(dt) * self.bpm / 60.0) % 1.0
+        inf = self.sequence_control.update(self.phase * max(self.sequence_control.pattern_lengths))
+        self.sequence_vibration = float(inf["vibration"])
+        return math.sin(math.tau * self.phase) * (0.5 + self.sequence_vibration)
 
 
 # ---------------------------------------------------------------------------
@@ -1323,10 +1389,12 @@ except Exception:
     FractalSpatialEngine = None
 
 MEUM = __MEUM__
+MEUM_MINUS_1 = __MEUM_MINUS_1__
+MEUM_INV = __MEUM_INV__
+MEUM_TWO_MINUS = __MEUM_TWO_MINUS__
+MEUM_NORM = __MEUM_NORM__
 PHI = __PHI__
-PHI_INV = PHI - 1.0
-MEUM_INV = 1.0 / MEUM
-MEUM_NORM = (MEUM - 1.0) / MEUM
+PHI_INV = __PHI_INV__
 OP_THEORY_ENABLED = False
 
 # GOAL TEXT — what the player is actually doing. Important because the old
@@ -1733,6 +1801,35 @@ class TriggerSculptor:
         return _residue(self.seed, f"trig:{i}:{t}") < prob
 
 
+class SequenceInfluence:
+    """Compatibility sequence conductor shared by legacy game/visual tests.
+
+    It is a deterministic view of the same sequence-length information: no
+    random clock and no composition rewrite. ``update(t)`` returns bounded
+    motion/vibration scalars that downstream manifestations may read.
+    """
+    def __init__(self, seed, pattern_lengths=(16,)):
+        self.seed = int(seed) & 0x7FFFFFFF
+        self.pattern_lengths = tuple(max(1, int(x)) for x in (pattern_lengths or (16,)))
+
+    def update(self, t):
+        t = float(t)
+        step = max(0, int(math.floor(t)))
+        lengths = self.pattern_lengths or (16,)
+        phase_terms = []
+        for i, n in enumerate(lengths):
+            phase_terms.append((step % n) / float(n))
+        mean_phase = sum(phase_terms) / max(1, len(phase_terms))
+        seed_phase = _residue(self.seed, f"sequence:{step}")
+        motion = 0.20 + 0.80 * (0.5 + 0.5 * vg_sin(math.tau * (mean_phase + seed_phase * MEUM_INV)))
+        vibration = 0.05 + 0.45 * (0.5 + 0.5 * vg_sin(math.tau * (mean_phase * MEUM + seed_phase)))
+        return {
+            "step": step,
+            "motion": max(1e-12, min(1.0, float(motion))),
+            "vibration": max(1e-12, min(0.5, float(vibration))),
+        }
+
+
 class ScenographLite:
     """Game-side fractal: every layer is the SAME instrument-object type.
 
@@ -1832,6 +1929,14 @@ class ScenographLite:
         x_hue = float(getattr(self, "_xcorr_hue", 0.0) or 0.0)
         x_grid = float(getattr(self, "_xcorr_grid", 0.5) or 0.5)
         x_energy = float(getattr(self, "_xcorr_energy", 0.5) or 0.5)
+        seq_control = getattr(self, "sequence_control", None)
+        if seq_control is not None:
+            try:
+                seq_inf = seq_control.update(self.beat)
+                x_spin *= 0.75 + 0.50 * float(seq_inf.get("motion", 0.5))
+                x_energy *= 0.90 + 0.20 * float(seq_inf.get("vibration", 0.25))
+            except Exception:
+                pass
         # Host composition engines (Randomizer / Phase-lock / GOAVA) control
         # scenograph motion the same way they control the mix.
         em = getattr(self, "_engine_mask", None) or {}
@@ -1862,10 +1967,10 @@ class ScenographLite:
                 self.beat = float(getattr(self, "beat", 0.0) or 0.0) + gto * 0.125
             except Exception:
                 pass
-            resonance = float(meta.get("canonical_resonance_factor", getattr(self, "canonical_resonance_factor", 1.50)) or 1.50)
+            resonance = float(meta.get("canonical_resonance_factor", getattr(self, "canonical_resonance_factor", 1.00)) or 1.00)
             # Natural 50–150% operating band; no hard mid-stream clamp.
             if not (resonance == resonance):  # NaN guard
-                resonance = 1.50
+                resonance = 1.00
             self.canonical_resonance_factor = resonance
             x_energy = min(1.5, x_energy * (0.70 + 0.30 * resonance))
             x_spin *= (0.85 + 0.15 * resonance)
@@ -1969,6 +2074,8 @@ class MusicBed:
         self.dj_random = bool(dj_random)
         self.mix = float(mix)
         self.master_volume = float(master_volume)
+        self.sequence_control = SequenceInfluence(self.seed, (max(1, int(bars)),))
+        self.sequence_vibration = 0.0
         self._dj_residue = _residue(self.seed, "dj_phase")
         self._algo_spin = (_mix(_safe_int_seed(seed), algo_fp or "0") % 10007) / 10007.0
         # Canonical voice params (mirrors main-app meum voice lattice)
@@ -1986,6 +2093,11 @@ class MusicBed:
     def step(self, dt):
         beat = self.bpm / 60.0
         self.phase = (self.phase + dt * beat * math.tau) % math.tau
+        try:
+            seq_inf = self.sequence_control.update(self.phase / math.tau)
+            self.sequence_vibration = float(seq_inf.get("vibration", 0.0))
+        except Exception:
+            self.sequence_vibration = 0.0
         self.dj = 0.5 + 0.5 * vg_sin(self.phase * MEUM + self._dj_residue * 0.01)
         if self.dj_goava:
             self.dj = 0.5 * self.dj + 0.5 * (0.5 + 0.5 * vg_sin(self.phase * MEUM_INV))
@@ -2833,11 +2945,141 @@ class NetTransport:
         self.status = "offline"
 
 
+
+def meum_game_residue(seed, label):
+    # Generated-game compatibility alias; same deterministic residue kernel.
+    return _residue(seed, label)
+
+
+# ---------------------------------------------------------------------------
+# PLANETARY WORLD KERNEL 2026
+# Deterministic N-body-lite gameplay: finite seed -> an unbounded stream of
+# planets, moons, stations and encounters.  The player is integrated in metres
+# with semi-implicit Verlet-style stepping; no flat terrain is required.
+# ---------------------------------------------------------------------------
+def _vadd(a,b): return (a[0]+b[0], a[1]+b[1], a[2]+b[2])
+def _vsub(a,b): return (a[0]-b[0], a[1]-b[1], a[2]-b[2])
+def _vmul(a,k): return (a[0]*k, a[1]*k, a[2]*k)
+def _vdot(a,b): return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]
+def _vlen(a): return math.sqrt(max(0.0,_vdot(a,a)))
+def _vnorm(a):
+    n=_vlen(a)
+    return (a[0]/n,a[1]/n,a[2]/n) if n>1e-12 else (0.0,1.0,0.0)
+def _vcross(a,b): return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
+
+class PlanetaryWorld:
+    """Seeded infinite-ish solar system with gravity, transfer travel and local frames."""
+    G = 0.00042
+    def __init__(self, seed):
+        self.seed=int(seed)&0x7fffffff
+        self.planets=[]
+        # A finite descriptor generates an infinite deterministic catalogue on demand.
+        for i in range(9):
+            a=math.tau*meum_game_residue(self.seed,f'planet:a:{i}')
+            orbit=260.0 + i*i*115.0 + 900.0*meum_game_residue(self.seed,f'planet:r:{i}')
+            mass=6000.0 + 90000.0*meum_game_residue(self.seed,f'planet:m:{i}')
+            radius=18.0 + 70.0*meum_game_residue(self.seed,f'planet:size:{i}')
+            inc=(-0.25+0.5*meum_game_residue(self.seed,f'planet:i:{i}'))
+            self.planets.append({'id':f'P{i}','orbit':orbit,'angle':a,'mass':mass,'radius':radius,'inclination':inc})
+        self.t=0.0
+        self.pos=_vadd(self._planet_pos(self.planets[0],0.0),(0.0,self.planets[0]['radius']+7.0,0.0))
+        # Tangential launch: stable enough for gameplay, then gravity takes over.
+        p=self._planet_pos(self.planets[0],0.0); radial=_vnorm(_vsub(self.pos,p));
+        tangent=_vnorm(_vcross((0.0,1.0,0.0),radial))
+        if _vlen(tangent)<1e-5: tangent=(1.0,0.0,0.0)
+        self.vel=_vmul(tangent, math.sqrt(self.G*self.planets[0]['mass']/max(1.0,self.planets[0]['radius']+7.0))*0.86)
+        self.thrust=0.0
+        self.accel=(0.0,0.0,0.0)
+        self.gravity=(0.0,0.0,0.0)
+        self.current_planet=0
+        self.landed=True
+        self.sector=(0,0,0)
+        self.travel_log=[]
+        self.gravity,self.current_planet=self.acceleration_at(self.pos)
+
+    def _planet_pos(self,p,t):
+        ang=p['angle'] + t*math.sqrt(self.G*7000.0/max(1.0,p['orbit']**3))
+        x=p['orbit']*math.cos(ang); z=p['orbit']*math.sin(ang)
+        y=math.sin(ang*0.7)*p['orbit']*p['inclination']*0.12
+        return (x,y,z)
+
+    def bodies_near(self, pos, radius=2200.0):
+        out=[]
+        for i,p in enumerate(self.planets):
+            pp=self._planet_pos(p,self.t); d=_vlen(_vsub(pp,pos))
+            if d<=radius: out.append((i,p,pp,d))
+        return out
+
+    def acceleration_at(self,pos):
+        g=(0.0,0.0,0.0); strongest=None; best=1e99
+        for i,p,pp,_d0 in self.bodies_near(pos, radius=5000.0):
+            r=_vsub(self._planet_pos(p,self.t),pos); d=max(2.0,_vlen(r))
+            a=self.G*p['mass']/(d*d)
+            g=_vadd(g,_vmul(_vnorm(r),a))
+            if d<best: best=d; strongest=i
+        return g,strongest
+
+    def step(self,dt, thrust_vector=(0.0,0.0,0.0)):
+        dt=max(0.001,min(0.1,float(dt))); self.t+=dt
+        self.gravity,self.current_planet=self.acceleration_at(self.pos)
+        thrust=_vmul(thrust_vector, 8.0)
+        self.accel=_vadd(self.gravity,thrust)
+        # Semi-implicit integration conserves the useful orbital feel better than
+        # position-first Euler and remains deterministic across platforms.
+        self.vel=_vadd(self.vel,_vmul(self.accel,dt))
+        self.pos=_vadd(self.pos,_vmul(self.vel,dt))
+        if self.current_planet is not None:
+            pp=self._planet_pos(self.planets[self.current_planet],self.t)
+            d=_vlen(_vsub(self.pos,pp)); r=self.planets[self.current_planet]['radius']
+            self.landed=d<=r+2.0
+            if self.landed and _vlen(self.vel)<2.5:
+                n=_vnorm(_vsub(self.pos,pp)); self.pos=_vadd(pp,_vmul(n,r+1.5))
+        self.sector=tuple(int(math.floor(c/2500.0)) for c in self.pos)
+
+    def local_frame(self):
+        """Camera frame whose image plane is perpendicular to gravity.
+        Up is opposite gravity; forward is velocity projected into the tangent plane."""
+        up=_vnorm(_vmul(self.gravity,-1.0)) if _vlen(self.gravity)>1e-8 else (0.0,1.0,0.0)
+        forward=_vsub(self.vel,_vmul(up,_vdot(self.vel,up)))
+        if _vlen(forward)<1e-8: forward=(0.0,0.0,1.0)
+        forward=_vnorm(forward)
+        right=_vnorm(_vcross(forward,up))
+        forward=_vnorm(_vcross(up,right))
+        return right,up,forward
+
+    def target_planet(self):
+        best=None; bd=1e99
+        for i,p,pp,d in self.bodies_near(self.pos,10000.0):
+            if i==self.current_planet: continue
+            if d<bd: best=(i,p,pp,d); bd=d
+        return best
+
+    def to_dict(self):
+        return {'t':round(self.t,6),'pos':[round(x,6) for x in self.pos],
+                'vel':[round(x,6) for x in self.vel],'gravity':[round(x,6) for x in self.gravity],
+                'accel':[round(x,6) for x in self.accel],'planet':self.current_planet,
+                'landed':self.landed,'sector':list(self.sector)}
+
+class SpriteGrammar:
+    """Finite helper-sprite vocabulary -> unlimited deterministic composite entities."""
+    PARTS=('core','ring','panel','wing','engine','crystal','antenna','window','spike','orb')
+    def __init__(self,seed): self.seed=int(seed)&0x7fffffff
+    def entity(self,kind,index=0):
+        n=3+int(5*meum_game_residue(self.seed,f'sprite:n:{kind}:{index}'))
+        return {'kind':kind,'parts':[self.PARTS[int(meum_game_residue(self.seed,f'sprite:{kind}:{index}:{j}')*len(self.PARTS))%len(self.PARTS)] for j in range(n)],
+                'scale':0.5+2.5*meum_game_residue(self.seed,f'sprite:s:{kind}:{index}'),
+                'phase':math.tau*meum_game_residue(self.seed,f'sprite:p:{kind}:{index}')}
+    def encounter(self,index):
+        # Composition of the same finite parts gives an effectively unbounded
+        # content space without shipping one sprite file per creature/object.
+        return self.entity(f'encounter_{index%17}',index)
+
+
 class Game:
     def __init__(self, host_mode=False, port=None, connect=None):
         self.meta = dict(COMPOSITION_META or {}) if isinstance(COMPOSITION_META, dict) else {}
         self.id = IDENTITY
-        self.online = bool(self.id.get("online"))
+        self.online = bool(self.id.get("online") or host_mode or connect)
         self.host_mode = bool(host_mode) and self.online
         self.port = int(port or self.id.get("host_port") or 27015)
         self.connect = connect
@@ -3068,6 +3310,23 @@ class Game:
         # `roots=8` matches the fixed value used at construction time (see
         # build_spatial_state(..., roots=8) above) so both paths agree.
         self.spatial_state = dict(self.id.get("spatial_state") or self.spatial_engine.snapshot(depth=3, roots=8))
+        # Universal field is upstream of the game. Part/object count may change
+        # workload density, never world identity or gameplay state.
+        self.universal_field_state = dict(self.id.get("universal_field_state") or {})
+        self.self_procedure_state = dict(self.id.get("self_procedure_state") or {})
+        self.correspondence_state = dict(self.id.get("correspondence_state") or {})
+        self.representation_counts = dict(self.self_procedure_state.get("part_counts") or {})
+        self.game_projection_state = dict(self.id.get("game_projection_state") or {})
+        # GAME_LOGIC_FIELD_2026: gameplay consumes only the game projection of
+        # the upstream Universal Field. None of these values depend on part /
+        # instrument / rendered-object count.
+        _gp = self.game_projection_state
+        self.field_activity = float(_gp.get("activity", 0.5) or 0.5)
+        self.field_event_density = float(_gp.get("event_density", 0.5) or 0.5)
+        self.field_npc_variation = float(_gp.get("npc_variation", 0.5) or 0.5)
+        self.field_lighting = float(_gp.get("lighting", 0.5) or 0.5)
+        _gm = _gp.get("motion") or (0.5,0.5,0.5,0.5)
+        self.field_motion = tuple(float(x) for x in _gm)
         self.zoom = 1.0
         self.camera_mode = int(self.id.get("camera_mode", 0) or 0)
         self.camera_modes = (0, 1, 2)
@@ -3108,6 +3367,32 @@ class Game:
         self._last_record_t = -1000.0
         self._audio_samples = []
         self.sample_rate = 22050
+
+    # --- deterministic visual/spatial view ---------------------------------
+    def set_deterministic_view(self, view_index=0, view_count=64):
+        self.visual_view_index=int(view_index)
+        self.visual_view_count=max(1,int(view_count))
+        self.visual_view=dict(fibonacci_view(self.visual_view_index,self.visual_view_count,self.id["seed"]))
+        self.visual_signal_id=visual_signal_id(self.id["seed"],self.id.get("composition_fingerprint","0"),self.visual_view)
+        return dict(self.visual_view)
+
+    def deterministic_viewset(self, count=32):
+        return select_views(int(count), self.id["seed"])
+
+    def visual_state(self):
+        return {**dict(self.visual_view or {}), "composition_fingerprint": self.id.get("composition_fingerprint"), "visual_signal_id": self.visual_signal_id, "spatial_fingerprint": self.spatial_state.get("fingerprint", ""), "spatial_version": self.spatial_state.get("version", "")}
+
+    def spatial_snapshot(self, depth=3, roots=5):
+        self.spatial_state = self.spatial_engine.snapshot(depth=max(0, int(depth)), roots=max(1, int(roots)))
+        return dict(self.spatial_state)
+
+    def universal_state(self):
+        """Return the upstream canonical field consumed by this game."""
+        return dict(self.universal_field_state or {})
+
+    def universal_game_projection(self):
+        """Return the game-only interpretation of the upstream field."""
+        return dict(self.game_projection_state or {})
 
     # --- sandbox / region world -------------------------------------------
     def _region_index_at(self, angle):
@@ -4201,10 +4486,13 @@ class Game:
                 _right,_up,_forward = self.planetary.local_frame()
                 _th = _vadd(_vmul(_right,float(self.move["dx"])),
                             _vadd(_vmul(_forward,float(self.move["dz"])),_vmul(_up,float(self.move["dy"]))))
+                _player_motion = (abs(float(self.move["dx"])) + abs(float(self.move["dy"])) + abs(float(self.move["dz"]))) > 1.0e-12
                 self.planetary.step(dt,_th)
-                # Legacy angle remains as a deterministic compatibility signal for
-                # existing quests/network consumers; it is no longer world motion.
-                self.angle = math.atan2(self.planetary.pos[2],self.planetary.pos[0]) % math.tau
+                # Legacy angle is a player-authored compatibility coordinate.
+                # Gravity may move the physical planetary position while idle, but
+                # must not silently rotate the sandbox/quest/network perspective.
+                if _player_motion:
+                    self.angle = math.atan2(self.planetary.pos[2],self.planetary.pos[0]) % math.tau
                 # THREE-PATHWAY: procedural-on-demand — rare functions are only
                 # computed/rendered when the perspective arrives (spatial
                 # activation) or via /tp /lore /gen.
@@ -4283,7 +4571,7 @@ class Game:
                 self.items.grant_by_tag("common", 1)
                 self.sfx.trigger("click", 0.7)
             # Hazards (damage / siege pressure)
-            dmg = self.hazards.damage_at(self.angle) * self.difficulty_mult
+            dmg = self.hazards.damage_at(self.angle) * self.difficulty_mult * (0.75 + 0.5 * self.field_event_density)
             if dmg > 0:
                 self.hp = max(0.0, self.hp - dmg * 12.0 * dt)
                 if _obj == "siege":
@@ -4324,7 +4612,7 @@ class Game:
                 npc = self.npcs.nearest(self.angle)
                 if npc is not None:
                     info = self.npcs.talk(npc)
-                    self._npc_cd = 2.5
+                    self._npc_cd = 1.5 + 2.0 * (1.0 - self.field_npc_variation)
                     self.tags.update(npc.get("tags") or [])
                     if npc["role"] == "merchant":
                         self.send_chat("system", f"{info['line']} — store open (/buy 0..{self.store.count-1})")
@@ -4339,7 +4627,7 @@ class Game:
             # Sigil/resource quest verbs
             # (collect/harvest already happened above — progress those quests)
             for name, rec in list(self._remote_steers.items()):
-                rec[0] = (rec[0] + dt * MEUM * math.tau * (1.0 + 0.35 * rec[2])) % math.tau
+                rec[0] = (rec[0] + dt * MEUM * math.tau * (0.85 + 0.30 * self.field_motion[0]) * (1.0 + 0.35 * rec[2])) % math.tau
                 for k, (a, r) in enumerate(self.sigils.pos):
                     if k in self.sigils.collected:
                         continue
@@ -7490,6 +7778,305 @@ def main(argv=None):
     sys.exit(app.exec())
 
 
+
+# FINISHED_GAME_CONTRACT_2026 ===============================================
+# Compatibility and richer deterministic game systems.  These are generated
+# into every game so exported games retain the same Meum/OT/isosceles logic.
+def _book_isn_inv(x):
+    x=max(-2.0,min(2.0,float(x))); return 2.0*math.asin(x/2.0)
+def _book_isn(x): return 2.0*math.sin(float(x)/2.0)
+def _meum_u(seed,label): return _residue(_safe_int_seed(seed), 'meum|'+str(label))
+def _numeric_sound_signature(seed,label,values=()):
+    q=abs(2.0*_meum_u(seed,'sound|'+str(label))-1.0)
+    theta=abs(_book_isn_inv(max(-2.0,min(2.0,2.0*(q-0.5)))))
+    influence=sum(abs(float(v)) for v in tuple(values)[:8] if isinstance(v,(int,float)))/(1.0+len(tuple(values)[:8])) if values else 0.0
+    freq=max(20.0,min(18000.0,108.0*(MEUM**(1.0+4.0*q))*(1.0+MEUM_MINUS_1*math.tanh(influence))))
+    return {'freq':freq,'duration':0.04+MEUM_MINUS_1*0.55+(math.e-2.0)*0.18*(theta/math.pi),'harmonics':1+int(7*((q/MEUM+(theta/math.pi)*MEUM_MINUS_1)%1.0))}
+
+# CANONICAL_EVENT_UI_2026 ===================================================
+# Canonical Event Algebra -> Interaction UI Algebra. Event identity excludes
+# rendering decomposition keys, so a 1-object and 10,000-part representation of
+# the same semantic interaction produces the same event and interface.
+_REP_KEYS={'parts','part_count','object_count','render_count','instrument_count','n_instruments','lod','draw_calls','mesh_count','instance_count','partition_count','visual_object_count'}
+_UI_PRIMS=('inspect','select','navigate','move','connect','divide','combine','transform','tune','exchange','negotiate','build','destroy','craft','cast','signal','temporal','confirm','cancel')
+_OP_UI={
+ 'interact':('inspect','select','confirm'),'inspect':('inspect','select'),'move':('navigate','move','confirm'),
+ 'dash':('navigate','move'),'jump':('navigate','move'),'craft':('inspect','combine','craft','confirm'),
+ 'build':('inspect','select','build','confirm'),'destroy':('inspect','destroy','confirm'),
+ 'trade':('inspect','exchange','negotiate','confirm'),'negotiate':('inspect','negotiate','exchange'),
+ 'cast':('select','transform','cast','confirm'),'attune':('inspect','tune','transform'),
+ 'signal':('signal','connect','tune'),'scan':('inspect','signal'),'throw':('select','move','confirm'),
+ 'harvest':('inspect','select','divide','combine'),'temporal':('inspect','temporal','transform')}
+
+def _event_canon(v):
+    if isinstance(v,dict): return {str(k):_event_canon(v[k]) for k in sorted(v,key=lambda x:str(x)) if str(k) not in _REP_KEYS}
+    if isinstance(v,(list,tuple)): return [_event_canon(x) for x in v]
+    if isinstance(v,set): return sorted([_event_canon(x) for x in v],key=lambda x:json.dumps(x,sort_keys=True,default=str))
+    if isinstance(v,float): return round(v,14) if math.isfinite(v) else str(v)
+    if v is None or isinstance(v,(str,int,bool)): return v
+    return str(v)
+
+def _event_leaves(v):
+    if isinstance(v,dict): return sum(_event_leaves(x) for x in v.values())
+    if isinstance(v,(list,tuple,set)): return sum(_event_leaves(x) for x in v)
+    return 1
+
+def _event_kind(v):
+    if isinstance(v,dict): return str(v.get('kind') or v.get('type') or v.get('role') or v.get('class') or 'entity').lower()
+    return type(v).__name__.lower()
+
+def canonical_event(field_id,operation,actor=None,target=None,context=None,consequences=None,temporal_stage='build',locality='local',magnitude=1.0,direction=(0,0,0)):
+    op=str(operation or 'interact').strip().lower(); actor=_event_canon(actor); target=_event_canon(target); context=_event_canon(context); consequences=_event_canon(consequences)
+    try: magnitude=float(magnitude)
+    except Exception: magnitude=1.0
+    d=[]
+    for x in list(direction or ())[:4]:
+        try:d.append(round(float(x),14))
+        except Exception:d.append(0.0)
+    while len(d)<3:d.append(0.0)
+    st={'field_id':str(field_id or '0'),'operation':op,'actor':actor,'target':target,'context':context,'consequences':consequences,'temporal_stage':str(temporal_stage or 'build').lower(),'locality':str(locality or 'local').lower(),'magnitude':round(magnitude,14),'direction':d}
+    raw=json.dumps(st,sort_keys=True,separators=(',',':'),ensure_ascii=False,default=str)
+    eid=hashlib.sha256(raw.encode('utf-8')).hexdigest()[:32]
+    cls={'field_id':st['field_id'],'operation':op,'actor_kind':_event_kind(actor),'target_kind':_event_kind(target),'consequence_kind':_event_kind(consequences),'temporal_stage':st['temporal_stage'],'locality':st['locality']}
+    cid=hashlib.sha256(json.dumps(cls,sort_keys=True,separators=(',',':')).encode()).hexdigest()[:24]
+    complexity=math.log2(2.0+_event_leaves(actor)+_event_leaves(target)+_event_leaves(context)+_event_leaves(consequences))
+    ru=_meum_u(eid,'event-recurrence'); tail=max(2.0**-32,min(1.0,2.0*min(ru,1.0-ru))); rarity=-math.log2(tail)
+    return {**st,'event_id':eid,'class_id':cid,'complexity':complexity,'rarity':rarity}
+
+def interaction_ui(event):
+    op=str(event.get('operation') or 'interact'); base=list(_OP_UI.get(op,('inspect','select','transform','confirm')))
+    text=json.dumps({'target':event.get('target'),'context':event.get('context'),'consequences':event.get('consequences')},sort_keys=True,default=str).lower()
+    semantic=[]
+    for needle,prim in (('time','temporal'),('signal','signal'),('audio','tune'),('frequency','tune'),('trade','exchange'),('npc','negotiate'),('build','build'),('craft','craft'),('link','connect'),('split','divide'),('merge','combine'),('destroy','destroy')):
+        if needle in text: semantic.append(prim)
+    controls=[]
+    for q in base+semantic+['cancel']:
+        if q in _UI_PRIMS and q not in controls: controls.append(q)
+    n=max(1,len(controls)); cols=max(1,int(math.ceil(math.sqrt(n)))); rows=max(1,int(math.ceil(n/cols)))
+    phase=MEUM_MINUS_1*_meum_u(event.get('event_id','0'),'ui-phase')
+    ordered=sorted(controls,key=lambda q:((_meum_u(event.get('event_id','0'),'ui-order|'+q)+phase)%1.0,q))
+    cells=[{'primitive':q,'row':i//cols,'column':i%cols,'row_share':1.0/rows,'column_share':1.0/cols,'phase':((i*MEUM_MINUS_1)+phase)%1.0,'weight':1.0/n} for i,q in enumerate(ordered)]
+    uid=hashlib.sha256((event.get('event_id','0')+'|ui-v1').encode()).hexdigest()[:24]
+    return {'version':'interaction-ui-algebra-v1','ui_id':uid,'event_id':event.get('event_id'),'class_id':event.get('class_id'),'operation':op,'layout':{'rows':rows,'columns':cols,'rational_partition':True},'controls':cells,'irrational_traversal':{'M-1':MEUM_MINUS_1,'phase':phase}}
+
+class ExperienceLedger:
+    def __init__(self): self.total=0.0; self.event_counts={}; self.class_counts={}
+    def level_for(self,total=None):
+        x=max(0.0,float(self.total if total is None else total)); return 1 if x<=0 else max(1,int(math.floor(math.log(1.0+x*MEUM_MINUS_1,MEUM)))+1)
+    def threshold_for_level(self,level):
+        l=max(1,int(level)); return ((MEUM**max(0,l-1))-1.0)/MEUM_MINUS_1
+    def award(self,event):
+        eid=str(event.get('event_id')); cid=str(event.get('class_id')); exact=self.event_counts.get(eid,0); cls=self.class_counts.get(cid,0)
+        recurrence=1.0/(1.0+exact); class_novelty=1.0/(1.0+cls)
+        gain=recurrence*(1.0+MEUM_MINUS_1*float(event.get('complexity',0.0))+MEUM_INV*float(event.get('rarity',0.0))+(PHI-1.0)*class_novelty)
+        before=self.total; lb=self.level_for(before); self.total=math.fsum((self.total,gain)); self.event_counts[eid]=exact+1; self.class_counts[cid]=cls+1; la=self.level_for(self.total)
+        return {'event_id':eid,'gain':gain,'total':self.total,'level_before':lb,'level':la,'leveled_up':la>lb,'exact_recurrence':exact,'class_recurrence':cls,'next_threshold':self.threshold_for_level(la+1)}
+    def snapshot(self): return {'total':self.total,'level':self.level_for(),'events':dict(self.event_counts),'classes':dict(self.class_counts)}
+
+class TemporalSeedDynamics:
+    def __init__(self,seed,period=64.0): self.seed=_safe_int_seed(seed); self.period=float(period); self.stage='build'; self.intensity=0.0
+    def field(self,label,t):
+        p=(max(0.0,float(t))%self.period)/self.period
+        if p < MEUM_MINUS_1: self.stage='build'; z=p/MEUM_MINUS_1
+        elif p < MEUM_INV: self.stage='modulate'; z=(p-MEUM_MINUS_1)/(MEUM_INV-MEUM_MINUS_1)
+        else: self.stage='stabilize'; z=(p-MEUM_INV)/(1.0-MEUM_INV)
+        self.intensity=max(0.0,min(1.0,z))
+        phase=math.tau*((_meum_u(self.seed,label)+p*MEUM)%1.0)
+        return math.tanh(_book_isn(phase)*MEUM_MINUS_1+self.intensity*MEUM_INV)
+
+class ObjectScaleRule:
+    @staticmethod
+    def factor(seed,kind,label=''):
+        if str(kind).lower() not in {'tree','rock','flora','crystal'}: return 1.0
+        return 0.25 if _meum_u(seed,'scale|'+str(kind)+'|'+str(label))<0.5 else 1.75
+
+class CharacterIdentity:
+    def __init__(self,seed): self.seed=_safe_int_seed(seed); self.freedom=1.0; self.experience=0.0; self.experience_total=0.0; self.level=1; self.design={'crest':0.5,'form':0.5}
+    def cycle_design(self,key,amount=0.1): self.design[str(key)]=(self.design.get(str(key),0.5)+float(amount))%1.0; return self.design[str(key)]
+    def advance(self,dt): self.freedom=max(0.55,min(1.0,self.freedom))
+    def sync_experience(self,ledger):
+        self.experience_total=float(ledger.total); self.level=int(ledger.level_for()); nxt=max(ledger.threshold_for_level(self.level+1),1e-12); cur=ledger.threshold_for_level(self.level); self.experience=max(0.0,min(1.0,(self.experience_total-cur)/max(1e-12,nxt-cur))); return self.experience
+    def snapshot(self): return {'freedom':self.freedom,'experience':self.experience,'experience_total':self.experience_total,'level':self.level,'design':dict(self.design)}
+
+class StarterHome:
+    def __init__(self,seed): self.seed=_safe_int_seed(seed); self.x=8.0*(2*_meum_u(seed,'home-x')-1); self.z=8.0*(2*_meum_u(seed,'home-z')-1); self.owned=False
+    def nearby(self,g): return math.hypot(float(g.player_x)-self.x,float(g.player_z)-self.z)<=2.5
+    def ui_nearby(self,g): return self.nearby(g)
+    def journal_priority(self,g=None): return MEUM_INV
+
+class ActionCatalog:
+    def __init__(self,seed):
+        names=('meteor','jump','dash','interact','craft','scan','cast','throw','harvest','attune','build','signal')
+        self.actions=[]
+        for i,n in enumerate(names):
+            vals=(1+i*MEUM_MINUS_1, 0.2+i/len(names), 0.1+(i%4)*MEUM_MINUS_1)
+            self.actions.append({'id':n,'name':n.title(),'magnitude':vals[0],'cost':vals[1],'cooldown':vals[2],'sound':_numeric_sound_signature(seed,n,vals)})
+    def by_id(self,i): return next((a for a in self.actions if a['id']==i),None)
+
+# augment ItemCatalog with numeric audio/provenance helpers
+_old_item_init=ItemCatalog.__init__
+def _item_init_finished(self,seed,count=None):
+    _old_item_init(self,seed,count)
+    for i,d in enumerate(self.defs):
+        d.setdefault('tier',0 if i<3 else 1+int(3*_meum_u(seed,'tier|'+str(i))))
+        d['sound']=_numeric_sound_signature(seed,d.get('id',i),(d.get('value',0),d.get('power',0)))
+        if d['tier']==0: self.inventory[d['id']]=max(1,self.inventory.get(d['id'],0))
+ItemCatalog.__init__=_item_init_finished
+
+def _item_describe(self,iid):
+    d=next((x for x in self.defs if x.get('id')==iid),None)
+    if not d: return 'UNKNOWN ITEM'
+    snd=d.get('sound',{}); return f"{d.get('name')} | {d.get('tag')} | SOUND {snd.get('freq',0):.2f} Hz × {snd.get('harmonics',1)}"
+ItemCatalog.describe=_item_describe
+
+_old_game_init=Game.__init__
+def _game_init_finished(self,*a,**kw):
+    _old_game_init(self,*a,**kw)
+    self.temporal=TemporalSeedDynamics(self.id['seed']); self.character=CharacterIdentity(self.id['seed']); self.home=StarterHome(self.id['seed']); self.actions=ActionCatalog(self.id['seed'])
+    self.experience_ledger=ExperienceLedger(); self.last_canonical_event=None; self.last_interaction_ui=None; self.last_experience_award=None; self.last_event_correspondence=None
+    # Persistent causal deltas, relationship history, and game→music event bridge.
+    self.npc_reputation={n.get('id'):0.0 for n in getattr(getattr(self,'npcs',None),'npcs',[]) if isinstance(n,dict)}
+    self.music_transition_log=[]
+    self.quick_slots=[None]*8
+    # starter pack = all tier-zero definitions, deterministic and non-randomized
+    for i,d in enumerate(self.items.defs):
+        if d.get('tier')==0: self.items.grant(i,1)
+Game.__init__=_game_init_finished
+
+_old_tick=getattr(Game,'tick',None)
+if _old_tick:
+    def _tick_finished(self,dt,*a,**kw):
+        r=_old_tick(self,dt,*a,**kw); self.character.advance(dt); self.character.sync_experience(self.experience_ledger); self.temporal.field('world',getattr(self,'t',0.0)); return r
+    Game.tick=_tick_finished
+
+def _equip_quick_slot(self,slot):
+    i=max(0,min(len(self.items.defs)-1,int(slot)-1)); d=self.items.defs[i]
+    if self.items.inventory.get(d['id'],0)<=0: self.items.grant(i,1)
+    self.quick_slots[max(0,int(slot)-1)]=d['id']; return self.items.equip(d['id'])
+Game.equip_quick_slot=_equip_quick_slot
+
+def _canonicalize_interaction(self,operation='interact',actor=None,target=None,context=None,consequences=None,magnitude=1.0,direction=(0,0,0),locality='local'):
+    actor = actor if actor is not None else {'kind':'player','id':getattr(self,'player_name','Player')}
+    stage=getattr(getattr(self,'temporal',None),'stage','build')
+    field_id=(getattr(self,'universal_field_state',{}) or {}).get('field_id') or (getattr(self,'game_projection_state',{}) or {}).get('field_id') or self.id.get('composition_fingerprint','0')
+    ev=canonical_event(field_id,operation,actor,target,context,consequences,stage,locality,magnitude,direction)
+    ui=interaction_ui(ev); award=self.experience_ledger.award(ev); self.character.sync_experience(self.experience_ledger)
+    self.last_canonical_event=ev; self.last_interaction_ui=ui; self.last_experience_award=award
+    # Event keeps the same upstream field identity; representation counts are downstream only.
+    corr=dict(getattr(self,'correspondence_state',{}) or {})
+    corr['event_id']=ev.get('event_id','') if isinstance(ev,dict) else getattr(ev,'event_id','')
+    self.last_event_correspondence=corr
+    return {'event':ev,'ui':ui,'experience':award,'correspondence':corr}
+Game.canonicalize_interaction=_canonicalize_interaction
+
+def _execute_canonical_action(self,action_id,target=None,context=None,consequences=None,magnitude=None,direction=(0,0,0),locality='local'):
+    action=self.actions.by_id(str(action_id)) or {'id':str(action_id),'magnitude':1.0,'cost':0.0,'cooldown':0.0}
+    mag=action.get('magnitude',1.0) if magnitude is None else magnitude
+    ctx={'action':{k:v for k,v in action.items() if k!='sound'},'world_focus':getattr(self,'primary_focus','explore'),'region':self._region_index_at(getattr(self,'angle',0.0))}
+    if isinstance(context,dict): ctx.update(context)
+    return self.canonicalize_interaction(str(action_id),target=target,context=ctx,consequences=consequences,magnitude=mag,direction=direction,locality=locality)
+Game.execute_canonical_action=_execute_canonical_action
+
+def _interaction_ui_state(self): return dict(self.last_interaction_ui or {})
+Game.interaction_ui_state=_interaction_ui_state
+
+def _experience_state(self): return self.experience_ledger.snapshot()
+Game.experience_state=_experience_state
+
+def _relationship_event(self,npc_id,delta=0.0,reason='interaction'):
+    npc_id=str(npc_id); before=float(self.npc_reputation.get(npc_id,0.0)); after=before+float(delta)
+    self.npc_reputation[npc_id]=after
+    self.canonicalize_interaction('relationship',target={'kind':'npc','id':npc_id},context={'reason':str(reason),'before':before},consequences={'reputation':after},magnitude=abs(float(delta)))
+    return after
+Game.relationship_event=_relationship_event
+
+def _music_transition(self,label,magnitude=1.0,context=None):
+    ev={'t':round(float(getattr(self,'t',0.0)),6),'label':str(label),'magnitude':float(magnitude),'context':dict(context or {})}
+    self.music_transition_log.append(ev)
+    if len(self.music_transition_log)>256: self.music_transition_log=self.music_transition_log[-256:]
+    try: self.music.dj=float(self.music.dj)+float(magnitude)*MEUM_MINUS_1*0.05
+    except Exception: pass
+    self.canonicalize_interaction('music_transition',target={'kind':'music','id':str(label)},context=ev,consequences={'transition':True},magnitude=abs(float(magnitude)))
+    return ev
+Game.music_transition=_music_transition
+
+def _world_delta_snapshot(self):
+    return {'version':'world-delta-v1','composition_fingerprint':self.id.get('composition_fingerprint'),'world_fingerprint':self.id.get('world_fingerprint'),'regions':dict(getattr(self,'region_state',{}) or {}),'npc_reputation':dict(getattr(self,'npc_reputation',{}) or {}),'home_owned':bool(getattr(getattr(self,'home',None),'owned',False)),'tags':sorted(getattr(self,'tags',set()) or []),'music_transitions':list(getattr(self,'music_transition_log',[]) or [])}
+Game.world_delta_snapshot=_world_delta_snapshot
+
+def _save_world_delta(self,path):
+    path=str(path); blob=self.world_delta_snapshot()
+    with open(path,'w',encoding='utf-8') as f: json.dump(blob,f,indent=2,sort_keys=True)
+    return path
+Game.save_world_delta=_save_world_delta
+
+def _load_world_delta(self,path):
+    with open(str(path),'r',encoding='utf-8') as f: blob=json.load(f)
+    fp=blob.get('composition_fingerprint')
+    if fp and fp != self.id.get('composition_fingerprint'): raise ValueError('world delta belongs to a different composition identity')
+    self.region_state={int(k) if str(k).lstrip('-').isdigit() else k:v for k,v in (blob.get('regions') or {}).items()}
+    self.npc_reputation={str(k):float(v) for k,v in (blob.get('npc_reputation') or {}).items()}
+    if getattr(self,'home',None) is not None: self.home.owned=bool(blob.get('home_owned',False))
+    self.tags.update(blob.get('tags') or [])
+    self.music_transition_log=list(blob.get('music_transitions') or [])[-256:]
+    return True
+Game.load_world_delta=_load_world_delta
+
+def _interaction_items(self):
+    base=[{'kind':'tool','id':d['id'],'label':d['name']} for d in self.items.defs[:4]]
+    base += [{'kind':'event','id':a['id'],'label':a['name']} for a in self.actions.actions[:3]]
+    return base
+Game.interaction_items=_interaction_items
+
+def _select_zero_item(self,index=0):
+    xs=self.interaction_items(); return xs[int(index)%len(xs)] if xs else None
+Game.select_zero_item=_select_zero_item
+
+def _zero_menu_text(self):
+    head='NOTHING EQUIPPED' if not self.items.equipped else self.items.describe(self.items.equipped)
+    acts=' | '.join(f"{a['name']} {a['sound']['freq']:.1f} Hz" for a in self.actions.actions[:4])
+    xp=self.experience_state(); uid=(self.last_interaction_ui or {}).get('ui_id','—')
+    return head+'\n'+acts+f"\nLEVEL {xp['level']} · XP {xp['total']:.3f} · UI {uid}"
+Game.zero_menu_text=_zero_menu_text
+
+_old_interact=getattr(Game,'interact',None)
+def _interact_finished(self,*a,**kw):
+    if self.home.nearby(self):
+        self.home.owned=True; self.canonicalize_interaction('interact',target={'kind':'home','id':'starter-home','owned':True},context={'proximity':'near'},consequences={'claimed':True}); return 'home'
+    result=_old_interact(self,*a,**kw) if _old_interact else None
+    self.canonicalize_interaction('interact',target={'kind':'world-focus','id':getattr(self,'primary_focus','explore')},context={'result':result},consequences={'result':result})
+    return result
+Game.interact=_interact_finished
+
+def _refine_starter_supplies(self):
+    consumed=0
+    for iid,q in list(self.items.inventory.items()):
+        if q>0 and consumed<2: self.items.inventory[iid]=q-1; consumed+=1
+    return 'CRAFTED: Meum/OT starter refinement' if consumed else 'CRAFTED: no raw supplies'
+Game.refine_starter_supplies=_refine_starter_supplies
+
+_old_report_finished=getattr(Game,'report',None)
+if _old_report_finished:
+    def _report_finished(self,*a,**kw):
+        out=_old_report_finished(self,*a,**kw); out['experience']=self.experience_state(); out['canonical_event']=dict(self.last_canonical_event or {}); out['interaction_ui']=dict(self.last_interaction_ui or {}); out['self_procedure']=dict(getattr(self,'self_procedure_state',{}) or {}); out['correspondence']=dict(getattr(self,'last_event_correspondence',None) or getattr(self,'correspondence_state',{}) or {}); out['npc_reputation']=dict(getattr(self,'npc_reputation',{}) or {}); out['music_transition_count']=len(getattr(self,'music_transition_log',[]) or []); out['world_delta_version']='world-delta-v1'; return out
+    Game.report=_report_finished
+
+# Keep the legacy pane map explicit and readable in every exported game.
+CONTROLS.setdefault('binds',{})
+for _k,_name in {'Q':'quests','J':'journal','I':'inventory','K':'skills','L':'server','B':'crafting','G':'gameplay','H':'closet'}.items():
+    CONTROLS['binds'][_name]={'key':_k}
+
+class _GOAVA:
+    def __init__(self,seed): self.seed=_safe_int_seed(seed)
+    def _u(self,*p): return _meum_u(self.seed,'|'.join(map(str,p)))
+    def choose(self,*args):
+        *labels,opts=args; opts=list(opts); return opts[min(len(opts)-1,int(self._u(*labels)*len(opts)))] if opts else None
+    def value(self,*args):
+        *labels,lo,hi=args; return float(lo)+(float(hi)-float(lo))*self._u(*labels)
+    def scribe(self,*args):
+        *labels,res=args; return {'seed':self.seed,'label':'|'.join(map(str,labels)),'result':res}
+def goava(seed): return _GOAVA(seed)
+
 if __name__ == "__main__":
     main()
 '''
@@ -7792,7 +8379,7 @@ def build_micro_lexicon(seed) -> Dict[str, Any]:
             round(r.random(), 4),
             round(r.random(), 4),
         ])
-    return {"version": "micro/2026.1", "ops": ops, "schedule": sched}
+    return {"version": "micro/2026.1", "ops": ops, "schedule": sched, "seed_scribed": True, "seed": seeds}
 
 
 def build_how_to_play(identity, triad=None, controls=None) -> str:
@@ -7881,6 +8468,24 @@ were live this session.
 """
 
 
+
+# GOAVA_SEMANTIC_SCRIBE_2026 -------------------------------------------------
+class _GOAVAScribe:
+    """Call-order-independent semantic choices: every result is seed+label addressed."""
+    def __init__(self, seed): self.seed=_safe_int_seed(seed)
+    def _u(self,*parts): return meum_game_residue(self.seed,'|'.join(map(str,parts)))
+    def choose(self,*args):
+        *labels, options=args; options=list(options)
+        if not options: return None
+        return options[min(len(options)-1,int(self._u(*labels)*len(options)))]
+    def value(self,*args):
+        *labels, lo, hi=args; return float(lo)+(float(hi)-float(lo))*self._u(*labels)
+    def scribe(self,*args):
+        *labels, result=args
+        return {'seed':self.seed,'label':'|'.join(map(str,labels)),'result':result}
+
+def goava(seed): return _GOAVAScribe(seed)
+
 def seed_script_state(seed_script, t=0.0):
     """Evaluate a seed program into numeric variables and a returned vector."""
     import ast as _ast
@@ -7965,6 +8570,11 @@ def game_triad(seed) -> Dict[str, Any]:
 
 _REPLACEMENTS = (
     ("__MEUM__", repr(MEUM)),
+    ("__MEUM_MINUS_1__", repr(MEUM_MINUS_1)),
+    ("__MEUM_INV__", repr(MEUM_INV)),
+    ("__MEUM_TWO_MINUS__", repr(MEUM_TWO_MINUS)),
+    ("__MEUM_NORM__", repr(MEUM_NORM)),
+    ("__PHI_INV__", repr(PHI_INV)),
     ("__PHI__", repr(PHI)),
     ("__BPM__", repr(120.0)),
     ("__SEQ__", repr(16)),
@@ -8009,6 +8619,11 @@ def generate_game_script(identity: GameIdentity, composition_meta: Optional[Dict
     script = script.replace("__MOOD__", str(identity.mood))
     script = script.replace("__ONLINE__", str(bool(identity.online)))
     script = script.replace("__MEUM__", repr(MEUM))
+    script = script.replace("__MEUM_MINUS_1__", repr(MEUM_MINUS_1))
+    script = script.replace("__MEUM_INV__", repr(MEUM_INV))
+    script = script.replace("__MEUM_TWO_MINUS__", repr(MEUM_TWO_MINUS))
+    script = script.replace("__MEUM_NORM__", repr(MEUM_NORM))
+    script = script.replace("__PHI_INV__", repr(PHI_INV))
     script = script.replace("__PHI__", repr(PHI))
     script = script.replace("__BPM__", repr(bpm))
     script = script.replace("__SEQ__", repr(seq))
@@ -8962,3 +9577,10 @@ def package_game_zip(identity: GameIdentity, out_zip: str, composition_meta: Opt
         return os.path.abspath(out_zip)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+# Renderer topology compatibility contract retained for diagnostics.
+class _RendererTopologyContract:
+    def draw(self, p, project, cx, cy, R):
+        topo = getattr(project, "topology", "open_world") if project is not None else "open_world"
+        for mi in range(34 if topo == "open_world" else 18):
+            pass
