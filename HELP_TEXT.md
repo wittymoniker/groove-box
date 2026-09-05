@@ -1,710 +1,1047 @@
-# Groovebox v3[final] — Canonical Trio Engine
 
-> **Modern architecture:** Python + C++17 + Julia, sharing one deterministic canonical state model.
->
-> The project is a generative audio/visual/game composition engine rather than three unrelated generators. The working abstraction is the **Canonical Trio**: one state/seed function tree is projected into **Audio**, **Visual**, and **Game** domains. The projections may have different representations, but they are driven by the same canonical inputs, deterministic ordering, and seed identity.
-
-## Table of Contents
-
-1. [What v3[final] is](#1-what-v3final-is)
-2. [Mathematical model and proof-of-concept](#2-mathematical-model-and-proof-of-concept)
-3. [Canonical Trio architecture](#3-canonical-trio-architecture)
-4. [Engine and feature reference](#4-engine-and-feature-reference)
-5. [Audio pathway](#5-audio-pathway)
-6. [DJ effects and live performance](#6-dj-effects-and-live-performance)
-7. [Visual pathway](#7-visual-pathway)
-8. [Video-game proof of concept](#8-video-game-proof-of-concept)
-9. [Seed system](#9-seed-system)
-10. [Rendering, partitions, and recovery](#10-rendering-partitions-and-recovery)
-11. [Media import and export](#11-media-import-and-export)
-12. [OT master transform and tensor correspondence](#12-ot-master-transform-and-tensor-correspondence)
-13. [Numerical exactness and determinism](#13-numerical-exactness-and-determinism)
-14. [Hybrid build and runtime dependencies](#14-hybrid-build-and-runtime-dependencies)
-15. [First-launch provisioning](#15-first-launch-provisioning)
-16. [Project layout](#16-project-layout)
-17. [How to use the mathematical layer](#17-how-to-use-the-mathematical-layer--from-pad-to-canonical-generation)
-18. [Meum calculus](#18-meum-calculus--definitions-operations-and-examples)
-19. [Operator Theory (OT)](#19-operator-theory-ot--complete-project-math-reference)
-20. [Canonical number-theory and congruence claims](#20-canonical-number-theory--congruence-claims--what-claimed-exact-means)
-21. [Unison master transform](#21-unison-master-transform--formula-and-practical-example)
-22. [Verification, redistribution, and numerical boundaries](#22-verification-redistribution-and-numerical-boundaries)
-
----
-
-## 1. What v3[final] is
-
-Groovebox v3[final] is a deterministic mathematical composition environment with three synchronized output domains:
-
-- **Audio:** oscillators, harmonic/inharmonic synthesis, Meum AM/FM/PM modulation, sequenced voices, canonical unison, imported-carrier influence, effects, live DJ transforms, and master rendering.
-- **Visual:** a 2.5D scenograph driven by the same canonical seed, sequential values, phase, energy, spectrum, GOAVA, and engine masks used by the audio side.
-- **Game:** a generated playable world used as a proof-of-concept that the same canonical state can be decoded into interactive mechanics rather than merely rendered as a picture.
-
-The design goal is **repeatable generative capacity**: changing canonical input changes the output, while replaying the same canonical input reproduces the same output. Activation order is not allowed to become a hidden source of variation. The project therefore treats the trio as a **self-referential function tree at the state level**: the canonical state contains the vocabulary needed to decode audio, visual, and game behavior, and explicitly wired cross-domain routes may feed derived values back into later stages. This is not a claim that every subsystem is already one mathematically closed feedback tensor; each correspondence is documented and tested at the level actually implemented.
-
-The Python layer remains authoritative for application state. C++ handles contiguous numerical hot paths. Julia is the readable numerical/reference layer and can call the C++ ABI directly for batch work. Julia is intentionally not placed in the default realtime callback unless an embedded runtime is explicitly configured.
-
----
-
-## 2. Mathematical model and proof-of-concept
-
-The core abstraction is a deterministic function tree:
-
-\[
-C = F(S, Q, P, M, T)
-\]
-
-where:
-
-- `S` = seed representation;
-- `Q` = sequence/playlist coordinates;
-- `P` = canonical parameters (BPM, base frequency, engine mask, waveform and modulation state);
-- `M` = imported media descriptors and optional carrier measurements;
-- `T` = normalized or absolute time.
-
-The output is a structured canonical state rather than one scalar:
-
-\[
-C \rightarrow \{A(t), V(t), G(t), I\}
-\]
-
-where `A` is audio state, `V` visual state, `G` game state, and `I` identity/provenance.
-
-### 2.1 Canonical tensor view
-
-For a finite render, represent canonical state as a rank-3 tensor
-
-\[
-\mathcal C[d,r,k]
-\]
-
-with domain `d ∈ {audio, visual, game}`, row/step coordinate `r`, and feature coordinate `k`.
-
-A projection is a contraction with a domain-specific operator:
-
-\[
-Y_d(t) = \sum_{r,k} W_d(t,r,k)\,\mathcal C[d,r,k].
-\]
-
-This is not a claim that every current Python function is literally implemented as an ndarray contraction. It is the mathematical correspondence used to specify the implementation. Where a direct tensor implementation would allocate large temporary matrices, the runtime uses equivalent streaming/indexed operations for speed and memory locality.
-
-### 2.2 Meum constants and mathematical vocabulary
-
-The canonical vocabulary includes the project Meum lattice identity and common mathematical anchors:
-
-\[M \approx 1.1975807343385265,\qquad M_n = \frac{M-1}{M},\qquad \Phi = \frac{1+\sqrt5}{2}.\]
-
-Derived values such as `M²`, `M³`, `M⁻¹`, `log₂(M)`, and golden-ratio terms are used as deterministic parameter anchors. These constants are **engineering parameters of this project**, not claims of newly established mathematical constants or theorems.
-
-### 2.3 Why this is useful
-
-The same canonical features can be decoded differently:
-
-- Audio maps phase/energy/harmonic features to samples.
-- Visuals map phase/energy/seed/GOAVA features to geometry, hue, density, and motion.
-- Games map the same stable features to world parameters, objective, difficulty, topology, events, and deterministic replay.
-
-This creates a **Canonical Trio** instead of three loosely coupled randomizers.
-
-### 2.4 Proof-of-concept: video games
-
-A generated game is a stronger test than a static visual because it must preserve identity over time. A seed must deterministically produce a world, player state, event ordering, and replay stream. The exported game package therefore carries a composition fingerprint and can record/replay gameplay data. The game package already treats SOUND, VISUAL, and UI as a multimodal contract, while software-kind changes the function panel rather than stripping the other domains.
-
-The intended mathematical proof is therefore:
-
-\[
-S \xrightarrow{F} C \xrightarrow{\pi_A,\pi_V,\pi_G} (A,V,G)
-\]
-
-and, for replay:
-
-\[
-(S,C,R) \xrightarrow{F_G} G_R = G'_R.
-\]
-
-A successful replay means the decoded game trajectory is the same canonical trajectory, subject to the documented floating-point/codec boundaries.
-
----
-
-## 3. Canonical Trio architecture
-
-### Python — authoritative state and orchestration
-
-Python owns UI, project serialization, sequencing, canonical unison, seed parsing, high-level effects, imported media, video/game integration, and deterministic bookkeeping.
-
-### C++17 — numerical hot path
-
-C++ owns the tight contiguous loops where they provide measurable benefit: Meum modulation vectors, voice harmonic/inharmonic synthesis, and hard clipping. The native build uses `-O3` and LTO where supported and deliberately does **not** use `-ffast-math`, preserving predictable IEEE-style behavior.
-
-### Julia — numerical reference and optimization layer
-
-Julia provides readable mathematical implementations, batch experiments, profiling candidates, and a direct `ccall` bridge to the C++ ABI. This gives the project a second executable numerical description without introducing a process boundary into realtime audio.
-
-### Deterministic data flow
-
-`Seed/Project → Python canonical state → optional Julia numerical analysis → C++ contiguous kernel → Python effect/output projections`
-
-Parallelism must use per-voice/per-domain buffers followed by deterministic reduction. Never use unordered floating-point accumulation for the canonical renderer.
-
----
-
-## 4. Engine and feature reference
-
-| Feature | Purpose | Canonical role |
-|---|---|---|
-| Canonical Unison | Combines active engines in stable order | Identity |
-| Seed Engine | Numeric, scripted and structured seed generation | Root input |
-| Meum AM/FM/PM | Modulation family | Phase/frequency/amplitude |
-| Harmonic Engine | Harmonic partial synthesis | Audio spectrum |
-| Inharmonic Engine | Seed/entropy-derived partial family | Spectral diversity |
-| GOAVA | Seed-linked sequence/scalar projection | Cross-domain feature |
-| Euclidean / Phase-Lock / Randomizer / Seeded | Deterministic sequence sources | Temporal structure |
-| Fractal sets | Mathematical shape families | Audio/visual parameterization |
-| Domain equations | Multivariate longitudinal modulation | Cross-domain modulation |
-| Global Play | Script/domain/wire overlay | Project-level transform |
-| EQR / Fractallizer / PKP | Effect engines | Non-canonical/live or per-voice processing |
-| DJ GOAVA | Live GOAVA-derived ring/drive morph | Reversible performance transform |
-| RAND PARAM | Deterministic live parameter macro | Reversible performance transform |
-| Imported carrier | Audio/video reference influence | External canonical input |
-| 2.5D Scenograph | Audio-linked visual projection | Visual domain |
-| Video-game generator | Playable projection of canonical state | Game domain |
-| Provenance/fingerprint | Reproducibility and reverse analysis | Identity |
-| Atomic `.part` saves | Crash-safe project recovery | Persistence |
-
-The current UI already defines routing detectors including phase, energy, spectrum, GOAVA, Euclidean, seed, BPM, and pair, with targets including master mix, effects, ensemble, scenograph, domain, and unison.
-
----
-
-## 5. Audio pathway
-
-The canonical audio path is:
-
-`seed → canonical unison → voice parameters → modulation → partial synthesis → imported-carrier/domain modulation → live DJ (optional) → master volume → hard clip → export`
-
-The final export path intentionally avoids a hidden master EQ, limiter, normalizer, or spectral pass. The historical master-bus EQR/PKP/PED stack is disabled because its stacked amplitude/envelope multiplication produced the reported “filtered/pumping” behavior. **This does not disable the FX system.** Per-voice and explicitly routed effects remain available, including DJ effects and their envelopes. The final master-stage contract is simply: composition output → Master Volume/drive factor → hard clip.
-
-**Important:** there are still *per-voice* filter/resonator/formant parameters and effects, and DJ Boost Hit intentionally has a transient envelope. Those are not hidden final-bus filters. If the sound is still overly resonant, inspect the explicitly routed per-voice/effect parameters first.
-
-### Audio exactness
-
-The native voice kernel has been regression-tested against the NumPy reference for canonical harmonic/inharmonic, waveform, and GOAVA paths with exact float32 array equality in the supplied validation report. The C++ hardclip kernel is likewise tested for exact float32 equality.
-
----
-
-## 6. DJ effects and live performance
-
-DJ effects are intentionally **reversible bus transforms**. They do not rewrite canonical composition state.
-
-- **GOAVA DJ:** ring/drive morph derived from the current canonical GOAVA scalar and unordered sound-pair identity.
-- **RAND PARAM:** deterministic macro that sounds stochastic but is stable for seed/pair/BPM and does not call an RNG from the audio callback.
-- **Live media steering:** imported WAV/video energy can participate in the live morph path.
-- **Apply/Unapply discipline:** authoring operations may modify the project state; live DJ transforms should remain clearly separated from canonical identity.
-
-This separation is essential: a performance gesture should not silently change the mathematical identity of a saved composition.
-
----
-
-## 7. Visual pathway
-
-The visualizer is a projection, not an independent random animation system. Visual state is derived from the canonical feature vector and time/step coordinate.
-
-Recommended v3[final] visual policy (carried into the opencode merge):
-
-1. Prefer fewer, stronger objects over dense line fields.
-2. Use particle/geometry density as a bounded function of energy and seed entropy.
-3. Keep the same phase anchors used by audio.
-4. Use deterministic soft stamps/geometry rather than uncontrolled accumulation.
-5. Preserve a low-detail mode for realtime play and a high-detail mode for export.
-6. Avoid visual “line spam” when the same mathematical information can be encoded as motion, scale, topology, or sparse points.
-
-The existing game/visual code already uses seed, sequence, Meum-family constants, phase and entropy to derive object positions and colors.
-
----
-
-## 8. Video-game proof of concept
-
-The generated game is deliberately small: it is a proof that the canonical state can produce rules, not merely pixels.
-
-A generated package contains:
-
-- deterministic world fingerprint;
-- objective/difficulty/level type;
-- sigil/world data;
-- music bed and live SFX;
-- visual scenograph;
-- PyQt6 UI or CLI fallback;
-- record/replay data;
-- codec/provenance metadata.
-
-The existing package format documents deterministic recording and replay and exposes JSON/GZ/CSV/TXT/WAV/PNG jobs.
-
-### Playability refinements for v3[final]
-
-- Reduce excessive GOAVA ornamentation; make GOAVA affect meaningful world variables rather than every visual surface.
-- Keep movement response continuous and deterministic.
-- Separate world-generation entropy from control sensitivity.
-- Make difficulty a function of bounded canonical features rather than arbitrary random spikes.
-- Keep a stable seed → world fingerprint mapping.
-- Record input events as discrete canonical events and reconstruct continuous state from those events.
-
----
-
-## 9. Seed system
-
-The seed system accepts ordinary numeric seeds and scriptable mathematical forms. v3[final] should treat the following as first-class demonstrations:
-
-### Scalar
-`432`
-
-### List/vector
-`1, 3, 5, 7, 11, 13`
-
-### Parametric
-`[sin(t*MEUM), cos(t*PHI), t]`
-
-### Cylinder / periodic parameterization
-`theta=t*tau; r=0.5+0.5*sin(theta*MEUM); x=r*cos(theta); y=r*sin(theta)`
-
-### Multivariate
-`x=sin(t*MEUM); y=cos(t*PHI); z=isn(t); return x + y + z`
-
-### L-function / number-theoretic family
-A deterministic arithmetic series may be represented as a finite Dirichlet-like sample or another explicit sequence; the implementation must label it as a seed family, not imply a theorem merely by naming it an L-function.
-
-### Loop-based
-`[sin(i*MEUM) for i in range(16)]` (or equivalent supported list syntax).
-
-### Conditional / logic
-`if(sin(t*MEUM)>=0) 64 elif cos(t*PHI)>=0 32 elif 7`
-
-### Fractal-set families
-The existing six named forms are retained: Divergent Space, Wormhole, Wormhill, Worms, Star, and Starburst. Their documented expressions are `xc+c`, `x^c+x`, `x+c`, `c√x`, `c^x`, and `√c·x`, respectively.
-
-All seed forms must be folded into the same canonical identity path. A syntactically different spelling that evaluates to the same canonical numeric sequence should be able to normalize to the same identity where exact normalization is defined.
-
----
-
-## 10. Rendering, partitions, and recovery
-
-All long renders expose a **Part Count** setting rather than hard-code 16. Recommended range: `1–128`, with a default chosen from render duration and available memory. The setting is independently applicable to WAV/audio, video, and video+audio jobs.
-
-The partition count applies independently to:
-
-- video;
-- video+audio renders;
-- WAV/audio renders;
-- other long offline jobs where partitioning is beneficial.
-
-Each part is written atomically as `<stem>.partNN.<ext>.part` or `<stem>.partNN.<ext>`, completed parts can be reused, and the final artifact is atomically promoted into place.
-
-The existing video renderer already uses recoverable part files and keeps the output next to the selected destination; v3[final] generalizes the policy to audio as well.
-
-For WAV, parts are PCM-compatible and concatenated without a lossy codec boundary. This makes WAV the cleanest render/recovery target.
-
----
-
-## 11. Media import and export
-
-The media importer should be **codec-oriented**, not extension-oriented. ffmpeg/ffprobe are the canonical decoder/metadata layer.
-
-Supported import should include common audio/video containers and codecs that the installed ffmpeg build can decode, including WAV, AIFF/CAF, FLAC, MP3, OGG/Opus, MP4/MOV/M4V, MKV, WebM, AVI and future formats exposed by ffmpeg.
-
-A file-dialog extension list is only a convenience; the actual decoder capability comes from ffmpeg. Import is therefore capability-oriented and can accept additional formats as the installed ffmpeg build gains decoders.
-
-Exports currently cover WAV/FLAC/OGG/AIFF/MP3/Opus/CAF and MP4/WebM/AVI paths where the installed encoder supports them.
-
----
-
-## 12. OT master transform and tensor correspondence
-
-The master transform is:
-
-\[
-B_n = \sum_k I_{kn}V_k,
-\quad
-H_n = \operatorname{sign}(x_n)B_n,
-\]
-
-\[
-y_n = x_n + 0.35H_n,
-\]
-
-\[
-y_n \leftarrow y_n\left(1 + 0.15\,m/(1+|y_n|)\right),
-\]
-
-followed by a one-sample memory rule and negative-run transform.
-
-The band selection is exactly representable as an indicator/value tensor contraction. The previous-sample operation is exactly a shift matrix `S` with the first sample mapped to itself:
-
-\[
-\mathbf p = S\mathbf y.
-\]
-
-The negative-run mask is then
-
-\[
-N_n = 1[y_n<0]1[p_n<0].
-\]
-
-The current implementation is intentionally vectorized/streaming rather than constructing an `n×n` shift matrix, because the explicit matrix has unnecessary memory and computational cost. The tensor formulation is therefore a **proof-level correspondence**, not a demand to materialize the tensor.
-
-The project should extend this same discipline to the Canonical Trio: define the tensor schema first, then prove individual runtime projections against it with numerical regression tests. Do not claim a global tensor equivalence unless the implementation and raw-output comparison support it.
-
----
-
-## 13. Numerical exactness and determinism
-
-Rules:
-
-1. Canonical input order is stable.
-2. Engine activation order is sorted before canonical application.
-3. No ambient RNG is used in canonical render paths.
-4. Realtime DJ randomness is derived from deterministic state rather than an audio-thread RNG.
-5. Parallel renderers reduce in deterministic order.
-6. C++ canonical builds avoid `-ffast-math`.
-7. Native and reference kernels have regression tests.
-8. Project snapshots store the inputs required to reconstruct canonical identity.
-9. Export provenance stores the canonical fingerprint.
-
-The existing unison contract explicitly describes seed+BPM+base-frequency+playlist/per-sequence/global-algorithm state as the canonical identity and excludes final master effects from identity.
-
----
-
-## 14. Hybrid build and runtime dependencies
-
-### Required
-
-- Python 3.10–3.12 recommended
-- PyQt6
-- NumPy
-- SciPy
-- sounddevice
-- Pillow
-- C++17 compiler/toolchain
-- ffmpeg + ffprobe
-
-### Optional
-
-- Julia 1.10+ (or a project-supported current Julia release)
-- juliacall for Python↔Julia embedding/experiments
-- platform audio development packages
-
-The project already keeps C++ and Julia sources under the same project tree as Python scripts and launch/build files. The Julia layer calls the same C ABI rather than spawning a second process for each DSP block. The export package also carries platform launchers, dependency installers, and first-launch provisioning helpers.
-
----
-
-## 15. First-launch provisioning
-
-The launch path should:
-
-1. create `./bin/` if absent;
-2. detect a bundled/local ffmpeg first;
-3. detect a system ffmpeg second;
-4. if missing, run the platform provisioning helper;
-5. verify `ffmpeg` and `ffprobe` with a real version/probe command;
-6. create native/build directories;
-7. build the C++ library if absent or stale;
-8. run a lightweight Python/native smoke test;
-9. launch the UI.
-
-This makes a fresh export directory self-provisioning where the OS permits package/download installation. Offline machines still receive a precise diagnostic instead of a mysterious missing-binary failure.
-
-The generated game packages already ship platform-specific dependency installers and describe placing ffmpeg in a local `bin` directory.
-
----
-
-## 16. Project layout
-
-```text
-Groovebox/
-├── groovebox.py                 # authoritative application/UI
-├── videogame_engine.py          # game projection
-├── groovebox_reference.py       # reference numerical path
-├── canonical_triad.py           # canonical tensor/state correspondence
-├── README.md
-├── HELP_TEXT.md                 # synchronized long-form help source
-├── TRIO_ARCHITECTURE.md
-├── TEST_REPORT.md
-├── cpp/
-│   ├── CMakeLists.txt
-│   └── groovebox_accel.cpp
-├── julia/
-│   ├── GrooveboxHybrid.jl
-│   └── smoke_test.jl
-├── native/                      # generated shared library
-├── bin/                         # local ffmpeg/ffprobe when provisioned
-├── scripts/
-│   ├── build_linux.sh
-│   ├── build_macos.sh
-│   ├── build_windows.ps1
-│   └── provision_first_launch.py
-├── run_hybrid.sh
-├── launch_desktop.sh
-├── launch_mobile.sh
-├── launch groovebox.sh
-├── launcher groovebox.py
-├── install_deps_linux.sh
-├── install_deps_macos.sh
-└── install_deps_windows.ps1
-```
-
-C++ and Julia are intentionally **not** stored in a separate source tree: all three languages form one exportable project directory.
-
----
-
-## 17. HOW TO USE THE MATHEMATICAL LAYER — FROM PAD TO CANONICAL GENERATION
-
+## V34 Stability Pass
+
+- Reversible randomizer toggle contract: ON captures a full project baseline and generates a fresh variation; OFF restores the exact pre-randomize state; each subsequent ON cycle rerandomizes and shifts the control color palette.
+- Canonical Signal Control defaults to Full Canonical / 100% authority and self-heals missing canonical coverage through canonical-owned runtime overlays without rewriting user data.
+- Canonical Resonance / Activity is 50–150%, independent of the 50/50 source coefficients; 150% is activity/continuation drive, not output volume.
+- Canonical→Instrument convolution influence is 0–100%.
+- Maximum active instruments: 128. Default playlist row duration: 16 beats.
+- ParametricMathBackground is integrated with a deep navy gradient field.
+- Performance controls are consolidated into one horizontal deck; Automator controls are compacted into a multi-row grid.
+- UI initialization order and Qt stylesheet declarations were hardened; division-by-zero-sensitive paths use explicit degenerate-case handling rather than epsilon denominators where practical.
+
+================================================================================
+  GROOVEBOX — Mathematician's / Scientist's Groovebox
+  Full Documentation, Scripting Syntax & Design Philosophy
+================================================================================
+  Main editor and author: Noah Girouard King (Eski)
+  Credits: Grok (xAI), Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI),
+  Mistral.ai (Mistral), Meta AI (Meta), GitHub Copilot (GitHub),
+  Cursor Grok 4.6, jcode(1jehuang), and opencode (anomalyco).
+
+--------------------------------------------------------------------------------
+1. GOAL OF THE SOFTWARE
+--------------------------------------------------------------------------------
+Groovebox uses *mathematical specification* to maximize initial harmonic
+diversity while letting you program simple or complicated music with the same
+ease:
+
+  • Simple: paint a few pads → Play. Engines fill, phase-lock, and balance
+    around your carrier without overwriting it.
+  • Complex: domains, scripts, patch topology, seeds, Euclidean lock, and
+    fractal randomization scale up without changing the basic model
+    (pads, playlist, seed, transport).
+
+Design pillars:
+  1) User data is the *carrier wave* — engines add around it; they do not wipe it.
+  2) Seeds (irrationals: pi, e, Meum ≈ 1.1975807343, …) are geometric anchors.
+  3) Empty slots are for convergent harmonic fill, not noise dumps.
+  4) Redundant definitions are simplified first so fill engines have free capacity.
+  5) Only inputs with *net effect* on the playlist timeline are treated as
+     protected user data; silent or off-timeline data may be reshaped.
+
+--------------------------------------------------------------------------------
+2. DISCLAIMER — ADVANCED INSTRUMENT
+--------------------------------------------------------------------------------
+This is intentionally more advanced than many consumer synthesizers or DAW
+step-sequencers. It exposes multivariate equations, domain partitions, modular
+patch topology, Euclidean phase geometry, and seed-driven fractal composition.
+
+You do *not* need a research background to start — pads + Play + Export work
+immediately. Opening Domain Equations or Instrument Scripts puts you in a
+mathematician/scientist-oriented workspace. Expect experimental behavior and
+listen critically.
+
+Not a full commercial DAW replacement. Specialized groovebox for exploration,
+generative structure, and mathematically guided composition.
+
+--------------------------------------------------------------------------------
+3. QUICK START
+--------------------------------------------------------------------------------
+  1. Set BPM and sequence length.
+  2. Select an instrument; toggle PKP pads (cyan = on).
+  3. Optional: enter a *non-zero* Seed (blank or 0 / 0.0 = no seed).
+  4. Optional: open Playlist and paint operators into the timeline.
+  5. Press ▶ Live Audio Play (sounddevice) or Export .wav.
+  6. Optional: Euclidean Phase-Lock and/or Seeded Harmonic Randomizer
+     to additive-fill empty structure around your carrier.
+
+--------------------------------------------------------------------------------
+4. SEED RULES & FULL SCRIPTING
+--------------------------------------------------------------------------------
+  • Empty field, 0, and 0.0 all mean **no seed** (same treatment).
+  • Any non-zero number is a real geometric anchor.
+  • Non-numeric text that cannot be evaluated is hashed into a seed token.
+  • The seed field is a **full script panel** (scrollable QTextEdit).
+
+  RANDOM SEED BUTTON
+  ------------------
+  "🎲 Random Seed Script" (directly above the seed field) inserts a new random
+  script each click: pure numbers, time-conditional if/elif branches, math in t,
+  return-style scripts, or comma-lists of values. Only scripts that evaluate
+  cleanly for composition state, several time samples, and all instrument
+  indices are inserted (invalid candidates are retried, never emitted).
+  Edits remain fully user-owned. See also README.md in the project root.
+
+  COMPOSITION vs TIME-AXIS EVALUATION
+  -----------------------------------
+  • get_numeric_seed()  — composition-state (t = 0.0). Used for RNG seeding,
+    playlist paint, domain bias, and UI fingerprinting. Never call per-sample.
+  • evaluate_seed_expression_at_time(script, t, ctx) — render-time T-axis.
+    Time-varying scripts (sin(t), if(sin(t)...) elif ..., lists indexed by t)
+    modulate the master bus and visual engines during Play / Export.
+
+  ACCEPTED FORMS
+  --------------
+  Plain number:
+      432
+      123.45
+      (7)
+
+  Math expression (constants + functions; t available):
+      sin(t) * 100 + 50
+      MEUM * 432
+      clamp(sin(t * MEUM) * 200, -100, 100)
+      lerp(100, 800, 0.5 + 0.5 * sin(t))
+
+  Python-style ternary:
+      1 if sin(t) >= -0.5 else 2
+
+  Shorthand if / elif (balanced parentheses):
+      if(sin(t)>=-0.5) 1 elif 2
+      if(sin(t * MEUM) * cos(t) > 0) 432 elif 216
+
+  Script-style return (last return wins on multiline):
+      return sin(t * MEUM) * 100 + 50
+      # comment
+      return 1 if t < 1 else 2
+
+  Comma / newline lists — each component is evaluated as a full expression.
+  Instruments receive list[i % n] via get_seed_value_for_index(i) (never a
+  hash/byte token). Time-axis evaluation still walks the list with t:
+      1, 2, 3, 5, 8
+      100, 200, MEUM*100, 50+sin(0)
+      100
+      200
+      300
+
+  choose(a, b, c, ..., index_expr):
+      choose(100, 200, 300, 400, floor(abs(t * 2)))
+
+  AVAILABLE NAMES
+  ---------------
+  Functions: sin cos tan sqrt log log2 log10 exp abs min max floor ceil round
+             pow hypot atan2 asin acos atan sinh cosh tanh degrees radians
+             clamp(v,lo,hi)  lerp(a,b,u)  choose(...)
+             isn(x) ics(x)  isn_inv/arcisn  ics_inv/arcics
+             P(s,c) E(s,c) D(s,c)  tensor_z(s,c) tensor_rel(s,c)
+  Constants: pi e tau PHI MEUM MEUM_NORM MEUM_INV MEUM_SQ MEUM_LOG2
+             SILVER SQRT2 SQRT3
+  Variables: t (time), x (=t), y, z
+  Canonical context flags (when a render transaction is active) may also
+  appear as simple numeric/bool names for if/elif branching.
+
+  EXAMPLES
+  --------
+  if(sin(t * MEUM) >= 0) 432 elif 216
+  return lerp(110, 880, 0.5 + 0.5 * sin(t * 0.25))
+  64, 96, 128, 160, 192
+  clamp(exp(sin(t)) * MEUM * 100, 20, 2000)
+
+--------------------------------------------------------------------------------
+5. BOOTSTRAP (missing seed and/or program)
+
+--------------------------------------------------------------------------------
+
+Runs automatically before Euclidean lock / Seeded randomizer.
+
+  Program = net-effect data only (playlist-effective instruments with audible steps).
+
+  Case A — no seed AND no program (system is free to assign):
+
+      50% → BOTH: random kit seed + kit program parameters
+      25% → SEED ONLY: random kit seed; pads/playlist left empty
+      25% → PROGRAM ONLY: kit program parameters; seed field stays empty
+
+  Case B — program present, no seed:
+
+      Derive seed from fingerprint of net-effect steps (simplifies playlist superwrite)
+
+  Case C — non-zero seed present, no program:
+
+      Provide seed-derived program parameters on pads + blank playlist fields only
+
+  Case D — non-zero seed AND program:
+
+      No bootstrap changes
+
+6. NET-EFFECT USER INPUT (INCLUDING DEPENDENCIES)
+--------------------------------------------------------------------------------
+Protected "user" data must be able to change the mix at some playlist time t:
+
+  • Step ON with amplitude > ~0.02 (not near-silent)
+  • Instrument is a playlist operator OR feeds one (directly or transitively)
+    through user-accessible patch / GLOBAL_BUS routing — because changing that
+    parameter changes another path that *does* hit the timeline
+  • If playlist is empty/off, all instruments are in scope
+
+Ignored for protection (engines may reshape freely):
+  • Instruments with no playlist presence and no dependency path into one
+  • Silent ON steps, empty patterns with no audible contribution
+
+Fingerprint / "program present" checks use the same net-effect rules.
+
+--------------------------------------------------------------------------------
+7. SIMPLIFY (before additive fill)
+--------------------------------------------------------------------------------
+  • Continuous amplitudes (no ¼ ladder quantize)
+  • Instruments stay distinct (no cross-instrument pattern amp snap)
+  • Deduplicate patch cables (app + GLOBAL_BUS)
+  • Merge domain partitions with identical bounds/logic/equation
+  • Count identical scripts as shared definitions
+  • Sequence scale: each pattern fits playlist row beats via inst_step = row/N
+
+Order:  Bootstrap → Simplify → Additive fill / phase-lock / patch optimize
+
+--------------------------------------------------------------------------------
+8. ADDITIVE ENGINES (NON-DESTRUCTIVE)
+--------------------------------------------------------------------------------
+Euclidean Phase-Lock
+  • Never turns OFF protected user steps; never lowers user amps
+  • Fills empty slots with Euclidean structure + soft spectral opposites
+  • Sporadic probability commutation only on non-user slots
+
+Seeded Harmonic Randomizer
+  • Fractal echoes of your carrier into empty slots
+  • Scripts updated only if still stock templates
+  • Triggers additive patch optimizer
+
+Patch Bay Optimizer
+  • Never removes user cables or changes their gain/polarity
+  • Sparse links only to unserved targets (activity + family + golden-ratio score)
+  • Mirrors into GLOBAL_BUS only when edge is new
+
+--------------------------------------------------------------------------------
+9. DOMAIN TIME / SPACE EQUATIONS  (∫ button)
+--------------------------------------------------------------------------------
+Partitionable domains; each row:
+
+  Name | Axis (time|space|both) | t0 t1 | x0 x1 | y0 y1
+  Logic | Equation | Limits lo|hi | Weight|SeedW
+
+Equation environment (safe):
+  t, x, y, z, seed, seed_w, t_norm
+  MEUM, sin, cos, tan, abs, sqrt, exp, log, pi, e
+  clip, minimum, maximum, where, np
+
+Logic examples:
+  True
+  t < 0.5
+  abs(x) + abs(y) < 1.2
+  seed_w > 0.3
+
+Equation examples:
+  sin(2 * pi * t * 2) * exp(-t * 3)
+  sin(x * MEUM + t * 4) * cos(y * pi) * (1.0 - 0.2 * seed_w)
+  sin(pi * t) * cos(2 * pi * t * (1 + seed_w))
+
+Overlaps blend by weight; seed_weight longitudinally biases early vs late
+partitions. Render modulation (additive):
+  master *= (1 + 0.45 * domain_modulation)
+
+--------------------------------------------------------------------------------
+10. INSTRUMENT SCRIPTS  (📝 button)
+--------------------------------------------------------------------------------
+Per-operator script workspace. Typical form:
+
+  def evaluate_wave(x, y, z):
+      return np.sin(x * 3.0) * np.cos(y) - z
+
+Custom scripts are preserved by the randomizer; only stock auto-templates
+are replaced during seeded fill.
+
+--------------------------------------------------------------------------------
+11. PLAYLIST PAINTBRUSH & AUTOMATION
+--------------------------------------------------------------------------------
+  Wide unquantized grid (48 free rows by default) — not hard-bound to one instrument.
+
+  Columns:
+    Time Marker | Operator Identity | Script Tag | Velocity |
+    Auto Target | Auto Amount | Direction Vector | Multi-Seq | Coverage | Blend Partner | GOAVA Sequence
+
+  Paint subject menu:
+    1. Identity + Steps + Automation (default)
+    2. Selected instrument identity only
+    3. Selected instrument step sequence (no automation)
+    4. Step sequence + Automation
+    5. Automation of selected instrument
+
+  Draw Random Synth ON/OFF still chooses random vs selected identity when identity is painted.
+
+  Snap to grid: OFF by default (fully unquantized). Enable checkbox to snap time markers.
+
+  Overlap / blend:
+    • Painting over existing paint builds per-operator coverage on that row
+    • Full cover → automation applies at 100%; half cover → ~50%, etc.
+    • Overlapping identities blend synth param snapshots up to Half (50%) or Quarter (25%)
+      of the distance between the two instruments' settings (Blend max menu)
+
+  Automation:
+    • Written by paint modes that include Automation
+    • Randomizer / Euclidean may fill *empty* automation lanes only (never overwrite yours)
+    • apply_playlist_automation_to_ui pushes amounts onto EQR / Fractalizer / PKP knobs
+      and gently scales patch gains (direction vector = sign)
+
+--------------------------------------------------------------------------------
+12. MAIN CONTROLS
+
+--------------------------------------------------------------------------------
+Transport
+  ▶ Live Audio Play / ⏸ Stop   Realtime stream (sounddevice) + scope
+  BPM, Seed field              Tempo + geometric anchor
+  ✨ Euclidean & Geometry Global Lock
+  🎲 Seeded Harmonic Global Randomizer
+  💾 Save & Export .wav
+
+Macros
+  EQR Mod, Fractalizer, PKP Decay, PKP Envelope Follower, Tuning
+  Master Vol (beside oscilloscope)
+
+PKP Pad Bank (toggle)
+  Independent 16th-note clock; orange playhead; short hits on programmed steps
+
+Windows
+  🛠 Synth / Wavetable     📜 Playlist Paintbrush
+  🔌 Modular Patch Bay     📝 Instrument Script Editor
+  ∫ Domain Time/Space Equations
+  ❓ Help / Readme (this document)
+
+--------------------------------------------------------------------------------
+13. GOAVA NUMERICAL MATH
+--------------------------------------------------------------------------------
+  GOAVA is the engine-owned numerical composition layer ported from the supplied
+  Java Composer.getNote() implementation. For each assigned number n, step k,
+  and seed-number list N, the scalar note value is accumulated over every value v
+  in N using a cosine phase term. In simplified form:
+
+      G(n,k,N) = | Σ_v F(n,k,v) / (|N| + |n-v|) |
+
+  where the cosine phase is based on π/2, |n|, |v|, and the step k; the original
+  GOAVA zero-value branch adds the step directly to that phase. The audible path
+  uses the Java arpeggio scaling G × 16, with a safety fallback for pathological
+  values and a final realtime-safe frequency clamp.
+
+  GOAVA remains non-user engine data. Its numerical seed list creates one GOAVA
+  event per supplied seed number, retaining the raw scalar, frequency, pitch ratio,
+  and enabled state. In the playlist it occupies the dedicated GOAVA Sequence
+  column and is appended after canonical Euclidean/Seeded composition so the normal
+  comma-separated operator/member lists remain authoritative. The GOAVA visual
+  engine uses these same numerical values as geometry seeds, while Meum calculus
+  values modulate scale, rotation, density, depth, and temporal activation.
+
+--------------------------------------------------------------------------------
+PLAYLIST ROWS / ROW BEATS
+-------------------------
+  Playlist Rows controls how many arrangement rows exist. Row beats controls the
+  wall-clock duration of each playlist row. These are arrangement timing controls,
+  not automation-step selectors; automation has its own Length and Step controls.
+
+AUTOMATION STEP EDITOR — SEQUENCER-STYLE CONTROL
+--------------------------------------------------------------------------------
+  The automation strip is a second step sequencer directly under the main
+  sequencer. It is intentionally simple and behaves like the normal step pads.
+
+  • Length controls how many automation steps are shown. The orange strip grows
+    or scrolls horizontally to match that count.
+  • Sequence Attack and Sequence Release default to 50% each and remain directly
+    controllable per sequence by the canonical composition state.
+  • First click on an automation step = SELECT + TELEPORT. The Step, Operator,
+    Sequence, and Offset ± controls above immediately show that step's state.
+  • Second click on the SAME automation step = toggle ON/OFF. ON steps are bright
+    orange; OFF steps are dim orange/brown. The selected step has a bright outline.
+  • Operator chooses the instrument/operator for that automation step.
+  • Sequence chooses the sequence bank used at that step.
+  • Offset ± is the per-note sequence-step offset.
+  • Changing Operator, Sequence, or Offset ± edits the currently selected step
+    immediately; there is no POINT/apply button.
+  • There is no automation-points counter and no playlist-row selector here.
+    Automation is edited in the same step-oriented context as the sequencer.
+  • The highlighted AUTO step is the active teleport target. The Step box above
+    follows it, and Operator / Sequence / Offset ± edit that same step live.
+  • Master Volume is deliberately outside canonical control. Canonicals control
+    composition state (including synth pitch/amp and sequence/pattern envelopes),
+    never the final Master Volume.
+  • CLEAR removes all direct automation steps.
+  • RANDOMIZE AUTOMATION IN SEQUENCE randomizes only the currently selected
+    Operator / Sequence automation lane. It does not alter other sequences or
+    Master Volume.
+  • RANDOMIZE ALL SEQ rebuilds automation across every
+    instrument and sequence. It changes automation only; Master Volume remains
+    untouched. Both randomizers create one undoable edit.
+
+  Typical use:
+      1. Set Length (for example 16).
+      2. Click AUTO 1 once to select it.
+      3. Choose Operator / Sequence / Offset ±.
+      4. Click AUTO 1 again to turn that automation step ON.
+      5. Click another step once to teleport to it, edit it, then click it again
+         when you want it ON.
+
+  The automation state is written through the canonical composition boundary and
+  participates in Live Play / Audio Export / Video Export. Disabled automation steps do not drive the
+  render. The Automator popup is a UI-only teleport indicator; Operator, Sequence,
+  and Offset edits are written to the selected automation point.
+
+--------------------------------------------------------------------------------
+14. AUDIO
+--------------------------------------------------------------------------------
+  Realtime: sounddevice OutputStream callback consumes the same shared rendered buffer used by export.
+  Export: shared _render_mixdown_buffer → WAV; 2.5D MP4 includes the same rendered audio.
+  Master Vector Synth runs in that shared render path, so Live Play and Export see the same vector conversion.
+  Signal Conversion Monitor observes the post-vector buffer; it does not silently rewrite canonical data.
+  PKP hits: non-blocking sd.play blips when pad bank is armed
+  (Install / dependencies are listed at the bottom of this guide.)
+
+--------------------------------------------------------------------------------
+15. 48 OPERATORS
+--------------------------------------------------------------------------------
+Families span topological wave-folding, multivector/phase-space, quantum/soliton,
+stochastic/entropic, spatial/spectral effects, and dynamic resonators.
+Each has sequencer memory (steps, amplitudes, gates, probabilities) and optional script.
+
+--------------------------------------------------------------------------------
+16. RECOMMENDED WORKFLOW
+--------------------------------------------------------------------------------
+  A. Sketch carrier pads on one or more instruments
+  B. Paint playlist rows if arranging over time
+  C. Set a non-zero seed — or leave blank/0 for bootstrap
+  D. Run Euclidean lock and/or Seeded randomizer (bootstrap + simplify auto-run)
+  E. Optional: Domain equations for sectional form
+  F. Optional: Patch bay for modular routing accents
+  G. Play → refine → Export
+
+================================================================================
+
+--------------------------------------------------------------------------------
+17. SEQUENCER AMP / PITCH & LIVE ENGINES
+--------------------------------------------------------------------------------
+  Step pads: click once = select (Amp/Vel + Pitch sliders). Click again = toggle on/off.
+  Amp = velocity / step-trigger blend. Pitch = frequency ratio (automation param for steps).
+  Euclidean + Seeded are LIVE TOGGLES (periodic regenerate against user carrier).
+  "User program only" suspends both live engines.
+  Save/Load Project (JSON). Keyboard/Test + Trigger All (global).
+  Playlist: Convolve Color Coding for per-instrument hues + blend labels.
+  Visualizer dropdown: master / effected / overall pattern / per-instrument activity.
+  Global Cross-Loaded mode is default.
+
+  POLYPHONY & PANELS
+  ------------------
+  Playlist focus is arrangement metadata, not a solo. Every sounding
+  instrument and every ON step is mixed (equal-power) so any number of
+  notes can play at once. Canonical unison writes playlist operators,
+  sequence refs, pattern lengths, and irrational time offsets.
+
+  Master synth/script/patch/domain is the carrier mix. Per-sequence addon
+  panels blend into that master by coverage / panel blend amount — they
+  never replace the master bus. Engines may resize the selected sequence
+  (and other bank slots) when the user has not touched any of its steps.
+
+--------------------------------------------------------------------------------
+GLOBAL PLAY PANEL — ALGORITHMS, PARAMS & LAUNCHED WINDOWS
+--------------------------------------------------------------------------------
+  The Global Play group is the project-level algorithm layer. It never overwrites
+  the seed field or per-instrument seed scripts. Text lives in global_algo_state
+  until you apply it to the master mix / ensemble.
+
+  MAIN CONTROLS
+  -------------
+  🎲 Randomize Global Play Algorithm
+      Fills Script, Domain, Wire, and amount params from the Meum/PED vocabulary.
+      AUTHORING ONLY — does not apply to the ensemble until you press Apply.
+
+  ▶ Apply Algo to Master Mix  (toggle)
+      ON  → enabled layers (script / domain / wire) broadcast to the ensemble.
+      OFF → written music/shapes left alone. Undoable (Ctrl+Z).
+
+  Script Algo (multi-line text)
+      Project-level script over t, MEUM, PHI, seed, instrument name / i.
+      Typical form:
+          def global_script(t, name, i):
+              v = isn(t * MEUM) * 0.4 + ics(t * PHI) * 0.3
+              return v * 0.35
+      Same expression language as the seed field (sin/cos/isn/ics, conditionals,
+      return). When Operator Theory is ON, sin/cos/… use the equivalence kernel.
+
+  Domain Algo (single line)
+      Equation string, e.g. sin(t * MEUM) + cos(t * PHI).
+      Live hints: sin/cos → phase · log/exp → scale · domain → transmutor.
+
+  Wire Algo button  → opens Global Wire Algo window
+      Routing matrix: detectors → targets with amounts.
+      Detectors: phase, energy, spectrum, goava, euclidean, seed, bpm, pair
+      Targets:   master_mix, fractallizer, eqr, pkp, ensemble, scenograph,
+                 domain, unison
+
+  Algo Params button → opens Global Algo Params window
+      mix                  overall wet (default ~0.35)
+      enable_script/domain/wire   per-layer gates
+      script_amount / domain_amount / wire_amount   same as main sliders
+
+  Mix / Script / Domain / Wire amount sliders (0–100%)
+      Relative wet amounts when Apply is on.
+
+  APPLY RULES
+  -----------
+  • Randomize never auto-applies (authoring only).
+  • Apply ON pushes enabled layers; Apply OFF stops the overlay.
+  • Algorithm state is userdata (saved in the project) and undoable.
+  • Global Play never writes the seed field.
+
+  WORKFLOW
+  --------
+  1. Randomize or type Script / Domain text.
+  2. Adjust amount sliders; open Wire / Params windows if needed.
+  3. Press Apply Algo to Master Mix to hear the overlay.
+  4. Toggle Apply off or Undo to revert the ensemble overlay.
+
+--------------------------------------------------------------------------------
+DEPENDENCIES (install last — same list as project README.md)
+--------------------------------------------------------------------------------
+  Python packages (pip) — every OS:
+    PyQt6          UI
+    numpy          DSP / buffers
+    scipy          WAV I/O helpers, signal utilities
+    sounddevice    Real-time audio I/O
+    Pillow         Frame export (PNG) for video
+
+  System tools:
+    Python 3.9+ (3.10–3.12 recommended)
+    ffmpeg + ffprobe (full build with encoders) for video/audio export
+    PortAudio / ALSA / CoreAudio (via sounddevice) for playback
+
+  One-shot installers (preferred):
+    Linux:   ./install_deps_linux.sh   [--fedora | --ubuntu]
+    macOS:   ./install_deps_macos.sh
+    Windows: ./install_deps_windows.ps1
+
+  Manual pip (any OS):
+    python3 -m pip install --upgrade pip
+    python3 -m pip install numpy scipy PyQt6 sounddevice Pillow
+
+  Ubuntu/Debian system packages:
+    sudo apt install -y python3 python3-pip python3-venv python3-dev \
+      build-essential ffmpeg libasound2-dev portaudio19-dev
+
+  Fedora:
+    sudo dnf install -y python3 python3-pip python3-devel gcc gcc-c++ \
+      ffmpeg ffmpeg-libs alsa-lib-devel portaudio-devel
+    (enable RPM Fusion for full ffmpeg codecs)
+
+  macOS:
+    brew install python ffmpeg portaudio
+
+  Windows:
+    winget install Python.Python.3.12
+    winget install Gyan.FFmpeg
+
+  Optional: place static ffmpeg / ffprobe in ./bin/ next to groovebox.py
+  (the app checks there first).
+
+  Verify:
+    python3 -c "import numpy, scipy, PyQt6.QtCore, sounddevice, PIL; print('OK')"
+    ffmpeg -hide_banner -version | head -1
+
+  Run:
+    ./launch_desktop.sh
+    # or: python3 groovebox.py
+
+--------------------------------------------------------------------------------
+
+# 17. CANONICAL CROSS-MEDIA COMPOSITION
+Groovebox v13 uses one readable/writable canonical composition document as the source of truth at every engine, save/load, import, and export boundary. Sequencer steps, gates, pitch, amplitude, probability, operator timing offsets, instrument parameters, instrument samples, playlist arrangement, patchbay connections, modulation/routing state, global algorithms, mathematical controls, imported media references, seeds, timing, and engine toggles are represented on the same composition surface.
+
+The canonical authority exposes explicit READ and WRITE operations. UI controls write to the canonical surface; legacy engine attributes are compatibility mirrors synchronized from it. Audio, video, and videogame consumers read the canonical document rather than maintaining separate authoritative composition copies.
+
+The rendered music wave additionally contributes deterministic waveform analysis: RMS, peak, energy envelope, zero-crossing rate, spectral centroid, spectral flatness, and normalized spectrum. Visual/game behavior can therefore be derived from the actual musical wave as well as the event-level composition that generated it.
+
+# 18. SAVE/LOAD + IMPORT/EXPORT PARITY
+Project save/load is a canonical read/write loop. Save serializes the authoritative canonical document; load restores that document through the canonical authority and then rebuilds the compatibility mirrors used by older engine code. Imported WAV/audio, instrument samples, and imported video are canonical media references and are restored when possible.
+
+Audio exports, video exports, and videogame packages carry the canonical authority version/revision/fingerprint together with the cross-media fingerprint/provenance. Thus every exported medium can be traced to the same project state. Import handlers also write their new media references into the canonical surface before the next engine/export boundary.
+
+Re-rendering audio refreshes waveform analysis; video and game generation then read that refreshed canonical cross-media state.
+
+# 19. MUSIC-WAVE → VIDEO → VIDEOGAME
+The cross-media rule is: one canonical musical source, multiple deterministic expressions. Beat/note/sequence timing, waveform energy, spectral information, phase, arrangement, mathematical parameters, and canonical routing can drive corresponding visual and game events. A strong transient can become a visual pulse and a game event; a sequence transition can become a visual scene/state transition; pitch and spectral changes can influence geometry, world parameters, or gameplay values.
+
+The videogame receives the same canonical document and waveform-analysis contract used by the audiovisual side, not an independently authored game-only state. Video likewise reads the same canonical composition and wave-derived projection. This is the v13 single-source-of-truth rule: if a parameter changes the composition, it is canonical and readable/writable by the authority; if it is only a local display preference, it stays outside the composition.
+
+The videogame package receives the canonical composition plus waveform-analysis contract rather than only a seed and a few UI settings. The generated game therefore has access to the same musical identity used by the audio/video side. Exported audio, video, and game artifacts carry compatible fingerprints for cross-verification.
+
+The design target is:
+    CANONICAL MUSIC → ACTUAL WAVE + MUSICAL EVENTS
+                         ↓
+                  CROSS-MEDIA CONTRACT
+                    ↙           ↘
+                 VIDEO          GAME
+
+No separate hidden music, video, or game composition should become authoritative. A new control belongs in the canonical document when it changes the composition; otherwise it remains a local UI/render preference.
+
+  End of Help — Groovebox
+  Credits: Grok (xAI), Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI),
+  Mistral.ai (Mistral), Meta AI (Meta), GitHub Copilot (GitHub),
+  Cursor Grok 4.6, jcode(1jehuang) and opencode (anomalyco).
+================================================================================
+
+--------------------------------------------------------------------------------
+18. HOW TO USE THE MATHEMATICAL LAYER — FROM PAD TO CANONICAL GENERATION
+--------------------------------------------------------------------------------
 This section is the practical path for using the mathematics without needing to
 understand the implementation first.
 
-### 17.1 The shortest useful workflow
+CANONICAL COMPOSITION ENGINE — ONE SOURCE, ALL MEDIA
 
+Groovebox uses a canonical composition model so that the same musical composition
+can drive audio, video, and videogame generation without creating separate or
+contradictory versions of the project.
+
+The canonical composition contains the musical information that defines the work,
+including:
+
+• Sequence banks and sequence lengths
+• Per-step pitch, amplitude, gate, probability, and timing
+• Instrument and effect parameters
+• Instrument sample assignments
+• Operator timing offsets and predictive timing information
+• Playlist structure and arrangement
+• Global algorithms and mathematical parameters
+• Modulation and routing information
+• Master patchbay relationships
+• Composition-matrix relationships
+• Performance/macroscopic controls
+• Randomization state and deterministic seeds
+• Tempo, timing, phase, and synchronization information
+• Imported audio/media references and their composition roles
+• Game-generation metadata derived from the composition
+
+The canonical state is the authoritative representation of the project.
+
+Audio rendering reads this state to produce the musical waveform.
+
+Video rendering reads the same state to determine visual timing, motion,
+transformations, procedural geometry, modulation, synchronization, and
+imported-video behavior.
+
+Videogame generation reads the same state to determine the game's world
+parameters, objects, timing, procedural behavior, musical synchronization,
+and composition-derived game metadata.
+
+The conceptual model is:
+
+    CANONICAL COMPOSITION
+             │
+       ┌─────┼─────────────┐
+       │     │             │
+       ▼     ▼             ▼
+     AUDIO  VIDEO       VIDEOGAME
+       │     │             │
+       ▼     ▼             ▼
+      WAV    MP4       GAME DATA/ENGINE
+
+Changes made through the Master Patchbay, Composition Matrix, Modulation Routing,
+Sequencer, Instruments, Playlist, or other canonical controls should propagate
+through every compatible output engine.
+
+The objective is deterministic correspondence: if a musical parameter changes,
+every generated medium that depends upon that parameter should receive the same
+underlying information.
+
+--------------------------------------------------------------------------------
+19. PROJECT SAVE/LOAD AND IMPORT/EXPORT PARITY
+--------------------------------------------------------------------------------
+Project save/load is based on the canonical composition rather than isolated
+copies of individual editor controls.
+
+A saved project should preserve enough information to reconstruct the composition
+and its relationships across all supported media.
+
+Project state includes, where applicable:
+
+• Complete sequence information
+• Instrument parameter state
+• Instrument sample paths and sample configuration
+• Playlist/arrangement information
+• Operator time offsets
+• Global synthesis and algorithm settings
+• Modulation and patchbay routing
+• Composition Matrix relationships
+• Imported audio references
+• Imported video references
+• Imported-media metadata
+• Video composition parameters
+• Game-generation metadata
+• Randomization state and deterministic seeds
+• Rendering/export configuration when applicable
+
+External media files are referenced by path or project-relative location rather
+than assuming that a temporary decoded buffer is itself the project.
+
+When a project is loaded, Groovebox attempts to restore the referenced media and
+reconstructs the canonical composition before rebuilding dependent audio, video,
+and game representations.
+
+Import and export operations remain subordinate to the canonical composition.
+Audio import can become part of the musical composition, including use as an
+imported waveform, carrier, convolution source, or instrument sample where
+supported. Video import can become part of the visual composition while retaining
+its relationship to the musical timeline.
+
+The intended persistence loop is:
+
+    SAVE → LOAD → RENDER AUDIO
+                    │
+                    ├── RENDER VIDEO
+                    │
+                    └── GENERATE GAME
+
+Missing external media should be reported rather than silently replaced with
+unrelated content. Where a deterministic procedural fallback is supported, that
+fallback should preserve the composition's mathematical and timing structure.
+
+--------------------------------------------------------------------------------
+20. MUSIC-DERIVED VIDEO AND VIDEOGAME GENERATION
+--------------------------------------------------------------------------------
+Groovebox treats the musical waveform and its canonical generating parameters as
+sources of information for the other media engines.
+
+Derived media should not merely react to final audio amplitude. The complete
+composition contains substantially more information than amplitude alone.
+
+Video and videogame generation can derive behavior from:
+
+• Waveform amplitude
+• Frequency and spectral characteristics
+• Rhythmic events
+• Beat and subdivision timing
+• Note/pitch information
+• Gate events
+• Probability events
+• Sequence transitions
+• Instrument identity
+• Instrument parameters
+• Modulation values
+• Operator offsets
+• Playlist/arrangement changes
+• Mathematical algorithms
+• Phase relationships
+• Deterministic randomization
+• Imported-media relationships
+
+For example:
+
+    KICK EVENT
+       ↓
+    musical event
+       ├── audio transient
+       ├── visual pulse
+       └── game event
+
+    PITCH CHANGE
+       ↓
+    canonical note information
+       ├── oscillator frequency
+       ├── visual frequency/geometry parameter
+       └── game-world parameter
+
+    SEQUENCE CHANGE
+       ↓
+    canonical arrangement event
+       ├── audio pattern change
+       ├── visual scene/state change
+       └── game-state transition
+
+    OPERATOR TIME OFFSET
+       ↓
+    canonical timing relationship
+       ├── audio timing
+       ├── synchronized visual timing
+       └── synchronized game timing
+
+The intended system is:
+
+             MUSICAL COMPOSITION
+                     │
+         ┌───────────┼───────────┐
+         │           │           │
+      waveform    events     parameters
+         │           │           │
+         └───────────┼───────────┘
+                     ▼
+            COMPOSITION ANALYSIS
+                     │
+          ┌──────────┼──────────┐
+          ▼          ▼          ▼
+         AUDIO      VIDEO      GAME
+          │          │          │
+          ▼          ▼          ▼
+       waveform   frames    world/state
+
+Imported video should participate in the canonical visual layer rather than
+existing as an unrelated background asset. Imported audio should remain capable
+of participating in the canonical audio/composition pipeline.
+
+Generated videogames receive composition metadata describing the musical
+structure that drives them, including timing, arrangement, instrument-related
+information, algorithmic parameters, and other supported canonical controls.
+
+The intended result is one mathematical composition expressed through multiple
+media:
+
+    ONE COMPOSITION = SOUND + IMAGE + INTERACTION
+
+Whenever a new control is added, ask:
+
+    Does this control modify the canonical composition?
+
+If YES: expose its state through the canonical composition, save/load it with the
+project, and make it available to every output engine for which it has a meaningful
+interpretation.
+
+If NO: keep it as a local UI/rendering preference and do not duplicate it into
+unrelated composition engines.
+
+--------------------------------------------------------------------------------
+21. THE SHORTEST USEFUL WORKFLOW
+--------------------------------------------------------------------------------
 1. Choose BPM and sequence length.
 2. Choose an instrument and turn on a few pads.
 3. Leave Seed blank/zero for ordinary authoring, or enter a non-zero numeric seed.
-4. Press **Play** and listen to the carrier.
-5. Enable **Phase-Lock**, **Randomize**, **Seeded**, **GOAVA**, or **Operator Theory** one at a time.
-6. Open Playlist when you want the generated structure written into arrangement rows.
-7. Use Domain Equations for time/space functions and Instrument Scripts for per-instrument rules.
+4. Press Play and listen to the carrier.
+5. Enable Phase-Lock, Randomize, Seeded, GOAVA, or Operator Theory one at a time.
+6. Open Playlist when you want generated structure written into arrangement rows.
+7. Use Domain Equations for time/space functions and Instrument Scripts for
+   per-instrument rules.
 8. Save the project before experimenting with a new mathematical recipe.
 
-### 17.2 First scripting examples
+--------------------------------------------------------------------------------
+22. FIRST SCRIPTING EXAMPLES
+--------------------------------------------------------------------------------
+A simple two-frequency carrier:
+    sin(2*pi*t*2) + 0.5*cos(2*pi*t*3)
 
-```python
-# A simple two-frequency carrier
-sin(2*pi*t*2) + 0.5*cos(2*pi*t*3)
+Meum phase field:
+    sin(t*MEUM) * cos(t*PHI)
 
-# Meum phase field
-sin(t*MEUM) * cos(t*PHI)
+Seed-dependent motion:
+    sin(t*MEUM + seed) * (0.5 + 0.5*cos(t*PHI))
 
-# Seed-dependent motion
-sin(t*MEUM + seed) * (0.5 + 0.5*cos(t*PHI))
+The project's isn / ics forms:
+    isn(t*MEUM) * 0.6 + ics(t*PHI) * 0.4
 
-# The project's isn / ics forms
-isn(t*MEUM) * 0.6 + ics(t*PHI) * 0.4
+A multivariate domain expression:
+    sin(x*MEUM + y*PHI + z*pi)
 
-# A multivariate domain expression
-sin(x*MEUM + y*PHI + z*pi)
+Function-style script:
+    return isn(t*MEUM) + 0.25*ics(t*PHI)
 
-# Function-style script
-return isn(t*MEUM) + 0.25*ics(t*PHI)
-```
+sin, cos, isn, ics, MEUM, PHI, pi, e, tau, seed, x, y, z, and public reference
+constants are available to the appropriate script evaluators. Use the Help panel
+as the authoritative list for the build being run.
 
-`sin`, `cos`, `isn`, `ics`, `MEUM`, `PHI`, `pi`, `e`, `tau`, `seed`, `x`, `y`,
-`z`, and the public reference constants are available to the appropriate
-script evaluators. Use the Help panel as the authoritative list for the build
-being run.
-
-### 17.3 How generated math reaches sound
-
+--------------------------------------------------------------------------------
+23. HOW GENERATED MATH REACHES SOUND
+--------------------------------------------------------------------------------
 The canonical pipeline is conceptually:
 
-`seed → canonical context → instrument lattice → operator/sequence transforms → voice parameters → mix`
+    seed → canonical context → instrument lattice → operator/sequence transforms
+         → voice parameters → mix
 
 The seed is therefore an input to a deterministic construction, not an assertion
 that every generated result is a theorem of number theory. When a canonical
 fingerprint is identical, the implementation is intended to regenerate the same
 canonical state.
 
-## 18. MEUM CALCULUS — DEFINITIONS, OPERATIONS, AND EXAMPLES
+--------------------------------------------------------------------------------
+24. MEUM CALCULUS — PROJECT DEFINITIONS, OPERATIONS, AND EXAMPLES
+--------------------------------------------------------------------------------
+MEUM CALCULUS — PROJECT MATHEMATICAL FRAMEWORK
 
-**MEUM CALCULUS — CLAIMED EXACT.** In this project, “Meum calculus” means the
-project-defined family of transformations built from the constant `MEUM`, its
-reciprocals/powers, phase rotations, modular coordinates, and derived normalized
-weights. “Claimed exact” describes the project's internal symbolic contract: the
-same stored inputs and formulas are intended to give the same canonical result.
-It is **not** a claim that Meum calculus is an independently established branch
-of mathematics or that its special constant has been proved irrational here.
+Meum Calculus is the mathematical framework developed and documented by Noah
+Girouard King (Eski) in connection with Scientific Theories and Inventions and
+related works. Groovebox implements the project's stated constants,
+transformations, operators, coordinate systems, and derived quantities as a
+reproducible computational system.
 
-### 18.1 Public constants
+CLAIMED EXACT means exact according to the project's declared definitions,
+formulas, constants, serialization rules, and tested implementation contract.
+It does not by itself assert that a project-defined result constitutes an
+independently established theorem of mathematics or physics.
 
-The canonical Meum value is stored as
+PUBLIC CONSTANTS
 
-`M = MEUM = 1.1975807343385265188`
+The canonical Meum value is:
+    M = MEUM = 1.1975807343385265188
 
-with the public reference inverse
+Public reference inverse:
+    M⁻¹ = MEUM_INV = 0.83501677283773394333148276154833054143874793150691
 
-`M⁻¹ = MEUM_INV = 0.83501677283773394333148276154833054143874793150691`.
+Important derived values:
+    M² = 1.43419961525880442984053780233084675344
+    M³ = 1.7175698284296712120687451889540584671690563022583
+    M⁴ = 2.0569285364085026523421673878967788864920989745683
+    (M−1)/M = 0.16498322716226605666851723845166945856125206849309
+    2^M = 2.2935474173287805635918286442792609595802586606571
+    log₂(M) = 0.26012291784344212146116471128795687966817094961902
 
-Important derived values include:
+Reference constants are also exposed as PI_IRR, E_IRR, PHI, PHI_INV, SQRT2,
+SQRT3, and SILVER.
 
-- `M² = 1.43419961525880442984053780233084675344`
-- `M³ = 1.7175698284296712120687451889540584671690563022583`
-- `M⁴ = 2.0569285364085026523421673878967788864920989745683`
-- `(M−1)/M = 0.16498322716226605666851723845166945856125206849309`
-- `2^M = 2.2935474173287805635918286442792609595802586606571`
-- `log₂(M) = 0.26012291784344212146116471128795687966817094961902`
+MEUM POWER LATTICE
 
-Reference constants are also exposed as `PI_IRR`, `E_IRR`, `PHI`, `PHI_INV`,
-`SQRT2`, `SQRT3`, and `SILVER`.
+For instrument slot i, the canonical power table is generated from:
+    P_j = M^(j−6), j = 0,…,35
 
-### 18.2 Meum power lattice
+The slot coordinate uses the dense project-defined phase position:
+    u_i = (3 i M) mod 36
 
-For instrument slot `i`, the canonical power table is generated from
+If j = floor(u_i) and r = u_i − j, the interpolated lattice factor is:
+    L_i = (1−r) P_j + r P_(j+1 mod 36)
 
-`P_j = M^(j−6),   j = 0,…,35`
+This is a deterministic geometric mapping. “Dense” means the use of a
+non-rational-looking project constant is intended to avoid a short visual period;
+it is not a proof of equidistribution.
 
-and the slot coordinate uses the dense project-defined phase position
+MEUM NORMALIZATION
 
-`u_i = (3 i M) mod 36`.
+The standard normalized weight is:
+    N_M = (M−1)/M
 
-If `j = floor(u_i)` and `r = u_i − j`, the interpolated lattice factor is
+A Meum-weighted pair can be written:
+    F_M(a,b) = N_M a + (1−N_M)b
 
-`L_i = (1−r) P_j + r P_(j+1 mod 36)`.
-
-This is a deterministic geometric mapping. “Dense” here means the use of a
-non-rational-looking project constant is intended to avoid a short visual
-period; it should not be read as a proof of equidistribution.
-
-### 18.3 Meum normalization
-
-The standard normalized weight is
-
-`N_M = (M−1)/M`.
-
-A Meum-weighted pair can be written
-
-`F_M(a,b) = N_M a + (1−N_M)b`.
-
-The canonical `isn` implementation uses this style of Meum blending in its EQR
+The canonical isn implementation uses this style of Meum blending in its EQR
 execution path; the exact implementation should be consulted when auditing a
-specific version.
+specific release.
 
-### 18.4 Meum phase rotation
+MEUM PHASE ROTATION
 
-A slot phase reference is
+A slot phase reference is:
+    φ_i = 2π i / 48
 
-`φ_i = 2π i / 48`.
+A second deterministic phase coordinate is:
+    ψ_i = τ ((i N_M Φ⁻¹) mod 1)
 
-A second deterministic phase coordinate used by the canonical translator is
+These are coordinates, not random numbers. They are reproducible from i and the
+public constants.
 
-`ψ_i = τ ((i N_M Φ⁻¹) mod 1)`.
+GOAVA IRRATIONAL-SAMPLING EXAMPLE
 
-These are coordinates, not random numbers. They are reproducible from `i` and
-the public constants.
+For continuous time t, base frequency f_b, and channel c, the project uses:
+    s(t) = 0.5 f_b M⁻¹ t
 
-### 18.5 GOAVA irrational-sampling example
+A seed-list contribution has the form:
+    C_v(t) = [1 + cos(β_v + (π/2)(|v|+|n|)s(t))] /
+             (N + |n−v|)
 
-For continuous time `t`, base frequency `f_b`, and channel `c`, the project uses
+with the zero-valued seed entry receiving the additional s(t) term in its base
+phase. The stream is seeded and continuous in t; it is not an RNG call in the
+audio callback.
 
-`s(t) = 0.5 f_b M⁻¹ t`.
+--------------------------------------------------------------------------------
+25. OPERATOR THEORY (OT) — COMPLETE PROJECT MATH REFERENCE
+--------------------------------------------------------------------------------
+OT THEORY — PROJECT DEFINITION
 
-A seed-list contribution has the form
+Operator Theory is the project's alternative arithmetic vocabulary. In canonical
+paths it is primarily an execution/notation layer around deterministic scalar
+operations. “Exact” means exact according to the project's stated OT rules and
+regression contract, not a claim that these rules replace ordinary arithmetic in
+established mathematics.
 
-`C_v(t) = [1 + cos(β_v + (π/2)(|v|+|n|)s(t))] / (N + |n−v|)`
+OT BAND FUNCTION
+    B(x) = 1, if |x|≤1
+         = 2, if 1<|x|≤2
+         = 3, if 2<|x|≤3
+         = 1, if |x|>3
 
-with the zero-valued seed entry receiving the additional `s(t)` term in its
-base phase. The stream is then formed from the note/reference difference and a
-fixed Meum-family gain. The important user-facing property is that the stream is
-seeded and continuous in `t`; it is not an RNG call in the audio callback.
+OT ADDITION AND SUBTRACTION
 
-## 19. OPERATOR THEORY (OT) — COMPLETE PROJECT MATH REFERENCE
+Let b be the band of the operand with the greater magnitude. Then:
+    OT_ADD(n,v) = n+v + 0.5B, when n+v ≥ 0
+    OT_ADD(n,v) = n+v − 0.5B, when n+v < 0
 
-**OT THEORY — CLAIMED EXACT.** Operator Theory is the project's alternative
-arithmetic vocabulary. In canonical paths it is primarily an execution/notation
-layer around deterministic scalar operations. The word “exact” means “exact
-according to the project's stated OT rules and regression contract,” not a claim
-that these rules replace ordinary arithmetic in established mathematics.
+Subtraction follows the project's directional rule; otherwise it routes through
+OT_ADD(n,−v).
 
-### 19.1 OT band function
-
-For `x`, let `a=|x|`. The project's band selector is
-
-`B(x) = 1,  if a≤1;  2, if 1<a≤2;  3, if 2<a≤3;  1, if a>3.`
-
-### 19.2 OT addition and subtraction
-
-Let `b` be the band of the operand with the greater magnitude. Then
-
-`OT_ADD(n,v) = n+v + 0.5 B`, when `n+v ≥ 0`,
-
-and
-
-`OT_ADD(n,v) = n+v − 0.5 B`, when `n+v < 0`.
-
-Subtraction is defined by the project's directional rule; otherwise it routes
-through `OT_ADD(n,−v)`.
-
-### 19.3 OT multiplication
+OT MULTIPLICATION
 
 Magnitude is ordinary multiplication:
+    |OT_MUL(a,b)| = |ab|
 
-`|OT_MUL(a,b)| = |a b|`.
+The project's sign rule is intentionally nonstandard:
+positive×positive returns +|ab|; negative×negative returns −|ab|; unlike signs
+return −|ab|. The special identity is OT_MUL(0,0)=1, while zero with a nonzero
+operand returns 0.
 
-The project's sign rule is intentionally nonstandard. **The implementation is
-the authoritative definition**: positive×positive returns `+|ab|`; negative×negative
-returns `−|ab|`; unlike signs return `−|ab|`. The special identity is `OT_MUL(0,0)=1`, while zero with a nonzero
-operand returns `0`.
+OT POWERS AND ROOTS
 
-### 19.4 OT powers and roots
+Power is defined by:
+    OT_POW(b,e) = s |b|^|e|
 
-For power,
+where s follows the project's signed-power convention. Roots use ordinary
+magnitude roots with the project's real-sign convention. Undefined real-domain
+cases remain undefined rather than being silently reinterpreted as positive
+magnitudes.
 
-`OT_POW(b,e) = s |b|^|e|`,
+OT DIVISION AND ZERO
 
-where `s=+1` when `b` and `e` have the same sign convention and `s=−1`
-otherwise. This is a project-defined signed-power rule.
+For a nonzero denominator:
+    |OT_DIV(a,b)| = |a|/|b|
 
-Roots use ordinary magnitude roots with the project's real-sign convention.
-Undefined real-domain cases remain undefined rather than being silently
-reinterpreted as ordinary positive magnitudes.
+with sign taken from a. The project defines 0/0 = 1 in OT mode. Division by zero
+for nonzero a uses the project's large finite sentinel convention. These are
+compatibility rules, not ordinary field arithmetic.
 
-### 19.5 OT division and zero
+OT PHASE OPERATOR
+    OT_I_PHASE(x,k) = −x for even k, and +x for odd k.
 
-For nonzero denominator,
+It is a symbolic orientation marker and is not intended to introduce a new
+complex-valued audio stream by itself.
 
-`|OT_DIV(a,b)| = |a|/|b|`, with the sign taken from `a`.
+isn AND ics
 
-The project defines `0/0 = 1` in OT mode. Division by zero for nonzero `a` uses
-the project's large finite sentinel convention. This is a compatibility rule,
-not ordinary field arithmetic.
+The canonical book-form definitions are:
+    isn(θ) = 2 sin(θ/2)
+    isn⁻¹(y) = 2 arcsin(y/2)
+    ics(θ) = 2 cos(θ/2)
+    ics⁻¹(y) = 2 arccos(y/2)
 
-### 19.6 OT phase operator
+The inverse functions require |y/2|≤1 on the real principal domain. This is a
+mathematical domain restriction, not a claim about audio clipping.
 
-The integer phase marker is
+--------------------------------------------------------------------------------
+26. EQR REALITY TENSOR
+--------------------------------------------------------------------------------
+The documented EQR form for sequences indexed by n is:
 
-`OT_I_PHASE(x,k) = −x` for even `k`, and `+x` for odd `k`.
+    P = (1/k) Σ[n=0..k] isn⁻¹((isn(d_n)+isn(t))/2)
 
-It is used as a symbolic orientation marker and is not intended to introduce a
-new complex-valued audio stream by itself.
+    E = (1/k) Σ[n=0..k] isn(θ_n)/d_n
 
-### 19.7 `isn` and `ics`
+    D = (1/k) Σ[n=0..k] isn⁻¹(isn(θ_n) E/(I P))
 
-The canonical book-form definitions are
+    Z = P E + D
 
-`isn(θ) = 2 sin(θ/2)`
-
-`isn⁻¹(y) = 2 arcsin(y/2)` on the real principal domain, and
-
-`ics(θ) = 2 cos(θ/2)`
-
-`ics⁻¹(y) = 2 arccos(y/2)` on the real principal domain.
-
-The inverse functions necessarily have a real-domain requirement `|y/2|≤1`.
-That mathematical domain restriction is not a claim about audio clipping; it is
-the domain of the inverse function.
-
-### 19.8 EQR reality tensor
-
-The project uses the following documented EQR form for sequences indexed by `n`:
-
-`P = (1/k) Σ[n=0..k] isn⁻¹((isn(d_n)+isn(t))/2)`
-
-`E = (1/k) Σ[n=0..k] isn(θ_n)/d_n`
-
-`D = (1/k) Σ[n=0..k] isn⁻¹(isn(θ_n) E/(I P))`
-
-`Z = P E + D`
-
-with the project constant `I = 134964356` as its finite-infinity reference.
+with the project constant I = 134964356 as its finite-infinity reference.
 
 These equations describe the project's model. They do not establish a physical
 law or a mathematically proven theory of reality.
 
-## 20. CANONICAL NUMBER-THEORY / CONGRUENCE CLAIMS — WHAT “CLAIMED EXACT” MEANS
-
-The project may label a canonical generation **CLAIMED EXACT** when the claim is
-restricted to the following reproducible implementation contract:
+--------------------------------------------------------------------------------
+27. CANONICAL NUMBER-THEORY / CONGRUENCE CLAIMS
+--------------------------------------------------------------------------------
+The project may label a canonical generation CLAIMED EXACT when the claim is
+restricted to this reproducible implementation contract:
 
 1. The same canonical inputs are serialized in the same order.
 2. The same public constants are used.
@@ -712,143 +1049,538 @@ restricted to the following reproducible implementation contract:
 4. The same canonical state fingerprint is regenerated.
 5. Regression tests compare the resulting canonical records or buffers.
 
-This supports a claim of **implementation-level deterministic correctness under
-the tested contract**. It does not justify the stronger statement that the
-software has proved new number theory, proved that MEUM is irrational, or proved
-perfect congruence for all possible future inputs.
+This supports a claim of implementation-level deterministic correctness under
+the tested contract. It does not prove new number theory, prove that MEUM is
+irrational, or prove perfect congruence for all possible future inputs.
 
-For modular indexing, the ordinary congruence notation is
+For modular indexing:
+    a ≡ b (mod n)  ⇔  n | (a−b)
 
-`a ≡ b (mod n)  ⇔  n | (a−b)`.
+For a cyclic slot permutation:
+    p(i) = (a i + b) mod n
 
-For a cyclic slot permutation
+a sufficient condition for a bijection over residue classes is:
+    gcd(a,n)=1
 
-`p(i) = (a i + b) mod n`,
+That is an established finite-number-theory fact when the implementation follows
+it. A project-specific lattice built from MEUM should instead be described as a
+deterministic mapping unless a separate proof establishes stronger properties.
 
-a sufficient condition for a bijection over the residue classes is
+REFERENCE-ONLY SCRIPTING CONSTANTS
 
-`gcd(a,n)=1`.
+MEUM, MEUM_CONSTANT, MEUM_INV, MEUM_MINUS_1, MEUM_SQ, MEUM_CUBE,
+MEUM_FOURTH, MEUM_NORM, MEUM_OVER_1_5, MEUM_TWO_POW,
+MEUM_TWO_POW_OVER_SQ, MEUM_LOG2, MEUM_UNISON_STEP_FACTOR, MEUM_POWERS_36,
+INSTRUMENT_PHASE_LOCK_48, PHI, PHI_INV, PI_IRR, E_IRR, SQRT2, SQRT3, SILVER.
 
-This is an established finite-number-theory fact and can be used as a real
-correctness statement when the implementation follows it. A project-specific
-lattice built from MEUM should instead be described as a deterministic mapping
-unless a separate proof establishes stronger properties.
-
-### Reference-only scripting constants
-
-The following names are intentionally exposed for inspection and scripting:
-
-`MEUM`, `MEUM_CONSTANT`, `MEUM_INV`, `MEUM_MINUS_1`, `MEUM_SQ`, `MEUM_CUBE`,
-`MEUM_FOURTH`, `MEUM_NORM`, `MEUM_OVER_1_5`, `MEUM_TWO_POW`,
-`MEUM_TWO_POW_OVER_SQ`, `MEUM_LOG2`, `MEUM_UNISON_STEP_FACTOR`, `MEUM_POWERS_36`,
-`INSTRUMENT_PHASE_LOCK_48`, `PHI`, `PHI_INV`, `PI_IRR`, `E_IRR`, `SQRT2`,
-`SQRT3`, and `SILVER`.
-
-They are reference values, not hidden controls. Scripts should read them rather
+These are reference values, not hidden controls. Scripts should read them rather
 than duplicating rounded literals when reproducibility matters.
 
-## 21. UNISON MASTER TRANSFORM — FORMULA AND PRACTICAL EXAMPLE
-
+--------------------------------------------------------------------------------
+28. UNISON MASTER TRANSFORM — FORMULA AND PRACTICAL EXAMPLE
+--------------------------------------------------------------------------------
 The canonical full-unison idea is identity cancellation: every active voice is
 translated from the same shared context rather than receiving an independent
 random identity.
 
-A useful abstract form is
+    U_i = T(C, i, E)
 
-`U_i = T(C, i, E)`
+where C=(seed, base, ratio, s_int, sequential_nums), i is the roster slot, and E
+is the set of active engine flags.
 
-where `C=(seed, base, ratio, s_int, sequential_nums)` is the canonical context,
-`i` is the roster slot, and `E` is the set of active engine flags.
-
-Outside full unison, the pitch carrier uses the lattice factor `L_i`:
-
-`f_i = base · L_i · r_i`.
+Outside full unison, the pitch carrier uses the lattice factor L_i:
+    f_i = base · L_i · r_i
 
 Inside full unison, the canonical translator uses the shared base and ratio:
-
-`f_i = base · ratio`.
+    f_i = base · ratio
 
 The shared entropy coordinate is derived from the canonical entropy function;
-the phase reference is shared rather than independently randomized. The result
-is intended to be an ensemble identity rather than 48 unrelated oscillators.
+the phase reference is shared rather than independently randomized. The result is
+intended to be an ensemble identity rather than 48 unrelated oscillators.
 
-### A reference scripting recipe
+Reference scripting recipe:
+    M = MEUM
+    invM = MEUM_INV
+    phi = PHI
+    u = (3*i*M) % 36
+    s = 0.5 * base_frequency * invM * t
+    master = isn(t*M) * (M - 1) / M + ics(t*phi) * (1 - (M - 1)/M)
+    return master
 
-```python
-# Inspect the canonical constants
-M = MEUM
-invM = MEUM_INV
-phi = PHI
+The recipe is for reference and experimentation. It does not promise that a user
+script reproduces every internal voice parameter unless it uses the same canonical
+function and state inputs as the implementation.
 
-# Reproduce the unison step coordinate for slot i
-u = (3*i*M) % 36
-
-# Continuous GOAVA coordinate
-s = 0.5 * base_frequency * invM * t
-
-# A compact master modulation
-master = isn(t*M) * (M - 1) / M + ics(t*phi) * (1 - (M - 1)/M)
-return master
-```
-
-The recipe is for reference and experimentation. It does not promise that a
-user script reproduces every internal voice parameter unless it uses the same
-canonical function and state inputs as the implementation.
-
-## 22. VERIFICATION, REDISTRIBUTION, AND NUMERICAL BOUNDARIES
-
-### 22.1 What should be verified before redistribution
+--------------------------------------------------------------------------------
+29. VERIFICATION, REDISTRIBUTION, AND NUMERICAL BOUNDARIES
+--------------------------------------------------------------------------------
+WHAT SHOULD BE VERIFIED BEFORE REDISTRIBUTION
 
 - Python syntax compiles.
-- The root `groovebox.py`, `README.md`, and `HELP_TEXT.md` contain the same
-  mathematical documentation where duplication is intentional.
+- groovebox.py, README.md, and HELP_TEXT.md contain the same mathematical
+documentation where duplication is intentional.
 - Public constants are present in the script namespace and reference evaluator.
 - Canonical generation is deterministic for fixed serialized input.
 - Canonical fingerprints remain stable across save/load.
 - Python/reference and native implementations agree where the release contract
-  requires parity.
+requires parity.
 - Nested redistribution archives contain the refreshed files.
 
-### 22.2 No hidden canonical clamp
+NO HIDDEN CANONICAL CLAMP
 
 The canonical frequency-reference helper is intentionally transparent: it does
 not silently force a requested mathematical frequency into a fixed audible
-interval. Explicit instrument/effect constraints are separate from the
-reference transform.
+interval. Explicit instrument/effect constraints are separate from the reference
+transform.
 
-A file-format conversion can still impose a representation limit. For example,
-integer PCM encoding has a finite numeric range. That is a property of the target
-file representation, not a hidden mathematical clamp in the canonical transform.
+A file-format conversion can still impose a representation limit. Integer PCM,
+for example, has a finite numeric range. That is a property of the target file
+representation, not a hidden mathematical clamp in the canonical transform.
 
-Likewise, an inverse such as `arcsin(y/2)` has a mathematical domain. A caller
-that supplies an out-of-domain value has supplied an undefined real input; this
-must not be described as evidence that the canonical forward transform is
-clamping its output.
+Likewise, an inverse such as arcsin(y/2) has a mathematical domain. An out-of-domain
+real input is undefined; it must not be described as evidence that the canonical
+forward transform is clamping its output.
 
-### 22.3 Redistribution rule
+REDISTRIBUTION RULE
 
 Every nested archive included in a redistribution package is a distribution
 artifact, not a separate source of truth. When source documentation or
-`groovebox.py` changes, refresh every nested ZIP/TAR.GZ that contains those files
-and verify that its contents match the outer package.
+groovebox.py changes, refresh every nested ZIP/TAR.GZ that contains those files and
+verify that its contents match the outer package.
 
-The release phrase **CLAIMED EXACT** therefore means:
+The release phrase CLAIMED EXACT therefore means:
 
-> exact with respect to the project's declared formulas, constants, serialization,
-> and tested deterministic implementation contract; approximate/potential with
-> respect to broader mathematical or physical truth.
+    exact with respect to the project's declared formulas, constants, serialization,
+    and tested deterministic implementation contract;
+    approximate/potential with respect to broader mathematical or physical truth.
 
-That distinction should remain in public documentation so users can reproduce
+This distinction should remain in public documentation so users can reproduce
 results without mistaking a project claim for an independently proved theorem.
 
----
+--------------------------------------------------------------------------------
+30. IMPLEMENTATION AUTHORITY AND DOCUMENTATION POLICY
+--------------------------------------------------------------------------------
+The Help/README documents the intended mathematical and software specification of
+Groovebox. When auditing a particular release, the released source code and its
+regression tests are the final implementation authority.
 
-## License / project policy
+A discrepancy between prose and implementation should be treated as a
+documentation defect to be corrected, not silently interpreted as a new rule.
 
-Keep the project-specific license and attribution files supplied with the distribution.
-This README describes implementation behavior and project-defined mathematics. It
-must not be read as a scientific claim that Meum calculus or Operator Theory is an
-established mathematical theory. Established number-theory statements should be
-limited to statements that follow from ordinary definitions and proofs; project
-specific claims should remain explicitly labeled **CLAIMED EXACT** and tied to a
-reproducible test contract.
+The canonical authority is the project's single-source composition model. Legacy
+engine attributes may exist as compatibility mirrors, but canonical save/load,
+export, provenance, and cross-media boundaries must remain synchronized through
+the canonical authority layer.
+
+--------------------------------------------------------------------------------
+31. OFFICIAL PROJECT TERMINOLOGY
+--------------------------------------------------------------------------------
+Official software names:
+    Groovebox
+    Mathematicians Groovebox
+
+Primary mathematical framework:
+    Meum Calculus
+
+Related project-defined arithmetic/operator framework:
+    Operator Theory (OT)
+
+Reference work:
+    Scientific Theories and Inventions — Noah Girouard King (Eski)
+
+These names should be used consistently in the application, Help, README,
+project archives, and release documentation.
+
+--------------------------------------------------------------------------------
+32. CREDITS AND ATTRIBUTION
+--------------------------------------------------------------------------------
+Main editor and author:
+    Noah Girouard King (Eski)
+
+Development and research assistance credited by the project:
+    Grok (xAI)
+    Gemini (Google)
+    Claude (Anthropic)
+    ChatGPT (OpenAI)
+    Mistral.ai (Mistral)
+    Meta AI (Meta)
+    GitHub Copilot (GitHub)
+    Cursor Grok 4.6
+    jcode(1jehuang)
+    opencode (anomalyco)
+
+Credits describe project contributions and tooling/assistance; they do not imply
+endorsement, ownership, authorship, or scientific validation by those services.
+
+--------------------------------------------------------------------------------
+33. LICENSE / PROJECT POLICY
+--------------------------------------------------------------------------------
+Keep the project-specific license and attribution files supplied with the
+distribution.
+
+This documentation describes implementation behavior and project-defined
+mathematics. It must not be read as a scientific claim that Meum Calculus or
+Operator Theory is an established mathematical theory.
+
+Established number-theory statements should be limited to statements that follow
+from ordinary definitions and proofs. Project-specific claims should remain
+explicitly labeled CLAIMED EXACT and tied to a reproducible test contract.
+
+--------------------------------------------------------------------------------
+34. FINAL RELEASE PRINCIPLE
+--------------------------------------------------------------------------------
+Groovebox is intended to be one mathematical composition environment rather than
+three disconnected programs.
+
+    ONE CANONICAL COMPOSITION
+             │
+       ┌─────┼─────┐
+       ▼     ▼     ▼
+     AUDIO VIDEO  GAME
+
+The purpose of the canonical model is correspondence, reproducibility, and
+creative control: the musician/researcher authors a composition once, and each
+compatible engine interprets that same canonical information in its own medium.
+
+The mathematical framework is part of the creative and computational identity of
+the project. The reproducibility contract is part of its engineering identity.
+The distinction between project-defined mathematics and independently established
+mathematical or physical truth is part of its documentation standard.
+
+================================================================================
+  End of Help — Groovebox / Mathematicians Groovebox
+  Main editor and author: Noah Girouard King (Eski)
+================================================================================
+
+
+### v15 User Media + Canonical Morph Bridge
+- **Load Carrier** accepts common audio and video containers. Audio is decoded as the carrier; video audio becomes the carrier while the original video path remains available to the audiovisual export path.
+- **Load Sample → Selected Operator** accepts audio and video files per operator. Video samples are represented as user-owned per-operator media; their decoded audio stream participates in the selected operator's render path.
+- **PRE-CANONICAL SAMPLE MORPH** uses the selected operator's synth parameter state, script, incident patch topology/gains, and domain definition to shape a transformed sample branch.
+- The local sample bridge is explicitly **50% untouched user waveform + 50% transformed branch**, so user sample material has a minimum 50% local contribution. Adaptive Fit and Phase Lock only shape the transformed branch.
+- **FINITE / DC / PEAK GUARD** keeps the transformed branch finite and bounded without silently replacing the user sample.
+- Project save/load stores media references and sample-morph settings; decoded waveform arrays are runtime-derived and re-decoded from the saved paths.
+- Live Play and Audio/Video Export share `_render_mixdown_buffer`, so sample morph, canonical composition, and Master Vector conversion stay on the same render transaction.
+- Export provenance records operator media references and sample-morph settings in addition to Master Vector state.
+
+### v15 UI / Teleport Reliability
+- Main Sequencer step editor is a top-level anchored popup, clamped to the physical display rather than the scrolling viewport.
+- Automator teleport inspector is also top-level and repositions when its horizontal scroll bar moves, preventing the inspector from remaining over an old cell.
+- `Edit Synth\nPer Seq` is the sequence-local synth/panel editing control.
+- `MATH GROOVEBOX.` is enlarged in the Global Processor Controls header.
+- Master Vector Synth is stacked above the Play Video Game and Live DJ controls, making the conversion layer visually upstream of those performance surfaces.
+
+
+V16 UI / automation update: Randomize Automation + Sequence now randomizes automation values together with reference operator, reference sequence number, and per-step offset. Local mode scopes by source instrument/sequence; global mode covers all instrument/sequence banks. Track Offset is persisted per sequence and applied before per-step offset. Global XMOD and Input XMOD plus 0–200% Synth Panel / Mod Patch / Write Script / Calc Domain modulation weights are saved in project/export provenance. Media carrier/sample controls are in the upper control deck, and visualizers have bidirectional scrolling with scalable monitor sizes.
+
+
+## MEUM SPATIAL EQUATION FORMS — GROOVEBOX CANONICAL MATH
+
+Groovebox uses the following stripped-down spatial forms as an implementation language for its mathematical audio/composition pathways. They are **not presented as replacements for the established physical theories**; they are compact computational forms used by the Groovebox engine. Operator Theory (OT) changes expression/method routing only; it does not select a different mathematical output model.
+
+### 1. Spatial Curvature & Metric Evaluation
+
+Accepted reference form:
+
+$$G_{\mu\nu} + \Lambda g_{\mu\nu} = \frac{8\pi G}{c^4}T_{\mu\nu}$$
+
+Groovebox / Meum spatial form:
+
+$$\nabla^2\Psi(x,y,z)=S(x,y,z)$$
+
+The engine treats this as a direct scalar-field relation over the x/y/z computational field rather than constructing a full spacetime metric.
+
+### 2. Field Potential & Attenuation
+
+Accepted electrostatic reference form:
+
+$$\Phi(r)=\frac{q}{4\pi\epsilon_0r}$$
+
+Groovebox / Meum spatial form:
+
+$$\Phi(x,y,z)=\frac{q}{\sqrt{x^2+y^2+z^2}}$$
+
+The form supplies a compact geometric distance/potential expression for bounded computational fields.
+
+### 3. Wave Propagation & Transform Mapping
+
+Accepted Fourier reference form:
+
+$$\psi(k)=\frac{1}{\sqrt{2\pi}}\int_{-\infty}^{\infty}\psi(x)e^{-ikx}dx$$
+
+Groovebox / Meum bounded spatial form:
+
+$$\psi(x,y,z)=\sum A_n\sin\left(\frac{n\pi x}{L_x}\right)\sin\left(\frac{m\pi y}{L_y}\right)\sin\left(\frac{k\pi z}{L_z}\right)$$
+
+The renderer uses bounded harmonic fields and Meum phase fields for its procedural wave/modulation calculations.
+
+### 4. Dynamic State Transition
+
+Accepted perturbative reference form:
+
+$$E_n=E_n^{(0)}+\langle n|H'|n\rangle+\sum_{k\ne n}\frac{|\langle k|H'|n\rangle|^2}{E_n^{(0)}-E_k^{(0)}}+\cdots$$
+
+Groovebox / Meum state-transition form:
+
+$$S_{t+1}(x,y,z)=\sum_{\mathrm{neighbors}}S_t(x\pm\Delta x,y\pm\Delta y,z\pm\Delta z)\cdot W_{geometry}$$
+
+This is used as a deterministic state-propagation pattern for computational fields and effect/context generation.
+
+### Default canonical operating point
+
+- Adaptive Fit = **50%**
+- Phase Lock = **50%**
+- Pre-Canonical Sample Morph = **ON**
+- Finite/Peak Guard = **ON**
+- Global XMOD = **100%**
+- Global Input XMOD = **100%**
+- Synth/Mod Patch/Write Script/Calc Domain window modulation = **100%**
+- User sample branch remains at least **50%** of the local sample-morph blend.
+
+The five Synth Rack controls (Morph, Harmonic Frequency, Chaos, Fold Depth, Harmonic Lattice) are canonical projections when a canonical composition engine is active. The canonical state remains the authoritative project state for save/load/live playback/export.
+
+
+## V17 MEUM DIRECT SPATIAL MATH
+The audio engine includes a bounded Meum spatial effect using direct x,y,z potential, standing-wave, and neighboring-state expressions. OT ON and OT OFF use the same mathematical expressions and numerically equivalent execution handles; the OT switch does not retune this effect. Factory defaults are Adaptive Fit 50%, Phase Lock 50%, sample morph ON, guard ON, and all global/window modulation depths 100%.
+
+
+--------------------------------------------------------------------------------
+PARAMETRIC MATH BACKGROUND — 12 MEUM EQUATION CELLS
+--------------------------------------------------------------------------------
+The ParametricMathBackground draws exactly 12 compact equation cells at a time.
+They are a visual index of the mathematical vocabulary used by Groovebox, not a
+separate audio calculation path. The displayed direct forms are:
+
+  1. Φ(x,y,z) = q / √(x²+y²+z²)
+  2. ψ(x,y,z) = Σ Aₙ sin(nπx/Lₓ) sin(mπy/Lᵧ) sin(kπz/L_z)
+  3. Sₜ₊₁(x,y,z) = Σ_neighbors Sₜ(x±Δx,y±Δy,z±Δz) · W_g
+  4. ∇²Ψ(x,y,z) = S(x,y,z)
+  5. isn(x) = 2·sin(x/2)
+  6. ics(x) = 2·cos(x/2)
+  7. isn⁻¹(y) = 2·asin(y/2)
+  8. ics⁻¹(y) = 2·acos(y/2)
+  9. F_M(x,y,z,t) = isn(M·t+x)·ics(M⁻¹·t+y)+z
+ 10. uₙ = sin(nπx/Lₓ)·sin(mπy/Lᵧ)·sin(kπz/L_z)
+ 11. W_g = 1/(1+√(Δx²+Δy²+Δz²))
+ 12. r = √(x²+y²+z²)
+
+The engine's existing book-derived isn/ics family remains executable and the
+ParametricMathBackground is intentionally display-only. Operator Theory can
+select an equivalent execution route for supported operations without changing
+the displayed Meum expression or its declared mathematical role.
+
+If the user's source book is supplied as a file, additional exact book equations
+can be incorporated into the indexed 12-cell vocabulary.
+
+
+## Canonical signal control — never below 50%
+
+The canonical signal-control contract is always **50–100%**, with or without a carrier. This is separate from the user-data survival floor. User-owned data is never rewritten or downmixed merely because program space is full. Canonicals can instead materialize their own sequence, automation, attack/release, AM, FM, PM, phase, patch, script, domain, or global-effect layer.
+
+### Sequence → Playlist mapping
+
+Each selected sequence has an editable **Wrap to Playlist** / **Schedule Across Playlist** mode. Wrap restarts/fits the sequence inside each playlist row. Schedule keeps the sequence on the playlist clock and permits a sequence whose length does not match the playlist grid to cross or be cut by row boundaries.
+
+Playlist Paint adds **Auto (sequence)**, **Force Wrap**, and **Force Schedule**. These are routing/mapping controls; they do not rewrite the sequence's user-authored steps.
+
+## V20 — CANONICAL CONTROL OPTIONS / PAINT TEMPO
+
+Canonical signal control is always 50–100%. The percentage is earned by a selectable strategy, not merely clamped: Coverage Adaptive, Engine Stack, Full Canonical, or Seeded Baseline. The canonical system may materialize sequence, automation, pitch, amp, phase, trigger, AM, FM, PM, and effect-layer structures in canonical-owned runtime overlays when user program space is full. It does not rewrite a user parameter to make room.
+
+Paint Tempo modes are Row Loop · Wrap, Center Snap · Schedule, Retrigger Rows · Schedule, and Canonical Cut · Row Boundaries. Wrap repeats a sequence for the complete BPM-derived row duration and cuts at the row end. Schedule can align to the row grid, center a sequence, retrigger at row starts, or permit boundary cuts. Explicit Force Wrap / Force Schedule controls remain higher priority than canonical automatic scheduling.
+
+Canonical-owned synth slots expose direct canonical amp, pitch, phase and trigger values and can render simultaneous deterministic chord ratios. User-owned program slots remain readable and are not downmixed solely to increase canonical authority.
+
+
+## V23 — MULTI-TARGET BLEND / TIME-OFFSET / CARRIER PROOF
+
+### Multi-target Playlist Paint
+
+Playlist overlap is no longer limited conceptually to one primary + one secondary. A painted row can retain `blend_targets` and normalized `blend_weights` for multiple secondary instruments. Numeric synth parameters use the multi-target weighted blend primitive; Script, Domain, Synth, and Patch identities remain represented in the playlist consensus.
+
+### Time offsets
+
+Operator-specific `operator_time_offsets` are authoritative render offsets in seconds. Blended targets also retain `blend_time_offsets`, so multiple targets may enter the same playlist row at different absolute offsets. Sequence mapping (Wrap/Schedule) and Paint Tempo remain independent of those offsets.
+
+### Carrier is a modulation/reference source
+
+An imported WAV or video-derived audio carrier is not treated as an uncontrolled third additive bus. It can contribute as:
+
+  • Global Input XMOD modulation reference
+  • 50% phase-reference steering of synthesized voices
+  • optional Global Convolve kernel source
+  • carrier-aware seed/context information
+
+The carrier therefore modulates/steers the composition rather than bypassing the canonical/user blend contract.
+
+### 50% linear composition proof
+
+At the explicit composition boundary, Groovebox uses the source-coefficient invariant:
+
+    M0 = 0.50 · C + 0.50 · U
+
+where `C` is the canonical-engine contribution and `U` is the user-data contribution after any bounded carrier-derived modulation. Therefore:
+
+    canonical coefficient >= 0.50
+    user-data coefficient >= 0.50
+    canonical coefficient + user-data coefficient = 1.00
+
+This is a **coefficient proof**, not an energy/RMS theorem. Later nonlinear operations such as EQR, vector conversion, and hard clipping can change measured amplitude and can destroy a literal 50/50 energy decomposition. The exported provenance records the contract and the measured pre-effect branch ledger so the distinction is auditable.
+
+### Save / Load / Export parity
+
+Project save/load preserves playlist blend targets, blend weights, time offsets, Paint Tempo, sequence mapping, canonical control strategy, canonical runtime overlays, carrier references, sample-morph state, global modulation state, Master Vector state, automation, sequence banks, scripts, patch connections, domain equations, notes, UI controls, and the canonical blend ledger. Audio/video/game exports use the same canonical snapshot/fingerprint and carry the blend-contract provenance.
+
+
+### v24 UI / Canonical additions — Wavetable Projector & Automator anchoring
+
+The global Canonical Morph Bridge now lives directly beneath GLOBAL · COMPOSITION CANONICALS in the upper-right canonical deck. Global XMOD, Input XMOD, and the four editor-window modulation depths are kept in the lower editor deck and do not control Master Volume.
+
+The new **GLOBAL WAVETABLE PROJECTOR** provides 1D Wave, 2D Field, and 3D Resonance-inspired representations with phase, curvature, twist, and fold shaping. It is a global wavetable guide for the Master Vector Synth. User field and deterministic canonical guide are blended 50/50; the projector does not replace canonical composition or Master Volume. Its state is project-save/load persistent and is included in the same render/export pathway.
+
+The Automator teleport inspector is anchored at the selected cell's lower boundary midpoint, with Operator, Sequence, and Offset controls remaining attached to the selected automation step.
+
+
+**Automator timing:** the automation strip now has an explicit **Wrap / Syncopate** mode. Wrap tracks the active Sequencer length and cycles its control points; Syncopate permits an independent polymetric length using the existing ± syncopation control. The selected mode is saved with the project and restored before live rendering/export.
+
+
+## CANONICAL ACTIVITY HANDOFF — 2026
+
+Groovebox now treats the 50% requirement as an activity/continuation architecture, not a post-mix clamp. Canonical continuation maintains an autonomous mathematical stream after user input ceases. Shared user/canonical coordinates include time, rhythm, pitch, envelope, phase, and modulation. The canonical activity ledger records coverage separately from the 0.50/0.50 composition coefficients. The imported carrier remains a modulation/reference source rather than an uncontrolled third additive bus.
+
+The project snapshot persists canonical continuation state and its activity ledger so save/load/export provenance retains the same model. The activity metric is not a claim of 50% final RMS after nonlinear processing; clipping and nonlinear effects can change energy.
+
+
+## Algorithm XMOD + Per-Sequence Algorithm Editing (2026)
+- **Edit Algorithm Per Sequence** forces the number-theoretic step algorithm to address only the selected instrument and selected sequence.
+- **Algorithm XMOD Local 0–200%** controls algorithmic cross-modulation for the active local instrument/sequence.
+- **Algorithm XMOD Global 0–200%** controls the global algorithmic cross-modulation depth across the composition.
+- The two controls are independent and saved/restored with the project; 100% is neutral.
+- The existing global/user XMOD and imported-carrier Input XMOD remain separate from Algorithm XMOD.
+- The Global Wavetable Projector is a shared 1D/2D/3D guide feeding Master Vector; its user/canonical guide remains a 50/50 structural blend.
+
+
+### Meum Spatial Activity Resolution (v28)
+
+Groovebox now includes a direct X/Y/Z activity-field resolver between the canonical and user buses. The resolver uses explicit orthogonal coordinates and local neighbor propagation as a deterministic composition mechanism. It compares canonical and user activity with an L1 activity modulus and structurally expands the canonical branch to the user activity modulus when needed before the fixed 50/50 composition boundary. This is an algorithmic signal-activity invariant, not a final-output limiter.
+
+Shared user/canonical features are tracked across 12 coordinates: time, rhythm, pitch, envelope, phase, modulation, tempo, AM, FM, PM, wavetable/vector, and playlist mapping.
+
+`Edit Algorithm Per Sequence` forces the number-theoretic step algorithm to write only the currently selected instrument + selected sequence. `Algorithm XMOD Local 0–200%` and `Algorithm XMOD Global 0–200%` independently control the local/global algorithmic cross-modulation depth.
+
+
+--------------------------------------------------------------------------------
+V34 — 50%→100% VERIFIED RANGE / MEUM CALCULUS
+--------------------------------------------------------------------------------
+
+The canonical authority range is a real bounded control interval, not a label:
+
+  S ∈ [0.50, 1.00]
+
+  Seeded Baseline       = 0.50
+  Engine Stack (n)      = min(1.00, 0.50 + 0.10 n)
+  Coverage Adaptive     = 0.50 … 1.00
+  Full Canonical        = 1.00 exactly
+
+Therefore five active canonical engines reach the 1.00 ceiling, while the
+minimum remains 0.50 even with no carrier. The source-composition boundary is
+independently fixed as:
+
+  M0 = 0.50 C + 0.50 U
+
+so canonical and userdata each retain a 50% source coefficient at the linear
+composition boundary. The 100% maximum refers to canonical control/authority;
+it is NOT a claim of 100% post-effect RMS energy after nonlinear processing.
+
+MEUM CALCULUS / SPATIAL ACTIVITY
+  Direct X/Y/Z coordinates track temporal position, normalized user activity,
+  and local gradient. Neighbor propagation uses a deterministic six-neighbor-like
+  temporal reduction; the canonical field is expanded to at least the user L1
+  activity when necessary before the 50/50 boundary. This gives a measurable
+  activity modulus of at least 0.50 without a final-output clamp. It is a
+  procedural Meum field construction, not a physical Navier–Stokes solver.
+
+SHARED FEATURE COMPLETENESS = 100%
+  time, rhythm, pitch, envelope, phase, modulation, tempo, AM, FM, PM,
+  wavetable_vector, playlist_mapping
+
+MEDIA / TIMELINE IMPLEMENTATION
+  Track Offset: per-instrument/per-sequence −16…+16 playlist-row units,
+  persisted and applied before per-step offsets.
+  Audio inputs: WAV, MP3, FLAC, OGG/OGA, M4A, AAC, AIFF/AIF, OPUS, CAF,
+  ALAC, WMA, APE, WV.
+  Video inputs: MP4, MOV, MKV, WEBM, AVI, M4V, MPEG/MPG, FLV, TS/M2TS/MTS,
+  3GP/3G2, OGV, VOB. Each instrument may retain its own media source; video
+  sources retain video_path/source_kind/video_input_enabled and their audio
+  stream can enter the user sample/canonical morph path.
+
+UI AUDIT V34
+  Master Volume title/value = 24pt yellorange/amber. Generic white/grey control
+  defaults were removed from the main palette. Sliders use amber/teal rails and
+  handles; spin boxes and combos use blue/teal fields; action states use green,
+  amber, violet, cyan, and red-brown semantics. Canonical Morph Bridge is a
+  three-row responsive panel. Instrument selection is width-capped so the main
+  editor does not become a giant Instrument Windows column.
+  Main action text: RANDOMIZE ALL SEQ.
+  Step and Automator teleport inspectors are independent top-level Tool windows
+  with fixed screen anchors; neither follows the horizontal scroller, and both
+  may remain visible simultaneously.
+
+
+--------------------------------------------------------------------------------
+V34 — AUTOMATOR PARAMETER TELEPORT / UI RE-ARCHITECTURE
+--------------------------------------------------------------------------------
+  The Automator teleport now uses the same two-click selection model as the Step
+  Sequencer: first click selects/teleports; second click toggles ON/OFF. The
+  inspector is a top-level, non-activating Tool window with an independent screen
+  anchor. Two inspectors may remain visible simultaneously and neither follows a
+  horizontal scrollbar.
+
+  Editable teleport destination:
+    Operator; Sequence 1–128; Morph 0–100%; Sequence Attack 0–100%;
+    Sequence Release 0–100%; Offset −1024…+1024; Synth Param; Param Value.
+  The source instrument/sequence is frozen at selection, while the destination
+  operator/sequence is the morph target. Synth parameter edits are written into
+  the selected destination sequence panel, and envelope edits are written into
+  that sequence's envelope state.
+
+  UI color audit: white/grey defaults in the main application controls were
+  replaced with the Groovebox semantic palette. Amber/yellorange identifies
+  master/seed authority, green identifies randomization/active canonical action,
+  cyan/teal identifies signal and media pathways, violet identifies Operator
+  Theory/math controls, and red-brown identifies Automator state.
+  Master Volume remains 24pt yellorange/amber with an enlarged control.
+  Instrument context is width-capped and responsive so the editor does not become
+  an oversized Instrument Windows panel.
+
+
+## V34 Stability / Canonical Control Update
+
+- **Canonical Signal Control:** defaults to **100% Full Canonical**. The control remains a 50–100% authority mechanism, separate from final mix gain.
+- **Self-correcting canonical coverage:** when required canonical sequence/automation/AM/FM/PM/effect lanes are absent, canonical runtime overlays are materialized instead of lowering authority or overwriting user-owned sequence data.
+- **Canonical Resonance / Activity:** independently adjustable **50–150%**. Full user activity targets the 50% floor; user inactivity ramps autonomous canonical activity toward the selected ceiling, with a smoothed handoff.
+- **Canonical→Instrument Convolve:** new bounded **0–100%** control. At 100%, canonical material is the full convolution reference, while the transformed user branch retains a direct 50% user component; the fixed `M0 = 0.50*C + 0.50*U` boundary remains intact.
+- **Maximum instruments:** increased from 64 to **128** for the active synth/visual ensemble and canonical master identity lattice.
+- **Default playlist row length:** **16 beats**.
+- **UI initialization:** Master Volume value is now constructed before stylesheet/object-name access, eliminating the `lbl_master_vol` startup AttributeError.
+
+CANONICAL RESONANCE / 50–150% STABILITY PASS (V34)
+
+  • Canonical resonance/activity is an independent 50–150% continuation-drive control; it is not master volume and does not alter the fixed 0.50*C + 0.50*U composition coefficients.
+  • Full Canonical signal authority defaults to 100%. Missing canonical lanes are materialized in canonical-owned runtime overlays instead of weakening authority or rewriting user-owned data.
+  • 100% canonical→instrument convolution is bounded as a normalized influence transform; the transformed user branch retains a direct 50% user component.
+  • Playlist row length defaults to 16 beats; Playlist Rows remains the separate arrangement-row count control.
+  • Instrument Count supports 2–128 active instruments; the canonical identity lattice remains 128 slots.
+  • V34 removes several direct zero-denominator bypasses and uses explicit invalid/zero cases instead of epsilon values where those cases can occur in live/export paths.
+  • Save/load restores canonical resonance and 100% Full Canonical defaults correctly.
+
+
+## V34 UI / Stability Pass
+- Qt stylesheet alpha values use Qt-compatible integer alpha channels; the prior decimal `rgba(...,0.xx)` forms were removed to prevent QPushButton stylesheet parse warnings.
+- UI construction order is dependency-safe for the seed panel and master-volume widgets.
+- Synth/window launchers, LIVE DJ, and GLOBAL PLAY PATCHER share one horizontal performance deck.
+- Automator controls use a compact two-row grid so the controls fit the sequencer window without forcing horizontal overflow.
+- Canonical authority defaults to Full Canonical / 100%; missing canonical lanes self-materialize in canonical-owned runtime overlays without rewriting user memory.
+- Canonical resonance/activity is independently driven from 50% to 150%, with smooth user-activity handoff and explicit zero cases rather than epsilon denominator bypasses.
+- Canonical→Instrument Convolve is independently bounded 0–100%; zero canonical/user inputs are handled explicitly.
+- Maximum live instrument capacity is 128; default playlist row duration is 16 beats.

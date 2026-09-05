@@ -1,4 +1,16 @@
-# Groovebox v3[final] — Canonical Trio Engine
+
+## V34 Stability Pass
+
+- Reversible randomizer toggle contract: ON captures a full project baseline and generates a fresh variation; OFF restores the exact pre-randomize state; each subsequent ON cycle rerandomizes and shifts the control color palette.
+- Canonical Signal Control defaults to Full Canonical / 100% authority and self-heals missing canonical coverage through canonical-owned runtime overlays without rewriting user data.
+- Canonical Resonance / Activity is 50–150%, independent of the 50/50 source coefficients; 150% is activity/continuation drive, not output volume.
+- Canonical→Instrument convolution influence is 0–100%.
+- Maximum active instruments: 128. Default playlist row duration: 16 beats.
+- ParametricMathBackground is integrated with a deep navy gradient field.
+- Performance controls are consolidated into one horizontal deck; Automator controls are compacted into a multi-row grid.
+- UI initialization order and Qt stylesheet declarations were hardened; division-by-zero-sensitive paths use explicit degenerate-case handling rather than epsilon denominators where practical.
+
+# Groovebox — Mathematicians Groovebox
 
 > **Modern architecture:** Python + C++17 + Julia, sharing one deterministic canonical state model.
 >
@@ -33,7 +45,7 @@
 
 ## 1. What v3[final] is
 
-Groovebox v3[final] is a deterministic mathematical composition environment with three synchronized output domains:
+Groovebox is a deterministic mathematical composition environment with three synchronized output domains:
 
 - **Audio:** oscillators, harmonic/inharmonic synthesis, Meum AM/FM/PM modulation, sequenced voices, canonical unison, imported-carrier influence, effects, live DJ transforms, and master rendering.
 - **Visual:** a 2.5D scenograph driven by the same canonical seed, sequential values, phase, energy, spectrum, GOAVA, and engine masks used by the audio side.
@@ -124,6 +136,29 @@ and, for replay:
 A successful replay means the decoded game trajectory is the same canonical trajectory, subject to the documented floating-point/codec boundaries.
 
 ---
+
+## Official identity and mathematical framework
+
+**Official software names:** Groovebox; Mathematicians Groovebox.
+
+**Primary mathematical framework:** Meum Calculus.
+
+**Related project-defined arithmetic/operator framework:** Operator Theory (OT).
+
+Meum Calculus is the mathematical framework developed and documented by Noah
+Girouard King (Eski) in connection with *Scientific Theories and Inventions* and
+related works. Groovebox implements the project-defined constants, transformations,
+operators, coordinate systems, and derived quantities as a reproducible
+computational system.
+
+The release phrase **CLAIMED EXACT** means exact according to the project's declared
+definitions, formulas, constants, serialization rules, and tested implementation
+contract. It does not by itself assert that a project-defined result is an
+independently established theorem of mathematics or physics.
+
+When prose and implementation differ, the released source code and regression
+tests are the final implementation authority; documentation discrepancies should
+be corrected rather than silently interpreted as new mathematical rules.
 
 ## 3. Canonical Trio architecture
 
@@ -506,7 +541,7 @@ that every generated result is a theorem of number theory. When a canonical
 fingerprint is identical, the implementation is intended to regenerate the same
 canonical state.
 
-## 18. MEUM CALCULUS — DEFINITIONS, OPERATIONS, AND EXAMPLES
+## 18. MEUM CALCULUS — PROJECT DEFINITIONS, OPERATIONS, AND EXAMPLES
 
 **MEUM CALCULUS — CLAIMED EXACT.** In this project, “Meum calculus” means the
 project-defined family of transformations built from the constant `MEUM`, its
@@ -875,3 +910,573 @@ planet or transitioning into deep space.
 seeded entities. This lets sectors, encounters, stations, creatures and props
 be generated from finite helper sprite parts instead of requiring one asset file
 per game object.
+
+
+## 23. Canonical authority and cross-media single-source policy
+
+The canonical composition is the authoritative representation of the project at
+engine, persistence, export, provenance, and cross-media boundaries. Audio, video,
+and videogame generation consume that same composition rather than independently
+reconstructing separate projects.
+
+Legacy engine attributes may remain as compatibility mirrors because Groovebox is
+a large existing application. They are not intended to become competing sources
+of truth. Canonical save/load, export, provenance, and cross-media operations pass
+through the canonical authority layer.
+
+The conceptual relationship is:
+
+```text
+             ONE CANONICAL COMPOSITION
+                       │
+             ┌─────────┼─────────┐
+             ▼         ▼         ▼
+           AUDIO     VIDEO      GAME
+             │         │         │
+             ▼         ▼         ▼
+            WAV       MP4   GAME DATA/ENGINE
+```
+
+The same principle applies to imported media: audio and video references are part
+of composition state when their supported roles affect the work. Missing external
+media should be reported rather than silently replaced with unrelated content.
+
+## 24. Credits and attribution
+
+Main editor and author: **Noah Girouard King (Eski)**.
+
+Development and research assistance credited by the project includes Grok (xAI),
+Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI), Mistral.ai (Mistral),
+Meta AI (Meta), GitHub Copilot (GitHub), Cursor Grok 4.6, jcode(1jehuang), and
+opencode (anomalyco). These credits describe project tooling/assistance and do not
+imply endorsement, ownership, authorship, or scientific validation by those services.
+
+## 25. Final release principle
+
+Groovebox is intended to be one mathematical composition environment rather than
+three disconnected programs:
+
+**ONE COMPOSITION = SOUND + IMAGE + INTERACTION**
+
+The mathematical framework is part of the creative and computational identity of
+the project. The reproducibility contract is part of its engineering identity.
+The distinction between project-defined mathematics and independently established
+mathematical or physical truth is part of its documentation standard.
+
+
+--------------------------------------------------------------------------------
+PLAYLIST ROWS / ROW BEATS
+-------------------------
+  Playlist Rows controls how many arrangement rows exist. Row beats controls the
+  wall-clock duration of each playlist row. These are arrangement timing controls,
+  not automation-step selectors; automation has its own Length and Step controls.
+
+AUTOMATION STEP EDITOR — SEQUENCER-STYLE CONTROL
+--------------------------------------------------------------------------------
+  The automation strip is a second step sequencer directly under the main
+  sequencer. It is intentionally simple and behaves like the normal step pads.
+
+  • Length controls how many automation steps are shown. The orange strip grows
+    or scrolls horizontally to match that count.
+  • Sequence Attack and Sequence Release default to 50% each and remain directly
+    controllable per sequence by the canonical composition state.
+  • First click on an automation step = SELECT + TELEPORT. The Step, Operator,
+    Sequence, and Offset ± controls above immediately show that step's state.
+  • Second click on the SAME automation step = toggle ON/OFF. ON steps are bright
+    orange; OFF steps are dim orange/brown. The selected step has a bright outline.
+  • Operator chooses the instrument/operator for that automation step.
+  • Sequence chooses the sequence bank used at that step.
+  • Offset ± is the per-note sequence-step offset.
+  • Changing Operator, Sequence, or Offset ± edits the currently selected step
+    immediately; there is no POINT/apply button.
+  • There is no automation-points counter and no playlist-row selector here.
+    Automation is edited in the same step-oriented context as the sequencer.
+  • The highlighted AUTO step is the active teleport target. The Step box above
+    follows it, and Operator / Sequence / Offset ± edit that same step live.
+  • Master Volume is deliberately outside canonical control. Canonicals control
+    composition state (including synth pitch/amp and sequence/pattern envelopes),
+    never the final Master Volume.
+  • CLEAR removes all direct automation steps.
+  • RANDOMIZE AUTOMATION IN SEQUENCE randomizes only the currently selected
+    Operator / Sequence automation lane. It does not alter other sequences or
+    Master Volume.
+  • RANDOMIZE ALL SEQ rebuilds automation across every
+    instrument and sequence. It changes automation only; Master Volume remains
+    untouched. Both randomizers create one undoable edit.
+
+  Typical use:
+      1. Set Length (for example 16).
+      2. Click AUTO 1 once to select it.
+      3. Choose Operator / Sequence / Offset ±.
+      4. Click AUTO 1 again to turn that automation step ON.
+      5. Click another step once to teleport to it, edit it, then click it again
+         when you want it ON.
+
+  The automation state is written through the canonical composition boundary and
+  participates in Live Play / Audio Export / Video Export. Disabled automation steps do not drive the
+  render. The Automator popup is a UI-only teleport indicator; Operator, Sequence,
+  and Offset edits are written to the selected automation point.
+
+## AUTOMATION RANDOMIZATION
+
+Automation has two deliberately separate randomizers:
+
+- **Randomize Automation In Sequence** — operates only on the currently selected instrument/operator and sequence.
+- **Randomize All Automation Everywhere** — operates across every instrument and every sequence.
+
+These controls modify automation steps/offsets only. They do **not** control or randomize Master Volume.
+
+
+### v13.1 Signal Conversion / Path Parity
+- **Master Vector Synth** is a bounded post-composition conversion layer. User XYZ direction and the deterministic canonical XYZ direction are blended 50/50; Drive controls conversion strength.
+- **Signal Guard** preserves finite/nonzero support when the bounded vector field is active; it is not a claim that an absent/zero input contains recoverable information.
+- **Signal Conversion Monitor** reports RMS, peak, headroom, finite status, and signal presence after vector conversion. It is observational and cannot become a second composition authority.
+- **SAFE VECTOR** restores the recommended starting point: conversion ON, guard ON, Drive 50%. **RESET VECTOR** zeros only the user XYZ direction; canonical direction remains active at 50%.
+- Project JSON save/load already carries `master_vector_state`. Export provenance now also carries the vector coordinates, Drive, enabled/guard flags, and the fixed 50/50 ownership weights.
+- Live Play and audio/video export all pass through `_render_mixdown_buffer`, so the Master Vector Synth is applied consistently before the final master hard-clip stage.
+
+### v13 UI / Master Vector Synth
+- SEQUENCER and AUTOMATOR STEPS interaction labels are green.
+- Sequencer ON cells are gold; OFF cells are dark blue.
+- Automator enabled cells use a brown-red base and become more red on hover; OFF cells are dark blue.
+- Edit Synth Per Seq is a brown active-state button and prepares sequence-local synth/panel editing.
+- Automator teleport inspector is a top-level anchored popup positioned above the selected cell when screen space allows.
+- Added MASTER VECTOR SYNTH: bounded XYZ resonant direction visualizer, fixed 50/50 user/canonical direction blend, drive control, and signal guard.
+- Added SIGNAL CONVERSION MONITOR with post-vector RMS/peak/headroom telemetry plus SAFE VECTOR and RESET VECTOR shortcuts.
+- Added top-right MATH GROOVEBOX. logo and expanded Live DJ panel width.
+
+
+### v15 User Media + Canonical Morph Bridge
+- **Load Carrier** accepts common audio and video containers. Audio is decoded as the carrier; video audio becomes the carrier while the original video path remains available to the audiovisual export path.
+- **Load Sample → Selected Operator** accepts audio and video files per operator. Video samples are represented as user-owned per-operator media; their decoded audio stream participates in the selected operator's render path.
+- **PRE-CANONICAL SAMPLE MORPH** uses the selected operator's synth parameter state, script, incident patch topology/gains, and domain definition to shape a transformed sample branch.
+- The local sample bridge is explicitly **50% untouched user waveform + 50% transformed branch**, so user sample material has a minimum 50% local contribution. Adaptive Fit and Phase Lock only shape the transformed branch.
+- **FINITE / DC / PEAK GUARD** keeps the transformed branch finite and bounded without silently replacing the user sample.
+- Project save/load stores media references and sample-morph settings; decoded waveform arrays are runtime-derived and re-decoded from the saved paths.
+- Live Play and Audio/Video Export share `_render_mixdown_buffer`, so sample morph, canonical composition, and Master Vector conversion stay on the same render transaction.
+- Export provenance records operator media references and sample-morph settings in addition to Master Vector state.
+
+### v15 UI / Teleport Reliability
+- Main Sequencer step editor is a top-level anchored popup, clamped to the physical display rather than the scrolling viewport.
+- Automator teleport inspector is also top-level and repositions when its horizontal scroll bar moves, preventing the inspector from remaining over an old cell.
+- `Edit Synth\nPer Seq` is the sequence-local synth/panel editing control.
+- `MATH GROOVEBOX.` is enlarged in the Global Processor Controls header.
+- Master Vector Synth is stacked above the Play Video Game and Live DJ controls, making the conversion layer visually upstream of those performance surfaces.
+
+
+V16 UI / automation update: Randomize Automation + Sequence now randomizes automation values together with reference operator, reference sequence number, and per-step offset. Local mode scopes by source instrument/sequence; global mode covers all instrument/sequence banks. Track Offset is persisted per sequence and applied before per-step offset. Global XMOD and Input XMOD plus 0–200% Synth Panel / Mod Patch / Write Script / Calc Domain modulation weights are saved in project/export provenance. Media carrier/sample controls are in the upper control deck, and visualizers have bidirectional scrolling with scalable monitor sizes.
+
+
+## MEUM SPATIAL EQUATION FORMS — GROOVEBOX CANONICAL MATH
+
+Groovebox uses the following stripped-down spatial forms as an implementation language for its mathematical audio/composition pathways. They are **not presented as replacements for the established physical theories**; they are compact computational forms used by the Groovebox engine. Operator Theory (OT) changes expression/method routing only; it does not select a different mathematical output model.
+
+### 1. Spatial Curvature & Metric Evaluation
+
+Accepted reference form:
+
+$$G_{\mu\nu} + \Lambda g_{\mu\nu} = \frac{8\pi G}{c^4}T_{\mu\nu}$$
+
+Groovebox / Meum spatial form:
+
+$$\nabla^2\Psi(x,y,z)=S(x,y,z)$$
+
+The engine treats this as a direct scalar-field relation over the x/y/z computational field rather than constructing a full spacetime metric.
+
+### 2. Field Potential & Attenuation
+
+Accepted electrostatic reference form:
+
+$$\Phi(r)=\frac{q}{4\pi\epsilon_0r}$$
+
+Groovebox / Meum spatial form:
+
+$$\Phi(x,y,z)=\frac{q}{\sqrt{x^2+y^2+z^2}}$$
+
+The form supplies a compact geometric distance/potential expression for bounded computational fields.
+
+### 3. Wave Propagation & Transform Mapping
+
+Accepted Fourier reference form:
+
+$$\psi(k)=\frac{1}{\sqrt{2\pi}}\int_{-\infty}^{\infty}\psi(x)e^{-ikx}dx$$
+
+Groovebox / Meum bounded spatial form:
+
+$$\psi(x,y,z)=\sum A_n\sin\left(\frac{n\pi x}{L_x}\right)\sin\left(\frac{m\pi y}{L_y}\right)\sin\left(\frac{k\pi z}{L_z}\right)$$
+
+The renderer uses bounded harmonic fields and Meum phase fields for its procedural wave/modulation calculations.
+
+### 4. Dynamic State Transition
+
+Accepted perturbative reference form:
+
+$$E_n=E_n^{(0)}+\langle n|H'|n\rangle+\sum_{k\ne n}\frac{|\langle k|H'|n\rangle|^2}{E_n^{(0)}-E_k^{(0)}}+\cdots$$
+
+Groovebox / Meum state-transition form:
+
+$$S_{t+1}(x,y,z)=\sum_{\mathrm{neighbors}}S_t(x\pm\Delta x,y\pm\Delta y,z\pm\Delta z)\cdot W_{geometry}$$
+
+This is used as a deterministic state-propagation pattern for computational fields and effect/context generation.
+
+### Default canonical operating point
+
+- Adaptive Fit = **50%**
+- Phase Lock = **50%**
+- Pre-Canonical Sample Morph = **ON**
+- Finite/Peak Guard = **ON**
+- Global XMOD = **100%**
+- Global Input XMOD = **100%**
+- Synth/Mod Patch/Write Script/Calc Domain window modulation = **100%**
+- User sample branch remains at least **50%** of the local sample-morph blend.
+
+The five Synth Rack controls (Morph, Harmonic Frequency, Chaos, Fold Depth, Harmonic Lattice) are canonical projections when a canonical composition engine is active. The canonical state remains the authoritative project state for save/load/live playback/export.
+
+
+## V17 — Meum Direct Spatial Math + Canonical Factory Defaults
+
+Groovebox uses the direct x,y,z Meum expressions as canonical mathematical forms. Operator Theory (OT) is an execution/representation handle: when OT is enabled, these expressions route through the OT equivalence kernel; when OT is disabled, the same expressions use ordinary arithmetic. The numerical output of these Meum DSP paths is therefore invariant to the OT toggle.
+
+### 1. Spatial curvature / metric field
+
+The accepted tensor description is represented here by the direct spatial Poisson-style form:
+
+$$\nabla^2 \Psi(x,y,z)=S(x,y,z)$$
+
+The Groovebox implementation samples a bounded scalar field directly over normalized $x,y,z$ coordinates rather than changing a metric tensor.
+
+### 2. Field potential
+
+The direct Meum potential form is:
+
+$$\Phi(x,y,z)=\frac{q}{\sqrt{x^2+y^2+z^2}}$$
+
+The implementation uses this bounded potential term as one component of the Meum spatial audio effect.
+
+### 3. Wave mechanics
+
+The direct bounded standing-wave form is:
+
+$$\psi(x,y,z)=\sum A_n\sin\left(\frac{n\pi x}{L_x}\right)\sin\left(\frac{m\pi y}{L_y}\right)\sin\left(\frac{k\pi z}{L_z}\right)$$
+
+The audio effect uses the first bounded spatial harmonic as its sampled wave component.
+
+### 4. State transitions
+
+The direct neighboring-node form is:
+
+$$S_{t+1}(x,y,z)=\sum_{\mathrm{neighbors}}S_t(x\pm\Delta x,y\pm\Delta y,z\pm\Delta z)\cdot\mathrm{GeometryWeight}$$
+
+The Groovebox effect uses a deterministic adjacent-coordinate state field as the local transition contribution.
+
+These four forms are mathematical expressions/methods used by the engine; they are not claims that the simplified forms replace general relativity, electrodynamics, Fourier analysis, or perturbation theory in physics.
+
+### Canonical factory defaults
+
+The productive default state is intentionally non-neutral: Adaptive Fit = **50%**, Phase Lock = **50%**, Pre-Canonical Sample Morph = **ON**, finite/peak guard = **ON**, and the Global XMOD / Input XMOD / four window modulation controls start at **100%**. The canonical engine can therefore autocompose directly against a seed while empty/default placeholder slots remain useful as remix/writing fallbacks. User sample contribution remains protected at a minimum 50% in the bounded sample-morph bridge.
+
+
+## Meum Equation Field — ParametricMathBackground
+
+The `ParametricMathBackground` is not decorative placeholder mathematics: its equation cells are a visual index of the same mathematical vocabulary used by Groovebox. Exactly **12 equation cells** are drawn at a time so the field remains readable rather than becoming a wall of formulas. The background is display-only and does not alter audio state.
+
+The current 12-cell field presents these direct forms:
+
+1. **Field potential:** `Φ(x,y,z) = q / √(x²+y²+z²)`
+2. **Wave mechanics:** `ψ(x,y,z) = Σ Aₙ sin(nπx/Lₓ) sin(mπy/Lᵧ) sin(kπz/L_z)`
+3. **State transition:** `Sₜ₊₁(x,y,z) = Σ_neighbors Sₜ(x±Δx,y±Δy,z±Δz) · W_g`
+4. **Spatial curvature/source field:** `∇²Ψ(x,y,z) = S(x,y,z)`
+5. **Meum isn:** `isn(x) = 2·sin(x/2)`
+6. **Meum ics:** `ics(x) = 2·cos(x/2)`
+7. **isn inverse:** `isn⁻¹(y) = 2·asin(y/2)`
+8. **ics inverse:** `ics⁻¹(y) = 2·acos(y/2)`
+9. **Meum field:** `F_M(x,y,z,t) = isn(M·t+x)·ics(M⁻¹·t+y)+z`
+10. **Standing node:** `uₙ = sin(nπx/Lₓ)·sin(mπy/Lᵧ)·sin(kπz/L_z)`
+11. **Neighbor weight:** `W_g = 1/(1+√(Δx²+Δy²+Δz²))`
+12. **Spatial radius:** `r = √(x²+y²+z²)`
+
+These cells are expressions/methods, not a second hidden computation path. OT may provide an equivalent execution handle for supported operations, while the displayed Meum expressions remain stable.
+
+The project also retains the book-derived `isn`/`ics` family and inverse forms in the executable math layer. The exact source text of the user's book is not bundled in this build; when a book PDF/source is supplied, its additional equations can be added to the 12-cell rotating/indexed field without replacing the existing canonical forms.
+
+
+## V19 — Canonical Signal Floor + Sequence Wrap/Schedule
+
+- **Canonical signal control invariant:** a single authoritative control scalar is clamped to **50–100%** and is independent of whether an imported carrier exists.
+- **User-data floor:** user-owned sample/program data is not silently downmixed to make canonical room; the protected local user branch remains 50%.
+- **No-slot rule:** if canonical material has nowhere to write, it creates canonical sequence/automation/AM/FM/PM/envelope/effect structure or uses the seeded global layer instead of rewriting user parameters.
+- **Sequence → Playlist mode:** each sequence can be edited as **Wrap to Playlist** or **Schedule Across Playlist**.
+- **Force Wrap / Force Schedule:** playlist paint can override the sequence mapping per painted row. Force Schedule permits a sequence to cross/cut through playlist-row boundaries instead of being silently re-fit.
+- **Track Offset startup fix:** restores `_on_track_offset_changed` so the v18 Track Offset control no longer aborts application startup.
+- **Persistence:** canonical signal control and sequence mapping metadata travel through project save/load.
+
+## V20 — Canonical Control Options + Paint Tempo
+
+Canonical signal control is an invariant 50–100% authority band, but it is **not a naked clamp**. The UI exposes four strategies: Coverage Adaptive, Engine Stack, Full Canonical, and Seeded Baseline. Missing canonical lanes are materialized in canonical-owned runtime overlays rather than rewriting user program slots.
+
+Canonical coverage includes sequence, automation, pitch, amp, phase, trigger, AM, FM, PM, and a canonical effect layer. Canonical-owned synth slots can use direct amp/pitch/phase/trigger values and simultaneous deterministic chord ratios. User-owned program data remains the protected source and is never downmixed merely to create canonical room.
+
+### Paint Tempo
+
+Playlist paint now records a tempo-aware mode: Row Loop / Wrap, Center Snap / Schedule, Retrigger Rows / Schedule, or Canonical Cut / Row Boundaries. Row Loop repeats a sequence to the row duration at the master BPM and cuts at the row boundary. Center Snap schedules the sequence around the middle of the row grid. Retrigger Rows restarts at each row. Canonical Cut allows boundary clipping when the canonical strategy determines that preserving row-local coverage is preferable. Explicit Force Wrap / Force Schedule settings override automatic mapping.
+
+## V23 blend and carrier contract
+
+Groovebox supports multi-target playlist blending. A row may retain multiple `blend_targets` with normalized `blend_weights`, while each target can retain an independent `blend_time_offsets` value in seconds. Operator `operator_time_offsets` remain authoritative render offsets.
+
+Imported audio/video carrier data is a modulation/reference source: Global Input XMOD can use carrier waveform values, synthesized voices can receive 50% carrier phase-reference steering, and Global Convolve can use the carrier as a kernel. The carrier is not an uncontrolled third additive bus.
+
+At the composition boundary the source-coefficient contract is:
+
+`M0 = 0.50*C + 0.50*U`
+
+where `C` is canonical-engine material and `U` is user data after bounded carrier-derived modulation. Thus both source coefficients have a mathematical minimum of 0.50 and sum to 1.00. This is a coefficient invariant, not a post-hardclip RMS/energy theorem.
+
+Project save/load now explicitly persists the playlist blend contract, multi-target data, offsets, canonical control/overlay state, and the measured canonical/user/carrier ledger. Export provenance records the same contract and canonical fingerprint.
+
+
+### v24 UI / Canonical additions — Wavetable Projector & Automator anchoring
+
+The global Canonical Morph Bridge now lives directly beneath GLOBAL · COMPOSITION CANONICALS in the upper-right canonical deck. Global XMOD, Input XMOD, and the four editor-window modulation depths are kept in the lower editor deck and do not control Master Volume.
+
+The new **GLOBAL WAVETABLE PROJECTOR** provides 1D Wave, 2D Field, and 3D Resonance-inspired representations with phase, curvature, twist, and fold shaping. It is a global wavetable guide for the Master Vector Synth. User field and deterministic canonical guide are blended 50/50; the projector does not replace canonical composition or Master Volume. Its state is project-save/load persistent and is included in the same render/export pathway.
+
+The Automator teleport inspector is anchored at the selected cell's lower boundary midpoint, with Operator, Sequence, and Offset controls remaining attached to the selected automation step.
+
+
+**Automator timing:** the automation strip now has an explicit **Wrap / Syncopate** mode. Wrap tracks the active Sequencer length and cycles its control points; Syncopate permits an independent polymetric length using the existing ± syncopation control. The selected mode is saved with the project and restored before live rendering/export.
+
+
+## CANONICAL ACTIVITY HANDOFF — 2026
+
+Groovebox now treats the 50% requirement as an activity/continuation architecture, not a post-mix clamp. Canonical continuation maintains an autonomous mathematical stream after user input ceases. Shared user/canonical coordinates include time, rhythm, pitch, envelope, phase, and modulation. The canonical activity ledger records coverage separately from the 0.50/0.50 composition coefficients. The imported carrier remains a modulation/reference source rather than an uncontrolled third additive bus.
+
+The project snapshot persists canonical continuation state and its activity ledger so save/load/export provenance retains the same model. The activity metric is not a claim of 50% final RMS after nonlinear processing; clipping and nonlinear effects can change energy.
+
+
+## Algorithm XMOD + Per-Sequence Algorithm Editing (2026)
+- **Edit Algorithm Per Sequence** forces the number-theoretic step algorithm to address only the selected instrument and selected sequence.
+- **Algorithm XMOD Local 0–200%** controls algorithmic cross-modulation for the active local instrument/sequence.
+- **Algorithm XMOD Global 0–200%** controls the global algorithmic cross-modulation depth across the composition.
+- The two controls are independent and saved/restored with the project; 100% is neutral.
+- The existing global/user XMOD and imported-carrier Input XMOD remain separate from Algorithm XMOD.
+- The Global Wavetable Projector is a shared 1D/2D/3D guide feeding Master Vector; its user/canonical guide remains a 50/50 structural blend.
+
+
+### Meum Spatial Activity Resolution (v28)
+
+Groovebox now includes a direct X/Y/Z activity-field resolver between the canonical and user buses. The resolver uses explicit orthogonal coordinates and local neighbor propagation as a deterministic composition mechanism. It compares canonical and user activity with an L1 activity modulus and structurally expands the canonical branch to the user activity modulus when needed before the fixed 50/50 composition boundary. This is an algorithmic signal-activity invariant, not a final-output limiter.
+
+Shared user/canonical features are tracked across 12 coordinates: time, rhythm, pitch, envelope, phase, modulation, tempo, AM, FM, PM, wavetable/vector, and playlist mapping.
+
+`Edit Algorithm Per Sequence` forces the number-theoretic step algorithm to write only the currently selected instrument + selected sequence. `Algorithm XMOD Local 0–200%` and `Algorithm XMOD Global 0–200%` independently control the local/global algorithmic cross-modulation depth.
+
+# V34 — MEUM CALCULUS 50% → 100% PROOF, UI COLOR/LEGIBILITY PASS, MEDIA + OFFSET AUDIT
+
+## The 50% floor and the 100% ceiling are now separately proven
+
+Groovebox now records a deterministic, machine-checkable `canonical_range_proof` in its project/export provenance. The proof distinguishes three different invariants that must not be conflated:
+
+1. **Canonical authority range:** the canonical control is structurally constrained to `0.50 ≤ S ≤ 1.00`.
+2. **User-data floor:** the protected user branch remains a 0.50 coefficient at the composition boundary.
+3. **Final audio energy:** this is deliberately *not* claimed to be a 50% RMS theorem after nonlinear processing.
+
+The named canonical strategies are now documented and tested as:
+
+- `Seeded Baseline` → **50%** minimum.
+- `Engine Stack` → **50–100%**, reaching **100%** at five active canonical engines.
+- `Full Canonical` → **100%** ceiling by explicit strategy.
+- `Coverage Adaptive` → **50–100%**, with sequence, automation, modulation and active-engine coverage contributing authority rather than silently stealing user slots.
+
+The composition boundary remains exactly:
+
+`M0 = 0.50 · C + 0.50 · U`
+
+That equation proves the source coefficients. It does **not** say that nonlinear EQR, Master Vector conversion, hard clipping, or other later transformations preserve equal RMS energy. Master Volume remains the final user-controlled gain and is not secretly manipulated by canonical authority.
+
+## Meum Calculus / spatial activity proof
+
+The Meum Spatial Activity Resolution layer is now part of the documented proof chain. It uses direct orthogonal coordinates:
+
+- `x` = temporal position
+- `y` = normalized user amplitude/activity
+- `z` = normalized local gradient
+
+The temporal field receives a deterministic three-sample local propagation `(left + center + right)/3`, representing the reduced one-dimensional form of the requested neighbor idea. The canonical field is then compared with the user field through an L1 activity modulus. If canonical L1 activity is below user L1 activity, the canonical branch is structurally expanded to the user activity level **before** the fixed 50/50 composition boundary; the user bus itself is not rewritten.
+
+This is a **procedural Meum field mechanism**, not a claim to solve physical Navier–Stokes. The mathematical distinction matters: the system borrows the user's loss/neighbor/vector intuition while remaining deterministic, bounded and auditable inside the music engine.
+
+A deterministic 2048-sample proof vector currently gives approximately **64.516% canonical activity modulus**, above the 50% floor. The proof is stored as `meum_spatial_activity_modulus` and `meum_spatial_loss` in the canonical ledger.
+
+## 100% shared feature completeness
+
+The user/canonical shared feature plane is now explicitly twelve-dimensional:
+
+`time, rhythm, pitch, envelope, phase, modulation, tempo, AM, FM, PM, wavetable_vector, playlist_mapping`
+
+The ledger records `shared_feature_count = 12` and `shared_feature_completeness = 1.0` (**100% of the defined shared-feature plane**).
+
+This 100% is a feature-coverage claim, not an assertion that every possible audio property in existence is controlled.
+
+## Automation / Step Teleport contract
+
+The Automator teleport inspector is now a real two-row editor rather than a cramped status strip. First click selects and teleports; second click toggles ON/OFF. The inspector exposes:
+
+- Target Operator
+- Target Sequence index (1–128)
+- Morph 0–100%
+- Sequence Attack 0–100%
+- Sequence Release 0–100%
+- Offset roller −1024…+1024 steps
+
+The target sequence's synth/panel state and sequence envelope are the morph destination. Changes are written into the automation point/target sequence rather than being visual-only.
+
+The main Step Sequencer teleport popup and the Automator popup are now explicitly **static after selection**. Horizontal scrollbar motion does not repeatedly reposition the popup, and the step editor no longer calls `ensureWidgetVisible()` during popup positioning.
+
+## Canonical Morph Bridge workspace
+
+The Canonical Morph Bridge is no longer duplicated in the narrow global side column. It is a dominant lower-deck panel with three explicit rows and an expanding horizontal footprint, allowing the right-hand blank workspace to become usable editing space instead of clipping the bridge in place.
+
+## Track Offset is a real render input
+
+`Track Offset` is persisted per sequence/instrument, exposes a continuous `−16 … +16` row-unit control, and is applied in the render timeline before the per-step offset. Save/load and export provenance retain the value.
+
+## Multiformat audio/video inputs
+
+The media decoder uses FFmpeg for non-WAV media and now advertises common audio and video containers including:
+
+- Audio: WAV, MP3, FLAC, OGG/OGA, M4A, AAC, AIFF/AIF, OPUS, CAF, ALAC, WMA, APE, WV.
+- Video: MP4, MOV, MKV, WEBM, AVI, M4V, MPEG/MPG, FLV, TS/M2TS/MTS, 3GP/3G2, OGV, VOB.
+
+A global carrier may use audio directly or the decoded audio stream of a video. Each selected instrument can independently own an imported audio **or video** source. Per-instrument video inputs retain `video_path`, `video_input_enabled`, `source_kind`, decoded waveform and user ownership through project save/load. The source participates in the same 50% user-data sample morph before canonical composition.
+
+## UI visual language — no generic white/grey control theme
+
+The V34 visual pass removes generic white/grey control defaults from the main application stylesheet. Sliders, spin boxes, combo boxes, labels, tables, headers, buttons, progress bars and text fields now use functional colors rather than default white/grey treatment. Gold/amber marks authority and important values; cyan/teal marks editable data and routing; violet/blue marks mathematical/canonical systems; green marks active/play/randomization; red-brown marks Automator state and warning/danger functions.
+
+**Master Volume is deliberately dominant:** its title and value are **24pt yellorange/amber**, its slider is wider and taller, and its handle is enlarged. Canonical processing never writes to Master Volume.
+
+## Seed / Help / README placement
+
+The global Seed editor is explicitly top-anchored and compact enough to keep `🎲 Random Seed Script` and `❓ README / Help` visible at the top of the global workspace. The seed remains user-controlled; the Random Seed button creates example scripts but does not silently overwrite a user's seed on startup.
+
+## Today’s feature chain
+
+V34 retains the work from the current development pass: Meum Spatial Activity Resolution; canonical 50–100% strategy control; autonomous canonical continuation; 12-feature shared plane; Algorithm XMOD global/local controls; Edit Algorithm Per Sequence; sequence Wrap/Schedule and Paint Tempo modes; multi-target playlist blending and time offsets; carrier-as-modulation/reference rather than a third additive bus; 50/50 user-sample morphing; Wavetable Projector; Master Vector Synth; sequence-wide attack/release follow; canonical amp/pitch/phase/trigger/chord material; static Step/Automator teleport inspectors; Track Offset; multiformat media decoding; per-instrument video/audio inputs; project save/load; and export provenance.
+
+
+--------------------------------------------------------------------------------
+V34 — 50%→100% VERIFIED RANGE / MEUM CALCULUS
+--------------------------------------------------------------------------------
+
+The canonical authority range is a real bounded control interval, not a label:
+
+  S ∈ [0.50, 1.00]
+
+  Seeded Baseline       = 0.50
+  Engine Stack (n)      = min(1.00, 0.50 + 0.10 n)
+  Coverage Adaptive     = 0.50 … 1.00
+  Full Canonical        = 1.00 exactly
+
+Therefore five active canonical engines reach the 1.00 ceiling, while the
+minimum remains 0.50 even with no carrier. The source-composition boundary is
+independently fixed as:
+
+  M0 = 0.50 C + 0.50 U
+
+so canonical and userdata each retain a 50% source coefficient at the linear
+composition boundary. The 100% maximum refers to canonical control/authority;
+it is NOT a claim of 100% post-effect RMS energy after nonlinear processing.
+
+MEUM CALCULUS / SPATIAL ACTIVITY
+  Direct X/Y/Z coordinates track temporal position, normalized user activity,
+  and local gradient. Neighbor propagation uses a deterministic six-neighbor-like
+  temporal reduction; the canonical field is expanded to at least the user L1
+  activity when necessary before the 50/50 boundary. This gives a measurable
+  activity modulus of at least 0.50 without a final-output clamp. It is a
+  procedural Meum field construction, not a physical Navier–Stokes solver.
+
+SHARED FEATURE COMPLETENESS = 100%
+  time, rhythm, pitch, envelope, phase, modulation, tempo, AM, FM, PM,
+  wavetable_vector, playlist_mapping
+
+MEDIA / TIMELINE IMPLEMENTATION
+  Track Offset: per-instrument/per-sequence −16…+16 playlist-row units,
+  persisted and applied before per-step offsets.
+  Audio inputs: WAV, MP3, FLAC, OGG/OGA, M4A, AAC, AIFF/AIF, OPUS, CAF,
+  ALAC, WMA, APE, WV.
+  Video inputs: MP4, MOV, MKV, WEBM, AVI, M4V, MPEG/MPG, FLV, TS/M2TS/MTS,
+  3GP/3G2, OGV, VOB. Each instrument may retain its own media source; video
+  sources retain video_path/source_kind/video_input_enabled and their audio
+  stream can enter the user sample/canonical morph path.
+
+UI AUDIT V34
+  Master Volume title/value = 24pt yellorange/amber. Generic white/grey control
+  defaults were removed from the main palette. Sliders use amber/teal rails and
+  handles; spin boxes and combos use blue/teal fields; action states use green,
+  amber, violet, cyan, and red-brown semantics. Canonical Morph Bridge is a
+  three-row responsive panel. Instrument selection is width-capped so the main
+  editor does not become a giant Instrument Windows column.
+  Main action text: RANDOMIZE ALL SEQ.
+  Step and Automator teleport inspectors are independent top-level Tool windows
+  with fixed screen anchors; neither follows the horizontal scroller, and both
+  may remain visible simultaneously.
+
+
+--------------------------------------------------------------------------------
+V34 — AUTOMATOR PARAMETER TELEPORT / UI RE-ARCHITECTURE
+--------------------------------------------------------------------------------
+  The Automator teleport now uses the same two-click selection model as the Step
+  Sequencer: first click selects/teleports; second click toggles ON/OFF. The
+  inspector is a top-level, non-activating Tool window with an independent screen
+  anchor. Two inspectors may remain visible simultaneously and neither follows a
+  horizontal scrollbar.
+
+  Editable teleport destination:
+    Operator; Sequence 1–128; Morph 0–100%; Sequence Attack 0–100%;
+    Sequence Release 0–100%; Offset −1024…+1024; Synth Param; Param Value.
+  The source instrument/sequence is frozen at selection, while the destination
+  operator/sequence is the morph target. Synth parameter edits are written into
+  the selected destination sequence panel, and envelope edits are written into
+  that sequence's envelope state.
+
+  UI color audit: white/grey defaults in the main application controls were
+  replaced with the Groovebox semantic palette. Amber/yellorange identifies
+  master/seed authority, green identifies randomization/active canonical action,
+  cyan/teal identifies signal and media pathways, violet identifies Operator
+  Theory/math controls, and red-brown identifies Automator state.
+  Master Volume remains 24pt yellorange/amber with an enlarged control.
+  Instrument context is width-capped and responsive so the editor does not become
+  an oversized Instrument Windows panel.
+
+
+## V34 Stability / Canonical Control Update
+
+- **Canonical Signal Control:** defaults to **100% Full Canonical**. The control remains a 50–100% authority mechanism, separate from final mix gain.
+- **Self-correcting canonical coverage:** when required canonical sequence/automation/AM/FM/PM/effect lanes are absent, canonical runtime overlays are materialized instead of lowering authority or overwriting user-owned sequence data.
+- **Canonical Resonance / Activity:** independently adjustable **50–150%**. Full user activity targets the 50% floor; user inactivity ramps autonomous canonical activity toward the selected ceiling, with a smoothed handoff.
+- **Canonical→Instrument Convolve:** new bounded **0–100%** control. At 100%, canonical material is the full convolution reference, while the transformed user branch retains a direct 50% user component; the fixed `M0 = 0.50*C + 0.50*U` boundary remains intact.
+- **Maximum instruments:** increased from 64 to **128** for the active synth/visual ensemble and canonical master identity lattice.
+- **Default playlist row length:** **16 beats**.
+- **UI initialization:** Master Volume value is now constructed before stylesheet/object-name access, eliminating the `lbl_master_vol` startup AttributeError.
+
+CANONICAL RESONANCE / 50–150% STABILITY PASS (V34)
+
+  • Canonical resonance/activity is an independent 50–150% continuation-drive control; it is not master volume and does not alter the fixed 0.50*C + 0.50*U composition coefficients.
+  • Full Canonical signal authority defaults to 100%. Missing canonical lanes are materialized in canonical-owned runtime overlays instead of weakening authority or rewriting user-owned data.
+  • 100% canonical→instrument convolution is bounded as a normalized influence transform; the transformed user branch retains a direct 50% user component.
+  • Playlist row length defaults to 16 beats; Playlist Rows remains the separate arrangement-row count control.
+  • Instrument Count supports 2–128 active instruments; the canonical identity lattice remains 128 slots.
+  • V34 removes several direct zero-denominator bypasses and uses explicit invalid/zero cases instead of epsilon values where those cases can occur in live/export paths.
+  • Save/load restores canonical resonance and 100% Full Canonical defaults correctly.
+
+
+## V34 UI / Stability Pass
+- Qt stylesheet alpha values use Qt-compatible integer alpha channels; the prior decimal `rgba(...,0.xx)` forms were removed to prevent QPushButton stylesheet parse warnings.
+- UI construction order is dependency-safe for the seed panel and master-volume widgets.
+- Synth/window launchers, LIVE DJ, and GLOBAL PLAY PATCHER share one horizontal performance deck.
+- Automator controls use a compact two-row grid so the controls fit the sequencer window without forcing horizontal overflow.
+- Canonical authority defaults to Full Canonical / 100%; missing canonical lanes self-materialize in canonical-owned runtime overlays without rewriting user memory.
+- Canonical resonance/activity is independently driven from 50% to 150%, with smooth user-activity handoff and explicit zero cases rather than epsilon denominator bypasses.
+- Canonical→Instrument Convolve is independently bounded 0–100%; zero canonical/user inputs are handled explicitly.
+- Maximum live instrument capacity is 128; default playlist row duration is 16 beats.
