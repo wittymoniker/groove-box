@@ -57,8 +57,7 @@ def check_python_deps() -> bool:
     
     required_packages = {
         'numpy': 'numpy',
-        'scipy': 'scipy',
-        'PyQt6': 'PyQt6',
+                'PyQt6': 'PyQt6',
         'sounddevice': 'sounddevice',
         'Pillow': 'Pillow'
     }

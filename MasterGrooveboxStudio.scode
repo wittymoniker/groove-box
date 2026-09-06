@@ -1,0 +1,24 @@
+language sCode version=1
+numerals scode_symbols_base16.json
+
+studio MatGrooveboxMasterStudio {
+  setting canonical.engines preserve
+  setting engines.simplified_by_meum on
+  setting trigonometry.engine on
+  setting project.extension .MCC
+  setting runtime.native_preferred on
+
+  permit studio.launch
+  permit project.read
+  permit scode.compile
+  permit model.infer
+}
+
+agent StudioAgent {
+  model local_gguf
+  permission model.train confirm
+  permission project.write confirm
+  permission shell confirm
+  permission network confirm
+  permission credential.read deny
+}

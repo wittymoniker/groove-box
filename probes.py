@@ -543,7 +543,7 @@ def suite_export():
         riffhead = f.read(12)
     check("WAV still a legal RIFF/WAVE", riffhead[:4] == b"RIFF" and riffhead[8:12] == b"WAVE")
     try:
-        import scipy.io.wavfile as sf
+        from audio_os_backend import wavfile as sf
         r_, d_ = sf.read(wav_path)
         check("standard WAV reader still decodes data",
               r_ == sr and d_.dtype == np.int16 and d_.size == pcm.size)

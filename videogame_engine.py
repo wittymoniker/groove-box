@@ -9382,7 +9382,7 @@ fi
 
 set -e
 
-PIP_DEPS="numpy scipy PyQt6 sounddevice Pillow"
+PIP_DEPS="numpy PyQt6 sounddevice Pillow"
 
 if [ "$DISTRO" = "fedora" ]; then
   echo "==> Enabling RPM Fusion (free + nonfree) for full ffmpeg codecs..."
@@ -9415,7 +9415,7 @@ if [ -n "$FF" ]; then cp -f "$FF" /bin/ffmpeg || ln -sf "$FF" /bin/ffmpeg; fi
 if [ -n "$FP" ]; then cp -f "$FP" /bin/ffprobe || ln -sf "$FP" /bin/ffprobe; fi
 
 echo "==> Verify:"
-python3 -c "import numpy, scipy, PyQt6.QtCore, sounddevice, PIL; print('python deps OK')"
+python3 -c "import numpy, PyQt6.QtCore, sounddevice, PIL; print('python deps OK')"
 command -v ffmpeg; command -v ffprobe
 ffmpeg -hide_banner -encoders 2>/dev/null | grep -E "libx264|aac|libvpx|libvorbis" | sed 's/^/  encoder: /' | head -6
 echo "==> Done."
@@ -9447,7 +9447,7 @@ echo "==> brew python + ffmpeg (full codec suite)..."
 brew install python ffmpeg || brew upgrade python ffmpeg
 
 echo "==> pip dependencies (shared: host app + exported games)..."
-PIP_DEPS="numpy scipy PyQt6 sounddevice Pillow"
+PIP_DEPS="numpy PyQt6 sounddevice Pillow"
 python3 -m pip install --upgrade pip wheel
 python3 -m pip install $PIP_DEPS
 
@@ -9462,7 +9462,7 @@ for pair in "ffmpeg|$FF" "ffprobe|$FP"; do
 done
 
 echo "==> Verify:"
-python3 -c "import numpy, scipy, PyQt6.QtCore, sounddevice, PIL; print('python deps OK')"
+python3 -c "import numpy, PyQt6.QtCore, sounddevice, PIL; print('python deps OK')"
 command -v ffmpeg; command -v ffprobe
 ffmpeg -hide_banner -encoders >/dev/null 2>&1 && echo "ffmpeg OK"
 echo "==> Done."
@@ -9539,10 +9539,10 @@ foreach ($tool in @("ffmpeg.exe", "ffprobe.exe", "ffplay.exe")) {
 # --- pip dependencies ----------------------------------------------------
 Write-Host "==> Installing Python packages..."
 & $py -m pip install --upgrade pip wheel
-& $py -m pip install numpy scipy PyQt6 sounddevice Pillow
+& $py -m pip install numpy PyQt6 sounddevice Pillow
 
 Write-Host "==> Verify:"
-& $py -c "import numpy, scipy, PyQt6.QtCore, sounddevice, PIL; print('python deps OK')"
+& $py -c "import numpy, PyQt6.QtCore, sounddevice, PIL; print('python deps OK')"
 & (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source -hide_banner -version | Select-Object -First 1
 Write-Host "==> Done."
 Write-Host "    Restart your terminal (PATH was updated), then run:   python groovebox.py"

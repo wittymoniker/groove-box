@@ -60,7 +60,7 @@ def scan() -> Dict[str, Any]:
         pass
     sound=[]
     try:
-        import sounddevice as sd
+        from audio_os_backend import sd
         sound=[str(d.get('name','')) for d in sd.query_devices()]
     except Exception:
         pass

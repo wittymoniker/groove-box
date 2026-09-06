@@ -102,17 +102,7 @@ from PyQt6.QtWidgets import (
 # =============================================================================
 
 
-try:
-    import scipy.io.wavfile as wavfile
-except ImportError:
-    wavfile = None
-
-try:
-    import sounddevice as sd
-    HAS_SOUNDDEVICE = True
-except ImportError:
-    sd = None
-    HAS_SOUNDDEVICE = False
+from audio_os_backend import wavfile, sd, HAS_SOUNDDEVICE
 
 try:
     import videogame_engine as _vge
@@ -10120,7 +10110,7 @@ DEPENDENCIES (install last — same list as project README.md)
   Python packages (pip) — every OS:
     PyQt6          UI
     numpy          DSP / buffers
-    scipy          WAV I/O helpers, signal utilities
+    wave/FFmpeg    OS/stdlib WAV + bundled media I/O
     sounddevice    Real-time audio I/O
     Pillow         Frame export (PNG) for video
 
@@ -10136,7 +10126,7 @@ DEPENDENCIES (install last — same list as project README.md)
 
   Manual pip (any OS):
     python3 -m pip install --upgrade pip
-    python3 -m pip install numpy scipy PyQt6 sounddevice Pillow
+    python3 -m pip install numpy PyQt6 sounddevice Pillow
 
   Ubuntu/Debian system packages:
     sudo apt install -y python3 python3-pip python3-venv python3-dev \
@@ -10158,7 +10148,7 @@ DEPENDENCIES (install last — same list as project README.md)
   (the app checks there first).
 
   Verify:
-    python3 -c "import numpy, scipy, PyQt6.QtCore, sounddevice, PIL; print('OK')"
+    python3 -c "import numpy, PyQt6.QtCore, sounddevice, PIL; print('OK')"
     ffmpeg -hide_banner -version | head -1
 
   Run:
