@@ -72,11 +72,12 @@ from dataclasses import dataclass
 import composition_state as _composition_state
 from PyQt6.QtGui import (
     QPainter, QPen, QColor, QPainterPath, QLinearGradient, QRadialGradient, QBrush, QFont, QPolygonF,
-    QAction, QPalette, QKeyEvent, QKeySequence, QImage, QPixmap, QIcon
+    QAction, QPalette, QKeyEvent, QKeySequence, QImage, QPixmap, QIcon, QFontMetrics
 )
 from ot_symbol_notation import (
     Direction as OTDirection, Role as OTRole, Operation as OTOperation,
     Border as OTBorder, ROLE_COLORS as OT_ROLE_COLORS, encode_decimal as ot_encode_decimal,
+    encode_nibble as ot_encode_nibble, direction_for as ot_direction_for,
 )
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QVBoxLayout,
@@ -87,6 +88,194 @@ from PyQt6.QtWidgets import (
     QDialog, QInputDialog, QHeaderView, QProgressBar, QSizePolicy, QToolButton,
     QDialogButtonBox, QDockWidget,
 )  # QToolButton is required by the global EXPORT menu control.
+
+
+def _ot_role_from_value(value, fallback=OTRole.RESULT):
+    """Resolve an explicit OT role property/string without changing engine state."""
+    if isinstance(value, OTRole):
+        return value
+    if value is None:
+        return fallback
+    key = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "variable": OTRole.INDEPENDENT_VARIABLE,
+        "independent_variable": OTRole.INDEPENDENT_VARIABLE,
+        "input": OTRole.INDEPENDENT_VARIABLE,
+        "constant": OTRole.INDEPENDENT_CONSTANT,
+        "independent_constant": OTRole.INDEPENDENT_CONSTANT,
+        "result": OTRole.RESULT,
+        "readout": OTRole.RESULT,
+        "output": OTRole.RESULT,
+        "dependent_constant": OTRole.DEPENDENT_CONSTANT,
+        "derived_constant": OTRole.DEPENDENT_CONSTANT,
+        "dependent_variable": OTRole.DEPENDENT_VARIABLE,
+        "derived_variable": OTRole.DEPENDENT_VARIABLE,
+    }
+    return aliases.get(key, fallback)
+
+
+def _infer_ot_numeric_role(widget, text=""):
+    """Infer the author's role color for a UI number.
+
+    Any widget can override this exactly with:
+        widget.setProperty("ot_role", "independent_variable")
+    """
+    try:
+        explicit = widget.property("ot_role")
+    except Exception:
+        explicit = None
+    if explicit not in (None, ""):
+        return _ot_role_from_value(explicit, OTRole.RESULT)
+
+    try:
+        name = str(widget.objectName() or "")
+    except Exception:
+        name = ""
+
+    sample = (name + " " + str(text or "")).lower()
+
+    # Canonical/reference irrational values are independent constants -> green.
+    constant_terms = (
+        "meum", "phi", "golden", "pi ", "π", "sqrt", "silver",
+        "constant", "reference value", "irrational",
+    )
+    if any(term in sample for term in constant_terms):
+        return OTRole.INDEPENDENT_CONSTANT
+
+    # Explicitly derived/locked constants -> black.
+    if any(term in sample for term in (
+        "dependent constant", "derived constant", "fixed constant",
+        "locked constant", "hard limit",
+    )):
+        return OTRole.DEPENDENT_CONSTANT
+
+    # Derived/modulated values -> white.
+    if any(term in sample for term in (
+        "dependent variable", "derived variable", "modulated",
+        "automation value", "phase result variable",
+    )):
+        return OTRole.DEPENDENT_VARIABLE
+
+    # Editable numeric controls are inputs/independent variables -> red.
+    if isinstance(widget, (QSpinBox, QDoubleSpinBox, QSlider, QDial, QLineEdit)):
+        try:
+            if hasattr(widget, "isReadOnly") and widget.isReadOnly():
+                return OTRole.RESULT
+        except Exception:
+            pass
+        return OTRole.INDEPENDENT_VARIABLE
+
+    # Named controls that represent editable/live parameters -> red.
+    variable_terms = (
+        "seed", "offset", "pitch", "tune", "speed", "volume", "gain",
+        "tempo", "bpm", "length", "step", "amount", "weight", "resonance",
+        "blend", "opacity", "rate", "decay", "frequency", "freq", "pan",
+        "velocity", "coverage", "direction", "threshold", "width", "height",
+    )
+    if any(term in sample for term in variable_terms):
+        return OTRole.INDEPENDENT_VARIABLE
+
+    # Readouts/results are blue by default.
+    return OTRole.RESULT
+
+
+def _ot_role_color(role):
+    return OT_ROLE_COLORS.get(role, OT_ROLE_COLORS.get(OTRole.RESULT, "#2f80ff"))
+
+def _ot_numeric_tokens_exact(text):
+    """Tokenize a displayed number without rounding or dropping trailing zeroes.
+
+    Returns (negative, tokens), where tokens contains one entry for every
+    displayed decimal digit and literal decimal dots.  Signs and dots do not
+    consume the digit-count index.
+    """
+    raw = str(text or "").strip()
+    negative = raw.startswith("-")
+    if raw[:1] in ("-", "+"):
+        raw = raw[1:]
+    tokens = [ch for ch in raw if ch.isdigit() or ch == "."]
+    if not any(ch.isdigit() for ch in tokens):
+        tokens = ["0"]
+    return negative, tokens
+
+
+def _ot_glyph_for_display_digit(digit_char, digit_index, negative, role,
+                                operation=OTOperation.NONE, continued=False,
+                                multiplicity=1, variable_letter=""):
+    """Encode exactly one displayed decimal digit at its true count position.
+
+    The alternating direction/orientation therefore follows the full displayed
+    number rather than restarting at zero for every glyph.
+    """
+    signed_probe = -1.0 if negative else 1.0
+    direction = ot_direction_for(signed_probe, int(digit_index))
+    return ot_encode_nibble(
+        int(digit_char),
+        direction=direction,
+        operation=operation,
+        continued=continued,
+        multiplicity=multiplicity,
+        role=role,
+        variable_letter=(variable_letter if int(digit_index) == 0 else ""),
+    )
+
+
+
+
+_QUARTER_CELL_PX = 8.0       # 1/4 of the fixed 32px symbol cell
+_INWARD_STEP_PX = 2.0        # one inward step after each 4-position cycle
+_MAX_INWARD_CYCLES = 4
+
+
+def _quarter_cycle_state(index, negative=False):
+    """Return (dx, dy, inward, phase) for one visible number position.
+
+    The symbol itself is unchanged. Only its placement advances one quarter-cell
+    at a time around the cell. After four positions the next cycle moves inward.
+
+    Positive: clockwise.
+    Negative: counter-clockwise.
+    """
+    i = max(0, int(index))
+    phase = i & 3
+    cycle = min(i // 4, _MAX_INWARD_CYCLES)
+
+    # quarter-cell positions around the center
+    cw = (
+        (0.0, -_QUARTER_CELL_PX),   # top
+        (_QUARTER_CELL_PX, 0.0),    # right
+        (0.0, _QUARTER_CELL_PX),    # bottom
+        (-_QUARTER_CELL_PX, 0.0),   # left
+    )
+    ccw = (
+        (0.0, -_QUARTER_CELL_PX),   # top
+        (-_QUARTER_CELL_PX, 0.0),   # left
+        (0.0, _QUARTER_CELL_PX),    # bottom
+        (_QUARTER_CELL_PX, 0.0),    # right
+    )
+    dx, dy = (ccw if negative else cw)[phase]
+
+    # Move subsequent completed cycles inward toward the cell center.
+    inward = cycle * _INWARD_STEP_PX
+    if dx > 0:
+        dx -= inward
+    elif dx < 0:
+        dx += inward
+    if dy > 0:
+        dy -= inward
+    elif dy < 0:
+        dy += inward
+
+    return dx, dy, inward, phase
+
+
+def _decimal_boundary_index(text):
+    """Return number of digits before decimal; decimal itself consumes no cell."""
+    raw = str(text or "")
+    if "." not in raw:
+        return None
+    left = raw.split(".", 1)[0]
+    return sum(ch.isdigit() for ch in left)
 
 
 
@@ -106,8 +295,8 @@ class OTNumberGlyphWidget(QWidget):
         self._continued = False
         self._multiplicity = 1
         self._variable_letter = ""
-        self.setMinimumSize(110, 30)
-        self.setMaximumHeight(34)
+        self.setMinimumSize(124, 34)
+        self.setMaximumHeight(40)
         self.setToolTip(
             "OT symbol readout: 12 directional strokes (4×3), four separator bits, "
             "four-way up/right/down/left orientation. Math Symbols OFF shows base-10."
@@ -132,7 +321,7 @@ class OTNumberGlyphWidget(QWidget):
         if variable_letter is not None: self._variable_letter = str(variable_letter)[:1]
         self.update()
 
-    def _pen(self, color, width=1.35, dotted=False):
+    def _pen(self, color, width=2.25, dotted=False):
         pen = QPen(QColor(color), width)
         if dotted:
             pen.setStyle(Qt.PenStyle.DotLine)
@@ -140,7 +329,7 @@ class OTNumberGlyphWidget(QWidget):
 
     def _draw_stroke(self, painter, cx, cy, dx, dy, squiggly, color):
         if not squiggly:
-            painter.setPen(self._pen(color, 1.15))
+            painter.setPen(self._pen(color, 2.55))
             painter.drawLine(QPointF(cx, cy), QPointF(cx+dx, cy+dy))
             return
         path = QPainterPath(QPointF(cx, cy))
@@ -150,8 +339,61 @@ class OTNumberGlyphWidget(QWidget):
         path.cubicTo(QPointF(cx+dx*.30+px, cy+dy*.30+py),
                      QPointF(cx+dx*.70-px, cy+dy*.70-py),
                      QPointF(cx+dx, cy+dy))
-        painter.setPen(self._pen(color, 1.1))
+        painter.setPen(self._pen(color, 2.45))
         painter.drawPath(path)
+
+    def _draw_halfspace_squiggle(self, painter, x, y, size, color, phase):
+        """Accent only: do not replace or reinterpret the original symbol."""
+        # phase 1 is the second quarter (0.5-space point)
+        if phase != 1:
+            return
+
+        painter.save()
+        painter.setPen(QPen(QColor(color), 1.55))
+        path = QPainterPath()
+
+        # small wave tucked into the active side of the 32px cell
+        cy = y + size * 0.50
+        x0 = x + size * 0.30
+        x1 = x + size * 0.70
+        amp = size * 0.055
+
+        path.moveTo(x0, cy)
+        path.cubicTo(
+            x0 + (x1-x0) * 0.25, cy - amp,
+            x0 + (x1-x0) * 0.50, cy + amp,
+            x0 + (x1-x0) * 0.75, cy - amp,
+        )
+        path.cubicTo(
+            x0 + (x1-x0) * 0.86, cy + amp,
+            x0 + (x1-x0) * 0.94, cy - amp,
+            x1, cy,
+        )
+        painter.drawPath(path)
+        painter.restore()
+
+    def _draw_radix_squiggle(self, painter, x, y, size, color):
+        """Compact decimal/radix marker; no decimal-dot width is consumed."""
+        painter.save()
+        painter.setPen(QPen(QColor(color), 1.35))
+        path = QPainterPath()
+        x0 = x + size * 0.20
+        x1 = x + size * 0.80
+        cy = y + size * 0.82
+        amp = size * 0.04
+        path.moveTo(x0, cy)
+        path.cubicTo(
+            x0 + (x1-x0) * 0.25, cy - amp,
+            x0 + (x1-x0) * 0.50, cy + amp,
+            x0 + (x1-x0) * 0.75, cy - amp,
+        )
+        path.cubicTo(
+            x0 + (x1-x0) * 0.85, cy + amp,
+            x0 + (x1-x0) * 0.95, cy - amp,
+            x1, cy,
+        )
+        painter.drawPath(path)
+        painter.restore()
 
     def _draw_glyph(self, painter, glyph, x, y, size):
         """Draw one author base-16 cell in the user's four-quadrant format.
@@ -164,16 +406,20 @@ class OTNumberGlyphWidget(QWidget):
         color = OT_ROLE_COLORS.get(glyph.role, '#2f80ff')
         if color == '#000000':
             painter.fillRect(QRectF(x, y, size, size), QColor('#b8b8b8'))
-        # Permanent outer author box.
-        painter.setPen(self._pen(color, 1.25))
+        # Permanent outer author box.  Zero is intentionally the EMPTY cell:
+        # no solid fill, no center ring, no separators and no count strokes.
+        painter.setPen(self._pen(color, 2.55))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(QRectF(x+1.5, y+1.5, size-3.0, size-3.0))
         cx, cy = x + size/2.0, y + size/2.0
-        # Dashed quadrant separators and center ring (literal sketch format).
-        painter.setPen(self._pen(color, 1.0, dotted=True))
-        painter.drawLine(QPointF(cx, y+3), QPointF(cx, y+size-3))
-        painter.drawLine(QPointF(x+3, cy), QPointF(x+size-3, cy))
-        painter.setPen(self._pen(color, 1.15))
-        painter.drawEllipse(QRectF(cx-size*.055, cy-size*.055, size*.11, size*.11))
+        empty_zero = int(getattr(glyph, 'value', 0)) == 0
+        if not empty_zero:
+            # Dashed quadrant separators and center ring (literal sketch format).
+            painter.setPen(self._pen(color, 1.15, dotted=True))
+            painter.drawLine(QPointF(cx, y+3), QPointF(cx, y+size-3))
+            painter.drawLine(QPointF(x+3, cy), QPointF(x+size-3, cy))
+            painter.setPen(self._pen(color, 1.75))
+            painter.drawEllipse(QRectF(cx-size*.055, cy-size*.055, size*.11, size*.11))
 
         # Quadrant stroke groups: UL, UR, LL are vertical; LR is horizontal,
         # matching the supplied handwritten reference.  Each nibble bit turns
@@ -186,16 +432,17 @@ class OTNumberGlyphWidget(QWidget):
             [(0.61,0.62,0.79,0.62),(0.61,0.70,0.79,0.70),(0.61,0.78,0.79,0.78)],
         ]
         mask = glyph.separator_mask
-        for q, strokes in enumerate(groups):
-            if not (mask & (1 << q)):
-                continue
-            for j,(ax,ay,bx,by) in enumerate(strokes):
-                i=q*3+j
-                if not (glyph.presence_mask & (1<<i)):
+        if not empty_zero:
+            for q, strokes in enumerate(groups):
+                if not (mask & (1 << q)):
                     continue
-                x1,y1=x+size*ax,y+size*ay; x2,y2=x+size*bx,y+size*by
-                self._draw_stroke(painter, x1, y1, x2-x1, y2-y1,
-                                  bool(glyph.squiggly_mask & (1<<i)), color)
+                for j,(ax,ay,bx,by) in enumerate(strokes):
+                    i=q*3+j
+                    if not (glyph.presence_mask & (1<<i)):
+                        continue
+                    x1,y1=x+size*ax,y+size*ay; x2,y2=x+size*bx,y+size*by
+                    self._draw_stroke(painter, x1, y1, x2-x1, y2-y1,
+                                      bool(glyph.squiggly_mask & (1<<i)), color)
 
         # Operation metadata stays outside the value-carrying four quadrants.
         if glyph.operation == OTOperation.MUL:
@@ -232,7 +479,7 @@ class OTNumberGlyphWidget(QWidget):
                                    continued=self._continued, multiplicity=self._multiplicity,
                                    variable_letter=self._variable_letter)
         count = max(1, len(glyphs))
-        cell = min(28.0, max(18.0, (self.width()-4.0)/count))
+        cell = min(32.0, max(20.0, (self.width()-4.0)/count))
         total = cell*count
         x = max(2.0, (self.width()-total)/2.0)
         y = max(1.0, (self.height()-cell)/2.0)
@@ -242,121 +489,703 @@ class OTNumberGlyphWidget(QWidget):
 
 
 class _OTNumericOverlay(OTNumberGlyphWidget):
-    """Read-only, always-on author-symbol mask for standard Qt numeric controls.
+    """Author-symbol display for QSpinBox/QDoubleSpinBox.
 
-    It never changes the underlying numeric value.  While Math Symbols is ON,
-    the ordinary base-10 editor text stays visually covered even when the spin
-    box has keyboard focus.  Math Symbols OFF is the explicit way to expose the
-    conventional numeric spelling.  Author numeral cells target 42 px.
+    Ordinary decimal text is suppressed at the QLineEdit paint-event level while
+    symbol mode is active.  The glyph overlay is parented to the spinbox itself,
+    so suppressing the editor's paint can never suppress the glyphs too.
     """
     def __init__(self, owner):
-        super().__init__(0, role=OTRole.RESULT, parent=owner)
         self.owner = owner
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.setStyleSheet('background: transparent;')
-        self.setToolTip('Author-symbol view. Math Symbols OFF exposes ordinary base-10 editing.')
-        self._sync()
-        try: owner.valueChanged.connect(lambda *_: self._sync())
-        except Exception: pass
-        owner.installEventFilter(self)
+        self._editor = None
+        self._syncing = False
+        self._last_render_key = None
+        self._suppress_editor_paint = False
 
-    def _sync(self):
-        try: self._value = self.owner.value()
-        except Exception: self._value = 0
-        self._symbols = bool(MATH_SYMBOLS_ENABLED)
-        self._fit(); self.update()
+        # Parent to the spinbox, NOT the line editor.  This is important because
+        # the line editor's paint event is intentionally consumed in symbol mode.
+        super().__init__(
+            0,
+            role=_infer_ot_numeric_role(owner, ""),
+            parent=owner,
+        )
+
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16777215, 16777215)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAutoFillBackground(False)
+        self.setStyleSheet("background: transparent; border: none;")
+
+        self._attach_editor()
+
+        try:
+            owner.installEventFilter(self)
+            owner.valueChanged.connect(self._value_changed)
+            owner.destroyed.connect(self.deleteLater)
+        except Exception:
+            pass
+
+        self._sync(force=True)
+
+    def _attach_editor(self):
+        try:
+            le = self.owner.lineEdit()
+        except Exception:
+            le = None
+
+        if le is self._editor:
+            return le
+
+        if self._editor is not None:
+            try:
+                self._editor.removeEventFilter(self)
+            except Exception:
+                pass
+
+        self._editor = le
+        if le is not None:
+            try:
+                le.installEventFilter(self)
+            except Exception:
+                pass
+        return le
+
+    def _value_changed(self, *_):
+        self._sync(force=False)
+
+    def _line_edit(self):
+        return self._attach_editor()
+
+    def _is_editing(self):
+        try:
+            le = self._line_edit()
+            return bool(
+                (le is not None and le.hasFocus())
+                or self.owner.hasFocus()
+            )
+        except Exception:
+            return False
+
+    def _set_owner_number_text_visible(self, visible):
+        # Do not mutate palettes or styles.  Those caused recursion and were also
+        # not guaranteed to override parent Qt stylesheets.  Instead, the editor's
+        # Paint event is consumed while the symbols are supposed to own the field.
+        self._suppress_editor_paint = not bool(visible)
+        try:
+            le = self._line_edit()
+            if le is not None:
+                le.update()
+        except Exception:
+            pass
+
+    def _fit(self):
+        """Cover only the numeric editor and keep the overlay above it.
+
+        The spinbox arrow/roll buttons remain completely unobstructed.
+        """
+        try:
+            le = self._line_edit()
+            if le is not None:
+                # The editor rectangle is the safe paint area. It excludes the
+                # QAbstractSpinBox up/down button subcontrols.
+                top_left = le.mapTo(self.owner, QPoint(0, 0))
+                r = QRect(
+                    int(top_left.x()),
+                    int(top_left.y()),
+                    int(le.width()),
+                    int(le.height()),
+                )
+            else:
+                # Fallback: reserve a right-side strip for native roll buttons.
+                r = self.owner.rect()
+                reserve = max(20, min(34, int(r.width() * 0.22)))
+                r.setWidth(max(1, r.width() - reserve))
+
+            if self.parent() is not self.owner:
+                self.setParent(self.owner)
+
+            if self.geometry() != r:
+                self.setGeometry(r)
+
+            # Keep the author symbols visually on top of the editor.
+            self.raise_()
+        except RuntimeError:
+            pass
+        except Exception:
+            pass
+
+
+    def _display_numeric_text(self):
+        try:
+            if isinstance(self.owner, QDoubleSpinBox):
+                decimals = max(0, int(self.owner.decimals()))
+                return f"{float(self.owner.value()):.{decimals}f}"
+            return str(int(self.owner.value()))
+        except Exception:
+            try:
+                return str(self.owner.value())
+            except Exception:
+                return "0"
+
+    def _sync(self, force=False):
+        if self._syncing:
+            return
+        self._syncing = True
+        try:
+            editing = self._is_editing()
+            symbols = bool(MATH_SYMBOLS_ENABLED)
+            self._symbols = symbols
+            self._role = _infer_ot_numeric_role(
+                self.owner,
+                self._display_numeric_text(),
+            )
+
+            # The ordinary number is visible only while the user is actively
+            # editing or when symbol mode is disabled.
+            self._set_owner_number_text_visible((not symbols) or editing)
+            self._fit()
+
+            show_glyphs = bool(symbols and not editing)
+            if self.isVisible() != show_glyphs:
+                self.setVisible(show_glyphs)
+
+            if show_glyphs:
+                self.raise_()
+                key = (
+                    self._display_numeric_text(),
+                    self.width(),
+                    self.height(),
+                )
+                if force or key != self._last_render_key:
+                    self._last_render_key = key
+                    self.update()
+        finally:
+            self._syncing = False
+
+    def eventFilter(self, obj, event):
+        t = event.type()
+
+        # Absolute masking: consume the editor's paint event.  This is what
+        # prevents the base-10 Hindu-Arabic numeral from leaking through even
+        # under aggressive application/QStyle stylesheets.
+        if obj is self._editor and t == QEvent.Type.Paint:
+            if (
+                self._suppress_editor_paint
+                and bool(MATH_SYMBOLS_ENABLED)
+                and not self._is_editing()
+            ):
+                return True
+            return False
+
+        if t in (
+            QEvent.Type.Resize,
+            QEvent.Type.Show,
+            QEvent.Type.LayoutRequest,
+            QEvent.Type.FontChange,
+        ):
+            QTimer.singleShot(0, lambda: self._sync(force=True))
+
+        elif t == QEvent.Type.FocusIn:
+            self._set_owner_number_text_visible(True)
+            self.hide()
+            try:
+                if self._editor is not None:
+                    self._editor.update()
+            except Exception:
+                pass
+
+        elif t == QEvent.Type.FocusOut:
+            QTimer.singleShot(0, lambda: self._sync(force=True))
+
+        return False
+
+    def mousePressEvent(self, event):
+        event.ignore()
+
+    def mouseReleaseEvent(self, event):
+        event.ignore()
+
+    def mouseMoveEvent(self, event):
+        event.ignore()
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+    def paintEvent(self, event):
+        if not MATH_SYMBOLS_ENABLED:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        text = self._display_numeric_text()
+        negative = text.startswith("-")
+        raw = text[1:] if text[:1] in ("-", "+") else text
+        digits = [c for c in raw if c.isdigit()]
+        if not digits:
+            digits = ["0"]
+
+        radix_index = _decimal_boundary_index(text)
+
+        cell = 32.0
+        gutter = 2.0
+        total = len(digits) * cell + max(0, len(digits)-1) * gutter
+        x = max(1.0, (self.width() - total) / 2.0)
+        y = max(0.0, min(2.0, (self.height() - cell) / 2.0))
+
+        role_color = _ot_role_color(self._role)
+
+        for i, ch in enumerate(digits):
+            dx, dy, inward, phase = _quarter_cycle_state(i, negative=negative)
+
+            glyph = _ot_glyph_for_display_digit(
+                ch,
+                i,
+                negative,
+                self._role,
+                operation=self._operation,
+                continued=self._continued,
+                multiplicity=self._multiplicity,
+                variable_letter=self._variable_letter,
+            )
+
+            # Preserve the original glyph exactly; only move it.
+            self._draw_glyph(
+                painter,
+                glyph,
+                x + dx,
+                y + dy,
+                cell,
+            )
+
+            # At the 0.5-space point, add the squiggle accent.
+            self._draw_halfspace_squiggle(
+                painter,
+                x + dx,
+                y + dy,
+                cell,
+                role_color,
+                phase,
+            )
+
+            # Decimal point consumes no cell. Mark the boundary on the first
+            # fractional glyph with a compact squiggle accent.
+            if radix_index is not None and i == radix_index:
+                self._draw_radix_squiggle(
+                    painter,
+                    x + dx,
+                    y + dy,
+                    cell,
+                    role_color,
+                )
+
+            x += cell + gutter
+
+
+
+class _OTMixedNumericTextOverlay(OTNumberGlyphWidget):
+    """Replace numeric substrings in ordinary UI text with 32px author glyphs.
+
+    Nonnumeric text, percent signs and decimal points stay ordinary.  Role color
+    follows the existing OT five-role palette.
+    """
+    NUMBER_RE = re.compile(r"(?<![\w])[-+]?\d+(?:\.\d+)?|[-+]?\d+(?:\.\d+)?")
+
+    def __init__(self, owner):
+        self.owner = owner
+        self._syncing = False
+        self._native_style = str(owner.styleSheet() or "")
+        self._last_source = None
+        self._source_text = ""
+        self._native_hidden = False
+        super().__init__(0, role=OTRole.RESULT, parent=owner)
+
+        # Safe deferred refresh.  Because this timer is parented to the overlay,
+        # Qt destroys/cancels it with the overlay; no stale lambda can call a
+        # deleted C++ QWidget.
+        self._sync_timer = QTimer(self)
+        self._sync_timer.setSingleShot(True)
+        self._sync_timer.setInterval(0)
+        self._sync_timer.timeout.connect(self._deferred_sync)
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16777215, 16777215)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAutoFillBackground(False)
+        self.setStyleSheet("background: transparent; border: none;")
+        try:
+            owner.installEventFilter(self)
+        except Exception:
+            pass
+        try:
+            if isinstance(owner, QLineEdit):
+                owner.textChanged.connect(lambda *_: self._sync(force=True))
+            elif isinstance(owner, QProgressBar):
+                owner.valueChanged.connect(lambda *_: self._sync(force=True))
+        except Exception:
+            pass
+        self._sync(force=True)
+
+    def _request_sync(self, force=True):
+        try:
+            if self._sync_timer is not None and not self._sync_timer.isActive():
+                self._sync_timer.start()
+        except RuntimeError:
+            pass
+        except Exception:
+            pass
+
+    def _deferred_sync(self):
+        try:
+            self._sync(force=True)
+        except RuntimeError:
+            # Owner/overlay may have been destroyed between event delivery and
+            # timeout; this is a normal Qt lifetime edge, not an app failure.
+            pass
+        except Exception:
+            pass
+
+    def _raw_text(self):
+        try:
+            if isinstance(self.owner, QLabel):
+                return str(self.owner.text() or "")
+            if isinstance(self.owner, (QPushButton, QToolButton, QCheckBox)):
+                return str(self.owner.text() or "")
+            if isinstance(self.owner, QProgressBar):
+                return str(self.owner.text() or "")
+            if isinstance(self.owner, QLineEdit):
+                return str(self.owner.text() or "")
+        except Exception:
+            pass
+        return ""
+
+    def _is_editing(self):
+        try:
+            return isinstance(self.owner, QLineEdit) and self.owner.hasFocus()
+        except Exception:
+            return False
+
+    def _set_native_visible(self, visible):
+        # For editable line edits, block paint when symbolized; for text widgets,
+        # an owner-local transparent text color leaves frames/icons/backgrounds.
+        visible = bool(visible)
+        if visible == (not self._native_hidden):
+            return
+        try:
+            if visible:
+                if not isinstance(self.owner, QLineEdit):
+                    self.owner.setStyleSheet(self._native_style)
+                self._native_hidden = False
+            else:
+                if not isinstance(self.owner, QLineEdit):
+                    base = self._native_style
+                    hidden = base + "\ncolor: rgba(0,0,0,0);"
+                    if isinstance(self.owner, QProgressBar):
+                        hidden += "\nQProgressBar { color: rgba(0,0,0,0); }"
+                    self.owner.setStyleSheet(hidden)
+                self._native_hidden = True
+        except RuntimeError:
+            pass
+        except Exception:
+            pass
 
     def _fit(self):
         try:
-            # 42 px is the canonical readable author-numeral cell size.  Grow the
-            # control vertically so the symbol is never crushed back to tiny text.
-            self.owner.setMinimumHeight(max(self.owner.minimumHeight(), 50))
-            w=max(8, self.owner.width()-24); h=max(46, self.owner.height()-4)
-            self.setGeometry(2,2,w,h)
+            r = self.owner.rect()
+            if self.geometry() != r:
+                self.setGeometry(r)
             self.raise_()
-        except Exception: pass
+        except Exception:
+            pass
+
+    def _sync(self, force=False):
+        if self._syncing:
+            return
+        self._syncing = True
+        try:
+            raw = self._raw_text()
+            has_number = bool(self.NUMBER_RE.search(raw))
+            editing = self._is_editing()
+            enabled = bool(MATH_SYMBOLS_ENABLED and has_number and not editing)
+
+            self._source_text = raw
+            self._role = _infer_ot_numeric_role(self.owner, raw)
+
+            # Long readouts/constants must not silently lose right-hand decimal
+            # glyphs.  Labels and progress/readout widgets may request the exact
+            # width needed by the visible number string.  Interactive controls
+            # keep their authored geometry.
+            if enabled and isinstance(self.owner, (QLabel, QProgressBar)):
+                try:
+                    fm = QFontMetrics(self.owner.font())
+                    required = 8.0
+                    pos = 0
+                    for m in self.NUMBER_RE.finditer(raw):
+                        if m.start() > pos:
+                            required += fm.horizontalAdvance(raw[pos:m.start()])
+                        required += self._token_width(m.group(0), fm)
+                        pos = m.end()
+                    if pos < len(raw):
+                        required += fm.horizontalAdvance(raw[pos:])
+                    self.owner.setMinimumWidth(max(self.owner.minimumWidth(), int(required + 8.0)))
+                    self.owner.setMinimumHeight(max(self.owner.minimumHeight(), 36))
+                except Exception:
+                    pass
+
+            self._set_native_visible(not enabled)
+            self._fit()
+
+            try:
+                if self.isVisible() != enabled:
+                    self.setVisible(enabled)
+            except RuntimeError:
+                return
+
+            if enabled:
+                try:
+                    self.raise_()
+                    key = (raw, self.width(), self.height(), self._role)
+                    if force or key != self._last_source:
+                        self._last_source = key
+                        self.update()
+                except RuntimeError:
+                    return
+        except RuntimeError:
+            return
+        finally:
+            self._syncing = False
 
     def eventFilter(self, obj, event):
-        t=event.type()
-        if t in (QEvent.Type.Resize, QEvent.Type.Show, QEvent.Type.FocusIn, QEvent.Type.FocusOut):
-            self._fit()
-            if MATH_SYMBOLS_ENABLED:
-                self.show(); self.raise_()
-            else:
-                self.hide()
+        t = event.type()
+
+        # General QLineEdit: when symbolized and not focused, suppress its native
+        # text paint at the source.  Spinbox line edits are excluded by installer.
+        if isinstance(self.owner, QLineEdit) and t == QEvent.Type.Paint:
+            if self._native_hidden and MATH_SYMBOLS_ENABLED and not self._is_editing():
+                return True
+            return False
+
+        if t in (
+            QEvent.Type.Show,
+            QEvent.Type.Resize,
+            QEvent.Type.LayoutRequest,
+            QEvent.Type.FontChange,
+            QEvent.Type.UpdateRequest,
+        ):
+            self._request_sync(force=True)
+        elif t == QEvent.Type.FocusIn:
+            self._set_native_visible(True)
+            self.hide()
+        elif t == QEvent.Type.FocusOut:
+            self._request_sync(force=True)
+        elif t == QEvent.Type.Paint:
+            # QLabel/QPushButton do not expose textChanged; compare lazily when
+            # Qt is already repainting, then update after this event returns.
+            current = self._raw_text()
+            if current != self._source_text:
+                self._request_sync(force=True)
         return False
+
+    def _font_metrics(self, painter):
+        try:
+            font = QFont(self.owner.font())
+        except Exception:
+            font = QFont()
+        painter.setFont(font)
+        return painter.fontMetrics()
+
+    def _alignment(self):
+        try:
+            if isinstance(self.owner, QLabel):
+                return self.owner.alignment()
+            if isinstance(self.owner, QLineEdit):
+                return self.owner.alignment()
+        except Exception:
+            pass
+        return Qt.AlignmentFlag.AlignCenter
+
+    def _token_width(self, token, fm):
+        if self.NUMBER_RE.fullmatch(token):
+            raw = token[1:] if token[:1] in ("-", "+") else token
+            digits = sum(ch.isdigit() for ch in raw)
+            if digits <= 0:
+                digits = 1
+            return digits * 32.0 + max(0, digits - 1) * 2.0
+        return float(fm.horizontalAdvance(token))
+
+
+    def _draw_number(self, painter, token, x, y, cell=32.0):
+        negative = token.startswith("-")
+        raw = token[1:] if token[:1] in ("-", "+") else token
+        digits = [c for c in raw if c.isdigit()]
+        if not digits:
+            digits = ["0"]
+
+        radix_index = _decimal_boundary_index(token)
+        role_color = _ot_role_color(self._role)
+
+        for i, ch in enumerate(digits):
+            dx, dy, inward, phase = _quarter_cycle_state(i, negative=negative)
+
+            glyph = _ot_glyph_for_display_digit(
+                ch,
+                i,
+                negative,
+                self._role,
+                operation=self._operation,
+                continued=self._continued,
+                multiplicity=self._multiplicity,
+                variable_letter=self._variable_letter,
+            )
+
+            self._draw_glyph(
+                painter,
+                glyph,
+                x + dx,
+                y + dy,
+                cell,
+            )
+
+            self._draw_halfspace_squiggle(
+                painter,
+                x + dx,
+                y + dy,
+                cell,
+                role_color,
+                phase,
+            )
+
+            if radix_index is not None and i == radix_index:
+                self._draw_radix_squiggle(
+                    painter,
+                    x + dx,
+                    y + dy,
+                    cell,
+                    role_color,
+                )
+
+            x += cell + 2.0
+
+        return x
+
+
+    def mousePressEvent(self, event):
+        event.ignore()
+
+    def mouseReleaseEvent(self, event):
+        event.ignore()
+
+    def mouseMoveEvent(self, event):
+        event.ignore()
+
+    def wheelEvent(self, event):
+        event.ignore()
 
     def paintEvent(self, event):
-        if not MATH_SYMBOLS_ENABLED: return
-        painter=QPainter(self); painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        # Keep enough precision to distinguish real control values. Decimal point
-        # is a small center dot between digit cells; sign is carried by direction.
+        if not MATH_SYMBOLS_ENABLED:
+            return
+        text = self._source_text
+        if not text or not self.NUMBER_RE.search(text):
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        fm = self._font_metrics(painter)
+
+        # Split while preserving numeric runs.
+        parts = []
+        pos = 0
+        for m in self.NUMBER_RE.finditer(text):
+            if m.start() > pos:
+                parts.append(("text", text[pos:m.start()]))
+            parts.append(("number", m.group(0)))
+            pos = m.end()
+        if pos < len(text):
+            parts.append(("text", text[pos:]))
+
+        total = 0.0
+        for kind, token in parts:
+            total += self._token_width(token, fm)
+
+        align = self._alignment()
+        left_pad = 4.0
+        if align & Qt.AlignmentFlag.AlignRight:
+            x = max(left_pad, self.width() - total - 4.0)
+        elif align & Qt.AlignmentFlag.AlignHCenter:
+            x = max(left_pad, (self.width() - total) / 2.0)
+        else:
+            x = left_pad
+
+        cell = 32.0
+        y = max(0.0, (self.height() - cell) / 2.0)
+
+        # Ordinary wording/punctuation uses the widget's normal foreground color.
         try:
-            if isinstance(self.owner, QDoubleSpinBox):
-                txt=f"{float(self.owner.value()):.{int(self.owner.decimals())}f}"
-            else: txt=str(int(self.owner.value()))
-        except Exception: txt=str(self._value)
-        neg=txt.startswith('-'); txt=txt.lstrip('+-')
-        chars=[c for c in txt if c.isdigit() or c=='.']
-        nd=max(1,sum(c.isdigit() for c in chars)); dots=sum(c=='.' for c in chars)
-        # Never shrink the author numerals below their requested 42 px reading size.
-        cell=42.0
-        total=cell*(nd+dots*.32)
-        # Give the line-edit portion enough room for every glyph.  The 28 px tail
-        # leaves the native spin buttons usable while the value itself stays masked.
-        try:
-            needed=int(total + 34.0)
-            if self.owner.minimumWidth() < needed:
-                self.owner.setMinimumWidth(needed)
+            ordinary_color = self.owner.palette().color(QPalette.ColorRole.WindowText)
+            if isinstance(self.owner, (QPushButton, QToolButton, QCheckBox)):
+                ordinary_color = self.owner.palette().color(QPalette.ColorRole.ButtonText)
+            elif isinstance(self.owner, QLineEdit):
+                ordinary_color = self.owner.palette().color(QPalette.ColorRole.Text)
         except Exception:
-            pass
-        x=max(2.0,(self.width()-total)/2.0); y=max(1.0,(self.height()-cell)/2.0)
-        idx=0
-        for c in chars:
-            if c=='.':
-                painter.setPen(Qt.PenStyle.NoPen); painter.setBrush(QColor('#2f80ff'))
-                painter.drawEllipse(QRectF(x+cell*.05,y+cell*.78,cell*.14,cell*.14)); x += cell*.32
-                continue
-            d=int(c); direction=OTDirection.DOWN if neg and idx==0 else (OTDirection.UP if idx%2==0 else OTDirection.RIGHT)
-            g=ot_encode_decimal(-d if neg and idx==0 else d, role=self._role)[0]
-            # Preserve deterministic alternate positive direction for readability.
-            if not neg and idx%2: g=type(g)(g.value, OTDirection.RIGHT, g.squiggly_mask, g.presence_mask, g.operation, g.continued, g.multiplicity, g.role, g.variable_letter)
-            self._draw_glyph(painter,g,x,y,cell); x+=cell; idx+=1
+            ordinary_color = QColor("#d8d8d8")
+
+        for kind, token in parts:
+            if kind == "number":
+                x = self._draw_number(painter, token, x, y, cell)
+            else:
+                painter.setPen(QPen(ordinary_color))
+                # baseline centered against the fixed 32px symbol cell.
+                baseline = y + (cell + fm.ascent() - fm.descent()) / 2.0
+                painter.drawText(QPointF(x, baseline), token)
+                x += fm.horizontalAdvance(token)
 
 
-class _OTNumericOverlayManager(QObject):
-    """Application-wide mask installer, including dialogs opened after startup."""
+class _MathSymbolSpinWatcher(QObject):
+    """Application-wide, event-driven installer for numeric symbol surfaces."""
+    TEXT_TYPES = (QLabel, QPushButton, QToolButton, QCheckBox, QProgressBar, QLineEdit)
+
     def __init__(self, host):
         super().__init__(host)
-        self.host = host
+        self._host = host
+        self._pending_ids = set()
 
-    def ensure(self, widget):
-        if not isinstance(widget, (QSpinBox, QDoubleSpinBox)):
-            return None
+    def _is_spin_editor(self, obj):
+        if not isinstance(obj, QLineEdit):
+            return False
         try:
-            ov = getattr(widget, '_author_numeric_overlay', None)
-            if ov is None:
-                ov = _OTNumericOverlay(widget)
-                widget._author_numeric_overlay = ov
-            ov._sync()
-            if MATH_SYMBOLS_ENABLED:
-                ov.show(); ov.raise_()
-            else:
-                ov.hide()
-            return ov
+            return isinstance(obj.parentWidget(), (QSpinBox, QDoubleSpinBox))
         except Exception:
-            return None
+            return False
+
+    def _install(self, obj, key):
+        try:
+            if isinstance(obj, (QSpinBox, QDoubleSpinBox)):
+                self._host._ensure_math_symbol_overlay(obj)
+            elif isinstance(obj, self.TEXT_TYPES) and not self._is_spin_editor(obj):
+                self._host._ensure_math_text_overlay(obj)
+        finally:
+            self._pending_ids.discard(key)
 
     def eventFilter(self, obj, event):
         try:
-            if isinstance(obj, (QSpinBox, QDoubleSpinBox)) and event.type() in (
-                QEvent.Type.Show, QEvent.Type.Resize, QEvent.Type.FocusIn,
-                QEvent.Type.FocusOut, QEvent.Type.EnabledChange,
-            ):
-                QTimer.singleShot(0, lambda w=obj: self.ensure(w))
+            if event.type() == QEvent.Type.Show:
+                supported = isinstance(obj, (QSpinBox, QDoubleSpinBox) + self.TEXT_TYPES)
+                if supported:
+                    oid = id(obj)
+                    if oid not in self._pending_ids:
+                        self._pending_ids.add(oid)
+                        QTimer.singleShot(0, lambda w=obj, key=oid: self._install(w, key))
+        except RuntimeError:
+            pass
         except Exception:
             pass
         return False
+
 
 # =============================================================================
 # PROCESSOR SYNTAX / DESIGN CONTRACT
@@ -1913,7 +2742,7 @@ def group_orbit_index(index, order, seed, goava=False):
     return perm[int(index) % n]
 
 # UI design tokens derived from M (self-similar spacing / translucency)
-UI_OPACITY = max(1.0, min(0.0, MEUM_NORM * PHI))          # pane glass
+UI_OPACITY = max(0.0, min(1.0, MEUM_NORM * PHI))          # pane glass
 UI_RADIUS = max(4, int(round(3.0 * MEUM)))                    # corner radius
 UI_TICK_MS = max(48, int(round(1000.0 / (MEUM_TWO_POW * 5.0))))  # decor frame period (perf: fewer background paints)
 UI_DRIFT = MEUM_NORM * PHI_INV                                  # caption micro-wiggle scale
@@ -10780,6 +11609,77 @@ irrational or irrational-candidate traversals can be reserved for ordering and c
 The benefit comes from the structure and invariants, not from a claim that one constant
 makes a CPU intrinsically faster.
 
+
+--------------------------------------------------------------------------------
+1A. MEUM COMPRESSION / LOGIC SEARCH (PROJECT METHOD)
+--------------------------------------------------------------------------------
+Groovebox/sCode uses "Meum Compression" as a project-defined semantic reduction
+method: preserve the observable/canonical identity while reducing repeated work or
+the number of independent obligations. It is NOT ordinary ZIP/audio compression and
+it is not a claim that arbitrary information can be reconstructed from a seed.
+
+Current search roles:
+  normalize/key logic : (2 - M)·x = [1 - (M - 1)]·x
+  locate ambiguity    : x/M, x/M², x/M³
+  predict/reflection  : (M - 1)^p·x, normally p = 1..3
+  ideal-form compare  : 2^M, with Meum's defining check
+                        2^M = M^4 + M^2 - M
+The compiler/reverse-grep may also compare the other named irrational constants
+from the author's book as candidate coordinates. Numeric proximity alone is only a
+locator. A reduction is accepted only after interval/direction, dependency and
+behavioral/canonical parity agree. `why()` is intended to retain that provenance.
+
+For cyclic/native state, finite repeated trajectories can additionally be stored as
+preperiod + period + certified jump information. The resulting "compression ratio"
+reported by native tests is a representation/reuse ratio for that certified cycle,
+not a universal data-compression theorem.
+
+--------------------------------------------------------------------------------
+1B. PERFORMANCE MEDIA PLAYER + SUPPORTED FILE FORMATS
+--------------------------------------------------------------------------------
+The Performance button opens a reusable dock. Closing it hides the workspace; pressing
+Performance again reopens the same live workspace. It contains the project/render file
+browser, playlist/cut-up player, game player, device/output routing, broadcast controls,
+DJ remixer and batch re-render tools.
+
+Player routing is deliberately hard-coded and deterministic:
+  1. mpv when available (including JSON-IPC for live speed changes),
+  2. VLC as the next external-player backend,
+  3. ffplay as the final fallback.
+The Groovebox composition remains the authority; the player is an output/performance
+surface and does not silently rewrite canonical state.
+
+MAIN MEDIA IMPORT — carrier/reference inputs
+  Audio: .wav .mp3 .flac .ogg .oga .m4a .aac .aiff .aif .opus .caf
+         .alac .wma .ape .wv
+  Video: .mp4 .mov .mkv .webm .avi .m4v .mpeg .mpg .flv .ts .m2ts
+         .mts .3gp .3g2 .ogv .vob
+WAV is read natively when possible; other audio/video decoding routes through FFmpeg.
+Video-only files are valid visual carriers and receive a silent carrier stream.
+
+PROJECT / PROGRAM FORMATS
+  .MCC       canonical transparent Groovebox composition/project document
+  .mgpr      legacy project input compatibility
+  .MGproject .MGsynth .MGprofile .MG
+             portable artifact identities/profiles/synths
+  .zip       generated videogame/software package and reverse-engineering import
+
+MAIN EXPORT MENU
+  Audio:       .wav .flac .mp3
+  Video+Audio: .mp4 .webm .avi
+  Video only:  .mp4 .webm .avi
+  Videogame:   .zip
+The audio writer/reconversion layer also understands .ogg .opus .caf and .aiff where
+the local FFmpeg build supports them. Exports can be written as recoverable `.part`
+segments and optionally stitched. Reconvert/Bake-and-Compare recognizes
+.wav .flac .mp3 .ogg .opus .caf .aiff .mp4 .webm .avi and .zip.
+
+PERFORMANCE PLAYER BROWSER
+  Audio: .wav .flac .mp3 .ogg .opus .aiff .aif .caf .oga .m4a .aac .alac
+         .wma .ape .wv
+  Video: .mp4 .webm .avi .mov .mkv .m4v .mpeg .mpg .flv .ts .m2ts .mts
+         .3gp .3g2 .ogv .vob
+
 --------------------------------------------------------------------------------
 2. DISCLAIMER — ADVANCED INSTRUMENT
 --------------------------------------------------------------------------------
@@ -12792,7 +13692,8 @@ Author/ASCII: `<event><x>-[xN]` — the line-connected solid square carries even
 ### Source vs. author clarification vs. Groovebox machine convention
 
 The supplied book explicitly describes four sets of three lines, conflicting/nonconflicting directions, optional grid intersections, operation intensity/dynamics, and boxes for variables. The author has clarified for this implementation that missing strokes are skipped; squiggles are contextual imaginary/decimal/half/doubling modifiers; four-way pathways are up/down/left/right; and the border/continued/multiplicity/color rules above are intended parts of the notation. Groovebox's exact bit packing, separator-to-`0..15` index, and ASCII spelling are implementation conventions chosen to make the notation reversible and inspectable. They should not be mistaken for additional claims printed verbatim in the book.
-    """
+    \n--------------------------------------------------------------------------------\nMEUM LOGIC SEARCH / REVERSE-GREP (PROJECT RESEARCH TOOL)\n--------------------------------------------------------------------------------\nThe current compiler/reverse-decoder experiments assign distinct jobs to Meum\nforms instead of treating every Meum-derived number as interchangeable:\n\n  normalize/key logic:       N(x) = (2 - M) x = [1-(M-1)]x\n  ambiguity/problem locate:  A_p(x) = x / M^p,       p = 1,2,3,...\n  interval prediction:       R_p(x) = (M - 1)^p x,   p = 1,2,3,...\n  ideal-form comparison:     T(x) = x / 2^M\n\nThe Meum root relation supplies a consistency route:\n\n  2^M - M^4 - M^2 + M = 0\n  therefore 2^M = M^4 + M^2 - M.\n\nThe search is LINEAR in responsibility: normalize -> locate ambiguity -> test\ninterval/reflection prediction -> compare already-equivalent target forms ->\nverify -> emit sCode.  2^M is not a command to force program outputs toward one\nnumber; it is a target-coordinate / preference test after behavioral equivalence.\n\nINTERVAL DIRECTION.  Because M>1 and M-1>0, multiplication by (M-1)^p\npreserves the ordinary ordering of real interval endpoints.  A candidate math\ncollapse is therefore stronger when value family, interval, direction, extrema,\ndependencies, and regression behavior agree.  Min/max or slope reversals are\nlandmarks that help reject a false semantic match.\n\nBOOK-CONSTANT SECOND STAGE.  Other named irrational/self-referential constants\nfrom the author's work may be used as additional locator coordinates.  Numerical\nproximity is evidence for where to inspect, not proof of semantic identity.  A\nmatch is promoted only after dependency, interval/direction, cross-resolution,\nand behavioral checks.\n\nWHY() / PROVENANCE TARGET.  A verified sCode reduction should retain the source\naddress X, semantic class Y, normalization, ambiguity probe, powered interval\nprediction, target comparison, and verification certificate so why() can invert\nthe route and explain the emitted syntax.\n\nMATH SYMBOL DISPLAY.  Math Symbols is a reversible presentation layer only.\n0 is the empty author cell. Numeric values remain unchanged underneath.  All\nQSpinBox/QDoubleSpinBox controls, including controls created later in floating\nwindows, are discovered and masked while unfocused; focusing a control reveals\nthe ordinary editable number, and leaving focus restores its symbol mask.\n
+"""
     def __init__(self, parent=None, dimensions=('x', 'y', 'z'), survival_mode=True, sample_rate=44100):
         super().__init__(parent)
         self.dimensions = dimensions
@@ -23584,6 +24485,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.bake_compare_export_dialog
         )
         export_menu.addSeparator()
+        export_menu.addAction("🧮 Meum Compressed Project (.MEUM)").triggered.connect(
+            self.export_meum_compressed_dialog
+        )
+        export_menu.addAction("🧮 Import Meum Compressed Project (.MEUM)…").triggered.connect(
+            self.load_meum_compressed_dialog
+        )
+        export_menu.addSeparator()
         # Audio-only — canonical mixdown, three core formats (WAV reference,
         # FLAC lossless-RFC, MP3 universal). Exactly 3 audio options.
         export_menu.addAction("Audio only (.wav)").triggered.connect(lambda: self.export_mixdown_dialog("wav"))
@@ -29566,6 +30474,47 @@ class MathematiciansGrooveboxApp(QMainWindow):
             pass
 
 
+    def export_meum_compressed_dialog(self):
+        """Export an exact-reconstructing project snapshot as a .MEUM container."""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Meum Compressed Project", self._projects_dir(),
+            "Meum Compressed Project (*.MEUM);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            from meum_compression import save
+            final = save(path, self._project_snapshot())
+            QMessageBox.information(
+                self, "Meum Compression Exported",
+                f"Exact-reconstructing Meum semantic container written:\n{final}"
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "Meum compression export failed", str(e))
+
+
+    def load_meum_compressed_dialog(self):
+        """Import a .MEUM container and restore its exact canonical project document."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Meum Compressed Project", self._projects_dir(),
+            "Meum Compressed Project (*.MEUM *.meum);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            from meum_compression import load
+            data = load(path)
+            self._apply_project_snapshot(data)
+            self._current_project_path = path
+            try:
+                self._refresh_after_file_input(reason="meum_project_load")
+            except Exception:
+                pass
+            QMessageBox.information(self, "Meum Compression Imported", f"Loaded:\n{path}")
+        except Exception as e:
+            QMessageBox.warning(self, "Meum compression import failed", str(e))
+
+
     def export_project_json(self):
         """Export the unified project snapshot (same document as Save)."""
         path, _ = QFileDialog.getSaveFileName(self, "Export Project JSON", self._projects_dir(), "Mathematician's Groovebox Composition (*.MCC)")
@@ -29928,6 +30877,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
             low = path.lower()
             if low.endswith(".mgpr") and not os.path.isfile(path) and os.path.isfile(path + ".part"):
                 load_path = path + ".part"
+            if str(load_path).lower().endswith(".meum"):
+                from meum_compression import load
+                data = load(load_path)
+                self._apply_project_snapshot(data)
+                self._current_project_path = path
+                try:
+                    self._refresh_after_file_input(reason="meum_project_load")
+                except Exception:
+                    pass
+                if show_message:
+                    QMessageBox.information(self, "Loaded", f"Meum compressed project loaded:\n{path}")
+                return True
             if str(load_path).lower().endswith(".mcc"):
                 from mcc_integrity import select_verified
                 load_path, integrity_status = select_verified(load_path)
@@ -35727,37 +36688,183 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
 
+    def _apply_math_symbol_display_transform(self, enabled):
+        """Reversible compact-display transform used by Math Symbols mode.
+
+        It compresses dead layout space rather than shrinking the authored glyphs:
+        margins/spacing tighten across the whole window while numeric controls gain
+        just enough face height for the larger heavy-stroke symbol cells.  The
+        original geometry is cached once and restored exactly when symbols are off.
+        """
+        enabled = bool(enabled)
+        density = 0.76
+        widgets = [self] + list(self.findChildren(QWidget))
+        seen_layouts = set()
+        for widget in widgets:
+            try:
+                lay = widget.layout()
+            except Exception:
+                lay = None
+            if lay is None or id(lay) in seen_layouts:
+                continue
+            seen_layouts.add(id(lay))
+            try:
+                if not hasattr(lay, '_math_symbol_original_metrics'):
+                    m = lay.contentsMargins()
+                    lay._math_symbol_original_metrics = (m.left(), m.top(), m.right(), m.bottom(), lay.spacing())
+                l,t,r,b,sp = lay._math_symbol_original_metrics
+                if enabled:
+                    # Never erase a deliberate separator completely; use 1px as
+                    # the compact visual rhythm when an original margin existed.
+                    cv = lambda v: 0 if v <= 0 else max(1, int(round(v*density)))
+                    lay.setContentsMargins(cv(l), cv(t), cv(r), cv(b))
+                    if sp >= 0: lay.setSpacing(0 if sp == 0 else max(1, int(round(sp*density))))
+                else:
+                    lay.setContentsMargins(l,t,r,b)
+                    if sp >= 0: lay.setSpacing(sp)
+            except Exception:
+                pass
+
+        for w in list(self.findChildren(QSpinBox)) + list(self.findChildren(QDoubleSpinBox)):
+            try:
+                if not hasattr(w, '_math_symbol_original_min_height'):
+                    w._math_symbol_original_min_height = w.minimumHeight()
+                if enabled:
+                    w.setMinimumHeight(max(int(w._math_symbol_original_min_height), 28))
+                else:
+                    w.setMinimumHeight(int(w._math_symbol_original_min_height))
+            except Exception:
+                pass
+        try:
+            self.updateGeometry(); self.update()
+        except Exception:
+            pass
+
+    def _ensure_math_text_overlay(self, w):
+        """Create at most one mixed-text number overlay for supported widgets."""
+        if w is None:
+            return None
+        if isinstance(w, QLineEdit):
+            try:
+                if isinstance(w.parentWidget(), (QSpinBox, QDoubleSpinBox)):
+                    return None
+            except Exception:
+                pass
+        if not isinstance(w, (QLabel, QPushButton, QToolButton, QCheckBox, QProgressBar, QLineEdit)):
+            return None
+        try:
+            existing = getattr(w, "_math_text_overlay", None)
+            if existing is not None:
+                existing._sync(force=False)
+                return existing
+        except RuntimeError:
+            return None
+        try:
+            ov = _OTMixedNumericTextOverlay(w)
+            w._math_text_overlay = ov
+            overlays = getattr(self, "_math_symbol_text_overlays", None)
+            if overlays is None:
+                overlays = self._math_symbol_text_overlays = []
+            overlays.append(ov)
+            ov._sync(force=True)
+            return ov
+        except Exception:
+            return None
+
+    def _ensure_math_symbol_overlay(self, w):
+        """Create at most one overlay for a numeric control."""
+        if w is None or not isinstance(w, (QSpinBox, QDoubleSpinBox)):
+            return None
+        try:
+            existing = getattr(w, "_math_symbol_overlay", None)
+            if existing is not None:
+                existing._sync(force=False)
+                return existing
+        except RuntimeError:
+            return None
+        try:
+            ov = _OTNumericOverlay(w)
+            w._math_symbol_overlay = ov
+            overlays = getattr(self, "_math_symbol_numeric_overlays", None)
+            if overlays is None:
+                overlays = self._math_symbol_numeric_overlays = []
+            overlays.append(ov)
+            ov._sync(force=True)
+            return ov
+        except Exception:
+            return None
+
     def _install_math_symbol_numeric_overlays(self):
-        """Mask every numeric spin control, including later Performance/dialog controls."""
-        self._math_symbol_numeric_overlays=[]
-        app = QApplication.instance()
-        mgr = getattr(self, '_math_symbol_overlay_manager', None)
-        if mgr is None:
-            mgr = _OTNumericOverlayManager(self)
-            self._math_symbol_overlay_manager = mgr
-            if app is not None:
-                app.installEventFilter(mgr)
-        widgets = []
-        if app is not None:
-            widgets = [w for w in app.allWidgets() if isinstance(w, (QSpinBox, QDoubleSpinBox))]
-        if not widgets:
+        """Install author glyph masks once; lazy controls are handled by Show events."""
+        self._math_symbol_numeric_overlays = []
+        self._math_symbol_text_overlays = []
+
+        try:
             widgets = list(self.findChildren(QSpinBox)) + list(self.findChildren(QDoubleSpinBox))
+        except Exception:
+            widgets = []
         for w in widgets:
-            ov=mgr.ensure(w)
-            if ov is not None and ov not in self._math_symbol_numeric_overlays:
-                self._math_symbol_numeric_overlays.append(ov)
+            self._ensure_math_symbol_overlay(w)
+
+        # Replace numeric substrings in ordinary labels/buttons/readouts too.
+        text_widgets = []
+        for typ in (QLabel, QPushButton, QToolButton, QCheckBox, QProgressBar, QLineEdit):
+            try:
+                text_widgets.extend(self.findChildren(typ))
+            except Exception:
+                pass
+        for w in text_widgets:
+            self._ensure_math_text_overlay(w)
+
+        self._apply_math_symbol_display_transform(MATH_SYMBOLS_ENABLED)
+
+        # Event-driven discovery replaces the old 750 ms full-tree polling timer.
+        try:
+            if getattr(self, "_math_symbol_spin_watcher", None) is None:
+                self._math_symbol_spin_watcher = _MathSymbolSpinWatcher(self)
+                app = QApplication.instance()
+                if app is not None:
+                    app.installEventFilter(self._math_symbol_spin_watcher)
+        except Exception:
+            self._math_symbol_spin_watcher = None
+
+        # Explicitly stop/delete any old polling timer left by a prior hot reload.
+        try:
+            timer = getattr(self, "_math_symbol_overlay_timer", None)
+            if timer is not None:
+                timer.stop()
+                timer.deleteLater()
+            self._math_symbol_overlay_timer = None
+        except Exception:
+            self._math_symbol_overlay_timer = None
 
     def _refresh_math_symbol_numeric_overlays(self):
-        app = QApplication.instance()
-        mgr = getattr(self, '_math_symbol_overlay_manager', None)
-        widgets = [w for w in app.allWidgets() if isinstance(w, (QSpinBox, QDoubleSpinBox))] if app is not None else []
-        for w in widgets:
+        """Refresh existing masks only; no application-wide rescan."""
+        alive = []
+        for ov in list(getattr(self, "_math_symbol_numeric_overlays", []) or []):
             try:
-                ov = mgr.ensure(w) if mgr is not None else getattr(w, '_author_numeric_overlay', None)
-                if ov is None: continue
-                if MATH_SYMBOLS_ENABLED: ov.show(); ov.raise_()
-                else: ov.hide()
-            except Exception: pass
+                if ov is None or getattr(ov, "owner", None) is None:
+                    continue
+                ov._sync(force=True)
+                alive.append(ov)
+            except RuntimeError:
+                pass
+            except Exception:
+                alive.append(ov)
+        self._math_symbol_numeric_overlays = alive
+
+        text_alive = []
+        for ov in list(getattr(self, "_math_symbol_text_overlays", []) or []):
+            try:
+                if ov is None or getattr(ov, "owner", None) is None:
+                    continue
+                ov._sync(force=True)
+                text_alive.append(ov)
+            except RuntimeError:
+                pass
+            except Exception:
+                text_alive.append(ov)
+        self._math_symbol_text_overlays = text_alive
 
     def _on_math_symbols_toggled(self, checked):
         """Toggle author symbol rendering without altering Operator Theory arithmetic."""
@@ -35770,6 +36877,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if preview is not None:
             preview.setSymbolsEnabled(MATH_SYMBOLS_ENABLED)
             preview.update()
+        self._apply_math_symbol_display_transform(MATH_SYMBOLS_ENABLED)
         self._refresh_math_symbol_numeric_overlays()
 
     def _on_goava_toggled(self, checked):
@@ -38687,48 +39795,117 @@ class MathematiciansGrooveboxApp(QMainWindow):
             QMessageBox.warning(self, "Export failed", str(e))
 
     def _open_performance(self):
-        """Open/toggle the live Performance workspace inside the main editor.
+        """Open or re-open Performance as an independent top-level window.
 
-        Performance is deliberately non-modal: transport, fullscreen playback and
-        the scientific editor remain live while the same host engine is manipulated.
-        The dock can float on a second display/tablet-style layout or remain tabbed
-        with other Qt docks.  Reopening the button toggles the existing instance.
+        Performance must never participate in the main-window dock layout.
+        Using a top-level window prevents opening/closing Performance from
+        changing the central widget width, frame thickness, splitter sizes,
+        or any other main-window geometry.
         """
         try:
-            dock = getattr(self, "_performance_dock", None)
-            if dock is not None:
-                dock.setVisible(not dock.isVisible())
-                if dock.isVisible():
-                    dock.raise_()
-                return dock
+            panel = getattr(self, "_performance_panel", None)
+
+            if panel is not None:
+                try:
+                    # Match the Performance window to the current main-window
+                    # size and screen position every time it is opened.
+                    try:
+                        panel.setGeometry(self.geometry())
+                    except Exception:
+                        try:
+                            panel.resize(self.size())
+                            panel.move(self.pos())
+                        except Exception:
+                            pass
+
+                    panel.show()
+                    panel.raise_()
+                    try:
+                        panel.activateWindow()
+                    except Exception:
+                        pass
+                    return panel
+                except RuntimeError:
+                    self._performance_panel = None
+                    panel = None
 
             from performance import Performance
-            panel = Performance(self, parent=self)
-            # Embed the QDialog as an ordinary dock widget instead of executing it
-            # modally. Qt accepts this once the window flag is changed to Widget.
-            panel.setWindowFlags(Qt.WindowType.Widget)
-            panel.setModal(False)
 
-            dock = QDockWidget("Performance — Live Operation Station", self)
-            dock.setObjectName("groovebox_performance_dock")
-            dock.setAllowedAreas(
-                Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea |
-                Qt.DockWidgetArea.TopDockWidgetArea | Qt.DockWidgetArea.BottomDockWidgetArea
+            panel = Performance(self, parent=None)
+
+            # Independent application window: do NOT add to QMainWindow docks.
+            panel.setWindowFlags(
+                Qt.WindowType.Window
+                | Qt.WindowType.WindowTitleHint
+                | Qt.WindowType.WindowSystemMenuHint
+                | Qt.WindowType.WindowMinMaxButtonsHint
+                | Qt.WindowType.WindowCloseButtonHint
             )
-            dock.setFeatures(
-                QDockWidget.DockWidgetFeature.DockWidgetMovable |
-                QDockWidget.DockWidgetFeature.DockWidgetFloatable |
-                QDockWidget.DockWidgetFeature.DockWidgetClosable
-            )
-            dock.setWidget(panel)
-            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+            panel.setModal(False)
+            panel.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+
             self._performance_panel = panel
-            self._performance_dock = dock
-            dock.show()
-            dock.raise_()
-            return dock
+            self._performance_dock = None
+
+            def _performance_destroyed(*_):
+                self._performance_panel = None
+                self._performance_dock = None
+
+            try:
+                panel.destroyed.connect(_performance_destroyed)
+            except Exception:
+                pass
+
+            # Performance starts with exactly the same outer geometry as the
+            # main Groovebox window.
+            try:
+                panel.setGeometry(self.geometry())
+            except Exception:
+                try:
+                    panel.resize(self.size())
+                    panel.move(self.pos())
+                except Exception:
+                    pass
+
+            # Closing Performance hides/reuses it without touching any
+            # main-window splitter/dock state.
+            try:
+                old_close = panel.closeEvent
+
+                def _perf_close(event, _panel=panel, _old=old_close):
+                    # Hide/reuse instead of deleting.  This keeps reopen instant
+                    # and, critically, leaves the main-window layout untouched.
+                    try:
+                        _panel.hide()
+                        event.ignore()
+                        return
+                    except Exception:
+                        pass
+
+                    try:
+                        _old(event)
+                    except Exception:
+                        event.accept()
+
+                panel.closeEvent = _perf_close
+            except Exception:
+                pass
+
+            panel.show()
+            panel.raise_()
+            try:
+                panel.activateWindow()
+            except Exception:
+                pass
+
+            return panel
+
         except Exception as e:
-            QMessageBox.warning(self, "Performance", f"Could not open Performance:\n{e}")
+            QMessageBox.warning(
+                self,
+                "Performance",
+                f"Could not open Performance:\n{e}",
+            )
             return None
 
     # Compatibility for project scripts that still call the old method.
