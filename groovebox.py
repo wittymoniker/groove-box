@@ -19985,23 +19985,31 @@ class MathematiciansGrooveboxApp(QMainWindow):
             pass
 
     def _refresh_goava_radio_brand(self):
-        """Fit the complete GOAVA Radio visual inside its current panel.
+        """Render the complete GOAVA Radio visual at readable height.
 
-        KeepAspectRatio is intentional: the right-hand green icons/labels are
-        part of the source visual and must remain visible rather than being
-        cropped by QLabel when the main window narrows.
+        RADIO_SCROLL_FIX_20260906: do not squeeze the image to the viewport.
+        The Radio artwork contains meaningful right-hand green icons/labels, so
+        preserve the whole aspect-ratio width and let its QScrollArea provide
+        horizontal access whenever the row is narrower than the artwork.
         """
         label = getattr(self, "lbl_goava_radio_brand", None)
         source = getattr(self, "_goava_radio_brand_source", None)
         if label is None or source is None or source.isNull():
             return
         try:
-            w = max(1, int(label.contentsRect().width()))
-            h = max(1, int(label.contentsRect().height()))
-            label.setPixmap(source.scaled(
-                w, h, Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            ))
+            scroll = getattr(self, "goava_radio_scroll", None)
+            # Use the visible Radio viewport height as the only scaling limit.
+            # Width follows from KeepAspectRatio and is intentionally allowed to
+            # exceed the viewport so the horizontal scrollbar can expose it.
+            if scroll is not None:
+                target_h = max(80, int(scroll.viewport().height()) - 4)
+            else:
+                target_h = max(80, int(label.height()) - 4)
+            pm = source.scaledToHeight(
+                target_h, Qt.TransformationMode.SmoothTransformation
+            )
+            label.setPixmap(pm)
+            label.setFixedSize(pm.size())
         except Exception:
             pass
 
@@ -22821,10 +22829,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Global Processor Controls. This prevents the previous right-edge crop.
         _radio_row = QHBoxLayout()
         _radio_row.setSpacing(10)
-        self.lbl_goava_radio_brand.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        self.lbl_goava_radio_brand.setMinimumHeight(104)
-        self.lbl_goava_radio_brand.setMaximumHeight(148)
-        _radio_row.addWidget(self.lbl_goava_radio_brand, 4)
+        # RADIO_SCROLL_FIX_20260906: preserve the complete graphic and expose
+        # its full right-hand side through a horizontal scroll area instead of
+        # allowing QLabel/layout compression to crop or shrink it.
+        self.lbl_goava_radio_brand.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.lbl_goava_radio_brand.setMinimumSize(1, 1)
+        self.goava_radio_scroll = QScrollArea()
+        self.goava_radio_scroll.setWidgetResizable(False)
+        self.goava_radio_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.goava_radio_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.goava_radio_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.goava_radio_scroll.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.goava_radio_scroll.setMinimumHeight(112)
+        self.goava_radio_scroll.setMaximumHeight(160)
+        self.goava_radio_scroll.setMinimumWidth(180)
+        self.goava_radio_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.goava_radio_scroll.setStyleSheet(
+            "QScrollArea{background:#050b12;border:1px solid #9a7b2f;border-radius:8px;}"
+            "QScrollBar:horizontal{height:14px;background:#071019;}"
+            "QScrollBar::handle:horizontal{min-width:34px;background:#3f7f62;border-radius:6px;}"
+        )
+        self.goava_radio_scroll.setWidget(self.lbl_goava_radio_brand)
+        _radio_row.addWidget(self.goava_radio_scroll, 4)
         try:
             from radio_station import load_identity
             _rid = load_identity()
