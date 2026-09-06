@@ -26,3 +26,8 @@ Always inspect the license of any future NASA repository before vendoring code.
 Government-authored U.S. works can be public domain domestically, but NASA software
 may also contain contractor/third-party material or be distributed under a specific
 license such as Apache-2.0 or NOSA.
+
+## Math-notation display convention
+
+Math Symbols defaults ON. Author glyphs use 4×3 directional strokes, U/R/D/L pathways, straight=full count, missing=skip, and context-sensitive squiggles (imaginary/decimal/half/doubling); operation/continued/multiplicity enclosures and semantic role colors carry additional context. Math Symbols OFF exposes conventional/base-10 notation; Operator Theory is an independent backend toggle. See `HELP_TEXT.md` → **Author Symbol Language — literal reading guide** for the literal and ASCII grammar and equation-by-equation examples.
+

@@ -74,6 +74,10 @@ from PyQt6.QtGui import (
     QPainter, QPen, QColor, QPainterPath, QLinearGradient, QRadialGradient, QBrush, QFont, QPolygonF,
     QAction, QPalette, QKeyEvent, QKeySequence, QImage, QPixmap, QIcon
 )
+from ot_symbol_notation import (
+    Direction as OTDirection, Role as OTRole, Operation as OTOperation,
+    Border as OTBorder, ROLE_COLORS as OT_ROLE_COLORS, encode_decimal as ot_encode_decimal,
+)
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QVBoxLayout,
     QHBoxLayout, QLabel, QSlider, QPushButton, QComboBox, QScrollArea,
@@ -84,6 +88,299 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox, QDockWidget,
 )  # QToolButton is required by the global EXPORT menu control.
 
+
+
+class OTNumberGlyphWidget(QWidget):
+    """Compact painter for the author's 12-line / four-separator number symbols.
+
+    This is a presentation layer only.  OT arithmetic remains controlled by the
+    existing Operator Theory toggle; Math Symbols can be turned off to expose the
+    ordinary base-10 value without changing the engine state.
+    """
+    def __init__(self, value=0, role=OTRole.RESULT, parent=None):
+        super().__init__(parent)
+        self._value = value
+        self._role = role
+        self._symbols = True
+        self._operation = OTOperation.NONE
+        self._continued = False
+        self._multiplicity = 1
+        self._variable_letter = ""
+        self.setMinimumSize(124, 34)
+        self.setMaximumHeight(40)
+        self.setToolTip(
+            "OT symbol readout: 12 directional strokes (4×3), four separator bits, "
+            "four-way up/right/down/left orientation. Math Symbols OFF shows base-10."
+        )
+
+    def setValue(self, value):
+        self._value = value
+        self.update()
+
+    def setSymbolsEnabled(self, enabled):
+        self._symbols = bool(enabled)
+        self.update()
+
+    def setRole(self, role):
+        self._role = role
+        self.update()
+
+    def setNotation(self, operation=None, continued=None, multiplicity=None, variable_letter=None):
+        if operation is not None: self._operation = operation
+        if continued is not None: self._continued = bool(continued)
+        if multiplicity is not None: self._multiplicity = max(1, int(multiplicity))
+        if variable_letter is not None: self._variable_letter = str(variable_letter)[:1]
+        self.update()
+
+    def _pen(self, color, width=2.05, dotted=False):
+        pen = QPen(QColor(color), width)
+        if dotted:
+            pen.setStyle(Qt.PenStyle.DotLine)
+        return pen
+
+    def _draw_stroke(self, painter, cx, cy, dx, dy, squiggly, color):
+        if not squiggly:
+            painter.setPen(self._pen(color, 2.15))
+            painter.drawLine(QPointF(cx, cy), QPointF(cx+dx, cy+dy))
+            return
+        path = QPainterPath(QPointF(cx, cy))
+        px, py = -dy, dx
+        L = max((dx*dx+dy*dy)**0.5, 1.0)
+        px, py = px/L*1.7, py/L*1.7
+        path.cubicTo(QPointF(cx+dx*.30+px, cy+dy*.30+py),
+                     QPointF(cx+dx*.70-px, cy+dy*.70-py),
+                     QPointF(cx+dx, cy+dy))
+        painter.setPen(self._pen(color, 2.05))
+        painter.drawPath(path)
+
+    def _draw_glyph(self, painter, glyph, x, y, size):
+        """Draw one author base-16 cell in the user's four-quadrant format.
+
+        The four quadrants are the nibble bits (UL, UR, LL, LR).  An active
+        quadrant carries its three contextual strokes.  The dashed cross and
+        center circle are structural landmarks, so every glyph remains easy to
+        compare at a glance even when some quadrants are absent.
+        """
+        color = OT_ROLE_COLORS.get(glyph.role, '#2f80ff')
+        if color == '#000000':
+            painter.fillRect(QRectF(x, y, size, size), QColor('#b8b8b8'))
+        # Permanent outer author box.  Zero is intentionally the EMPTY cell:
+        # no solid fill, no center ring, no separators and no count strokes.
+        painter.setPen(self._pen(color, 2.15))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(QRectF(x+1.5, y+1.5, size-3.0, size-3.0))
+        cx, cy = x + size/2.0, y + size/2.0
+        empty_zero = int(getattr(glyph, 'value', 0)) == 0
+        if not empty_zero:
+            # Dashed quadrant separators and center ring (literal sketch format).
+            painter.setPen(self._pen(color, 1.35, dotted=True))
+            painter.drawLine(QPointF(cx, y+3), QPointF(cx, y+size-3))
+            painter.drawLine(QPointF(x+3, cy), QPointF(x+size-3, cy))
+            painter.setPen(self._pen(color, 1.55))
+            painter.drawEllipse(QRectF(cx-size*.055, cy-size*.055, size*.11, size*.11))
+
+        # Quadrant stroke groups: UL, UR, LL are vertical; LR is horizontal,
+        # matching the supplied handwritten reference.  Each nibble bit turns
+        # one whole 3-stroke group on/off; squiggle_mask modifies individual
+        # strokes without changing the encoded value.
+        groups = [
+            [(0.28,0.27,0.28,0.42),(0.37,0.27,0.37,0.42),(0.46,0.27,0.46,0.42)],
+            [(0.61,0.27,0.61,0.42),(0.70,0.27,0.70,0.42),(0.79,0.27,0.79,0.42)],
+            [(0.28,0.60,0.28,0.79),(0.37,0.60,0.37,0.79),(0.46,0.60,0.46,0.79)],
+            [(0.61,0.62,0.79,0.62),(0.61,0.70,0.79,0.70),(0.61,0.78,0.79,0.78)],
+        ]
+        mask = glyph.separator_mask
+        if not empty_zero:
+            for q, strokes in enumerate(groups):
+                if not (mask & (1 << q)):
+                    continue
+                for j,(ax,ay,bx,by) in enumerate(strokes):
+                    i=q*3+j
+                    if not (glyph.presence_mask & (1<<i)):
+                        continue
+                    x1,y1=x+size*ax,y+size*ay; x2,y2=x+size*bx,y+size*by
+                    self._draw_stroke(painter, x1, y1, x2-x1, y2-y1,
+                                      bool(glyph.squiggly_mask & (1<<i)), color)
+
+        # Operation metadata stays outside the value-carrying four quadrants.
+        if glyph.operation == OTOperation.MUL:
+            painter.setPen(self._pen(color, 1.4))
+            painter.drawLine(QPointF(x,y), QPointF(x+size*.72,y))
+            painter.drawLine(QPointF(x,y), QPointF(x,y+size))
+            painter.drawLine(QPointF(x,y+size), QPointF(x+size*.72,y+size))
+        elif glyph.operation in (OTOperation.ADD, OTOperation.SUB):
+            painter.setPen(self._pen(color, 1.3, dotted=True))
+            painter.drawRect(QRectF(x-1,y-1,size+2,size+2))
+        elif glyph.operation == OTOperation.DIV:
+            painter.setPen(self._pen(color, 1.6))
+            painter.drawRect(QRectF(x-1,y-1,size+2,size+2))
+        if glyph.continued:
+            painter.setPen(self._pen(color, 1.0, dotted=True))
+            painter.drawRect(QRectF(x-3,y-3,size+6,size+6))
+        if glyph.variable_letter:
+            painter.setPen(self._pen(color, 1.1))
+            painter.setFont(QFont('Sans Serif', max(6, int(size*.15)), QFont.Weight.Bold))
+            painter.drawText(QRectF(x+2,y+2,size*.22,size*.20), Qt.AlignmentFlag.AlignCenter, glyph.variable_letter)
+        if glyph.multiplicity > 1:
+            painter.setPen(self._pen(color, 1.2))
+            painter.drawRect(QRectF(x+size*.82,y+size*.05,size*.12,size*.12))
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        if not self._symbols:
+            painter.setPen(QColor('#e8eef8'))
+            painter.setFont(QFont('Monospace', 10, QFont.Weight.Bold))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, str(self._value))
+            return
+        glyphs = ot_encode_decimal(self._value, role=self._role, operation=self._operation,
+                                   continued=self._continued, multiplicity=self._multiplicity,
+                                   variable_letter=self._variable_letter)
+        count = max(1, len(glyphs))
+        cell = min(32.0, max(20.0, (self.width()-4.0)/count))
+        total = cell*count
+        x = max(2.0, (self.width()-total)/2.0)
+        y = max(1.0, (self.height()-cell)/2.0)
+        for g in glyphs:
+            self._draw_glyph(painter, g, x, y, cell)
+            x += cell
+
+
+class _OTNumericOverlay(OTNumberGlyphWidget):
+    """Read-only symbol mask for standard Qt numeric controls.
+
+    It never changes the underlying value.  Mouse events pass through; when a
+    spin box receives keyboard focus the mask hides so ordinary numeric editing
+    remains possible, then returns on focus-out.
+    """
+    def __init__(self, owner):
+        super().__init__(0, role=OTRole.RESULT, parent=owner)
+        self.owner = owner
+        self._owner_text_palette = None
+        self._owner_text_stylesheet = None
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setStyleSheet('background: transparent;')
+        self.setToolTip('Author-symbol view. Click/focus the control to edit the ordinary numeric value.')
+        try:
+            le = owner.lineEdit()
+            self._owner_text_palette = QPalette(le.palette()) if le is not None else None
+            self._owner_text_stylesheet = str(le.styleSheet()) if le is not None else ""
+        except Exception:
+            self._owner_text_palette = None
+            self._owner_text_stylesheet = ""
+        self._sync()
+        try: owner.valueChanged.connect(lambda *_: self._sync())
+        except Exception: pass
+        owner.installEventFilter(self)
+
+    def _set_owner_number_text_visible(self, visible):
+        """Hide native base-10 text unless the editor itself has focus.
+
+        Palette-only hiding is insufficient when a QSS rule sets QLineEdit color
+        (Performance does this), because Qt's stylesheet wins over the palette.
+        Preserve both the original palette and stylesheet and add a transparent
+        text rule only while the author glyph is the active display.
+        """
+        try:
+            le = self.owner.lineEdit()
+            if le is None:
+                return
+            if self._owner_text_palette is None:
+                self._owner_text_palette = QPalette(le.palette())
+            if self._owner_text_stylesheet is None:
+                self._owner_text_stylesheet = str(le.styleSheet())
+            pal = QPalette(self._owner_text_palette)
+            base_qss = str(self._owner_text_stylesheet or "")
+            if visible:
+                le.setPalette(pal)
+                le.setStyleSheet(base_qss)
+            else:
+                clear = QColor(0, 0, 0, 0)
+                pal.setColor(QPalette.ColorRole.Text, clear)
+                pal.setColor(QPalette.ColorRole.PlaceholderText, clear)
+                pal.setColor(QPalette.ColorRole.HighlightedText, clear)
+                le.setPalette(pal)
+                # QSS is required because parent/floating-window stylesheets can
+                # explicitly color QLineEdit and override a transparent palette.
+                le.setStyleSheet(
+                    base_qss
+                    + "\nQLineEdit { color: rgba(0,0,0,0); "
+                      "selection-color: rgba(0,0,0,0); }"
+                )
+        except RuntimeError:
+            pass
+        except Exception:
+            pass
+
+    def _sync(self):
+        try: self._value = self.owner.value()
+        except Exception: self._value = 0
+        self._symbols = bool(MATH_SYMBOLS_ENABLED)
+        focused = bool(self.owner.hasFocus())
+        self._set_owner_number_text_visible((not MATH_SYMBOLS_ENABLED) or focused)
+        self._fit(); self.update()
+
+    def _fit(self):
+        try:
+            # Cover the actual QLineEdit edit field exactly.  Its geometry already
+            # excludes spin arrows/buttons, so there is no guessed "-20 px" width
+            # and no strip where the native number can leak around the glyph.
+            le = self.owner.lineEdit()
+            if le is not None:
+                r = le.geometry()
+                self.setGeometry(r.x(), r.y(), max(10, r.width()), max(10, r.height()))
+            else:
+                self.setGeometry(1, 1, max(10, self.owner.width()-2), max(10, self.owner.height()-2))
+            self.raise_()
+        except RuntimeError:
+            pass
+        except Exception:
+            pass
+
+    def eventFilter(self, obj, event):
+        t=event.type()
+        if t in (QEvent.Type.Resize, QEvent.Type.Show):
+            self._fit(); self._sync()
+        elif t == QEvent.Type.FocusIn:
+            # Editing remains practical: focus temporarily reveals the actual
+            # numeric editor while the normal symbol-only display stays clean.
+            self._set_owner_number_text_visible(True)
+            self.hide()
+        elif t == QEvent.Type.FocusOut:
+            if MATH_SYMBOLS_ENABLED:
+                self._set_owner_number_text_visible(False)
+                self.show(); self.raise_()
+            else:
+                self._set_owner_number_text_visible(True)
+        return False
+
+    def paintEvent(self, event):
+        if not MATH_SYMBOLS_ENABLED: return
+        painter=QPainter(self); painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        # Keep enough precision to distinguish real control values. Decimal point
+        # is a small center dot between digit cells; sign is carried by direction.
+        try:
+            if isinstance(self.owner, QDoubleSpinBox):
+                txt=f"{float(self.owner.value()):.{int(self.owner.decimals())}f}"
+            else: txt=str(int(self.owner.value()))
+        except Exception: txt=str(self._value)
+        neg=txt.startswith('-'); txt=txt.lstrip('+-')
+        chars=[c for c in txt if c.isdigit() or c=='.']
+        nd=max(1,sum(c.isdigit() for c in chars)); dots=sum(c=='.' for c in chars)
+        cell=min(34.0,max(18.0,(self.width()-2.0)/(nd+dots*.28)))
+        total=cell*(nd+dots*.28); x=max(1.0,(self.width()-total)/2.0); y=max(0.0,(self.height()-cell)/2.0)
+        idx=0
+        for c in chars:
+            if c=='.':
+                painter.setPen(Qt.PenStyle.NoPen); painter.setBrush(QColor('#2f80ff'))
+                painter.drawEllipse(QRectF(x+cell*.05,y+cell*.78,cell*.14,cell*.14)); x += cell*.28
+                continue
+            d=int(c); direction=OTDirection.DOWN if neg and idx==0 else (OTDirection.UP if idx%2==0 else OTDirection.RIGHT)
+            g=ot_encode_decimal(-d if neg and idx==0 else d, role=self._role)[0]
+            # Preserve deterministic alternate positive direction for readability.
+            if not neg and idx%2: g=type(g)(g.value, OTDirection.RIGHT, g.squiggly_mask, g.presence_mask, g.operation, g.continued, g.multiplicity, g.role, g.variable_letter)
+            self._draw_glyph(painter,g,x,y,cell); x+=cell; idx+=1
 
 # =============================================================================
 # PROCESSOR SYNTAX / DESIGN CONTRACT
@@ -107,17 +404,7 @@ from PyQt6.QtWidgets import (
 # =============================================================================
 
 
-try:
-    import scipy.io.wavfile as wavfile
-except ImportError:
-    wavfile = None
-
-try:
-    import sounddevice as sd
-    HAS_SOUNDDEVICE = True
-except ImportError:
-    sd = None
-    HAS_SOUNDDEVICE = False
+from audio_os_backend import wavfile, sd, HAS_SOUNDDEVICE
 
 # PERF_2026: optional C++ accel (voice synth / hardclip / meum vectors).
 # Loaded once; missing library is fine — pure NumPy paths remain authoritative.
@@ -651,6 +938,7 @@ def eqr_tensor_audio(sample, d_char, theta_char, t=0.0):
 #       "higher-value" numeric field (refined once by the Meum residue).
 # ---------------------------------------------------------------------------
 OP_THEORY_ENABLED = True  # default ON — nested dynamics active at launch
+MATH_SYMBOLS_ENABLED = True  # display-only; OFF reveals ordinary base-10 without changing OT
 
 
 def set_operator_theory(enabled):
@@ -10516,6 +10804,77 @@ irrational or irrational-candidate traversals can be reserved for ordering and c
 The benefit comes from the structure and invariants, not from a claim that one constant
 makes a CPU intrinsically faster.
 
+
+--------------------------------------------------------------------------------
+1A. MEUM COMPRESSION / LOGIC SEARCH (PROJECT METHOD)
+--------------------------------------------------------------------------------
+Groovebox/sCode uses "Meum Compression" as a project-defined semantic reduction
+method: preserve the observable/canonical identity while reducing repeated work or
+the number of independent obligations. It is NOT ordinary ZIP/audio compression and
+it is not a claim that arbitrary information can be reconstructed from a seed.
+
+Current search roles:
+  normalize/key logic : (2 - M)·x = [1 - (M - 1)]·x
+  locate ambiguity    : x/M, x/M², x/M³
+  predict/reflection  : (M - 1)^p·x, normally p = 1..3
+  ideal-form compare  : 2^M, with Meum's defining check
+                        2^M = M^4 + M^2 - M
+The compiler/reverse-grep may also compare the other named irrational constants
+from the author's book as candidate coordinates. Numeric proximity alone is only a
+locator. A reduction is accepted only after interval/direction, dependency and
+behavioral/canonical parity agree. `why()` is intended to retain that provenance.
+
+For cyclic/native state, finite repeated trajectories can additionally be stored as
+preperiod + period + certified jump information. The resulting "compression ratio"
+reported by native tests is a representation/reuse ratio for that certified cycle,
+not a universal data-compression theorem.
+
+--------------------------------------------------------------------------------
+1B. PERFORMANCE MEDIA PLAYER + SUPPORTED FILE FORMATS
+--------------------------------------------------------------------------------
+The Performance button opens a reusable dock. Closing it hides the workspace; pressing
+Performance again reopens the same live workspace. It contains the project/render file
+browser, playlist/cut-up player, game player, device/output routing, broadcast controls,
+DJ remixer and batch re-render tools.
+
+Player routing is deliberately hard-coded and deterministic:
+  1. mpv when available (including JSON-IPC for live speed changes),
+  2. VLC as the next external-player backend,
+  3. ffplay as the final fallback.
+The Groovebox composition remains the authority; the player is an output/performance
+surface and does not silently rewrite canonical state.
+
+MAIN MEDIA IMPORT — carrier/reference inputs
+  Audio: .wav .mp3 .flac .ogg .oga .m4a .aac .aiff .aif .opus .caf
+         .alac .wma .ape .wv
+  Video: .mp4 .mov .mkv .webm .avi .m4v .mpeg .mpg .flv .ts .m2ts
+         .mts .3gp .3g2 .ogv .vob
+WAV is read natively when possible; other audio/video decoding routes through FFmpeg.
+Video-only files are valid visual carriers and receive a silent carrier stream.
+
+PROJECT / PROGRAM FORMATS
+  .MCC       canonical transparent Groovebox composition/project document
+  .mgpr      legacy project input compatibility
+  .MGproject .MGsynth .MGprofile .MG
+             portable artifact identities/profiles/synths
+  .zip       generated videogame/software package and reverse-engineering import
+
+MAIN EXPORT MENU
+  Audio:       .wav .flac .mp3
+  Video+Audio: .mp4 .webm .avi
+  Video only:  .mp4 .webm .avi
+  Videogame:   .zip
+The audio writer/reconversion layer also understands .ogg .opus .caf and .aiff where
+the local FFmpeg build supports them. Exports can be written as recoverable `.part`
+segments and optionally stitched. Reconvert/Bake-and-Compare recognizes
+.wav .flac .mp3 .ogg .opus .caf .aiff .mp4 .webm .avi and .zip.
+
+PERFORMANCE PLAYER BROWSER
+  Audio: .wav .flac .mp3 .ogg .opus .aiff .aif .caf .oga .m4a .aac .alac
+         .wma .ape .wv
+  Video: .mp4 .webm .avi .mov .mkv .m4v .mpeg .mpg .flv .ts .m2ts .mts
+         .3gp .3g2 .ogv .vob
+
 --------------------------------------------------------------------------------
 2. DISCLAIMER — ADVANCED INSTRUMENT
 --------------------------------------------------------------------------------
@@ -10986,7 +11345,7 @@ DEPENDENCIES (install last — same list as project README.md)
   Python packages (pip) — every OS:
     PyQt6          UI
     numpy          DSP / buffers
-    scipy          WAV I/O helpers, signal utilities
+    wave/FFmpeg    OS/stdlib WAV + bundled media I/O
     sounddevice    Real-time audio I/O
     Pillow         Frame export (PNG) for video
 
@@ -11002,7 +11361,7 @@ DEPENDENCIES (install last — same list as project README.md)
 
   Manual pip (any OS):
     python3 -m pip install --upgrade pip
-    python3 -m pip install numpy scipy PyQt6 sounddevice Pillow
+    python3 -m pip install numpy PyQt6 sounddevice Pillow
 
   Ubuntu/Debian system packages:
     sudo apt install -y python3 python3-pip python3-venv python3-dev \
@@ -11024,7 +11383,7 @@ DEPENDENCIES (install last — same list as project README.md)
   (the app checks there first).
 
   Verify:
-    python3 -c "import numpy, scipy, PyQt6.QtCore, sounddevice, PIL; print('OK')"
+    python3 -c "import numpy, PyQt6.QtCore, sounddevice, PIL; print('OK')"
     ffmpeg -hide_banner -version | head -1
 
   Run:
@@ -12456,14 +12815,99 @@ This is an **equivalence-preserving execution rewrite**, not a claim that every 
 Groovebox is also an executable research artifact. Mathematicians, physicists, DSP/numerical programmers, generative artists, and simulation developers are invited to test the Meum root theorem, OT equivalence routes, `isn`/`ics` transforms, Universal Field decomposition invariance, traversal distributions, native/reference parity, and performance claims. Useful contributions include proofs or counterexamples, reproducible benchmarks, profiling results, alternative constants/bases, and simpler equivalent formulations.
 
 The project distinguishes: (1) proved statements under its declared definitions, (2) implementation invariants backed by tests, and (3) empirical hypotheses such as whether coupled Meum-family traversal outperforms other irrational or low-discrepancy bases in a particular audio/visual/game workload.
-    """
-    def __init__(self, dimensions=('x', 'y', 'z'), survival_mode=True, sample_rate=44100):
+
+## Author Symbol Language — literal reading guide (Math Symbols defaults ON)
+
+Mathematician's Groovebox starts with **Math Symbols ON** because the author notation carries information that an ordinary decimal numeral does not show directly: four-way direction/reference, counted/skipped strokes, contextual stroke modifiers, operation enclosure, continued-series structure, event multiplicity, and variable/result role. **Operator Theory (OT)** is a separate switch: OT ON selects the OT calculation route; OT OFF keeps the symbol display available for comparison. **Math Symbols OFF** exposes the ordinary base-10 / conventional mathematical spelling of the same inspectable value. This makes base-10 a secondary inspection and interoperability view rather than deleting it.
+
+### Literal visual grammar
+
+A numeric cell has **four groups of three strokes = twelve possible strokes**. The four pathways are **UP, RIGHT, DOWN, LEFT**. UP/RIGHT are the two positive-oriented pathways and DOWN/LEFT the two negative-oriented pathways, so direction space has two of four negative-oriented choices rather than a single unary minus. A **missing stroke is skipped**. A **straight stroke is an ordinary/full counted stroke**. A **squiggly stroke is contextual**: according to its enclosing expression it can mark imaginary participation, decimal/fractional participation, a half-count (`0.5` rather than `1`), or symbolic doubling (`×2`). It must not be decoded as one universal number without its context.
+
+Four optional separator positions provide the compact counted-state/intersection layer. **Open outer/partial square = multiplication; dotted outer square = sum/difference; solid outer square = division; dotted enclosing square = ordinary continued inner expansion; line-connected solid square = multiplicity/events in place.** Adjacent cells form a row for adjunct addition/subtraction or further contextual composition. A plain box can contain a letter to name a variable.
+
+Role colors are semantic, not magnitude: **red = independent variable; green = independent constant; blue = result; black = dependent constant; white = dependent variable.**
+
+### Portable ASCII analogy
+
+The drawn symbols remain authoritative. Plain-text documents/logs use this analogy when the graphical painter is unavailable:
+
+`U R D L` = up/right/down/left pathway; `|` = straight/full count; `~` = squiggly/context-modified count; `.` = missing/skipped count; `:` = dotted sum/difference enclosure; `[>` = open multiplication enclosure; `[]` = solid division enclosure; `::...::` = dotted continued-expansion enclosure; `-[xN]` = line-connected multiplicity square; `<x>` = boxed variable letter. The final hexadecimal `0..F` field is Groovebox's reversible four-separator machine index, not a claim that the book assigns hexadecimal digits to the glyphs.
+
+Example schematic cell: `U:|||~..|||~..:5<x>` means an UP-oriented boxed `x`, with straight, modified and skipped strokes, and separator state 5. The meaning of each `~` is supplied by the surrounding operation/context.
+
+### Why prefer it contextually?
+
+Use the author symbols when direction, handedness/reference, continued structure, multiplicity, dependency role, or contextual half/imaginary/decimal/doubling information matters. They can keep those relationships visible without repeatedly flattening them into a signed decimal plus separate annotations. Prefer conventional/base-10 notation when exchanging values with software or readers that do not know the glyph grammar, when checking a conventional identity, or when an ordinary scalar is the clearest representation. The switches deliberately allow four comparisons: OT+symbols, OT+base-10, conventional math+symbols, and conventional math+base-10.
+
+### Equation translations — conventional first, author-symbol/ASCII analogy immediately below
+
+The ASCII lines are **analogies of the drawn notation**, not a replacement alphabet. They preserve the best currently specified context; where the source does not uniquely assign a stroke pattern, the line names the operation rather than inventing one.
+
+Conventional: `isn(theta) = 2 sin(theta/2)`  
+Author/ASCII: `<isn>[> <theta> [] 2 ] = [>2] <sin>(<theta>[]2)`
+
+Conventional: `isn^-1(x) = 2 asin(x/2)`  
+Author/ASCII: `<isn^-1><x> = [>2] <asin>(<x>[]2)`
+
+Conventional: `ics(theta) = 2 cos(theta/2)`  
+Author/ASCII: `<ics>[> <theta> [] 2 ] = [>2] <cos>(<theta>[]2)`
+
+Conventional: `sin(x) = isn(2x)/2`  
+Author/ASCII: `<sin><x> = []2 ( <isn>([>2]<x>) )`
+
+Conventional: `cos(x) = ics(2x)/2`  
+Author/ASCII: `<cos><x> = []2 ( <ics>([>2]<x>) )`
+
+Conventional: `2^M = M^4 + M^2 - M`  
+Author/ASCII: `<result:blue> = : ([pow]2,<M>,4) + ([pow]<M>,2) - <M> :`  
+Here `<M>` is a boxed/named constant; in the painter it should use the role color appropriate to whether M is independent or dependent in the active expression.
+
+Conventional: `F(x) = 2^x - x^4 - x^2 + x = 0`  
+Author/ASCII: `<F><x> = : [pow](2,<x>) - [pow](<x>,4) - [pow](<x>,2) + <x> : = 0`
+
+Conventional contextual direction: `C = sigma * hand * reference * concentric`, with each factor in `{UP,RIGHT,DOWN,LEFT}` orientation state rather than merely a unary sign.  
+Author/ASCII: `<C> = [> <sigma> <hand> <reference> <concentric> ]`; direction markers `U/R/D/L` remain attached to the participating cells.
+
+Conventional odd-context transfer: `isn(C*x) = C*isn(x)` (where the selected branch/context makes this correspondence valid).  
+Author/ASCII: `<isn>([><C><x>]) = [><C><isn><x>]` — the direction pathway may move outside the odd transform while its context is retained.
+
+Conventional even-context rule: `ics(C*x) = ics(x)` for `C = +/-1` at the scalar parity level.  
+Author/ASCII: `<ics>([><C><x>]) = <ics><x> ; keep U/R/D/L context` — the scalar sign can disappear from an even function, but the directional/reference state must **not** be discarded.
+
+Conventional inverse-operation pairs: `+ <-> -`, `* <-> /`, `power <-> root`.  
+Author/ASCII: `:sum <-> :difference`, `[>multiply <-> []divide`, `[power] <-> [root]`; reverse operation order when traversing an inverse path where the OT rule requires it.
+
+Conventional continued expansion: `a0 + 1/(a1 + 1/(a2 + ...))`.  
+Author/ASCII: `:: <a0> : [] ( <a1> : [] ( <a2> : ... ) ) ::` — the dotted outer enclosure says the inner symbol row is an ordinary continued expansion. A single-square continued-series symbol can leave the inner repetition implicit; multiple delimited squares expose successive series structure.
+
+Conventional multiplicity: `N * event(x)` or `event(x)` repeated N times in place.  
+Author/ASCII: `<event><x>-[xN]` — the line-connected solid square carries event multiplicity without requiring N separately drawn copies.
+
+### Source vs. author clarification vs. Groovebox machine convention
+
+The supplied book explicitly describes four sets of three lines, conflicting/nonconflicting directions, optional grid intersections, operation intensity/dynamics, and boxes for variables. The author has clarified for this implementation that missing strokes are skipped; squiggles are contextual imaginary/decimal/half/doubling modifiers; four-way pathways are up/down/left/right; and the border/continued/multiplicity/color rules above are intended parts of the notation. Groovebox's exact bit packing, separator-to-`0..15` index, and ASCII spelling are implementation conventions chosen to make the notation reversible and inspectable. They should not be mistaken for additional claims printed verbatim in the book.
+    \n--------------------------------------------------------------------------------\nMEUM LOGIC SEARCH / REVERSE-GREP (PROJECT RESEARCH TOOL)\n--------------------------------------------------------------------------------\nThe current compiler/reverse-decoder experiments assign distinct jobs to Meum\nforms instead of treating every Meum-derived number as interchangeable:\n\n  normalize/key logic:       N(x) = (2 - M) x = [1-(M-1)]x\n  ambiguity/problem locate:  A_p(x) = x / M^p,       p = 1,2,3,...\n  interval prediction:       R_p(x) = (M - 1)^p x,   p = 1,2,3,...\n  ideal-form comparison:     T(x) = x / 2^M\n\nThe Meum root relation supplies a consistency route:\n\n  2^M - M^4 - M^2 + M = 0\n  therefore 2^M = M^4 + M^2 - M.\n\nThe search is LINEAR in responsibility: normalize -> locate ambiguity -> test\ninterval/reflection prediction -> compare already-equivalent target forms ->\nverify -> emit sCode.  2^M is not a command to force program outputs toward one\nnumber; it is a target-coordinate / preference test after behavioral equivalence.\n\nINTERVAL DIRECTION.  Because M>1 and M-1>0, multiplication by (M-1)^p\npreserves the ordinary ordering of real interval endpoints.  A candidate math\ncollapse is therefore stronger when value family, interval, direction, extrema,\ndependencies, and regression behavior agree.  Min/max or slope reversals are\nlandmarks that help reject a false semantic match.\n\nBOOK-CONSTANT SECOND STAGE.  Other named irrational/self-referential constants\nfrom the author's work may be used as additional locator coordinates.  Numerical\nproximity is evidence for where to inspect, not proof of semantic identity.  A\nmatch is promoted only after dependency, interval/direction, cross-resolution,\nand behavioral checks.\n\nWHY() / PROVENANCE TARGET.  A verified sCode reduction should retain the source\naddress X, semantic class Y, normalization, ambiguity probe, powered interval\nprediction, target comparison, and verification certificate so why() can invert\nthe route and explain the emitted syntax.\n\nMATH SYMBOL DISPLAY.  Math Symbols is a reversible presentation layer only.\n0 is the empty author cell. Numeric values remain unchanged underneath.  All\nQSpinBox/QDoubleSpinBox controls, including controls created later in floating\nwindows, are discovered and masked while unfocused; focusing a control reveals\nthe ordinary editable number, and leaving focus restores its symbol mask.\n
+"""
+    def __init__(self, parent=None, dimensions=('x', 'y', 'z'), survival_mode=True, sample_rate=44100):
+        super().__init__(parent)
         self.dimensions = dimensions
         self.survival_mode = survival_mode
         self.active_patches = []
         self.sample_rate = int(sample_rate)
         self._buf = np.zeros(2048, dtype=np.float32)
         self._buf_pos = 0
+        self.setWindowTitle("Mathematician's Groovebox — Help / Readme")
+        self.resize(980, 760)
+        layout = QVBoxLayout(self)
+        text = QTextEdit(self)
+        text.setReadOnly(True)
+        text.setPlainText(self.HELP_TEXT)
+        layout.addWidget(text)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, parent=self)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
 
     def generate_fractal_stream(self, seed_data):
         arr = np.asarray(seed_data, dtype=np.float32).ravel()
@@ -13764,8 +14208,21 @@ class GrooveboxEngine:
                 "identity_note": "seed+engines+sequential nums; instrument count ignored",
             },
         }
-        with open(filepath, 'w') as f:
-            json.dump(data, f, indent=4)
+        target = os.path.abspath(str(filepath))
+        os.makedirs(os.path.dirname(target) or '.', exist_ok=True)
+        tmp = target + f'.tmp.{os.getpid()}'
+        with open(tmp, 'w', encoding='utf-8', newline='\n') as f:
+            json.dump(data, f, indent=4, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, target)
+        try:
+            if os.name != 'nt':
+                dfd = os.open(os.path.dirname(target) or '.', os.O_RDONLY)
+                try: os.fsync(dfd)
+                finally: os.close(dfd)
+        except Exception:
+            pass
 
     def deserialize_project(self, filepath):
         with open(filepath, 'r') as f:
@@ -15354,12 +15811,12 @@ class MasterControlPatchbayPage(QWidget):
         QMessageBox.information(self, "Song & Patchbay Randomizer", "Successfully randomized song arrangement, synth wiring, effects modules, and global cross-tab patch cables!")
 
     def _save_project(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Save Project File", self._projects_dir(), "EQ爾 Groovebox Files (*.mgpr)")
+        path, _ = QFileDialog.getSaveFileName(self, "Save Project File", self._projects_dir(), "Mathematician's Groovebox Composition (*.MCC)")
         if path:
-            # SAVE_EXT_2026: enforce the .mgpr suffix so the second save with the
+            # SAVE_EXT_2026: enforce the canonical .MCC suffix so the second save with the
             # canonical-protect toggle can never fail on a bare extension.
-            if not path.lower().endswith(".mgpr"):
-                path = path + ".mgpr"
+            from mcc_filetype import ensure_project_extension
+            path = ensure_project_extension(path)
             try:
                 self.engine.serialize_project(path)
             except Exception as exc:
@@ -15368,7 +15825,7 @@ class MasterControlPatchbayPage(QWidget):
             QMessageBox.information(self, "Project Saved", f"Project successfully saved to:\n{path}")
 
     def _load_project(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Open Project File", self._projects_dir(), "EQ爾 Groovebox Files (*.mgpr)")
+        path, _ = QFileDialog.getOpenFileName(self, "Open Project File", self._projects_dir(), "Mathematician's Groovebox Composition (*.MCC);;Legacy Groovebox Project (*.mgpr *.mgpr.part);;All files (*)")
         if path:
             self.engine.deserialize_project(path)
             self.bpm_slider.setValue(int(self.engine.global_bpm * 10))
@@ -18209,6 +18666,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._heuristic_writer_snapshot = {}
         self._heuristic_writer_scope = None
         self.init_ui_components()
+        self._install_math_symbol_numeric_overlays()
         self._install_scroll_value_guards()
         # V3_OPERATION_STATION_BASELINE: fresh boot must be numerically identical
         # to Clear Memory before any playlist/canonical runtime writer observes UI.
@@ -20640,6 +21098,36 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.chk_canonical_protect = QCheckBox("Canonical: skip overwrite user composition")
         self.chk_canonical_protect.setChecked(True)
         self.chk_canonical_protect.setStyleSheet("color: #f5d97d; font-weight: bold;")
+        self.btn_meum_engine_simplify = QPushButton("Engines simplified by Meum: ON")
+        self.btn_meum_engine_simplify.setCheckable(True)
+        self.btn_meum_engine_simplify.setChecked(True)
+        self.btn_meum_engine_simplify.setToolTip(
+            "ON (default): use the composite Meum canonical dispatcher. Shared seed/context "
+            "is computed once, then the existing GOAVA, Randomizer, Phase Lock, Euclidean, "
+            "and Seeded engine functions are called unchanged in deterministic order.\n"
+            "OFF: use the original per-engine dispatcher directly. No canonical engine is removed."
+        )
+        self.btn_meum_engine_simplify.setStyleSheet(
+            "QPushButton { background:#263b2b; color:#b8f7e6; border:1px solid #55d66f; "
+            "border-radius:3px; padding:4px 8px; font-weight:bold; } "
+            "QPushButton:checked { background:#1f5a31; border:2px solid #7cf29b; }"
+        )
+
+        self.btn_trigonometry_engine = QPushButton("Trigonometry Engine: ON")
+        self.btn_trigonometry_engine.setCheckable(True)
+        self.btn_trigonometry_engine.setChecked(True)
+        self.btn_trigonometry_engine.setToolTip(
+            "ON (default): enable the Trigonometry/OT execution layer for supported "
+            "angle/phase transforms while preserving the canonical engines themselves.\n"
+            "OFF: bypass the trig execution layer and use the baseline/original math path "
+            "where available. This is intended for immediate A/B comparison."
+        )
+        self.btn_trigonometry_engine.setStyleSheet(
+            "QPushButton { background:#2f2942; color:#eadcff; border:1px solid #9d7ad9; "
+            "border-radius:3px; padding:4px 8px; font-weight:bold; } "
+            "QPushButton:checked { background:#4b3472; border:2px solid #c7a4ff; }"
+        )
+
         self.chk_canonical_protect.setToolTip(
             "ON (default): protect user-painted cells; seed is a one-in-one stochastic "
             "modifier and unison mimics without wiping your locks.\n"
@@ -21198,6 +21686,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_seeded_randomize.toggled.connect(self._on_seeded_live_toggled)
         self.chk_user_program_only.toggled.connect(self._on_user_program_only_toggled)
         self.chk_canonical_protect.toggled.connect(self._on_canonical_protect_toggled)
+        self.btn_meum_engine_simplify.toggled.connect(self._on_meum_engine_simplify_toggled)
+        self.btn_trigonometry_engine.toggled.connect(self._on_trigonometry_engine_toggled)
         self.btn_restore_userdata.clicked.connect(self._on_restore_userdata_clicked)
         self.btn_save_project.clicked.connect(self.save_project_dialog)
         self.btn_load_project.clicked.connect(self.load_project_dialog)
@@ -21230,6 +21720,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.transport_layout_row2.addWidget(self.btn_idealize_rhythm)
         self.transport_layout_row2.addWidget(self.chk_user_program_only)
         self.transport_layout_row2.addWidget(self.chk_canonical_protect)
+        self.transport_layout_row2.addWidget(self.btn_meum_engine_simplify)
+        self.transport_layout_row2.addWidget(self.btn_trigonometry_engine)
         self.transport_layout_row2.addWidget(self.btn_restore_userdata)
         # PROJECT_UNDO_2026: undo/redo every engine apply / playlist / pattern /
         # instrument resize without losing data (Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y).
@@ -23011,6 +23503,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_operator_theory.setObjectName("operatorTheoryBtn")
         self.btn_operator_theory.toggled.connect(self._on_operator_theory_toggled)
         master_vol_row.addWidget(self.btn_operator_theory)
+
+        self.btn_math_symbols = QPushButton("Math Symbols · ON")
+        self.btn_math_symbols.setCheckable(True)
+        self.btn_math_symbols.setChecked(True)
+        self.btn_math_symbols.setMinimumHeight(28)
+        self.btn_math_symbols.setMaximumHeight(32)
+        self.btn_math_symbols.setToolTip(
+            "Author notation (default ON): 12 contextual strokes, four separators, four-way direction, "
+            "operation/series borders, and role colors. Straight=count; missing=skip; squiggle is context-sensitive (imaginary/decimal/half/doubling). OFF shows the same value in base 10. "
+            "The Operator Theory toggle separately controls the calculation backend."
+        )
+        self.btn_math_symbols.toggled.connect(self._on_math_symbols_toggled)
+        master_vol_row.addWidget(self.btn_math_symbols)
+        self.ot_symbol_preview = OTNumberGlyphWidget(50, role=OTRole.RESULT, parent=self)
+        self.ot_symbol_preview.setFixedWidth(116)
+        master_vol_row.addWidget(self.ot_symbol_preview)
 
         master_vol_row.addStretch(1)
 
@@ -28020,6 +28528,37 @@ class MathematiciansGrooveboxApp(QMainWindow):
               f"cell(s), {cleared_rows} generated playlist row(s)")
         return cleared_steps, cleared_rows
 
+    def _trigonometry_engine_enabled(self):
+        btn = getattr(self, "btn_trigonometry_engine", None)
+        return True if btn is None else bool(btn.isChecked())
+
+    def _on_trigonometry_engine_toggled(self, checked):
+        btn = getattr(self, "btn_trigonometry_engine", None)
+        if btn is not None:
+            btn.setText(f"Trigonometry Engine: {'ON' if checked else 'OFF'}")
+        # Rebuild the canonical state from the same deterministic baseline so
+        # comparing ON/OFF cannot inherit stale modulation from the other path.
+        try:
+            self._ensure_perfect_unison()
+        except Exception as exc:
+            print(f"[Trig engine] toggle rebuild skipped: {exc}")
+
+    def _meum_engine_simplification_enabled(self):
+        btn = getattr(self, "btn_meum_engine_simplify", None)
+        return True if btn is None else bool(btn.isChecked())
+
+    def _on_meum_engine_simplify_toggled(self, checked):
+        """Switch dispatch strategy without changing any canonical engine implementation."""
+        btn = getattr(self, "btn_meum_engine_simplify", None)
+        if btn is not None:
+            btn.setText(f"Engines simplified by Meum: {'ON' if checked else 'OFF'}")
+        # Re-derive from the same clean canonical baseline so switching strategy
+        # cannot leave residue from the prior path.
+        try:
+            self._ensure_perfect_unison()
+        except Exception as exc:
+            print(f"[Meum composite] toggle rebuild skipped: {exc}")
+
     def _on_canonical_protect_toggled(self, checked):
         """Canonical-protect is a state boundary, followed by exactly one rebuild.
 
@@ -28731,6 +29270,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "canonical_resonance_handoff": float(getattr(self, "canonical_resonance_handoff", 1.00)),
             "canonical_convolve": float(self.spin_canonical_convolve.value()) if hasattr(self, "spin_canonical_convolve") else CANONICAL_CONVOLVE_DEFAULT_PCT,
             "meum_spatial_resolution_enabled": bool(getattr(self, "meum_spatial_resolution_enabled", True)),
+            "meum_engine_simplification_enabled": bool(self._meum_engine_simplification_enabled()),
+            "trigonometry_engine_enabled": bool(self._trigonometry_engine_enabled()),
             "meum_spatial_activity_modulus": float(getattr(self, "meum_spatial_activity_modulus", 0.50)),
             "instrument_media_samples": _safe_json({
                 str(k): {"path": str(v.get("path", "")), "sample_rate": int(v.get("sample_rate", 44100)), "user_owned": True, "source_kind": str(v.get("source_kind", "audio")),
@@ -28800,6 +29341,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self._canonical_activity_ledger = {}
         if "meum_spatial_resolution_enabled" in data:
             self.meum_spatial_resolution_enabled = bool(data.get("meum_spatial_resolution_enabled", True))
+        if hasattr(self, "btn_meum_engine_simplify"):
+            _meum_simple = bool(data.get("meum_engine_simplification_enabled", True))
+            self.btn_meum_engine_simplify.blockSignals(True)
+            self.btn_meum_engine_simplify.setChecked(_meum_simple)
+            self.btn_meum_engine_simplify.setText(f"Engines simplified by Meum: {'ON' if _meum_simple else 'OFF'}")
+            self.btn_meum_engine_simplify.blockSignals(False)
+        if hasattr(self, "btn_trigonometry_engine"):
+            _trig_on = bool(data.get("trigonometry_engine_enabled", True))
+            self.btn_trigonometry_engine.blockSignals(True)
+            self.btn_trigonometry_engine.setChecked(_trig_on)
+            self.btn_trigonometry_engine.setText(f"Trigonometry Engine: {'ON' if _trig_on else 'OFF'}")
+            self.btn_trigonometry_engine.blockSignals(False)
         if "meum_spatial_activity_modulus" in data:
             try:
                 self.meum_spatial_activity_modulus = float(data.get("meum_spatial_activity_modulus", 0.50))
@@ -29111,19 +29664,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def export_project_json(self):
         """Export the unified project snapshot (same document as Save)."""
-        path, _ = QFileDialog.getSaveFileName(self, "Export Project JSON", self._projects_dir(), "Mathematician's Groovebox Project (*.mgpr)")
+        path, _ = QFileDialog.getSaveFileName(self, "Export Project JSON", self._projects_dir(), "Mathematician's Groovebox Composition (*.MCC)")
         if not path:
             return
         self._save_project_document(path)
 
     def _ensure_project_extension(self, path):
-        """SAVE_EXT_2026: always end project documents with .mgpr."""
-        path = str(path or "")
-        if not path.strip():
-            return path
-        if not path.lower().endswith(".mgpr"):
-            path = path + ".mgpr"
-        return path
+        """Canonicalize new project saves to .MCC; legacy .mgpr remains loadable."""
+        from mcc_filetype import ensure_project_extension
+        return ensure_project_extension(path)
 
     def _apply_visual_view_state(self, state):
         try:
@@ -29154,24 +29703,82 @@ class MathematiciansGrooveboxApp(QMainWindow):
         return groovebox_paths.samples_dir()
 
     def _atomic_write_document(self, path, data):
-        """Write a full project document atomically via a .part file.
+        """Crash-resistant MCC commit with cross-process commit exclusion.
 
-        PART_FILE_2026: the real document lands in <path>.part first, then is
-        atomically renamed over the destination. A crash mid-write can only
-        ever leave a recoverable .part file (never a half-written project), and
-        a second save may not interrupt the first.
+        The new payload is fully fsync'd before replacement. The previous good
+        generation is retained as ``.prev`` and the containing directory is
+        fsync'd on POSIX so the rename itself survives sudden power loss.
+        A short-lived O_EXCL lock prevents two Groovebox processes from
+        committing the same document at the same instant.
         """
         path = self._ensure_project_extension(path)
-        part = str(path) + ".part"
-        payload = json.dumps(data, indent=2, default=str)
+        path_s = str(path)
+        part = path_s + ".part"
+        prev = path_s + ".prev"
+        lock = path_s + ".lock"
+        payload = json.dumps(data, indent=2, sort_keys=True, default=str)
         tmp = part + f".{os.getpid()}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(payload)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, part)
-        os.replace(part, str(path))
-        return path
+        lock_fd = None
+        try:
+            # Cross-process commit exclusion. A stale lock older than 15 min is
+            # recoverable after a crashed writer.
+            try:
+                lock_fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except FileExistsError:
+                try:
+                    if time.time() - os.path.getmtime(lock) > 900:
+                        os.unlink(lock)
+                        lock_fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                    else:
+                        raise RuntimeError("This MCC is currently being committed by another Groovebox process.")
+                except FileNotFoundError:
+                    lock_fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            if lock_fd is not None:
+                os.write(lock_fd, f"pid={os.getpid()}\n".encode("ascii", "replace"))
+                os.fsync(lock_fd)
+
+            with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, part)
+
+            # Preserve the last committed generation before replacing it.
+            if os.path.isfile(path_s):
+                prev_tmp = prev + f".{os.getpid()}.tmp"
+                with open(path_s, "rb") as src, open(prev_tmp, "wb") as dst:
+                    shutil.copyfileobj(src, dst, length=1024 * 1024)
+                    dst.flush(); os.fsync(dst.fileno())
+                os.replace(prev_tmp, prev)
+
+            os.replace(part, path_s)
+            try:
+                from mcc_integrity import sha256_file, write_sidecar
+                if os.path.isfile(prev): write_sidecar(prev, sha256_file(prev))
+                write_sidecar(path_s, sha256_file(path_s))
+            except Exception as _integrity_exc:
+                print(f"[MCC] integrity sidecar warning: {_integrity_exc}")
+            try:
+                if os.name != "nt":
+                    dfd = os.open(os.path.dirname(os.path.abspath(path_s)) or ".", os.O_RDONLY)
+                    try: os.fsync(dfd)
+                    finally: os.close(dfd)
+            except Exception:
+                pass
+            return path
+        finally:
+            for leftover in (tmp,):
+                try:
+                    if os.path.exists(leftover): os.unlink(leftover)
+                except Exception:
+                    pass
+            if lock_fd is not None:
+                try: os.close(lock_fd)
+                except Exception: pass
+            try:
+                if os.path.exists(lock): os.unlink(lock)
+            except Exception:
+                pass
 
     def _save_project_document(self, path, show_saved=True):
         """Serialize on the UI thread, write in a worker so big projects never
@@ -29216,7 +29823,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _autosave_project(self):
         try:
             fp = self._last_autosave_fp
-            path = os.path.join(self._projects_dir(), "autosave.mgpr")
+            path = os.path.join(self._projects_dir(), "autosave.MCC")
             if fp is not None and hasattr(fp, "text"):
                 self._atomic_write_document(path, self._project_snapshot())
         except Exception:
@@ -29229,9 +29836,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             d = self._projects_dir()
             candidates = []
             for name in sorted(os.listdir(d)):
-                # Only project recovery documents (*.mgpr.part), never video
+                # Only project recovery documents (*.MCC.part or legacy *.mgpr.part), never video
                 # segment leftovers or pid tmp files.
-                if (name.endswith(".mgpr.part")
+                if ((name.endswith(".MCC.part") or name.endswith(".mcc.part") or name.endswith(".mgpr.part"))
                         and not name.endswith(".tmp")
                         and os.path.isfile(os.path.join(d, name))):
                     candidates.append(os.path.join(d, name))
@@ -29400,46 +30007,30 @@ class MathematiciansGrooveboxApp(QMainWindow):
             QMessageBox.warning(self,".MG load failed",str(e))
 
     def save_project_dialog(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Save Mathematician's Groovebox Project", self._projects_dir(), "Mathematician's Groovebox Project (*.mgpr)")
+        path, _ = QFileDialog.getSaveFileName(self, "Save Mathematician's Groovebox Project", self._projects_dir(), "Mathematician's Groovebox Composition (*.MCC)")
         if not path:
             return
         path = self._ensure_project_extension(path)
         self._save_project_document(path)
         self._current_project_path = path
 
-    def load_project_dialog(self):
-        """Load a unified project document back onto the live surface.
-
-        This is the restore half of the save/load unison contract: everything
-        except the actual audio/video buffers is carried in the document, and
-        the WAV/video carrier is re-loaded from its saved path (see
-        `_apply_project_snapshot`). Skip signals during restore, rebuild the
-        atomic CompositionToggleState from the restored engine mask, then refresh
-        so every downstream consumer (mixdown render, video export, video-game
-        classification) reads the restored source-of-truth — identical
-        canonical fingerprint ⇒ identical exports/play as the saved session.
-        """
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Load Mathematician's Groovebox Project", self._projects_dir(),
-            "Mathematician's Groovebox Project (*.mgpr *.mgpr.part);;All files (*)",
-        )
+    def open_project_path(self, path, *, show_message=True):
+        """Open an .MCC project (or legacy .mgpr) through one canonical loader."""
+        path = os.path.abspath(os.path.expanduser(str(path or "")))
         if not path:
-            return
+            return False
         try:
-            # Autorecovery: if user picks a leftover .mgpr.part (or a .mgpr that
-            # is missing but the .part sibling exists), load the recoverable copy.
             load_path = path
-            if path.lower().endswith(".mgpr.part"):
-                load_path = path
-            elif not os.path.isfile(path) and os.path.isfile(path + ".part"):
+            low = path.lower()
+            if low.endswith(".mgpr") and not os.path.isfile(path) and os.path.isfile(path + ".part"):
                 load_path = path + ".part"
-            elif path.lower().endswith(".mgpr") and os.path.isfile(path + ".part"):
-                # Prefer complete .mgpr; only fall back if it fails to parse.
-                load_path = path
+            if str(load_path).lower().endswith(".mcc"):
+                from mcc_integrity import select_verified
+                load_path, integrity_status = select_verified(load_path)
             with open(load_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             self._apply_project_snapshot(data)
-            self._current_project_path = load_path if load_path.lower().endswith(".mgpr") else path
+            self._current_project_path = path
             try:
                 self.reload_active_instrument_sequencer_ui()
             except Exception:
@@ -29448,9 +30039,23 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self._refresh_after_file_input(reason="project_load")
             except Exception:
                 pass
-            QMessageBox.information(self, "Loaded", f"Project loaded:\n{path}")
+            if show_message:
+                QMessageBox.information(self, "Loaded", f"Project loaded:\n{path}")
+            return True
         except Exception as e:
-            QMessageBox.warning(self, "Load failed", str(e))
+            if show_message:
+                QMessageBox.warning(self, "Load failed", str(e))
+            else:
+                print(f"[MCC] Could not open {path}: {e}")
+            return False
+
+    def load_project_dialog(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load Mathematician's Groovebox Composition", self._projects_dir(),
+            "Mathematician's Groovebox Composition (*.MCC);;Legacy Groovebox Project (*.mgpr *.mgpr.part);;All files (*)",
+        )
+        if path:
+            self.open_project_path(path)
 
 
     def open_keyboard_test_window(self):
@@ -30424,6 +31029,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.master_volume = val / 100.0
         if hasattr(self, 'lbl_master_vol'):
             self.lbl_master_vol.setText(f"{val}%")
+        if hasattr(self, 'ot_symbol_preview'):
+            self.ot_symbol_preview.setValue(int(val))
 
     def _on_clip_ratio_changed(self, val):
         """CLIP_GAIN_2026: update ratio label, queue a re-render, and (when a
@@ -30576,7 +31183,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
             def _worker():
                 try:
-                    import sounddevice as sd
+                    from audio_os_backend import sd
                     frames = max(1, int(round(float(duration) * sr)))
                     arr = sd.rec(frames, samplerate=sr, channels=1, dtype="float32")
                     sd.wait()
@@ -34480,9 +35087,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # Step 1: Establish clean baseline (history-free)
             self._establish_clean_baseline()
 
-            # Step 2: Apply all active engines in deterministic order
-            for engine in sorted(active_engines):  # Sorted for deterministic order
-                self._apply_engine_deterministically(engine)
+            # Step 2: Apply all active engines in deterministic order.
+            # Default ON uses the composite dispatcher; OFF retains the original
+            # per-engine dispatch path for immediate parity/A-B fallback.
+            if self._meum_engine_simplification_enabled():
+                self._apply_active_engines_meum_composite(active_engines)
+            else:
+                for engine in sorted(active_engines):
+                    self._apply_engine_deterministically(engine)
 
             # Step 3: Final reconciliation ensures perfect unison
             self._final_unison_reconciliation()
@@ -34937,42 +35549,86 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         return state
 
-    def _apply_engine_deterministically(self, engine):
-        """Apply a single engine with perfect determinism.
+    def _trig_engine_transform(self, op, x, *args, **kwargs):
+        """Central A/B dispatch point for supported trigonometric transforms.
 
-        Retoggle with the same seed + same active set MUST rewrite identical
-        patterns and parametrics. Engine-local RNG is seed XOR engine-id only;
-        generation counter is not part of the content identity.
+        ON prefers the project's OT/Meum trigonometric implementation when a
+        matching helper exists. OFF uses NumPy/libm baseline operations.
+        Unsupported operations always fall back to the baseline.
         """
-        seed = _safe_int_seed(self.get_numeric_seed())
+        enabled = self._trigonometry_engine_enabled()
+        try:
+            if enabled:
+                if op == "sin" and hasattr(self, "_ot_sin"):
+                    return self._ot_sin(x, *args, **kwargs)
+                if op == "cos" and hasattr(self, "_ot_cos"):
+                    return self._ot_cos(x, *args, **kwargs)
+                if op == "tan" and hasattr(self, "_ot_tan"):
+                    return self._ot_tan(x, *args, **kwargs)
+        except Exception:
+            pass
+        if op == "sin":
+            return np.sin(x)
+        if op == "cos":
+            return np.cos(x)
+        if op == "tan":
+            return np.tan(x)
+        raise ValueError(f"unsupported trig op: {op}")
+
+    def _apply_engine_with_shared_context(self, engine, seed):
+        """Apply one existing canonical engine using an already-computed canonical seed.
+
+        This function does not replace an engine. It only removes duplicated seed/context
+        setup so the composite and legacy dispatchers share exactly the same implementation.
+        """
         eng_h = int(_safe_int_seed(_stable_hash(str(engine)) & 0x7FFFFFFF))
         rng = np.random.default_rng((seed ^ eng_h) & 0x7FFFFFFF)
         self._active_engine_write_source = engine
-
-        # Engine-specific deterministic application
-        if engine == "goava":
-            self._apply_goava_deterministically(seed, rng)
-        elif engine == "randomizer":
-            self._apply_randomizer_deterministically(seed, rng)
-        elif engine == "phase_lock":
-            self._apply_phase_lock_deterministically(seed, rng)
-        elif engine == "euclidean":
-            self._apply_euclidean_deterministically(seed, rng)
-        elif engine == "seeded":
-            self._apply_seeded_deterministically(seed, rng)
-
-        # Sequence panels (synth/script/domain/patch) — same seed every retoggle
         try:
-            if hasattr(self, "_engine_write_sequence_panels"):
-                self._engine_write_sequence_panels(source=str(engine))
-        except Exception as _pe:
-            print(f"[Unison] sequence panels ({engine}): {_pe}")
-        # Clear live modulation baselines so live path starts from this write
-        self._live_offset_baselines = {}
-        self._live_param_baselines = {}
-        # Store signature to prevent duplicate processing
-        self._store_engine_signature(engine, seed)
-        self._active_engine_write_source = None
+            if engine == "goava":
+                self._apply_goava_deterministically(seed, rng)
+            elif engine == "randomizer":
+                self._apply_randomizer_deterministically(seed, rng)
+            elif engine == "phase_lock":
+                self._apply_phase_lock_deterministically(seed, rng)
+            elif engine == "euclidean":
+                self._apply_euclidean_deterministically(seed, rng)
+            elif engine == "seeded":
+                self._apply_seeded_deterministically(seed, rng)
+
+            try:
+                if hasattr(self, "_engine_write_sequence_panels"):
+                    self._engine_write_sequence_panels(source=str(engine))
+            except Exception as _pe:
+                print(f"[Unison] sequence panels ({engine}): {_pe}")
+
+            self._live_offset_baselines = {}
+            self._live_param_baselines = {}
+            self._store_engine_signature(engine, seed)
+        finally:
+            self._active_engine_write_source = None
+
+    def _apply_engine_deterministically(self, engine):
+        """Original per-engine dispatcher, retained for Meum simplification OFF."""
+        seed = _safe_int_seed(self.get_numeric_seed())
+        return self._apply_engine_with_shared_context(engine, seed)
+
+    def _apply_active_engines_meum_composite(self, active_engines):
+        """Composite canonical dispatcher used when 'Engines simplified by Meum' is ON.
+
+        Provable equivalence boundary:
+        - active engine set is sorted exactly as before;
+        - the canonical seed is computed once instead of once per engine;
+        - each unchanged engine receives the identical per-engine RNG seed;
+        - panel writes/signatures/baseline resets remain in the same order.
+
+        Therefore this is a code-path simplification, not a replacement of the
+        GOAVA/Randomizer/Phase Lock/Euclidean/Seeded engines.
+        """
+        seed = _safe_int_seed(self.get_numeric_seed())
+        for engine in sorted(active_engines):
+            self._apply_engine_with_shared_context(engine, seed)
+
 
     def _apply_goava_deterministically(self, seed, rng):
         """Deterministic GOAVA application"""
@@ -35149,6 +35805,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
         try:
+            preview = getattr(self, "ot_symbol_preview", None)
+            if preview is not None:
+                preview.setToolTip(
+                    ("OT backend ON · author symbol/base-10 display is independently selectable." if enabled else
+                     "Conventional backend ON · author symbol/base-10 display is independently selectable.")
+                )
+        except Exception:
+            pass
+        try:
             if hasattr(self, "scope_status_label") and self.scope_status_label is not None:
                 self.scope_status_label.setText(
                     "Operator Theory ON — nested dynamics (no sat / no peak-norm)"
@@ -35157,6 +35822,141 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 )
         except Exception:
             pass
+
+    def _apply_math_symbol_display_transform(self, enabled):
+        """Reversible compact-display transform used by Math Symbols mode.
+
+        It compresses dead layout space rather than shrinking the authored glyphs:
+        margins/spacing tighten across the whole window while numeric controls gain
+        just enough face height for the larger heavy-stroke symbol cells.  The
+        original geometry is cached once and restored exactly when symbols are off.
+        """
+        enabled = bool(enabled)
+        density = 0.76
+        widgets = [self] + list(self.findChildren(QWidget))
+        seen_layouts = set()
+        for widget in widgets:
+            try:
+                lay = widget.layout()
+            except Exception:
+                lay = None
+            if lay is None or id(lay) in seen_layouts:
+                continue
+            seen_layouts.add(id(lay))
+            try:
+                if not hasattr(lay, '_math_symbol_original_metrics'):
+                    m = lay.contentsMargins()
+                    lay._math_symbol_original_metrics = (m.left(), m.top(), m.right(), m.bottom(), lay.spacing())
+                l,t,r,b,sp = lay._math_symbol_original_metrics
+                if enabled:
+                    # Never erase a deliberate separator completely; use 1px as
+                    # the compact visual rhythm when an original margin existed.
+                    cv = lambda v: 0 if v <= 0 else max(1, int(round(v*density)))
+                    lay.setContentsMargins(cv(l), cv(t), cv(r), cv(b))
+                    if sp >= 0: lay.setSpacing(0 if sp == 0 else max(1, int(round(sp*density))))
+                else:
+                    lay.setContentsMargins(l,t,r,b)
+                    if sp >= 0: lay.setSpacing(sp)
+            except Exception:
+                pass
+
+        for w in list(self.findChildren(QSpinBox)) + list(self.findChildren(QDoubleSpinBox)):
+            try:
+                if not hasattr(w, '_math_symbol_original_min_height'):
+                    w._math_symbol_original_min_height = w.minimumHeight()
+                if enabled:
+                    w.setMinimumHeight(max(int(w._math_symbol_original_min_height), 28))
+                else:
+                    w.setMinimumHeight(int(w._math_symbol_original_min_height))
+            except Exception:
+                pass
+        try:
+            self.updateGeometry(); self.update()
+        except Exception:
+            pass
+
+    def _install_math_symbol_numeric_overlays(self):
+        """Mask every standard numeric spin control with the author glyph view."""
+        self._math_symbol_numeric_overlays=[]
+        widgets = list(self.findChildren(QSpinBox)) + list(self.findChildren(QDoubleSpinBox))
+        for w in widgets:
+            try:
+                ov=_OTNumericOverlay(w)
+                self._math_symbol_numeric_overlays.append(ov)
+                if MATH_SYMBOLS_ENABLED and not w.hasFocus():
+                    ov._set_owner_number_text_visible(False); ov.show(); ov.raise_()
+                else:
+                    ov._set_owner_number_text_visible(True); ov.hide()
+            except Exception:
+                pass
+        self._apply_math_symbol_display_transform(MATH_SYMBOLS_ENABLED)
+        # Lazy/floating panels create numeric controls after __init__.  A low-rate
+        # discovery pass makes Math Symbols truly global without changing values.
+        if getattr(self, '_math_symbol_overlay_timer', None) is None:
+            try:
+                self._math_symbol_overlay_timer = QTimer(self)
+                self._math_symbol_overlay_timer.setInterval(750)
+                self._math_symbol_overlay_timer.timeout.connect(self._refresh_math_symbol_numeric_overlays)
+                self._math_symbol_overlay_timer.start()
+            except Exception:
+                self._math_symbol_overlay_timer = None
+
+    def _refresh_math_symbol_numeric_overlays(self):
+        """Refresh masks and discover numeric controls created after startup.
+
+        Floating synth/editor windows build QSpinBox/QDoubleSpinBox controls lazily.
+        The old one-shot installer therefore left those numbers unmasked.  Keep the
+        overlay registry identity-based and add only genuinely new controls.
+        """
+        overlays = getattr(self, '_math_symbol_numeric_overlays', None)
+        if overlays is None:
+            self._math_symbol_numeric_overlays = []
+            overlays = self._math_symbol_numeric_overlays
+        covered = {id(getattr(ov, 'owner', None)) for ov in overlays}
+        try:
+            widgets = list(self.findChildren(QSpinBox)) + list(self.findChildren(QDoubleSpinBox))
+        except Exception:
+            widgets = []
+        for w in widgets:
+            if id(w) in covered:
+                continue
+            try:
+                ov = _OTNumericOverlay(w)
+                overlays.append(ov)
+                covered.add(id(w))
+            except Exception:
+                pass
+        alive = []
+        for ov in overlays:
+            try:
+                if ov.owner is None:
+                    continue
+                ov._sync()
+                if MATH_SYMBOLS_ENABLED and not ov.owner.hasFocus():
+                    ov._set_owner_number_text_visible(False); ov.show(); ov.raise_()
+                else:
+                    ov._set_owner_number_text_visible(True); ov.hide()
+                alive.append(ov)
+            except RuntimeError:
+                # Qt owner was destroyed with a floating window.
+                pass
+            except Exception:
+                alive.append(ov)
+        self._math_symbol_numeric_overlays = alive
+
+    def _on_math_symbols_toggled(self, checked):
+        """Toggle author symbol rendering without altering Operator Theory arithmetic."""
+        global MATH_SYMBOLS_ENABLED
+        MATH_SYMBOLS_ENABLED = bool(checked)
+        btn = getattr(self, "btn_math_symbols", None)
+        if btn is not None:
+            btn.setText("Math Symbols · ON" if MATH_SYMBOLS_ENABLED else "Math Symbols · OFF · base 10")
+        preview = getattr(self, "ot_symbol_preview", None)
+        if preview is not None:
+            preview.setSymbolsEnabled(MATH_SYMBOLS_ENABLED)
+            preview.update()
+        self._apply_math_symbol_display_transform(MATH_SYMBOLS_ENABLED)
+        self._refresh_math_symbol_numeric_overlays()
 
     def _on_goava_toggled(self, checked):
         """Modified to use perfect unison system"""
@@ -38083,10 +38883,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             dock = getattr(self, "_performance_dock", None)
             if dock is not None:
-                dock.setVisible(not dock.isVisible())
-                if dock.isVisible():
-                    dock.raise_()
-                return dock
+                try:
+                    # A normal QDockWidget close hides it. Some platform/window
+                    # managers can destroy the native object after a float/close;
+                    # accessing that stale Python wrapper raises RuntimeError.
+                    if dock.isVisible():
+                        dock.hide()
+                    else:
+                        dock.show()
+                        dock.raise_()
+                        dock.activateWindow()
+                    return dock
+                except RuntimeError:
+                    self._performance_dock = None
+                    self._performance_panel = None
+                    dock = None
 
             from performance import Performance
             panel = Performance(self, parent=self)
@@ -38108,8 +38919,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
             )
             dock.setWidget(panel)
             self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+            # Close must mean "hide and reopen later", never one-shot deletion.
+            dock.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+            panel.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
             self._performance_panel = panel
             self._performance_dock = dock
+            try:
+                dock.destroyed.connect(lambda *_: (
+                    setattr(self, "_performance_dock", None),
+                    setattr(self, "_performance_panel", None),
+                ))
+            except Exception:
+                pass
             dock.show()
             dock.raise_()
             return dock
@@ -39505,7 +40326,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "btn_goava", "btn_local_randomize", "btn_local_phase_lock",
             "btn_idealize_rhythm", "btn_seeded_randomize",
             "btn_apply_algo_master", "chk_user_program_only",
-            "chk_canonical_protect", "chk_fullweight_seed", "chk_full_unison",
+            "chk_canonical_protect", "btn_meum_engine_simplify", "btn_trigonometry_engine", "chk_fullweight_seed", "chk_full_unison",
             "btn_auto_randomize_sequence", "btn_auto_randomize_everywhere",
         ):
             try:
@@ -39805,4 +40626,13 @@ if __name__ == "__main__":
         pass
     player = MathematiciansGrooveboxApp()
     player.show()
+    try:
+        from mcc_filetype import project_argument, register_filetype
+        register_filetype(__file__)
+        _mcc_path = project_argument(sys.argv[1:])
+        if _mcc_path:
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, lambda p=_mcc_path: player.open_project_path(p))
+    except Exception as _mcc_exc:
+        print(f"[MCC] file association startup: {_mcc_exc}")
     sys.exit(app.exec())

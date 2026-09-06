@@ -4,7 +4,7 @@ performance.py — Groovebox Performance workspace and device manager.
 
 Provides an in-app:
   • Project + render file browser (browse / rename / delete / open)
-  • Media playlister (queue WAV/MP3/FLAC/OGG/OPUS/MP4/WEBM/AVI)
+  • Hardcoded media playlister (broad FFmpeg audio/video formats; mpv → VLC → ffplay)
   • Built-in game player (live composition game + packaged .zip games)
   • Parametric live remixer (drives host LiveDJ GOAVA / RAND PARAM amounts)
   • Batch re-render from linked project provenance (scale FPS / audio bitrate)
@@ -62,9 +62,16 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-AUDIO_EXT = {".wav", ".flac", ".mp3", ".ogg", ".opus", ".aiff", ".aif", ".caf"}
-VIDEO_EXT = {".mp4", ".webm", ".avi", ".mov", ".mkv"}
-PROJECT_EXT = {".mgpr"}
+AUDIO_EXT = {
+    ".wav", ".flac", ".mp3", ".ogg", ".oga", ".opus", ".aiff", ".aif", ".caf",
+    ".m4a", ".aac", ".alac", ".wma", ".ape", ".wv",
+}
+VIDEO_EXT = {
+    ".mp4", ".webm", ".avi", ".mov", ".mkv", ".m4v", ".mpeg", ".mpg", ".flv",
+    ".ts", ".m2ts", ".mts", ".3gp", ".3g2", ".ogv", ".vob",
+}
+# Performance browses both the canonical project document and portable .MG artifacts.
+PROJECT_EXT = {".mcc", ".mgpr", ".mgproject", ".mgsynth", ".mgprofile", ".mg"}
 GAME_EXT = {".zip"}
 MEDIA_EXT = AUDIO_EXT | VIDEO_EXT
 
@@ -443,6 +450,24 @@ class Performance(QDialog):
         self.lbl_engine_qos.setToolTip("Audio has priority; expensive Performance visuals are low-rate and may drop frames. Native C++ kernels are used when available.")
         self.lbl_engine_qos.setStyleSheet("background:rgba(5,18,24,245);color:#9dffb0;border:1px solid #4f8799;border-radius:8px;padding:6px;font-weight:800;")
         brand_row.addWidget(self.lbl_engine_qos)
+
+        # MASTER_STUDIO_LAUNCHER_20260905: the player/performance surface is also
+        # the natural front door into the complete authoring environment.  Reuse
+        # the existing host studio when embedded; only spawn the canonical
+        # run_groovebox.py entry point when this panel is actually standalone.
+        self.btn_master_studio = QPushButton("🎛 Launch MatGroovebox Master Studio")
+        self.btn_master_studio.setToolTip(
+            "Open the complete Mathematician's Groovebox authoring/mastering studio. "
+            "If this player is already hosted by the studio, the existing studio is "
+            "raised instead of launching a duplicate process."
+        )
+        self.btn_master_studio.setStyleSheet(
+            "QPushButton { background:#3a2510; color:#ffe8a6; border:2px solid #c99436; "
+            "border-radius:9px; padding:8px 12px; font-weight:900; } "
+            "QPushButton:hover { background:#553815; border-color:#f1ce68; }"
+        )
+        self.btn_master_studio.clicked.connect(self._launch_master_studio)
+        brand_row.addWidget(self.btn_master_studio)
         root.addLayout(brand_row)
 
         # --- top bar: path + roots ---
@@ -966,7 +991,7 @@ class Performance(QDialog):
     def _play_wav_on_host(self, path: str):
         import numpy as np
         try:
-            import scipy.io.wavfile as wavfile
+            from audio_os_backend import wavfile
             sr, data = wavfile.read(path)
             if data.ndim > 1:
                 data = data.mean(axis=1)
@@ -985,7 +1010,7 @@ class Performance(QDialog):
                 self.host._audio_only_mode = True
             if hasattr(self.host, "audio_stream") and getattr(self.host, "HAS_SOUNDDEVICE", True):
                 try:
-                    import sounddevice as sd
+                    from audio_os_backend import sd
                     if self.host.audio_stream is not None:
                         try:
                             self.host.audio_stream.stop()
@@ -1083,6 +1108,61 @@ class Performance(QDialog):
                 except Exception:
                     continue
         self.lbl_status.setText(folder)
+
+    def _launch_master_studio(self):
+        """Raise the existing MatGroovebox studio or launch its canonical entry point.
+
+        Performance/player mode never constructs a second copy of the studio
+        internally.  That keeps QApplication ownership, MCC file handling and
+        native/audio initialization on the same supported startup path.
+        """
+        host = getattr(self, "host", None)
+        try:
+            # Embedded Performance dock: the host is the master studio itself.
+            if host is not None and host is not self:
+                show = getattr(host, "show", None)
+                if callable(show):
+                    show()
+                normal = getattr(host, "showNormal", None)
+                if callable(normal):
+                    normal()
+                raise_ = getattr(host, "raise_", None)
+                if callable(raise_):
+                    raise_()
+                activate = getattr(host, "activateWindow", None)
+                if callable(activate):
+                    activate()
+                self.lbl_status.setText("MatGroovebox Master Studio ready.")
+                return host
+        except Exception as exc:
+            # Fall through to the canonical process launcher.
+            try:
+                self.lbl_status.setText(f"Studio focus unavailable ({exc}); launching studio…")
+            except Exception:
+                pass
+
+        root = os.path.dirname(os.path.abspath(__file__))
+        runner = os.path.join(root, "run_groovebox.py")
+        if not os.path.isfile(runner):
+            QMessageBox.warning(self, "Master Studio", f"Studio launcher not found:\n{runner}")
+            return None
+        try:
+            cmd = [sys.executable, runner]
+            kw = {"cwd": root}
+            if os.name == "nt":
+                try:
+                    kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+                except Exception:
+                    pass
+            else:
+                kw["start_new_session"] = True
+            proc = subprocess.Popen(cmd, **kw)
+            self._master_studio_process = proc
+            self.lbl_status.setText(f"MatGroovebox Master Studio launched (PID {proc.pid}).")
+            return proc
+        except Exception as exc:
+            QMessageBox.warning(self, "Master Studio", f"Could not launch MatGroovebox Master Studio:\n{exc}")
+            return None
 
     # ------------------------------------------------------------------ playlist tab
     def _build_playlist_tab(self) -> QWidget:

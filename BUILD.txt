@@ -1,0 +1,3 @@
+Linux/macOS: c++ -std=c++17 -O2 sCode/native_data/snative.cpp -o snative
+Windows (MSVC): cl /std:c++17 /O2 /EHsc sCode\native_data\snative.cpp /Fe:snative.exe
+Python reference: python sCode/native_data/snative.py pack input.bin output.sndata
