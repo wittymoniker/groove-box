@@ -1,0 +1,26 @@
+# Canonical Groovebox application in sCode
+program Groovebox {
+    seed 1.1975807343
+
+    engine canonical {
+        goava
+        phaselock euclidean
+        randomizer seeded
+        global_randomizer
+        global_phaselocker
+    }
+
+    studio master {
+        audio
+        visual
+        game
+        performance
+        project mcc
+        agent studio
+    }
+
+    map canonical -> audio
+    map canonical -> visual
+    map canonical -> game
+    launch master_studio
+}

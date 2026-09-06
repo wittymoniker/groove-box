@@ -1,0 +1,154 @@
+{
+  "nodes": [
+    {
+      "args": [],
+      "attrs": {},
+      "children": [
+        {
+          "args": [],
+          "attrs": {},
+          "children": [],
+          "kind": "seed",
+          "name": "1.1975807343"
+        },
+        {
+          "args": [],
+          "attrs": {},
+          "children": [
+            {
+              "args": [],
+              "attrs": {},
+              "children": [],
+              "kind": "goava",
+              "name": ""
+            },
+            {
+              "args": [],
+              "attrs": {},
+              "children": [],
+              "kind": "phaselock",
+              "name": "euclidean"
+            },
+            {
+              "args": [],
+              "attrs": {},
+              "children": [],
+              "kind": "randomizer",
+              "name": "seeded"
+            },
+            {
+              "args": [],
+              "attrs": {},
+              "children": [],
+              "kind": "global_randomizer",
+              "name": ""
+            },
+            {
+              "args": [],
+              "attrs": {},
+              "children": [],
+              "kind": "global_phaselocker",
+              "name": ""
+            }
+          ],
+          "kind": "engine",
+          "name": "canonical"
+        },
+        {
+          "args": [],
+          "attrs": {},
+          "children": [
+            {
+              "args": [],
+              "attrs": {},
+              "children": [],
+              "kind": "audio",
+              "name": ""
+            },
+            {
+              "args": [],
+              "attrs": {},
+              "children": [],
+              "kind": "visual",
+              "name": ""
+            },
+            {
+              "args": [],
+              "attrs": {},
+              "children": [],
+              "kind": "game",
+              "name": ""
+            },
+            {
+              "args": [],
+              "attrs": {},
+              "children": [],
+              "kind": "performance",
+              "name": ""
+            },
+            {
+              "args": [],
+              "attrs": {},
+              "children": [],
+              "kind": "project",
+              "name": "mcc"
+            },
+            {
+              "args": [],
+              "attrs": {},
+              "children": [],
+              "kind": "agent",
+              "name": "studio"
+            }
+          ],
+          "kind": "studio",
+          "name": "master"
+        },
+        {
+          "args": [
+            "->",
+            "audio"
+          ],
+          "attrs": {},
+          "children": [],
+          "kind": "map",
+          "name": "canonical"
+        },
+        {
+          "args": [
+            "->",
+            "visual"
+          ],
+          "attrs": {},
+          "children": [],
+          "kind": "map",
+          "name": "canonical"
+        },
+        {
+          "args": [
+            "->",
+            "game"
+          ],
+          "attrs": {},
+          "children": [],
+          "kind": "map",
+          "name": "canonical"
+        },
+        {
+          "args": [],
+          "attrs": {},
+          "children": [],
+          "kind": "launch",
+          "name": "master_studio"
+        }
+      ],
+      "kind": "program",
+      "name": "Groovebox"
+    }
+  ],
+  "radix": 16,
+  "scode_ir_version": 1,
+  "sha256": "e0b55052472baa298e0082a7da4024fc5642e3da6eef813f2b0494272c610a49",
+  "source": "Groovebox.scode",
+  "source_language": "sCode"
+}

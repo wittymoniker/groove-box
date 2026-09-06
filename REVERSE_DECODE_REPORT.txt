@@ -1,0 +1,29 @@
+Reverse decoder verification
+============================
+Reference source: groovebox.py
+Reference lines: 40,369
+Decoded classes: 95
+Decoded functions/methods: 1,129
+Decoded UI controls: 216
+Shared-state flow edges: 4,141
+Generated sIR records: 21,233
+Generated sCode structs: 95
+Generated reverse_fn blocks: 1,129
+Generated method declarations: 853
+Generated control declarations: 216
+
+Targeted sample query: "randomize sequence restore"
+Relevant function cone at resolution 10: 273 / 1,129
+
+Tests performed in build environment:
+- Python bytecode compile: PASS
+- generated sCode -> sIR compile: PASS
+- reverse decoder whole-project pass: PASS
+- reverse decoder targeted-resolution pass: PASS
+- selected non-GUI regression tests: 5 passed
+
+Important boundary:
+This is a finished-stab / bridge build, not a claim that all 1,129 Python
+behaviors are already native sCode. Unsupported structs fall back to the mature
+Python reference while the reverse tensor provides the path for systematic
+replacement.
