@@ -174,3 +174,8 @@ Generated games already contain an authoritative TCP transport. This rollout exp
 ## 11. Verification scope
 
 The regression suite checks deterministic composition behavior, instrument→visual determinism, media-cutup routing, media-output helpers, and sequence→game influence. A generated-game localhost smoke test also ran a real host and client together; the host accepted one remote and both sessions advanced. GUI interaction and specific physical devices still require real-machine testing because the build environment used to assemble this package does not provide the full PyQt6/hardware stack.
+
+## Math-notation display convention
+
+Math Symbols defaults ON. Author glyphs use 4×3 directional strokes, U/R/D/L pathways, straight=full count, missing=skip, and context-sensitive squiggles (imaginary/decimal/half/doubling); operation/continued/multiplicity enclosures and semantic role colors carry additional context. Math Symbols OFF exposes conventional/base-10 notation; Operator Theory is an independent backend toggle. See `HELP_TEXT.md` → **Author Symbol Language — literal reading guide** for the literal and ASCII grammar and equation-by-equation examples.
+

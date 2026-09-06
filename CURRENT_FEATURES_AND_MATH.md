@@ -317,3 +317,86 @@ Groovebox is also an executable research artifact. Mathematicians, physicists, D
 
 The project distinguishes: (1) proved statements under its declared definitions, (2) implementation invariants backed by tests, and (3) empirical hypotheses such as whether coupled Meum-family traversal outperforms other irrational or low-discrepancy bases in a particular audio/visual/game workload.
 
+
+## 2026-09-05 — OT Symbol Pathways / four-way number notation
+
+The UI now contains a display-only **Math Symbols** toggle beside the existing **Operator Theory** toggle. Operator Theory still selects the calculation route; Math Symbols selects only the representation. Turning Math Symbols OFF exposes the same live value in ordinary base-10 so the two views can be compared without changing the engine state.
+
+The symbol codec is implemented in `ot_symbol_notation.py` from the author-specified grammar in *Scientific Theories and Inventions*: four groups of three directional strokes (12 strokes), up to four separator positions (16 counted states), variable boxes, operation/continued-series borders, and four-way directional pathways. The author-specified role palette is red=independent variable, green=independent constant, blue=result, black=dependent constant, white=dependent variable.
+
+Four-way direction is represented as UP / RIGHT / DOWN / LEFT rather than one unary sign. Two of the four pathways (DOWN/LEFT) are negative-oriented and two (UP/RIGHT) are positive-oriented, preserving the requested 50/50 polarity availability while retaining four directions. Odd OT transforms may transfer orientation through the numeric value; even transforms retain orientation in context instead of discarding it as a scalar sign.
+
+The book states that numbers may be symbolized by **four sets of three lines**, optionally intersected by up to **four grid lines** for sixteen counted values, with boxes preferred for variables. Because the book does not uniquely assign every bit pattern to every numeral, Groovebox uses an explicit reversible implementation convention: separator presence carries the 0..15 state; straight/squiggly stroke style is secondary deterministic texture; operation-border style does not alter the digit value. Open outer/partial border denotes multiplication, dotted border denotes sum/difference, solid border denotes division, and a dotted enclosing square denotes ordinary continued inner expansion. A line-connected solid square marks event multiplicity. These conventions are deliberately isolated from the numeric backend so they can be revised without altering project arithmetic.
+
+## Author Symbol Language — literal reading guide (Math Symbols defaults ON)
+
+Mathematician's Groovebox starts with **Math Symbols ON** because the author notation carries information that an ordinary decimal numeral does not show directly: four-way direction/reference, counted/skipped strokes, contextual stroke modifiers, operation enclosure, continued-series structure, event multiplicity, and variable/result role. **Operator Theory (OT)** is a separate switch: OT ON selects the OT calculation route; OT OFF keeps the symbol display available for comparison. **Math Symbols OFF** exposes the ordinary base-10 / conventional mathematical spelling of the same inspectable value. This makes base-10 a secondary inspection and interoperability view rather than deleting it.
+
+### Literal visual grammar
+
+A numeric cell has **four groups of three strokes = twelve possible strokes**. The four pathways are **UP, RIGHT, DOWN, LEFT**. UP/RIGHT are the two positive-oriented pathways and DOWN/LEFT the two negative-oriented pathways, so direction space has two of four negative-oriented choices rather than a single unary minus. A **missing stroke is skipped**. A **straight stroke is an ordinary/full counted stroke**. A **squiggly stroke is contextual**: according to its enclosing expression it can mark imaginary participation, decimal/fractional participation, a half-count (`0.5` rather than `1`), or symbolic doubling (`×2`). It must not be decoded as one universal number without its context.
+
+Four optional separator positions provide the compact counted-state/intersection layer. **Open outer/partial square = multiplication; dotted outer square = sum/difference; solid outer square = division; dotted enclosing square = ordinary continued inner expansion; line-connected solid square = multiplicity/events in place.** Adjacent cells form a row for adjunct addition/subtraction or further contextual composition. A plain box can contain a letter to name a variable.
+
+Role colors are semantic, not magnitude: **red = independent variable; green = independent constant; blue = result; black = dependent constant; white = dependent variable.**
+
+### Portable ASCII analogy
+
+The drawn symbols remain authoritative. Plain-text documents/logs use this analogy when the graphical painter is unavailable:
+
+`U R D L` = up/right/down/left pathway; `|` = straight/full count; `~` = squiggly/context-modified count; `.` = missing/skipped count; `:` = dotted sum/difference enclosure; `[>` = open multiplication enclosure; `[]` = solid division enclosure; `::...::` = dotted continued-expansion enclosure; `-[xN]` = line-connected multiplicity square; `<x>` = boxed variable letter. The final hexadecimal `0..F` field is Groovebox's reversible four-separator machine index, not a claim that the book assigns hexadecimal digits to the glyphs.
+
+Example schematic cell: `U:|||~..|||~..:5<x>` means an UP-oriented boxed `x`, with straight, modified and skipped strokes, and separator state 5. The meaning of each `~` is supplied by the surrounding operation/context.
+
+### Why prefer it contextually?
+
+Use the author symbols when direction, handedness/reference, continued structure, multiplicity, dependency role, or contextual half/imaginary/decimal/doubling information matters. They can keep those relationships visible without repeatedly flattening them into a signed decimal plus separate annotations. Prefer conventional/base-10 notation when exchanging values with software or readers that do not know the glyph grammar, when checking a conventional identity, or when an ordinary scalar is the clearest representation. The switches deliberately allow four comparisons: OT+symbols, OT+base-10, conventional math+symbols, and conventional math+base-10.
+
+### Equation translations — conventional first, author-symbol/ASCII analogy immediately below
+
+The ASCII lines are **analogies of the drawn notation**, not a replacement alphabet. They preserve the best currently specified context; where the source does not uniquely assign a stroke pattern, the line names the operation rather than inventing one.
+
+Conventional: `isn(theta) = 2 sin(theta/2)`  
+Author/ASCII: `<isn>[> <theta> [] 2 ] = [>2] <sin>(<theta>[]2)`
+
+Conventional: `isn^-1(x) = 2 asin(x/2)`  
+Author/ASCII: `<isn^-1><x> = [>2] <asin>(<x>[]2)`
+
+Conventional: `ics(theta) = 2 cos(theta/2)`  
+Author/ASCII: `<ics>[> <theta> [] 2 ] = [>2] <cos>(<theta>[]2)`
+
+Conventional: `sin(x) = isn(2x)/2`  
+Author/ASCII: `<sin><x> = []2 ( <isn>([>2]<x>) )`
+
+Conventional: `cos(x) = ics(2x)/2`  
+Author/ASCII: `<cos><x> = []2 ( <ics>([>2]<x>) )`
+
+Conventional: `2^M = M^4 + M^2 - M`  
+Author/ASCII: `<result:blue> = : ([pow]2,<M>,4) + ([pow]<M>,2) - <M> :`  
+Here `<M>` is a boxed/named constant; in the painter it should use the role color appropriate to whether M is independent or dependent in the active expression.
+
+Conventional: `F(x) = 2^x - x^4 - x^2 + x = 0`  
+Author/ASCII: `<F><x> = : [pow](2,<x>) - [pow](<x>,4) - [pow](<x>,2) + <x> : = 0`
+
+Conventional contextual direction: `C = sigma * hand * reference * concentric`, with each factor in `{UP,RIGHT,DOWN,LEFT}` orientation state rather than merely a unary sign.  
+Author/ASCII: `<C> = [> <sigma> <hand> <reference> <concentric> ]`; direction markers `U/R/D/L` remain attached to the participating cells.
+
+Conventional odd-context transfer: `isn(C*x) = C*isn(x)` (where the selected branch/context makes this correspondence valid).  
+Author/ASCII: `<isn>([><C><x>]) = [><C><isn><x>]` — the direction pathway may move outside the odd transform while its context is retained.
+
+Conventional even-context rule: `ics(C*x) = ics(x)` for `C = +/-1` at the scalar parity level.  
+Author/ASCII: `<ics>([><C><x>]) = <ics><x> ; keep U/R/D/L context` — the scalar sign can disappear from an even function, but the directional/reference state must **not** be discarded.
+
+Conventional inverse-operation pairs: `+ <-> -`, `* <-> /`, `power <-> root`.  
+Author/ASCII: `:sum <-> :difference`, `[>multiply <-> []divide`, `[power] <-> [root]`; reverse operation order when traversing an inverse path where the OT rule requires it.
+
+Conventional continued expansion: `a0 + 1/(a1 + 1/(a2 + ...))`.  
+Author/ASCII: `:: <a0> : [] ( <a1> : [] ( <a2> : ... ) ) ::` — the dotted outer enclosure says the inner symbol row is an ordinary continued expansion. A single-square continued-series symbol can leave the inner repetition implicit; multiple delimited squares expose successive series structure.
+
+Conventional multiplicity: `N * event(x)` or `event(x)` repeated N times in place.  
+Author/ASCII: `<event><x>-[xN]` — the line-connected solid square carries event multiplicity without requiring N separately drawn copies.
+
+### Source vs. author clarification vs. Groovebox machine convention
+
+The supplied book explicitly describes four sets of three lines, conflicting/nonconflicting directions, optional grid intersections, operation intensity/dynamics, and boxes for variables. The author has clarified for this implementation that missing strokes are skipped; squiggles are contextual imaginary/decimal/half/doubling modifiers; four-way pathways are up/down/left/right; and the border/continued/multiplicity/color rules above are intended parts of the notation. Groovebox's exact bit packing, separator-to-`0..15` index, and ASCII spelling are implementation conventions chosen to make the notation reversible and inspectable. They should not be mistaken for additional claims printed verbatim in the book.
+

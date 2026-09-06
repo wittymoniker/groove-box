@@ -80,7 +80,9 @@ class CompositionToggleState:
         return hashlib.sha256(
             payload.encode("utf-8")
         ).hexdigest()[:16]
-from meum_constants import MEUM, MEUM_MINUS_1, MEUM_INV, MEUM_TWO_MINUS, MEUM_NORM, PHI
+MEUM = 1.19758073433
+MEUM_MINUS_1 = MEUM - 1.0
+PHI = 1.618033988749895
 class CompositionEngine:
     """
     Canonical project state is never modified by toggles.

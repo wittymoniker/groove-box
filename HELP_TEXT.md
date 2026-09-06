@@ -1,4 +1,5 @@
 
+
 ## V34 Stability Pass
 
 - Reversible randomizer toggle contract: ON captures a full project baseline and generates a fresh variation; OFF restores the exact pre-randomize state; each subsequent ON cycle rerandomizes and shifts the control color palette.
@@ -9,6 +10,46 @@
 - ParametricMathBackground is integrated with a deep navy gradient field.
 - Performance controls are consolidated into one horizontal deck; Automator controls are compacted into a multi-row grid.
 - UI initialization order and Qt stylesheet declarations were hardened; division-by-zero-sensitive paths use explicit degenerate-case handling rather than epsilon denominators where practical.
+
+--------------------------------------------------------------------------------
+FINITE INFINITY GREP + FINITE INFINITY–MEUM HYPERDRIVE
+--------------------------------------------------------------------------------
+Groovebox and sCode use the project reference I = 134964356 as a bounded
+"Finite Infinity" index space. The compiler/search path can hash normalized
+source tokens into 0..I-1 for fast grep-style candidate lookup, then verifies
+the exact normalized token before reporting a semantic match. The finite index
+is therefore an accelerator/organization mechanism, not a claim that all
+mathematical infinity is literally finite.
+
+The optional **Finite Infinity–Meum HyperDrive** is a single cross-media
+resonator/drive state shared by SOUND + IMAGE + INTERACTION. It is OFF by
+default and is saved with the project.
+
+For a project seed/canonical fingerprint, HyperDrive derives a deterministic
+index h modulo I and finite coordinate u=h/I. A Meum phase is formed from u and
+time. With Trigonometry Engine ON the modulation uses the project book forms:
+
+    isn(theta) = 2 sin(theta/2)
+    ics(theta) = 2 cos(theta/2)
+
+and combines their unit-equivalent components with Meum terms such as M-1 and
+1/M. With Trigonometry Engine OFF the compatibility path uses ordinary sin/cos.
+With Operator Theory ON the same phase uses the OT orientation/sign rule. Thus
+OT/Trig change the calculation route while the seed/fingerprint remains the
+single identity source.
+
+HyperDrive then applies the SAME modulation state to:
+  • Audio — a pre-hardclip Meum resonator/drive gain field plus a small cubic
+    drive curvature. It does not replace Master Volume or the final hard clip.
+  • Visuals — deterministic field/brightness and Meum-phase color deformation.
+  • Game generation — deterministic world/behavior identity modulation by the
+    same finite coordinate; it does not introduce an unrelated random seed.
+
+Drive controls cross-media modulation amount. Resonance controls the Meum
+resonator depth and defaults to M-1. HyperDrive, Operator Theory, Trigonometry
+Engine, Math Symbols, Meum engine simplification, and the other saved project
+controls are restored on load so save→load→audio/video/game uses the same math
+configuration.
 
 ================================================================================
   GROOVEBOX — Mathematician's / Scientist's Groovebox
@@ -49,6 +90,77 @@ network projections; rational partition weights can conserve an upstream identit
 irrational or irrational-candidate traversals can be reserved for ordering and coverage.
 The benefit comes from the structure and invariants, not from a claim that one constant
 makes a CPU intrinsically faster.
+
+
+--------------------------------------------------------------------------------
+1A. MEUM COMPRESSION / LOGIC SEARCH (PROJECT METHOD)
+--------------------------------------------------------------------------------
+Groovebox/sCode uses "Meum Compression" as a project-defined semantic reduction
+method: preserve the observable/canonical identity while reducing repeated work or
+the number of independent obligations. It is NOT ordinary ZIP/audio compression and
+it is not a claim that arbitrary information can be reconstructed from a seed.
+
+Current search roles:
+  normalize/key logic : (2 - M)·x = [1 - (M - 1)]·x
+  locate ambiguity    : x/M, x/M², x/M³
+  predict/reflection  : (M - 1)^p·x, normally p = 1..3
+  ideal-form compare  : 2^M, with Meum's defining check
+                        2^M = M^4 + M^2 - M
+The compiler/reverse-grep may also compare the other named irrational constants
+from the author's book as candidate coordinates. Numeric proximity alone is only a
+locator. A reduction is accepted only after interval/direction, dependency and
+behavioral/canonical parity agree. `why()` is intended to retain that provenance.
+
+For cyclic/native state, finite repeated trajectories can additionally be stored as
+preperiod + period + certified jump information. The resulting "compression ratio"
+reported by native tests is a representation/reuse ratio for that certified cycle,
+not a universal data-compression theorem.
+
+--------------------------------------------------------------------------------
+1B. PERFORMANCE MEDIA PLAYER + SUPPORTED FILE FORMATS
+--------------------------------------------------------------------------------
+The Performance button opens a reusable dock. Closing it hides the workspace; pressing
+Performance again reopens the same live workspace. It contains the project/render file
+browser, playlist/cut-up player, game player, device/output routing, broadcast controls,
+DJ remixer and batch re-render tools.
+
+Player routing is deliberately hard-coded and deterministic:
+  1. mpv when available (including JSON-IPC for live speed changes),
+  2. VLC as the next external-player backend,
+  3. ffplay as the final fallback.
+The Groovebox composition remains the authority; the player is an output/performance
+surface and does not silently rewrite canonical state.
+
+MAIN MEDIA IMPORT — carrier/reference inputs
+  Audio: .wav .mp3 .flac .ogg .oga .m4a .aac .aiff .aif .opus .caf
+         .alac .wma .ape .wv
+  Video: .mp4 .mov .mkv .webm .avi .m4v .mpeg .mpg .flv .ts .m2ts
+         .mts .3gp .3g2 .ogv .vob
+WAV is read natively when possible; other audio/video decoding routes through FFmpeg.
+Video-only files are valid visual carriers and receive a silent carrier stream.
+
+PROJECT / PROGRAM FORMATS
+  .MCC       canonical transparent Groovebox composition/project document
+  .mgpr      legacy project input compatibility
+  .MGproject .MGsynth .MGprofile .MG
+             portable artifact identities/profiles/synths
+  .zip       generated videogame/software package and reverse-engineering import
+
+MAIN EXPORT MENU
+  Audio:       .wav .flac .mp3
+  Video+Audio: .mp4 .webm .avi
+  Video only:  .mp4 .webm .avi
+  Videogame:   .zip
+The audio writer/reconversion layer also understands .ogg .opus .caf and .aiff where
+the local FFmpeg build supports them. Exports can be written as recoverable `.part`
+segments and optionally stitched. Reconvert/Bake-and-Compare recognizes
+.wav .flac .mp3 .ogg .opus .caf .aiff .mp4 .webm .avi and .zip.
+
+PERFORMANCE PLAYER BROWSER
+  Audio: .wav .flac .mp3 .ogg .opus .aiff .aif .caf .oga .m4a .aac .alac
+         .wma .ape .wv
+  Video: .mp4 .webm .avi .mov .mkv .m4v .mpeg .mpg .flv .ts .m2ts .mts
+         .3gp .3g2 .ogv .vob
 
 --------------------------------------------------------------------------------
 2. DISCLAIMER — ADVANCED INSTRUMENT
@@ -265,7 +377,7 @@ partitions. Render modulation (additive):
 Per-operator script workspace. Typical form:
 
   def evaluate_wave(x, y, z):
-      return np.sin(x * 3.0) * np.cos(y) - z
+      return series_sin(x * 3.0) * series_cos(y) - z
 
 Custom scripts are preserved by the randomizer; only stock auto-templates
 are replaced during seeded fill.
@@ -520,7 +632,7 @@ DEPENDENCIES (install last — same list as project README.md)
   Python packages (pip) — every OS:
     PyQt6          UI
     numpy          DSP / buffers
-    scipy          WAV I/O helpers, signal utilities
+    wave/FFmpeg    OS/stdlib WAV + bundled media I/O
     sounddevice    Real-time audio I/O
     Pillow         Frame export (PNG) for video
 
@@ -536,7 +648,7 @@ DEPENDENCIES (install last — same list as project README.md)
 
   Manual pip (any OS):
     python3 -m pip install --upgrade pip
-    python3 -m pip install numpy scipy PyQt6 sounddevice Pillow
+    python3 -m pip install numpy PyQt6 sounddevice Pillow
 
   Ubuntu/Debian system packages:
     sudo apt install -y python3 python3-pip python3-venv python3-dev \
@@ -558,7 +670,7 @@ DEPENDENCIES (install last — same list as project README.md)
   (the app checks there first).
 
   Verify:
-    python3 -c "import numpy, scipy, PyQt6.QtCore, sounddevice, PIL; print('OK')"
+    python3 -c "import numpy, PyQt6.QtCore, sounddevice, PIL; print('OK')"
     ffmpeg -hide_banner -version | head -1
 
   Run:
@@ -890,7 +1002,130 @@ independently established theorem of mathematics or physics.
 PUBLIC CONSTANTS
 
 The canonical Meum value is:
-    M = MEUM = 1.1975807343385265188
+    M = 
+# -----------------------------------------------------------------------------
+# Author-series trigonometry kernels (radians)
+# Direct summation/recurrence implementations: no math/NumPy circular or inverse
+# trig calls.  These are the canonical Groovebox kernels for scalar/array use.
+# -----------------------------------------------------------------------------
+SERIES_PI = 3.14159265358979323846264338327950288419716939937510
+SERIES_TAU = 2.0 * SERIES_PI
+
+def _series_arr(x):
+    return np.asarray(x, dtype=np.float64)
+
+def _series_out(v):
+    a=np.asarray(v)
+    return a.item() if a.ndim==0 else a
+
+def _series_reduce(x):
+    a=_series_arr(x)
+    with np.errstate(invalid='ignore'):
+        return np.remainder(a + SERIES_PI, SERIES_TAU) - SERIES_PI
+
+def series_sin(x):
+    a=_series_reduce(x)
+    a=np.where(a>SERIES_PI/2, SERIES_PI-a, np.where(a<-SERIES_PI/2, -SERIES_PI-a, a))
+    term=a.copy(); total=a.copy()
+    for n in range(1, 19):
+        term *= -(a*a)/((2.0*n)*(2.0*n+1.0)); total += term
+    return _series_out(total)
+
+def series_cos(x):
+    a=_series_reduce(x); sign=np.ones_like(a)
+    hi=a>SERIES_PI/2; lo=a<-SERIES_PI/2
+    sign=np.where(hi|lo,-1.0,1.0)
+    a=np.where(hi,SERIES_PI-a,np.where(lo,-SERIES_PI-a,a))
+    term=np.ones_like(a); total=term.copy()
+    for n in range(1,19):
+        term *= -(a*a)/((2.0*n-1.0)*(2.0*n)); total += term
+    return _series_out(sign*total)
+
+def series_asin(x):
+    z=_series_arr(x); a=np.abs(z); bad=a>1.0; reduce=a>0.5
+    with np.errstate(invalid='ignore'):
+        w=np.where(reduce,np.sqrt((1.0-a)/2.0),a)
+    term=w.copy(); total=w.copy()
+    for n in range(1,33):
+        term *= (w*w*(2.0*n-1.0)**2)/((2.0*n)*(2.0*n+1.0)); total += term
+    total=np.where(reduce,SERIES_PI/2.0-2.0*total,total)
+    total=np.copysign(total,z); total=np.where(bad,np.nan,total)
+    return _series_out(total)
+
+def series_acos(x):
+    z=_series_arr(x); bad=np.abs(z)>1.0
+    with np.errstate(invalid='ignore'):
+        q=2.0*np.asarray(series_asin(np.sqrt((1.0-np.abs(z))/2.0)))
+    out=np.where(z>=0.0,q,SERIES_PI-q); out=np.where(bad,np.nan,out)
+    return _series_out(out)
+
+def series_atan(x):
+    z=_series_arr(x); a=np.abs(z); inv=a>1.0
+    with np.errstate(divide='ignore',invalid='ignore'):
+        a=np.where(inv,1.0/a,a)
+        a=a/(1.0+np.sqrt(1.0+a*a))
+    term=a.copy(); total=a.copy()
+    for n in range(1,33):
+        term *= -(a*a); total += term/(2.0*n+1.0)
+    total*=2.0; total=np.where(inv,SERIES_PI/2.0-total,total)
+    return _series_out(np.copysign(total,z))
+
+def series_atan2(y,x):
+    y,x=np.broadcast_arrays(_series_arr(y),_series_arr(x))
+    with np.errstate(divide='ignore',invalid='ignore'):
+        out=np.asarray(series_atan(y/x))
+    out=np.where(x<0.0,out+np.copysign(SERIES_PI,y),out)
+    out=np.where(x==0.0,np.copysign(SERIES_PI/2.0,y),out)
+    out=np.where(y==0.0,np.where(np.signbit(x),np.copysign(SERIES_PI,y),y),out)
+    return _series_out(out)
+
+def series_tan(x):
+    with np.errstate(divide='ignore',invalid='ignore'):
+        return _series_out(np.asarray(series_sin(x))/np.asarray(series_cos(x)))
+
+def series_sinh(x):
+    z=_series_arr(x); a=np.abs(z); scale=np.zeros(a.shape,dtype=np.int32)
+    a=np.where(np.isfinite(a),np.minimum(a,710.0),0.0)
+    for _ in range(11):
+        m=a>0.5; a=np.where(m,a*0.5,a); scale += m
+    term=a.copy(); total=a.copy()
+    for n in range(1,19):
+        term *= (a*a)/((2.0*n)*(2.0*n+1.0)); total += term
+    with np.errstate(over='ignore',invalid='ignore'):
+        for k in range(11): total=np.where(scale>k,2.0*total*np.sqrt(1.0+total*total),total)
+    total=np.where(np.abs(z)>710.0,np.inf,total); total=np.where(np.isnan(z),np.nan,total)
+    return _series_out(np.copysign(total,z))
+
+def series_cosh(x):
+    q=np.asarray(series_sinh(_series_arr(x)/2.0)); return _series_out(1.0+2.0*q*q)
+
+def series_tanh(x):
+    z=_series_arr(x); q=np.clip(z,-20.0,20.0)
+    with np.errstate(divide='ignore',invalid='ignore'):
+        out=np.asarray(series_sinh(q))/np.asarray(series_cosh(q))
+    return _series_out(np.where(np.abs(z)>20.0,np.copysign(1.0,z),out))
+
+def series_sinc(x):
+    z=_series_arr(x)
+    with np.errstate(divide='ignore',invalid='ignore'):
+        out=np.where(z==0.0,1.0,np.asarray(series_sin(SERIES_PI*z))/(SERIES_PI*z))
+    return _series_out(out)
+
+def series_book_isn(x):
+    # sum (-1)^n*x^(2n+1)/(2^(2n)*(2n+1)!)
+    return _series_out(2.0*np.asarray(series_sin(_series_arr(x)/2.0)))
+
+def series_book_isn_inverse(x):
+    return _series_out(2.0*np.asarray(series_asin(np.clip(_series_arr(x)/2.0,-1.0,1.0))))
+
+def series_cyclic_isn(x):
+    # author's even-power series: x^2/2! - x^4/4! + x^6/6! - ...
+    a=_series_reduce(x); term=a*a/2.0; total=term.copy()
+    for n in range(2,25):
+        term *= -(a*a)/((2.0*n-1.0)*(2.0*n)); total += term
+    return _series_out(total)
+
+MEUM = 1.1975807343385265188
 
 Public reference inverse:
     M⁻¹ = MEUM_INV = 0.83501677283773394333148276154833054143874793150691
@@ -1991,3 +2226,75 @@ Groovebox is also an executable research artifact. Mathematicians, physicists, D
 
 The project distinguishes: (1) proved statements under its declared definitions, (2) implementation invariants backed by tests, and (3) empirical hypotheses such as whether coupled Meum-family traversal outperforms other irrational or low-discrepancy bases in a particular audio/visual/game workload.
 
+## Author Symbol Language — literal reading guide (Math Symbols defaults OFF (public build))
+
+Mathematician's Groovebox starts with **Math Symbols OFF** in the public build because the author notation carries information that an ordinary decimal numeral does not show directly: four-way direction/reference, counted/skipped strokes, contextual stroke modifiers, operation enclosure, continued-series structure, event multiplicity, and variable/result role. **Operator Theory (OT)** is a separate switch: OT ON selects the OT calculation route; OT OFF keeps the symbol display available for comparison. **Math Symbols OFF** exposes the ordinary base-10 / conventional mathematical spelling of the same inspectable value. This makes base-10 a secondary inspection and interoperability view rather than deleting it.
+
+### Literal visual grammar
+
+A numeric cell has **four groups of three strokes = twelve possible strokes**. The four pathways are **UP, RIGHT, DOWN, LEFT**. UP/RIGHT are the two positive-oriented pathways and DOWN/LEFT the two negative-oriented pathways, so direction space has two of four negative-oriented choices rather than a single unary minus. A **missing stroke is skipped**. A **straight stroke is an ordinary/full counted stroke**. A **squiggly stroke is contextual**: according to its enclosing expression it can mark imaginary participation, decimal/fractional participation, a half-count (`0.5` rather than `1`), or symbolic doubling (`×2`). It must not be decoded as one universal number without its context.
+
+Four optional separator positions provide the compact counted-state/intersection layer. **Open outer/partial square = multiplication; dotted outer square = sum/difference; solid outer square = division; dotted enclosing square = ordinary continued inner expansion; line-connected solid square = multiplicity/events in place.** Adjacent cells form a row for adjunct addition/subtraction or further contextual composition. A plain box can contain a letter to name a variable.
+
+Role colors are semantic, not magnitude: **red = independent variable; green = independent constant; blue = result; black = dependent constant; white = dependent variable.**
+
+### Portable ASCII analogy
+
+The drawn symbols remain authoritative. Plain-text documents/logs use this analogy when the graphical painter is unavailable:
+
+`U R D L` = up/right/down/left pathway; `|` = straight/full count; `~` = squiggly/context-modified count; `.` = missing/skipped count; `:` = dotted sum/difference enclosure; `[>` = open multiplication enclosure; `[]` = solid division enclosure; `::...::` = dotted continued-expansion enclosure; `-[xN]` = line-connected multiplicity square; `<x>` = boxed variable letter. The final hexadecimal `0..F` field is Groovebox's reversible four-separator machine index, not a claim that the book assigns hexadecimal digits to the glyphs.
+
+Example schematic cell: `U:|||~..|||~..:5<x>` means an UP-oriented boxed `x`, with straight, modified and skipped strokes, and separator state 5. The meaning of each `~` is supplied by the surrounding operation/context.
+
+### Why prefer it contextually?
+
+Use the author symbols when direction, handedness/reference, continued structure, multiplicity, dependency role, or contextual half/imaginary/decimal/doubling information matters. They can keep those relationships visible without repeatedly flattening them into a signed decimal plus separate annotations. Prefer conventional/base-10 notation when exchanging values with software or readers that do not know the glyph grammar, when checking a conventional identity, or when an ordinary scalar is the clearest representation. The switches deliberately allow four comparisons: OT+symbols, OT+base-10, conventional math+symbols, and conventional math+base-10.
+
+### Equation translations — conventional first, author-symbol/ASCII analogy immediately below
+
+The ASCII lines are **analogies of the drawn notation**, not a replacement alphabet. They preserve the best currently specified context; where the source does not uniquely assign a stroke pattern, the line names the operation rather than inventing one.
+
+Conventional: `isn(theta) = 2 sin(theta/2)`  
+Author/ASCII: `<isn>[> <theta> [] 2 ] = [>2] <sin>(<theta>[]2)`
+
+Conventional: `isn^-1(x) = 2 asin(x/2)`  
+Author/ASCII: `<isn^-1><x> = [>2] <asin>(<x>[]2)`
+
+Conventional: `ics(theta) = 2 cos(theta/2)`  
+Author/ASCII: `<ics>[> <theta> [] 2 ] = [>2] <cos>(<theta>[]2)`
+
+Conventional: `sin(x) = isn(2x)/2`  
+Author/ASCII: `<sin><x> = []2 ( <isn>([>2]<x>) )`
+
+Conventional: `cos(x) = ics(2x)/2`  
+Author/ASCII: `<cos><x> = []2 ( <ics>([>2]<x>) )`
+
+Conventional: `2^M = M^4 + M^2 - M`  
+Author/ASCII: `<result:blue> = : ([pow]2,<M>,4) + ([pow]<M>,2) - <M> :`  
+Here `<M>` is a boxed/named constant; in the painter it should use the role color appropriate to whether M is independent or dependent in the active expression.
+
+Conventional: `F(x) = 2^x - x^4 - x^2 + x = 0`  
+Author/ASCII: `<F><x> = : [pow](2,<x>) - [pow](<x>,4) - [pow](<x>,2) + <x> : = 0`
+
+Conventional contextual direction: `C = sigma * hand * reference * concentric`, with each factor in `{UP,RIGHT,DOWN,LEFT}` orientation state rather than merely a unary sign.  
+Author/ASCII: `<C> = [> <sigma> <hand> <reference> <concentric> ]`; direction markers `U/R/D/L` remain attached to the participating cells.
+
+Conventional odd-context transfer: `isn(C*x) = C*isn(x)` (where the selected branch/context makes this correspondence valid).  
+Author/ASCII: `<isn>([><C><x>]) = [><C><isn><x>]` — the direction pathway may move outside the odd transform while its context is retained.
+
+Conventional even-context rule: `ics(C*x) = ics(x)` for `C = +/-1` at the scalar parity level.  
+Author/ASCII: `<ics>([><C><x>]) = <ics><x> ; keep U/R/D/L context` — the scalar sign can disappear from an even function, but the directional/reference state must **not** be discarded.
+
+Conventional inverse-operation pairs: `+ <-> -`, `* <-> /`, `power <-> root`.  
+Author/ASCII: `:sum <-> :difference`, `[>multiply <-> []divide`, `[power] <-> [root]`; reverse operation order when traversing an inverse path where the OT rule requires it.
+
+Conventional continued expansion: `a0 + 1/(a1 + 1/(a2 + ...))`.  
+Author/ASCII: `:: <a0> : [] ( <a1> : [] ( <a2> : ... ) ) ::` — the dotted outer enclosure says the inner symbol row is an ordinary continued expansion. A single-square continued-series symbol can leave the inner repetition implicit; multiple delimited squares expose successive series structure.
+
+Conventional multiplicity: `N * event(x)` or `event(x)` repeated N times in place.  
+Author/ASCII: `<event><x>-[xN]` — the line-connected solid square carries event multiplicity without requiring N separately drawn copies.
+
+### Source vs. author clarification vs. Groovebox machine convention
+
+The supplied book explicitly describes four sets of three lines, conflicting/nonconflicting directions, optional grid intersections, operation intensity/dynamics, and boxes for variables. The author has clarified for this implementation that missing strokes are skipped; squiggles are contextual imaginary/decimal/half/doubling modifiers; four-way pathways are up/down/left/right; and the border/continued/multiplicity/color rules above are intended parts of the notation. Groovebox's exact bit packing, separator-to-`0..15` index, and ASCII spelling are implementation conventions chosen to make the notation reversible and inspectable. They should not be mistaken for additional claims printed verbatim in the book.
+    \n--------------------------------------------------------------------------------\nMEUM LOGIC SEARCH / REVERSE-GREP (PROJECT RESEARCH TOOL)\n--------------------------------------------------------------------------------\nThe current compiler/reverse-decoder experiments assign distinct jobs to Meum\nforms instead of treating every Meum-derived number as interchangeable:\n\n  normalize/key logic:       N(x) = (2 - M) x = [1-(M-1)]x\n  ambiguity/problem locate:  A_p(x) = x / M^p,       p = 1,2,3,...\n  interval prediction:       R_p(x) = (M - 1)^p x,   p = 1,2,3,...\n  ideal-form comparison:     T(x) = x / 2^M\n\nThe Meum root relation supplies a consistency route:\n\n  2^M - M^4 - M^2 + M = 0\n  therefore 2^M = M^4 + M^2 - M.\n\nThe search is LINEAR in responsibility: normalize -> locate ambiguity -> test\ninterval/reflection prediction -> compare already-equivalent target forms ->\nverify -> emit sCode.  2^M is not a command to force program outputs toward one\nnumber; it is a target-coordinate / preference test after behavioral equivalence.\n\nINTERVAL DIRECTION.  Because M>1 and M-1>0, multiplication by (M-1)^p\npreserves the ordinary ordering of real interval endpoints.  A candidate math\ncollapse is therefore stronger when value family, interval, direction, extrema,\ndependencies, and regression behavior agree.  Min/max or slope reversals are\nlandmarks that help reject a false semantic match.\n\nBOOK-CONSTANT SECOND STAGE.  Other named irrational/self-referential constants\nfrom the author's work may be used as additional locator coordinates.  Numerical\nproximity is evidence for where to inspect, not proof of semantic identity.  A\nmatch is promoted only after dependency, interval/direction, cross-resolution,\nand behavioral checks.\n\nWHY() / PROVENANCE TARGET.  A verified sCode reduction should retain the source\naddress X, semantic class Y, normalization, ambiguity probe, powered interval\nprediction, target comparison, and verification certificate so why() can invert\nthe route and explain the emitted syntax.\n\nMATH SYMBOL DISPLAY.  Math Symbols is a reversible presentation layer only.\n0 is the empty author cell. Numeric values remain unchanged underneath.  All\nQSpinBox/QDoubleSpinBox controls, including controls created later in floating\nwindows, are discovered and masked while unfocused; focusing a control reveals\nthe ordinary editable number, and leaving focus restores its symbol mask.\n

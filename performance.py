@@ -4,7 +4,7 @@ performance.py — Groovebox Performance workspace and device manager.
 
 Provides an in-app:
   • Project + render file browser (browse / rename / delete / open)
-  • Hardcoded media playlister (broad FFmpeg audio/video formats; mpv → VLC → ffplay)
+  • Media playlister (queue WAV/MP3/FLAC/OGG/OPUS/MP4/WEBM/AVI)
   • Built-in game player (live composition game + packaged .zip games)
   • Parametric live remixer (drives host LiveDJ GOAVA / RAND PARAM amounts)
   • Batch re-render from linked project provenance (scale FPS / audio bitrate)
@@ -62,16 +62,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-AUDIO_EXT = {
-    ".wav", ".flac", ".mp3", ".ogg", ".oga", ".opus", ".aiff", ".aif", ".caf",
-    ".m4a", ".aac", ".alac", ".wma", ".ape", ".wv",
-}
-VIDEO_EXT = {
-    ".mp4", ".webm", ".avi", ".mov", ".mkv", ".m4v", ".mpeg", ".mpg", ".flv",
-    ".ts", ".m2ts", ".mts", ".3gp", ".3g2", ".ogv", ".vob",
-}
-# Performance browses both the canonical project document and portable .MG artifacts.
-PROJECT_EXT = {".mcc", ".meum", ".mgpr", ".mgproject", ".mgsynth", ".mgprofile", ".mg"}
+AUDIO_EXT = {".wav", ".flac", ".mp3", ".ogg", ".opus", ".aiff", ".aif", ".caf"}
+VIDEO_EXT = {".mp4", ".webm", ".avi", ".mov", ".mkv"}
+PROJECT_EXT = {".mgpr"}
 GAME_EXT = {".zip"}
 MEDIA_EXT = AUDIO_EXT | VIDEO_EXT
 

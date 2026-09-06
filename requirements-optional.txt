@@ -1,0 +1,3 @@
+# Optional integrations; Groovebox operates without these.
+mido
+juliacall

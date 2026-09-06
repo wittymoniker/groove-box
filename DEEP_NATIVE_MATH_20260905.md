@@ -12,3 +12,8 @@ This pass keeps Groovebox mathematics authoritative while reducing representatio
 Performance note: the mathematical constants themselves are not assumed to make a CPU faster. The speed gain comes from their deterministic structure making caching, progressive refinement, precomputation and fused SIMD/native evaluation possible. Whether Meum-family traversal improves an artistic/statistical objective is a separate empirical question and must be benchmarked against rational, golden-ratio and random baselines.
 
 External framework policy: Groovebox does not vendor NASA Trick/cFS or SLEEF code in this pass. NASA simulation architecture remains credited as inspiration. This avoids unnecessary runtime weight and licensing coupling while keeping the native ABI ready for optional vector-math backends.
+
+## Math-notation display convention
+
+Math Symbols defaults ON. Author glyphs use 4×3 directional strokes, U/R/D/L pathways, straight=full count, missing=skip, and context-sensitive squiggles (imaginary/decimal/half/doubling); operation/continued/multiplicity enclosures and semantic role colors carry additional context. Math Symbols OFF exposes conventional/base-10 notation; Operator Theory is an independent backend toggle. See `HELP_TEXT.md` → **Author Symbol Language — literal reading guide** for the literal and ASCII grammar and equation-by-equation examples.
+

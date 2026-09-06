@@ -35,7 +35,6 @@ import time
 import tempfile
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from meum_constants import MEUM, MEUM_MINUS_1, MEUM_INV
 
 _FLOAT_NEG = float("-inf")
 
@@ -67,7 +66,7 @@ def check_meum_identity():
     import math
     import videogame_engine as ve
     M = ve.MEUM
-    lhs = MEUM_MINUS_1 * M + MEUM_MINUS_1 * MEUM_INV
+    lhs = (M - 1.0) * M + (M - 1.0) * (1.0 / M)
     rhs = (2.0 ** M) / (M * M) - M
     resid = abs(lhs - rhs)
     ok = resid < 1e-9

@@ -1,94 +1,98 @@
-"""Groovebox Meum semantic container (.MEUM).
+"""Exact-reconstructing .MEUM project container for Mathematician's Groovebox.
 
-This is deliberately conservative: it performs exact structural DAG reuse on the
-JSON-compatible project document and records the project's Meum search roles.
-It does not claim arbitrary information can be recovered from a seed, and it
-falls back to exact lossless reconstruction only.
+This module implements the public ``save(path, project)`` / ``load(path)`` API
+used by Groovebox.  The canonical project document is serialized as stable
+UTF-8 JSON, SHA-256 authenticated, then zlib-compressed.  Compression changes
+storage representation only; it does not alter canonical project values.
 """
 from __future__ import annotations
-import hashlib, json, os, tempfile
-from typing import Any, Dict
 
-FORMAT = "Groovebox-Meum-Compression"
+import hashlib
+import json
+import os
+import struct
+import tempfile
+import zlib
+from pathlib import Path
+from typing import Any
+
+MAGIC = b"MEUMGBX1"
 VERSION = 1
-EXTENSION = ".MEUM"
-M = 1.1975807343385265
+_HEADER = struct.Struct(">8sBQQ32s")  # magic, version, raw_len, comp_len, sha256
 
-def _canon(x: Any) -> bytes:
-    return json.dumps(x, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str).encode("utf-8")
 
-def _intern(value: Any, nodes: Dict[str, Any]) -> Any:
-    if isinstance(value, dict):
-        body = {"t":"d","v":[[str(k), _intern(v, nodes)] for k,v in sorted(value.items(), key=lambda kv: str(kv[0]))]}
-    elif isinstance(value, list):
-        body = {"t":"l","v":[_intern(v, nodes) for v in value]}
-    elif isinstance(value, tuple):
-        body = {"t":"l","v":[_intern(v, nodes) for v in value]}
-    else:
-        return {"v": value}
-    key = hashlib.sha256(_canon(body)).hexdigest()
-    nodes.setdefault(key, body)
-    return {"r": key}
+def _canonical_json_bytes(project: Any) -> bytes:
+    return json.dumps(
+        project,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+        default=str,
+    ).encode("utf-8")
 
-def _expand(ref: Any, nodes: Dict[str, Any]) -> Any:
-    if "v" in ref and "r" not in ref:
-        return ref["v"]
-    body = nodes[ref["r"]]
-    if body["t"] == "l":
-        return [_expand(v, nodes) for v in body["v"]]
-    return {k:_expand(v, nodes) for k,v in body["v"]}
 
-def encode_document(document: Dict[str, Any]) -> Dict[str, Any]:
-    nodes: Dict[str, Any] = {}
-    root = _intern(document, nodes)
-    raw = _canon(document)
-    return {
-        "format": FORMAT,
-        "version": VERSION,
-        "method": "lossless-structural-reuse",
-        "meum": {
-            "M": M,
-            "normalize": "2-M",
-            "ambiguity": "M^-p",
-            "prediction": "(M-1)^p",
-            "ideal_compare": "2^M",
-            "certificate_rule": "exact reconstruction required",
-        },
-        "source_sha256": hashlib.sha256(raw).hexdigest(),
-        "source_bytes": len(raw),
-        "root": root,
-        "nodes": nodes,
-    }
+def _ensure_path(path: os.PathLike[str] | str) -> Path:
+    p = Path(path).expanduser()
+    if p.suffix.lower() != ".meum":
+        p = p.with_suffix(p.suffix + ".MEUM" if p.suffix else ".MEUM")
+    return p
 
-def decode_document(package: Dict[str, Any]) -> Dict[str, Any]:
-    if package.get("format") != FORMAT or int(package.get("version",0)) != VERSION:
-        raise ValueError("Not a supported Groovebox .MEUM container")
-    doc = _expand(package["root"], package["nodes"])
-    raw = _canon(doc)
-    if hashlib.sha256(raw).hexdigest() != package.get("source_sha256"):
-        raise ValueError(".MEUM reconstruction checksum mismatch")
-    return doc
 
-def save(path: str, document: Dict[str, Any]) -> str:
-    if not path.lower().endswith(".meum"):
-        path += EXTENSION
-    pkg = encode_document(document)
-    parent = os.path.dirname(os.path.abspath(path)) or "."
-    os.makedirs(parent, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=".meum-", suffix=".tmp", dir=parent)
+def dumps(project: Any, level: int = 9) -> bytes:
+    raw = _canonical_json_bytes(project)
+    digest = hashlib.sha256(raw).digest()
+    comp = zlib.compress(raw, max(0, min(9, int(level))))
+    return _HEADER.pack(MAGIC, VERSION, len(raw), len(comp), digest) + comp
+
+
+def loads(blob: bytes) -> Any:
+    if len(blob) < _HEADER.size:
+        raise ValueError("Not a complete .MEUM container")
+    magic, version, raw_len, comp_len, digest = _HEADER.unpack_from(blob, 0)
+    if magic != MAGIC:
+        raise ValueError("Invalid .MEUM magic")
+    if version != VERSION:
+        raise ValueError(f"Unsupported .MEUM version: {version}")
+    comp = blob[_HEADER.size:]
+    if len(comp) != comp_len:
+        raise ValueError("Truncated or overlong .MEUM payload")
+    raw = zlib.decompress(comp)
+    if len(raw) != raw_len:
+        raise ValueError(".MEUM reconstructed length mismatch")
+    if hashlib.sha256(raw).digest() != digest:
+        raise ValueError(".MEUM SHA-256 integrity check failed")
+    return json.loads(raw.decode("utf-8"))
+
+
+def save(path: os.PathLike[str] | str, project: Any) -> str:
+    """Atomically save *project* and return the final .MEUM path as a string."""
+    p = _ensure_path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    blob = dumps(project)
+    fd, tmp_name = tempfile.mkstemp(prefix=p.name + ".", suffix=".tmp", dir=p.parent)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
-            json.dump(pkg, f, ensure_ascii=False, separators=(",", ":"))
+        with os.fdopen(fd, "wb") as f:
+            f.write(blob)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
-    finally:
+        os.replace(tmp_name, p)
         try:
-            if os.path.exists(tmp): os.unlink(tmp)
-        except Exception:
+            dfd = os.open(str(p.parent), os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        except OSError:
             pass
-    return path
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    return str(p)
 
-def load(path: str) -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        return decode_document(json.load(f))
+
+def load(path: os.PathLike[str] | str) -> Any:
+    return loads(Path(path).expanduser().read_bytes())

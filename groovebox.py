@@ -222,12 +222,12 @@ def _ot_glyph_for_display_digit(digit_char, digit_index, negative, role,
 
 
 
-_QUARTER_CELL_PX = 8.0       # 1/4 of the fixed 32px symbol cell
-_INWARD_STEP_PX = 2.0        # one inward step after each 4-position cycle
+_QUARTER_CELL_PX = 10.5      # 1/4 of preferred 42px symbol cell
+_INWARD_STEP_PX = 2.625      # 1/16 of preferred cell; scales with fitted cells
 _MAX_INWARD_CYCLES = 4
 
 
-def _quarter_cycle_state(index, negative=False):
+def _quarter_cycle_state(index, negative=False, cell=42.0):
     """Return (dx, dy, inward, phase) for one visible number position.
 
     The symbol itself is unchanged. Only its placement advances one quarter-cell
@@ -240,23 +240,26 @@ def _quarter_cycle_state(index, negative=False):
     phase = i & 3
     cycle = min(i // 4, _MAX_INWARD_CYCLES)
 
-    # quarter-cell positions around the center
+    # quarter-cell positions around the center. Scale with the actual fitted
+    # cell so narrow spin boxes do not push the glyph outside their editor.
+    q = max(2.0, float(cell) * 0.25)
+    inward_step = max(0.5, float(cell) / 16.0)
     cw = (
-        (0.0, -_QUARTER_CELL_PX),   # top
-        (_QUARTER_CELL_PX, 0.0),    # right
-        (0.0, _QUARTER_CELL_PX),    # bottom
-        (-_QUARTER_CELL_PX, 0.0),   # left
+        (0.0, -q),   # top
+        (q, 0.0),    # right
+        (0.0, q),    # bottom
+        (-q, 0.0),   # left
     )
     ccw = (
-        (0.0, -_QUARTER_CELL_PX),   # top
-        (-_QUARTER_CELL_PX, 0.0),   # left
-        (0.0, _QUARTER_CELL_PX),    # bottom
-        (_QUARTER_CELL_PX, 0.0),    # right
+        (0.0, -q),   # top
+        (-q, 0.0),   # left
+        (0.0, q),    # bottom
+        (q, 0.0),    # right
     )
     dx, dy = (ccw if negative else cw)[phase]
 
     # Move subsequent completed cycles inward toward the cell center.
-    inward = cycle * _INWARD_STEP_PX
+    inward = cycle * inward_step
     if dx > 0:
         dx -= inward
     elif dx < 0:
@@ -479,7 +482,7 @@ class OTNumberGlyphWidget(QWidget):
                                    continued=self._continued, multiplicity=self._multiplicity,
                                    variable_letter=self._variable_letter)
         count = max(1, len(glyphs))
-        cell = min(32.0, max(20.0, (self.width()-4.0)/count))
+        cell = min(42.0, max(20.0, (self.width()-4.0)/count))
         total = cell*count
         x = max(2.0, (self.width()-total)/2.0)
         y = max(1.0, (self.height()-cell)/2.0)
@@ -622,7 +625,10 @@ class _OTNumericOverlay(OTNumberGlyphWidget):
         try:
             if isinstance(self.owner, QDoubleSpinBox):
                 decimals = max(0, int(self.owner.decimals()))
-                return f"{float(self.owner.value()):.{decimals}f}"
+                txt = f"{float(self.owner.value()):.{decimals}f}"
+                if "." in txt:
+                    txt = txt.rstrip("0").rstrip(".")
+                return txt
             return str(int(self.owner.value()))
         except Exception:
             try:
@@ -730,16 +736,24 @@ class _OTNumericOverlay(OTNumberGlyphWidget):
 
         radix_index = _decimal_boundary_index(text)
 
-        cell = 32.0
         gutter = 2.0
+        n = max(1, len(digits))
+        # 42px is the authored public target. Fit downward only when the editor
+        # cannot hold that many compact digits. Reserve a quarter-cell on both
+        # sides for the cycle motion so right/left phases never leave the field.
+        preferred = 42.0
+        max_by_width = (max(10.0, float(self.width()) - 4.0) - max(0, n-1)*gutter) / (n + 0.5)
+        max_by_height = max(12.0, float(self.height()) - 2.0)
+        cell = max(12.0, min(preferred, max_by_width, max_by_height))
+        motion_margin = cell * 0.25
         total = len(digits) * cell + max(0, len(digits)-1) * gutter
-        x = max(1.0, (self.width() - total) / 2.0)
-        y = max(0.0, min(2.0, (self.height() - cell) / 2.0))
+        x = max(1.0 + motion_margin, (self.width() - total) / 2.0)
+        y = max(motion_margin, (self.height() - cell) / 2.0)
 
         role_color = _ot_role_color(self._role)
 
         for i, ch in enumerate(digits):
-            dx, dy, inward, phase = _quarter_cycle_state(i, negative=negative)
+            dx, dy, inward, phase = _quarter_cycle_state(i, negative=negative, cell=cell)
 
             glyph = _ot_glyph_for_display_digit(
                 ch,
@@ -1030,7 +1044,7 @@ class _OTMixedNumericTextOverlay(OTNumberGlyphWidget):
         role_color = _ot_role_color(self._role)
 
         for i, ch in enumerate(digits):
-            dx, dy, inward, phase = _quarter_cycle_state(i, negative=negative)
+            dx, dy, inward, phase = _quarter_cycle_state(i, negative=negative, cell=cell)
 
             glyph = _ot_glyph_for_display_digit(
                 ch,
@@ -1146,8 +1160,14 @@ class _OTMixedNumericTextOverlay(OTNumberGlyphWidget):
 
 
 class _MathSymbolSpinWatcher(QObject):
-    """Application-wide, event-driven installer for numeric symbol surfaces."""
-    TEXT_TYPES = (QLabel, QPushButton, QToolButton, QCheckBox, QProgressBar, QLineEdit)
+    """Event-driven installer for *actual numeric controls* only.
+
+    PUBLIC_SYMBOL_PERF_FINAL_20260906: labels/buttons/readouts are deliberately
+    not overpainted.  This keeps author notation confined to editable numeric
+    fields and avoids an application-wide paint tax.  When Math Symbols is OFF
+    this filter returns immediately and creates no overlay widgets.
+    """
+    TEXT_TYPES = ()
 
     def __init__(self, host):
         super().__init__(host)
@@ -1164,22 +1184,22 @@ class _MathSymbolSpinWatcher(QObject):
 
     def _install(self, obj, key):
         try:
-            if isinstance(obj, (QSpinBox, QDoubleSpinBox)):
+            if MATH_SYMBOLS_ENABLED and isinstance(obj, (QSpinBox, QDoubleSpinBox)):
                 self._host._ensure_math_symbol_overlay(obj)
-            elif isinstance(obj, self.TEXT_TYPES) and not self._is_spin_editor(obj):
-                self._host._ensure_math_text_overlay(obj)
         finally:
             self._pending_ids.discard(key)
 
     def eventFilter(self, obj, event):
+        # Absolute fast path: public/default Symbols OFF performs no overlay
+        # discovery, scheduling, layout or paint-related work.
+        if not MATH_SYMBOLS_ENABLED:
+            return False
         try:
-            if event.type() == QEvent.Type.Show:
-                supported = isinstance(obj, (QSpinBox, QDoubleSpinBox) + self.TEXT_TYPES)
-                if supported:
-                    oid = id(obj)
-                    if oid not in self._pending_ids:
-                        self._pending_ids.add(oid)
-                        QTimer.singleShot(0, lambda w=obj, key=oid: self._install(w, key))
+            if event.type() == QEvent.Type.Show and isinstance(obj, (QSpinBox, QDoubleSpinBox)):
+                oid = id(obj)
+                if oid not in self._pending_ids:
+                    self._pending_ids.add(oid)
+                    QTimer.singleShot(0, lambda w=obj, key=oid: self._install(w, key))
         except RuntimeError:
             pass
         except Exception:
@@ -1902,7 +1922,7 @@ def eqr_tensor_audio(sample, d_char, theta_char, t=0.0):
 #       "higher-value" numeric field (refined once by the Meum residue).
 # ---------------------------------------------------------------------------
 OP_THEORY_ENABLED = True  # default ON — nested dynamics active at launch
-MATH_SYMBOLS_ENABLED = True  # display-only; OFF reveals ordinary base-10 without changing OT
+MATH_SYMBOLS_ENABLED = False  # public default OFF; display-only and never changes OT arithmetic
 
 
 def set_operator_theory(enabled):
@@ -9496,6 +9516,25 @@ class VideoSynthEngine:
             col = self._hsv((q*30 + self._video_hue_shift + self._canonical_ctx.get("seed",0.0)*0.17)%360, 0.45, 0.82)
             self._dot(img,x,y,col,0.10+0.08*self._rms,r=1)
 
+        # FINITE_INFINITY_MEUM_HYPERDRIVE_2026: the visual side consumes the
+        # same cross-media state as audio/game. Apply a deterministic field
+        # deformation rather than creating an unrelated random effect.
+        try:
+            if self.app is not None and hasattr(self.app, "_hyperdrive_state"):
+                _hd = self.app._hyperdrive_state(float(getattr(self, "t", 0.0)), int(self._render_frame_index))
+                if bool(_hd.get("enabled", False)):
+                    _d = max(0.0, float(_hd.get("drive", 0.0)))
+                    _r = max(0.0, float(_hd.get("resonance", 0.0)))
+                    _m = float(_hd.get("modulation", 0.0))
+                    yy = np.linspace(-1.0, 1.0, h, dtype=np.float32)[:, None, None]
+                    field = 1.0 + (0.10 * _d * _r * _m) + (0.04 * _d * float(MEUM_MINUS_1)) * yy
+                    img = img * field
+                    # Meum phase also rotates a small amount of color energy.
+                    mix = min(0.20, 0.04 * _d * (1.0 + abs(_m)))
+                    img = (1.0 - mix) * img + mix * np.roll(img, 1 if _m >= 0 else -1, axis=2)
+        except Exception:
+            pass
+
         return np.clip(img, 0, 255).astype(np.uint8)
 
 
@@ -11728,6 +11767,46 @@ class ReadmeGuideDialog(QDialog):
 - Performance controls are consolidated into one horizontal deck; Automator controls are compacted into a multi-row grid.
 - UI initialization order and Qt stylesheet declarations were hardened; division-by-zero-sensitive paths use explicit degenerate-case handling rather than epsilon denominators where practical.
 
+--------------------------------------------------------------------------------
+FINITE INFINITY GREP + FINITE INFINITY–MEUM HYPERDRIVE
+--------------------------------------------------------------------------------
+Groovebox and sCode use the project reference I = 134964356 as a bounded
+"Finite Infinity" index space. The compiler/search path can hash normalized
+source tokens into 0..I-1 for fast grep-style candidate lookup, then verifies
+the exact normalized token before reporting a semantic match. The finite index
+is therefore an accelerator/organization mechanism, not a claim that all
+mathematical infinity is literally finite.
+
+The optional **Finite Infinity–Meum HyperDrive** is a single cross-media
+resonator/drive state shared by SOUND + IMAGE + INTERACTION. It is OFF by
+default and is saved with the project.
+
+For a project seed/canonical fingerprint, HyperDrive derives a deterministic
+index h modulo I and finite coordinate u=h/I. A Meum phase is formed from u and
+time. With Trigonometry Engine ON the modulation uses the project book forms:
+
+    isn(theta) = 2 sin(theta/2)
+    ics(theta) = 2 cos(theta/2)
+
+and combines their unit-equivalent components with Meum terms such as M-1 and
+1/M. With Trigonometry Engine OFF the compatibility path uses ordinary sin/cos.
+With Operator Theory ON the same phase uses the OT orientation/sign rule. Thus
+OT/Trig change the calculation route while the seed/fingerprint remains the
+single identity source.
+
+HyperDrive then applies the SAME modulation state to:
+  • Audio — a pre-hardclip Meum resonator/drive gain field plus a small cubic
+    drive curvature. It does not replace Master Volume or the final hard clip.
+  • Visuals — deterministic field/brightness and Meum-phase color deformation.
+  • Game generation — deterministic world/behavior identity modulation by the
+    same finite coordinate; it does not introduce an unrelated random seed.
+
+Drive controls cross-media modulation amount. Resonance controls the Meum
+resonator depth and defaults to M-1. HyperDrive, Operator Theory, Trigonometry
+Engine, Math Symbols, Meum engine simplification, and the other saved project
+controls are restored on load so save→load→audio/video/game uses the same math
+configuration.
+
 ================================================================================
   GROOVEBOX — Mathematician's / Scientist's Groovebox
   Full Documentation, Scripting Syntax & Design Philosophy
@@ -13903,9 +13982,9 @@ Groovebox is also an executable research artifact. Mathematicians, physicists, D
 
 The project distinguishes: (1) proved statements under its declared definitions, (2) implementation invariants backed by tests, and (3) empirical hypotheses such as whether coupled Meum-family traversal outperforms other irrational or low-discrepancy bases in a particular audio/visual/game workload.
 
-## Author Symbol Language — literal reading guide (Math Symbols defaults ON)
+## Author Symbol Language — literal reading guide (Math Symbols defaults OFF (public build))
 
-Mathematician's Groovebox starts with **Math Symbols ON** because the author notation carries information that an ordinary decimal numeral does not show directly: four-way direction/reference, counted/skipped strokes, contextual stroke modifiers, operation enclosure, continued-series structure, event multiplicity, and variable/result role. **Operator Theory (OT)** is a separate switch: OT ON selects the OT calculation route; OT OFF keeps the symbol display available for comparison. **Math Symbols OFF** exposes the ordinary base-10 / conventional mathematical spelling of the same inspectable value. This makes base-10 a secondary inspection and interoperability view rather than deleting it.
+Mathematician's Groovebox starts with **Math Symbols OFF** in the public build because the author notation carries information that an ordinary decimal numeral does not show directly: four-way direction/reference, counted/skipped strokes, contextual stroke modifiers, operation enclosure, continued-series structure, event multiplicity, and variable/result role. **Operator Theory (OT)** is a separate switch: OT ON selects the OT calculation route; OT OFF keeps the symbol display available for comparison. **Math Symbols OFF** exposes the ordinary base-10 / conventional mathematical spelling of the same inspectable value. This makes base-10 a secondary inspection and interoperability view rather than deleting it.
 
 ### Literal visual grammar
 
@@ -20001,15 +20080,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # Use the visible Radio viewport height as the only scaling limit.
             # Width follows from KeepAspectRatio and is intentionally allowed to
             # exceed the viewport so the horizontal scrollbar can expose it.
-            if scroll is not None:
-                target_h = max(80, int(scroll.viewport().height()) - 4)
-            else:
-                target_h = max(80, int(label.height()) - 4)
-            pm = source.scaledToHeight(
-                target_h, Qt.TransformationMode.SmoothTransformation
-            )
+            native_h = max(1, int(source.height()))
+            # Preserve the authored Radio artwork size instead of stretching it
+            # to whatever height the surrounding processor panel happens to have.
+            # The holder therefore shrinks to the picture; only genuine overflow
+            # produces horizontal scrolling.
+            target_h = native_h
+            pm = source.scaledToHeight(target_h, Qt.TransformationMode.SmoothTransformation)
             label.setPixmap(pm)
             label.setFixedSize(pm.size())
+            if scroll is not None:
+                bar_h = max(14, int(scroll.horizontalScrollBar().sizeHint().height()))
+                frame = max(2, int(scroll.frameWidth()) * 2)
+                scroll.setFixedHeight(pm.height() + bar_h + frame + 4)
+                scroll.setMaximumWidth(pm.width() + frame + 4)
+                scroll.widget().adjustSize()
         except Exception:
             pass
 
@@ -22837,29 +22922,43 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.goava_radio_scroll = QScrollArea()
         self.goava_radio_scroll.setWidgetResizable(False)
         self.goava_radio_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.goava_radio_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.goava_radio_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.goava_radio_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.goava_radio_scroll.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self.goava_radio_scroll.setMinimumHeight(112)
-        self.goava_radio_scroll.setMaximumHeight(160)
-        self.goava_radio_scroll.setMinimumWidth(180)
-        self.goava_radio_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.goava_radio_scroll.setMinimumHeight(1)
+        self.goava_radio_scroll.setMinimumWidth(1)
+        # RADIO_SHRINK_TO_FIT_20260906: the artwork pane asks only for the
+        # artwork's natural size. It may be constrained by the parent, in which
+        # case the horizontal scrollbar exposes the remaining width.
+        self.goava_radio_scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.goava_radio_scroll.setStyleSheet(
             "QScrollArea{background:#050b12;border:1px solid #9a7b2f;border-radius:8px;}"
             "QScrollBar:horizontal{height:14px;background:#071019;}"
             "QScrollBar::handle:horizontal{min-width:34px;background:#3f7f62;border-radius:6px;}"
         )
         self.goava_radio_scroll.setWidget(self.lbl_goava_radio_brand)
-        _radio_row.addWidget(self.goava_radio_scroll, 4)
+        _radio_row.addWidget(self.goava_radio_scroll, 0)
         try:
             from radio_station import load_identity
             _rid = load_identity()
         except Exception:
             _rid = {"name":"GOAVA Radio", "logo":""}
+        # RADIO_PANEL_FINAL_20260906: artwork and identity are sibling panels.
+        # The artwork panel receives all remaining horizontal/vertical room; the
+        # compact identity panel never competes with the scroll viewport.
+        self.radio_identity_panel = QFrame()
+        self.radio_identity_panel.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
+        self.radio_identity_panel.setMinimumWidth(220)
+        self.radio_identity_panel.setMaximumWidth(360)
+        self.radio_identity_panel.setStyleSheet("QFrame{background:#0a141d;border:1px solid #263f51;border-radius:10px;}")
+        _radio_identity_layout = QVBoxLayout(self.radio_identity_panel)
+        _radio_identity_layout.setContentsMargins(6, 6, 6, 6)
+        _radio_identity_layout.setSpacing(6)
         self.lbl_radio_station_name = QLabel(str(_rid.get("name") or "GOAVA Radio"))
         self.lbl_radio_station_name.setStyleSheet("color:#f1ce68; font-size:18pt; font-weight:900; padding:8px 12px; background:#0c1822; border:1px solid #8b6b2c; border-radius:12px;")
         self.lbl_radio_station_name.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        _radio_row.addWidget(self.lbl_radio_station_name, 1)
+        self.lbl_radio_station_name.setWordWrap(True)
+        _radio_identity_layout.addWidget(self.lbl_radio_station_name, 1)
         self.btn_edit_radio_identity = QPushButton("✦ EDIT RADIO NAME / LOGO")
         self.btn_edit_radio_identity.setMinimumHeight(54)
         self.btn_edit_radio_identity.setStyleSheet("QPushButton{background:#172a39;color:#d9f7ff;border:1px solid #4d8199;border-radius:10px;padding:8px 12px;font-weight:800;} QPushButton:hover{background:#21445a;border-color:#79d6e8;}")
@@ -22879,8 +22978,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             except Exception as e:
                 QMessageBox.warning(self, "Radio Identity", str(e))
         self.btn_edit_radio_identity.clicked.connect(_edit_radio_identity)
-        _radio_row.addWidget(self.btn_edit_radio_identity, 0)
-        self.global_controls_side.addLayout(_radio_row)
+        _radio_identity_layout.addWidget(self.btn_edit_radio_identity, 0)
+        _radio_row.addWidget(self.radio_identity_panel, 1)
+        _radio_row.setStretch(0, 0)
+        _radio_row.setStretch(1, 1)
+        self.global_controls_side.addLayout(_radio_row, 1)
         QTimer.singleShot(0, self._refresh_goava_radio_brand)
         self.global_controls_side.addLayout(_proc_title_row)
         self.global_geometry_layout.addLayout(self.global_controls_side, 1)
@@ -22927,8 +23029,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.transport_layout_row2.addWidget(self.btn_idealize_rhythm)
         self.transport_layout_row2.addWidget(self.chk_user_program_only)
         self.transport_layout_row2.addWidget(self.chk_canonical_protect)
-        self.transport_layout_row2.addWidget(self.btn_meum_engine_simplify)
-        self.transport_layout_row2.addWidget(self.btn_trigonometry_engine)
         self.transport_layout_row2.addWidget(self.btn_restore_userdata)
         # PROJECT_UNDO_2026: undo/redo every engine apply / playlist / pattern /
         # instrument resize without losing data (Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y).
@@ -24710,22 +24810,26 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_operator_theory.setObjectName("operatorTheoryBtn")
         self.btn_operator_theory.toggled.connect(self._on_operator_theory_toggled)
         master_vol_row.addWidget(self.btn_operator_theory)
+        # FINAL_MATH_TOGGLE_ROW_20260906: keep the three execution-engine toggles together.
+        # Meum + Trig used to live in the transport row and could scroll out of sight.
+        master_vol_row.addWidget(self.btn_meum_engine_simplify)
+        master_vol_row.addWidget(self.btn_trigonometry_engine)
 
-        self.btn_math_symbols = QPushButton("Math Symbols · ON")
+        self.btn_math_symbols = QPushButton("Math Symbols · OFF · base 10")
         self.btn_math_symbols.setCheckable(True)
-        self.btn_math_symbols.setChecked(True)
+        self.btn_math_symbols.setChecked(False)
         self.btn_math_symbols.setMinimumHeight(28)
         self.btn_math_symbols.setMaximumHeight(32)
         self.btn_math_symbols.setToolTip(
-            "Author notation (default ON): 12 contextual strokes, four separators, four-way direction, "
+            "Optional author notation (public default OFF): 12 contextual strokes, four separators, four-way direction, "
             "operation/series borders, and role colors. Straight=count; missing=skip; squiggle is context-sensitive (imaginary/decimal/half/doubling). OFF shows the same value in base 10. "
             "The Operator Theory toggle separately controls the calculation backend."
         )
         self.btn_math_symbols.toggled.connect(self._on_math_symbols_toggled)
-        master_vol_row.addWidget(self.btn_math_symbols)
-        self.ot_symbol_preview = OTNumberGlyphWidget(50, role=OTRole.RESULT, parent=self)
-        self.ot_symbol_preview.setFixedWidth(116)
-        master_vol_row.addWidget(self.ot_symbol_preview)
+        seed_header.addWidget(self.btn_math_symbols)
+        # Public Symbols-OFF mode must not leave a numeric/symbol preview behind.
+        # Keep the attribute for compatibility, but do not place/render it in the layout.
+        self.ot_symbol_preview = None
 
         master_vol_row.addStretch(1)
 
@@ -24780,6 +24884,57 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # are positioned in the upper global processor stack.
         self.master_volume_row = master_vol_row
         self.global_controls_side.addLayout(master_vol_row)
+
+        # FINITE_INFINITY_MEUM_HYPERDRIVE_2026: cross-media canonical modulation.
+        # This lives at the bottom of the upper/global processor panel and is OFF
+        # by default. One deterministic state modulates sound, visuals and game
+        # generation from the same finite-infinity/Meum coordinate.
+        hyper_row = QHBoxLayout()
+        hyper_row.setSpacing(6)
+        self.btn_hyperdrive = QPushButton("∞M HyperDrive · OFF")
+        self.btn_hyperdrive.setCheckable(True)
+        self.btn_hyperdrive.setChecked(False)
+        self.btn_hyperdrive.setToolTip(
+            "Finite Infinity–Meum HyperDrive: one deterministic cross-media resonator/drive. "
+            "The same finite coordinate (mod 134964356) is transformed by Meum and the active "
+            "Trig/OT compatibility path, then applied coherently to audio, visual, and game generation. "
+            "OFF by default; project-save/load persistent."
+        )
+        self.btn_hyperdrive.setStyleSheet(
+            "QPushButton { background:#241a31; color:#f1d8ff; border:1px solid #c48cff; "
+            "border-radius:4px; padding:4px 9px; font-weight:900; } "
+            "QPushButton:checked { background:#5b287a; color:#ffffff; border:2px solid #f0b7ff; }"
+        )
+        self.btn_hyperdrive.toggled.connect(self._on_hyperdrive_toggled)
+        hyper_row.addWidget(self.btn_hyperdrive)
+
+        hyper_row.addWidget(QLabel("Drive"))
+        self.spin_hyperdrive_drive = QDoubleSpinBox()
+        self.spin_hyperdrive_drive.setRange(0.0, 2.0)
+        self.spin_hyperdrive_drive.setDecimals(3)
+        self.spin_hyperdrive_drive.setSingleStep(0.05)
+        self.spin_hyperdrive_drive.setValue(0.50)
+        self.spin_hyperdrive_drive.setFixedWidth(72)
+        self.spin_hyperdrive_drive.setToolTip("Cross-media HyperDrive amount. 0 is neutral; 2 is maximum project-defined drive.")
+        self.spin_hyperdrive_drive.valueChanged.connect(lambda _v: self._on_hyperdrive_toggled(self._hyperdrive_enabled()))
+        hyper_row.addWidget(self.spin_hyperdrive_drive)
+
+        hyper_row.addWidget(QLabel("Resonance"))
+        self.spin_hyperdrive_resonance = QDoubleSpinBox()
+        self.spin_hyperdrive_resonance.setRange(0.0, 2.0)
+        self.spin_hyperdrive_resonance.setDecimals(3)
+        self.spin_hyperdrive_resonance.setSingleStep(0.05)
+        self.spin_hyperdrive_resonance.setValue(float(MEUM_MINUS_1))
+        self.spin_hyperdrive_resonance.setFixedWidth(78)
+        self.spin_hyperdrive_resonance.setToolTip("Meum-relative resonator depth; default M−1.")
+        self.spin_hyperdrive_resonance.valueChanged.connect(lambda _v: self._on_hyperdrive_toggled(self._hyperdrive_enabled()))
+        hyper_row.addWidget(self.spin_hyperdrive_resonance)
+        self.lbl_hyperdrive_state = QLabel("Finite∞ 134964356 · M · A/V/Game")
+        self.lbl_hyperdrive_state.setStyleSheet("color:#d9b8ff; font-size:8pt;")
+        hyper_row.addWidget(self.lbl_hyperdrive_state)
+        hyper_row.addStretch(1)
+        self.hyperdrive_row = hyper_row
+        self.global_controls_side.addLayout(hyper_row)
 
         # UI_LAYOUT_2026: Wave/Scope + Spectrum/Geometry dropdowns are built here
         # but deliberately NOT added to seq_inner — they are laid into
@@ -24899,6 +25054,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         export_menu.addAction("Audio only (.wav)").triggered.connect(lambda: self.export_mixdown_dialog("wav"))
         export_menu.addAction("Audio only (.flac)").triggered.connect(lambda: self.export_mixdown_dialog("flac"))
         export_menu.addAction("Audio only (.mp3)").triggered.connect(lambda: self.export_mixdown_dialog("mp3"))
+        export_menu.addSeparator()
+        export_menu.addAction("🖼 Image frame (.png/.jpg/.webp)…").triggered.connect(
+            self.export_image_frame_dialog
+        )
         export_menu.addSeparator()
         # Video + Audio
         export_menu.addAction("Video + Audio (.mp4)").triggered.connect(
@@ -29424,10 +29583,29 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if isinstance(mem, dict) and mem.get("touched"):
                     seq[name] = copy.deepcopy(mem)
 
+        # Canonical overwrite is a reversible transaction, not just a lock-mask
+        # operation. Preserve the full newer sequence/automation authority so
+        # OFF/Restore round-trips Automation, sequence references and timing.
+        full_state = {}
+        for key in (
+            "playlist_automation",
+            "instrument_sequence_banks",
+            "instrument_selected_sequence",
+            "instrument_sequencer_memory",
+            "sequencer_automation_points",
+            "sequencer_automation_enabled",
+            "automator_timing_mode",
+            "_selected_automation_step",
+        ):
+            try:
+                full_state[key] = copy.deepcopy(getattr(self, key, None))
+            except Exception:
+                full_state[key] = None
         snap = {
             "playlist_rows": playlist_rows,
             "table_touches": table_touches,
             "sequencer": seq,
+            "full_sequence_automation_state": full_state,
         }
         self._user_composition_snapshot = snap
         print(f"[Canonical] snapshotted {len(playlist_rows)} user playlist rows, "
@@ -29518,6 +29696,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 else:
                     mems[key] = copy.deepcopy(mem)
         self.instrument_sequence_banks = banks
+
+        # Restore the complete newer automation/sequence transaction if this
+        # snapshot was captured by a current build. Older snapshots remain
+        # backwards compatible through the selective restoration above.
+        full_state = snap.get("full_sequence_automation_state") or {}
+        if full_state:
+            for key, value in full_state.items():
+                try:
+                    setattr(self, key, copy.deepcopy(value))
+                except Exception:
+                    pass
+            try:
+                self._ensure_sequence_banks_after_resize()
+            except Exception:
+                pass
 
         self._push_restored_playlist_to_table()
         try:
@@ -30112,6 +30305,111 @@ class MathematiciansGrooveboxApp(QMainWindow):
             )
         print("[ClearMemory] Project and seed reset to a fresh boot state.")
 
+    # ------------------------------------------------------------------
+    # FINITE_INFINITY_MEUM_HYPERDRIVE_2026
+    # ------------------------------------------------------------------
+    def _hyperdrive_enabled(self):
+        btn = getattr(self, "btn_hyperdrive", None)
+        return bool(btn is not None and btn.isChecked())
+
+    def _on_hyperdrive_toggled(self, checked):
+        btn = getattr(self, "btn_hyperdrive", None)
+        if btn is not None:
+            btn.setText("∞M HyperDrive · ON" if checked else "∞M HyperDrive · OFF")
+        try:
+            self._on_live_source_changed()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "video_synth_viewer", None) is not None:
+                self.video_synth_viewer.update()
+        except Exception:
+            pass
+
+    def _hyperdrive_state(self, t_value=0.0, frame_index=0):
+        """Return the one shared finite-infinity/Meum cross-media state.
+
+        The hash/index is bounded by the project's Finite Infinity reference I=134964356.
+        Trig ON uses the project's book-form isn/ics route; Trig OFF uses ordinary
+        sin/cos. OT ON changes the orientation/sign route, not the source identity.
+        """
+        I = 134964356
+        try:
+            seed = float(self.get_numeric_seed())
+        except Exception:
+            seed = 0.0
+        try:
+            fp = str(getattr(self, "_canonical_fingerprint_value", "") or "")
+            if not fp:
+                fp = str(self._canonical_fingerprint()) if hasattr(self, "_canonical_fingerprint") else ""
+        except Exception:
+            fp = ""
+        payload = (f"{seed:.17g}|{fp}|{int(frame_index)}").encode("utf-8", "replace")
+        h = int.from_bytes(hashlib.sha256(payload).digest()[:8], "big") % I
+        finite = float(h) / float(I)
+        phase = (finite * math.tau) + float(t_value) * float(MEUM_MINUS_1)
+        if operator_theory_enabled():
+            phase = ot_i_phase(phase, h)
+        if self._trigonometry_engine_enabled():
+            # Canonical book forms: isn(theta)=2 sin(theta/2), ics(theta)=2 cos(theta/2).
+            s = 0.5 * float(ot_book_isn(phase))
+            c = 0.5 * float(ot_book_ics(phase))
+        else:
+            s = math.sin(phase)
+            c = math.cos(phase)
+        try:
+            drive = float(self.spin_hyperdrive_drive.value())
+        except Exception:
+            drive = 0.50
+        try:
+            resonance = float(self.spin_hyperdrive_resonance.value())
+        except Exception:
+            resonance = float(MEUM_MINUS_1)
+        modulation = (s * float(MEUM_MINUS_1) + c * float(MEUM_INV))
+        return {
+            "enabled": bool(self._hyperdrive_enabled()),
+            "finite_infinity": I,
+            "index": int(h),
+            "finite_coordinate": finite,
+            "phase": float(phase),
+            "isn_sin": float(s),
+            "ics_cos": float(c),
+            "modulation": float(modulation),
+            "drive": float(drive),
+            "resonance": float(resonance),
+            "ot_enabled": bool(operator_theory_enabled()),
+            "trig_enabled": bool(self._trigonometry_engine_enabled()),
+        }
+
+    def _apply_hyperdrive_audio(self, master, sample_rate):
+        """Deterministic pre-hardclip resonator/drive using the shared HyperDrive state."""
+        x = np.asarray(master, dtype=np.float32)
+        if x.size == 0 or not self._hyperdrive_enabled():
+            return x
+        st = self._hyperdrive_state(0.0, 0)
+        drive = max(0.0, float(st["drive"]))
+        res = max(0.0, float(st["resonance"]))
+        # Meum-spaced low-frequency modulation: one vector operation, no per-sample
+        # Python trig loop. Trig compatibility selects the algebraic form.
+        tt = np.arange(x.size, dtype=np.float64) / max(float(sample_rate), 1.0)
+        freq = max(0.05, float(MEUM_MINUS_1) * (1.0 + st["finite_coordinate"] * float(MEUM)))
+        ph = float(st["phase"]) + math.tau * freq * tt
+        if st["ot_enabled"] and (int(st["index"]) % 2 == 0):
+            ph = -ph
+        if st["trig_enabled"]:
+            carrier = np.sin(ph * 0.5)  # 0.5*isn(ph)
+            companion = np.cos(ph * 0.5)  # 0.5*ics(ph)
+        else:
+            carrier = np.sin(ph)
+            companion = np.cos(ph)
+        resonant = (float(MEUM_MINUS_1) * carrier + float(MEUM_INV) * companion)
+        gain = 1.0 + drive * res * resonant
+        # Project-defined drive curvature. No hidden normalizer/clamp here; the
+        # existing Master Volume/Clip hard ceiling remains downstream.
+        y = x.astype(np.float64) * gain
+        y += (drive * float(MEUM_MINUS_1) * 0.125) * (x.astype(np.float64) ** 3)
+        return y.astype(np.float32)
+
     def _collect_project_ui_state(self):
         """Serialize named UI handles so save/load restores the complete live surface."""
         state = {}
@@ -30123,6 +30421,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "spin_engine_strength", "spin_unison_blend",
             "gp_mix_slider", "gp_script_slider", "gp_domain_slider", "gp_wire_slider",
             "spin_clip_ratio", "spin_import_speed", "spin_sparse_density", "spin_speed_scrub",
+            "spin_hyperdrive_drive", "spin_hyperdrive_resonance",
         ):
             obj = getattr(self, name, None)
             if obj is not None and hasattr(obj, "value"):
@@ -30139,6 +30438,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # project silently changes its canonical fingerprint.
             "btn_idealize_rhythm", "btn_seeded_randomize",
             "btn_edit_panels_per_sequence",
+            "btn_meum_engine_simplify", "btn_trigonometry_engine", "btn_operator_theory",
+            "btn_math_symbols", "btn_hyperdrive",
             "chk_sparse_mask", "chk_speed_scrub",
         ):
             obj = getattr(self, name, None)
@@ -30487,6 +30788,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "meum_spatial_resolution_enabled": bool(getattr(self, "meum_spatial_resolution_enabled", True)),
             "meum_engine_simplification_enabled": bool(self._meum_engine_simplification_enabled()),
             "trigonometry_engine_enabled": bool(self._trigonometry_engine_enabled()),
+            "operator_theory_enabled": bool(operator_theory_enabled()),
+            "math_symbols_enabled": bool(globals().get("MATH_SYMBOLS_ENABLED", False)),
+            "hyperdrive_state": _safe_json(self._hyperdrive_state(0.0, 0)),
             "meum_spatial_activity_modulus": float(getattr(self, "meum_spatial_activity_modulus", 0.50)),
             "instrument_media_samples": _safe_json({
                 str(k): {"path": str(v.get("path", "")), "sample_rate": int(v.get("sample_rate", 44100)), "user_owned": True, "source_kind": str(v.get("source_kind", "audio")),
@@ -30568,6 +30872,38 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.btn_trigonometry_engine.setChecked(_trig_on)
             self.btn_trigonometry_engine.setText(f"Trigonometry Engine: {'ON' if _trig_on else 'OFF'}")
             self.btn_trigonometry_engine.blockSignals(False)
+        if hasattr(self, "btn_operator_theory"):
+            _ot_on = bool(data.get("operator_theory_enabled", True))
+            self.btn_operator_theory.blockSignals(True)
+            self.btn_operator_theory.setChecked(_ot_on)
+            self.btn_operator_theory.blockSignals(False)
+            set_operator_theory(_ot_on)
+            try:
+                self.btn_operator_theory.setText("Operator Theory · ON" if _ot_on else "Operator Theory · OFF")
+            except Exception:
+                pass
+        if hasattr(self, "btn_math_symbols"):
+            _sym_on = bool(data.get("math_symbols_enabled", False))
+            self.btn_math_symbols.blockSignals(True)
+            self.btn_math_symbols.setChecked(_sym_on)
+            self.btn_math_symbols.blockSignals(False)
+            try:
+                self._on_math_symbols_toggled(_sym_on)
+            except Exception:
+                pass
+        _hd = data.get("hyperdrive_state") if isinstance(data.get("hyperdrive_state"), dict) else {}
+        if hasattr(self, "spin_hyperdrive_drive"):
+            try: self.spin_hyperdrive_drive.setValue(float(_hd.get("drive", 0.50)))
+            except Exception: pass
+        if hasattr(self, "spin_hyperdrive_resonance"):
+            try: self.spin_hyperdrive_resonance.setValue(float(_hd.get("resonance", MEUM_MINUS_1)))
+            except Exception: pass
+        if hasattr(self, "btn_hyperdrive"):
+            _hd_on = bool(_hd.get("enabled", False))
+            self.btn_hyperdrive.blockSignals(True)
+            self.btn_hyperdrive.setChecked(_hd_on)
+            self.btn_hyperdrive.blockSignals(False)
+            self.btn_hyperdrive.setText("∞M HyperDrive · ON" if _hd_on else "∞M HyperDrive · OFF")
         if "meum_spatial_activity_modulus" in data:
             try:
                 self.meum_spatial_activity_modulus = float(data.get("meum_spatial_activity_modulus", 0.50))
@@ -32297,8 +32633,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.master_volume = val / 100.0
         if hasattr(self, 'lbl_master_vol'):
             self.lbl_master_vol.setText(f"{val}%")
-        if hasattr(self, 'ot_symbol_preview'):
-            self.ot_symbol_preview.setValue(int(val))
+        _preview = getattr(self, 'ot_symbol_preview', None)
+        if _preview is not None:
+            _preview.setValue(int(val))
 
     def _on_clip_ratio_changed(self, val):
         """CLIP_GAIN_2026: update ratio label, queue a re-render, and (when a
@@ -36071,6 +36408,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # route, never the final master waveform.  The legacy ot_master_transform
         # remains available to explicit scripts but is not an implicit DSP stage.
         #
+        # FINITE_INFINITY_MEUM_HYPERDRIVE_2026: optional deterministic cross-media
+        # resonator/drive. It is downstream of canonical composition but upstream
+        # of Master Volume/Clip, and does not write back into canonical user data.
+        master = self._apply_hyperdrive_audio(master, sample_rate)
+
         # MASTER_VECTOR_SYNTH_2026: bounded post-composition conversion monitor.
         # User direction and canonical direction each contribute 50%; the vector
         # never replaces canonical composition and remains below unity gain.
@@ -36276,6 +36618,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # Include a bounded canonical digest so apply/unapply changes project ID.
                 f"pl{hashlib.sha256(repr(self._canonical_project_identity_payload()).encode('utf-8','replace')).hexdigest()[:16]}",
                 "mv" + hashlib.sha256(repr(getattr(self, "master_vector_state", {})).encode("utf-8", "replace")).hexdigest()[:12],
+                # HyperDrive is cross-media canonical modulation rather than an
+                # audio-only master effect, so its active math route belongs to
+                # the identity whenever enabled.
+                ("hd1:" +
+                 f"{float(self.spin_hyperdrive_drive.value()) if hasattr(self, 'spin_hyperdrive_drive') else 0.5:.6f}:" +
+                 f"{float(self.spin_hyperdrive_resonance.value()) if hasattr(self, 'spin_hyperdrive_resonance') else MEUM_MINUS_1:.6f}:" +
+                 ("ot1" if operator_theory_enabled() else "ot0") + ":" +
+                 ("tr1" if self._trigonometry_engine_enabled() else "tr0"))
+                if self._hyperdrive_enabled() else "hd0",
                 # Instrument Count is a rendering/repartition choice, not part
                 # of the seed/composition identity.
             ]
@@ -37141,7 +37492,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if not hasattr(w, '_math_symbol_original_min_height'):
                     w._math_symbol_original_min_height = w.minimumHeight()
                 if enabled:
-                    w.setMinimumHeight(max(int(w._math_symbol_original_min_height), 28))
+                    w.setMinimumHeight(max(int(w._math_symbol_original_min_height), 46))
                 else:
                     w.setMinimumHeight(int(w._math_symbol_original_min_height))
             except Exception:
@@ -37206,30 +37557,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return None
 
     def _install_math_symbol_numeric_overlays(self):
-        """Install author glyph masks once; lazy controls are handled by Show events."""
-        self._math_symbol_numeric_overlays = []
-        self._math_symbol_text_overlays = []
+        """Install overlays only when explicitly enabled.
 
+        PUBLIC_SYMBOL_PERF_2026: numeric author notation defaults OFF and creates
+        zero overlay widgets in that state.  When enabled, only actual numeric
+        fields are masked; arbitrary labels/buttons keep ordinary text. This
+        removes the largest UI repaint cost while preserving author notation
+        where it is semantically useful and editable.
+        """
+        if getattr(self, "_math_symbol_numeric_overlays", None) is None:
+            self._math_symbol_numeric_overlays = []
+        if getattr(self, "_math_symbol_text_overlays", None) is None:
+            self._math_symbol_text_overlays = []
+        if not MATH_SYMBOLS_ENABLED:
+            self._apply_math_symbol_display_transform(False)
+            return
         try:
             widgets = list(self.findChildren(QSpinBox)) + list(self.findChildren(QDoubleSpinBox))
         except Exception:
             widgets = []
         for w in widgets:
             self._ensure_math_symbol_overlay(w)
-
-        # Replace numeric substrings in ordinary labels/buttons/readouts too.
-        text_widgets = []
-        for typ in (QLabel, QPushButton, QToolButton, QCheckBox, QProgressBar, QLineEdit):
-            try:
-                text_widgets.extend(self.findChildren(typ))
-            except Exception:
-                pass
-        for w in text_widgets:
-            self._ensure_math_text_overlay(w)
-
-        self._apply_math_symbol_display_transform(MATH_SYMBOLS_ENABLED)
-
-        # Event-driven discovery replaces the old 750 ms full-tree polling timer.
+        self._apply_math_symbol_display_transform(True)
         try:
             if getattr(self, "_math_symbol_spin_watcher", None) is None:
                 self._math_symbol_spin_watcher = _MathSymbolSpinWatcher(self)
@@ -37239,18 +37588,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             self._math_symbol_spin_watcher = None
 
-        # Explicitly stop/delete any old polling timer left by a prior hot reload.
-        try:
-            timer = getattr(self, "_math_symbol_overlay_timer", None)
-            if timer is not None:
-                timer.stop()
-                timer.deleteLater()
-            self._math_symbol_overlay_timer = None
-        except Exception:
-            self._math_symbol_overlay_timer = None
-
     def _refresh_math_symbol_numeric_overlays(self):
-        """Refresh existing masks only; no application-wide rescan."""
+        """Refresh existing masks only; OFF is an absolute zero-work fast path."""
+        if not MATH_SYMBOLS_ENABLED:
+            return
         alive = []
         for ov in list(getattr(self, "_math_symbol_numeric_overlays", []) or []):
             try:
@@ -37278,7 +37619,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._math_symbol_text_overlays = text_alive
 
     def _on_math_symbols_toggled(self, checked):
-        """Toggle author symbol rendering without altering Operator Theory arithmetic."""
+        """Toggle author symbols; OFF destroys overlay machinery completely."""
         global MATH_SYMBOLS_ENABLED
         MATH_SYMBOLS_ENABLED = bool(checked)
         btn = getattr(self, "btn_math_symbols", None)
@@ -37288,8 +37629,48 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if preview is not None:
             preview.setSymbolsEnabled(MATH_SYMBOLS_ENABLED)
             preview.update()
-        self._apply_math_symbol_display_transform(MATH_SYMBOLS_ENABLED)
-        self._refresh_math_symbol_numeric_overlays()
+
+        if MATH_SYMBOLS_ENABLED:
+            self._install_math_symbol_numeric_overlays()
+            self._apply_math_symbol_display_transform(True)
+            self._refresh_math_symbol_numeric_overlays()
+            return
+
+        # PUBLIC_SYMBOL_ZERO_WORK_20260906: restore native editors first, then
+        # destroy every overlay and remove the application-wide watcher.  Thus
+        # OFF means no overlay paint/layout/event-filter work remains resident.
+        for ov in list(getattr(self, "_math_symbol_numeric_overlays", []) or []):
+            try:
+                ov._set_owner_number_text_visible(True)
+                if getattr(ov, "owner", None) is not None:
+                    ov.owner.removeEventFilter(ov)
+                le = getattr(ov, "_editor", None)
+                if le is not None:
+                    le.removeEventFilter(ov)
+                ov.hide(); ov.deleteLater()
+            except Exception:
+                pass
+        self._math_symbol_numeric_overlays = []
+        for ov in list(getattr(self, "_math_symbol_text_overlays", []) or []):
+            try:
+                ov._set_native_visible(True)
+                if getattr(ov, "owner", None) is not None:
+                    ov.owner.removeEventFilter(ov)
+                ov.hide(); ov.deleteLater()
+            except Exception:
+                pass
+        self._math_symbol_text_overlays = []
+        watcher = getattr(self, "_math_symbol_spin_watcher", None)
+        if watcher is not None:
+            try:
+                app = QApplication.instance()
+                if app is not None:
+                    app.removeEventFilter(watcher)
+                watcher.deleteLater()
+            except Exception:
+                pass
+            self._math_symbol_spin_watcher = None
+        self._apply_math_symbol_display_transform(False)
 
     def _on_goava_toggled(self, checked):
         """Modified to use perfect unison system"""
@@ -40095,6 +40476,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         resonance = float(getattr(self, "canonical_resonance_factor", CANONICAL_RESONANCE_DEFAULT) or CANONICAL_RESONANCE_DEFAULT)
         if not math.isfinite(resonance):
             resonance = 1.50
+        _hyper = self._hyperdrive_state(0.0, 0) if hasattr(self, "_hyperdrive_state") else {"enabled": False}
         return {
             "bpm": float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0,
             "seq_length": int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else 16,
@@ -40104,6 +40486,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "randomizer_active": rnd_on,
             "phase_lock_active": pl_on,
             "seed": float(self.get_numeric_seed()) if hasattr(self, "get_numeric_seed") else 0.0,
+            "hyperdrive": _hyper,
             "live_parametrics": live_p,
             "goava_group_phase": bool(getattr(self, "goava_active", False)),
             "global_algo": gas,
@@ -40149,8 +40532,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 meta["live_parametrics"] = str(pl[0].get("live_parametrics"))[:240]
         except Exception:
             pass
+        _game_seed = float(meta["seed"])
+        _hd = meta.get("hyperdrive") or {}
+        if bool(_hd.get("enabled", False)):
+            # Same shared finite coordinate deterministically perturbs the game
+            # identity seed; no independent random branch is introduced.
+            _game_seed = _game_seed + float(_hd.get("modulation", 0.0)) * float(MEUM_MINUS_1)
         return _vge.classify_from_composition(
-            meta["seed"],
+            _game_seed,
             bpm=meta["bpm"],
             seq_length=meta["seq_length"],
             playlist_rows=meta["playlist_rows"],
@@ -40439,6 +40828,137 @@ class MathematiciansGrooveboxApp(QMainWindow):
         btn_export.clicked.connect(lambda: (dlg.accept(), self._on_export_videogame_scripts()))
         btn_close.clicked.connect(dlg.accept)
         dlg.exec()
+
+    def export_image_frame_dialog(self):
+        """Export one deterministic visual frame at a chosen track time.
+
+        IMAGE_FRAME_EXPORT_2026:
+          * exact track time in seconds
+          * arbitrary output resolution
+          * exactly three public formats: PNG, JPEG, WEBP
+          * optional promotion of the saved frame to the GOAVA Radio artwork
+
+        The visual engine receives both the frame index and the corresponding
+        Math-First time coordinate, so taking the same project/time/resolution
+        snapshot is reproducible rather than being a screenshot of UI timing.
+        """
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Export Image Frame — Time / Resolution / Format")
+        form = QFormLayout(dlg)
+
+        spin_time = QDoubleSpinBox()
+        spin_time.setRange(0.0, 24.0 * 60.0 * 60.0)
+        spin_time.setDecimals(4)
+        spin_time.setSingleStep(0.25)
+        spin_time.setSuffix(" s")
+        spin_time.setValue(float(getattr(self, "_last_image_export_time", 0.0) or 0.0))
+        form.addRow("Track time", spin_time)
+
+        try:
+            dw, dh = self._export_frame_size()
+        except Exception:
+            dw, dh = 1280, 720
+        spin_w = QSpinBox(); spin_w.setRange(160, 7680); spin_w.setValue(int(getattr(self, "_last_image_export_w", dw) or dw))
+        spin_h = QSpinBox(); spin_h.setRange(120, 4320); spin_h.setValue(int(getattr(self, "_last_image_export_h", dh) or dh))
+        form.addRow("Width (px)", spin_w)
+        form.addRow("Height (px)", spin_h)
+
+        combo_fmt = QComboBox()
+        combo_fmt.addItems(["PNG — lossless", "JPEG — compact", "WEBP — tablet/web"])
+        fmt_last = str(getattr(self, "_last_image_export_format", "png") or "png").lower()
+        combo_fmt.setCurrentIndex({"png":0,"jpg":1,"jpeg":1,"webp":2}.get(fmt_last,0))
+        form.addRow("Format", combo_fmt)
+
+        chk_radio = QCheckBox("Use exported frame as GOAVA Radio artwork")
+        chk_radio.setChecked(False)
+        chk_radio.setToolTip("Copies the selected frame into assets/goava_radio_brand.png and refreshes the Radio panel.")
+        form.addRow(chk_radio)
+
+        note = QLabel("Exports the deterministic 2.5D/scenograph frame for the selected musical time. Useful as a lightweight Radio image on tablet installs.")
+        note.setWordWrap(True)
+        form.addRow(note)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dlg.accept); buttons.rejected.connect(dlg.reject)
+        form.addRow(buttons)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        t_sec = float(spin_time.value())
+        w, h = int(spin_w.value()), int(spin_h.value())
+        fmt = ("png", "jpg", "webp")[int(combo_fmt.currentIndex())]
+        self._last_image_export_time = t_sec
+        self._last_image_export_w, self._last_image_export_h = w, h
+        self._last_image_export_format = fmt
+        filters = {"png":"PNG Image (*.png)", "jpg":"JPEG Image (*.jpg *.jpeg)", "webp":"WebP Image (*.webp)"}
+        default = os.path.join(self._exports_dir(), f"groovebox_frame_{t_sec:010.4f}s_{w}x{h}.{fmt}")
+        out, _ = QFileDialog.getSaveFileName(self, "Export Image Frame", default, filters[fmt] + ";;All Files (*)")
+        if not out:
+            return
+        ext = "." + fmt
+        if not out.lower().endswith(ext) and not (fmt == "jpg" and out.lower().endswith(".jpeg")):
+            out += ext
+
+        try:
+            eng = self.video_synth_engine
+            fps = max(1, int(getattr(self, "_last_export_fps", 24) or 24))
+            fi = max(0, int(round(t_sec * fps)))
+            old_t = float(getattr(eng, "t", 0.0) or 0.0)
+            try:
+                # Feed the audio neighborhood at the selected time into the same
+                # visual correspondence path used by video export.
+                master, sr = self._render_mixdown_buffer()
+                master = np.asarray(master, dtype=np.float32).ravel()
+                center = max(0, min(len(master), int(round(t_sec * sr))))
+                span = max(1, int(sr / fps))
+                a = max(0, center - span // 2); b = min(len(master), a + span)
+                if b > a:
+                    eng.set_waveform(master[a:b], playhead=(center / max(1, len(master)-1)))
+            except Exception:
+                pass
+            eng.t = t_sec * float(MEUM_NORM)
+            frame = eng.render_frame(w, h, export=True, frame_index=fi)
+            eng.t = old_t
+
+            frame = np.ascontiguousarray(np.asarray(frame, dtype=np.uint8))
+            saved = False
+            try:
+                from PIL import Image
+                im = Image.fromarray(frame, mode="RGB")
+                if fmt == "jpg":
+                    im.save(out, "JPEG", quality=95, subsampling=0)
+                elif fmt == "webp":
+                    im.save(out, "WEBP", quality=95, method=6)
+                else:
+                    im.save(out, "PNG", optimize=True)
+                saved = True
+            except Exception:
+                qimg = QImage(frame.data, w, h, w * 3, QImage.Format.Format_RGB888).copy()
+                saved = bool(qimg.save(out, fmt.upper() if fmt != "jpg" else "JPEG"))
+            if not saved:
+                raise RuntimeError("No encoder accepted the selected image format")
+
+            if chk_radio.isChecked():
+                try:
+                    import shutil
+                    assets = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+                    os.makedirs(assets, exist_ok=True)
+                    radio_path = os.path.join(assets, "goava_radio_brand.png")
+                    # Normalize the persistent Radio asset to PNG regardless of
+                    # export format, keeping minimal-tablet installs predictable.
+                    from PIL import Image
+                    Image.open(out).convert("RGB").save(radio_path, "PNG", optimize=True)
+                    pm = QPixmap(radio_path)
+                    if not pm.isNull():
+                        self._goava_radio_brand_source = pm
+                        self._refresh_goava_radio_brand()
+                except Exception as exc:
+                    QMessageBox.warning(self, "Radio Artwork", f"Image exported, but Radio artwork update failed: {exc}")
+
+            if hasattr(self, "scope_status_label"):
+                self.scope_status_label.setText(f"🖼 Exported frame @ {t_sec:.4f}s · {w}×{h} · {fmt.upper()}")
+            QMessageBox.information(self, "Image Export", f"Saved deterministic frame:\n{out}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Image Export Error", str(exc))
 
     def export_video_dialog(self, include_audio=True, container="mp4"):
         """Render 2.5D frames in 16 recoverable .part segments inside the
@@ -41707,7 +42227,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "btn_goava", "btn_local_randomize", "btn_local_phase_lock",
             "btn_idealize_rhythm", "btn_seeded_randomize",
             "btn_apply_algo_master", "chk_user_program_only",
-            "chk_canonical_protect", "btn_meum_engine_simplify", "btn_trigonometry_engine", "chk_fullweight_seed", "chk_full_unison",
+            "chk_canonical_protect", "btn_meum_engine_simplify", "btn_trigonometry_engine", "btn_operator_theory", "btn_math_symbols", "btn_hyperdrive", "chk_fullweight_seed", "chk_full_unison",
             "btn_auto_randomize_sequence", "btn_auto_randomize_everywhere",
         ):
             try:
