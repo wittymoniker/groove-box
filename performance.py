@@ -71,7 +71,7 @@ VIDEO_EXT = {
     ".ts", ".m2ts", ".mts", ".3gp", ".3g2", ".ogv", ".vob",
 }
 # Performance browses both the canonical project document and portable .MG artifacts.
-PROJECT_EXT = {".mcc", ".mgpr", ".mgproject", ".mgsynth", ".mgprofile", ".mg"}
+PROJECT_EXT = {".mcc", ".meum", ".mgpr", ".mgproject", ".mgsynth", ".mgprofile", ".mg"}
 GAME_EXT = {".zip"}
 MEDIA_EXT = AUDIO_EXT | VIDEO_EXT
 

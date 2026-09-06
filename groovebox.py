@@ -247,91 +247,123 @@ class OTNumberGlyphWidget(QWidget):
 
 
 class _OTNumericOverlay(OTNumberGlyphWidget):
-    """Read-only symbol mask for standard Qt numeric controls.
+    """Symbol-only face for Qt spin boxes.
 
-    It never changes the underlying value.  Mouse events pass through; when a
-    spin box receives keyboard focus the mask hides so ordinary numeric editing
-    remains possible, then returns on focus-out.
+    The glyph widget is parented directly to the spin box's QLineEdit, not to
+    the platform-dependent spin-box frame.  This keeps symbol placement stable
+    in frozen/built executables where native style metrics differ from source
+    runs.  The underlying decimal text is hidden except while the editor has
+    keyboard focus.
     """
     def __init__(self, owner):
-        super().__init__(0, role=OTRole.RESULT, parent=owner)
         self.owner = owner
+        try:
+            editor = owner.lineEdit()
+        except Exception:
+            editor = None
+        parent = editor if editor is not None else owner
+        super().__init__(0, role=OTRole.RESULT, parent=parent)
+        self._editor = editor
         self._owner_text_palette = None
-        self._owner_text_stylesheet = None
+        self._owner_text_stylesheet = ""
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
-        self.setStyleSheet('background: transparent;')
-        self.setToolTip('Author-symbol view. Click/focus the control to edit the ordinary numeric value.')
+        self.setStyleSheet("background: transparent;")
+        self.setToolTip("Author-symbol view. Focus the control to edit the ordinary numeric value.")
         try:
-            le = owner.lineEdit()
-            self._owner_text_palette = QPalette(le.palette()) if le is not None else None
-            self._owner_text_stylesheet = str(le.styleSheet()) if le is not None else ""
+            if editor is not None:
+                self._owner_text_palette = QPalette(editor.palette())
+                self._owner_text_stylesheet = str(editor.styleSheet() or "")
+                editor.installEventFilter(self)
         except Exception:
-            self._owner_text_palette = None
-            self._owner_text_stylesheet = ""
+            pass
+        try:
+            owner.installEventFilter(self)
+            owner.valueChanged.connect(lambda *_: self._sync())
+        except Exception:
+            pass
         self._sync()
-        try: owner.valueChanged.connect(lambda *_: self._sync())
-        except Exception: pass
-        owner.installEventFilter(self)
 
-    def _set_owner_number_text_visible(self, visible):
-        """Hide native base-10 text unless the editor itself has focus.
-
-        Palette-only hiding is insufficient when a QSS rule sets QLineEdit color
-        (Performance does this), because Qt's stylesheet wins over the palette.
-        Preserve both the original palette and stylesheet and add a transparent
-        text rule only while the author glyph is the active display.
-        """
+    def _line_edit(self):
         try:
             le = self.owner.lineEdit()
+            if le is not None and le is not self._editor:
+                self._editor = le
+                if self.parent() is not le:
+                    self.setParent(le)
+                self._owner_text_palette = QPalette(le.palette())
+                self._owner_text_stylesheet = str(le.styleSheet() or "")
+                le.installEventFilter(self)
+            return le
+        except Exception:
+            return self._editor
+
+    def _set_owner_number_text_visible(self, visible):
+        """Hide native decimal text robustly across Qt platform styles/QSS."""
+        try:
+            le = self._line_edit()
             if le is None:
                 return
             if self._owner_text_palette is None:
                 self._owner_text_palette = QPalette(le.palette())
-            if self._owner_text_stylesheet is None:
-                self._owner_text_stylesheet = str(le.styleSheet())
             pal = QPalette(self._owner_text_palette)
-            base_qss = str(self._owner_text_stylesheet or "")
             if visible:
                 le.setPalette(pal)
-                le.setStyleSheet(base_qss)
+                le.setStyleSheet(self._owner_text_stylesheet or "")
             else:
-                clear = QColor(0, 0, 0, 0)
-                pal.setColor(QPalette.ColorRole.Text, clear)
-                pal.setColor(QPalette.ColorRole.PlaceholderText, clear)
-                pal.setColor(QPalette.ColorRole.HighlightedText, clear)
+                transparent = QColor(0, 0, 0, 0)
+                for role in (
+                    QPalette.ColorRole.Text,
+                    QPalette.ColorRole.PlaceholderText,
+                    QPalette.ColorRole.HighlightedText,
+                ):
+                    pal.setColor(role, transparent)
                 le.setPalette(pal)
-                # QSS is required because parent/floating-window stylesheets can
-                # explicitly color QLineEdit and override a transparent palette.
+                # This stylesheet is applied directly to the editor itself.
+                # Avoid a QLineEdit selector here: frozen/native style engines
+                # can re-resolve selector specificity differently.
+                base = self._owner_text_stylesheet or ""
                 le.setStyleSheet(
-                    base_qss
-                    + "\nQLineEdit { color: rgba(0,0,0,0); "
-                      "selection-color: rgba(0,0,0,0); }"
+                    base
+                    + "\ncolor: rgba(0,0,0,0);"
+                      "\nselection-color: rgba(0,0,0,0);"
                 )
         except RuntimeError:
             pass
         except Exception:
             pass
 
+    def _is_editing(self):
+        try:
+            le = self._line_edit()
+            return bool((le is not None and le.hasFocus()) or self.owner.hasFocus())
+        except Exception:
+            return False
+
     def _sync(self):
-        try: self._value = self.owner.value()
-        except Exception: self._value = 0
+        try:
+            self._value = self.owner.value()
+        except Exception:
+            self._value = 0
         self._symbols = bool(MATH_SYMBOLS_ENABLED)
-        focused = bool(self.owner.hasFocus())
-        self._set_owner_number_text_visible((not MATH_SYMBOLS_ENABLED) or focused)
-        self._fit(); self.update()
+        editing = self._is_editing()
+        self._set_owner_number_text_visible((not MATH_SYMBOLS_ENABLED) or editing)
+        self._fit()
+        self.setVisible(bool(MATH_SYMBOLS_ENABLED and not editing))
+        if self.isVisible():
+            self.raise_()
+        self.update()
 
     def _fit(self):
+        """Fill the editor's own local rectangle exactly."""
         try:
-            # Cover the actual QLineEdit edit field exactly.  Its geometry already
-            # excludes spin arrows/buttons, so there is no guessed "-20 px" width
-            # and no strip where the native number can leak around the glyph.
-            le = self.owner.lineEdit()
+            le = self._line_edit()
             if le is not None:
-                r = le.geometry()
-                self.setGeometry(r.x(), r.y(), max(10, r.width()), max(10, r.height()))
+                if self.parent() is not le:
+                    self.setParent(le)
+                self.setGeometry(le.rect())
             else:
-                self.setGeometry(1, 1, max(10, self.owner.width()-2), max(10, self.owner.height()-2))
+                self.setGeometry(self.owner.rect())
             self.raise_()
         except RuntimeError:
             pass
@@ -339,1631 +371,58 @@ class _OTNumericOverlay(OTNumberGlyphWidget):
             pass
 
     def eventFilter(self, obj, event):
-        t=event.type()
-        if t in (QEvent.Type.Resize, QEvent.Type.Show):
-            self._fit(); self._sync()
+        t = event.type()
+        if t in (
+            QEvent.Type.Resize, QEvent.Type.Show, QEvent.Type.Move,
+            QEvent.Type.LayoutRequest, QEvent.Type.StyleChange,
+            QEvent.Type.PaletteChange, QEvent.Type.FontChange,
+        ):
+            QTimer.singleShot(0, self._sync)
         elif t == QEvent.Type.FocusIn:
-            # Editing remains practical: focus temporarily reveals the actual
-            # numeric editor while the normal symbol-only display stays clean.
             self._set_owner_number_text_visible(True)
             self.hide()
         elif t == QEvent.Type.FocusOut:
-            if MATH_SYMBOLS_ENABLED:
-                self._set_owner_number_text_visible(False)
-                self.show(); self.raise_()
-            else:
-                self._set_owner_number_text_visible(True)
+            QTimer.singleShot(0, self._sync)
         return False
 
     def paintEvent(self, event):
-        if not MATH_SYMBOLS_ENABLED: return
-        painter=QPainter(self); painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        # Keep enough precision to distinguish real control values. Decimal point
-        # is a small center dot between digit cells; sign is carried by direction.
+        if not MATH_SYMBOLS_ENABLED:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         try:
             if isinstance(self.owner, QDoubleSpinBox):
-                txt=f"{float(self.owner.value()):.{int(self.owner.decimals())}f}"
-            else: txt=str(int(self.owner.value()))
-        except Exception: txt=str(self._value)
-        neg=txt.startswith('-'); txt=txt.lstrip('+-')
-        chars=[c for c in txt if c.isdigit() or c=='.']
-        nd=max(1,sum(c.isdigit() for c in chars)); dots=sum(c=='.' for c in chars)
-        cell=min(34.0,max(18.0,(self.width()-2.0)/(nd+dots*.28)))
-        total=cell*(nd+dots*.28); x=max(1.0,(self.width()-total)/2.0); y=max(0.0,(self.height()-cell)/2.0)
-        idx=0
+                txt = f"{float(self.owner.value()):.{int(self.owner.decimals())}f}"
+            else:
+                txt = str(int(self.owner.value()))
+        except Exception:
+            txt = str(self._value)
+        neg = txt.startswith("-")
+        txt = txt.lstrip("+-")
+        chars = [c for c in txt if c.isdigit() or c == "."]
+        digit_count = max(1, sum(c.isdigit() for c in chars))
+        dot_count = sum(c == "." for c in chars)
+        usable = max(8.0, float(self.width()) - 4.0)
+        denom = digit_count + 0.32 * dot_count
+        cell = min(32.0, max(12.0, usable / max(1.0, denom)))
+        total = digit_count * cell + dot_count * cell * 0.32
+        x = max(1.0, (self.width() - total) / 2.0)
+        y = max(0.0, (self.height() - cell) / 2.0)
+        if neg:
+            pen = QPen(self._color, max(1.5, cell * 0.07))
+            painter.setPen(pen)
+            painter.drawLine(QPointF(max(1.0, x-cell*0.30), self.height()/2.0),
+                             QPointF(max(2.0, x-cell*0.05), self.height()/2.0))
         for c in chars:
-            if c=='.':
-                painter.setPen(Qt.PenStyle.NoPen); painter.setBrush(QColor('#2f80ff'))
-                painter.drawEllipse(QRectF(x+cell*.05,y+cell*.78,cell*.14,cell*.14)); x += cell*.28
-                continue
-            d=int(c); direction=OTDirection.DOWN if neg and idx==0 else (OTDirection.UP if idx%2==0 else OTDirection.RIGHT)
-            g=ot_encode_decimal(-d if neg and idx==0 else d, role=self._role)[0]
-            # Preserve deterministic alternate positive direction for readability.
-            if not neg and idx%2: g=type(g)(g.value, OTDirection.RIGHT, g.squiggly_mask, g.presence_mask, g.operation, g.continued, g.multiplicity, g.role, g.variable_letter)
-            self._draw_glyph(painter,g,x,y,cell); x+=cell; idx+=1
-
-# =============================================================================
-# PROCESSOR SYNTAX / DESIGN CONTRACT
-# =============================================================================
-# Every identity-bearing processor follows the same English-readable form:
-#   INPUTS -> deterministic mathematical transform -> bounded state -> OUTPUT.
-# Oscillator: phase += 2π*f_inst/SR; this is the minimal discrete-time carrier.
-# AM: gain = 1 + depth*LFO; it changes energy without changing identity.
-# FM: f_inst = f*(1 + depth*LFO); it creates deterministic sideband families.
-# PM: phase += depth*sin(modulator); it changes timing while preserving carrier.
-# Meum field: sin(M*t + phase) is shared by audio/visual state so both domains
-# respond to the same invariant instead of inventing independent randomness.
-# Cyclic orbit: p(i)=(a*i+b) mod n, gcd(a,n)=1; this is a finite bijection and
-# therefore cannot repeat an index before the orbit closes.
-# Hash-noise: H(parameters,index) is used where texture is needed; it is
-# deterministic noise, so replaying the same state reproduces the same samples.
-# GOAVA: a state bit is included in audio, scenograph and game fingerprints,
-# so GOAVA ON/OFF is a genuine audiovisual state transition.
-# UI-only randomize buttons may still request fresh user variation; that action
-# is deliberately outside the canonical replay kernel.
-# =============================================================================
-
-
-from audio_os_backend import wavfile, sd, HAS_SOUNDDEVICE
-
-# PERF_2026: optional C++ accel (voice synth / hardclip / meum vectors).
-# Loaded once; missing library is fine — pure NumPy paths remain authoritative.
-_GB_ACCEL = None
-_GB_ACCEL_FUNCS = {}
-try:
-    import ctypes as _ctypes_accel
-    from pathlib import Path as _Path_accel
-    _here_accel = _Path_accel(__file__).resolve().parent
-    for _cand in (
-        _here_accel / "native" / "libgroovebox_accel.so",
-        _here_accel / "cpp" / "libgroovebox_accel.so",
-        _here_accel / "libgroovebox_accel.so",
-    ):
-        if _cand.is_file():
-            _GB_ACCEL = _ctypes_accel.CDLL(str(_cand))
-            break
-    if _GB_ACCEL is not None:
-        _P_f = _ctypes_accel.POINTER(_ctypes_accel.c_float)
-        _GB_ACCEL.gb_hardclip_f32.argtypes = [
-            _P_f, _P_f, _ctypes_accel.c_size_t, _ctypes_accel.c_float, _P_f
-        ]
-        _GB_ACCEL.gb_hardclip_f32.restype = None
-        _GB_ACCEL_FUNCS["hardclip"] = _GB_ACCEL.gb_hardclip_f32
-        # PERF_NATIVE_20260905: wire the kernels that were already compiled but
-        # previously never exposed to Python.  Missing symbols are tolerated so
-        # older packaged libraries still fall back to the authoritative NumPy path.
-        try:
-            _P_d = _ctypes_accel.POINTER(_ctypes_accel.c_double)
-            _GB_ACCEL.gb_meum_modulation_f32.argtypes = [
-                _P_d, _ctypes_accel.c_size_t,
-                _ctypes_accel.c_double, _ctypes_accel.c_double,
-                _ctypes_accel.c_double, _ctypes_accel.c_double, _ctypes_accel.c_double,
-                _ctypes_accel.c_double, _ctypes_accel.c_double, _ctypes_accel.c_double,
-                _ctypes_accel.c_double, _ctypes_accel.c_double, _ctypes_accel.c_double,
-                _ctypes_accel.c_double, _P_f, _P_f, _P_f
-            ]
-            _GB_ACCEL.gb_meum_modulation_f32.restype = None
-            _GB_ACCEL_FUNCS["meum_mod"] = _GB_ACCEL.gb_meum_modulation_f32
-        except Exception:
-            pass
-        try:
-            _GB_ACCEL.gb_voice_synth_f32.argtypes = [
-                _P_d, _ctypes_accel.c_size_t,
-                _ctypes_accel.c_double, _ctypes_accel.c_double, _ctypes_accel.c_double,
-                _ctypes_accel.c_double, _ctypes_accel.c_int, _ctypes_accel.c_int,
-                _ctypes_accel.c_int, _ctypes_accel.c_int, _ctypes_accel.c_double,
-                _ctypes_accel.c_longlong, _ctypes_accel.c_int, _ctypes_accel.c_double,
-                _ctypes_accel.c_double, _P_f
-            ]
-            _GB_ACCEL.gb_voice_synth_f32.restype = None
-            _GB_ACCEL_FUNCS["voice"] = _GB_ACCEL.gb_voice_synth_f32
-        except Exception:
-            pass
-        try:
-            _GB_ACCEL.gb_phase_build_f64.argtypes = [
-                _P_f, _P_f, _ctypes_accel.c_size_t,
-                _ctypes_accel.c_double, _ctypes_accel.c_double, _ctypes_accel.c_double,
-                _ctypes_accel.c_double, _ctypes_accel.c_double, _ctypes_accel.c_double, _P_d
-            ]
-            _GB_ACCEL.gb_phase_build_f64.restype = _ctypes_accel.c_double
-            _GB_ACCEL_FUNCS["phase_build"] = _GB_ACCEL.gb_phase_build_f64
-        except Exception:
-            pass
-        try:
-            _GB_ACCEL.gb_accumulate_f32.argtypes = [_P_f, _P_f, _ctypes_accel.c_size_t, _ctypes_accel.c_float]
-            _GB_ACCEL.gb_accumulate_f32.restype = None
-            _GB_ACCEL_FUNCS["accumulate"] = _GB_ACCEL.gb_accumulate_f32
-        except Exception:
-            pass
-        try:
-            _GB_ACCEL.gb_ot_div_f64.argtypes = [_P_d, _P_d, _ctypes_accel.c_size_t, _ctypes_accel.c_int, _ctypes_accel.c_double, _P_d]
-            _GB_ACCEL.gb_ot_div_f64.restype = None
-            _GB_ACCEL_FUNCS["ot_div"] = _GB_ACCEL.gb_ot_div_f64
-        except Exception:
-            pass
-        try:
-            _GB_ACCEL.gb_meum_space_f64.argtypes = [_ctypes_accel.c_size_t, _ctypes_accel.c_size_t, _ctypes_accel.c_double, _P_d, _P_d, _P_d, _P_d]
-            _GB_ACCEL.gb_meum_space_f64.restype = None
-            _GB_ACCEL_FUNCS["meum_space"] = _GB_ACCEL.gb_meum_space_f64
-            _GB_ACCEL.gb_ot_apply_f64.argtypes = [_P_d, _P_d, _ctypes_accel.c_size_t, _ctypes_accel.c_int, _ctypes_accel.c_int, _ctypes_accel.c_double, _P_d]
-            _GB_ACCEL.gb_ot_apply_f64.restype = None
-            _GB_ACCEL_FUNCS["ot_apply"] = _GB_ACCEL.gb_ot_apply_f64
-            _GB_ACCEL.gb_meum_trig_f64.argtypes = [_P_d, _ctypes_accel.c_size_t, _ctypes_accel.c_int, _P_d]
-            _GB_ACCEL.gb_meum_trig_f64.restype = None
-            _GB_ACCEL_FUNCS["meum_trig"] = _GB_ACCEL.gb_meum_trig_f64
-        except Exception:
-            pass
-except Exception:
-    _GB_ACCEL = None
-    _GB_ACCEL_FUNCS = {}
-
-try:
-    import videogame_engine as _vge
-except Exception:
-    _vge = None  # optional companion — video-game generator
-
-try:
-    from universal_field import (canonical_field as _universal_field, projection as _universal_projection,
-                                self_procedure as _universal_self_procedure,
-                                correspondence_manifest as _universal_correspondence,
-                                PROJECTION_TYPES as UNIVERSAL_PROJECTION_TYPES)
-except Exception:
-    _universal_field = _universal_projection = _universal_self_procedure = _universal_correspondence = None
-    UNIVERSAL_PROJECTION_TYPES = ()
-
-# POWER_V3_MEUM_CORE — canonical Meum spatial-dynamic constant.
-# The root and hot derived values come from meum_constants.py, which stores a
-# 100+ digit decimal reference plus exact IEEE-754 binary64 hex constants. This
-# prevents module-to-module drift from independently truncated decimal literals.
-MEUM_CONSTANT = MEUM  # backwards-compatible alias used throughout the codebase
-
-
-def _safe_json(obj):
-    """Deep-copy JSON-ish structures for snapshots/provenance; never raise."""
-    try:
-        return copy.deepcopy(obj)
-    except Exception:
-        try:
-            return json.loads(json.dumps(obj, default=str))
-        except Exception:
-            return None
-
-
-def identity_unit(*key_parts) -> float:
-    """Deterministic fraction in [0,1) from arbitrary identity parts (name,
-    field, index, ...). Same canonical-hash approach as CommutativePairSpace's
-    signature: given identity in, one full-entropy scalar out, with no RNG
-    and no small-period modulus wrap. Use this instead of `i % small_int`
-    anywhere a per-instrument/per-item default needs to be unique-looking
-    without literally repeating every N items.
-    """
-    key = "|".join(str(p) for p in key_parts).encode("utf-8")
-    h = hashlib.blake2b(key, digest_size=8).digest()
-    return int.from_bytes(h, "big") / 18446744073709551616.0
-
-
-# Major Meum powers/inverse/normalization are hardcoded in meum_constants.py
-# from high-precision evaluation. Only project-specific composites live here.
-MEUM_OVER_1_5 = MEUM / 1.5
-MEUM_TWO_POW_OVER_SQ = MEUM_TWO_POW / MEUM_SQ
-# Full target hearing / synthesis window (user V1). Content above Nyquist is
-# clamped per sample-rate; prefer SR >= 96000 for true 27.5 kHz headroom.
-AUDIBLE_LO_HZ = 5.2
-AUDIBLE_HI_HZ = 27500.0
-TARGET_SAMPLE_RATE = 96000
-# Optional runtime override: GROOVEBOX_SAMPLE_RATE=48000 (mobile) or 96000 (desktop)
-try:
-    import os as _os_sr
-    _sr_env = int(float(_os_sr.environ.get("GROOVEBOX_SAMPLE_RATE", "0") or 0))
-    if _sr_env >= 22050:
-        TARGET_SAMPLE_RATE = int(_sr_env)
-except Exception:
-    pass
-DEFAULT_SAMPLE_RATE = 48000  # practical default; export/render may lift to TARGET
-
-def positive_bpm(value, fallback=120.0):
-    """Return a finite, strictly positive BPM; invalid/zero input uses an explicit fallback."""
-    try:
-        bpm = float(value)
-    except Exception:
-        return float(fallback)
-    if not math.isfinite(bpm) or bpm <= 0.0:
-        return float(fallback)
-    return bpm
-
-def audible_hz(freq, sample_rate=None):
-    """Clamp frequency into the audible design window and below ~0.45·Nyquist."""
-    try:
-        f = float(freq)
-    except Exception:
-        f = AUDIBLE_LO_HZ
-    if not math.isfinite(f):
-        f = AUDIBLE_LO_HZ
-    hi = AUDIBLE_HI_HZ
-    if sample_rate is not None:
-        try:
-            sr = float(sample_rate)
-            if sr > 1.0:
-                hi = min(hi, sr * 0.75)
-        except Exception:
-            pass
-    return float(max(AUDIBLE_LO_HZ, min(hi, f)))
-
-# Frequently used integer powers: M^0 ... M^35.
-# Folded so instrument-index-driven frequency scaling stays bounded instead of
-# compounding without limit: MEUM ** i grew from 1x at index 0 to ~560x by
-# index 35 (see conversation notes), pushing every higher-indexed instrument
-# further and further up in pitch. Wrapping the exponent into a symmetric
-# 12-slot window (-6..+5, one "octave" of Meum-steps) keeps the same per-index
-# color/identity but centers it around the base frequency instead of climbing.
-MEUM_POWERS_36 = _MEUM_POWERS_36_CANON  # imported high-precision-rounded table
-# HARDCODE_UNISON_2026: fixed, instrument-index-derived tables that replace
-# the old runtime Nyquist/frequency-based partial cap and the random-per-voice
-# phase offset. Both are pure functions of the instrument's slot in the
-# roster (like MEUM_POWERS_36 above) — never of sample_rate or the live
-# fundamental — so every voice's harmonic budget and phase anchor are fixed,
-# reproducible, and, most importantly, chosen so adjacent instrument slots
-# share compatible partial counts and evenly-spaced phase anchors instead of
-# landing at independent random points. That's what makes the ensemble blend
-# into one continuous mass instead of reading as N separate oscillators.
-INSTRUMENT_PARTIAL_CAP_48 = tuple(7 + (i % 6) for i in range(48))
-INSTRUMENT_PHASE_LOCK_48 = tuple((2.0 * math.pi * i) / 48.0 for i in range(48))
-
-MEUM_IDENTITY_LHS = (MEUM_MINUS_1 * MEUM) + (MEUM_MINUS_1 * MEUM_INV)
-MEUM_IDENTITY_RHS = MEUM_TWO_POW_OVER_SQ - MEUM
-MEUM_IDENTITY_RESIDUAL = MEUM_IDENTITY_LHS - MEUM_IDENTITY_RHS
-# PHI / irrational reference constants are centralized in meum_constants.py.
-
-# ---------------------------------------------------------------------------
-# MEUM SPATIAL PRIMITIVES — compact x/y/z computational forms
-# ---------------------------------------------------------------------------
-def meum_spatial_potential(x, y, z, q=1.0, epsilon=1e-9):
-    """Direct bounded field-potential form: Φ = q / sqrt(x²+y²+z²).
-
-    This is a computational geometric potential, not a claim of physical
-    equivalence to Coulomb/QFT normalization.  It is deliberately finite.
-    """
-    r = math.sqrt(float(x)*float(x) + float(y)*float(y) + float(z)*float(z))
-    return float(q) / max(float(epsilon), r)
-
-
-def meum_bounded_wave_xyz(x, y, z, lx=1.0, ly=1.0, lz=1.0, n=1, m=1, k=1):
-    """Bounded standing-wave form over x/y/z spatial limits."""
-    return (
-        math.sin(float(n) * math.pi * float(x) / max(float(lx), 1e-9))
-        * math.sin(float(m) * math.pi * float(y) / max(float(ly), 1e-9))
-        * math.sin(float(k) * math.pi * float(z) / max(float(lz), 1e-9))
-    )
-
-
-def meum_state_transition(values, geometry_weight=0.5):
-    """Nearest-neighbor Meum state transition in one rendered dimension."""
-    a = np.asarray(values, dtype=np.float64).ravel()
-    if a.size < 2:
-        return a.astype(np.float32)
-    w = float(np.clip(geometry_weight, 0.0, 1.0))
-    left = np.roll(a, 1)
-    right = np.roll(a, -1)
-    neigh = 0.5 * (left + right)
-    out = (1.0 - w) * a + w * neigh
-    out[0] = a[0]
-    out[-1] = a[-1]
-    return out.astype(np.float32)
-
-
-# ---------------------------------------------------------------------------
-# EQUATION OF REALITY — EQR reality-tensor (book p.78 LaTeX, faithful).
-#
-# Book isn / isn⁻¹ (p.38, p.43):
-#   isn(θ)  = 2·sin(θ/2)
-#   isn⁻¹(x) = 2·arcsin(clamp(x/2, −1, 1))
-#
-# Three levels per step (P structure, E energy/direction, D determination):
-#   All three sums run n = 0 … k (book p.78):
-#   P = Σ_{n=0}^{k} isn⁻¹( (isn(d_n)+isn(t))/2 ) / k
-#   E = Σ_{n=0}^{k} isn(θ_n)/d_n / k
-#   D = Σ_{n=0}^{k} isn⁻¹( isn(θ_n)·E/(I·P) ) / k
-#   Z = P·E + D
-# with I = 134964356 ± 1 (finite infinity, book p.79).
-#
-# Application (this engine): the single z-value at the origin for the harmonic
-# context of the wave at time t is mixed as a *contribution harmonic* into the
-# contextual audio, time-centered at the origin.  No scale-normalization /
-# equalizer stage.  Effect mix is capped at 50%.
-# ---------------------------------------------------------------------------
-EQR_FINITE_INFINITY = 134964356.0
-
-def eqr_isn(x):
-    """Meum-normalized odd sinusoid; OT mode is an equivalent execution route."""
-    x = float(x)
-    if OP_THEORY_ENABLED:
-        a = ot_equiv_sin(x)
-        b = ot_equiv_sin(x * MEUM)
-        return ot_equiv_add(ot_equiv_mul(a, MEUM_NORM),
-                            ot_equiv_mul(b, 1.0 - MEUM_NORM))
-    a = math.sin(x)
-    b = math.sin(x * MEUM)
-    return a * MEUM_NORM + b * (1.0 - MEUM_NORM)
-
-
-def eqr_ics(x):
-    """Meum-normalized even cosinusoid; OT mode is an equivalent execution route."""
-    x = float(x)
-    if OP_THEORY_ENABLED:
-        a = ot_equiv_cos(x)
-        b = ot_equiv_cos(x * MEUM)
-        return ot_equiv_add(ot_equiv_mul(a, MEUM_NORM),
-                            ot_equiv_mul(b, 1.0 - MEUM_NORM))
-    a = math.cos(x)
-    b = math.cos(x * MEUM)
-    return a * MEUM_NORM + b * (1.0 - MEUM_NORM)
-
-
-def _native_meum_trig_vec(x, mode):
-    """Contiguous native Meum/book trig; None means use authoritative NumPy fallback."""
-    fn = _GB_ACCEL_FUNCS.get("meum_trig") if isinstance(_GB_ACCEL_FUNCS, dict) else None
-    a = np.ascontiguousarray(np.asarray(x, dtype=np.float64))
-    if fn is None or a.size < 64:
-        return None
-    out = np.empty_like(a)
-    try:
-        fn(a.ctypes.data_as(_P_d), _ctypes_accel.c_size_t(a.size),
-           _ctypes_accel.c_int(int(mode)), out.ctypes.data_as(_P_d))
-        return out
-    except Exception:
-        return None
-
-def isn_vec(x):
-    """Vectorized Meum-normalized odd sinusoid; native OT/Meum path is default when available."""
-    x = np.asarray(x, dtype=np.float64)
-    out = _native_meum_trig_vec(x, 0)
-    if out is None:
-        out = np.sin(x) * MEUM_NORM + np.sin(x * MEUM) * (1.0 - MEUM_NORM)
-    return np.asarray(out, dtype=np.float32)
-
-def ics_vec(x):
-    """Vectorized Meum-normalized even cosinusoid; native OT/Meum path is default when available."""
-    x = np.asarray(x, dtype=np.float64)
-    out = _native_meum_trig_vec(x, 1)
-    if out is None:
-        out = np.cos(x) * MEUM_NORM + np.cos(x * MEUM) * (1.0 - MEUM_NORM)
-    return np.asarray(out, dtype=np.float32)
-
-
-def ot_sin_vec_equiv(x):
-    """Conventional sin semantics through the book isn identity when OT is enabled.
-
-    For contiguous arrays this uses the native book-isn kernel:
-        sin(x) = isn(2x) / 2,  isn(t)=2*sin(t/2).
-    Scalar/small inputs stay on libm/NumPy because crossing the native ABI would
-    cost more than the arithmetic.  Numeric meaning is conventional sine; this
-    is an execution-route optimization, not a retuning of geometry or DSP.
-    """
-    a = np.asarray(x, dtype=np.float64)
-    if a.ndim == 0:
-        return math.sin(float(a))
-    if OP_THEORY_ENABLED:
-        doubled = np.ascontiguousarray(a * 2.0)
-        out = _native_meum_trig_vec(doubled, 2)
-        if out is not None:
-            out *= 0.5
-            return out
-    return np.sin(a)
-
-
-def ot_cos_vec_equiv(x):
-    """Conventional cos semantics through the book ics identity when profitable.
-
-    cos(x) = ics(2x) / 2,  ics(t)=2*cos(t/2).
-    See :func:`ot_sin_vec_equiv` for the scalar/ABI policy.
-    """
-    a = np.asarray(x, dtype=np.float64)
-    if a.ndim == 0:
-        return math.cos(float(a))
-    if OP_THEORY_ENABLED:
-        doubled = np.ascontiguousarray(a * 2.0)
-        out = _native_meum_trig_vec(doubled, 3)
-        if out is not None:
-            out *= 0.5
-            return out
-    return np.cos(a)
-
-
-def isn_scalar(x):
-    return eqr_isn(x)
-
-
-def ics_scalar(x):
-    return eqr_ics(x)
-
-
-def _eqr_invert_odd(f, y, lo=-math.pi / 2.0, hi=math.pi / 2.0, iters=24):
-    """Deterministic bisection inverse of eqr_isn (radians)."""
-    y = float(y)
-    a, b = float(lo), float(hi)
-    fa, fb = f(a) - y, f(b) - y
-    if fa * fb > 0:
-        for _ in range(8):
-            a *= 1.25
-            b *= 1.25
-            fa, fb = f(a) - y, f(b) - y
-            if fa * fb <= 0:
-                break
-    if fa * fb > 0:
-        return 0.0
-    x = (a + b) * 0.5
-    for _ in range(iters):
-        fx = f(x) - y
-        if (fa < 0) != (fx < 0):
-            b = x
-        else:
-            a = x
-            fa = fx
-        x = (a + b) * 0.5
-    return float(x)
-
-
-def eqr_isn_inv(y):
-    """isn⁻¹ — inverse of the Meum-normalized odd sinusoid blend."""
-    y = float(y)
-    limit = float(eqr_isn(math.pi / 2.0))
-    if abs(y) > limit:
-        y = math.copysign(limit, y)
-    return _eqr_invert_odd(eqr_isn, y)
-
-
-def book_isn(x):
-    """Book isn (p.38/43), routed through the OT equivalence kernel when on."""
-    if OP_THEORY_ENABLED:
-        return ot_book_isn(x)
-    return 2.0 * math.sin(0.5 * float(x))
-
-
-def book_isn_inv(y):
-    """Book isn⁻¹(x), with identical output in OT and normal modes."""
-    if OP_THEORY_ENABLED:
-        return ot_book_isn_inv(y)
-    a = max(-1.0, min(1.0, 0.5 * float(y)))
-    return 2.0 * math.asin(a)
-
-
-def book_isn_vec(x):
-    x = np.asarray(x, dtype=np.float64)
-    out = _native_meum_trig_vec(x, 2)
-    return out if out is not None else (2.0 * ot_sin_vec_equiv(0.5 * x)).astype(np.float64)
-
-
-def book_ics(x):
-    if OP_THEORY_ENABLED:
-        return ot_book_ics(x)
-    return 2.0 * math.cos(0.5 * float(x))
-
-
-def book_ics_inv(y):
-    if OP_THEORY_ENABLED:
-        return ot_book_ics_inv(y)
-    a = max(-1.0, min(1.0, 0.5 * float(y)))
-    return 2.0 * math.acos(a)
-
-
-def eqr_tensor_step(sample, neighbours, t=0.0):
-    """Book p.78 reality tensor (exact discrete sum, n = 0 … k).
-
-        P = Σ_{n=0}^{k} isn⁻¹( (isn(d_n)+isn(t))/2 ) / k
-        E = Σ_{n=0}^{k} isn(θ_n)/d_n / k
-        D = Σ_{n=0}^{k} isn⁻¹( isn(θ_n)·E / (I·P) ) / k
-        Z = P·E + D
-
-    Prefer eqr_tensor_audio() for 1D/2D audio — same identities, no O(k) loop.
-    """
-    s = float(sample)
-    t = float(t)
-    pts = [float(v) for v in (neighbours or [])]
-    if not pts:
-        pts = [s]
-    k = max(1, len(pts) - 1)
-    _I = EQR_FINITE_INFINITY
-    sum_p = 0.0
-    sum_e = 0.0
-    for v in pts:
-        dn = abs(v - s) + 1e-9
-        sum_p += book_isn_inv((book_isn(dn) + book_isn(t)) * 0.5)
-        sum_e += book_isn(v) / dn
-    P = sum_p / float(k)
-    E = sum_e / float(k)
-    D = 0.0
-    if abs(P) > 1e-12:
-        acc = 0.0
-        for v in pts:
-            acc += book_isn_inv(book_isn(v) * E / (_I * P))
-        D = acc / float(k)
-    Z = P * E + D
-    return float(P), float(E), float(D), float(Z)
-
-
-def eqr_tensor_audio(sample, d_char, theta_char, t=0.0):
-    """Closed-form audio reduction of the book sums (no neighbour loop).
-
-    For a continuous 1D/2D wave the discrete sum Σ_{n=0}^{k} (·)/k collapses
-    to the single characteristic pair (d̄, θ̄) of the local context:
-
-        d̄  = characteristic distance (local MAD / RMS of the window)
-        θ̄  = characteristic amplitude (the sample, or local mean)
-
-    Then each sum is one term (k cancels with the single representative):
-
-        P = isn⁻¹( (isn(d̄)+isn(t))/2 )
-        E = isn(θ̄) / d̄
-        D = isn⁻¹( isn(θ̄)·E / (I·P) )
-        Z = P·E + D
-
-    Same identities as the book; O(1) per sample after one sliding-window pass.
-    """
-    d = abs(float(d_char)) + 1e-9
-    th = float(theta_char)
-    tt = float(t)
-    _I = EQR_FINITE_INFINITY
-    P = book_isn_inv((book_isn(d) + book_isn(tt)) * 0.5)
-    E = book_isn(th) / d
-    D = 0.0
-    if abs(P) > 1e-12:
-        D = book_isn_inv(book_isn(th) * E / (_I * P))
-    Z = P * E + D
-    return float(P), float(E), float(D), float(Z)
-
-# ---------------------------------------------------------------------------
-# OPERATOR THEORY — the book's alternative arithmetic ("Further Abstract
-# Conclusions and Operator Theory", p.49-50).  Gated by a large master toggle
-# (default OFF: every canonical path is numerically untouched).  When enabled,
-# the DSP pathway's final master transform and the game logic's numeric
-# transforms re-encode every scalar through these rules:
-#
-#   1)  +/- are directionally biased operators: adding two negatives produces
-#       further negatives; subtracting a positive from a negative adds its
-#       value back toward/through zero (= ot_add / ot_sub).
-#   2)  A product keeps its hand: negative·negative = negative, positive·positive
-#       = positive, mixed signs = indeterminate (imaginary), taken on the
-#       negative branch (= ot_prod).
-#   3)  Signed powers/roots are ambiguous only when the hands differ; same-hand
-#       powers resolve to the magnitude and its own orientation (= ot_pow).
-#   a)  (-1)/(-x) = -1/X ; (+1)/(+x) = 1/X ; mixed signs → proper sign (±)X/1
-#       with the net absolute (continued-2^x style) (= ot_div).
-#   b)  Multiplying a graph by (±)1 flips one side's orientation.
-#   c)  0·0 = 1 and 0/0 = 1 (fixes the factorial-0 hole) (= ot_prod / ot_div).
-#   d)  The imaginary unit simply alternates +1/−1 across powers (= ot_i_phase).
-#   e)  For scalar addition/subtraction, the operands step through the
-#       enclosing integer band of their magnitude: |v| ∈ (0,1] hops at 1,
-#       (1,2] at 2, (2,3] at 3, >3 folds back to 1 (= ot_add band hop).
-#   f)  Dividing a number by a divisor in absolute (0,2) re-expresses it in the
-#       "higher-value" numeric field (refined once by the Meum residue).
-# ---------------------------------------------------------------------------
-OP_THEORY_ENABLED = True  # default ON — nested dynamics active at launch
-MATH_SYMBOLS_ENABLED = True  # display-only; OFF reveals ordinary base-10 without changing OT
-
-
-def set_operator_theory(enabled):
-    global OP_THEORY_ENABLED
-    OP_THEORY_ENABLED = bool(enabled)
-
-
-def operator_theory_enabled():
-    return OP_THEORY_ENABLED
-
-
-def ot_band(x):
-    ax = math.fabs(float(x))
-    if ax <= 1.0:
-        return 1.0
-    if ax <= 2.0:
-        return 2.0
-    if ax <= 3.0:
-        return 3.0
-    return 1.0
-
-
-def ot_add(n, v):
-    n = float(n)
-    v = float(v)
-    s = n + v
-    b = ot_band(v) if math.fabs(v) >= math.fabs(n) else ot_band(n)
-    if s >= 0.0:
-        return s + b * 0.5
-    return s - b * 0.5
-
-
-def ot_sub(n, v):
-    n = float(n)
-    v = float(v)
-    if n < 0.0 and v > 0.0:
-        return n + v
-    return ot_add(n, -v)
-
-
-def ot_prod(a, b):
-    a = float(a)
-    b = float(b)
-    if a == 0.0 and b == 0.0:
-        return 1.0
-    if a == 0.0 or b == 0.0:
-        return 0.0
-    mag = math.fabs(a * b)
-    an = a < 0.0
-    bn = b < 0.0
-    if an and bn:
-        return -mag
-    if not (an or bn):
-        return mag
-    return -mag
-
-
-def ot_pow(b, e):
-    b = float(b)
-    e = float(e)
-    r = math.pow(math.fabs(b), math.fabs(e))
-    same_hand = (b >= 0.0) == (e >= 0.0)
-    return r if same_hand else -r
-
-
-def _division_zero_result(a, policy="zero", equation_result=None):
-    """Resolve an intentional zero denominator without hidden epsilon/clamping.
-
-    Policies are chosen by the owning operation, not globally:
-      zero       -> 0
-      one        -> 1
-      inf        -> signed infinity
-      numerator  -> n / carry the numerator
-      equation   -> an explicitly supplied x/y-equivalent solved value
-
-    This keeps divide-by-zero semantics visible and useful while preventing
-    accidental ZeroDivisionError in realtime/audio/control paths.
-    """
-    try:
-        a = float(a)
-    except Exception:
-        a = 0.0
-    pol = str(policy or "zero").strip().lower()
-    if pol in {"one", "1", "unity"}:
-        return 1.0
-    if pol in {"inf", "infinity", "∞"}:
-        return math.copysign(math.inf, a if a != 0.0 else 1.0)
-    if pol in {"numerator", "n", "carry"}:
-        return a
-    if pol in {"equation", "solved", "x/y"}:
-        try:
-            return float(equation_result)
-        except Exception:
-            return a
-    return 0.0
-
-def safe_divide(a, b, *, zero_policy="zero", equation_result=None):
-    """Context-selectable divide with exact nonzero division and explicit zero policy."""
-    a = float(a); b = float(b)
-    if b == 0.0:
-        return _division_zero_result(a, zero_policy, equation_result)
-    return a / b
-
-
-def ot_div(a, b):
-    a = float(a)
-    b = float(b)
-    if a == 0.0 and b == 0.0:
-        return 1.0
-    ab = math.fabs(b)
-    if ab == 0.0:
-        return _division_zero_result(a, "inf")
-    if a == 0.0:
-        return 0.0
-    mag = math.fabs(a) / ab
-    sign = -1.0 if a < 0.0 else 1.0
-    return sign * mag
-
-
-def ot_i_phase(x, k):
-    x = float(x)
-    return x * (-1.0 if int(k) % 2 == 0 else 1.0)
-
-
-# ---------------------------------------------------------------------------
-# OPERATOR-THEORY EQUIVALENCE KERNEL
-#
-# The OT layer is an execution/representation path, not a second audible
-# instrument.  The book's operators are allowed to describe the operation,
-# while this compatibility kernel preserves the canonical scalar result.
-# This is important for DSP: enabling OT must not silently retune a project.
-# The legacy ot_* functions remain available to explicit OT scripts, but the
-# shared engine uses these equivalence-preserving primitives.
-# ---------------------------------------------------------------------------
-
-def ot_equiv_add(a, b):
-    return float(a) + float(b)
-
-
-def ot_equiv_sub(a, b):
-    return float(a) - float(b)
-
-
-def ot_equiv_mul(a, b):
-    return float(a) * float(b)
-
-
-def ot_equiv_div(a, b):
-    a = float(a)
-    b = float(b)
-    return safe_divide(a, b, zero_policy="zero")
-
-
-def ot_equiv_pow(b, e):
-    return math.pow(float(b), float(e))
-
-
-def ot_equiv_root(x, n=2.0):
-    x = float(x)
-    n = float(n)
-    if n == 0.0:
-        return 0.0
-    if x < 0.0 and abs(n % 2.0) == 1.0:
-        return -math.pow(abs(x), 1.0 / n)
-    if x < 0.0:
-        return math.nan
-    return math.pow(x, 1.0 / n)
-
-
-def ot_equiv_i_pow(k):
-    # The book's imaginary-number convention used by the series layer: the
-    # orientation alternates each integer power.  It is deliberately kept as
-    # an internal symbolic phase marker and never changes the real audio value.
-    return 1.0 if int(k) % 2 == 0 else -1.0
-
-
-def ot_book_isn(x):
-    # Canonical book form: isn(theta) = 2 sin(theta/2). OT-equivalent sin.
-    return ot_equiv_mul(2.0, ot_equiv_sin(ot_equiv_mul(0.5, float(x))))
-
-
-def ot_book_isn_inv(y):
-    # Exact inverse of the canonical book form on its real principal domain.
-    a = max(-1.0, min(1.0, ot_equiv_mul(0.5, float(y))))
-    return ot_equiv_mul(2.0, ot_equiv_asin(a))
-
-
-def ot_book_ics(x):
-    # Isosceles/cosine counterpart, represented through the same OT arithmetic.
-    return ot_equiv_mul(2.0, ot_equiv_cos(ot_equiv_mul(0.5, float(x))))
-
-
-def ot_book_ics_inv(y):
-    a = max(-1.0, min(1.0, ot_equiv_mul(0.5, float(y))))
-    return ot_equiv_mul(2.0, ot_equiv_acos(a))
-
-
-# ---------------------------------------------------------------------------
-# OT-EQUIVALENT transcendental functions
-#
-# Same contract as ot_equiv_add/mul/…: when Operator Theory is ON these are
-# the execution route, but the numeric result is identical to the ordinary
-# math.* function.  That lets CPU / event paths prefer the OT call graph
-# without retuning a project (matches isn / arcisn / EQR policy).
-# ---------------------------------------------------------------------------
-
-def ot_equiv_sin(x):
-    return math.sin(float(x))
-
-
-def ot_equiv_cos(x):
-    return math.cos(float(x))
-
-
-def ot_equiv_tan(x):
-    return math.tan(float(x))
-
-
-def ot_equiv_asin(x):
-    return math.asin(max(-1.0, min(1.0, float(x))))
-
-
-def ot_equiv_acos(x):
-    return math.acos(max(-1.0, min(1.0, float(x))))
-
-
-def ot_equiv_atan(x):
-    return math.atan(float(x))
-
-
-def ot_equiv_atan2(y, x):
-    return math.atan2(float(y), float(x))
-
-
-def ot_equiv_sinh(x):
-    return math.sinh(float(x))
-
-
-def ot_equiv_cosh(x):
-    return math.cosh(float(x))
-
-
-def ot_equiv_tanh(x):
-    return math.tanh(float(x))
-
-
-def ot_equiv_sqrt(x):
-    x = float(x)
-    if x < 0.0:
-        return math.nan
-    return math.sqrt(x)
-
-
-def ot_equiv_exp(x):
-    return math.exp(float(x))
-
-
-def ot_equiv_log(x):
-    x = float(x)
-    if x <= 0.0:
-        return math.nan
-    return math.log(x)
-
-
-def ot_equiv_log2(x):
-    x = float(x)
-    if x <= 0.0:
-        return math.nan
-    return math.log2(x)
-
-
-def ot_equiv_log10(x):
-    x = float(x)
-    if x <= 0.0:
-        return math.nan
-    return math.log10(x)
-
-
-def ot_equiv_fabs(x):
-    return math.fabs(float(x))
-
-
-def ot_equiv_floor(x):
-    return float(math.floor(float(x)))
-
-
-def ot_equiv_ceil(x):
-    return float(math.ceil(float(x)))
-
-
-def ot_equiv_hypot(a, b):
-    return math.hypot(float(a), float(b))
-
-
-# ---------------------------------------------------------------------------
-# DUAL MATH MODE — project math can route through the OT execution layer.
-# OT mode is intentionally semantics-preserving for canonical DSP paths.
-# Explicit ot_* script functions still expose the book's alternate symbolic
-# rules when a user asks for those rules directly.
-# ---------------------------------------------------------------------------
-
-def math_add(a, b):
-    """Composition add — OT uses book ot_add (numeric significance on sums).
-
-    isn/ics/EQR still use ot_equiv_* so the oscillator identity stays stable.
-    Playlist algorithms, FX drives, and seed folds that call math_* get real
-    OT arithmetic when the toggle is on.
-    """
-    if OP_THEORY_ENABLED:
-        return ot_add(a, b)
-    return float(a) + float(b)
-
-
-def math_sub(a, b):
-    """Composition sub — OT uses book ot_sub."""
-    if OP_THEORY_ENABLED:
-        return ot_sub(a, b)
-    return float(a) - float(b)
-
-
-def math_mul(a, b):
-    """Composition product — OT uses book ot_prod (signed product rules).
-
-    This is where OT changes the *music*: gains, drives, and ratio folds that
-    multiply through math_mul inherit OT significance.  Ordinary * when off.
-    """
-    if OP_THEORY_ENABLED:
-        return ot_prod(a, b)
-    return float(a) * float(b)
-
-
-def math_div(a, b):
-    """Composition division — OT uses book ot_div (0/0→1 rule)."""
-    if OP_THEORY_ENABLED:
-        return ot_div(a, b)
-    return safe_divide(a, b, zero_policy="zero")
-
-
-def math_pow(b, e):
-    """Composition power — OT uses book ot_pow (same-hand / opposite-hand)."""
-    if OP_THEORY_ENABLED:
-        return ot_pow(b, e)
-    return math.pow(float(b), float(e))
-
-
-def math_scale(x, gain):
-    """Scale without soft saturation; OT uses book ot_prod for gain significance."""
-    if OP_THEORY_ENABLED:
-        return ot_prod(x, gain)
-    return float(x) * float(gain)
-
-# ---------------------------------------------------------------------------
-# ESKI BOOK FRACTAL SETS (Scientific Theories and Inventions, p.26)
-#
-# Unlike isn / ics / sin / cos (and their inverses), which keep a fixed
-# audible formula and only change *execution route* under OT, these fractal
-# sets keep the **same algebraic expression** in both modes.  What changes
-# under Operator Theory is the *nature of the arithmetic itself* (book OT
-# product / power / root / add rules from p.48) — the expression text is
-# never rewritten.
-#
-#   Without OT: ordinary IEEE + * ** sqrt
-#   With OT:    ot_add / ot_prod / ot_pow / ot_div on the identical form
-#
-# Table (book):
-#   Divergent Space Set  Y = x·c + c
-#   Wormhole Set         Y = x^c + x
-#   Wormhill Set         Y = x + c
-#   Worms Set            Y = c · √x
-#   Star Set             Y = c^x
-#   Starburst Set        Y = √c · x
-#
-# Prevalence in video/game: sequential numeric inputs + playlist / step
-# algorithms select which set is most active; the fractal *object* remains
-# the same schema sampled per instrument slot.
-# ---------------------------------------------------------------------------
-
-ESKI_FRACTAL_SET_NAMES = (
-    "divergent_space",  # Y = xc + c
-    "wormhole",         # Y = x^c + x
-    "wormhill",         # Y = x + c
-    "worms",            # Y = c * root(x)
-    "star",             # Y = c^x
-    "starburst",        # Y = root(c) * x
-)
-
-
-def _fractal_add(a, b):
-    """Addition: OT → book ot_add (directional bias); else ordinary +."""
-    if OP_THEORY_ENABLED:
-        return ot_add(a, b)
-    return float(a) + float(b)
-
-
-def _fractal_mul(a, b):
-    """Product: OT → book ot_prod (signed product rules); else ordinary *."""
-    if OP_THEORY_ENABLED:
-        return ot_prod(a, b)
-    return float(a) * float(b)
-
-
-def _fractal_pow(base, exp):
-    """Power: OT → book ot_pow (same-hand / opposite-hand); else |b|^|e| sign rules via math.pow on abs with sign."""
-    if OP_THEORY_ENABLED:
-        return ot_pow(base, exp)
-    try:
-        return math.pow(float(base), float(exp))
-    except Exception:
-        # Domain guard for negative base / fractional exp
-        b = float(base)
-        e = float(exp)
-        if b < 0.0:
-            return -math.pow(abs(b), e) if e == int(e) and int(e) % 2 else float("nan")
-        return math.pow(max(b, 0.0), e)
-
-
-def _fractal_root(x, n=2.0):
-    """Root: OT uses ot_pow with 1/n under book rules; else ordinary root."""
-    x = float(x)
-    n = float(n) if float(n) != 0.0 else 2.0
-    if OP_THEORY_ENABLED:
-        return ot_pow(max(x, 0.0) if x < 0 else x, 1.0 / n)
-    if x < 0.0 and abs(n - 2.0) < 1e-12:
-        return float("nan")
-    try:
-        return math.pow(max(x, 0.0), 1.0 / n) if x < 0 else math.pow(x, 1.0 / n)
-    except Exception:
-        return float("nan")
-
-
-def eski_fractal_eval(set_name, x, c):
-    """Evaluate one book fractal set at (x, c) — expression never rewritten.
-
-    OT toggle selects arithmetic nature only.  Returns a finite float (nan
-    coerced to 0 for graphing stability in the frame path).
-    """
-    name = (set_name or "wormhill").lower().strip().replace(" ", "_")
-    x = float(x)
-    c = float(c)
-    try:
-        if name in ("divergent_space", "divergent", "divergent_space_set"):
-            # Y = x*c + c
-            y = _fractal_add(_fractal_mul(x, c), c)
-        elif name in ("wormhole", "wormhole_set"):
-            # Y = x^c + x
-            y = _fractal_add(_fractal_pow(x, c), x)
-        elif name in ("wormhill", "wormhill_set"):
-            # Y = x + c
-            y = _fractal_add(x, c)
-        elif name in ("worms", "worms_set"):
-            # Y = c * root(x)
-            y = _fractal_mul(c, _fractal_root(max(x, 0.0), 2.0))
-        elif name in ("star", "star_set"):
-            # Y = c^x
-            y = _fractal_pow(c, x)
-        elif name in ("starburst", "starburst_set"):
-            # Y = root(c) * x
-            y = _fractal_mul(_fractal_root(max(c, 0.0), 2.0), x)
-        else:
-            y = _fractal_add(x, c)
-    except Exception:
-        y = 0.0
-    if not math.isfinite(y):
-        y = 0.0
-    # Soft bound for graphing (does not change the expression — display only)
-    if abs(y) > 1e6:
-        y = math.copysign(1e6, y)
-    return float(y)
-
-
-def eski_fractal_pick(seed_key, sequential_nums=None, playlist_hash=0):
-    """Pick which book set is most prevalent from numeric / playlist geometry.
-
-    Prevalence driver (most → least): sequential numeric inputs → playlist /
-    step-algorithm fingerprint → raw seed.  Returns a set name from
-    ESKI_FRACTAL_SET_NAMES.
-    """
-    seq = list(sequential_nums or []) or [float(seed_key or 0)]
-    mean = sum(abs(float(v)) for v in seq) / max(1, len(seq))
-    fold = abs(float(seq[0]) * MEUM) % 1.0 if seq else 0.0
-    # Mix playlist / algo identity so composition pathways change the set
-    h = int(seed_key or 0) ^ int(playlist_hash or 0) & 0x7FFFFFFF
-    h ^= int(fold * 1000) & 0xFFFF
-    h ^= int(mean * 100) & 0xFFFF
-    return ESKI_FRACTAL_SET_NAMES[h % len(ESKI_FRACTAL_SET_NAMES)]
-
-
-def eski_fractal_field_sample(set_name, u, v, c, t=0.0):
-    """2D graphing sample: treat (u,v) as complex-ish indices into the set.
-
-    Book: Y for all directional axis values with alternate dimensions
-    cross-factored (X) and complex distance from solution point (C).
-    Here u ~ real, v ~ imag contribution folded into x = u + MEUM*v*sin(t).
-    """
-    x = float(u) + MEUM * float(v) * math.sin(float(t) * MEUM_INV + float(c))
-    return eski_fractal_eval(set_name, x, c)
-
-
-# Hard cap on z-iterations per node (user request / graphing stability).
-ESKI_FRACTAL_MAX_ITER = 12
-
-
-def compositional_xyz(seed, sequential_nums=None, t=0.0, slot=0):
-    """Shared compositional X,Y,Z from seed + sequential numerics.
-
-    Why shared: video, game, and music lattices should sample the *same*
-    spatial identity for a given composition so fractal nodes, instrument
-    objects, and pitch residues stay cross-correlated.  OT does not rewrite
-    these coordinates; it only changes arithmetic when they are later
-    combined under fractal / ratio ops.
-    """
-    seq = list(sequential_nums or []) or [float(seed or 0.0)]
-    s = float(seed or 0.0)
-    t = float(t)
-    i = int(slot) & 0x7FFF
-    # Deterministic axes from sequential geometry + slot
-    x = ((seq[0] if seq else s) * MEUM_INV + i * PHI_INV + t * 0.01) % 2.0 - 1.0
-    y = ((seq[1] if len(seq) > 1 else s * MEUM) * MEUM_INV + i * MEUM + t * 0.013) % 2.0 - 1.0
-    z = ((seq[2] if len(seq) > 2 else s * PHI) * MEUM_INV + i * 0.07 + t * 0.008) % 2.0 - 1.0
-    if OP_THEORY_ENABLED:
-        # OT combination of axes (expression: x' = x+y*z style via book ops)
-        try:
-            x = _fractal_add(x, _fractal_mul(y, 0.05))
-            y = _fractal_add(y, _fractal_mul(z, 0.05))
-            z = _fractal_add(z, _fractal_mul(x, 0.03))
-        except Exception:
-            pass
-    return float(x), float(y), float(z)
-
-
-def eski_fractal_iterate_z(set_name, x, y, z0, c, max_iter=None):
-    """Iterate fractal z-values at a node — **max 12 iterations**.
-
-    Each step applies the book set expression to a mix of (x, y, z_n) without
-    rewriting the equation.  Returns (z_list, n_done, escaped) where z_list
-    has length ≤ 12.  Escape when |z| exceeds a bound (graphing only).
-    """
-    max_iter = int(max_iter if max_iter is not None else ESKI_FRACTAL_MAX_ITER)
-    max_iter = max(1, min(12, max_iter))  # hard ceiling of 12
-    z = float(z0)
-    c = float(c)
-    x, y = float(x), float(y)
-    zs = []
-    escaped = False
-    for n in range(max_iter):
-        # Fold 3D into the 1D book variable: ξ = x + MEUM·y + z (same expression input)
-        xi = _fractal_add(_fractal_add(x, _fractal_mul(MEUM, y)), z)
-        z = eski_fractal_eval(set_name, xi, c)
-        zs.append(z)
-        if abs(z) > 8.0:
-            escaped = True
-            break
-    return zs, len(zs), escaped
-
-
-def instrument_geometry_mode(slot, phase, xyz, flags=None, fractal_set=None):
-    """Blend / switch instrument modes from geometry at phase-points.
-
-    Three engines (music, video, game) call this so each instrument object
-    follows the composition as closely as possible:
-
-      * phase   — voice phase0 + time (phase-point on the circle)
-      * xyz     — compositional_xyz for this slot (shared spatial identity)
-      * flags   — engine mask (randomizer / phase_lock / goava / …)
-      * fractal_set — active book set name (optional)
-
-    Returns weights dict summing ~1.0:
-      lattice   — instrument_lattice / canonical object draw (default dominant)
-      book_set  — book fractal field influence
-      phase_lock — lock-ring / phase-ribbon emphasis
-      scatter   — randomizer spread emphasis
-      goava     — goava portal/glyph emphasis
-
-    Switch vs blend: near phase-points (phase mod τ close to 0 or π) weights
-    snap harder (switch); between phase-points they interpolate (blend).
-    """
-    flags = dict(flags or {})
-    x, y, z = xyz if xyz and len(xyz) >= 3 else (0.0, 0.0, 0.0)
-    ph = float(phase) % math.tau
-    # Distance to nearest phase-point (0 or π)
-    d0 = min(abs(ph), abs(ph - math.tau))
-    dpi = abs(ph - math.pi)
-    near = min(d0, dpi) / math.pi  # 0 at point, 1 at farthest mid
-    snap = 1.0 - near  # 1 at phase-point → switch; 0 mid → soft blend
-    # Geometry residue from position
-    geo = (abs(x) + abs(y) + abs(z)) / 3.0
-    geo = max(0.0, min(1.0, geo))
-    w = {
-        "lattice": 0.45 + 0.25 * (1.0 - geo),
-        "book_set": 0.20 + 0.20 * geo,
-        "phase_lock": 0.08 * (1.5 if flags.get("phase_lock") else 0.4),
-        "scatter": 0.08 * (1.5 if flags.get("randomizer") else 0.4),
-        "goava": 0.08 * (1.6 if flags.get("goava") else 0.3),
-    }
-    # At phase-points, boost lattice or book_set by slot parity (switch)
-    if snap > 0.65:
-        if int(slot) % 2 == 0:
-            w["lattice"] += 0.20 * snap
-        else:
-            w["book_set"] += 0.20 * snap
-    else:
-        # Mid-arc blend: mix lattice/book by xyz.z
-        w["lattice"] = w["lattice"] * (1.0 - 0.3 * near) + w["book_set"] * 0.15 * near
-    # Normalize
-    s = sum(w.values()) or 1.0
-    for k in w:
-        w[k] = float(w[k] / s)
-    w["snap"] = float(snap)
-    w["near_phase_point"] = bool(snap > 0.65)
-    w["fractal_set"] = fractal_set or ""
-    w["slot"] = int(slot)
-    return w
-
-
-def math_sin(x):
-    """sin — OT route is numeric-identical to math.sin."""
-    if OP_THEORY_ENABLED:
-        return ot_equiv_sin(x)
-    return math.sin(float(x))
-
-
-def math_cos(x):
-    if OP_THEORY_ENABLED:
-        return ot_equiv_cos(x)
-    return math.cos(float(x))
-
-
-def math_tan(x):
-    if OP_THEORY_ENABLED:
-        return ot_equiv_tan(x)
-    return math.tan(float(x))
-
-
-def math_asin(x):
-    if OP_THEORY_ENABLED:
-        return ot_equiv_asin(x)
-    return math.asin(max(-1.0, min(1.0, float(x))))
-
-
-def math_acos(x):
-    if OP_THEORY_ENABLED:
-        return ot_equiv_acos(x)
-    return math.acos(max(-1.0, min(1.0, float(x))))
-
-
-def math_atan(x):
-    if OP_THEORY_ENABLED:
-        return ot_equiv_atan(x)
-    return math.atan(float(x))
-
-
-def math_atan2(y, x):
-    if OP_THEORY_ENABLED:
-        return ot_equiv_atan2(y, x)
-    return math.atan2(float(y), float(x))
-
-
-def math_sinh(x):
-    if OP_THEORY_ENABLED:
-        return ot_equiv_sinh(x)
-    return math.sinh(float(x))
-
-
-def math_cosh(x):
-    if OP_THEORY_ENABLED:
-        return ot_equiv_cosh(x)
-    return math.cosh(float(x))
-
-
-def math_tanh(x):
-    if OP_THEORY_ENABLED:
-        return ot_equiv_tanh(x)
-    return math.tanh(float(x))
-
-
-def math_sqrt(x):
-    if OP_THEORY_ENABLED:
-        return ot_equiv_sqrt(x)
-    x = float(x)
-    return math.sqrt(x) if x >= 0.0 else math.nan
-
-
-def math_exp(x):
-    if OP_THEORY_ENABLED:
-        return ot_equiv_exp(x)
-    return math.exp(float(x))
-
-
-def math_log(x):
-    if OP_THEORY_ENABLED:
-        return ot_equiv_log(x)
-    x = float(x)
-    return math.log(x) if x > 0.0 else math.nan
-
-
-def math_log2(x):
-    if OP_THEORY_ENABLED:
-        return ot_equiv_log2(x)
-    x = float(x)
-    return math.log2(x) if x > 0.0 else math.nan
-
-
-def math_log10(x):
-    if OP_THEORY_ENABLED:
-        return ot_equiv_log10(x)
-    x = float(x)
-    return math.log10(x) if x > 0.0 else math.nan
-
-
-# ---------------------------------------------------------------------------
-# VIDEO / GAME trig via isn · ics · arcisn · arcics (Operator Theory ON)
-#
-# book:  isn(θ) = 2 sin(θ/2)  ⇒  sin(θ) = isn(2θ)/2
-#        ics(θ) = 2 cos(θ/2)  ⇒  cos(θ) = ics(2θ)/2
-#        isn⁻¹(y) = 2 arcsin(y/2)  ⇒  arcsin(y) = isn⁻¹(2y)/2
-#        ics⁻¹(y) = 2 arccos(y/2)  ⇒  arccos(y) = ics⁻¹(2y)/2
-# When OT is ON these call graphs run through the isn/ics family while remaining
-# numerically identical to math.sin/cos/asin/acos (equivalence kernel).
-# When OT is OFF they are plain math.* for zero overhead.
-# ---------------------------------------------------------------------------
-
-def ot_sin_via_isn(x):
-    return ot_equiv_mul(0.5, ot_book_isn(ot_equiv_mul(2.0, float(x))))
-
-
-def ot_cos_via_ics(x):
-    return ot_equiv_mul(0.5, ot_book_ics(ot_equiv_mul(2.0, float(x))))
-
-
-def ot_asin_via_arcisn(y):
-    y = max(-1.0, min(1.0, float(y)))
-    return ot_equiv_mul(0.5, ot_book_isn_inv(ot_equiv_mul(2.0, y)))
-
-
-def ot_acos_via_arcics(y):
-    y = max(-1.0, min(1.0, float(y)))
-    return ot_equiv_mul(0.5, ot_book_ics_inv(ot_equiv_mul(2.0, y)))
-
-
-def ot_tan_via_isn_ics(x):
-    c = ot_cos_via_ics(x)
-    if abs(c) < 1e-18:
-        return math.copysign(1e18, ot_sin_via_isn(x))
-    return ot_equiv_div(ot_sin_via_isn(x), c)
-
-
-def vg_sin(x):
-    """Video/game sine: isn-route under Operator Theory, else math.sin."""
-    if OP_THEORY_ENABLED:
-        return ot_sin_via_isn(x)
-    return math.sin(float(x))
-
-
-def vg_cos(x):
-    if OP_THEORY_ENABLED:
-        return ot_cos_via_ics(x)
-    return math.cos(float(x))
-
-
-def vg_tan(x):
-    if OP_THEORY_ENABLED:
-        return ot_tan_via_isn_ics(x)
-    return math.tan(float(x))
-
-
-def vg_asin(x):
-    if OP_THEORY_ENABLED:
-        return ot_asin_via_arcisn(x)
-    return math.asin(max(-1.0, min(1.0, float(x))))
-
-
-def vg_acos(x):
-    if OP_THEORY_ENABLED:
-        return ot_acos_via_arcics(x)
-    return math.acos(max(-1.0, min(1.0, float(x))))
-
-
-def dual_map_array(arr, scalar_fn_ot, scalar_fn_normal=None):
-    """Apply OT or normal elementwise map to an array. No clipping."""
-    x = np.asarray(arr, dtype=np.float64)
-    if x.size == 0:
-        return x.astype(np.float32)
-    if OP_THEORY_ENABLED:
-        out = np.empty_like(x)
-        flat = x.ravel()
-        for i, v in enumerate(flat):
-            out.flat[i] = scalar_fn_ot(v)
-        return out.astype(np.float32)
-    if scalar_fn_normal is not None:
-        return np.asarray(scalar_fn_normal(x), dtype=np.float32)
-    return x.astype(np.float32)
-
-
-def no_sat(x):
-    """Identity passthrough — project policy: no soft-clip / no saturation."""
-    return x
-
-
-def ot_master_transform(x):
-    """Operator-theory re-encoding of the master bus (gated, default off).
-
-    Deterministic float64 whole-buffer map of the book's nested dynamics:
-    band-hop add (rule e), Meum residual refinement (rule f), negative-run
-    composition (rule 1).  NO peak normalization and NO soft-clip saturation.
-    """
-    x = np.asarray(x, dtype=np.float64)
-    n = x.size
-    if n == 0:
-        return x.astype(np.float32)
-    band = np.select(
-        [np.abs(x) <= 1.0, np.abs(x) <= 2.0, np.abs(x) <= 3.0],
-        [1.0, 2.0, 3.0],
-        default=1.0,
-    )
-    hop = np.sign(x) * band
-    out = x + 0.35 * hop
-    # Nested Meum residual factor (no unit-ceiling division).
-    out = out * (1.0 + MEUM_NORM * 0.15 / (1.0 + np.abs(out)))
-    prev = np.empty_like(out)
-    prev[0] = out[0]
-    prev[1:] = out[:-1]
-    negrun = (out < 0.0) & (prev < 0.0)
-    out = np.where(negrun, -np.abs(out) * 1.15, out)
-    return out.astype(np.float32)
-
-
-def book_isn_envelope_shape(u, decay):
-    """Smart isn()-based PKP envelope over one step (u∈[0,1] = one step).
-
-    Balanced to *fit a step*: starts/ends at 0 when the shape is cyclic or
-    two-step (no bleed into the next step); sustain mode holds through the
-    step end.  Peak is balanced to 1.0 so all decay settings share the same
-    crest.  Mean level is gently equalized so 0 / 0.5 / 1 do not jump in loudness.
-
-    decay ∈ [0,1]:
-      0.0 → single isn() cycle over the step (θ: 0→2π).
-      0.5 → 2-step: isn ramp [0→0.5], solid mid, isn release [1.5→2].
-      1.0 → isn cycle then flat sustain to the end of the step/row.
-    """
-    u = np.asarray(u, dtype=np.float64)
-    # Clamp into the open-closed step unit interval.
-    u = np.clip(u, 0.0, 1.0)
-    d = float(np.clip(decay, 0.0, 1.0))
-
-    def _isn_cycle(uu):
-        # Full book-isn cycle fits exactly in the step: 0 at edges, 1 at mid.
-        theta = uu * 2.0 * np.pi
-        return book_isn_vec(theta) * 0.5
-
-    def _two_step(uu):
-        # Phase domain p∈[0,2] mapped from the step — edges at 0.
-        p = uu * 2.0
-        env = np.zeros_like(p)
-        m = p <= 0.5
-        env[m] = book_isn_vec((p[m] / 0.5) * np.pi) * 0.5
-        m = (p > 0.5) & (p < 1.5)
-        env[m] = 1.0
-        m = p >= 1.5
-        env[m] = book_isn_vec(np.pi - ((p[m] - 1.5) / 0.5) * np.pi) * 0.5
-        return env
-
-    def _cycle_then_sustain(uu, cycle_frac=0.35):
-        # isn attack fits the first fraction of the step; solid hold to step end.
-        env = np.ones_like(uu)
-        m = uu <= cycle_frac
-        if np.any(m):
-            env[m] = _isn_cycle(uu[m] / max(cycle_frac, 1e-9))
-        return env
-
-    if d <= 1e-9:
-        shape = _isn_cycle(u)
-    elif d >= 1.0 - 1e-9:
-        shape = _cycle_then_sustain(u)
-    elif d <= 0.5:
-        a = d / 0.5
-        shape = (1.0 - a) * _isn_cycle(u) + a * _two_step(u)
-    else:
-        a = (d - 0.5) / 0.5
-        shape = (1.0 - a) * _two_step(u) + a * _cycle_then_sustain(u)
-
-    # Balance crest to 1.0 so every decay setting fits the same step height.
-    peak = float(np.max(shape)) if shape.size else 1.0
-    if peak > 1e-12:
-        shape = shape / peak
-    # Soft mean balance toward ~0.5 so step energy is comparable across morphs
-    # without a hard equalizer (scale only, no compression).
-    mean = float(np.mean(shape)) if shape.size else 0.5
-    if mean > 1e-12:
-        target_mean = 0.50
-        bal = target_mean / mean
-        # Keep peak ≤ 1 after balance.
-        bal = min(bal, 1.0 / max(float(np.max(shape)), 0.0))
-        shape = shape * bal
-    return shape.astype(np.float32)
-
-
-def build_master_follow_env(
-    master,
-    bpm,
-    sample_rate,
-    pkp_envelope,
-    row_length_samples=None,
-    step_length_samples=None,
-):
-    """PKP isn envelope shared by EQR, Fractallizer, and PKP master stages.
-
-    Balanced to fit a playlist STEP (16th / quarter-beat) by default so each
-    envelope cycle lands cleanly on the step grid with no phase drift:
-
-      0.0 = one isn() cycle per step
-      0.5 = 2-step isn ramp / solid / isn release, still one shape per step
-      1.0 = isn cycle then flat sustain; tile length grows toward row length
-
-    Tile length morphs with decay: step at 0 → row at 1 (when row is known),
-    so the envelope always *fits* an integer number of tiles in the buffer
-    as closely as possible.  No peak-norm.
-    """
-    m = np.asarray(master, dtype=np.float64).ravel()
-    n = m.size
-    if n == 0:
-        return np.ones(1, dtype=np.float32)
-
-    raw = float(pkp_envelope)
-    if raw > 1.0:
-        decay = max(0.0, min(1.0, raw / 1000.0))
-    else:
-        decay = max(0.0, min(1.0, raw))
-
-    # Canonical step = one 16th (quarter of a beat) from BPM/SR.
-    sr = max(float(sample_rate), 1.0)
-    bpm_f = float(bpm)
-    if not math.isfinite(bpm_f) or bpm_f <= 0.0:
-        bpm_f = 120.0
-    beat_samples = sr * (60.0 / bpm_f)
-    default_step = max(1, int(round(beat_samples / 4.0)))
-    step = max(1, int(step_length_samples)) if step_length_samples else default_step
-    row = max(step, int(row_length_samples)) if row_length_samples else max(step, default_step * 16)
-
-    # Decay morphs tile length: step (0) → row (1).  Always ≥ step.
-    tile = int(round(step + decay * (row - step)))
-    tile = max(step, min(n, tile))
-
-    # Snap tile so an integer number of tiles fills the buffer when possible
-    # (balance: no orphan partial cycle mid-buffer on exact grid lengths).
-    if tile > 1 and n >= tile:
-        n_tiles = max(1, int(round(n / float(tile))))
-        snapped = max(step, int(round(n / float(n_tiles))))
-        # Prefer snapped only when close to intended tile (keeps step/row intent).
-        if abs(snapped - tile) <= max(1, tile // 16):
-            tile = snapped
-
-    env = np.empty(n, dtype=np.float32)
-    pos = 0
-    while pos < n:
-        hi = min(n, pos + tile)
-        seg_n = hi - pos
-        # Full 0→1 span over this tile so the isn shape always completes
-        # (fits the step/tile even on a short final remainder).
-        u = np.linspace(0.0, 1.0, seg_n, endpoint=False)
-        env[pos:hi] = book_isn_envelope_shape(u, decay)
-        pos = hi
-    return env
-
-# ---------------------------------------------------------------------------
-# DETERMINISTIC COMPOSITION KERNEL
-# ---------------------------------------------------------------------------
-# Processor syntax is intentionally uniform:
-#   canonical_input -> labelled hash/residue -> bounded transform -> consumer.
-# A processor never uses process-global random state for identity-bearing data.
-# The cyclic residue is a group-theoretic index; the affine permutation below
-# is a bijection on Z/n whenever gcd(a,n)=1, which prevents duplicate indices
-# inside a finite orbit while still allowing every seed to choose a new orbit.
-def deterministic_u64(*parts):
-    """Return a platform-stable 64-bit digest for identity-bearing state."""
-    payload = "|".join(str(p) for p in parts).encode("utf-8")
-    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
-
-def cyclic_permutation(length, key):
-    """Return a non-repeating orbit of Z/n using p(i)=a*i+b (mod n)."""
-    n = max(1, int(length))
-    if n == 1:
-        return [0]
-    a = 1 + int(key) % (n - 1)
-    while math.gcd(a, n) != 1:
-        a = (a + 1) % n or 1
-    b = (int(key) >> 16) % n
-    return [(a * i + b) % n for i in range(n)]
-
-def group_orbit_index(index, order, seed, goava=False):
-    """Map an ordinal to a seed-stable cyclic-group residue."""
-    n = max(1, int(order))
-    if n == 1:
-        return 0
-    key = deterministic_u64("group-orbit", _safe_int_seed(seed), n, int(bool(goava)))
-    perm = cyclic_permutation(n, key)
-    return perm[int(index) % n]
-
-# UI design tokens derived from M (self-similar spacing / translucency)
-UI_OPACITY = max(1.0, min(0.0, MEUM_NORM * PHI))          # pane glass
-UI_RADIUS = max(4, int(round(3.0 * MEUM)))                    # corner radius
-UI_TICK_MS = max(48, int(round(1000.0 / (MEUM_TWO_POW * 5.0))))  # decor frame period (perf: fewer background paints)
-UI_DRIFT = MEUM_NORM * PHI_INV                                  # caption micro-wiggle scale
-PAINT_RATE_HZ = 2.395                                           # max single-cell stack rate
-PAINT_PERIOD_S = 1.0 / PAINT_RATE_HZ                            # ~0.418 s between stacks
-PAINT_INSTANCE_LIMIT = 8
-import numpy as np
-import math
-class DeterministicPanelManager:
-    """
-    Manages deterministic parameter overrides across multi-sequence channels
-    using invariant Meum constants and golden ratios.
-    """
-    def __init__(self, channels: int = 4) -> None:
-        self.channels = channels
-        self.MEUM_NORM = MEUM
-        self.MEUM_INV = MEUM_INV
-        self.PHI = PHI
-
-    def get_channel_overrides(self, channel_id: int, ctx: float) -> dict:
-        """Computes invariant-mapped parameter overrides for a given channel."""
-        return {
-            "gain": float(np.clip(self.MEUM_NORM * 0.5 + (self.PHI - 1.0) * ctx * channel_id, 0.0, 1.0)),
-            "modulation_skew": float(math.fmod(channel_id * self.PHI, 1.0)),
-            "phase_offset": float(math.tau * ((channel_id * self.MEUM_NORM * (self.PHI - 1.0)) % 1.0))
-        }
+            if c == ".":
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(self._color))
+                r = max(1.6, cell * 0.075)
+                painter.drawEllipse(QPointF(x + cell*0.12, self.height()*0.58), r, r)
+                x += cell * 0.32
+            else:
+                self._draw_glyph(painter, int(c), x, y, cell)
+                x += cell
 
 
 class DeterministicPanelOverride:
@@ -10854,12 +9313,14 @@ Video-only files are valid visual carriers and receive a silent carrier stream.
 
 PROJECT / PROGRAM FORMATS
   .MCC       canonical transparent Groovebox composition/project document
+  .MEUM      lossless Meum semantic-compression project container; exact reconstruction required
   .mgpr      legacy project input compatibility
   .MGproject .MGsynth .MGprofile .MG
              portable artifact identities/profiles/synths
   .zip       generated videogame/software package and reverse-engineering import
 
 MAIN EXPORT MENU
+  Project:     .MEUM (Meum semantic compression; import + export)
   Audio:       .wav .flac .mp3
   Video+Audio: .mp4 .webm .avi
   Video only:  .mp4 .webm .avi
@@ -23680,6 +22141,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.bake_compare_export_dialog
         )
         export_menu.addSeparator()
+        export_menu.addAction("🧮 Meum Compressed Project (.MEUM)").triggered.connect(
+            self.export_meum_compressed_dialog
+        )
+        export_menu.addAction("🧮 Import Meum Compressed Project (.MEUM)…").triggered.connect(
+            self.load_meum_compressed_dialog
+        )
+        export_menu.addSeparator()
         # Audio-only — canonical mixdown, three core formats (WAV reference,
         # FLAC lossless-RFC, MP3 universal). Exactly 3 audio options.
         export_menu.addAction("Audio only (.wav)").triggered.connect(lambda: self.export_mixdown_dialog("wav"))
@@ -29662,6 +28130,45 @@ class MathematiciansGrooveboxApp(QMainWindow):
             pass
 
 
+    def export_meum_compressed_dialog(self):
+        """Export an exact-reconstructing project snapshot as a .MEUM container."""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Meum Compressed Project", self._projects_dir(),
+            "Meum Compressed Project (*.MEUM);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            from meum_compression import save
+            final = save(path, self._project_snapshot())
+            QMessageBox.information(
+                self, "Meum Compression Exported",
+                f"Exact-reconstructing Meum semantic container written:\n{final}"
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "Meum compression export failed", str(e))
+
+    def load_meum_compressed_dialog(self):
+        """Import a .MEUM container and restore its exact canonical project document."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Meum Compressed Project", self._projects_dir(),
+            "Meum Compressed Project (*.MEUM *.meum);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            from meum_compression import load
+            data = load(path)
+            self._apply_project_snapshot(data)
+            self._current_project_path = path
+            try:
+                self._refresh_after_file_input(reason="meum_project_load")
+            except Exception:
+                pass
+            QMessageBox.information(self, "Meum Compression Imported", f"Loaded:\n{path}")
+        except Exception as e:
+            QMessageBox.warning(self, "Meum compression import failed", str(e))
+
     def export_project_json(self):
         """Export the unified project snapshot (same document as Save)."""
         path, _ = QFileDialog.getSaveFileName(self, "Export Project JSON", self._projects_dir(), "Mathematician's Groovebox Composition (*.MCC)")
@@ -30024,6 +28531,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
             low = path.lower()
             if low.endswith(".mgpr") and not os.path.isfile(path) and os.path.isfile(path + ".part"):
                 load_path = path + ".part"
+            if str(load_path).lower().endswith(".meum"):
+                from meum_compression import load
+                data = load(load_path)
+                self._apply_project_snapshot(data)
+                self._current_project_path = path
+                try:
+                    self._refresh_after_file_input(reason="meum_project_load")
+                except Exception:
+                    pass
+                if show_message:
+                    QMessageBox.information(self, "Loaded", f"Meum compressed project loaded:\n{path}")
+                return True
             if str(load_path).lower().endswith(".mcc"):
                 from mcc_integrity import select_verified
                 load_path, integrity_status = select_verified(load_path)
@@ -30052,7 +28571,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def load_project_dialog(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Load Mathematician's Groovebox Composition", self._projects_dir(),
-            "Mathematician's Groovebox Composition (*.MCC);;Legacy Groovebox Project (*.mgpr *.mgpr.part);;All files (*)",
+            "Mathematician's Groovebox Composition (*.MCC);;Meum Compressed Project (*.MEUM *.meum);;Legacy Groovebox Project (*.mgpr *.mgpr.part);;All files (*)",
         )
         if path:
             self.open_project_path(path)
