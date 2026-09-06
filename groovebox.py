@@ -1419,6 +1419,165 @@ MEUM_IDENTITY_RHS = MEUM_TWO_POW_OVER_SQ - MEUM
 MEUM_IDENTITY_RESIDUAL = MEUM_IDENTITY_LHS - MEUM_IDENTITY_RHS
 # PHI / irrational reference constants are centralized in meum_constants.py.
 
+
+
+# ---------------------------------------------------------------------------
+# Runtime trigonometric series kernels
+# ---------------------------------------------------------------------------
+# These are real module-level functions.  A previous generated build left the
+# same definitions embedded inside HELP_TEXT, which made calls such as
+# series_sin(...) fail with NameError at runtime.
+_SERIES_PI = 3.141592653589793238462643383279502884
+
+def _series_arr(x):
+    return np.asarray(x, dtype=np.float64)
+
+def _series_out(v):
+    a = np.asarray(v)
+    return float(a) if a.ndim == 0 else a
+
+def series_sin(x):
+    a = _series_arr(x)
+    a = np.remainder(a + _SERIES_PI, 2.0 * _SERIES_PI) - _SERIES_PI
+    a = np.where(a > _SERIES_PI/2.0, _SERIES_PI-a,
+                 np.where(a < -_SERIES_PI/2.0, -_SERIES_PI-a, a))
+    term = a.copy(); out = a.copy()
+    for n in range(1, 19):
+        term *= -(a*a) / ((2.0*n)*(2.0*n+1.0))
+        out += term
+    return _series_out(out)
+
+def series_cos(x):
+    a = _series_arr(x)
+    a = np.remainder(a + _SERIES_PI, 2.0 * _SERIES_PI) - _SERIES_PI
+    sign = np.where(np.abs(a) > _SERIES_PI/2.0, -1.0, 1.0)
+    a = np.where(a > _SERIES_PI/2.0, _SERIES_PI-a,
+                 np.where(a < -_SERIES_PI/2.0, -_SERIES_PI-a, a))
+    term = np.ones_like(a); out = term.copy()
+    for n in range(1, 19):
+        term *= -(a*a) / ((2.0*n-1.0)*(2.0*n))
+        out += term
+    return _series_out(sign*out)
+
+def series_tan(x):
+    c = np.asarray(series_cos(x), dtype=np.float64)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        out = np.asarray(series_sin(x), dtype=np.float64) / c
+    return _series_out(out)
+
+def series_asin(x):
+    x = _series_arr(x)
+    ax = np.abs(x)
+    invalid = ax > 1.0
+    reduced = ax > 0.5
+    a = np.where(reduced, np.sqrt(np.maximum(0.0, (1.0-ax)/2.0)), ax)
+    term = a.copy(); out = a.copy()
+    for n in range(1, 33):
+        term *= (a*a*(2.0*n-1.0)**2) / ((2.0*n)*(2.0*n+1.0))
+        out += term
+    out = np.where(reduced, _SERIES_PI/2.0 - 2.0*out, out)
+    out = np.copysign(out, x)
+    out = np.where(invalid, np.nan, out)
+    return _series_out(out)
+
+def series_acos(x):
+    x = _series_arr(x)
+    invalid = np.abs(x) > 1.0
+    a = 2.0*np.asarray(series_asin(np.sqrt(np.maximum(0.0, (1.0-np.abs(x))/2.0))))
+    out = np.where(x >= 0.0, a, _SERIES_PI-a)
+    out = np.where(invalid, np.nan, out)
+    return _series_out(out)
+
+def series_atan(x):
+    x = _series_arr(x)
+    ax = np.abs(x)
+    inv = ax > 1.0
+    a = np.where(inv, 1.0/np.where(ax == 0.0, 1.0, ax), ax)
+    a = a / (1.0 + np.sqrt(1.0+a*a))
+    term = a.copy(); out = a.copy()
+    for n in range(1, 33):
+        term *= -(a*a)
+        out += term/(2.0*n+1.0)
+    out *= 2.0
+    out = np.where(inv, _SERIES_PI/2.0-out, out)
+    out = np.copysign(out, x)
+    return _series_out(out)
+
+def series_atan2(y, x):
+    y, x = np.broadcast_arrays(_series_arr(y), _series_arr(x))
+    with np.errstate(divide='ignore', invalid='ignore'):
+        out = np.asarray(series_atan(y/x), dtype=np.float64)
+    out = np.where(x < 0.0, out + np.copysign(_SERIES_PI, y), out)
+    out = np.where(x == 0.0, np.copysign(_SERIES_PI/2.0, y), out)
+    out = np.where((y == 0.0) & (x >= 0.0), y, out)
+    out = np.where((y == 0.0) & (x < 0.0), np.copysign(_SERIES_PI, y), out)
+    return _series_out(out)
+
+def series_sinh(x):
+    x = _series_arr(x)
+    ax = np.abs(x)
+    scale = np.zeros(ax.shape, dtype=np.int32)
+    a = ax.copy()
+    for _ in range(12):
+        m = a > 0.5
+        a = np.where(m, a*0.5, a)
+        scale += m.astype(np.int32)
+    term = a.copy(); out = a.copy()
+    for n in range(1, 19):
+        term *= (a*a)/((2.0*n)*(2.0*n+1.0))
+        out += term
+    for k in range(12):
+        out = np.where(scale > k, 2.0*out*np.sqrt(1.0+out*out), out)
+    out = np.copysign(out, x)
+    return _series_out(out)
+
+def series_cosh(x):
+    s = np.asarray(series_sinh(_series_arr(x)/2.0), dtype=np.float64)
+    return _series_out(1.0 + 2.0*s*s)
+
+def series_tanh(x):
+    x = _series_arr(x)
+    s = np.asarray(series_sinh(x), dtype=np.float64)
+    c = np.asarray(series_cosh(x), dtype=np.float64)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        out = s/c
+    return _series_out(np.where(np.abs(x)>20.0, np.copysign(1.0,x), out))
+
+def series_sinc(x):
+    x = _series_arr(x)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        out = np.where(x == 0.0, 1.0, np.asarray(series_sin(_SERIES_PI*x))/(_SERIES_PI*x))
+    return _series_out(out)
+
+def series_book_isn(x):
+    # Author-selected chord-isn: 2*sin(x/2), evaluated through its series kernel.
+    return _series_out(2.0*np.asarray(series_sin(_series_arr(x)/2.0)))
+
+def series_book_isn_inverse(x):
+    return _series_out(2.0*np.asarray(series_asin(np.clip(_series_arr(x)/2.0, -1.0, 1.0))))
+
+def series_cyclic_isn(x):
+    # x^2/2! - x^4/4! + x^6/6! - ...
+    a = np.remainder(_series_arr(x)+_SERIES_PI, 2.0*_SERIES_PI)-_SERIES_PI
+    term = a*a/2.0; out = term.copy()
+    for n in range(2, 25):
+        term *= -(a*a)/((2.0*n-1.0)*(2.0*n))
+        out += term
+    return _series_out(out)
+
+# Public project aliases used by seed/domain evaluators.
+def isn(x):
+    return series_book_isn(x)
+
+def ics(x):
+    return series_book_isn_inverse(x)
+
+def isx(x):
+    return _series_out(1.0 - np.asarray(isn(x)))
+
+def isy(x):
+    return _series_out(1.0 - np.asarray(isn(_series_arr(x)-_SERIES_PI/2.0)))
+
 # ---------------------------------------------------------------------------
 # MEUM SPATIAL PRIMITIVES — compact x/y/z computational forms
 # ---------------------------------------------------------------------------
@@ -1435,9 +1594,9 @@ def meum_spatial_potential(x, y, z, q=1.0, epsilon=1e-9):
 def meum_bounded_wave_xyz(x, y, z, lx=1.0, ly=1.0, lz=1.0, n=1, m=1, k=1):
     """Bounded standing-wave form over x/y/z spatial limits."""
     return (
-        math.sin(float(n) * math.pi * float(x) / max(float(lx), 1e-9))
-        * math.sin(float(m) * math.pi * float(y) / max(float(ly), 1e-9))
-        * math.sin(float(k) * math.pi * float(z) / max(float(lz), 1e-9))
+        series_sin(float(n) * math.pi * float(x) / max(float(lx), 1e-9))
+        * series_sin(float(m) * math.pi * float(y) / max(float(ly), 1e-9))
+        * series_sin(float(k) * math.pi * float(z) / max(float(lz), 1e-9))
     )
 
 
@@ -1486,8 +1645,8 @@ def eqr_isn(x):
         b = ot_equiv_sin(x * MEUM)
         return ot_equiv_add(ot_equiv_mul(a, MEUM_NORM),
                             ot_equiv_mul(b, 1.0 - MEUM_NORM))
-    a = math.sin(x)
-    b = math.sin(x * MEUM)
+    a = series_sin(x)
+    b = series_sin(x * MEUM)
     return a * MEUM_NORM + b * (1.0 - MEUM_NORM)
 
 
@@ -1499,8 +1658,8 @@ def eqr_ics(x):
         b = ot_equiv_cos(x * MEUM)
         return ot_equiv_add(ot_equiv_mul(a, MEUM_NORM),
                             ot_equiv_mul(b, 1.0 - MEUM_NORM))
-    a = math.cos(x)
-    b = math.cos(x * MEUM)
+    a = series_cos(x)
+    b = series_cos(x * MEUM)
     return a * MEUM_NORM + b * (1.0 - MEUM_NORM)
 
 
@@ -1523,7 +1682,7 @@ def isn_vec(x):
     x = np.asarray(x, dtype=np.float64)
     out = _native_meum_trig_vec(x, 0)
     if out is None:
-        out = np.sin(x) * MEUM_NORM + np.sin(x * MEUM) * (1.0 - MEUM_NORM)
+        out = series_sin(x) * MEUM_NORM + series_sin(x * MEUM) * (1.0 - MEUM_NORM)
     return np.asarray(out, dtype=np.float32)
 
 def ics_vec(x):
@@ -1531,7 +1690,7 @@ def ics_vec(x):
     x = np.asarray(x, dtype=np.float64)
     out = _native_meum_trig_vec(x, 1)
     if out is None:
-        out = np.cos(x) * MEUM_NORM + np.cos(x * MEUM) * (1.0 - MEUM_NORM)
+        out = series_cos(x) * MEUM_NORM + series_cos(x * MEUM) * (1.0 - MEUM_NORM)
     return np.asarray(out, dtype=np.float32)
 
 
@@ -1546,14 +1705,14 @@ def ot_sin_vec_equiv(x):
     """
     a = np.asarray(x, dtype=np.float64)
     if a.ndim == 0:
-        return math.sin(float(a))
+        return series_sin(float(a))
     if OP_THEORY_ENABLED:
         doubled = np.ascontiguousarray(a * 2.0)
         out = _native_meum_trig_vec(doubled, 2)
         if out is not None:
             out *= 0.5
             return out
-    return np.sin(a)
+    return series_sin(a)
 
 
 def ot_cos_vec_equiv(x):
@@ -1564,14 +1723,14 @@ def ot_cos_vec_equiv(x):
     """
     a = np.asarray(x, dtype=np.float64)
     if a.ndim == 0:
-        return math.cos(float(a))
+        return series_cos(float(a))
     if OP_THEORY_ENABLED:
         doubled = np.ascontiguousarray(a * 2.0)
         out = _native_meum_trig_vec(doubled, 3)
         if out is not None:
             out *= 0.5
             return out
-    return np.cos(a)
+    return series_cos(a)
 
 
 def isn_scalar(x):
@@ -1621,7 +1780,7 @@ def book_isn(x):
     """Book isn (p.38/43), routed through the OT equivalence kernel when on."""
     if OP_THEORY_ENABLED:
         return ot_book_isn(x)
-    return 2.0 * math.sin(0.5 * float(x))
+    return 2.0 * series_sin(0.5 * float(x))
 
 
 def book_isn_inv(y):
@@ -1629,7 +1788,7 @@ def book_isn_inv(y):
     if OP_THEORY_ENABLED:
         return ot_book_isn_inv(y)
     a = max(-1.0, min(1.0, 0.5 * float(y)))
-    return 2.0 * math.asin(a)
+    return 2.0 * series_asin(a)
 
 
 def book_isn_vec(x):
@@ -1641,14 +1800,14 @@ def book_isn_vec(x):
 def book_ics(x):
     if OP_THEORY_ENABLED:
         return ot_book_ics(x)
-    return 2.0 * math.cos(0.5 * float(x))
+    return 2.0 * series_cos(0.5 * float(x))
 
 
 def book_ics_inv(y):
     if OP_THEORY_ENABLED:
         return ot_book_ics_inv(y)
     a = max(-1.0, min(1.0, 0.5 * float(y)))
-    return 2.0 * math.acos(a)
+    return 2.0 * series_acos(a)
 
 
 def eqr_tensor_step(sample, neighbours, t=0.0):
@@ -1951,43 +2110,43 @@ def ot_book_ics_inv(y):
 # ---------------------------------------------------------------------------
 
 def ot_equiv_sin(x):
-    return math.sin(float(x))
+    return series_sin(float(x))
 
 
 def ot_equiv_cos(x):
-    return math.cos(float(x))
+    return series_cos(float(x))
 
 
 def ot_equiv_tan(x):
-    return math.tan(float(x))
+    return series_tan(float(x))
 
 
 def ot_equiv_asin(x):
-    return math.asin(max(-1.0, min(1.0, float(x))))
+    return series_asin(max(-1.0, min(1.0, float(x))))
 
 
 def ot_equiv_acos(x):
-    return math.acos(max(-1.0, min(1.0, float(x))))
+    return series_acos(max(-1.0, min(1.0, float(x))))
 
 
 def ot_equiv_atan(x):
-    return math.atan(float(x))
+    return series_atan(float(x))
 
 
 def ot_equiv_atan2(y, x):
-    return math.atan2(float(y), float(x))
+    return series_atan2(float(y), float(x))
 
 
 def ot_equiv_sinh(x):
-    return math.sinh(float(x))
+    return series_sinh(float(x))
 
 
 def ot_equiv_cosh(x):
-    return math.cosh(float(x))
+    return series_cosh(float(x))
 
 
 def ot_equiv_tanh(x):
-    return math.tanh(float(x))
+    return series_tanh(float(x))
 
 
 def ot_equiv_sqrt(x):
@@ -2238,7 +2397,7 @@ def eski_fractal_field_sample(set_name, u, v, c, t=0.0):
     cross-factored (X) and complex distance from solution point (C).
     Here u ~ real, v ~ imag contribution folded into x = u + MEUM*v*sin(t).
     """
-    x = float(u) + MEUM * float(v) * math.sin(float(t) * MEUM_INV + float(c))
+    x = float(u) + MEUM * float(v) * series_sin(float(t) * MEUM_INV + float(c))
     return eski_fractal_eval(set_name, x, c)
 
 
@@ -2362,61 +2521,61 @@ def math_sin(x):
     """sin — OT route is numeric-identical to math.sin."""
     if OP_THEORY_ENABLED:
         return ot_equiv_sin(x)
-    return math.sin(float(x))
+    return series_sin(float(x))
 
 
 def math_cos(x):
     if OP_THEORY_ENABLED:
         return ot_equiv_cos(x)
-    return math.cos(float(x))
+    return series_cos(float(x))
 
 
 def math_tan(x):
     if OP_THEORY_ENABLED:
         return ot_equiv_tan(x)
-    return math.tan(float(x))
+    return series_tan(float(x))
 
 
 def math_asin(x):
     if OP_THEORY_ENABLED:
         return ot_equiv_asin(x)
-    return math.asin(max(-1.0, min(1.0, float(x))))
+    return series_asin(max(-1.0, min(1.0, float(x))))
 
 
 def math_acos(x):
     if OP_THEORY_ENABLED:
         return ot_equiv_acos(x)
-    return math.acos(max(-1.0, min(1.0, float(x))))
+    return series_acos(max(-1.0, min(1.0, float(x))))
 
 
 def math_atan(x):
     if OP_THEORY_ENABLED:
         return ot_equiv_atan(x)
-    return math.atan(float(x))
+    return series_atan(float(x))
 
 
 def math_atan2(y, x):
     if OP_THEORY_ENABLED:
         return ot_equiv_atan2(y, x)
-    return math.atan2(float(y), float(x))
+    return series_atan2(float(y), float(x))
 
 
 def math_sinh(x):
     if OP_THEORY_ENABLED:
         return ot_equiv_sinh(x)
-    return math.sinh(float(x))
+    return series_sinh(float(x))
 
 
 def math_cosh(x):
     if OP_THEORY_ENABLED:
         return ot_equiv_cosh(x)
-    return math.cosh(float(x))
+    return series_cosh(float(x))
 
 
 def math_tanh(x):
     if OP_THEORY_ENABLED:
         return ot_equiv_tanh(x)
-    return math.tanh(float(x))
+    return series_tanh(float(x))
 
 
 def math_sqrt(x):
@@ -2494,31 +2653,31 @@ def vg_sin(x):
     """Video/game sine: isn-route under Operator Theory, else math.sin."""
     if OP_THEORY_ENABLED:
         return ot_sin_via_isn(x)
-    return math.sin(float(x))
+    return series_sin(float(x))
 
 
 def vg_cos(x):
     if OP_THEORY_ENABLED:
         return ot_cos_via_ics(x)
-    return math.cos(float(x))
+    return series_cos(float(x))
 
 
 def vg_tan(x):
     if OP_THEORY_ENABLED:
         return ot_tan_via_isn_ics(x)
-    return math.tan(float(x))
+    return series_tan(float(x))
 
 
 def vg_asin(x):
     if OP_THEORY_ENABLED:
         return ot_asin_via_arcisn(x)
-    return math.asin(max(-1.0, min(1.0, float(x))))
+    return series_asin(max(-1.0, min(1.0, float(x))))
 
 
 def vg_acos(x):
     if OP_THEORY_ENABLED:
         return ot_acos_via_arcics(x)
-    return math.acos(max(-1.0, min(1.0, float(x))))
+    return series_acos(max(-1.0, min(1.0, float(x))))
 
 
 def dual_map_array(arr, scalar_fn_ot, scalar_fn_normal=None):
@@ -2833,7 +2992,7 @@ def _meum_phase_modulation(
         phase=phase_shift,
     )
 
-    pm = math.sin(
+    pm = series_sin(
         2.0 * math.pi * t * float(pm_rate)
         + float(phase_shift)
     )
@@ -2862,7 +3021,7 @@ def _meum_amplitude_modulation(
         phase=phase_shift,
     )
 
-    lfo = math.sin(
+    lfo = series_sin(
         2.0 * math.pi * t * float(am_rate)
         + float(phase_shift)
     )
@@ -2898,7 +3057,7 @@ def _meum_advance_phase(
         phase=phase_shift,
     )
 
-    fm = math.sin(
+    fm = series_sin(
         2.0 * math.pi * t * float(fm_rate)
         + float(phase_shift)
     )
@@ -2936,8 +3095,8 @@ def meum_spatial_operator_field(x, y, z):
     x, y, z = float(x), float(y), float(z)
     r = math.sqrt(max(0.0, x*x + y*y + z*z))
     potential = safe_divide(1.0, r, zero_policy="one")
-    wave = math.sin(math.pi*x) * math.sin(math.pi*y) * math.sin(math.pi*z)
-    state = (math.sin(2.0*math.pi*(x+1.0/3.0)) + math.sin(2.0*math.pi*(y+1.0/3.0)) + math.sin(2.0*math.pi*(z+1.0/3.0))) / 3.0
+    wave = series_sin(math.pi*x) * series_sin(math.pi*y) * series_sin(math.pi*z)
+    state = (series_sin(2.0*math.pi*(x+1.0/3.0)) + series_sin(2.0*math.pi*(y+1.0/3.0)) + series_sin(2.0*math.pi*(z+1.0/3.0))) / 3.0
     return float(_meum_handle_add(_meum_handle_add(0.34*potential, 0.33*wave), 0.33*state))
 
 def meum_spatial_audio_effect(signal, strength=0.025, phase=0.0):
@@ -2955,8 +3114,8 @@ def meum_phase_field(t, rate=1.0, phase=0.0):
     rate = float(rate)
     phase = float(phase)
 
-    a = math.sin(2.0 * math.pi * t * rate + phase)
-    b = math.sin(
+    a = series_sin(2.0 * math.pi * t * rate + phase)
+    b = series_sin(
         2.0 * math.pi * t * rate * MEUM_INV + phase * MEUM_NORM
     )
 
@@ -3148,7 +3307,7 @@ def meum_waveform_from_phase(phase, waveform="isn"):
         for i, v in enumerate(phase.ravel()):
             y = float(v)
             # ics range is roughly bounded; map phase fraction into that range.
-            y = max(-1.0, min(1.0, y if abs(y) <= 1.0 else math.cos(y)))
+            y = max(-1.0, min(1.0, y if abs(y) <= 1.0 else series_cos(y)))
             out.flat[i] = float(eqr_isn_inv(y))  # reuse odd inverter as phase-like map
         return out
     # Default: isn (Meum odd sinusoid) — also accepts "sine"/"sin" as aliases.
@@ -3246,7 +3405,7 @@ def meum_modulated_phase(
     # PM = direct phase displacement.
     pm = (
         float(pm_depth)
-        * math.sin(
+        * series_sin(
             2.0 * math.pi * float(t) * float(pm_rate)
             + float(phase_shift)
         )
@@ -3391,11 +3550,11 @@ class MeumModulatedOscillator:
         t = float(t)
         rate = float(rate)
 
-        a = math.sin(
+        a = series_sin(
             math.tau * t * rate
         )
 
-        b = math.sin(
+        b = series_sin(
             math.tau
             * t
             * rate
@@ -3420,7 +3579,7 @@ class MeumModulatedOscillator:
         AM changes amplitude only.
         """
 
-        lfo = math.sin(
+        lfo = series_sin(
             math.tau
             * t
             * self.am_rate
@@ -3454,7 +3613,7 @@ class MeumModulatedOscillator:
         The returned frequency is subsequently integrated into phase.
         """
 
-        lfo = math.sin(
+        lfo = series_sin(
             math.tau
             * t
             * self.fm_rate
@@ -3493,7 +3652,7 @@ class MeumModulatedOscillator:
         PM directly displaces oscillator phase.
         """
 
-        lfo = math.sin(
+        lfo = series_sin(
             math.tau
             * t
             * self.pm_rate
@@ -4104,12 +4263,12 @@ def _eval_coordinate_seed_script(raw, env):
         return vals, 'cartesian'
     if 'r' in assignments and 'theta' in assignments and 'phi' in assignments:
         r, th, ph = assignments['r'], assignments['theta'], assignments['phi']
-        return [r * math.sin(ph) * math.cos(th),
-                r * math.sin(ph) * math.sin(th),
-                r * math.cos(ph)], 'spherical'
+        return [r * series_sin(ph) * series_cos(th),
+                r * series_sin(ph) * series_sin(th),
+                r * series_cos(ph)], 'spherical'
     if 'r' in assignments and 'theta' in assignments:
         r, th = assignments['r'], assignments['theta']
-        return [r * math.cos(th), r * math.sin(th)], 'polar'
+        return [r * series_cos(th), r * series_sin(th)], 'polar'
     if 'x' in assignments:
         return [assignments['x']], 'cartesian'
     return None
@@ -4252,17 +4411,17 @@ def _seed_script_env(t_scalar=0.0, canonical_context=None):
 
     def polar(r, theta):
         r, theta = float(r), float(theta)
-        return (r * math.cos(theta), r * math.sin(theta))
+        return (r * series_cos(theta), r * series_sin(theta))
 
     def cylindrical(r, theta, z=0.0):
         r, theta, z = float(r), float(theta), float(z)
-        return (r * math.cos(theta), r * math.sin(theta), z)
+        return (r * series_cos(theta), r * series_sin(theta), z)
 
     def spherical(r, theta, phi):
         r, theta, phi = float(r), float(theta), float(phi)
-        return (r * math.sin(phi) * math.cos(theta),
-                r * math.sin(phi) * math.sin(theta),
-                r * math.cos(phi))
+        return (r * series_sin(phi) * series_cos(theta),
+                r * series_sin(phi) * series_sin(theta),
+                r * series_cos(phi))
 
     env = {
         "__builtins__": {},
@@ -4561,14 +4720,14 @@ def goava_get_note(number_assigned, step, numbers):
     for value in nums:
         if value != 0.0:
             total += (
-                1.0 + math.cos(
+                1.0 + series_cos(
                     1.0 + abs((math.pi / 2.0) * num)
                     + (math.pi / 2.0) * ((abs(value) + abs(num)) * step)
                 )
             ) / (len(nums) + abs(num - value))
         else:
             total += (
-                1.0 + math.cos(
+                1.0 + series_cos(
                     1.0 + step
                     + abs((math.pi / 2.0) * num)
                     + (math.pi / 2.0) * ((abs(value) + abs(num)) * step)
@@ -4665,8 +4824,8 @@ def entropy_draw_0_1(s_abs, s_frac, s_int, vo):
     """
     return float(np.clip(
         (float(s_frac)
-         + 0.37 * math.sin(float(s_abs) * MEUM_NORM + float(vo) * MEUM_INV)
-         + 0.29 * math.cos(float(s_int) * MEUM + float(vo))) % 1.0,
+         + 0.37 * series_sin(float(s_abs) * MEUM_NORM + float(vo) * MEUM_INV)
+         + 0.29 * series_cos(float(s_int) * MEUM + float(vo))) % 1.0,
         0.0, 1.0
     ))
 
@@ -4948,8 +5107,8 @@ def canonical_visual_instrument(slot, ctx, flags):
     }
     depth = 1.35 + 0.18 * _pow + 2.2 * (ch_seed - 0.25 * k5)
     yaw = float(math.fmod(i * PHI * MEUM_NORM + 0.6 * (ch_ph - ch_rnd), math.tau))
-    pitch = 0.12 * math.sin(i * MEUM + ch_euc * 1.3)
-    roll = 0.09 * math.cos(i * MEUM_INV + ch_ph)
+    pitch = 0.12 * series_sin(i * MEUM + ch_euc * 1.3)
+    roll = 0.09 * series_cos(i * MEUM_INV + ch_ph)
     pack = 0.62 + 0.60 * _pow * (1.0 + 0.8 * (ch_seed - 0.5 * k5))
     max_partial = int(INSTRUMENT_PARTIAL_CAP_48[i % 48])
     verts = int(4 + (max_partial % 6) + int(ch_euc * 6.0))
@@ -4964,11 +5123,11 @@ def canonical_visual_instrument(slot, ctx, flags):
     if fu:
         conson = 1.0
     else:
-        conson = 0.5 + 0.5 * math.cos(_ax * math.tau)
+        conson = 0.5 + 0.5 * series_cos(_ax * math.tau)
     depth = 0.96 + 0.72 * (1.0 - conson) + 0.18 * _pow
     # Calculated shading: brightness tracks the same meum phase envelope the
     # audio pass rings against, dimmed proportionally as a voice recedes.
-    shade = float(np.clip(0.35 + 0.55 * (0.5 + 0.5 * math.sin(_ax * math.tau)) * (0.5 + 0.5 * conson),
+    shade = float(np.clip(0.35 + 0.55 * (0.5 + 0.5 * series_sin(_ax * math.tau)) * (0.5 + 0.5 * conson),
                           0.05, 0.98))
     life = 0.30 + 0.70 * conson * (0.25 + 0.75 * ent)
     rad = (2.0 - depth) * (0.30 + 0.45 * pack)
@@ -4980,9 +5139,9 @@ def canonical_visual_instrument(slot, ctx, flags):
         "scale_axis": ch_seed, "hue_axis": ch_goa, "engines": n_eng,
         "depth": depth, "yaw": yaw, "pitch": pitch, "roll": roll,
         "pack": pack, "verts": verts, "hue": hue, "life": life, "shade": shade,
-        "x": float(math.cos(yaw) * rad * math.cos(pitch)),
-        "y": float(math.sin(pitch) * rad * 0.72),
-        "z": float(depth * (0.6 + 0.4 * math.sin(roll))),
+        "x": float(series_cos(yaw) * rad * series_cos(pitch)),
+        "y": float(series_sin(pitch) * rad * 0.72),
+        "z": float(depth * (0.6 + 0.4 * series_sin(roll))),
     }
 
 
@@ -6335,7 +6494,7 @@ class VisualOscilloscope(QFrame):
             for j,v in enumerate(vals):
                 a=math.tau*(j/max(1,len(vals))) + float(v)*math.tau*(MEUM_MINUS_1)
                 rr=rad*(0.25+0.75*float(v))
-                pts.append(QPointF(cx+math.cos(a)*rr, cy-math.sin(a)*rr))
+                pts.append(QPointF(cx+series_cos(a)*rr, cy-series_sin(a)*rr))
             if any(x in kind for x in ("graph","constellation","correspondence","map")):
                 for j,p0 in enumerate(pts):
                     for k in range(j+1,min(len(pts),j+3)):
@@ -6345,7 +6504,7 @@ class VisualOscilloscope(QFrame):
                 for j in range(max(2,len(vals)*3)):
                     x0=(j/max(1,len(vals)*3-1))*(w-1)
                     v=float(vals[j%len(vals)])
-                    y0=cy-math.sin(j*(MEUM_MINUS_1)+v*math.tau)*rad*(0.2+0.8*v)
+                    y0=cy-series_sin(j*(MEUM_MINUS_1)+v*math.tau)*rad*(0.2+0.8*v)
                     if j: painter.drawLine(prev,QPointF(x0,y0))
                     prev=QPointF(x0,y0)
             else:
@@ -6472,7 +6631,7 @@ class VisualOscilloscope(QFrame):
             sx = int(peak_i / 255.0 * (w - 1))
             sy = int(mid_y - float(self.wave_data[peak_i]) * amp)
             painter.setPen(QPen(QColor(255, 255, 230, 200), 1))
-            rad = 3.0 + 2.0 * math.sin(spark)
+            rad = 3.0 + 2.0 * series_sin(spark)
             painter.drawEllipse(QPointF(sx, sy), rad, rad)
 
         painter.setFont(QFont("Segoe UI", 7))
@@ -6623,7 +6782,7 @@ class SpectrumAnalyzer(QFrame):
             for j,v in enumerate(vals[::stride]):
                 a=math.tau*(j/max(1,len(vals[::stride]))) + v*(MEUM_MINUS_1)*math.tau
                 rr=r*(0.3+0.8*v)
-                pts.append(QPointF(cx+math.cos(a)*rr,cy+math.sin(a)*rr))
+                pts.append(QPointF(cx+series_cos(a)*rr,cy+series_sin(a)*rr))
             painter.setPen(QPen(QColor.fromHsv(int(self.seed_hue)%360,200,240),1.5))
             if any(x in kind for x in ("graph","constellation","correspondence","map")):
                 for j,p0 in enumerate(pts):
@@ -6669,10 +6828,10 @@ class SpectrumAnalyzer(QFrame):
                 r1 = r0 + mag * r_span
                 hue = int((i / max(n - 1, 1)) * 280 + self.mode * 25 + self.seed_hue) % 360
                 col = QColor.fromHsv(hue, 210, 40 + int(200 * mag))
-                x0 = cx + r0 * math.cos(ang)
-                y0 = cy + r0 * math.sin(ang)
-                x1 = cx + r1 * math.cos(ang)
-                y1 = cy + r1 * math.sin(ang)
+                x0 = cx + r0 * series_cos(ang)
+                y0 = cy + r0 * series_sin(ang)
+                x1 = cx + r1 * series_cos(ang)
+                y1 = cy + r1 * series_sin(ang)
                 painter.setPen(QPen(col, max(2, int(bar_w * 0.6))))
                 painter.drawLine(QPointF(x0, y0), QPointF(x1, y1))
             painter.setPen(QPen(QColor(80, 90, 110, 120), 1))
@@ -7606,7 +7765,7 @@ class VideoSynthEngine:
 
     def _project(self, x, y, z, w, h, fov=None):
         if fov is None:
-            fov = math.tan(math.radians(float(getattr(self, "_cam_fov_deg", 48.0))) * 0.5) * 2.0
+            fov = series_tan(math.radians(float(getattr(self, "_cam_fov_deg", 48.0))) * 0.5) * 2.0
         x, y, z = self._camera_transform(float(x), float(y), float(z))
         z = max(z, 0.5)
         inv = 1.0 / z
@@ -7705,7 +7864,7 @@ class VideoSynthEngine:
         # Radial + angular latent coordinates. Every term is tied to a real
         # composition quantity; there are no purely decorative random fields.
         r = np.sqrt(xn*xn + yn*yn)
-        a = np.arctan2(yn, xn)
+        a = series_atan2(yn, xn)
         f1 = ot_sin_vec_equiv(a * (3.0 + 5.0*b1) + r * (7.0 + 9.0*b2) + ph + atom_angle)
         f2 = ot_cos_vec_equiv(r * (11.0 + 8.0*centroid) - t*(0.07 + 0.13*e) + seed*0.0017)
         f3 = ot_sin_vec_equiv((xn*vg_cos(atom_phase) + yn*vg_sin(atom_phase)) * (8.0 + 12.0*b0) + ph*2.0)
@@ -8865,8 +9024,8 @@ class VideoSynthEngine:
                 yaw = live_phase + z_last * 0.08 * book_w
                 rad_orb = (0.25 + 0.35 * depth_o) * (0.85 + 0.3 * lat_w)
                 px, py, _ = self._project(
-                    math.cos(yaw) * rad_orb + sx * 0.1,
-                    math.sin(yaw * MEUM_INV) * rad_orb * 0.78 + sy * 0.1,
+                    series_cos(yaw) * rad_orb + sx * 0.1,
+                    series_sin(yaw * MEUM_INV) * rad_orb * 0.78 + sy * 0.1,
                     0.75 + 0.2 * depth_o + 0.1 * max(-1.0, min(1.0, z_last * 0.1)) * book_w + sz * 0.05,
                     w, h)
                 alpha = (0.5 + 0.5 * ent * (n_done / 12.0) * (0.4 if escaped else 1.0)) * boost
@@ -8884,8 +9043,8 @@ class VideoSynthEngine:
                 child_a = alpha * (0.35 + 0.25 * float(mode.get("scatter", 0))
                                    + 0.2 * float(mode.get("goava", 0)))
                 cx2, cy2, _ = self._project(
-                    math.cos(yaw * PHI) * (0.5 + 0.5 * depth_o),
-                    math.sin(yaw * MEUM) * (0.5 + 0.5 * depth_o) * 0.7,
+                    series_cos(yaw * PHI) * (0.5 + 0.5 * depth_o),
+                    series_sin(yaw * MEUM) * (0.5 + 0.5 * depth_o) * 0.7,
                     0.8 + 0.1 * depth_o, w, h)
                 col2 = self._hsv((hue_m + 60) % 360, 0.4, 0.35 + 0.3 * ent)
                 self._dot(img, cx2, cy2, col2, child_a, r=max(1, rad // 2))
@@ -9590,8 +9749,8 @@ class VideoSynthViewer(QFrame):
             for i, v in enumerate(seed_list[:12]):
                 ang = (i / max(len(seed_list[:12]), 1)) * math.tau + float(getattr(self.engine, "t", 0.0)) * 0.5
                 rr = min(self.width(), self.height()) * (0.5 + 0.5 * abs(v) / mx)
-                x = cx + math.cos(ang) * rr
-                y = cy + math.sin(ang * MEUM_INV) * rr * 0.5
+                x = cx + series_cos(ang) * rr
+                y = cy + series_sin(ang * MEUM_INV) * rr * 0.5
                 col = QColor.fromHsv(int(abs(v) * 0.5) % 360, 180, 230, 200)
                 painter.setPen(QPen(col, 2))
                 painter.drawEllipse(int(x - 2), int(y - 2), 4, 4)
@@ -10320,7 +10479,7 @@ class AsymmetryCorrection:
         right = sum(scalars[i] for i in range(1, len(scalars), 2))
         denom = max(left + right, 1e-9)
         lr = (left - right) / denom
-        temporal = math.sin(phase * MEUM_LOG2 + index * PHI_INV) * MEUM_NORM
+        temporal = series_sin(phase * MEUM_LOG2 + index * PHI_INV) * MEUM_NORM
         x = max(-max_s, min(max_s, -(lr * MEUM_NORM * 0.5 + temporal * UI_DRIFT)))
         top = sum(scalars[i] for i in range(len(scalars)//2))
         bottom = sum(scalars[i] for i in range(len(scalars)//2, len(scalars)))
@@ -10446,14 +10605,14 @@ class AdvancedDSPEngine:
             # Preset 1: Z-Pinch / Quantum Field Resonance (isn core)
             arg = sub_t * k2
             arg = np.minimum(np.maximum(arg, -1.5), 1.5)
-            pinched = isn_vec(phase * (1.0 + track_idx * 0.05)) * (1.0 + k1 * np.tan(arg))
+            pinched = isn_vec(phase * (1.0 + track_idx * 0.05)) * (1.0 + k1 * series_tan(arg))
             pinched_b = np.minimum(np.maximum(pinched * (0.5 + eqr), -0.99), 0.99)
-            resonance = np.arcsin(pinched_b)
+            resonance = series_asin(pinched_b)
             return resonance * k3 * (1.0 + k4 * isn_vec(sub_t * k5 * 10.0)) * (1.0 - k6)
 
         elif preset == 2:
             # Preset 2: Hyperbolic & Torus Phase-Space (isn/ics cores)
-            hyp = np.sinh(k1 * isn_vec(phase)) / (1.0 + np.cosh(k2 * ics_vec(phase * k3)))
+            hyp = series_sinh(k1 * isn_vec(phase)) / (1.0 + series_cosh(k2 * ics_vec(phase * k3)))
             torus_mod = ics_vec(phase * (1.0 + k4)) + 0.5 * isn_vec(phase * (2.0 + k5))
             return hyp * torus_mod * (1.0 + fractal * 3.0) * (1.0 - k6 * 0.2)
 
@@ -10752,7 +10911,7 @@ class ParametricMathBackground(QWidget):
     def _paint_wave(self, painter, index, width, height, scalars, phase):
         sf = scalars[index % len(scalars)]
         sf2 = scalars[(index * 7 + 3) % len(scalars)]
-        hue = (index / self.WAVE_COUNT + 0.12 * sf + 0.08 * math.sin(phase * 0.7 + index)) % 1.0
+        hue = (index / self.WAVE_COUNT + 0.12 * sf + 0.08 * series_sin(phase * 0.7 + index)) % 1.0
         # Sinewaves: MEUM× less transparent (more opaque) — alpha * M, capped
         wave_alpha = min(0.92, (0.58 + 0.28 * sf) * MEUM)
         painter.setPen(
@@ -10773,11 +10932,11 @@ class ParametricMathBackground(QWidget):
         freq = 1.2 + 4.5 * sf
         fm = 0.25 + 1.7 * sf2
         am = 0.15 + 0.65 * scalars[(index * 11 + 5) % len(scalars)]
-        vertical = height * 0.055 * math.sin(phase * (0.30 + sf) + index * 0.91)
+        vertical = height * 0.055 * series_sin(phase * (0.30 + sf) + index * 0.91)
         for px in range(0, max(2, width), 8):
             x = px / max(width, 1) + corr_x
-            carrier = math.sin((x * freq * math.tau) + phase * direction * (0.7 + sf))
-            mod = math.sin((x * fm * math.tau) + phase * (0.5 + sf2))
+            carrier = series_sin((x * freq * math.tau) + phase * direction * (0.7 + sf))
+            mod = series_sin((x * fm * math.tau) + phase * (0.5 + sf2))
             amp = (5.0 + 20.0 * sf) * (1.0 + am * mod)
             y = base_y + vertical + direction * amp * carrier
             if px == 0:
@@ -10795,15 +10954,15 @@ class ParametricMathBackground(QWidget):
         x = width * ((0.09 + index * 0.379) % 0.82) + width * corr_x
         base_y = height * ((0.12 + index * 0.613) % 0.76) + height * corr_y
         # Deliberately larger vertical travel for the animated text/glyph layer.
-        y = base_y + height * 0.15 * math.sin(phase * (0.35 + 0.8 * sf) + index * 1.17)
+        y = base_y + height * 0.15 * series_sin(phase * (0.35 + 0.8 * sf) + index * 1.17)
         radius = 8.0 + 22.0 * sf
         sides = 3 + (index % 6)
         points = []
         for j in range(sides):
             a = angle + math.tau * j / sides
-            wobble = 0.72 + 0.55 * math.sin(phase * (0.4 + sf) + j + index)
+            wobble = 0.72 + 0.55 * series_sin(phase * (0.4 + sf) + j + index)
             r = radius * wobble
-            points.append(QPointF(x + math.cos(a) * r, y + math.sin(a) * r))
+            points.append(QPointF(x + series_cos(a) * r, y + series_sin(a) * r))
         hue = (0.56 + 0.42 * sf + 0.19 * sf2 + index * 0.027) % 1.0
         painter.setBrush(QBrush(QColor.fromHsvF(hue, 0.78, 0.96, 0.34 + 0.24 * sf)))
         painter.setPen(QPen(QColor.fromHsvF((hue + 0.08 * sf2) % 1.0, 0.82, 0.98, 0.78 + 0.18 * sf), 1.4))
@@ -10812,7 +10971,7 @@ class ParametricMathBackground(QWidget):
             label = self._param_cache[1][index % len(self._param_cache[1])]
             text = f"{label[0][:8]} {label[1]:+.2f}"
             # Text follows a larger independent vertical orbit than the glyph.
-            text_y = y + radius + 8 + height * 0.09 * math.sin(phase * (0.28 + sf2) + index * 1.63)
+            text_y = y + radius + 8 + height * 0.09 * series_sin(phase * (0.28 + sf2) + index * 1.63)
             text_y = max(12.0, min(height - 3.0, text_y))
             painter.setPen(QPen(QColor.fromHsvF(hue, 0.72, 1.0, 0.92), 0.72))
             painter.setFont(QFont("Consolas", 7))
@@ -10853,9 +11012,9 @@ class ParametricMathBackground(QWidget):
             col, row = i % cols, i // cols
             x = margin + col * (cell_w + gap)
             y = margin + row * (cell_h + gap)
-            drift = 2.5 * math.sin(phase * 0.17 + i * MEUM_LOG2)
+            drift = 2.5 * series_sin(phase * 0.17 + i * MEUM_LOG2)
             rect = QRectF(x, y + drift, cell_w, cell_h)
-            alpha = 0.42 + 0.10 * math.sin(phase * 0.23 + i * PHI_INV)
+            alpha = 0.42 + 0.10 * series_sin(phase * 0.23 + i * PHI_INV)
             painter.setBrush(QBrush(QColor(12, 20, 30, int(145 + 20*alpha))))
             painter.setPen(QPen(QColor(212, 175, 55, int(275 + 35*alpha)), 1.0))
             painter.drawRoundedRect(rect, 5, 5)
@@ -10916,16 +11075,16 @@ class ParametricMathBackground(QWidget):
             fy = MEUM_POWERS_36[min(2 + (i % 7), 35)]
             bx = (0.08 + 0.84 * ((i * PHI_INV + i * MEUM_NORM) % 1.0))
             by = (0.08 + 0.84 * ((i * MEUM_INV * PHI + 0.17) % 1.0))
-            x = width * (bx + 0.22 * math.sin(t * fx * MEUM_NORM + i * 0.73)
-                         + 0.12 * math.cos(t * MEUM + i * 1.17)
+            x = width * (bx + 0.22 * series_sin(t * fx * MEUM_NORM + i * 0.73)
+                         + 0.12 * series_cos(t * MEUM + i * 1.17)
                          + corr_x * 0.5)
-            y = height * (by + 0.20 * math.cos(t * fy * MEUM_NORM + i * 0.51)
-                          + 0.14 * math.sin(t * MEUM_LOG2 + i * 0.89)
+            y = height * (by + 0.20 * series_cos(t * fy * MEUM_NORM + i * 0.51)
+                          + 0.14 * series_sin(t * MEUM_LOG2 + i * 0.89)
                           + corr_y * 0.5)
             x = max(4.0, min(width - col_w - 4.0, x))
             y = max(6.0, min(height - 44.0, y))
             rect = QRectF(x, y, col_w, 40.0)
-            hue = (0.5  + 0.5 * math.sin(t)) % 1.0
+            hue = (0.5  + 0.5 * series_sin(t)) % 1.0
             fill = QColor.fromHsvF(hue, 0.35, 0.12, a_fill)
             edge = QColor.fromHsvF(hue, 0.55, 0.95, a_edge)
             painter.setBrush(QBrush(fill))
@@ -11049,7 +11208,7 @@ class PhaseLockedWavefieldEngine:
                     continue
                 p = float(rng.random())  # any decimal in [0,1)
                 # Soft open threshold from seed phase — not a rigid %2 pattern
-                thr = 0.5 + 0.5 * math.sin((s + 1) * MEUM + i * MEUM_INV)
+                thr = 0.5 + 0.5 * series_sin((s + 1) * MEUM + i * MEUM_INV)
                 if p > thr:
                     euc[s] = True
             t = np.linspace(0, 1, count, endpoint=False)
@@ -11150,7 +11309,7 @@ class PhaseLockedWavefieldEngine:
                     + (op_idx + 1) * PHI_INV
                     + (s + 1) * MEUM_LOG2
                 )
-                seed_coord = 0.5 + 0.5 * math.sin(
+                seed_coord = 0.5 + 0.5 * series_sin(
                     2.0 * math.pi * q + (op_idx + 1) * MEUM
                 )
                 # Per-instrument list seed when available (not only global int).
@@ -11306,7 +11465,7 @@ class WaveformVectorCanvas(QWidget):
         super().__init__(parent)
         self.setMinimumSize(220, 110)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.points = [QPointF(i * 13.7, 55 + math.sin(i)*30) for i in range(16)]
+        self.points = [QPointF(i * 13.7, 55 + series_sin(i)*30) for i in range(16)]
         self.hardness = 50.0  # Controls percussiveness vs paddedness
         self.vector_scale = 1.0
         self.syncopation = 0.5
@@ -11895,7 +12054,7 @@ partitions. Render modulation (additive):
 Per-operator script workspace. Typical form:
 
   def evaluate_wave(x, y, z):
-      return np.sin(x * 3.0) * np.cos(y) - z
+      return series_sin(x * 3.0) * series_cos(y) - z
 
 Custom scripts are preserved by the randomizer; only stock auto-templates
 are replaced during seeded fill.
@@ -12520,7 +12679,130 @@ independently established theorem of mathematics or physics.
 PUBLIC CONSTANTS
 
 The canonical Meum value is:
-    M = MEUM = 1.1975807343385265188
+    M = 
+# -----------------------------------------------------------------------------
+# Author-series trigonometry kernels (radians)
+# Direct summation/recurrence implementations: no math/NumPy circular or inverse
+# trig calls.  These are the canonical Groovebox kernels for scalar/array use.
+# -----------------------------------------------------------------------------
+SERIES_PI = 3.14159265358979323846264338327950288419716939937510
+SERIES_TAU = 2.0 * SERIES_PI
+
+def _series_arr(x):
+    return np.asarray(x, dtype=np.float64)
+
+def _series_out(v):
+    a=np.asarray(v)
+    return a.item() if a.ndim==0 else a
+
+def _series_reduce(x):
+    a=_series_arr(x)
+    with np.errstate(invalid='ignore'):
+        return np.remainder(a + SERIES_PI, SERIES_TAU) - SERIES_PI
+
+def series_sin(x):
+    a=_series_reduce(x)
+    a=np.where(a>SERIES_PI/2, SERIES_PI-a, np.where(a<-SERIES_PI/2, -SERIES_PI-a, a))
+    term=a.copy(); total=a.copy()
+    for n in range(1, 19):
+        term *= -(a*a)/((2.0*n)*(2.0*n+1.0)); total += term
+    return _series_out(total)
+
+def series_cos(x):
+    a=_series_reduce(x); sign=np.ones_like(a)
+    hi=a>SERIES_PI/2; lo=a<-SERIES_PI/2
+    sign=np.where(hi|lo,-1.0,1.0)
+    a=np.where(hi,SERIES_PI-a,np.where(lo,-SERIES_PI-a,a))
+    term=np.ones_like(a); total=term.copy()
+    for n in range(1,19):
+        term *= -(a*a)/((2.0*n-1.0)*(2.0*n)); total += term
+    return _series_out(sign*total)
+
+def series_asin(x):
+    z=_series_arr(x); a=np.abs(z); bad=a>1.0; reduce=a>0.5
+    with np.errstate(invalid='ignore'):
+        w=np.where(reduce,np.sqrt((1.0-a)/2.0),a)
+    term=w.copy(); total=w.copy()
+    for n in range(1,33):
+        term *= (w*w*(2.0*n-1.0)**2)/((2.0*n)*(2.0*n+1.0)); total += term
+    total=np.where(reduce,SERIES_PI/2.0-2.0*total,total)
+    total=np.copysign(total,z); total=np.where(bad,np.nan,total)
+    return _series_out(total)
+
+def series_acos(x):
+    z=_series_arr(x); bad=np.abs(z)>1.0
+    with np.errstate(invalid='ignore'):
+        q=2.0*np.asarray(series_asin(np.sqrt((1.0-np.abs(z))/2.0)))
+    out=np.where(z>=0.0,q,SERIES_PI-q); out=np.where(bad,np.nan,out)
+    return _series_out(out)
+
+def series_atan(x):
+    z=_series_arr(x); a=np.abs(z); inv=a>1.0
+    with np.errstate(divide='ignore',invalid='ignore'):
+        a=np.where(inv,1.0/a,a)
+        a=a/(1.0+np.sqrt(1.0+a*a))
+    term=a.copy(); total=a.copy()
+    for n in range(1,33):
+        term *= -(a*a); total += term/(2.0*n+1.0)
+    total*=2.0; total=np.where(inv,SERIES_PI/2.0-total,total)
+    return _series_out(np.copysign(total,z))
+
+def series_atan2(y,x):
+    y,x=np.broadcast_arrays(_series_arr(y),_series_arr(x))
+    with np.errstate(divide='ignore',invalid='ignore'):
+        out=np.asarray(series_atan(y/x))
+    out=np.where(x<0.0,out+np.copysign(SERIES_PI,y),out)
+    out=np.where(x==0.0,np.copysign(SERIES_PI/2.0,y),out)
+    out=np.where(y==0.0,np.where(np.signbit(x),np.copysign(SERIES_PI,y),y),out)
+    return _series_out(out)
+
+def series_tan(x):
+    with np.errstate(divide='ignore',invalid='ignore'):
+        return _series_out(np.asarray(series_sin(x))/np.asarray(series_cos(x)))
+
+def series_sinh(x):
+    z=_series_arr(x); a=np.abs(z); scale=np.zeros(a.shape,dtype=np.int32)
+    a=np.where(np.isfinite(a),np.minimum(a,710.0),0.0)
+    for _ in range(11):
+        m=a>0.5; a=np.where(m,a*0.5,a); scale += m
+    term=a.copy(); total=a.copy()
+    for n in range(1,19):
+        term *= (a*a)/((2.0*n)*(2.0*n+1.0)); total += term
+    with np.errstate(over='ignore',invalid='ignore'):
+        for k in range(11): total=np.where(scale>k,2.0*total*np.sqrt(1.0+total*total),total)
+    total=np.where(np.abs(z)>710.0,np.inf,total); total=np.where(np.isnan(z),np.nan,total)
+    return _series_out(np.copysign(total,z))
+
+def series_cosh(x):
+    q=np.asarray(series_sinh(_series_arr(x)/2.0)); return _series_out(1.0+2.0*q*q)
+
+def series_tanh(x):
+    z=_series_arr(x); q=np.clip(z,-20.0,20.0)
+    with np.errstate(divide='ignore',invalid='ignore'):
+        out=np.asarray(series_sinh(q))/np.asarray(series_cosh(q))
+    return _series_out(np.where(np.abs(z)>20.0,np.copysign(1.0,z),out))
+
+def series_sinc(x):
+    z=_series_arr(x)
+    with np.errstate(divide='ignore',invalid='ignore'):
+        out=np.where(z==0.0,1.0,np.asarray(series_sin(SERIES_PI*z))/(SERIES_PI*z))
+    return _series_out(out)
+
+def series_book_isn(x):
+    # sum (-1)^n*x^(2n+1)/(2^(2n)*(2n+1)!)
+    return _series_out(2.0*np.asarray(series_sin(_series_arr(x)/2.0)))
+
+def series_book_isn_inverse(x):
+    return _series_out(2.0*np.asarray(series_asin(np.clip(_series_arr(x)/2.0,-1.0,1.0))))
+
+def series_cyclic_isn(x):
+    # author's even-power series: x^2/2! - x^4/4! + x^6/6! - ...
+    a=_series_reduce(x); term=a*a/2.0; total=term.copy()
+    for n in range(2,25):
+        term *= -(a*a)/((2.0*n-1.0)*(2.0*n)); total += term
+    return _series_out(total)
+
+MEUM = 1.1975807343385265188
 
 Public reference inverse:
     M⁻¹ = MEUM_INV = 0.83501677283773394333148276154833054143874793150691
@@ -13694,8 +13976,14 @@ Author/ASCII: `<event><x>-[xN]` — the line-connected solid square carries even
 The supplied book explicitly describes four sets of three lines, conflicting/nonconflicting directions, optional grid intersections, operation intensity/dynamics, and boxes for variables. The author has clarified for this implementation that missing strokes are skipped; squiggles are contextual imaginary/decimal/half/doubling modifiers; four-way pathways are up/down/left/right; and the border/continued/multiplicity/color rules above are intended parts of the notation. Groovebox's exact bit packing, separator-to-`0..15` index, and ASCII spelling are implementation conventions chosen to make the notation reversible and inspectable. They should not be mistaken for additional claims printed verbatim in the book.
     \n--------------------------------------------------------------------------------\nMEUM LOGIC SEARCH / REVERSE-GREP (PROJECT RESEARCH TOOL)\n--------------------------------------------------------------------------------\nThe current compiler/reverse-decoder experiments assign distinct jobs to Meum\nforms instead of treating every Meum-derived number as interchangeable:\n\n  normalize/key logic:       N(x) = (2 - M) x = [1-(M-1)]x\n  ambiguity/problem locate:  A_p(x) = x / M^p,       p = 1,2,3,...\n  interval prediction:       R_p(x) = (M - 1)^p x,   p = 1,2,3,...\n  ideal-form comparison:     T(x) = x / 2^M\n\nThe Meum root relation supplies a consistency route:\n\n  2^M - M^4 - M^2 + M = 0\n  therefore 2^M = M^4 + M^2 - M.\n\nThe search is LINEAR in responsibility: normalize -> locate ambiguity -> test\ninterval/reflection prediction -> compare already-equivalent target forms ->\nverify -> emit sCode.  2^M is not a command to force program outputs toward one\nnumber; it is a target-coordinate / preference test after behavioral equivalence.\n\nINTERVAL DIRECTION.  Because M>1 and M-1>0, multiplication by (M-1)^p\npreserves the ordinary ordering of real interval endpoints.  A candidate math\ncollapse is therefore stronger when value family, interval, direction, extrema,\ndependencies, and regression behavior agree.  Min/max or slope reversals are\nlandmarks that help reject a false semantic match.\n\nBOOK-CONSTANT SECOND STAGE.  Other named irrational/self-referential constants\nfrom the author's work may be used as additional locator coordinates.  Numerical\nproximity is evidence for where to inspect, not proof of semantic identity.  A\nmatch is promoted only after dependency, interval/direction, cross-resolution,\nand behavioral checks.\n\nWHY() / PROVENANCE TARGET.  A verified sCode reduction should retain the source\naddress X, semantic class Y, normalization, ambiguity probe, powered interval\nprediction, target comparison, and verification certificate so why() can invert\nthe route and explain the emitted syntax.\n\nMATH SYMBOL DISPLAY.  Math Symbols is a reversible presentation layer only.\n0 is the empty author cell. Numeric values remain unchanged underneath.  All\nQSpinBox/QDoubleSpinBox controls, including controls created later in floating\nwindows, are discovered and masked while unfocused; focusing a control reveals\nthe ordinary editable number, and leaving focus restores its symbol mask.\n
 """
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, dimensions=('x', 'y', 'z'), survival_mode=True, sample_rate=44100):
         super().__init__(parent)
+        self.dimensions = dimensions
+        self.survival_mode = survival_mode
+        self.active_patches = []
+        self.sample_rate = int(sample_rate)
+        self._buf = np.zeros(2048, dtype=np.float32)
+        self._buf_pos = 0
         self.setWindowTitle("Mathematician's Groovebox — Help / Readme")
         self.resize(980, 760)
         layout = QVBoxLayout(self)
@@ -13707,17 +13995,6 @@ The supplied book explicitly describes four sets of three lines, conflicting/non
         buttons.rejected.connect(self.reject)
         buttons.accepted.connect(self.accept)
         layout.addWidget(buttons)
-
-class MusicFractallizer:
-    """Contextual sub/superharmonic audio engine shared by render effects."""
-
-    def __init__(self, dimensions=('x', 'y', 'z'), survival_mode=True, sample_rate=44100):
-        self.dimensions = dimensions
-        self.survival_mode = survival_mode
-        self.active_patches = []
-        self.sample_rate = int(sample_rate)
-        self._buf = np.zeros(2048, dtype=np.float32)
-        self._buf_pos = 0
 
     def generate_fractal_stream(self, seed_data):
         arr = np.asarray(seed_data, dtype=np.float32).ravel()
@@ -13758,7 +14035,7 @@ class MusicFractallizer:
                 f0 = sr / max(period * 2.0, 2.0)
             else:
                 f0 = 110.0
-            f0_ctrl[i] = max(40.0, min(f0, sr * 0.0))
+            f0_ctrl[i] = max(40.0, min(f0, sr * 0.45))
         f0_full = np.interp(
             np.arange(n, dtype=np.float64),
             np.linspace(0, n - 1, nb),
@@ -13816,6 +14093,63 @@ class MusicFractallizer:
         out = dry + wet_mix * companion
         return out.astype(np.float32)
 
+
+
+class MusicFractallizer:
+    """Global/import-aware contextual sub/superharmonic fractal companion."""
+    def __init__(self, parent=None, dimensions=('x','y','z'), survival_mode=True, sample_rate=44100):
+        self.parent=parent; self.dimensions=dimensions; self.survival_mode=survival_mode
+        self.active_patches=[]; self.sample_rate=int(sample_rate)
+        self._buf=np.zeros(2048,dtype=np.float32); self._buf_pos=0
+
+    def generate_fractal_stream(self, seed_data):
+        arr=np.asarray(seed_data,dtype=np.float32).ravel()
+        if arr.size==0: return {dim:np.zeros(1,dtype=np.float32) for dim in self.dimensions}
+        if operator_theory_enabled():
+            return {dim:dual_map_array(arr,lambda v:math_scale(v,1.0)) for dim in self.dimensions}
+        return {dim:np.asarray(arr,dtype=np.float32) for dim in self.dimensions}
+
+    @staticmethod
+    def _contextual_sub_super(signal, sample_rate, strength=1.0):
+        x=np.asarray(signal,dtype=np.float64).ravel(); n=x.size
+        if n<16: return np.zeros(n,dtype=np.float32)
+        sr=max(float(sample_rate),1.0); win=max(8,min(256,n//64))
+        kernel=np.ones(win,dtype=np.float64)/float(win)
+        local_env=np.convolve(np.abs(x),kernel,mode='same')
+        block=max(32,min(512,n//32)); nb=max(1,n//block); f0_ctrl=np.empty(nb,dtype=np.float64)
+        for i in range(nb):
+            lo=i*block; hi=min(n,lo+block); seg=x[lo:hi]; zc=np.where(np.diff(np.signbit(seg)))[0]
+            if zc.size>=2:
+                period=float(np.median(np.diff(zc))); f0=sr/max(period*2.0,2.0)
+            else: f0=110.0
+            f0_ctrl[i]=max(40.0,min(f0,sr*0.45))
+        f0_full=np.interp(np.arange(n,dtype=np.float64),np.linspace(0,n-1,nb),f0_ctrl)
+        phase=np.cumsum(2.0*SERIES_PI*f0_full/sr)
+        ratios=(1/2,1/3,1/4,1/5,1/6,2,3,4,5,6)
+        weights=(.14,.11,.09,.07,.05,.14,.11,.09,.07,.05)
+        companion=np.zeros(n,dtype=np.float64)
+        for r,w in zip(ratios,weights):
+            partial=np.asarray(series_book_isn(np.mod(phase*r,SERIES_TAU)),dtype=np.float64)
+            partial=partial-np.mean(partial); companion += w*partial
+        companion *= local_env*float(strength)
+        return companion.astype(np.float32)
+
+    def process(self, dry, activation=0.33, gamma=2.0, pkp_env=None, bpm=120.0, reference_buffer=None):
+        dry=np.asarray(dry,dtype=np.float32).ravel(); n=dry.size
+        if n==0: return dry
+        src=dry
+        if reference_buffer is not None:
+            ref=np.asarray(reference_buffer,dtype=np.float32).ravel()
+            if ref.size==n: src=ref
+        wet_mix=0.5*float(np.clip(activation,0.0,1.0))
+        if wet_mix<1e-6: return dry.copy()
+        strength=0.5+0.5*float(gamma)/4.0
+        companion=self._contextual_sub_super(src,self.sample_rate,strength=strength)
+        if pkp_env is not None:
+            env=np.asarray(pkp_env,dtype=np.float32).ravel()
+            if env.size!=n: env=np.resize(env,n)
+            companion=companion*env
+        return (dry+wet_mix*companion).astype(np.float32)
 
 class HarmonicLattice:
     """Per-synth contextual sub/superharmonic companion (lighter Fractallizer)."""
@@ -13996,8 +14330,8 @@ class IdealizedMathKnob(QWidget):
         span_val = self.max_val - self.min_val if self.max_val != self.min_val else 1.0
         normalized = (self.value - self.min_val) / span_val
         angle = math.radians(-130 + (normalized * 260))
-        tip_x = center.x() + (radius - 5) * math.sin(angle)
-        tip_y = center.y() - (radius - 5) * math.cos(angle)
+        tip_x = center.x() + (radius - 5) * series_sin(angle)
+        tip_y = center.y() - (radius - 5) * series_cos(angle)
 
         painter.setPen(QPen(QColor("#00ffcc"), 2.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         painter.drawLine(center, QPointF(tip_x, tip_y))
@@ -14437,7 +14771,7 @@ class StandardWaveSynthNode:
         step = (2.0 * math.pi * effective_freq) / self.sr
         for _ in range(num_samples):
             self.phase += step
-            val = math.sin(self.phase) * self.amp * y
+            val = series_sin(self.phase) * self.amp * y
             buf.append(val)
         return buf
 class AdditiveSynthNode(StandardWaveSynthNode):
@@ -14454,7 +14788,7 @@ class AdditiveSynthNode(StandardWaveSynthNode):
             self._meum_sample_index = 0
             sample = 0.0
             for h, w in zip(harmonics, weights):
-                sample += math.sin(self.phase * h * (1.0 + z * 0.1)) * w
+                sample += series_sin(self.phase * h * (1.0 + z * 0.1)) * w
             buf.append(sample * self.amp * y * 0.5)
         return buf
 
@@ -14470,8 +14804,8 @@ class FormantSynthNode(StandardWaveSynthNode):
             self.phase += step
             self._meum_phase = 0.0
             self._meum_sample_index = 0
-            carrier = math.sin(self.phase)
-            modulator = math.sin(self.phase * 1.414) * math.cos(f_step)
+            carrier = series_sin(self.phase)
+            modulator = series_sin(self.phase * 1.414) * series_cos(f_step)
             val = carrier * modulator * self.amp * z
             buf.append(val)
         return buf
@@ -14907,9 +15241,9 @@ class GrooveboxEngine:
 
         equations = [
             "x**2 + y - z",
-            "math.sin(x) * y - z**2",
+            "series_sin(x) * y - z**2",
             "x * y - z",
-            "abs(x) + math.cos(y) - z",
+            "abs(x) + series_cos(y) - z",
             "x**3 - y**2 + z",
             "isn(x * y) - z"
         ]
@@ -15192,7 +15526,7 @@ class WavetableCanvas(QWidget):
         if existing:
             self.points = list(existing)
         else:
-            self.points = [QPointF(i * (500 / 16), 55 + 25 * math.sin(i * 0.4)) for i in range(17)]
+            self.points = [QPointF(i * (500 / 16), 55 + 25 * series_sin(i * 0.4)) for i in range(17)]
 
     def paintEvent(self, event):
         p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -19119,15 +19453,15 @@ class WavetableProjector(QWidget):
         pts=[]
         for i in range(96):
             u=i/95.0
-            wave=math.sin(math.tau*(u*(1.0+3.0*self.twist)+self.phase))
-            wave += self.fold*math.sin(math.tau*(u*3.0+self.phase*1.7))
+            wave=series_sin(math.tau*(u*(1.0+3.0*self.twist)+self.phase))
+            wave += self.fold*series_sin(math.tau*(u*3.0+self.phase*1.7))
             wave *= (0.65 + 0.35*self.curvature)
             if self.mode == 2:
                 xx=r.left()+u*w
                 yy=cy - wave*(h*0.32)*(0.6+0.4*ef[1]) - (u-0.5)*h*0.18*ef[0]
             elif self.mode == 3:
                 xx=r.left()+u*w
-                yy=cy - wave*(h*0.30)*(0.5+0.5*ef[2]) - math.sin(u*math.tau*2)*h*0.10*ef[0]
+                yy=cy - wave*(h*0.30)*(0.5+0.5*ef[2]) - series_sin(u*math.tau*2)*h*0.10*ef[0]
             else:
                 xx=r.left()+u*w; yy=cy-wave*(h*0.32)*(0.7+0.3*ef[0])
             pts.append(QPointF(xx, yy))
@@ -19650,9 +19984,35 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
 
+    def _refresh_goava_radio_brand(self):
+        """Fit the complete GOAVA Radio visual inside its current panel.
+
+        KeepAspectRatio is intentional: the right-hand green icons/labels are
+        part of the source visual and must remain visible rather than being
+        cropped by QLabel when the main window narrows.
+        """
+        label = getattr(self, "lbl_goava_radio_brand", None)
+        source = getattr(self, "_goava_radio_brand_source", None)
+        if label is None or source is None or source.isNull():
+            return
+        try:
+            w = max(1, int(label.contentsRect().width()))
+            h = max(1, int(label.contentsRect().height()))
+            label.setPixmap(source.scaled(
+                w, h, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            ))
+        except Exception:
+            pass
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._sync_parametric_background_geometry()
+        try:
+            self._refresh_goava_radio_brand()
+            QTimer.singleShot(0, self._refresh_goava_radio_brand)
+        except Exception:
+            pass
         # LAYOUT_STABILITY_FIX_2026: playback state must not select a different
         # geometry algorithm.  Every resize uses the same proportional layout,
         # while a queued second pass lets Qt finish button/style/layout changes
@@ -19985,7 +20345,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # contextual coordinate. The golden-ratio and sqrt(2) phase terms remain
         # available elsewhere as their own mathematical constants; they are not Meum.
         meum_phase = ((step + 1) * MEUM + (row + 1) * MEUM_INV + (seed % 997) * MEUM_NORM) % 1.0
-        meum_field = 0.5 + 0.5 * math.sin(2.0 * math.pi * meum_phase)
+        meum_field = 0.5 + 0.5 * series_sin(2.0 * math.pi * meum_phase)
         # POWER_V3_CONTEXT_FIELD: all subsystems contribute to one reproducible field.
         score = float(np.clip(
             0.22*script_score + 0.20*topology_score + 0.16*domain_score +
@@ -20035,7 +20395,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             seed_val = 0.0
         # Evaluated (never hashed) fold of the seed into a smooth 0..1 coordinate.
         seed_phase = ((abs(seed_val) * MEUM) + step * MEUM_INV + row * MEUM_NORM) % 1.0
-        top = 0.5 + 0.5 * math.sin(2.0 * math.pi * seed_phase)
+        top = 0.5 + 0.5 * series_sin(2.0 * math.pi * seed_phase)
         # ORDER_INDEPENDENCE: while a canonical transaction is active the numeric
         # context must read the FROZEN pre-canonical cache built by
         # _reset_canonical_engine_derived_state() — never the live accumulated
@@ -20381,7 +20741,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             jitter = float(rng.uniform(-0.5, 0.5)) if randomize else 0.0
             # Full continuous amp in (0,1] — no 0.25-step quantization
             target_amp = float(np.clip(
-                abs(0.5 + 0.5 * math.sin(ctx * math.tau * MEUM + i * MEUM_INV))
+                abs(0.5 + 0.5 * series_sin(ctx * math.tau * MEUM + i * MEUM_INV))
                 * (0.85 + 0.3 * (jitter if randomize else 0.0)),
                 1e-6, 1.0,
             ))
@@ -20397,7 +20757,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             ))
             target_prob = int(np.clip(round(55 + 45*ctx + (rng.uniform(-8,8) if randomize else 0)), 1, 100))
             target_offset = float(np.clip(
-                0.5 * math.sin((i + 1) * MEUM + ctx * math.tau)
+                0.5 * series_sin((i + 1) * MEUM + ctx * math.tau)
                 + (rng.uniform(-0.5, 0.5) if randomize else 0.0),
                 -0.5, 0.5
             ))
@@ -22436,12 +22796,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
         _logo_perf_stack.setSpacing(4)
         self.lbl_goava_radio_brand = QLabel()
         self.lbl_goava_radio_brand.setToolTip("GOAVA Radio — seed-shaped broadcast identity for Mathematician's Groovebox")
+        self.lbl_goava_radio_brand.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # RADIO_VISUAL_FIT_20260906: the brand image contains useful right-hand
+        # symbols/labels.  QLabel's pixmap sizeHint used to reserve the original
+        # ~620 px width and Qt then clipped the right edge when the Radio row
+        # became narrower.  Ignore the pixmap sizeHint horizontally and always
+        # rescale the *whole* source image into the actual label rectangle.
+        self.lbl_goava_radio_brand.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.lbl_goava_radio_brand.setMinimumWidth(120)
+        self._goava_radio_brand_source = QPixmap()
         try:
             _brand_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "goava_radio_brand.png")
             _pm = QPixmap(_brand_path)
             if not _pm.isNull():
-                self.lbl_goava_radio_brand.setPixmap(_pm.scaled(620, 138, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-                self.lbl_goava_radio_brand.setMinimumSize(360, 104)
+                self._goava_radio_brand_source = _pm
         except Exception:
             pass
         self.lbl_goava_radio_brand.setStyleSheet("background:#050b12; border:1px solid #9a7b2f; border-radius:8px; padding:2px;")
@@ -22453,10 +22821,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Global Processor Controls. This prevents the previous right-edge crop.
         _radio_row = QHBoxLayout()
         _radio_row.setSpacing(10)
-        self.lbl_goava_radio_brand.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.lbl_goava_radio_brand.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.lbl_goava_radio_brand.setMinimumHeight(104)
         self.lbl_goava_radio_brand.setMaximumHeight(148)
-        _radio_row.addWidget(self.lbl_goava_radio_brand, 2)
+        _radio_row.addWidget(self.lbl_goava_radio_brand, 4)
         try:
             from radio_station import load_identity
             _rid = load_identity()
@@ -22479,12 +22847,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 data = save_identity(name, logo if logo else str(cur.get("logo") or ""))
                 self.lbl_radio_station_name.setText(data.get("name", "GOAVA Radio"))
                 pm = QPixmap(data.get("logo", ""))
-                if not pm.isNull(): self.lbl_goava_radio_brand.setPixmap(pm.scaled(620, 138, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+                if not pm.isNull():
+                    self._goava_radio_brand_source = pm
+                    self._refresh_goava_radio_brand()
             except Exception as e:
                 QMessageBox.warning(self, "Radio Identity", str(e))
         self.btn_edit_radio_identity.clicked.connect(_edit_radio_identity)
         _radio_row.addWidget(self.btn_edit_radio_identity, 0)
         self.global_controls_side.addLayout(_radio_row)
+        QTimer.singleShot(0, self._refresh_goava_radio_brand)
         self.global_controls_side.addLayout(_proc_title_row)
         self.global_geometry_layout.addLayout(self.global_controls_side, 1)
         self.global_geometry_layout.setAlignment(self.global_controls_side, Qt.AlignmentFlag.AlignTop)
@@ -26223,15 +26594,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception: seed = 0
         active = self._get_active_engine_set() if hasattr(self, "_get_active_engine_set") else set()
         mask = sum((i + 1) * (1 if name in active else 0) for i, name in enumerate(("goava", "randomizer", "phase_lock", "euclidean", "seeded")))
+        trig = self._trig_engine_transform
         base = (
-            math.sin(seed * 0.00011 + PHI_INV) * 0.5 + 0.5,
-            math.cos(seed * 0.00017 + MEUM) * 0.5 + 0.5,
-            math.sin(seed * 0.00023 + PHI * MEUM) * 0.5 + 0.5,
+            float(trig("sin", seed * 0.00011 + PHI_INV)) * 0.5 + 0.5,
+            float(trig("cos", seed * 0.00017 + MEUM)) * 0.5 + 0.5,
+            float(trig("sin", seed * 0.00023 + PHI * MEUM)) * 0.5 + 0.5,
         )
         target = (
-            math.sin(seed * 0.00011 + PHI_INV + PHI) * 0.5 + 0.5,
-            math.cos(seed * 0.00017 + MEUM + PHI) * 0.5 + 0.5,
-            math.sin(seed * 0.00023 + PHI * MEUM + PHI) * 0.5 + 0.5,
+            float(trig("sin", seed * 0.00011 + PHI_INV + PHI)) * 0.5 + 0.5,
+            float(trig("cos", seed * 0.00017 + MEUM + PHI)) * 0.5 + 0.5,
+            float(trig("sin", seed * 0.00023 + PHI * MEUM + PHI)) * 0.5 + 0.5,
         )
         growth = 1.0 - math.exp(-mask / 3.0)
         return tuple(float(b + (t - b) * growth) for b, t in zip(base, target))
@@ -26272,8 +26644,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         out = {}
         for j, k in enumerate(("xmod", "input_xmod", "synth", "patch", "script", "domain")):
             base_phase = seed * 0.00013 * (j + 1)
-            base = 1.0 + math.sin(base_phase) * 0.9
-            target = 1.0 + math.sin(base_phase + PHI) * 0.9
+            base = 1.0 + series_sin(base_phase) * 0.9
+            target = 1.0 + series_sin(base_phase + PHI) * 0.9
             out[k] = float(np.clip(base + (target - base) * growth, 0.0, 2.0))
         return out
 
@@ -26298,9 +26670,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         mask = sum((i + 1) * (1 if name in active else 0) for i, name in enumerate(("goava", "randomizer", "phase_lock", "euclidean", "seeded")))
         phase = seed * 0.00017 + mask * PHI_INV
         return (
-            float(math.sin(phase)),
-            float(math.cos(phase * MEUM)),
-            float(math.sin(phase * PHI_INV + mask * 0.37)),
+            float(series_sin(phase)),
+            float(series_cos(phase * MEUM)),
+            float(series_sin(phase * PHI_INV + mask * 0.37)),
         )
 
     def _master_vector_effective(self):
@@ -26817,7 +27189,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "amplitudes": [1.0] * auto_len, "pitches": [1.0] * auto_len,
             "offsets": [0.0] * auto_len, "canonical_owner": "canonical:coverage"
         })
-        auto_vals = [{"step": i + 1, "value": 0.5 + 0.5 * math.sin((i + 1) * MEUM_NORM + int(row_idx) * 0.17)} for i in range(auto_len)]
+        auto_vals = [{"step": i + 1, "value": 0.5 + 0.5 * series_sin((i + 1) * MEUM_NORM + int(row_idx) * 0.17)} for i in range(auto_len)]
         overlay.setdefault("automation", auto_vals)
         overlay.setdefault("modulation", {"am_depth": 0.35, "fm_depth": 0.25, "pm_depth": 0.25, "trigger_phase": 0.0})
         overlay.setdefault("effect_layer", {"source": "canonical_seed_default", "active": True})
@@ -27433,7 +27805,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 elif source == "phase_lock":
                     n = base_len
                 else:
-                    jitter = int(round(4 * math.sin(inst_seed_i * MEUM_INV)))
+                    jitter = int(round(4 * series_sin(inst_seed_i * MEUM_INV)))
                     n = base_len + jitter
                 n = max(1, min(1024, n))
 
@@ -27458,7 +27830,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         # Dense structural grid — phase-lock owns non-stochastic placement.
                         mem["steps"][j] = bool(((j * 3 + inst_seed_i) % 5) < 3)
                     else:
-                        threshold = 0.34 + 0.18 * math.sin((j + 1) * MEUM_INV + inst_seed_i * 1e-4)
+                        threshold = 0.34 + 0.18 * series_sin((j + 1) * MEUM_INV + inst_seed_i * 1e-4)
                         mem["steps"][j] = bool(rng.random() > threshold)
                     # >>> GROK_EDIT_BEGIN: canonical_pitch_from_seed
                     # ALWAYS write pitches — previously left at 1.0 for most sources
@@ -27469,7 +27841,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     elif phase_on and source in ("seeded", "randomizer", "euclidean"):
                         # Contextual provocation around the phase-lock lattice,
                         # not free random notes that ignore structure.
-                        jitter = 0.06 * math.sin((j + 1) * MEUM + inst_seed_i * 0.01)
+                        jitter = 0.06 * series_sin((j + 1) * MEUM + inst_seed_i * 0.01)
                         mem["pitches"][j] = float(np.clip(lattice * (1.0 + jitter), 1.0/32.0, 32.0))
                     elif source == "goava":
                         # Full-range GOAVA pitch from seed lattice (no 7-step ramp)
@@ -27483,11 +27855,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     # Continuous amplitude/offset — full float decimals from seed phase
                     _ph = (j + 1) * MEUM + inst_seed_i * 0.001317
                     _ph2 = (j + 1) * MEUM_INV + inst_seed_i * 1.713e-5
-                    mem["amplitudes"][j] = float(0.5 + 0.5 * math.sin(_ph) * math.cos(_ph2 * 0.37))
+                    mem["amplitudes"][j] = float(0.5 + 0.5 * series_sin(_ph) * series_cos(_ph2 * 0.37))
                     mem["amplitudes"][j] = float(abs(mem["amplitudes"][j]))  # (0,1]
                     if mem["amplitudes"][j] < 1e-6:
                         mem["amplitudes"][j] = 1e-6
-                    mem["offsets"][j] = float(0.5 * math.sin(_ph2) * math.cos(_ph * MEUM_NORM))
+                    mem["offsets"][j] = float(0.5 * series_sin(_ph2) * series_cos(_ph * MEUM_NORM))
                     mem["engine_step_sources"][int(j)] = {f"canonical:{source}"}
                 bank[idx] = mem
                 # Write synth panel fundamental from seed so panels match the note identity.
@@ -31474,7 +31846,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         # Sporadic spectrum commutation: slightly lower probability on complements
                         mem["probabilities"][s] = 100 if is_eucl else int(rng.integers(55, 85))
                         mem["offsets"][s] = float(np.clip(
-                            0.18 * math.sin((s + 1) * MEUM_INV + i * MEUM_NORM)
+                            0.18 * series_sin((s + 1) * MEUM_INV + i * MEUM_NORM)
                             + (float(rng.uniform(-0.5, 0.5)) if complement else 0.0),
                             -0.5, 0.5
                         ))
@@ -31684,7 +32056,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             ctx = self._contextual_numerology(name, s, s) if hasattr(self, "_contextual_numerology") else 0.5
                             mem["pitches"][s] = float(np.clip(_seed_to_pitch_ratio(self.get_numeric_seed() if hasattr(self,"get_numeric_seed") else 1, i, s) * (0.9 + 0.2 * float(rng.random())), 1.0/32.0, 32.0))
                         mem["offsets"][s] = float(np.clip(
-                            0.24 * math.sin((s + 1) * MEUM + i * PHI)
+                            0.24 * series_sin((s + 1) * MEUM + i * PHI)
                             + rng.uniform(-1.0, 1.0),
                             -0.5, 0.5
                         ))
@@ -33944,7 +34316,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 raw = float(ev.get("raw", ev.get("seed", 0.0)) or 0.0)
                 weight = float(np.clip(ev.get("weight", 1.0), 0.0, 1.0))
                 field["goava_phase"] = (raw*MEUM_NORM + (op_idx+1)*MEUM_INV) % math.tau
-                field["phase"] += .10*math.sin(field["goava_phase"])
+                field["phase"] += .10*series_sin(field["goava_phase"])
                 field["mod_rate"] *= .84 + .30*weight
         # Final deterministic resolution: bounded, correlated, node-specific.
         field["trigger_probability"] = float(np.clip(field["trigger_probability"], 0.0, 0.97))
@@ -35037,7 +35409,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                                 harm = harm + amp_h * ot_sin_vec_equiv(phase * h * det + ph0)
                     inh = np.zeros_like(local_t, dtype=np.float32)
                     for h in range(1, n_inh + 1):
-                        ratio = 1.0 + h * (1.0 + 0.37 * math.sin((_s_int + h * 17) * MEUM_NORM))
+                        ratio = 1.0 + h * (1.0 + 0.37 * series_sin((_s_int + h * 17) * MEUM_NORM))
                         ratio = 1.0 + (ratio - 1.0) * (0.4 + 0.6 * entropy)
                         amp_i = (0.25 + 0.6 * entropy) / (h ** (0.9 + 0.4 * entropy))
                         ph0 = ((_s_int * h * 31 + _vo * 11) % 1000) / 1000.0 * math.tau
@@ -36437,12 +36809,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     return self._ot_tan(x, *args, **kwargs)
         except Exception:
             pass
-        if op == "sin":
-            return np.sin(x)
-        if op == "cos":
-            return np.cos(x)
-        if op == "tan":
-            return np.tan(x)
+        if enabled:
+            if op == "sin":
+                return series_sin(x)
+            if op == "cos":
+                return series_cos(x)
+            if op == "tan":
+                return series_tan(x)
+        else:
+            if op == "sin":
+                return np.sin(x)
+            if op == "cos":
+                return np.cos(x)
+            if op == "tan":
+                return np.tan(x)
         raise ValueError(f"unsupported trig op: {op}")
 
     def _apply_engine_with_shared_context(self, engine, seed):
@@ -37501,11 +37881,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     phase = (seed * 0.0001 + ri * MEUM + (_stable_hash(str(op_name),1000)) * 0.01) + t * math.tau
                     depth = 0.04 / n_eng
                     if "phase_lock" in active:
-                        om[op_name] = base + depth * math.sin(phase)
+                        om[op_name] = base + depth * series_sin(phase)
                     elif "euclidean" in active:
-                        om[op_name] = base + depth * 0.7 * math.sin(phase * 2.0)
+                        om[op_name] = base + depth * 0.7 * series_sin(phase * 2.0)
                     elif "randomizer" in active or "seeded" in active:
-                        om[op_name] = base + depth * math.sin(phase * MEUM)
+                        om[op_name] = base + depth * series_sin(phase * MEUM)
                     else:
                         om[op_name] = base
                 entry["operator_time_offsets"] = om
@@ -37534,17 +37914,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 b = param_base[name]
                 phase = (seed * 0.001 + i * PHI_INV + t * math.tau * (1.0 + 0.1 * i))
                 if "randomizer" in active or "seeded" in active:
-                    pst["drive"] = float(np.clip(b["drive"] * (0.5 + 0.5  * (0.5 + 0.5 * math.sin(phase))), 0.0, 1.0))
-                    pst["am_rate"] = float(max(0.05, b["am_rate"] * (0.5 + 0.5  * math.sin(phase * 1.0))))
+                    pst["drive"] = float(np.clip(b["drive"] * (0.5 + 0.5  * (0.5 + 0.5 * series_sin(phase))), 0.0, 1.0))
+                    pst["am_rate"] = float(max(0.05, b["am_rate"] * (0.5 + 0.5  * series_sin(phase * 1.0))))
                 if "phase_lock" in active:
-                    pst["pm_rate"] = float(max(0.05, b["pm_rate"] * (0.5 + 0.5  * math.cos(phase))))
-                    pst["filter"] = float(np.clip(b["filter"] * (0.5 + 0.5  * math.sin(phase * MEUM)), 0.0, 1.0))
+                    pst["pm_rate"] = float(max(0.05, b["pm_rate"] * (0.5 + 0.5  * series_cos(phase))))
+                    pst["filter"] = float(np.clip(b["filter"] * (0.5 + 0.5  * series_sin(phase * MEUM)), 0.0, 1.0))
                 if "euclidean" in active:
-                    pst["fm_rate"] = float(max(0.05, b["fm_rate"] * (0.5 + 0.5  * math.sin(phase * 1.0))))
+                    pst["fm_rate"] = float(max(0.05, b["fm_rate"] * (0.5 + 0.5  * series_sin(phase * 1.0))))
                 if getattr(self, "goava_active", False) and pst.get("goava_sine_patch"):
                     pst["goava_mix_weight"] = 1.0 / n_eng
-                    pst["am_depth"] = float(np.clip(b["am_depth"] * (0.5 + 0.5  * math.sin(phase)), 0.0, 1.0))
-                    pst["pm_depth"] = float(np.clip(b["pm_depth"] * (0.5 + 0.5 * math.cos(phase)), 0.0, 1.0))
+                    pst["am_depth"] = float(np.clip(b["am_depth"] * (0.5 + 0.5  * series_sin(phase)), 0.0, 1.0))
+                    pst["pm_depth"] = float(np.clip(b["pm_depth"] * (0.5 + 0.5 * series_cos(phase)), 0.0, 1.0))
         except Exception:
             pass
 
@@ -38030,17 +38410,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 b = 1 + ((k * max(1, depth)) % max(2, mod))
                 v = (a / float(a + b))
             elif fam == "Geometric":
-                v = 0.5 + 0.5 * math.sin(phase0 + k * MEUM * PHI_INV)
+                v = 0.5 + 0.5 * series_sin(phase0 + k * MEUM * PHI_INV)
             elif fam == "Harmonic":
-                v = 0.5 + 0.25 * math.sin(phase0 + k * PHI) + 0.25 * math.cos(k * MEUM_NORM * math.pi)
+                v = 0.5 + 0.25 * series_sin(phase0 + k * PHI) + 0.25 * series_cos(k * MEUM_NORM * math.pi)
             elif fam == "Seed Function":
                 try:
                     v = float(evaluate_seed_expression_at_time(self._seed_text(), k / float(max(1, n)), canonical_context={"step": k, "span": n}))
-                    v = 0.5 + 0.5 * math.tanh(v)
+                    v = 0.5 + 0.5 * series_tanh(v)
                 except Exception:
-                    v = 0.5 + 0.5 * math.sin(phase0 + k * MEUM)
+                    v = 0.5 + 0.5 * series_sin(phase0 + k * MEUM)
             else:  # Hybrid
-                g = 0.5 + 0.5 * math.sin(phase0 + k * MEUM * PHI_INV)
+                g = 0.5 + 0.5 * series_sin(phase0 + k * MEUM * PHI_INV)
                 v = 0.40 * lattice + 0.25 * cop + 0.20 * g + 0.15 * (1.0 if residue in qr else 0.0)
             v = float(np.clip(v, 0.0, 1.0))
             if bias == "Sparse":
@@ -38050,7 +38430,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             elif bias == "Self-Similar":
                 motif = max(2, min(n, 2 ** max(1, int(math.log2(max(2, depth + 1))))))
                 mphase = ((i % motif) + 1) / float(motif)
-                v = 0.60 * v + 0.40 * (0.5 + 0.5 * math.sin(math.tau * mphase + phase0))
+                v = 0.60 * v + 0.40 * (0.5 + 0.5 * series_sin(math.tau * mphase + phase0))
             elif bias == "T-Independent":
                 # No absolute t: residue/phase class only.
                 v = 0.55 * v + 0.45 * (((residue * phi_n + depth) % max(2, mod)) / float(max(1, mod - 1)))
@@ -41599,6 +41979,11 @@ if __name__ == "__main__":
             app.setWindowIcon(QIcon(_logo))
     except Exception:
         pass
+    # AUDIO_CLASS_GUARD_20260906: fail at startup with a precise diagnostic if
+    # packaging/indentation ever removes the Fractallizer class again, rather
+    # than waiting for Play Audio Track to raise a NameError.
+    if "MusicFractallizer" not in globals() or not isinstance(globals().get("MusicFractallizer"), type):
+        raise RuntimeError("MusicFractallizer class is unavailable; Groovebox package is incomplete or structurally corrupted")
     player = MathematiciansGrooveboxApp()
     player.show()
     try:
