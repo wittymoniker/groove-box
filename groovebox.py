@@ -11756,56 +11756,6 @@ class ReadmeGuideDialog(QDialog):
 
     HELP_TEXT = r"""
 
-## V34 Stability Pass
-
-- Reversible randomizer toggle contract: ON captures a full project baseline and generates a fresh variation; OFF restores the exact pre-randomize state; each subsequent ON cycle rerandomizes and shifts the control color palette.
-- Canonical Signal Control defaults to Full Canonical / 100% authority and self-heals missing canonical coverage through canonical-owned runtime overlays without rewriting user data.
-- Canonical Resonance / Activity is 50–150%, independent of the 50/50 source coefficients; 150% is activity/continuation drive, not output volume.
-- Canonical→Instrument convolution influence is 0–100%.
-- Maximum active instruments: 128. Default playlist row duration: 16 beats.
-- ParametricMathBackground is integrated with a deep navy gradient field.
-- Performance controls are consolidated into one horizontal deck; Automator controls are compacted into a multi-row grid.
-- UI initialization order and Qt stylesheet declarations were hardened; division-by-zero-sensitive paths use explicit degenerate-case handling rather than epsilon denominators where practical.
-
---------------------------------------------------------------------------------
-FINITE INFINITY GREP + FINITE INFINITY–MEUM HYPERDRIVE
---------------------------------------------------------------------------------
-Groovebox and sCode use the project reference I = 134964356 as a bounded
-"Finite Infinity" index space. The compiler/search path can hash normalized
-source tokens into 0..I-1 for fast grep-style candidate lookup, then verifies
-the exact normalized token before reporting a semantic match. The finite index
-is therefore an accelerator/organization mechanism, not a claim that all
-mathematical infinity is literally finite.
-
-The optional **Finite Infinity–Meum HyperDrive** is a single cross-media
-resonator/drive state shared by SOUND + IMAGE + INTERACTION. It is OFF by
-default and is saved with the project.
-
-For a project seed/canonical fingerprint, HyperDrive derives a deterministic
-index h modulo I and finite coordinate u=h/I. A Meum phase is formed from u and
-time. With Trigonometry Engine ON the modulation uses the project book forms:
-
-    isn(theta) = 2 sin(theta/2)
-    ics(theta) = 2 cos(theta/2)
-
-and combines their unit-equivalent components with Meum terms such as M-1 and
-1/M. With Trigonometry Engine OFF the compatibility path uses ordinary sin/cos.
-With Operator Theory ON the same phase uses the OT orientation/sign rule. Thus
-OT/Trig change the calculation route while the seed/fingerprint remains the
-single identity source.
-
-HyperDrive then applies the SAME modulation state to:
-  • Audio — a pre-hardclip Meum resonator/drive gain field plus a small cubic
-    drive curvature. It does not replace Master Volume or the final hard clip.
-  • Visuals — deterministic field/brightness and Meum-phase color deformation.
-  • Game generation — deterministic world/behavior identity modulation by the
-    same finite coordinate; it does not introduce an unrelated random seed.
-
-Drive controls cross-media modulation amount. Resonance controls the Meum
-resonator depth and defaults to M-1. HyperDrive, Operator Theory, Trigonometry
-Engine, Math Symbols, Meum engine simplification, and the other saved project
-controls are restored on load so save→load→audio/video/game uses the same math
-configuration.
 
 ================================================================================
   GROOVEBOX — Mathematician's / Scientist's Groovebox
@@ -11871,6 +11821,45 @@ For cyclic/native state, finite repeated trajectories can additionally be stored
 preperiod + period + certified jump information. The resulting "compression ratio"
 reported by native tests is a representation/reuse ratio for that certified cycle,
 not a universal data-compression theorem.
+
+FINITE INFINITY GREP (reverse grep) + FINITE INFINITY–MEUM HYPERDRIVE
+
+Groovebox and sCode use the project reference I = 134964356 as a bounded
+"Finite Infinity" index space. The compiler/search path can hash normalized
+source tokens into 0..I-1 for fast grep-style candidate lookup, then verifies
+the exact normalized token before reporting a semantic match. The finite index
+is therefore an accelerator/organization mechanism, not a claim that all
+mathematical infinity is literally finite.
+
+The optional **Finite Infinity–Meum HyperDrive** is a single cross-media
+resonator/drive state shared by SOUND + IMAGE + INTERACTION. It is OFF by
+default and is saved with the project.
+
+For a project seed/canonical fingerprint, HyperDrive derives a deterministic
+index h modulo I and finite coordinate u=h/I. A Meum phase is formed from u and
+time. With Trigonometry Engine ON the modulation uses the project book forms:
+
+    isn(theta) = 2 sin(theta/2)
+    ics(theta) = 2 cos(theta/2)
+
+and combines their unit-equivalent components with Meum terms such as M-1 and
+1/M. With Trigonometry Engine OFF the compatibility path uses ordinary sin/cos.
+With Operator Theory ON the same phase uses the OT orientation/sign rule. Thus
+OT/Trig change the calculation route while the seed/fingerprint remains the
+single identity source.
+
+HyperDrive then applies the SAME modulation state to:
+  • Audio — a pre-hardclip Meum resonator/drive gain field plus a small cubic
+    drive curvature. It does not replace Master Volume or the final hard clip.
+  • Visuals — deterministic field/brightness and Meum-phase color deformation.
+  • Game generation — deterministic world/behavior identity modulation by the
+    same finite coordinate; it does not introduce an unrelated random seed.
+
+Drive controls cross-media modulation amount. Resonance controls the Meum
+resonator depth and defaults to M-1. HyperDrive, Operator Theory, Trigonometry
+Engine, Math Symbols, Meum engine simplification, and the other saved project
+controls are restored on load so save→load→audio/video/game uses the same math
+configuration.
 
 --------------------------------------------------------------------------------
 1B. PERFORMANCE MEDIA PLAYER + SUPPORTED FILE FORMATS
