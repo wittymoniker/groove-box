@@ -822,7 +822,7 @@ class _OTMixedNumericTextOverlay(OTNumberGlyphWidget):
         # deleted C++ QWidget.
         self._sync_timer = QTimer(self)
         self._sync_timer.setSingleShot(True)
-        self._sync_timer.setInterval(0)
+        self._sync_timer.setInterval(16)  # PERF: coalesce symbol-overlay churn to one GUI frame
         self._sync_timer.timeout.connect(self._deferred_sync)
         self.setMinimumSize(0, 0)
         self.setMaximumSize(16777215, 16777215)
@@ -2923,7 +2923,7 @@ def group_orbit_index(index, order, seed, goava=False):
 # UI design tokens derived from M (self-similar spacing / translucency)
 UI_OPACITY = max(0.0, min(1.0, MEUM_NORM * PHI))          # pane glass
 UI_RADIUS = max(4, int(round(3.0 * MEUM)))                    # corner radius
-UI_TICK_MS = max(48, int(round(1000.0 / (MEUM_TWO_POW * 5.0))))  # decor frame period (perf: fewer background paints)
+UI_TICK_MS = max(80, int(round(1000.0 / (MEUM_TWO_POW * 5.0))))  # PERF: cap decorative background near 12.5 Hz
 UI_DRIFT = MEUM_NORM * PHI_INV                                  # caption micro-wiggle scale
 PAINT_RATE_HZ = 2.395                                           # max single-cell stack rate
 PAINT_PERIOD_S = 1.0 / PAINT_RATE_HZ                            # ~0.418 s between stacks
@@ -9598,6 +9598,11 @@ class VideoSynthViewer(QFrame):
         self._render_inflight = False
         self._render_pending = None
         self._render_generation = 0
+        # PERF: audio callbacks can arrive far faster than a useful visual preview.
+        # Throttle only audio-driven preview requests; manual camera/mode/resize
+        # requests remain immediate and canonical/audio state is untouched.
+        self._preview_min_interval = 1.0 / 15.0
+        self._last_audio_preview_request = 0.0
         self.setMouseTracking(True)
 
     def _request_async_frame(self, width=None, height=None, export=None):
@@ -9706,10 +9711,15 @@ class VideoSynthViewer(QFrame):
         self.engine.set_waveform(wave_data, playhead=playhead)
         if isinstance(wave_data, np.ndarray) and wave_data.size:
             self.scope_wave = np.resize(wave_data.astype(np.float32), 100)
+        # PERF: latest-only rendering prevents a queue, but without a rate gate the
+        # single worker can still stay at 100% CPU indefinitely. 15 fps is ample
+        # for the scenograph while audio/DSP remains full-rate and deterministic.
+        now = time.monotonic()
+        if (now - self._last_audio_preview_request) < self._preview_min_interval:
+            return
+        self._last_audio_preview_request = now
         ww = max(self.width(), 180)
         hh = max(self.height(), 180)
-        # Live preview only — oscilloscope/FFT are separate widgets, not composited here.
-        # Render asynchronously and coalesce rapid updates to the newest frame.
         self._request_async_frame(ww, hh, False)
 
     def set_mode(self, mode_idx):
@@ -9732,7 +9742,7 @@ class VideoSynthViewer(QFrame):
         if self._frame is not None:
             fh, fw = self._frame.shape[:2]
             qimg = QImage(self._frame.data, fw, fh, fw * 3, QImage.Format.Format_RGB888)
-            painter.drawImage(self.rect(), qimg.copy())
+            painter.drawImage(self.rect(), qimg)  # PERF: immediate draw; avoid full-frame copy
         painter.setPen(QColor("#c8a2ff"))
         painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
         painter.drawText(8, 14, "MEUM SCENOGRAPH")
@@ -11756,6 +11766,56 @@ class ReadmeGuideDialog(QDialog):
 
     HELP_TEXT = r"""
 
+## V34 Stability Pass
+
+- Reversible randomizer toggle contract: ON captures a full project baseline and generates a fresh variation; OFF restores the exact pre-randomize state; each subsequent ON cycle rerandomizes and shifts the control color palette.
+- Canonical Signal Control defaults to Full Canonical / 100% authority and self-heals missing canonical coverage through canonical-owned runtime overlays without rewriting user data.
+- Canonical Resonance / Activity is 50–150%, independent of the 50/50 source coefficients; 150% is activity/continuation drive, not output volume.
+- Canonical→Instrument convolution influence is 0–100%.
+- Maximum active instruments: 128. Default playlist row duration: 16 beats.
+- ParametricMathBackground is integrated with a deep navy gradient field.
+- Performance controls are consolidated into one horizontal deck; Automator controls are compacted into a multi-row grid.
+- UI initialization order and Qt stylesheet declarations were hardened; division-by-zero-sensitive paths use explicit degenerate-case handling rather than epsilon denominators where practical.
+
+--------------------------------------------------------------------------------
+FINITE INFINITY GREP + FINITE INFINITY–MEUM HYPERDRIVE
+--------------------------------------------------------------------------------
+Groovebox and sCode use the project reference I = 134964356 as a bounded
+"Finite Infinity" index space. The compiler/search path can hash normalized
+source tokens into 0..I-1 for fast grep-style candidate lookup, then verifies
+the exact normalized token before reporting a semantic match. The finite index
+is therefore an accelerator/organization mechanism, not a claim that all
+mathematical infinity is literally finite.
+
+The optional **Finite Infinity–Meum HyperDrive** is a single cross-media
+resonator/drive state shared by SOUND + IMAGE + INTERACTION. It is OFF by
+default and is saved with the project.
+
+For a project seed/canonical fingerprint, HyperDrive derives a deterministic
+index h modulo I and finite coordinate u=h/I. A Meum phase is formed from u and
+time. With Trigonometry Engine ON the modulation uses the project book forms:
+
+    isn(theta) = 2 sin(theta/2)
+    ics(theta) = 2 cos(theta/2)
+
+and combines their unit-equivalent components with Meum terms such as M-1 and
+1/M. With Trigonometry Engine OFF the compatibility path uses ordinary sin/cos.
+With Operator Theory ON the same phase uses the OT orientation/sign rule. Thus
+OT/Trig change the calculation route while the seed/fingerprint remains the
+single identity source.
+
+HyperDrive then applies the SAME modulation state to:
+  • Audio — a pre-hardclip Meum resonator/drive gain field plus a small cubic
+    drive curvature. It does not replace Master Volume or the final hard clip.
+  • Visuals — deterministic field/brightness and Meum-phase color deformation.
+  • Game generation — deterministic world/behavior identity modulation by the
+    same finite coordinate; it does not introduce an unrelated random seed.
+
+Drive controls cross-media modulation amount. Resonance controls the Meum
+resonator depth and defaults to M-1. HyperDrive, Operator Theory, Trigonometry
+Engine, Math Symbols, Meum engine simplification, and the other saved project
+controls are restored on load so save→load→audio/video/game uses the same math
+configuration.
 
 ================================================================================
   GROOVEBOX — Mathematician's / Scientist's Groovebox
@@ -11821,45 +11881,6 @@ For cyclic/native state, finite repeated trajectories can additionally be stored
 preperiod + period + certified jump information. The resulting "compression ratio"
 reported by native tests is a representation/reuse ratio for that certified cycle,
 not a universal data-compression theorem.
-
-FINITE INFINITY GREP (reverse grep) + FINITE INFINITY–MEUM HYPERDRIVE
-
-Groovebox and sCode use the project reference I = 134964356 as a bounded
-"Finite Infinity" index space. The compiler/search path can hash normalized
-source tokens into 0..I-1 for fast grep-style candidate lookup, then verifies
-the exact normalized token before reporting a semantic match. The finite index
-is therefore an accelerator/organization mechanism, not a claim that all
-mathematical infinity is literally finite.
-
-The optional **Finite Infinity–Meum HyperDrive** is a single cross-media
-resonator/drive state shared by SOUND + IMAGE + INTERACTION. It is OFF by
-default and is saved with the project.
-
-For a project seed/canonical fingerprint, HyperDrive derives a deterministic
-index h modulo I and finite coordinate u=h/I. A Meum phase is formed from u and
-time. With Trigonometry Engine ON the modulation uses the project book forms:
-
-    isn(theta) = 2 sin(theta/2)
-    ics(theta) = 2 cos(theta/2)
-
-and combines their unit-equivalent components with Meum terms such as M-1 and
-1/M. With Trigonometry Engine OFF the compatibility path uses ordinary sin/cos.
-With Operator Theory ON the same phase uses the OT orientation/sign rule. Thus
-OT/Trig change the calculation route while the seed/fingerprint remains the
-single identity source.
-
-HyperDrive then applies the SAME modulation state to:
-  • Audio — a pre-hardclip Meum resonator/drive gain field plus a small cubic
-    drive curvature. It does not replace Master Volume or the final hard clip.
-  • Visuals — deterministic field/brightness and Meum-phase color deformation.
-  • Game generation — deterministic world/behavior identity modulation by the
-    same finite coordinate; it does not introduce an unrelated random seed.
-
-Drive controls cross-media modulation amount. Resonance controls the Meum
-resonator depth and defaults to M-1. HyperDrive, Operator Theory, Trigonometry
-Engine, Math Symbols, Meum engine simplification, and the other saved project
-controls are restored on load so save→load→audio/video/game uses the same math
-configuration.
 
 --------------------------------------------------------------------------------
 1B. PERFORMANCE MEDIA PLAYER + SUPPORTED FILE FORMATS
