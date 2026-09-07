@@ -1,0 +1,77 @@
+{
+  "appliance_base": "sOS / Fedora 43 game-ready rootfs",
+  "architecture": "x86_64",
+  "author_numeric_font": {
+    "base": 16,
+    "full_cycle_cell": 16,
+    "precomputed_variants": 68,
+    "rewritable_per_field": true,
+    "scheme": "base16-squiggle-subscale-v4",
+    "spacing_rule": {
+      "spaced": "1/1 slot",
+      "unspaced": "1/2 slot"
+    },
+    "squiggle_weight": "2^-1",
+    "subscale_rule": "slot k => 2^(-4k)",
+    "underlying_value_preserved": true
+  },
+  "builders": {
+    "linux": "appliance_tools/BUILD_AND_BURN_LINUX.sh",
+    "macos": "appliance_tools/BUILD_AND_BURN_MACOS.command",
+    "scode": "appliance_tools/INSTALL_WITH_SCODE.sh",
+    "windows": "appliance_tools/BUILD_AND_BURN_WINDOWS.ps1"
+  },
+  "full_acceleration": {
+    "abi": 5,
+    "consumers": [
+      "canonical",
+      "audio offline/play render scratch/time-grid",
+      "visual preview analysis",
+      "parametric background",
+      "layered media",
+      "game identity",
+      "performance script compilation",
+      "symbol/UI QoS",
+      "author-number semantic codec and glyph atlas"
+    ],
+    "realtime_audio_policy": "no subprocess/IPC inside callback; sCode plans outside callback and Python/native DSP executes the selected work",
+    "required": true
+  },
+  "optimizer_contract": [
+    "logic-number cross casting",
+    "deterministic finite pool routing",
+    "modality lanes and dirty-state gates",
+    "host-consumed work claims and duplicate-work rejection",
+    "reusable NumPy buffer pools selected by sCode slots",
+    "sCode-keyed deterministic result memoization",
+    "visual/background cadence and editor QoS",
+    "media decode/reconstruction reuse",
+    "canonical recomposition coalescing",
+    "game identity reuse",
+    "compiled Parametric Remix control-script pooling",
+    "base-16 author-number semantic packet pooling",
+    "0..16 x squiggle x spacing precomputed symbol variants",
+    "2^-4k subscale decomposition and spacing-weight parity in sCode",
+    "symbol dirty-gating before formatting and immutable glyph packet reuse"
+  ],
+  "performance_media": [
+    "Parametric Remix file rendering",
+    "timed mixed-media playlist including still images",
+    "external display/audio routing",
+    "layered Draw Wave",
+    "layered Record/Sample tabs",
+    "relative time scalar reconstruction",
+    "heuristic and parametric interpolation",
+    "frequency peak and spectrum monitor",
+    "Play Sample and WAV export"
+  ],
+  "product": "Mathematician's Groovebox + sCode Standalone Appliance",
+  "project_roundtrip_keys": [
+    "media_workbench_state",
+    "scode_optimizer",
+    "author_numeric_font"
+  ],
+  "scode_appliance_installer_abi": 1,
+  "scode_optimizer_abi": 5,
+  "scode_required": true
+}

@@ -24,7 +24,7 @@ echo "==> brew python + ffmpeg (full codec suite)..."
 brew install python ffmpeg || brew upgrade python ffmpeg
 
 echo "==> pip dependencies (shared: host app + exported games)..."
-PIP_DEPS="numpy scipy PyQt6 sounddevice Pillow"
+PIP_DEPS="numpy PyQt6 sounddevice Pillow"
 python3 -m pip install --upgrade pip wheel
 python3 -m pip install $PIP_DEPS
 
@@ -39,8 +39,10 @@ for pair in "ffmpeg|$FF" "ffprobe|$FP"; do
 done
 
 echo "==> Verify:"
-python3 -c "import numpy, scipy, PyQt6.QtCore, sounddevice, PIL; print('python deps OK')"
+python3 -c "import numpy, PyQt6.QtCore, sounddevice, PIL; print('python deps OK')"
 command -v ffmpeg; command -v ffprobe
 ffmpeg -hide_banner -encoders >/dev/null 2>&1 && echo "ffmpeg OK"
 echo "==> Done."
-echo "    Run the app:   python3 groovebox.py"
+echo "    This distribution requires sCode. The shipped native stage-0 is Linux x86_64."
+echo "    To make the standalone appliance on macOS, run:"
+echo "      ./appliance_tools/BUILD_AND_BURN_MACOS.command"

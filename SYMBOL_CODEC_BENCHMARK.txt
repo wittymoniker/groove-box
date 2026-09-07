@@ -1,0 +1,6 @@
+precomputed semantic faces=68
+codec cold 1000=22.1378 ms
+codec cached 1000=0.8050 ms
+codec cache speedup=27.5x
+sCode memo cached per lookup=3.326 us
+sample 1.20 {'scheme': 'base16-squiggle-subscale-v4', 'source_text': '1.20', 'negative': False, 'integer_cells': [1], 'half_squiggle': False, 'fractional_cells': [{'value': 3, 'slot': 1, 'spaced': True, 'squiggle': False, 'subscale_exponent': 4}, {'value': 3, 'slot': 2, 'spaced': True, 'squiggle': False, 'subscale_exponent': 8}], 'visible_decimal_places': 2, 'represented': '1.19921875', 'error': '0.00078125', 'exact': False}

@@ -1,0 +1,10 @@
+sCode ABI 5
+plan uncached ms=1.6146
+plan cached ms=0.004368  speedup=369.7x
+work claim first ms=0.010926
+work claim repeated ms=0.003746
+layered media raw ms=3.3850
+layered media sCode memo ms=0.013936  speedup=242.9x
+row boolean-mask setup ms=6.1191
+row slice lookup ms=0.002052  speedup=2982.0x
+stats {'plans': 10, 'plan_cache_hits': 2000, 'work_claims': 5001, 'work_skips': 5000, 'memo_hits': 2000, 'memo_misses': 1, 'pool_hits': 1, 'pool_misses': 1}

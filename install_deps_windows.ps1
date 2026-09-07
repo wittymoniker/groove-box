@@ -69,10 +69,12 @@ foreach ($tool in @("ffmpeg.exe", "ffprobe.exe", "ffplay.exe")) {
 # --- pip dependencies ----------------------------------------------------
 Write-Host "==> Installing Python packages..."
 & $py -m pip install --upgrade pip wheel
-& $py -m pip install numpy scipy PyQt6 sounddevice Pillow
+& $py -m pip install numpy PyQt6 sounddevice Pillow
 
 Write-Host "==> Verify:"
-& $py -c "import numpy, scipy, PyQt6.QtCore, sounddevice, PIL; print('python deps OK')"
+& $py -c "import numpy, PyQt6.QtCore, sounddevice, PIL; print('python deps OK')"
 & (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source -hide_banner -version | Select-Object -First 1
 Write-Host "==> Done."
-Write-Host "    Restart your terminal (PATH was updated), then run:   python groovebox.py"
+Write-Host "    This distribution requires sCode. The shipped native stage-0 is Linux x86_64."
+Write-Host "    To make the standalone appliance on Windows, run:"
+Write-Host "      .\appliance_tools\BUILD_AND_BURN_WINDOWS.ps1"

@@ -46,7 +46,7 @@ check_python() {
 check_python_deps() {
     log_info "Checking Python dependencies..."
     
-    REQUIRED_PACKAGES=("numpy" "scipy" "PyQt6" "sounddevice" "Pillow")
+    REQUIRED_PACKAGES=("numpy" "PyQt6" "sounddevice" "Pillow")
     MISSING_PACKAGES=()
     
     for package in "${REQUIRED_PACKAGES[@]}"; do
@@ -191,7 +191,7 @@ check_julia() {
             log_info "Install with: pip install juliacall"
         fi
     else
-        log_info "Julia not found. Using Python-only mode."
+        log_info "Julia not found. Julia is optional; required sCode + Python/native acceleration remains active."
     fi
 }
 
@@ -219,11 +219,11 @@ launch_app() {
     echo "=========================================="
     echo "  EQR GROOVEBOX — MATHEMATICIAN'S"
     echo "         SCIENTIST'S GROOVEBOX"
-    echo "   Hybrid C++/Python/Julia Engine"
+    echo "   Required sCode + C++/Python Engine"
     echo "=========================================="
     echo ""
     
-    exec python3 groovebox.py "$@"
+    exec python3 run_groovebox.py "$@"
 }
 
 # =============================================================================

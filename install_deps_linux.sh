@@ -55,7 +55,7 @@ fi
 
 set -e
 
-PIP_DEPS="numpy scipy PyQt6 sounddevice Pillow"
+PIP_DEPS="numpy PyQt6 sounddevice Pillow"
 
 if [ "$DISTRO" = "fedora" ]; then
   echo "==> Enabling RPM Fusion (free + nonfree) for full ffmpeg codecs..."
@@ -64,13 +64,16 @@ if [ "$DISTRO" = "fedora" ]; then
     "https://download1.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm"
   dnf install -y \
     python3 python3-pip python3-devel gcc gcc-c++ \
-    ffmpeg ffmpeg-libs alsa-lib-devel portaudio-devel openssl-devel libffi-devel
+    ffmpeg ffmpeg-libs alsa-lib-devel portaudio portaudio-devel openssl-devel libffi-devel \
+    pipewire wireplumber pipewire-alsa pipewire-pulseaudio mesa-dri-drivers mesa-vulkan-drivers \
+    SDL2 SDL2_mixer openal-soft gamescope mpv qt6-qtwayland xorg-x11-server-Xwayland
 else
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
   apt-get install -y \
     python3 python3-pip python3-venv python3-dev build-essential \
-    ffmpeg libasound2-dev portaudio19-dev libssl-dev libffi-dev
+    ffmpeg mpv pipewire wireplumber libasound2-dev portaudio19-dev libssl-dev libffi-dev \
+    libsdl2-2.0-0 libsdl2-mixer-2.0-0 libopenal1
   # Broad codec pack (mp3 / mp4 / aac / av1 / h264 …). Best effort: this is a
   # multiverse package; if it fails, core ffmpeg above already covers WAV/PNG
   # frame muxing and the common containers.
@@ -88,8 +91,18 @@ if [ -n "$FF" ]; then cp -f "$FF" /bin/ffmpeg || ln -sf "$FF" /bin/ffmpeg; fi
 if [ -n "$FP" ]; then cp -f "$FP" /bin/ffprobe || ln -sf "$FP" /bin/ffprobe; fi
 
 echo "==> Verify:"
-python3 -c "import numpy, scipy, PyQt6.QtCore, sounddevice, PIL; print('python deps OK')"
+python3 -c "import numpy, PyQt6.QtCore, sounddevice, PIL; print('python deps OK')"
 command -v ffmpeg; command -v ffprobe
 ffmpeg -hide_banner -encoders 2>/dev/null | grep -E "libx264|aac|libvpx|libvorbis" | sed 's/^/  encoder: /' | head -6
+echo "==> Verifying bundled required sCode optimizer..."
+if [ -x "$(dirname "$0")/sCode/bootstrap/linux-x86_64/scode0" ]; then
+  PLAN=$(cd "$(dirname "$0")/sCode" && GB_OPT_ID=5 GB_OPT_DIRTY=255 GB_OPT_FRAME=0 GB_OPT_LANES=4 GB_OPT_POOL=64 GB_OPT_SHAPE=1 ./bootstrap/linux-x86_64/scode0 run apps/groovebox/groovebox_optimizer.sC)
+  printf '%s\n' "$PLAN" | grep -q '^scode_optimizer_abi=5$'
+  printf '%s\n' "$PLAN" | grep -Eq '^pool_slot=[0-9-]+$'
+  printf '%s\n' "$PLAN" | grep -Eq '^audio_lane=[0-9-]+$'
+  echo "    bundled sCode optimizer OK"
+else
+  echo "ERROR: bundled Linux x86_64 sCode runtime missing." >&2; exit 6
+fi
 echo "==> Done."
-echo "    Run the app:   python3 groovebox.py"
+echo "    Run the required-sCode app:   python3 run_groovebox.py"

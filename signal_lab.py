@@ -190,3 +190,6 @@ class SignalLab(QWidget):
 def tempfile_dir():
     import tempfile
     d=os.path.join(tempfile.gettempdir(),'groovebox_signal_lab'); os.makedirs(d,exist_ok=True); return d
+
+# LAYERED_SIGNAL_LAB_20260906: canonical Draw/Record implementation.
+from layered_signal_lab import LayeredSignalLab as SignalLab

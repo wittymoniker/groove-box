@@ -64,9 +64,10 @@ from PyQt6.QtWidgets import (
 
 AUDIO_EXT = {".wav", ".flac", ".mp3", ".ogg", ".opus", ".aiff", ".aif", ".caf"}
 VIDEO_EXT = {".mp4", ".webm", ".avi", ".mov", ".mkv"}
+IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
 PROJECT_EXT = {".mgpr"}
 GAME_EXT = {".zip"}
-MEDIA_EXT = AUDIO_EXT | VIDEO_EXT
+MEDIA_EXT = AUDIO_EXT | VIDEO_EXT | IMAGE_EXT
 
 # Fine-grained stream classification, distinct from the AUDIO_EXT/VIDEO_EXT
 # extension buckets above: a .mp4/.mkv/etc. container can hold audio-only,
@@ -74,6 +75,7 @@ MEDIA_EXT = AUDIO_EXT | VIDEO_EXT
 KIND_AUDIO = "audio"        # audio file, or audio-only container: no video track
 KIND_VIDEO = "video"        # video container with NO audio track ("audioless video")
 KIND_AV = "av"              # video container WITH an audio track ("both")
+KIND_IMAGE = "image"          # still/animated image shown for playlist duration
 KIND_UNKNOWN = "unknown"    # couldn't probe (no ffprobe, or read error)
 KIND_PENDING = "pending"    # probe queued/in flight; always shown regardless of filter
 
@@ -128,6 +130,8 @@ def _probe_media_kind_sync(path: str) -> str:
     ext = os.path.splitext(path)[1].lower()
     if ext in AUDIO_EXT:
         return KIND_AUDIO
+    if ext in IMAGE_EXT:
+        return KIND_IMAGE
     if ext not in VIDEO_EXT:
         return KIND_UNKNOWN
     ffprobe = shutil.which("ffprobe")
@@ -155,7 +159,7 @@ def _probe_media_kind_sync(path: str) -> str:
 
 def _kind_icon(kind: str) -> str:
     return {
-        KIND_AUDIO: "🔊", KIND_VIDEO: "🎬(mute)", KIND_AV: "🎬🔊", KIND_PENDING: "⏳",
+        KIND_AUDIO: "🔊", KIND_VIDEO: "🎬(mute)", KIND_AV: "🎬🔊", KIND_IMAGE: "🖼", KIND_PENDING: "⏳",
     }.get(kind, "📄")
 
 
@@ -343,6 +347,13 @@ class Performance(QDialog):
         self._player_proc: Optional[subprocess.Popen] = None
         self._playlist: List[Dict[str, Any]] = []
         self._playlist_index = -1
+        # TIMED_MEDIA_20260906: absolute timeline scheduling for any media type,
+        # including still pictures routed to a selected external display.
+        self._timed_playlist_timer = QTimer(self)
+        self._timed_playlist_timer.setInterval(25)
+        self._timed_playlist_timer.timeout.connect(self._timed_playlist_tick)
+        self._timed_playlist_epoch = 0.0
+        self._timed_playlist_pending: List[int] = []
         self._batch_cancel = False
         self._mix_procs: List[subprocess.Popen] = []
         # LIVE_MEDIA_2026: mpv JSON-IPC gives instant speed changes without
@@ -570,6 +581,7 @@ class Performance(QDialog):
         root.addLayout(close_row)
 
         self.refresh()
+        self.restore_state((getattr(self.host, "media_workbench_state", {}) or {}).get("performance", {}))
 
     def resizeEvent(self, event):
         try:
@@ -929,7 +941,7 @@ class Performance(QDialog):
             pass
         return cmd, env
 
-    def _play_path(self, path: str, volume_pct: int = 100):
+    def _play_path(self, path: str, volume_pct: int = 100, duration_s: float = 0.0):
         self._stop_player()
         ext = os.path.splitext(path)[1].lower()
         if ext in AUDIO_EXT and hasattr(self.host, "play_buffer"):
@@ -942,7 +954,8 @@ class Performance(QDialog):
                     return
                 except Exception as e:
                     self.lbl_status.setText(f"Host play failed ({e}); external player…")
-        cmd = _player_cmd_with_volume(volume_pct, want_video=(ext in VIDEO_EXT)) or _find_player()
+        want_video = ext in VIDEO_EXT or ext in IMAGE_EXT
+        cmd = _player_cmd_with_volume(volume_pct, want_video=want_video) or _find_player()
         if not cmd:
             QMessageBox.warning(
                 self, "No player",
@@ -962,7 +975,12 @@ class Performance(QDialog):
                 cmd = list(cmd) + [f"--input-ipc-server={self._mpv_ipc_path}", f"--speed={self._live_speed:.6f}"]
             else:
                 self._mpv_ipc_path = None
-            cmd, penv = self._routed_player(cmd, want_video=(ext in VIDEO_EXT))
+            if cmd and os.path.basename(cmd[0]).startswith("mpv"):
+                if ext in IMAGE_EXT:
+                    cmd = list(cmd) + [f"--image-display-duration={max(0.05, float(duration_s or 5.0)):.6f}", "--loop-file=no"]
+                elif float(duration_s or 0.0) > 0.0:
+                    cmd = list(cmd) + [f"--length={float(duration_s):.6f}"]
+            cmd, penv = self._routed_player(cmd, want_video=want_video)
             self._player_proc = subprocess.Popen(cmd + [path], env=penv)
             try:
                 if self._media_share_server is not None:
@@ -1055,10 +1073,10 @@ class Performance(QDialog):
                             self._kind_cache[path] = (st.st_mtime, st.st_size, fine_kind)
                         except OSError:
                             pass
-                    self._playlist.append({"path": path, "volume": 100, "mix": False, "kind": fine_kind})
+                    self._playlist.append({"path": path, "volume": 100, "mix": False, "kind": fine_kind, "time_s": float(len(self._playlist) * 5.0), "duration_s": 5.0 if fine_kind == KIND_IMAGE else 0.0})
                 elif ext in GAME_EXT:
-                    self._playlist.append({"path": path, "volume": 100, "mix": False, "kind": KIND_UNKNOWN})
-        self._refresh_playlist_widget()
+                    self._playlist.append({"path": path, "volume": 100, "mix": False, "kind": KIND_UNKNOWN, "time_s": float(len(self._playlist) * 5.0), "duration_s": 0.0})
+        self._refresh_playlist_widget(); self._sync_project_state()
         self.lbl_status.setText(f"Playlist: {len(self._playlist)} items")
 
     def _delete_selected(self):
@@ -1243,6 +1261,17 @@ class Performance(QDialog):
         speed_row.addWidget(btn_speed_reset)
         lay.addLayout(speed_row)
 
+        timing = QGroupBox("Timed external-display playlist")
+        tf = QFormLayout(timing)
+        self.spin_item_time = QDoubleSpinBox(); self.spin_item_time.setRange(0.0, 86400.0); self.spin_item_time.setDecimals(3); self.spin_item_time.setSuffix(" s")
+        self.spin_item_duration = QDoubleSpinBox(); self.spin_item_duration.setRange(0.0, 86400.0); self.spin_item_duration.setDecimals(3); self.spin_item_duration.setValue(5.0); self.spin_item_duration.setSuffix(" s")
+        self.spin_item_time.valueChanged.connect(self._on_playlist_timing_changed); self.spin_item_duration.valueChanged.connect(self._on_playlist_timing_changed)
+        tf.addRow("Selected start time", self.spin_item_time); tf.addRow("Selected duration (0=natural)", self.spin_item_duration)
+        tr = QHBoxLayout(); btn_timed = QPushButton("▶ Send Timed Playlist → Display"); btn_timed.clicked.connect(self._start_timed_playlist)
+        btn_timed_stop = QPushButton("■ Stop Timed Playlist"); btn_timed_stop.clicked.connect(self._stop_timed_playlist)
+        tr.addWidget(btn_timed); tr.addWidget(btn_timed_stop); tf.addRow(tr)
+        lay.addWidget(timing)
+
         hint = QLabel(
             "Queue projects' renders here for sequential playback, or flag rows "
             "'[MIX]' and use Play Mix to layer several tracks (each at its own "
@@ -1271,7 +1300,8 @@ class Performance(QDialog):
             mod_tag = ""
             if "pitch_semitones" in it or "rate" in it:
                 mod_tag = f"  [P {float(it.get('pitch_semitones',0.0)):+.2f} st · R {float(it.get('rate',1.0)):.2f}× · {it.get('resample','preserve-duration')}]"
-            self.playlist_widget.addItem(f"{icon} {name}  {it.get('volume', 100)}%{mix_tag}{mod_tag}")
+            timing_tag = f"  [T {float(it.get('time_s',0.0)):.3f}s · D {float(it.get('duration_s',0.0)):.3f}s]"
+            self.playlist_widget.addItem(f"{icon} {name}  {it.get('volume', 100)}%{mix_tag}{timing_tag}{mod_tag}")
         self.playlist_widget.blockSignals(False)
         for row in selected_rows:
             if 0 <= row < self.playlist_widget.count():
@@ -1345,13 +1375,28 @@ class Performance(QDialog):
         self.sld_playlist_volume.setValue(int(vol))
         self.sld_playlist_volume.blockSignals(False)
         self.lbl_playlist_volume.setText(f"{int(vol)}%")
+        if hasattr(self, "spin_item_time") and 0 <= rows[0] < len(self._playlist):
+            it = self._playlist[rows[0]]
+            self.spin_item_time.blockSignals(True); self.spin_item_duration.blockSignals(True)
+            self.spin_item_time.setValue(float(it.get("time_s", 0.0) or 0.0))
+            self.spin_item_duration.setValue(float(it.get("duration_s", 0.0) or 0.0))
+            self.spin_item_time.blockSignals(False); self.spin_item_duration.blockSignals(False)
+
+    def _on_playlist_timing_changed(self, *_):
+        rows = {i.row() for i in self.playlist_widget.selectedIndexes()}
+        for row in rows:
+            if 0 <= row < len(self._playlist):
+                self._playlist[row]["time_s"] = float(self.spin_item_time.value())
+                self._playlist[row]["duration_s"] = float(self.spin_item_duration.value())
+        if rows:
+            self._refresh_playlist_widget(); self._sync_project_state()
 
     def _on_playlist_volume_changed(self, value: int):
         self.lbl_playlist_volume.setText(f"{value}%")
         for row in {i.row() for i in self.playlist_widget.selectedIndexes()}:
             if 0 <= row < len(self._playlist):
                 self._playlist[row]["volume"] = int(value)
-        self._refresh_playlist_widget()
+        self._refresh_playlist_widget(); self._sync_project_state()
 
     def _toggle_mix_selected(self):
         rows = {i.row() for i in self.playlist_widget.selectedIndexes()}
@@ -1360,7 +1405,7 @@ class Performance(QDialog):
         for row in rows:
             if 0 <= row < len(self._playlist):
                 self._playlist[row]["mix"] = not self._playlist[row].get("mix", False)
-        self._refresh_playlist_widget()
+        self._refresh_playlist_widget(); self._sync_project_state()
 
     def _mpv_command(self, command: list) -> bool:
         path = self._mpv_ipc_path
@@ -1388,7 +1433,7 @@ class Performance(QDialog):
         self._stop_mix()
         self._playlist.clear()
         self._playlist_index = -1
-        self.playlist_widget.clear()
+        self.playlist_widget.clear(); self._sync_project_state()
 
     def _playlist_play(self):
         if not self._playlist:
@@ -1405,7 +1450,37 @@ class Performance(QDialog):
         else:
             if "rate" in entry and hasattr(self, "sld_live_speed"):
                 self.sld_live_speed.setValue(max(25, min(400, int(round(float(entry.get("rate", 1.0)) * 100.0)))))
-            self._play_path(path, volume_pct=entry.get("volume", 100))
+            self._play_path(path, volume_pct=entry.get("volume", 100), duration_s=float(entry.get("duration_s", 0.0) or 0.0))
+
+    def _start_timed_playlist(self):
+        if not self._playlist:
+            return
+        self._timed_playlist_pending = sorted(range(len(self._playlist)), key=lambda i: (float(self._playlist[i].get("time_s", 0.0) or 0.0), i))
+        self._timed_playlist_epoch = time.monotonic()
+        self._timed_playlist_timer.start()
+        self.lbl_status.setText(f"Timed display playlist armed: {len(self._timed_playlist_pending)} item(s)")
+        self._timed_playlist_tick()
+
+    def _timed_playlist_tick(self):
+        if not self._timed_playlist_pending:
+            self._timed_playlist_timer.stop(); return
+        elapsed = time.monotonic() - self._timed_playlist_epoch
+        while self._timed_playlist_pending:
+            idx = self._timed_playlist_pending[0]
+            it = self._playlist[idx]
+            if elapsed + 1e-6 < float(it.get("time_s", 0.0) or 0.0):
+                break
+            self._timed_playlist_pending.pop(0)
+            self._playlist_index = idx; self.playlist_widget.setCurrentRow(idx)
+            path = it.get("path", "")
+            if os.path.isfile(path):
+                self._play_path(path, volume_pct=int(it.get("volume",100)), duration_s=float(it.get("duration_s",0.0) or 0.0))
+        if not self._timed_playlist_pending:
+            self._timed_playlist_timer.stop()
+
+    def _stop_timed_playlist(self):
+        self._timed_playlist_timer.stop(); self._timed_playlist_pending = []; self._stop_player()
+        self.lbl_status.setText("Timed display playlist stopped.")
 
     def _playlist_next(self):
         if not self._playlist:
@@ -1610,6 +1685,10 @@ class Performance(QDialog):
         btn_arm.clicked.connect(self._arm_host_dj_toggles)
         row.addWidget(btn_apply)
         row.addWidget(btn_arm)
+        btn_file = QPushButton("Render Parametric Remix → File…")
+        btn_file.setToolTip("Non-destructively render the selected browser/playlist media through the current continuous remix script and deterministic DJ processor.")
+        btn_file.clicked.connect(self._render_parametric_remix_file)
+        row.addWidget(btn_file)
         lay.addLayout(row)
 
         self.lbl_remix = QLabel("Remix amounts at 0 — dry.")
@@ -1660,6 +1739,97 @@ class Performance(QDialog):
         lay.addWidget(script_group)
         lay.addStretch(1)
         return w
+
+    def _render_parametric_remix_file(self):
+        paths = [p for p in self._selected_paths() if os.path.isfile(p) and os.path.splitext(p)[1].lower() in MEDIA_EXT]
+        if not paths and 0 <= self._playlist_index < len(self._playlist):
+            p = self._playlist[self._playlist_index].get("path", "")
+            if os.path.isfile(p): paths = [p]
+        if not paths:
+            QMessageBox.information(self, "Parametric Remix", "Select an audio/video file in Performance, or select a playlist item first.")
+            return
+        src = paths[0]; ext = os.path.splitext(src)[1].lower()
+        default_ext = ".wav" if ext in AUDIO_EXT else (".mp4" if ext in VIDEO_EXT else ".png")
+        default = os.path.splitext(src)[0] + "_parametric_remix" + default_ext
+        out, _ = QFileDialog.getSaveFileName(self, "Render Parametric Remix", default, "Media files (*.*)")
+        if not out: return
+        try:
+            from parametric_file_remix import render_parametric_file
+            result = render_parametric_file(
+                src, out, self.txt_pattern_script.toPlainText(), int(self.spin_pattern_seed.value()),
+                pair=(int(self.spin_remix_pair_a.value()), int(self.spin_remix_pair_b.value())),
+                bpm=float(getattr(getattr(self.host, "spin_bpm", None), "value", lambda:120.0)()),
+                control_hz=max(1, min(60, int(self.spin_pattern_hz.value()))),
+            )
+            self.lbl_status.setText("Parametric file edit: " + result)
+            self._sync_project_state()
+        except Exception as exc:
+            QMessageBox.warning(self, "Parametric Remix", str(exc))
+
+    def export_state(self) -> Dict[str, Any]:
+        """JSON-safe Performance state used by normal Groovebox save/load."""
+        display = getattr(self._output_display, "name", "") if self._output_display else ""
+        audio = getattr(self._output_audio_target, "name", "") if self._output_audio_target else ""
+        return {
+            "version": 2,
+            "playlist": json.loads(json.dumps(self._playlist, default=str)),
+            "playlist_index": int(self._playlist_index),
+            "live_speed": float(self._live_speed),
+            "arrange": self.cmb_playlist_arrange.currentText() if hasattr(self,"cmb_playlist_arrange") else "Energy arc (size)",
+            "arrange_seed": int(self.spin_playlist_arrange_seed.value()) if hasattr(self,"spin_playlist_arrange_seed") else 1975807343,
+            "output_display": display, "output_audio": audio,
+            "remix": {
+                "goava": int(self.sld_goava.value()) if hasattr(self,"sld_goava") else 0,
+                "rand": int(self.sld_rand.value()) if hasattr(self,"sld_rand") else 0,
+                "boost": int(self.sld_boost.value()) if hasattr(self,"sld_boost") else 0,
+                "pair_a": int(self.spin_remix_pair_a.value()) if hasattr(self,"spin_remix_pair_a") else 0,
+                "pair_b": int(self.spin_remix_pair_b.value()) if hasattr(self,"spin_remix_pair_b") else 1,
+                "script": self.txt_pattern_script.toPlainText() if hasattr(self,"txt_pattern_script") else "",
+                "rate_hz": int(self.spin_pattern_hz.value()) if hasattr(self,"spin_pattern_hz") else 20,
+                "seed": int(self.spin_pattern_seed.value()) if hasattr(self,"spin_pattern_seed") else 1975807343,
+                "host_playlist": bool(self.chk_pattern_host_playlist.isChecked()) if hasattr(self,"chk_pattern_host_playlist") else True,
+            },
+        }
+
+    def restore_state(self, state: Dict[str, Any]):
+        if not isinstance(state, dict): return
+        pl = state.get("playlist")
+        if isinstance(pl, list):
+            self._playlist = [dict(x) for x in pl if isinstance(x, dict) and x.get("path")]
+            self._playlist_index = max(-1, min(int(state.get("playlist_index", -1)), len(self._playlist)-1))
+            self._refresh_playlist_widget()
+        if hasattr(self,"sld_live_speed"):
+            self.sld_live_speed.setValue(max(25,min(400,int(round(float(state.get("live_speed",1.0))*100)))))
+        if hasattr(self,"cmb_playlist_arrange") and state.get("arrange"):
+            self.cmb_playlist_arrange.setCurrentText(str(state.get("arrange")))
+        if hasattr(self,"spin_playlist_arrange_seed"):
+            self.spin_playlist_arrange_seed.setValue(int(state.get("arrange_seed",1975807343)))
+        r=state.get("remix") if isinstance(state.get("remix"),dict) else {}
+        for name,key,default in (("sld_goava","goava",0),("sld_rand","rand",0),("sld_boost","boost",0),("spin_remix_pair_a","pair_a",0),("spin_remix_pair_b","pair_b",1),("spin_pattern_hz","rate_hz",20),("spin_pattern_seed","seed",1975807343)):
+            if hasattr(self,name): getattr(self,name).setValue(int(r.get(key,default)))
+        if hasattr(self,"txt_pattern_script") and "script" in r: self.txt_pattern_script.setPlainText(str(r.get("script") or ""))
+        if hasattr(self,"chk_pattern_host_playlist"): self.chk_pattern_host_playlist.setChecked(bool(r.get("host_playlist",True)))
+        self._refresh_output_devices()
+        dn=str(state.get("output_display") or ""); an=str(state.get("output_audio") or "")
+        if dn and hasattr(self,"cmb_output_display"):
+            for i,d in enumerate(self._output_displays):
+                if getattr(d,"name","")==dn: self.cmb_output_display.setCurrentIndex(i); break
+        if an and hasattr(self,"cmb_output_audio"):
+            for i,a in enumerate(self._output_audio):
+                if getattr(a,"name","")==an: self.cmb_output_audio.setCurrentIndex(i); break
+        self._apply_output_selection()
+
+    def _sync_project_state(self):
+        try:
+            state=getattr(self.host,"media_workbench_state",None)
+            if not isinstance(state,dict): state={}; setattr(self.host,"media_workbench_state",state)
+            state["performance"]=self.export_state()
+        except Exception:
+            pass
+
+    def closeEvent(self, event):
+        self._sync_project_state()
+        return super().closeEvent(event)
 
     def _push_remix(self, *_args):
         host = self.host
@@ -1714,6 +1884,36 @@ class Performance(QDialog):
                 raise ValueError("only listed math functions may be called")
         return eval(compile(node, "<media-pattern>", "eval"), {"__builtins__": {}}, env)
 
+    def _compiled_pattern_program(self):
+        """Compile the control script once per text identity, routed by sCode."""
+        text=self.txt_pattern_script.toPlainText()
+        def build():
+            program=[]
+            allowed_names={"t","step","pi","e","sin","cos","tan","sqrt","abs","min","max","rand",
+                           "goava","rand","boost","speed","advance","host"}
+            allowed_nodes=(ast.Expression,ast.Constant,ast.Name,ast.Load,ast.BinOp,ast.UnaryOp,
+                           ast.BoolOp,ast.Compare,ast.Call,ast.Add,ast.Sub,ast.Mult,ast.Div,
+                           ast.Mod,ast.Pow,ast.USub,ast.UAdd,ast.And,ast.Or,ast.Not,
+                           ast.Eq,ast.NotEq,ast.Lt,ast.LtE,ast.Gt,ast.GtE)
+            callable_names={"sin","cos","tan","sqrt","abs","min","max","rand"}
+            for raw in text.splitlines():
+                line=raw.split("#",1)[0].strip()
+                if not line or "=" not in line: continue
+                key,expr=line.split("=",1); key=key.strip().lower(); expr=expr.strip()
+                if key not in {"goava","rand","boost","speed","advance","host"}: continue
+                node=ast.parse(expr,mode="eval")
+                for n in ast.walk(node):
+                    if not isinstance(n,allowed_nodes): raise ValueError(f"unsupported script syntax: {type(n).__name__}")
+                    if isinstance(n,ast.Name) and n.id not in allowed_names: raise ValueError(f"unknown pattern name: {n.id}")
+                    if isinstance(n,ast.Call) and (not isinstance(n.func,ast.Name) or n.func.id not in callable_names):
+                        raise ValueError("only listed math functions may be called")
+                program.append((key,compile(node,"<media-pattern>","eval")))
+            return tuple(program)
+        opt=getattr(self.host,"_scode_optimizer",None)
+        if opt is not None:
+            return opt.memoized_result("ui_pattern_compile",text,build,max_entries=8)
+        return build()
+
     def _set_pattern_rate(self, hz: int):
         self._pattern_timer.setInterval(max(16, int(round(1000.0 / max(1, hz)))))
 
@@ -1730,47 +1930,38 @@ class Performance(QDialog):
             self.lbl_pattern.setText("Pattern stopped.")
 
     def _pattern_tick(self):
-        hz = max(1, int(getattr(self, "spin_pattern_hz", None).value() if hasattr(self, "spin_pattern_hz") else 20))
-        t = self._pattern_phase
-        step = self._pattern_step
-        env = {
-            "t": t, "step": step, "pi": math.pi, "e": math.e,
-            "sin": math.sin, "cos": math.cos, "tan": math.tan, "sqrt": math.sqrt,
-            "abs": abs, "min": min, "max": max,
-            "rand": self._pattern_rng.random,
-        }
-        values: Dict[str, Any] = {}
+        hz=max(1,int(getattr(self,"spin_pattern_hz",None).value() if hasattr(self,"spin_pattern_hz") else 20))
+        t=self._pattern_phase; step=self._pattern_step
+        env={"t":t,"step":step,"pi":math.pi,"e":math.e,"sin":math.sin,"cos":math.cos,
+             "tan":math.tan,"sqrt":math.sqrt,"abs":abs,"min":min,"max":max,"rand":self._pattern_rng.random}
+        values:Dict[str,Any]={}
         try:
-            for raw in self.txt_pattern_script.toPlainText().splitlines():
-                line = raw.split("#", 1)[0].strip()
-                if not line or "=" not in line:
-                    continue
-                key, expr = line.split("=", 1)
-                key = key.strip().lower()
-                if key not in {"goava", "rand", "boost", "speed", "advance", "host"}:
-                    continue
-                values[key] = self._safe_pattern_eval(expr.strip(), dict(env, **values))
-            if "goava" in values:
-                self.sld_goava.setValue(max(0, min(100, int(round(float(values["goava"]))))))
-            if "rand" in values:
-                self.sld_rand.setValue(max(0, min(100, int(round(float(values["rand"]))))))
-            if "boost" in values:
-                self.sld_boost.setValue(max(0, min(100, int(round(float(values["boost"]))))))
-            if "speed" in values and hasattr(self, "sld_live_speed"):
-                self.sld_live_speed.setValue(max(25, min(400, int(round(float(values["speed"]) * 100.0)))))
-            if bool(values.get("advance", False)) and self._playlist:
-                self._playlist_next()
+            for key,code in self._compiled_pattern_program():
+                values[key]=eval(code,{"__builtins__":{}},dict(env,**values))
+
+            # SCODE_FULL_ACCEL_V4: coalesce three slider signal cascades into one
+            # live-DJ update. Numeric values are still identical to the old path.
+            changed=False
+            assignments=[]
+            if "goava" in values: assignments.append((self.sld_goava,max(0,min(100,int(round(float(values["goava"])))))))
+            if "rand" in values: assignments.append((self.sld_rand,max(0,min(100,int(round(float(values["rand"])))))))
+            if "boost" in values: assignments.append((self.sld_boost,max(0,min(100,int(round(float(values["boost"])))))))
+            for widget,val in assignments:
+                if widget.value()!=val:
+                    widget.blockSignals(True); widget.setValue(val); widget.blockSignals(False); changed=True
+            if changed:
+                self._push_remix()
+            if "speed" in values and hasattr(self,"sld_live_speed"):
+                sv=max(25,min(400,int(round(float(values["speed"])*100.0))))
+                if self.sld_live_speed.value()!=sv:
+                    self.sld_live_speed.setValue(sv)
+            if bool(values.get("advance",False)) and self._playlist: self._playlist_next()
             if self.chk_pattern_host_playlist.isChecked():
-                self._write_host_pattern_value(values.get("host", values.get("goava", 0.0) / 100.0), step)
-            self.lbl_pattern.setText(
-                f"t={t:.2f} · step={step} · G={self.sld_goava.value()} R={self.sld_rand.value()} "
-                f"B={self.sld_boost.value()} · speed={self._live_speed:.2f}×"
-            )
+                self._write_host_pattern_value(values.get("host",values.get("goava",0.0)/100.0),step)
+            self.lbl_pattern.setText(f"t={t:.2f} · step={step} · G={self.sld_goava.value()} R={self.sld_rand.value()} B={self.sld_boost.value()} · speed={self._live_speed:.2f}×")
         except Exception as e:
-            self.lbl_pattern.setText(f"Pattern error: {e}")
-            self._pattern_timer.stop()
-        self._pattern_step += 1
-        self._pattern_phase += 1.0 / float(hz)
+            self.lbl_pattern.setText(f"Pattern error: {e}"); self._pattern_timer.stop()
+        self._pattern_step+=1; self._pattern_phase+=1.0/float(hz)
 
     def _write_host_pattern_value(self, value: Any, step: int):
         """Write sparse, bounded control-rate data into the host playlist automation.

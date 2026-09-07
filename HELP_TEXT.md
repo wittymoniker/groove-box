@@ -1,12 +1,15 @@
 
-================================================================================
-  GROOVEBOX — Mathematician's / Scientist's Groovebox
-  Full Documentation, Scripting Syntax & Design Philosophy
-================================================================================
-  Main editor and author: Noah Girouard King (Eski)
-  Credits: Grok (xAI), Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI),
-  Mistral.ai (Mistral), Meta AI (Meta), GitHub Copilot (GitHub),
-  Cursor Grok 4.6, jcode(1jehuang), and opencode (anomalyco).
+
+## V34 Stability Pass
+
+- Reversible randomizer toggle contract: ON captures a full project baseline and generates a fresh variation; OFF restores the exact pre-randomize state; each subsequent ON cycle rerandomizes and shifts the control color palette.
+- Canonical Signal Control defaults to Full Canonical / 100% authority and self-heals missing canonical coverage through canonical-owned runtime overlays without rewriting user data.
+- Canonical Resonance / Activity is 50–150%, independent of the 50/50 source coefficients; 150% is activity/continuation drive, not output volume.
+- Canonical→Instrument convolution influence is 0–100%.
+- Maximum active instruments: 128. Default playlist row duration: 16 beats.
+- ParametricMathBackground is integrated with a deep navy gradient field.
+- Performance controls are consolidated into one horizontal deck; Automator controls are compacted into a multi-row grid.
+- UI initialization order and Qt stylesheet declarations were hardened; division-by-zero-sensitive paths use explicit degenerate-case handling rather than epsilon denominators where practical.
 
 --------------------------------------------------------------------------------
 FINITE INFINITY GREP + FINITE INFINITY–MEUM HYPERDRIVE
@@ -47,6 +50,15 @@ resonator depth and defaults to M-1. HyperDrive, Operator Theory, Trigonometry
 Engine, Math Symbols, Meum engine simplification, and the other saved project
 controls are restored on load so save→load→audio/video/game uses the same math
 configuration.
+
+================================================================================
+  GROOVEBOX — Mathematician's / Scientist's Groovebox
+  Full Documentation, Scripting Syntax & Design Philosophy
+================================================================================
+  Main editor and author: Noah Girouard King (Eski)
+  Credits: Grok (xAI), Gemini (Google), Claude (Anthropic), ChatGPT (OpenAI),
+  Mistral.ai (Mistral), Meta AI (Meta), GitHub Copilot (GitHub),
+  Cursor Grok 4.6, jcode(1jehuang), and opencode (anomalyco).
 
 --------------------------------------------------------------------------------
 1. GOAL OF THE SOFTWARE
@@ -2216,11 +2228,33 @@ The project distinguishes: (1) proved statements under its declared definitions,
 
 ## Author Symbol Language — literal reading guide (Math Symbols defaults OFF (public build))
 
+
+### Base-16 / squiggle subscale number spelling
+
+The numeric symbol display is **base-16-first, with deliberate exceptions for compact integer and fractional spelling**. Ordinary symbol cells carry values **0 through 15**. A separate semantic **16 / completed-cycle cell** is available when one full cycle is the clearer spelling; it is not treated as a fifth hexadecimal digit. The underlying QSpinBox/QDoubleSpinBox/project value remains authoritative and is never replaced by the compact visual spelling.
+
+Fractions begin *inside the integer/count cell*. A **squiggle on the least-significant integer cell can carry the first fractional subdivision, `2^-1 = 1/2`, without consuming another cell**. If more precision is required, additional fractional cells follow that in-cell squiggle/no-squiggle state. Fractional slot `k` has the base weight
+
+`16^-k = 2^(-4k)`  for `k = 1, 2, 3, ...`.
+
+Therefore the first added subscale cell is weighted `2^-4 = 1/16`, the next `2^-8 = 1/256`, then `2^-12`, and so on. Groovebox uses only as many subscale cells as are needed to preserve the numeric field's visible precision; exact integers omit the fractional chain.
+
+**Spacing is semantic inside a fractional/subscale position.** A spaced straight/count is the full **`1/1` of that slot**. The same straight/count in the **unspaced** authored form is **`1/2` of that slot**. Automatic conversion of ordinary numeric controls uses the spaced/full form so ordinary base-16 fractional weighting remains unambiguous. Explicit authored notation may use the unspaced half-slot form.
+
+Examples of automatic spelling:
+
+- `1.5` -> integer cell `1` with the in-cell half/squiggle; no extra fractional cell is required.
+- `1.25` -> integer `1`, no half squiggle, then value `4` in subscale slot 1: `4 * 2^-4 = 0.25`.
+- `1.20` -> the formatter may use more than one subscale cell because one `1/16` cell cannot preserve two visible decimal places closely enough. The symbol spelling is a display approximation to the requested visible precision; the stored value remains exactly the application's `1.20` value.
+- At slot 1, value `4` spaced contributes `4 * 2^-4 * 1/1 = 0.25`; the same value `4` unspaced contributes `4 * 2^-4 * 1/2 = 0.125`.
+
+The codec identifier written into project/export provenance is `base16-squiggle-subscale-v4`. The same base, full-cycle value, half rule, `2^-4k` subscale rule, spacing rule, and 68 precomputed `(0..16) × squiggle/no-squiggle × spaced/unspaced` semantic faces are exposed by the bundled required sCode library. Qt rendering uses cached immutable packets; it does not re-derive these rules during paint events.
+
 Mathematician's Groovebox starts with **Math Symbols OFF** in the public build because the author notation carries information that an ordinary decimal numeral does not show directly: four-way direction/reference, counted/skipped strokes, contextual stroke modifiers, operation enclosure, continued-series structure, event multiplicity, and variable/result role. **Operator Theory (OT)** is a separate switch: OT ON selects the OT calculation route; OT OFF keeps the symbol display available for comparison. **Math Symbols OFF** exposes the ordinary base-10 / conventional mathematical spelling of the same inspectable value. This makes base-10 a secondary inspection and interoperability view rather than deleting it.
 
 ### Literal visual grammar
 
-A numeric cell has **four groups of three strokes = twelve possible strokes**. The four pathways are **UP, RIGHT, DOWN, LEFT**. UP/RIGHT are the two positive-oriented pathways and DOWN/LEFT the two negative-oriented pathways, so direction space has two of four negative-oriented choices rather than a single unary minus. A **missing stroke is skipped**. A **straight stroke is an ordinary/full counted stroke**. A **squiggly stroke is contextual**: according to its enclosing expression it can mark imaginary participation, decimal/fractional participation, a half-count (`0.5` rather than `1`), or symbolic doubling (`×2`). It must not be decoded as one universal number without its context.
+A numeric cell has **four groups of three strokes = twelve possible strokes**. The four pathways are **UP, RIGHT, DOWN, LEFT**. UP/RIGHT are the two positive-oriented pathways and DOWN/LEFT the two negative-oriented pathways, so direction space has two of four negative-oriented choices rather than a single unary minus. A **missing stroke is skipped**. A **straight stroke is an ordinary/full counted stroke**. A **squiggly stroke is contextual**: according to its enclosing expression it can mark imaginary participation, decimal/fractional participation, a half-count (`0.5` rather than `1`), or symbolic doubling (`×2`). In the numeric `base16-squiggle-subscale-v4` context specifically, the in-cell fractional squiggle has the explicit `2^-1` meaning described above; in other contexts it must not be decoded as one universal number without its enclosing rule.
 
 Four optional separator positions provide the compact counted-state/intersection layer. **Open outer/partial square = multiplication; dotted outer square = sum/difference; solid outer square = division; dotted enclosing square = ordinary continued inner expansion; line-connected solid square = multiplicity/events in place.** Adjacent cells form a row for adjunct addition/subtraction or further contextual composition. A plain box can contain a letter to name a variable.
 
@@ -2230,7 +2264,7 @@ Role colors are semantic, not magnitude: **red = independent variable; green = i
 
 The drawn symbols remain authoritative. Plain-text documents/logs use this analogy when the graphical painter is unavailable:
 
-`U R D L` = up/right/down/left pathway; `|` = straight/full count; `~` = squiggly/context-modified count; `.` = missing/skipped count; `:` = dotted sum/difference enclosure; `[>` = open multiplication enclosure; `[]` = solid division enclosure; `::...::` = dotted continued-expansion enclosure; `-[xN]` = line-connected multiplicity square; `<x>` = boxed variable letter. The final hexadecimal `0..F` field is Groovebox's reversible four-separator machine index, not a claim that the book assigns hexadecimal digits to the glyphs.
+`U R D L` = up/right/down/left pathway; `|` = straight/full count; `~` = squiggly/context-modified count; `.` = missing/skipped count; `:` = dotted sum/difference enclosure; `[>` = open multiplication enclosure; `[]` = solid division enclosure; `::...::` = dotted continued-expansion enclosure; `-[xN]` = line-connected multiplicity square; `<x>` = boxed variable letter. The ordinary `0..F` values are the base-16-first symbol cells used by the current author-approved Groovebox spelling; the separate semantic value 16 marks one completed cycle. The exact stroke/separator packing remains a Groovebox rendering convention, while the numeric spelling rules above are the current project contract.
 
 Example schematic cell: `U:|||~..|||~..:5<x>` means an UP-oriented boxed `x`, with straight, modified and skipped strokes, and separator state 5. The meaning of each `~` is supplied by the surrounding operation/context.
 

@@ -79,6 +79,14 @@ from ot_symbol_notation import (
     Border as OTBorder, ROLE_COLORS as OT_ROLE_COLORS, encode_decimal as ot_encode_decimal,
     encode_nibble as ot_encode_nibble, direction_for as ot_direction_for,
 )
+from author_numeric_font import AuthorNumericFieldAdapter, AUTHOR_NUMERIC_FONT
+from author_number_codec import (
+    SCHEME as AUTHOR_NUMBER_SCHEME,
+    spell_number as author_symbol_spell_packet,
+    decode_authored as author_symbol_decode_authored,
+    fractional_cell_value as author_symbol_fractional_cell_value,
+    scheme_manifest as author_symbol_scheme_manifest,
+)
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QVBoxLayout,
     QHBoxLayout, QLabel, QSlider, QPushButton, QComboBox, QScrollArea,
@@ -797,6 +805,32 @@ class _OTNumericOverlay(OTNumberGlyphWidget):
                 )
 
             x += cell + gutter
+
+
+
+# =============================================================================
+# CACHED_AUTHOR_NUMERIC_FONT_20260906
+# Replace the legacy paint-intercepting numeric overlay with a stable per-field
+# glyph-atlas adapter.  The old class remains above only for source-history
+# compatibility; this rebinding is the runtime implementation used by all
+# subsequently-created numeric symbol fields.
+# =============================================================================
+_LegacyOTNumericOverlay = _OTNumericOverlay
+
+class _OTNumericOverlay(AuthorNumericFieldAdapter):
+    """Cached author-numeric font adapter living inside each spinbox editor.
+
+    It never consumes QLineEdit Paint events and never rewrites the editor's
+    numeric value/text.  Each field owns one cached pixmap instance that is
+    regenerated only after value, role, size, palette, or notation changes.
+    """
+    def __init__(self, owner):
+        super().__init__(
+            owner,
+            role_provider=lambda w, t: _infer_ot_numeric_role(w, t),
+            enabled_provider=lambda: bool(MATH_SYMBOLS_ENABLED),
+            font_library=AUTHOR_NUMERIC_FONT,
+        )
 
 
 
@@ -4494,6 +4528,16 @@ def _seed_script_env(t_scalar=0.0, canonical_context=None):
         "ot_equiv_floor": ot_equiv_floor, "ot_equiv_ceil": ot_equiv_ceil,
         "ot_equiv_hypot": ot_equiv_hypot,
         "no_sat": no_sat,
+        # AUTHOR_SYMBOL_CODEC_V4: scripting sees the same semantic spelling/
+        # decoder used by Qt, project provenance and native sCode.
+        "author_symbol_spell": lambda value: author_symbol_spell_packet(str(value)).to_dict(),
+        "author_symbol_decode": lambda integer_cells, half=False, fractional_cells=(), negative=False: float(
+            author_symbol_decode_authored(integer_cells, half_squiggle=bool(half), fractional_cells=fractional_cells, negative=bool(negative))
+        ),
+        "author_symbol_fraction": lambda value, slot, spaced=True: float(
+            author_symbol_fractional_cell_value(int(value), int(slot), bool(spaced))
+        ),
+        "AUTHOR_NUMBER_SCHEME": AUTHOR_NUMBER_SCHEME,
         "op_theory_enabled": operator_theory_enabled,
         "set_op_theory": set_operator_theory,
         "t": float(t_scalar), "x": float(t_scalar), "y": 0.0, "z": 0.0,
@@ -9603,6 +9647,7 @@ class VideoSynthViewer(QFrame):
         # requests remain immediate and canonical/audio state is untouched.
         self._preview_min_interval = 1.0 / 15.0
         self._last_audio_preview_request = 0.0
+        self._scode_visual_seq = 0
         self.setMouseTracking(True)
 
     def _request_async_frame(self, width=None, height=None, export=None):
@@ -9706,18 +9751,23 @@ class VideoSynthViewer(QFrame):
         super().mouseDoubleClickEvent(event)
 
     def update_from_audio(self, wave_data, playhead=None):
-        if self.engine.app is None and self.parent() is not None:
-            self.engine.bind_app(self.parent())
-        self.engine.set_waveform(wave_data, playhead=playhead)
-        if isinstance(wave_data, np.ndarray) and wave_data.size:
-            self.scope_wave = np.resize(wave_data.astype(np.float32), 100)
-        # PERF: latest-only rendering prevents a queue, but without a rate gate the
-        # single worker can still stay at 100% CPU indefinitely. 15 fps is ample
-        # for the scenograph while audio/DSP remains full-rate and deterministic.
+        # SCODE_FULL_ACCEL_V4: throttle BEFORE waveform resampling/_analyze().
+        # The previous implementation rendered at 15 fps but still analyzed every
+        # incoming audio update, which could consume a full core for invisible work.
         now = time.monotonic()
         if (now - self._last_audio_preview_request) < self._preview_min_interval:
             return
+        self._scode_visual_seq += 1
+        if self.engine.app is None and self.parent() is not None:
+            self.engine.bind_app(self.parent())
+        _opt = getattr(getattr(self.engine, "app", None), "_scode_optimizer", None)
+        if _opt is not None and not _opt.cadence_due("visual", frame=self._scode_visual_seq):
+            return
         self._last_audio_preview_request = now
+        self.engine.set_waveform(wave_data, playhead=playhead)
+        if isinstance(wave_data, np.ndarray) and wave_data.size:
+            # Keep the scope preview bounded; this is presentation state, not DSP.
+            self.scope_wave = np.resize(wave_data.astype(np.float32, copy=False), 100)
         ww = max(self.width(), 180)
         hh = max(self.height(), 180)
         self._request_async_frame(ww, hh, False)
@@ -10886,6 +10936,7 @@ class ParametricMathBackground(QWidget):
         self.setAutoFillBackground(False)
         self.setStyleSheet("background: transparent;")
         self._cycle = 0
+        self._scode_bg_seq = 0
         self._started = time.monotonic()
         self._timer = QTimer(self)
         self._timer.setInterval(int(UI_TICK_MS) * (3 if _low_power_mode() else 1))
@@ -10899,16 +10950,25 @@ class ParametricMathBackground(QWidget):
         self._instances.add(self)
 
     def _advance(self):
-        # PERF_2026: a minimized/hidden host window (or one fully covered by
-        # a modal dialog) still received timer ticks before this check,
-        # painting work nobody could see. Skip entirely when not visible.
         if not self.isVisible():
             return
+        self._scode_bg_seq += 1
         elapsed = time.monotonic() - self._started
         new_cycle = int(elapsed / (MEUM * PHI + 1.0))
-        if new_cycle != self._cycle:
+        cycle_changed = new_cycle != self._cycle
+        if cycle_changed:
             self._cycle = new_cycle
             self._reseed()
+
+        # sCode schedules decorative paint separately from composition work. While
+        # the user is typing/editing, only a genuine mathematical-cycle boundary
+        # may repaint; otherwise the background yields completely to the editor.
+        _opt = getattr(self.app, "_scode_optimizer", None)
+        if _opt is not None:
+            if _opt.editing_active(self.host) and not cycle_changed:
+                return
+            if not cycle_changed and not _opt.cadence_due("background", frame=self._scode_bg_seq):
+                return
         self.update()
 
     def _reseed(self):
@@ -13994,11 +14054,33 @@ The project distinguishes: (1) proved statements under its declared definitions,
 
 ## Author Symbol Language — literal reading guide (Math Symbols defaults OFF (public build))
 
+
+### Base-16 / squiggle subscale number spelling
+
+The numeric symbol display is **base-16-first, with deliberate exceptions for compact integer and fractional spelling**. Ordinary symbol cells carry values **0 through 15**. A separate semantic **16 / completed-cycle cell** is available when one full cycle is the clearer spelling; it is not treated as a fifth hexadecimal digit. The underlying QSpinBox/QDoubleSpinBox/project value remains authoritative and is never replaced by the compact visual spelling.
+
+Fractions begin *inside the integer/count cell*. A **squiggle on the least-significant integer cell can carry the first fractional subdivision, `2^-1 = 1/2`, without consuming another cell**. If more precision is required, additional fractional cells follow that in-cell squiggle/no-squiggle state. Fractional slot `k` has the base weight
+
+`16^-k = 2^(-4k)`  for `k = 1, 2, 3, ...`.
+
+Therefore the first added subscale cell is weighted `2^-4 = 1/16`, the next `2^-8 = 1/256`, then `2^-12`, and so on. Groovebox uses only as many subscale cells as are needed to preserve the numeric field's visible precision; exact integers omit the fractional chain.
+
+**Spacing is semantic inside a fractional/subscale position.** A spaced straight/count is the full **`1/1` of that slot**. The same straight/count in the **unspaced** authored form is **`1/2` of that slot**. Automatic conversion of ordinary numeric controls uses the spaced/full form so ordinary base-16 fractional weighting remains unambiguous. Explicit authored notation may use the unspaced half-slot form.
+
+Examples of automatic spelling:
+
+- `1.5` -> integer cell `1` with the in-cell half/squiggle; no extra fractional cell is required.
+- `1.25` -> integer `1`, no half squiggle, then value `4` in subscale slot 1: `4 * 2^-4 = 0.25`.
+- `1.20` -> the formatter may use more than one subscale cell because one `1/16` cell cannot preserve two visible decimal places closely enough. The symbol spelling is a display approximation to the requested visible precision; the stored value remains exactly the application's `1.20` value.
+- At slot 1, value `4` spaced contributes `4 * 2^-4 * 1/1 = 0.25`; the same value `4` unspaced contributes `4 * 2^-4 * 1/2 = 0.125`.
+
+The codec identifier written into project/export provenance is `base16-squiggle-subscale-v4`. The same base, full-cycle value, half rule, `2^-4k` subscale rule, spacing rule, and 68 precomputed `(0..16) × squiggle/no-squiggle × spaced/unspaced` semantic faces are exposed by the bundled required sCode library. Qt rendering uses cached immutable packets; it does not re-derive these rules during paint events.
+
 Mathematician's Groovebox starts with **Math Symbols OFF** in the public build because the author notation carries information that an ordinary decimal numeral does not show directly: four-way direction/reference, counted/skipped strokes, contextual stroke modifiers, operation enclosure, continued-series structure, event multiplicity, and variable/result role. **Operator Theory (OT)** is a separate switch: OT ON selects the OT calculation route; OT OFF keeps the symbol display available for comparison. **Math Symbols OFF** exposes the ordinary base-10 / conventional mathematical spelling of the same inspectable value. This makes base-10 a secondary inspection and interoperability view rather than deleting it.
 
 ### Literal visual grammar
 
-A numeric cell has **four groups of three strokes = twelve possible strokes**. The four pathways are **UP, RIGHT, DOWN, LEFT**. UP/RIGHT are the two positive-oriented pathways and DOWN/LEFT the two negative-oriented pathways, so direction space has two of four negative-oriented choices rather than a single unary minus. A **missing stroke is skipped**. A **straight stroke is an ordinary/full counted stroke**. A **squiggly stroke is contextual**: according to its enclosing expression it can mark imaginary participation, decimal/fractional participation, a half-count (`0.5` rather than `1`), or symbolic doubling (`×2`). It must not be decoded as one universal number without its context.
+A numeric cell has **four groups of three strokes = twelve possible strokes**. The four pathways are **UP, RIGHT, DOWN, LEFT**. UP/RIGHT are the two positive-oriented pathways and DOWN/LEFT the two negative-oriented pathways, so direction space has two of four negative-oriented choices rather than a single unary minus. A **missing stroke is skipped**. A **straight stroke is an ordinary/full counted stroke**. A **squiggly stroke is contextual**: according to its enclosing expression it can mark imaginary participation, decimal/fractional participation, a half-count (`0.5` rather than `1`), or symbolic doubling (`×2`). In the numeric `base16-squiggle-subscale-v4` context specifically, the in-cell fractional squiggle has the explicit `2^-1` meaning described above; in other contexts it must not be decoded as one universal number without its enclosing rule.
 
 Four optional separator positions provide the compact counted-state/intersection layer. **Open outer/partial square = multiplication; dotted outer square = sum/difference; solid outer square = division; dotted enclosing square = ordinary continued inner expansion; line-connected solid square = multiplicity/events in place.** Adjacent cells form a row for adjunct addition/subtraction or further contextual composition. A plain box can contain a letter to name a variable.
 
@@ -14008,7 +14090,7 @@ Role colors are semantic, not magnitude: **red = independent variable; green = i
 
 The drawn symbols remain authoritative. Plain-text documents/logs use this analogy when the graphical painter is unavailable:
 
-`U R D L` = up/right/down/left pathway; `|` = straight/full count; `~` = squiggly/context-modified count; `.` = missing/skipped count; `:` = dotted sum/difference enclosure; `[>` = open multiplication enclosure; `[]` = solid division enclosure; `::...::` = dotted continued-expansion enclosure; `-[xN]` = line-connected multiplicity square; `<x>` = boxed variable letter. The final hexadecimal `0..F` field is Groovebox's reversible four-separator machine index, not a claim that the book assigns hexadecimal digits to the glyphs.
+`U R D L` = up/right/down/left pathway; `|` = straight/full count; `~` = squiggly/context-modified count; `.` = missing/skipped count; `:` = dotted sum/difference enclosure; `[>` = open multiplication enclosure; `[]` = solid division enclosure; `::...::` = dotted continued-expansion enclosure; `-[xN]` = line-connected multiplicity square; `<x>` = boxed variable letter. The ordinary `0..F` values are the base-16-first symbol cells used by the current author-approved Groovebox spelling; the separate semantic value 16 marks one completed cycle. The exact stroke/separator packing remains a Groovebox rendering convention, while the numeric spelling rules above are the current project contract.
 
 Example schematic cell: `U:|||~..|||~..:5<x>` means an UP-oriented boxed `x`, with straight, modified and skipped strokes, and separator state 5. The meaning of each `~` is supplied by the surrounding operation/context.
 
@@ -19934,6 +20016,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
             QShortcut(QKeySequence("Ctrl+Y"), self, activated=self._do_redo)
         except Exception:
             pass
+
+        # SCODE_REQUIRED_OPT_20260906: this appliance build requires the bundled
+        # native sCode optimizer.  It performs compact number<->logic routing,
+        # dirty-state coalescing, deterministic lane selection, and pool-slot
+        # assignment away from the realtime audio callback.  Missing/invalid
+        # sCode is a startup error rather than a silent Python-only fallback.
+        from scode_optimizer_bridge import require_scode_runtime
+        self._scode_optimizer = require_scode_runtime()
+        self._scode_optimizer.install_on_host(self, interval_ms=250)
+        # SCODE_SYMBOL_CODEC_V5: the verified sCode singleton owns symbol pool
+        # routing/cache identities; Qt consumes immutable packets without IPC in
+        # paint/valueChanged hot paths.
+        AUTHOR_NUMERIC_FONT.bind_optimizer(self._scode_optimizer)
+
     def _install_scroll_value_guards(self):
         """Prevent accidental roller/dropdown edits while the user scrolls.
 
@@ -30648,6 +30744,45 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
 
+    def _collect_media_workbench_state(self):
+        """Return one JSON-safe state for Performance + Draw/Record media tools."""
+        try:
+            state = copy.deepcopy(getattr(self, "media_workbench_state", {}) or {})
+        except Exception:
+            state = {}
+        if not isinstance(state, dict):
+            state = {}
+        panel = getattr(self, "_performance_panel", None)
+        if panel is not None and hasattr(panel, "export_state"):
+            try:
+                state["performance"] = panel.export_state()
+            except Exception as exc:
+                print(f"[Project] Performance state snapshot skipped: {exc}")
+        self.media_workbench_state = state
+        return state
+
+    def _restore_media_workbench_state(self, state):
+        try:
+            self.media_workbench_state = copy.deepcopy(state) if isinstance(state, dict) else {}
+        except Exception:
+            self.media_workbench_state = {}
+        panel = getattr(self, "_performance_panel", None)
+        if panel is not None and hasattr(panel, "restore_state"):
+            try:
+                panel.restore_state((self.media_workbench_state or {}).get("performance", {}))
+            except Exception as exc:
+                print(f"[Project Load] Performance media state skipped: {exc}")
+        # Force the required sCode optimizer to derive a fresh post-load plan.
+        opt = getattr(self, "_scode_optimizer", None)
+        if opt is not None:
+            try:
+                opt._last_categories = {}
+                opt.invalidate_work("canonical")
+                opt.invalidate_work("media")
+                opt.invalidate_work("game")
+            except Exception:
+                pass
+
     def _project_snapshot(self):
         """Single canonical project document for save / export / game interpreter.
 
@@ -30804,12 +30939,24 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "meum_spatial_activity_modulus": float(getattr(self, "meum_spatial_activity_modulus", 0.50)),
             "instrument_media_samples": _safe_json({
                 str(k): {"path": str(v.get("path", "")), "sample_rate": int(v.get("sample_rate", 44100)), "user_owned": True, "source_kind": str(v.get("source_kind", "audio")),
-                "video_path": str(v.get("video_path", "")), "video_input_enabled": bool(v.get("video_input_enabled", False))}
+                "video_path": str(v.get("video_path", "")), "video_input_enabled": bool(v.get("video_input_enabled", False)),
+                "layered_state": _safe_json(v.get("layered_state", {}))}
                 for k, v in (getattr(self, "instrument_media_samples", {}) or {}).items() if isinstance(v, dict) and v.get("path")
             }),
             "project_notes": notes,
             "last_videogame_identity": _safe_json(getattr(self, "_last_videogame_identity", None)),
             "last_videogame_path": getattr(self, "_last_videogame_path", None),
+            # MEDIA_WORKBENCH_20260906: Draw/Record layered reconstruction, timed
+            # Performance media playlist/output routing, and Parametric Remix
+            # file-editor settings share the normal project/provenance document.
+            "media_workbench_state": _safe_json(self._collect_media_workbench_state()),
+            # Required optimizer policy is saved for audit/provenance only.  The
+            # actual plan is recomputed from restored state after load.
+            "scode_optimizer": _safe_json(
+                self._scode_optimizer.state_for_project()
+                if getattr(self, "_scode_optimizer", None) is not None else {"required": True}
+            ),
+            "author_numeric_font": _safe_json(AUTHOR_NUMERIC_FONT.project_manifest()),
             "visual_view_state": _safe_json(self.video_synth_engine.get_camera_state() if getattr(self, "video_synth_engine", None) is not None else {}),
             "ui_state": self._collect_project_ui_state() if hasattr(self, "_collect_project_ui_state") else {},
         }
@@ -30818,6 +30965,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _apply_project_snapshot(self, data):
         """Restore a full project document (inverse of _project_snapshot)."""
         data = data if isinstance(data, dict) else {}
+        self._restore_media_workbench_state(data.get("media_workbench_state", {}))
+        _scode_saved = data.get("scode_optimizer")
+        if isinstance(_scode_saved, dict) and _scode_saved.get("required") is False:
+            print("[Project Load] Saved project predates required-sCode appliance policy; current runtime remains required.")
+        # Symbol spelling is presentation metadata only; numerical project values
+        # remain authoritative. Preserve the source scheme for provenance/audit,
+        # while current rendering uses the bundled reversible codec.
+        self._author_numeric_font_saved_state = _safe_json(data.get("author_numeric_font", {}))
         if isinstance(data.get("master_vector_state"), dict):
             try:
                 self.master_vector_state.update({
@@ -30857,7 +31012,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 try:
                     _arr, _sr = self._decode_media_audio(str(_rec.get("path")))
                     if _arr.size:
-                        self.instrument_media_samples[str(_op)] = {"path": str(_rec.get("path")), "sample_rate": int(_sr), "waveform": _arr, "user_owned": True, "source_kind": str(_rec.get("source_kind", "audio")), "video_path": str(_rec.get("video_path", "")), "video_input_enabled": bool(_rec.get("video_input_enabled", str(_rec.get("source_kind", "audio")) == "video"))}
+                        self.instrument_media_samples[str(_op)] = {"path": str(_rec.get("path")), "sample_rate": int(_sr), "waveform": _arr, "user_owned": True, "source_kind": str(_rec.get("source_kind", "audio")), "video_path": str(_rec.get("video_path", "")), "video_input_enabled": bool(_rec.get("video_input_enabled", str(_rec.get("source_kind", "audio")) == "video")), "layered_state": copy.deepcopy(_rec.get("layered_state", {})) if isinstance(_rec.get("layered_state"), dict) else {}}
                 except Exception as _media_exc:
                     print(f"[Project Load] operator media skipped {_op}: {_media_exc}")
             try: self._refresh_operator_sample_ui()
@@ -32771,85 +32926,30 @@ class MathematiciansGrooveboxApp(QMainWindow):
             QMessageBox.warning(self, "Draw Wave Matrix", f"Could not open Signal Lab:\n{exc}")
 
     def _record_audio_to_slot(self, local=False):
-        """Asynchronously capture input audio and route it to global or selected slot."""
-        if getattr(self, "_record_audio_job", None):
-            QMessageBox.information(self, "Record Audio", "A recording is already in progress.")
-            return
+        """Open the layered Draw/Record workbench and arm a recording layer.
+
+        Record is intentionally non-destructive: captured takes remain separate
+        reusable layers with relative-time scalars and can be meshed with drawn
+        or imported layers before Send Global / Send -> Selected.
+        """
         try:
-            from PyQt6.QtWidgets import QInputDialog
-            duration, ok = QInputDialog.getDouble(
-                self, "Record Audio", "Duration (seconds):",
-                float(getattr(self, "_last_record_duration", 8.0) or 8.0), 0.1, 600.0, 2
-            )
-            if not ok:
-                return
-            self._last_record_duration = float(duration)
-            sr = 48000
-            name = self._current_instrument_name() if local else "GLOBAL"
-            import tempfile, wave as _wave
-            out_dir = self._samples_dir() if hasattr(self, "_samples_dir") else tempfile.gettempdir()
-            os.makedirs(out_dir, exist_ok=True)
-            tag = "operator" if local else "global"
-            out_path = os.path.join(out_dir, f"recorded_{tag}_{int(time.time())}.wav")
-            job = {"done": False, "error": None, "path": out_path, "name": name, "local": bool(local), "sr": sr}
-            self._record_audio_job = job
-            if hasattr(self, "scope_status_label"):
-                self.scope_status_label.setText(f"🎙 Recording {name} for {duration:.2f}s…")
-
-            def _worker():
-                try:
-                    from audio_os_backend import sd
-                    frames = max(1, int(round(float(duration) * sr)))
-                    arr = sd.rec(frames, samplerate=sr, channels=1, dtype="float32")
-                    sd.wait()
-                    arr = np.asarray(arr, dtype=np.float32).reshape(-1)
-                    finite = np.isfinite(arr)
-                    if not bool(np.all(finite)):
-                        arr = np.where(finite, arr, 0.0).astype(np.float32)
-                    pcm = np.rint(np.maximum(-1.0, np.minimum(1.0, arr)) * 32767.0).astype("<i2")
-                    with _wave.open(out_path, "wb") as wf:
-                        wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr); wf.writeframes(pcm.tobytes())
-                    job["waveform"] = arr
-                except Exception as exc:
-                    job["error"] = str(exc)
-                finally:
-                    job["done"] = True
-
-            threading.Thread(target=_worker, daemon=True, name="GrooveboxInputRecord").start()
-
-            def _poll():
-                if not job.get("done"):
-                    QTimer.singleShot(100, _poll)
-                    return
-                self._record_audio_job = None
-                if job.get("error"):
-                    if hasattr(self, "scope_status_label"):
-                        self.scope_status_label.setText(f"🎙 Record error: {job['error']}")
-                    QMessageBox.warning(self, "Record Audio", job["error"])
-                    return
-                arr = np.asarray(job.get("waveform", []), dtype=np.float32)
-                rec = {"path": out_path, "sample_rate": sr, "waveform": arr, "user_owned": True, "source_kind": "recorded_audio"}
-                if local:
-                    self.instrument_media_samples[name] = rec
-                    self._refresh_operator_sample_ui()
-                else:
-                    self.global_media_sample = rec
-                    self._global_carrier_path = out_path
-                    self.wav_carrier_path = out_path
-                    self.wav_carrier_sr = sr
-                    self.wav_carrier = arr
-                    if hasattr(self, "lbl_wav_carrier"):
-                        self.lbl_wav_carrier.setText(f"Carrier: {os.path.basename(out_path)[:20]}")
-                try:
-                    self._on_live_source_changed()
-                except Exception:
-                    pass
-                if hasattr(self, "scope_status_label"):
-                    self.scope_status_label.setText(f"🎙 Recorded → {name}")
-            QTimer.singleShot(100, _poll)
+            from signal_lab import SignalLab
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Mathematician's Groovebox — Layered Record / Draw Wave")
+            dlg.resize(980, 820)
+            lay = QVBoxLayout(dlg)
+            target = self._current_instrument_name() if local else "GLOBAL"
+            note = QLabel(f"Recording workbench target: {target}. Add/record/draw multiple layers, set relative time scalars, render, inspect spectrum, then send to the desired slot.")
+            note.setWordWrap(True); lay.addWidget(note)
+            lab = SignalLab(self, dlg); lay.addWidget(lab)
+            dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+            self._record_signal_lab_dialog = dlg
+            dlg.show(); dlg.raise_()
+            # Arm a first recording prompt after the window is visible.
+            if hasattr(lab, "_record_layer"):
+                QTimer.singleShot(0, lab._record_layer)
         except Exception as exc:
-            self._record_audio_job = None
-            QMessageBox.warning(self, "Record Audio", str(exc))
+            QMessageBox.warning(self, "Layered Record", f"Could not open recording workbench:\n{exc}")
 
     def _media_file_filter(self):
         return ("Media Files (*.wav *.mp3 *.flac *.ogg *.oga *.m4a *.aac *.aiff *.aif *.opus *.caf *.alac *.wma *.ape *.wv "
@@ -33045,7 +33145,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 elif width == 4:
                     data = np.frombuffer(raw, dtype=np.int32).astype(np.float32) / 2147483648.0
                 else:
-                    raise RuntimeError("Unsupported PCM WAV sample width without scipy.")
+                    raise RuntimeError("Unsupported PCM WAV sample width.")
                 if channels > 1:
                     data = data.reshape(-1, channels).mean(axis=1)
         arr = np.asarray(data)
@@ -34935,7 +35035,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
         total_duration = max(0.002, rows * row_duration)
 
         n_samples = int(sample_rate * total_duration)
-        t = np.linspace(0.0, total_duration, n_samples, endpoint=False)
+        _opt = getattr(self, "_scode_optimizer", None)
+        # SCODE_FULL_ACCEL_V4: the render-time coordinate grid is deterministic
+        # and read-only. Reuse it for normal-sized repeated Play/Export renders.
+        # Very long renders bypass the cache to keep memory bounded.
+        if _opt is not None and n_samples <= 2_000_000:
+            t = _opt.memoized_result(
+                "audio_time_grid", (sample_rate, round(total_duration, 12), n_samples),
+                lambda: np.linspace(0.0, total_duration, n_samples, endpoint=False), max_entries=4
+            )
+        else:
+            t = np.linspace(0.0, total_duration, n_samples, endpoint=False)
         master = np.zeros(n_samples, dtype=np.float32)
         canonical_bus = np.zeros(n_samples, dtype=np.float32)
         userdata_bus = np.zeros(n_samples, dtype=np.float32)
@@ -34978,11 +35088,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
         for row_idx in range(rows):
             start_time = row_idx * row_duration
             end_time = start_time + row_duration
-            mask = (t >= start_time) & (t < end_time)
-            if not np.any(mask):
+            # PERF + SCODE_FULL_ACCEL_V4: rows are contiguous by construction.
+            # Use an O(1) slice instead of allocating/scanning an n_samples-wide
+            # Boolean mask for every row. This preserves the exact same t samples.
+            start_idx = max(0, min(n_samples, int(np.searchsorted(t, start_time, side="left"))))
+            end_idx = max(start_idx, min(n_samples, int(np.searchsorted(t, end_time, side="left"))))
+            if end_idx <= start_idx:
                 continue
+            mask = slice(start_idx, end_idx)
             local_t = t[mask] - start_time
-            row_mix = np.zeros_like(local_t, dtype=np.float32)
+            if _opt is not None:
+                row_mix = _opt.borrow_array(f"audio_row_mix_{threading.get_ident()}", local_t.shape, np.float32, zero=True)
+            else:
+                row_mix = np.zeros_like(local_t, dtype=np.float32)
             velocity_scale = 1.0
             if getattr(self, "goava_active", False):
                 _goava = self._goava_mix(local_t, row_idx, step_duration, row_start_time=start_time)
@@ -35971,7 +36089,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         # its own time, instead of forcing it onto the row grid
                         # every other operator in this row shares.
                         shift_samples = int(round(op_offset_sec * sample_rate))
-                        base_idx = np.nonzero(mask)[0]
+                        base_idx = np.arange(start_idx, end_idx, dtype=np.int64)
                         dest_idx = base_idx + shift_samples
                         valid = (dest_idx >= 0) & (dest_idx < n_samples)
                         if np.any(valid):
@@ -36656,6 +36774,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 pass
             return
         fp = self._canonical_fingerprint()
+        # SCODE_FULL_ACCEL_V4: cache the committed fingerprint so the background
+        # optimizer can classify host state without re-hashing the full canonical
+        # project payload every 250 ms. The authoritative function above still
+        # computes it at each actual composition commit/export boundary.
+        self._scode_cached_fp = str(fp)
         label = getattr(self, "lbl_canonical_fp", None)
         if label is not None:
             text = f"ID: {fp}"
@@ -36696,6 +36819,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
         • Step 5 re-refreshes the fingerprint so the HUD label always shows
           the state the export/video-game classifiers will read.
         """
+        # SCODE_FULL_ACCEL_V4: number/logic cross-cast work claim. Repeated UI
+        # signals that describe the exact same canonical inputs no longer rebuild
+        # 1..1024 playlist rows, deep-copy sequence banks, and repaint every
+        # canonical candidate. sCode is consulted synchronously here (UI/control
+        # path only; never the realtime audio callback) before the expensive work.
+        _opt = getattr(self, "_scode_optimizer", None)
+        if _opt is not None and not bool(getattr(self, "_scode_force_canonical", False)):
+            _opt.plan_host_now(self)
+            if not _opt.claim_host_work(self, "canonical"):
+                return
+
         active_engines = self._get_active_engine_set()
 
         if not active_engines:
@@ -37599,15 +37733,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._math_symbol_spin_watcher = None
 
     def _refresh_math_symbol_numeric_overlays(self):
-        """Refresh existing masks only; OFF is an absolute zero-work fast path."""
+        """Refresh only changed field glyphs; OFF is an absolute zero-work path."""
         if not MATH_SYMBOLS_ENABLED:
+            return
+        _opt = getattr(self, "_scode_optimizer", None)
+        if _opt is not None and _opt.editing_active(self):
             return
         alive = []
         for ov in list(getattr(self, "_math_symbol_numeric_overlays", []) or []):
             try:
                 if ov is None or getattr(ov, "owner", None) is None:
                     continue
-                ov._sync(force=True)
+                ov._sync(force=False)
                 alive.append(ov)
             except RuntimeError:
                 pass
@@ -37620,7 +37757,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             try:
                 if ov is None or getattr(ov, "owner", None) is None:
                     continue
-                ov._sync(force=True)
+                ov._sync(force=False)
                 text_alive.append(ov)
             except RuntimeError:
                 pass
@@ -37654,6 +37791,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 ov._set_owner_number_text_visible(True)
                 if getattr(ov, "owner", None) is not None:
                     ov.owner.removeEventFilter(ov)
+                    try:
+                        ov.owner._math_symbol_overlay = None
+                    except Exception:
+                        pass
                 le = getattr(ov, "_editor", None)
                 if le is not None:
                     le.removeEventFilter(ov)
@@ -37742,6 +37883,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "global_track_offset": _user_global_track_off,
                 "track_offset_user_owned": True,
             }
+            # SCODE_FULL_ACCEL_V4: many Qt controls emit the same committed value
+            # more than once (editingFinished + valueChanged + canonical sync). Reject
+            # an identical sequence-runtime write before rebuilding the document and
+            # fingerprint. The payload itself remains the complete correctness key.
+            _opt = getattr(self, "_scode_optimizer", None)
+            if _opt is not None and not _opt.claim_work("canonical_sequence_runtime", (name, sid, seq_payload)):
+                return
             doc = getattr(self, "_canonical_composition_document", None)
             if not isinstance(doc, dict):
                 doc = self._project_snapshot()
@@ -38450,17 +38598,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
         _stride = max(1, min(6, int(getattr(self, "_scope_heavy_stride", 1) or 1)))
         if _lite:
             _stride = max(_stride, 3)
-        _heavy_tick = (self._scope_tick_counter % _stride == 0)
+        _opt = getattr(self, "_scode_optimizer", None)
+        if _opt is not None:
+            _lane = max(0, int(_opt.lane("visual")))
+            _spec_tick = ((self._scope_tick_counter + _lane) % _stride == 0)
+            _scene_tick = ((self._scope_tick_counter + _lane + 1) % _stride == 0)
+            _hud_tick = ((self._scope_tick_counter + _lane + 2) % _stride == 0)
+        else:
+            _heavy_tick = (self._scope_tick_counter % _stride == 0)
+            _spec_tick = _scene_tick = _hud_tick = _heavy_tick
         if isinstance(getattr(self, 'visual_oscilloscope', None), VisualOscilloscope):
             self.visual_oscilloscope.update_waveform(chunk, overview=overview, playhead=playhead)
-        if _heavy_tick and hasattr(self, 'spectrum_analyzer') and self.spectrum_analyzer is not None:
+        if _spec_tick and hasattr(self, 'spectrum_analyzer') and self.spectrum_analyzer is not None:
             self.spectrum_analyzer.update_spectrum(chunk)
-        if _heavy_tick and hasattr(self, 'video_synth_viewer'):
+        if _scene_tick and hasattr(self, 'video_synth_viewer'):
             try:
                 self.video_synth_viewer.update_from_audio(chunk, playhead=playhead)
             except Exception:
                 pass
-        if _heavy_tick:
+        if _hud_tick:
             try:
                 self._push_visualizer_seed_hud()
             except Exception:
@@ -39268,7 +39424,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "eqr": _num("slider_eqr", 0.0),
                 "fractalizer": _num("slider_fractalizer", 0.0),
             },
-            "operator_media_samples": {str(k): {"path": str(v.get("path", "")), "source_kind": str(v.get("source_kind", "audio")), "video_path": str(v.get("video_path", "")), "video_input_enabled": bool(v.get("video_input_enabled", False))} for k, v in (getattr(self, "instrument_media_samples", {}) or {}).items() if isinstance(v, dict) and v.get("path")},
+            "operator_media_samples": {str(k): {"path": str(v.get("path", "")), "source_kind": str(v.get("source_kind", "audio")), "video_path": str(v.get("video_path", "")), "video_input_enabled": bool(v.get("video_input_enabled", False)), "layered_state": _safe_json(v.get("layered_state", {}))} for k, v in (getattr(self, "instrument_media_samples", {}) or {}).items() if isinstance(v, dict) and v.get("path")},
+            "media_workbench_state": _safe_json(self._collect_media_workbench_state()),
+            "scode_optimizer": _safe_json(self._scode_optimizer.state_for_project() if getattr(self, "_scode_optimizer", None) is not None else {"required": True}),
+            "author_numeric_font": _safe_json(AUTHOR_NUMERIC_FONT.project_manifest()),
             "sample_morph": _safe_json(getattr(self, "sample_morph_state", {})),
             "global_mod": _safe_json(getattr(self, "global_mod_state", {})),
             "canonical_blend_contract": {
@@ -39399,6 +39558,45 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self._master_vector_effective()
             except Exception:
                 pass
+        if isinstance(payload.get("media_workbench_state"), dict):
+            try:
+                self._restore_media_workbench_state(payload.get("media_workbench_state", {}))
+            except Exception:
+                pass
+        if isinstance(payload.get("operator_media_samples"), dict):
+            # Rehydrate user-owned operator media and retain the layered
+            # Draw/Record reconstruction recipe when the source file remains.
+            try:
+                restored_media = {}
+                for _op, _rec in payload.get("operator_media_samples", {}).items():
+                    if not isinstance(_rec, dict) or not _rec.get("path"):
+                        continue
+                    _path = str(_rec.get("path"))
+                    if not os.path.isfile(_path):
+                        continue
+                    _arr, _sr = self._decode_media_audio(_path)
+                    if getattr(_arr, "size", 0):
+                        restored_media[str(_op)] = {
+                            "path": _path, "sample_rate": int(_sr), "waveform": _arr,
+                            "user_owned": True, "source_kind": str(_rec.get("source_kind", "audio")),
+                            "video_path": str(_rec.get("video_path", "")),
+                            "video_input_enabled": bool(_rec.get("video_input_enabled", False)),
+                            "layered_state": copy.deepcopy(_rec.get("layered_state", {})) if isinstance(_rec.get("layered_state"), dict) else {},
+                        }
+                if restored_media:
+                    self.instrument_media_samples = restored_media
+                    try: self._refresh_operator_sample_ui()
+                    except Exception: pass
+            except Exception as _prov_media_exc:
+                print(f"[Reconvert] operator media skipped: {_prov_media_exc}")
+        # sCode remains mandatory; serialized optimizer data is provenance only.
+        if isinstance(payload.get("scode_optimizer"), dict):
+            try:
+                if getattr(self, "_scode_optimizer", None) is not None:
+                    self._scode_optimizer._last_categories = {}
+            except Exception:
+                pass
+
         seed = str(payload.get("seed") or "")
         if hasattr(self, "input_seed_val") and self.input_seed_val is not None:
             try:
@@ -39457,6 +39655,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         engines' timers, and commit perfect unison so the canonical fingerprint
         reflects the final committed state — not intermediate rebuild frames."""
         from PyQt6.QtWidgets import QApplication as _QA
+        # Explicit project/load recompose must execute even when its final numeric
+        # identity matches the previously committed project. Invalidate only the
+        # canonical work claim; all other sCode caches remain reusable.
+        _opt = getattr(self, "_scode_optimizer", None)
+        if _opt is not None:
+            _opt.invalidate_work("canonical")
+            _opt.plan_host_now(self, force=True)
         for t in (getattr(self, "_live_euclid_timer", None), getattr(self, "_live_seeded_timer", None)):
             if t is not None:
                 try:
@@ -40548,7 +40753,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # Same shared finite coordinate deterministically perturbs the game
             # identity seed; no independent random branch is introduced.
             _game_seed = _game_seed + float(_hd.get("modulation", 0.0)) * float(MEUM_MINUS_1)
-        return _vge.classify_from_composition(
+        _game_payload = (_game_seed, meta)
+        _opt = getattr(self, "_scode_optimizer", None)
+        def _produce_game_identity():
+            return _vge.classify_from_composition(
             _game_seed,
             bpm=meta["bpm"],
             seq_length=meta["seq_length"],
@@ -40564,7 +40772,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
             step_algorithms=meta.get("step_algorithms"),
             live_dj_goava=meta.get("live_dj_goava"),
             live_dj_random=meta.get("live_dj_random"),
-        ), meta
+        )
+        if _opt is not None:
+            identity = _opt.memoized_result("game", _game_payload, _produce_game_identity, max_entries=24)
+        else:
+            identity = _produce_game_identity()
+        return identity, meta
 
     def _on_export_videogame_scripts(self):
         """Export the video game as one .zip package: deterministic script +
