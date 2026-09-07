@@ -33,12 +33,16 @@ from ot_symbol_notation import (
 from author_number_codec import (
     SCHEME as AUTHOR_NUMBER_SCHEME,
     FULL_CYCLE_VALUE,
+    FULL_CYCLE_DIVIDER_COUNT,
+    FULL_CYCLE_SOLID_MASK,
+    FULL_CYCLE_DOTTED_MASK,
     PRECOMPUTED_VARIANT_COUNT,
     NumberSpelling,
     GlyphVariant,
     normalize_numeric_text,
     spell_number,
     set_fraction_spacing,
+    set_integer_crossbars,
     scheme_manifest,
 )
 
@@ -171,9 +175,8 @@ class AuthorNumericFontLibrary:
         cx, cy = x + size / 2.0, y + size / 2.0
         empty_zero = int(getattr(glyph, "value", 0)) == 0
         if not empty_zero:
-            painter.setPen(self._pen(color, 1.15, dotted=True))
-            painter.drawLine(QPointF(cx, y + 3), QPointF(cx, y + size - 3))
-            painter.drawLine(QPointF(x + 3, cy), QPointF(x + size - 3, cy))
+            # Cross-bars are semantic and are drawn separately from the nibble
+            # body. Never use dotted guide lines here: dotted means 0.5.
             painter.setPen(self._pen(color, 1.75))
             painter.drawEllipse(QRectF(cx-size*.055, cy-size*.055, size*.11, size*.11))
 
@@ -223,30 +226,65 @@ class AuthorNumericFontLibrary:
             painter.setPen(self._pen(color, 1.2))
             painter.drawRect(QRectF(x+size*.82,y+size*.05,size*.12,size*.12))
 
-    def _draw_full_cycle(self, painter, x, y, size, color, operation, continued, multiplicity, variable_letter):
-        """Distinct Groovebox rendering convention for semantic cell 16.
+    def _draw_crossbars(self, painter, variant: GlyphVariant, x, y, size, color):
+        """Draw all four ordered cross-bar positions for every glyph face.
 
-        0..15 exhaust the four separator states, so cell 16 cannot be encoded as
-        another nibble.  The full-cycle face deliberately shows the completed
-        outer cycle plus an inner cycle ring.  Its *numeric* meaning comes from
-        author_number_codec, not from the drawing convention.
+        absent=0, dotted=0.5, solid=1.  The positions are top, right, bottom,
+        left in order.  Dotted is never decorative anywhere in this layer.
+        """
+        cx, cy = x + size * .5, y + size * .5
+        outer = size * .10
+        inner = size * .36
+        segments = (
+            (QPointF(cx, y + outer), QPointF(cx, y + inner)),
+            (QPointF(x + size - outer, cy), QPointF(x + size - inner, cy)),
+            (QPointF(cx, y + size - outer), QPointF(cx, y + size - inner)),
+            (QPointF(x + outer, cy), QPointF(x + inner, cy)),
+        )
+        sm = int(getattr(variant, "solid_mask", 0))
+        dm = int(getattr(variant, "dotted_mask", 0))
+        for position, (a, b) in enumerate(segments):
+            bit = 1 << position
+            if sm & bit:
+                painter.setPen(self._pen(color, max(2.0, size * .060), dotted=False))
+                painter.drawLine(a, b)
+            elif dm & bit:
+                painter.setPen(self._pen(color, max(1.7, size * .052), dotted=True))
+                painter.drawLine(a, b)
+
+    def _draw_full_cycle(self, painter, x, y, size, color, operation, continued, multiplicity, variable_letter):
+        """Draw semantic cell 16 using the corrected counted-divider contract.
+
+        Full-cycle 16 is not a fifth nibble/separator bit.  It is the completed
+        four-place divider state: **four solid divider bars**, each worth 1/1 in
+        its ordered place.  Dotted bars would mean 0.5 and therefore are never
+        used by the automatic full-cycle face.  This visual contract mirrors
+        ``groovebox.symbols`` in required sCode ABI 9.
         """
         if color == "#000000":
             painter.fillRect(QRectF(x, y, size, size), QColor("#b8b8b8"))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(self._pen(color, 2.7))
-        painter.drawRect(QRectF(x+1.5, y+1.5, size-3, size-3))
-        inset = size * .20
-        painter.setPen(self._pen(color, 1.8))
-        painter.drawRoundedRect(QRectF(x+inset, y+inset, size-2*inset, size-2*inset), size*.10, size*.10)
-        cx, cy = x+size*.5, y+size*.5
-        painter.drawEllipse(QRectF(cx-size*.075, cy-size*.075, size*.15, size*.15))
-        # Four completed-quarter ticks make this visually different from 0 and F.
-        q0, q1 = size*.08, size*.22
-        painter.drawLine(QPointF(cx, y+q0), QPointF(cx, y+q1))
-        painter.drawLine(QPointF(x+size-q0, cy), QPointF(x+size-q1, cy))
-        painter.drawLine(QPointF(cx, y+size-q0), QPointF(cx, y+size-q1))
-        painter.drawLine(QPointF(x+q0, cy), QPointF(x+q1, cy))
+        painter.drawRect(QRectF(x + 1.5, y + 1.5, size - 3, size - 3))
+
+        cx, cy = x + size * .5, y + size * .5
+        # Full-cycle 16 is the saturated authored cell: all twelve main strokes
+        # are present, straight, and solid. The four subdividers are rendered by
+        # _draw_crossbars immediately afterward from the invariant 1111 mask.
+        groups = (
+            ((0.28,0.27,0.28,0.42),(0.37,0.27,0.37,0.42),(0.46,0.27,0.46,0.42)),
+            ((0.61,0.27,0.61,0.42),(0.70,0.27,0.70,0.42),(0.79,0.27,0.79,0.42)),
+            ((0.28,0.60,0.28,0.79),(0.37,0.60,0.37,0.79),(0.46,0.60,0.46,0.79)),
+            ((0.61,0.62,0.79,0.62),(0.61,0.70,0.79,0.70),(0.61,0.78,0.79,0.78)),
+        )
+        painter.setPen(self._pen(color, max(2.1, size * .061), dotted=False))
+        for strokes in groups:
+            for ax, ay, bx, by in strokes:
+                painter.drawLine(QPointF(x + size*ax, y + size*ay), QPointF(x + size*bx, y + size*by))
+        # Center mark groups the saturated body without adding a counted stroke.
+        painter.setPen(self._pen(color, max(1.4, size * .040), dotted=False))
+        painter.drawEllipse(QRectF(cx - size * .045, cy - size * .045, size * .09, size * .09))
+
         if operation == OTOperation.MUL:
             painter.setPen(self._pen(color, 1.4)); painter.drawRect(QRectF(x-1,y-1,size+2,size+2))
         elif operation in (OTOperation.ADD, OTOperation.SUB):
@@ -292,6 +330,7 @@ class AuthorNumericFontLibrary:
                 variable_letter=str(variable_letter)[:1],
             )
             self._draw_glyph(p, glyph, 0, 0, size_px)
+        self._draw_crossbars(p, variant, 0, 0, size_px, color)
         if variant.squiggle:
             self._draw_incell_squiggle(p, 0, 0, size_px, color)
         p.end()
@@ -382,7 +421,7 @@ class AuthorNumericFontLibrary:
     def project_manifest(self) -> dict:
         out = scheme_manifest()
         out.update({
-            "font": "cached-code-glyph-atlas-v4",
+            "font": "cached-code-glyph-atlas-v6",
             "face_cache": True,
             "number_cache": True,
             "sCode_symbol_pool": self._optimizer is not None,
@@ -485,6 +524,13 @@ class AuthorNumericFieldAdapter(QLabel):
         """Rewrite one existing fractional slot as spaced 1/1 or unspaced 1/2."""
         packet=self._packet_override or self._spelling or self._font_library.spell(self._display_numeric_text())
         self.rewriteSpelling(set_fraction_spacing(packet, int(slot), bool(spaced)))
+
+    def setIntegerCrossbars(self, cell_index: int, solid_mask: int, dotted_mask: int):
+        """Rewrite one integer glyph's four cross-bars without changing its value."""
+        packet=self._packet_override or self._spelling or self._font_library.spell(self._display_numeric_text())
+        self.rewriteSpelling(set_integer_crossbars(
+            packet, int(cell_index), solid_mask=int(solid_mask), dotted_mask=int(dotted_mask)
+        ))
 
     def _value_changed(self,*_):
         self._packet_override=None; self._override_text=None; self._last_source_key=None; self._sync(force=False)

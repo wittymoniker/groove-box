@@ -27,49 +27,126 @@ from functools import lru_cache
 from typing import Iterable, Sequence, Tuple
 import re
 
-SCHEME = "base16-squiggle-subscale-v4"
+SCHEME = "base16-squiggle-crossbar-subscale-v7"
 BASE = 16
 FULL_CYCLE_VALUE = 16
 HALF_WEIGHT = Decimal(1) / Decimal(2)
 SUBSCALE_BITS = 4
 MAX_SUBSCALE_CELLS = 16
 
+# Divider semantics are part of the numeric face contract, not decoration.
+DIVIDER_FULL_VALUE = Decimal(1)
+DIVIDER_DOTTED_VALUE = Decimal(1) / Decimal(2)
+FULL_CYCLE_DIVIDER_COUNT = 4
+FULL_CYCLE_MAIN_STROKE_COUNT = 12
+FULL_CYCLE_MAIN_STROKE_SOLID_COUNT = 12
+FULL_CYCLE_SOLID_MASK = 0b1111
+FULL_CYCLE_DOTTED_MASK = 0
+
 _NUMERIC_RE = re.compile(r"^[+-]?(?:\d+(?:[\.,]\d*)?|[\.,]\d+)(?:[eE][+-]?\d+)?$")
 
 
 @dataclass(frozen=True, slots=True)
 class GlyphVariant:
-    """Interned semantic face for one 0..16 symbol cell."""
+    """Interned semantic face for one 0..16 symbol cell.
+
+    Every cell owns four ordered cross-bar positions.  Each position is encoded
+    by two disjoint masks: absent=0, dotted=0.5, solid=1.  Automatic 0..15
+    spellings use absent bars; automatic 16/full-cycle uses four solid bars.
+    """
     value: int
     squiggle: bool = False
     spaced: bool = True
+    solid_mask: int = 0
+    dotted_mask: int = 0
+
+    def __post_init__(self):
+        sm, dm = int(self.solid_mask), int(self.dotted_mask)
+        if not (0 <= sm <= 15 and 0 <= dm <= 15):
+            raise ValueError("cross-bar masks must be 0..15")
+        if sm & dm:
+            raise ValueError("solid and dotted cross-bar masks may not overlap")
 
     @property
     def full_cycle(self) -> bool:
         return int(self.value) == FULL_CYCLE_VALUE
 
     @property
+    def crossbar_variant_index(self) -> int:
+        idx = 0
+        factor = 1
+        for position in range(4):
+            bit = 1 << position
+            state = 2 if (int(self.solid_mask) & bit) else (1 if (int(self.dotted_mask) & bit) else 0)
+            idx += state * factor
+            factor *= 3
+        return idx
+
+    @property
     def variant_index(self) -> int:
-        # 17 values * 2 squiggle states * 2 spacing states = 68 stable faces.
-        return int(self.value) * 4 + (2 if self.squiggle else 0) + (1 if self.spaced else 0)
+        # Values 0..15 each admit 81 cross-bar states. Cell 16 is invariant:
+        # all 12 main strokes solid and all four subdividers solid, so it has
+        # only the four squiggle/spacing presentation variants.
+        q = (2 if self.squiggle else 0) + (1 if self.spaced else 0)
+        if int(self.value) == FULL_CYCLE_VALUE:
+            return 16 * 324 + q
+        return int(self.value) * 324 + self.crossbar_variant_index * 4 + q
+
+    def crossbar_state(self, position: int) -> int:
+        bit = 1 << int(position)
+        if int(self.solid_mask) & bit:
+            return 2
+        if int(self.dotted_mask) & bit:
+            return 1
+        return 0
+
+    def crossbar_value(self, position: int) -> Decimal:
+        state = self.crossbar_state(position)
+        return DIVIDER_FULL_VALUE if state == 2 else (DIVIDER_DOTTED_VALUE if state == 1 else Decimal(0))
 
 
-# Precompute every face once.  Renderers only ever reference these immutable
-# objects; they never reconstruct the semantic face for each widget instance.
+def _default_crossbar_masks(value: int) -> tuple[int, int]:
+    return (FULL_CYCLE_SOLID_MASK, FULL_CYCLE_DOTTED_MASK) if int(value) == FULL_CYCLE_VALUE else (0, 0)
+
+
+def _valid_crossbar_masks():
+    for solid_mask in range(16):
+        for dotted_mask in range(16):
+            if not (solid_mask & dotted_mask):
+                yield solid_mask, dotted_mask
+
+
+# Precompute all semantically legal faces once. Values 0..15 admit the full
+# 3^4 cross-bar state space; semantic 16/full-cycle is invariant at 12 solid
+# main strokes + four solid subdividers. Count: (16*81 + 1) * 2 * 2 = 5188.
 GLYPH_VARIANTS = {
-    (value, squiggle, spaced): GlyphVariant(value, squiggle, spaced)
+    (value, squiggle, spaced, solid_mask, dotted_mask): GlyphVariant(
+        value, squiggle, spaced, solid_mask, dotted_mask
+    )
     for value in range(FULL_CYCLE_VALUE + 1)
     for squiggle in (False, True)
     for spaced in (False, True)
+    for solid_mask, dotted_mask in _valid_crossbar_masks()
+    if value != FULL_CYCLE_VALUE or (solid_mask == FULL_CYCLE_SOLID_MASK and dotted_mask == FULL_CYCLE_DOTTED_MASK)
 }
 PRECOMPUTED_VARIANT_COUNT = len(GLYPH_VARIANTS)
 
 
-def glyph_variant(value: int, squiggle: bool = False, spaced: bool = True) -> GlyphVariant:
+def glyph_variant(
+    value: int, squiggle: bool = False, spaced: bool = True,
+    solid_mask: int | None = None, dotted_mask: int | None = None,
+) -> GlyphVariant:
     iv = int(value)
     if not 0 <= iv <= FULL_CYCLE_VALUE:
         raise ValueError("author symbol cell must be 0..16")
-    return GLYPH_VARIANTS[(iv, bool(squiggle), bool(spaced))]
+    dsm, ddm = _default_crossbar_masks(iv)
+    sm = dsm if solid_mask is None else int(solid_mask)
+    dm = ddm if dotted_mask is None else int(dotted_mask)
+    if not (0 <= sm <= 15 and 0 <= dm <= 15) or (sm & dm):
+        raise ValueError("cross-bar masks must be disjoint 4-bit masks")
+    if iv == FULL_CYCLE_VALUE and (sm != FULL_CYCLE_SOLID_MASK or dm != FULL_CYCLE_DOTTED_MASK):
+        raise ValueError("cell 16 is invariant: 12 solid main strokes and four solid subdividers")
+    return GLYPH_VARIANTS[(iv, bool(squiggle), bool(spaced), sm, dm)]
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +187,7 @@ class NumberSpelling:
     represented: Decimal
     error: Decimal
     exact: bool
+    integer_crossbars: Tuple[Tuple[int, int], ...] = ()
     scheme: str = SCHEME
 
     @property
@@ -118,8 +196,10 @@ class NumberSpelling:
             self.scheme,
             int(self.negative),
             tuple(int(v) for v in self.integer_values),
+            tuple((int(sm), int(dm)) for sm, dm in self.integer_crossbars),
             int(self.half_squiggle),
-            tuple((c.variant.value, int(c.variant.spaced), int(c.variant.squiggle), c.slot) for c in self.fractional_cells),
+            tuple((c.variant.value, int(c.variant.spaced), int(c.variant.squiggle),
+                   int(c.variant.solid_mask), int(c.variant.dotted_mask), c.slot) for c in self.fractional_cells),
             int(self.visible_decimal_places),
         )
 
@@ -135,7 +215,14 @@ class NumberSpelling:
         out = []
         last = len(self.integer_values) - 1
         for i, value in enumerate(self.integer_values):
-            out.append(glyph_variant(value, squiggle=(self.half_squiggle and i == last), spaced=True))
+            if i < len(self.integer_crossbars):
+                solid_mask, dotted_mask = self.integer_crossbars[i]
+            else:
+                solid_mask, dotted_mask = _default_crossbar_masks(value)
+            out.append(glyph_variant(
+                value, squiggle=(self.half_squiggle and i == last), spaced=True,
+                solid_mask=solid_mask, dotted_mask=dotted_mask,
+            ))
         return tuple(out)
 
     def all_variants(self) -> Tuple[GlyphVariant, ...]:
@@ -147,6 +234,10 @@ class NumberSpelling:
             "source_text": self.source_text,
             "negative": self.negative,
             "integer_cells": list(self.integer_values),
+            "integer_crossbars": [
+                {"solid_mask": int(sm), "dotted_mask": int(dm)}
+                for sm, dm in (self.integer_crossbars or tuple(_default_crossbar_masks(v) for v in self.integer_values))
+            ],
             "half_squiggle": self.half_squiggle,
             "fractional_cells": [
                 {
@@ -154,6 +245,9 @@ class NumberSpelling:
                     "slot": c.slot,
                     "spaced": c.variant.spaced,
                     "squiggle": c.variant.squiggle,
+                    "solid_mask": int(c.variant.solid_mask),
+                    "dotted_mask": int(c.variant.dotted_mask),
+                    "crossbars": [float(c.variant.crossbar_value(i)) for i in range(4)],
                     "subscale_exponent": c.exponent,
                 }
                 for c in self.fractional_cells
@@ -371,7 +465,7 @@ def set_fraction_spacing(spelling: NumberSpelling, slot: int, spaced: bool) -> N
     for cell in spelling.fractional_cells:
         if cell.slot == target:
             found = True
-            cells.append(FractionCell(glyph_variant(cell.variant.value, cell.variant.squiggle, bool(spaced)), cell.slot))
+            cells.append(FractionCell(glyph_variant(cell.variant.value, cell.variant.squiggle, bool(spaced), cell.variant.solid_mask, cell.variant.dotted_mask), cell.slot))
         else:
             cells.append(cell)
     if not found:
@@ -379,6 +473,73 @@ def set_fraction_spacing(spelling: NumberSpelling, slot: int, spaced: bool) -> N
     provisional = replace(spelling, fractional_cells=tuple(cells), exact=False)
     represented = decode_spelling(provisional)
     source = _source_decimal(spelling.source_text)
+    return replace(provisional, represented=represented, error=abs(represented-source), exact=(represented==source))
+
+
+def set_integer_crossbars(spelling: NumberSpelling, cell_index: int, *, solid_mask: int, dotted_mask: int) -> NumberSpelling:
+    """Rewrite one integer cell's four ordered cross-bar states."""
+    idx = int(cell_index)
+    if idx < 0:
+        idx += len(spelling.integer_values)
+    if idx < 0 or idx >= len(spelling.integer_values):
+        raise IndexError("integer cell index out of range")
+    sm, dm = int(solid_mask), int(dotted_mask)
+    # Validate using the interned face constructor.
+    glyph_variant(spelling.integer_values[idx], False, True, sm, dm)
+    bars = list(spelling.integer_crossbars or tuple(_default_crossbar_masks(v) for v in spelling.integer_values))
+    bars[idx] = (sm, dm)
+    return replace(spelling, integer_crossbars=tuple(bars))
+
+
+def set_cell_crossbars(variant: GlyphVariant, *, solid_mask: int, dotted_mask: int) -> GlyphVariant:
+    """Return the same 0..16/squiggle/spacing face with explicit cross-bars."""
+    return glyph_variant(variant.value, variant.squiggle, variant.spaced, solid_mask, dotted_mask)
+
+
+def crossbar_values(variant: GlyphVariant) -> Tuple[Decimal, Decimal, Decimal, Decimal]:
+    return tuple(variant.crossbar_value(i) for i in range(4))
+
+
+def spelling_from_dict(data: dict) -> NumberSpelling:
+    """Reconstruct an explicit spelling packet from project/provenance metadata."""
+    if not isinstance(data, dict):
+        raise TypeError("spelling metadata must be a dict")
+    source_text = normalize_numeric_text(data.get("source_text", "0"))
+    integer_values = tuple(int(v) for v in (data.get("integer_cells") or [0]))
+    bars_data = data.get("integer_crossbars") or []
+    integer_crossbars = []
+    for i, value in enumerate(integer_values):
+        if i < len(bars_data) and isinstance(bars_data[i], dict):
+            sm = int(bars_data[i].get("solid_mask", _default_crossbar_masks(value)[0]))
+            dm = int(bars_data[i].get("dotted_mask", _default_crossbar_masks(value)[1]))
+        else:
+            sm, dm = _default_crossbar_masks(value)
+        glyph_variant(value, False, True, sm, dm)
+        integer_crossbars.append((sm, dm))
+    cells = []
+    for rec in (data.get("fractional_cells") or []):
+        if not isinstance(rec, dict):
+            continue
+        slot = int(rec.get("slot", len(cells) + 1))
+        value = int(rec.get("value", 0))
+        spaced = bool(rec.get("spaced", True))
+        squiggle = bool(rec.get("squiggle", False))
+        solid_mask = int(rec.get("solid_mask", 0))
+        dotted_mask = int(rec.get("dotted_mask", 0))
+        cells.append(FractionCell(glyph_variant(value, squiggle=squiggle, spaced=spaced,
+                                                solid_mask=solid_mask, dotted_mask=dotted_mask), slot))
+    provisional = NumberSpelling(
+        source_text=source_text,
+        negative=bool(data.get("negative", False)),
+        integer_values=integer_values,
+        half_squiggle=bool(data.get("half_squiggle", False)),
+        fractional_cells=tuple(cells),
+        visible_decimal_places=int(data.get("visible_decimal_places", _visible_decimal_places(source_text))),
+        represented=Decimal(0), error=Decimal(0), exact=False,
+        integer_crossbars=tuple(integer_crossbars), scheme=SCHEME,
+    )
+    represented = decode_spelling(provisional)
+    source = _source_decimal(source_text)
     return replace(provisional, represented=represented, error=abs(represented-source), exact=(represented==source))
 
 
@@ -394,6 +555,18 @@ def scheme_manifest() -> dict:
         "subscale_weights": "slot k => 2^(-4k)",
         "spacing_rule": {"spaced_straight": "1/1 slot", "unspaced_straight": "1/2 slot"},
         "automatic_fraction_cells": "spaced/full",
+        "divider_semantics": {
+            "crossbar_count_per_glyph": 4,
+            "states": {"absent": 0, "dotted": "1/2", "solid": "1/1"},
+            "solid": "1/1 counted divider",
+            "dotted": "1/2 counted divider",
+            "full_cycle_divider_count": FULL_CYCLE_DIVIDER_COUNT,
+            "full_cycle_main_stroke_count": FULL_CYCLE_MAIN_STROKE_COUNT,
+            "full_cycle_main_stroke_solid_count": FULL_CYCLE_MAIN_STROKE_SOLID_COUNT,
+            "full_cycle_solid_mask": FULL_CYCLE_SOLID_MASK,
+            "full_cycle_dotted_mask": FULL_CYCLE_DOTTED_MASK,
+            "full_cycle_invariant": "12/12 solid main strokes + 4/4 solid subdividers",
+        },
         "precomputed_variant_count": PRECOMPUTED_VARIANT_COUNT,
         "rewritable": True,
         "underlying_value_preserved": True,

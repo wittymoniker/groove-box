@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from time import perf_counter_ns
-from author_number_codec import spell_number, _spell_cached, PRECOMPUTED_VARIANT_COUNT
+from author_number_codec import spell_number, _spell_cached, PRECOMPUTED_VARIANT_COUNT, SCHEME
 from scode_optimizer_bridge import require_scode_runtime
 
 values=[f"{(i%97)+((i*37)%1000)/1000:.3f}" for i in range(1000)]
@@ -10,11 +10,11 @@ t2=perf_counter_ns(); hot=[spell_number(v) for v in values]; t3=perf_counter_ns(
 bridge=require_scode_runtime()
 # warm a dedicated sCode-routed semantic packet cache
 for v in values:
-    bridge.memoized_symbol_spelling(("base16-squiggle-subscale-v4",v), lambda v=v: spell_number(v))
+    bridge.memoized_symbol_spelling((SCHEME,v), lambda v=v: spell_number(v))
 t4=perf_counter_ns()
 for _ in range(20):
     for v in values:
-        bridge.memoized_symbol_spelling(("base16-squiggle-subscale-v4",v), lambda v=v: spell_number(v))
+        bridge.memoized_symbol_spelling((SCHEME,v), lambda v=v: spell_number(v))
 t5=perf_counter_ns()
 print(f"precomputed semantic faces={PRECOMPUTED_VARIANT_COUNT}")
 print(f"codec cold 1000={((t1-t0)/1e6):.4f} ms")

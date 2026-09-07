@@ -1835,7 +1835,21 @@ class Performance(QDialog):
         if an and hasattr(self,"cmb_output_audio"):
             for i,a in enumerate(self._output_audio):
                 if getattr(a,"name","")==an: self.cmb_output_audio.setCurrentIndex(i); break
-        self._apply_output_selection()
+        # OUTPUT_ROUTER_COMPAT_20260907: routing method was renamed from
+        # _apply_output_selection() to _apply_output_routing().  Apply the
+        # restored combo-box indices using the current implementation.
+        self._apply_output_routing()
+
+    def _apply_output_selection(self):
+        """Backward-compatible alias for older Performance state/callback code.
+
+        ABI9 briefly retained a call to this legacy method name after the
+        output-router implementation was renamed.  Keep the alias so older
+        project/session paths and third-party extensions cannot crash the
+        Performance window while all routing remains centralized in
+        ``_apply_output_routing``.
+        """
+        return self._apply_output_routing()
 
     def _sync_project_state(self):
         try:

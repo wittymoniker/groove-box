@@ -97,9 +97,13 @@ ffmpeg -hide_banner -encoders 2>/dev/null | grep -E "libx264|aac|libvpx|libvorbi
 echo "==> Verifying bundled required sCode optimizer..."
 if [ -x "$(dirname "$0")/sCode/bootstrap/linux-x86_64/scode0" ]; then
   PLAN=$(cd "$(dirname "$0")/sCode" && GB_OPT_ID=5 GB_OPT_DIRTY=255 GB_OPT_FRAME=0 GB_OPT_LANES=4 GB_OPT_POOL=64 GB_OPT_SHAPE=1 ./bootstrap/linux-x86_64/scode0 run apps/groovebox/groovebox_optimizer.sC)
-  printf '%s\n' "$PLAN" | grep -q '^scode_optimizer_abi=5$'
+  printf '%s\n' "$PLAN" | grep -q '^scode_optimizer_abi=9$'
   printf '%s\n' "$PLAN" | grep -Eq '^pool_slot=[0-9-]+$'
   printf '%s\n' "$PLAN" | grep -Eq '^audio_lane=[0-9-]+$'
+  printf '%s\n' "$PLAN" | grep -q '^pool_abi=3$'
+  printf '%s\n' "$PLAN" | grep -q '^completion_abi=1$'
+  printf '%s\n' "$PLAN" | grep -q '^symbol_abi=4$'
+  printf '%s\n' "$PLAN" | grep -q '^symbol_variant_count=5188$'
   echo "    bundled sCode optimizer OK"
 else
   echo "ERROR: bundled Linux x86_64 sCode runtime missing." >&2; exit 6
