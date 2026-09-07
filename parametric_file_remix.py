@@ -9,6 +9,7 @@ audio (video PTS is uniformly conformed when required). Images are copied.
 from __future__ import annotations
 import ast, math, os, random, shutil, subprocess, tempfile, wave
 from pathlib import Path
+from groovebox_media_tools import resolve_local_tool
 import numpy as np
 from dj_effects import LiveDJEffects
 
@@ -35,7 +36,7 @@ def _script_values(script,t,step,rng):
     return out
 
 def _decode(path,sr=48000):
-    ff=shutil.which('ffmpeg')
+    ff=resolve_local_tool('ffmpeg', required=False)
     if not ff: raise RuntimeError('ffmpeg is required for Parametric Remix file rendering')
     p=subprocess.run([ff,'-v','error','-i',path,'-vn','-ac','1','-ar',str(sr),'-f','f32le','pipe:1'],capture_output=True,check=False)
     if p.returncode!=0 or not p.stdout: raise RuntimeError((p.stderr or b'ffmpeg decode failed').decode('utf-8','replace')[-1500:])
@@ -70,7 +71,7 @@ def render_parametric_file(src,out,script,seed,pair=(0,1),bpm=120.0,control_hz=2
         if Path(out).suffix.lower()!='.wav': out=str(Path(out).with_suffix('.wav'))
         _write_wav(out,y,sr); return out
     if ext in VIDEO_EXT:
-        ff=shutil.which('ffmpeg'); td=tempfile.mkdtemp(prefix='gb_parametric_'); wav=os.path.join(td,'remix.wav'); _write_wav(wav,y,sr)
+        ff=resolve_local_tool('ffmpeg', required=True); td=tempfile.mkdtemp(prefix='gb_parametric_'); wav=os.path.join(td,'remix.wav'); _write_wav(wav,y,sr)
         # Preserve original picture stream; processed audio is the authoritative edit.
         cmd=[ff,'-y','-v','error','-i',src,'-i',wav,'-map','0:v:0','-map','1:a:0','-c:v','copy','-c:a','aac','-b:a','256k','-shortest',out]
         p=subprocess.run(cmd,capture_output=True,text=True,check=False)

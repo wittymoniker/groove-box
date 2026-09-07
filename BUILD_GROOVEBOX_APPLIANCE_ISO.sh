@@ -9,9 +9,9 @@ OUT="${1:-$ROOT/dist/Groovebox-sCode-Appliance-x86_64.iso}"
 _SCODE_PLAN=$(cd "$ROOT/sCode" && GB_OPT_ID=1 GB_OPT_DIRTY=255 GB_OPT_FRAME=0 GB_OPT_LANES=4 GB_OPT_POOL=64 GB_OPT_SHAPE=1 \
   ./bootstrap/linux-x86_64/scode0 run apps/groovebox/groovebox_optimizer.sC) \
   || { echo "sCode optimizer execution failed." >&2; exit 5; }
-printf '%s\n' "$_SCODE_PLAN" | grep -q '^scode_optimizer_abi=5$' \
-  || { echo "sCode optimizer ABI5 preflight failed." >&2; exit 5; }
-for _k in pool_slot audio_lane visual_lane game_lane media_lane run_audio run_media coalesce_bucket canonical_pool_slot background_cadence parallel_width symbol_pool_slot symbol_base symbol_full_cycle symbol_half_denominator symbol_subscale_bits symbol_variant_count symbol_pool_key; do
+printf '%s\n' "$_SCODE_PLAN" | grep -q '^scode_optimizer_abi=9$' \
+  || { echo "sCode optimizer ABI9 preflight failed." >&2; exit 5; }
+for _k in pool_slot audio_lane visual_lane game_lane media_lane run_audio run_media coalesce_bucket canonical_pool_slot background_cadence parallel_width symbol_pool_slot symbol_base symbol_full_cycle symbol_half_denominator symbol_subscale_bits symbol_variant_count symbol_pool_key completion_abi completion_policy_count pool_abi scheduler_abi symbol_abi symbol_crossbar_count symbol_crossbar_state_count symbol_full_cycle_main_strokes symbol_full_cycle_main_strokes_solid symbol_full_cycle_solid_mask symbol_full_cycle_dotted_mask; do
   printf '%s\n' "$_SCODE_PLAN" | grep -Eq "^${_k}=[0-9-]+$" \
     || { echo "sCode optimizer returned a non-concrete field: $_k" >&2; printf '%s\n' "$_SCODE_PLAN" >&2; exit 5; }
 done
@@ -36,8 +36,8 @@ install -m755 "$ROOT/sCode/bootstrap/linux-x86_64/scode0" "$ISOBASE/source/rootf
 # root; running from /opt/groovebox would leave imported optimizer helpers null.
 _STAGE_PLAN=$(cd "$ISOBASE/source/rootfs/opt/groovebox/sCode" && GB_OPT_ID=2 GB_OPT_DIRTY=255 GB_OPT_FRAME=0 GB_OPT_LANES=4 GB_OPT_POOL=64 GB_OPT_SHAPE=2 \
   ./bootstrap/linux-x86_64/scode0 run apps/groovebox/groovebox_optimizer.sC)
-printf '%s\n' "$_STAGE_PLAN" | grep -q '^scode_optimizer_abi=5$'
-for _k in pool_slot audio_lane visual_lane game_lane media_lane run_audio run_media coalesce_bucket canonical_pool_slot background_cadence parallel_width symbol_pool_slot symbol_base symbol_full_cycle symbol_half_denominator symbol_subscale_bits symbol_variant_count symbol_pool_key; do
+printf '%s\n' "$_STAGE_PLAN" | grep -q '^scode_optimizer_abi=9$'
+for _k in pool_slot audio_lane visual_lane game_lane media_lane run_audio run_media coalesce_bucket canonical_pool_slot background_cadence parallel_width symbol_pool_slot symbol_base symbol_full_cycle symbol_half_denominator symbol_subscale_bits symbol_variant_count symbol_pool_key completion_abi completion_policy_count pool_abi scheduler_abi symbol_abi symbol_crossbar_count symbol_crossbar_state_count symbol_full_cycle_main_strokes symbol_full_cycle_main_strokes_solid symbol_full_cycle_solid_mask symbol_full_cycle_dotted_mask; do
   printf '%s\n' "$_STAGE_PLAN" | grep -Eq "^${_k}=[0-9-]+$"
 done
 # Build using the hardened Fedora43/sOS fat-rootfs path (usr-merge, /var/tmp,

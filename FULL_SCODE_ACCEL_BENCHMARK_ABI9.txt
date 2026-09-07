@@ -1,0 +1,10 @@
+sCode ABI 9
+plan uncached ms=17.5270
+plan cached ms=0.010150  speedup=1726.7x
+work claim first ms=0.022638
+work claim repeated ms=0.007942
+layered media raw ms=7.6782
+layered media sCode memo ms=0.027086  speedup=283.5x
+row boolean-mask setup ms=25.5883
+row slice lookup ms=0.003432  speedup=7456.4x
+stats {'plans': 10, 'plan_cache_hits': 2000, 'work_claims': 5001, 'work_skips': 5000, 'memo_hits': 2000, 'memo_misses': 1, 'pool_hits': 1, 'pool_misses': 1, 'completion_submitted': 0, 'completion_cache_hits': 0, 'completion_coalesced': 0, 'completion_published': 0, 'completion_stale_dropped': 0, 'completion_errors': 0, 'completion_ui_delivered': 0}

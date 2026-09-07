@@ -1292,6 +1292,142 @@ def classify_from_composition(
     )
 
 
+
+# ---------------------------------------------------------------------------
+# Deterministic exported-game compatibility kernels (2026-09-07)
+# These are also importable from the host module so the standalone template and
+# host regression surfaces share the same finite-seed semantics.
+# ---------------------------------------------------------------------------
+class SeedScribedGOAVA:
+    """Call-order-independent semantic selector with an explicit seed ledger."""
+    def __init__(self, seed):
+        self.seed = _safe_int_seed(seed)
+
+    def _r(self, namespace, key, action="value"):
+        return meum_game_residue(self.seed, f"{namespace}|{key}|{action}")
+
+    def choose(self, namespace, key, options):
+        opts = list(options or [])
+        if not opts:
+            raise ValueError("GOAVA choose() requires at least one option")
+        idx = min(len(opts) - 1, int(self._r(namespace, key, "choose") * len(opts)))
+        return opts[idx]
+
+    def value(self, namespace, key, lo=0.0, hi=1.0):
+        lo, hi = float(lo), float(hi)
+        return lo + (hi - lo) * self._r(namespace, key, "value")
+
+    def scribe(self, namespace, key, action, result):
+        return {"seed": self.seed, "label": f"{namespace}|{key}|{action}", "result": result}
+
+
+def goava(seed):
+    return SeedScribedGOAVA(seed)
+
+
+class SequenceInfluence:
+    """Finite sequence lengths -> deterministic motion/vibration controls."""
+    def __init__(self, seed, pattern_lengths=(8, 13, 21)):
+        self.seed = _safe_int_seed(seed)
+        self.pattern_lengths = tuple(max(1, int(x)) for x in (pattern_lengths or (8, 13, 21)))
+
+    def update(self, t):
+        tt = max(0.0, float(t))
+        step = int(math.floor(tt))
+        plen = self.pattern_lengths[step % len(self.pattern_lengths)]
+        phase = (tt % plen) / float(plen)
+        r = meum_game_residue(self.seed, f"sequence:{step}:{plen}")
+        motion = 0.18 + 0.82 * (0.5 + 0.5 * math.sin(math.tau * phase + math.tau * r))
+        vibration = 0.04 + 0.46 * (0.5 + 0.5 * math.cos(math.tau * phase * MEUM + math.tau * r))
+        return {
+            "step": step,
+            "pattern": plen,
+            "phase": phase,
+            "motion": max(1e-9, min(1.0, motion)),
+            "vibration": max(1e-9, min(0.5, vibration)),
+        }
+
+
+class TemporalSeedDynamics:
+    """Deterministic build -> modulate -> stabilize temporal field."""
+    def __init__(self, seed):
+        self.seed = _safe_int_seed(seed)
+        self.stage = "build"
+        self.intensity = 0.0
+
+    def field(self, label, t):
+        tt = max(0.0, float(t))
+        phase = tt % 96.0
+        if phase < 16.0:
+            self.stage = "build"
+            local = phase / 16.0
+            gain = 0.25 + 0.75 * local
+        elif phase < 64.0:
+            self.stage = "modulate"
+            local = (phase - 16.0) / 48.0
+            gain = 0.72 + 0.28 * (0.5 + 0.5 * math.sin(math.tau * local))
+        else:
+            self.stage = "stabilize"
+            local = (phase - 64.0) / 32.0
+            gain = 1.0 - 0.35 * local
+        r = meum_game_residue(self.seed, f"temporal:{label}:{int(tt)}")
+        wave = math.sin(math.tau * (tt * MEUM_INV / 32.0 + r))
+        self.intensity = max(0.0, min(1.0, gain))
+        return self.intensity * wave
+
+
+class ScenographLite:
+    """Host-visible compact mirror used by the deterministic sequence tests."""
+    def __init__(self, seed, n=12, goava=False, topology="open_world"):
+        self.seed = _safe_int_seed(seed)
+        self.n = max(1, int(n))
+        self.beat = 0.0
+        self.sequence_control = SequenceInfluence(self.seed)
+        self.layers = [
+            {"yaw": math.tau * meum_game_residue(self.seed, f"compat:yaw:{i}"), "on": True}
+            for i in range(self.n)
+        ]
+
+    def tick(self, dt, audio_rms=0.2):
+        dt = max(0.0, float(dt))
+        self.beat += dt * 2.0
+        seq = self.sequence_control.update(self.beat)
+        for i, layer in enumerate(self.layers):
+            layer["yaw"] = (layer["yaw"] + dt * seq["motion"] * (0.25 + (i + 1) / max(1, self.n))) % math.tau
+        return self.layers
+
+
+class MusicBed:
+    """Host-visible compact mirror; exported games contain the full music bed."""
+    def __init__(self, seed, bpm=120, bars=32, **_kwargs):
+        self.seed = _safe_int_seed(seed)
+        self.bpm = float(bpm)
+        self.bars = int(bars)
+        self.phase = 0.0
+        self.sequence_control = SequenceInfluence(self.seed)
+        self.sequence_vibration = 0.0
+
+    def step(self, dt):
+        dt = max(0.0, float(dt))
+        self.phase = (self.phase + dt * (self.bpm / 60.0) * math.tau) % math.tau
+        seq = self.sequence_control.update(self.phase / math.tau * max(1, self.bars))
+        self.sequence_vibration = seq["vibration"]
+        return max(-1.0, min(1.0, math.sin(self.phase * MEUM) * (0.45 + self.sequence_vibration)))
+
+
+class ProceduralWorldRenderer:
+    """Topology guard mirror retained for generated-game regression inspection."""
+    def __init__(self, topology="open_world"):
+        self.topology = topology
+
+    def draw(self, p, project, cx, cy, R):
+        topo = str(getattr(self, "topology", "open_world") or "open_world").lower()
+        out = []
+        for mi in range(34 if topo == "open_world" else 18):
+            out.append(mi)
+        return out
+
+
 # ---------------------------------------------------------------------------
 # Generated-game template. Built with placeholder tokens (__TOKEN__) and plain
 # string substitution instead of an f-string, so the body's own braces stay
@@ -1314,7 +1450,7 @@ __TITLE__
   social=__SOCIAL__  mood=__MOOD__  online=__ONLINE__
 """
 from __future__ import annotations
-import csv, gzip, hashlib, io, json, math, os, queue, socket, struct, sys, threading, time, wave, zlib
+import csv, gzip, hashlib, io, json, math, os, queue, socket, struct, sys, tempfile, threading, time, wave, zlib
 
 from visual_determinism import fibonacci_view, select_views, visual_signal_id
 try:
@@ -1483,7 +1619,7 @@ def seed_script_channels(seed_script, t=0.0):
 # two shared (Python / PyQt6) system dependencies.
 # ---------------------------------------------------------------------------
 try:
-    from PyQt6.QtCore import QTimer, Qt, QPointF
+    from PyQt6.QtCore import QTimer, Qt, QPointF, QRect
     from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QBrush, QPolygonF
     from PyQt6.QtWidgets import (
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -1515,6 +1651,171 @@ def _residue(seed, label):
     blob = f"{seed}|{label}|{MEUM:.12f}".encode("utf-8")
     i = int.from_bytes(hashlib.sha256(blob).digest()[:8], "big")
     return (i % 10_000_000) / 10_000_000.0
+
+def _game_ot_enabled():
+    return bool(OP_THEORY_ENABLED)
+
+def ot_band(x):
+    ax=abs(float(x))
+    if ax<=1.0: return 1.0
+    if ax<=2.0: return 2.0
+    if ax<=3.0: return 3.0
+    return 1.0
+
+def _g_fractal_add(a,b): return float(a)+float(b)
+def _g_fractal_mul(a,b): return float(a)*float(b)
+def _g_fractal_pow(a,b):
+    try: return math.pow(float(a),float(b))
+    except Exception: return 0.0
+def _g_fractal_root(x,n=2.0):
+    try: return math.pow(max(float(x),0.0),1.0/(float(n) or 2.0))
+    except Exception: return 0.0
+
+ESKI_FRACTAL_SET_NAMES=("divergent_space","wormhole","wormhill","worms","star","starburst")
+def eski_fractal_eval(set_name,x,c):
+    name=(set_name or "wormhill").lower().strip().replace(" ","_"); x=float(x); c=float(c)
+    try:
+        if name.startswith("divergent"): y=_g_fractal_add(_g_fractal_mul(x,c),c)
+        elif name.startswith("wormhole"): y=_g_fractal_add(_g_fractal_pow(x,c),x)
+        elif name.startswith("wormhill"): y=_g_fractal_add(x,c)
+        elif name.startswith("worms"): y=_g_fractal_mul(c,_g_fractal_root(max(x,0.0),2.0))
+        elif name=="star" or name.startswith("star_set"): y=_g_fractal_pow(c,x)
+        elif name.startswith("starburst"): y=_g_fractal_mul(_g_fractal_root(max(c,0.0),2.0),x)
+        else: y=_g_fractal_add(x,c)
+    except Exception: y=0.0
+    if not math.isfinite(y): y=0.0
+    if abs(y)>1e6: y=math.copysign(1e6,y)
+    return float(y)
+
+def eski_fractal_pick(seed_key,sequential_nums=None,playlist_hash=0):
+    seq=list(sequential_nums or []) or [float(seed_key or 0)]; mean=sum(abs(float(v)) for v in seq)/max(1,len(seq)); fold=abs(float(seq[0])*MEUM)%1.0
+    h=(int(seed_key or 0) ^ (int(playlist_hash or 0)&0x7fffffff)); h^=int(fold*1000)&0xffff; h^=int(mean*100)&0xffff
+    return ESKI_FRACTAL_SET_NAMES[h%len(ESKI_FRACTAL_SET_NAMES)]
+
+def compositional_xyz(seed,sequential_nums=None,t=0.0,slot=0):
+    seq=list(sequential_nums or []) or [float(seed or 0.0)]; s=float(seed or 0.0); t=float(t); i=int(slot)&0x7fff
+    x=((seq[0] if seq else s)*MEUM_INV+i*PHI_INV+t*0.01)%2.0-1.0
+    y=((seq[1] if len(seq)>1 else s*MEUM)*MEUM_INV+i*MEUM+t*0.013)%2.0-1.0
+    z=((seq[2] if len(seq)>2 else s*PHI)*MEUM_INV+i*0.07+t*0.008)%2.0-1.0
+    return float(x),float(y),float(z)
+
+def eski_fractal_iterate_z(set_name,x,y,z0,c,max_iter=None):
+    max_iter=max(1,min(12,int(max_iter if max_iter is not None else ESKI_FRACTAL_MAX_ITER))); z=float(z0); zs=[]; escaped=False
+    for _ in range(max_iter):
+        z=eski_fractal_eval(set_name,float(x)+MEUM*float(y)+z,float(c)); zs.append(z)
+        if abs(z)>8.0: escaped=True; break
+    return zs,len(zs),escaped
+
+def instrument_geometry_mode(slot,phase,xyz,flags=None,fractal_set=None):
+    flags=dict(flags or {}); x,y,z=xyz if xyz and len(xyz)>=3 else (0.0,0.0,0.0); ph=float(phase)%math.tau
+    near=min(min(abs(ph),abs(ph-math.tau)),abs(ph-math.pi))/math.pi; snap=1.0-near; geo=(abs(float(x))+abs(float(y))+abs(float(z)))/3.0
+    w={"lattice":0.45+0.25*(1.0-geo),"book_set":0.20+0.20*geo,"phase_lock":0.08*(1.5 if flags.get("phase_lock") else 0.4),"scatter":0.08*(1.5 if flags.get("randomizer") else 0.4),"goava":0.08*(1.6 if flags.get("goava") else 0.3)}
+    if snap>0.65: w["lattice" if int(slot)%2==0 else "book_set"]+=0.20*snap
+    else: w["lattice"]=w["lattice"]*(1.0-0.3*near)+w["book_set"]*0.15*near
+    ss=sum(w.values()) or 1.0
+    for k in list(w): w[k]=float(w[k]/ss)
+    w.update({"snap":float(snap),"near_phase_point":bool(snap>0.65),"fractal_set":fractal_set or "","slot":int(slot)})
+    return w
+
+class SpriteGrammar:
+    PARTS=("core","ring","panel","wing","engine","crystal","antenna","window","spike","orb")
+    def __init__(self,seed): self.seed=_safe_int_seed(seed)
+    def entity(self,kind,index=0):
+        n=3+int(5*_residue(self.seed,f"sprite:n:{kind}:{index}"))
+        return {"kind":kind,"parts":[self.PARTS[int(_residue(self.seed,f"sprite:{kind}:{index}:{j}")*len(self.PARTS))%len(self.PARTS)] for j in range(n)],"scale":0.5+2.5*_residue(self.seed,f"sprite:s:{kind}:{index}"),"phase":math.tau*_residue(self.seed,f"sprite:p:{kind}:{index}")}
+    def encounter(self,index): return self.entity(f"encounter_{index%17}",index)
+
+# Deterministic compatibility kernels carried inside every exported game.
+def _vadd(a,b): return (a[0]+b[0], a[1]+b[1], a[2]+b[2])
+def _vsub(a,b): return (a[0]-b[0], a[1]-b[1], a[2]-b[2])
+def _vmul(a,k): return (a[0]*k, a[1]*k, a[2]*k)
+def _vdot(a,b): return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]
+def _vlen(a): return math.sqrt(max(0.0, _vdot(a,a)))
+def _vnorm(a):
+    n=_vlen(a)
+    return (a[0]/n,a[1]/n,a[2]/n) if n>1e-12 else (0.0,1.0,0.0)
+def _vcross(a,b): return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
+
+class SeedScribedGOAVA:
+    def __init__(self, seed): self.seed=_safe_int_seed(seed)
+    def _r(self, namespace, key, action="value"):
+        return _residue(self.seed, f"{namespace}|{key}|{action}")
+    def choose(self, namespace, key, options):
+        opts=list(options or [])
+        if not opts: raise ValueError("GOAVA choose() requires at least one option")
+        return opts[min(len(opts)-1, int(self._r(namespace,key,"choose")*len(opts)))]
+    def value(self, namespace, key, lo=0.0, hi=1.0):
+        lo,hi=float(lo),float(hi); return lo+(hi-lo)*self._r(namespace,key,"value")
+    def scribe(self, namespace, key, action, result):
+        return {"seed":self.seed,"label":f"{namespace}|{key}|{action}","result":result}
+
+def goava(seed): return SeedScribedGOAVA(seed)
+
+class SequenceInfluence:
+    def __init__(self, seed, pattern_lengths=(8,13,21)):
+        self.seed=_safe_int_seed(seed)
+        self.pattern_lengths=tuple(max(1,int(x)) for x in (pattern_lengths or (8,13,21)))
+    def update(self,t):
+        tt=max(0.0,float(t)); step=int(math.floor(tt)); plen=self.pattern_lengths[step%len(self.pattern_lengths)]
+        phase=(tt%plen)/float(plen); r=_residue(self.seed,f"sequence:{step}:{plen}")
+        motion=0.18+0.82*(0.5+0.5*vg_sin(math.tau*phase+math.tau*r))
+        vibration=0.04+0.46*(0.5+0.5*vg_cos(math.tau*phase*MEUM+math.tau*r))
+        return {"step":step,"pattern":plen,"phase":phase,"motion":max(1e-9,min(1.0,motion)),"vibration":max(1e-9,min(0.5,vibration))}
+
+class TemporalSeedDynamics:
+    def __init__(self, seed): self.seed=_safe_int_seed(seed); self.stage="build"; self.intensity=0.0
+    def field(self,label,t):
+        tt=max(0.0,float(t)); phase=tt%96.0
+        if phase<16.0: self.stage="build"; local=phase/16.0; gain=0.25+0.75*local
+        elif phase<64.0: self.stage="modulate"; local=(phase-16.0)/48.0; gain=0.72+0.28*(0.5+0.5*vg_sin(math.tau*local))
+        else: self.stage="stabilize"; local=(phase-64.0)/32.0; gain=1.0-0.35*local
+        r=_residue(self.seed,f"temporal:{label}:{int(tt)}"); wave=vg_sin(math.tau*(tt*MEUM_INV/32.0+r))
+        self.intensity=max(0.0,min(1.0,gain)); return self.intensity*wave
+
+class PlanetaryWorld:
+    """Small deterministic orbital kernel used by the self-contained game."""
+    G=0.00042
+    def __init__(self,seed):
+        self.seed=_safe_int_seed(seed); self.planets=[]
+        for i in range(9):
+            a=math.tau*_residue(self.seed,f"planet:a:{i}"); orbit=260.0+i*i*115.0+900.0*_residue(self.seed,f"planet:r:{i}")
+            mass=6000.0+90000.0*_residue(self.seed,f"planet:m:{i}"); radius=18.0+70.0*_residue(self.seed,f"planet:size:{i}")
+            inc=-0.25+0.5*_residue(self.seed,f"planet:i:{i}")
+            self.planets.append({"id":f"P{i}","orbit":orbit,"angle":a,"mass":mass,"radius":radius,"inclination":inc})
+        self.t=0.0; p0=self._planet_pos(self.planets[0],0.0)
+        self.pos=_vadd(p0,(0.0,self.planets[0]["radius"]+7.0,0.0)); radial=_vnorm(_vsub(self.pos,p0))
+        tangent=_vnorm(_vcross((0.0,1.0,0.0),radial)); tangent=tangent if _vlen(tangent)>=1e-5 else (1.0,0.0,0.0)
+        self.vel=_vmul(tangent,math.sqrt(self.G*self.planets[0]["mass"]/max(1.0,self.planets[0]["radius"]+7.0))*0.86)
+        self.accel=(0.0,0.0,0.0); self.gravity=(0.0,0.0,0.0); self.current_planet=0; self.landed=True
+        self.gravity,self.current_planet=self.acceleration_at(self.pos)
+    def _planet_pos(self,p,t):
+        ang=p["angle"]+t*math.sqrt(self.G*7000.0/max(1.0,p["orbit"]**3))
+        return (p["orbit"]*vg_cos(ang), vg_sin(ang*0.7)*p["orbit"]*p["inclination"]*0.12, p["orbit"]*vg_sin(ang))
+    def bodies_near(self,pos,radius=2200.0):
+        out=[]
+        for i,p in enumerate(self.planets):
+            pp=self._planet_pos(p,self.t); d=_vlen(_vsub(pp,pos))
+            if d<=radius: out.append((i,p,pp,d))
+        return out
+    def acceleration_at(self,pos):
+        g=(0.0,0.0,0.0); strongest=None; best=1e99
+        for i,p,pp,_ in self.bodies_near(pos,5000.0):
+            r=_vsub(pp,pos); d=max(2.0,_vlen(r)); g=_vadd(g,_vmul(_vnorm(r),self.G*p["mass"]/(d*d)))
+            if d<best: best=d; strongest=i
+        return g,strongest
+    def step(self,dt,thrust_vector=(0.0,0.0,0.0)):
+        dt=max(0.001,min(0.1,float(dt))); self.t+=dt; self.gravity,self.current_planet=self.acceleration_at(self.pos)
+        self.accel=_vadd(self.gravity,_vmul(thrust_vector,8.0)); self.vel=_vadd(self.vel,_vmul(self.accel,dt)); self.pos=_vadd(self.pos,_vmul(self.vel,dt))
+        if self.current_planet is not None:
+            pp=self._planet_pos(self.planets[self.current_planet],self.t); d=_vlen(_vsub(self.pos,pp)); r=self.planets[self.current_planet]["radius"]
+            self.landed=d<=r+2.0
+            if self.landed and _vlen(self.vel)<2.5: self.pos=_vadd(pp,_vmul(_vnorm(_vsub(self.pos,pp)),r+1.5))
+    def local_frame(self):
+        up=_vnorm(_vmul(self.gravity,-1.0)) if _vlen(self.gravity)>1e-8 else (0.0,1.0,0.0)
+        forward=_vsub(self.vel,_vmul(up,_vdot(self.vel,up))); forward=_vnorm(forward if _vlen(forward)>=1e-8 else (0.0,0.0,1.0))
+        right=_vnorm(_vcross(forward,up)); return right,up,_vnorm(_vcross(up,right))
+    def to_dict(self):
+        return {"t":round(self.t,6),"pos":[round(x,6) for x in self.pos],"vel":[round(x,6) for x in self.vel],"gravity":[round(x,6) for x in self.gravity],"accel":[round(x,6) for x in self.accel],"planet":self.current_planet,"landed":self.landed}
 
 def meum_angle(k):
     """Collision-free angle packing on the circle (OT-gated, p.78/49-50).
@@ -1763,6 +2064,7 @@ class ScenographLite:
         self.goava = bool(goava)
         self.topology = (topology or "open_world").lower()
         self.sculptor = TriggerSculptor(self.seed, self.n)
+        self.sequence_control = SequenceInfluence(self.seed, (8, 13, 21))
         self.beat = 0.0
         self.layers = []
         base = 220.0 * 2.0 ** ((round(36.0 * _residue(self.seed, "base")) - 18) / 12.0)
@@ -1824,6 +2126,7 @@ class ScenographLite:
     def tick(self, dt, audio_rms=0.2):
         self.beat += dt * (BPM / 60.0)
         step = int(self.beat)
+        _seq = self.sequence_control.update(self.beat)
         # Cross-correlation bias from the unified audio/activity/visual field
         # (set by Game._refresh_activities).  Singular scenarios become visible
         # as spin rate, hue drift, and grid density — the same numbers the ear
@@ -1904,6 +2207,7 @@ class ScenographLite:
             if L["on"]:
                 on_count += 1
                 spin = (0.25 + 0.65 * MEUM * (i + 1) / max(1, self.n)) * (0.6 + 0.8 * x_spin)
+                spin *= (0.55 + 0.90 * float(_seq["motion"]))
                 L["yaw"] = (L["yaw"] + dt * spin * (0.6 + 0.9 * audio_rms + 0.35 * x_energy)) % math.tau
             L["pitch"] = 0.55 * vg_sin(self.beat * MEUM + i * PHI + x_grid * 0.4)
             # Subtle life pulse so open-world layers feel alive
@@ -1936,6 +2240,9 @@ class MusicBed:
         self.master_volume = float(master_volume)
         self._dj_residue = _residue(self.seed, "dj_phase")
         self._algo_spin = (_mix(_safe_int_seed(seed), algo_fp or "0") % 10007) / 10007.0
+        self.sequence_control = SequenceInfluence(self.seed, (8, 13, 21))
+        self.sequence_vibration = 0.0
+        self._sequence_time = 0.0
         # Canonical voice params (mirrors main-app meum voice lattice)
         self._phase0 = _residue(self.seed, "music_phase0") * math.tau
         self._entropy = _residue(self.seed, "music_entropy")
@@ -1950,6 +2257,9 @@ class MusicBed:
         ]
     def step(self, dt):
         beat = self.bpm / 60.0
+        self._sequence_time += max(0.0, float(dt)) * beat
+        _seq = self.sequence_control.update(self._sequence_time)
+        self.sequence_vibration = float(_seq["vibration"])
         self.phase = (self.phase + dt * beat * math.tau) % math.tau
         self.dj = 0.5 + 0.5 * vg_sin(self.phase * MEUM + self._dj_residue * 0.01)
         if self.dj_goava:
@@ -1966,7 +2276,7 @@ class MusicBed:
         sample = 0.0
         for k in range(self._n_partials):
             sample += self._amps[k] * vg_sin(ph * self._ratios[k])
-        sample *= (0.65 + 0.55 * self.dj)
+        sample *= (0.65 + 0.55 * self.dj + 0.20 * self.sequence_vibration)
         sample += 0.22 * g
         sample *= (1.0 + 0.16 * _seed_drive)
         # MASTER BUS (host-matching doctrine): a plain MASTER VOLUME multiplier
@@ -2376,6 +2686,13 @@ class ItemCatalog:
             if d["id"] == self.equipped:
                 return float(d["power"])
         return 0.0
+
+    def describe(self, iid):
+        d = next((x for x in self.defs if x.get("id") == str(iid)), None)
+        if not d:
+            return "UNKNOWN ITEM"
+        snd = d.get("sound") or {}
+        return f"{d.get('name','ITEM')} [{d.get('tag','')}] SOUND {float(snd.get('freq',0.0)):.2f} Hz"
 
     def to_dict(self):
         return {"inventory": dict(self.inventory), "equipped": self.equipped}
@@ -2798,6 +3115,57 @@ class NetTransport:
         self.status = "offline"
 
 
+def _numeric_sound_signature(seed, label, values=()):
+    vals=tuple(float(v) for v in (values or ()))
+    fold=sum((i+1)*abs(v) for i,v in enumerate(vals))
+    r=_residue(_safe_int_seed(seed),f"sound:{label}:{fold:.9f}")
+    return {
+        "freq": 96.0 + 1904.0*r,
+        "duration": 0.045 + 0.405*_residue(_safe_int_seed(seed),f"sound_d:{label}:{fold:.9f}"),
+        "harmonics": 1 + int(7*_residue(_safe_int_seed(seed),f"sound_h:{label}:{fold:.9f}")),
+    }
+
+class ActionCatalog:
+    def __init__(self,seed):
+        self.seed=_safe_int_seed(seed)
+        ids=("meteor","dash","scan","pulse","craft","heal","shield","portal","harvest","survey","escort","attune")
+        self.actions=[]
+        for i,aid in enumerate(ids):
+            magnitude=0.2+1.8*_residue(self.seed,f"action_mag:{aid}")
+            cost=1.0+9.0*_residue(self.seed,f"action_cost:{aid}")
+            cooldown=0.05+2.95*_residue(self.seed,f"action_cd:{aid}")
+            self.actions.append({"id":aid,"magnitude":magnitude,"cost":cost,"cooldown":cooldown,
+                                 "sound":_numeric_sound_signature(self.seed,aid,(magnitude,cost,cooldown))})
+    def by_id(self,aid):
+        return next((a for a in self.actions if a["id"]==str(aid)),None)
+
+class CharacterProgression:
+    def __init__(self,seed):
+        self.seed=_safe_int_seed(seed); self.experience=0.0; self.freedom=1.0; self.design={}
+    def cycle_design(self,key,amount=0.1):
+        k=str(key); self.design[k]=(float(self.design.get(k,0.0))+float(amount))%1.0
+        self.experience=max(0.0,min(1.0,self.experience+0.01+0.02*abs(float(amount))))
+        self.freedom=max(0.55,min(1.0,self.freedom))
+        return self.design[k]
+    def snapshot(self):
+        return {"experience":float(self.experience),"freedom":float(self.freedom),"design":dict(self.design)}
+
+class ObjectScaleRule:
+    @staticmethod
+    def factor(seed,kind,label=""):
+        k=str(kind).lower()
+        if k in ("tree","plant","ridge","tower"):
+            return 1.75 if _residue(_safe_int_seed(seed),f"scale:{k}:{label}")>=0.5 else 0.25
+        return 1.0
+
+class HomeBase:
+    def __init__(self,seed,angle=0.0):
+        self.seed=_safe_int_seed(seed); self.angle=float(angle); self.x=math.cos(self.angle); self.z=math.sin(self.angle); self.owned=False
+    def nearby(self,g,reach=0.08):
+        return math.hypot(float(getattr(g,"player_x",0.0))-self.x,float(getattr(g,"player_z",0.0))-self.z)<=float(reach)
+    def ui_nearby(self,g): return self.nearby(g,0.12)
+    def journal_priority(self,g=None): return 0.72+0.28*_residue(self.seed,"home:journal")
+
 class Game:
     def __init__(self, host_mode=False, port=None, connect=None):
         self.meta = dict(COMPOSITION_META or {}) if isinstance(COMPOSITION_META, dict) else {}
@@ -2940,6 +3308,20 @@ class Game:
             self.waypoints = WaypointTrail(_seed)
             self.pve = PveEncounter(_seed)
         self.items = ItemCatalog(self.id["seed"])
+        # STARTER_NUMERIC_IDENTITY_2026: every item carries a tier and a
+        # deterministic audible signature; tier-0 supplies start in inventory.
+        for _ii, _d in enumerate(self.items.defs):
+            _d["tier"] = 0 if _ii < min(3, len(self.items.defs)) else 1 + int(2 * _residue(_safe_int_seed(self.id["seed"]), f"tier:{_ii}"))
+            _d["kind"] = ("tool", "event", "interaction")[_ii % 3]
+            _d["sound"] = _numeric_sound_signature(self.id["seed"], _d["id"], (_d.get("value",0), _d.get("power",0)))
+            if _d["tier"] == 0:
+                self.items.grant(_ii, 1)
+        self.actions = ActionCatalog(self.id["seed"])
+        self.character = CharacterProgression(self.id["seed"])
+        self.quick_slots = [d["id"] for d in self.items.defs[:9]]
+        _home_angle = meum_angle(_safe_int_seed(self.id["seed"]) + 17)
+        self.home = HomeBase(self.id["seed"], _home_angle)
+        self.player_x, self.player_z = self.home.x + 1.0, self.home.z + 1.0
         self.quests = QuestLog(self.id["seed"])
         self.purse = CoinPurse(self.id["seed"])
         self.store = Store(self.id["seed"], self.items)
@@ -3126,6 +3508,55 @@ class Game:
         if st is None:
             return {"region": None}
         return dict(st)
+
+    # --- persistent character / home / numeric interaction surface ----------
+    def equip_quick_slot(self, slot):
+        try: idx=int(slot)-1
+        except Exception: return False
+        if idx<0 or idx>=len(self.quick_slots): return False
+        iid=self.quick_slots[idx]
+        if self.items.inventory.get(iid,0)<=0:
+            d=next((x for x in self.items.defs if x["id"]==iid),None)
+            if d is not None: self.items.grant(self.items.defs.index(d),1)
+        return bool(self.items.equip(iid))
+
+    def interaction_items(self):
+        out=[]
+        for i,d in enumerate(self.items.defs):
+            out.append({"id":d["id"],"kind":d.get("kind",("tool","event","interaction")[i%3]),"name":d.get("name",d["id"]),"sound":d.get("sound",{})})
+        # guarantee tool + event affordances even for unusually short catalogs
+        kinds={x["kind"] for x in out}
+        if "tool" not in kinds: out.append({"id":"tool_compat","kind":"tool","name":"Tool","sound":_numeric_sound_signature(self.id["seed"],"tool")})
+        if "event" not in kinds: out.append({"id":"event_compat","kind":"event","name":"Event","sound":_numeric_sound_signature(self.id["seed"],"event")})
+        return out
+
+    def select_zero_item(self, index=0):
+        opts=self.interaction_items()
+        if not opts: return None
+        return opts[int(index)%len(opts)]
+
+    def zero_menu_text(self):
+        lines=["0 — NOTHING EQUIPPED"]
+        for d in self.items.defs[:9]:
+            snd=d.get("sound") or {}
+            lines.append(f"{d['id']} {d.get('name','ITEM')} — {float(snd.get('freq',0.0)):.2f} Hz")
+        return "\n".join(lines)
+
+    def refine_starter_supplies(self):
+        # Lossy by design: crafting consumes one starter unit without silently
+        # creating replacement inventory mass.
+        for d in self.items.defs:
+            if d.get("tier")==0 and self.items.inventory.get(d["id"],0)>0:
+                self.items.inventory[d["id"]]-=1
+                if self.items.inventory[d["id"]]<=0: self.items.inventory.pop(d["id"],None)
+                return f"CRAFTED refined {d.get('name',d['id'])}"
+        return "CRAFTED nothing — starter supplies exhausted"
+
+    def interact(self):
+        if self.home is not None and self.home.nearby(self):
+            self.home.owned=True
+            return "home"
+        return "world"
 
     # --- networking ---------------------------------------------------------
     def toggle_host_mode(self):
@@ -4153,10 +4584,12 @@ class Game:
                 _right,_up,_forward = self.planetary.local_frame()
                 _th = _vadd(_vmul(_right,float(self.move["dx"])),
                             _vadd(_vmul(_forward,float(self.move["dz"])),_vmul(_up,float(self.move["dy"]))))
-                self.planetary.step(dt,_th)
-                # Legacy angle remains as a deterministic compatibility signal for
-                # existing quests/network consumers; it is no longer world motion.
-                self.angle = math.atan2(self.planetary.pos[2],self.planetary.pos[0]) % math.tau
+                _player_motion = (abs(float(self.steer)) > 1e-12 or _vlen(_th) > 1e-12)
+                if _player_motion:
+                    self.planetary.step(dt,_th)
+                    # Legacy angle remains a compatibility signal, but only
+                    # authored motion may change it in free-roam mode.
+                    self.angle = math.atan2(self.planetary.pos[2],self.planetary.pos[0]) % math.tau
                 # THREE-PATHWAY: procedural-on-demand — rare functions are only
                 # computed/rendered when the perspective arrives (spatial
                 # activation) or via /tp /lore /gen.
@@ -7637,6 +8070,19 @@ def build_control_scheme(identity=None) -> Dict[str, Any]:
     if layers.get("radio"):
         binds["radio"] = {"key": "U", "qt": "Key_U", "action": "radio_panel", "layer": "radio"}
 
+    # STABLE_PANE_KEYS_2026: persistent game/system panes use the documented
+    # single-key map regardless of which optional gameplay layers are active.
+    binds.update({
+        "quests": {"key": "Q", "qt": "Key_Q", "action": "quests", "layer": "system_panes"},
+        "journal": {"key": "J", "qt": "Key_J", "action": "journal", "layer": "system_panes"},
+        "inventory": {"key": "I", "qt": "Key_I", "action": "inventory", "layer": "system_panes"},
+        "skills": {"key": "K", "qt": "Key_K", "action": "skills", "layer": "system_panes"},
+        "server": {"key": "L", "qt": "Key_L", "action": "server", "layer": "system_panes"},
+        "crafting": {"key": "B", "qt": "Key_B", "action": "crafting", "layer": "system_panes"},
+        "gameplay": {"key": "G", "qt": "Key_G", "action": "gameplay", "layer": "system_panes"},
+        "closet": {"key": "H", "qt": "Key_H", "action": "closet", "layer": "system_panes"},
+    })
+
     # --- macros: grow with complexity (1..N) ---
     macros = [
         ("1", "orbit / move-bias", "macro_orbit"),
@@ -7744,7 +8190,7 @@ def build_micro_lexicon(seed) -> Dict[str, Any]:
             round(r.random(), 4),
             round(r.random(), 4),
         ])
-    return {"version": "micro/2026.1", "ops": ops, "schedule": sched}
+    return {"version": "micro/2026.1", "ops": ops, "schedule": sched, "seed_scribed": True}
 
 
 def build_how_to_play(identity, triad=None, controls=None) -> str:

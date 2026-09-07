@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Microbenchmarks for the required sCode ABI-5 acceleration layer.
+"""Microbenchmarks for the required sCode ABI-9 acceleration layer.
 
-These are not whole-Groovebox FPS claims. They isolate the work that ABI-5 now
+These are not whole-Groovebox FPS claims. They isolate the work that ABI-9 now
 actually consumes: sCode plan caching, work-claim rejection, deterministic
 media result reuse, ndarray pools, and row-slice replacement for old Boolean
 row masks.
@@ -46,7 +46,7 @@ arr1=b.borrow_array('bench',(65536,),np.float32,zero=True)
 arr2=b.borrow_array('bench',(65536,),np.float32,zero=True)
 assert arr1 is arr2
 
-# Old row selection allocated/scanned a whole-song boolean mask per row. ABI-5
+# Old row selection allocated/scanned a whole-song boolean mask per row. ABI-9
 # build uses contiguous slices after searchsorted. Compare only indexing setup.
 t=np.linspace(0,128.0,6_144_000,endpoint=False)
 row=27; start=row*4.0; end=start+4.0

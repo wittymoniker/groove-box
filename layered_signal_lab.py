@@ -9,6 +9,7 @@ from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabel,QPushButton,QComboBox,
     QDoubleSpinBox,QSpinBox,QFileDialog,QMessageBox,QPlainTextEdit,QTabWidget,QLineEdit,QGroupBox)
 from media_layer_engine import render_layers, write_wav, spectrum_peaks
+import groovebox_paths
 
 class LayerCanvas(QWidget):
     changed=pyqtSignal()
@@ -87,8 +88,11 @@ class LayeredSignalLab(QWidget):
     def _layer_default(self,name='Draw',kind='draw',path=''): return {'name':name,'kind':kind,'path':path,'points':[(0,.5),(1,.5)],'time_scalar':1.0,'gain':1.0,'cycles':1.0,'phase':0.0,'provenance':kind}
     def _add_draw_layer(self): self._add_layer(self._layer_default(f'Draw {len(self.layers)+1}'))
     def _add_sample_layer(self):
-        p,_=QFileDialog.getOpenFileName(self,'Import audio layer','','Audio (*.wav *.flac *.mp3 *.ogg *.opus *.aiff *.aif *.caf);;All files (*)')
-        if p:self._add_layer(self._layer_default(Path(p).stem,'sample',os.path.abspath(p)))
+        base=groovebox_paths.samples_dir(getattr(self.host,'_current_project_path',None))
+        p,_=QFileDialog.getOpenFileName(self,'Import audio layer',base,'Audio (*.wav *.flac *.mp3 *.ogg *.opus *.aiff *.aif *.caf);;All files (*)')
+        if p:
+            p=groovebox_paths.ingest_file(p,'layer',getattr(self.host,'_current_project_path',None))
+            self._add_layer(self._layer_default(Path(p).stem,'sample',os.path.abspath(p)))
     def _add_layer(self,rec):
         self.layers.append(rec); page=QWidget(); l=QVBoxLayout(page)
         if rec.get('kind')=='draw':
@@ -173,12 +177,13 @@ class LayeredSignalLab(QWidget):
     def _save(self):
         if self._preview is None:self._render_preview()
         if self._preview is None:return
-        p,_=QFileDialog.getSaveFileName(self,'Save layered wave','layered_wave.wav','WAV (*.wav)')
+        base=os.path.join(groovebox_paths.layers_dir(getattr(self.host,'_current_project_path',None)),'layered_wave.wav')
+        p,_=QFileDialog.getSaveFileName(self,'Save layered wave',base,'WAV (*.wav)')
         if p:self.last_generated=write_wav(p,self._preview,self._preview_sr); self.report.setPlainText('Saved: '+self.last_generated)
     def _send(self,local):
         if self._preview is None:self._render_preview()
         if self._preview is None:return
-        p=os.path.join(tempfile.gettempdir(),f'groovebox_layered_{"local" if local else "global"}.wav'); write_wav(p,self._preview,self._preview_sr); self.last_generated=p
+        base=groovebox_paths.layers_dir(getattr(self.host,'_current_project_path',None)); p=os.path.join(base,f'groovebox_layered_{"local" if local else "global"}.wav'); write_wav(p,self._preview,self._preview_sr); groovebox_paths.index_file(p,'layer_render',getattr(self.host,'_current_project_path',None)); self.last_generated=p
         try:
             if local:
                 name='selected'; combo=getattr(self.host,'instrument_selector_dropdown',None)
@@ -191,15 +196,21 @@ class LayeredSignalLab(QWidget):
             self._state_changed(); self.report.setPlainText(('Local' if local else 'Global')+' layered sample sent: '+p)
         except Exception as e:QMessageBox.warning(self,'Send failed',str(e))
     def _record_layer(self):
-        dur=max(.1,min(600,float(self.duration.value()))); sr=int(self.sr.value()); path=os.path.join(tempfile.gettempdir(),f'groovebox_record_layer_{int(time.time()*1000)}.wav'); self.report.setPlainText(f'Recording {dur:.2f}s…')
+        dur=max(.1,min(600,float(self.duration.value()))); sr=int(self.sr.value()); recdir=groovebox_paths.recordings_dir(getattr(self.host,'_current_project_path',None)); path=os.path.join(recdir,f'groovebox_record_layer_{int(time.time()*1000)}.wav'); self.report.setPlainText(f'Recording {dur:.2f}s…')
         def work():
-            try:
-                from audio_os_backend import sd
-                arr=sd.rec(max(1,int(round(dur*sr))),samplerate=sr,channels=1,dtype='float32'); sd.wait(); write_wav(path,np.asarray(arr,dtype=np.float32).reshape(-1),sr); self.record_ready.emit(path,'')
-            except Exception as e:self.record_ready.emit('',str(e))
-        threading.Thread(target=work,daemon=True).start()
+            from audio_os_backend import sd
+            arr=sd.rec(max(1,int(round(dur*sr))),samplerate=sr,channels=1,dtype='float32'); sd.wait(); write_wav(path,np.asarray(arr,dtype=np.float32).reshape(-1),sr); return path
+        opt=getattr(self.host,'_scode_optimizer',None)
+        if opt is not None and hasattr(opt,'submit_pooled'):
+            def done(result,error): self._record_finished(str(result or ''), '' if error is None else str(error))
+            opt.submit_pooled('audio_record',(path,dur,sr),work,policy='side_effect',format_id='audio',side_effecting=True,callback=done,qt_callback=True)
+        else:
+            def legacy():
+                try:self.record_ready.emit(work(),'')
+                except Exception as e:self.record_ready.emit('',str(e))
+            threading.Thread(target=legacy,daemon=True).start()
     def _record_finished(self,path,error):
         if error:QMessageBox.warning(self,'Record failed',error);return
-        self._add_layer(self._layer_default(f'Record {len(self.layers)+1}','record',path)); self.report.setPlainText('Recorded layer: '+path)
+        groovebox_paths.index_file(path,'recording',getattr(self.host,'_current_project_path',None)); self._add_layer(self._layer_default(f'Record {len(self.layers)+1}','record',path)); self.report.setPlainText('Recorded layer: '+path)
 
 SignalLab=LayeredSignalLab

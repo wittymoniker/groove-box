@@ -26,6 +26,7 @@ import threading
 from dataclasses import dataclass, asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from groovebox_media_tools import resolve_local_tool
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
@@ -180,7 +181,7 @@ class MediaShareServer:
         ext = Path(path).suffix.lower()
         if ext in {".mp4", ".webm", ".mp3", ".wav", ".ogg"}:
             return path
-        ffmpeg = shutil.which("ffmpeg")
+        ffmpeg = resolve_local_tool("ffmpeg", required=False)
         if not ffmpeg:
             return path
         st = os.stat(path)

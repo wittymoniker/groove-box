@@ -63,60 +63,14 @@ check_python_deps() {
 # 3. Check and setup ffmpeg
 # =============================================================================
 setup_ffmpeg() {
-    log_info "Checking ffmpeg..."
-    
-    # Check system ffmpeg first
-    if command -v ffmpeg &> /dev/null; then
-        FFMPEG_VERSION=$(ffmpeg -version | head -1 | awk '{print $3}')
-        log_success "System ffmpeg $FFMPEG_VERSION found"
-        
-        # Copy to local bin for export readiness
-        mkdir -p "$SCRIPT_DIR/bin"
-        if [ ! -f "$SCRIPT_DIR/bin/ffmpeg" ]; then
-            cp "$(which ffmpeg)" "$SCRIPT_DIR/bin/ffmpeg" 2>/dev/null || true
-            cp "$(which ffprobe)" "$SCRIPT_DIR/bin/ffprobe" 2>/dev/null || true
-            log_success "ffmpeg copied to local bin/"
-        fi
-        return 0
+    log_info "Provisioning/validating project-local bin/ffmpeg + bin/ffprobe..."
+    python3 "$SCRIPT_DIR/scripts/provision_first_launch.py"
+    if [ ! -x "$SCRIPT_DIR/bin/ffmpeg" ] || [ ! -x "$SCRIPT_DIR/bin/ffprobe" ]; then
+        log_error "Local FFmpeg pair is incomplete; launch aborted."
+        exit 2
     fi
-    
-    # Check local bin
-    if [ -f "$SCRIPT_DIR/bin/ffmpeg" ]; then
-        log_success "Local ffmpeg found in bin/"
-        export PATH="$SCRIPT_DIR/bin:$PATH"
-        return 0
-    fi
-    
-    # Install ffmpeg locally
-    log_warning "ffmpeg not found. Installing locally..."
-    mkdir -p "$SCRIPT_DIR/bin"
-    
-    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        # Try to install via package manager
-        if command -v apt-get &> /dev/null; then
-            sudo apt-get update -y
-            sudo apt-get install -y ffmpeg
-            cp "$(which ffmpeg)" "$SCRIPT_DIR/bin/ffmpeg" 2>/dev/null || true
-            cp "$(which ffprobe)" "$SCRIPT_DIR/bin/ffprobe" 2>/dev/null || true
-        elif command -v dnf &> /dev/null; then
-            sudo dnf install -y ffmpeg
-            cp "$(which ffmpeg)" "$SCRIPT_DIR/bin/ffmpeg" 2>/dev/null || true
-            cp "$(which ffprobe)" "$SCRIPT_DIR/bin/ffprobe" 2>/dev/null || true
-        fi
-    elif [[ "$OSTYPE" == "darwin"* ]]; then
-        if command -v brew &> /dev/null; then
-            brew install ffmpeg
-            cp "$(which ffmpeg)" "$SCRIPT_DIR/bin/ffmpeg" 2>/dev/null || true
-            cp "$(which ffprobe)" "$SCRIPT_DIR/bin/ffprobe" 2>/dev/null || true
-        fi
-    fi
-    
-    if [ -f "$SCRIPT_DIR/bin/ffmpeg" ]; then
-        log_success "ffmpeg installed locally"
-        export PATH="$SCRIPT_DIR/bin:$PATH"
-    else
-        log_error "Could not install ffmpeg. Video export may not work."
-    fi
+    export PATH="$SCRIPT_DIR/bin:$PATH"
+    log_success "Local FFmpeg pair ready; runtime will not resolve system codecs"
 }
 
 # =============================================================================

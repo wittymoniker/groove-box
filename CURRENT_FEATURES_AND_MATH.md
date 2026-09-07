@@ -400,3 +400,26 @@ Author/ASCII: `<event><x>-[xN]` — the line-connected solid square carries even
 
 The supplied book explicitly describes four sets of three lines, conflicting/nonconflicting directions, optional grid intersections, operation intensity/dynamics, and boxes for variables. The author has clarified for this implementation that missing strokes are skipped; squiggles are contextual imaginary/decimal/half/doubling modifiers; four-way pathways are up/down/left/right; and the border/continued/multiplicity/color rules above are intended parts of the notation. Groovebox's exact bit packing, separator-to-`0..15` index, and ASCII spelling are implementation conventions chosen to make the notation reversible and inspectable. They should not be mistaken for additional claims printed verbatim in the book.
 
+
+
+**Full-cycle divider correction:** semantic cell 16 uses four solid ordered divider bars (`1/1` each). A dotted divider is a half-count (`0.5`).
+
+
+## 2026-09-07 project-local media / FFmpeg / Draw-Record completion
+
+- Each project owns a named folder: `<Projects>/<Project Name>/`. The `.MCC`, samples/imports, recordings, layered Draw/Record sources, audio/video/frame exports, games, metadata and index live below that root. Legacy/external project documents use a sibling project workspace until the next canonical save.
+- Main Window and Performance resolve the same active-project sample/render/game roots. Imported operator samples and Draw/Record layers are copied or recorded into the project before they become persistent sources.
+- Runtime codec behavior is pinned to `./bin/ffmpeg` + `./bin/ffprobe`. System-PATH fallback is disabled. First launch and `build.py` invoke the provisioning step when the local pair is absent; packaged builds include that exact pair.
+- Draw and Record share the layered Signal Lab. Draw, Sample and Record layers can be combined with independent relative-time scalars and rendered/sent together.
+- GOAVA Radio uses a fixed default viewport independent of artwork size. Larger artwork remains at authored scale and is accessed by a normal interactive scrollbar.
+- Heuristic STEP and AUTOMATION remain the only persistent heuristic writers. `APPLY HEURISTIC → SEQ SYNTH` is a one-shot project edit that authors per-sequence synth/script/domain/patch context without creating notes or automation. Applied algorithms can modulate the numeric variables of an existing automation-resolved state at runtime, but do not compose automation points.
+
+## 2026-09-07 final project-local media / UI contract
+
+- **Draw + Record are merged** into one layered Draw / Record / Sample Lab. Add drawn, microphone-recorded, or imported sample layers in one editor, then render/send the result globally or to the selected operator.
+- **Project-local storage** keeps samples, recordings, layers, audio/video/frame exports, games, and metadata under the named project folder; Performance and the main window resolve the same workspace.
+- **GOAVA Radio artwork viewport is fixed at 384×148**. Artwork remains at authored/native scale and scrolls horizontally/vertically when larger; artwork size never resizes the panel.
+- **Apply Heuristic → Seq Synth** is a one-shot sequence-context authoring operation for synth preset/mod patch/script/domain fields. It does not add another persistent heuristic writer.
+- **Algorithm XMOD parity:** applied Algorithm processing can modulate existing synth/sequence automation variables with the same runtime reach as its step-side effect; it does not compose step or automation lanes.
+- **Local FFmpeg contract:** runtime media calls resolve only the project `bin/ffmpeg` + `bin/ffprobe` pair. First-launch/build provisioning must populate and validate that pair before execution; PATH codecs are never selected by the application runtime.
+

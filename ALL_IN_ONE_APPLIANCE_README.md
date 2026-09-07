@@ -4,7 +4,7 @@ This tree is the source of truth for both normal Linux launch and the standalone
 
 ## Required sCode
 
-`run_groovebox.py` and Groovebox startup require the bundled native `sCode/bootstrap/linux-x86_64/scode0` optimizer and ABI 3 script. The Python/PyQt application remains the UI/DSP reference implementation; sCode supplies mandatory deterministic number/logic cross-casting, dirty-state planning, lane scheduling, work coalescing, and pool identities. A failed sCode preflight stops launch rather than silently bypassing it.
+`run_groovebox.py` and Groovebox startup require the bundled native `sCode/bootstrap/linux-x86_64/scode0` optimizer and ABI 9 contract. The Python/PyQt application remains the UI/DSP reference implementation; sCode supplies mandatory deterministic number/logic cross-casting, dirty-state planning, lane scheduling, universal format-aware pooling, work coalescing, dependency/QoS scheduling, and dedicated completion semantics. A failed sCode preflight stops launch rather than silently bypassing it.
 
 ## Performance media
 

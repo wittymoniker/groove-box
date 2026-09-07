@@ -8,6 +8,7 @@ from __future__ import annotations
 import html, json, os, shutil, socket, subprocess, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from groovebox_media_tools import resolve_local_tool
 from typing import Dict, List, Optional
 
 DEFAULT_HTTP_PORT = 8780
@@ -124,7 +125,7 @@ class RadioStationService:
                 self.send_response(200); self.send_header("Content-Type","text/html; charset=utf-8"); self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body)
             def _stream(self):
                 self.send_response(200); self.send_header("Content-Type","audio/mpeg"); self.send_header("Cache-Control","no-cache"); self.send_header("Connection","close"); self.end_headers()
-                ffmpeg = shutil.which("ffmpeg")
+                ffmpeg = resolve_local_tool("ffmpeg", required=False)
                 if not ffmpeg: return
                 files = _candidate_audio(owner.roots)
                 idx = 0

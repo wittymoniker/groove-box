@@ -1,60 +1,45 @@
-# Groovebox + sCode Full Acceleration validation — ABI 5 — 2026-09-07
+# ABI-9 final release validation — 2026-09-07
 
-Validated against both the outer source tree and the exact `/opt/groovebox` tree staged into the appliance ISO.
+Status: **FINAL_RELEASE_ABI9|PASS** for the source/staged appliance contract.
 
-## Required runtime and symbol contract
+## Passed
 
-- Required sCode optimizer ABI: **5** — PASS.
-- Concrete sCode author-number contract — PASS:
-  - base = 16
-  - completed/full-cycle semantic cell = 16
-  - in-cell squiggle fractional denominator = 2 (`2^-1`)
-  - additional fractional subscale = 4 bits per slot (`16^-k = 2^-4k`)
-  - precomputed semantic variants = 68 (`0..16 × squiggle/no-squiggle × spaced/unspaced`)
-  - symbol pool key and symbol pool slot are concrete integers.
-- Spacing semantics — PASS: at fractional slot 1, value 4 contributes 0.25 when spaced/full and 0.125 when unspaced/half-slot.
-- Native sCode fractional extraction — PASS: decimal fraction 0.20 begins with base-16 subscale cells 3, 3.
-- Pure Python/host codec round-trip and precision tests — PASS.
-- Exact underlying control/project numbers are preserved; display spelling never overwrites them.
+- Python static compilation: `groovebox.py`, launch bridge, sCode optimizer bridge, Performance, layered media, parametric remix, author-number codec/font, and release tests.
+- Bundled stage-0 strict sCode test suite: optimizer ABI 9, pool ABI 3, pool-format ABI 1, 18 formats, scheduler ABI 2, completion ABI 1, five completion policies, symbol ABI 4.
+- All exported `pool_format_*` and `pool_request_*` methods are exercised by the strict sCode suite.
+- Host universal request descriptor parity against stage-0 sCode across generic, audio, visual/image, video-frame, symbol, project side-effect, sequence/canonical, world and media-stream requests.
+- Completion bridge: PURE reuse/coalescing, GENERATION/FRAME stale rejection, STREAM publication, SIDE_EFFECT non-cache/non-coalesce, dedicated `scode-complete` thread.
+- Author-number codec: 5,188 semantic states, four ordered cross-bars on every glyph, absent=0/dotted=0.5/solid=1, full-cycle 16 has 12/12 solid main strokes and solid subdivider mask 1111; alternate 16 cross-bar faces are rejected.
+- Heuristic writer split: STEP and AUTOMATION have independent field-level revert memories, share GLOBAL/LOCAL scope, and pass both activation-order regressions.
+- Groovebox final determinism: 7/7 purity groups.
+- Composition parity: PASS.
+- Native Groovebox parity is included in the strict sCode suite.
+- sOS package profile contains kernel, modules, EFI/BIOS GRUB, dracut, filesystem and partitioning tools required for installed-appliance boot.
+- `sos-install-appliance` syntax and safety guards: preflight before erase, whole-disk checks, mounted-target refusal, explicit erase phrase, at least one GRUB firmware path required.
+- Installed normal and Safe/Recovery GRUB entries explicitly locate the root filesystem by UUID.
+- Linux/macOS shell syntax pass for packaged shell/build scripts.
+- Critical root files byte-match staged `/opt/groovebox`; runtime pool/completion libraries also byte-match standalone staged `APPLIANCE_ISO/source/sCode`.
+- The strict sCode suite and host/stage-0 pool descriptor parity both pass again from the exact staged `/opt/groovebox` payload.
 
-## Hot-path integration
+## Validation boundary
 
-- Per-field source dirty gate skips the codec for unchanged values — PASS (static/integration validation).
-- Immutable number-spelling packets are memoized through the shared required sCode optimizer bridge — PASS.
-- 68 semantic glyph variants are precomputed; individual Qt glyph faces and composed number pixmaps have bounded LRU caches — PASS.
-- Explicit authored rewrites support per-slot spaced `1/1` and unspaced `1/2` semantics — PASS (API/static + pure-codec validation).
-- Project save/load/provenance exposes `base16-squiggle-subscale-v4` author-number metadata — PASS.
-- Numeric scripting exposes the same spelling/decoding/fraction helpers — PASS.
-- Help/README symbol-language section documents the base-16/full-cycle, in-cell squiggle, `2^-4k` continuation, and spacing rules — PASS.
+The packaging environment does not provide a full PyQt6/audio/display hardware session and does not build the final Fedora package-fed ISO with network/root privileges. Therefore interactive GUI/device operation and physical/VM boot of the generated ISO remain deployment-machine tests. The builder, installed-root staging, preflight and disk-install scripts are included and statically/runtime-contract validated without executing destructive disk installation.
 
-## Full sOS/sCode/native validation
+## ABI-9 corrections in this release
 
-The final staged source suite completed all 11 phases:
+- Semantic cell `16` is invariant: **12/12 main strokes solid + 4/4 subdividers solid**; dotted/missing `16` variants are rejected by the codec and sCode symbol ABI.
+- Valid semantic face count is **5,188**, because values 0..15 retain all four ternary cross-bar states while cell 16 has one fixed cross-bar state.
+- Heuristic composition is split into **HEURISTIC WRITE STEP** and **HEURISTIC WRITE AUTOMATION**. Each has independent field-level revert memory and both obey the shared GLOBAL/LOCAL scope selector.
+- Headless activation-order tests prove either writer can be reverted without erasing the other.
+- Final validation was completed as segmented gates because the packaging harness limits one long combined shell run; every constituent gate passed independently, including staged sCode, 7/7 determinism, composition parity, rootfs hashes, and source/stage byte parity.
 
-1. sCode runtime — PASS
-2. static check of all sCode sources — PASS (**93 modules**)
-3. hardware modality imports — PASS
-4. logic/math duality and pooling — PASS
-5. author-number symbol codec — PASS
-6. finite-infinity compiled index — PASS
-7. full native cross-media export — PASS
-8. deterministic parity — PASS
-9. rootfs shell syntax — PASS
-10. source build helper — PASS
-11. manifests and required handles — PASS
+## Two-writer cleanup validation
 
-Python static compilation passed for Groovebox, required sCode bridge, author-number codec/font, Performance, layered Draw/Record, media layering and Parametric Remix modules. Shell syntax passed for 34 Linux/macOS `.sh`/`.command` entry points. `run_hybrid.sh` invokes its platform build helper via `bash`, avoiding the prior ZIP executable-bit `Permission denied` failure.
-
-## Current microbenchmarks
-
-These are isolated path measurements from this build container, **not whole-application multipliers**:
-
-- sCode optimization plan: ~1.615 ms fresh vs ~0.00437 ms cached (~370× cached-plan speedup).
-- unchanged layered-media reconstruction: ~3.385 ms raw vs ~0.01394 ms memoized (~243× path speedup).
-- playlist row activation setup: ~6.119 ms old whole-song Boolean-mask path vs ~0.00205 ms indexed slice (~2,982× path speedup).
-- symbol semantic codec: ~22.14 ms for 1000 cold spellings vs ~0.805 ms for 1000 cached spellings (~27.5× in-process cache speedup).
-- sCode memoized symbol packet lookup: ~3.33 µs per cached lookup in the benchmark path.
-
-## Environment limitation
-
-PyQt6 is not installed in this packaging container, so the complete GUI could not be interactively exercised here. The Python sources compile, the Qt-free number codec tests execute, the required sCode runtime executes, and the appliance dependency/rootfs flow installs PyQt6 on the target system. Final ISO creation still requires the host/container Fedora DNF + GRUB/xorriso build environment.
+- PASS: exactly one `HEURISTIC WRITE STEP` control.
+- PASS: exactly one `HEURISTIC WRITE AUTOMATION` control.
+- PASS: legacy `btn_nt_apply`, `_on_nt_lattice_apply`, `chk_edit_algorithm_per_sequence`, and `_sync_nt_lattice_button_state` are absent from active Groovebox source.
+- PASS: STEP and AUTOMATION independent revert regression in both activation orders.
+- PASS: Algorithm XMod activation now follows the authoritative STEP writer.
+- PASS: deterministic visual/composition tests remain unchanged.
+- PASS: sCode optimizer ABI 9 / pool ABI 3 / symbol ABI 4 unchanged.
+- NOTE: PyQt6 is not installed in the packaging container, so the full interactive GUI import/launch test remains a target-machine acceptance step.

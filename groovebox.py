@@ -51,6 +51,7 @@ import colorsys
 import re
 import weakref
 import numpy as np
+from groovebox_media_tools import resolve_local_tool
 from meum_constants import (
     MEUM, M, MEUM_DECIMAL, MEUM_MINUS_1, MEUM_INV, MEUM_TWO_MINUS,
     MEUM_NORM, MEUM_SQ, MEUM_CUBE, MEUM_FOURTH, MEUM_TWO_POW, MEUM_LOG2,
@@ -2963,6 +2964,7 @@ PAINT_RATE_HZ = 2.395                                           # max single-cel
 PAINT_PERIOD_S = 1.0 / PAINT_RATE_HZ                            # ~0.418 s between stacks
 PAINT_INSTANCE_LIMIT = 8
 import numpy as np
+from groovebox_media_tools import resolve_local_tool
 import math
 class DeterministicPanelManager:
     """
@@ -9662,7 +9664,21 @@ class VideoSynthViewer(QFrame):
             return
         self._render_inflight = True
         self._render_pending = None
-        self._render_pool.start(_VideoRenderTask(self.engine, ww, hh, ex, request[3], self._render_signals))
+        app = getattr(self.engine, "app", None)
+        opt = getattr(app, "_scode_optimizer", None) if app is not None else None
+        if opt is not None and hasattr(opt, "submit_pooled"):
+            gen = int(request[3])
+            def produce_frame():
+                return self.engine.render_frame(ww, hh, export=ex)
+            def frame_done(frame, error):
+                self._on_async_frame_ready(None if error is not None else frame, ww, hh, gen)
+            opt.submit_pooled(
+                "visual_preview", (ww, hh, int(ex), gen), produce_frame,
+                policy="frame", format_id="image", frame=gen,
+                callback=frame_done, qt_callback=True, max_entries=2,
+            )
+        else:
+            self._render_pool.start(_VideoRenderTask(self.engine, ww, hh, ex, request[3], self._render_signals))
 
     def _on_async_frame_ready(self, frame, width, height, generation):
         self._render_inflight = False
@@ -9679,7 +9695,18 @@ class VideoSynthViewer(QFrame):
         if pending is not None:
             ww, hh, ex, gen = pending
             self._render_inflight = True
-            self._render_pool.start(_VideoRenderTask(self.engine, ww, hh, ex, gen, self._render_signals))
+            app = getattr(self.engine, "app", None)
+            opt = getattr(app, "_scode_optimizer", None) if app is not None else None
+            if opt is not None and hasattr(opt, "submit_pooled"):
+                def produce_frame(): return self.engine.render_frame(ww, hh, export=ex)
+                def frame_done(frame, error): self._on_async_frame_ready(None if error is not None else frame, ww, hh, gen)
+                opt.submit_pooled(
+                    "visual_preview", (ww, hh, int(ex), int(gen)), produce_frame,
+                    policy="frame", format_id="image", frame=int(gen),
+                    callback=frame_done, qt_callback=True, max_entries=2,
+                )
+            else:
+                self._render_pool.start(_VideoRenderTask(self.engine, ww, hh, ex, gen, self._render_signals))
 
     def shutdown_rendering(self):
         """Stop preview rendering before Qt destroys the viewer/signals QObject."""
@@ -12492,7 +12519,7 @@ DEPENDENCIES (install last — same list as project README.md)
     winget install Python.Python.3.12
     winget install Gyan.FFmpeg
 
-  Optional: place static ffmpeg / ffprobe in ./bin/ next to groovebox.py
+  Required: Groovebox provisions and uses ffmpeg / ffprobe ONLY from ./bin/ next to groovebox.py
   (the app checks there first).
 
   Verify:
@@ -13831,10 +13858,14 @@ This is a software determinism contract, not an independently established mathem
 
 ## 3. Heuristic composition
 
-The single **HEURISTIC WRITE** control has GLOBAL / LOCAL scope and reversible ON/OFF state.
+Heuristic composition is split into two independent reversible writers: **HEURISTIC WRITE STEP** and **HEURISTIC WRITE AUTOMATION**. Both use the same GLOBAL / LOCAL scope selector, but each owns a separate exact revert snapshot.
+These are the **only two Heuristic Composer write controls**. The older separate/third “Heuristic Step Write” direct-lattice button is retired; ℤ-Lattice mode, modulus, and depth remain inputs to the composer and Algorithm → Seed without creating another writer/revert path.
 
-- **GLOBAL:** transcribes the selected seed-derived heuristic across the applicable sequence and automation space.
-- **LOCAL:** writes only to the selected instrument + selected sequence + its automation.
+- **HEURISTIC WRITE STEP:** writes only deterministic sequence structure (steps, gates, amplitudes, pitches, probabilities, offsets and pattern length).
+- **HEURISTIC WRITE AUTOMATION:** writes only the continuous automation lane/tiles for the same heuristic values.
+- **GLOBAL:** each enabled writer applies its own layer across the applicable project sequences.
+- **LOCAL:** each enabled writer applies only to the selected instrument + selected sequence.
+- Turning either writer OFF restores only that writer's pre-write fields; the other writer remains intact regardless of activation order.
 - Families include ℤ-Lattice, Prime/Modular, Farey/Fraction, Tree/Ratio, Geometric, Harmonic, Seed Function, and Hybrid.
 - Biases include Balanced, Sparse, Dense, Self-Similar, and T-Independent.
 - Continuous heuristic outputs become editable automation; discrete values become deterministic sequence structure.
@@ -14059,6 +14090,8 @@ The project distinguishes: (1) proved statements under its declared definitions,
 
 The numeric symbol display is **base-16-first, with deliberate exceptions for compact integer and fractional spelling**. Ordinary symbol cells carry values **0 through 15**. A separate semantic **16 / completed-cycle cell** is available when one full cycle is the clearer spelling; it is not treated as a fifth hexadecimal digit. The underlying QSpinBox/QDoubleSpinBox/project value remains authoritative and is never replaced by the compact visual spelling.
 
+The **16 / completed-cycle cell is fully saturated: all 12 main strokes are solid and its four dividing/subdivider bars are also all solid**. Each solid dividing bar counts as **`1/1` in its ordered place**. A dotted dividing bar is not stylistic decoration: it means **`0.5` / half of that ordered place**. Therefore automatic cell `16` uses four solid dividers (solid mask `1111`, dotted mask `0000`); it must never be drawn as four dotted dividers.
+
 Fractions begin *inside the integer/count cell*. A **squiggle on the least-significant integer cell can carry the first fractional subdivision, `2^-1 = 1/2`, without consuming another cell**. If more precision is required, additional fractional cells follow that in-cell squiggle/no-squiggle state. Fractional slot `k` has the base weight
 
 `16^-k = 2^(-4k)`  for `k = 1, 2, 3, ...`.
@@ -14074,13 +14107,13 @@ Examples of automatic spelling:
 - `1.20` -> the formatter may use more than one subscale cell because one `1/16` cell cannot preserve two visible decimal places closely enough. The symbol spelling is a display approximation to the requested visible precision; the stored value remains exactly the application's `1.20` value.
 - At slot 1, value `4` spaced contributes `4 * 2^-4 * 1/1 = 0.25`; the same value `4` unspaced contributes `4 * 2^-4 * 1/2 = 0.125`.
 
-The codec identifier written into project/export provenance is `base16-squiggle-subscale-v4`. The same base, full-cycle value, half rule, `2^-4k` subscale rule, spacing rule, and 68 precomputed `(0..16) × squiggle/no-squiggle × spaced/unspaced` semantic faces are exposed by the bundled required sCode library. Qt rendering uses cached immutable packets; it does not re-derive these rules during paint events.
+The codec identifier written into project/export provenance is `base16-squiggle-crossbar-subscale-v7`. Every glyph packet carries **four ordered cross-bar positions**. Each cross-bar state is explicit: absent = `0`, dotted = `0.5`, solid = `1`. Together with 17 cell values (`0..16`), squiggle/no-squiggle, and spaced/unspaced state, this yields **5,188 precomputed semantic glyph states** (`(16 × 3^4 + 1) × 2 × 2`). Cell `16` is invariant: **all 12 main strokes are solid and all 4 subdividers are solid** `(solid mask 1111, dotted mask 0000)`; alternate dotted/missing 16 faces are invalid. The bundled required sCode symbol ABI validates the same contract, while Qt consumes cached immutable packets rather than re-deriving notation semantics during paint events.
 
 Mathematician's Groovebox starts with **Math Symbols OFF** in the public build because the author notation carries information that an ordinary decimal numeral does not show directly: four-way direction/reference, counted/skipped strokes, contextual stroke modifiers, operation enclosure, continued-series structure, event multiplicity, and variable/result role. **Operator Theory (OT)** is a separate switch: OT ON selects the OT calculation route; OT OFF keeps the symbol display available for comparison. **Math Symbols OFF** exposes the ordinary base-10 / conventional mathematical spelling of the same inspectable value. This makes base-10 a secondary inspection and interoperability view rather than deleting it.
 
 ### Literal visual grammar
 
-A numeric cell has **four groups of three strokes = twelve possible strokes**. The four pathways are **UP, RIGHT, DOWN, LEFT**. UP/RIGHT are the two positive-oriented pathways and DOWN/LEFT the two negative-oriented pathways, so direction space has two of four negative-oriented choices rather than a single unary minus. A **missing stroke is skipped**. A **straight stroke is an ordinary/full counted stroke**. A **squiggly stroke is contextual**: according to its enclosing expression it can mark imaginary participation, decimal/fractional participation, a half-count (`0.5` rather than `1`), or symbolic doubling (`×2`). In the numeric `base16-squiggle-subscale-v4` context specifically, the in-cell fractional squiggle has the explicit `2^-1` meaning described above; in other contexts it must not be decoded as one universal number without its enclosing rule.
+A numeric cell has **four groups of three strokes = twelve possible strokes**, plus **four ordered cross-bars that every glyph accounts for**. The four pathways are **UP, RIGHT, DOWN, LEFT**. UP/RIGHT are the two positive-oriented pathways and DOWN/LEFT the two negative-oriented pathways, so direction space has two of four negative-oriented choices rather than a single unary minus. A **missing stroke is skipped**. A **straight stroke is an ordinary/full counted stroke**. A **squiggly stroke is contextual**: according to its enclosing expression it can mark imaginary participation, decimal/fractional participation, a half-count (`0.5` rather than `1`), or symbolic doubling (`×2`). In the numeric `base16-squiggle-crossbar-subscale-v7` context specifically, the in-cell fractional squiggle has the explicit `2^-1` meaning described above. Each of the four cross-bars independently carries state `0` (absent), `0.5` (dotted), or `1` (solid); this is semantic data, not decoration.
 
 Four optional separator positions provide the compact counted-state/intersection layer. **Open outer/partial square = multiplication; dotted outer square = sum/difference; solid outer square = division; dotted enclosing square = ordinary continued inner expansion; line-connected solid square = multiplicity/events in place.** Adjacent cells form a row for adjunct addition/subtraction or further contextual composition. A plain box can contain a letter to name a variable.
 
@@ -17164,7 +17197,7 @@ class MasterControlPatchbayPage(QWidget):
             else:
                 self.instrument_param_state = {}
     def _export_audio(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Export Master WAV Audio", self._exports_dir(), "WAV Audio Files (*.wav)")
+        path, _ = QFileDialog.getSaveFileName(self, "Export Master WAV Audio", self._audio_exports_dir(), "WAV Audio Files (*.wav)")
         if path:
             self.engine.export_audio(path)
             QMessageBox.information(self, "Audio Exported", f"Master audio successfully rendered and exported to:\n{path}")
@@ -19064,6 +19097,7 @@ import json
 import random
 import wave
 import numpy as np
+from groovebox_media_tools import resolve_local_tool
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QSlider, QSpinBox, QComboBox, QPushButton, QLabel, QMessageBox, QSplitter
@@ -19845,16 +19879,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         # PROJECT_UNDO_2026: full-project snapshot history. Every mutating
         # action (playlist / pattern / instrument resize, every engine apply,
-        # randomize, ℤ-Lattice step-algo apply/unapply, Algorithm→Seed) pushes
+        # randomize, heuristic STEP/AUTOMATION writes, Algorithm→Seed) pushes
         # an authoritative deep snapshot just before mutation, so all data is
         # kept and reversible with Ctrl+Z / Ctrl+Y (and the transport buttons).
         self._undo_stack = []
         self._redo_stack = []
         self._undo_max = 64
         self._undo_in_flight = False
-        # ℤ-Lattice "Apply step algorithm" unapply snapshots: name -> prior mem.
-        self._nt_lattice_snapshot = {}
-        self._nt_lattice_scope = "global"
         # "Algorithm → Seed" revert history: list of prior seed-field texts.
         self._seed_history = []
 
@@ -19934,7 +19965,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.global_track_offset = 0.0
         self.local_algorithm_xmod = 1.0
         self.global_algorithm_xmod = 1.0
-        self.edit_algorithm_per_sequence = False
 
         self.playlist_automation = []
         # SEQUENCER_AUTOMATION_POINTS_2026: second sequencer row. Each point
@@ -19978,7 +20008,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Reversible derived-writer registry. Each writer owns its own snapshots
         # and is removed independently of activation order.
         self._derived_writer_layers = {}
-        self._heuristic_writer_snapshot = {}
+        # Heuristic STEP and AUTOMATION are independent reversible writers.
+        # Each owns only the fields it changes so either toggle can revert its
+        # LOCAL/GLOBAL write without erasing the other writer or unrelated state.
+        self._heuristic_writer_snapshots = {"step": None, "automation": None}
         self._heuristic_writer_scope = None
         self.init_ui_components()
         self._install_math_symbol_numeric_overlays()
@@ -20172,10 +20205,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _refresh_goava_radio_brand(self):
         """Render the complete GOAVA Radio visual at readable height.
 
-        RADIO_SCROLL_FIX_20260906: do not squeeze the image to the viewport.
-        The Radio artwork contains meaningful right-hand green icons/labels, so
-        preserve the whole aspect-ratio width and let its QScrollArea provide
-        horizontal access whenever the row is narrower than the artwork.
+        RADIO_FIXED_VIEWPORT_20260907: the panel geometry is independent of the
+        current artwork dimensions. The source remains at authored/native scale
+        inside a fixed 384x148 viewport; larger custom art scrolls instead of
+        resizing the panel or surrounding controls.
         """
         label = getattr(self, "lbl_goava_radio_brand", None)
         source = getattr(self, "_goava_radio_brand_source", None)
@@ -20183,23 +20216,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return
         try:
             scroll = getattr(self, "goava_radio_scroll", None)
-            # Use the visible Radio viewport height as the only scaling limit.
-            # Width follows from KeepAspectRatio and is intentionally allowed to
-            # exceed the viewport so the horizontal scrollbar can expose it.
-            native_h = max(1, int(source.height()))
-            # Preserve the authored Radio artwork size instead of stretching it
-            # to whatever height the surrounding processor panel happens to have.
-            # The holder therefore shrinks to the picture; only genuine overflow
-            # produces horizontal scrolling.
-            target_h = native_h
-            pm = source.scaledToHeight(target_h, Qt.TransformationMode.SmoothTransformation)
+            pm = source
             label.setPixmap(pm)
             label.setFixedSize(pm.size())
             if scroll is not None:
-                bar_h = max(14, int(scroll.horizontalScrollBar().sizeHint().height()))
-                frame = max(2, int(scroll.frameWidth()) * 2)
-                scroll.setFixedHeight(pm.height() + bar_h + frame + 4)
-                scroll.setMaximumWidth(pm.width() + frame + 4)
+                # Fixed default panel footprint; never derive this from image size.
+                scroll.setFixedSize(384, 148)
+                scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+                scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+                bar = scroll.horizontalScrollBar()
+                bar.setEnabled(True)
+                bar.setSingleStep(24)
+                bar.setPageStep(160)
                 scroll.widget().adjustSize()
         except Exception:
             pass
@@ -22717,24 +22745,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_nt_depth.setValue(5)
         self.spin_nt_depth.setToolTip("Farey order / Stern–Brocot depth.")
         nt_row.addWidget(self.spin_nt_depth)
-        self.btn_nt_apply = QPushButton("HEURISTIC STEP WRITE · OFF")
-        self.btn_nt_apply.setCheckable(True)
-        self.btn_nt_apply.setToolTip(
-            "Write the selected number-theoretic mask into the active instrument steps.\n"
-            "Click again (⌫ Unapply) to restore the exact steps/pitches/amplitudes "
-            "that existed before the algorithm was applied."
-        )
-        self.btn_nt_apply.setStyleSheet(
-            "QPushButton { background-color: #102030; color: #9fd4ff; font-weight: bold; }\n"
-            "QPushButton:checked { background-color:#3a6aaa; color:#b8f7e6; }"
-        )
-        self.btn_nt_apply.toggled.connect(self._on_nt_lattice_apply)
-        nt_row.addWidget(self.btn_nt_apply)
-        self.chk_edit_algorithm_per_sequence = QCheckBox("LOCAL selected sequence")
-        self.chk_edit_algorithm_per_sequence.setChecked(False)
-        self.chk_edit_algorithm_per_sequence.setToolTip("When ON, Apply step algorithm writes only the selected instrument + selected sequence. When OFF, the existing local/global scope behavior is used.")
-        self.chk_edit_algorithm_per_sequence.toggled.connect(lambda v: setattr(self, "edit_algorithm_per_sequence", bool(v)))
-        nt_row.addWidget(self.chk_edit_algorithm_per_sequence)
         self.btn_nt_seed = QPushButton("Algorithm → Seed")
         self.btn_nt_seed.setToolTip(
             "Fill seed field with a script derived from modulus, φ(n), and Meum.\n"
@@ -22751,9 +22761,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         nt_row.addStretch(1)
         seed_panel.addLayout(nt_row)
 
-        # HEURISTIC_COMPOSER_V3 — broader structural composer that keeps the
-        # ℤ-Lattice number-theory rules as one family, then decisively scribes
-        # the result into BOTH sequence steps and the sequencer automation lane.
+        # HEURISTIC_COMPOSER_V10 — exactly two reversible writers. ℤ-Lattice
+        # remains a number-theory input family, but there is no third/direct
+        # Step writer: STEP and AUTOMATION are the complete write surface.
         heur_row = QHBoxLayout()
         heur_row.setSpacing(6)
         heur_row.addWidget(QLabel("Heuristic Composer:"))
@@ -22788,15 +22798,35 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.combo_heuristic_scope.setMinimumWidth(110)
         self.combo_heuristic_scope.setToolTip("Mutually exclusive heuristic scope. GLOBAL = applicable project sequences; LOCAL = selected instrument + selected sequence.")
         heur_row.addWidget(self.combo_heuristic_scope)
-        self.btn_heuristic_transcribe = QPushButton("HEURISTIC WRITE · OFF")
-        self.btn_heuristic_transcribe.setCheckable(True)
-        self.btn_heuristic_transcribe.setMinimumHeight(38)
-        self.btn_heuristic_transcribe.setToolTip(
-            "Reversible deterministic heuristic writer. ON applies exactly one GLOBAL or LOCAL derived layer to Sequence + Automation; OFF removes only this writer and restores its exact pre-write zero-state. Scope changes while ON first unapply the previous scope, then apply the new scope."
+        self.btn_heuristic_write_step = QPushButton("HEURISTIC WRITE STEP · OFF")
+        self.btn_heuristic_write_step.setCheckable(True)
+        self.btn_heuristic_write_step.setMinimumHeight(38)
+        self.btn_heuristic_write_step.setToolTip(
+            "Independent reversible STEP writer. Uses the selected GLOBAL/LOCAL scope, writes only sequence step/gate/amplitude/pitch/probability/offset fields, and owns its own exact revert memory."
         )
-        self.btn_heuristic_transcribe.toggled.connect(self._on_heuristic_transcribe)
+        self.btn_heuristic_write_step.toggled.connect(self._on_heuristic_write_step)
+        heur_row.addWidget(self.btn_heuristic_write_step)
+        self.btn_heuristic_write_automation = QPushButton("HEURISTIC WRITE AUTOMATION · OFF")
+        self.btn_heuristic_write_automation.setCheckable(True)
+        self.btn_heuristic_write_automation.setMinimumHeight(38)
+        self.btn_heuristic_write_automation.setToolTip(
+            "Independent reversible AUTOMATION writer. Uses the selected GLOBAL/LOCAL scope, writes only the heuristic automation lane/tiles, and owns its own exact revert memory."
+        )
+        self.btn_heuristic_write_automation.toggled.connect(self._on_heuristic_write_automation)
         self.combo_heuristic_scope.currentIndexChanged.connect(self._on_heuristic_scope_changed)
-        heur_row.addWidget(self.btn_heuristic_transcribe)
+        heur_row.addWidget(self.btn_heuristic_write_automation)
+        self.btn_heuristic_seq_synth = QPushButton("APPLY HEURISTIC → SEQ SYNTH")
+        self.btn_heuristic_seq_synth.setMinimumHeight(38)
+        self.btn_heuristic_seq_synth.setToolTip(
+            "One-shot reversible project edit: deterministically authors per-sequence synth preset, "
+            "mod/patch context, script and domain using the selected heuristic family/scope. "
+            "It does not create or toggle step/automation lanes."
+        )
+        self.btn_heuristic_seq_synth.clicked.connect(self._on_heuristic_seq_synth)
+        heur_row.addWidget(self.btn_heuristic_seq_synth)
+        # Compatibility alias for old scripts: the former combined writer now
+        # names the STEP writer; automation has its own explicit control.
+        self.btn_heuristic_transcribe = self.btn_heuristic_write_step
         heur_row.addStretch(1)
         seed_panel.addLayout(heur_row)
 
@@ -23028,19 +23058,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.goava_radio_scroll = QScrollArea()
         self.goava_radio_scroll.setWidgetResizable(False)
         self.goava_radio_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.goava_radio_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
-        self.goava_radio_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.goava_radio_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.goava_radio_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.goava_radio_scroll.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self.goava_radio_scroll.setMinimumHeight(1)
-        self.goava_radio_scroll.setMinimumWidth(1)
+        self.goava_radio_scroll.setFixedSize(384, 148)
         # RADIO_SHRINK_TO_FIT_20260906: the artwork pane asks only for the
         # artwork's natural size. It may be constrained by the parent, in which
         # case the horizontal scrollbar exposes the remaining width.
-        self.goava_radio_scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.goava_radio_scroll.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.goava_radio_scroll.setStyleSheet(
             "QScrollArea{background:#050b12;border:1px solid #9a7b2f;border-radius:8px;}"
-            "QScrollBar:horizontal{height:14px;background:#071019;}"
-            "QScrollBar::handle:horizontal{min-width:34px;background:#3f7f62;border-radius:6px;}"
+            "QScrollBar:horizontal{height:14px;background:#071019;border:1px solid #294050;}"
+            "QScrollBar::handle:horizontal{min-width:34px;background:#8aa4b3;border:1px solid #c7d7df;border-radius:5px;}"
+            "QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal{width:14px;background:#172735;border:1px solid #294050;}"
+            "QScrollBar:vertical{width:14px;background:#071019;border:1px solid #294050;}"
+            "QScrollBar::handle:vertical{min-height:34px;background:#8aa4b3;border:1px solid #c7d7df;border-radius:5px;}"
+            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:14px;background:#172735;border:1px solid #294050;}"
         )
         self.goava_radio_scroll.setWidget(self.lbl_goava_radio_brand)
         _radio_row.addWidget(self.goava_radio_scroll, 0)
@@ -23744,18 +23777,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.lbl_operator_sample.setMinimumWidth(135)
         self.lbl_operator_sample.setToolTip("Selected operator's user-owned sample source. Synth knobs, script, patch and domain shape its 50% morph contribution.")
         media_import_row.addWidget(self.lbl_operator_sample)
-        self.btn_draw_wave_matrix = QPushButton("✎ Draw Wave Matrix")
-        self.btn_draw_wave_matrix.setToolTip("Open the Draw / Signal Lab directly from the Main Window; send the drawn carrier globally or to the selected operator.")
-        self.btn_draw_wave_matrix.clicked.connect(self._open_main_signal_lab)
-        media_import_row.addWidget(self.btn_draw_wave_matrix)
-        self.btn_record_audio_global = QPushButton("🎙 Record Global")
-        self.btn_record_audio_global.setToolTip("Record microphone/input audio asynchronously into the global carrier slot.")
-        self.btn_record_audio_global.clicked.connect(lambda: self._record_audio_to_slot(local=False))
-        media_import_row.addWidget(self.btn_record_audio_global)
-        self.btn_record_audio_operator = QPushButton("🎙 Record → Operator")
-        self.btn_record_audio_operator.setToolTip("Record microphone/input audio asynchronously into the selected operator sample slot.")
-        self.btn_record_audio_operator.clicked.connect(lambda: self._record_audio_to_slot(local=True))
-        media_import_row.addWidget(self.btn_record_audio_operator)
+        # DRAW_RECORD_MERGE_20260907: one layered editor owns Draw + Record + Sample.
+        # Layers can be mixed/morphed, renamed, reordered and then sent Global or
+        # to the selected Operator from the same window. Legacy attribute aliases
+        # are retained for scripts, but there are no separate quick-record buttons.
+        self.btn_draw_record_layers = QPushButton("✎🎙 Draw / Record Layers")
+        self.btn_draw_record_layers.setToolTip(
+            "Open the merged layered Draw / Record / Sample Lab. Add any number of drawn, "
+            "recorded or imported layers, then Send Global or Send → Selected Operator."
+        )
+        self.btn_draw_record_layers.clicked.connect(self._open_main_signal_lab)
+        media_import_row.addWidget(self.btn_draw_record_layers)
+        self.btn_draw_wave_matrix = self.btn_draw_record_layers
+        self.btn_record_audio_global = self.btn_draw_record_layers
+        self.btn_record_audio_operator = self.btn_draw_record_layers
         media_import_row.addStretch(1)
         # IMPORT_SPEED_2026: varispeed pitch/speed shift for the loaded
         # WAV/video carrier. One import then yields alternate voicings without
@@ -25404,7 +25439,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._scope_update_timer.timeout.connect(self._update_scope_from_playhead)
         QTimer.singleShot(0, self._sync_square_visuals)
         QTimer.singleShot(120, self._sync_square_visuals)
-        self._last_scope_chunk = np.zeros(100, dtype=np.float32)
+        self._scope_buffers = [np.zeros(100, dtype=np.float32), np.zeros(100, dtype=np.float32)]
+        self._scope_write_index = 0
+        self._last_scope_chunk = self._scope_buffers[0]
         # AUTOSAVE_2026 + CRASH_RECOVERY_2026: after the UI has come up, start
         # the periodic autosave and scan for interrupted .part documents so a
         # crashed save can always be finished.
@@ -25449,7 +25486,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "btn_apply_algo_master": "applyBtn",
             "btn_gp_wire_algo": "applyBtn",
             "btn_gp_algo_params": "applyBtn",
-            "btn_nt_apply": "applyBtn",
             "btn_nt_seed": "applyBtn",
             "btn_play_videogame": "gameBtn",
             "btn_load_wav": "mediaBtn",
@@ -28501,6 +28537,37 @@ class MathematiciansGrooveboxApp(QMainWindow):
         synth = self._automation_lerp_dict(patch, synth, 0.5)
         return {"sequence": seq, "synth": synth, "point": point}
 
+    def _algorithm_modulate_resolved_automation(self, state, instrument_name, point=None):
+        """Runtime-only Algorithm XMOD for existing automation-resolved variables.
+
+        It never creates steps or automation points.  It only modulates numeric
+        synth/sequence values already present in the resolved automation state,
+        matching the variable reach of the step-side algorithm cross-modulation.
+        """
+        if not isinstance(state, dict): return state
+        gas=getattr(self,"global_algo_state",{}) or {}
+        if not bool(gas.get("apply_enabled",False)) and not any(bool(r.get("global_algorithm_applied")) for r in (getattr(self,"master_playlist_data",[]) or []) if isinstance(r,dict)):
+            return state
+        depth=float(np.clip(getattr(self,"global_algorithm_xmod",1.0),0.0,2.0))
+        if str(instrument_name)==str(getattr(self,"current_instrument_name","")):
+            depth*=float(np.clip(getattr(self,"local_algorithm_xmod",1.0),0.0,2.0))
+        amount=float(np.clip((gas.get("params") or {}).get("mix",0.35),0.0,1.0))*depth
+        phase=0.5
+        try: phase=float(point.get("morph",point.get("value",0.5))) if isinstance(point,dict) else 0.5
+        except Exception: pass
+        factor=1.0 + (phase-0.5)*2.0*MEUM_MINUS_1*amount
+        out=copy.deepcopy(state)
+        for bucket in ("synth","sequence"):
+            obj=out.get(bucket)
+            if not isinstance(obj,dict): continue
+            for key,val in list(obj.items()):
+                if isinstance(val,(int,float,np.number)) and not isinstance(val,bool):
+                    obj[key]=float(val)*factor
+                elif isinstance(val,list):
+                    obj[key]=[float(x)*factor if isinstance(x,(int,float,np.number)) and not isinstance(x,bool) else x for x in val]
+        out["algorithm_xmod_applied"] = amount
+        return out
+
     def _automation_lane_points(self, instrument_name, row_idx):
         mem = self._current_sequence_mem(instrument_name)
         lane = mem.get("automation_lane", []) if isinstance(mem, dict) else []
@@ -28577,11 +28644,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # falling off after the last automation point.
         target_step = (int(step_idx) % auto_len) + 1
         if len(controls) == 1:
-            return self._automation_resolved_state(controls[0][1], instrument_name, composition_mem)
+            return self._algorithm_modulate_resolved_automation(self._automation_resolved_state(controls[0][1], instrument_name, composition_mem), instrument_name, controls[0][1])
         if target_step <= controls[0][0]:
-            return self._automation_resolved_state(controls[0][1], instrument_name, composition_mem)
+            return self._algorithm_modulate_resolved_automation(self._automation_resolved_state(controls[0][1], instrument_name, composition_mem), instrument_name, controls[0][1])
         if target_step >= controls[-1][0]:
-            return self._automation_resolved_state(controls[-1][1], instrument_name, composition_mem)
+            return self._algorithm_modulate_resolved_automation(self._automation_resolved_state(controls[-1][1], instrument_name, composition_mem), instrument_name, controls[-1][1])
 
         lo = controls[0]
         hi = controls[-1]
@@ -28629,12 +28696,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 resolved_sequence["offsets"] = offsets
         except Exception:
             pass
-        return {
+        return self._algorithm_modulate_resolved_automation({
             "sequence": resolved_sequence,
             "synth": self._automation_lerp_dict(A["synth"], B["synth"], frac),
             "point": lo[1],
             "linear_fraction": frac,
-        }
+        }, instrument_name, lo[1])
 
     def _on_automator_timing_mode_changed(self, index):
         self.automator_timing_mode = "syncopate" if int(index) == 1 else "wrap"
@@ -30282,10 +30349,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _clear_project_memory(self):
         """Reset all project/composition state and the global seed to a fresh boot."""
-        # Clear the ℤ-Lattice unapply snapshots and seed history (all imports point
-        # to project memory which is about to be wiped).
-        self._nt_lattice_snapshot.clear()
+        # Clear Algorithm→Seed revert history; heuristic writers own their own
+        # exact STEP/AUTOMATION revert snapshots.
         self._seed_history.clear()
+        self._heuristic_writer_snapshots = {"step": None, "automation": None}
         # Stop any active transport first so nothing writes into state mid-reset.
         try:
             self.stop_playback()
@@ -30909,7 +30976,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "global_track_offset": float(getattr(self, "global_track_offset", 0.0)), 
             "algorithm_xmod_local": float(getattr(self, "local_algorithm_xmod", 1.0)),
             "algorithm_xmod_global": float(getattr(self, "global_algorithm_xmod", 1.0)),
-            "edit_algorithm_per_sequence": bool(getattr(self, "edit_algorithm_per_sequence", False)),
             "canonical_factory_defaults": _safe_json(getattr(self, "canonical_factory_defaults", {})),
             "canonical_signal_control": float(getattr(self, "canonical_signal_control", 0.50)),
             "canonical_control_strategy": str(getattr(self, "canonical_control_strategy", "Full Canonical")),
@@ -31184,10 +31250,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.global_algorithm_xmod = float(np.clip(float(data.get("algorithm_xmod_global",1.0)), 0.0, 2.0))
                 if hasattr(self,"global_algorithm_xmod_slider"): self.global_algorithm_xmod_slider.setValue(int(round(self.global_algorithm_xmod*100)))
             except Exception: pass
-        if "edit_algorithm_per_sequence" in data:
-            self.edit_algorithm_per_sequence = bool(data.get("edit_algorithm_per_sequence", False))
-            if hasattr(self,"chk_edit_algorithm_per_sequence"): self.chk_edit_algorithm_per_sequence.setChecked(self.edit_algorithm_per_sequence)
-
         if isinstance(data.get("global_mod_state"), dict):
             self.global_mod_state.update({k: float(data["global_mod_state"][k]) for k in ("xmod", "input_xmod", "synth", "patch", "script", "domain") if k in data["global_mod_state"]})
         try:
@@ -31451,13 +31513,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
         import groovebox_paths
         return groovebox_paths.projects_dir()
 
+    def _project_workspace(self):
+        import groovebox_paths
+        return str(groovebox_paths.project_root(getattr(self, "_current_project_path", None)))
+
     def _games_dir(self):
         import groovebox_paths
-        return groovebox_paths.games_dir()
+        return groovebox_paths.games_dir(getattr(self, "_current_project_path", None))
 
     def _samples_dir(self):
         import groovebox_paths
-        return groovebox_paths.samples_dir()
+        return groovebox_paths.samples_dir(getattr(self, "_current_project_path", None))
+
+    def _recordings_dir(self):
+        import groovebox_paths
+        return groovebox_paths.recordings_dir(getattr(self, "_current_project_path", None))
+
+    def _layers_dir(self):
+        import groovebox_paths
+        return groovebox_paths.layers_dir(getattr(self, "_current_project_path", None))
 
     def _atomic_write_document(self, path, data):
         """Crash-resistant MCC commit with cross-process commit exclusion.
@@ -31549,22 +31623,37 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if not hasattr(self, "_project_save_lock"):
             self._project_save_lock = threading.Lock()
 
-        def _worker():
-            final = None
-            ok = False
-            try:
-                with self._project_save_lock:
-                    final = self._atomic_write_document(path, data)
-                    ok = True
-            except Exception as e:
-                err = str(e)
-                if show_saved:
-                    QTimer.singleShot(0, lambda: QMessageBox.warning(self, "Save failed", f"{path}\n{err}"))
-                return
-            if ok and show_saved and not self.is_playing:
-                QTimer.singleShot(0, lambda: QMessageBox.information(self, "Saved", f"Project saved:\n{final}"))
+        def _write_project():
+            with self._project_save_lock:
+                return self._atomic_write_document(path, data)
 
-        threading.Thread(target=_worker, daemon=True, name="project-save").start()
+        def _save_complete(final, error):
+            if error is not None:
+                if show_saved:
+                    QMessageBox.warning(self, "Save failed", f"{path}\n{error}")
+                return
+            if show_saved and not self.is_playing:
+                QMessageBox.information(self, "Saved", f"Project saved:\n{final}")
+
+        opt = getattr(self, "_scode_optimizer", None)
+        if opt is not None and hasattr(opt, "submit_pooled"):
+            # Disk writes are SIDE_EFFECT completions: never cached/coalesced, but
+            # the slow write and fsync work stays off the UI thread and Qt dialogs
+            # are delivered by the sCode completion queue on the main thread.
+            opt.submit_pooled(
+                "project_save",
+                (path, getattr(self, "_composition_generation_counter", 0), getattr(self, "_current_project_path", None)),
+                _write_project, policy="side_effect", format_id="project",
+                side_effecting=True, callback=_save_complete, qt_callback=True,
+            )
+        else:
+            def _legacy_worker():
+                try:
+                    final = _write_project(); error = None
+                except Exception as exc:
+                    final = None; error = exc
+                QTimer.singleShot(0, lambda: _save_complete(final, error))
+            threading.Thread(target=_legacy_worker, daemon=True, name="project-save").start()
         return path
 
     def _install_project_autosave(self):
@@ -31578,11 +31667,36 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._last_autosave_fp = getattr(self, "lbl_canonical_fp", None)
 
     def _autosave_project(self):
+        """Snapshot on the GUI thread, commit on the sCode SIDE_EFFECT worker.
+
+        Autosave is intentionally never cached or coalesced: each timer firing is a
+        real durability request.  Only the UI-owned snapshot construction remains on
+        the GUI thread; JSON encoding, fsync and atomic replacement run off-thread.
+        """
         try:
             fp = self._last_autosave_fp
-            path = os.path.join(self._projects_dir(), "autosave.MCC")
-            if fp is not None and hasattr(fp, "text"):
-                self._atomic_write_document(path, self._project_snapshot())
+            if fp is None or not hasattr(fp, "text"):
+                return
+            import groovebox_paths
+            path = os.path.join(groovebox_paths.metadata_dir(getattr(self, "_current_project_path", None)), "autosave.MCC")
+            data = self._project_snapshot()
+
+            def _write_autosave():
+                with self._project_save_lock:
+                    return self._atomic_write_document(path, data)
+
+            opt = getattr(self, "_scode_optimizer", None)
+            if opt is not None and hasattr(opt, "submit_pooled"):
+                opt.submit_pooled(
+                    "project_autosave",
+                    (path, getattr(self, "_composition_generation_counter", 0)),
+                    _write_autosave, policy="side_effect", format_id="project",
+                    side_effecting=True, qt_callback=False,
+                )
+            else:
+                threading.Thread(
+                    target=_write_autosave, daemon=True, name="project-autosave"
+                ).start()
         except Exception:
             pass
 
@@ -31764,12 +31878,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
             QMessageBox.warning(self,".MG load failed",str(e))
 
     def save_project_dialog(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Save Mathematician's Groovebox Project", self._projects_dir(), "Mathematician's Groovebox Composition (*.MCC)")
+        import groovebox_paths
+        current = getattr(self, "_current_project_path", None)
+        default = current or groovebox_paths.default_project_path("Untitled")
+        path, _ = QFileDialog.getSaveFileName(self, "Save Mathematician's Groovebox Project", default, "Mathematician's Groovebox Composition (*.MCC)")
         if not path:
             return
         path = self._ensure_project_extension(path)
-        self._save_project_document(path)
+        path = groovebox_paths.canonical_project_path(path)
         self._current_project_path = path
+        groovebox_paths.project_root(path)
+        self._save_project_document(path)
+        groovebox_paths.index_file(path, "project", path)
 
     def open_project_path(self, path, *, show_message=True):
         """Open an .MCC project (or legacy .mgpr) through one canonical loader."""
@@ -32959,7 +33079,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _decode_media_audio(self, file_path):
         """Decode any supported audio/video container to mono float32 via ffmpeg."""
         import subprocess
-        cmd = ["ffmpeg", "-v", "error", "-i", str(file_path), "-vn", "-ac", "1", "-ar", "44100", "-f", "f32le", "-"]
+        ffmpeg = resolve_local_tool("ffmpeg", required=True)
+        cmd = [ffmpeg, "-v", "error", "-i", str(file_path), "-vn", "-ac", "1", "-ar", "44100", "-f", "f32le", "-"]
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
         if proc.returncode != 0:
             raise RuntimeError(proc.stderr.decode(errors="replace")[-1400:] or "ffmpeg could not decode media audio")
@@ -32977,10 +33098,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
             path, _ = QFileDialog.getOpenFileName(self, "Load Sample to Selected Operator", self._samples_dir(), self._media_file_filter())
             if not path:
                 return
+            import groovebox_paths
+            name = self._current_instrument_name()
+            path = groovebox_paths.ingest_file(path, "operator_sample", getattr(self, "_current_project_path", None), instrument=name)
             arr, sr = self._decode_media_audio(path)
             if arr.size == 0:
                 raise RuntimeError("The selected media contains no decodable audio stream.")
-            name = self._current_instrument_name()
             _is_video = Path(path).suffix.lower() in {".mp4", ".mov", ".mkv", ".webm", ".avi", ".mpeg", ".mpg", ".m4v", ".flv", ".ts", ".m2ts", ".mts", ".3gp", ".3g2", ".ogv", ".vob"}
             self.instrument_media_samples[name] = {
                 "path": str(path), "sample_rate": int(sr), "waveform": arr.astype(np.float32),
@@ -33176,10 +33299,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _load_video_path(self, file_path):
         """Parse a video file: probe video metadata and extract mono PCM audio as carrier."""
-        ffprobe = shutil.which("ffprobe")
-        ffmpeg = shutil.which("ffmpeg")
-        if not ffmpeg:
-            raise RuntimeError("ffmpeg is required for video import. Install ffmpeg and try again.")
+        ffprobe = resolve_local_tool("ffprobe", required=True)
+        ffmpeg = resolve_local_tool("ffmpeg", required=True)
 
         meta = {}
         if ffprobe:
@@ -33257,6 +33378,33 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     self.video_synth_viewer.update_from_audio(preview[idx])
 
     def _resample_carrier(self, target_len, target_rate):
+        """sCode-routed memoized carrier resampling for repeated Play/Export."""
+        if self.imported_waveform is None or target_len <= 0:
+            return None
+        _opt = getattr(self, "_scode_optimizer", None)
+        if _opt is None:
+            return self._resample_carrier_uncached(target_len, target_rate)
+        try:
+            _path = str(getattr(self, "imported_wav_path", "") or getattr(self, "imported_video_path", "") or "")
+            _mtime = 0
+            _size = 0
+            if _path and os.path.exists(_path):
+                _st = os.stat(_path); _mtime = int(getattr(_st, "st_mtime_ns", 0)); _size = int(_st.st_size)
+            _speed = float(self.spin_import_speed.value()) if getattr(self, "spin_import_speed", None) is not None else 1.0
+            _scrub_on = bool(getattr(self, "chk_speed_scrub", None) and self.chk_speed_scrub.isChecked())
+            _scrub_depth = float(self.spin_speed_scrub.value()) if getattr(self, "spin_speed_scrub", None) is not None else 0.0
+            _seed = self._seed_text() if hasattr(self, "_seed_text") else str(self.get_numeric_seed())
+            _payload = (_path, _mtime, _size, int(np.asarray(self.imported_waveform).size),
+                        int(getattr(self, "imported_sample_rate", 44100) or 44100), int(target_len),
+                        int(target_rate), round(_speed, 9), int(_scrub_on), round(_scrub_depth, 9), _seed)
+            return _opt.memoized_result(
+                "media_carrier_resample", _payload,
+                lambda: self._resample_carrier_uncached(target_len, target_rate), max_entries=8
+            )
+        except Exception:
+            return self._resample_carrier_uncached(target_len, target_rate)
+
+    def _resample_carrier_uncached(self, target_len, target_rate):
         """Return the loaded carrier resampled/looped to the render duration.
 
         When a seed script is present, a mild deterministic gain scale derived
@@ -35986,9 +36134,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     _depth = float(np.clip(_depth, 0.0, 0.08))
                     _alg_xmod = 1.0
                     try:
-                        _alg_active = False
-                        _prow = getattr(locals().get("entry", None), "get", lambda *a: None)("step_algorithm", "") if locals().get("entry", None) is not None else ""
-                        _alg_active = bool(_prow) or bool(getattr(self, "edit_algorithm_per_sequence", False) and getattr(self, "btn_nt_apply", None) is not None and self.btn_nt_apply.isChecked())
+                        # ALGORITHM_XMOD_PARITY_2026: Algorithm is a runtime modifier,
+                        # not a step/automation composer. The same applied Algorithm
+                        # state gates both step-side voice modulation and resolved
+                        # synth/sequence automation variables. Heuristic writers remain
+                        # independent authoring tools and never gate Algorithm XMOD.
+                        _gas = getattr(self, "global_algo_state", {}) or {}
+                        _alg_active = bool(_gas.get("apply_enabled", False)) or any(
+                            bool(_r.get("global_algorithm_applied")) for _r in
+                            (getattr(self, "master_playlist_data", []) or []) if isinstance(_r, dict)
+                        )
                         if _alg_active:
                             _alg_xmod = float(getattr(self, "global_algorithm_xmod", 1.0))
                             if op_name == getattr(self, "current_instrument_name", ""):
@@ -36827,6 +36982,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         _opt = getattr(self, "_scode_optimizer", None)
         if _opt is not None and not bool(getattr(self, "_scode_force_canonical", False)):
             _opt.plan_host_now(self)
+            if not _opt.should_run("canonical"):
+                return
             if not _opt.claim_host_work(self, "canonical"):
                 return
 
@@ -37737,8 +37894,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if not MATH_SYMBOLS_ENABLED:
             return
         _opt = getattr(self, "_scode_optimizer", None)
-        if _opt is not None and _opt.editing_active(self):
-            return
+        if _opt is not None:
+            if _opt.editing_active(self):
+                return
+            if not _opt.should_run("symbols"):
+                return
+            if not _opt.cadence_due("symbols"):
+                return
         alive = []
         for ov in list(getattr(self, "_math_symbol_numeric_overlays", []) or []):
             try:
@@ -38494,66 +38656,68 @@ class MathematiciansGrooveboxApp(QMainWindow):
             pass
 
     def _audio_callback(self, outdata, frames, time_info, status):
-        """sounddevice stream callback — pulls from play_buffer under lock."""
+        """Realtime sounddevice callback: no sCode IPC and no blocking mutex.
+
+        The UI swaps immutable NumPy buffer references before starting the stream.
+        This callback snapshots the pointer/cursor, processes directly into the
+        PortAudio output buffer, and atomically publishes a preallocated scope
+        buffer. Completion/cache bookkeeping never runs here.
+        """
         if status:
-            pass  # underrun etc. ignored for now
-        with self.play_lock:
-            if self.play_buffer is None or not self.is_playing:
-                outdata.fill(0)
-                return
-            remaining = len(self.play_buffer) - self.play_cursor
-            n = min(frames, remaining)
-            if n > 0:
-                start_sample = int(self.play_cursor)
-                # MASTER_HARDCLIP_2026: volume × clip-factors → hard clip only.
-                # No video-energy bedding, no peak normalize, no soft limiter.
-                # Default master vol 50% is the warning; hard clip is the ceiling.
-                raw = self.play_buffer[start_sample:start_sample + n]
-                try:
-                    ratio_pct = float(self.spin_clip_ratio.value()) if hasattr(self, "spin_clip_ratio") else 50.0
-                except Exception:
-                    ratio_pct = 50.0
-                drive = float(1.0 + 1.5 * (ratio_pct / 100.0))
-                vol = float(getattr(self, "master_volume", 0.5) or 0.5)
-                chunk = np.clip(raw * np.float32(vol * drive), -1.0, 1.0).astype(np.float32)
-                chunk = self._apply_live_dj_chunk(chunk, start_sample)
-                # Live DJ may boost; hard-clip again so no path escapes the ceiling.
-                chunk = np.clip(chunk, -1.0, 1.0).astype(np.float32)
-                outdata[:n, 0] = chunk
-                # EQR_BAND_READOUT_2026: live peak + peak-hold numbers written by
-                # the audio thread (plain floats — the labels are refreshed by the
-                # UI-thread scope timer, never touched from here).
-                try:
-                    _cpk = float(np.max(np.abs(chunk))) if chunk.size else 0.0
-                    self._live_peak = _cpk
-                    _ph = float(getattr(self, "_live_peak_hold", 0.0))
-                    self._live_peak_hold = max(_cpk, _ph * float(np.exp(-float(n) / max(0.0 * float(self.preferred_sample_rate), 1.0))))
-                except Exception:
-                    pass
-                # stash a short window for the UI scope
+            pass
+        buf = self.play_buffer
+        if buf is None or not self.is_playing:
+            outdata.fill(0)
+            return
+        cursor = int(self.play_cursor)
+        remaining = len(buf) - cursor
+        n = min(int(frames), max(0, remaining))
+        if n > 0:
+            start_sample = cursor
+            raw = buf[start_sample:start_sample + n]
+            try:
+                ratio_pct = float(self.spin_clip_ratio.value()) if hasattr(self, "spin_clip_ratio") else 50.0
+            except Exception:
+                ratio_pct = 50.0
+            drive = float(1.0 + 1.5 * (ratio_pct / 100.0))
+            vol = float(getattr(self, "master_volume", 0.5) or 0.5)
+            dest = outdata[:n, 0]
+            np.multiply(raw, np.float32(vol * drive), out=dest, casting="unsafe")
+            np.clip(dest, -1.0, 1.0, out=dest)
+            processed = self._apply_live_dj_chunk(dest, start_sample)
+            if processed is not dest:
+                np.copyto(dest, np.asarray(processed, dtype=np.float32).reshape(-1)[:n], casting="unsafe")
+            np.clip(dest, -1.0, 1.0, out=dest)
+            chunk = dest
+            try:
+                _cpk = float(np.max(np.abs(chunk))) if chunk.size else 0.0
+                self._live_peak = _cpk
+                _ph = float(getattr(self, "_live_peak_hold", 0.0))
+                self._live_peak_hold = max(_cpk, _ph * float(np.exp(-float(n) / max(float(self.preferred_sample_rate), 1.0))))
+            except Exception:
+                pass
+            try:
+                wi = 1 - int(getattr(self, "_scope_write_index", 0) or 0)
+                target = self._scope_buffers[wi]
+                target.fill(0)
                 if n >= 100:
-                    self._last_scope_chunk = chunk[::max(1, n // 100)][:100].copy()
+                    step = max(1, n // 100)
+                    view = chunk[::step][:100]
+                    target[:view.size] = view
                 else:
-                    pad = np.zeros(100, dtype=np.float32)
-                    pad[:n] = chunk
-                    self._last_scope_chunk = pad
-                self.play_cursor += n
-            if n < frames:
-                outdata[n:, 0] = 0
-            if remaining <= n:
-                # Buffer exhausted: flip plain state flags only. This
-                # callback runs on the sounddevice audio thread, not the Qt
-                # UI thread — calling stop_playback() directly from here
-                # touches QPushButton/style-sheet state from a non-UI thread,
-                # which PyQt does not guarantee is safe and was leaving
-                # btn_play stuck reading "⏸ PAUSE" instead of resetting to
-                # "▶ PLAY" like a real Stop. The UI-thread scope timer
-                # (_update_scope_from_playhead) already polls is_playing and
-                # performs the actual stop_playback() on the correct thread.
-                self.is_playing = False
-                self._transport_finished = True
-                self._composition_generation_guard = False
-                return
+                    target[:n] = chunk
+                self._scope_write_index = wi
+                self._last_scope_chunk = target
+            except Exception:
+                pass
+            self.play_cursor = cursor + n
+        if n < frames:
+            outdata[n:, 0] = 0
+        if remaining <= n:
+            self.is_playing = False
+            self._transport_finished = True
+            self._composition_generation_guard = False
+            return
     def _update_scope_from_playhead(self):
         """UI-thread timer with adaptive visual backpressure during live play."""
         _scope_t0 = time.perf_counter()
@@ -38600,6 +38764,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             _stride = max(_stride, 3)
         _opt = getattr(self, "_scode_optimizer", None)
         if _opt is not None:
+            _stride = max(_stride, _opt.cadence_value("visual", 1))
             _lane = max(0, int(_opt.lane("visual")))
             _spec_tick = ((self._scope_tick_counter + _lane) % _stride == 0)
             _scene_tick = ((self._scope_tick_counter + _lane + 1) % _stride == 0)
@@ -38787,160 +38952,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
             QMessageBox.critical(self, "Playback Error", str(e))
 
 
-    def _on_nt_lattice_apply(self, checked=False):
-        """Apply the ℤ-Lattice step algorithm at the selected global/local scope.
-
-        Global mode walks every playlist row and applies the mask to each
-        sequence bank referenced by that row. Local mode touches only the
-        currently selected instrument/pattern. Snapshots are keyed by the same
-        scope so Unapply reverses exactly the affected material.
-        """
-        import copy as _c
-        mode_map = {
-            "Prime steps": "primes", "Square steps": "quadratic", "Coprime steps": "totient",
-            "Square-free steps": "mobius", "Fraction steps": "farey", "Tree-ratio steps": "stern",
-            "Primes": "primes", "Quadratic residues": "quadratic", "Totient units": "totient",
-            "Möbius support": "mobius", "Farey": "farey", "Stern–Brocot": "stern",
-        }
-        mode_ui = self.combo_nt_mode.currentText() if hasattr(self, "combo_nt_mode") else "Prime steps"
-        mode_alg = mode_map.get(mode_ui, "primes")
-        mod = int(self.spin_nt_modulus.value()) if hasattr(self, "spin_nt_modulus") else 12
-        depth = int(self.spin_nt_depth.value()) if hasattr(self, "spin_nt_depth") else 5
-        is_local = bool(hasattr(self, "mode_combo") and self.mode_combo.currentIndex() == 1)
-        if bool(getattr(self, "edit_algorithm_per_sequence", False)):
-            is_local = True
-        self._nt_lattice_scope = "local" if is_local else "global"
-        if bool(getattr(self, "edit_algorithm_per_sequence", False)):
-            _sel_name = str(getattr(self, "current_instrument_name", self.instrument_names_48[0] if self.instrument_names_48 else ""))
-            _sel_seq = int((getattr(self, "instrument_selected_sequence", {}) or {}).get(_sel_name, 0))
-            self._nt_lattice_scope = f"local_sequence:{_sel_name}:{_sel_seq}"
-
-        def apply_mem(mem, key):
-            if not isinstance(mem, dict):
-                return
-            prior = self._nt_lattice_snapshot.get(key)
-            if prior is not None:
-                return
-            length = max(1, min(128, int(mem.get("pattern_length", len(mem.get("steps") or []) or 8))))
-            steps = list(mem.get("steps") or [])
-            amps = list(mem.get("amplitudes") or [])
-            pitches = list(mem.get("pitches") or [])
-            offsets = list(mem.get("offsets") or [])
-            probabilities = list(mem.get("probabilities") or [])
-            gates = list(mem.get("gates") or [])
-            while len(steps) < length: steps.append(False)
-            while len(amps) < length: amps.append(1.0)
-            while len(pitches) < length: pitches.append(1.0)
-            while len(offsets) < length: offsets.append(0.0)
-            while len(probabilities) < length: probabilities.append(100)
-            while len(gates) < length: gates.append(True)
-            self._nt_lattice_snapshot[key] = {
-                "steps": _c.deepcopy(steps[:length]), "amplitudes": _c.deepcopy(amps[:length]),
-                "pitches": _c.deepcopy(pitches[:length]), "offsets": _c.deepcopy(offsets[:length]),
-                "probabilities": _c.deepcopy(probabilities[:length]), "gates": _c.deepcopy(gates[:length]),
-                "pattern_length": length,
-            }
-            mask = _nt_step_mask(length, mode_alg, mod, depth)
-            for i in range(length):
-                steps[i] = bool(mask[i])
-                if steps[i]:
-                    residue = i % mod
-                    scramble = (residue * 7 + i * 11) % max(1, mod)
-                    pitches[i] = float(np.clip(_seed_to_pitch_ratio(scramble + mod * 0.01, residue, i), 1.0/32.0, 32.0))
-                    amps[i] = float(0.55 + 0.45 * abs(_nt_mobius(residue + 1)))
-            mem.update({"steps": steps[:length], "amplitudes": amps[:length], "pitches": pitches[:length],
-                        "offsets": offsets[:length], "probabilities": probabilities[:length],
-                        "gates": gates[:length], "pattern_length": length})
-
-        if is_local:
-            name = self.instrument_selector_dropdown.currentText() if hasattr(self, "instrument_selector_dropdown") else None
-            if not name:
-                names = list(getattr(self, "instrument_names_48", []) or [])
-                name = names[0] if names else None
-            if not name:
-                return
-            bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(name, {})
-            sid = int((getattr(self, "instrument_selected_sequence", {}) or {}).get(name, 1))
-            mem = bank.get(sid) if isinstance(bank, dict) else None
-            if not isinstance(mem, dict):
-                mem = (getattr(self, "instrument_sequencer_memory", {}) or {}).get(name)
-            key = f"local:{name}"
-            if self._nt_lattice_snapshot.get(key) is not None:
-                if not getattr(self, "_undo_in_flight", False): self._push_undo("Unapply step algorithm")
-                prior = self._nt_lattice_snapshot.pop(key)
-                target = mem if isinstance(mem, dict) else (getattr(self, "instrument_sequencer_memory", {}) or {}).get(name)
-                if isinstance(target, dict): target.update(_c.deepcopy(prior))
-            else:
-                if not getattr(self, "_undo_in_flight", False): self._push_undo("Apply step algorithm")
-                if isinstance(mem, dict): apply_mem(mem, key)
-                elif isinstance((getattr(self, "instrument_sequencer_memory", {}) or {}).get(name), dict):
-                    apply_mem(self.instrument_sequencer_memory[name], key)
-        else:
-            global_keys = [k for k in list(self._nt_lattice_snapshot) if str(k).startswith("global:")]
-            if global_keys:
-                if not getattr(self, "_undo_in_flight", False): self._push_undo("Unapply step algorithm")
-                for key in global_keys:
-                    try:
-                        _, op, sid = str(key).split(":", 2)
-                        mem = (getattr(self, "instrument_sequence_banks", {}) or {}).get(op, {}).get(int(sid))
-                        if isinstance(mem, dict): mem.update(_c.deepcopy(self._nt_lattice_snapshot[key]))
-                    except Exception: pass
-                    self._nt_lattice_snapshot.pop(key, None)
-            else:
-                if not getattr(self, "_undo_in_flight", False): self._push_undo("Apply step algorithm")
-                touched = 0
-                seen = set()
-                for r, entry in enumerate(getattr(self, "master_playlist_data", []) or []):
-                    if not isinstance(entry, dict): continue
-                    refs = entry.get("sequence_refs") or []
-                    if isinstance(refs, str): refs = [x.strip() for x in refs.split(",") if x.strip()]
-                    if not refs:
-                        op = str(entry.get("operator") or "").strip()
-                        sid = int((getattr(self, "instrument_selected_sequence", {}) or {}).get(op, 1)) if op else 1
-                        refs = [f"{op}#S{sid}"] if op else []
-                    row_applied = []
-                    for ref in refs:
-                        txt = str(ref).strip()
-                        if "#S" in txt: op, sid_txt = txt.rsplit("#S", 1)
-                        elif ":" in txt: op, sid_txt = txt.rsplit(":", 1)
-                        else: continue
-                        op = op.strip()
-                        try: sid = int(sid_txt)
-                        except Exception: continue
-                        key = f"global:{op}:{sid}"
-                        if key in seen or key in self._nt_lattice_snapshot: continue
-                        mem = (getattr(self, "instrument_sequence_banks", {}) or {}).get(op, {}).get(sid)
-                        if isinstance(mem, dict):
-                            apply_mem(mem, key); seen.add(key); row_applied.append(key); touched += 1
-                    if row_applied:
-                        entry["step_algorithm_scope"] = "global"
-                        entry["step_algorithm"] = mode_ui
-                        entry["step_algorithm_refs"] = row_applied
-                if touched == 0:
-                    # A global sequence should still reach every row; fall back to
-                    # each row's operator memory when no explicit #S reference exists.
-                    for r, entry in enumerate(getattr(self, "master_playlist_data", []) or []):
-                        if not isinstance(entry, dict): continue
-                        op = str(entry.get("operator") or "").strip()
-                        if not op: continue
-                        mem = (getattr(self, "instrument_sequencer_memory", {}) or {}).get(op)
-                        key = f"global:{op}:1"
-                        if isinstance(mem, dict) and key not in self._nt_lattice_snapshot:
-                            apply_mem(mem, key); entry["step_algorithm_scope"] = "global"; entry["step_algorithm"] = mode_ui
-        try:
-            self._refresh_step_ui()
-        except Exception: pass
-        try:
-            self._sync_playlist_paint_table_from_memory()
-        except Exception: pass
-        try: self._on_live_source_changed()
-        except Exception: pass
-        self._sync_nt_lattice_button_state()
-        try:
-            self.btn_nt_apply.setText("HEURISTIC STEP WRITE · ON" if bool(checked) else "HEURISTIC STEP WRITE · OFF")
-        except Exception:
-            pass
-
     def _heuristic_values(self, family, bias, n, seed_value=None):
         """Return deterministic [0,1] structural values for the Heuristic Composer.
 
@@ -39010,7 +39021,35 @@ class MathematiciansGrooveboxApp(QMainWindow):
             vals.append(float(np.clip(v, 0.0, 1.0)))
         return vals
 
-    def _transcribe_heuristic_into_sequence(self, name, sid, values, family, bias):
+    _HEURISTIC_STEP_FIELDS = (
+        "steps", "gates", "amplitudes", "pitches", "probabilities", "offsets",
+        "pattern_length", "heuristic_family", "heuristic_bias", "canonical_owner",
+    )
+    _HEURISTIC_AUTOMATION_FIELDS = ("automation_lane", "automation_lane_length")
+
+    def _heuristic_snapshot_fields(self, mem, fields):
+        snap = {}
+        if not isinstance(mem, dict):
+            mem = {}
+        for field in fields:
+            snap[field] = (field in mem, copy.deepcopy(mem.get(field)))
+        return snap
+
+    def _heuristic_restore_fields(self, mem, snapshot):
+        if not isinstance(mem, dict) or not isinstance(snapshot, dict):
+            return
+        for field, rec in snapshot.items():
+            try:
+                present, value = rec
+            except Exception:
+                continue
+            if present:
+                mem[field] = copy.deepcopy(value)
+            else:
+                mem.pop(field, None)
+
+    def _heuristic_write_step_into_sequence(self, name, sid, values, family, bias):
+        """Write only the discrete/step-side heuristic layer."""
         bank = (getattr(self, "instrument_sequence_banks", {}) or {}).setdefault(name, {})
         mem = bank.get(int(sid))
         if not isinstance(mem, dict):
@@ -39034,16 +39073,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
         mem["pattern_length"] = n
         mem["heuristic_family"] = str(family)
         mem["heuristic_bias"] = str(bias)
-        mem["canonical_owner"] = "heuristic:transcribed"
-        self.instrument_sequencer_memory[name] = mem
-        self.instrument_selected_sequence[name] = int(sid)
-        # Continuous heuristic state becomes a real editable automation lane.
+        mem["canonical_owner"] = "heuristic:step"
+        if int((getattr(self, "instrument_selected_sequence", {}) or {}).get(name, 1)) == int(sid):
+            self.instrument_sequencer_memory[name] = mem
+        return mem
+
+    def _heuristic_write_automation_into_sequence(self, name, sid, values, family, bias):
+        """Write only the continuous heuristic automation layer/tiles."""
         self._bake_automation_pattern_to_tiles(
             [100.0 * float(v) for v in values],
-            pattern_name=f"Heuristic · {family} · {bias}", activate=True,
+            pattern_name=f"Heuristic Automation · {family} · {bias}", activate=True,
             instrument_name=name, sequence_id=int(sid)
         )
-        return mem
 
     def _heuristic_target_list(self, scope=None):
         scope = str(scope if scope is not None else (self.combo_heuristic_scope.currentText() if hasattr(self, "combo_heuristic_scope") else "LOCAL")).upper()
@@ -39061,76 +39102,94 @@ class MathematiciansGrooveboxApp(QMainWindow):
             targets = [(name, sid)]
         return targets
 
-    def _heuristic_restore(self):
-        """Remove only the currently-applied heuristic writer layer."""
-        snap = getattr(self, "_heuristic_writer_snapshot", None)
-        if not isinstance(snap, dict): return
-        for key, prior in (snap.get("memories") or {}).items():
+    def _heuristic_restore_writer(self, kind):
+        """Restore exactly one heuristic writer's owned state."""
+        kind = "automation" if str(kind).lower().startswith("auto") else "step"
+        snaps = getattr(self, "_heuristic_writer_snapshots", None)
+        if not isinstance(snaps, dict):
+            self._heuristic_writer_snapshots = {"step": None, "automation": None}
+            snaps = self._heuristic_writer_snapshots
+        snap = snaps.get(kind)
+        if not isinstance(snap, dict):
+            return
+        memories = snap.get("memories") or {}
+        for key, field_snap in memories.items():
             try:
                 name, sid = key
                 bank = (getattr(self, "instrument_sequence_banks", {}) or {}).setdefault(name, {})
-                bank[int(sid)] = copy.deepcopy(prior)
+                mem = bank.get(int(sid))
+                if not isinstance(mem, dict):
+                    mem = {}
+                    bank[int(sid)] = mem
+                self._heuristic_restore_fields(mem, field_snap)
                 if int((getattr(self, "instrument_selected_sequence", {}) or {}).get(name, 1)) == int(sid):
-                    self.instrument_sequencer_memory[name] = bank[int(sid)]
-            except Exception: pass
-        # Restore only automation scopes touched by this writer; unrelated/user
-        # automation survives regardless of toggle order.
-        scopes = set(tuple(x) for x in (snap.get("scopes") or []))
-        current = []
-        for point in list(getattr(self, "sequencer_automation_points", []) or []):
-            if not isinstance(point, dict): continue
-            sc=(str(point.get("from_instrument") or point.get("instrument") or ""), int(point.get("from_sequence", 1) or 1))
-            if sc in scopes: continue
-            current.append(point)
-        current.extend(copy.deepcopy(snap.get("automation") or []))
-        self.sequencer_automation_points = current
-        self._heuristic_writer_snapshot = None
+                    self.instrument_sequencer_memory[name] = mem
+            except Exception:
+                pass
+        if kind == "automation":
+            scopes = set(tuple(x) for x in (snap.get("scopes") or []))
+            current = []
+            for point in list(getattr(self, "sequencer_automation_points", []) or []):
+                if not isinstance(point, dict):
+                    continue
+                sc = (str(point.get("from_instrument") or point.get("instrument") or ""), int(point.get("from_sequence", 1) or 1))
+                if sc in scopes:
+                    continue
+                current.append(point)
+            current.extend(copy.deepcopy(snap.get("automation") or []))
+            self.sequencer_automation_points = current
+        snaps[kind] = None
 
-    def _on_heuristic_scope_changed(self, _index=0):
-        if not hasattr(self, "btn_heuristic_transcribe") or not self.btn_heuristic_transcribe.isChecked(): return
-        # Scope is mutually exclusive. Rebuild from the exact zero-state of the
-        # previous scope rather than stacking GLOBAL and LOCAL writes.
-        self._heuristic_restore()
-        self._heuristic_apply_current_scope()
-
-    def _heuristic_apply_current_scope(self):
+    def _heuristic_apply_writer(self, kind):
+        kind = "automation" if str(kind).lower().startswith("auto") else "step"
         family = str(self.combo_heuristic_family.currentText()) if hasattr(self, "combo_heuristic_family") else "ℤ-Lattice"
         bias = str(self.combo_heuristic_bias.currentText()) if hasattr(self, "combo_heuristic_bias") else "Balanced"
         n = int(self.spin_heuristic_span.value()) if hasattr(self, "spin_heuristic_span") else 16
         scope = str(self.combo_heuristic_scope.currentText()) if hasattr(self, "combo_heuristic_scope") else "LOCAL"
         targets = self._heuristic_target_list(scope)
         values = self._heuristic_values(family, bias, n)
-        memories={}; scopes=[]; automation=[]
-        all_points=list(getattr(self, "sequencer_automation_points", []) or [])
-        for name,sid in targets:
-            bank=(getattr(self,"instrument_sequence_banks",{}) or {}).setdefault(name,{})
-            mem=bank.get(int(sid))
-            if not isinstance(mem,dict): mem=copy.deepcopy((getattr(self,"instrument_sequencer_memory",{}) or {}).get(name,{})); bank[int(sid)]=mem
-            memories[(name,int(sid))]=copy.deepcopy(mem); scopes.append((name,int(sid)))
-            for point in all_points:
-                if not isinstance(point,dict): continue
-                sc=(str(point.get("from_instrument") or point.get("instrument") or ""), int(point.get("from_sequence",1) or 1))
-                if sc==(name,int(sid)): automation.append(copy.deepcopy(point))
-        self._heuristic_writer_snapshot={"scope":scope,"memories":memories,"scopes":scopes,"automation":automation}
-        for idx,(name,sid) in enumerate(targets):
-            vv=list(values)
+        memories = {}; scopes = []; automation = []
+        all_points = list(getattr(self, "sequencer_automation_points", []) or [])
+        fields = self._HEURISTIC_AUTOMATION_FIELDS if kind == "automation" else self._HEURISTIC_STEP_FIELDS
+        for name, sid in targets:
+            bank = (getattr(self, "instrument_sequence_banks", {}) or {}).setdefault(name, {})
+            mem = bank.get(int(sid))
+            if not isinstance(mem, dict):
+                mem = copy.deepcopy((getattr(self, "instrument_sequencer_memory", {}) or {}).get(name, {}))
+                bank[int(sid)] = mem
+            memories[(name, int(sid))] = self._heuristic_snapshot_fields(mem, fields)
+            if kind == "automation":
+                scopes.append((name, int(sid)))
+                for point in all_points:
+                    if not isinstance(point, dict):
+                        continue
+                    sc = (str(point.get("from_instrument") or point.get("instrument") or ""), int(point.get("from_sequence", 1) or 1))
+                    if sc == (name, int(sid)):
+                        automation.append(copy.deepcopy(point))
+        self._heuristic_writer_snapshots[kind] = {
+            "scope": scope, "memories": memories, "scopes": scopes, "automation": automation,
+            "family": family, "bias": bias, "span": n,
+        }
+        for idx, (name, sid) in enumerate(targets):
+            vv = list(values)
             if idx and vv:
-                rot=int(identity_unit(name,"heuristic_rotation")*len(vv))%len(vv); vv=vv[rot:]+vv[:rot]
-            self._transcribe_heuristic_into_sequence(name,sid,vv,family,bias)
-        if hasattr(self,"scope_status_label"):
-            self.scope_status_label.setText(f"Heuristic {scope} ON · {family} · {bias} · {len(targets)} sequence(s) · {n} steps")
+                rot = int(identity_unit(name, "heuristic_rotation") * len(vv)) % len(vv)
+                vv = vv[rot:] + vv[:rot]
+            if kind == "automation":
+                self._heuristic_write_automation_into_sequence(name, sid, vv, family, bias)
+            else:
+                self._heuristic_write_step_into_sequence(name, sid, vv, family, bias)
+        return len(targets), scope, family, bias, n
 
-    def _on_heuristic_transcribe(self, checked=False):
-        """True reversible heuristic writer toggle: ON adds one derived layer; OFF removes it."""
-        if not getattr(self, "_undo_in_flight", False): self._push_undo("Toggle heuristic writer")
-        if bool(checked):
-            self._heuristic_restore()  # protects against stale prior application
-            self._heuristic_apply_current_scope()
-            self.btn_heuristic_transcribe.setText(f"HEURISTIC WRITE · {self.combo_heuristic_scope.currentText()} · ON")
-        else:
-            self._heuristic_restore()
-            self.btn_heuristic_transcribe.setText("HEURISTIC WRITE · OFF")
-            if hasattr(self,"scope_status_label"): self.scope_status_label.setText("Heuristic writer OFF · zero-state restored")
+    def _heuristic_active_writer_summary(self):
+        step_on = bool(getattr(self, "btn_heuristic_write_step", None) and self.btn_heuristic_write_step.isChecked())
+        auto_on = bool(getattr(self, "btn_heuristic_write_automation", None) and self.btn_heuristic_write_automation.isChecked())
+        active = []
+        if step_on: active.append("STEP")
+        if auto_on: active.append("AUTOMATION")
+        return "+".join(active) if active else "OFF"
+
+    def _heuristic_refresh_after_write(self):
         try: self.reload_active_instrument_sequencer_ui()
         except Exception: pass
         try: self._refresh_sequencer_automation_row()
@@ -39139,6 +39198,98 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception: pass
         try: self._on_live_source_changed()
         except Exception: pass
+
+    def _on_heuristic_scope_changed(self, _index=0):
+        active = []
+        if hasattr(self, "btn_heuristic_write_step") and self.btn_heuristic_write_step.isChecked(): active.append("step")
+        if hasattr(self, "btn_heuristic_write_automation") and self.btn_heuristic_write_automation.isChecked(): active.append("automation")
+        if not active:
+            return
+        # Restore both independent zero states before applying the new common
+        # GLOBAL/LOCAL scope, so scope switches cannot stack writer residue.
+        for kind in active:
+            self._heuristic_restore_writer(kind)
+        details = None
+        for kind in active:
+            details = self._heuristic_apply_writer(kind)
+        if details and hasattr(self, "scope_status_label"):
+            count, scope, family, bias, n = details
+            self.scope_status_label.setText(f"Heuristic {self._heuristic_active_writer_summary()} · {scope} · {family} · {bias} · {count} sequence(s) · {n} steps")
+        self._heuristic_refresh_after_write()
+
+    def _on_heuristic_writer_toggle(self, kind, checked=False):
+        label = "automation" if str(kind).lower().startswith("auto") else "step"
+        if not getattr(self, "_undo_in_flight", False):
+            self._push_undo(f"Toggle heuristic {label} writer")
+        button = self.btn_heuristic_write_automation if label == "automation" else self.btn_heuristic_write_step
+        title = "HEURISTIC WRITE AUTOMATION" if label == "automation" else "HEURISTIC WRITE STEP"
+        if bool(checked):
+            self._heuristic_restore_writer(label)
+            count, scope, family, bias, n = self._heuristic_apply_writer(label)
+            button.setText(f"{title} · {scope} · ON")
+            if hasattr(self, "scope_status_label"):
+                self.scope_status_label.setText(f"Heuristic {self._heuristic_active_writer_summary()} · {scope} · {family} · {bias} · {count} sequence(s) · {n} steps")
+        else:
+            self._heuristic_restore_writer(label)
+            button.setText(f"{title} · OFF")
+            if hasattr(self, "scope_status_label"):
+                self.scope_status_label.setText(f"Heuristic {self._heuristic_active_writer_summary()} · own revert state restored")
+        self._heuristic_refresh_after_write()
+
+    def _on_heuristic_write_step(self, checked=False):
+        self._on_heuristic_writer_toggle("step", checked)
+
+    def _on_heuristic_write_automation(self, checked=False):
+        self._on_heuristic_writer_toggle("automation", checked)
+
+    def _on_heuristic_transcribe(self, checked=False):
+        """Compatibility route for older scripts: controls the STEP writer only."""
+        if hasattr(self, "btn_heuristic_write_step") and self.btn_heuristic_write_step.isChecked() != bool(checked):
+            self.btn_heuristic_write_step.setChecked(bool(checked))
+        else:
+            self._on_heuristic_write_step(bool(checked))
+
+    def _on_heuristic_seq_synth(self):
+        """Apply heuristic structure to sequence-local synth/script/domain/patch context only.
+
+        This is deliberately not a third STEP/AUTOMATION writer. It authors the
+        same sequence-panel stores used by Edit Synth Per Seq and is covered by
+        normal project Undo/Redo.
+        """
+        if not getattr(self, "_undo_in_flight", False):
+            self._push_undo("Apply heuristic to sequence synth")
+        family = str(self.combo_heuristic_family.currentText()) if hasattr(self,"combo_heuristic_family") else "ℤ-Lattice"
+        bias = str(self.combo_heuristic_bias.currentText()) if hasattr(self,"combo_heuristic_bias") else "Balanced"
+        span = int(self.spin_heuristic_span.value()) if hasattr(self,"spin_heuristic_span") else 16
+        targets = self._heuristic_target_list()
+        vals = self._heuristic_values(family,bias,max(8,span))
+        seed = float(self.get_numeric_seed()) if hasattr(self,"get_numeric_seed") else 1.0
+        touched = 0
+        for idx,(name,sid) in enumerate(targets):
+            bank=(getattr(self,"instrument_sequence_banks",{}) or {}).setdefault(name,{})
+            mem=bank.setdefault(int(sid),{})
+            v=float(vals[idx % len(vals)]) if vals else 0.5
+            synth=copy.deepcopy(mem.get("synth") or {})
+            # Bounded sequence-local offsets/preset coordinates. These are context
+            # values, not generated notes or automation control points.
+            synth.update({
+                "pitch": float(np.clip(0.5 + v * MEUM, 0.125, 2.0)),
+                "amp": float(np.clip(0.25 + 0.75*v, 0.0, 1.0)),
+                "detune": float((v-0.5) * MEUM_MINUS_1),
+                "heuristic_family": family, "heuristic_bias": bias,
+                "heuristic_value": v,
+            })
+            mem["synth"] = synth
+            mem["script"] = f"# heuristic:{family}:{bias}\n({seed:.12g} * MEUM + t * {1.0+v:.12g})"
+            mem["domain"] = {"axis":"time","equation":f"sin(t*MEUM*{1.0+v:.12g})","weight":v,"source":"heuristic_seq_synth"}
+            mem["patch"] = {"source":"heuristic_seq_synth","mod_depth":v,"ratio":float(1.0+MEUM_MINUS_1*v)}
+            mem["heuristic_seq_synth"] = {"family":family,"bias":bias,"value":v,"span":span}
+            if int((getattr(self,"instrument_selected_sequence",{}) or {}).get(name,1)) == int(sid):
+                self.instrument_sequencer_memory[name]=mem
+            touched += 1
+        self._heuristic_refresh_after_write()
+        if hasattr(self,"scope_status_label"):
+            self.scope_status_label.setText(f"Heuristic → Seq Synth · {family} · {bias} · {touched} sequence context(s); steps/automation unchanged")
 
     def _on_nt_to_seed(self):
         """Emit a seed script that number-theorists will recognize as structured.
@@ -39319,9 +39470,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._stop_requested = False
 
     def _exports_dir(self):
-        """Default export/render root: <groovebox root>/renders/"""
+        """Project-local export root: <Project>/exports/."""
         import groovebox_paths
-        return groovebox_paths.renders_dir()
+        return groovebox_paths.renders_dir(getattr(self, "_current_project_path", None))
+
+    def _audio_exports_dir(self):
+        import groovebox_paths
+        return groovebox_paths.audio_exports_dir(getattr(self, "_current_project_path", None))
+
+    def _video_exports_dir(self):
+        import groovebox_paths
+        return groovebox_paths.video_exports_dir(getattr(self, "_current_project_path", None))
+
+    def _frame_exports_dir(self):
+        import groovebox_paths
+        return groovebox_paths.frame_exports_dir(getattr(self, "_current_project_path", None))
+
+    def _index_project_file(self, path, role):
+        try:
+            import groovebox_paths
+            groovebox_paths.index_file(path, role, getattr(self, "_current_project_path", None))
+        except Exception:
+            pass
 
     def _export_frame_size(self):
         """Video resolution = main window size at export time (even dims for yuv420p)."""
@@ -39760,7 +39930,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                                 continue
             except Exception:
                 pass
-        ffprobe = shutil.which("ffprobe")
+        ffprobe = resolve_local_tool("ffprobe", required=False)
         if ffprobe:
             try:
                 proc = subprocess.run(
@@ -40324,6 +40494,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     provenance_bytes if pi == 0 else None,
                 )
                 part_paths.append(part_path)
+                self._index_project_file(part_path, "audio_export_part")
                 if hasattr(self, "scope_status_label"):
                     self.scope_status_label.setText(
                         f"📊 Audio part {pi + 1}/{n_parts} → {os.path.basename(part_path)}"
@@ -40405,6 +40576,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 pass
             if proc.returncode != 0:
                 raise RuntimeError(proc.stderr or f"FFmpeg failed for {audio_format.upper()}")
+        self._index_project_file(file_path, "audio_export")
         return file_path, part_paths
 
     def export_mixdown_dialog(self, audio_format="wav"):
@@ -40433,7 +40605,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         }
         ext = ".aiff" if audio_format == "aiff" else "." + audio_format
         try:
-            default_filename = os.path.join(self._exports_dir(), f"groovebox_mixdown_{self.export_counter:03d}{ext}")
+            default_filename = os.path.join(self._audio_exports_dir(), f"groovebox_mixdown_{self.export_counter:03d}{ext}")
             file_path, _ = QFileDialog.getSaveFileName(self, "Save Mixdown Audio", default_filename, filters[audio_format])
             if not file_path:
                 return
@@ -40533,31 +40705,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
     # Supports Video+Audio / Video-only in mp4|webm|avi with encoder auto-fallback.
     # =====================================================================
     def _resolve_ffmpeg_binary(self):
-        """Locate a usable ffmpeg binary (PATH, ./bin, /bin, common prefixes)."""
-        candidates = []
-        which = shutil.which("ffmpeg")
-        if which:
-            candidates.append(which)
-        try:
-            here = os.path.dirname(os.path.abspath(__file__))
-        except Exception:
-            here = os.getcwd()
-        for p in (
-            os.path.join(here, "bin", "ffmpeg"),
-            os.path.join(here, "ffmpeg"),
-            "/bin/ffmpeg",
-            "/usr/bin/ffmpeg",
-            "/usr/local/bin/ffmpeg",
-            os.path.expanduser("~/bin/ffmpeg"),
-        ):
-            if p and os.path.isfile(p) and os.access(p, os.X_OK):
-                candidates.append(p)
-        seen, ordered = set(), []
-        for c in candidates:
-            if c not in seen:
-                seen.add(c)
-                ordered.append(c)
-        return ordered[0] if ordered else None
+        """Return only the provisioned/bundled Groovebox-local FFmpeg."""
+        return resolve_local_tool("ffmpeg", required=False)
 
     def _ffmpeg_encoder_args(self, ffmpeg_bin, container="mp4"):
         """Pick video/audio encoder args this ffmpeg build actually supports."""
@@ -40707,7 +40856,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "global_algo": gas,
             "algorithm_xmod_local": float(getattr(self, "local_algorithm_xmod", 1.0)),
             "algorithm_xmod_global": float(getattr(self, "global_algorithm_xmod", 1.0)),
-            "edit_algorithm_per_sequence": bool(getattr(self, "edit_algorithm_per_sequence", False)),
             "global_algo_fingerprint": algo_fp,
             "step_algorithms": step_rows,
             "step_algorithm_fingerprint": step_algo_fingerprint,
@@ -41113,7 +41261,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._last_image_export_w, self._last_image_export_h = w, h
         self._last_image_export_format = fmt
         filters = {"png":"PNG Image (*.png)", "jpg":"JPEG Image (*.jpg *.jpeg)", "webp":"WebP Image (*.webp)"}
-        default = os.path.join(self._exports_dir(), f"groovebox_frame_{t_sec:010.4f}s_{w}x{h}.{fmt}")
+        default = os.path.join(self._frame_exports_dir(), f"groovebox_frame_{t_sec:010.4f}s_{w}x{h}.{fmt}")
         out, _ = QFileDialog.getSaveFileName(self, "Export Image Frame", default, filters[fmt] + ";;All Files (*)")
         if not out:
             return
@@ -41159,6 +41307,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 saved = bool(qimg.save(out, fmt.upper() if fmt != "jpg" else "JPEG"))
             if not saved:
                 raise RuntimeError("No encoder accepted the selected image format")
+            self._index_project_file(out, "frame_export")
 
             if chk_radio.isChecked():
                 try:
@@ -41205,8 +41354,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if not ffmpeg:
             QMessageBox.critical(
                 self, "Video Export Error",
-                "ffmpeg not found. Install a full build (see Help) or place "
-                "ffmpeg at ./bin/ffmpeg or on PATH."
+                "Local ffmpeg not found. Run scripts/provision_first_launch.py; "
+                "Groovebox intentionally does not fall back to PATH."
             )
             return
 
@@ -41292,7 +41441,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             aargs = ["-b:a", f"{int(self._last_audio_bitrate_kbps)}k"]
 
         default_name = os.path.join(
-            self._exports_dir(), f"groovebox_video_{self.export_counter:03d}.{container}"
+            self._video_exports_dir(), f"groovebox_video_{self.export_counter:03d}.{container}"
         )
         filters = {
             "mp4": "MP4 Video (*.mp4)",
@@ -41581,6 +41730,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     raise RuntimeError(f"Final mux failed:\n{err}\n(earlier copy attempt: {err1})")
 
             os.replace(final_tmp, out_path)
+            self._index_project_file(out_path, "video_export")
             try:
                 _elapsed = max(1e-9, time.perf_counter() - _render_wall_start)
                 self._video_render_seconds_per_frame = _elapsed / max(1, n_frames)
@@ -42572,9 +42722,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._refresh_canonical_fingerprint()
         except Exception:
             pass
-        # Reset the ℤ-Lattice toggle if the instrument no longer matches its
-        # applied snapshot (so the button never lies about unapply-ability).
-        self._sync_nt_lattice_button_state()
 
     def _push_undo(self, label="edit"):
         """Snapshot current project state onto the undo stack (clears redo).
@@ -42687,10 +42834,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         the Automator destination selector. This prevents the first roster entry
         (Z-Pinch Resonator) from leaking into unrelated automation lanes.
         """
-        try:
-            self._sync_nt_lattice_button_state()
-        except Exception:
-            pass
         if self._is_local_context():
             try:
                 selected = str(self.instrument_selector_dropdown.currentText())
@@ -42707,22 +42850,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
 
-    def _sync_nt_lattice_button_state(self):
-        """Reflect the apply/unapply state for the current global/local scope."""
-        try:
-            is_local = self._is_local_context()
-            self._nt_lattice_scope = "local" if is_local else "global"
-            name = self.instrument_selector_dropdown.currentText() if hasattr(self, "instrument_selector_dropdown") else None
-            if is_local:
-                has_snap = bool(self._nt_lattice_snapshot.get(f"local:{name}"))
-            else:
-                has_snap = any(str(k).startswith("global:") for k in self._nt_lattice_snapshot)
-            btn = getattr(self, "btn_nt_apply", None)
-            if btn is not None:
-                btn.setText("⌫ Unapply step algorithm" if has_snap else "Apply step algorithm")
-                btn.setChecked(has_snap)
-        except Exception:
-            pass
 
 # ============================================================================
 # STARTUP_DIAGNOSTIC — protects against the exact QSizePolicy crash reported

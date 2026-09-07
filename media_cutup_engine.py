@@ -11,7 +11,6 @@ import json
 import math
 import os
 import random
-import shutil
 import subprocess
 import tempfile
 from dataclasses import asdict, dataclass
@@ -19,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
+from groovebox_media_tools import resolve_local_tool
 
 PHI = (1.0 + math.sqrt(5.0)) / 2.0
 GOLDEN_ANGLE = math.pi * (3.0 - math.sqrt(5.0))
@@ -40,14 +40,14 @@ class CutEvent:
 
 
 def _which_ffmpeg() -> str:
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = resolve_local_tool("ffmpeg", required=False)
     if not ffmpeg:
-        raise RuntimeError("ffmpeg is required for the Media Hub Cutup Lab")
+        raise RuntimeError("Local bin/ffmpeg is required for the Media Hub Cutup Lab")
     return ffmpeg
 
 
 def probe_duration(path: str) -> float:
-    ffprobe = shutil.which("ffprobe")
+    ffprobe = resolve_local_tool("ffprobe", required=False)
     if not ffprobe:
         return 0.0
     try:

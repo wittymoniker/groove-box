@@ -33,6 +33,7 @@ import threading
 import zipfile
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from groovebox_media_tools import resolve_local_tool
 
 from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPixmap, QPainter, QPen
@@ -134,7 +135,7 @@ def _probe_media_kind_sync(path: str) -> str:
         return KIND_IMAGE
     if ext not in VIDEO_EXT:
         return KIND_UNKNOWN
-    ffprobe = shutil.which("ffprobe")
+    ffprobe = resolve_local_tool("ffprobe", required=False)
     if not ffprobe:
         return KIND_UNKNOWN
     try:
@@ -280,7 +281,7 @@ def _extract_json_comment(path: str) -> Optional[dict]:
             except Exception:
                 pass
     # ffprobe comment
-    ffprobe = shutil.which("ffprobe")
+    ffprobe = resolve_local_tool("ffprobe", required=False)
     if ffprobe and os.path.isfile(path):
         try:
             proc = subprocess.run(
@@ -608,7 +609,7 @@ class Performance(QDialog):
             except Exception:
                 pass
         import groovebox_paths
-        return groovebox_paths.renders_dir()
+        return groovebox_paths.renders_dir(getattr(self.host, "_current_project_path", None))
 
     def _host_games_dir(self) -> str:
         if hasattr(self.host, "_games_dir"):
@@ -617,7 +618,7 @@ class Performance(QDialog):
             except Exception:
                 pass
         import groovebox_paths
-        return groovebox_paths.games_dir()
+        return groovebox_paths.games_dir(getattr(self.host, "_current_project_path", None))
 
     def _host_samples_dir(self) -> str:
         if hasattr(self.host, "_samples_dir"):
@@ -626,7 +627,7 @@ class Performance(QDialog):
             except Exception:
                 pass
         import groovebox_paths
-        return groovebox_paths.samples_dir()
+        return groovebox_paths.samples_dir(getattr(self.host, "_current_project_path", None))
 
     # ------------------------------------------------------------------ browser
     def _on_root_changed(self, idx: int):
@@ -773,9 +774,17 @@ class Performance(QDialog):
 
         if pending_probe:
             self.lbl_probe_status.setText(f"Classifying {len(pending_probe)} video file(s)…")
-            threading.Thread(
-                target=self._kind_worker.run_batch, args=(generation, pending_probe), daemon=True
-            ).start()
+            opt=getattr(self.host,'_scode_optimizer',None)
+            if opt is not None and hasattr(opt,'submit_pooled'):
+                paths=tuple(pending_probe)
+                def probe_batch(): return [(p,_probe_media_kind_sync(p)) for p in paths]
+                def probe_done(result,error):
+                    if error is not None or generation != self._refresh_generation: return
+                    for p,kind in (result or []): self._on_kind_probe_progress(generation,p,kind)
+                    self._on_kind_probe_batch_done(generation)
+                opt.submit_pooled('media_probe',(generation,paths),probe_batch,policy='frame',format_id='media_stream',frame=generation,callback=probe_done,qt_callback=True)
+            else:
+                threading.Thread(target=self._kind_worker.run_batch,args=(generation,pending_probe),daemon=True).start()
         else:
             self.lbl_probe_status.setText("")
 
@@ -852,9 +861,18 @@ class Performance(QDialog):
             return
         path = paths[0]
         token = self._selection_token
-        threading.Thread(
-            target=self._prov_worker.lookup, args=(token, path), daemon=True
-        ).start()
+        opt=getattr(self.host,'_scode_optimizer',None)
+        if opt is not None and hasattr(opt,'submit_pooled'):
+            try:
+                st=os.stat(path); identity=(path,st.st_mtime_ns,st.st_size)
+            except OSError:
+                identity=(path,0,0)
+            def lookup(): return _extract_json_comment(path) if os.path.isfile(path) else None
+            def done(result,error):
+                if error is None: self._on_provenance_ready(token,path,result)
+            opt.submit_pooled('media_provenance',identity,lookup,policy='pure',format_id='object',callback=done,qt_callback=True,max_entries=256)
+        else:
+            threading.Thread(target=self._prov_worker.lookup,args=(token,path),daemon=True).start()
 
     def _on_provenance_ready(self, token: int, path: str, prov: Optional[dict]):
         if token != self._selection_token:

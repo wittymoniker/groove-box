@@ -1,12 +1,34 @@
 {
+  "algorithm_automation_contract": {
+    "activation": "same applied Algorithm state used by step-side XMOD",
+    "composes_automation": false,
+    "composes_steps": false,
+    "interpolation": "endpoint and between-point automation states both modulated",
+    "runtime_variable_reach": [
+      "resolved sequence numeric variables",
+      "resolved synth numeric variables"
+    ]
+  },
   "appliance_base": "sOS / Fedora 43 game-ready rootfs",
   "architecture": "x86_64",
   "author_numeric_font": {
     "base": 16,
+    "crossbar_count": 4,
+    "crossbar_states": [
+      0,
+      0.5,
+      1
+    ],
     "full_cycle_cell": 16,
-    "precomputed_variants": 68,
+    "full_cycle_dotted_mask": 0,
+    "full_cycle_invariant": "12/12 solid main strokes + 4/4 solid subdividers",
+    "full_cycle_main_strokes": 12,
+    "full_cycle_main_strokes_solid": 12,
+    "full_cycle_solid_mask": 15,
+    "precomputed_semantic_states": 5188,
+    "precomputed_variants": 5188,
     "rewritable_per_field": true,
-    "scheme": "base16-squiggle-subscale-v4",
+    "scheme": "base16-squiggle-crossbar-subscale-v7",
     "spacing_rule": {
       "spaced": "1/1 slot",
       "unspaced": "1/2 slot"
@@ -21,38 +43,82 @@
     "scode": "appliance_tools/INSTALL_WITH_SCODE.sh",
     "windows": "appliance_tools/BUILD_AND_BURN_WINDOWS.ps1"
   },
+  "draw_record_layers": {
+    "destinations": [
+      "global",
+      "selected operator"
+    ],
+    "layer_types": [
+      "draw",
+      "record",
+      "sample"
+    ],
+    "layered": true,
+    "merged_main_control": "\u270e\ud83c\udf99 Draw / Record Layers",
+    "project_storage": [
+      "recordings",
+      "layers"
+    ]
+  },
   "full_acceleration": {
-    "abi": 5,
+    "abi": 9,
     "consumers": [
-      "canonical",
-      "audio offline/play render scratch/time-grid",
-      "visual preview analysis",
-      "parametric background",
-      "layered media",
-      "game identity",
+      "canonical generation/reconciliation gates",
+      "audio offline/play render scratch and reusable stream buffers",
+      "visual preview/frame scheduling",
+      "parametric background and monitor QoS",
+      "layered media decode/reconstruction",
+      "game/world identity and world-format pooling",
       "performance script compilation",
-      "symbol/UI QoS",
-      "author-number semantic codec and glyph atlas"
+      "project save/autosave side effects",
+      "symbol/UI QoS and 5,188-state author-number glyph atlas",
+      "universal 18-format pool request descriptors",
+      "worker/completion publication with stale-result rejection"
     ],
     "realtime_audio_policy": "no subprocess/IPC inside callback; sCode plans outside callback and Python/native DSP executes the selected work",
     "required": true
   },
+  "heuristic_writer_contract": {
+    "algorithm_xmod_gate": "applied Algorithm state; independent of heuristic STEP/AUTOMATION writers",
+    "control_count": 2,
+    "controls": [
+      "HEURISTIC WRITE STEP",
+      "HEURISTIC WRITE AUTOMATION"
+    ],
+    "independent_revert_memory": true,
+    "legacy_direct_step_writer": "retired",
+    "scope": [
+      "GLOBAL",
+      "LOCAL"
+    ],
+    "seq_synth_action": "one-shot Apply Heuristic -> Seq Synth authors synth/mod-patch/script/domain context; not a third writer"
+  },
+  "local_ffmpeg_contract": {
+    "build": "BUILD_KIT/build.py provisions/validates then bundles local pair as mandatory binaries",
+    "first_launch": "run_groovebox.py provisions/validates local pair before UI import",
+    "launchers": "desktop/mobile/hybrid fail closed if local pair cannot be provisioned",
+    "linux_bootstrap": "static x86_64/arm64 download preferred; validated host-pair copy is bootstrap fallback",
+    "runtime_resolution": "bin/ffmpeg + bin/ffprobe only; no PATH fallback",
+    "source_archive_note": "platform-matching binaries may be populated at first launch/build; placeholder scripts are not treated as valid codecs"
+  },
   "optimizer_contract": [
     "logic-number cross casting",
     "deterministic finite pool routing",
-    "modality lanes and dirty-state gates",
-    "host-consumed work claims and duplicate-work rejection",
-    "reusable NumPy buffer pools selected by sCode slots",
-    "sCode-keyed deterministic result memoization",
-    "visual/background cadence and editor QoS",
-    "media decode/reconstruction reuse",
-    "canonical recomposition coalescing",
-    "game identity reuse",
-    "compiled Parametric Remix control-script pooling",
+    "18 universal pool formats",
+    "format identity/slot/generation/lane/coalescing/buffer/result routing",
+    "all poolable requests normalized through one request pipeline",
+    "PURE/GENERATION/FRAME/STREAM/SIDE_EFFECT completion policies",
+    "separate scode-work worker pool and scode-complete publication thread",
+    "generation/frame stale completion rejection",
+    "latest-ready STREAM publication",
+    "side effects never replayed from cache or coalesced",
+    "Qt completion marshaling to the GUI thread",
+    "realtime audio callback free of sCode IPC/blocking completion work",
+    "host request descriptors parity-tested against stage-0 sCode",
     "base-16 author-number semantic packet pooling",
-    "0..16 x squiggle x spacing precomputed symbol variants",
+    "0..16 x squiggle x spacing x 3^4 ordered-crossbar states",
     "2^-4k subscale decomposition and spacing-weight parity in sCode",
-    "symbol dirty-gating before formatting and immutable glyph packet reuse"
+    "symbol dirty-gating and immutable glyph packet reuse"
   ],
   "performance_media": [
     "Parametric Remix file rendering",
@@ -71,7 +137,41 @@
     "scode_optimizer",
     "author_numeric_font"
   ],
+  "project_workspace": {
+    "index": "metadata/project_index.json",
+    "layout_version": 2,
+    "legacy_save_migration": "save targets normalize into a named project folder",
+    "performance_shared_roots": true,
+    "project_document": "<Projects>/<Project>/<Project>.MCC",
+    "subdirectories": [
+      "samples/imports",
+      "samples/global",
+      "samples/operators",
+      "recordings",
+      "layers",
+      "exports/audio",
+      "exports/video",
+      "exports/frames",
+      "games",
+      "metadata",
+      "cache"
+    ]
+  },
+  "radio_viewport": {
+    "artwork_resizes_panel": false,
+    "artwork_scale": "native/authored",
+    "fixed_pixels": [
+      384,
+      148
+    ],
+    "scrollbars": "horizontal + vertical as needed"
+  },
+  "release_contract": "sCode ABI 9 -> Groovebox project-local media runtime -> sOS staged /opt/groovebox appliance",
   "scode_appliance_installer_abi": 1,
-  "scode_optimizer_abi": 5,
+  "scode_completion_abi": 1,
+  "scode_completion_policy_count": 5,
+  "scode_optimizer_abi": 9,
+  "scode_pool_abi": 3,
+  "scode_pool_format_count": 18,
   "scode_required": true
 }

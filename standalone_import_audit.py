@@ -5,7 +5,7 @@ import ast, json, sys
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent
 STDLIB=set(getattr(sys,'stdlib_module_names',()))
-LOCAL={p.stem for p in ROOT.glob('*.py') if p.stem.isidentifier()}
+LOCAL={p.stem for p in ROOT.glob('*.py') if p.stem.isidentifier()} | {p.name for p in ROOT.iterdir() if p.is_dir() and p.name.isidentifier() and (p/'__init__.py').exists()}
 BUNDLED={'PyQt6','numpy','sounddevice','PIL'}
 OPTIONAL={'juliacall','mido'}
 

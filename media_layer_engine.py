@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Deterministic layered Draw/Record/Sample reconstruction for Groovebox."""
 from __future__ import annotations
-import ast, math, os, subprocess, shutil, wave
+import ast, math, os, subprocess, wave
+from groovebox_media_tools import resolve_local_tool
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
@@ -27,7 +28,7 @@ def _decode(path:str, sr:int, n:int)->np.ndarray:
     if hit is not None:
         _DECODE_CACHE.move_to_end(key)
         return hit
-    ff=shutil.which('ffmpeg')
+    ff=resolve_local_tool('ffmpeg', required=False)
     if ff:
         p=subprocess.run([ff,'-v','error','-i',path,'-vn','-ac','1','-ar',str(sr),'-f','f32le','pipe:1'],capture_output=True,check=False)
         if p.returncode==0 and p.stdout:

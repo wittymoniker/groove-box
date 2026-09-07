@@ -1,4 +1,4 @@
-# Author Numeric Font / Number Codec v4
+# Author Numeric Font / Number Codec v7
 
 Groovebox now separates **number meaning** from **Qt drawing**.
 
@@ -7,6 +7,8 @@ Groovebox now separates **number meaning** from **Qt drawing**.
 ## Current number grammar
 
 - ordinary base cells: `0..15` (base 16)
+- every glyph carries four ordered cross-bar positions: absent=`0`, dotted=`0.5`, solid=`1`
+- semantic cell `16` is invariant: all **12 main strokes are solid** and all **4 cross-bars/subdividers are solid** (`1111`), with no dotted/missing 16 variant
 - special semantic cell: `16` = one completed/full cycle
 - an in-cell squiggle can carry the first fractional `2^-1 = 1/2`
 - additional fractional slot `k`: `16^-k = 2^(-4k)`
@@ -21,10 +23,13 @@ Examples: `1.5` fits in a squiggled `1` cell; `1.25` is `1` plus a spaced value-
 
 ## Caching / sCode acceleration
 
-The semantic library precomputes all 68 `(0..16) × squiggle/no-squiggle × spaced/unspaced` faces. Numeric fields dirty-gate their source values, so an unchanged field never re-enters the formatter. The required sCode ABI-5 optimizer chooses the symbol pool/cache identity. Immutable spellings and individual Qt glyph faces are reused across every field showing the same state.
+The semantic library precomputes all **5,188** valid states: `(16 × 3^4 + 1) × 2 × 2` for cell value, squiggle state, spacing state, and the four ternary cross-bars. Numeric fields dirty-gate their source values, so an unchanged field never re-enters the formatter. The required sCode ABI-9 optimizer chooses the symbol pool/cache identity. Immutable spellings and individual Qt glyph faces are reused across every field showing the same state.
 
-Project save/load and export provenance identify this scheme as `base16-squiggle-subscale-v4`. Scripts can use `author_symbol_spell`, `author_symbol_decode`, and `author_symbol_fraction` so they share the same codec instead of implementing a separate conversion.
+Project save/load and export provenance identify this scheme as `base16-squiggle-crossbar-subscale-v7`. Scripts can use `author_symbol_spell`, `author_symbol_decode`, and `author_symbol_fraction` so they share the same codec instead of implementing a separate conversion.
 
 ## Per-field authored rewriting
 
 `AuthorNumericFieldAdapter.rewrite(text)` asks the automatic codec for a new packet without changing the field value. `rewriteSpelling(packet)` applies an explicit immutable packet, and `setFractionSpacing(slot, True/False)` switches an existing fractional slot between spaced `1/1` and unspaced `1/2` semantics for that field only.
+
+
+**Full-cycle correction:** semantic cell 16 is the fully saturated face: 12/12 solid main strokes plus 4/4 solid ordered subdividers (`1/1` each). A dotted subdivider means a half-count (`0.5`) and is therefore invalid for cell 16.

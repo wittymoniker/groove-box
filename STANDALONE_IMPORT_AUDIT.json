@@ -1,0 +1,4478 @@
+[
+  {
+    "file": "audio_os_backend.py",
+    "line": 8,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "audio_os_backend.py",
+    "line": 10,
+    "import": "wave",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "audio_os_backend.py",
+    "line": 11,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "audio_os_backend.py",
+    "line": 12,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "audio_os_backend.py",
+    "line": 15,
+    "import": "sounddevice",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "author_number_codec.py",
+    "line": 22,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "author_number_codec.py",
+    "line": 24,
+    "import": "dataclasses",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "author_number_codec.py",
+    "line": 25,
+    "import": "decimal",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "author_number_codec.py",
+    "line": 26,
+    "import": "functools",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "author_number_codec.py",
+    "line": 27,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "author_number_codec.py",
+    "line": 28,
+    "import": "re",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "author_numeric_font.py",
+    "line": 17,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "author_numeric_font.py",
+    "line": 19,
+    "import": "collections",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "author_numeric_font.py",
+    "line": 20,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "author_numeric_font.py",
+    "line": 22,
+    "import": "PyQt6.QtCore",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "author_numeric_font.py",
+    "line": 23,
+    "import": "PyQt6.QtGui",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "author_numeric_font.py",
+    "line": 24,
+    "import": "PyQt6.QtWidgets",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "author_numeric_font.py",
+    "line": 26,
+    "import": "ot_symbol_notation",
+    "class": "local"
+  },
+  {
+    "file": "author_numeric_font.py",
+    "line": 33,
+    "import": "author_number_codec",
+    "class": "local"
+  },
+  {
+    "file": "benchmark_native.py",
+    "line": 1,
+    "import": "ctypes",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "benchmark_native.py",
+    "line": 1,
+    "import": "time",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "benchmark_native.py",
+    "line": 1,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "benchmark_native.py",
+    "line": 2,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "benchmark_native.py",
+    "line": 3,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "benchmark_scode_full_accel.py",
+    "line": 9,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "benchmark_scode_full_accel.py",
+    "line": 10,
+    "import": "time",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "benchmark_scode_full_accel.py",
+    "line": 11,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "benchmark_scode_full_accel.py",
+    "line": 12,
+    "import": "scode_optimizer_bridge",
+    "class": "local"
+  },
+  {
+    "file": "benchmark_scode_full_accel.py",
+    "line": 13,
+    "import": "media_layer_engine",
+    "class": "local"
+  },
+  {
+    "file": "benchmark_symbol_codec.py",
+    "line": 2,
+    "import": "time",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "benchmark_symbol_codec.py",
+    "line": 3,
+    "import": "author_number_codec",
+    "class": "local"
+  },
+  {
+    "file": "benchmark_symbol_codec.py",
+    "line": 4,
+    "import": "scode_optimizer_bridge",
+    "class": "local"
+  },
+  {
+    "file": "build.py",
+    "line": 2,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "build.py",
+    "line": 3,
+    "import": "runpy",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_authority.py",
+    "line": 9,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_authority.py",
+    "line": 10,
+    "import": "copy",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_authority.py",
+    "line": 10,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_authority.py",
+    "line": 10,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_authority.py",
+    "line": 11,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_authority.py",
+    "line": 129,
+    "import": "canonical_cross_media",
+    "class": "local"
+  },
+  {
+    "file": "canonical_cross_media.py",
+    "line": 7,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_cross_media.py",
+    "line": 8,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_cross_media.py",
+    "line": 8,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_cross_media.py",
+    "line": 8,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_cross_media.py",
+    "line": 9,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_cross_media.py",
+    "line": 10,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "canonical_cross_media.py",
+    "line": 61,
+    "import": "copy",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_edit_list.py",
+    "line": 2,
+    "import": "dataclasses",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_edit_list.py",
+    "line": 3,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_edit_list.py",
+    "line": 4,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_edit_list.py",
+    "line": 4,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_engine_bridge.py",
+    "line": 6,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_engine_bridge.py",
+    "line": 7,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_engine_bridge.py",
+    "line": 7,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_event_algebra.py",
+    "line": 12,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_event_algebra.py",
+    "line": 13,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_event_algebra.py",
+    "line": 13,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_event_algebra.py",
+    "line": 13,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_event_algebra.py",
+    "line": 14,
+    "import": "dataclasses",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_event_algebra.py",
+    "line": 15,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_event_algebra.py",
+    "line": 16,
+    "import": "meum_constants",
+    "class": "local"
+  },
+  {
+    "file": "canonical_triad.py",
+    "line": 6,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_triad.py",
+    "line": 7,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_triad.py",
+    "line": 7,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "canonical_triad.py",
+    "line": 8,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "composition_state.py",
+    "line": 24,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "composition_state.py",
+    "line": 26,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "composition_state.py",
+    "line": 27,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "composition_state.py",
+    "line": 28,
+    "import": "dataclasses",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "composition_state.py",
+    "line": 29,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "decentralized_mesh.py",
+    "line": 12,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "decentralized_mesh.py",
+    "line": 13,
+    "import": "base64",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "decentralized_mesh.py",
+    "line": 13,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "decentralized_mesh.py",
+    "line": 13,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "decentralized_mesh.py",
+    "line": 13,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "decentralized_mesh.py",
+    "line": 13,
+    "import": "random",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "decentralized_mesh.py",
+    "line": 13,
+    "import": "threading",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "decentralized_mesh.py",
+    "line": 13,
+    "import": "time",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "decentralized_mesh.py",
+    "line": 13,
+    "import": "urllib.request",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "decentralized_mesh.py",
+    "line": 13,
+    "import": "urllib.error",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "decentralized_mesh.py",
+    "line": 14,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "decentralized_mesh.py",
+    "line": 15,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "decentralized_mesh.py",
+    "line": 17,
+    "import": "meum_constants",
+    "class": "local"
+  },
+  {
+    "file": "decentralized_mesh.py",
+    "line": 25,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "dj_effects.py",
+    "line": 7,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "dj_effects.py",
+    "line": 9,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "dj_effects.py",
+    "line": 10,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "dj_effects.py",
+    "line": 11,
+    "import": "dataclasses",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "dj_effects.py",
+    "line": 12,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "dj_effects.py",
+    "line": 14,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 31,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 32,
+    "import": "sys",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 33,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 34,
+    "import": "time",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 35,
+    "import": "tempfile",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 36,
+    "import": "argparse",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 37,
+    "import": "concurrent.futures",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 66,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 67,
+    "import": "videogame_engine",
+    "class": "local"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 78,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 79,
+    "import": "videogame_engine",
+    "class": "local"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 98,
+    "import": "videogame_engine",
+    "class": "local"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 109,
+    "import": "videogame_engine",
+    "class": "local"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 123,
+    "import": "videogame_engine",
+    "class": "local"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 176,
+    "import": "PyQt6.QtWidgets",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 229,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 239,
+    "import": "PyQt6.QtWidgets",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 240,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 298,
+    "import": "PyQt6.QtWidgets",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 309,
+    "import": "videogame_engine",
+    "class": "local"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 410,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 446,
+    "import": "PyQt6.QtWidgets",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 217,
+    "import": "PyQt6.QtWidgets",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 412,
+    "import": "PyQt6.QtWidgets",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 414,
+    "import": "groovebox",
+    "class": "local"
+  },
+  {
+    "file": "engine_auditor.py",
+    "line": 163,
+    "import": "PyQt6.QtWidgets",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "fast_widgets.py",
+    "line": 19,
+    "import": "PyQt6.QtWidgets",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "fast_widgets.py",
+    "line": 20,
+    "import": "PyQt6.QtCore",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "fast_widgets.py",
+    "line": 21,
+    "import": "PyQt6.QtGui",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "finite_infinity.py",
+    "line": 8,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "finite_infinity.py",
+    "line": 9,
+    "import": "dataclasses",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "finite_infinity.py",
+    "line": 10,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "finite_infinity.py",
+    "line": 78,
+    "import": "collections",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "fractal_spatial_engine.py",
+    "line": 8,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "fractal_spatial_engine.py",
+    "line": 9,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "fractal_spatial_engine.py",
+    "line": 9,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "fractal_spatial_engine.py",
+    "line": 9,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "fractal_spatial_engine.py",
+    "line": 10,
+    "import": "dataclasses",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "fractal_spatial_engine.py",
+    "line": 11,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 35,
+    "import": "random",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 36,
+    "import": "struct",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 37,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 38,
+    "import": "ast",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 39,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 40,
+    "import": "copy",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 41,
+    "import": "wave",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 42,
+    "import": "time",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 43,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 44,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 45,
+    "import": "threading",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 46,
+    "import": "queue",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 47,
+    "import": "subprocess",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 48,
+    "import": "tempfile",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 49,
+    "import": "shutil",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 50,
+    "import": "colorsys",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 51,
+    "import": "re",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 52,
+    "import": "weakref",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 53,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 54,
+    "import": "groovebox_media_tools",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 55,
+    "import": "meum_constants",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 63,
+    "import": "visual_determinism",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 68,
+    "import": "fractal_spatial_engine",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 70,
+    "import": "dj_effects",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 71,
+    "import": "PyQt6.QtCore",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 72,
+    "import": "dataclasses",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 73,
+    "import": "composition_state",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 74,
+    "import": "PyQt6.QtGui",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 78,
+    "import": "ot_symbol_notation",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 83,
+    "import": "author_numeric_font",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 84,
+    "import": "author_number_codec",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 91,
+    "import": "PyQt6.QtWidgets",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 1267,
+    "import": "audio_os_backend",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 2966,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 2967,
+    "import": "groovebox_media_tools",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 2968,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 14607,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 14608,
+    "import": "random",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 19095,
+    "import": "sys",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 19096,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 19097,
+    "import": "random",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 19098,
+    "import": "wave",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 19099,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 19100,
+    "import": "groovebox_media_tools",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 19101,
+    "import": "PyQt6.QtWidgets",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 19105,
+    "import": "PyQt6.QtCore",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 1274,
+    "import": "ctypes",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 1275,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 1361,
+    "import": "videogame_engine",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 1366,
+    "import": "universal_field",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 1416,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 3005,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 3951,
+    "import": "re",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 4044,
+    "import": "struct",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 4063,
+    "import": "struct",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 4095,
+    "import": "struct",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 4108,
+    "import": "struct",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 4277,
+    "import": "re",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 4576,
+    "import": "re",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 4626,
+    "import": "re",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 5767,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 6096,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 42864,
+    "import": "sys",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 10916,
+    "import": "platform",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 10923,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 20058,
+    "import": "scode_optimizer_bridge",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 20449,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 20592,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 26064,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 26065,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 31493,
+    "import": "mcc_filetype",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 31513,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 31517,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 31521,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 31525,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 31529,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 31533,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 31779,
+    "import": "user_synth_library",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 31817,
+    "import": "mg_artifacts",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 31857,
+    "import": "mg_artifacts",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 31881,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 33081,
+    "import": "subprocess",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 33152,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 34150,
+    "import": "copy",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 34150,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 34885,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 34956,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 37162,
+    "import": "re",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 37403,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 37403,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 39474,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 39478,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 39482,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 39486,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 39805,
+    "import": "PyQt6.QtWidgets",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 39827,
+    "import": "PyQt6.QtWidgets",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 40023,
+    "import": "zipfile",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 40024,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 42552,
+    "import": "copy",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 42617,
+    "import": "copy",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 42886,
+    "import": "mcc_filetype",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 3409,
+    "import": "ctypes",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 4225,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 17166,
+    "import": "mcc_filetype",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 20046,
+    "import": "PyQt6.QtGui",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 23081,
+    "import": "radio_station",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 31452,
+    "import": "meum_compression",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 31471,
+    "import": "meum_compression",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 31680,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 31745,
+    "import": "program_identity",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 31765,
+    "import": "program_identity",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 31873,
+    "import": "mg_artifacts",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 33034,
+    "import": "signal_lab",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 33056,
+    "import": "signal_lab",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 33101,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 34323,
+    "import": "copy",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 39491,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 40516,
+    "import": "wave",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 41003,
+    "import": "performance",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 41156,
+    "import": "tempfile",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 41156,
+    "import": "subprocess",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 41156,
+    "import": "sys",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 41348,
+    "import": "PIL",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 42890,
+    "import": "PyQt6.QtCore",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 23106,
+    "import": "radio_station",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 31587,
+    "import": "mcc_integrity",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 31905,
+    "import": "meum_compression",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 31917,
+    "import": "mcc_integrity",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 36764,
+    "import": "ctypes",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 39905,
+    "import": "zipfile",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 40887,
+    "import": "videogame_engine",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 41296,
+    "import": "PIL",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 41314,
+    "import": "shutil",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 41320,
+    "import": "PIL",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 21217,
+    "import": "PyQt6.QtWidgets",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 35892,
+    "import": "ctypes",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 36011,
+    "import": "ctypes",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 34137,
+    "import": "PyQt6.QtWidgets",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "groovebox_media_tools.py",
+    "line": 7,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox_media_tools.py",
+    "line": 8,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox_media_tools.py",
+    "line": 8,
+    "import": "subprocess",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox_media_tools.py",
+    "line": 8,
+    "import": "sys",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox_media_tools.py",
+    "line": 9,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox_paths.py",
+    "line": 8,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox_paths.py",
+    "line": 9,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox_paths.py",
+    "line": 9,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox_paths.py",
+    "line": 9,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox_paths.py",
+    "line": 9,
+    "import": "re",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox_paths.py",
+    "line": 9,
+    "import": "shutil",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox_paths.py",
+    "line": 9,
+    "import": "time",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox_paths.py",
+    "line": 10,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "groovebox_paths.py",
+    "line": 11,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "hardware_hub.py",
+    "line": 9,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "hardware_hub.py",
+    "line": 10,
+    "import": "glob",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "hardware_hub.py",
+    "line": 10,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "hardware_hub.py",
+    "line": 10,
+    "import": "shutil",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "hardware_hub.py",
+    "line": 10,
+    "import": "subprocess",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "hardware_hub.py",
+    "line": 11,
+    "import": "dataclasses",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "hardware_hub.py",
+    "line": 12,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "hardware_hub.py",
+    "line": 57,
+    "import": "mido",
+    "class": "optional"
+  },
+  {
+    "file": "hardware_hub.py",
+    "line": 63,
+    "import": "audio_os_backend",
+    "class": "local"
+  },
+  {
+    "file": "julia_bridge.py",
+    "line": 8,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "julia_bridge.py",
+    "line": 10,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "julia_bridge.py",
+    "line": 11,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "julia_bridge.py",
+    "line": 12,
+    "import": "threading",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "julia_bridge.py",
+    "line": 13,
+    "import": "weakref",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "julia_bridge.py",
+    "line": 14,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "julia_bridge.py",
+    "line": 16,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "julia_bridge.py",
+    "line": 220,
+    "import": "copy",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "julia_bridge.py",
+    "line": 51,
+    "import": "juliacall",
+    "class": "optional"
+  },
+  {
+    "file": "layered_signal_lab.py",
+    "line": 2,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "layered_signal_lab.py",
+    "line": 3,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "layered_signal_lab.py",
+    "line": 3,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "layered_signal_lab.py",
+    "line": 3,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "layered_signal_lab.py",
+    "line": 3,
+    "import": "tempfile",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "layered_signal_lab.py",
+    "line": 3,
+    "import": "threading",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "layered_signal_lab.py",
+    "line": 3,
+    "import": "time",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "layered_signal_lab.py",
+    "line": 4,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "layered_signal_lab.py",
+    "line": 5,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "layered_signal_lab.py",
+    "line": 6,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "layered_signal_lab.py",
+    "line": 7,
+    "import": "PyQt6.QtCore",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "layered_signal_lab.py",
+    "line": 8,
+    "import": "PyQt6.QtGui",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "layered_signal_lab.py",
+    "line": 9,
+    "import": "PyQt6.QtWidgets",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "layered_signal_lab.py",
+    "line": 11,
+    "import": "media_layer_engine",
+    "class": "local"
+  },
+  {
+    "file": "layered_signal_lab.py",
+    "line": 12,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "layered_signal_lab.py",
+    "line": 171,
+    "import": "audio_os_backend",
+    "class": "local"
+  },
+  {
+    "file": "layered_signal_lab.py",
+    "line": 201,
+    "import": "audio_os_backend",
+    "class": "local"
+  },
+  {
+    "file": "layered_signal_lab.py",
+    "line": 174,
+    "import": "subprocess",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "layered_signal_lab.py",
+    "line": 174,
+    "import": "shutil",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "mcc_filetype.py",
+    "line": 7,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "mcc_filetype.py",
+    "line": 9,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "mcc_filetype.py",
+    "line": 10,
+    "import": "platform",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "mcc_filetype.py",
+    "line": 11,
+    "import": "shutil",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "mcc_filetype.py",
+    "line": 12,
+    "import": "subprocess",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "mcc_filetype.py",
+    "line": 13,
+    "import": "sys",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "mcc_filetype.py",
+    "line": 14,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "mcc_filetype.py",
+    "line": 60,
+    "import": "shlex",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "mcc_filetype.py",
+    "line": 82,
+    "import": "winreg",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "mcc_integrity.py",
+    "line": 2,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "mcc_integrity.py",
+    "line": 2,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_cutup_engine.py",
+    "line": 8,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_cutup_engine.py",
+    "line": 10,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_cutup_engine.py",
+    "line": 11,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_cutup_engine.py",
+    "line": 12,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_cutup_engine.py",
+    "line": 13,
+    "import": "random",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_cutup_engine.py",
+    "line": 14,
+    "import": "subprocess",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_cutup_engine.py",
+    "line": 15,
+    "import": "tempfile",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_cutup_engine.py",
+    "line": 16,
+    "import": "dataclasses",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_cutup_engine.py",
+    "line": 17,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_cutup_engine.py",
+    "line": 18,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_cutup_engine.py",
+    "line": 20,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "media_cutup_engine.py",
+    "line": 21,
+    "import": "groovebox_media_tools",
+    "class": "local"
+  },
+  {
+    "file": "media_layer_engine.py",
+    "line": 3,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_layer_engine.py",
+    "line": 4,
+    "import": "ast",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_layer_engine.py",
+    "line": 4,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_layer_engine.py",
+    "line": 4,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_layer_engine.py",
+    "line": 4,
+    "import": "subprocess",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_layer_engine.py",
+    "line": 4,
+    "import": "wave",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_layer_engine.py",
+    "line": 5,
+    "import": "groovebox_media_tools",
+    "class": "local"
+  },
+  {
+    "file": "media_layer_engine.py",
+    "line": 6,
+    "import": "collections",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_layer_engine.py",
+    "line": 7,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_layer_engine.py",
+    "line": 8,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_layer_engine.py",
+    "line": 9,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "media_output_router.py",
+    "line": 12,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_output_router.py",
+    "line": 14,
+    "import": "html",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_output_router.py",
+    "line": 15,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_output_router.py",
+    "line": 16,
+    "import": "mimetypes",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_output_router.py",
+    "line": 17,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_output_router.py",
+    "line": 18,
+    "import": "re",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_output_router.py",
+    "line": 19,
+    "import": "secrets",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_output_router.py",
+    "line": 20,
+    "import": "shutil",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_output_router.py",
+    "line": 21,
+    "import": "socket",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_output_router.py",
+    "line": 22,
+    "import": "subprocess",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_output_router.py",
+    "line": 23,
+    "import": "tempfile",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_output_router.py",
+    "line": 24,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_output_router.py",
+    "line": 25,
+    "import": "threading",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_output_router.py",
+    "line": 26,
+    "import": "dataclasses",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_output_router.py",
+    "line": 27,
+    "import": "http.server",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_output_router.py",
+    "line": 28,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_output_router.py",
+    "line": 29,
+    "import": "groovebox_media_tools",
+    "class": "local"
+  },
+  {
+    "file": "media_output_router.py",
+    "line": 30,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "media_output_router.py",
+    "line": 31,
+    "import": "urllib.parse",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "meum_compression.py",
+    "line": 8,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "meum_compression.py",
+    "line": 10,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "meum_compression.py",
+    "line": 11,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "meum_compression.py",
+    "line": 12,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "meum_compression.py",
+    "line": 13,
+    "import": "struct",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "meum_compression.py",
+    "line": 14,
+    "import": "tempfile",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "meum_compression.py",
+    "line": 15,
+    "import": "zlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "meum_compression.py",
+    "line": 16,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "meum_compression.py",
+    "line": 17,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "meum_constants.py",
+    "line": 13,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "meum_constants.py",
+    "line": 15,
+    "import": "decimal",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "meum_constants.py",
+    "line": 16,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "meum_constants.py",
+    "line": 17,
+    "import": "functools",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "meum_ot_math.py",
+    "line": 8,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "meum_ot_math.py",
+    "line": 9,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "meum_ot_math.py",
+    "line": 9,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "meum_ot_math.py",
+    "line": 10,
+    "import": "dataclasses",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "meum_ot_math.py",
+    "line": 11,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "meum_ot_math.py",
+    "line": 12,
+    "import": "meum_constants",
+    "class": "local"
+  },
+  {
+    "file": "mg_artifacts.py",
+    "line": 1,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "mg_artifacts.py",
+    "line": 2,
+    "import": "copy",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "mg_artifacts.py",
+    "line": 2,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "mg_artifacts.py",
+    "line": 2,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "mg_artifacts.py",
+    "line": 2,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "mg_artifacts.py",
+    "line": 2,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "mg_artifacts.py",
+    "line": 2,
+    "import": "time",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "mg_artifacts.py",
+    "line": 3,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "mg_artifacts.py",
+    "line": 4,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "mg_artifacts.py",
+    "line": 177,
+    "import": "csv",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "mg_artifacts.py",
+    "line": 177,
+    "import": "html",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "operation_station_transfer.py",
+    "line": 8,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "operation_station_transfer.py",
+    "line": 9,
+    "import": "dataclasses",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "operation_station_transfer.py",
+    "line": 10,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "operation_station_transfer.py",
+    "line": 11,
+    "import": "http.server",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "operation_station_transfer.py",
+    "line": 12,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "operation_station_transfer.py",
+    "line": 12,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "operation_station_transfer.py",
+    "line": 12,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "operation_station_transfer.py",
+    "line": 12,
+    "import": "platform",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "operation_station_transfer.py",
+    "line": 12,
+    "import": "shutil",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "operation_station_transfer.py",
+    "line": 12,
+    "import": "socket",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "operation_station_transfer.py",
+    "line": 12,
+    "import": "tempfile",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "operation_station_transfer.py",
+    "line": 12,
+    "import": "threading",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "operation_station_transfer.py",
+    "line": 12,
+    "import": "time",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "operation_station_transfer.py",
+    "line": 12,
+    "import": "zipfile",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "operation_station_transfer.py",
+    "line": 13,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "ot_symbol_notation.py",
+    "line": 14,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "ot_symbol_notation.py",
+    "line": 15,
+    "import": "dataclasses",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "ot_symbol_notation.py",
+    "line": 16,
+    "import": "enum",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "ot_symbol_notation.py",
+    "line": 17,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "parametric_file_remix.py",
+    "line": 9,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "parametric_file_remix.py",
+    "line": 10,
+    "import": "ast",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "parametric_file_remix.py",
+    "line": 10,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "parametric_file_remix.py",
+    "line": 10,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "parametric_file_remix.py",
+    "line": 10,
+    "import": "random",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "parametric_file_remix.py",
+    "line": 10,
+    "import": "shutil",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "parametric_file_remix.py",
+    "line": 10,
+    "import": "subprocess",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "parametric_file_remix.py",
+    "line": 10,
+    "import": "tempfile",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "parametric_file_remix.py",
+    "line": 10,
+    "import": "wave",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "parametric_file_remix.py",
+    "line": 11,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "parametric_file_remix.py",
+    "line": 12,
+    "import": "groovebox_media_tools",
+    "class": "local"
+  },
+  {
+    "file": "parametric_file_remix.py",
+    "line": 13,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "parametric_file_remix.py",
+    "line": 14,
+    "import": "dj_effects",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 15,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance.py",
+    "line": 17,
+    "import": "ast",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance.py",
+    "line": 18,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance.py",
+    "line": 19,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance.py",
+    "line": 20,
+    "import": "meum_constants",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 21,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance.py",
+    "line": 22,
+    "import": "random",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance.py",
+    "line": 23,
+    "import": "re",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance.py",
+    "line": 24,
+    "import": "socket",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance.py",
+    "line": 25,
+    "import": "time",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance.py",
+    "line": 26,
+    "import": "secrets",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance.py",
+    "line": 27,
+    "import": "http.server",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance.py",
+    "line": 28,
+    "import": "shutil",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance.py",
+    "line": 29,
+    "import": "subprocess",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance.py",
+    "line": 30,
+    "import": "sys",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance.py",
+    "line": 31,
+    "import": "tempfile",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance.py",
+    "line": 32,
+    "import": "threading",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance.py",
+    "line": 33,
+    "import": "zipfile",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance.py",
+    "line": 34,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance.py",
+    "line": 35,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance.py",
+    "line": 36,
+    "import": "groovebox_media_tools",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 38,
+    "import": "PyQt6.QtCore",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "performance.py",
+    "line": 39,
+    "import": "PyQt6.QtGui",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "performance.py",
+    "line": 40,
+    "import": "PyQt6.QtWidgets",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "performance.py",
+    "line": 602,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 611,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 620,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 629,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 1021,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "performance.py",
+    "line": 2963,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "performance.py",
+    "line": 556,
+    "import": "signal_lab",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 953,
+    "import": "media_output_router",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 1023,
+    "import": "audio_os_backend",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 1775,
+    "import": "parametric_file_remix",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 2163,
+    "import": "media_cutup_engine",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 2184,
+    "import": "media_cutup_engine",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 2198,
+    "import": "media_cutup_engine",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 2227,
+    "import": "media_cutup_engine",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 2246,
+    "import": "media_cutup_engine",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 2279,
+    "import": "media_cutup_engine",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 2362,
+    "import": "radio_station",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 2574,
+    "import": "media_output_router",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 2602,
+    "import": "media_output_router",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 2639,
+    "import": "media_output_router",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 2693,
+    "import": "operation_station_transfer",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 2706,
+    "import": "operation_station_transfer",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 2714,
+    "import": "operation_station_transfer",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 2728,
+    "import": "operation_station_transfer",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 2737,
+    "import": "operation_station_transfer",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 2754,
+    "import": "hardware_hub",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 2782,
+    "import": "performance_box",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 2789,
+    "import": "performance_box",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 3029,
+    "import": "mg_artifacts",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 3047,
+    "import": "mg_artifacts",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 3059,
+    "import": "mg_artifacts",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 3089,
+    "import": "mg_artifacts",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 3108,
+    "import": "mg_artifacts",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 3117,
+    "import": "mg_artifacts",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 3129,
+    "import": "mg_artifacts",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 1862,
+    "import": "dj_effects",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 2308,
+    "import": "media_cutup_engine",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 2442,
+    "import": "relativity_projection",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 1042,
+    "import": "audio_os_backend",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 1346,
+    "import": "media_cutup_engine",
+    "class": "local"
+  },
+  {
+    "file": "performance_box.py",
+    "line": 2,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance_box.py",
+    "line": 3,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance_box.py",
+    "line": 3,
+    "import": "shutil",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance_box.py",
+    "line": 3,
+    "import": "subprocess",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance_box.py",
+    "line": 4,
+    "import": "dataclasses",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance_box.py",
+    "line": 5,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance_box.py",
+    "line": 6,
+    "import": "groovebox_media_tools",
+    "class": "local"
+  },
+  {
+    "file": "performance_modules.py",
+    "line": 3,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance_modules.py",
+    "line": 4,
+    "import": "dataclasses",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance_modules.py",
+    "line": 5,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance_modules.py",
+    "line": 6,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance_modules.py",
+    "line": 6,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance_modules.py",
+    "line": 6,
+    "import": "time",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "performance_modules.py",
+    "line": 7,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "pi_media_hub.py",
+    "line": 3,
+    "import": "performance",
+    "class": "local"
+  },
+  {
+    "file": "program_identity.py",
+    "line": 1,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "program_identity.py",
+    "line": 2,
+    "import": "ast",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "program_identity.py",
+    "line": 2,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "program_identity.py",
+    "line": 2,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "program_identity.py",
+    "line": 2,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "program_identity.py",
+    "line": 2,
+    "import": "zipfile",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "program_identity.py",
+    "line": 3,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "program_identity.py",
+    "line": 4,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "radio_station.py",
+    "line": 7,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "radio_station.py",
+    "line": 8,
+    "import": "html",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "radio_station.py",
+    "line": 8,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "radio_station.py",
+    "line": 8,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "radio_station.py",
+    "line": 8,
+    "import": "shutil",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "radio_station.py",
+    "line": 8,
+    "import": "socket",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "radio_station.py",
+    "line": 8,
+    "import": "subprocess",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "radio_station.py",
+    "line": 8,
+    "import": "threading",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "radio_station.py",
+    "line": 8,
+    "import": "time",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "radio_station.py",
+    "line": 9,
+    "import": "http.server",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "radio_station.py",
+    "line": 10,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "radio_station.py",
+    "line": 11,
+    "import": "groovebox_media_tools",
+    "class": "local"
+  },
+  {
+    "file": "radio_station.py",
+    "line": 12,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "radio_station.py",
+    "line": 22,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "relativity_projection.py",
+    "line": 11,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "relativity_projection.py",
+    "line": 12,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "reverse_engineer.py",
+    "line": 7,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "reverse_engineer.py",
+    "line": 8,
+    "import": "dataclasses",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "reverse_engineer.py",
+    "line": 9,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "reverse_engineer.py",
+    "line": 9,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "reverse_engineer.py",
+    "line": 9,
+    "import": "wave",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "reverse_engineer.py",
+    "line": 10,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "reverse_engineer.py",
+    "line": 11,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "reverse_engineer.py",
+    "line": 12,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "run_groovebox.py",
+    "line": 3,
+    "import": "sys",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "run_groovebox.py",
+    "line": 3,
+    "import": "subprocess",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "run_groovebox.py",
+    "line": 4,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "run_groovebox.py",
+    "line": 5,
+    "import": "groovebox_media_tools",
+    "class": "local"
+  },
+  {
+    "file": "run_groovebox.py",
+    "line": 17,
+    "import": "scode_optimizer_bridge",
+    "class": "local"
+  },
+  {
+    "file": "run_groovebox.py",
+    "line": 25,
+    "import": "groovebox",
+    "class": "local"
+  },
+  {
+    "file": "scode_cli.py",
+    "line": 2,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_cli.py",
+    "line": 3,
+    "import": "argparse",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_cli.py",
+    "line": 3,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_cli.py",
+    "line": 4,
+    "import": "scode.compiler",
+    "class": "local"
+  },
+  {
+    "file": "scode_cli.py",
+    "line": 5,
+    "import": "scode.numerals",
+    "class": "local"
+  },
+  {
+    "file": "scode_optimizer_bridge.py",
+    "line": 14,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_optimizer_bridge.py",
+    "line": 16,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_optimizer_bridge.py",
+    "line": 17,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_optimizer_bridge.py",
+    "line": 18,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_optimizer_bridge.py",
+    "line": 19,
+    "import": "platform",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_optimizer_bridge.py",
+    "line": 20,
+    "import": "queue",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_optimizer_bridge.py",
+    "line": 21,
+    "import": "subprocess",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_optimizer_bridge.py",
+    "line": 22,
+    "import": "threading",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_optimizer_bridge.py",
+    "line": 23,
+    "import": "time",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_optimizer_bridge.py",
+    "line": 24,
+    "import": "collections",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_optimizer_bridge.py",
+    "line": 25,
+    "import": "concurrent.futures",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_optimizer_bridge.py",
+    "line": 26,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_optimizer_bridge.py",
+    "line": 27,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_optimizer_bridge.py",
+    "line": 29,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "scode_optimizer_bridge.py",
+    "line": 938,
+    "import": "PyQt6.QtWidgets",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "scode_optimizer_bridge.py",
+    "line": 961,
+    "import": "PyQt6.QtCore",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "scode_selfbuild.py",
+    "line": 2,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_selfbuild.py",
+    "line": 3,
+    "import": "argparse",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_selfbuild.py",
+    "line": 3,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_selfbuild.py",
+    "line": 3,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_selfbuild.py",
+    "line": 3,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_selfbuild.py",
+    "line": 3,
+    "import": "tarfile",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_selfbuild.py",
+    "line": 3,
+    "import": "zipfile",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_selfbuild.py",
+    "line": 4,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_update.py",
+    "line": 2,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_update.py",
+    "line": 3,
+    "import": "argparse",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_update.py",
+    "line": 3,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_update.py",
+    "line": 3,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_update.py",
+    "line": 3,
+    "import": "shutil",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_update.py",
+    "line": 3,
+    "import": "tempfile",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_update.py",
+    "line": 3,
+    "import": "urllib.request",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "scode_update.py",
+    "line": 4,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "signal_lab.py",
+    "line": 5,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "signal_lab.py",
+    "line": 6,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "signal_lab.py",
+    "line": 6,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "signal_lab.py",
+    "line": 6,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "signal_lab.py",
+    "line": 6,
+    "import": "wave",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "signal_lab.py",
+    "line": 7,
+    "import": "meum_constants",
+    "class": "local"
+  },
+  {
+    "file": "signal_lab.py",
+    "line": 8,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "signal_lab.py",
+    "line": 9,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "signal_lab.py",
+    "line": 10,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "signal_lab.py",
+    "line": 11,
+    "import": "PyQt6.QtCore",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "signal_lab.py",
+    "line": 12,
+    "import": "PyQt6.QtGui",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "signal_lab.py",
+    "line": 13,
+    "import": "PyQt6.QtWidgets",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "signal_lab.py",
+    "line": 195,
+    "import": "layered_signal_lab",
+    "class": "local"
+  },
+  {
+    "file": "signal_lab.py",
+    "line": 191,
+    "import": "tempfile",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "signal_lab.py",
+    "line": 152,
+    "import": "reverse_engineer",
+    "class": "local"
+  },
+  {
+    "file": "signal_lab.py",
+    "line": 158,
+    "import": "reverse_engineer",
+    "class": "local"
+  },
+  {
+    "file": "signal_lab.py",
+    "line": 175,
+    "import": "reverse_engineer",
+    "class": "local"
+  },
+  {
+    "file": "standalone_import_audit.py",
+    "line": 3,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "standalone_import_audit.py",
+    "line": 4,
+    "import": "ast",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "standalone_import_audit.py",
+    "line": 4,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "standalone_import_audit.py",
+    "line": 4,
+    "import": "sys",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "standalone_import_audit.py",
+    "line": 5,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "teach_scode.py",
+    "line": 2,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "teach_scode.py",
+    "line": 3,
+    "import": "argparse",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "teach_scode.py",
+    "line": 3,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "teach_scode.py",
+    "line": 4,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "teach_scode.py",
+    "line": 5,
+    "import": "scode.language_pack",
+    "class": "local"
+  },
+  {
+    "file": "test_algorithm_automation_parity.py",
+    "line": 2,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_author_number_codec.py",
+    "line": 1,
+    "import": "decimal",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_author_number_codec.py",
+    "line": 2,
+    "import": "author_number_codec",
+    "class": "local"
+  },
+  {
+    "file": "test_component_usage.py",
+    "line": 1,
+    "import": "sys",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_component_usage.py",
+    "line": 2,
+    "import": "inspect",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_component_usage.py",
+    "line": 3,
+    "import": "importlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_component_usage.py",
+    "line": 5,
+    "import": "groovebox",
+    "class": "local"
+  },
+  {
+    "file": "test_composition_parity.py",
+    "line": 13,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_composition_parity.py",
+    "line": 14,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_composition_parity.py",
+    "line": 15,
+    "import": "sys",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_composition_parity.py",
+    "line": 21,
+    "import": "videogame_engine",
+    "class": "local"
+  },
+  {
+    "file": "test_final_determinism.py",
+    "line": 8,
+    "import": "visual_determinism",
+    "class": "local"
+  },
+  {
+    "file": "test_fractal_spatial_engine.py",
+    "line": 1,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_fractal_spatial_engine.py",
+    "line": 2,
+    "import": "fractal_spatial_engine",
+    "class": "local"
+  },
+  {
+    "file": "test_full_cycle_renderer_contract.py",
+    "line": 2,
+    "import": "ast",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_full_cycle_renderer_contract.py",
+    "line": 2,
+    "import": "re",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_full_cycle_renderer_contract.py",
+    "line": 3,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_game_runtime.py",
+    "line": 2,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_game_runtime.py",
+    "line": 3,
+    "import": "importlib.util",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_game_runtime.py",
+    "line": 4,
+    "import": "shutil",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_game_runtime.py",
+    "line": 5,
+    "import": "sys",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_game_runtime.py",
+    "line": 6,
+    "import": "tempfile",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_game_runtime.py",
+    "line": 7,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "test_game_runtime.py",
+    "line": 8,
+    "import": "videogame_engine",
+    "class": "local"
+  },
+  {
+    "file": "test_heuristic_writer_split.py",
+    "line": 2,
+    "import": "ast",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_heuristic_writer_split.py",
+    "line": 2,
+    "import": "copy",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_heuristic_writer_split.py",
+    "line": 2,
+    "import": "re",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_heuristic_writer_split.py",
+    "line": 3,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_heuristic_writer_split.py",
+    "line": 4,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "test_instrument_translation_determinism.py",
+    "line": 8,
+    "import": "visual_determinism",
+    "class": "local"
+  },
+  {
+    "file": "test_julia_parity.py",
+    "line": 6,
+    "import": "importlib.util",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_julia_parity.py",
+    "line": 7,
+    "import": "weakref",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_julia_parity.py",
+    "line": 9,
+    "import": "julia_bridge",
+    "class": "local"
+  },
+  {
+    "file": "test_open_world_sandbox.py",
+    "line": 1,
+    "import": "importlib.util",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_open_world_sandbox.py",
+    "line": 1,
+    "import": "tempfile",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_open_world_sandbox.py",
+    "line": 1,
+    "import": "shutil",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_open_world_sandbox.py",
+    "line": 1,
+    "import": "sys",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_open_world_sandbox.py",
+    "line": 2,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "test_open_world_sandbox.py",
+    "line": 3,
+    "import": "videogame_engine",
+    "class": "local"
+  },
+  {
+    "file": "test_project_media_contract.py",
+    "line": 2,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_project_media_contract.py",
+    "line": 3,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_project_media_contract.py",
+    "line": 3,
+    "import": "tempfile",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_project_media_contract.py",
+    "line": 4,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "test_project_media_contract.py",
+    "line": 5,
+    "import": "groovebox_media_tools",
+    "class": "local"
+  },
+  {
+    "file": "test_scode_completion_bridge.py",
+    "line": 1,
+    "import": "threading",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_scode_completion_bridge.py",
+    "line": 2,
+    "import": "time",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_scode_completion_bridge.py",
+    "line": 3,
+    "import": "scode_optimizer_bridge",
+    "class": "local"
+  },
+  {
+    "file": "test_scode_pool_descriptor_parity.py",
+    "line": 2,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_scode_pool_descriptor_parity.py",
+    "line": 3,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_scode_pool_descriptor_parity.py",
+    "line": 3,
+    "import": "subprocess",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_scode_pool_descriptor_parity.py",
+    "line": 4,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_scode_pool_descriptor_parity.py",
+    "line": 5,
+    "import": "scode_optimizer_bridge",
+    "class": "local"
+  },
+  {
+    "file": "test_sequence_conductor.py",
+    "line": 1,
+    "import": "videogame_engine",
+    "class": "local"
+  },
+  {
+    "file": "test_video_render_contract.py",
+    "line": 3,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_video_render_contract.py",
+    "line": 4,
+    "import": "ast",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_video_render_contract.py",
+    "line": 5,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_visual_determinism.py",
+    "line": 1,
+    "import": "sys",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_visual_determinism.py",
+    "line": 1,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_visual_determinism.py",
+    "line": 2,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "test_visual_determinism.py",
+    "line": 4,
+    "import": "visual_determinism",
+    "class": "local"
+  },
+  {
+    "file": "tests.py",
+    "line": 8,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "tests.py",
+    "line": 10,
+    "import": "ast",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "tests.py",
+    "line": 11,
+    "import": "importlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "tests.py",
+    "line": 12,
+    "import": "importlib.util",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "tests.py",
+    "line": 13,
+    "import": "inspect",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "tests.py",
+    "line": 14,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "tests.py",
+    "line": 15,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "tests.py",
+    "line": 16,
+    "import": "shutil",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "tests.py",
+    "line": 17,
+    "import": "sys",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "tests.py",
+    "line": 18,
+    "import": "tempfile",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "tests.py",
+    "line": 19,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "tests.py",
+    "line": 53,
+    "import": "videogame_engine",
+    "class": "local"
+  },
+  {
+    "file": "tests.py",
+    "line": 76,
+    "import": "visual_determinism",
+    "class": "local"
+  },
+  {
+    "file": "tests.py",
+    "line": 100,
+    "import": "fractal_spatial_engine",
+    "class": "local"
+  },
+  {
+    "file": "tests.py",
+    "line": 121,
+    "import": "videogame_engine",
+    "class": "local"
+  },
+  {
+    "file": "tests.py",
+    "line": 131,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "tests.py",
+    "line": 189,
+    "import": "visual_determinism",
+    "class": "local"
+  },
+  {
+    "file": "tests.py",
+    "line": 221,
+    "import": "visual_determinism",
+    "class": "local"
+  },
+  {
+    "file": "tests.py",
+    "line": 302,
+    "import": "videogame_engine",
+    "class": "local"
+  },
+  {
+    "file": "tests.py",
+    "line": 28,
+    "import": "groovebox",
+    "class": "local"
+  },
+  {
+    "file": "tests_planetary.py",
+    "line": 1,
+    "import": "unittest",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "tests_planetary.py",
+    "line": 2,
+    "import": "videogame_engine",
+    "class": "local"
+  },
+  {
+    "file": "tests_triad.py",
+    "line": 1,
+    "import": "ast",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "tests_triad.py",
+    "line": 1,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "tests_triad.py",
+    "line": 1,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "tests_triad.py",
+    "line": 2,
+    "import": "canonical_triad",
+    "class": "local"
+  },
+  {
+    "file": "universal_field.py",
+    "line": 13,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "universal_field.py",
+    "line": 14,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "universal_field.py",
+    "line": 14,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "universal_field.py",
+    "line": 14,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "universal_field.py",
+    "line": 15,
+    "import": "functools",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "universal_field.py",
+    "line": 16,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "universal_field.py",
+    "line": 17,
+    "import": "meum_constants",
+    "class": "local"
+  },
+  {
+    "file": "universal_field.py",
+    "line": 101,
+    "import": "ctypes",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "universal_field.py",
+    "line": 102,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "universal_field.py",
+    "line": 141,
+    "import": "ctypes",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "universal_field.py",
+    "line": 142,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "user_synth_library.py",
+    "line": 3,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "user_synth_library.py",
+    "line": 4,
+    "import": "copy",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "user_synth_library.py",
+    "line": 4,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "user_synth_library.py",
+    "line": 5,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 23,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 25,
+    "import": "gzip",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 26,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 27,
+    "import": "io",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 28,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 29,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 30,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 31,
+    "import": "shutil",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 32,
+    "import": "stat",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 33,
+    "import": "struct",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 34,
+    "import": "tempfile",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 35,
+    "import": "wave",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 36,
+    "import": "zipfile",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 37,
+    "import": "dataclasses",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 38,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 40,
+    "import": "visual_determinism",
+    "class": "local"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 41,
+    "import": "fractal_spatial_engine",
+    "class": "local"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 8180,
+    "import": "random",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 8284,
+    "import": "ast",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 8285,
+    "import": "re",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 309,
+    "import": "groovebox",
+    "class": "local"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 8938,
+    "import": "zlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 317,
+    "import": "groovebox",
+    "class": "local"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 326,
+    "import": "groovebox",
+    "class": "local"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 335,
+    "import": "groovebox",
+    "class": "local"
+  },
+  {
+    "file": "videogame_engine.py",
+    "line": 349,
+    "import": "groovebox",
+    "class": "local"
+  },
+  {
+    "file": "visual_determinism.py",
+    "line": 8,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "visual_determinism.py",
+    "line": 9,
+    "import": "hashlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "visual_determinism.py",
+    "line": 9,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "visual_determinism.py",
+    "line": 9,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "visual_determinism.py",
+    "line": 10,
+    "import": "typing",
+    "class": "stdlib/os"
+  }
+]
