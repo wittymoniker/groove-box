@@ -388,8 +388,17 @@ class VideoClipStudio(QWidget):
         """Run potentially slow media work without blocking Qt and always return to GUI safely."""
         opt=getattr(self.host,'_scode_optimizer',None)
         if opt is not None and hasattr(opt,'submit_pooled'):
-            opt.submit_pooled(name,args_key,work,policy='side_effect',format_id='video',side_effecting=True,callback=done,qt_callback=True)
-            return
+            try:
+                # sCode optimizer has a media_stream pool format, not a generic
+                # 'video' format.  Finalization is side-effecting, so the pool is
+                # used only for safe background completion/callback delivery.
+                opt.submit_pooled(name,args_key,work,policy='side_effect',format_id='media_stream',side_effecting=True,callback=done,qt_callback=True)
+                return
+            except Exception as exc:
+                # Optimizer availability must never be a hard dependency for
+                # recording. Fall back to the ordinary worker thread.
+                try: self.lbl_render.setText('Media optimizer fallback: '+str(exc))
+                except Exception: pass
         import threading
         def runner():
             try:

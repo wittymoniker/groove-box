@@ -23300,8 +23300,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "font-family:Consolas, monospace; font-size:9pt; font-weight:bold; padding:3px 6px;"
         )
         self.lbl_seed_script_error.setToolTip(
-            "Seed Script parser/name diagnostic. Unknown variables/presets and syntax errors "
-            "are shown here and highlighted in the editor. Clears automatically when valid."
+            "Seed Script parser/name diagnostic. Unknown variables/presets and syntax errors are shown as errors; variable redefinitions are shown as warnings with the original assignment line and the variable being overwritten. Clears automatically when valid."
         )
         self.lbl_seed_script_error.hide()
         seed_panel.addWidget(self.lbl_seed_script_error, 0)
@@ -26544,7 +26543,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             line = max(1, int(getattr(exc, "lineno", 1) or 1))
             col = max(0, int(getattr(exc, "offset", 1) or 1) - 1)
             msg = str(getattr(exc, "msg", None) or "invalid syntax")
-            return (f"SEED SCRIPT ERROR · {msg} · line {line}", line, col, 1)
+            return (f"SEED SCRIPT ERROR · {msg} · line {line}", line, col, 1, "error")
         except Exception:
             return None
 
@@ -26583,11 +26582,46 @@ class MathematiciansGrooveboxApp(QMainWindow):
             col = max(0, int(getattr(node, "col_offset", 0) or 0))
             return (
                 f"SEED SCRIPT ERROR · unknown variable/preset '{name}' · line {line}",
-                line, col, max(1, len(name)),
+                line, col, max(1, len(name)), "error",
             )
+
+        # A second assignment to the same local seed variable is legal, but it is
+        # important enough to surface because it changes the value used by every
+        # later expression.  Track assignment targets in source order and warn on
+        # the later write.  Function arguments and loop targets are excluded here;
+        # this warning is specifically about user variable reassignment.
+        writes = []
+        class _SeedWriteVisitor(ast.NodeVisitor):
+            def visit_Assign(self, node):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        writes.append((target.id, target))
+                self.generic_visit(node.value)
+            def visit_AnnAssign(self, node):
+                if isinstance(node.target, ast.Name):
+                    writes.append((node.target.id, node.target))
+                if node.value is not None:
+                    self.visit(node.value)
+            def visit_AugAssign(self, node):
+                if isinstance(node.target, ast.Name):
+                    writes.append((node.target.id, node.target))
+                self.visit(node.value)
+        _SeedWriteVisitor().visit(tree)
+        first_write = {}
+        for name, node in sorted(writes, key=lambda item: (getattr(item[1], "lineno", 1), getattr(item[1], "col_offset", 0))):
+            if name in first_write:
+                prev = first_write[name]
+                line = max(1, int(getattr(node, "lineno", 1) or 1))
+                col = max(0, int(getattr(node, "col_offset", 0) or 0))
+                prev_line = max(1, int(getattr(prev, "lineno", 1) or 1))
+                return (
+                    f"SEED SCRIPT WARNING · redefining variable '{name}' · line {line} writes over the value first assigned on line {prev_line}; later seed expressions use the new value",
+                    line, col, max(1, len(name)), "warning",
+                )
+            first_write[name] = node
         return None
 
-    def _set_seed_error_highlight(self, line=0, col=0, length=0):
+    def _set_seed_error_highlight(self, line=0, col=0, length=0, severity="error"):
         """Highlight exactly the offending Seed Script token without modifying text."""
         try:
             if not hasattr(self, "input_seed_val"):
@@ -26605,11 +26639,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     sel = QTextEdit.ExtraSelection()
                     sel.cursor = cursor
                     fmt = QTextCharFormat()
-                    fmt.setForeground(QColor("#ff5555"))
+                    warn = str(severity).lower() == "warning"
+                    tone = QColor("#ffbf5a" if warn else "#ff5555")
+                    fmt.setForeground(tone)
                     fmt.setFontWeight(QFont.Weight.Bold)
-                    fmt.setUnderlineColor(QColor("#ff5555"))
-                    fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.WaveUnderline)
-                    fmt.setBackground(QColor(80, 12, 18, 115))
+                    fmt.setUnderlineColor(tone)
+                    fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SingleUnderline if warn else QTextCharFormat.UnderlineStyle.WaveUnderline)
+                    fmt.setBackground(QColor(70, 46, 8, 110) if warn else QColor(80, 12, 18, 115))
                     sel.format = fmt
                     selections.append(sel)
             self.input_seed_val.setExtraSelections(selections)
@@ -26628,9 +26664,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     label.clear()
                     label.hide()
                 return
-            message, line, col, length = diag
-            self._set_seed_error_highlight(line, col, length)
+            message, line, col, length, severity = diag
+            self._set_seed_error_highlight(line, col, length, severity)
             if label is not None:
+                if str(severity).lower() == 'warning':
+                    label.setStyleSheet(
+                        "background-color:#121212; color:#ffbf5a; border:1px solid #6d5725; "
+                        "font-family:Consolas, monospace; font-size:9pt; font-weight:bold; padding:3px 6px;"
+                    )
+                else:
+                    label.setStyleSheet(
+                        "background-color:#121212; color:#ff5555; border:1px solid #31577a; "
+                        "font-family:Consolas, monospace; font-size:9pt; font-weight:bold; padding:3px 6px;"
+                    )
                 label.setText(message)
                 label.show()
         except Exception as exc:
@@ -34038,9 +34084,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "-vn", "-ac", "1", "-ar", "44100", "-f", "f32le", "pipe:1"
         ]
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if proc.returncode != 0:
+        if proc.returncode != 0 and bool(meta.get("has_audio", False)):
             raise RuntimeError(proc.stderr.decode(errors="replace")[-1200:] or "ffmpeg could not decode the video audio stream.")
-        arr = np.frombuffer(proc.stdout, dtype=np.float32).copy()
+        # A video-only carrier is valid. ffmpeg reports 'Output file does not
+        # contain any stream' when asked to extract nonexistent audio; synthesize
+        # silence instead of turning that expected condition into an app crash.
+        arr = np.frombuffer(proc.stdout, dtype=np.float32).copy() if proc.returncode == 0 else np.zeros(0, dtype=np.float32)
         arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
         if arr.size == 0:
             # Video-only files are still valid visual carriers; use a silent audio stream.
