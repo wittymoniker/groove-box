@@ -41061,6 +41061,33 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # User-owned TrackOffset (engines respond; not a canonical write handle)
             "global_track_offset": float(getattr(self, "global_track_offset", 0.0) or 0.0),
             "track_offset": float(getattr(self, "global_track_offset", 0.0) or 0.0),
+            # GAME_BOUND_MEDIA_2026: authoritative carrier + per-operator media
+            # references.  Buffers are never serialized; generated games stage
+            # the referenced files into their own package and use a bounded
+            # decoder cache so game FPS is not tied to instrument count.
+            "game_bound_media": {
+                "carrier": {
+                    "audio_path": str(getattr(self, "imported_wav_path", "") or ""),
+                    "video_path": str(getattr(self, "imported_video_path", "") or ""),
+                    "binding_mode": str(getattr(self, "carrier_binding_mode", "") or ""),
+                    "binding_source": str(getattr(self, "carrier_binding_source", "") or ""),
+                },
+                "instruments": [
+                    {
+                        "name": str(_name),
+                        "audio_path": str((_rec or {}).get("path", "") or ""),
+                        "video_path": str((_rec or {}).get("video_path", "") or ""),
+                        "video_input_enabled": bool((_rec or {}).get("video_input_enabled", False)),
+                        "audio_present": bool((_rec or {}).get("audio_present", bool((_rec or {}).get("path")))),
+                        "binding_mode": str((_rec or {}).get("binding_mode", "") or ""),
+                        "binding_source": str((_rec or {}).get("binding_source", "") or ""),
+                    }
+                    for _name, _rec in sorted((getattr(self, "instrument_media_samples", {}) or {}).items())
+                    if isinstance(_rec, dict) and ((_rec.get("path")) or (_rec.get("video_path")))
+                ],
+                "visual_policy": {"carrier_full_frame": True, "instrument_tile_max_fraction": 0.18, "max_live_video_decoders": 4},
+                "audio_policy": {"carrier_gain": 0.45, "instrument_gain": 0.14, "max_live_audio_players": 8},
+            },
         }
 
     def _classify_live_game(self):
@@ -41516,6 +41543,133 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "Image Export Error", str(exc))
 
+    def _bound_video_sources(self):
+        """Return project-visible carrier and per-instrument video bindings.
+
+        Carrier video is the large/background source. Instrument videos are
+        deliberately treated as secondary visual tiles so one operator cannot
+        hide the generated/canonical scene or the carrier.
+        """
+        carrier = str(getattr(self, "imported_video_path", "") or "")
+        if not (carrier and os.path.isfile(carrier)):
+            carrier = ""
+        items = []
+        store = getattr(self, "instrument_media_samples", {}) or {}
+        # Preserve the authoritative instrument roster order first, then any
+        # extra saved operator names deterministically.
+        roster = list(getattr(self, "instrument_names_48", []) or [])
+        names = roster + sorted(k for k in store.keys() if k not in roster)
+        seen = set()
+        for name in names:
+            if name in seen:
+                continue
+            seen.add(name)
+            rec = store.get(name)
+            if not isinstance(rec, dict) or not bool(rec.get("video_input_enabled", False)):
+                continue
+            vp = str(rec.get("video_path", "") or "")
+            if vp and os.path.isfile(vp):
+                items.append((str(name), vp))
+        return carrier, items
+
+    @staticmethod
+    def _read_bound_video_rgb(proc, width, height):
+        """Read one exact RGB24 frame from an ffmpeg rawvideo pipe."""
+        if proc is None or proc.stdout is None:
+            return None
+        need = int(width) * int(height) * 3
+        chunks = bytearray()
+        try:
+            while len(chunks) < need:
+                b = proc.stdout.read(need - len(chunks))
+                if not b:
+                    return None
+                chunks.extend(b)
+            return np.frombuffer(bytes(chunks), dtype=np.uint8).reshape((int(height), int(width), 3))
+        except Exception:
+            return None
+
+    def _start_bound_video_reader(self, ffmpeg, path, width, height, fps, start_seconds=0.0):
+        """Start a looping, silent RGB24 reader for a project video binding."""
+        if not path or not os.path.isfile(path):
+            return None
+        vf = (
+            f"fps={max(1,int(fps))},"
+            f"scale={max(2,int(width))}:{max(2,int(height))}:force_original_aspect_ratio=decrease,"
+            f"pad={max(2,int(width))}:{max(2,int(height))}:(ow-iw)/2:(oh-ih)/2:black"
+        )
+        cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-stream_loop", "-1"]
+        if float(start_seconds or 0.0) > 0.0:
+            cmd += ["-ss", f"{float(start_seconds):.6f}"]
+        cmd += ["-i", path, "-an", "-vf", vf, "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
+        try:
+            return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=10**7)
+        except Exception as e:
+            print(f"[Video] bound-media reader failed for {path}: {e}")
+            return None
+
+    @staticmethod
+    def _instrument_video_tile_geometry(frame_w, frame_h, count):
+        """Small deterministic tile geometry for operator-bound video.
+
+        A single instrument is capped at 18% of frame width; additional
+        instrument videos shrink further, keeping them subordinate to the
+        carrier/global visual field.
+        """
+        n = max(1, int(count))
+        frac = min(0.18, max(0.065, 0.22 / math.sqrt(float(n))))
+        tw = max(96, int(frame_w * frac))
+        th = max(54, int(round(tw * 9.0 / 16.0)))
+        if th > int(frame_h * 0.22):
+            th = max(54, int(frame_h * 0.22))
+            tw = max(96, int(round(th * 16.0 / 9.0)))
+        return min(tw, frame_w), min(th, frame_h)
+
+    @staticmethod
+    def _compose_bound_video_frame(base_frame, carrier_frame=None, instrument_frames=None):
+        """Composite carrier + small instrument videos over a generated frame."""
+        out = np.ascontiguousarray(np.asarray(base_frame, dtype=np.uint8)).copy()
+        h, w = out.shape[:2]
+        # Carrier remains a large/global source. Preserve the mathematical
+        # renderer by using an even 50/50 union rather than replacing it.
+        if carrier_frame is not None:
+            cf = np.asarray(carrier_frame, dtype=np.uint8)
+            if cf.shape[:2] == (h, w):
+                out = ((out.astype(np.uint16) + cf.astype(np.uint16)) // 2).astype(np.uint8)
+        frames = list(instrument_frames or [])
+        if not frames:
+            return out
+        valid = [(name, np.asarray(fr, dtype=np.uint8)) for name, fr in frames if fr is not None]
+        if not valid:
+            return out
+        th, tw = valid[0][1].shape[:2]
+        margin = max(4, int(round(min(w, h) * 0.008)))
+        step_x, step_y = tw + margin, th + margin
+        rows = max(1, (h - 2 * margin) // max(1, step_y))
+        # Tiles start at the upper-right and proceed downward, then leftward.
+        # This keeps the visual center mostly free even with several operators.
+        alpha = 0.82
+        for idx, (_name, fr) in enumerate(valid):
+            if fr.shape[:2] != (th, tw):
+                continue
+            col = idx // rows
+            row = idx % rows
+            x1 = w - margin - col * step_x
+            x0 = x1 - tw
+            y0 = margin + row * step_y
+            y1 = y0 + th
+            if x0 < 0 or y1 > h:
+                break
+            roi = out[y0:y1, x0:x1]
+            mix = (roi.astype(np.float32) * (1.0 - alpha) + fr.astype(np.float32) * alpha)
+            out[y0:y1, x0:x1] = np.clip(mix, 0, 255).astype(np.uint8)
+            # Thin neutral separator prevents adjacent videos visually merging.
+            out[max(0,y0-1):min(h,y0+1), x0:x1] = 0
+            out[max(0,y1-1):min(h,y1+1), x0:x1] = 0
+            out[y0:y1, max(0,x0-1):min(w,x0+1)] = 0
+            out[y0:y1, max(0,x1-1):min(w,x1+1)] = 0
+        return out
+
     def export_video_dialog(self, include_audio=True, container="mp4"):
         """Render 2.5D frames in 16 recoverable .part segments inside the
         chosen render destination (never /tmp). User controls resolution;
@@ -41793,6 +41947,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     "-c:v", vcodec, *vargs, *pix,
                     "-an", "-f", _muxer, part_tmp,
                 ]
+                # Open the external video bindings at this part's exact time
+                # coordinate. Reopening per part keeps crash/resume deterministic.
+                _carrier_video_source, _instrument_video_sources = self._bound_video_sources()
+                _tile_w, _tile_h = self._instrument_video_tile_geometry(w, h, len(_instrument_video_sources))
+                _part_start_sec = float(f0) / float(max(1, fps))
+                _carrier_reader = self._start_bound_video_reader(
+                    ffmpeg, _carrier_video_source, w, h, fps, _part_start_sec
+                ) if _carrier_video_source else None
+                _instrument_readers = [
+                    self._start_bound_video_reader(ffmpeg, _vp, _tile_w, _tile_h, fps, _part_start_sec)
+                    for _nm, _vp in _instrument_video_sources
+                ]
                 proc = subprocess.Popen(
                     cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
                 )
@@ -41805,6 +41971,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         frame = eng.render_frame(w, h, export=True, frame_index=fi)
                         if frame.dtype != np.uint8:
                             frame = np.asarray(frame, dtype=np.uint8)
+                        # PROJECT_VIDEO_BINDINGS_2026: carrier video participates
+                        # as a global 50/50 visual source; every instrument with
+                        # video_input_enabled contributes a deliberately smaller
+                        # tile. Audio for these same bindings is already mixed by
+                        # _render_mixdown_buffer(), so Both is now symmetric.
+                        _carrier_frame = self._read_bound_video_rgb(_carrier_reader, w, h) if _carrier_reader else None
+                        _inst_frames = []
+                        for (_nm, _vp), _reader in zip(_instrument_video_sources, _instrument_readers):
+                            _fr = self._read_bound_video_rgb(_reader, _tile_w, _tile_h) if _reader else None
+                            if _fr is not None:
+                                _inst_frames.append((_nm, _fr))
+                        frame = self._compose_bound_video_frame(frame, _carrier_frame, _inst_frames)
                         proc.stdin.write(np.ascontiguousarray(frame).tobytes())
                         if local_count % 8 == 0 and hasattr(self, 'scope_status_label'):
                             self.scope_status_label.setText(
@@ -41826,6 +42004,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         pass
                     proc.wait()
                     raise
+                finally:
+                    for _vr in ([_carrier_reader] + list(_instrument_readers)):
+                        if _vr is not None:
+                            try: _vr.terminate()
+                            except Exception: pass
+                            try: _vr.wait(timeout=1.0)
+                            except Exception:
+                                try: _vr.kill()
+                                except Exception: pass
                 if proc.returncode != 0:
                     err = (stderr.decode(errors="replace") if isinstance(stderr, bytes) else (stderr or stdout or ""))[-2200:]
                     raise RuntimeError(f"Part {pi+1}/{N_PARTS} encode failed:\\n{err}")

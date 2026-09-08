@@ -1619,17 +1619,24 @@ def seed_script_channels(seed_script, t=0.0):
 # two shared (Python / PyQt6) system dependencies.
 # ---------------------------------------------------------------------------
 try:
-    from PyQt6.QtCore import QTimer, Qt, QPointF, QRect
-    from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QBrush, QPolygonF
+    from PyQt6.QtCore import QTimer, Qt, QPointF, QRect, QUrl
+    from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QBrush, QPolygonF, QImage
     from PyQt6.QtWidgets import (
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
         QPushButton, QLineEdit, QPlainTextEdit, QSpinBox, QCheckBox, QFrame,
         QSizePolicy, QGroupBox, QMessageBox, QInputDialog, QProgressBar,
         QSplitter,
     )
+    try:
+        from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink
+        HAS_MEDIA_UI = True
+    except Exception:
+        QMediaPlayer = QAudioOutput = QVideoSink = None
+        HAS_MEDIA_UI = False
     HAS_UI = True
 except Exception:
     HAS_UI = False
+    HAS_MEDIA_UI = False
 
 
 def _mix(seed, label):
@@ -6618,6 +6625,102 @@ class PokerTable:
 
 # ---------------------------------------------------------------------------
 if HAS_UI:
+    class BoundMediaRuntime:
+        """Low-overhead package-local carrier/operator media bridge.
+
+        Video frames are decoded by Qt on their own cadence and cached as QImage;
+        paintEvent only blits cached images.  Decoder/player counts are bounded so
+        adding many instrument bindings cannot linearly destroy game FPS.
+        """
+        def __init__(self, game, owner=None):
+            self.game = game
+            self.owner = owner
+            self.root = os.path.dirname(os.path.abspath(__file__))
+            self.meta = dict((game.meta or {}).get("game_bound_media") or {})
+            self.carrier_image = None
+            self.instrument_images = {}
+            self.players = []
+            self.video_players = []
+            self.audio_players = []
+            if not HAS_MEDIA_UI:
+                return
+            vp = dict(self.meta.get("visual_policy") or {})
+            ap = dict(self.meta.get("audio_policy") or {})
+            self.max_video = max(1, min(8, int(vp.get("max_live_video_decoders", 4) or 4)))
+            self.max_audio = max(1, min(16, int(ap.get("max_live_audio_players", 8) or 8)))
+            self.carrier_gain = max(0.0, min(1.0, float(ap.get("carrier_gain", .45) or .45)))
+            self.instrument_gain = max(0.0, min(1.0, float(ap.get("instrument_gain", .14) or .14)))
+            self._start()
+
+        def _path(self, p):
+            p = str(p or "")
+            if not p: return ""
+            if os.path.isabs(p): return p if os.path.isfile(p) else ""
+            q = os.path.realpath(os.path.join(self.root, p))
+            return q if os.path.isfile(q) else ""
+
+        def _video(self, path, key, *, audio_gain=0.0):
+            path = self._path(path)
+            if not path or len(self.video_players) >= self.max_video: return
+            player = QMediaPlayer(self.owner)
+            sink = QVideoSink(self.owner)
+            if key == "carrier":
+                sink.videoFrameChanged.connect(lambda fr: self._frame(fr, "carrier"))
+            else:
+                sink.videoFrameChanged.connect(lambda fr, k=key: self._frame(fr, k))
+            player.setVideoSink(sink)
+            ao = None
+            if audio_gain > 0 and len(self.audio_players) < self.max_audio:
+                ao = QAudioOutput(self.owner); ao.setVolume(float(audio_gain)); player.setAudioOutput(ao); self.audio_players.append(ao)
+            player.setSource(QUrl.fromLocalFile(path))
+            player.mediaStatusChanged.connect(lambda st, p=player: self._loop_status(st, p))
+            player.play()
+            self.video_players.append((player, sink, ao))
+            self.players.append(player)
+
+        def _audio(self, path, gain):
+            path = self._path(path)
+            if not path or len(self.audio_players) >= self.max_audio: return
+            p = QMediaPlayer(self.owner); ao = QAudioOutput(self.owner); ao.setVolume(float(gain)); p.setAudioOutput(ao)
+            p.setSource(QUrl.fromLocalFile(path)); p.mediaStatusChanged.connect(lambda st, pp=p: self._loop_status(st, pp)); p.play()
+            self.audio_players.append(ao); self.players.append(p)
+
+        def _loop_status(self, st, player):
+            try:
+                if st == QMediaPlayer.MediaStatus.EndOfMedia:
+                    player.setPosition(0); player.play()
+            except Exception: pass
+
+        def _frame(self, frame, key):
+            try:
+                if not frame or not frame.isValid(): return
+                img = frame.toImage()
+                if img.isNull(): return
+                img = img.copy()
+                if key == "carrier": self.carrier_image = img
+                else: self.instrument_images[str(key)] = img
+            except Exception: pass
+
+        def _start(self):
+            car = dict(self.meta.get("carrier") or {})
+            cv = car.get("video_path")
+            ca = car.get("audio_path")
+            # One carrier video decoder; use its audio only when there is no
+            # dedicated carrier audio file, avoiding double playback.
+            if cv:
+                self._video(cv, "carrier", audio_gain=(self.carrier_gain if not ca else 0.0))
+            if ca:
+                self._audio(ca, self.carrier_gain)
+            for rec in list(self.meta.get("instruments") or []):
+                if not isinstance(rec, dict): continue
+                name = str(rec.get("name") or "instrument")
+                vp = rec.get("video_path") if rec.get("video_input_enabled", bool(rec.get("video_path"))) else ""
+                ap = rec.get("audio_path") if rec.get("audio_present", bool(rec.get("audio_path"))) else ""
+                if vp and len(self.video_players) < self.max_video:
+                    self._video(vp, name, audio_gain=(self.instrument_gain if not ap else 0.0))
+                if ap and len(self.audio_players) < self.max_audio:
+                    self._audio(ap, self.instrument_gain)
+
     class SceneViewport(QWidget):
         def __init__(self, game, parent=None):
             super().__init__(parent)
@@ -6745,7 +6848,36 @@ if HAS_UI:
             R = min(w, h) * 0.42 * max(0.35, float(getattr(g, "zoom", 1.0)))
             cy = cy - float(getattr(g, "pitch", 0.0)) * R * 0.35
             p.fillRect(self.rect(), QColor(bg))
+            # GAME_BOUND_MEDIA_2026: carrier video is a subdued full-frame
+            # background.  Instrument videos are drawn later as small tiles.
+            try:
+                _mr = getattr(g, "bound_media", None)
+                _ci = getattr(_mr, "carrier_image", None) if _mr is not None else None
+                if _ci is not None and not _ci.isNull():
+                    p.setOpacity(0.42)
+                    p.drawImage(self.rect(), _ci)
+                    p.setOpacity(1.0)
+            except Exception:
+                p.setOpacity(1.0)
             topo = str(g.id.get("topology") or "open_world")
+
+            try:
+                _mr = getattr(g, "bound_media", None)
+                _imgs = list((getattr(_mr, "instrument_images", {}) or {}).items()) if _mr is not None else []
+                _imgs = _imgs[:4]
+                if _imgs:
+                    frac = min(0.18, 0.36 / max(2, len(_imgs)))
+                    tw = max(96, int(w * frac)); th = max(54, int(tw * 9 / 16))
+                    gap = 8
+                    for _i, (_nm, _im) in enumerate(_imgs):
+                        if _im is None or _im.isNull(): continue
+                        x = gap if (_i % 2 == 0) else max(gap, w - tw - gap)
+                        y = gap + (_i // 2) * (th + gap)
+                        p.setOpacity(0.72)
+                        p.drawImage(QRect(int(x), int(y), int(tw), int(th)), _im)
+                        p.setOpacity(1.0)
+            except Exception:
+                p.setOpacity(1.0)
 
             # Planetary 3-D view. The projection basis is rebuilt from gravity
             # every frame: screen space is tangent to the local gravitational field.
@@ -7496,6 +7628,11 @@ if HAS_UI:
         def __init__(self, game):
             super().__init__()
             self.game = game
+            try:
+                game.bound_media = BoundMediaRuntime(game, self)
+            except Exception as _media_err:
+                game.bound_media = None
+                print(f"[game media] {_media_err}")
             self.setWindowTitle(f"{game.id['title']}")
             self.resize(1040, 620)
             central = QWidget()
@@ -8424,8 +8561,50 @@ def generate_game_script(identity: GameIdentity, composition_meta: Optional[Dict
 
 
 
+def _stage_bound_game_media(out_dir: str, composition_meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Copy bound carrier/operator media into the generated package and rewrite
+    paths package-relative.  Missing files remain empty; source project files
+    are never modified.
+    """
+    import copy as _copy
+    meta = _copy.deepcopy(composition_meta or {})
+    gm = meta.get("game_bound_media")
+    if not isinstance(gm, dict):
+        return meta
+    media_dir = os.path.join(out_dir, "media")
+    os.makedirs(media_dir, exist_ok=True)
+    used = {}
+    def stage(path, label):
+        path = os.path.abspath(os.path.expanduser(str(path or "")))
+        if not path or not os.path.isfile(path): return ""
+        key = os.path.realpath(path)
+        if key in used: return used[key]
+        ext = os.path.splitext(path)[1][:12]
+        digest = hashlib.sha256(key.encode("utf-8", "replace")).hexdigest()[:12]
+        safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(label))[:48] or "media"
+        name = f"{safe}_{digest}{ext}"
+        dst = os.path.join(media_dir, name)
+        shutil.copy2(path, dst)
+        rel = os.path.join("media", name).replace(os.sep, "/")
+        used[key] = rel
+        return rel
+    car = gm.get("carrier")
+    if isinstance(car, dict):
+        car["audio_path"] = stage(car.get("audio_path"), "carrier_audio")
+        car["video_path"] = stage(car.get("video_path"), "carrier_video")
+    inst = gm.get("instruments")
+    if isinstance(inst, list):
+        for i, rec in enumerate(inst):
+            if not isinstance(rec, dict): continue
+            label = rec.get("name") or f"instrument_{i}"
+            rec["audio_path"] = stage(rec.get("audio_path"), f"{label}_audio")
+            rec["video_path"] = stage(rec.get("video_path"), f"{label}_video")
+    return meta
+
+
 def export_game_files(identity: GameIdentity, out_dir: str, composition_meta: Optional[Dict[str, Any]] = None, extra_files: Optional[Dict[str, Any]] = None) -> str:
     os.makedirs(out_dir, exist_ok=True)
+    composition_meta = _stage_bound_game_media(out_dir, composition_meta)
     script_path = os.path.join(out_dir, f"game_{identity.composition_fingerprint}.py")
     with open(script_path, "w", encoding="utf-8") as f:
         f.write(generate_game_script(identity, composition_meta))
@@ -9347,16 +9526,19 @@ def package_game_zip(identity: GameIdentity, out_zip: str, composition_meta: Opt
         export_game_files(identity, tmpdir, composition_meta, extra_files)
         os.makedirs(os.path.dirname(os.path.abspath(out_zip)) or ".", exist_ok=True)
         with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED) as zf:
-            for name in sorted(os.listdir(tmpdir)):
-                src = os.path.join(tmpdir, name)
-                st = os.stat(src)
-                info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
-                mode = (st.st_mode & 0o777)
-                if name.endswith((".sh", ".command")):
-                    mode |= stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
-                info.external_attr = (mode & 0xFFFF) << 16
-                with open(src, "rb") as fh:
-                    zf.writestr(info, fh.read())
+            for base, dirs, files in os.walk(tmpdir):
+                dirs.sort(); files.sort()
+                for name in files:
+                    src = os.path.join(base, name)
+                    arc = os.path.relpath(src, tmpdir).replace(os.sep, "/")
+                    st = os.stat(src)
+                    info = zipfile.ZipInfo(arc, date_time=(2026, 1, 1, 0, 0, 0))
+                    mode = (st.st_mode & 0o777)
+                    if name.endswith((".sh", ".command")):
+                        mode |= stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+                    info.external_attr = (mode & 0xFFFF) << 16
+                    with open(src, "rb") as fh:
+                        zf.writestr(info, fh.read())
         return os.path.abspath(out_zip)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
