@@ -45,13 +45,13 @@ from groovebox_media_tools import resolve_local_tool
 try:
     from PyQt6.QtMultimedia import (
         QMediaDevices, QCamera, QMediaCaptureSession, QMediaRecorder,
-        QMediaFormat, QAudioInput, QAudioSource, QAudioFormat,
+        QMediaFormat, QAudioInput, QAudioSource, QAudioFormat, QVideoSink,
     )
     from PyQt6.QtMultimediaWidgets import QVideoWidget
     QT_MULTIMEDIA = True
 except Exception:
     QMediaDevices = QCamera = QMediaCaptureSession = QMediaRecorder = None
-    QMediaFormat = QAudioInput = QAudioSource = QAudioFormat = None
+    QMediaFormat = QAudioInput = QAudioSource = QAudioFormat = QVideoSink = None
     QVideoWidget = None
     QT_MULTIMEDIA = False
 
@@ -326,6 +326,7 @@ class VideoClipStudio(QWidget):
         self._audio_devices = []
         self._camera = None
         self._capture_session = None
+        self._video_sink = None
         self._recorder = None
         self._record_audio_input = None
         self._record_path = ''
@@ -385,10 +386,24 @@ class VideoClipStudio(QWidget):
         left = QWidget(); left.setMinimumWidth(520); ll = QVBoxLayout(left); ll.setContentsMargins(4,4,4,4); ll.setSpacing(7)
         preview_group = QGroupBox('Camera / clip preview')
         pl = QVBoxLayout(preview_group)
-        if QT_MULTIMEDIA:
-            self.video_preview = QVideoWidget(); self.video_preview.setMinimumSize(480,270); self.video_preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding); pl.addWidget(self.video_preview,1)
-        else:
-            self.video_preview = QLabel('Qt Multimedia unavailable — device selection/import/drawing still work.'); self.video_preview.setWordWrap(True); self.video_preview.setMinimumSize(480,270); self.video_preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding); self.video_preview.setAlignment(Qt.AlignmentFlag.AlignCenter); pl.addWidget(self.video_preview,1)
+        # Use a software QLabel preview fed by QVideoSink rather than QVideoWidget.
+        # Some Qt/GStreamer backends implement QVideoWidget with a native overlay
+        # surface that ignores QScrollArea clipping and can paint over controls.
+        # A QVideoSink -> QImage -> QLabel path remains a normal child widget, so
+        # scrolling/maximizing can never render camera pixels outside the viewport.
+        self.video_preview = QLabel('Camera preview idle')
+        self.video_preview.setWordWrap(True)
+        self.video_preview.setMinimumSize(480,270)
+        self.video_preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.video_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.video_preview.setStyleSheet('background:#050708; border:1px solid #29404a;')
+        pl.addWidget(self.video_preview,1)
+        if QT_MULTIMEDIA and QVideoSink is not None:
+            try:
+                self._video_sink = QVideoSink(self)
+                self._video_sink.videoFrameChanged.connect(self._on_video_frame)
+            except Exception:
+                self._video_sink = None
         self.mic_meter = QProgressBar(); self.mic_meter.setRange(0,100); self.mic_meter.setValue(0); self.mic_meter.setFormat('Mic level %p%'); pl.addWidget(self.mic_meter)
         ll.addWidget(preview_group)
 
@@ -580,12 +595,30 @@ class VideoClipStudio(QWidget):
                 if self.cmb_tablet.itemData(i)==oldt: self.cmb_tablet.setCurrentIndex(i); break
         self.lbl_render.setText(f'Devices refreshed · {len(self._camera_devices)} camera(s), {len(self._audio_devices)} mic(s), {max(0,self.cmb_tablet.count()-1)} mounted tablet/media source(s).')
 
+    def _on_video_frame(self, frame):
+        """Paint camera frames inside the normal Qt widget hierarchy."""
+        try:
+            if frame is None or not frame.isValid():
+                return
+            image = frame.toImage()
+            if image.isNull():
+                return
+            target = self.video_preview.size()
+            pix = QPixmap.fromImage(image).scaled(
+                target, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
+            self.video_preview.setPixmap(pix)
+        except Exception:
+            pass
+
     def _toggle_camera_preview(self, on: bool):
         if not on:
             try:
                 if self._camera: self._camera.stop()
             except Exception: pass
             self._camera=None; self._capture_session=None
+            try: self.video_preview.clear(); self.video_preview.setText('Camera preview idle')
+            except Exception: pass
             self.btn_camera_preview.setText('▶ Camera Preview'); return
         if not QT_MULTIMEDIA or not self._camera_devices:
             self.btn_camera_preview.setChecked(False); QMessageBox.information(self,'Camera preview','No Qt Multimedia camera is available.'); return
@@ -594,7 +627,9 @@ class VideoClipStudio(QWidget):
             self._capture_session=QMediaCaptureSession(self)
             self._camera=QCamera(self._camera_devices[idx], self)
             self._capture_session.setCamera(self._camera)
-            self._capture_session.setVideoOutput(self.video_preview)
+            if self._video_sink is None:
+                raise RuntimeError('Qt video sink is unavailable for scroll-safe camera preview.')
+            self._capture_session.setVideoOutput(self._video_sink)
             self._camera.start(); self.btn_camera_preview.setText('■ Stop Camera Preview')
         except Exception as e:
             self.btn_camera_preview.setChecked(False); QMessageBox.warning(self,'Camera preview',str(e))
@@ -618,6 +653,8 @@ class VideoClipStudio(QWidget):
             if self._mic_source: self._mic_source.stop()
         except Exception: pass
         self._mic_source=None; self._mic_io=None; self._mic_level=0.0
+        try: self.mic_meter.setValue(0)
+        except Exception: pass
 
     def _read_mic_level(self):
         try:
@@ -638,6 +675,13 @@ class VideoClipStudio(QWidget):
         except Exception: pass
 
     def _update_mic_meter(self):
+        # Poll as well as listening to readyRead: some PipeWire/Qt backends do not
+        # emit readyRead reliably when the UI hierarchy is reparented or hidden.
+        try:
+            if self._mic_io is not None and self._mic_io.bytesAvailable() > 0:
+                self._read_mic_level()
+        except Exception:
+            pass
         self.mic_meter.setValue(int(round(self._mic_level*100)))
 
     # --------------------------- import / record
@@ -671,7 +715,10 @@ class VideoClipStudio(QWidget):
             if self._camera is None or self._capture_session is None:
                 idx=max(0,min(self.cmb_camera.currentIndex(),len(self._camera_devices)-1))
                 self._capture_session=QMediaCaptureSession(self); self._camera=QCamera(self._camera_devices[idx],self)
-                self._capture_session.setCamera(self._camera); self._capture_session.setVideoOutput(self.video_preview); self._camera.start()
+                self._capture_session.setCamera(self._camera)
+                if self._video_sink is not None:
+                    self._capture_session.setVideoOutput(self._video_sink)
+                self._camera.start()
             self._record_audio_input=None
             if self._audio_devices:
                 mi=max(0,min(self.cmb_mic.currentIndex(),len(self._audio_devices)-1))
@@ -1079,44 +1126,80 @@ class VideoClipStudio(QWidget):
         if not ff: QMessageBox.warning(self,'Render video','FFmpeg is not available in the local Groovebox bin/PATH.'); return
         self._capture_curve(); self._persist_layer(True)
         duration=float(self.spin_duration.value()); fps=int(self.spin_fps.value()); w=int(self.spin_width.value()); h=int(self.spin_height.value())
-        if self.base_clip and os.path.isfile(self.base_clip):
-            d=_probe_duration(self.base_clip)
-            if d>0: duration=min(duration,d) if duration>0 else d
-        default=os.path.join(self._video_exports_dir(),_safe_stem(Path(self.base_clip).stem if self.base_clip else 'drawn_video')+'_mixed.mp4')
+
+        # RECORDING_LAYER_RENDER_2026: every appended recording layer participates
+        # in the render. Older builds only switched base_clip, so the layer tabs were
+        # state/UI without true multi-layer composition.
+        video_layers=[]
+        for candidate in list(self.recording_layers) + ([self.base_clip] if self.base_clip else []):
+            candidate=os.path.abspath(str(candidate or ''))
+            if candidate and os.path.isfile(candidate) and candidate not in video_layers:
+                video_layers.append(candidate)
+
+        default=os.path.join(self._video_exports_dir(),_safe_stem(Path(video_layers[0]).stem if video_layers else 'drawn_video')+'_mixed.mp4')
         out,_=QFileDialog.getSaveFileName(self,'Render / Mix Video Clip',default,'MP4 video (*.mp4);;WebM video (*.webm)')
         if not out:return
         if not os.path.splitext(out)[1]:out += '.mp4'
         tmp=Path(self._layers_dir())/'_video_clip_render_tmp'; shutil.rmtree(tmp,ignore_errors=True); tmp.mkdir(parents=True,exist_ok=True)
         try:
-            n=max(1,int(math.ceil(duration*fps))); env=self._extract_audio_envelope(self.base_clip,duration,fps) if self.chk_sound_color.isChecked() else np.zeros(n)
-            transparent=bool(self.base_clip and os.path.isfile(self.base_clip))
-            self.lbl_render.setText(f'Rendering {n} paint/graph frame(s)…'); self.repaint()
+            n=max(1,int(math.ceil(duration*fps)))
+            envelope_source = self.base_clip if self.base_clip and os.path.isfile(self.base_clip) else (video_layers[0] if video_layers else '')
+            env=self._extract_audio_envelope(envelope_source,duration,fps) if self.chk_sound_color.isChecked() else np.zeros(n)
+            transparent=bool(video_layers)
+            self.lbl_render.setText(f'Rendering {n} paint/graph frame(s) over {len(video_layers)} recording layer(s)…'); self.repaint()
             for i in range(n):
                 fr=self._render_frame(w,h,i/max(1,n-1),float(env[min(i,len(env)-1)]) if len(env) else 0.0,transparent)
                 fr.save(str(tmp/f'frame_{i:06d}.png'),'PNG')
             sound=str(tmp/'drawn_sound.wav'); has_generated=self._generate_sound(sound,duration)
             seq=str(tmp/'frame_%06d.png'); ext=Path(out).suffix.lower(); codec='libvpx-vp9' if ext=='.webm' else 'libx264'
             cmd=[ff,'-y']
-            if transparent:
-                cmd += ['-i',self.base_clip,'-framerate',str(fps),'-i',seq]
-                has_base_audio=_probe_has_audio(self.base_clip)
-                if has_generated:cmd += ['-i',sound]
-                filters=[f'[0:v]scale={w}:{h}[base];[base][1:v]overlay=0:0:shortest=1[v]']
-                if has_generated and has_base_audio:filters.append('[0:a][2:a]amix=inputs=2:normalize=0:dropout_transition=0[a]')
-                cmd += ['-filter_complex',';'.join(filters),'-map','[v]']
-                if has_generated and has_base_audio:cmd += ['-map','[a]']
-                elif has_generated:cmd += ['-map','2:a:0']
-                elif has_base_audio:cmd += ['-map','0:a:0']
+            for src in video_layers:
+                cmd += ['-i',src]
+            paint_idx=len(video_layers)
+            cmd += ['-framerate',str(fps),'-i',seq]
+            sound_idx=paint_idx+1
+            if has_generated: cmd += ['-i',sound]
+
+            filters=[]
+            if video_layers:
+                # Fit each recording to the target frame and hold its last frame to
+                # the requested project duration. Blend incrementally with weights
+                # chosen so N layers contribute equally rather than hiding each other.
+                for j in range(len(video_layers)):
+                    filters.append(
+                        f'[{j}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,'
+                        f'pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,'
+                        f'tpad=stop_mode=clone:stop_duration={duration:.6f},trim=duration={duration:.6f},setpts=PTS-STARTPTS[rv{j}]')
+                comp='rv0'
+                for j in range(1,len(video_layers)):
+                    k=j+1; outtag=f'rmix{j}'
+                    filters.append(f'[{comp}][rv{j}]blend=all_expr=\'A*{k-1}/{k}+B/{k}\':shortest=1[{outtag}]')
+                    comp=outtag
+                filters.append(f'[{comp}][{paint_idx}:v]overlay=0:0:shortest=1[v]')
             else:
-                cmd += ['-framerate',str(fps),'-i',seq]
-                if has_generated:cmd += ['-i',sound]
-                cmd += ['-map','0:v:0']
-                if has_generated:cmd += ['-map','1:a:0']
+                filters.append(f'[{paint_idx}:v]format=rgba[v]')
+
+            audio_refs=[]
+            for j,src in enumerate(video_layers):
+                if _probe_has_audio(src):
+                    filters.append(f'[{j}:a]apad=whole_dur={duration:.6f},atrim=duration={duration:.6f},asetpts=PTS-STARTPTS[ra{j}]')
+                    audio_refs.append(f'[ra{j}]')
+            if has_generated:
+                filters.append(f'[{sound_idx}:a]apad=whole_dur={duration:.6f},atrim=duration={duration:.6f},asetpts=PTS-STARTPTS[rgen]')
+                audio_refs.append('[rgen]')
+            audio_map=None
+            if len(audio_refs)>1:
+                filters.append(''.join(audio_refs)+f'amix=inputs={len(audio_refs)}:normalize=0:dropout_transition=0[a]')
+                audio_map='[a]'
+            elif len(audio_refs)==1:
+                audio_map=audio_refs[0]
+
+            cmd += ['-filter_complex',';'.join(filters),'-map','[v]']
+            if audio_map: cmd += ['-map',audio_map]
             cmd += ['-t',f'{duration:.6f}','-r',str(fps),'-c:v',codec]
             if codec=='libx264':cmd += ['-pix_fmt','yuv420p','-crf','18','-preset','veryfast']
             else:cmd += ['-pix_fmt','yuv420p','-b:v','0','-crf','30']
-            if has_generated or (transparent and _probe_has_audio(self.base_clip)):
-                cmd += ['-c:a','aac' if ext!='.webm' else 'libopus','-b:a','192k']
+            if audio_map: cmd += ['-c:a','aac' if ext!='.webm' else 'libopus','-b:a','192k']
             cmd += [out]
             cp=subprocess.run(cmd,capture_output=True,text=True,timeout=max(60,int(duration*8)+30))
             if cp.returncode!=0: raise RuntimeError((cp.stderr or cp.stdout or 'FFmpeg failed')[-5000:])
@@ -1125,9 +1208,10 @@ class VideoClipStudio(QWidget):
             except Exception:pass
             self.last_rendered_video=str(out)
             self._save_host_state()
-            self.lbl_render.setText('Rendered: '+out)
+            self.lbl_render.setText(f'Rendered {len(video_layers)} recording layer(s): '+out)
             try:
                 if hasattr(self.parent(),'refresh'):self.parent().refresh()
             except Exception:pass
         except Exception as e: QMessageBox.warning(self,'Render video',str(e)); self.lbl_render.setText('Render failed.')
         finally: shutil.rmtree(tmp,ignore_errors=True)
+
