@@ -319,6 +319,12 @@ class GraphLane(QWidget):
 class VideoClipStudio(QWidget):
     """Project-aware Record / Import / Draw Video Clip workspace."""
 
+    # Thread-safe bridge for worker completion. Emitting a Qt signal from a plain
+    # Python worker thread queues delivery onto this widget's GUI thread; unlike
+    # QTimer.singleShot() created inside that worker, it does not require the
+    # worker thread to own a Qt event loop.
+    _worker_finished = pyqtSignal(object, object, object)
+
     def __init__(self, host, parent=None):
         super().__init__(parent)
         self.host = host
@@ -365,8 +371,36 @@ class VideoClipStudio(QWidget):
         self.draw_canvases: List[PaintCanvas] = []
         self._curves: Dict[str, List[float]] = {}
         self._current_curve_target = 'Layer Opacity'
+        self._worker_finished.connect(self._dispatch_worker_finished)
         self._build_ui()
         self.refresh_devices()
+
+    def _dispatch_worker_finished(self, callback, result, error):
+        """Deliver worker completion on the GUI thread."""
+        try:
+            if callable(callback):
+                callback(result, error)
+        except Exception as exc:
+            try: self.lbl_render.setText('Background media completion failed: '+str(exc))
+            except Exception: pass
+
+    def _run_media_worker(self, name: str, args_key, work, done):
+        """Run potentially slow media work without blocking Qt and always return to GUI safely."""
+        opt=getattr(self.host,'_scode_optimizer',None)
+        if opt is not None and hasattr(opt,'submit_pooled'):
+            opt.submit_pooled(name,args_key,work,policy='side_effect',format_id='video',side_effecting=True,callback=done,qt_callback=True)
+            return
+        import threading
+        def runner():
+            try:
+                result=work(); error=None
+            except Exception as exc:
+                result=''; error=str(exc)
+            try:
+                self._worker_finished.emit(done,result,error)
+            except Exception:
+                pass
+        threading.Thread(target=runner,daemon=True,name='GrooveboxMediaFinalize').start()
 
     # --------------------------- project paths
     def _project_path(self) -> Optional[str]:
@@ -999,9 +1033,14 @@ class VideoClipStudio(QWidget):
             cp=subprocess.run(cmd,capture_output=True,text=True)
             if cp.returncode!=0 or not os.path.isfile(tmp) or os.path.getsize(tmp)<1024:
                 raise RuntimeError((cp.stderr or 'FFmpeg V4L2 finalize failed').strip())
+            # Never publish the destination until the completed temporary MP4 is
+            # independently verified. This prevents a failed remux/probe from
+            # leaving a zero-byte or unreadable camera_*.mp4 in recordings/.
+            if not self._recording_video_probe_ok(tmp):
+                raise RuntimeError('Finalized temporary MP4 did not contain a readable positive-duration video stream.')
             os.replace(tmp,final)
-            if not self._recording_video_probe_ok(final):
-                raise RuntimeError('Final MP4 did not contain a readable positive-duration video stream after finalization.')
+            if not os.path.isfile(final) or os.path.getsize(final)<1024:
+                raise RuntimeError('Final MP4 publication failed or produced an empty file.')
             return final
 
         def done(result,error):
@@ -1012,11 +1051,15 @@ class VideoClipStudio(QWidget):
                     import groovebox_paths; groovebox_paths.index_file(out,'recording',self._project_path())
                 except Exception: pass
                 self._append_recording_path(out)
+                self._save_host_state()
                 dur=_probe_duration(out)
                 if dur>0: self.spin_duration.setValue(min(86400.0,dur))
                 self.lbl_source.setText('Source: '+out)
                 self.lbl_render.setText('Recorded + appended layer: '+os.path.basename(out))
             except Exception as e:
+                try:
+                    if final and os.path.isfile(final) and os.path.getsize(final)==0: os.remove(final)
+                except Exception: pass
                 self.lbl_render.setText('V4L2 recording failed: '+str(e))
                 QMessageBox.warning(self,'Camera recording failed',str(e))
             finally:
@@ -1032,15 +1075,7 @@ class VideoClipStudio(QWidget):
                         QTimer.singleShot(120,lambda:self._start_v4l2_capture(False))
                 except Exception: pass
 
-        opt=getattr(self.host,'_scode_optimizer',None)
-        if opt is not None and hasattr(opt,'submit_pooled'):
-            opt.submit_pooled('v4l2_finalize',(video,audio,final),work,policy='side_effect',format_id='video',side_effecting=True,callback=done,qt_callback=True)
-        else:
-            def runner():
-                try: result=work(); QTimer.singleShot(0,lambda r=result:done(r,None))
-                except Exception as exc: QTimer.singleShot(0,lambda e=str(exc):done('',e))
-            import threading
-            threading.Thread(target=runner,daemon=True).start()
+        self._run_media_worker('v4l2_finalize',(video,audio,final),work,done)
 
     def _camera_error(self, *args):
         text=''
@@ -1251,35 +1286,60 @@ class VideoClipStudio(QWidget):
         n=int(getattr(self,'_sw_frame_index',0)); ff=_ffmpeg()
         if not d or not ff or n < 1:
             self.lbl_render.setText('Camera recording produced no frames.')
+            self._record_path=''; self._record_final_path=''
             return
         fps=max(1,min(60,int(self.spin_fps.value()) if hasattr(self,'spin_fps') else 24))
         audio=os.path.join(d,'audio.s16le')
         tmp=final+'.part.mp4'
-        cmd=[ff,'-y','-v','error','-framerate',str(fps),'-i',os.path.join(d,'frame_%08d.jpg')]
-        if os.path.isfile(audio) and os.path.getsize(audio)>0:
-            cmd += ['-f','s16le','-ar',str(self._sw_audio_rate),'-ac',str(self._sw_audio_channels),'-i',audio]
-        cmd += ['-c:v','libx264','-preset','veryfast','-pix_fmt','yuv420p']
-        if os.path.isfile(audio) and os.path.getsize(audio)>0:
-            cmd += ['-c:a','aac','-b:a','192k','-shortest']
-        cmd += ['-movflags','+faststart',tmp]
-        try:
-            cp=subprocess.run(cmd,capture_output=True,text=True,timeout=300)
+        audio_rate=int(getattr(self,'_sw_audio_rate',48000) or 48000)
+        audio_channels=max(1,int(getattr(self,'_sw_audio_channels',1) or 1))
+        self.lbl_render.setText('Finalizing camera recording…')
+
+        def work():
+            cmd=[ff,'-y','-v','error','-framerate',str(fps),'-i',os.path.join(d,'frame_%08d.jpg')]
+            has_audio=os.path.isfile(audio) and os.path.getsize(audio)>0
+            if has_audio:
+                cmd += ['-f','s16le','-ar',str(audio_rate),'-ac',str(audio_channels),'-i',audio]
+            cmd += ['-c:v','libx264','-preset','veryfast','-pix_fmt','yuv420p']
+            if has_audio:
+                cmd += ['-c:a','aac','-b:a','192k','-shortest']
+            cmd += ['-movflags','+faststart',tmp]
+            cp=subprocess.run(cmd,capture_output=True,text=True)
             if cp.returncode!=0 or not os.path.isfile(tmp) or os.path.getsize(tmp)<1024:
                 raise RuntimeError((cp.stderr or 'FFmpeg software recording failed').strip())
+            if not self._recording_video_probe_ok(tmp):
+                raise RuntimeError('Software recording finalized but did not contain a readable positive-duration video stream.')
             os.replace(tmp,final)
-            try: shutil.rmtree(d,ignore_errors=True)
-            except Exception: pass
+            if not os.path.isfile(final) or os.path.getsize(final)<1024:
+                raise RuntimeError('Final MP4 publication failed or produced an empty file.')
+            return final
+
+        def done(result,error):
             try:
-                import groovebox_paths; groovebox_paths.index_file(final,'recording',self._project_path())
-            except Exception: pass
-            self._append_recording_path(final); dur=_probe_duration(final)
-            if dur>0: self.spin_duration.setValue(min(86400.0,dur))
-            self.lbl_source.setText('Source: '+final); self.lbl_render.setText('Recorded: '+os.path.basename(final))
-        except Exception as e:
-            self.lbl_render.setText('Software recording failed: '+str(e))
-            QMessageBox.warning(self,'Camera recording failed',str(e))
-        finally:
-            self._record_path=''; self._record_final_path=''
+                if error is not None: raise RuntimeError(str(error))
+                out=str(result or final)
+                try:
+                    import groovebox_paths; groovebox_paths.index_file(out,'recording',self._project_path())
+                except Exception: pass
+                self._append_recording_path(out); self._save_host_state()
+                dur=_probe_duration(out)
+                if dur>0: self.spin_duration.setValue(min(86400.0,dur))
+                self.lbl_source.setText('Source: '+out); self.lbl_render.setText('Recorded + appended layer: '+os.path.basename(out))
+            except Exception as e:
+                try:
+                    if final and os.path.isfile(final) and os.path.getsize(final)==0: os.remove(final)
+                except Exception: pass
+                self.lbl_render.setText('Software recording failed: '+str(e))
+                QMessageBox.warning(self,'Camera recording failed',str(e))
+            finally:
+                try:
+                    if tmp and os.path.isfile(tmp): os.remove(tmp)
+                except Exception: pass
+                try: shutil.rmtree(d,ignore_errors=True)
+                except Exception: pass
+                self._record_path=''; self._record_final_path=''
+
+        self._run_media_worker('software_record_finalize',(d,final,n,fps),work,done)
 
     def _record_format_candidates(self, recdir: str, stamp: str):
         """Return backend-supported live recorder candidates in preference order.
@@ -1526,6 +1586,8 @@ class VideoClipStudio(QWidget):
                 if cp.returncode==0 and os.path.isfile(tmp) and os.path.getsize(tmp)>1024:
                     if self._recording_video_probe_ok(tmp):
                         os.replace(tmp,final)
+                        if not os.path.isfile(final) or os.path.getsize(final)<1024:
+                            raise RuntimeError('Final MP4 publication failed or produced an empty file.')
                         try: os.remove(src)
                         except Exception: pass
                         return final
@@ -1695,6 +1757,7 @@ class VideoClipStudio(QWidget):
                     import groovebox_paths; groovebox_paths.index_file(out,'recording',self._project_path())
                 except Exception: pass
                 self._append_recording_path(out)
+                self._save_host_state()
                 d=_probe_duration(out)
                 if d>0:self.spin_duration.setValue(min(86400.0,d))
                 self.lbl_source.setText('Source: '+out)
@@ -1705,17 +1768,7 @@ class VideoClipStudio(QWidget):
             finally:
                 self._recorder=None; self._record_audio_input=None
 
-        opt=getattr(self.host,'_scode_optimizer',None)
-        if opt is not None and hasattr(opt,'submit_pooled'):
-            opt.submit_pooled('qt_record_finalize',(src_path,),work,policy='side_effect',format_id='video',side_effecting=True,callback=done,qt_callback=True)
-        else:
-            def runner():
-                try:
-                    result=work(); QTimer.singleShot(0,lambda r=result:done(r,None))
-                except Exception as exc:
-                    QTimer.singleShot(0,lambda e=str(exc):done('',e))
-            import threading
-            threading.Thread(target=runner,daemon=True).start()
+        self._run_media_worker('qt_record_finalize',(src_path,),work,done)
 
     # --------------------------- paint / graph state
     def _set_color_button(self):

@@ -19839,6 +19839,121 @@ class WavetableProjector(QWidget):
         p.end()
 
 
+class _MainWindowRelaunchFilter(QObject):
+    """Adds one lightweight 'Relaunch Main Window' control to Groovebox subwindows.
+
+    Installed once on QApplication so dynamically-created dialogs/windows receive
+    the same control automatically.  The button only reveals/activates the
+    already-running main Groovebox window; it never starts a duplicate process.
+    """
+
+    _BUTTON_NAME = "grooveboxRelaunchMainWindowButton"
+
+    def __init__(self, main_window):
+        super().__init__(main_window)
+        self._main_ref = weakref.ref(main_window)
+
+    @staticmethod
+    def _eligible_window(obj):
+        if not isinstance(obj, (QDialog, QMainWindow)):
+            return False
+        # Native utility dialogs are deliberately left untouched; their platform
+        # layouts are not owned by Groovebox.  All Groovebox-created dialogs and
+        # top-level windows are covered, including dynamically-created ones.
+        if isinstance(obj, (QMessageBox, QFileDialog, QInputDialog)):
+            return False
+        return True
+
+    def _button_for(self, window):
+        try:
+            button = window.findChild(QPushButton, self._BUTTON_NAME)
+            if button is not None:
+                return button
+            button = QPushButton("↩ Relaunch Main Window", window)
+            button.setObjectName(self._BUTTON_NAME)
+            button.setToolTip(
+                "Show and activate the already-running Mathematician's Groovebox main window. "
+                "This does not launch a duplicate process or close this subwindow."
+            )
+            button.setAutoDefault(False)
+            button.setDefault(False)
+            button.setMinimumWidth(178)
+            button.setMaximumHeight(30)
+            button.setStyleSheet(
+                "QPushButton#grooveboxRelaunchMainWindowButton {"
+                " background: rgba(28,28,28,220); color: #d8d8d8;"
+                " border: 1px solid #777; border-radius: 4px; padding: 4px 9px; }"
+                "QPushButton#grooveboxRelaunchMainWindowButton:hover {"
+                " background: rgba(52,52,52,235); color: #f2f2f2; border-color: #aaa; }"
+            )
+            button.clicked.connect(self._relaunch_main)
+            button.show()
+            button.raise_()
+            return button
+        except Exception:
+            return None
+
+    def _position_button(self, window):
+        button = self._button_for(window)
+        if button is None:
+            return
+        try:
+            button.adjustSize()
+            margin = 10
+            x = max(margin, int(window.width()) - int(button.width()) - margin)
+            # Overlay rather than modifying each subwindow's layout.  This keeps
+            # legacy dialogs structurally unchanged and makes the feature work on
+            # every future dynamically-created Groovebox subwindow as well.
+            button.move(x, margin)
+            button.raise_()
+        except Exception:
+            pass
+
+    def _relaunch_main(self):
+        main = self._main_ref()
+        if main is None:
+            return
+        try:
+            main.show()
+            if main.isMinimized():
+                main.showNormal()
+            else:
+                main.setWindowState(main.windowState() & ~Qt.WindowState.WindowMinimized)
+            main.raise_()
+            main.activateWindow()
+            handle = main.windowHandle()
+            if handle is not None and hasattr(handle, "requestActivate"):
+                handle.requestActivate()
+        except Exception:
+            pass
+
+        # A queued second request is considerably more reliable on Wayland after
+        # the button's mouse-release event has returned to the compositor.
+        def _activate_again():
+            try:
+                main.show()
+                main.raise_()
+                main.activateWindow()
+                handle = main.windowHandle()
+                if handle is not None and hasattr(handle, "requestActivate"):
+                    handle.requestActivate()
+            except Exception:
+                pass
+        QTimer.singleShot(0, _activate_again)
+        QTimer.singleShot(80, _activate_again)
+
+    def eventFilter(self, obj, event):
+        try:
+            main = self._main_ref()
+            if main is not None and obj is not main and self._eligible_window(obj):
+                et = event.type()
+                if et in (QEvent.Type.Show, QEvent.Type.Resize, QEvent.Type.WindowActivate):
+                    self._position_button(obj)
+        except Exception:
+            pass
+        return False
+
+
 class MathematiciansGrooveboxApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -19869,6 +19984,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.move(avail.center().x() - self.width() // 2, avail.center().y() - self.height() // 2)
         else:
             self.resize(1300, 950)
+        # SUBWINDOW_RETURN_2026: one QApplication-level filter adds a consistent
+        # Relaunch Main Window control to every Groovebox-owned dialog/window,
+        # including windows created later at runtime.
+        self._main_window_relaunch_filter = _MainWindowRelaunchFilter(self)
+        try:
+            _app = QApplication.instance()
+            if _app is not None:
+                _app.installEventFilter(self._main_window_relaunch_filter)
+                for _w in _app.topLevelWidgets():
+                    if _w is not self and self._main_window_relaunch_filter._eligible_window(_w):
+                        self._main_window_relaunch_filter._position_button(_w)
+        except Exception:
+            pass
+
         self.playlist_window = None
         self.patch_bay_dialog = None
         self.synth_editor_window = None
