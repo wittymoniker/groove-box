@@ -345,6 +345,8 @@ class VideoClipStudio(QWidget):
         self._sw_audio_rate = 48000
         self._sw_audio_channels = 1
         self._sw_started_mic = False
+        self._last_video_frame_t = 0.0
+        self._camera_watchdog_generation = 0
         self.last_rendered_video = ''
         self.recording_layers: List[str] = []
         self.draw_layers: List[Dict[str, Any]] = []
@@ -435,11 +437,13 @@ class VideoClipStudio(QWidget):
         self.btn_append_recording=QPushButton('＋ Append Recording Layer…'); self.btn_append_recording.clicked.connect(self._append_recording_layer_dialog); rrow.addWidget(self.btn_append_recording)
         self.btn_remove_recording=QPushButton('− Remove Recording Layer Tab'); self.btn_remove_recording.clicked.connect(self._remove_recording_layer_tab); rrow.addWidget(self.btn_remove_recording)
         self.btn_clear_recordings=QPushButton('Clear Recordings Table'); self.btn_clear_recordings.clicked.connect(self._clear_recordings_table); rrow.addWidget(self.btn_clear_recordings)
+        self.btn_remove_project_recording=QPushButton('Remove from Project'); self.btn_remove_project_recording.clicked.connect(lambda: self._delete_selected_recording(False)); rrow.addWidget(self.btn_remove_project_recording)
+        self.btn_delete_recording_file=QPushButton('Delete File + Entry'); self.btn_delete_recording_file.clicked.connect(lambda: self._delete_selected_recording(True)); rrow.addWidget(self.btn_delete_recording_file)
         cl.addLayout(rrow,5,0,1,2)
         self.recording_tabs.setMinimumHeight(100)
         self.recordings_table.setMinimumHeight(125)
         self.recordings_table.horizontalHeader().setStretchLastSection(True)
-        for _b in (self.btn_record, bimport, btablet, bclearbase, self.btn_append_recording, self.btn_remove_recording, self.btn_clear_recordings):
+        for _b in (self.btn_record, bimport, btablet, bclearbase, self.btn_append_recording, self.btn_remove_recording, self.btn_clear_recordings, self.btn_remove_project_recording, self.btn_delete_recording_file):
             _b.setMinimumHeight(34)
             _b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         ll.addWidget(capture)
@@ -550,6 +554,35 @@ class VideoClipStudio(QWidget):
             j=max(0,min(i,len(self.recording_layers)-1)); self.recording_tabs.setCurrentIndex(j); self.base_clip=self.recording_layers[j]
         else:self.base_clip=''; self.lbl_source.setText('Source: draw-only (black background)')
         self._refresh_recordings_table(); self._save_host_state()
+    def _delete_selected_recording(self, delete_file: bool):
+        row=self.recordings_table.currentRow() if hasattr(self,'recordings_table') else -1
+        i=self.recording_tabs.currentIndex() if hasattr(self,'recording_tabs') else -1
+        if row >= 0: i=row
+        if not (0 <= i < len(self.recording_layers)):
+            QMessageBox.information(self,'Recording','Select a recording row or recording-layer tab first.'); return
+        path=os.path.abspath(self.recording_layers[i])
+        action='Delete the file from disk AND remove its project entry?' if delete_file else 'Remove this recording from the project but keep the file on disk?'
+        if QMessageBox.question(self,'Delete recording',f'{action}\n\n{path}',QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,QMessageBox.StandardButton.No)!=QMessageBox.StandardButton.Yes:
+            return
+        try:
+            import groovebox_paths; groovebox_paths.unindex_file(path,self._project_path())
+        except Exception: pass
+        # Remove every in-editor reference to this path.
+        self.recording_layers=[p for p in self.recording_layers if os.path.abspath(str(p)) != path]
+        while self.recording_tabs.count(): self.recording_tabs.removeTab(0)
+        old=list(self.recording_layers); self.recording_layers=[]
+        for p in old: self._append_recording_path(p)
+        if delete_file:
+            try:
+                if os.path.isfile(path): os.remove(path)
+            except Exception as e:
+                QMessageBox.warning(self,'Delete file failed',str(e))
+        if os.path.abspath(str(self.base_clip or '')) == path:
+            self.base_clip=self.recording_layers[0] if self.recording_layers else ''
+            self.lbl_source.setText('Source: '+self.base_clip if self.base_clip else 'Source: draw-only (black background)')
+        self._refresh_recordings_table(); self._save_host_state()
+        self.lbl_render.setText(('Deleted file + project entry: ' if delete_file else 'Removed project entry; file kept: ')+os.path.basename(path))
+
     def _clear_recordings_table(self):
         self.recordings_table.setRowCount(0); self.lbl_render.setText('Recordings Table cleared. Recording files and layer tabs were not deleted.')
     def _refresh_recordings_table(self):
@@ -616,13 +649,19 @@ class VideoClipStudio(QWidget):
         self.lbl_render.setText(f'Devices refreshed · {len(self._camera_devices)} camera(s), {len(self._audio_devices)} mic(s), {max(0,self.cmb_tablet.count()-1)} mounted tablet/media source(s).')
 
     def _on_video_frame(self, frame):
-        """Paint camera frames inside the normal Qt widget hierarchy."""
+        """Paint camera frames inside the normal Qt widget hierarchy and feed recording."""
         try:
             if frame is None or not frame.isValid():
                 return
+            # Mark receipt before conversion: some backends can deliver a valid GPU-backed
+            # frame whose first toImage() conversion is temporarily unavailable.  The old
+            # code never updated this timestamp at all, so the watchdog always reported
+            # a dead camera even when frames were flowing.
+            self._last_video_frame_t = time.monotonic()
             image = frame.toImage()
             if image.isNull():
                 return
+            self._last_video_image = image.copy()
             target = self.video_preview.size()
             pix = QPixmap.fromImage(image).scaled(
                 target, Qt.AspectRatioMode.KeepAspectRatio,
@@ -642,6 +681,63 @@ class VideoClipStudio(QWidget):
         except Exception:
             pass
 
+    def _configure_camera_for_preview(self, camera, device):
+        """Choose a conservative supported camera format for reliable sink delivery."""
+        try:
+            formats = list(device.videoFormats())
+        except Exception:
+            formats = []
+        if not formats:
+            return
+        def score(fmt):
+            try:
+                r=fmt.resolution(); w=int(r.width()); h=int(r.height())
+                maxfps=float(fmt.maxFrameRate() or 0.0); minfps=float(fmt.minFrameRate() or 0.0)
+            except Exception:
+                return (10**12, 10**12)
+            # Prefer common 720p/480p capture sizes and <=30fps for backend compatibility.
+            target=min(abs(w-1280)+abs(h-720), abs(w-640)+abs(h-480))
+            fps_penalty=0 if (maxfps >= 15.0 and minfps <= 30.0) else 100000
+            return (fps_penalty + target, abs(maxfps-30.0))
+        for fmt in sorted(formats, key=score):
+            try:
+                camera.setCameraFormat(fmt)
+                return
+            except Exception:
+                continue
+
+    def _attach_video_sink(self):
+        if self._capture_session is None or self._video_sink is None:
+            raise RuntimeError('Camera capture session/video sink is unavailable.')
+        # Qt 6 exposes setVideoSink directly.  Keep setVideoOutput as compatibility
+        # fallback for bindings/backends where only the QObject preview setter exists.
+        attached=False
+        if hasattr(self._capture_session, 'setVideoSink'):
+            try:
+                self._capture_session.setVideoSink(self._video_sink); attached=True
+            except Exception:
+                attached=False
+        if not attached:
+            self._capture_session.setVideoOutput(self._video_sink)
+        try:
+            got=self._capture_session.videoSink() if hasattr(self._capture_session,'videoSink') else None
+            if got is not None and got is not self._video_sink:
+                raise RuntimeError('Qt camera preview sink did not attach to the capture session.')
+        except RuntimeError:
+            raise
+        except Exception:
+            pass
+
+    def _camera_error(self, *args):
+        text=''
+        try: text=str(self._camera.errorString() or '') if self._camera else ''
+        except Exception: pass
+        if not text and args:
+            text=' '.join(str(x) for x in args if x is not None)
+        if text:
+            try: self.lbl_render.setText('Camera error: '+text)
+            except Exception: pass
+
     def _toggle_camera_preview(self, on: bool):
         if not on:
             try:
@@ -656,14 +752,37 @@ class VideoClipStudio(QWidget):
         try:
             idx=max(0,min(self.cmb_camera.currentIndex(),len(self._camera_devices)-1))
             self._capture_session=QMediaCaptureSession(self)
-            self._camera=QCamera(self._camera_devices[idx], self)
+            dev=self._camera_devices[idx]
+            self._camera=QCamera(dev, self)
+            self._configure_camera_for_preview(self._camera, dev)
+            try: self._camera.errorOccurred.connect(self._camera_error)
+            except Exception: pass
             self._capture_session.setCamera(self._camera)
             if self._video_sink is None:
                 raise RuntimeError('Qt video sink is unavailable for scroll-safe camera preview.')
-            self._capture_session.setVideoOutput(self._video_sink)
+            self._attach_video_sink()
+            self._last_video_frame_t = 0.0
+            self._camera_watchdog_generation += 1
+            _gen = self._camera_watchdog_generation
             self._camera.start(); self.btn_camera_preview.setText('■ Stop Camera Preview')
+            QTimer.singleShot(1800, lambda g=_gen: self._camera_frame_watchdog(g))
         except Exception as e:
             self.btn_camera_preview.setChecked(False); QMessageBox.warning(self,'Camera preview',str(e))
+
+    def _camera_frame_watchdog(self, generation: int):
+        if generation != int(getattr(self, '_camera_watchdog_generation', 0)):
+            return
+        if self._camera is None:
+            return
+        last=float(getattr(self,'_last_video_frame_t',0.0) or 0.0)
+        if last <= 0.0:
+            self.video_preview.clear()
+            self.video_preview.setText('Camera started, but no video frames were received. Try Refresh devices or another camera/device.')
+            try:
+                err=str(self._camera.errorString() or '') if self._camera else ''
+            except Exception:
+                err=''
+            self.lbl_render.setText('Camera backend opened but delivered no frames.' + ((' '+err) if err else ''))
 
     def _toggle_mic_preview(self, on: bool):
         self._stop_mic_source()
@@ -729,7 +848,15 @@ class VideoClipStudio(QWidget):
                 self._read_mic_level()
         except Exception:
             pass
-        self.mic_meter.setValue(int(round(self._mic_level*100)))
+        # Human-readable meter: map -60 dBFS..0 dBFS to 0..100.  A linear
+        # amplitude meter makes normal microphone speech appear misleadingly tiny.
+        level=max(0.0,min(1.0,float(getattr(self,'_mic_level',0.0) or 0.0)))
+        if level <= 1e-6:
+            pct=0
+        else:
+            db=20.0*math.log10(level)
+            pct=int(round(max(0.0,min(100.0,(db+60.0)*(100.0/60.0)))))
+        self.mic_meter.setValue(pct)
 
     # --------------------------- import / record
     def import_video(self, tablet=False):
@@ -969,11 +1096,18 @@ class VideoClipStudio(QWidget):
             # Keep the selected camera visible while recording.
             if self._camera is None or self._capture_session is None:
                 idx=max(0,min(self.cmb_camera.currentIndex(),len(self._camera_devices)-1))
-                self._capture_session=QMediaCaptureSession(self); self._camera=QCamera(self._camera_devices[idx],self)
+                dev=self._camera_devices[idx]
+                self._capture_session=QMediaCaptureSession(self); self._camera=QCamera(dev,self)
+                self._configure_camera_for_preview(self._camera, dev)
+                try: self._camera.errorOccurred.connect(self._camera_error)
+                except Exception: pass
                 self._capture_session.setCamera(self._camera)
-                if self._video_sink is not None:
-                    self._capture_session.setVideoOutput(self._video_sink)
+                self._attach_video_sink()
+                self._last_video_frame_t=0.0
+                self._camera_watchdog_generation += 1
+                _gen=self._camera_watchdog_generation
                 self._camera.start()
+                QTimer.singleShot(1800, lambda g=_gen: self._camera_frame_watchdog(g))
             self._record_audio_input=None
             if self._audio_devices:
                 mi=max(0,min(self.cmb_mic.currentIndex(),len(self._audio_devices)-1))

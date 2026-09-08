@@ -133,6 +133,33 @@ def index_file(path: str, role: str, project_path: Optional[str]=None, project_n
     except Exception:
         pass
 
+def unindex_file(path: str, project_path: Optional[str]=None, project_name: Optional[str]=None) -> bool:
+    """Remove a file reference from the project index without deleting the file."""
+    try:
+        root=project_root(project_path, project_name); p=Path(path).resolve()
+        try: rel=str(p.relative_to(root.resolve()))
+        except Exception: rel=str(p)
+        ip=index_path(project_path, project_name)
+        if not ip.is_file(): return False
+        try: doc=json.loads(ip.read_text(encoding='utf-8'))
+        except Exception: return False
+        files=doc.get('files',{}) if isinstance(doc,dict) else {}
+        changed=False
+        if isinstance(files,dict):
+            for key in list(files):
+                try:
+                    kabs=(root/key).resolve() if not os.path.isabs(str(key)) else Path(key).resolve()
+                    if str(key)==rel or kabs==p:
+                        files.pop(key,None); changed=True
+                except Exception:
+                    if str(key)==rel:
+                        files.pop(key,None); changed=True
+        if changed:
+            tmp=ip.with_suffix('.json.tmp'); tmp.write_text(json.dumps(doc,indent=2,sort_keys=True),encoding='utf-8'); os.replace(tmp,ip)
+        return changed
+    except Exception:
+        return False
+
 def ingest_file(source: str, role: str='sample', project_path: Optional[str]=None, project_name: Optional[str]=None, instrument: str='') -> str:
     src=Path(os.path.abspath(os.path.expanduser(str(source))))
     if not src.is_file(): raise FileNotFoundError(str(src))

@@ -83,6 +83,8 @@ class LayeredSignalLab(QWidget):
         self.btn_append_recording=QPushButton('＋ Append Recording Layer…'); self.btn_append_recording.clicked.connect(self._append_recording_layer); rr.addWidget(self.btn_append_recording)
         self.btn_remove_recording=QPushButton('− Remove Recording Layer Tab'); self.btn_remove_recording.clicked.connect(self._remove_recording_layer_tab); rr.addWidget(self.btn_remove_recording)
         self.btn_clear_recordings=QPushButton('Clear Recordings Table'); self.btn_clear_recordings.clicked.connect(self._clear_recordings_table); rr.addWidget(self.btn_clear_recordings)
+        self.btn_remove_project_recording=QPushButton('Remove from Project'); self.btn_remove_project_recording.clicked.connect(lambda: self._delete_selected_recording(False)); rr.addWidget(self.btn_remove_project_recording)
+        self.btn_delete_recording_file=QPushButton('Delete File + Entry'); self.btn_delete_recording_file.clicked.connect(lambda: self._delete_selected_recording(True)); rr.addWidget(self.btn_delete_recording_file)
         rbl.addLayout(rr); root.addWidget(recbox)
         self.tabs=QTabWidget(); self.tabs.setMinimumHeight(300); self.tabs.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Expanding); self.tabs.currentChanged.connect(self._sync_controls_from_layer); root.addWidget(self.tabs,1)
         cfg=QGroupBox('Selected layer / reconstruction'); f=QFormLayout(cfg)
@@ -172,6 +174,30 @@ class LayeredSignalLab(QWidget):
         if str(self.layers[i].get('kind',''))!='record':
             QMessageBox.information(self,'Remove Recording Layer','Select a Record layer tab first. Other layer types are left intact.'); return
         self._remove_layer()
+    def _delete_selected_recording(self, delete_file: bool):
+        rows=[(i,r) for i,r in enumerate(self.layers) if isinstance(r,dict) and str(r.get('kind',''))=='record']
+        row=self.recordings_table.currentRow() if hasattr(self,'recordings_table') else -1
+        idx=-1
+        if 0 <= row < len(rows): idx=rows[row][0]
+        elif 0 <= self.tabs.currentIndex() < len(self.layers) and str(self.layers[self.tabs.currentIndex()].get('kind',''))=='record': idx=self.tabs.currentIndex()
+        if idx < 0:
+            QMessageBox.information(self,'Recording','Select a recording row or Record layer tab first.'); return
+        path=os.path.abspath(str(self.layers[idx].get('path') or ''))
+        action='Delete the file from disk AND remove its project entry?' if delete_file else 'Remove this recording from the project but keep the file on disk?'
+        if QMessageBox.question(self,'Delete recording',f'{action}\n\n{path}',QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,QMessageBox.StandardButton.No)!=QMessageBox.StandardButton.Yes:
+            return
+        try:
+            import groovebox_paths; groovebox_paths.unindex_file(path,getattr(self.host,'_current_project_path',None))
+        except Exception: pass
+        self.tabs.removeTab(idx); self.layers.pop(idx); self.canvases.pop(idx)
+        if delete_file:
+            try:
+                if path and os.path.isfile(path): os.remove(path)
+            except Exception as e:
+                QMessageBox.warning(self,'Delete file failed',str(e))
+        self._sync_controls_from_layer(); self._state_changed(); self._refresh_recordings_table()
+        self.report.setPlainText(('Deleted file + project entry: ' if delete_file else 'Removed project entry; file kept: ')+path)
+
     def _clear_recordings_table(self):
         self.recordings_table.setRowCount(0)
         self.report.setPlainText('Recordings Table cleared. Source files and layer tabs were not deleted.')
