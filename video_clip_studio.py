@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from PyQt6.QtCore import Qt, QTimer, QPointF, QUrl, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QPointF, QUrl, pyqtSignal, QProcess
 from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QTransform, QBrush
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QLabel,
@@ -347,6 +347,16 @@ class VideoClipStudio(QWidget):
         self._sw_started_mic = False
         self._last_video_frame_t = 0.0
         self._camera_watchdog_generation = 0
+        # Linux/Fedora camera fallback: FFmpeg/V4L2 owns video capture so we do
+        # not depend on Qt/GStreamer delivering QVideoSink frames.
+        self._v4l_proc = None
+        self._v4l_buf = bytearray()
+        self._v4l_device = ''
+        self._v4l_recording = False
+        self._v4l_record_dir = ''
+        self._v4l_video_tmp = ''
+        self._v4l_audio_path = ''
+        self._v4l_frame_count = 0
         self.last_rendered_video = ''
         self.recording_layers: List[str] = []
         self.draw_layers: List[Dict[str, Any]] = []
@@ -728,6 +738,255 @@ class VideoClipStudio(QWidget):
         except Exception:
             pass
 
+    def _selected_v4l2_device(self) -> str:
+        """Best-effort mapping from the selected Qt camera to a Linux V4L2 node."""
+        if not sys.platform.startswith('linux'):
+            return ''
+        # QCameraDevice.id() is normally the actual /dev/videoN path on Linux.
+        try:
+            if self._camera_devices:
+                idx=max(0,min(self.cmb_camera.currentIndex(),len(self._camera_devices)-1))
+                dev=self._camera_devices[idx]
+                raw=dev.id()
+                if isinstance(raw,(bytes,bytearray)):
+                    ident=bytes(raw).decode('utf-8','ignore')
+                else:
+                    try: ident=bytes(raw).decode('utf-8','ignore')
+                    except Exception: ident=str(raw or '')
+                if ident.startswith('/dev/video') and os.path.exists(ident):
+                    return ident
+        except Exception:
+            pass
+        # Prefer stable by-id symlinks, then direct nodes.
+        candidates=[]
+        try:
+            import glob
+            candidates += sorted(glob.glob('/dev/v4l/by-id/*'))
+            candidates += sorted(glob.glob('/dev/video*'))
+        except Exception:
+            pass
+        seen=set()
+        for c in candidates:
+            try:
+                real=os.path.realpath(c)
+                if real in seen or not os.path.exists(c):
+                    continue
+                seen.add(real)
+                return c
+            except Exception:
+                continue
+        return ''
+
+    def _stop_v4l2_process(self, wait_ms: int = 2500):
+        proc=getattr(self,'_v4l_proc',None)
+        self._v4l_proc=None
+        if proc is None:
+            return
+        try:
+            if proc.state() != QProcess.ProcessState.NotRunning:
+                proc.write(b'q\n')
+                proc.waitForBytesWritten(300)
+                if not proc.waitForFinished(wait_ms):
+                    proc.terminate()
+                    if not proc.waitForFinished(1200):
+                        proc.kill(); proc.waitForFinished(800)
+        except Exception:
+            try: proc.kill()
+            except Exception: pass
+
+    def _read_v4l2_preview(self):
+        proc=getattr(self,'_v4l_proc',None)
+        if proc is None:
+            return
+        try:
+            chunk=bytes(proc.readAllStandardOutput())
+        except Exception:
+            chunk=b''
+        if not chunk:
+            return
+        buf=self._v4l_buf
+        buf.extend(chunk)
+        # Keep parsing bounded even if a corrupt stream appears.
+        if len(buf) > 8*1024*1024:
+            del buf[:-2*1024*1024]
+        while True:
+            a=buf.find(b'\xff\xd8')
+            if a < 0:
+                if len(buf)>1: del buf[:-1]
+                break
+            b=buf.find(b'\xff\xd9',a+2)
+            if b < 0:
+                if a>0: del buf[:a]
+                break
+            jpg=bytes(buf[a:b+2]); del buf[:b+2]
+            image=QImage.fromData(jpg,'JPG')
+            if image.isNull():
+                continue
+            self._last_video_frame_t=time.monotonic()
+            self._last_video_image=image.copy()
+            self._v4l_frame_count += 1
+            target=self.video_preview.size()
+            pix=QPixmap.fromImage(image).scaled(
+                target, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
+            self.video_preview.setPixmap(pix)
+
+    def _v4l2_process_error(self, err=None):
+        proc=getattr(self,'_v4l_proc',None)
+        text=''
+        try: text=bytes(proc.readAllStandardError()).decode('utf-8','replace').strip() if proc else ''
+        except Exception: pass
+        if not text: text=str(err or 'V4L2 camera process error')
+        try: self.lbl_render.setText('Camera/V4L2 error: '+text[-500:])
+        except Exception: pass
+
+    def _start_v4l2_capture(self, record: bool=False, recdir: str='', stamp: str='') -> bool:
+        """Start one FFmpeg/V4L2 process that feeds the QLabel preview and optionally records video."""
+        if not sys.platform.startswith('linux') or not _ffmpeg():
+            return False
+        dev=self._selected_v4l2_device()
+        if not dev:
+            return False
+        self._stop_v4l2_process()
+        # A Qt camera cannot hold the V4L2 node at the same time.
+        try:
+            if self._camera: self._camera.stop()
+        except Exception: pass
+        self._camera=None; self._capture_session=None
+        self._v4l_device=dev; self._v4l_buf=bytearray(); self._v4l_frame_count=0
+        self._last_video_frame_t=0.0
+        ff=_ffmpeg(); proc=QProcess(self)
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
+        proc.readyReadStandardOutput.connect(self._read_v4l2_preview)
+        proc.errorOccurred.connect(self._v4l2_process_error)
+        args=['-hide_banner','-loglevel','error','-y','-f','v4l2','-i',dev]
+        # First output is a low-cost preview stream. It is generated from the same
+        # camera input as recording, so preview and saved video cannot diverge.
+        args += ['-map','0:v:0','-vf','fps=12,scale=640:-2','-c:v','mjpeg','-q:v','6','-f','image2pipe','pipe:1']
+        if record:
+            if not recdir: recdir=self._recordings_dir()
+            os.makedirs(recdir,exist_ok=True)
+            if not stamp: stamp=time.strftime('%Y%m%d_%H%M%S')
+            d=tempfile.mkdtemp(prefix=f'groovebox_v4l2_{stamp}_',dir=recdir)
+            self._v4l_record_dir=d
+            self._v4l_video_tmp=os.path.join(d,'video.mkv')
+            self._v4l_audio_path=os.path.join(d,'audio.s16le')
+            self._record_final_path=os.path.join(recdir,f'camera_{stamp}.mp4')
+            self._record_path=self._record_final_path
+            fps=max(1,min(60,int(self.spin_fps.value()) if hasattr(self,'spin_fps') else 24))
+            args += ['-map','0:v:0','-an','-r',str(fps),'-c:v','libx264','-preset','veryfast','-pix_fmt','yuv420p','-f','matroska',self._v4l_video_tmp]
+            # Record the selected microphone through Qt into raw PCM; this avoids
+            # guessing PipeWire/Pulse source names in FFmpeg.
+            self._sw_started_mic=False; self._sw_audio_fh=None
+            try:
+                if self._mic_io is None and self._audio_devices:
+                    mi=max(0,min(self.cmb_mic.currentIndex(),len(self._audio_devices)-1))
+                    adev=self._audio_devices[mi]; fmt=adev.preferredFormat()
+                    self._mic_source=QAudioSource(adev,fmt,self); self._mic_format=fmt
+                    self._mic_io=self._mic_source.start(); self._mic_io.readyRead.connect(self._read_mic_level)
+                    self._sw_started_mic=True
+                if self._mic_io is not None:
+                    self._sw_audio_rate=int(self._mic_format.sampleRate()) or 48000
+                    self._sw_audio_channels=max(1,int(self._mic_format.channelCount()))
+                    self._sw_audio_fh=open(self._v4l_audio_path,'wb')
+            except Exception:
+                self._sw_audio_fh=None
+            self._v4l_recording=True
+        else:
+            self._v4l_recording=False
+        self._v4l_proc=proc
+        proc.start(ff,args)
+        if not proc.waitForStarted(1800):
+            self._v4l_proc=None
+            return False
+        self.video_preview.setText(f'Opening {dev}…')
+        self.lbl_render.setText(('Recording' if record else 'Previewing')+f' camera through FFmpeg/V4L2: {dev}')
+        self._camera_watchdog_generation += 1
+        gen=self._camera_watchdog_generation
+        QTimer.singleShot(2200,lambda g=gen:self._v4l2_watchdog(g))
+        return True
+
+    def _v4l2_watchdog(self, generation: int):
+        if generation != int(getattr(self,'_camera_watchdog_generation',0)):
+            return
+        if self._v4l_proc is None:
+            return
+        if int(getattr(self,'_v4l_frame_count',0)) > 0:
+            return
+        text='FFmpeg opened the camera device but no V4L2 frames arrived.'
+        try:
+            err=bytes(self._v4l_proc.readAllStandardError()).decode('utf-8','replace').strip()
+            if err: text += ' '+err[-500:]
+        except Exception: pass
+        self.video_preview.clear(); self.video_preview.setText(text)
+        self.lbl_render.setText(text)
+
+    def _finish_v4l2_recording(self):
+        if not getattr(self,'_v4l_recording',False):
+            return
+        self._v4l_recording=False
+        self.lbl_render.setText('Finalizing V4L2 camera recording…')
+        self._stop_v4l2_process(3500)
+        try:
+            if self._sw_audio_fh:
+                self._sw_audio_fh.flush(); self._sw_audio_fh.close()
+        except Exception: pass
+        self._sw_audio_fh=None
+        if getattr(self,'_sw_started_mic',False):
+            try:
+                if self._mic_source: self._mic_source.stop()
+            except Exception: pass
+            self._mic_source=None; self._mic_io=None; self._sw_started_mic=False
+        video=str(getattr(self,'_v4l_video_tmp','') or '')
+        audio=str(getattr(self,'_v4l_audio_path','') or '')
+        final=str(getattr(self,'_record_final_path','') or '')
+        d=str(getattr(self,'_v4l_record_dir','') or '')
+        ff=_ffmpeg(); tmp=final+'.part.mp4' if final else ''
+        try:
+            if not video or not os.path.isfile(video) or os.path.getsize(video)<1024:
+                raise RuntimeError('V4L2 camera recording produced no usable video stream.')
+            cmd=[ff,'-y','-v','error','-i',video]
+            has_audio=bool(audio and os.path.isfile(audio) and os.path.getsize(audio)>0)
+            if has_audio:
+                cmd += ['-f','s16le','-ar',str(self._sw_audio_rate),'-ac',str(self._sw_audio_channels),'-i',audio]
+            cmd += ['-map','0:v:0']
+            if has_audio: cmd += ['-map','1:a:0']
+            cmd += ['-c:v','copy']
+            if has_audio: cmd += ['-c:a','aac','-b:a','192k','-shortest']
+            cmd += ['-movflags','+faststart',tmp]
+            cp=subprocess.run(cmd,capture_output=True,text=True,timeout=300)
+            if cp.returncode!=0 or not os.path.isfile(tmp) or os.path.getsize(tmp)<1024:
+                raise RuntimeError((cp.stderr or 'FFmpeg V4L2 finalize failed').strip())
+            os.replace(tmp,final)
+            if not self._wait_for_recording_container(final, 6.0):
+                raise RuntimeError('Final MP4 did not contain a readable positive-duration video stream after finalization.')
+            try:
+                import groovebox_paths; groovebox_paths.index_file(final,'recording',self._project_path())
+            except Exception: pass
+            self._append_recording_path(final)
+            dur=_probe_duration(final)
+            if dur>0: self.spin_duration.setValue(min(3600.0,dur))
+            self.lbl_source.setText('Source: '+final)
+            self.lbl_render.setText('Recorded + appended layer: '+os.path.basename(final))
+        except Exception as e:
+            self.lbl_render.setText('V4L2 recording failed: '+str(e))
+            QMessageBox.warning(self,'Camera recording failed',str(e))
+        finally:
+            try:
+                if tmp and os.path.isfile(tmp): os.remove(tmp)
+            except Exception: pass
+            try: shutil.rmtree(d,ignore_errors=True)
+            except Exception: pass
+            self._v4l_record_dir=''; self._v4l_video_tmp=''; self._v4l_audio_path=''
+            self._record_path=''; self._record_final_path=''
+            # If the user had Preview enabled before recording, resume the same
+            # direct V4L2 preview after the recording file has finalized.
+            try:
+                if self.btn_camera_preview.isChecked():
+                    QTimer.singleShot(120, lambda: self._start_v4l2_capture(False))
+            except Exception:
+                pass
+
     def _camera_error(self, *args):
         text=''
         try: text=str(self._camera.errorString() or '') if self._camera else ''
@@ -740,6 +999,8 @@ class VideoClipStudio(QWidget):
 
     def _toggle_camera_preview(self, on: bool):
         if not on:
+            self._camera_watchdog_generation += 1
+            self._stop_v4l2_process()
             try:
                 if self._camera: self._camera.stop()
             except Exception: pass
@@ -747,6 +1008,10 @@ class VideoClipStudio(QWidget):
             try: self.video_preview.clear(); self.video_preview.setText('Camera preview idle')
             except Exception: pass
             self.btn_camera_preview.setText('▶ Camera Preview'); return
+        # Fedora/Linux: prefer direct V4L2 capture. Qt/GStreamer can report a
+        # started camera while never forwarding frames to QVideoSink.
+        if sys.platform.startswith('linux') and self._start_v4l2_capture(False):
+            self.btn_camera_preview.setText('■ Stop Camera Preview'); return
         if not QT_MULTIMEDIA or not self._camera_devices:
             self.btn_camera_preview.setChecked(False); QMessageBox.information(self,'Camera preview','No Qt Multimedia camera is available.'); return
         try:
@@ -1090,6 +1355,13 @@ class VideoClipStudio(QWidget):
     def _toggle_record(self,on:bool):
         if not on:
             self._stop_recording(); return
+        # Linux/Fedora: record directly from V4L2 with bundled FFmpeg. This is
+        # independent of QVideoSink/GStreamer frame delivery and shares one camera
+        # input between live preview and the encoded file.
+        if sys.platform.startswith('linux') and _ffmpeg():
+            stamp=time.strftime('%Y%m%d_%H%M%S'); recdir=self._recordings_dir(); os.makedirs(recdir,exist_ok=True)
+            if self._start_v4l2_capture(True,recdir,stamp):
+                self.btn_record.setText('■ Stop Recording'); return
         if not QT_MULTIMEDIA or not self._camera_devices:
             self.btn_record.setChecked(False); QMessageBox.information(self,'Record','Qt Multimedia camera support is unavailable.'); return
         try:
@@ -1179,7 +1451,7 @@ class VideoClipStudio(QWidget):
         if not src or not os.path.isfile(src) or os.path.getsize(src) < 1024:
             return ''
         if os.path.abspath(src) == os.path.abspath(final):
-            return src if self._recording_container_ready(src) else ''
+            return src if self._wait_for_recording_container(src, 6.0) else ''
         ff=_ffmpeg()
         if not ff:
             return ''
@@ -1194,7 +1466,7 @@ class VideoClipStudio(QWidget):
                     os.replace(tmp,final)
                     try: os.remove(src)
                     except Exception: pass
-                    return final if self._recording_container_ready(final) else ''
+                    return final if self._wait_for_recording_container(final, 6.0) else ''
             except Exception:
                 pass
             try:
@@ -1203,6 +1475,10 @@ class VideoClipStudio(QWidget):
         return ''
 
     def _stop_recording(self):
+        if getattr(self, '_v4l_recording', False):
+            self.btn_record.setText('● Record Camera + Mic')
+            QTimer.singleShot(10, self._finish_v4l2_recording)
+            return
         if getattr(self, '_sw_recording', False):
             self.lbl_render.setText('Finalizing camera recording…')
             self.btn_record.setText('● Record Camera + Mic')
@@ -1231,12 +1507,55 @@ class VideoClipStudio(QWidget):
         if self._record_path:
             QTimer.singleShot(250, self._finish_recording)
 
-    def _recording_container_ready(self, path: str) -> bool:
-        """Return True only after the recorded container is parseable and stable.
+    def _recording_video_probe_ok(self, path: str) -> bool:
+        """True when ffprobe can see a real video stream with positive duration.
 
-        MP4 writes their index (`moov`) during finalization.  Merely seeing a file on
-        disk is not enough; require a successful media probe and a stable non-trivial
-        size before publishing it to Groovebox.
+        This is intentionally format-agnostic: a valid MP4/MOV/MKV produced by the
+        camera backend is accepted as soon as the file is parseable and contains a
+        usable video stream.  Do not reject a good capture merely because a specific
+        muxer/codec name differs from what Groovebox expected.
+        """
+        if not path or not os.path.isfile(path):
+            return False
+        try:
+            if os.path.getsize(path) < 1024:
+                return False
+        except Exception:
+            return False
+        probe = _ffprobe()
+        if not probe:
+            # Local ffprobe is part of the Groovebox runtime contract, but keep a
+            # conservative fallback rather than turning a completed recording into
+            # a false-negative if provisioning is temporarily unavailable.
+            return _probe_duration(path) > 0.0
+        try:
+            cp = subprocess.run(
+                [probe, '-v', 'error', '-select_streams', 'v:0',
+                 '-show_entries', 'stream=codec_type,duration:format=duration',
+                 '-of', 'json', path],
+                capture_output=True, text=True, timeout=4,
+            )
+            if cp.returncode != 0:
+                return False
+            data = json.loads(cp.stdout or '{}')
+            streams = data.get('streams') or []
+            if not streams or str(streams[0].get('codec_type', '')) != 'video':
+                return False
+            durations = []
+            for value in (streams[0].get('duration'), (data.get('format') or {}).get('duration')):
+                try:
+                    durations.append(float(value))
+                except Exception:
+                    pass
+            return any(d > 0.0 and math.isfinite(d) for d in durations)
+        except Exception:
+            return False
+
+    def _recording_container_ready(self, path: str) -> bool:
+        """Non-blocking readiness check used by the Qt-recorder finalize timer.
+
+        Require a stable non-trivial file plus a real positive-duration video stream.
+        The size gate avoids racing MP4 `moov`/filesystem finalization.
         """
         if not path or not os.path.isfile(path):
             return False
@@ -1252,21 +1571,38 @@ class VideoClipStudio(QWidget):
         else:
             self._record_stable_size_count = 0
             self._record_last_size = size
-        probe = _ffprobe()
-        if probe:
+        return (int(getattr(self, '_record_stable_size_count', 0)) >= 1
+                and self._recording_video_probe_ok(path))
+
+    def _wait_for_recording_container(self, path: str, timeout_s: float = 6.0) -> bool:
+        """Wait briefly for Stop/finalize to flush, then accept any real video.
+
+        V4L2/FFmpeg finalization is synchronous but filesystem writes and MP4 metadata
+        publication can still lag the process exit by a few scheduling ticks.  The old
+        code called the stateful stability checker exactly once after os.replace(), so
+        a valid MP4 was guaranteed to fail its *first* stability observation.  Polling
+        here removes that false-negative without changing the working camera path.
+        """
+        deadline = time.monotonic() + max(0.5, float(timeout_s))
+        last_size = -1
+        stable = 0
+        while time.monotonic() < deadline:
             try:
-                cp = subprocess.run(
-                    [probe, '-v', 'error', '-show_entries', 'format=format_name,duration',
-                     '-of', 'default=nk=1:nw=1', path],
-                    capture_output=True, text=True, timeout=4,
-                )
-                if cp.returncode != 0:
-                    return False
+                size = os.path.getsize(path) if path and os.path.isfile(path) else -1
             except Exception:
-                return False
-        # Two equal-size observations prevent racing a backend that has created the
-        # moov atom but is still completing the final filesystem write.
-        return int(getattr(self, '_record_stable_size_count', 0)) >= 1
+                size = -1
+            if size >= 1024:
+                if size == last_size:
+                    stable += 1
+                else:
+                    last_size = size
+                    stable = 0
+                if stable >= 1 and self._recording_video_probe_ok(path):
+                    self._record_last_size = size
+                    self._record_stable_size_count = max(1, int(getattr(self, '_record_stable_size_count', 0)))
+                    return True
+            time.sleep(0.15)
+        return False
 
     def _finish_recording(self):
         path=self._record_path
