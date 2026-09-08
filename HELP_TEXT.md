@@ -207,7 +207,7 @@ generative structure, and mathematically guided composition.
 
   COMPOSITION vs TIME-AXIS EVALUATION
   -----------------------------------
-  • get_numeric_seed()  — composition-state (t = 0.0). Used for RNG seeding,
+  • get_numeric_seed()  — static/global snapshot (t = 0.0). Used for RNG seeding,
     playlist paint, domain bias, and UI fingerprinting. Never call per-sample.
   • evaluate_seed_expression_at_time(script, t, ctx) — render-time T-axis.
     Time-varying scripts (sin(t), if(sin(t)...) elif ..., lists indexed by t)
@@ -1934,8 +1934,8 @@ from the playlist automation pattern combo alongside classic filter/resonance ra
 
 
 ### TrackOffset (user-owned)
-Global TrackOffset and per-sequence `track_offset` are user-set timing controls
-in playlist-row units — same ownership model as Canonical Resonance amount.
+Global TrackOffset is user-set in **beats**; legacy per-sequence `track_offset`
+remains in playlist-row units — both use the same ownership model as Canonical Resonance amount.
 Audio, video, and game engines respond to them; canonical engines do **not**
 treat them as modification handles and do not rewrite them. Negative starts
 earlier; positive later. Values are mirrored into `composition_snapshot` and

@@ -1501,12 +1501,18 @@ class VideoClipStudio(QWidget):
             msg+'\n\nGroovebox tried every encoding profile Qt reports as available on this system.')
 
     def _finalize_recording_to_mp4(self, src: str) -> str:
-        """Return a verified MP4 path; never publish a zero-byte placeholder."""
+        """Worker-safe MP4 finalizer; never sleeps or polls the GUI thread.
+
+        The recorder-stop state machine already establishes that the source is
+        stable/readable before this is called.  FFmpeg completion is therefore
+        the synchronization event: once the process exits successfully, probe
+        the completed output exactly once and publish only a real video stream.
+        """
         final=str(getattr(self,'_record_final_path','') or src)
         if not src or not os.path.isfile(src) or os.path.getsize(src) < 1024:
             return ''
         if os.path.abspath(src) == os.path.abspath(final):
-            return src if self._wait_for_recording_container(src, 6.0) else ''
+            return src if self._recording_video_probe_ok(src) else ''
         ff=_ffmpeg()
         if not ff:
             return ''
@@ -1518,10 +1524,11 @@ class VideoClipStudio(QWidget):
             try:
                 cp=subprocess.run(cmd,capture_output=True,text=True,timeout=180)
                 if cp.returncode==0 and os.path.isfile(tmp) and os.path.getsize(tmp)>1024:
-                    os.replace(tmp,final)
-                    try: os.remove(src)
-                    except Exception: pass
-                    return final if self._wait_for_recording_container(final, 6.0) else ''
+                    if self._recording_video_probe_ok(tmp):
+                        os.replace(tmp,final)
+                        try: os.remove(src)
+                        except Exception: pass
+                        return final
             except Exception:
                 pass
             try:
@@ -1629,36 +1636,6 @@ class VideoClipStudio(QWidget):
         return (int(getattr(self, '_record_stable_size_count', 0)) >= 1
                 and self._recording_video_probe_ok(path))
 
-    def _wait_for_recording_container(self, path: str, timeout_s: float = 6.0) -> bool:
-        """Wait briefly for Stop/finalize to flush, then accept any real video.
-
-        V4L2/FFmpeg finalization is synchronous but filesystem writes and MP4 metadata
-        publication can still lag the process exit by a few scheduling ticks.  The old
-        code called the stateful stability checker exactly once after os.replace(), so
-        a valid MP4 was guaranteed to fail its *first* stability observation.  Polling
-        here removes that false-negative without changing the working camera path.
-        """
-        deadline = time.monotonic() + max(0.5, float(timeout_s))
-        last_size = -1
-        stable = 0
-        while time.monotonic() < deadline:
-            try:
-                size = os.path.getsize(path) if path and os.path.isfile(path) else -1
-            except Exception:
-                size = -1
-            if size >= 1024:
-                if size == last_size:
-                    stable += 1
-                else:
-                    last_size = size
-                    stable = 0
-                if stable >= 1 and self._recording_video_probe_ok(path):
-                    self._record_last_size = size
-                    self._record_stable_size_count = max(1, int(getattr(self, '_record_stable_size_count', 0)))
-                    return True
-            time.sleep(0.15)
-        return False
-
     def _finish_recording(self):
         path=self._record_path
         # Qt backends can choose a sibling extension; prefer reported actual location.
@@ -1696,17 +1673,49 @@ class VideoClipStudio(QWidget):
             self._recorder=None; self._record_audio_input=None
             return
 
-        path=self._finalize_recording_to_mp4(path)
-        self._record_path=''
-        self._record_final_path=''
-        if path and os.path.isfile(path):
+        # REMUX_OFF_GUI_2026: FFmpeg remux/probe can take arbitrarily long on
+        # long recordings. Run it in the same pooled worker model as V4L2
+        # finalization instead of freezing Qt while subprocess.run completes.
+        src_path=str(path)
+        self.lbl_render.setText('Finalizing camera recording…')
+
+        def work():
+            return self._finalize_recording_to_mp4(src_path)
+
+        def done(result,error):
+            out=str(result or '')
+            self._record_path=''
+            self._record_final_path=''
             try:
-                import groovebox_paths; groovebox_paths.index_file(path,'recording',self._project_path())
-            except Exception: pass
-            self._append_recording_path(path); d=_probe_duration(path)
-            if d>0:self.spin_duration.setValue(min(3600.0,d))
-            self.lbl_source.setText('Source: '+path); self.lbl_render.setText('Recorded: '+os.path.basename(path))
-        self._recorder=None; self._record_audio_input=None
+                if error is not None:
+                    raise RuntimeError(str(error))
+                if not out or not os.path.isfile(out):
+                    raise RuntimeError('Camera recording did not finalize into a verified MP4.')
+                try:
+                    import groovebox_paths; groovebox_paths.index_file(out,'recording',self._project_path())
+                except Exception: pass
+                self._append_recording_path(out)
+                d=_probe_duration(out)
+                if d>0:self.spin_duration.setValue(min(86400.0,d))
+                self.lbl_source.setText('Source: '+out)
+                self.lbl_render.setText('Recorded: '+os.path.basename(out))
+            except Exception as exc:
+                self.lbl_render.setText('Camera recording failed: '+str(exc))
+                QMessageBox.warning(self,'Camera recording failed',str(exc))
+            finally:
+                self._recorder=None; self._record_audio_input=None
+
+        opt=getattr(self.host,'_scode_optimizer',None)
+        if opt is not None and hasattr(opt,'submit_pooled'):
+            opt.submit_pooled('qt_record_finalize',(src_path,),work,policy='side_effect',format_id='video',side_effecting=True,callback=done,qt_callback=True)
+        else:
+            def runner():
+                try:
+                    result=work(); QTimer.singleShot(0,lambda r=result:done(r,None))
+                except Exception as exc:
+                    QTimer.singleShot(0,lambda e=str(exc):done('',e))
+            import threading
+            threading.Thread(target=runner,daemon=True).start()
 
     # --------------------------- paint / graph state
     def _set_color_button(self):

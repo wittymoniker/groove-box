@@ -73,7 +73,8 @@ from dataclasses import dataclass
 import composition_state as _composition_state
 from PyQt6.QtGui import (
     QPainter, QPen, QColor, QPainterPath, QLinearGradient, QRadialGradient, QBrush, QFont, QPolygonF,
-    QAction, QPalette, QKeyEvent, QKeySequence, QImage, QPixmap, QIcon, QFontMetrics
+    QAction, QPalette, QKeyEvent, QKeySequence, QImage, QPixmap, QIcon, QFontMetrics,
+    QSyntaxHighlighter, QTextCharFormat, QTextCursor
 )
 from ot_symbol_notation import (
     Direction as OTDirection, Role as OTRole, Operation as OTOperation,
@@ -97,6 +98,134 @@ from PyQt6.QtWidgets import (
     QDialog, QInputDialog, QHeaderView, QProgressBar, QSizePolicy, QToolButton,
     QDialogButtonBox, QDockWidget,
 )  # QToolButton is required by the global EXPORT menu control.
+
+
+class SeedScriptSyntaxHighlighter(QSyntaxHighlighter):
+    """Low-overhead syntax shading for the global Seed Script editor.
+
+    This is intentionally visual only: it never evaluates the script and therefore
+    cannot perturb deterministic seed/composition state while the user is typing.
+    Tokens that look like the supported seed/Python-style language are rendered in
+    a neutral light-to-dark grey hierarchy; bracket depth is shaded independently.
+    """
+
+    _KEYWORDS = {
+        "if", "elif", "else", "while", "for", "in", "def", "return", "lambda",
+        "and", "or", "not", "is", "break", "continue", "pass", "True", "False", "None",
+    }
+    _BUILTINS = {
+        "abs", "min", "max", "sum", "round", "int", "float", "len", "range",
+        "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sqrt", "log", "log2", "log10",
+        "exp", "floor", "ceil", "pow", "mod", "clamp", "sign",
+        "polar", "cartesian", "cylindrical", "spherical", "isn", "ics",
+        "MEUM", "M", "PHI", "PI", "E", "SQRT2", "SQRT3",
+    }
+    _TOKEN_RE = re.compile(
+        r"(?P<comment>\#.*$)|"
+        r"(?P<string>'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\")|"
+        r"(?P<number>(?<![\w.])(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)|"
+        r"(?P<identifier>\b[A-Za-z_]\w*\b)|"
+        r"(?P<operator>==|!=|<=|>=|\*\*|//|:=|->|[+\-*/%^=<>?:,.])"
+    )
+
+    def __init__(self, document):
+        super().__init__(document)
+        self._fmt_keyword = self._format("#ededed", bold=True)
+        self._fmt_builtin = self._format("#d8d8d8")
+        self._fmt_identifier = self._format("#c4c4c4")
+        self._fmt_number = self._format("#adadad")
+        self._fmt_operator = self._format("#929292")
+        self._fmt_string = self._format("#b7b7b7")
+        self._fmt_comment = self._format("#777777", italic=True)
+        # Repeats gracefully for deeply nested parametric expressions.
+        self._bracket_formats = [
+            self._format("#f0f0f0", bold=True),
+            self._format("#d6d6d6", bold=True),
+            self._format("#bcbcbc", bold=True),
+            self._format("#a2a2a2", bold=True),
+            self._format("#888888", bold=True),
+            self._format("#707070", bold=True),
+        ]
+        self._fmt_unmatched = self._format("#5f5f5f", bold=True, underline=True)
+
+    @staticmethod
+    def _format(color, bold=False, italic=False, underline=False):
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(color))
+        if bold:
+            fmt.setFontWeight(QFont.Weight.Bold)
+        if italic:
+            fmt.setFontItalic(True)
+        if underline:
+            fmt.setFontUnderline(True)
+        return fmt
+
+    def highlightBlock(self, text):
+        # Lexical shading first. This does not call the Seed evaluator/parser.
+        for match in self._TOKEN_RE.finditer(text):
+            kind = match.lastgroup
+            token = match.group(0)
+            if kind == "identifier":
+                if token in self._KEYWORDS:
+                    fmt = self._fmt_keyword
+                elif token in self._BUILTINS:
+                    fmt = self._fmt_builtin
+                else:
+                    fmt = self._fmt_identifier
+            elif kind == "number":
+                fmt = self._fmt_number
+            elif kind == "operator":
+                fmt = self._fmt_operator
+            elif kind == "string":
+                fmt = self._fmt_string
+            else:
+                fmt = self._fmt_comment
+            self.setFormat(match.start(), match.end() - match.start(), fmt)
+            if kind == "comment":
+                break
+
+        # Preserve bracket nesting between lines in the QTextDocument block state.
+        previous_depth = self.previousBlockState()
+        depth = 0 if previous_depth < 0 else previous_depth
+        stack = []
+        pairs = {")": "(", "]": "[", "}": "{"}
+        opens = "([{"
+        closes = ")] }".replace(" ", "")
+
+        # Ignore brackets that occur inside already-recognized comments/strings.
+        protected = [False] * len(text)
+        for match in self._TOKEN_RE.finditer(text):
+            if match.lastgroup in ("comment", "string"):
+                for i in range(match.start(), match.end()):
+                    if i < len(protected):
+                        protected[i] = True
+                if match.lastgroup == "comment":
+                    break
+
+        for i, ch in enumerate(text):
+            if protected[i]:
+                continue
+            if ch in opens:
+                fmt = self._bracket_formats[depth % len(self._bracket_formats)]
+                self.setFormat(i, 1, fmt)
+                stack.append((ch, i, depth))
+                depth += 1
+            elif ch in closes:
+                closing_depth = max(0, depth - 1)
+                fmt = self._bracket_formats[closing_depth % len(self._bracket_formats)]
+                if stack and stack[-1][0] == pairs[ch]:
+                    stack.pop()
+                    depth = closing_depth
+                    self.setFormat(i, 1, fmt)
+                elif depth > 0:
+                    # Cross-line nesting can legitimately close a bracket opened in
+                    # an earlier block; shade by inherited depth rather than flagging.
+                    depth = closing_depth
+                    self.setFormat(i, 1, fmt)
+                else:
+                    self.setFormat(i, 1, self._fmt_unmatched)
+
+        self.setCurrentBlockState(max(0, depth))
 
 
 def _ot_role_from_value(value, fallback=OTRole.RESULT):
@@ -7431,9 +7560,22 @@ class VideoSynthEngine:
             gto = float(snap.get("global_track_offset", snap.get("track_offset", 0.0)) or 0.0)
             if not math.isfinite(gto):
                 gto = 0.0
-            # Offset is in playlist-row units; map a fraction of a cycle into phase.
-            t = float(t) + gto
-            ph = (float(ph) + gto * 0.125) % 1.0
+            # Global Track Offset is authored in beats. Visualizer self.t is
+            # seconds, so convert only at this wall-clock boundary; phase shifts
+            # by the same fraction of the current playlist row.
+            try:
+                _bpm = float(getattr(self.app, "spin_bpm", None).value()) if self.app is not None and hasattr(self.app, "spin_bpm") else 120.0
+            except Exception:
+                _bpm = 120.0
+            if not math.isfinite(_bpm) or _bpm <= 0.0:
+                _bpm = 120.0
+            try:
+                _row_beats = float(getattr(self.app, "spin_row_beats", None).value()) if self.app is not None and hasattr(self.app, "spin_row_beats") else 8.0
+            except Exception:
+                _row_beats = 8.0
+            _row_beats = max(0.25, _row_beats)
+            t = float(t) + gto * (60.0 / _bpm)
+            ph = (float(ph) + gto / _row_beats) % 1.0
         except Exception:
             pass
         # Base identities
@@ -8532,7 +8674,20 @@ class VideoSynthEngine:
             return []
         try:
             if not cache and hasattr(self.app, "_build_goava_composition"):
-                t_value = float(getattr(self, "t", 0.0))
+                # Visual GOAVA follows the same musical beat-domain t as audio
+                # composition; visualizer self.t is wall-clock seconds.
+                _seconds = float(getattr(self, "t", 0.0))
+                try:
+                    _bpm = float(self.app.spin_bpm.value()) if hasattr(self.app, "spin_bpm") else 120.0
+                except Exception:
+                    _bpm = 120.0
+                if not math.isfinite(_bpm) or _bpm <= 0.0:
+                    _bpm = 120.0
+                try:
+                    _offset = float(getattr(self.app, "global_track_offset", 0.0) or 0.0)
+                except Exception:
+                    _offset = 0.0
+                t_value = (_seconds * _bpm / 60.0) + _offset
                 # Force the same evaluated numeric seed path used by GOAVA.
                 self.app._parse_goava_seed_values(t_value=t_value)
                 events = self.app._build_goava_composition(t_value=t_value)
@@ -12061,7 +12216,7 @@ generative structure, and mathematically guided composition.
 
   COMPOSITION vs TIME-AXIS EVALUATION
   -----------------------------------
-  • get_numeric_seed()  — composition-state (t = 0.0). Used for RNG seeding,
+  • get_numeric_seed()  — static/global snapshot (t = 0.0). Used for RNG seeding,
     playlist paint, domain bias, and UI fingerprinting. Never call per-sample.
   • evaluate_seed_expression_at_time(script, t, ctx) — render-time T-axis.
     Time-varying scripts (sin(t), if(sin(t)...) elif ..., lists indexed by t)
@@ -13787,8 +13942,8 @@ from the playlist automation pattern combo alongside classic filter/resonance ra
 
 
 ### TrackOffset (user-owned)
-Global TrackOffset and per-sequence `track_offset` are user-set timing controls
-in playlist-row units — same ownership model as Canonical Resonance amount.
+Global TrackOffset is user-set in **beats**; legacy per-sequence `track_offset`
+remains in playlist-row units — both use the same ownership model as Canonical Resonance amount.
 Audio, video, and game engines respond to them; canonical engines do **not**
 treat them as modification handles and do not rewrite them. Negative starts
 earlier; positive later. Values are mirrored into `composition_snapshot` and
@@ -20573,7 +20728,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
             except Exception:
                 pass
 
-        seed = self.get_numeric_seed() if hasattr(self, 'get_numeric_seed') else 42
+        # COMPOSITION_BEAT_T_2026: arrangement-aware composition evaluates the
+        # seed at the absolute musical beat represented by this playlist row.
+        # This keeps composition invariant under BPM changes; wall-clock seconds
+        # are only introduced later at the DSP/render boundary.
+        try:
+            _seed_t = float(self._composition_beat_for_row(row))
+            _seed_vals = list(self.get_seed_values(t_value=_seed_t) or [])
+            seed = float(_seed_vals[int(step) % len(_seed_vals)]) if _seed_vals else 0.0
+        except Exception:
+            seed = self.get_numeric_seed() if hasattr(self, 'get_numeric_seed') else 42
         # POWER_V3_MEUM_FIELD: use the invariant M spatial ratio as a genuine
         # contextual coordinate. The golden-ratio and sqrt(2) phase terms remain
         # available elsewhere as their own mathematical constants; they are not Meum.
@@ -20618,8 +20782,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """
         f = self._contextual_feature_vector(instrument_name, step, row)
         try:
+            _seed_t = float(self._composition_beat_for_row(row))
             if hasattr(self, "get_seed_value_for_index"):
-                seed_val = float(self.get_seed_value_for_index(step))
+                seed_val = float(self.get_seed_value_for_index(step, t_value=_seed_t))
             elif hasattr(self, "get_numeric_seed"):
                 seed_val = float(self.get_numeric_seed() or 0.0)
             else:
@@ -20638,6 +20803,36 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return float(cache[instrument_name])
         return float(np.clip(1.0*f['score'] + 0.0*top, 0.0, 1.0))
 
+
+    def _composition_beat_for_row(self, row_index=0, local_beat=0.0):
+        """Absolute musical-time ``t`` used by arrangement/composition code.
+
+        ``t`` is measured in beats, not seconds.  Playlist row N begins at
+        N * RowBeats.  Global Track Offset is also beat-domain and shifts the
+        composition coordinate directly.  This function deliberately does not
+        depend on BPM, so changing tempo cannot silently recompose the song.
+        """
+        try:
+            row_beats = float(self.spin_row_beats.value()) if hasattr(self, "spin_row_beats") else 4.0
+        except Exception:
+            row_beats = 4.0
+        if not math.isfinite(row_beats) or row_beats <= 0.0:
+            row_beats = 4.0
+        try:
+            offset_beats = float(getattr(self, "global_track_offset", 0.0) or 0.0)
+        except Exception:
+            offset_beats = 0.0
+        if not math.isfinite(offset_beats):
+            offset_beats = 0.0
+        try:
+            r = float(row_index)
+        except Exception:
+            r = 0.0
+        try:
+            lb = float(local_beat)
+        except Exception:
+            lb = 0.0
+        return float(r * row_beats + lb + offset_beats)
 
     # =====================================================================
     # GOAVA_ENGINE — engine-owned canonical numerical composition layer.
@@ -20858,7 +21053,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     # deduped: shadowed by later _on_goava_toggled() definition (perfect-unison system).
 
-    def _goava_mix(self, local_t, row_idx, step_duration, row_start_time=0.0):
+    def _goava_mix(self, local_t, row_idx, step_duration, row_start_beat=0.0):
         """Mix GOAVA pitched-sine chords using true composition time index.
 
         row_idx is the playlist/row ordinal.  We treat it as the true time
@@ -20874,15 +21069,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         expression (``t``, ``sin(t)``, a list indexed by ``t``, etc.) it
         meant every row played back the SAME t=0 snapshot forever — GOAVA
         never actually ticked forward in time. We now rebuild the event
-        list for this row using its real absolute start time, so any ``t``
-        in the seed script is evaluated at the moment it actually occurs in
+        list for this row using its real absolute beat position, so any ``t``
+        in the seed script is evaluated at the musical beat where it actually occurs in
         the composition instead of once at the very start.
         """
         if not getattr(self, "goava_active", False):
             return np.zeros_like(local_t, dtype=np.float32)
         try:
             events = list(self._build_goava_composition(
-                t_value=float(row_start_time), true_time_index=int(row_idx)
+                t_value=float(row_start_beat), true_time_index=int(row_idx)
             ) or [])
         except Exception:
             events = list(getattr(self, "goava_note_events", []) or [])
@@ -22635,11 +22830,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "if(cond) a elif b over t, return scripts, comma-lists, and "
             "parametric/cartesian/polar/cylindrical/spherical curves. Examples: "
             "x(t)=sin(t); y(t)=cos(t) or polar(1+0.25*sin(t), MEUM*t). "
-            "Composition uses t=0; Play/Export evaluates curves over time. "
+            "Arrangement-aware composition uses t=absolute beat position (BPM-independent); "
+            "continuous DSP Play/Export modulation uses t=seconds. Static RNG/fingerprint snapshots may sample beat 0. "
+            "Syntax feedback: recognized keywords, variables, numbers/operators, and nested parentheses/brackets "
+            "shade from light to dark grey while you type. Unknown variables/presets or confident syntax errors "
+            "are highlighted red and reported at the bottom of this panel; feedback never evaluates or changes the seed. "
             "Use 🎲 Random Seed Script above for examples. Field scrolls."
         )
         self.input_seed_val.setAcceptRichText(False)
         self.input_seed_val.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        # Visual-only code feedback: parsable-looking tokens and nested brackets
+        # use a light→dark neutral grey hierarchy. Keep a strong reference so Qt
+        # does not garbage-collect the highlighter while the editor is alive.
+        self._seed_script_highlighter = SeedScriptSyntaxHighlighter(self.input_seed_val.document())
         # SEED_EXPAND_V41: the seed editor owns the available vertical space in
         # the top/global geometry area; do not cap it at a fixed height.
         self.input_seed_val.setMinimumSize(300, 210)
@@ -22659,8 +22862,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_global_track_offset.setFixedSize(18,86)
         self.spin_global_track_offset.setToolTip(
             "Global TrackOffset (user-owned, like Canonical Resonance amount).\n"
-            "Applied to every track/sequence in playlist-row units so audio, video,\n"
-            "and game timing all respond. Negative starts earlier; positive later.\n"
+            "Measured in beats and applied to every track/sequence so audio, video,\n"
+            "game timing, and beat-domain seed composition all respond. Negative starts earlier; positive later.\n"
             "Not a handle for canonical modification — engines read it; they do not rewrite it."
         )
         self.spin_global_track_offset.setStyleSheet(
@@ -22691,8 +22894,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         seed_header.addWidget(QLabel("GLOBAL SEED / PARAMETRIC SCRIPT (USER CONTROLLED):"), 1)
         self.btn_random_seed = QPushButton("🎲 Random Seed Script")
         self.btn_random_seed.setToolTip(
-            "Generate a random scriptable seed: pure number, time-conditional "
-            "if/elif over t, math expressions, return-scripts, or value lists."
+            "Generate a random scriptable seed: pure number, if/elif over t, math expressions, "
+            "return-scripts, or value lists. In composition t is the absolute beat; in continuous DSP modulation t is seconds."
         )
         self.btn_random_seed.setStyleSheet(
             "QPushButton { background-color:#1a2a22; color:#7dffa0; border:1px solid #3a7a55; "
@@ -22954,6 +23157,32 @@ class MathematiciansGrooveboxApp(QMainWindow):
         seed_panel.addLayout(eng_row)
 
         seed_panel.addWidget(self.input_seed_val, 1)
+
+        # SEED_SCRIPT_DIAGNOSTIC_2026: persistent, non-modal parser/name feedback
+        # at the bottom of the Seed panel.  Uses the same red error treatment used
+        # elsewhere in Groovebox; validation itself is debounced and static so it
+        # never evaluates/recomposes the seed while the user is typing.
+        self.lbl_seed_script_error = QLabel("")
+        self.lbl_seed_script_error.setObjectName("SeedScriptErrorReadout")
+        self.lbl_seed_script_error.setWordWrap(True)
+        self.lbl_seed_script_error.setMinimumHeight(18)
+        self.lbl_seed_script_error.setStyleSheet(
+            "background-color:#121212; color:#ff5555; border:1px solid #31577a; "
+            "font-family:Consolas, monospace; font-size:9pt; font-weight:bold; padding:3px 6px;"
+        )
+        self.lbl_seed_script_error.setToolTip(
+            "Seed Script parser/name diagnostic. Unknown variables/presets and syntax errors "
+            "are shown here and highlighted in the editor. Clears automatically when valid."
+        )
+        self.lbl_seed_script_error.hide()
+        seed_panel.addWidget(self.lbl_seed_script_error, 0)
+
+        self._seed_validation_timer = QTimer(self)
+        self._seed_validation_timer.setSingleShot(True)
+        self._seed_validation_timer.setInterval(180)
+        self._seed_validation_timer.timeout.connect(self._validate_seed_script_ui)
+        self.input_seed_val.textChanged.connect(self._schedule_seed_script_validation)
+
         # No fixed-height spacer: the seed editor is the vertical stretch owner.
         self.global_geometry_layout.addLayout(seed_panel, 3)
         self.global_geometry_layout.setStretch(0, 3)
@@ -26132,6 +26361,159 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "carrier_peak": carrier_peak,
         }
 
+    def _schedule_seed_script_validation(self):
+        """Debounce visual Seed Script diagnostics; never evaluate/recompose here."""
+        try:
+            self._seed_validation_timer.start()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _seed_script_static_diagnostic(raw):
+        """Return (message, line, col, length) for a confident static seed error.
+
+        This intentionally does *not* execute the script.  It catches Python-style
+        syntax errors and unresolved loaded names (including a variable assigned to
+        an unknown preset identifier). Groovebox's coordinate DSL and if/elif
+        shorthand are normalized/skipped where their custom parser is authoritative.
+        """
+        text = str(raw or "").replace("\r\n", "\n").replace("\r", "\n")
+        if not text.strip():
+            return None
+
+        # x(t)=..., polar/cylindrical/etc. are owned by the coordinate parser and
+        # are not legal Python assignment syntax; do not falsely mark them red.
+        try:
+            if _seed_script_is_coordinate(text):
+                return None
+        except Exception:
+            pass
+
+        source = text
+        # Groovebox shorthand such as `if(t<4) 1 elif 2` has its own parser.
+        try:
+            sh = _parse_if_elif_shorthand(text.strip())
+            if sh:
+                source = sh
+        except Exception:
+            pass
+
+        try:
+            tree = ast.parse(source, mode="exec")
+        except SyntaxError as exc:
+            # A top-level `return expr` is a supported Seed Script convenience;
+            # normalize it to the expression before calling it a syntax error.
+            try:
+                normalized = _normalize_seed_script_text(text)
+                if normalized and normalized != text.strip():
+                    ast.parse(normalized, mode="eval")
+                    return None
+            except SyntaxError as exc2:
+                exc = exc2
+            except Exception:
+                pass
+            line = max(1, int(getattr(exc, "lineno", 1) or 1))
+            col = max(0, int(getattr(exc, "offset", 1) or 1) - 1)
+            msg = str(getattr(exc, "msg", None) or "invalid syntax")
+            return (f"SEED SCRIPT ERROR · {msg} · line {line}", line, col, 1)
+        except Exception:
+            return None
+
+        # Names available from the numeric seed environment plus every name the
+        # script itself binds.  This catches `voice = MyPreset` as an unresolved
+        # preset/name while permitting ordinary local variables and def arguments.
+        try:
+            allowed = set(_seed_script_env(t_scalar=0.0, canonical_context=None).keys())
+        except Exception:
+            allowed = set()
+        bound = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Param)):
+                bound.add(node.id)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                bound.add(node.name)
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for arg in list(node.args.posonlyargs) + list(node.args.args) + list(node.args.kwonlyargs):
+                        bound.add(arg.arg)
+                    if node.args.vararg:
+                        bound.add(node.args.vararg.arg)
+                    if node.args.kwarg:
+                        bound.add(node.args.kwarg.arg)
+            elif isinstance(node, ast.alias):
+                bound.add(node.asname or node.name.split(".")[0])
+
+        unresolved = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                if node.id not in allowed and node.id not in bound:
+                    unresolved.append(node)
+        if unresolved:
+            node = min(unresolved, key=lambda n: (getattr(n, "lineno", 1), getattr(n, "col_offset", 0)))
+            name = node.id
+            line = max(1, int(getattr(node, "lineno", 1) or 1))
+            col = max(0, int(getattr(node, "col_offset", 0) or 0))
+            return (
+                f"SEED SCRIPT ERROR · unknown variable/preset '{name}' · line {line}",
+                line, col, max(1, len(name)),
+            )
+        return None
+
+    def _set_seed_error_highlight(self, line=0, col=0, length=0):
+        """Highlight exactly the offending Seed Script token without modifying text."""
+        try:
+            if not hasattr(self, "input_seed_val"):
+                return
+            selections = []
+            if line > 0 and length > 0:
+                doc = self.input_seed_val.document()
+                block = doc.findBlockByNumber(int(line) - 1)
+                if block.isValid():
+                    cursor = QTextCursor(doc)
+                    start = block.position() + max(0, int(col))
+                    end = min(block.position() + max(0, block.length() - 1), start + max(1, int(length)))
+                    cursor.setPosition(start)
+                    cursor.setPosition(max(start + 1, end), QTextCursor.MoveMode.KeepAnchor)
+                    sel = QTextEdit.ExtraSelection()
+                    sel.cursor = cursor
+                    fmt = QTextCharFormat()
+                    fmt.setForeground(QColor("#ff5555"))
+                    fmt.setFontWeight(QFont.Weight.Bold)
+                    fmt.setUnderlineColor(QColor("#ff5555"))
+                    fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.WaveUnderline)
+                    fmt.setBackground(QColor(80, 12, 18, 115))
+                    sel.format = fmt
+                    selections.append(sel)
+            self.input_seed_val.setExtraSelections(selections)
+        except Exception:
+            pass
+
+    def _validate_seed_script_ui(self):
+        """Refresh the Seed panel diagnostic readout and offending-token highlight."""
+        try:
+            raw = self.input_seed_val.toPlainText() if hasattr(self, "input_seed_val") else ""
+            diag = self._seed_script_static_diagnostic(raw)
+            label = getattr(self, "lbl_seed_script_error", None)
+            if diag is None:
+                self._set_seed_error_highlight()
+                if label is not None:
+                    label.clear()
+                    label.hide()
+                return
+            message, line, col, length = diag
+            self._set_seed_error_highlight(line, col, length)
+            if label is not None:
+                label.setText(message)
+                label.show()
+        except Exception as exc:
+            # Diagnostics must never become a new crash source.
+            try:
+                label = getattr(self, "lbl_seed_script_error", None)
+                if label is not None:
+                    label.setText(f"SEED SCRIPT ERROR · diagnostic failure: {exc}")
+                    label.show()
+            except Exception:
+                pass
+
     def _seed_text(self):
         """Return the complete scrollable seed/script field as plain text."""
         if not hasattr(self, 'input_seed_val'):
@@ -26277,8 +26659,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         Multi-value lists return the first evaluable component (not a hash).
         Use get_seed_values() / get_seed_value_for_index(i) for per-instrument lists.
 
-        Composition-state evaluation uses t=0.0. Time-varying scripts are
-        fully resolved during render via evaluate_seed_expression_at_time().
+        This method is the static/global seed snapshot and samples t=0.0.
+        Arrangement-aware composition must use get_seed_values(t_value=beat_t)
+        (or get_seed_value_for_index(..., t_value=beat_t)); continuous DSP
+        modulation resolves t in seconds at the render boundary.
 
         IMPORTANT: composition-state only — never call from a per-sample loop.
         """
@@ -26306,9 +26690,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         DEGENERATE_T_GUARD: a script can be perfectly valid and still be
         undefined at one exact instant — e.g. "1/t", "log(t)", "sqrt(t-1)",
         "100/tan(t)" all blow up (ZeroDivisionError / domain error / NaN) at
-        t=0.0, which is precisely the fixed t that composition-state
-        evaluation (get_numeric_seed, per-instrument assignment before
-        render, etc.) always uses. Without this guard, that single
+        t=0.0, which is the static snapshot used by get_numeric_seed().
+        Arrangement-aware composition supplies its absolute beat explicitly,
+        so only truly static/global callers use this degenerate instant. Without this guard, that single
         degenerate instant made the whole script look unevaluable, so
         callers fell through to the text-hash last resort — a static,
         script-unrelated number that also never varies with time. Real user
@@ -35447,7 +35831,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 row_mix = np.zeros_like(local_t, dtype=np.float32)
             velocity_scale = 1.0
             if getattr(self, "goava_active", False):
-                _goava = self._goava_mix(local_t, row_idx, step_duration, row_start_time=start_time)
+                _goava_beat_t = self._composition_beat_for_row(row_idx)
+                _goava = self._goava_mix(local_t, row_idx, step_duration, row_start_beat=_goava_beat_t)
                 row_mix += _goava
                 canonical_bus[mask] += _goava
 
@@ -35772,7 +36157,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 except Exception:
                     _track_off = 0.0
                 try:
-                    _global_track_off = float(getattr(self, "global_track_offset", 0.0) or 0.0) * float(row_duration)
+                    # Global Track Offset is authored in beats, unlike the legacy
+                    # per-sequence track_offset which remains row-relative.
+                    _global_track_off = float(getattr(self, "global_track_offset", 0.0) or 0.0) * float(seconds_per_beat)
                 except Exception:
                     _global_track_off = 0.0
                 _op_off += _track_off + _global_track_off
@@ -36754,8 +37141,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # SEED_SCRIPT_T_AXIS: seed/script expressions that reference `t` or use
         # the if(...)/elif shorthand are DSP-boundary constructs — they describe
         # a signal over render time, not a single composition-state number.
-        # get_numeric_seed() only ever sees t=0.0 (by design: it's called from
-        # UI/composition code, never per-sample). This is the actual DSP-side
+        # get_numeric_seed() is the static t=0 snapshot. Arrangement-aware
+        # composition separately evaluates seed scripts in beat-domain time.
+        # This block is the continuous DSP-side
         # evaluation: the seed text is resolved across the real render-time
         # axis `t` and blended in as a gentle, seed-driven texture — a no-op
         # for a plain numeric seed like "432" (constant curve, ~0 contribution)
@@ -42023,17 +42411,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         proc.kill()
                     except Exception:
                         pass
-                    proc.wait()
+                    # kill() is already definitive here; avoid an unbounded explicit wait.
+                    try: proc.poll()
+                    except Exception: pass
                     raise
                 finally:
                     for _vr in ([_carrier_reader] + list(_instrument_readers)):
                         if _vr is not None:
                             try: _vr.terminate()
                             except Exception: pass
-                            try: _vr.wait(timeout=1.0)
-                            except Exception:
-                                try: _vr.kill()
-                                except Exception: pass
+                            try:
+                                if _vr.poll() is None: _vr.kill()
+                            except Exception: pass
                 if proc.returncode != 0:
                     err = (stderr.decode(errors="replace") if isinstance(stderr, bytes) else (stderr or stdout or ""))[-2200:]
                     raise RuntimeError(f"Part {pi+1}/{N_PARTS} encode failed:\\n{err}")
