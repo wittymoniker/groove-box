@@ -26,6 +26,7 @@ import subprocess
 import sys
 import time
 import wave
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -330,9 +331,20 @@ class VideoClipStudio(QWidget):
         self._recorder = None
         self._record_audio_input = None
         self._record_path = ''
+        self._record_final_path = ''
+        self._record_container = 'mp4'
+        self._recorder_error_text = ''
         self._mic_source = None
         self._mic_io = None
         self._mic_level = 0.0
+        self._sw_recording = False
+        self._sw_record_dir = ''
+        self._sw_frame_index = 0
+        self._sw_last_frame_t = 0.0
+        self._sw_audio_fh = None
+        self._sw_audio_rate = 48000
+        self._sw_audio_channels = 1
+        self._sw_started_mic = False
         self.last_rendered_video = ''
         self.recording_layers: List[str] = []
         self.draw_layers: List[Dict[str, Any]] = []
@@ -380,10 +392,12 @@ class VideoClipStudio(QWidget):
             _w.setMinimumHeight(32)
         root.addWidget(devices)
 
+        # Compatibility-first layout: stack capture and drawing vertically.
+        # This avoids wide splitter/native-surface geometry escaping the Performance tab.
         split = QSplitter(Qt.Orientation.Horizontal)
         split.setChildrenCollapsible(False)
         split.setHandleWidth(7)
-        left = QWidget(); left.setMinimumWidth(520); ll = QVBoxLayout(left); ll.setContentsMargins(4,4,4,4); ll.setSpacing(7)
+        left = QWidget(); left.setMinimumWidth(560); ll = QVBoxLayout(left); ll.setContentsMargins(4,4,4,4); ll.setSpacing(7)
         preview_group = QGroupBox('Camera / clip preview')
         pl = QVBoxLayout(preview_group)
         # Use a software QLabel preview fed by QVideoSink rather than QVideoWidget.
@@ -431,18 +445,16 @@ class VideoClipStudio(QWidget):
         ll.addWidget(capture)
         ll.addStretch(1)
 
-        # Never let the camera/clip controls disappear when Performance is resized.
-        # The left authoring column keeps useful dimensions and scrolls vertically
-        # instead of allowing Qt to crush button rows/tabs/table to zero height.
-        left_scroll = QScrollArea()
-        left_scroll.setWidgetResizable(True)
+        # Each major pane owns its own two-axis scroll viewport. The camera
+        # preview is a software QLabel (QVideoSink -> QImage), so unlike the old
+        # native QVideoWidget path it remains clipped correctly inside this viewport.
+        left_scroll = QScrollArea(); left_scroll.setWidgetResizable(True)
         left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         left_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        left_scroll.setMinimumWidth(540)
-        left_scroll.setWidget(left)
+        left_scroll.setMinimumWidth(420); left_scroll.setWidget(left)
         split.addWidget(left_scroll)
 
-        right = QWidget(); right.setMinimumWidth(600); rl = QVBoxLayout(right); rl.setContentsMargins(4,4,4,4); rl.setSpacing(7)
+        right = QWidget(); right.setMinimumWidth(680); rl = QVBoxLayout(right); rl.setContentsMargins(4,4,4,4); rl.setSpacing(7)
         paint_group = QGroupBox('Image paint layer')
         pgl = QVBoxLayout(paint_group)
         tools = QHBoxLayout()
@@ -464,9 +476,16 @@ class VideoClipStudio(QWidget):
         self.canvas = None
         self._append_draw_layer()
         rl.addWidget(paint_group,3)
-        split.addWidget(right)
-        split.setStretchFactor(0,5); split.setStretchFactor(1,6)
+        right_scroll = QScrollArea(); right_scroll.setWidgetResizable(True)
+        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        right_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        right_scroll.setMinimumWidth(420); right_scroll.setWidget(right)
+        split.addWidget(right_scroll)
+        split.setStretchFactor(0, 1); split.setStretchFactor(1, 1)
         split.setSizes([620, 760])
+        split.setMinimumWidth(1160)
+        split.setStretchFactor(0,5); split.setStretchFactor(1,6)
+        split.setSizes([560, 640])
         root.addWidget(split,4)
 
         graph_group = QGroupBox('Time-varying graph layer · draw left→right across clip time')
@@ -552,7 +571,8 @@ class VideoClipStudio(QWidget):
         if not (0<=i<len(self.draw_layers)):return
         self.canvas=self.draw_canvases[i]; r=self.draw_layers[i]
         for w in (self.spin_layer_start,self.spin_layer_end,self.spin_layer_fade):w.blockSignals(True)
-        self.spin_layer_start.setValue(float(r.get('start',0))); self.spin_layer_end.setValue(float(r.get('end',self.spin_duration.value()))); self.spin_layer_fade.setValue(float(r.get('fade',0)))
+        default_end = float(self.spin_duration.value()) if hasattr(self, 'spin_duration') else 5.0
+        self.spin_layer_start.setValue(float(r.get('start',0))); self.spin_layer_end.setValue(float(r.get('end', default_end))); self.spin_layer_fade.setValue(float(r.get('fade',0)))
         for w in (self.spin_layer_start,self.spin_layer_end,self.spin_layer_fade):w.blockSignals(False)
         self._set_color_button()
     def _update_draw_layer_controls(self,*_):
@@ -608,6 +628,17 @@ class VideoClipStudio(QWidget):
                 target, Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation)
             self.video_preview.setPixmap(pix)
+            if getattr(self, '_sw_recording', False):
+                fps = max(1, min(60, int(self.spin_fps.value()) if hasattr(self, 'spin_fps') else 24))
+                now = time.monotonic()
+                if now - float(getattr(self, '_sw_last_frame_t', 0.0)) >= (1.0 / fps):
+                    self._sw_last_frame_t = now
+                    d = str(getattr(self, '_sw_record_dir', '') or '')
+                    if d:
+                        fn = os.path.join(d, f'frame_{self._sw_frame_index:08d}.jpg')
+                        im = image.convertToFormat(QImage.Format.Format_RGB888)
+                        if im.save(fn, 'JPG', 88):
+                            self._sw_frame_index += 1
         except Exception:
             pass
 
@@ -672,6 +703,22 @@ class VideoClipStudio(QWidget):
                 a=np.frombuffer(raw,dtype=np.uint8); peak=float(np.max(np.abs(a.astype(np.int16)-128)))/128.0 if a.size else 0.0
             else: peak=0.0
             self._mic_level=max(0.0,min(1.0,peak))
+            fh = getattr(self, '_sw_audio_fh', None)
+            if fh is not None and raw:
+                try:
+                    if sf == QAudioFormat.SampleFormat.Float:
+                        pcm = (np.clip(np.frombuffer(raw,dtype=np.float32),-1,1)*32767.0).astype('<i2').tobytes()
+                    elif sf == QAudioFormat.SampleFormat.Int16:
+                        pcm = raw
+                    elif sf == QAudioFormat.SampleFormat.Int32:
+                        pcm = (np.frombuffer(raw,dtype=np.int32).astype(np.int64)//65536).astype('<i2').tobytes()
+                    elif sf == QAudioFormat.SampleFormat.UInt8:
+                        pcm = ((np.frombuffer(raw,dtype=np.uint8).astype(np.int16)-128)<<8).astype('<i2').tobytes()
+                    else:
+                        pcm = b''
+                    if pcm: fh.write(pcm)
+                except Exception:
+                    pass
         except Exception: pass
 
     def _update_mic_meter(self):
@@ -705,6 +752,214 @@ class VideoClipStudio(QWidget):
     def _clear_base_clip(self):
         self.base_clip=''; self.lbl_source.setText('Source: draw-only (black background)')
 
+    def _start_software_recording(self, recdir: str, stamp: str) -> bool:
+        """Linux/Fedora fallback: capture QVideoSink frames + mic PCM, encode with bundled FFmpeg.
+
+        This deliberately avoids QMediaRecorder/GStreamer encoders, which may advertise
+        formats but still fail with `Could not initialize encoder`.
+        """
+        if not _ffmpeg() or self._video_sink is None:
+            return False
+        d = tempfile.mkdtemp(prefix=f'groovebox_camera_{stamp}_', dir=recdir)
+        self._sw_record_dir=d; self._sw_frame_index=0; self._sw_last_frame_t=0.0
+        self._record_final_path=os.path.join(recdir,f'camera_{stamp}.mp4')
+        self._record_path=self._record_final_path
+        self._sw_started_mic=False
+        try:
+            if self._mic_io is None and self._audio_devices:
+                mi=max(0,min(self.cmb_mic.currentIndex(),len(self._audio_devices)-1))
+                dev=self._audio_devices[mi]; fmt=dev.preferredFormat()
+                self._mic_source=QAudioSource(dev,fmt,self); self._mic_format=fmt
+                self._mic_io=self._mic_source.start(); self._mic_io.readyRead.connect(self._read_mic_level)
+                self._sw_started_mic=True
+            if self._mic_io is not None:
+                try:
+                    self._sw_audio_rate=int(self._mic_format.sampleRate()) or 48000
+                    self._sw_audio_channels=max(1,int(self._mic_format.channelCount()))
+                except Exception:
+                    self._sw_audio_rate=48000; self._sw_audio_channels=1
+                self._sw_audio_fh=open(os.path.join(d,'audio.s16le'),'wb')
+        except Exception:
+            self._sw_audio_fh=None
+        self._sw_recording=True
+        self.lbl_render.setText('Recording camera + microphone with FFmpeg software fallback…')
+        return True
+
+    def _finish_software_recording(self):
+        if not getattr(self,'_sw_recording',False) and not getattr(self,'_sw_record_dir',''):
+            return
+        self._sw_recording=False
+        try:
+            if self._sw_audio_fh:
+                self._sw_audio_fh.flush(); self._sw_audio_fh.close()
+        except Exception: pass
+        self._sw_audio_fh=None
+        if getattr(self,'_sw_started_mic',False):
+            try:
+                if self._mic_source: self._mic_source.stop()
+            except Exception: pass
+            self._mic_source=None; self._mic_io=None; self._sw_started_mic=False
+        d=str(getattr(self,'_sw_record_dir','') or ''); self._sw_record_dir=''
+        final=str(getattr(self,'_record_final_path','') or '')
+        n=int(getattr(self,'_sw_frame_index',0)); ff=_ffmpeg()
+        if not d or not ff or n < 1:
+            self.lbl_render.setText('Camera recording produced no frames.')
+            return
+        fps=max(1,min(60,int(self.spin_fps.value()) if hasattr(self,'spin_fps') else 24))
+        audio=os.path.join(d,'audio.s16le')
+        tmp=final+'.part.mp4'
+        cmd=[ff,'-y','-v','error','-framerate',str(fps),'-i',os.path.join(d,'frame_%08d.jpg')]
+        if os.path.isfile(audio) and os.path.getsize(audio)>0:
+            cmd += ['-f','s16le','-ar',str(self._sw_audio_rate),'-ac',str(self._sw_audio_channels),'-i',audio]
+        cmd += ['-c:v','libx264','-preset','veryfast','-pix_fmt','yuv420p']
+        if os.path.isfile(audio) and os.path.getsize(audio)>0:
+            cmd += ['-c:a','aac','-b:a','192k','-shortest']
+        cmd += ['-movflags','+faststart',tmp]
+        try:
+            cp=subprocess.run(cmd,capture_output=True,text=True,timeout=300)
+            if cp.returncode!=0 or not os.path.isfile(tmp) or os.path.getsize(tmp)<1024:
+                raise RuntimeError((cp.stderr or 'FFmpeg software recording failed').strip())
+            os.replace(tmp,final)
+            try: shutil.rmtree(d,ignore_errors=True)
+            except Exception: pass
+            try:
+                import groovebox_paths; groovebox_paths.index_file(final,'recording',self._project_path())
+            except Exception: pass
+            self._append_recording_path(final); dur=_probe_duration(final)
+            if dur>0: self.spin_duration.setValue(min(3600.0,dur))
+            self.lbl_source.setText('Source: '+final); self.lbl_render.setText('Recorded: '+os.path.basename(final))
+        except Exception as e:
+            self.lbl_render.setText('Software recording failed: '+str(e))
+            QMessageBox.warning(self,'Camera recording failed',str(e))
+        finally:
+            self._record_path=''; self._record_final_path=''
+
+    def _record_format_candidates(self, recdir: str, stamp: str):
+        """Return backend-supported live recorder candidates in preference order.
+
+        Qt Multimedia/GStreamer availability differs by Fedora installation.  Never
+        assume that choosing a container implies that an encoder for its default
+        codecs exists.  Ask QMediaFormat to resolve a real Encode profile, then try
+        the supported containers one-by-one.  The final project asset is still MP4;
+        non-MP4 live captures are remuxed/transcoded after the recorder is stopped.
+        """
+        if not QT_MULTIMEDIA or QMediaFormat is None:
+            return []
+        mode = QMediaFormat.ConversionMode.Encode
+        supported = []
+        try:
+            supported = list(QMediaFormat().supportedFileFormats(mode))
+        except Exception:
+            pass
+        FF = QMediaFormat.FileFormat
+        prefs = []
+        for enum_name, ext, label in (
+            ('MPEG4', '.mp4', 'MP4'),
+            ('Matroska', '.mkv', 'Matroska'),
+            ('WebM', '.webm', 'WebM'),
+            ('QuickTime', '.mov', 'QuickTime'),
+        ):
+            v = getattr(FF, enum_name, None)
+            if v is not None and (not supported or v in supported):
+                prefs.append((v, ext, label))
+        # Include any backend-advertised formats we did not know by name.
+        for v in supported:
+            if any(v == x[0] for x in prefs):
+                continue
+            name = getattr(v, 'name', str(v))
+            ext = '.mkv'
+            low = str(name).lower()
+            if 'mpeg4' in low or low == 'mp4': ext = '.mp4'
+            elif 'webm' in low: ext = '.webm'
+            elif 'quick' in low or 'mov' in low: ext = '.mov'
+            prefs.append((v, ext, str(name)))
+
+        out = []
+        for filefmt, ext, label in prefs:
+            try:
+                fmt = QMediaFormat()
+                fmt.setFileFormat(filefmt)
+                # Let Qt choose codecs that the active backend can truly encode.
+                resolver = getattr(fmt, 'resolveForEncoding', None)
+                if callable(resolver):
+                    flags_cls = getattr(QMediaFormat, 'ResolveFlags', None)
+                    rv = getattr(flags_cls, 'RequiresVideo', None) if flags_cls else None
+                    ra = getattr(flags_cls, 'RequiresAudio', None) if flags_cls else None
+                    flags = rv
+                    if self._audio_devices and rv is not None and ra is not None:
+                        try: flags = rv | ra
+                        except Exception: flags = rv
+                    if flags is not None:
+                        resolver(flags)
+                try:
+                    if not fmt.isSupported(mode):
+                        continue
+                except Exception:
+                    pass
+                live = os.path.join(recdir, f'.camera_{stamp}.recording{ext}')
+                # If MP4 is directly supported it can still be written to a hidden
+                # temporary name; final publication only happens after probe/stability.
+                out.append((fmt, live, label))
+            except Exception:
+                continue
+        return out
+
+    def _start_recorder_candidate(self, index: int) -> bool:
+        cands = list(getattr(self, '_record_candidates', []) or [])
+        if index < 0 or index >= len(cands) or self._capture_session is None:
+            return False
+        fmt, record_out, label = cands[index]
+        try:
+            old = getattr(self, '_recorder', None)
+            if old is not None:
+                try: old.stop()
+                except Exception: pass
+                try: self._capture_session.setRecorder(None)
+                except Exception: pass
+            self._recorder = QMediaRecorder(self)
+            self._capture_session.setRecorder(self._recorder)
+            self._recorder.setMediaFormat(fmt)
+            self._recorder_error_text = ''
+            self._record_candidate_index = int(index)
+            self._record_path = record_out
+            try:
+                self._recorder.recorderStateChanged.connect(self._on_recorder_state_changed)
+            except Exception:
+                pass
+            try:
+                self._recorder.errorOccurred.connect(self._on_recorder_error)
+            except Exception:
+                try: self._recorder.errorChanged.connect(lambda: self._on_recorder_error())
+                except Exception: pass
+            try:
+                if os.path.isfile(record_out): os.remove(record_out)
+            except Exception:
+                pass
+            self._recorder.setOutputLocation(QUrl.fromLocalFile(record_out))
+            self._recorder.record()
+            self.lbl_render.setText(f'Recording selected camera + microphone… encoder profile: {label}')
+            QTimer.singleShot(1200, self._verify_recorder_started)
+            return True
+        except Exception as e:
+            self._recorder_error_text = str(e)
+            return False
+
+    def _try_next_recorder_candidate(self, failure_text: str = '') -> bool:
+        cands = list(getattr(self, '_record_candidates', []) or [])
+        start = int(getattr(self, '_record_candidate_index', -1)) + 1
+        for i in range(start, len(cands)):
+            try:
+                oldpath = str(getattr(self, '_record_path', '') or '')
+                if oldpath and os.path.isfile(oldpath) and os.path.getsize(oldpath) == 0:
+                    os.remove(oldpath)
+            except Exception:
+                pass
+            if self._start_recorder_candidate(i):
+                self.lbl_render.setText(
+                    f'Previous camera encoder was unavailable; trying backend profile {i+1}/{len(cands)}…')
+                return True
+        return False
+
     def _toggle_record(self,on:bool):
         if not on:
             self._stop_recording(); return
@@ -723,29 +978,102 @@ class VideoClipStudio(QWidget):
             if self._audio_devices:
                 mi=max(0,min(self.cmb_mic.currentIndex(),len(self._audio_devices)-1))
                 self._record_audio_input=QAudioInput(self._audio_devices[mi],self); self._capture_session.setAudioInput(self._record_audio_input)
-            self._recorder=QMediaRecorder(self); self._capture_session.setRecorder(self._recorder)
-            # CAMERA_MP4_FINALIZE_2026: never expose an MP4 to the rest of Groovebox
-            # until the Qt multimedia backend has actually stopped/flushed the muxer.
-            # A fixed 500 ms delay is not sufficient on every GStreamer/driver stack
-            # and can yield a file with no `moov` atom.
-            try:
-                self._recorder.recorderStateChanged.connect(self._on_recorder_state_changed)
-            except Exception:
-                pass
-            try:
-                fmt=QMediaFormat(); fmt.setFileFormat(QMediaFormat.FileFormat.MPEG4); self._recorder.setMediaFormat(fmt)
-            except Exception: pass
-            stamp=time.strftime('%Y%m%d_%H%M%S'); out=os.path.join(self._recordings_dir(),f'camera_{stamp}.mp4')
-            self._record_path=out
+
+            stamp=time.strftime('%Y%m%d_%H%M%S')
+            recdir=self._recordings_dir(); os.makedirs(recdir, exist_ok=True)
+            self._record_final_path=os.path.join(recdir,f'camera_{stamp}.mp4')
+            self._record_container='auto'
             self._record_finalize_attempts=0
             self._record_last_size=-1
             self._record_stable_size_count=0
-            self._recorder.setOutputLocation(QUrl.fromLocalFile(out)); self._recorder.record()
-            self.btn_record.setText('■ Stop Recording'); self.lbl_render.setText('Recording selected camera + microphone…')
+            # Fedora/Linux: bypass fragile Qt/GStreamer encode plugins and use the
+            # bundled FFmpeg encoder while Qt continues to provide camera frames.
+            if sys.platform.startswith('linux') and self._start_software_recording(recdir, stamp):
+                self.btn_record.setText('■ Stop Recording')
+                return
+            self._record_candidates=self._record_format_candidates(recdir, stamp)
+            self._record_candidate_index=-1
+            if not self._record_candidates:
+                raise RuntimeError(
+                    'Qt Multimedia reports no usable video-encoding profile. '
+                    'Install/enable the Fedora GStreamer codec plugins or use Import Video until a backend encoder is available.')
+            if not self._try_next_recorder_candidate('initial encoder selection'):
+                raise RuntimeError('Could not initialize any camera encoder advertised by Qt Multimedia.')
+            self.btn_record.setText('■ Stop Recording')
         except Exception as e:
-            self.btn_record.setChecked(False); QMessageBox.warning(self,'Record',str(e))
+            self.btn_record.blockSignals(True); self.btn_record.setChecked(False); self.btn_record.blockSignals(False)
+            self.btn_record.setText('● Record Camera + Mic')
+            QMessageBox.warning(self,'Record',str(e))
+
+    def _on_recorder_error(self, *args):
+        try:
+            self._recorder_error_text = str(self._recorder.errorString() or 'Qt Multimedia recorder error') if self._recorder else 'Qt Multimedia recorder error'
+        except Exception:
+            self._recorder_error_text = 'Qt Multimedia recorder error'
+
+    def _verify_recorder_started(self):
+        """Do not silently continue when Qt created a zero-byte placeholder but never started encoding."""
+        if not self._recorder or not self.btn_record.isChecked():
+            return
+        try:
+            state=self._recorder.recorderState()
+            active=(state == QMediaRecorder.RecorderState.RecordingState)
+        except Exception:
+            active=True
+        if active and not self._recorder_error_text:
+            return
+        msg=self._recorder_error_text or 'The Qt camera recorder did not enter RecordingState.'
+        try: self._recorder.stop()
+        except Exception: pass
+        # Qt/GStreamer can advertise a container whose default encoder plugin is
+        # missing. Retry every backend-supported resolved profile before failing.
+        if self._try_next_recorder_candidate(msg):
+            return
+        try:
+            if self._record_path and os.path.isfile(self._record_path) and os.path.getsize(self._record_path) == 0:
+                os.remove(self._record_path)
+        except Exception: pass
+        self.btn_record.blockSignals(True); self.btn_record.setChecked(False); self.btn_record.blockSignals(False)
+        self.btn_record.setText('● Record Camera + Mic')
+        self.lbl_render.setText('Camera recording could not start: '+msg)
+        QMessageBox.warning(self,'Camera recording could not start',
+            msg+'\n\nGroovebox tried every encoding profile Qt reports as available on this system.')
+
+    def _finalize_recording_to_mp4(self, src: str) -> str:
+        """Return a verified MP4 path; never publish a zero-byte placeholder."""
+        final=str(getattr(self,'_record_final_path','') or src)
+        if not src or not os.path.isfile(src) or os.path.getsize(src) < 1024:
+            return ''
+        if os.path.abspath(src) == os.path.abspath(final):
+            return src if self._recording_container_ready(src) else ''
+        ff=_ffmpeg()
+        if not ff:
+            return ''
+        tmp=final+'.part.mp4'
+        for cmd in (
+            [ff,'-y','-v','error','-i',src,'-map','0:v:0','-map','0:a?','-c','copy','-movflags','+faststart',tmp],
+            [ff,'-y','-v','error','-i',src,'-map','0:v:0','-map','0:a?','-c:v','libx264','-preset','veryfast','-pix_fmt','yuv420p','-c:a','aac','-b:a','192k','-movflags','+faststart',tmp],
+        ):
+            try:
+                cp=subprocess.run(cmd,capture_output=True,text=True,timeout=180)
+                if cp.returncode==0 and os.path.isfile(tmp) and os.path.getsize(tmp)>1024:
+                    os.replace(tmp,final)
+                    try: os.remove(src)
+                    except Exception: pass
+                    return final if self._recording_container_ready(final) else ''
+            except Exception:
+                pass
+            try:
+                if os.path.isfile(tmp): os.remove(tmp)
+            except Exception: pass
+        return ''
 
     def _stop_recording(self):
+        if getattr(self, '_sw_recording', False):
+            self.lbl_render.setText('Finalizing camera recording…')
+            self.btn_record.setText('● Record Camera + Mic')
+            QTimer.singleShot(10, self._finish_software_recording)
+            return
         try:
             if self._recorder:
                 self.lbl_render.setText('Finalizing camera recording…')
@@ -834,11 +1162,18 @@ class VideoClipStudio(QWidget):
                 'The incomplete file was left in the project recordings folder for inspection; '
                 'it was not loaded into the project.'
             )
+            try:
+                if path and os.path.isfile(path) and os.path.getsize(path) == 0:
+                    os.remove(path)
+            except Exception: pass
             self._record_path=''
+            self._record_final_path=''
             self._recorder=None; self._record_audio_input=None
             return
 
+        path=self._finalize_recording_to_mp4(path)
         self._record_path=''
+        self._record_final_path=''
         if path and os.path.isfile(path):
             try:
                 import groovebox_paths; groovebox_paths.index_file(path,'recording',self._project_path())
@@ -986,8 +1321,13 @@ class VideoClipStudio(QWidget):
             self._save_host_state(); self.lbl_render.setText(f'Unbound Video Clip Studio layers from {name}.'); return
         video=str(self.last_rendered_video or '')
         if not video or not os.path.isfile(video):
-            QMessageBox.information(self,'Bind All Layers','Render / Mix the video first. Bind All Layers attaches the final editable-layer result, while the paint/graph state remains saved for later editing.')
-            return
+            auto_name=_safe_stem(name or 'selected_operator')+'_all_layers_bound.mp4'
+            auto_path=os.path.join(self._video_exports_dir(), auto_name)
+            self.lbl_render.setText('Materializing editable layers for selected operator…')
+            video=str(self.render_video(output_path=auto_path, quiet=True) or '')
+            if not video or not os.path.isfile(video):
+                QMessageBox.warning(self,'Bind All Layers','Could not materialize the current recording/drawing layers for the selected operator. See the render status for details.')
+                return
         arr=np.zeros(1,dtype=np.float32); sr=44100; has_audio=False
         if mode in ('Audio','Both'):
             try:
@@ -1014,10 +1354,14 @@ class VideoClipStudio(QWidget):
         if mode=='Unbound':
             setattr(h,'carrier_binding_source',''); setattr(h,'carrier_binding_mode','unbound'); setattr(h,'carrier_bound_layers_state',{})
             self._save_host_state(); self.lbl_render.setText('Unbound video/draw layers from carrier provenance. Current carrier media is left intact.'); return
-        video=str(getattr(self,'last_render_path','') or getattr(self,'_last_render_path','') or '')
+        video=str(getattr(self,'last_render_path','') or getattr(self,'_last_render_path','') or self.last_rendered_video or '')
         if not video or not os.path.isfile(video):
-            QMessageBox.information(self,'Bind All Layers to Carrier','Render / Mix the video first. Carrier binding uses the finalized rendered result while preserving the editable paint/graph state.')
-            return
+            auto_path=os.path.join(self._video_exports_dir(), 'carrier_all_layers_bound.mp4')
+            self.lbl_render.setText('Materializing editable layers for carrier…')
+            video=str(self.render_video(output_path=auto_path, quiet=True) or '')
+            if not video or not os.path.isfile(video):
+                QMessageBox.warning(self,'Bind All Layers to Carrier','Could not materialize the current recording/drawing layers for the carrier. See the render status for details.')
+                return
         old_audio=(getattr(h,'imported_waveform',None),getattr(h,'imported_sample_rate',44100),str(getattr(h,'imported_wav_path','') or ''))
         old_video=(str(getattr(h,'imported_video_path','') or ''),getattr(h,'imported_video_meta',{}) or {})
         if mode=='Both':
@@ -1121,7 +1465,7 @@ class VideoClipStudio(QWidget):
             q.fillRect(frame.rect(),c)
         q.end(); return frame
 
-    def render_video(self):
+    def render_video(self, output_path=None, quiet=False):
         ff=_ffmpeg()
         if not ff: QMessageBox.warning(self,'Render video','FFmpeg is not available in the local Groovebox bin/PATH.'); return
         self._capture_curve(); self._persist_layer(True)
@@ -1137,8 +1481,12 @@ class VideoClipStudio(QWidget):
                 video_layers.append(candidate)
 
         default=os.path.join(self._video_exports_dir(),_safe_stem(Path(video_layers[0]).stem if video_layers else 'drawn_video')+'_mixed.mp4')
-        out,_=QFileDialog.getSaveFileName(self,'Render / Mix Video Clip',default,'MP4 video (*.mp4);;WebM video (*.webm)')
-        if not out:return
+        if output_path:
+            out=os.path.abspath(str(output_path))
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+        else:
+            out,_=QFileDialog.getSaveFileName(self,'Render / Mix Video Clip',default,'MP4 video (*.mp4);;WebM video (*.webm)')
+            if not out:return None
         if not os.path.splitext(out)[1]:out += '.mp4'
         tmp=Path(self._layers_dir())/'_video_clip_render_tmp'; shutil.rmtree(tmp,ignore_errors=True); tmp.mkdir(parents=True,exist_ok=True)
         try:
@@ -1207,11 +1555,17 @@ class VideoClipStudio(QWidget):
                 import groovebox_paths; groovebox_paths.index_file(out,'video_export',self._project_path())
             except Exception:pass
             self.last_rendered_video=str(out)
+            self.last_render_path=str(out)
+            self._last_render_path=str(out)
             self._save_host_state()
             self.lbl_render.setText(f'Rendered {len(video_layers)} recording layer(s): '+out)
             try:
                 if hasattr(self.parent(),'refresh'):self.parent().refresh()
             except Exception:pass
-        except Exception as e: QMessageBox.warning(self,'Render video',str(e)); self.lbl_render.setText('Render failed.')
+            return str(out)
+        except Exception as e:
+            if not quiet: QMessageBox.warning(self,'Render video',str(e))
+            self.lbl_render.setText('Render failed: '+str(e))
+            return None
         finally: shutil.rmtree(tmp,ignore_errors=True)
 

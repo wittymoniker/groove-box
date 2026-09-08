@@ -572,7 +572,10 @@ class Performance(QDialog):
         try:
             from video_clip_studio import VideoClipStudio
             self.video_clip_studio = VideoClipStudio(self.host, self)
-            right.addTab(self._scroll_page(self.video_clip_studio), "🎥 Record / Import / Draw Clip")
+            # VideoClipStudio already owns a full two-axis scroll viewport. Wrapping
+            # it again creates nested viewport geometry that can make camera surfaces
+            # appear over the drawing pane on some Qt/GStreamer combinations.
+            right.addTab(self.video_clip_studio, "🎥 Record / Import / Draw Clip")
         except Exception as e:
             self.video_clip_studio = None
             fallback = QWidget(); fl = QVBoxLayout(fallback); msg = QLabel(f"Video Clip Studio unavailable: {e}"); msg.setWordWrap(True); fl.addWidget(msg); fl.addStretch(1); right.addTab(self._scroll_page(fallback), "🎥 Record / Import / Draw Clip")
