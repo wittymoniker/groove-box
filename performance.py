@@ -1169,20 +1169,50 @@ class Performance(QDialog):
         """
         host = getattr(self, "host", None)
         try:
-            # Embedded Performance dock: the host is the master studio itself.
+            # Performance is normally a separate top-level window owned logically
+            # (not as a QWidget parent) by the already-running Master Studio.
+            # On Wayland a compositor may ignore raise_/activateWindow() requests
+            # from another top-level window.  Hiding Performance first makes the
+            # existing studio reliably visible and avoids spawning a duplicate.
             if host is not None and host is not self:
-                show = getattr(host, "show", None)
-                if callable(show):
-                    show()
+                # Persist the live Performance controls before switching windows.
+                try:
+                    state = getattr(host, "media_workbench_state", None)
+                    if not isinstance(state, dict):
+                        state = {}
+                        setattr(host, "media_workbench_state", state)
+                    state["performance"] = self.export_state()
+                except Exception:
+                    pass
+
+                # Restore from minimized state before requesting focus.
                 normal = getattr(host, "showNormal", None)
                 if callable(normal):
                     normal()
+                show = getattr(host, "show", None)
+                if callable(show):
+                    show()
+
+                # Hide this top-level window.  This is the reliable part on
+                # Wayland; raise_/activateWindow() remain useful on X11/Windows.
+                try:
+                    self.hide()
+                except Exception:
+                    pass
+
                 raise_ = getattr(host, "raise_", None)
                 if callable(raise_):
                     raise_()
                 activate = getattr(host, "activateWindow", None)
                 if callable(activate):
                     activate()
+
+                # Some WMs apply activation only after the current click event
+                # unwinds. Queue one zero-delay retry without blocking the GUI.
+                try:
+                    QTimer.singleShot(0, lambda h=host: (h.raise_(), h.activateWindow()))
+                except Exception:
+                    pass
                 self.lbl_status.setText("MatGroovebox Master Studio ready.")
                 return host
         except Exception as exc:
