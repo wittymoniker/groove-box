@@ -30865,6 +30865,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
             perf_state = state.get("performance") if isinstance(state.get("performance"), dict) else {}
             perf_state["video_clip"] = copy.deepcopy(main_video_state)
             state["performance"] = perf_state
+        # PERFORMANCE_PROJECT_PROFILE_20260908: profile/reference identity is
+        # persistent project state, not an .MG Profile-only side channel. Keep it
+        # with the rest of Performance so normal Save/Load is a true round trip.
+        try:
+            state["target_profile"] = copy.deepcopy(getattr(self, "_performance_profile_state", {}) or {})
+        except Exception:
+            state["target_profile"] = {}
+        try:
+            state["reference_profile"] = copy.deepcopy(getattr(self, "_signal_lab_reference_profile", None))
+        except Exception:
+            state["reference_profile"] = None
         self.media_workbench_state = state
         return state
 
@@ -30873,6 +30884,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.media_workbench_state = copy.deepcopy(state) if isinstance(state, dict) else {}
         except Exception:
             self.media_workbench_state = {}
+        # Restore profile identity before any visible Performance widgets so all
+        # consumers observe the same project state during their own restore hooks.
+        try:
+            self._performance_profile_state = copy.deepcopy((self.media_workbench_state or {}).get("target_profile", {}))
+        except Exception:
+            self._performance_profile_state = {}
+        try:
+            self._signal_lab_reference_profile = copy.deepcopy((self.media_workbench_state or {}).get("reference_profile", None))
+        except Exception:
+            self._signal_lab_reference_profile = None
         panel = getattr(self, "_performance_panel", None)
         if panel is not None and hasattr(panel, "restore_state"):
             try:

@@ -357,6 +357,8 @@ class VideoClipStudio(QWidget):
         self._v4l_video_tmp = ''
         self._v4l_audio_path = ''
         self._v4l_frame_count = 0
+        self._v4l_stop_generation = 0
+        self._v4l_stop_callback = None
         self.last_rendered_video = ''
         self.recording_layers: List[str] = []
         self.draw_layers: List[Dict[str, Any]] = []
@@ -521,7 +523,7 @@ class VideoClipStudio(QWidget):
         self.chk_sound_color = QCheckBox('Enable Sound→Color'); self.chk_sound_color.setChecked(False)
         self.cmb_color_detail = QComboBox(); self.cmb_color_detail.addItems(['Off','Basic','Detailed']); self.cmb_color_detail.setCurrentText('Off')
         self.cmb_color_detail.setToolTip('FINAL-MIX option. Off performs no color→sound calculations. Basic maps global hue/saturation/value; Detailed maps multiple color regions as a deterministic partial bank.')
-        self.spin_duration = QDoubleSpinBox(); self.spin_duration.setRange(.25,3600.0); self.spin_duration.setDecimals(2); self.spin_duration.setValue(5.0); self.spin_duration.setSuffix(' s')
+        self.spin_duration = QDoubleSpinBox(); self.spin_duration.setRange(.25,86400.0); self.spin_duration.setDecimals(2); self.spin_duration.setValue(5.0); self.spin_duration.setSuffix(' s')
         self.spin_fps = QSpinBox(); self.spin_fps.setRange(1,120); self.spin_fps.setValue(30); self.spin_fps.setSuffix(' fps')
         self.spin_width = QSpinBox(); self.spin_width.setRange(160,3840); self.spin_width.setValue(1280)
         self.spin_height = QSpinBox(); self.spin_height.setRange(90,2160); self.spin_height.setValue(720)
@@ -777,22 +779,46 @@ class VideoClipStudio(QWidget):
                 continue
         return ''
 
-    def _stop_v4l2_process(self, wait_ms: int = 2500):
+    def _stop_v4l2_process(self, on_stopped=None):
+        """Request FFmpeg shutdown without any blocking QProcess wait calls.
+
+        Completion is driven by QProcess.finished.  Timers only escalate q ->
+        terminate -> kill if the process ignores the previous request; they never
+        block the GUI thread or assume a fixed encode/finalize duration.
+        """
         proc=getattr(self,'_v4l_proc',None)
-        self._v4l_proc=None
         if proc is None:
+            if callable(on_stopped): QTimer.singleShot(0,on_stopped)
             return
+        self._v4l_stop_generation=int(getattr(self,'_v4l_stop_generation',0))+1
+        gen=self._v4l_stop_generation
+        self._v4l_stop_callback=on_stopped
+        def finished(*_args):
+            if gen != int(getattr(self,'_v4l_stop_generation',0)): return
+            if getattr(self,'_v4l_proc',None) is proc: self._v4l_proc=None
+            cb=getattr(self,'_v4l_stop_callback',None); self._v4l_stop_callback=None
+            if callable(cb): QTimer.singleShot(0,cb)
+        try: proc.finished.connect(finished)
+        except Exception: pass
         try:
-            if proc.state() != QProcess.ProcessState.NotRunning:
-                proc.write(b'q\n')
-                proc.waitForBytesWritten(300)
-                if not proc.waitForFinished(wait_ms):
-                    proc.terminate()
-                    if not proc.waitForFinished(1200):
-                        proc.kill(); proc.waitForFinished(800)
+            if proc.state() == QProcess.ProcessState.NotRunning:
+                finished(); return
+            proc.write(b'q\n')
         except Exception:
-            try: proc.kill()
+            try: proc.terminate()
             except Exception: pass
+        def escalate_terminate():
+            if gen != int(getattr(self,'_v4l_stop_generation',0)): return
+            try:
+                if proc.state() != QProcess.ProcessState.NotRunning: proc.terminate()
+            except Exception: pass
+        def escalate_kill():
+            if gen != int(getattr(self,'_v4l_stop_generation',0)): return
+            try:
+                if proc.state() != QProcess.ProcessState.NotRunning: proc.kill()
+            except Exception: pass
+        QTimer.singleShot(1800,escalate_terminate)
+        QTimer.singleShot(3200,escalate_kill)
 
     def _read_v4l2_preview(self):
         proc=getattr(self,'_v4l_proc',None)
@@ -847,7 +873,16 @@ class VideoClipStudio(QWidget):
         dev=self._selected_v4l2_device()
         if not dev:
             return False
-        self._stop_v4l2_process()
+        old_proc=getattr(self,'_v4l_proc',None)
+        if old_proc is not None:
+            try: running=(old_proc.state()!=QProcess.ProcessState.NotRunning)
+            except Exception: running=False
+            if running:
+                # Serialize V4L2 ownership. Start the replacement only after the
+                # previous FFmpeg process reports finished, avoiding device-busy races.
+                self._stop_v4l2_process(lambda:self._start_v4l2_capture(record,recdir,stamp))
+                return True
+            self._v4l_proc=None
         # A Qt camera cannot hold the V4L2 node at the same time.
         try:
             if self._camera: self._camera.stop()
@@ -896,9 +931,9 @@ class VideoClipStudio(QWidget):
             self._v4l_recording=False
         self._v4l_proc=proc
         proc.start(ff,args)
-        if not proc.waitForStarted(1800):
-            self._v4l_proc=None
-            return False
+        # QProcess startup is asynchronous. errorOccurred handles a failed open;
+        # the frame watchdog independently catches a process that starts but yields
+        # no camera frames. No waitForStarted() is needed.
         self.video_preview.setText(f'Opening {dev}…')
         self.lbl_render.setText(('Recording' if record else 'Previewing')+f' camera through FFmpeg/V4L2: {dev}')
         self._camera_watchdog_generation += 1
@@ -926,7 +961,11 @@ class VideoClipStudio(QWidget):
             return
         self._v4l_recording=False
         self.lbl_render.setText('Finalizing V4L2 camera recording…')
-        self._stop_v4l2_process(3500)
+        # Do not mux until FFmpeg has actually emitted its finished signal.
+        self._stop_v4l2_process(self._complete_v4l2_recording)
+
+    def _complete_v4l2_recording(self):
+        """Finalize the already-stopped V4L2 capture off the GUI thread."""
         try:
             if self._sw_audio_fh:
                 self._sw_audio_fh.flush(); self._sw_audio_fh.close()
@@ -942,50 +981,66 @@ class VideoClipStudio(QWidget):
         final=str(getattr(self,'_record_final_path','') or '')
         d=str(getattr(self,'_v4l_record_dir','') or '')
         ff=_ffmpeg(); tmp=final+'.part.mp4' if final else ''
-        try:
+        audio_rate=int(getattr(self,'_sw_audio_rate',48000) or 48000)
+        audio_channels=max(1,int(getattr(self,'_sw_audio_channels',1) or 1))
+
+        def work():
             if not video or not os.path.isfile(video) or os.path.getsize(video)<1024:
                 raise RuntimeError('V4L2 camera recording produced no usable video stream.')
             cmd=[ff,'-y','-v','error','-i',video]
             has_audio=bool(audio and os.path.isfile(audio) and os.path.getsize(audio)>0)
             if has_audio:
-                cmd += ['-f','s16le','-ar',str(self._sw_audio_rate),'-ac',str(self._sw_audio_channels),'-i',audio]
+                cmd += ['-f','s16le','-ar',str(audio_rate),'-ac',str(audio_channels),'-i',audio]
             cmd += ['-map','0:v:0']
             if has_audio: cmd += ['-map','1:a:0']
             cmd += ['-c:v','copy']
             if has_audio: cmd += ['-c:a','aac','-b:a','192k','-shortest']
             cmd += ['-movflags','+faststart',tmp]
-            cp=subprocess.run(cmd,capture_output=True,text=True,timeout=300)
+            cp=subprocess.run(cmd,capture_output=True,text=True)
             if cp.returncode!=0 or not os.path.isfile(tmp) or os.path.getsize(tmp)<1024:
                 raise RuntimeError((cp.stderr or 'FFmpeg V4L2 finalize failed').strip())
             os.replace(tmp,final)
-            if not self._wait_for_recording_container(final, 6.0):
+            if not self._recording_video_probe_ok(final):
                 raise RuntimeError('Final MP4 did not contain a readable positive-duration video stream after finalization.')
+            return final
+
+        def done(result,error):
             try:
-                import groovebox_paths; groovebox_paths.index_file(final,'recording',self._project_path())
-            except Exception: pass
-            self._append_recording_path(final)
-            dur=_probe_duration(final)
-            if dur>0: self.spin_duration.setValue(min(3600.0,dur))
-            self.lbl_source.setText('Source: '+final)
-            self.lbl_render.setText('Recorded + appended layer: '+os.path.basename(final))
-        except Exception as e:
-            self.lbl_render.setText('V4L2 recording failed: '+str(e))
-            QMessageBox.warning(self,'Camera recording failed',str(e))
-        finally:
-            try:
-                if tmp and os.path.isfile(tmp): os.remove(tmp)
-            except Exception: pass
-            try: shutil.rmtree(d,ignore_errors=True)
-            except Exception: pass
-            self._v4l_record_dir=''; self._v4l_video_tmp=''; self._v4l_audio_path=''
-            self._record_path=''; self._record_final_path=''
-            # If the user had Preview enabled before recording, resume the same
-            # direct V4L2 preview after the recording file has finalized.
-            try:
-                if self.btn_camera_preview.isChecked():
-                    QTimer.singleShot(120, lambda: self._start_v4l2_capture(False))
-            except Exception:
-                pass
+                if error is not None: raise RuntimeError(str(error))
+                out=str(result or final)
+                try:
+                    import groovebox_paths; groovebox_paths.index_file(out,'recording',self._project_path())
+                except Exception: pass
+                self._append_recording_path(out)
+                dur=_probe_duration(out)
+                if dur>0: self.spin_duration.setValue(min(86400.0,dur))
+                self.lbl_source.setText('Source: '+out)
+                self.lbl_render.setText('Recorded + appended layer: '+os.path.basename(out))
+            except Exception as e:
+                self.lbl_render.setText('V4L2 recording failed: '+str(e))
+                QMessageBox.warning(self,'Camera recording failed',str(e))
+            finally:
+                try:
+                    if tmp and os.path.isfile(tmp): os.remove(tmp)
+                except Exception: pass
+                try: shutil.rmtree(d,ignore_errors=True)
+                except Exception: pass
+                self._v4l_record_dir=''; self._v4l_video_tmp=''; self._v4l_audio_path=''
+                self._record_path=''; self._record_final_path=''
+                try:
+                    if self.btn_camera_preview.isChecked():
+                        QTimer.singleShot(120,lambda:self._start_v4l2_capture(False))
+                except Exception: pass
+
+        opt=getattr(self.host,'_scode_optimizer',None)
+        if opt is not None and hasattr(opt,'submit_pooled'):
+            opt.submit_pooled('v4l2_finalize',(video,audio,final),work,policy='side_effect',format_id='video',side_effecting=True,callback=done,qt_callback=True)
+        else:
+            def runner():
+                try: result=work(); QTimer.singleShot(0,lambda r=result:done(r,None))
+                except Exception as exc: QTimer.singleShot(0,lambda e=str(exc):done('',e))
+            import threading
+            threading.Thread(target=runner,daemon=True).start()
 
     def _camera_error(self, *args):
         text=''
@@ -1136,7 +1191,7 @@ class VideoClipStudio(QWidget):
             dst=groovebox_paths.ingest_file(src,role='recording',project_path=self._project_path())
             self._append_recording_path(dst)
             dur=_probe_duration(dst)
-            if dur>0: self.spin_duration.setValue(min(3600.0,dur))
+            if dur>0: self.spin_duration.setValue(min(86400.0,dur))
             self.lbl_source.setText('Source: '+dst)
             self.lbl_render.setText('Imported into project recordings: '+os.path.basename(dst))
         except Exception as e: QMessageBox.warning(self,'Import video',str(e))
@@ -1218,7 +1273,7 @@ class VideoClipStudio(QWidget):
                 import groovebox_paths; groovebox_paths.index_file(final,'recording',self._project_path())
             except Exception: pass
             self._append_recording_path(final); dur=_probe_duration(final)
-            if dur>0: self.spin_duration.setValue(min(3600.0,dur))
+            if dur>0: self.spin_duration.setValue(min(86400.0,dur))
             self.lbl_source.setText('Source: '+final); self.lbl_render.setText('Recorded: '+os.path.basename(final))
         except Exception as e:
             self.lbl_render.setText('Software recording failed: '+str(e))
@@ -1727,7 +1782,7 @@ class VideoClipStudio(QWidget):
         if tpath:
             for i in range(self.cmb_tablet.count()):
                 if str(self.cmb_tablet.itemData(i) or '')==tpath:self.cmb_tablet.setCurrentIndex(i);break
-        self.spin_duration.setValue(max(.25,min(3600,float(state.get('duration',5.0)))))
+        self.spin_duration.setValue(max(.25,min(86400,float(state.get('duration',5.0)))))
         self.spin_fps.setValue(max(1,min(120,int(state.get('fps',30)))))
         self.spin_width.setValue(max(160,min(3840,int(state.get('width',1280)))))
         self.spin_height.setValue(max(90,min(2160,int(state.get('height',720)))))

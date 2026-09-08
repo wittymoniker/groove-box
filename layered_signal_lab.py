@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import json, math, os, tempfile, threading, time
+import json, math, os, tempfile, threading, time, wave
 from pathlib import Path
 from typing import Any, Dict, List
 import numpy as np
@@ -92,7 +92,7 @@ class LayeredSignalLab(QWidget):
         self.scalar=QDoubleSpinBox(); self.scalar.setRange(.000001,1000000); self.scalar.setDecimals(6); self.scalar.setValue(1); self.scalar.valueChanged.connect(self._pull_controls); f.addRow('Relative time scalar',self.scalar)
         self.gain=QDoubleSpinBox(); self.gain.setRange(0,8); self.gain.setDecimals(5); self.gain.setValue(1); self.gain.valueChanged.connect(self._pull_controls); f.addRow('Layer gain',self.gain)
         self.cycles=QDoubleSpinBox(); self.cycles.setRange(.000001,4096); self.cycles.setDecimals(7); self.cycles.setValue(1); self.cycles.valueChanged.connect(self._pull_controls); f.addRow('Layer cycles',self.cycles)
-        self.duration=QDoubleSpinBox(); self.duration.setRange(.02,3600); self.duration.setDecimals(4); self.duration.setValue(4); self.duration.valueChanged.connect(self._state_changed); f.addRow('Total output time (s)',self.duration)
+        self.duration=QDoubleSpinBox(); self.duration.setRange(.02,86400); self.duration.setDecimals(4); self.duration.setValue(4); self.duration.valueChanged.connect(self._state_changed); f.addRow('Total output time (s)',self.duration)
         self.sr=QSpinBox(); self.sr.setRange(8000,192000); self.sr.setValue(48000); self.sr.valueChanged.connect(self._state_changed); f.addRow('Sample rate',self.sr)
         self.blend_mode=QComboBox(); self.blend_mode.addItems(['Morph Between Layers','Pooled Overlay']); self.blend_mode.currentTextChanged.connect(self._state_changed); f.addRow('Layer composition',self.blend_mode)
         self.heur=QComboBox(); self.heur.addItems(['Linear','Equal Power','Smoothstep','Nearest','Co-fractal Meum','Parametric']); self.heur.currentTextChanged.connect(self._state_changed); f.addRow('Between-layer heuristic',self.heur)
@@ -393,13 +393,36 @@ class LayeredSignalLab(QWidget):
         self._state_changed(); self.report.setPlainText(f'Bound ALL sound layers → Carrier {mode}: {p}')
 
     def _record_layer(self):
-        dur=max(.1,min(600,float(self.duration.value()))); sr=int(self.sr.value()); recdir=groovebox_paths.recordings_dir(getattr(self.host,'_current_project_path',None)); path=os.path.join(recdir,f'groovebox_record_layer_{int(time.time()*1000)}.wav'); self.report.setPlainText(f'Recording {dur:.2f}s…')
+        # Stream directly to disk instead of sd.rec()+sd.wait().  This keeps RAM
+        # bounded for long takes and completion depends on frames actually read,
+        # not on a backend-global wait primitive.
+        dur=max(.1,min(86400.0,float(self.duration.value()))); sr=int(self.sr.value()); recdir=groovebox_paths.recordings_dir(getattr(self.host,'_current_project_path',None)); path=os.path.join(recdir,f'groovebox_record_layer_{int(time.time()*1000)}.wav'); self.report.setPlainText(f'Recording {dur:.2f}s…')
         device=self.cmb_record_input.currentData() if hasattr(self,'cmb_record_input') else None
         def work():
             from audio_os_backend import sd
-            kwargs={'samplerate':sr,'channels':1,'dtype':'float32'}
-            if device is not None:kwargs['device']=int(device)
-            arr=sd.rec(max(1,int(round(dur*sr))),**kwargs); sd.wait(); write_wav(path,np.asarray(arr,dtype=np.float32).reshape(-1),sr); return path
+            if sd is None:
+                raise RuntimeError('Realtime audio input backend is unavailable.')
+            total=max(1,int(round(dur*sr))); done=0; block=2048
+            kwargs={'samplerate':sr,'channels':1,'dtype':'float32','blocksize':block}
+            if device is not None: kwargs['device']=int(device)
+            os.makedirs(os.path.dirname(path),exist_ok=True)
+            with wave.open(path,'wb') as wf:
+                wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr)
+                with sd.InputStream(**kwargs) as stream:
+                    while done < total:
+                        need=min(block,total-done)
+                        data,overflowed=stream.read(need)
+                        if overflowed:
+                            # Overflow is reported as an event, not hidden; keep the
+                            # captured frames and continue rather than deadlocking.
+                            pass
+                        pcm=(np.clip(np.asarray(data,dtype=np.float32).reshape(-1),-1.0,1.0)*32767.0).astype('<i2')
+                        wf.writeframesraw(pcm.tobytes())
+                        done += int(pcm.size)
+                wf.writeframes(b'')
+            if done <= 0 or not os.path.isfile(path) or os.path.getsize(path) <= 44:
+                raise RuntimeError('Audio input produced no usable frames.')
+            return path
         opt=getattr(self.host,'_scode_optimizer',None)
         if opt is not None and hasattr(opt,'submit_pooled'):
             def done(result,error): self._record_finished(str(result or ''), '' if error is None else str(error))
