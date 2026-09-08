@@ -7,7 +7,7 @@ import numpy as np
 from PyQt6.QtCore import Qt, QPointF, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabel,QPushButton,QComboBox,
-    QDoubleSpinBox,QSpinBox,QFileDialog,QMessageBox,QPlainTextEdit,QTabWidget,QLineEdit,QGroupBox)
+    QDoubleSpinBox,QSpinBox,QFileDialog,QMessageBox,QPlainTextEdit,QTabWidget,QLineEdit,QGroupBox,QTableWidget,QTableWidgetItem,QScrollArea,QSizePolicy)
 from media_layer_engine import render_layers, write_wav, spectrum_peaks
 import groovebox_paths
 
@@ -58,12 +58,33 @@ class LayeredSignalLab(QWidget):
     def __init__(self,host=None,parent=None):
         super().__init__(parent); self.host=host; self.layers:List[Dict[str,Any]]=[]; self.canvases=[]; self.last_generated=None
         self.record_ready.connect(self._record_finished)
-        root=QVBoxLayout(self); intro=QLabel('Layered Draw/Record/Sample reconstruction. Relative time scalars divide the final duration; each interval morphs one layer into the next deterministically.'); intro.setWordWrap(True); root.addWidget(intro)
+        outer=QVBoxLayout(self); outer.setContentsMargins(0,0,0,0)
+        whole_scroll=QScrollArea(); whole_scroll.setWidgetResizable(True)
+        whole_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        whole_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        whole_body=QWidget(); whole_body.setMinimumWidth(700)
+        root=QVBoxLayout(whole_body); root.setContentsMargins(6,6,6,6); root.setSpacing(6)
+        whole_scroll.setWidget(whole_body); outer.addWidget(whole_scroll)
+        intro=QLabel('Layered Draw/Record/Sample reconstruction. Relative time scalars divide the final duration; each interval morphs one layer into the next deterministically.'); intro.setWordWrap(True); root.addWidget(intro)
+        indev=QGroupBox('Record Sound · input device')
+        idl=QHBoxLayout(indev)
+        idl.addWidget(QLabel('Microphone / input'))
+        self.cmb_record_input=QComboBox(); idl.addWidget(self.cmb_record_input,1)
+        self.btn_refresh_record_inputs=QPushButton('↻ Refresh'); self.btn_refresh_record_inputs.clicked.connect(self._refresh_record_inputs); idl.addWidget(self.btn_refresh_record_inputs)
+        root.addWidget(indev)
         ctl=QHBoxLayout();
         for text,fn in [('＋ Draw Layer',self._add_draw_layer),('＋ Sample Layer…',self._add_sample_layer),('● Record Layer',self._record_layer),('− Layer',self._remove_layer)]:
             b=QPushButton(text); b.clicked.connect(fn); ctl.addWidget(b)
         ctl.addStretch(1); root.addLayout(ctl)
-        self.tabs=QTabWidget(); self.tabs.currentChanged.connect(self._sync_controls_from_layer); root.addWidget(self.tabs,1)
+        recbox=QGroupBox('Recordings Table · project/session references')
+        rbl=QVBoxLayout(recbox)
+        self.recordings_table=QTableWidget(0,3); self.recordings_table.setHorizontalHeaderLabels(['Layer','Type','File']); rbl.addWidget(self.recordings_table)
+        rr=QHBoxLayout()
+        self.btn_append_recording=QPushButton('＋ Append Recording Layer…'); self.btn_append_recording.clicked.connect(self._append_recording_layer); rr.addWidget(self.btn_append_recording)
+        self.btn_remove_recording=QPushButton('− Remove Recording Layer Tab'); self.btn_remove_recording.clicked.connect(self._remove_recording_layer_tab); rr.addWidget(self.btn_remove_recording)
+        self.btn_clear_recordings=QPushButton('Clear Recordings Table'); self.btn_clear_recordings.clicked.connect(self._clear_recordings_table); rr.addWidget(self.btn_clear_recordings)
+        rbl.addLayout(rr); root.addWidget(recbox)
+        self.tabs=QTabWidget(); self.tabs.setMinimumHeight(300); self.tabs.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Expanding); self.tabs.currentChanged.connect(self._sync_controls_from_layer); root.addWidget(self.tabs,1)
         cfg=QGroupBox('Selected layer / reconstruction'); f=QFormLayout(cfg)
         self.edit_name=QLineEdit(); self.edit_name.editingFinished.connect(self._pull_controls); f.addRow('Layer name',self.edit_name)
         self.scalar=QDoubleSpinBox(); self.scalar.setRange(.000001,1000000); self.scalar.setDecimals(6); self.scalar.setValue(1); self.scalar.valueChanged.connect(self._pull_controls); f.addRow('Relative time scalar',self.scalar)
@@ -74,17 +95,51 @@ class LayeredSignalLab(QWidget):
         self.blend_mode=QComboBox(); self.blend_mode.addItems(['Morph Between Layers','Pooled Overlay']); self.blend_mode.currentTextChanged.connect(self._state_changed); f.addRow('Layer composition',self.blend_mode)
         self.heur=QComboBox(); self.heur.addItems(['Linear','Equal Power','Smoothstep','Nearest','Co-fractal Meum','Parametric']); self.heur.currentTextChanged.connect(self._state_changed); f.addRow('Between-layer heuristic',self.heur)
         self.expr=QLineEdit('u'); self.expr.setToolTip('For Parametric mode: alpha expression using u/t, MEUM, PHI, pi, sin, cos, sqrt, abs.'); self.expr.editingFinished.connect(self._state_changed); f.addRow('Parametric alpha',self.expr)
-        root.addWidget(cfg)
+        cfg.setMinimumHeight(300)
+        cfg.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Minimum)
+        bind=QGroupBox('Bind All Layers to Instrument')
+        bl=QHBoxLayout(bind); bl.addWidget(QLabel('Bind as'))
+        self.cmb_bind_all=QComboBox(); self.cmb_bind_all.addItems(['Audio','Video','Both','Unbound']); bl.addWidget(self.cmb_bind_all)
+        self.btn_bind_all=QPushButton('Bind All Layers to Selected Instrument'); self.btn_bind_all.clicked.connect(self._bind_all_layers_to_instrument); bl.addWidget(self.btn_bind_all,1)
+        self.btn_bind_carrier=QPushButton('Bind All Layers to Carrier'); self.btn_bind_carrier.clicked.connect(self._bind_all_layers_to_carrier); bl.addWidget(self.btn_bind_carrier,1)
+        bind.setMinimumHeight(90)
+        bind.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Minimum)
         mon=QGroupBox('Rendered sample monitor'); ml=QVBoxLayout(mon); self.spec=SpectrumWidget(); ml.addWidget(self.spec)
         self.lbl_peaks=QLabel('Peaks: —'); self.lbl_peaks.setWordWrap(True); ml.addWidget(self.lbl_peaks)
         row=QHBoxLayout();
         for text,fn in [('Render Preview',self._render_preview),('▶ Play Sample',self._play_sample),('Save WAV…',self._save),('Send Global',lambda:self._send(False)),('Send → Selected',lambda:self._send(True))]:
             b=QPushButton(text); b.clicked.connect(fn); row.addWidget(b)
-        ml.addLayout(row); root.addWidget(mon)
-        self.report=QPlainTextEdit(); self.report.setReadOnly(True); self.report.setMaximumHeight(100); root.addWidget(self.report)
-        self._preview=None; self._preview_sr=48000
+        ml.addLayout(row)
+        mon.setMinimumHeight(245)
+        mon.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Minimum)
+        for _b in mon.findChildren(QPushButton):
+            _b.setMinimumHeight(32)
+        self.report=QPlainTextEdit(); self.report.setReadOnly(True); self.report.setMinimumHeight(90); self.report.setMaximumHeight(140)
+        # AUDIO_LAYOUT_20260907: protect Selected Layer / Reconstruction and
+        # its action controls from splitter/fullscreen squeeze.  The layer tabs
+        # remain the expanding editor; the lower reconstruction workstation
+        # scrolls instead of allowing Qt to collapse or clip controls.
+        recon_body=QWidget()
+        recon_body.setMinimumWidth(620)
+        recon_lay=QVBoxLayout(recon_body)
+        recon_lay.setContentsMargins(4,4,4,4)
+        recon_lay.addWidget(cfg)
+        recon_lay.addWidget(bind)
+        recon_lay.addWidget(mon)
+        recon_lay.addWidget(self.report)
+        recon_lay.addStretch(1)
+        self.reconstruction_scroll=QScrollArea()
+        self.reconstruction_scroll.setWidgetResizable(True)
+        self.reconstruction_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.reconstruction_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.reconstruction_scroll.setMinimumHeight(360)
+        self.reconstruction_scroll.setWidget(recon_body)
+        root.addWidget(self.reconstruction_scroll,1)
+        self._preview=None; self._preview_sr=48000; self._record_input_devices=[]
+        self._refresh_record_inputs()
         self._restore_host_state()
         if not self.layers:self._add_draw_layer()
+        self._refresh_recordings_table()
     def _layer_default(self,name='Draw',kind='draw',path=''): return {'name':name,'kind':kind,'path':path,'points':[(0,.5),(1,.5)],'time_scalar':1.0,'gain':1.0,'cycles':1.0,'phase':0.0,'provenance':kind}
     def _add_draw_layer(self): self._add_layer(self._layer_default(f'Draw {len(self.layers)+1}'))
     def _add_sample_layer(self):
@@ -99,11 +154,34 @@ class LayeredSignalLab(QWidget):
             c=LayerCanvas(points=rec.get('points')); c.changed.connect(lambda c=c:self._canvas_changed(c)); l.addWidget(c); self.canvases.append(c)
         else:
             q=QLabel(f"{rec.get('kind','audio').upper()}\n{rec.get('path','')}"); q.setWordWrap(True); q.setAlignment(Qt.AlignmentFlag.AlignCenter); l.addWidget(q,1); self.canvases.append(None)
-        idx=self.tabs.addTab(page,str(rec.get('name','Layer'))); self.tabs.setCurrentIndex(idx); self._sync_controls_from_layer(); self._state_changed()
+        idx=self.tabs.addTab(page,str(rec.get('name','Layer'))); self.tabs.setCurrentIndex(idx); self._sync_controls_from_layer(); self._state_changed(); self._refresh_recordings_table()
     def _remove_layer(self):
         i=self.tabs.currentIndex()
         if i<0:return
-        self.tabs.removeTab(i); self.layers.pop(i); self.canvases.pop(i); self._sync_controls_from_layer(); self._state_changed()
+        self.tabs.removeTab(i); self.layers.pop(i); self.canvases.pop(i); self._sync_controls_from_layer(); self._state_changed(); self._refresh_recordings_table()
+    def _append_recording_layer(self):
+        base=groovebox_paths.recordings_dir(getattr(self.host,'_current_project_path',None))
+        p,_=QFileDialog.getOpenFileName(self,'Append recording layer',base,'Audio recordings (*.wav *.flac *.mp3 *.ogg *.opus *.aiff *.aif *.caf);;All files (*)')
+        if not p:return
+        try:p=groovebox_paths.ingest_file(p,'recording',getattr(self.host,'_current_project_path',None))
+        except Exception:pass
+        self._add_layer(self._layer_default(Path(p).stem,'record',os.path.abspath(p))); self._refresh_recordings_table()
+    def _remove_recording_layer_tab(self):
+        i=self.tabs.currentIndex()
+        if i<0 or i>=len(self.layers):return
+        if str(self.layers[i].get('kind',''))!='record':
+            QMessageBox.information(self,'Remove Recording Layer','Select a Record layer tab first. Other layer types are left intact.'); return
+        self._remove_layer()
+    def _clear_recordings_table(self):
+        self.recordings_table.setRowCount(0)
+        self.report.setPlainText('Recordings Table cleared. Source files and layer tabs were not deleted.')
+    def _refresh_recordings_table(self):
+        if not hasattr(self,'recordings_table'):return
+        rows=[(i,r) for i,r in enumerate(self.layers) if isinstance(r,dict) and str(r.get('kind',''))=='record']
+        self.recordings_table.setRowCount(len(rows))
+        for row,(idx,r) in enumerate(rows):
+            vals=(str(r.get('name') or f'Record {idx+1}'),'record',str(r.get('path') or ''))
+            for c,v in enumerate(vals):self.recordings_table.setItem(row,c,QTableWidgetItem(v))
     def _canvas_changed(self,c):
         try:i=self.canvases.index(c); self.layers[i]['points']=c.normalized_points(); self._state_changed()
         except Exception:pass
@@ -120,10 +198,16 @@ class LayeredSignalLab(QWidget):
         if 0<=i<len(self.layers):
             r=self.layers[i]; r.update(name=self.edit_name.text().strip() or f'Layer {i+1}',time_scalar=float(self.scalar.value()),gain=float(self.gain.value()),cycles=float(self.cycles.value())); self.tabs.setTabText(i,r['name']); self._state_changed()
     def export_state(self):
-        return {'version':3,'duration':float(self.duration.value()),'sample_rate':int(self.sr.value()),'blend_mode':self.blend_mode.currentText(),'heuristic':self.heur.currentText(),'parametric':self.expr.text(),'layers':json.loads(json.dumps(self.layers,default=str))}
+        return {'version':4,'duration':float(self.duration.value()),'sample_rate':int(self.sr.value()),'blend_mode':self.blend_mode.currentText(),'heuristic':self.heur.currentText(),'parametric':self.expr.text(),'record_input':self.cmb_record_input.currentText() if hasattr(self,'cmb_record_input') else '','bind_all_mode':self.cmb_bind_all.currentText() if hasattr(self,'cmb_bind_all') else 'Audio','layers':json.loads(json.dumps(self.layers,default=str))}
     def restore_state(self,state):
         if not isinstance(state,dict):return
         self.duration.setValue(float(state.get('duration',4))); self.sr.setValue(int(state.get('sample_rate',48000))); self.blend_mode.setCurrentText(str(state.get('blend_mode','Morph Between Layers'))); self.heur.setCurrentText(str(state.get('heuristic','Linear'))); self.expr.setText(str(state.get('parametric','u')))
+        recdev=str(state.get('record_input') or '')
+        if recdev and hasattr(self,'cmb_record_input'):
+            i=self.cmb_record_input.findText(recdev)
+            if i>=0:self.cmb_record_input.setCurrentIndex(i)
+        mode=str(state.get('bind_all_mode') or 'Audio')
+        if hasattr(self,'cmb_bind_all') and mode in ('Audio','Video','Both','Unbound'):self.cmb_bind_all.setCurrentText(mode)
         for r in state.get('layers',[]):
             if isinstance(r,dict):self._add_layer(dict(r))
     def _restore_host_state(self):
@@ -195,11 +279,101 @@ class LayeredSignalLab(QWidget):
                 setattr(self.host,'_global_carrier_path',p); setattr(self.host,'global_media_sample',{'path':p,'derived':True,'source':'layered','layered_state':self.export_state()})
             self._state_changed(); self.report.setPlainText(('Local' if local else 'Global')+' layered sample sent: '+p)
         except Exception as e:QMessageBox.warning(self,'Send failed',str(e))
+    def _refresh_record_inputs(self):
+        old=self.cmb_record_input.currentText() if hasattr(self,'cmb_record_input') and self.cmb_record_input.count() else ''
+        self._record_input_devices=[]
+        if hasattr(self,'cmb_record_input'):self.cmb_record_input.clear()
+        try:
+            from audio_os_backend import sd
+            for idx,d in enumerate(sd.query_devices()):
+                if int(d.get('max_input_channels',0) or 0)>0:
+                    name=str(d.get('name') or f'Input {idx}')
+                    self._record_input_devices.append((idx,name))
+                    self.cmb_record_input.addItem(name,idx)
+        except Exception:
+            pass
+        if hasattr(self,'cmb_record_input') and self.cmb_record_input.count()==0:self.cmb_record_input.addItem('Default input',None)
+        if old and hasattr(self,'cmb_record_input'):
+            i=self.cmb_record_input.findText(old)
+            if i>=0:self.cmb_record_input.setCurrentIndex(i)
+
+    def _selected_instrument_name(self):
+        try:
+            if self.host is not None and hasattr(self.host,'_current_instrument_name'):return str(self.host._current_instrument_name())
+        except Exception:pass
+        try:
+            c=getattr(self.host,'instrument_selector_dropdown',None)
+            if c is not None:return str(c.currentText())
+        except Exception:pass
+        return 'selected'
+
+    def _bind_all_layers_to_instrument(self):
+        mode=self.cmb_bind_all.currentText() if hasattr(self,'cmb_bind_all') else 'Audio'
+        name=self._selected_instrument_name()
+        store=getattr(self.host,'instrument_media_samples',None)
+        if not isinstance(store,dict):store={};setattr(self.host,'instrument_media_samples',store)
+        if mode=='Unbound':
+            rec=store.get(name)
+            if isinstance(rec,dict) and rec.get('binding_source')=='signal_lab_all_layers':store.pop(name,None)
+            self._state_changed(); self.report.setPlainText(f'Unbound Draw/Record layers from {name}.'); return
+        if mode=='Video':
+            QMessageBox.information(self,'Bind All Layers','This Sound tab contains audio layers. Choose Audio or Both here; video layers can be bound from the Video tab.')
+            return
+        if self._preview is None:self._render_preview()
+        if self._preview is None:return
+        base=groovebox_paths.layers_dir(getattr(self.host,'_current_project_path',None))
+        safe=''.join(ch if ch.isalnum() or ch in '-_' else '_' for ch in name)[:80] or 'instrument'
+        p=os.path.join(base,f'{safe}_bound_all_layers.wav')
+        write_wav(p,self._preview,self._preview_sr); groovebox_paths.index_file(p,'layer_render',getattr(self.host,'_current_project_path',None))
+        prior=store.get(name) if isinstance(store.get(name),dict) else {}
+        video_path=str(prior.get('video_path','')) if mode=='Both' else ''
+        store[name]={'path':p,'sample_rate':int(self._preview_sr),'waveform':self._preview.copy(),'user_owned':True,'source_kind':'audio','video_path':video_path,'video_input_enabled':bool(video_path),'layered_state':self.export_state(),'binding_mode':mode.lower(),'binding_source':'signal_lab_all_layers','bound_layers_state':self.export_state()}
+        self._state_changed(); self.report.setPlainText(f'Bound ALL sound layers → {name} as {mode}: {p}')
+        try:
+            if hasattr(self.host,'_refresh_operator_sample_ui'):self.host._refresh_operator_sample_ui()
+            if hasattr(self.host,'_on_live_source_changed'):self.host._on_live_source_changed()
+        except Exception:pass
+
+
+    def _bind_all_layers_to_carrier(self):
+        mode=self.cmb_bind_all.currentText() if hasattr(self,'cmb_bind_all') else 'Audio'
+        if mode=='Unbound':
+            try:
+                setattr(self.host,'carrier_binding_source','')
+                setattr(self.host,'carrier_binding_mode','unbound')
+                setattr(self.host,'carrier_bound_layers_state',{})
+            except Exception: pass
+            self.report.setPlainText('Unbound Draw/Record layers from carrier provenance. Current carrier media is left intact.')
+            self._state_changed(); return
+        if mode=='Video':
+            QMessageBox.information(self,'Bind All Layers to Carrier','This Sound tab has no video endpoint. Choose Audio, or use the Video tab for Carrier Video/Both.')
+            return
+        if self._preview is None:self._render_preview()
+        if self._preview is None:return
+        base=groovebox_paths.layers_dir(getattr(self.host,'_current_project_path',None))
+        p=os.path.join(base,'carrier_bound_all_sound_layers.wav')
+        write_wav(p,self._preview,self._preview_sr); groovebox_paths.index_file(p,'carrier_layer_render',getattr(self.host,'_current_project_path',None))
+        old_video=str(getattr(self.host,'imported_video_path','') or '')
+        old_meta=getattr(self.host,'imported_video_meta',{}) or {}
+        if hasattr(self.host,'_load_wav_path'): self.host._load_wav_path(p)
+        if mode=='Both':
+            if old_video:
+                self.host.imported_video_path=old_video; self.host.imported_video_meta=old_meta
+            else:
+                QMessageBox.information(self,'Bind All Layers to Carrier','Audio was bound to the carrier. No existing Carrier Video was present, so use the Video tab to create/bind the video half of Both.')
+        setattr(self.host,'carrier_binding_source','signal_lab_all_layers')
+        setattr(self.host,'carrier_binding_mode',mode.lower())
+        setattr(self.host,'carrier_bound_layers_state',self.export_state())
+        self._state_changed(); self.report.setPlainText(f'Bound ALL sound layers → Carrier {mode}: {p}')
+
     def _record_layer(self):
         dur=max(.1,min(600,float(self.duration.value()))); sr=int(self.sr.value()); recdir=groovebox_paths.recordings_dir(getattr(self.host,'_current_project_path',None)); path=os.path.join(recdir,f'groovebox_record_layer_{int(time.time()*1000)}.wav'); self.report.setPlainText(f'Recording {dur:.2f}s…')
+        device=self.cmb_record_input.currentData() if hasattr(self,'cmb_record_input') else None
         def work():
             from audio_os_backend import sd
-            arr=sd.rec(max(1,int(round(dur*sr))),samplerate=sr,channels=1,dtype='float32'); sd.wait(); write_wav(path,np.asarray(arr,dtype=np.float32).reshape(-1),sr); return path
+            kwargs={'samplerate':sr,'channels':1,'dtype':'float32'}
+            if device is not None:kwargs['device']=int(device)
+            arr=sd.rec(max(1,int(round(dur*sr))),**kwargs); sd.wait(); write_wav(path,np.asarray(arr,dtype=np.float32).reshape(-1),sr); return path
         opt=getattr(self.host,'_scode_optimizer',None)
         if opt is not None and hasattr(opt,'submit_pooled'):
             def done(result,error): self._record_finished(str(result or ''), '' if error is None else str(error))
@@ -211,6 +385,6 @@ class LayeredSignalLab(QWidget):
             threading.Thread(target=legacy,daemon=True).start()
     def _record_finished(self,path,error):
         if error:QMessageBox.warning(self,'Record failed',error);return
-        groovebox_paths.index_file(path,'recording',getattr(self.host,'_current_project_path',None)); self._add_layer(self._layer_default(f'Record {len(self.layers)+1}','record',path)); self.report.setPlainText('Recorded layer: '+path)
+        groovebox_paths.index_file(path,'recording',getattr(self.host,'_current_project_path',None)); self._add_layer(self._layer_default(f'Record {len(self.layers)+1}','record',path)); self._refresh_recordings_table(); self.report.setPlainText('Recorded layer: '+path)
 
 SignalLab=LayeredSignalLab

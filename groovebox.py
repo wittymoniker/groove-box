@@ -5824,6 +5824,7 @@ PLAYLIST_STRUCT_COL_INDICES = (2, 3, 4, 5)  # indices into PLAYLIST_COLUMNS
 # authoritative. The adjacent Full-Unison OFF fallback remains 0.55.
 CANONICAL_RESONANCE_DEFAULT = 1.00
 CANONICAL_CONVOLVE_DEFAULT_PCT = 50.0
+CANONICAL_LIVE_OVERBLEND_DEFAULT_PCT = 50.0  # legacy/default net waveform crossfade: 50% user + 50% canonical
 CANONICAL_SEED_WEIGHT_DEFAULT = math.e - 2.0
 CANONICAL_ADHERENCE_FALLBACK = 0.55
 EQR_DEFAULT = 0.4014
@@ -13553,19 +13554,15 @@ An imported WAV or video-derived audio carrier is not treated as an uncontrolled
 
 The carrier therefore modulates/steers the composition rather than bypassing the canonical/user blend contract.
 
-### 50% linear composition proof
+### Optional Canonical Live Overblend
 
-At the explicit composition boundary, Groovebox uses the source-coefficient invariant:
+Canonical control/activity is now separated from final waveform share. **Canonical Live Overblend defaults to 50%** to preserve the net 50/50 user/canonical waveform contract. With user material present the linear boundary is:
 
-    M0 = 0.50 · C + 0.50 · U
+    M0 = (1 − b) · U + b · C,     b ∈ [0,1]
 
-where `C` is the canonical-engine contribution and `U` is the user-data contribution after any bounded carrier-derived modulation. Therefore:
+where `b` is Canonical Live Overblend. `b=0` selects the user waveform only; `b=0.5` is the default legacy 50/50 waveform blend; `b=1` selects the canonical waveform. Canonical-only rows fall back to `C` so autonomous/generated material does not disappear. Canonical math can still control timing, phase, synthesis, convolution, modulation, visual/game projection and other transforms when `b=0`.
 
-    canonical coefficient >= 0.50
-    user-data coefficient >= 0.50
-    canonical coefficient + user-data coefficient = 1.00
-
-This is a **coefficient proof**, not an energy/RMS theorem. Later nonlinear operations such as EQR, vector conversion, and hard clipping can change measured amplitude and can destroy a literal 50/50 energy decomposition. The exported provenance records the contract and the measured pre-effect branch ledger so the distinction is auditable.
+This is a source coefficient statement, not an energy/RMS theorem. The existing intentional master hard clip remains unchanged; no normalizer or limiter/compressor is added.
 
 ### Save / Load / Export parity
 
@@ -13586,7 +13583,7 @@ The Automator teleport inspector is anchored at the selected cell's lower bounda
 
 ## CANONICAL ACTIVITY HANDOFF — 2026
 
-Groovebox now treats the 50% requirement as an activity/continuation architecture, not a post-mix clamp. Canonical continuation maintains an autonomous mathematical stream after user input ceases. Shared user/canonical coordinates include time, rhythm, pitch, envelope, phase, and modulation. The canonical activity ledger records coverage separately from the 0.50/0.50 composition coefficients. The imported carrier remains a modulation/reference source rather than an uncontrolled third additive bus.
+Groovebox now treats the 50% requirement as an activity/continuation architecture, not a post-mix clamp. Canonical continuation maintains an autonomous mathematical stream after user input ceases. Shared user/canonical coordinates include time, rhythm, pitch, envelope, phase, and modulation. The canonical activity ledger records coverage separately from the optional Canonical Live Overblend waveform coefficients. The imported carrier remains a modulation/reference source rather than an uncontrolled third additive bus.
 
 The project snapshot persists canonical continuation state and its activity ledger so save/load/export provenance retains the same model. The activity metric is not a claim of 50% final RMS after nonlinear processing; clipping and nonlinear effects can change energy.
 
@@ -13602,7 +13599,7 @@ The project snapshot persists canonical continuation state and its activity ledg
 
 ### Meum Spatial Activity Resolution (v28)
 
-Groovebox now includes a direct X/Y/Z activity-field resolver between the canonical and user buses. The resolver uses explicit orthogonal coordinates and local neighbor propagation as a deterministic composition mechanism. It compares canonical and user activity with an L1 activity modulus and structurally expands the canonical branch to the user activity modulus when needed before the fixed 50/50 composition boundary. This is an algorithmic signal-activity invariant, not a final-output limiter.
+Groovebox now includes a direct X/Y/Z activity-field resolver between the canonical and user buses. The resolver uses explicit orthogonal coordinates and local neighbor propagation as a deterministic composition mechanism. It compares canonical and user activity with an L1 activity modulus and structurally expands the canonical branch to the user activity modulus when needed before the optional Canonical Live Overblend boundary. This is an algorithmic signal-activity invariant, not a final-output limiter.
 
 Shared user/canonical features are tracked across 12 coordinates: time, rhythm, pitch, envelope, phase, modulation, tempo, AM, FM, PM, wavetable/vector, and playlist mapping.
 
@@ -13623,20 +13620,19 @@ The canonical authority range is a real bounded control interval, not a label:
   Full Canonical        = 1.00 exactly
 
 Therefore five active canonical engines reach the 1.00 ceiling, while the
-minimum remains 0.50 even with no carrier. The source-composition boundary is
-independently fixed as:
+minimum remains 0.50 even with no carrier. The source-composition boundary is independently adjustable as:
 
-  M0 = 0.50 C + 0.50 U
+  M0 = (1 − b) U + b C,    b = Canonical Live Overblend
 
-so canonical and userdata each retain a 50% source coefficient at the linear
-composition boundary. The 100% maximum refers to canonical control/authority;
-it is NOT a claim of 100% post-effect RMS energy after nonlinear processing.
+The default is b=0 for maximum live/user dynamics; b=0.50 reproduces the legacy
+50/50 source blend. The 100% canonical authority setting is independent from b
+and is NOT a claim of post-effect RMS energy after nonlinear processing.
 
 MEUM CALCULUS / SPATIAL ACTIVITY
   Direct X/Y/Z coordinates track temporal position, normalized user activity,
   and local gradient. Neighbor propagation uses a deterministic six-neighbor-like
   temporal reduction; the canonical field is expanded to at least the user L1
-  activity when necessary before the 50/50 boundary. This gives a measurable
+  activity when necessary before the optional live-overblend boundary. This gives a measurable
   activity modulus of at least 0.50 without a final-output clamp. It is a
   procedural Meum field construction, not a physical Navier–Stokes solver.
 
@@ -13699,14 +13695,14 @@ V34 — AUTOMATOR PARAMETER TELEPORT / UI RE-ARCHITECTURE
 - **Canonical Signal Control:** defaults to **100% Full Canonical**. The control remains a 50–100% authority mechanism, separate from final mix gain.
 - **Self-correcting canonical coverage:** when required canonical sequence/automation/AM/FM/PM/effect lanes are absent, canonical runtime overlays are materialized instead of lowering authority or overwriting user-owned sequence data.
 - **Canonical Resonance / Activity:** independently adjustable **50–150%**. Full user activity targets the 50% floor; user inactivity ramps autonomous canonical activity toward the selected ceiling, with a smoothed handoff.
-- **Canonical→Instrument Convolve:** new bounded **0–100%** control. At 100%, canonical material is the full convolution reference, while the transformed user branch retains a direct 50% user component; the fixed `M0 = 0.50*C + 0.50*U` boundary remains intact.
+- **Canonical→Instrument Convolve:** bounded **0–100%** control. At 100%, canonical material is the convolution reference while the transformed user branch retains a direct user component. Final waveform share is independently controlled by **Canonical Live Overblend**, default **50%**.
 - **Maximum instruments:** increased from 64 to **128** for the active synth/visual ensemble and canonical master identity lattice.
 - **Default playlist row length:** **8 beats**.
 - **UI initialization:** Master Volume value is now constructed before stylesheet/object-name access, eliminating the `lbl_master_vol` startup AttributeError.
 
 CANONICAL RESONANCE / 50–150% STABILITY PASS (V34)
 
-  • Canonical resonance/activity is an independent 50–150% continuation-drive control; it is not master volume and does not alter the fixed 0.50*C + 0.50*U composition coefficients.
+  • Canonical resonance/activity is an independent 50–150% continuation-drive control; it is not master volume and does not force a canonical waveform share. Canonical Live Overblend independently defaults to 50%.
   • Full Canonical signal authority defaults to 100%. Missing canonical lanes are materialized in canonical-owned runtime overlays instead of weakening authority or rewriting user-owned data.
   • 100% canonical→instrument convolution is bounded as a normalized influence transform; the transformed user branch retains a direct 50% user component.
   • Playlist row length defaults to 8 beats; Playlist Rows remains the separate arrangement-row count control.
@@ -13772,7 +13768,7 @@ Algo XMOD local/global depth sequence algorithms.
 
 ### Resonance — 50–150% vs 0–200%
 Canonical Resonance / Activity is **activity / continuation drive** (not Master
-Volume, not the 50/50 C/U mix). The legal band follows User Data Overwrite:
+Volume and not the optional Canonical Live Overblend waveform mix). The legal band follows User Data Overwrite:
 
 | Mode | Control | Range |
 |------|---------|-------|
@@ -15183,6 +15179,16 @@ class ActiveEngineClock:
 # -------------------------------------------------------------------------
 # CORE GROOVEBOX & HARDWARE ENGINE
 # -------------------------------------------------------------------------
+def _compat_scroll_central(content: QWidget, min_width: int = 420, min_height: int = 280) -> QScrollArea:
+    """Global window compatibility wrapper: preserve access to controls instead of clipping them."""
+    area = QScrollArea()
+    area.setWidgetResizable(True)
+    area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    content.setMinimumSize(max(min_width, content.minimumWidth()), max(min_height, content.minimumHeight()))
+    area.setWidget(content)
+    return area
+
 class DAWPlaylistGrid(QMainWindow):
     def __init__(self, parent=None, app_ref=None):
         super().__init__(parent)
@@ -15234,7 +15240,7 @@ class DAWPlaylistGrid(QMainWindow):
         layout.addWidget(self.status_bar)
 
         container.setLayout(layout)
-        self.setCentralWidget(container)
+        self.setCentralWidget(_compat_scroll_central(container, 760, 420))
 
     def update_vertical_headers(self):
         if self.app_ref and hasattr(self.app_ref, 'instrument_names'):
@@ -18733,7 +18739,7 @@ class PlaylistWindow(QMainWindow):
         layout.addLayout(btn_layout)
 
         container.setLayout(layout)
-        self.setCentralWidget(container)
+        self.setCentralWidget(_compat_scroll_central(container, 620, 420))
 # ==========================================
 # 4. MINIATURE SYNTH WIDGET WITH PATCH CABLES
 # ==========================================
@@ -18847,7 +18853,7 @@ class FloatingSynthWindow(QMainWindow):
         layout.addWidget(export_btn)
 
         container.setLayout(layout)
-        self.setCentralWidget(container)
+        self.setCentralWidget(_compat_scroll_central(container, 520, 560))
 
     def update_synth_algorithm(self, index):
         self.oscilloscope.wave_type = index
@@ -19917,7 +19923,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.canonical_continuation_mode = "Shared Activity Handoff"
         # CANONICAL_RESONANCE_2026: independent canonical activity/resonance drive.
         # This is NOT source-share or master volume; it shapes autonomous canonical
-        # continuation from 50% to 150% while the composition boundary remains 50/50.
+        # continuation from 50% to 150% independently of the optional live-overblend waveform boundary.
         self.canonical_resonance_factor_min = 0.50
         self.canonical_resonance_factor_max = 1.50
         self.canonical_resonance_factor = CANONICAL_RESONANCE_DEFAULT
@@ -23781,10 +23787,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Layers can be mixed/morphed, renamed, reordered and then sent Global or
         # to the selected Operator from the same window. Legacy attribute aliases
         # are retained for scripts, but there are no separate quick-record buttons.
-        self.btn_draw_record_layers = QPushButton("✎🎙 Draw / Record Layers")
+        self.btn_draw_record_layers = QPushButton("✎🎙🎥 Draw / Record / Video")
         self.btn_draw_record_layers.setToolTip(
-            "Open the merged layered Draw / Record / Sample Lab. Add any number of drawn, "
-            "recorded or imported layers, then Send Global or Send → Selected Operator."
+            "Open the shared Draw / Record workbench. Audio tab: layered drawn/recorded/imported "
+            "signal layers. Video tab: select camera + microphone + tablet/media source, preview "
+            "devices, record/import video, paint frames, draw time-varying graph lanes, and optionally "
+            "translate color↔sound at final mix."
         )
         self.btn_draw_record_layers.clicked.connect(self._open_main_signal_lab)
         media_import_row.addWidget(self.btn_draw_record_layers)
@@ -24204,7 +24212,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         msg.addWidget(self.chk_meum_spatial)
         self.lbl_meum_spatial = QLabel("ACTIVITY MODULUS: 50%+  ·  GEOMETRIC LOSS: 0.000")
         self.lbl_meum_spatial.setStyleSheet("color:#7dff8a; font-weight:900; font-size:8pt;")
-        self.lbl_meum_spatial.setToolTip("Canonical activity is structurally resolved in direct x/y/z coordinates before the fixed 50/50 canonical/user composition boundary.")
+        self.lbl_meum_spatial.setToolTip("Canonical activity is structurally resolved in direct x/y/z coordinates before the optional Canonical Live Overblend boundary (50% by default).")
         msg.addWidget(self.lbl_meum_spatial)
         msg.addWidget(QLabel("6-neighbor propagation · direct vector coordinates · no final clamp"))
         # Keep the display live with the existing render/source refresh path.
@@ -24491,6 +24499,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "Bounded canonical→instrument convolution influence: 0–100%. At 100%, the canonical field is the full convolution reference, while the user waveform remains embedded in the transformed user branch."
         )
         canonical_resonance_row.addWidget(self.spin_canonical_convolve)
+        canonical_resonance_row.addWidget(QLabel("Canonical Live Overblend:"))
+        self.spin_canonical_live_overblend = QDoubleSpinBox()
+        self.spin_canonical_live_overblend.setRange(0.0, 100.0)
+        self.spin_canonical_live_overblend.setDecimals(1)
+        self.spin_canonical_live_overblend.setSingleStep(1.0)
+        self.spin_canonical_live_overblend.setSuffix("%")
+        self.spin_canonical_live_overblend.setValue(CANONICAL_LIVE_OVERBLEND_DEFAULT_PCT)
+        self.spin_canonical_live_overblend.setMinimumWidth(100)
+        self.spin_canonical_live_overblend.setToolTip(
+            "Optional final canonical waveform crossfade at the live composition boundary. "
+            "0% (default) preserves maximum user/live dynamics while canonical math can still "
+            "modify timing, phase, synthesis, convolution, modulation and other transforms. "
+            "50% reproduces the legacy 50/50 waveform blend; 100% selects the canonical waveform. "
+            "If no user waveform is present, the canonical branch remains audible as a fallback."
+        )
+        canonical_resonance_row.addWidget(self.spin_canonical_live_overblend)
         master_container.addLayout(canonical_resonance_row)
         self.spin_canonical_resonance.valueChanged.connect(self._on_canonical_resonance_changed)
         canonical_strategy_row = QHBoxLayout()
@@ -27696,7 +27720,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "Range: 50–150%.\n"
             "50% floor with active user data; up to 150% autonomous continuation when\n"
             "user activity is low. Respects protected userdata; does not wipe locks.\n"
-            "Activity/continuation drive only — not Master Volume, not the 50/50 C/U mix.\n"
+            "Activity/continuation drive only — not Master Volume and not the optional Canonical Live Overblend waveform mix.\n"
             "Turn protect OFF (User Data Overwrite) to open the 0–200% band."
         )
 
@@ -27792,7 +27816,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         user activity targets up to the manual ceiling (≤200%).
 
         Applied only to the autonomous canonical continuation branch — never
-        changes the fixed 0.50*C + 0.50*U source coefficients.
+        changes the independently selected Canonical Live Overblend coefficients.
         """
         lo, hi = self._canonical_resonance_range()
         try:
@@ -30296,6 +30320,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         _set_value("spin_canonical_resonance", CANONICAL_RESONANCE_DEFAULT * 100.0)
         _set_value("spin_canonical_convolve", CANONICAL_CONVOLVE_DEFAULT_PCT)
+        _set_value("spin_canonical_live_overblend", CANONICAL_LIVE_OVERBLEND_DEFAULT_PCT)
         _set_value("spin_engine_strength", CANONICAL_SEED_WEIGHT_DEFAULT)
         self._unison_blend_user = CANONICAL_ADHERENCE_FALLBACK
         _set_value("spin_unison_blend", 1.0)
@@ -30819,12 +30844,27 @@ class MathematiciansGrooveboxApp(QMainWindow):
             state = {}
         if not isinstance(state, dict):
             state = {}
+        main_video = getattr(self, "_main_video_clip_studio", None)
+        main_video_state = None
+        if main_video is not None:
+            try:
+                main_video_state = main_video.export_state()
+                state["video_clip"] = copy.deepcopy(main_video_state)
+            except Exception as exc:
+                print(f"[Project] Main Video Clip state snapshot skipped: {exc}")
         panel = getattr(self, "_performance_panel", None)
         if panel is not None and hasattr(panel, "export_state"):
             try:
-                state["performance"] = panel.export_state()
+                perf_state = panel.export_state()
+                if main_video_state is not None:
+                    perf_state["video_clip"] = copy.deepcopy(main_video_state)
+                state["performance"] = perf_state
             except Exception as exc:
                 print(f"[Project] Performance state snapshot skipped: {exc}")
+        elif main_video_state is not None:
+            perf_state = state.get("performance") if isinstance(state.get("performance"), dict) else {}
+            perf_state["video_clip"] = copy.deepcopy(main_video_state)
+            state["performance"] = perf_state
         self.media_workbench_state = state
         return state
 
@@ -30839,6 +30879,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 panel.restore_state((self.media_workbench_state or {}).get("performance", {}))
             except Exception as exc:
                 print(f"[Project Load] Performance media state skipped: {exc}")
+        main_video = getattr(self, "_main_video_clip_studio", None)
+        if main_video is not None:
+            try:
+                clip_state = (self.media_workbench_state or {}).get("video_clip")
+                if not isinstance(clip_state, dict):
+                    perf = (self.media_workbench_state or {}).get("performance", {})
+                    clip_state = perf.get("video_clip", {}) if isinstance(perf, dict) else {}
+                main_video.restore_state(clip_state if isinstance(clip_state, dict) else {})
+            except Exception as exc:
+                print(f"[Project Load] Main Video Clip state skipped: {exc}")
         # Force the required sCode optimizer to derive a fresh post-load plan.
         opt = getattr(self, "_scode_optimizer", None)
         if opt is not None:
@@ -30965,6 +31015,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "media_carrier": {
                 "wav_path": str(getattr(self, "imported_wav_path", "") or ""),
                 "video_path": str(getattr(self, "imported_video_path", "") or ""),
+                "binding_mode": str(getattr(self, "carrier_binding_mode", "") or ""),
+                "binding_source": str(getattr(self, "carrier_binding_source", "") or ""),
+                "bound_layers_state": _safe_json(getattr(self, "carrier_bound_layers_state", {})),
             },
             "global_algo": _safe_json(gas),
             "global_algo_fingerprint": algo_fp,
@@ -30982,7 +31035,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "canonical_runtime_overlays": _safe_json(getattr(self, "canonical_runtime_overlays", {})),
             "blend_contract": {
                 "minimum_canonical_control": 0.50,
-                "minimum_userdata_share": 0.50,
+                "minimum_userdata_share": 0.0,
+                "canonical_live_overblend_default": CANONICAL_LIVE_OVERBLEND_DEFAULT_PCT / 100.0,
+                "canonical_live_overblend": float(self.spin_canonical_live_overblend.value()) / 100.0 if hasattr(self, "spin_canonical_live_overblend") else 0.0,
                 "carrier_role": "modulation_reference",
                 "carrier_phase_lock": 0.50,
                 "multi_target": True,
@@ -30996,6 +31051,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "canonical_resonance_factor": float(getattr(self, "canonical_resonance_factor", CANONICAL_RESONANCE_DEFAULT)),
             "canonical_resonance_handoff": float(getattr(self, "canonical_resonance_handoff", 1.00)),
             "canonical_convolve": float(self.spin_canonical_convolve.value()) if hasattr(self, "spin_canonical_convolve") else CANONICAL_CONVOLVE_DEFAULT_PCT,
+            "canonical_live_overblend": float(self.spin_canonical_live_overblend.value()) if hasattr(self, "spin_canonical_live_overblend") else CANONICAL_LIVE_OVERBLEND_DEFAULT_PCT,
             "meum_spatial_resolution_enabled": bool(getattr(self, "meum_spatial_resolution_enabled", True)),
             "meum_engine_simplification_enabled": bool(self._meum_engine_simplification_enabled()),
             "trigonometry_engine_enabled": bool(self._trigonometry_engine_enabled()),
@@ -31006,7 +31062,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "instrument_media_samples": _safe_json({
                 str(k): {"path": str(v.get("path", "")), "sample_rate": int(v.get("sample_rate", 44100)), "user_owned": True, "source_kind": str(v.get("source_kind", "audio")),
                 "video_path": str(v.get("video_path", "")), "video_input_enabled": bool(v.get("video_input_enabled", False)),
-                "layered_state": _safe_json(v.get("layered_state", {}))}
+                "layered_state": _safe_json(v.get("layered_state", {})), "binding_mode": str(v.get("binding_mode", "")),
+                "binding_source": str(v.get("binding_source", "")), "bound_layers_state": _safe_json(v.get("bound_layers_state", {})),
+                "audio_present": bool(v.get("audio_present", True))}
                 for k, v in (getattr(self, "instrument_media_samples", {}) or {}).items() if isinstance(v, dict) and v.get("path")
             }),
             "project_notes": notes,
@@ -31076,9 +31134,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if not isinstance(_rec, dict) or not _rec.get("path"):
                     continue
                 try:
-                    _arr, _sr = self._decode_media_audio(str(_rec.get("path")))
-                    if _arr.size:
-                        self.instrument_media_samples[str(_op)] = {"path": str(_rec.get("path")), "sample_rate": int(_sr), "waveform": _arr, "user_owned": True, "source_kind": str(_rec.get("source_kind", "audio")), "video_path": str(_rec.get("video_path", "")), "video_input_enabled": bool(_rec.get("video_input_enabled", str(_rec.get("source_kind", "audio")) == "video")), "layered_state": copy.deepcopy(_rec.get("layered_state", {})) if isinstance(_rec.get("layered_state"), dict) else {}}
+                    _path=str(_rec.get("path")); _video=str(_rec.get("video_path", "")); _arr=np.zeros(1,dtype=np.float32); _sr=int(_rec.get("sample_rate",44100)); _decoded=False
+                    try:
+                        _arr, _sr = self._decode_media_audio(_path); _decoded=bool(_arr.size)
+                    except Exception as _decode_exc:
+                        # Video-only instrument bindings are valid even when the container has no audio stream.
+                        if not (_video and os.path.isfile(_video)):
+                            raise _decode_exc
+                    self.instrument_media_samples[str(_op)] = {"path": _path, "sample_rate": int(_sr), "waveform": _arr if _arr.size else np.zeros(1,dtype=np.float32), "user_owned": True, "source_kind": str(_rec.get("source_kind", "audio")), "video_path": _video, "video_input_enabled": bool(_rec.get("video_input_enabled", str(_rec.get("source_kind", "audio")) == "video")), "layered_state": copy.deepcopy(_rec.get("layered_state", {})) if isinstance(_rec.get("layered_state"), dict) else {}, "binding_mode": str(_rec.get("binding_mode", "")), "binding_source": str(_rec.get("binding_source", "")), "bound_layers_state": copy.deepcopy(_rec.get("bound_layers_state", {})) if isinstance(_rec.get("bound_layers_state"), dict) else {}, "audio_present": bool(_rec.get("audio_present", _decoded))}
                 except Exception as _media_exc:
                     print(f"[Project Load] operator media skipped {_op}: {_media_exc}")
             try: self._refresh_operator_sample_ui()
@@ -31221,6 +31284,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.spin_canonical_convolve.blockSignals(True)
                 self.spin_canonical_convolve.setValue(float(np.clip(float(data.get("canonical_convolve", CANONICAL_CONVOLVE_DEFAULT_PCT)), 0.0, 100.0)))
                 self.spin_canonical_convolve.blockSignals(False)
+            except Exception:
+                pass
+        if hasattr(self, "spin_canonical_live_overblend"):
+            try:
+                self.spin_canonical_live_overblend.blockSignals(True)
+                self.spin_canonical_live_overblend.setValue(float(np.clip(float(data.get("canonical_live_overblend", CANONICAL_LIVE_OVERBLEND_DEFAULT_PCT)), 0.0, 100.0)))
+                self.spin_canonical_live_overblend.blockSignals(False)
             except Exception:
                 pass
 
@@ -31372,6 +31442,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if isinstance(mc, dict):
                 wav_p = str(mc.get("wav_path") or "")
                 vid_p = str(mc.get("video_path") or "")
+                self.carrier_binding_mode = str(mc.get("binding_mode") or "")
+                self.carrier_binding_source = str(mc.get("binding_source") or "")
+                self.carrier_bound_layers_state = copy.deepcopy(mc.get("bound_layers_state", {})) if isinstance(mc.get("bound_layers_state"), dict) else {}
                 if wav_p and os.path.isfile(wav_p) and hasattr(self, "_load_wav_path"):
                     self._load_wav_path(wav_p)
                 elif vid_p and os.path.isfile(vid_p) and hasattr(self, "_load_video_path"):
@@ -33028,22 +33101,118 @@ class MathematiciansGrooveboxApp(QMainWindow):
     # =====================================================================
     # CONVOLVE_FIT_FEATURE — WAV carrier loading and spectral-fit helpers
     # =====================================================================
-    def _open_main_signal_lab(self):
-        """Open the same Draw / Signal Lab used by Performance from the Main Window."""
+    def _shared_video_clip_state(self):
+        """Return the freshest project-shared Video Clip Studio state."""
+        # Main-window studio wins while open.
+        studio = getattr(self, "_main_video_clip_studio", None)
+        if studio is not None:
+            try:
+                return studio.export_state()
+            except Exception:
+                pass
+        # Otherwise use Performance's live studio when available.
+        panel = getattr(self, "_performance_panel", None)
+        pstudio = getattr(panel, "video_clip_studio", None) if panel is not None else None
+        if pstudio is not None:
+            try:
+                return pstudio.export_state()
+            except Exception:
+                pass
+        state = getattr(self, "media_workbench_state", {}) or {}
+        if isinstance(state, dict):
+            if isinstance(state.get("video_clip"), dict):
+                return copy.deepcopy(state["video_clip"])
+            perf = state.get("performance")
+            if isinstance(perf, dict) and isinstance(perf.get("video_clip"), dict):
+                return copy.deepcopy(perf["video_clip"])
+        return {}
+
+    def _store_shared_video_clip_state(self, clip_state):
+        """Store Video Clip Studio state in both shared and Performance project slots."""
+        if not isinstance(clip_state, dict):
+            return
         try:
+            state = getattr(self, "media_workbench_state", None)
+            if not isinstance(state, dict):
+                state = {}
+                self.media_workbench_state = state
+            state["video_clip"] = copy.deepcopy(clip_state)
+            perf = state.get("performance")
+            if not isinstance(perf, dict):
+                perf = {}
+                state["performance"] = perf
+            perf["video_clip"] = copy.deepcopy(clip_state)
+        except Exception:
+            pass
+
+    def _open_main_signal_lab(self):
+        """Open the shared Main Window Draw / Record / Video workbench."""
+        try:
+            existing = getattr(self, "_main_signal_lab_dialog", None)
+            if existing is not None:
+                try:
+                    existing.show(); existing.raise_(); existing.activateWindow(); return existing
+                except RuntimeError:
+                    self._main_signal_lab_dialog = None
+
             from signal_lab import SignalLab
+            from video_clip_studio import VideoClipStudio
+
             dlg = QDialog(self)
-            dlg.setWindowTitle("Mathematician's Groovebox — Draw Wave Matrix")
-            dlg.resize(920, 760)
+            dlg.setWindowTitle("Mathematician's Groovebox — Draw / Record / Video")
+            dlg.resize(1180, 880)
             lay = QVBoxLayout(dlg)
-            lab = SignalLab(self, dlg)
-            lay.addWidget(lab)
-            dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+            tabs = QTabWidget(dlg)
+
+            lab = SignalLab(self, tabs)
+            tabs.addTab(lab, "✎🎙 Audio Draw / Record")
+
+            video = VideoClipStudio(self, tabs)
+            self._main_video_clip_studio = video
+            try:
+                video.restore_state(self._shared_video_clip_state())
+            except Exception:
+                pass
+            tabs.addTab(video, "🎥 Record / Import / Draw Video")
+            lay.addWidget(tabs)
+
+            note = QLabel(
+                "Video input devices are explicitly selectable in the Video tab. Camera and mic "
+                "previews are independent of recording. Color→Sound and Sound→Color remain optional; "
+                "Color→Sound Translation Detail is applied only at final video mix."
+            )
+            note.setWordWrap(True)
+            lay.addWidget(note)
+
             self._main_signal_lab_dialog = dlg
-            dlg.show()
-            dlg.raise_()
+            self._main_signal_lab_tabs = tabs
+
+            old_close = dlg.closeEvent
+            def _close_main_media(event, _dlg=dlg, _old=old_close):
+                try:
+                    st = getattr(self, "_main_video_clip_studio", None)
+                    if st is not None:
+                        self._store_shared_video_clip_state(st.export_state())
+                        try: st._stop_mic_source()
+                        except Exception: pass
+                        try:
+                            if getattr(st, "_camera", None) is not None: st._camera.stop()
+                        except Exception: pass
+                except Exception:
+                    pass
+                self._main_video_clip_studio = None
+                self._main_signal_lab_dialog = None
+                try:
+                    _old(event)
+                except Exception:
+                    event.accept()
+            dlg.closeEvent = _close_main_media
+            dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+            dlg.show(); dlg.raise_()
+            return dlg
         except Exception as exc:
-            QMessageBox.warning(self, "Draw Wave Matrix", f"Could not open Signal Lab:\n{exc}")
+            QMessageBox.warning(self, "Draw / Record / Video", f"Could not open media workbench:\n{exc}")
+            return None
 
     def _record_audio_to_slot(self, local=False):
         """Open the layered Draw/Record workbench and arm a recording layer.
@@ -34755,7 +34924,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         branch is projected onto three directly tracked coordinates (x=time,
         y=amplitude/activity, z=local change), then a six-neighbor lattice average
         supplies the continuation field. The canonical branch is normalized to at
-        least the user's L1 activity modulus before the fixed 50/50 composition
+        least the user's L1 activity modulus before the optional live-overblend composition
         boundary. Thus the 50% floor is earned by the branch itself rather than by
         clamping the final signal.
         """
@@ -35047,8 +35216,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "resonance_full_user_activity_target": 0.50,
             "resonance_full_user_inactivity_target": 1.50,
             "resonance_is_not_source_share": True,
-            "composition_coefficients": {"canonical": 0.50, "userdata": 0.50},
+            "composition_coefficients": {
+                "canonical": float(getattr(getattr(self, "spin_canonical_live_overblend", None), "value", lambda: CANONICAL_LIVE_OVERBLEND_DEFAULT_PCT)()) / 100.0,
+                "userdata": 1.0 - float(getattr(getattr(self, "spin_canonical_live_overblend", None), "value", lambda: CANONICAL_LIVE_OVERBLEND_DEFAULT_PCT)()) / 100.0,
+            },
             "composition_coefficients_sum": 1.00,
+            "canonical_waveform_overblend_optional": True,
             "exact_100_percent_authority_available": True,
             "exact_150_percent_resonance_available": True,
             "shared_feature_completeness": 1.0,
@@ -35064,7 +35237,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "minimum": report["authority_minimum"], "maximum": report["authority_maximum"],
             "strategy_values": {"Seeded Baseline":0.50, "Engine Stack":1.00, "Full Canonical":1.00, "Coverage Adaptive":1.00},
             "spatial_activity_modulus": 0.50, "spatial_activity_meets_50pct": True,
-            "composition_coefficients": {"canonical":0.50, "userdata":0.50},
+            "composition_coefficients": report.get("composition_coefficients", {"canonical":0.0, "userdata":1.0}),
             "composition_coefficients_sum": 1.00, "final_energy_theorem": False,
             "canonical_resonance_activity_range": {"minimum": 0.50, "baseline": 1.00, "maximum": 1.50},
             "resonance_full_user_activity_target": 0.50,
@@ -35074,24 +35247,26 @@ class MathematiciansGrooveboxApp(QMainWindow):
         return report
 
     def _verify_canonical_user_carrier_contract(self, carrier_present=None):
-        """Return a machine-checkable proof of the linear 50/50 composition contract.
+        """Describe the optional canonical waveform overblend contract.
 
-        The proof is about source coefficients at the composition boundary, not
-        post-hardclip energy. Carrier material is classified as a modulation/reference
-        input to the userdata branch, so it cannot bypass the user/canonical contract.
-        This is a coefficient floor, not a claim that final RMS or perceived energy
-        remains exactly 50% after nonlinear effects.
+        Canonical control/activity remains independent from final source-waveform
+        share.  The default is an equal user/canonical boundary (50% canonical overblend),
+        preserving live dynamics while canonical transforms may still shape U.
         """
         if carrier_present is None:
             carrier_present = getattr(self, "_canonical_user_blend_ledger", {}).get("carrier_present", False)
-        c = 0.50
-        u = 0.50
+        try:
+            c = float(self.spin_canonical_live_overblend.value()) / 100.0 if hasattr(self, "spin_canonical_live_overblend") else CANONICAL_LIVE_OVERBLEND_DEFAULT_PCT / 100.0
+        except Exception:
+            c = 0.0
+        c = max(0.0, min(1.0, c)); u = 1.0 - c
         return {
-            "equation": "M0 = 0.50*C + 0.50*U",
+            "equation": f"M0 = {c:.6f}*C + {u:.6f}*U (when U is present; canonical fallback otherwise)",
             "canonical_coefficient": c,
             "userdata_coefficient": u,
-            "canonical_minimum_satisfied": c >= 0.50,
-            "userdata_minimum_satisfied": u >= 0.50,
+            "canonical_overblend_optional": True,
+            "canonical_overblend_default": CANONICAL_LIVE_OVERBLEND_DEFAULT_PCT / 100.0,
+            "canonical_activity_authority_separate_from_waveform_share": True,
             "coefficients_sum_to_one": abs((c + u) - 1.0) < 1e-15,
             "carrier_is_modulation_source": bool(carrier_present),
             "carrier_is_third_additive_bus": False,
@@ -36266,8 +36441,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # CANONICAL_INSTRUMENT_CONVOLVE_2026: bounded 0–100% canonical→instrument
             # convolution. The user branch is never replaced outright: the transformed
             # branch contains 50% of the original user waveform before its coefficient
-            # reaches the fixed 50/50 composition boundary. This makes 100% a stable
-            # convolution reference, not a hidden third bus or final-volume boost.
+            # reaches the optional live-overblend composition boundary. This makes
+            # 100% a stable convolution reference, not a hidden third bus or final-volume boost.
             try:
                 _cc_amt = float(self.spin_canonical_convolve.value()) / 100.0 if hasattr(self, "spin_canonical_convolve") else CANONICAL_CONVOLVE_DEFAULT_PCT / 100.0
                 if _cc_amt > 0.0 and canonical_bus[mask].size > 8:
@@ -36294,7 +36469,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 print(f"[Canonical→Instrument Convolve] skipped: {_cc_exc}")
 
             # MEUM_SPATIAL_ACTIVITY_2026: resolve the canonical branch against the
-            # user branch in direct x/y/z coordinates before the fixed 50/50 blend.
+            # user branch in direct x/y/z coordinates before the optional live overblend.
             # This is the structural activity-floor mechanism: no final-signal clamp.
             try:
                 _cspatial, _cmod, _closs = self._meum_spatial_resolve_activity(
@@ -36326,9 +36501,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
             except Exception:
                 pass
 
-            # row_mix remains a diagnostic/local compatibility view; the actual
-            # composition bus is the explicit 50/50 canonical/user-data blend.
-            master[mask] += 0.5 * canonical_bus[mask] + 0.5 * userdata_bus[mask]
+            # CANONICAL_LIVE_OVERBLEND_20260907: canonical authority/transforms are
+            # separate from additive waveform share. Default 50% keeps the live/user
+            # waveform fully dynamic; 50% reproduces the legacy 50/50 source blend.
+            # Canonical-only rows fall back to C so generative material cannot vanish.
+            try:
+                _live_overblend = float(self.spin_canonical_live_overblend.value()) / 100.0 if hasattr(self, "spin_canonical_live_overblend") else CANONICAL_LIVE_OVERBLEND_DEFAULT_PCT / 100.0
+                _live_overblend = max(0.0, min(1.0, _live_overblend))
+            except Exception:
+                _live_overblend = 0.0
+            _urow = userdata_bus[mask]
+            _crow = canonical_bus[mask]
+            if _urow.size and bool(np.any(np.abs(_urow) > 1e-12)):
+                master[mask] += (1.0 - _live_overblend) * _urow + _live_overblend * _crow
+            else:
+                master[mask] += _crow
 
         # ROW_BOUNDARY_SMOOTH_FIX_2026: the phase-carry fix above keeps each
         # voice's oscillator phase continuous across row boundaries, but the
@@ -36402,22 +36589,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
             except Exception:
                 pass
 
-        # CANONICAL_USER_CARRIER_PROOF_2026: exact linear blend contract at the
-        # composition boundary. Carrier is not an additive third source; it is used
-        # as bounded modulation/phase reference inside the userdata path. Therefore
-        # for every sample x before nonlinear master effects:
-        #     M0 = 0.50*C + 0.50*U
-        # where C is canonical-engine material and U is user material after its
-        # carrier-derived modulation. This is a coefficient invariant, not an
-        # energy theorem; later EQR/vector/hardclip stages can change measured RMS.
+        # CANONICAL_USER_CARRIER_PROOF_20260907: canonical activity/control remains
+        # available to transforms, while the final waveform share is an optional
+        # user-controlled crossfade. Default 50% canonical live overblend preserves
+        # the user/live envelope; canonical-only rows fall back to canonical audio.
         try:
             c_rms = float(np.sqrt(np.mean(np.square(canonical_bus.astype(np.float64))))) if canonical_bus.size else 0.0
             u_rms = float(np.sqrt(np.mean(np.square(userdata_bus.astype(np.float64))))) if userdata_bus.size else 0.0
             carrier_present = imported_carrier is not None and bool(np.any(np.abs(imported_carrier) > 1e-9))
             self._canonical_user_blend_ledger = {
                 **self._verify_canonical_user_carrier_contract(carrier_present),
-                "canonical_minimum": 0.50,
-                "userdata_minimum": 0.50,
+                "canonical_minimum": 0.0,
+                "userdata_minimum": 0.0,
+                "canonical_live_overblend": float(self.spin_canonical_live_overblend.value()) / 100.0 if hasattr(self, "spin_canonical_live_overblend") else 0.0,
                 "carrier_present": carrier_present,
                 "carrier_role": "modulation_reference",
                 "carrier_phase_lock": 0.50,

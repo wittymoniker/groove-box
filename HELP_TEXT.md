@@ -1700,19 +1700,16 @@ An imported WAV or video-derived audio carrier is not treated as an uncontrolled
 
 The carrier therefore modulates/steers the composition rather than bypassing the canonical/user blend contract.
 
-### 50% linear composition proof
+### Optional Canonical Live Overblend composition contract
 
-At the explicit composition boundary, Groovebox uses the source-coefficient invariant:
+At the explicit waveform-composition boundary, Groovebox uses an adjustable crossfade:
 
-    M0 = 0.50 · C + 0.50 · U
+    M0 = (1 − b) · U + b · C
+    b = Canonical Live Overblend / 100
 
-where `C` is the canonical-engine contribution and `U` is the user-data contribution after any bounded carrier-derived modulation. Therefore:
+where `C` is the canonical-engine contribution and `U` is the user-data/live contribution after bounded carrier-derived modulation. `b` ranges from 0 to 1 and the two waveform coefficients always sum to 1. The default is **b = 0**, preserving maximum user/live waveform dynamics; **b = 0.50** reproduces the legacy 50/50 waveform blend. Canonical authority, activity, convolution, phase, timing, synthesis and modulation remain separate from this optional additive waveform share. Canonical-only rows fall back to `C` so generative material does not become silent.
 
-    canonical coefficient >= 0.50
-    user-data coefficient >= 0.50
-    canonical coefficient + user-data coefficient = 1.00
-
-This is a **coefficient proof**, not an energy/RMS theorem. Later nonlinear operations such as EQR, vector conversion, and hard clipping can change measured amplitude and can destroy a literal 50/50 energy decomposition. The exported provenance records the contract and the measured pre-effect branch ledger so the distinction is auditable.
+This is a **coefficient contract**, not an energy/RMS theorem. Later nonlinear operations such as EQR, vector conversion, the intentional master hard clip and optional effects can change measured amplitude. The exported provenance records the selected overblend coefficient and pre-effect branch ledger so the distinction remains auditable.
 
 ### Save / Load / Export parity
 
@@ -1733,7 +1730,7 @@ The Automator teleport inspector is anchored at the selected cell's lower bounda
 
 ## CANONICAL ACTIVITY HANDOFF — 2026
 
-Groovebox now treats the 50% requirement as an activity/continuation architecture, not a post-mix clamp. Canonical continuation maintains an autonomous mathematical stream after user input ceases. Shared user/canonical coordinates include time, rhythm, pitch, envelope, phase, and modulation. The canonical activity ledger records coverage separately from the 0.50/0.50 composition coefficients. The imported carrier remains a modulation/reference source rather than an uncontrolled third additive bus.
+Groovebox now treats the 50% requirement as an activity/continuation architecture, not a post-mix clamp. Canonical continuation maintains an autonomous mathematical stream after user input ceases. Shared user/canonical coordinates include time, rhythm, pitch, envelope, phase, and modulation. The canonical activity ledger records coverage separately from the optional Canonical Live Overblend waveform coefficients (50% canonical waveform by default). The imported carrier remains a modulation/reference source rather than an uncontrolled third additive bus.
 
 The project snapshot persists canonical continuation state and its activity ledger so save/load/export provenance retains the same model. The activity metric is not a claim of 50% final RMS after nonlinear processing; clipping and nonlinear effects can change energy.
 
@@ -1749,7 +1746,7 @@ The project snapshot persists canonical continuation state and its activity ledg
 
 ### Meum Spatial Activity Resolution (v28)
 
-Groovebox now includes a direct X/Y/Z activity-field resolver between the canonical and user buses. The resolver uses explicit orthogonal coordinates and local neighbor propagation as a deterministic composition mechanism. It compares canonical and user activity with an L1 activity modulus and structurally expands the canonical branch to the user activity modulus when needed before the fixed 50/50 composition boundary. This is an algorithmic signal-activity invariant, not a final-output limiter.
+Groovebox now includes a direct X/Y/Z activity-field resolver between the canonical and user buses. The resolver uses explicit orthogonal coordinates and local neighbor propagation as a deterministic composition mechanism. It compares canonical and user activity with an L1 activity modulus and structurally expands the canonical branch to the user activity modulus when needed before the optional Canonical Live Overblend boundary (50% by default). This is an algorithmic signal-activity invariant, not a final-output limiter.
 
 Shared user/canonical features are tracked across 12 coordinates: time, rhythm, pitch, envelope, phase, modulation, tempo, AM, FM, PM, wavetable/vector, and playlist mapping.
 
@@ -1770,20 +1767,19 @@ The canonical authority range is a real bounded control interval, not a label:
   Full Canonical        = 1.00 exactly
 
 Therefore five active canonical engines reach the 1.00 ceiling, while the
-minimum remains 0.50 even with no carrier. The source-composition boundary is
-independently fixed as:
+minimum remains 0.50 even with no carrier. The source-composition boundary is independently adjustable as:
 
-  M0 = 0.50 C + 0.50 U
+  M0 = (1 − b) U + b C,    b = Canonical Live Overblend
 
-so canonical and userdata each retain a 50% source coefficient at the linear
-composition boundary. The 100% maximum refers to canonical control/authority;
-it is NOT a claim of 100% post-effect RMS energy after nonlinear processing.
+The default is b=0 for maximum live/user dynamics; b=0.50 reproduces the legacy
+50/50 source blend. The 100% maximum refers to canonical control/authority; it
+is independent of waveform overblend and is NOT a claim of post-effect RMS energy.
 
 MEUM CALCULUS / SPATIAL ACTIVITY
   Direct X/Y/Z coordinates track temporal position, normalized user activity,
   and local gradient. Neighbor propagation uses a deterministic six-neighbor-like
   temporal reduction; the canonical field is expanded to at least the user L1
-  activity when necessary before the 50/50 boundary. This gives a measurable
+  activity when necessary before the optional live-overblend boundary. This gives a measurable
   activity modulus of at least 0.50 without a final-output clamp. It is a
   procedural Meum field construction, not a physical Navier–Stokes solver.
 
@@ -1846,14 +1842,14 @@ V34 — AUTOMATOR PARAMETER TELEPORT / UI RE-ARCHITECTURE
 - **Canonical Signal Control:** defaults to **100% Full Canonical**. The control remains a 50–100% authority mechanism, separate from final mix gain.
 - **Self-correcting canonical coverage:** when required canonical sequence/automation/AM/FM/PM/effect lanes are absent, canonical runtime overlays are materialized instead of lowering authority or overwriting user-owned sequence data.
 - **Canonical Resonance / Activity:** independently adjustable **50–150%**. Full user activity targets the 50% floor; user inactivity ramps autonomous canonical activity toward the selected ceiling, with a smoothed handoff.
-- **Canonical→Instrument Convolve:** new bounded **0–100%** control. At 100%, canonical material is the full convolution reference, while the transformed user branch retains a direct 50% user component; the fixed `M0 = 0.50*C + 0.50*U` boundary remains intact.
+- **Canonical→Instrument Convolve:** bounded **0–100%** control. At 100%, canonical material is the convolution reference while the transformed user branch remains directly audible. Final waveform share is independently controlled by **Canonical Live Overblend**, default **50%**.
 - **Maximum instruments:** increased from 64 to **128** for the active synth/visual ensemble and canonical master identity lattice.
 - **Default playlist row length:** **8 beats**.
 - **UI initialization:** Master Volume value is now constructed before stylesheet/object-name access, eliminating the `lbl_master_vol` startup AttributeError.
 
 CANONICAL RESONANCE / 50–150% STABILITY PASS (V34)
 
-  • Canonical resonance/activity is an independent 50–150% continuation-drive control; it is not master volume and does not alter the fixed 0.50*C + 0.50*U composition coefficients.
+  • Canonical resonance/activity is an independent 50–150% continuation-drive control; it is not master volume and does not alter the independently selected Canonical Live Overblend coefficients.
   • Full Canonical signal authority defaults to 100%. Missing canonical lanes are materialized in canonical-owned runtime overlays instead of weakening authority or rewriting user-owned data.
   • 100% canonical→instrument convolution is bounded as a normalized influence transform; the transformed user branch retains a direct 50% user component.
   • Playlist row length defaults to 8 beats; Playlist Rows remains the separate arrangement-row count control.
@@ -1919,7 +1915,7 @@ Algo XMOD local/global depth sequence algorithms.
 
 ### Resonance — 50–150% vs 0–200%
 Canonical Resonance / Activity is **activity / continuation drive** (not Master
-Volume, not the 50/50 C/U mix). The legal band follows User Data Overwrite:
+Volume and not the optional Canonical Live Overblend waveform mix). The legal band follows User Data Overwrite:
 
 | Mode | Control | Range |
 |------|---------|-------|
@@ -2346,3 +2342,25 @@ The supplied book explicitly describes four sets of three lines, conflicting/non
 - **Algorithm XMOD parity:** applied Algorithm processing can modulate existing synth/sequence automation variables with the same runtime reach as its step-side effect; it does not compose step or automation lanes.
 - **Local FFmpeg contract:** runtime media calls resolve only the project `bin/ffmpeg` + `bin/ffprobe` pair. First-launch/build provisioning must populate and validate that pair before execution; PATH codecs are never selected by the application runtime.
 
+
+## Performance · Record / Import / Draw Video Clip (2026-09-07)
+Performance now includes **🎥 Record / Import / Draw Clip**.
+
+- Explicit **Camera**, **Microphone**, and **Tablet / media source** selectors with Refresh Devices.
+- Live **Camera Preview** and **Mic Preview** level meter before recording.
+- Record selected camera + microphone directly into the active project's `recordings/` folder.
+- Import video from ordinary files or mounted/MTP tablet media into the same project folder/index.
+- Basic RGBA image paint layer: Brush, Eraser, Line, Rectangle, Ellipse, color picker, size, Undo, Clear.
+- Time-varying graph lanes: layer opacity, X, Y, scale, rotation, Drawn Sound pitch/gain, and Sound→Color amount.
+- **Draw Sound**, **Color→Sound**, and **Sound→Color** are independent and OFF by default.
+- **Color→Sound Translation Detail** is a final-mix option: Off / Basic / Detailed. Off performs no color-derived sound calculation.
+- Basic mode maps global hue/saturation/value; Detailed mode deterministically maps multiple color regions into a partial bank.
+- Final generated sound mixes with source audio using FFmpeg `amix normalize=0`. No normalizer, limiter, compressor, or extra generic clipper is introduced.
+- Paint/graph state is saved to the active project's `layers/`; rendered clips are indexed with project video exports.
+
+
+### Main Window access
+The Main Window **✎🎙🎥 Draw / Record / Video** button opens the same project-shared media workbench. Its audio tab retains the layered Signal Lab, while its video tab exposes the full camera/microphone/tablet device selectors, live camera preview, mic meter preview, camera+mic recording, tablet/video import, paint layer, time-varying graph lane, optional Draw Sound / Color→Sound / Sound→Color paths, and final Color→Sound Translation Detail. Video Clip state is synchronized with Performance project state on save/load.
+
+## Canonical Live Overblend default
+Canonical Live Overblend now defaults to **50%**, preserving the net 50/50 user/canonical waveform contract. The control remains adjustable: 0% selects the user waveform branch only, 50% is equal user/canonical waveform share, and 100% selects the canonical waveform branch. The intentional existing master hard clip and its 50% Clip/Gain default are unchanged.

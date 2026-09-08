@@ -55,6 +55,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSlider,
+    QScrollArea,
     QSpinBox,
     QSplitter,
     QTabWidget,
@@ -324,6 +325,17 @@ class _ProvenanceWorker(QObject):
 class Performance(QDialog):
     """In-app file browser, playlister, game player, DJ remixer, batch re-render."""
 
+    def _scroll_page(self, page: QWidget) -> QScrollArea:
+        """Compatibility wrapper: every Performance tab remains reachable at any DPI/window size."""
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        area.setMinimumSize(320, 240)
+        page.setMinimumSize(max(300, page.minimumWidth()), max(200, page.minimumHeight()))
+        area.setWidget(page)
+        return area
+
     def __init__(self, host, parent=None):
         super().__init__(parent or host)
         self.host = host
@@ -548,23 +560,30 @@ class Performance(QDialog):
         right.setTabPosition(QTabWidget.TabPosition.West)
         right.setUsesScrollButtons(True)
         right.tabBar().setExpanding(False)
-        right.addTab(self._build_playlist_tab(), "♫ Playlist")
-        right.addTab(self._build_game_tab(), "🎮 Game / Wi‑Fi")
-        right.addTab(self._build_remix_tab(), "∿ Parametric Remix")
-        right.addTab(self._build_cutup_tab(), "✂ Cutup Lab")
+        right.addTab(self._scroll_page(self._build_playlist_tab()), "♫ Playlist")
+        right.addTab(self._scroll_page(self._build_game_tab()), "🎮 Game / Wi‑Fi")
+        right.addTab(self._scroll_page(self._build_remix_tab()), "∿ Parametric Remix")
+        right.addTab(self._scroll_page(self._build_cutup_tab()), "✂ Cutup Lab")
         try:
             from signal_lab import SignalLab
-            right.addTab(SignalLab(self.host, self), "✎ Draw / Signal Lab")
+            right.addTab(self._scroll_page(SignalLab(self.host, self)), "✎ Draw / Signal Lab")
         except Exception as e:
-            fallback = QWidget(); fl = QVBoxLayout(fallback); msg = QLabel(f"Signal Lab unavailable: {e}"); msg.setWordWrap(True); fl.addWidget(msg); fl.addStretch(1); right.addTab(fallback, "✎ Draw / Signal Lab")
-        right.addTab(self._build_performance_tab(), "◉ Live Broadcast")
-        right.addTab(self._build_outputs_tab(), "▣ Device Manager")
-        right.addTab(self._build_hardware_tab(), "⌨ Hardware")
-        right.addTab(self._build_transfer_tab(), "⇄ Drive / Clone")
-        right.addTab(self._build_mg_library_tab(), "⌬ .MG Related")
-        right.addTab(self._build_box_tab(), "⚙ Box Mode")
-        right.addTab(self._build_batch_tab(), "Batch Re-render")
-        right.addTab(self._build_info_tab(), "Info")
+            fallback = QWidget(); fl = QVBoxLayout(fallback); msg = QLabel(f"Signal Lab unavailable: {e}"); msg.setWordWrap(True); fl.addWidget(msg); fl.addStretch(1); right.addTab(self._scroll_page(fallback), "✎ Draw / Signal Lab")
+        try:
+            from video_clip_studio import VideoClipStudio
+            self.video_clip_studio = VideoClipStudio(self.host, self)
+            right.addTab(self._scroll_page(self.video_clip_studio), "🎥 Record / Import / Draw Clip")
+        except Exception as e:
+            self.video_clip_studio = None
+            fallback = QWidget(); fl = QVBoxLayout(fallback); msg = QLabel(f"Video Clip Studio unavailable: {e}"); msg.setWordWrap(True); fl.addWidget(msg); fl.addStretch(1); right.addTab(self._scroll_page(fallback), "🎥 Record / Import / Draw Clip")
+        right.addTab(self._scroll_page(self._build_performance_tab()), "◉ Live Broadcast")
+        right.addTab(self._scroll_page(self._build_outputs_tab()), "▣ Device Manager")
+        right.addTab(self._scroll_page(self._build_hardware_tab()), "⌨ Hardware")
+        right.addTab(self._scroll_page(self._build_transfer_tab()), "⇄ Drive / Clone")
+        right.addTab(self._scroll_page(self._build_mg_library_tab()), "⌬ .MG Related")
+        right.addTab(self._scroll_page(self._build_box_tab()), "⚙ Box Mode")
+        right.addTab(self._scroll_page(self._build_batch_tab()), "Batch Re-render")
+        right.addTab(self._scroll_page(self._build_info_tab()), "Info")
         split.addWidget(right)
         split.setStretchFactor(0, 3)
         split.setStretchFactor(1, 2)
@@ -1796,6 +1815,7 @@ class Performance(QDialog):
             "arrange": self.cmb_playlist_arrange.currentText() if hasattr(self,"cmb_playlist_arrange") else "Energy arc (size)",
             "arrange_seed": int(self.spin_playlist_arrange_seed.value()) if hasattr(self,"spin_playlist_arrange_seed") else 1975807343,
             "output_display": display, "output_audio": audio,
+            "video_clip": self.video_clip_studio.export_state() if getattr(self, "video_clip_studio", None) is not None else {},
             "remix": {
                 "goava": int(self.sld_goava.value()) if hasattr(self,"sld_goava") else 0,
                 "rand": int(self.sld_rand.value()) if hasattr(self,"sld_rand") else 0,
@@ -1827,6 +1847,11 @@ class Performance(QDialog):
             if hasattr(self,name): getattr(self,name).setValue(int(r.get(key,default)))
         if hasattr(self,"txt_pattern_script") and "script" in r: self.txt_pattern_script.setPlainText(str(r.get("script") or ""))
         if hasattr(self,"chk_pattern_host_playlist"): self.chk_pattern_host_playlist.setChecked(bool(r.get("host_playlist",True)))
+        if getattr(self, "video_clip_studio", None) is not None:
+            try:
+                self.video_clip_studio.restore_state(state.get("video_clip") if isinstance(state.get("video_clip"), dict) else {})
+            except Exception:
+                pass
         self._refresh_output_devices()
         dn=str(state.get("output_display") or ""); an=str(state.get("output_audio") or "")
         if dn and hasattr(self,"cmb_output_display"):
@@ -1861,6 +1886,14 @@ class Performance(QDialog):
 
     def closeEvent(self, event):
         self._sync_project_state()
+        try:
+            studio = getattr(self, "video_clip_studio", None)
+            if studio is not None:
+                studio._stop_mic_source()
+                if getattr(studio, "_camera", None) is not None:
+                    studio._camera.stop()
+        except Exception:
+            pass
         return super().closeEvent(event)
 
     def _push_remix(self, *_args):

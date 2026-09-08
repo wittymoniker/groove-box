@@ -991,61 +991,61 @@
   },
   {
     "file": "groovebox.py",
-    "line": 14607,
+    "line": 14603,
     "import": "math",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 14608,
+    "line": 14604,
     "import": "random",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 19095,
+    "line": 19091,
     "import": "sys",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 19096,
+    "line": 19092,
     "import": "json",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 19097,
+    "line": 19093,
     "import": "random",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 19098,
+    "line": 19094,
     "import": "wave",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 19099,
+    "line": 19095,
     "import": "numpy",
     "class": "bundled-runtime"
   },
   {
     "file": "groovebox.py",
-    "line": 19100,
+    "line": 19096,
     "import": "groovebox_media_tools",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 19101,
+    "line": 19097,
     "import": "PyQt6.QtWidgets",
     "class": "bundled-runtime"
   },
   {
     "file": "groovebox.py",
-    "line": 19105,
+    "line": 19101,
     "import": "PyQt6.QtCore",
     "class": "bundled-runtime"
   },
@@ -1141,241 +1141,241 @@
   },
   {
     "file": "groovebox.py",
-    "line": 6096,
+    "line": 6097,
     "import": "json",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 42864,
+    "line": 43025,
     "import": "sys",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 10916,
+    "line": 10917,
     "import": "platform",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 10923,
+    "line": 10924,
     "import": "os",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 20058,
+    "line": 20054,
     "import": "scode_optimizer_bridge",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 20449,
+    "line": 20445,
     "import": "hashlib",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 20592,
+    "line": 20588,
     "import": "hashlib",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 26064,
+    "line": 26078,
     "import": "hashlib",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 26065,
+    "line": 26079,
     "import": "numpy",
     "class": "bundled-runtime"
   },
   {
     "file": "groovebox.py",
-    "line": 31493,
+    "line": 31543,
     "import": "mcc_filetype",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 31513,
+    "line": 31563,
     "import": "groovebox_paths",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 31517,
+    "line": 31567,
     "import": "groovebox_paths",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 31521,
+    "line": 31571,
     "import": "groovebox_paths",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 31525,
+    "line": 31575,
     "import": "groovebox_paths",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 31529,
+    "line": 31579,
     "import": "groovebox_paths",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 31533,
+    "line": 31583,
     "import": "groovebox_paths",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 31779,
+    "line": 31829,
     "import": "user_synth_library",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 31817,
+    "line": 31867,
     "import": "mg_artifacts",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 31857,
+    "line": 31907,
     "import": "mg_artifacts",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 31881,
+    "line": 31931,
     "import": "groovebox_paths",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 33081,
+    "line": 33227,
     "import": "subprocess",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 33152,
+    "line": 33298,
     "import": "hashlib",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 34150,
+    "line": 34296,
     "import": "copy",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 34150,
+    "line": 34296,
     "import": "json",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 34885,
+    "line": 35031,
     "import": "hashlib",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 34956,
+    "line": 35102,
     "import": "hashlib",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 37162,
+    "line": 37323,
     "import": "re",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 37403,
+    "line": 37564,
     "import": "hashlib",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 37403,
+    "line": 37564,
     "import": "json",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 39474,
+    "line": 39635,
     "import": "groovebox_paths",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 39478,
+    "line": 39639,
     "import": "groovebox_paths",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 39482,
+    "line": 39643,
     "import": "groovebox_paths",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 39486,
+    "line": 39647,
     "import": "groovebox_paths",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 39805,
+    "line": 39966,
     "import": "PyQt6.QtWidgets",
     "class": "bundled-runtime"
   },
   {
     "file": "groovebox.py",
-    "line": 39827,
+    "line": 39988,
     "import": "PyQt6.QtWidgets",
     "class": "bundled-runtime"
   },
   {
     "file": "groovebox.py",
-    "line": 40023,
+    "line": 40184,
     "import": "zipfile",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 40024,
+    "line": 40185,
     "import": "hashlib",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 42552,
+    "line": 42713,
     "import": "copy",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 42617,
+    "line": 42778,
     "import": "copy",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 42886,
+    "line": 43047,
     "import": "mcc_filetype",
     "class": "local"
   },
@@ -1393,211 +1393,217 @@
   },
   {
     "file": "groovebox.py",
-    "line": 17166,
+    "line": 17162,
     "import": "mcc_filetype",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 20046,
+    "line": 20042,
     "import": "PyQt6.QtGui",
     "class": "bundled-runtime"
   },
   {
     "file": "groovebox.py",
-    "line": 23081,
+    "line": 23077,
     "import": "radio_station",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 31452,
+    "line": 31502,
     "import": "meum_compression",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 31471,
+    "line": 31521,
     "import": "meum_compression",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 31680,
+    "line": 31730,
     "import": "groovebox_paths",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 31745,
+    "line": 31795,
     "import": "program_identity",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 31765,
+    "line": 31815,
     "import": "program_identity",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 31873,
+    "line": 31923,
     "import": "mg_artifacts",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 33034,
+    "line": 33135,
     "import": "signal_lab",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 33056,
+    "line": 33136,
+    "import": "video_clip_studio",
+    "class": "local"
+  },
+  {
+    "file": "groovebox.py",
+    "line": 33202,
     "import": "signal_lab",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 33101,
+    "line": 33247,
     "import": "groovebox_paths",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 34323,
+    "line": 34469,
     "import": "copy",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 39491,
+    "line": 39652,
     "import": "groovebox_paths",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 40516,
+    "line": 40677,
     "import": "wave",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 41003,
+    "line": 41164,
     "import": "performance",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 41156,
+    "line": 41317,
     "import": "tempfile",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 41156,
+    "line": 41317,
     "import": "subprocess",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 41156,
+    "line": 41317,
     "import": "sys",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 41348,
+    "line": 41509,
     "import": "PIL",
     "class": "bundled-runtime"
   },
   {
     "file": "groovebox.py",
-    "line": 42890,
+    "line": 43051,
     "import": "PyQt6.QtCore",
     "class": "bundled-runtime"
   },
   {
     "file": "groovebox.py",
-    "line": 23106,
+    "line": 23102,
     "import": "radio_station",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 31587,
+    "line": 31637,
     "import": "mcc_integrity",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 31905,
+    "line": 31955,
     "import": "meum_compression",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 31917,
+    "line": 31967,
     "import": "mcc_integrity",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 36764,
+    "line": 36925,
     "import": "ctypes",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 39905,
+    "line": 40066,
     "import": "zipfile",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 40887,
+    "line": 41048,
     "import": "videogame_engine",
     "class": "local"
   },
   {
     "file": "groovebox.py",
-    "line": 41296,
+    "line": 41457,
     "import": "PIL",
     "class": "bundled-runtime"
   },
   {
     "file": "groovebox.py",
-    "line": 41314,
+    "line": 41475,
     "import": "shutil",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 41320,
+    "line": 41481,
     "import": "PIL",
     "class": "bundled-runtime"
   },
   {
     "file": "groovebox.py",
-    "line": 21217,
+    "line": 21213,
     "import": "PyQt6.QtWidgets",
     "class": "bundled-runtime"
   },
   {
     "file": "groovebox.py",
-    "line": 35892,
+    "line": 36044,
     "import": "ctypes",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 36011,
+    "line": 36163,
     "import": "ctypes",
     "class": "stdlib/os"
   },
   {
     "file": "groovebox.py",
-    "line": 34137,
+    "line": 34283,
     "import": "PyQt6.QtWidgets",
     "class": "bundled-runtime"
   },
@@ -2743,37 +2749,37 @@
   },
   {
     "file": "performance.py",
-    "line": 602,
+    "line": 609,
     "import": "groovebox_paths",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 611,
+    "line": 618,
     "import": "groovebox_paths",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 620,
+    "line": 627,
     "import": "groovebox_paths",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 629,
+    "line": 636,
     "import": "groovebox_paths",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 1021,
+    "line": 1028,
     "import": "numpy",
     "class": "bundled-runtime"
   },
   {
     "file": "performance.py",
-    "line": 2963,
+    "line": 2998,
     "import": "numpy",
     "class": "bundled-runtime"
   },
@@ -2785,32 +2791,26 @@
   },
   {
     "file": "performance.py",
-    "line": 953,
+    "line": 561,
+    "import": "video_clip_studio",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 960,
     "import": "media_output_router",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 1023,
+    "line": 1030,
     "import": "audio_os_backend",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 1775,
+    "line": 1782,
     "import": "parametric_file_remix",
-    "class": "local"
-  },
-  {
-    "file": "performance.py",
-    "line": 2163,
-    "import": "media_cutup_engine",
-    "class": "local"
-  },
-  {
-    "file": "performance.py",
-    "line": 2184,
-    "import": "media_cutup_engine",
     "class": "local"
   },
   {
@@ -2821,62 +2821,56 @@
   },
   {
     "file": "performance.py",
-    "line": 2227,
+    "line": 2219,
     "import": "media_cutup_engine",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 2246,
+    "line": 2233,
     "import": "media_cutup_engine",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 2279,
+    "line": 2262,
     "import": "media_cutup_engine",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 2362,
+    "line": 2281,
+    "import": "media_cutup_engine",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 2314,
+    "import": "media_cutup_engine",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 2397,
     "import": "radio_station",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 2574,
+    "line": 2609,
     "import": "media_output_router",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 2602,
+    "line": 2637,
     "import": "media_output_router",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 2639,
+    "line": 2674,
     "import": "media_output_router",
-    "class": "local"
-  },
-  {
-    "file": "performance.py",
-    "line": 2693,
-    "import": "operation_station_transfer",
-    "class": "local"
-  },
-  {
-    "file": "performance.py",
-    "line": 2706,
-    "import": "operation_station_transfer",
-    "class": "local"
-  },
-  {
-    "file": "performance.py",
-    "line": 2714,
-    "import": "operation_station_transfer",
     "class": "local"
   },
   {
@@ -2887,97 +2881,115 @@
   },
   {
     "file": "performance.py",
-    "line": 2737,
+    "line": 2741,
     "import": "operation_station_transfer",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 2754,
-    "import": "hardware_hub",
+    "line": 2749,
+    "import": "operation_station_transfer",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 2782,
-    "import": "performance_box",
+    "line": 2763,
+    "import": "operation_station_transfer",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 2772,
+    "import": "operation_station_transfer",
     "class": "local"
   },
   {
     "file": "performance.py",
     "line": 2789,
+    "import": "hardware_hub",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 2817,
     "import": "performance_box",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 3029,
+    "line": 2824,
+    "import": "performance_box",
+    "class": "local"
+  },
+  {
+    "file": "performance.py",
+    "line": 3064,
     "import": "mg_artifacts",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 3047,
+    "line": 3082,
     "import": "mg_artifacts",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 3059,
+    "line": 3094,
     "import": "mg_artifacts",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 3089,
+    "line": 3124,
     "import": "mg_artifacts",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 3108,
+    "line": 3143,
     "import": "mg_artifacts",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 3117,
+    "line": 3152,
     "import": "mg_artifacts",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 3129,
+    "line": 3164,
     "import": "mg_artifacts",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 1862,
+    "line": 1897,
     "import": "dj_effects",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 2308,
+    "line": 2343,
     "import": "media_cutup_engine",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 2442,
+    "line": 2477,
     "import": "relativity_projection",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 1042,
+    "line": 1049,
     "import": "audio_os_backend",
     "class": "local"
   },
   {
     "file": "performance.py",
-    "line": 1346,
+    "line": 1353,
     "import": "media_cutup_engine",
     "class": "local"
   },
@@ -4288,6 +4300,162 @@
     "line": 5,
     "import": "pathlib",
     "class": "stdlib/os"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 18,
+    "import": "__future__",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 20,
+    "import": "array",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 21,
+    "import": "json",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 22,
+    "import": "math",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 23,
+    "import": "os",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 24,
+    "import": "shutil",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 25,
+    "import": "subprocess",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 26,
+    "import": "sys",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 27,
+    "import": "time",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 28,
+    "import": "wave",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 29,
+    "import": "pathlib",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 30,
+    "import": "typing",
+    "class": "stdlib/os"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 32,
+    "import": "numpy",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 34,
+    "import": "PyQt6.QtCore",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 35,
+    "import": "PyQt6.QtGui",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 36,
+    "import": "PyQt6.QtWidgets",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 42,
+    "import": "groovebox_media_tools",
+    "class": "local"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 45,
+    "import": "PyQt6.QtMultimedia",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 49,
+    "import": "PyQt6.QtMultimediaWidgets",
+    "class": "bundled-runtime"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 344,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 348,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 352,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 542,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 646,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 597,
+    "import": "groovebox_paths",
+    "class": "local"
+  },
+  {
+    "file": "video_clip_studio.py",
+    "line": 808,
+    "import": "groovebox_paths",
+    "class": "local"
   },
   {
     "file": "videogame_engine.py",
