@@ -11319,22 +11319,58 @@ class ParametricMathBackground(QWidget):
             painter.setFont(QFont("Consolas", 7))
             painter.drawText(QPointF(max(2.0, x - radius), text_y), text)
 
-    # Twelve equation cells are painted per frame.  The cells are the visual
-    # mathematical index for the same expressions used by the engine.  They are
-    # intentionally expressions/methods rather than a second calculation path.
+    # BOOK_MATH_BACKGROUND_20260909:
+    # Twelve equation cells are painted per frame, but they page through a larger
+    # book-derived corpus.  The older compact stand-ins (for example isn(x)=
+    # 2*sin(x/2) and ics(x)=2*cos(x/2)) were useful implementation identities,
+    # but were not faithful renderings of the full series printed in THIS BOOK.
+    # Keep the background display-only: these strings never enter DSP or control
+    # calculations, so the larger formulas add no realtime synthesis cost.
     MEUM_EQUATION_CELLS = (
-        ("FIELD POTENTIAL", "Φ(x,y,z) = q / √(x²+y²+z²)"),
-        ("WAVE MECHANICS", "ψ(x,y,z) = Σ Aₙ sin(nπx/Lₓ) sin(mπy/Lᵧ) sin(kπz/L_z)"),
-        ("STATE TRANSITION", "Sₜ₊₁(x,y,z) = Σ_neighbors Sₜ(x±Δx,y±Δy,z±Δz)·W_g"),
-        ("SPATIAL CURVATURE", "∇²Ψ(x,y,z) = S(x,y,z)"),
-        ("MEUM ISN", "isn(x) = 2·sin(x/2)"),
-        ("MEUM ICS", "ics(x) = 2·cos(x/2)"),
-        ("ISN INVERSE", "isn⁻¹(y) = 2·asin(y/2)"),
-        ("ICS INVERSE", "ics⁻¹(y) = 2·acos(y/2)"),
-        ("MEUM FIELD", "F_M(x,y,z,t) = isn(M·t+x)·ics(M⁻¹·t+y)+z"),
-        ("STANDING NODE", "uₙ = sin(nπx/Lₓ)·sin(mπy/Lᵧ)·sin(kπz/L_z)"),
-        ("NEIGHBOR WEIGHT", "W_g = 1/(1+√(Δx²+Δy²+Δz²))"),
-        ("SPATIAL RADIUS", "r = √(x²+y²+z²)"),
+        ("MEUM — DEFINING ROOT",
+         "(M−1)^M + (M−1)^(1/M) = 2^M/M² − M"),
+        ("MEUM — IDENTITY II",
+         "2^M/M² − (M−1)/M = M²"),
+        ("MEUM — BALANCE",
+         "(M−1)·M + (M−1)·(1/M) = 2^M/M² − M"),
+        ("MEUM — IDENTITY IV",
+         "2^M/M² + 1 = M³ + M"),
+        ("MEUM — IDENTITY V",
+         "2^M/M² − M³ = M − 1"),
+        ("ISN⁻¹ — FULL SERIES",
+         "isn⁻¹(x) = Σₙ₌₀^∞ [(2n)!·x^(2n+1)] / [16^n·(n!)²·(2n+1)]"),
+        ("ISN⁻¹ — EXPANDED",
+         "≈ x + 2x³/[(4·1·3)·4] + 24x⁵/[(16·4·5)·16] + 720x⁷/[(64·36·7)·64] + …"),
+        ("ICS⁻¹ — FULL SERIES",
+         "ics⁻¹(x) = π − Σₙ₌₀^∞ [(2n)!·x^(2n+1)] / [16^n·(n!)²·(2n+1)] = π − isn⁻¹(x)"),
+        ("ISN — CYCLIC SERIES",
+         "isn(x) = Σₙ₌₁^∞ [x^(2n)/(2n)!]·i^n,   i = √(−1)"),
+        ("1 − ISN — SERIES",
+         "1 − isn(x) = Σₙ₌₀^∞ [x^(2n)/(2n)!]·i^(n−1)"),
+        ("ISX COMPONENT",
+         "isx(γ) = 1 − isn(γ)"),
+        ("ISY COMPONENT",
+         "isy(γ) = 1 − isn(γ − π/2)"),
+        ("π FROM ISN⁻¹",
+         "π = Σₙ₌₀^∞ [(2n)!·2^(1−2n)] / [(n!)²·(2n+1)]"),
+        ("ICS⁻¹ — SSS INPUT",
+         "x = (adj₁² + adj₂² − opp²)/(adj₁·adj₂);   angle = ics⁻¹(x)"),
+        ("CIRCUMSCRIPTION FORM",
+         "C = (π + |isn⁻¹(x)|)·side"),
+        ("FIELD POTENTIAL",
+         "Φ(x,y,z) = q / √(x²+y²+z²)"),
+        ("WAVE MECHANICS",
+         "ψ(x,y,z) = Σ Aₙ sin(nπx/Lₓ) sin(mπy/Lᵧ) sin(kπz/L_z)"),
+        ("STATE TRANSITION",
+         "Sₜ₊₁(x,y,z) = Σ_neighbors Sₜ(x±Δx,y±Δy,z±Δz)·W_g"),
+        ("SPATIAL CURVATURE",
+         "∇²Ψ(x,y,z) = S(x,y,z)"),
+        ("STANDING NODE",
+         "uₙ = sin(nπx/Lₓ)·sin(mπy/Lᵧ)·sin(kπz/L_z)"),
+        ("NEIGHBOR WEIGHT",
+         "W_g = 1/(1+√(Δx²+Δy²+Δz²))"),
+        ("SPATIAL RADIUS",
+         "r = √(x²+y²+z²)"),
     )
 
     def _paint_meum_equation_cells(self, painter, width, height, phase):
@@ -11348,9 +11384,13 @@ class ParametricMathBackground(QWidget):
         margin = 10.0
         cell_w = max(110.0, (width - 2*margin - (cols-1)*gap) / cols)
         cell_h = max(42.0, (height - 2*margin - (rows-1)*gap) / rows)
-        # Twelve cells are shown at once; the phase only animates their subtle
-        # position/opacity so the complete equation vocabulary remains legible.
-        for i, (title, expr) in enumerate(self.MEUM_EQUATION_CELLS[:12]):
+        # Twelve cells are shown at once. Page through the complete book-derived
+        # corpus at each slow Meum cycle so every expression gets screen time
+        # without increasing paint count or background CPU load.
+        _all = self.MEUM_EQUATION_CELLS
+        _start = (int(self._cycle) * 12) % max(1, len(_all))
+        _shown = tuple(_all[(_start + j) % len(_all)] for j in range(min(12, len(_all))))
+        for i, (title, expr) in enumerate(_shown):
             col, row = i % cols, i // cols
             x = margin + col * (cell_w + gap)
             y = margin + row * (cell_h + gap)
@@ -11365,11 +11405,15 @@ class ParametricMathBackground(QWidget):
             painter.setPen(QColor(212, 175, 55, int(175 + 50*alpha)))
             painter.drawText(rect.adjusted(6, 4, -6, -cell_h*0.55),
                              int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop), title)
-            f2 = QFont("Consolas", 7)
+            # Long book series need a little more vertical room and a smaller
+            # font than the former one-line placeholders. Qt wraps only the
+            # display text; the stored expression remains complete.
+            _fs = 6 if len(expr) > 72 else 7
+            f2 = QFont("Consolas", _fs)
             painter.setFont(f2)
             painter.setPen(QColor(190, 210, 225, int(125 + 40*alpha)))
-            painter.drawText(rect.adjusted(6, cell_h*0.34, -6, -5),
-                             int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), expr)
+            painter.drawText(rect.adjusted(6, cell_h*0.28, -6, -5),
+                             int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap), expr)
 
     MEUM_BLOCKS = (
         # Primary Meum identities (theorem-facing keywords for the left rail)
@@ -13691,32 +13735,38 @@ The audio engine includes a bounded Meum spatial effect using direct x,y,z poten
 
 
 --------------------------------------------------------------------------------
-PARAMETRIC MATH BACKGROUND — 12 MEUM EQUATION CELLS
+PARAMETRIC MATH BACKGROUND — BOOK-DERIVED MEUM / SERIES EQUATION CELLS
 --------------------------------------------------------------------------------
-The ParametricMathBackground draws exactly 12 compact equation cells at a time.
-They are a visual index of the mathematical vocabulary used by Groovebox, not a
-separate audio calculation path. The displayed direct forms are:
+ParametricMathBackground still draws exactly 12 compact equation cells at a time
+for predictable paint cost, but those 12 cells now page through a larger corpus
+transcribed from THIS BOOK. Long expressions wrap rather than being replaced by
+short implementation identities. The display corpus includes:
 
-  1. Φ(x,y,z) = q / √(x²+y²+z²)
-  2. ψ(x,y,z) = Σ Aₙ sin(nπx/Lₓ) sin(mπy/Lᵧ) sin(kπz/L_z)
-  3. Sₜ₊₁(x,y,z) = Σ_neighbors Sₜ(x±Δx,y±Δy,z±Δz) · W_g
-  4. ∇²Ψ(x,y,z) = S(x,y,z)
-  5. isn(x) = 2·sin(x/2)
-  6. ics(x) = 2·cos(x/2)
-  7. isn⁻¹(y) = 2·asin(y/2)
-  8. ics⁻¹(y) = 2·acos(y/2)
-  9. F_M(x,y,z,t) = isn(M·t+x)·ics(M⁻¹·t+y)+z
- 10. uₙ = sin(nπx/Lₓ)·sin(mπy/Lᵧ)·sin(kπz/L_z)
- 11. W_g = 1/(1+√(Δx²+Δy²+Δz²))
- 12. r = √(x²+y²+z²)
+  • Meum defining root:
+      (M−1)^M + (M−1)^(1/M) = 2^M/M² − M
+  • Meum alternate identities:
+      2^M/M² − (M−1)/M = M²
+      (M−1)M + (M−1)(1/M) = 2^M/M² − M
+      2^M/M² + 1 = M³ + M
+      2^M/M² − M³ = M − 1
+  • Full inverse-isosceles-sine series:
+      isn⁻¹(x) = Σₙ₌₀^∞ [(2n)! x^(2n+1)]/[16^n (n!)² (2n+1)]
+  • Full inverse-isosceles-cosine relation/series:
+      ics⁻¹(x) = π − Σₙ₌₀^∞ [(2n)! x^(2n+1)]/[16^n (n!)² (2n+1)]
+                 = π − isn⁻¹(x)
+  • Cyclic isn series:
+      isn(x) = Σₙ₌₁^∞ [x^(2n)/(2n)!] i^n,  i=√(−1)
+  • Complement series:
+      1−isn(x) = Σₙ₌₀^∞ [x^(2n)/(2n)!] i^(n−1)
+  • Component functions:
+      isx(γ)=1−isn(γ)
+      isy(γ)=1−isn(γ−π/2)
+  • π series simplified from isn⁻¹:
+      π = Σₙ₌₀^∞ [(2n)! 2^(1−2n)]/[(n!)²(2n+1)]
 
-The engine's existing book-derived isn/ics family remains executable and the
-ParametricMathBackground is intentionally display-only. Operator Theory can
-select an equivalent execution route for supported operations without changing
-the displayed Meum expression or its declared mathematical role.
-
-If the user's source book is supplied as a file, additional exact book equations
-can be incorporated into the indexed 12-cell vocabulary.
+The spatial field/wave/state equations remain in the rotation as Groovebox
+application equations. The background remains display-only and does not execute
+these strings in the realtime audio, visual, or game paths.
 
 
 ## Canonical signal control — never below 50%

@@ -1632,32 +1632,38 @@ The audio engine includes a bounded Meum spatial effect using direct x,y,z poten
 
 
 --------------------------------------------------------------------------------
-PARAMETRIC MATH BACKGROUND — 12 MEUM EQUATION CELLS
+PARAMETRIC MATH BACKGROUND — BOOK-DERIVED MEUM / SERIES EQUATION CELLS
 --------------------------------------------------------------------------------
-The ParametricMathBackground draws exactly 12 compact equation cells at a time.
-They are a visual index of the mathematical vocabulary used by Groovebox, not a
-separate audio calculation path. The displayed direct forms are:
+ParametricMathBackground still draws exactly 12 compact equation cells at a time
+for predictable paint cost, but those 12 cells now page through a larger corpus
+transcribed from THIS BOOK. Long expressions wrap rather than being replaced by
+short implementation identities. The display corpus includes:
 
-  1. Φ(x,y,z) = q / √(x²+y²+z²)
-  2. ψ(x,y,z) = Σ Aₙ sin(nπx/Lₓ) sin(mπy/Lᵧ) sin(kπz/L_z)
-  3. Sₜ₊₁(x,y,z) = Σ_neighbors Sₜ(x±Δx,y±Δy,z±Δz) · W_g
-  4. ∇²Ψ(x,y,z) = S(x,y,z)
-  5. isn(x) = 2·sin(x/2)
-  6. ics(x) = 2·cos(x/2)
-  7. isn⁻¹(y) = 2·asin(y/2)
-  8. ics⁻¹(y) = 2·acos(y/2)
-  9. F_M(x,y,z,t) = isn(M·t+x)·ics(M⁻¹·t+y)+z
- 10. uₙ = sin(nπx/Lₓ)·sin(mπy/Lᵧ)·sin(kπz/L_z)
- 11. W_g = 1/(1+√(Δx²+Δy²+Δz²))
- 12. r = √(x²+y²+z²)
+  • Meum defining root:
+      (M−1)^M + (M−1)^(1/M) = 2^M/M² − M
+  • Meum alternate identities:
+      2^M/M² − (M−1)/M = M²
+      (M−1)M + (M−1)(1/M) = 2^M/M² − M
+      2^M/M² + 1 = M³ + M
+      2^M/M² − M³ = M − 1
+  • Full inverse-isosceles-sine series:
+      isn⁻¹(x) = Σₙ₌₀^∞ [(2n)! x^(2n+1)]/[16^n (n!)² (2n+1)]
+  • Full inverse-isosceles-cosine relation/series:
+      ics⁻¹(x) = π − Σₙ₌₀^∞ [(2n)! x^(2n+1)]/[16^n (n!)² (2n+1)]
+                 = π − isn⁻¹(x)
+  • Cyclic isn series:
+      isn(x) = Σₙ₌₁^∞ [x^(2n)/(2n)!] i^n,  i=√(−1)
+  • Complement series:
+      1−isn(x) = Σₙ₌₀^∞ [x^(2n)/(2n)!] i^(n−1)
+  • Component functions:
+      isx(γ)=1−isn(γ)
+      isy(γ)=1−isn(γ−π/2)
+  • π series simplified from isn⁻¹:
+      π = Σₙ₌₀^∞ [(2n)! 2^(1−2n)]/[(n!)²(2n+1)]
 
-The engine's existing book-derived isn/ics family remains executable and the
-ParametricMathBackground is intentionally display-only. Operator Theory can
-select an equivalent execution route for supported operations without changing
-the displayed Meum expression or its declared mathematical role.
-
-If the user's source book is supplied as a file, additional exact book equations
-can be incorporated into the indexed 12-cell vocabulary.
+The spatial field/wave/state equations remain in the rotation as Groovebox
+application equations. The background remains display-only and does not execute
+these strings in the realtime audio, visual, or game paths.
 
 
 ## Canonical signal control — never below 50%
