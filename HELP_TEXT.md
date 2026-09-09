@@ -2351,6 +2351,8 @@ Performance now includes **🎥 Record / Import / Draw Clip**.
 - Record selected camera + microphone directly into the active project's `recordings/` folder.
 - Import video from ordinary files or mounted/MTP tablet media into the same project folder/index.
 - Basic RGBA image paint layer: Brush, Eraser, Line, Rectangle, Ellipse, color picker, size, Undo, Clear.
+- **Take Picture From Camera** captures one fresh frame into a new drawable layer. If preview/recording was not already active, Groovebox opens the selected camera only for the snapshot and releases it immediately afterward.
+- Camera/microphone ownership is demand-driven: idle mic metering is stopped, stopping preview releases the capture objects, stopping a recording releases the physical camera before/while file finalization continues, and leaving the video workspace releases idle capture devices.
 - Time-varying graph lanes: layer opacity, X, Y, scale, rotation, Drawn Sound pitch/gain, and Sound→Color amount.
 - **Draw Sound**, **Color→Sound**, and **Sound→Color** are independent and OFF by default.
 - **Color→Sound Translation Detail** is a final-mix option: Off / Basic / Detailed. Off performs no color-derived sound calculation.

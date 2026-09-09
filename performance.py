@@ -96,7 +96,16 @@ class _PerformanceMathBackground(QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(180)  # ~5.5 fps: visual ambience, not a render surface
         self._timer.timeout.connect(self._advance)
-        self._timer.start()
+        # LAG_AUDIT_20260909: no decorative timer ticks while Performance is hidden.
+    def showEvent(self, event):
+        try:
+            if not self._timer.isActive(): self._timer.start()
+        except Exception: pass
+        return super().showEvent(event)
+    def hideEvent(self, event):
+        try: self._timer.stop()
+        except Exception: pass
+        return super().hideEvent(event)
     def _advance(self):
         if self.isVisible():
             self._phase = (self._phase + 0.04759) % math.tau
@@ -396,7 +405,7 @@ class Performance(QDialog):
         self._remote_timer = QTimer(self)
         self._remote_timer.setInterval(50)
         self._remote_timer.timeout.connect(self._drain_remote_commands)
-        self._remote_timer.start()
+        # Starts only with the Ethernet control server; idle Performance has no 20 Hz poll.
 
         # OUTPUT_ROUTER_2026: optional local display/audio routing plus LAN/Wi-Fi TV
         # sharing. Hardware discovery is refreshed on demand so hot-plugged HDMI,
@@ -1718,13 +1727,13 @@ class Performance(QDialog):
         self.sld_goava = QSlider(Qt.Orientation.Horizontal)
         self.sld_goava.setRange(0, 100)
         self.sld_goava.setValue(0)
-        self.sld_goava.valueChanged.connect(self._push_remix)
+        self.sld_goava.valueChanged.connect(self._queue_remix)
         form.addRow("GOAVA morph %", self.sld_goava)
 
         self.sld_rand = QSlider(Qt.Orientation.Horizontal)
         self.sld_rand.setRange(0, 100)
         self.sld_rand.setValue(0)
-        self.sld_rand.valueChanged.connect(self._push_remix)
+        self.sld_rand.valueChanged.connect(self._queue_remix)
         form.addRow("RAND PARAM %", self.sld_rand)
 
         self.spin_remix_pair_a = QSpinBox()
@@ -1737,13 +1746,13 @@ class Performance(QDialog):
         pair_row.addWidget(QLabel("↔"))
         pair_row.addWidget(self.spin_remix_pair_b)
         form.addRow("Pair (A↔B)", pair_row)
-        self.spin_remix_pair_a.valueChanged.connect(self._push_remix)
-        self.spin_remix_pair_b.valueChanged.connect(self._push_remix)
+        self.spin_remix_pair_a.valueChanged.connect(self._queue_remix)
+        self.spin_remix_pair_b.valueChanged.connect(self._queue_remix)
 
         self.sld_boost = QSlider(Qt.Orientation.Horizontal)
         self.sld_boost.setRange(0, 100)
         self.sld_boost.setValue(0)
-        self.sld_boost.valueChanged.connect(self._push_remix)
+        self.sld_boost.valueChanged.connect(self._queue_remix)
         form.addRow("Boost hit %", self.sld_boost)
 
         lay.addLayout(form)
@@ -1917,17 +1926,13 @@ class Performance(QDialog):
         except Exception:
             pass
 
-    def closeEvent(self, event):
-        self._sync_project_state()
-        try:
-            studio = getattr(self, "video_clip_studio", None)
-            if studio is not None:
-                studio._stop_mic_source()
-                if getattr(studio, "_camera", None) is not None:
-                    studio._camera.stop()
-        except Exception:
-            pass
-        return super().closeEvent(event)
+    def _queue_remix(self, *_args):
+        """Coalesce dense slider-drag events to at most one DJ update per GUI frame."""
+        timer=getattr(self,'_remix_apply_timer',None)
+        if timer is None:
+            timer=QTimer(self); timer.setSingleShot(True); timer.setInterval(16)
+            timer.timeout.connect(self._push_remix); self._remix_apply_timer=timer
+        if not timer.isActive(): timer.start()
 
     def _push_remix(self, *_args):
         host = self.host
@@ -2578,11 +2583,16 @@ class Performance(QDialog):
         try:
             self._remote_server = ThreadingHTTPServer(("0.0.0.0", int(self.spin_remote_port.value())), Handler)
             self._remote_thread = threading.Thread(target=self._remote_server.serve_forever, daemon=True); self._remote_thread.start()
+            if not self._remote_timer.isActive(): self._remote_timer.start()
             self.lbl_remote.setText(f"http://{self._lan_ip()}:{self.spin_remote_port.value()}/status · control token: {self._remote_token}")
         except Exception as e:
             self._remote_server = None; QMessageBox.warning(self, "Ethernet host", str(e))
 
     def _stop_remote_server(self):
+        try: self._remote_timer.stop()
+        except Exception: pass
+        with self._remote_lock:
+            self._remote_commands.clear()
         srv = self._remote_server; self._remote_server = None
         if srv is not None:
             try: srv.shutdown(); srv.server_close()
@@ -3228,6 +3238,23 @@ class Performance(QDialog):
         return w
 
     def closeEvent(self, event):
+        # LAG/DEVICE_AUDIT_20260909: this is the authoritative Performance cleanup.
+        # An older closeEvent earlier in this class was shadowed by this one, which
+        # is why a stopped recording could leave QCamera allocated on Windows.
+        try: self._sync_project_state()
+        except Exception: pass
+        for name in ('_timed_playlist_timer','_pattern_timer','_performance_timer','_radio_peer_timer','_selection_debounce','_remote_timer','_remix_apply_timer'):
+            try:
+                t=getattr(self,name,None)
+                if t is not None: t.stop()
+            except Exception: pass
+        try:
+            if getattr(self,'_math_background',None) is not None: self._math_background._timer.stop()
+        except Exception: pass
+        try:
+            studio=getattr(self,'video_clip_studio',None)
+            if studio is not None: studio._release_capture_devices(True)
+        except Exception: pass
         try: self._stop_goava_radio()
         except Exception: pass
         try: self._stop_performance()
@@ -3235,6 +3262,8 @@ class Performance(QDialog):
         try: self._stop_remote_server()
         except Exception: pass
         try: self._stop_tv_host()
+        except Exception: pass
+        try: self._stop_timed_playlist()
         except Exception: pass
         self._stop_player()
         super().closeEvent(event)

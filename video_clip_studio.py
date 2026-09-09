@@ -353,6 +353,9 @@ class VideoClipStudio(QWidget):
         self._sw_started_mic = False
         self._last_video_frame_t = 0.0
         self._camera_watchdog_generation = 0
+        self._snapshot_request_generation = 0
+        self._snapshot_request_started_at = 0.0
+        self._snapshot_auto_release = False
         # Linux/Fedora camera fallback: FFmpeg/V4L2 owns video capture so we do
         # not depend on Qt/GStreamer delivering QVideoSink frames.
         self._v4l_proc = None
@@ -523,6 +526,10 @@ class VideoClipStudio(QWidget):
         self.sld_brush = QSlider(Qt.Orientation.Horizontal); self.sld_brush.setRange(1,80); self.sld_brush.setValue(12); self.sld_brush.valueChanged.connect(lambda v:self.canvas.set_brush_size(v)); tools.addWidget(self.sld_brush,1)
         bund = QPushButton('Undo'); bund.clicked.connect(lambda:self.canvas.undo()); tools.addWidget(bund)
         bclear = QPushButton('Clear'); bclear.clicked.connect(lambda:self.canvas.clear()); tools.addWidget(bclear)
+        self.btn_camera_snapshot = QPushButton('📷 Take Picture From Camera')
+        self.btn_camera_snapshot.setToolTip('Capture one frame from the selected camera into a new drawable image layer. If camera preview is off, Groovebox opens the camera only long enough to capture the frame, then releases it.')
+        self.btn_camera_snapshot.clicked.connect(self._take_picture_from_camera)
+        tools.addWidget(self.btn_camera_snapshot)
         pgl.addLayout(tools)
         layerrow=QHBoxLayout()
         self.btn_append_draw_layer=QPushButton('＋ Append Drawing Layer'); self.btn_append_draw_layer.clicked.connect(self._append_draw_layer); layerrow.addWidget(self.btn_append_draw_layer)
@@ -583,7 +590,8 @@ class VideoClipStudio(QWidget):
         self.lbl_render = QLabel('Visual drawing is independent of sound drawing. Color↔sound translation is OFF by default.'); self.lbl_render.setWordWrap(True); self.lbl_render.setStyleSheet('color:#9dffb0;'); mg.addWidget(self.lbl_render,6,2)
         root.addWidget(mix)
 
-        self._mic_timer = QTimer(self); self._mic_timer.setInterval(50); self._mic_timer.timeout.connect(self._update_mic_meter); self._mic_timer.start()
+        # LAG_AUDIT_20260909: the mic meter must be zero-cost while no mic is open.
+        self._mic_timer = QTimer(self); self._mic_timer.setInterval(50); self._mic_timer.timeout.connect(self._update_mic_meter)
         self._set_color_button()
         self._reset_curve()
 
@@ -833,6 +841,10 @@ class VideoClipStudio(QWidget):
         if proc is None:
             if callable(on_stopped): QTimer.singleShot(0,on_stopped)
             return
+        # If recording finalization already owns the stop callback, a generic
+        # release/hide request must not replace it and orphan the completed file.
+        if on_stopped is None and callable(getattr(self,'_v4l_stop_callback',None)):
+            return
         self._v4l_stop_generation=int(getattr(self,'_v4l_stop_generation',0))+1
         gen=self._v4l_stop_generation
         self._v4l_stop_callback=on_stopped
@@ -962,6 +974,7 @@ class VideoClipStudio(QWidget):
                     adev=self._audio_devices[mi]; fmt=adev.preferredFormat()
                     self._mic_source=QAudioSource(adev,fmt,self); self._mic_format=fmt
                     self._mic_io=self._mic_source.start(); self._mic_io.readyRead.connect(self._read_mic_level)
+                    self._set_mic_meter_timer_active(True)
                     self._sw_started_mic=True
                 if self._mic_io is not None:
                     self._sw_audio_rate=int(self._mic_format.sampleRate()) or 48000
@@ -1079,10 +1092,9 @@ class VideoClipStudio(QWidget):
                 except Exception: pass
                 self._v4l_record_dir=''; self._v4l_video_tmp=''; self._v4l_audio_path=''
                 self._record_path=''; self._record_final_path=''
-                try:
-                    if self.btn_camera_preview.isChecked():
-                        QTimer.singleShot(120,lambda:self._start_v4l2_capture(False))
-                except Exception: pass
+                # DEVICE_RELEASE_20260909: stopping a recording means Groovebox no
+                # longer owns the camera unless the user explicitly starts preview again.
+                self._release_capture_devices(True)
 
         self._run_media_worker('v4l2_finalize',(video,audio,final),work,done)
 
@@ -1098,14 +1110,14 @@ class VideoClipStudio(QWidget):
 
     def _toggle_camera_preview(self, on: bool):
         if not on:
-            self._camera_watchdog_generation += 1
-            self._stop_v4l2_process()
-            try:
-                if self._camera: self._camera.stop()
-            except Exception: pass
-            self._camera=None; self._capture_session=None
-            try: self.video_preview.clear(); self.video_preview.setText('Camera preview idle')
-            except Exception: pass
+            # During a recording the device is still intentionally in use; do not
+            # let a preview-only toggle tear down the recorder underneath it.
+            if bool(getattr(self,'btn_record',None) and self.btn_record.isChecked()):
+                self.btn_camera_preview.setText('▶ Camera Preview')
+                return
+            # Explicit preview stop must relinquish the physical device, not merely
+            # hide the preview widget or drop Python references.
+            self._release_capture_devices(True)
             self.btn_camera_preview.setText('▶ Camera Preview'); return
         # Fedora/Linux: prefer direct V4L2 capture. Qt/GStreamer can report a
         # started camera while never forwarding frames to QVideoSink.
@@ -1148,9 +1160,148 @@ class VideoClipStudio(QWidget):
                 err=''
             self.lbl_render.setText('Camera backend opened but delivered no frames.' + ((' '+err) if err else ''))
 
+    def _set_mic_meter_timer_active(self, active: bool):
+        """Run the 20 Hz meter only while Groovebox actually owns a microphone."""
+        try:
+            if active:
+                if not self._mic_timer.isActive(): self._mic_timer.start()
+            else:
+                self._mic_timer.stop()
+                self._mic_level=0.0
+                self.mic_meter.setValue(0)
+        except Exception:
+            pass
+
+    def _release_camera_stream_only(self):
+        """Release camera + capture audio immediately while retaining recorder metadata."""
+        cam=getattr(self,'_camera',None); sess=getattr(self,'_capture_session',None)
+        ain=getattr(self,'_record_audio_input',None)
+        try:
+            if sess is not None and hasattr(sess,'setAudioInput'): sess.setAudioInput(None)
+        except Exception: pass
+        try:
+            if cam is not None: cam.stop()
+        except Exception: pass
+        try:
+            if sess is not None and hasattr(sess,'setCamera'): sess.setCamera(None)
+        except Exception: pass
+        for obj in (ain,cam):
+            try:
+                if obj is not None and hasattr(obj,'deleteLater'): obj.deleteLater()
+            except Exception: pass
+        self._camera=None; self._record_audio_input=None
+
+    def _release_capture_devices(self, reset_buttons: bool=True):
+        """Release camera/microphone handles when capture is not actively requested.
+
+        This is deliberately stronger than merely calling QCamera.stop(): the
+        camera/recorder/audio objects are detached from QMediaCaptureSession and
+        scheduled for deletion so Windows/macOS/Linux drivers can give the device
+        to another application immediately after Groovebox stops using it.
+        """
+        self._camera_watchdog_generation += 1
+        self._snapshot_request_generation += 1
+        # V4L2/FFmpeg owns the Linux device directly; request asynchronous quit.
+        try: self._stop_v4l2_process()
+        except Exception: pass
+        cam=getattr(self,'_camera',None); sess=getattr(self,'_capture_session',None)
+        rec=getattr(self,'_recorder',None); ain=getattr(self,'_record_audio_input',None)
+        try:
+            if rec is not None: rec.stop()
+        except Exception: pass
+        try:
+            if sess is not None and hasattr(sess,'setRecorder'): sess.setRecorder(None)
+        except Exception: pass
+        try:
+            if sess is not None and hasattr(sess,'setAudioInput'): sess.setAudioInput(None)
+        except Exception: pass
+        try:
+            if cam is not None: cam.stop()
+        except Exception: pass
+        try:
+            if sess is not None and hasattr(sess,'setCamera'): sess.setCamera(None)
+        except Exception: pass
+        self._stop_mic_source()
+        for obj in (rec, ain, cam, sess):
+            try:
+                if obj is not None and hasattr(obj,'deleteLater'): obj.deleteLater()
+            except Exception: pass
+        self._camera=None; self._capture_session=None; self._recorder=None; self._record_audio_input=None
+        self._v4l_recording=False if not getattr(self,'_v4l_record_dir','') else getattr(self,'_v4l_recording',False)
+        if reset_buttons:
+            for name,text in (("btn_camera_preview",'▶ Camera Preview'),("btn_mic_preview",'▶ Mic Preview')):
+                try:
+                    btn=getattr(self,name); btn.blockSignals(True); btn.setChecked(False); btn.setText(text); btn.blockSignals(False)
+                except Exception: pass
+        try:
+            if reset_buttons:
+                self.video_preview.clear(); self.video_preview.setText('Camera preview idle')
+        except Exception: pass
+
+    def _apply_camera_snapshot_to_draw_layer(self, image: QImage):
+        if image is None or image.isNull():
+            raise RuntimeError('Camera did not provide a usable frame.')
+        self._append_draw_layer()
+        idx=len(self.draw_layers)-1
+        rec=self.draw_layers[idx]
+        rec['name']=f'Camera Photo {idx+1}'
+        try: self.draw_tabs.setTabText(idx,rec['name'])
+        except Exception: pass
+        canvas=self.draw_canvases[idx]
+        w,h=canvas.image.width(),canvas.image.height()
+        scaled=image.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied).scaled(
+            w,h,Qt.AspectRatioMode.KeepAspectRatioByExpanding,Qt.TransformationMode.SmoothTransformation)
+        x=max(0,(scaled.width()-w)//2); y=max(0,(scaled.height()-h)//2)
+        canvas._snapshot()
+        canvas.image=scaled.copy(x,y,w,h).convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
+        canvas.changed.emit(); canvas.update()
+        self.canvas=canvas
+        self._set_color_button()
+        self.lbl_render.setText('Camera picture captured into a new drawable layer; camera released if it was opened only for the snapshot.')
+        self._save_host_state()
+
+    def _take_picture_from_camera(self):
+        """Capture a fresh camera frame, auto-opening/releasing the device if needed."""
+        if not QT_MULTIMEDIA and not (sys.platform.startswith('linux') and _ffmpeg()):
+            QMessageBox.information(self,'Camera picture','Camera support is unavailable on this system.'); return
+        # During an active recording the camera is already intentionally in use;
+        # snapshot the next fresh frame without changing recording ownership.
+        recording=bool(getattr(self,'btn_record',None) and self.btn_record.isChecked())
+        preview=bool(getattr(self,'btn_camera_preview',None) and self.btn_camera_preview.isChecked())
+        self._snapshot_request_generation += 1
+        gen=self._snapshot_request_generation
+        self._snapshot_request_started_at=time.monotonic()
+        self._snapshot_auto_release=not recording and not preview
+        if not recording and not preview:
+            try: self.btn_camera_preview.setChecked(True)
+            except Exception as exc:
+                QMessageBox.warning(self,'Camera picture',str(exc)); return
+        self.lbl_render.setText('Capturing a fresh camera picture…')
+
+        def poll(attempt=0):
+            if gen != int(getattr(self,'_snapshot_request_generation',0)): return
+            img=getattr(self,'_last_video_image',None)
+            fresh=float(getattr(self,'_last_video_frame_t',0.0) or 0.0) >= float(self._snapshot_request_started_at)
+            if isinstance(img,QImage) and not img.isNull() and fresh:
+                try: self._apply_camera_snapshot_to_draw_layer(img.copy())
+                except Exception as exc: QMessageBox.warning(self,'Camera picture',str(exc))
+                finally:
+                    if self._snapshot_auto_release and not self.btn_record.isChecked():
+                        try: self.btn_camera_preview.setChecked(False)
+                        except Exception: self._release_capture_devices(True)
+                return
+            if attempt < 40:
+                QTimer.singleShot(75,lambda a=attempt+1:poll(a)); return
+            if self._snapshot_auto_release and not self.btn_record.isChecked():
+                try: self.btn_camera_preview.setChecked(False)
+                except Exception: self._release_capture_devices(True)
+            QMessageBox.warning(self,'Camera picture','No fresh camera frame arrived within 3 seconds.')
+        QTimer.singleShot(0,poll)
+
     def _toggle_mic_preview(self, on: bool):
         self._stop_mic_source()
         if not on:
+            self._set_mic_meter_timer_active(False)
             self.btn_mic_preview.setText('▶ Mic Preview'); return
         if not QT_MULTIMEDIA or not self._audio_devices:
             self.btn_mic_preview.setChecked(False); QMessageBox.information(self,'Mic preview','No Qt Multimedia microphone is available.'); return
@@ -1158,16 +1309,23 @@ class VideoClipStudio(QWidget):
             idx=max(0,min(self.cmb_mic.currentIndex(),len(self._audio_devices)-1)); dev=self._audio_devices[idx]
             fmt=dev.preferredFormat(); self._mic_source=QAudioSource(dev,fmt,self); self._mic_format=fmt
             self._mic_io=self._mic_source.start(); self._mic_io.readyRead.connect(self._read_mic_level)
+            self._set_mic_meter_timer_active(True)
             self.btn_mic_preview.setText('■ Stop Mic Preview')
         except Exception as e:
             self._stop_mic_source(); self.btn_mic_preview.setChecked(False); QMessageBox.warning(self,'Mic preview',str(e))
 
     def _stop_mic_source(self):
+        src=getattr(self,'_mic_source',None)
         try:
-            if self._mic_source: self._mic_source.stop()
+            if src: src.stop()
+        except Exception: pass
+        try:
+            if src is not None and hasattr(src,'deleteLater'): src.deleteLater()
         except Exception: pass
         self._mic_source=None; self._mic_io=None; self._mic_level=0.0
-        try: self.mic_meter.setValue(0)
+        try:
+            if hasattr(self,'_mic_timer'): self._mic_timer.stop()
+            self.mic_meter.setValue(0)
         except Exception: pass
 
     def _read_mic_level(self):
@@ -1262,6 +1420,7 @@ class VideoClipStudio(QWidget):
                 dev=self._audio_devices[mi]; fmt=dev.preferredFormat()
                 self._mic_source=QAudioSource(dev,fmt,self); self._mic_format=fmt
                 self._mic_io=self._mic_source.start(); self._mic_io.readyRead.connect(self._read_mic_level)
+                self._set_mic_meter_timer_active(True)
                 self._sw_started_mic=True
             if self._mic_io is not None:
                 try:
@@ -1280,6 +1439,9 @@ class VideoClipStudio(QWidget):
         if not getattr(self,'_sw_recording',False) and not getattr(self,'_sw_record_dir',''):
             return
         self._sw_recording=False
+        # Frames are already on disk; release the physical camera before FFmpeg
+        # encoding/finalization so other apps can use it immediately.
+        self._release_camera_stream_only()
         try:
             if self._sw_audio_fh:
                 self._sw_audio_fh.flush(); self._sw_audio_fh.close()
@@ -1296,6 +1458,7 @@ class VideoClipStudio(QWidget):
         if not d or not ff or n < 1:
             self.lbl_render.setText('Camera recording produced no frames.')
             self._record_path=''; self._record_final_path=''
+            self._release_capture_devices(True)
             return
         fps=max(1,min(60,int(self.spin_fps.value()) if hasattr(self,'spin_fps') else 24))
         audio=os.path.join(d,'audio.s16le')
@@ -1347,6 +1510,7 @@ class VideoClipStudio(QWidget):
                 try: shutil.rmtree(d,ignore_errors=True)
                 except Exception: pass
                 self._record_path=''; self._record_final_path=''
+                self._release_capture_devices(True)
 
         self._run_media_worker('software_record_finalize',(d,final,n,fps),work,done)
 
@@ -1608,6 +1772,11 @@ class VideoClipStudio(QWidget):
         return ''
 
     def _stop_recording(self):
+        # Recording stop is an ownership boundary: do not silently keep the camera
+        # open as a preview after capture ends. The user can explicitly re-enable it.
+        try:
+            self.btn_camera_preview.blockSignals(True); self.btn_camera_preview.setChecked(False); self.btn_camera_preview.setText('▶ Camera Preview'); self.btn_camera_preview.blockSignals(False)
+        except Exception: pass
         if getattr(self, '_v4l_recording', False):
             self.btn_record.setText('● Record Camera + Mic')
             QTimer.singleShot(10, self._finish_v4l2_recording)
@@ -1633,6 +1802,10 @@ class VideoClipStudio(QWidget):
             stopped = (state == QMediaRecorder.RecorderState.StoppedState)
         except Exception:
             stopped = ('Stopped' in str(state))
+        if stopped:
+            # Device ownership is no longer needed for container finalization. Keep
+            # the recorder object only long enough to read actualLocation().
+            self._release_camera_stream_only()
         if stopped and self._record_path:
             self._schedule_record_finalize_check()
 
@@ -1742,6 +1915,7 @@ class VideoClipStudio(QWidget):
             self._record_path=''
             self._record_final_path=''
             self._recorder=None; self._record_audio_input=None
+            self._release_capture_devices(True)
             return
 
         # REMUX_OFF_GUI_2026: FFmpeg remux/probe can take arbitrarily long on
@@ -1776,8 +1950,28 @@ class VideoClipStudio(QWidget):
                 QMessageBox.warning(self,'Camera recording failed',str(exc))
             finally:
                 self._recorder=None; self._record_audio_input=None
+                self._release_capture_devices(True)
 
         self._run_media_worker('qt_record_finalize',(src_path,),work,done)
+
+    def hideEvent(self, event):
+        # Switching away from Record/Import/Draw must not leave a preview device
+        # allocated. Active recording/finalization is still explicit work and must
+        # be allowed to complete without replacing its V4L2 stop callback.
+        try:
+            busy=bool((getattr(self,'btn_record',None) and self.btn_record.isChecked())
+                      or getattr(self,'_v4l_recording',False) or getattr(self,'_sw_recording',False)
+                      or getattr(self,'_v4l_record_dir','') or getattr(self,'_record_path',''))
+            if not busy:
+                self._release_capture_devices(True)
+        except Exception:
+            pass
+        return super().hideEvent(event)
+
+    def closeEvent(self, event):
+        try: self._release_capture_devices(True)
+        except Exception: pass
+        return super().closeEvent(event)
 
     # --------------------------- paint / graph state
     def _set_color_button(self):

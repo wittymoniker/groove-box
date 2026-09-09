@@ -11132,6 +11132,17 @@ class ParametricMathBackground(QWidget):
         # wave/shape/Meum budget instead of each panel adding another 24.
         self._instances.add(self)
 
+    def showEvent(self, event):
+        try:
+            if not self._timer.isActive(): self._timer.start()
+        except Exception: pass
+        return super().showEvent(event)
+
+    def hideEvent(self, event):
+        try: self._timer.stop()
+        except Exception: pass
+        return super().hideEvent(event)
+
     def _advance(self):
         if not self.isVisible():
             return

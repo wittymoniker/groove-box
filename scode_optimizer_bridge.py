@@ -761,10 +761,10 @@ class SCodeOptimizerBridge:
 
     def _completion_loop(self) -> None:
         while not self._completion_stop.is_set():
-            try:
-                record = self._completion_queue.get(timeout=0.1)
-            except queue.Empty:
-                continue
+            # LAG_AUDIT_20260909: block until real completion work arrives.
+            # shutdown() already pushes a sentinel, so a 100 ms polling timeout
+            # only caused needless background wakeups while Groovebox was idle.
+            record = self._completion_queue.get()
             if record is None:
                 break
             key = record["key"]
@@ -1000,8 +1000,18 @@ class SCodeOptimizerBridge:
         # Dedicated GUI-thread publication drain. The completion worker never
         # invokes Qt widgets directly.
         completion_timer = QTimer(host)
-        completion_timer.setInterval(16)
-        completion_timer.timeout.connect(self._drain_ui_callbacks)
+        completion_timer.setInterval(100)
+        def drain_ui_adaptive():
+            delivered=self._drain_ui_callbacks()
+            # Burst at GUI-frame cadence only while callbacks are actually flowing;
+            # idle at 10 Hz instead of waking Qt 60 times/sec with an empty queue.
+            try:
+                with self._ui_lock:
+                    pending=bool(self._ui_callbacks)
+                completion_timer.setInterval(16 if (delivered or pending) else 100)
+            except Exception:
+                pass
+        completion_timer.timeout.connect(drain_ui_adaptive)
         completion_timer.start()
         self._completion_timer = completion_timer
         host._scode_completion_timer = completion_timer
