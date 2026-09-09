@@ -27,6 +27,7 @@ import sys
 import time
 import wave
 import tempfile
+import weakref
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -319,6 +320,11 @@ class GraphLane(QWidget):
 class VideoClipStudio(QWidget):
     """Project-aware Record / Import / Draw Video Clip workspace."""
 
+    # One Groovebox process can host this workspace in both Performance and the
+    # main Draw/Record dialog. Track all live instances so an idle hidden studio
+    # can never retain the physical camera behind another studio's back.
+    _capture_instances = weakref.WeakSet()
+
     # Thread-safe bridge for worker completion. Emitting a Qt signal from a plain
     # Python worker thread queues delivery onto this widget's GUI thread; unlike
     # QTimer.singleShot() created inside that worker, it does not require the
@@ -356,6 +362,9 @@ class VideoClipStudio(QWidget):
         self._snapshot_request_generation = 0
         self._snapshot_request_started_at = 0.0
         self._snapshot_auto_release = False
+        self._snapshot_pending = False
+        self._capture_release_generation = 0
+        VideoClipStudio._capture_instances.add(self)
         # Linux/Fedora camera fallback: FFmpeg/V4L2 owns video capture so we do
         # not depend on Qt/GStreamer delivering QVideoSink frames.
         self._v4l_proc = None
@@ -377,6 +386,10 @@ class VideoClipStudio(QWidget):
         self._worker_finished.connect(self._dispatch_worker_finished)
         self._build_ui()
         self.refresh_devices()
+        try:
+            self.destroyed.connect(lambda *_: VideoClipStudio._capture_instances.discard(self))
+        except Exception:
+            pass
 
     def _dispatch_worker_finished(self, callback, result, error):
         """Deliver worker completion on the GUI thread."""
@@ -682,6 +695,132 @@ class VideoClipStudio(QWidget):
         if fade>0:g=min(g,max(0.0,min(1.0,(tsec-start)/fade)),max(0.0,min(1.0,(end-tsec)/fade)))
         return g
 
+    # --------------------------- camera ownership / hard release
+    def _camera_intentionally_active(self) -> bool:
+        """True only while the user explicitly asked Groovebox to own a camera."""
+        try:
+            if getattr(self, 'btn_record', None) is not None and self.btn_record.isChecked():
+                return True
+        except Exception:
+            pass
+        try:
+            if getattr(self, 'btn_camera_preview', None) is not None and self.btn_camera_preview.isChecked():
+                return True
+        except Exception:
+            pass
+        return bool(getattr(self, '_v4l_recording', False)
+                    or getattr(self, '_sw_recording', False)
+                    or getattr(self, '_snapshot_pending', False))
+
+    def _prepare_camera_ownership(self):
+        """Release stale camera owners in other Groovebox media workspaces.
+
+        Groovebox can have one VideoClipStudio in Performance and another in the
+        main Draw/Record dialog.  An idle hidden instance must not keep a device
+        handle.  If another instance is *actively* recording/previewing we leave
+        it alone and fail with a clear message rather than stealing its camera.
+        """
+        active_other = None
+        for other in list(VideoClipStudio._capture_instances):
+            if other is self:
+                continue
+            try:
+                if other._camera_intentionally_active():
+                    active_other = other
+                    continue
+                other._release_capture_devices(True)
+            except Exception:
+                pass
+        if active_other is not None:
+            raise RuntimeError(
+                'The camera is already active in another Groovebox media window. '
+                'Stop Camera Preview/Recording there first.')
+
+    @staticmethod
+    def _destroy_qobject(obj):
+        """Destroy a Qt multimedia QObject strongly enough to release OS handles.
+
+        deleteLater() is normally sufficient, but Windows Media Foundation can
+        retain a camera until the underlying C++ QObject is actually destroyed.
+        Prefer PyQt's immediate sip deletion after all capture-session links have
+        been detached; fall back to deleteLater() when sip is unavailable.
+        """
+        if obj is None:
+            return
+        try:
+            obj.blockSignals(True)
+        except Exception:
+            pass
+        try:
+            from PyQt6 import sip
+            try:
+                if hasattr(sip, 'isdeleted') and sip.isdeleted(obj):
+                    return
+            except Exception:
+                pass
+            sip.delete(obj)
+            return
+        except Exception:
+            pass
+        try:
+            obj.deleteLater()
+        except Exception:
+            pass
+
+    def _detach_capture_session(self, sess, recorder=None, audio_input=None, camera=None):
+        """Detach every multimedia endpoint before destroying the session."""
+        if sess is None:
+            return
+        try:
+            if hasattr(sess, 'setVideoSink'):
+                sess.setVideoSink(None)
+            elif hasattr(sess, 'setVideoOutput'):
+                sess.setVideoOutput(None)
+        except Exception:
+            try:
+                if hasattr(sess, 'setVideoOutput'):
+                    sess.setVideoOutput(None)
+            except Exception:
+                pass
+        try:
+            if hasattr(sess, 'setRecorder'):
+                sess.setRecorder(None)
+        except Exception:
+            pass
+        try:
+            if hasattr(sess, 'setAudioInput'):
+                sess.setAudioInput(None)
+        except Exception:
+            pass
+        try:
+            if hasattr(sess, 'setCamera'):
+                sess.setCamera(None)
+        except Exception:
+            pass
+
+    def _cache_recorder_location(self):
+        """Preserve Qt's chosen output path before recorder/session destruction."""
+        rec = getattr(self, '_recorder', None)
+        if rec is None:
+            return
+        try:
+            loc = rec.actualLocation()
+            if loc and loc.isLocalFile():
+                path = str(loc.toLocalFile() or '')
+                if path:
+                    self._record_path = path
+        except Exception:
+            pass
+
+    def _destroy_capture_backend_next_turn(self, objs, generation: int):
+        """Destroy already-detached Qt backends after the current signal returns."""
+        # Do not cancel destruction merely because another release happened first:
+        # that would leak the older backend and can keep Windows camera ownership.
+        def destroy():
+            for obj in objs:
+                self._destroy_qobject(obj)
+        QTimer.singleShot(0, destroy)
+
     # --------------------------- devices
     def refresh_devices(self):
         oldc = self.cmb_camera.currentText() if self.cmb_camera.count() else ''
@@ -925,6 +1064,7 @@ class VideoClipStudio(QWidget):
         """Start one FFmpeg/V4L2 process that feeds the QLabel preview and optionally records video."""
         if not sys.platform.startswith('linux') or not _ffmpeg():
             return False
+        self._prepare_camera_ownership()
         dev=self._selected_v4l2_device()
         if not dev:
             return False
@@ -938,11 +1078,11 @@ class VideoClipStudio(QWidget):
                 self._stop_v4l2_process(lambda:self._start_v4l2_capture(record,recdir,stamp))
                 return True
             self._v4l_proc=None
-        # A Qt camera cannot hold the V4L2 node at the same time.
-        try:
-            if self._camera: self._camera.stop()
-        except Exception: pass
-        self._camera=None; self._capture_session=None
+        # A Qt camera cannot hold the V4L2 node at the same time. Fully destroy
+        # any prior Qt capture graph; dropping Python references is not sufficient
+        # on Windows/Media Foundation and can also keep Linux backends open.
+        if getattr(self,'_camera',None) is not None or getattr(self,'_capture_session',None) is not None:
+            self._release_capture_devices(False)
         self._v4l_device=dev; self._v4l_buf=bytearray(); self._v4l_frame_count=0
         self._last_video_frame_t=0.0
         ff=_ffmpeg(); proc=QProcess(self)
@@ -1121,11 +1261,18 @@ class VideoClipStudio(QWidget):
             self.btn_camera_preview.setText('▶ Camera Preview'); return
         # Fedora/Linux: prefer direct V4L2 capture. Qt/GStreamer can report a
         # started camera while never forwarding frames to QVideoSink.
-        if sys.platform.startswith('linux') and self._start_v4l2_capture(False):
-            self.btn_camera_preview.setText('■ Stop Camera Preview'); return
+        if sys.platform.startswith('linux'):
+            try:
+                if self._start_v4l2_capture(False):
+                    self.btn_camera_preview.setText('■ Stop Camera Preview'); return
+            except Exception as e:
+                self.btn_camera_preview.blockSignals(True); self.btn_camera_preview.setChecked(False); self.btn_camera_preview.blockSignals(False)
+                self.btn_camera_preview.setText('▶ Camera Preview')
+                QMessageBox.warning(self,'Camera busy',str(e)); return
         if not QT_MULTIMEDIA or not self._camera_devices:
             self.btn_camera_preview.setChecked(False); QMessageBox.information(self,'Camera preview','No Qt Multimedia camera is available.'); return
         try:
+            self._prepare_camera_ownership()
             idx=max(0,min(self.cmb_camera.currentIndex(),len(self._camera_devices)-1))
             self._capture_session=QMediaCaptureSession(self)
             dev=self._camera_devices[idx]
@@ -1143,7 +1290,12 @@ class VideoClipStudio(QWidget):
             self._camera.start(); self.btn_camera_preview.setText('■ Stop Camera Preview')
             QTimer.singleShot(1800, lambda g=_gen: self._camera_frame_watchdog(g))
         except Exception as e:
-            self.btn_camera_preview.setChecked(False); QMessageBox.warning(self,'Camera preview',str(e))
+            # Setup may have opened the OS camera before a later sink/backend step
+            # failed. Treat failed setup exactly like Stop and destroy the graph.
+            self._release_capture_devices(True)
+            self.btn_camera_preview.blockSignals(True); self.btn_camera_preview.setChecked(False); self.btn_camera_preview.blockSignals(False)
+            self.btn_camera_preview.setText('▶ Camera Preview')
+            QMessageBox.warning(self,'Camera preview',str(e))
 
     def _camera_frame_watchdog(self, generation: int):
         if generation != int(getattr(self, '_camera_watchdog_generation', 0)):
@@ -1173,70 +1325,94 @@ class VideoClipStudio(QWidget):
             pass
 
     def _release_camera_stream_only(self):
-        """Release camera + capture audio immediately while retaining recorder metadata."""
+        """Immediately relinquish camera/audio/session after recording stops.
+
+        Container finalization does not need a live QMediaCaptureSession.  Cache
+        the recorder's actual output location first, then tear down the camera,
+        audio input and session.  Recorder destruction is deferred to the next Qt
+        turn when this method is reached from recorderStateChanged.
+        """
+        self._cache_recorder_location()
+        self._capture_release_generation += 1
+        gen=self._capture_release_generation
         cam=getattr(self,'_camera',None); sess=getattr(self,'_capture_session',None)
-        ain=getattr(self,'_record_audio_input',None)
+        ain=getattr(self,'_record_audio_input',None); rec=getattr(self,'_recorder',None)
         try:
-            if sess is not None and hasattr(sess,'setAudioInput'): sess.setAudioInput(None)
-        except Exception: pass
+            if rec is not None: rec.stop()
+        except Exception:
+            pass
         try:
             if cam is not None: cam.stop()
-        except Exception: pass
-        try:
-            if sess is not None and hasattr(sess,'setCamera'): sess.setCamera(None)
-        except Exception: pass
-        for obj in (ain,cam):
-            try:
-                if obj is not None and hasattr(obj,'deleteLater'): obj.deleteLater()
-            except Exception: pass
-        self._camera=None; self._record_audio_input=None
+        except Exception:
+            pass
+        self._detach_capture_session(sess, rec, ain, cam)
+        # Drop Python-visible ownership before deferred destruction so no later
+        # callback can accidentally restart/reuse this backend.
+        self._camera=None; self._capture_session=None; self._record_audio_input=None
+        self._recorder=None
+        self._destroy_capture_backend_next_turn((rec,ain,cam,sess), gen)
 
     def _release_capture_devices(self, reset_buttons: bool=True):
-        """Release camera/microphone handles when capture is not actively requested.
+        """Hard release every physical camera/microphone handle held by this studio.
 
-        This is deliberately stronger than merely calling QCamera.stop(): the
-        camera/recorder/audio objects are detached from QMediaCaptureSession and
-        scheduled for deletion so Windows/macOS/Linux drivers can give the device
-        to another application immediately after Groovebox stops using it.
+        OFF means *no OS camera ownership*: stop capture, detach all endpoints from
+        QMediaCaptureSession, destroy the C++ multimedia objects, and clear stale
+        owners from sibling Groovebox media windows.  This is stronger than
+        QCamera.stop()+deleteLater(), which can leave Windows Media Foundation
+        reporting the camera as busy until the QObject is actually destroyed.
         """
         self._camera_watchdog_generation += 1
         self._snapshot_request_generation += 1
-        # V4L2/FFmpeg owns the Linux device directly; request asynchronous quit.
-        try: self._stop_v4l2_process()
-        except Exception: pass
+        self._snapshot_pending=False
+        self._capture_release_generation += 1
+        gen=self._capture_release_generation
+        # V4L2/FFmpeg owns the Linux device directly. Preview-only processes can
+        # be terminated immediately; recording finalization keeps its graceful
+        # callback and will release when FFmpeg reports finished.
+        try:
+            proc=getattr(self,'_v4l_proc',None)
+            if proc is not None and not getattr(self,'_v4l_recording',False) and not callable(getattr(self,'_v4l_stop_callback',None)):
+                try: proc.terminate()
+                except Exception: pass
+                def _kill_preview_process(p=proc):
+                    try:
+                        if p.state()!=QProcess.ProcessState.NotRunning: p.kill()
+                    except Exception:
+                        pass
+                QTimer.singleShot(500, _kill_preview_process)
+            else:
+                self._stop_v4l2_process()
+        except Exception:
+            pass
         cam=getattr(self,'_camera',None); sess=getattr(self,'_capture_session',None)
         rec=getattr(self,'_recorder',None); ain=getattr(self,'_record_audio_input',None)
+        self._cache_recorder_location()
         try:
             if rec is not None: rec.stop()
-        except Exception: pass
-        try:
-            if sess is not None and hasattr(sess,'setRecorder'): sess.setRecorder(None)
-        except Exception: pass
-        try:
-            if sess is not None and hasattr(sess,'setAudioInput'): sess.setAudioInput(None)
-        except Exception: pass
+        except Exception:
+            pass
         try:
             if cam is not None: cam.stop()
-        except Exception: pass
-        try:
-            if sess is not None and hasattr(sess,'setCamera'): sess.setCamera(None)
-        except Exception: pass
+        except Exception:
+            pass
+        self._detach_capture_session(sess, rec, ain, cam)
         self._stop_mic_source()
-        for obj in (rec, ain, cam, sess):
-            try:
-                if obj is not None and hasattr(obj,'deleteLater'): obj.deleteLater()
-            except Exception: pass
+        # Clear references before destruction.  This also prevents delayed timer
+        # callbacks from seeing a stopped object and reusing it.
         self._camera=None; self._capture_session=None; self._recorder=None; self._record_audio_input=None
+        self._destroy_capture_backend_next_turn((rec,ain,cam,sess), gen)
         self._v4l_recording=False if not getattr(self,'_v4l_record_dir','') else getattr(self,'_v4l_recording',False)
         if reset_buttons:
             for name,text in (("btn_camera_preview",'▶ Camera Preview'),("btn_mic_preview",'▶ Mic Preview')):
                 try:
                     btn=getattr(self,name); btn.blockSignals(True); btn.setChecked(False); btn.setText(text); btn.blockSignals(False)
-                except Exception: pass
+                except Exception:
+                    pass
         try:
             if reset_buttons:
-                self.video_preview.clear(); self.video_preview.setText('Camera preview idle')
-        except Exception: pass
+                self.video_preview.clear(); self.video_preview.setText('Camera preview idle - device released')
+        except Exception:
+            pass
 
     def _apply_camera_snapshot_to_draw_layer(self, image: QImage):
         if image is None or image.isNull():
@@ -1270,6 +1446,7 @@ class VideoClipStudio(QWidget):
         preview=bool(getattr(self,'btn_camera_preview',None) and self.btn_camera_preview.isChecked())
         self._snapshot_request_generation += 1
         gen=self._snapshot_request_generation
+        self._snapshot_pending=True
         self._snapshot_request_started_at=time.monotonic()
         self._snapshot_auto_release=not recording and not preview
         if not recording and not preview:
@@ -1286,12 +1463,14 @@ class VideoClipStudio(QWidget):
                 try: self._apply_camera_snapshot_to_draw_layer(img.copy())
                 except Exception as exc: QMessageBox.warning(self,'Camera picture',str(exc))
                 finally:
+                    self._snapshot_pending=False
                     if self._snapshot_auto_release and not self.btn_record.isChecked():
                         try: self.btn_camera_preview.setChecked(False)
                         except Exception: self._release_capture_devices(True)
                 return
             if attempt < 40:
                 QTimer.singleShot(75,lambda a=attempt+1:poll(a)); return
+            self._snapshot_pending=False
             if self._snapshot_auto_release and not self.btn_record.isChecked():
                 try: self.btn_camera_preview.setChecked(False)
                 except Exception: self._release_capture_devices(True)
@@ -1596,6 +1775,7 @@ class VideoClipStudio(QWidget):
                 except Exception: pass
                 try: self._capture_session.setRecorder(None)
                 except Exception: pass
+                self._destroy_qobject(old)
             self._recorder = QMediaRecorder(self)
             self._capture_session.setRecorder(self._recorder)
             self._recorder.setMediaFormat(fmt)
@@ -1643,6 +1823,12 @@ class VideoClipStudio(QWidget):
     def _toggle_record(self,on:bool):
         if not on:
             self._stop_recording(); return
+        try:
+            self._prepare_camera_ownership()
+        except Exception as e:
+            self.btn_record.blockSignals(True); self.btn_record.setChecked(False); self.btn_record.blockSignals(False)
+            self.btn_record.setText('● Record Camera + Mic')
+            QMessageBox.warning(self,'Camera busy',str(e)); return
         # Linux/Fedora: record directly from V4L2 with bundled FFmpeg. This is
         # independent of QVideoSink/GStreamer frame delivery and shares one camera
         # input between live preview and the encoded file.
@@ -1697,6 +1883,9 @@ class VideoClipStudio(QWidget):
         except Exception as e:
             self.btn_record.blockSignals(True); self.btn_record.setChecked(False); self.btn_record.blockSignals(False)
             self.btn_record.setText('● Record Camera + Mic')
+            # A failed recorder/encoder setup can occur *after* QCamera.start().
+            # Never leave that partial capture graph alive.
+            self._release_capture_devices(True)
             QMessageBox.warning(self,'Record',str(e))
 
     def _on_recorder_error(self, *args):
@@ -1730,6 +1919,7 @@ class VideoClipStudio(QWidget):
         self.btn_record.blockSignals(True); self.btn_record.setChecked(False); self.btn_record.blockSignals(False)
         self.btn_record.setText('● Record Camera + Mic')
         self.lbl_render.setText('Camera recording could not start: '+msg)
+        self._release_capture_devices(True)
         QMessageBox.warning(self,'Camera recording could not start',
             msg+'\n\nGroovebox tried every encoding profile Qt reports as available on this system.')
 
@@ -1790,11 +1980,56 @@ class VideoClipStudio(QWidget):
             if self._recorder:
                 self.lbl_render.setText('Finalizing camera recording…')
                 self._recorder.stop()
+                QTimer.singleShot(250, lambda: self._qt_record_stop_release_watchdog(0))
             else:
                 self._schedule_record_finalize_check()
         except Exception:
             self._schedule_record_finalize_check()
         self.btn_record.setText('● Record Camera + Mic')
+
+    def _qt_record_stop_release_watchdog(self, attempt=0):
+        """Release Qt camera even if a backend misses recorderStateChanged.
+
+        Windows camera drivers occasionally keep the capture source allocated when
+        QMediaRecorder.stop() succeeds but the Python state-change callback is late
+        or absent. Poll only while stopping; never run as a background timer.
+        """
+        try:
+            if getattr(self, 'btn_record', None) is not None and self.btn_record.isChecked():
+                return
+        except Exception:
+            pass
+        if getattr(self, '_v4l_recording', False) or getattr(self, '_sw_recording', False):
+            return
+        rec=getattr(self,'_recorder',None)
+        cam=getattr(self,'_camera',None)
+        sess=getattr(self,'_capture_session',None)
+        if rec is None and cam is None and sess is None:
+            return
+        stopped=False
+        if rec is None:
+            stopped=True
+        else:
+            try:
+                stopped=(rec.recorderState() == QMediaRecorder.RecorderState.StoppedState)
+            except Exception:
+                stopped=('Stopped' in str(getattr(rec,'recorderState',lambda: '')()))
+        if stopped:
+            self._cache_recorder_location()
+            self._release_camera_stream_only()
+            if self._record_path: self._schedule_record_finalize_check()
+            return
+        if attempt < 7:
+            QTimer.singleShot(500, lambda a=attempt+1: self._qt_record_stop_release_watchdog(a))
+            return
+        # Four seconds after an explicit Stop, device ownership wins over a stuck
+        # backend. Ask stop once more, cache any chosen path, tear down the capture
+        # graph, then let the existing finalize checker validate the file.
+        try: rec.stop()
+        except Exception: pass
+        self._cache_recorder_location()
+        self._release_camera_stream_only()
+        if self._record_path: self._schedule_record_finalize_check()
 
     def _on_recorder_state_changed(self, state):
         """Finalize only after QMediaRecorder confirms the backend is stopped."""
@@ -1803,9 +2038,11 @@ class VideoClipStudio(QWidget):
         except Exception:
             stopped = ('Stopped' in str(state))
         if stopped:
-            # Device ownership is no longer needed for container finalization. Keep
-            # the recorder object only long enough to read actualLocation().
-            self._release_camera_stream_only()
+            # Cache backend-selected path before destroying the recorder/session.
+            # Destruction is queued one Qt turn so we never delete the signal sender
+            # while recorderStateChanged is still on the stack.
+            self._cache_recorder_location()
+            QTimer.singleShot(0, self._release_camera_stream_only)
         if stopped and self._record_path:
             self._schedule_record_finalize_check()
 
@@ -1970,6 +2207,8 @@ class VideoClipStudio(QWidget):
 
     def closeEvent(self, event):
         try: self._release_capture_devices(True)
+        except Exception: pass
+        try: VideoClipStudio._capture_instances.discard(self)
         except Exception: pass
         return super().closeEvent(event)
 

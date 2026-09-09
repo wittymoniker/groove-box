@@ -1,0 +1,98 @@
+MATHEMATICIAN'S GROOVEBOX — TOTAL IDLE-LAG + CAPTURE DEVICE AUDIT
+2026-09-09
+=================================================================
+
+SCOPE
+-----
+Audited Groovebox's persistent Qt timers and the Performance/Cutup/Parametric
+DJ/Record-Import-Draw lifecycle, plus the sCode completion worker's idle wakeups.
+The goal is demand-driven hardware and background work: when a feature is not
+actively being used, it should not poll, decode, record, meter, or repaint.
+
+CHANGES MADE
+------------
+1. CAMERA / MICROPHONE DEVICE OWNERSHIP
+   - Camera Preview OFF now fully stops/detaches/deletes the QCamera capture
+     objects instead of only dropping references.
+   - Stopping a camera recording no longer automatically restarts camera preview.
+   - Windows/macOS Qt recording releases the physical camera as soon as the
+     recorder reports Stopped; MP4 verification/finalization can continue without
+     keeping the device allocated.
+   - Software-recording fallback releases the camera before FFmpeg finalization.
+   - Linux V4L2 finalization preserves its stop callback if a generic hide/release
+     arrives while the capture process is already shutting down.
+   - Leaving/hiding the Record/Import/Draw workspace releases idle capture devices.
+   - Microphone preview/recording objects are stopped and deleteLater()'d.
+   - The mic-level QTimer no longer runs at all while no microphone is open.
+
+2. DRAW TAB CAMERA SNAPSHOT
+   - Added "Take Picture From Camera" beside the Draw tools.
+   - It captures a fresh selected-camera frame into a NEW drawable image layer.
+   - If no preview/recording was active, the camera is opened only long enough
+     to obtain the frame and is then automatically released.
+   - The photograph is center-cropped/scaled into the drawable canvas and saved
+     through the existing project drawing-layer state.
+
+3. PARAMETRIC DJ / PARAMETRIC REMIX
+   - At rest it has no active remix-processing timer.
+   - GOAVA/RAND/Boost/pair slider changes now coalesce dense drag events to at
+     most one live-DJ state update per ~16 ms GUI frame instead of applying every
+     queued mouse-value event.
+   - Continuous Pattern Script still runs only after the user explicitly presses
+     Run Pattern; its timer stops when the feature is stopped/closed.
+
+4. CUTUP LAB
+   - Static audit confirms Cutup generation/pitch analysis/rendering is action-
+     driven. It does not maintain a background Cutup computation loop at idle.
+   - The phaselocked performance timer runs only while the user explicitly starts
+     a cutup/live broadcast and is stopped by the normal stop/close path.
+
+5. PERFORMANCE WINDOW BACKGROUND LOAD
+   - Decorative Performance math background timer now stops completely while
+     hidden and resumes only while visible.
+   - Ethernet remote-control polling no longer runs 20 times/sec merely because
+     Performance exists; it starts only with the remote server and stops with it.
+   - Closing Performance stops optional playlist/pattern/performance/radio/
+     selection/remix timers and releases capture devices.
+   - Removed the duplicate/shadowed Performance closeEvent implementation so
+     there is now one authoritative cleanup path.
+
+6. MAIN GROOVEBOX VISUAL BACKGROUND
+   - ParametricMathBackground's timer now stops when the background widget is
+     hidden and resumes when shown, rather than receiving timer events offscreen.
+
+7. sCODE COMPLETION BACKGROUND WAKEUPS
+   - The completion worker now blocks on its queue while idle instead of waking
+     every 100 ms to discover there is no work.
+   - The GUI completion pump idles at 100 ms and switches to 16 ms cadence only
+     while actual callbacks are flowing, replacing a permanent empty 60-Hz poll.
+
+INTENTIONALLY ACTIVE / NOT REMOVED
+----------------------------------
+- Main autosave: one durability request every 3 minutes.
+- Main visible mathematical background: active only while visible, with existing
+  low-power cadence controls.
+- sCode host scheduler: low-frequency central state scheduling remains active.
+- Audio scope timer: active only during playback.
+- Euclidean/Seeded live timers: active only when those live engines are engaged.
+- PKP Boost timer: created/active only while Boost Beats is engaged.
+- Generated-game 33 ms timer: active only while a game window is actually running.
+- Explicit media players, radio servers, TV hosts and network servers continue
+  running when the user deliberately starts them.
+
+VALIDATION
+----------
+- Python compile check passed for modified Groovebox modules.
+- Whole package compileall completed without syntax errors.
+- Added test_idle_lag_camera_contract.py.
+- Relevant source/contract test run: 5 passed.
+- Existing video/game/project/subwindow/sCode contract tests remained passing in
+  the available test environment.
+
+HARDWARE TEST NOTE
+------------------
+The build environment used for this package does not have PyQt6 camera hardware
+or a physical Windows/macOS camera available, so the actual OS camera privacy
+indicator/device handoff must still be verified on the user's machine. The code
+now explicitly performs the stop/detach/delete lifecycle expected to release the
+device rather than retaining a preview capture after recording.

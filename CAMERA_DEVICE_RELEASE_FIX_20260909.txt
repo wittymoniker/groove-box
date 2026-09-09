@@ -1,0 +1,35 @@
+GROOVEBOX CAMERA DEVICE RELEASE FIX - 2026-09-09
+================================================
+
+This build strengthens the rule that Groovebox owns a physical camera only
+while Camera Preview, Camera Recording, or a camera snapshot is explicitly in
+progress.
+
+Important fixes:
+- Groovebox has two possible Video Clip Studio instances (Performance and the
+  Main Draw/Record/Video dialog). They now share a process-wide ownership
+  registry. Idle/hidden sibling studios are forcibly released before a camera
+  is opened elsewhere.
+- Qt capture teardown now detaches video sink, recorder, audio input and camera
+  from QMediaCaptureSession before destroying the underlying multimedia QObjects.
+- On PyQt builds exposing sip, stopped camera/session/recorder objects are
+  destroyed at the C++ QObject level rather than relying only on deleteLater().
+  This is especially important for Windows Media Foundation camera ownership.
+- Failed preview setup, failed recorder setup and exhausted encoder fallback
+  paths now all release the camera instead of merely unchecking the UI button.
+- Qt recording Stop has a temporary stop-only watchdog. It performs no idle
+  polling; it exists only for a few seconds after an explicit Stop in case the
+  backend fails to deliver recorderStateChanged, and then tears down the stale
+  capture graph.
+- Main-window media dialog cleanup now uses the same hard release routine.
+- Linux preview-only FFmpeg/V4L2 ownership is terminated when no capture is in
+  progress; recording finalization remains graceful so files are not orphaned.
+
+Expected behavior:
+- Launching Groovebox alone does not own the camera.
+- Opening a media window alone does not own the camera.
+- Camera Preview owns it only while Preview is ON.
+- Camera Recording owns it only through active capture; after Stop, final MP4
+  probing/remuxing continues without needing camera ownership.
+- Take Picture From Camera opens the device only for the snapshot when preview
+  was off, then releases it.

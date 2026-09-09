@@ -33839,11 +33839,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     st = getattr(self, "_main_video_clip_studio", None)
                     if st is not None:
                         self._store_shared_video_clip_state(st.export_state())
-                        try: st._stop_mic_source()
-                        except Exception: pass
-                        try:
-                            if getattr(st, "_camera", None) is not None: st._camera.stop()
-                        except Exception: pass
+                        try: st._release_capture_devices(True)
+                        except Exception:
+                            try: st._stop_mic_source()
+                            except Exception: pass
                 except Exception:
                     pass
                 self._main_video_clip_studio = None
