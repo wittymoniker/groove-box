@@ -19840,7 +19840,7 @@ class WavetableProjector(QWidget):
 
 
 class _MainWindowRelaunchFilter(QObject):
-    """Adds one lightweight 'Relaunch Main Window' control to Groovebox subwindows.
+    """Adds one lightweight 'Return to Main Window' control to Groovebox subwindows.
 
     Installed once on QApplication so dynamically-created dialogs/windows receive
     the same control automatically.  The button only reveals/activates the
@@ -19869,7 +19869,7 @@ class _MainWindowRelaunchFilter(QObject):
             button = window.findChild(QPushButton, self._BUTTON_NAME)
             if button is not None:
                 return button
-            button = QPushButton("↩ Relaunch Main Window", window)
+            button = QPushButton("↩ Return to Main Window", window)
             button.setObjectName(self._BUTTON_NAME)
             button.setToolTip(
                 "Show and activate the already-running Mathematician's Groovebox main window. "
@@ -19893,6 +19893,61 @@ class _MainWindowRelaunchFilter(QObject):
         except Exception:
             return None
 
+    def _reserve_button_space(self, window, button, margin=10):
+        """Reserve a real navigation strip so the return button never covers UI.
+
+        Older builds floated the button over the top-right of every dialog.  That
+        made it universal, but compact dialogs (notably Export Parameters) could
+        place a spinbox/label underneath it.  Keep the universal overlay approach
+        while padding the *owned* content layout below a dedicated top strip.
+        Margins are captured once and never accumulate across Show/Resize events.
+        """
+        try:
+            target = window
+            layout = window.layout()
+            # QMainWindow owns an internal layout; reserve space on its central
+            # widget instead of mutating Qt's private main-window layout.
+            if isinstance(window, QMainWindow):
+                central = window.centralWidget()
+                if central is not None and central.layout() is not None:
+                    target = central
+                    layout = central.layout()
+            if layout is None:
+                return
+
+            key = "_grooveboxRelaunchOriginalMargins"
+            original = getattr(window, key, None)
+            if original is None:
+                m = layout.contentsMargins()
+                original = (int(m.left()), int(m.top()), int(m.right()), int(m.bottom()))
+                setattr(window, key, original)
+
+            left, top, right, bottom = original
+            button.adjustSize()
+            required_top = max(top, int(margin + button.height() + 8))
+            current = layout.contentsMargins()
+            if (int(current.left()), int(current.top()), int(current.right()), int(current.bottom())) != (left, required_top, right, bottom):
+                layout.setContentsMargins(left, required_top, right, bottom)
+
+            # Preserve the dialog's former usable content height where practical.
+            # Do this once only; repeated resize/show events must never grow it.
+            grow_key = "_grooveboxRelaunchHeightReserved"
+            if not bool(getattr(window, grow_key, False)):
+                setattr(window, grow_key, True)
+                delta = max(0, required_top - top)
+                if delta:
+                    try:
+                        screen = window.screen() or QApplication.primaryScreen()
+                        avail_h = int(screen.availableGeometry().height()) if screen else 0
+                        desired = int(window.height()) + delta
+                        if avail_h > 0:
+                            desired = min(desired, max(int(window.height()), avail_h - 24))
+                        window.resize(int(window.width()), desired)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
     def _position_button(self, window):
         button = self._button_for(window)
         if button is None:
@@ -19900,10 +19955,10 @@ class _MainWindowRelaunchFilter(QObject):
         try:
             button.adjustSize()
             margin = 10
+            self._reserve_button_space(window, button, margin)
             x = max(margin, int(window.width()) - int(button.width()) - margin)
-            # Overlay rather than modifying each subwindow's layout.  This keeps
-            # legacy dialogs structurally unchanged and makes the feature work on
-            # every future dynamically-created Groovebox subwindow as well.
+            # The button still uses absolute positioning for universal coverage,
+            # but the content layout now begins below a reserved navigation strip.
             button.move(x, margin)
             button.raise_()
         except Exception:
@@ -19985,7 +20040,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         else:
             self.resize(1300, 950)
         # SUBWINDOW_RETURN_2026: one QApplication-level filter adds a consistent
-        # Relaunch Main Window control to every Groovebox-owned dialog/window,
+        # Return-to-Main control to every Groovebox-owned dialog/window,
         # including windows created later at runtime.
         self._main_window_relaunch_filter = _MainWindowRelaunchFilter(self)
         try:
