@@ -6785,6 +6785,54 @@ if HAS_UI:
             self.update()
             super().wheelEvent(e)
 
+        @staticmethod
+        def _bound_media_phase(name, t):
+            try:
+                h = int(hashlib.sha256(str(name or "carrier").encode("utf-8", "replace")).hexdigest()[:12], 16)
+                seed = (h % 1000003) / 1000003.0
+            except Exception:
+                seed = MEUM_NORM
+            return math.tau * seed + float(t or 0.0) * (0.23 if str(name) == "carrier" else 0.47)
+
+        def _draw_bound_media_fx(self, p, image, rect, t, name="carrier", carrier=False, opacity=0.5):
+            """Draw imported media through the same phase/geometry vocabulary
+            as native game graphics: drift, zoom, rotation/reflection, color
+            breathing and a light scan/lattice texture. No random state.
+            """
+            if image is None or image.isNull():
+                return
+            phase = self._bound_media_phase(name, t)
+            r = QRect(rect)
+            cx = r.center().x(); cy = r.center().y()
+            angle = math.sin(phase * 0.73) * (1.15 if carrier else 4.5)
+            zoom = 1.0 + (0.025 if carrier else 0.075) * (0.5 + 0.5 * math.sin(phase * 0.61))
+            dx = math.sin(phase * MEUM) * r.width() * (0.012 if carrier else 0.035)
+            dy = math.cos(phase * MEUM_INV) * r.height() * (0.008 if carrier else 0.025)
+            mirror = (not carrier and math.sin(phase * 0.37) < -0.35)
+            p.save()
+            p.setClipRect(r)
+            p.setOpacity(max(0.0, min(1.0, float(opacity))))
+            p.translate(cx + dx, cy + dy)
+            p.rotate(angle)
+            p.scale((-zoom if mirror else zoom), zoom)
+            target = QRect(int(-r.width()/2), int(-r.height()/2), int(r.width()), int(r.height()))
+            p.drawImage(target, image)
+            p.restore()
+
+            # Color breathing / scan texture is intentionally restrained on
+            # carrier and stronger on per-instrument material.
+            hue = int((180.0 + 150.0 * (0.5 + 0.5 * math.sin(phase))) % 360)
+            tint = QColor.fromHsv(hue, 90 if carrier else 145, 210, 22 if carrier else 38)
+            p.save(); p.setClipRect(r); p.fillRect(r, tint)
+            p.setOpacity(0.10 if carrier else 0.16)
+            p.setPen(QPen(QColor(255,255,255,80), 1))
+            step = max(5, int(r.height() * (0.012 if carrier else 0.022)))
+            off = int(abs(math.sin(phase)) * max(1, step-1))
+            y = r.top() + off
+            while y < r.bottom():
+                p.drawLine(r.left(), y, r.right(), y); y += step
+            p.restore()
+
         def _draw_chess(self, p, g):
             w, h = self.width(), self.height()
             side = min(w, h) - 20
@@ -6854,8 +6902,7 @@ if HAS_UI:
                 _mr = getattr(g, "bound_media", None)
                 _ci = getattr(_mr, "carrier_image", None) if _mr is not None else None
                 if _ci is not None and not _ci.isNull():
-                    p.setOpacity(0.42)
-                    p.drawImage(self.rect(), _ci)
+                    self._draw_bound_media_fx(p, _ci, self.rect(), getattr(g, "t", 0.0), name="carrier", carrier=True, opacity=0.42)
                     p.setOpacity(1.0)
             except Exception:
                 p.setOpacity(1.0)
@@ -6873,8 +6920,10 @@ if HAS_UI:
                         if _im is None or _im.isNull(): continue
                         x = gap if (_i % 2 == 0) else max(gap, w - tw - gap)
                         y = gap + (_i // 2) * (th + gap)
-                        p.setOpacity(0.72)
-                        p.drawImage(QRect(int(x), int(y), int(tw), int(th)), _im)
+                        self._draw_bound_media_fx(
+                            p, _im, QRect(int(x), int(y), int(tw), int(th)),
+                            getattr(g, "t", 0.0), name=_nm, carrier=False, opacity=0.72
+                        )
                         p.setOpacity(1.0)
             except Exception:
                 p.setOpacity(1.0)

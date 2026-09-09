@@ -101,10 +101,8 @@ def _load_native_meum_space():
         import ctypes
         from pathlib import Path
         root=Path(__file__).resolve().parent
-        candidates=(
-            root/'native'/'libgroovebox_accel.so', root/'cpp'/'libgroovebox_accel.so',
-            root/'native'/'groovebox_accel.dll', root/'native'/'libgroovebox_accel.dylib',
-        )
+        from platform_runtime import accel_candidates
+        candidates=accel_candidates(root)
         libpath=next((p for p in candidates if p.is_file()), None)
         if libpath is None: return None
         lib=ctypes.CDLL(str(libpath)); Pd=ctypes.POINTER(ctypes.c_double)

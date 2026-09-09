@@ -1403,14 +1403,14 @@ try:
     import ctypes as _ctypes_accel
     from pathlib import Path as _Path_accel
     _here_accel = _Path_accel(__file__).resolve().parent
-    for _cand in (
-        _here_accel / "native" / "libgroovebox_accel.so",
-        _here_accel / "cpp" / "libgroovebox_accel.so",
-        _here_accel / "libgroovebox_accel.so",
-    ):
+    from platform_runtime import accel_candidates as _platform_accel_candidates
+    for _cand in _platform_accel_candidates(_here_accel):
         if _cand.is_file():
-            _GB_ACCEL = _ctypes_accel.CDLL(str(_cand))
-            break
+            try:
+                _GB_ACCEL = _ctypes_accel.CDLL(str(_cand))
+                break
+            except OSError:
+                continue
     if _GB_ACCEL is not None:
         _P_f = _ctypes_accel.POINTER(_ctypes_accel.c_float)
         _GB_ACCEL.gb_hardclip_f32.argtypes = [
@@ -42213,20 +42213,105 @@ class MathematiciansGrooveboxApp(QMainWindow):
         return min(tw, frame_w), min(th, frame_h)
 
     @staticmethod
-    def _compose_bound_video_frame(base_frame, carrier_frame=None, instrument_frames=None):
-        """Composite carrier + small instrument videos over a generated frame."""
+    def _bound_video_fx_seed(identity):
+        """Stable phase seed shared by carrier/instrument video FX."""
+        try:
+            blob = str(identity or "carrier").encode("utf-8", "replace")
+            return (int(hashlib.sha256(blob).hexdigest()[:12], 16) % 1000003) / 1000003.0
+        except Exception:
+            return 0.1975807343
+
+    @staticmethod
+    def _apply_bound_video_fx(frame, t_sec=0.0, identity="carrier", carrier=False):
+        """Deterministic audiovisual-style transform for imported video.
+
+        This deliberately uses the same transform vocabulary as the native
+        scenograph: phase motion, zoom/pan, reflection, channel/color motion
+        and a lightweight lattice/scan texture. Carrier FX stay subtle;
+        per-instrument videos are more animated but remain small tiles.
+        """
+        if frame is None:
+            return None
+        a = np.ascontiguousarray(np.asarray(frame, dtype=np.uint8)).copy()
+        if a.ndim != 3 or a.shape[2] < 3:
+            return a
+        h, w = a.shape[:2]
+        if h < 2 or w < 2:
+            return a
+        seed = MathematiciansGrooveboxApp._bound_video_fx_seed(identity)
+        t = float(t_sec or 0.0)
+        phase = math.tau * seed + t * (0.23 if carrier else 0.47)
+
+        # Slow deterministic pan/phase displacement.
+        dx = int(round(math.sin(phase * MEUM) * w * (0.012 if carrier else 0.035)))
+        dy = int(round(math.cos(phase * MEUM_INV) * h * (0.008 if carrier else 0.025)))
+        if dx: a = np.roll(a, dx, axis=1)
+        if dy: a = np.roll(a, dy, axis=0)
+
+        # Smooth crop/zoom without another decoder. Nearest source indexing is
+        # deterministic and cheap enough to run for every exported frame.
+        zoom = 1.0 + (0.025 if carrier else 0.075) * (0.5 + 0.5 * math.sin(phase * 0.73))
+        if zoom > 1.0001:
+            cw = max(2, int(round(w / zoom))); ch = max(2, int(round(h / zoom)))
+            cx = int(round((w - cw) * (0.5 + 0.18 * math.sin(phase * 0.61))))
+            cy = int(round((h - ch) * (0.5 + 0.18 * math.cos(phase * 0.67))))
+            cx = max(0, min(w - cw, cx)); cy = max(0, min(h - ch, cy))
+            crop = a[cy:cy+ch, cx:cx+cw]
+            yi = np.minimum(ch - 1, (np.arange(h) * (ch / float(h))).astype(np.int32))
+            xi = np.minimum(cw - 1, (np.arange(w) * (cw / float(w))).astype(np.int32))
+            a = crop[yi[:, None], xi[None, :]]
+
+        # Instrument video gets reflection/folding akin to the per-instrument
+        # graphics. Use a slowly changing phase region rather than randomness.
+        if not carrier and math.sin(phase * 0.37 + seed * math.tau) < -0.35:
+            a = a[:, ::-1].copy()
+
+        # Color breathing + tiny RGB displacement. Carrier is deliberately mild.
+        strength = 0.075 if carrier else 0.16
+        gains = np.array([
+            1.0 + strength * math.sin(phase + 0.0),
+            1.0 + strength * math.sin(phase + math.tau / 3.0),
+            1.0 + strength * math.sin(phase + 2.0 * math.tau / 3.0),
+        ], dtype=np.float32)
+        f = a.astype(np.float32) * gains.reshape((1, 1, 3))
+        shift = max(1, int(round(w * (0.0015 if carrier else 0.004))))
+        f[..., 0] = np.roll(f[..., 0], shift, axis=1)
+        f[..., 2] = np.roll(f[..., 2], -shift, axis=1)
+
+        # Fine scan/lattice modulation ties imported material into the global
+        # graphics rather than leaving it as an untouched rectangular movie.
+        step = max(3, int(round(h * (0.007 if carrier else 0.012))))
+        offset = int(abs(math.sin(phase)) * max(1, step - 1))
+        f[offset::step, :, :] *= (0.94 if carrier else 0.88)
+        return np.clip(f, 0, 255).astype(np.uint8)
+
+    @staticmethod
+    def _compose_bound_video_frame(base_frame, carrier_frame=None, instrument_frames=None, t_sec=0.0):
+        """Composite transformed carrier + transformed instrument videos."""
         out = np.ascontiguousarray(np.asarray(base_frame, dtype=np.uint8)).copy()
         h, w = out.shape[:2]
-        # Carrier remains a large/global source. Preserve the mathematical
-        # renderer by using an even 50/50 union rather than replacing it.
+        # Carrier remains a large/global source, now with the same transform/FX
+        # vocabulary used by the generated graphics. Preserve the mathematical
+        # renderer with an even union rather than replacing it.
         if carrier_frame is not None:
-            cf = np.asarray(carrier_frame, dtype=np.uint8)
-            if cf.shape[:2] == (h, w):
-                out = ((out.astype(np.uint16) + cf.astype(np.uint16)) // 2).astype(np.uint8)
+            cf = MathematiciansGrooveboxApp._apply_bound_video_fx(
+                carrier_frame, t_sec=t_sec, identity="global_carrier", carrier=True
+            )
+            if cf is not None and cf.shape[:2] == (h, w):
+                pulse = 0.46 + 0.08 * math.sin(float(t_sec or 0.0) * 0.31 * MEUM)
+                out = np.clip(out.astype(np.float32) * (1.0-pulse) + cf.astype(np.float32) * pulse, 0, 255).astype(np.uint8)
         frames = list(instrument_frames or [])
         if not frames:
             return out
-        valid = [(name, np.asarray(fr, dtype=np.uint8)) for name, fr in frames if fr is not None]
+        valid = []
+        for name, fr in frames:
+            if fr is None:
+                continue
+            fx = MathematiciansGrooveboxApp._apply_bound_video_fx(
+                fr, t_sec=t_sec, identity=name, carrier=False
+            )
+            if fx is not None:
+                valid.append((name, fx))
         if not valid:
             return out
         th, tw = valid[0][1].shape[:2]
@@ -42234,23 +42319,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
         step_x, step_y = tw + margin, th + margin
         rows = max(1, (h - 2 * margin) // max(1, step_y))
         # Tiles start at the upper-right and proceed downward, then leftward.
-        # This keeps the visual center mostly free even with several operators.
-        alpha = 0.82
+        alpha = 0.78 + 0.08 * (0.5 + 0.5 * math.sin(float(t_sec or 0.0) * 0.83))
         for idx, (_name, fr) in enumerate(valid):
             if fr.shape[:2] != (th, tw):
                 continue
-            col = idx // rows
-            row = idx % rows
-            x1 = w - margin - col * step_x
-            x0 = x1 - tw
-            y0 = margin + row * step_y
-            y1 = y0 + th
+            col = idx // rows; row = idx % rows
+            x1 = w - margin - col * step_x; x0 = x1 - tw
+            y0 = margin + row * step_y; y1 = y0 + th
             if x0 < 0 or y1 > h:
                 break
             roi = out[y0:y1, x0:x1]
-            mix = (roi.astype(np.float32) * (1.0 - alpha) + fr.astype(np.float32) * alpha)
+            mix = roi.astype(np.float32) * (1.0-alpha) + fr.astype(np.float32) * alpha
             out[y0:y1, x0:x1] = np.clip(mix, 0, 255).astype(np.uint8)
-            # Thin neutral separator prevents adjacent videos visually merging.
             out[max(0,y0-1):min(h,y0+1), x0:x1] = 0
             out[max(0,y1-1):min(h,y1+1), x0:x1] = 0
             out[y0:y1, max(0,x0-1):min(w,x0+1)] = 0
@@ -42569,7 +42649,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             _fr = self._read_bound_video_rgb(_reader, _tile_w, _tile_h) if _reader else None
                             if _fr is not None:
                                 _inst_frames.append((_nm, _fr))
-                        frame = self._compose_bound_video_frame(frame, _carrier_frame, _inst_frames)
+                        frame = self._compose_bound_video_frame(frame, _carrier_frame, _inst_frames, t_sec=(float(fi) / float(max(1, fps))))
                         proc.stdin.write(np.ascontiguousarray(frame).tobytes())
                         if local_count % 8 == 0 and hasattr(self, 'scope_status_label'):
                             self.scope_status_label.setText(

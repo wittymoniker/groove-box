@@ -43,17 +43,9 @@ def _root() -> Path:
 
 
 def _find_stage0(root: Path) -> Path:
-    sysname = platform.system().lower()
-    machine = platform.machine().lower()
-    if sysname == "linux" and machine in {"x86_64", "amd64"}:
-        return root / "bootstrap" / "linux-x86_64" / "scode0"
-    if sysname == "darwin" and machine in {"x86_64", "amd64"}:
-        return root / "bootstrap" / "macos-x86_64" / "scode0"
-    if sysname == "darwin" and machine in {"arm64", "aarch64"}:
-        return root / "bootstrap" / "macos-arm64" / "scode0"
-    if os.name == "nt" and machine in {"x86_64", "amd64"}:
-        return root / "bootstrap" / "windows-x86_64" / "scode0.exe"
-    return root / "bootstrap" / "UNAVAILABLE"
+    from platform_runtime import find_scode_stage0
+    found = find_scode_stage0(root.parent)
+    return found if found is not None else root / 'bootstrap' / 'UNAVAILABLE'
 
 
 def stable_numeric_identity(value: Any) -> int:
