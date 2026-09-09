@@ -904,3 +904,8 @@ Standalone sOS/appliance launches automatically inventory the installed Linux Wi
 When two radios are present, Groovebox prefers the already-connected adapter for normal networking and a spare AP-capable adapter for `Groovebox-Direct` sharing. This lets an appliance keep its ordinary Wi-Fi association while a second antenna handles router-free Groovebox-to-Groovebox transfer. With a one-radio tablet/laptop the same adapter is selected, but Groovebox never silently starts a hotspot or disconnects the current network: `Start Direct Wi-Fi` remains an explicit action.
 
 `CONFIGURE_APPLIANCE_WIFI.sh` can be run manually to print the detected hardware choice. `LAUNCH_GROOVEBOX_SOS.sh` automatically enables the appliance profile, and `run_groovebox.py` performs the same selection before Nearby Groovebox networking is imported. Incoming file writes remain disabled by default.
+
+
+## Dynamic Graph Seed State
+
+Coordinate and parametric seed scripts now carry a whole-graph identity as well as their instantaneous point. Groovebox samples one canonical turn of the curve at a fixed 33 positions to build a deterministic Meum-folded `GraphIdentity`; that identity is independent of instrument count, viewport FPS, audio sample rate, and export resolution. At time `t`, Groovebox combines the identity with x/y/z, r/theta, first and second derivatives, and curvature to produce `DynamicSeed(t)`. Ordinary non-graph seeds keep their existing behavior. Hover a graph function or coordinate assignment in the Global Seed editor to inspect the function, current t, coordinates, derivatives, curvature, GraphIdentity, and DynamicSeed being passed forward. The whole-graph signature is cached, so hover display does not rescan the curve on every mouse movement.

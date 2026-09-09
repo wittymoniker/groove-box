@@ -2372,3 +2372,8 @@ The Main Window **✎🎙🎥 Draw / Record / Video** button opens the same proj
 
 ## Canonical Live Overblend default
 Canonical Live Overblend now defaults to **50%**, preserving the net 50/50 user/canonical waveform contract. The control remains adjustable: 0% selects the user waveform branch only, 50% is equal user/canonical waveform share, and 100% selects the canonical waveform branch. The intentional existing master hard clip and its 50% Clip/Gain default are unchanged.
+
+
+## Dynamic Graph Seed State
+
+Coordinate and parametric seed scripts now carry a whole-graph identity as well as their instantaneous point. Groovebox samples one canonical turn of the curve at a fixed 33 positions to build a deterministic Meum-folded `GraphIdentity`; that identity is independent of instrument count, viewport FPS, audio sample rate, and export resolution. At time `t`, Groovebox combines the identity with x/y/z, r/theta, first and second derivatives, and curvature to produce `DynamicSeed(t)`. Ordinary non-graph seeds keep their existing behavior. Hover a graph function or coordinate assignment in the Global Seed editor to inspect the function, current t, coordinates, derivatives, curvature, GraphIdentity, and DynamicSeed being passed forward. The whole-graph signature is cached, so hover display does not rescan the curve on every mouse movement.

@@ -96,7 +96,7 @@ from PyQt6.QtWidgets import (
     QGridLayout, QLayout, QFileDialog, QSplitter, QGroupBox, QTextEdit, QMenu,
     QMessageBox, QTableWidget, QTableWidgetItem, QCheckBox, QDial, QMenuBar,
     QDialog, QInputDialog, QHeaderView, QProgressBar, QSizePolicy, QToolButton,
-    QDialogButtonBox, QDockWidget,
+    QDialogButtonBox, QDockWidget, QToolTip,
 )  # QToolButton is required by the global EXPORT menu control.
 
 
@@ -4426,6 +4426,149 @@ def _coordinate_seed_projection(values):
     return float(math.hypot(*vals[:2])) if len(vals) == 2 else float(math.sqrt(sum(v * v for v in vals)))
 
 
+
+# GRAPH_SEED_STATE_20260909 -------------------------------------------------
+# A coordinate/parametric seed has two identities in Groovebox:
+#   GraphIdentity  = fixed, instrument-count-independent signature of the curve
+#   DynamicSeed(t) = GraphIdentity + current point/direction/curvature state
+# The expensive whole-graph signature is cached by source text.  Dynamic state
+# uses only three local evaluations, so it is suitable at a control/render
+# boundary but is never intended as a per-sample Python DSP operation.
+_GRAPH_SEED_CACHE = {}
+_GRAPH_SEED_CACHE_LIMIT = 128
+_GRAPH_SEED_SAMPLES = 33
+
+
+def _graph_seed_fold(values, initial=MEUM):
+    """Finite deterministic Meum fold for graph state; never Python hash()."""
+    acc = float(initial)
+    for i, raw_v in enumerate(values or ()):
+        try:
+            v = float(raw_v)
+        except Exception:
+            v = 0.0
+        if not math.isfinite(v):
+            v = 0.0
+        # tanh keeps singular/very large coordinates bounded while preserving
+        # sign and local ordering. Irrational phase increments reduce trivial
+        # axis permutations without introducing RNG or instrument-count state.
+        q = math.tanh(v)
+        phase = acc * MEUM + q * (MEUM_INV + (i + 1) * MEUM_NORM)
+        acc = math.sin(phase) + math.cos(q * MEUM + (i + 1) * (MEUM - 1.0))
+    return float(acc)
+
+
+def _graph_seed_context_key(canonical_context):
+    if not isinstance(canonical_context, dict):
+        return ()
+    out = []
+    for k in sorted(canonical_context):
+        v = canonical_context.get(k)
+        if isinstance(v, (bool, int, float, str)):
+            out.append((str(k), str(v)))
+    return tuple(out)
+
+
+def _coordinate_values_at(raw, t_value, canonical_context=None):
+    try:
+        t = float(t_value)
+    except Exception:
+        t = 0.0
+    env = _seed_script_env(t_scalar=t, canonical_context=canonical_context)
+    result = _eval_coordinate_seed_script(raw, env)
+    if result is None:
+        # Expression-form parametric()/polar()/cylindrical()/spherical() also
+        # carries graph geometry, even when no x(t)= assignment is used.
+        try:
+            vals = _eval_seed_python(raw, t_value=t, canonical_context=canonical_context, allow_scrape=False)
+            if vals and _seed_script_is_coordinate(raw):
+                return [float(x) for x in vals], 'parametric'
+        except Exception:
+            pass
+        return None
+    return [float(x) for x in result[0]], str(result[1])
+
+
+def graph_seed_identity(seed_text, canonical_context=None):
+    """Return the deterministic whole-curve scalar identity for a graph seed.
+
+    Domain is one canonical turn t=[0, 2*pi], sampled at a fixed 33 locations.
+    The sample count and domain do not depend on instrument count, viewport FPS,
+    audio sample rate, or export resolution, so adding an instrument cannot
+    change GraphIdentity.
+    """
+    raw = str(seed_text or '').strip()
+    if not raw or not _seed_script_is_coordinate(raw):
+        return 0.0
+    key = (raw, _graph_seed_context_key(canonical_context))
+    cached = _GRAPH_SEED_CACHE.get(key)
+    if cached is not None:
+        return float(cached[0])
+    stream = []
+    kind = ''
+    for i in range(_GRAPH_SEED_SAMPLES):
+        t = math.tau * i / float(_GRAPH_SEED_SAMPLES - 1)
+        item = _coordinate_values_at(raw, t, canonical_context)
+        if item is None:
+            continue
+        vals, kind = item
+        stream.extend((float(i) / (_GRAPH_SEED_SAMPLES - 1), *vals))
+    identity = _graph_seed_fold(stream, initial=MEUM + MEUM_INV) if stream else 0.0
+    if len(_GRAPH_SEED_CACHE) >= _GRAPH_SEED_CACHE_LIMIT:
+        try:
+            _GRAPH_SEED_CACHE.pop(next(iter(_GRAPH_SEED_CACHE)))
+        except Exception:
+            _GRAPH_SEED_CACHE.clear()
+    _GRAPH_SEED_CACHE[key] = (float(identity), kind)
+    return float(identity)
+
+
+def graph_seed_state(seed_text, t_value=0.0, canonical_context=None):
+    """Structured GraphState(t) and DynamicSeed(t) for coordinate seeds."""
+    raw = str(seed_text or '').strip()
+    here = _coordinate_values_at(raw, t_value, canonical_context)
+    if here is None:
+        return None
+    p, kind = here
+    dim = len(p)
+    h = 1.0e-4 * max(1.0, abs(float(t_value)))
+    before = _coordinate_values_at(raw, float(t_value) - h, canonical_context)
+    after = _coordinate_values_at(raw, float(t_value) + h, canonical_context)
+    pm = before[0] if before is not None and len(before[0]) == dim else list(p)
+    pp = after[0] if after is not None and len(after[0]) == dim else list(p)
+    d1 = [(pp[i] - pm[i]) / (2.0 * h) for i in range(dim)]
+    d2 = [(pp[i] - 2.0 * p[i] + pm[i]) / (h * h) for i in range(dim)]
+    speed2 = sum(v*v for v in d1)
+    curvature = 0.0
+    if speed2 > 1.0e-24:
+        if dim >= 3:
+            ax, ay, az = d1[:3]; bx, by, bz = d2[:3]
+            cross2 = (ay*bz-az*by)**2 + (az*bx-ax*bz)**2 + (ax*by-ay*bx)**2
+            curvature = math.sqrt(cross2) / (speed2 ** 1.5)
+        elif dim == 2:
+            curvature = abs(d1[0]*d2[1] - d1[1]*d2[0]) / (speed2 ** 1.5)
+    x = p[0] if dim > 0 else 0.0
+    y = p[1] if dim > 1 else 0.0
+    z = p[2] if dim > 2 else 0.0
+    r = math.sqrt(sum(v*v for v in p))
+    theta = math.atan2(y, x) if dim > 1 else 0.0
+    identity = graph_seed_identity(raw, canonical_context)
+    dynamic = _graph_seed_fold([identity, float(t_value), *p, *d1, *d2, curvature], initial=identity + MEUM)
+    return {
+        'kind': kind, 't': float(t_value), 'point': tuple(p),
+        'x': float(x), 'y': float(y), 'z': float(z), 'r': float(r), 'theta': float(theta),
+        'd1': tuple(d1), 'd2': tuple(d2), 'curvature': float(curvature),
+        'graph_identity': float(identity), 'dynamic_seed': float(dynamic),
+    }
+
+
+def evaluate_dynamic_graph_seed(seed_text, t_value=0.0, canonical_context=None):
+    """Public graph-seed entry point; falls back to ordinary seed evaluation."""
+    state = graph_seed_state(seed_text, t_value, canonical_context)
+    if state is not None:
+        return float(state['dynamic_seed'])
+    return float(evaluate_seed_expression_at_time(seed_text, t_value, canonical_context))
+
 def _eval_coordinate_seed_script(raw, env):
     """Evaluate explicit Cartesian, parametric, polar, cylindrical or spherical seed syntax.
 
@@ -4917,6 +5060,11 @@ def evaluate_seed_expression_at_time(seed_text, t_value, canonical_context=None)
     """
     vals = _eval_seed_python(seed_text, t_value=t_value, canonical_context=canonical_context, allow_scrape=False)
     if vals and _seed_script_is_coordinate(seed_text):
+        # Whole-graph parent identity + local geometric state.  This replaces
+        # the old magnitude-only projection while preserving ordinary seeds.
+        state = graph_seed_state(seed_text, t_value=t_value, canonical_context=canonical_context)
+        if state is not None:
+            return float(state["dynamic_seed"])
         return _coordinate_seed_projection(vals)
     if not vals:
         # Degenerate-t retry — try a REAL evaluation at nearby t before ever
@@ -20566,8 +20714,75 @@ class MathematiciansGrooveboxApp(QMainWindow):
             pass
         return False
 
+    def _graph_seed_hover_t(self):
+        """Current transport seconds when available; otherwise seed-time zero."""
+        try:
+            if getattr(self, 'play_buffer', None) is not None:
+                sr = float(getattr(self, '_realtime_audio_sr', 0.0) or getattr(self, 'export_sample_rate', 0.0) or 44100.0)
+                return float(getattr(self, 'play_cursor', 0)) / max(sr, 1.0)
+        except Exception:
+            pass
+        return 0.0
+
+    @staticmethod
+    def _fmt_graph_vec(values):
+        return '(' + ', '.join(f'{float(v):.8g}' for v in values) + ')'
+
+    def _graph_seed_hover_tooltip(self, line_text):
+        raw = self._seed_text() if hasattr(self, '_seed_text') else ''
+        if not raw or not _seed_script_is_coordinate(raw):
+            return ''
+        line = str(line_text or '').strip()
+        if not line or not re.search(r'(?i)(?:^[xyzr]|theta|phi|parametric|cartesian|polar|cylindrical|spherical)', line):
+            return ''
+        t = self._graph_seed_hover_t()
+        # Quantize tooltip time to 20 Hz. Whole GraphIdentity itself is cached.
+        tq = round(float(t) * 20.0) / 20.0
+        key = (raw, line, tq)
+        if key == getattr(self, '_graph_seed_tooltip_cache_key', None):
+            return getattr(self, '_graph_seed_tooltip_cache_text', '')
+        try:
+            ctx = getattr(self, '_canonical_render_input_context', None) or self._canonical_input_context()
+        except Exception:
+            ctx = None
+        try:
+            st = graph_seed_state(raw, tq, ctx)
+        except Exception:
+            st = None
+        if not st:
+            return ''
+        text = (
+            f"GRAPH FUNCTION  {line}\n"
+            f"kind={st['kind']}   t={st['t']:.8g}\n"
+            f"xyz={self._fmt_graph_vec((st['x'], st['y'], st['z']))}   r={st['r']:.8g}   theta={st['theta']:.8g}\n"
+            f"d/dt={self._fmt_graph_vec(st['d1'])}\n"
+            f"d2/dt2={self._fmt_graph_vec(st['d2'])}   curvature={st['curvature']:.8g}\n"
+            f"GraphIdentity={st['graph_identity']:.15g}\n"
+            f"DynamicSeed(t)={st['dynamic_seed']:.15g}\n"
+            "GraphIdentity is whole-curve, fixed-resolution-independent, and instrument-count-independent."
+        )
+        self._graph_seed_tooltip_cache_key = key
+        self._graph_seed_tooltip_cache_text = text
+        return text
+
     def eventFilter(self, obj, event):
         try:
+            seed_editor = getattr(self, 'input_seed_val', None)
+            if seed_editor is not None and obj is seed_editor.viewport():
+                if event.type() == QEvent.Type.MouseMove:
+                    try:
+                        pos = event.position().toPoint()
+                        cursor = seed_editor.cursorForPosition(pos)
+                        cursor.select(QTextCursor.SelectionType.LineUnderCursor)
+                        tip = self._graph_seed_hover_tooltip(cursor.selectedText())
+                        if tip:
+                            QToolTip.showText(event.globalPosition().toPoint(), tip, seed_editor)
+                        else:
+                            QToolTip.hideText()
+                    except Exception:
+                        pass
+                elif event.type() == QEvent.Type.Leave:
+                    QToolTip.hideText()
             if isinstance(obj, (QSpinBox, QDoubleSpinBox, QComboBox)):
                 if event.type() == QEvent.Type.Leave:
                     if isinstance(obj, (QSpinBox, QDoubleSpinBox)):
@@ -23141,6 +23356,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         )
         self.input_seed_val.setAcceptRichText(False)
         self.input_seed_val.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        # GRAPH_SEED_TOOLTIP_20260909: function/assignment hover reveals the
+        # cached graph payload being passed to the canonical dynamic-seed layer.
+        # Mouse movement itself never samples the whole graph repeatedly.
+        self.input_seed_val.viewport().setMouseTracking(True)
+        self.input_seed_val.viewport().installEventFilter(self)
+        self._graph_seed_tooltip_cache_key = None
+        self._graph_seed_tooltip_cache_text = ""
         # Visual-only code feedback: parsable-looking tokens and nested brackets
         # use a light→dark neutral grey hierarchy. Keep a strong reference so Qt
         # does not garbage-collect the highlighter while the editor is alive.
