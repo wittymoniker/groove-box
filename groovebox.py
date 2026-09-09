@@ -20508,6 +20508,24 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # paint/valueChanged hot paths.
         AUTHOR_NUMERIC_FONT.bind_optimizer(self._scode_optimizer)
 
+        # NEARBY_GROOVEBOX_20260909: app-level presence. Every running
+        # Groovebox advertises/listens over whatever local IP link exists, not
+        # only while Performance is open. Router-free Direct Link discovery is
+        # scanned in a low-rate worker; actually taking over a Wi-Fi adapter to
+        # host/join an AP remains an explicit user action. sCode coalesces the
+        # file-catalog work, while socket bytes stay out of realtime audio.
+        self._nearby_share_service = None
+        try:
+            from nearby_groovebox import NearbyGrooveboxService
+            self._nearby_share_service = NearbyGrooveboxService(
+                os.path.dirname(os.path.abspath(__file__)),
+                optimizer=self._scode_optimizer,
+            )
+            self._nearby_share_service.start()
+        except Exception as _nearby_exc:
+            print(f"[Nearby Groovebox] startup skipped: {_nearby_exc}")
+            self._nearby_share_service = None
+
     def _install_scroll_value_guards(self):
         """Prevent accidental roller/dropdown edits while the user scrolls.
 
@@ -43130,6 +43148,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
             pass
         try:
             self.pkp_pad_bank_active = False
+        except Exception:
+            pass
+        try:
+            _nearby = getattr(self, "_nearby_share_service", None)
+            if _nearby is not None:
+                _nearby.stop()
         except Exception:
             pass
         super().closeEvent(event)

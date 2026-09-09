@@ -895,3 +895,12 @@ per game object.
 - **Algorithm XMOD parity:** applied Algorithm processing can modulate existing synth/sequence automation variables with the same runtime reach as its step-side effect; it does not compose step or automation lanes.
 - **Local FFmpeg contract:** runtime media calls resolve only the project `bin/ffmpeg` + `bin/ffprobe` pair. First-launch/build provisioning must populate and validate that pair before execution; PATH codecs are never selected by the application runtime.
 
+
+
+## Nearby Grooveboxes / Standalone Wi-Fi hardware
+
+Standalone sOS/appliance launches automatically inventory the installed Linux Wi-Fi hardware before Groovebox starts. `appliance_wifi.py` uses sysfs, `iw`, and NetworkManager to identify the kernel-bound driver, radio/phy, connection state, and AP capability. It does not hardcode Intel, Realtek, MediaTek, Atheros, or USB-adapter names.
+
+When two radios are present, Groovebox prefers the already-connected adapter for normal networking and a spare AP-capable adapter for `Groovebox-Direct` sharing. This lets an appliance keep its ordinary Wi-Fi association while a second antenna handles router-free Groovebox-to-Groovebox transfer. With a one-radio tablet/laptop the same adapter is selected, but Groovebox never silently starts a hotspot or disconnects the current network: `Start Direct Wi-Fi` remains an explicit action.
+
+`CONFIGURE_APPLIANCE_WIFI.sh` can be run manually to print the detected hardware choice. `LAUNCH_GROOVEBOX_SOS.sh` automatically enables the appliance profile, and `run_groovebox.py` performs the same selection before Nearby Groovebox networking is imported. Incoming file writes remain disabled by default.

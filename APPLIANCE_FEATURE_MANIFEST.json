@@ -101,6 +101,22 @@
     "runtime_resolution": "bin/ffmpeg + bin/ffprobe only; no PATH fallback",
     "source_archive_note": "platform-matching binaries may be populated at first launch/build; placeholder scripts are not treated as valid codecs"
   },
+  "nearby_groovebox_wifi": {
+    "appliance_hardware_auto_config": {
+      "direct_interface_export": "GROOVEBOX_WIFI_IFACE",
+      "driver_policy": "use kernel-bound driver/firmware discovered from sysfs; no chipset hardcoding",
+      "first_boot_helper": "CONFIGURE_APPLIANCE_WIFI.sh",
+      "linux_stack": "NetworkManager + rfkill + iw/sysfs capability inventory",
+      "module": "appliance_wifi.py",
+      "selection": "prefer connected radio for client networking and a spare AP-capable radio for Direct mode",
+      "single_radio_policy": "never auto-start hotspot; Direct mode remains explicit"
+    },
+    "direct_mode": "Groovebox-Direct self-hosted Wi-Fi link when supported",
+    "incoming_files_default": "disabled",
+    "internet_required": false,
+    "presence": "automatic while Groovebox is running once an IP link exists",
+    "router_required": false
+  },
   "optimizer_contract": [
     "logic-number cross casting",
     "deterministic finite pool routing",

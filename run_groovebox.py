@@ -4,6 +4,18 @@ import sys, subprocess
 from pathlib import Path
 from groovebox_media_tools import require_local_pair
 
+# Standalone/sOS appliances select the best installed Wi-Fi radio before the
+# nearby-share service is imported. Desktop installs are left untouched.
+try:
+    from appliance_wifi import prepare_if_appliance
+    _APPLIANCE_WIFI = prepare_if_appliance()
+    if _APPLIANCE_WIFI:
+        _wi = _APPLIANCE_WIFI.get("preferred_direct_iface") or "auto"
+        print(f"[Groovebox Appliance] Wi-Fi Direct radio: {_wi}")
+except Exception as _wifi_exc:
+    _APPLIANCE_WIFI = {}
+    print(f"[Groovebox Appliance] Wi-Fi auto-config fallback: {_wifi_exc}")
+
 def _require_local_ffmpeg():
     try:
         return require_local_pair()

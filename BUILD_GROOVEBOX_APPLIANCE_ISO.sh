@@ -19,7 +19,7 @@ done
 # Static app preflight before staging.
 python3 -m py_compile "$ROOT/groovebox.py" "$ROOT/run_groovebox.py" "$ROOT/scode_optimizer_bridge.py" \
   "$ROOT/performance.py" "$ROOT/video_clip_studio.py" "$ROOT/layered_signal_lab.py" "$ROOT/media_layer_engine.py" "$ROOT/parametric_file_remix.py" \
-  "$ROOT/author_number_codec.py" "$ROOT/author_numeric_font.py"
+  "$ROOT/author_number_codec.py" "$ROOT/author_numeric_font.py" "$ROOT/appliance_wifi.py" "$ROOT/groovebox_direct_link.py" "$ROOT/nearby_groovebox.py"
 
 echo '[Groovebox Appliance] staging application + sCode into ISO rootfs...'
 rm -rf "$ISOBASE/source/rootfs/opt/groovebox" "$ISOBASE/source/sCode"

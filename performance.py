@@ -174,6 +174,11 @@ def _kind_icon(kind: str) -> str:
     }.get(kind, "📄")
 
 
+
+class _NearbyBridge(QObject):
+    result = pyqtSignal(str, object, str)
+    progress = pyqtSignal(int, int, str)
+
 class _KindProbeWorker(QObject):
     """Batch stream-probing off the UI thread (see _ProvenanceWorker above
     for why: ffprobe calls must never run on the UI thread). Probes an
@@ -190,6 +195,14 @@ class _KindProbeWorker(QObject):
             self.progress.emit(generation, p, kind)
         self.batch_done.emit(generation)
 
+
+
+def _safe_size_bytes(n: int) -> str:
+    try: n=int(n)
+    except Exception: return "?"
+    for unit,div in (("GB",1<<30),("MB",1<<20),("KB",1<<10)):
+        if n >= div: return f"{n/div:.1f} {unit}"
+    return f"{n} B"
 
 
 def _safe_size(path: str) -> str:
@@ -422,6 +435,17 @@ class Performance(QDialog):
         self._radio_peer_timer = QTimer(self)
         self._radio_peer_timer.setInterval(1800)
         self._radio_peer_timer.timeout.connect(self._refresh_radio_peers)
+        # NEARBY_GROOVEBOX_UI: networking is app-level; this UI only observes
+        # and initiates transfers. Worker signals keep HTTP/hash/scan work off Qt.
+        self._nearby_bridge = _NearbyBridge()
+        self._nearby_bridge.result.connect(self._nearby_worker_result)
+        self._nearby_bridge.progress.connect(self._nearby_worker_progress)
+        self._nearby_peer_rows = []
+        self._nearby_remote_rows = []
+        self._nearby_ui_timer = QTimer(self)
+        self._nearby_ui_timer.setInterval(1800)
+        self._nearby_ui_timer.timeout.connect(self._refresh_nearby_ui)
+        self._nearby_ui_timer.start()
 
         # Fine-grained (audio/video/av) stream-kind cache, keyed by path:
         # (mtime, size, kind) so a probe is only redone if the file changed.
@@ -2773,10 +2797,143 @@ class Performance(QDialog):
         nr=QHBoxLayout(); b=QPushButton("Start Clone Share"); b.clicked.connect(self._start_clone_share); nr.addWidget(b); b=QPushButton("Stop"); b.clicked.connect(self._stop_clone_share); nr.addWidget(b); nf.addRow(nr)
         self.lbl_clone_url=QLabel("Stopped"); self.lbl_clone_url.setWordWrap(True); self.lbl_clone_url.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse); nf.addRow("Network URL",self.lbl_clone_url)
         lay.addWidget(net)
+
+        nearby=QGroupBox("Nearby Grooveboxes · router-free Wi-Fi Share")
+        nv=QVBoxLayout(nearby)
+        nn=QLabel("Nearby presence is automatic whenever Groovebox is running. Devices may use an existing LAN or a self-hosted Groovebox Direct Wi-Fi link; Internet and a router are not required. Direct hotspot mode is explicit because some single-radio adapters must leave their current Wi-Fi to host it.")
+        nn.setWordWrap(True); nv.addWidget(nn)
+        self.chk_nearby_receive=QCheckBox("Allow incoming files from nearby Grooveboxes")
+        self.chk_nearby_receive.setChecked(False); self.chk_nearby_receive.toggled.connect(self._nearby_set_receive); nv.addWidget(self.chk_nearby_receive)
+        dr=QHBoxLayout()
+        b=QPushButton("↻ Scan Nearby"); b.clicked.connect(self._nearby_scan_now); dr.addWidget(b)
+        b=QPushButton("Start Direct Wi-Fi"); b.clicked.connect(self._nearby_start_direct); dr.addWidget(b)
+        b=QPushButton("Stop Direct Wi-Fi"); b.clicked.connect(self._nearby_stop_direct); dr.addWidget(b)
+        nv.addLayout(dr)
+        self.lbl_nearby_direct=QLabel("Direct-link status: checking capabilities…"); self.lbl_nearby_direct.setWordWrap(True); nv.addWidget(self.lbl_nearby_direct)
+        self.lst_nearby=QListWidget(); self.lst_nearby.setMinimumHeight(115); nv.addWidget(QLabel("Nearby Grooveboxes / Direct radios")); nv.addWidget(self.lst_nearby)
+        pr=QHBoxLayout()
+        b=QPushButton("Join Selected Direct Radio"); b.clicked.connect(self._nearby_join_selected); pr.addWidget(b)
+        b=QPushButton("Browse Selected Groovebox"); b.clicked.connect(self._nearby_browse_selected); pr.addWidget(b)
+        nv.addLayout(pr)
+        self.lst_nearby_files=QListWidget(); self.lst_nearby_files.setMinimumHeight(130); nv.addWidget(QLabel("Shared files on selected Groovebox")); nv.addWidget(self.lst_nearby_files)
+        tr=QHBoxLayout()
+        b=QPushButton("Receive Selected File"); b.clicked.connect(self._nearby_download_selected); tr.addWidget(b)
+        b=QPushButton("Send File to Selected Groovebox"); b.clicked.connect(self._nearby_send_file); tr.addWidget(b)
+        nv.addLayout(tr)
+        self.lbl_nearby_progress=QLabel("Idle"); self.lbl_nearby_progress.setWordWrap(True); nv.addWidget(self.lbl_nearby_progress)
+        lay.addWidget(nearby)
+        QTimer.singleShot(0,self._refresh_nearby_ui)
+
         usb=QGroupBox("USB / mounted drive"); uf=QFormLayout(usb)
         self.cmb_clone_mount=QComboBox(); uf.addRow("Destination",self.cmb_clone_mount)
         ur=QHBoxLayout(); b=QPushButton("↻ Detect Drives"); b.clicked.connect(self._refresh_clone_mounts); ur.addWidget(b); b=QPushButton("Copy Clone to Drive"); b.clicked.connect(self._copy_clone_to_mount); ur.addWidget(b); uf.addRow(ur)
         lay.addWidget(usb); lay.addStretch(1); QTimer.singleShot(0,self._refresh_clone_mounts); return w
+
+    def _nearby_service(self):
+        return getattr(self.host, "_nearby_share_service", None)
+
+    def _nearby_async(self, kind, fn):
+        def run():
+            try: self._nearby_bridge.result.emit(kind, fn(), "")
+            except Exception as e: self._nearby_bridge.result.emit(kind, None, str(e))
+        threading.Thread(target=run,name=f"nearby-{kind}",daemon=True).start()
+
+    def _nearby_set_receive(self, checked):
+        svc=self._nearby_service()
+        if svc is not None: svc.set_incoming_enabled(bool(checked))
+        self.lbl_nearby_progress.setText("Incoming file reception enabled." if checked else "Incoming file reception disabled; discovery remains active.")
+
+    def _refresh_nearby_ui(self):
+        svc=self._nearby_service()
+        if svc is None or not hasattr(self,'lst_nearby'): return
+        try:
+            peers=svc.peer_list(); direct=svc.direct_candidate_list()
+            old=self.lst_nearby.currentRow(); self.lst_nearby.clear(); self._nearby_peer_rows=[]
+            for p in peers:
+                item=QListWidgetItem(f"● {p.get('name','Groovebox')} · {p.get('ip','?')}:{p.get('port','?')} · {p.get('platform','')}")
+                item.setData(Qt.ItemDataRole.UserRole,{"kind":"peer","data":p}); self.lst_nearby.addItem(item); self._nearby_peer_rows.append(p)
+            for d in direct:
+                item=QListWidgetItem(f"◉ {d.get('ssid','Groovebox Direct')} · signal {d.get('signal',0)}% · router-free")
+                item.setData(Qt.ItemDataRole.UserRole,{"kind":"direct","data":d}); self.lst_nearby.addItem(item)
+            if self.lst_nearby.count() and old >= 0: self.lst_nearby.setCurrentRow(min(old,self.lst_nearby.count()-1))
+            caps=svc.direct.capabilities() if getattr(svc,'direct',None) is not None else {}
+            self.lbl_nearby_direct.setText(f"Direct link: host={'yes' if caps.get('host') else 'no'} · scan={'yes' if caps.get('scan') else 'no'} · join={'yes' if caps.get('join') else 'no'} · SSID {caps.get('ssid','—')}" + (f"\n{caps.get('reason')}" if caps.get('reason') else ""))
+        except Exception as e: self.lbl_nearby_progress.setText(f"Nearby refresh: {e}")
+
+    def _nearby_scan_now(self):
+        svc=self._nearby_service()
+        if svc is None: return
+        self.lbl_nearby_progress.setText("Scanning local IP peers and Groovebox Direct radios…")
+        self._nearby_async("scan", lambda: svc.scan_direct_now())
+
+    def _nearby_start_direct(self):
+        svc=self._nearby_service()
+        if svc is None: return
+        ans=QMessageBox.question(self,"Start Groovebox Direct Wi-Fi",
+            "Start a router-free Groovebox Wi-Fi network?\n\nOn some single-radio PCs/tablets this may disconnect the current Wi-Fi while the direct network is active.")
+        if ans != QMessageBox.StandardButton.Yes: return
+        self.lbl_nearby_progress.setText("Starting Groovebox Direct Wi-Fi…")
+        self._nearby_async("direct_start", svc.start_direct_hotspot)
+
+    def _nearby_stop_direct(self):
+        svc=self._nearby_service()
+        if svc is not None: self._nearby_async("direct_stop", svc.stop_direct_hotspot)
+
+    def _nearby_selected_payload(self):
+        it=self.lst_nearby.currentItem() if hasattr(self,'lst_nearby') else None
+        return it.data(Qt.ItemDataRole.UserRole) if it is not None else None
+
+    def _nearby_join_selected(self):
+        svc=self._nearby_service(); sel=self._nearby_selected_payload()
+        if svc is None or not sel or sel.get('kind')!='direct':
+            QMessageBox.information(self,"Direct Link","Select a ◉ Groovebox Direct radio first."); return
+        ssid=sel['data'].get('ssid',''); self.lbl_nearby_progress.setText(f"Joining {ssid}…")
+        self._nearby_async("join",lambda:svc.join_direct(ssid))
+
+    def _nearby_browse_selected(self):
+        svc=self._nearby_service(); sel=self._nearby_selected_payload()
+        if svc is None or not sel or sel.get('kind')!='peer':
+            QMessageBox.information(self,"Browse Groovebox","Select a connected ● Groovebox peer first. If you only see a Direct radio, join it first."); return
+        peer=sel['data']; self._nearby_active_peer=peer; self.lbl_nearby_progress.setText(f"Reading {peer.get('name','Groovebox')} catalog…")
+        self._nearby_async("files",lambda:svc.fetch_files(peer))
+
+    def _nearby_download_selected(self):
+        svc=self._nearby_service(); peer=getattr(self,'_nearby_active_peer',None); it=self.lst_nearby_files.currentItem() if hasattr(self,'lst_nearby_files') else None
+        if svc is None or peer is None or it is None: return
+        row=it.data(Qt.ItemDataRole.UserRole); self.lbl_nearby_progress.setText(f"Receiving {row.get('name','file')}…")
+        def progress(done,total,phase): self._nearby_bridge.progress.emit(int(done),int(total),phase)
+        self._nearby_async("download",lambda:svc.download(peer,row,progress=progress))
+
+    def _nearby_send_file(self):
+        svc=self._nearby_service(); sel=self._nearby_selected_payload()
+        if svc is None or not sel or sel.get('kind')!='peer':
+            QMessageBox.information(self,"Send File","Select a connected ● Groovebox peer first."); return
+        path,_=QFileDialog.getOpenFileName(self,"Send file to nearby Groovebox",self._cwd or os.path.dirname(__file__),"All files (*)")
+        if not path:return
+        peer=sel['data']; self._nearby_active_peer=peer; self.lbl_nearby_progress.setText(f"Sending {os.path.basename(path)}…")
+        def progress(done,total,phase): self._nearby_bridge.progress.emit(int(done),int(total),phase)
+        self._nearby_async("upload",lambda:svc.upload(peer,path,progress=progress))
+
+    def _nearby_worker_progress(self,done,total,phase):
+        pct=(100.0*done/total) if total else 0.0
+        self.lbl_nearby_progress.setText(f"{phase.title()}: {pct:.1f}% · {_safe_size_bytes(done)} / {_safe_size_bytes(total) if total else '?'}")
+
+    def _nearby_worker_result(self,kind,payload,error):
+        if error:
+            self.lbl_nearby_progress.setText(f"Nearby {kind} failed: {error}"); return
+        if kind=='files':
+            self._nearby_remote_rows=list(payload or []); self.lst_nearby_files.clear()
+            for row in self._nearby_remote_rows:
+                item=QListWidgetItem(f"{row.get('category','file')} · {row.get('path',row.get('name',''))} · {_safe_size_bytes(int(row.get('size',0) or 0))}")
+                item.setData(Qt.ItemDataRole.UserRole,row); self.lst_nearby_files.addItem(item)
+            self.lbl_nearby_progress.setText(f"{len(self._nearby_remote_rows)} shared file(s).")
+        elif kind in ('direct_start','direct_stop','join'):
+            ok,msg=payload if isinstance(payload,(list,tuple)) and len(payload)>=2 else (False,str(payload))
+            self.lbl_nearby_progress.setText(("OK: " if ok else "Not available: ")+str(msg or kind))
+        elif kind=='download': self.lbl_nearby_progress.setText(f"Received safely: {payload}")
+        elif kind=='upload': self.lbl_nearby_progress.setText(f"Sent successfully: {payload.get('name','file') if isinstance(payload,dict) else payload}")
+        elif kind=='scan': self.lbl_nearby_progress.setText(f"Direct radio scan found {len(payload or [])} Groovebox network(s).")
+        self._refresh_nearby_ui()
 
     def _create_clone_bundle(self):
         try:
@@ -3243,7 +3400,7 @@ class Performance(QDialog):
         # is why a stopped recording could leave QCamera allocated on Windows.
         try: self._sync_project_state()
         except Exception: pass
-        for name in ('_timed_playlist_timer','_pattern_timer','_performance_timer','_radio_peer_timer','_selection_debounce','_remote_timer','_remix_apply_timer'):
+        for name in ('_timed_playlist_timer','_pattern_timer','_performance_timer','_radio_peer_timer','_nearby_ui_timer','_selection_debounce','_remote_timer','_remix_apply_timer'):
             try:
                 t=getattr(self,name,None)
                 if t is not None: t.stop()
