@@ -43,7 +43,7 @@ if (-not $py) {
     $wpy = Get-ChildItem "$env:LOCALAPPDATA\Programs\Python" -Recurse -Filter python.exe -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($wpy) { $env:Path = $wpy.DirectoryName + ";" + $env:Path; $py = $wpy.FullName }
 }
-if (-not $py) { throw "Python is required — re-run after installing Python 3.9+." }
+if (-not $py) { throw "Python is required - re-run after installing Python 3.9+." }
 
 # --- ffmpeg codec suite --------------------------------------------------
 Write-Host "==> Installing ffmpeg codec suite..."
