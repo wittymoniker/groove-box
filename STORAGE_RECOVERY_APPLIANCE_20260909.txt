@@ -1,0 +1,27 @@
+Mathematician's Groovebox — Storage / Recovery / Appliance Path Pass — 2026-09-09
+
+Implemented:
+- Performance > Storage usage dashboard and safe emergency cleanup.
+- Current-project/global export cleanup as explicit destructive actions.
+- Detect-first, confirm-second unused project media cleanup.
+- Autosave startup prompt: Recover / Delete Autosave / Ignore for Now.
+- Autosave identity display: Project Title, Project Notes, timestamp, path/size.
+- Persistent bounded Known Grooveboxes metadata history with Forget/Reset.
+- Resetting peer history never touches Nearby received files.
+- Central groovebox_paths auto-created global layout.
+- run_groovebox.py validates writable paths before FFmpeg/network/UI startup.
+- sOS appliance uses persistent GROOVEBOX_DATA_DIR=/var/lib/groovebox.
+- Appliance launcher and disk installer create/write-probe all required data paths.
+- Installed-target Python path preflight occurs before installer reports success.
+- Complete APPLIANCE_ISO builder tree restored to redistribution source.
+- PACKAGE_GROOVEBOX_RELEASE.sh keeps the ISO builder while excluding transient builds/user content.
+
+Validation in build workspace:
+- Python compile: groovebox.py, performance.py, groovebox_paths.py, nearby_groovebox.py,
+  operation_station_transfer.py, run_groovebox.py.
+- Shell syntax: appliance launcher, installer, preflight, release packager.
+- Storage/appliance/Nearby/project-path targeted tests pass.
+
+Hardware/QEMU boot is not asserted by this note; use the included appliance preflight,
+ISO builder, checksum, and QEMU/hardware test scripts on a host with grub-mkrescue,
+xorriso, and/or qemu-system-x86_64 available.

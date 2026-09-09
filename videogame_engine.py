@@ -1088,6 +1088,7 @@ def classify_from_composition(
     step_algorithms: Optional[List[Dict[str, Any]]] = None,
     live_dj_goava: bool = False,
     live_dj_random: bool = False,
+    graph_context_fingerprint: Optional[str] = None,
 ) -> GameIdentity:
     """Map composition state → unique game identity (group action on Z/n factors).
 
@@ -1114,6 +1115,7 @@ def classify_from_composition(
         f"|DJG={int(live_dj_goava)}|DJR={int(live_dj_random)}"
         f"|GA={global_algo_fingerprint or '0'}"
         f"|SA={step_algorithm_fingerprint or '0'}"
+        f"|GRAPH={graph_context_fingerprint or '0'}"
     )
     if live_parametrics:
         fp_src += f"|lp={str(live_parametrics)[:120]}"
@@ -1197,6 +1199,8 @@ def classify_from_composition(
         hooks.append("hook_live_dj_goava")
     if live_dj_random:
         hooks.append("hook_live_dj_parametric")
+    if graph_context_fingerprint:
+        hooks.append(f"hook_full_graph_{str(graph_context_fingerprint)[:8]}")
     if global_algo_fingerprint and global_algo_fingerprint != "0" * 16:
         hooks.append(f"hook_global_algo_{global_algo_fingerprint[:8]}")
     if step_algorithm_fingerprint and step_algorithm_fingerprint != "0" * 16:

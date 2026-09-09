@@ -52,6 +52,7 @@ import re
 import weakref
 import numpy as np
 from groovebox_media_tools import resolve_local_tool
+from graph_context import GRAPH_CONTEXT_VERSION, GRAPH_VARIABLES, build_graph_context, context_fingerprint, coerce_graph_output
 from meum_constants import (
     MEUM, M, MEUM_DECIMAL, MEUM_MINUS_1, MEUM_INV, MEUM_TWO_MINUS,
     MEUM_NORM, MEUM_SQ, MEUM_CUBE, MEUM_FOURTH, MEUM_TWO_POW, MEUM_LOG2,
@@ -96,7 +97,7 @@ from PyQt6.QtWidgets import (
     QGridLayout, QLayout, QFileDialog, QSplitter, QGroupBox, QTextEdit, QMenu,
     QMessageBox, QTableWidget, QTableWidgetItem, QCheckBox, QDial, QMenuBar,
     QDialog, QInputDialog, QHeaderView, QProgressBar, QSizePolicy, QToolButton,
-    QDialogButtonBox, QDockWidget, QToolTip,
+    QDialogButtonBox, QDockWidget,
 )  # QToolButton is required by the global EXPORT menu control.
 
 
@@ -4426,149 +4427,6 @@ def _coordinate_seed_projection(values):
     return float(math.hypot(*vals[:2])) if len(vals) == 2 else float(math.sqrt(sum(v * v for v in vals)))
 
 
-
-# GRAPH_SEED_STATE_20260909 -------------------------------------------------
-# A coordinate/parametric seed has two identities in Groovebox:
-#   GraphIdentity  = fixed, instrument-count-independent signature of the curve
-#   DynamicSeed(t) = GraphIdentity + current point/direction/curvature state
-# The expensive whole-graph signature is cached by source text.  Dynamic state
-# uses only three local evaluations, so it is suitable at a control/render
-# boundary but is never intended as a per-sample Python DSP operation.
-_GRAPH_SEED_CACHE = {}
-_GRAPH_SEED_CACHE_LIMIT = 128
-_GRAPH_SEED_SAMPLES = 33
-
-
-def _graph_seed_fold(values, initial=MEUM):
-    """Finite deterministic Meum fold for graph state; never Python hash()."""
-    acc = float(initial)
-    for i, raw_v in enumerate(values or ()):
-        try:
-            v = float(raw_v)
-        except Exception:
-            v = 0.0
-        if not math.isfinite(v):
-            v = 0.0
-        # tanh keeps singular/very large coordinates bounded while preserving
-        # sign and local ordering. Irrational phase increments reduce trivial
-        # axis permutations without introducing RNG or instrument-count state.
-        q = math.tanh(v)
-        phase = acc * MEUM + q * (MEUM_INV + (i + 1) * MEUM_NORM)
-        acc = math.sin(phase) + math.cos(q * MEUM + (i + 1) * (MEUM - 1.0))
-    return float(acc)
-
-
-def _graph_seed_context_key(canonical_context):
-    if not isinstance(canonical_context, dict):
-        return ()
-    out = []
-    for k in sorted(canonical_context):
-        v = canonical_context.get(k)
-        if isinstance(v, (bool, int, float, str)):
-            out.append((str(k), str(v)))
-    return tuple(out)
-
-
-def _coordinate_values_at(raw, t_value, canonical_context=None):
-    try:
-        t = float(t_value)
-    except Exception:
-        t = 0.0
-    env = _seed_script_env(t_scalar=t, canonical_context=canonical_context)
-    result = _eval_coordinate_seed_script(raw, env)
-    if result is None:
-        # Expression-form parametric()/polar()/cylindrical()/spherical() also
-        # carries graph geometry, even when no x(t)= assignment is used.
-        try:
-            vals = _eval_seed_python(raw, t_value=t, canonical_context=canonical_context, allow_scrape=False)
-            if vals and _seed_script_is_coordinate(raw):
-                return [float(x) for x in vals], 'parametric'
-        except Exception:
-            pass
-        return None
-    return [float(x) for x in result[0]], str(result[1])
-
-
-def graph_seed_identity(seed_text, canonical_context=None):
-    """Return the deterministic whole-curve scalar identity for a graph seed.
-
-    Domain is one canonical turn t=[0, 2*pi], sampled at a fixed 33 locations.
-    The sample count and domain do not depend on instrument count, viewport FPS,
-    audio sample rate, or export resolution, so adding an instrument cannot
-    change GraphIdentity.
-    """
-    raw = str(seed_text or '').strip()
-    if not raw or not _seed_script_is_coordinate(raw):
-        return 0.0
-    key = (raw, _graph_seed_context_key(canonical_context))
-    cached = _GRAPH_SEED_CACHE.get(key)
-    if cached is not None:
-        return float(cached[0])
-    stream = []
-    kind = ''
-    for i in range(_GRAPH_SEED_SAMPLES):
-        t = math.tau * i / float(_GRAPH_SEED_SAMPLES - 1)
-        item = _coordinate_values_at(raw, t, canonical_context)
-        if item is None:
-            continue
-        vals, kind = item
-        stream.extend((float(i) / (_GRAPH_SEED_SAMPLES - 1), *vals))
-    identity = _graph_seed_fold(stream, initial=MEUM + MEUM_INV) if stream else 0.0
-    if len(_GRAPH_SEED_CACHE) >= _GRAPH_SEED_CACHE_LIMIT:
-        try:
-            _GRAPH_SEED_CACHE.pop(next(iter(_GRAPH_SEED_CACHE)))
-        except Exception:
-            _GRAPH_SEED_CACHE.clear()
-    _GRAPH_SEED_CACHE[key] = (float(identity), kind)
-    return float(identity)
-
-
-def graph_seed_state(seed_text, t_value=0.0, canonical_context=None):
-    """Structured GraphState(t) and DynamicSeed(t) for coordinate seeds."""
-    raw = str(seed_text or '').strip()
-    here = _coordinate_values_at(raw, t_value, canonical_context)
-    if here is None:
-        return None
-    p, kind = here
-    dim = len(p)
-    h = 1.0e-4 * max(1.0, abs(float(t_value)))
-    before = _coordinate_values_at(raw, float(t_value) - h, canonical_context)
-    after = _coordinate_values_at(raw, float(t_value) + h, canonical_context)
-    pm = before[0] if before is not None and len(before[0]) == dim else list(p)
-    pp = after[0] if after is not None and len(after[0]) == dim else list(p)
-    d1 = [(pp[i] - pm[i]) / (2.0 * h) for i in range(dim)]
-    d2 = [(pp[i] - 2.0 * p[i] + pm[i]) / (h * h) for i in range(dim)]
-    speed2 = sum(v*v for v in d1)
-    curvature = 0.0
-    if speed2 > 1.0e-24:
-        if dim >= 3:
-            ax, ay, az = d1[:3]; bx, by, bz = d2[:3]
-            cross2 = (ay*bz-az*by)**2 + (az*bx-ax*bz)**2 + (ax*by-ay*bx)**2
-            curvature = math.sqrt(cross2) / (speed2 ** 1.5)
-        elif dim == 2:
-            curvature = abs(d1[0]*d2[1] - d1[1]*d2[0]) / (speed2 ** 1.5)
-    x = p[0] if dim > 0 else 0.0
-    y = p[1] if dim > 1 else 0.0
-    z = p[2] if dim > 2 else 0.0
-    r = math.sqrt(sum(v*v for v in p))
-    theta = math.atan2(y, x) if dim > 1 else 0.0
-    identity = graph_seed_identity(raw, canonical_context)
-    dynamic = _graph_seed_fold([identity, float(t_value), *p, *d1, *d2, curvature], initial=identity + MEUM)
-    return {
-        'kind': kind, 't': float(t_value), 'point': tuple(p),
-        'x': float(x), 'y': float(y), 'z': float(z), 'r': float(r), 'theta': float(theta),
-        'd1': tuple(d1), 'd2': tuple(d2), 'curvature': float(curvature),
-        'graph_identity': float(identity), 'dynamic_seed': float(dynamic),
-    }
-
-
-def evaluate_dynamic_graph_seed(seed_text, t_value=0.0, canonical_context=None):
-    """Public graph-seed entry point; falls back to ordinary seed evaluation."""
-    state = graph_seed_state(seed_text, t_value, canonical_context)
-    if state is not None:
-        return float(state['dynamic_seed'])
-    return float(evaluate_seed_expression_at_time(seed_text, t_value, canonical_context))
-
 def _eval_coordinate_seed_script(raw, env):
     """Evaluate explicit Cartesian, parametric, polar, cylindrical or spherical seed syntax.
 
@@ -4851,7 +4709,11 @@ def _seed_script_env(t_scalar=0.0, canonical_context=None):
         "AUTHOR_NUMBER_SCHEME": AUTHOR_NUMBER_SCHEME,
         "op_theory_enabled": operator_theory_enabled,
         "set_op_theory": set_operator_theory,
-        "t": float(t_scalar), "x": float(t_scalar), "y": 0.0, "z": 0.0,
+        "t": float(t_scalar), "t_norm": float(max(0.0, min(1.0, t_scalar))),
+        "x": float(t_scalar), "y": 0.0, "z": 0.0, "seed": 0.0, "seed_w": 0.0,
+        "graph_radius": abs(float(t_scalar)), "graph_phase": 0.0, "graph_energy": 0.0,
+        "graph_index": 0, "graph_slot": 0, "graph_u": float(t_scalar), "graph_v": 0.0, "graph_w": 0.0,
+        "GRAPH_CONTEXT_VERSION": GRAPH_CONTEXT_VERSION,
         "True": True, "False": False, "None": None,
         "carrier_present": 0,
         "carrier_rms": 0.0,
@@ -5060,11 +4922,6 @@ def evaluate_seed_expression_at_time(seed_text, t_value, canonical_context=None)
     """
     vals = _eval_seed_python(seed_text, t_value=t_value, canonical_context=canonical_context, allow_scrape=False)
     if vals and _seed_script_is_coordinate(seed_text):
-        # Whole-graph parent identity + local geometric state.  This replaces
-        # the old magnitude-only projection while preserving ordinary seeds.
-        state = graph_seed_state(seed_text, t_value=t_value, canonical_context=canonical_context)
-        if state is not None:
-            return float(state["dynamic_seed"])
         return _coordinate_seed_projection(vals)
     if not vals:
         # Degenerate-t retry — try a REAL evaluation at nearby t before ever
@@ -5790,6 +5647,9 @@ def generate_random_seed_script(rng=None):
                 f"# seed-weight path\n({n1} * MEUM_NORM + {n2} * (1 - MEUM_NORM)) * (0.5 + 0.5 * {f1}(t))",
                 f"if({cond}) {n1} * MEUM elif {n2} * MEUM_INV",
                 f"# transmutor\nlog2(abs({f1}(t * MEUM)) + 1) * {n1} + sqrt(abs({f2}(t))) * {n2}",
+                f"# full-graph vector path\nparametric(sin((x + t_norm) * MEUM) * {mix_w}, cos((y - t_norm) * PHI) * {round(1.0-mix_w,3)}, tanh(z + seed_w))",
+                f"# radial/phase graph path\n({n1} * (0.5 + 0.5*sin(graph_phase + t*MEUM)) + {n2} * clamp(graph_radius,0,1)) * (0.5 + 0.5*seed_w)",
+                f"# graph-channel list\n{n1}*(0.5+0.5*graph_u), {n2}*(0.5+0.5*graph_v), {n3}*(0.5+0.5*graph_w), {n4}*(0.5+0.5*t_norm)",
             ]
             cand = pool[rng.randrange(0, len(pool))]
         try:
@@ -5822,6 +5682,8 @@ def generate_random_global_play_algo(rng=None):
         f"# Global script algo\ndef global_script(t, name, i):\n    v = isn(t * MEUM) * {a} + ics(t * PHI) * {b}\n    return v * {mix}\n",
         f"# Global script algo\ndef global_script(t, name, i):\n    if sin(t * MEUM) >= 0:\n        return {mix} * cos(t * {a})\n    return {round(1 - mix, 3)} * sin(t * {b})\n",
         f"# Global script algo\ndef global_script(t, name, i):\n    return isn(sin(t * MEUM * {a}) * cos(t * PHI * {b})) * {mix}\n",
+        f"# Full-graph Global script algo\ndef global_script(t, name, i, x=0.0, y=0.0, z=0.0, t_norm=None, seed=0.0, seed_w=0.0, graph_radius=0.0, graph_phase=0.0, graph_energy=0.0):\n    tn = t if t_norm is None else t_norm\n    return (sin((x+tn)*MEUM*{a}) + cos((y-tn)*PHI*{b}) + tanh(z+seed_w) + graph_radius*cos(graph_phase)) * {mix} / 4.0\n",
+        f"# Vector-aware Global script algo\ndef global_script(t, name, i, x=0.0, y=0.0, z=0.0, t_norm=None, seed=0.0, seed_w=0.0, graph_radius=0.0, graph_phase=0.0, graph_energy=0.0):\n    return {{'value': sin(t*MEUM+graph_phase)*{mix}, 'x': x, 'y': y, 'z': z, 'amp': 0.5+0.5*tanh(graph_energy+seed_w)}}\n",
     ]
     domain_pool = [
         f"sin(t * MEUM) * {mix} + cos(t * PHI) * {round(1 - mix, 3)}",
@@ -5830,6 +5692,8 @@ def generate_random_global_play_algo(rng=None):
         f"log2(abs(sin(t * MEUM)) + 1) * {a} + sqrt(abs(cos(t))) * {b}",
         f"sin(t * MEUM * {a}) * cos(t * {b}) + MEUM_INV * sin(t * PHI)",
         f"sin(t * MEUM) * {a} * cos(t * PHI * {b})",
+        f"sin((x+t_norm)*MEUM*{a}) * cos((y-t_norm)*PHI*{b}) + tanh(z+seed_w)",
+        f"graph_radius * cos(graph_phase + t*MEUM) * {mix} + graph_energy * {round(1-mix,3)}",
     ]
     detectors = ("phase", "energy", "spectrum", "goava", "euclidean", "seed", "bpm", "pair")
     targets = ("master_mix", "fractallizer", "eqr", "pkp", "ensemble", "scenograph", "domain", "unison")
@@ -7927,6 +7791,19 @@ class VideoSynthEngine:
                 except Exception:
                     snap["global_track_offset"] = 0.0
                     snap["track_offset"] = 0.0
+                # FULL_GRAPH_CONTEXT_20260909: video/scenograph reads the same
+                # deterministic graph coordinates as script/domain/audio/game paths.
+                _gt = float(getattr(self, "t", 0.0) or 0.0)
+                _gseed = float(snap.get("seed", 0.0) or 0.0)
+                _gx = math_sin(_gt * MEUM + _gseed * MEUM_NORM)
+                _gy = math_cos(_gt * PHI - _gseed * MEUM_INV)
+                _gz = math_tanh(_gx - _gy + (_gseed % 1.0))
+                snap["graph_context"] = build_graph_context(
+                    t=_gt, t_norm=_gt % 1.0, x=_gx, y=_gy, z=_gz, seed=_gseed,
+                    graph_index=int(_gt * max(1, snap.get("bpm", 120.0)) / 60.0),
+                    graph_slot=int(snap.get("live_dj_pair_index", 0)),
+                    energy=float(getattr(self, "_rms", 0.0) or 0.0),
+                )
             except Exception:
                 pass
         except Exception:
@@ -10667,15 +10544,10 @@ class DomainPartitionEquationEngine:
             t_norm = float(np.clip(t, 0.0, 1.0))
 
         seed_w = abs(self.seed) % 1.0 if abs(self.seed) > 1.0 else abs(self.seed)
-        local_base = {
-            "t": float(t),
-            "x": float(x),
-            "y": float(y),
-            "z": float(z),
-            "seed": float(self.seed),
-            "seed_w": float(seed_w),
-            "t_norm": float(t_norm),
-        }
+        local_base = build_graph_context(
+            t=float(t), t_norm=float(t_norm), x=float(x), y=float(y), z=float(z),
+            seed=float(self.seed), seed_w=float(seed_w)
+        )
 
         weighted_sum = 0.0
         weight_total = 0.0
@@ -12447,7 +12319,21 @@ generative structure, and mathematically guided composition.
   • Non-numeric text that cannot be evaluated is hashed into a seed token.
   • The seed field is a **full script panel** (scrollable QTextEdit).
 
-  RANDOM SEED BUTTON
+  FULL-GRAPH SCRIPT CONTEXT (2026-09-09)
+  Seed, Instrument, Algorithm, Domain, Canonical, audio, video and game paths now
+  share one graph-reading vocabulary. Available values include:
+    t, t_norm, x, y, z, seed, seed_w, graph_radius, graph_phase, graph_energy,
+    graph_index, graph_slot, graph_u, graph_v, graph_w.
+  Scripts may return one scalar, a vector/list, or a named dict. Named outputs can
+  describe value/x/y/z plus parameter intentions such as pitch, amp, pan/filter,
+  visual and game channels. Consumers use the channels they understand and ignore
+  the rest, preserving compatibility with older scalar scripts.
+  Canonical writers, Random Seed Script, Global Algorithm randomization, and
+  Heuristic → Seq Synth may author this richer form. RAND PARAM consumes the same
+  deterministic graph coordinate family in realtime without arbitrary eval/RNG in
+  the audio callback. Full graph identity is carried into video/game fingerprints.
+
+RANDOM SEED BUTTON
   ------------------
   "🎲 Random Seed Script" (directly above the seed field) inserts a new random
   script each click: pure numbers, time-conditional if/elif branches, math in t,
@@ -20664,9 +20550,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # file-catalog work, while socket bytes stay out of realtime audio.
         self._nearby_share_service = None
         try:
+            import groovebox_paths
+            groovebox_paths.ensure_app_layout()
             from nearby_groovebox import NearbyGrooveboxService
             self._nearby_share_service = NearbyGrooveboxService(
-                os.path.dirname(os.path.abspath(__file__)),
+                groovebox_paths.base_dir(),
                 optimizer=self._scode_optimizer,
             )
             self._nearby_share_service.start()
@@ -20714,75 +20602,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             pass
         return False
 
-    def _graph_seed_hover_t(self):
-        """Current transport seconds when available; otherwise seed-time zero."""
-        try:
-            if getattr(self, 'play_buffer', None) is not None:
-                sr = float(getattr(self, '_realtime_audio_sr', 0.0) or getattr(self, 'export_sample_rate', 0.0) or 44100.0)
-                return float(getattr(self, 'play_cursor', 0)) / max(sr, 1.0)
-        except Exception:
-            pass
-        return 0.0
-
-    @staticmethod
-    def _fmt_graph_vec(values):
-        return '(' + ', '.join(f'{float(v):.8g}' for v in values) + ')'
-
-    def _graph_seed_hover_tooltip(self, line_text):
-        raw = self._seed_text() if hasattr(self, '_seed_text') else ''
-        if not raw or not _seed_script_is_coordinate(raw):
-            return ''
-        line = str(line_text or '').strip()
-        if not line or not re.search(r'(?i)(?:^[xyzr]|theta|phi|parametric|cartesian|polar|cylindrical|spherical)', line):
-            return ''
-        t = self._graph_seed_hover_t()
-        # Quantize tooltip time to 20 Hz. Whole GraphIdentity itself is cached.
-        tq = round(float(t) * 20.0) / 20.0
-        key = (raw, line, tq)
-        if key == getattr(self, '_graph_seed_tooltip_cache_key', None):
-            return getattr(self, '_graph_seed_tooltip_cache_text', '')
-        try:
-            ctx = getattr(self, '_canonical_render_input_context', None) or self._canonical_input_context()
-        except Exception:
-            ctx = None
-        try:
-            st = graph_seed_state(raw, tq, ctx)
-        except Exception:
-            st = None
-        if not st:
-            return ''
-        text = (
-            f"GRAPH FUNCTION  {line}\n"
-            f"kind={st['kind']}   t={st['t']:.8g}\n"
-            f"xyz={self._fmt_graph_vec((st['x'], st['y'], st['z']))}   r={st['r']:.8g}   theta={st['theta']:.8g}\n"
-            f"d/dt={self._fmt_graph_vec(st['d1'])}\n"
-            f"d2/dt2={self._fmt_graph_vec(st['d2'])}   curvature={st['curvature']:.8g}\n"
-            f"GraphIdentity={st['graph_identity']:.15g}\n"
-            f"DynamicSeed(t)={st['dynamic_seed']:.15g}\n"
-            "GraphIdentity is whole-curve, fixed-resolution-independent, and instrument-count-independent."
-        )
-        self._graph_seed_tooltip_cache_key = key
-        self._graph_seed_tooltip_cache_text = text
-        return text
-
     def eventFilter(self, obj, event):
         try:
-            seed_editor = getattr(self, 'input_seed_val', None)
-            if seed_editor is not None and obj is seed_editor.viewport():
-                if event.type() == QEvent.Type.MouseMove:
-                    try:
-                        pos = event.position().toPoint()
-                        cursor = seed_editor.cursorForPosition(pos)
-                        cursor.select(QTextCursor.SelectionType.LineUnderCursor)
-                        tip = self._graph_seed_hover_tooltip(cursor.selectedText())
-                        if tip:
-                            QToolTip.showText(event.globalPosition().toPoint(), tip, seed_editor)
-                        else:
-                            QToolTip.hideText()
-                    except Exception:
-                        pass
-                elif event.type() == QEvent.Type.Leave:
-                    QToolTip.hideText()
             if isinstance(obj, (QSpinBox, QDoubleSpinBox, QComboBox)):
                 if event.type() == QEvent.Type.Leave:
                     if isinstance(obj, (QSpinBox, QDoubleSpinBox)):
@@ -23356,13 +23177,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         )
         self.input_seed_val.setAcceptRichText(False)
         self.input_seed_val.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
-        # GRAPH_SEED_TOOLTIP_20260909: function/assignment hover reveals the
-        # cached graph payload being passed to the canonical dynamic-seed layer.
-        # Mouse movement itself never samples the whole graph repeatedly.
-        self.input_seed_val.viewport().setMouseTracking(True)
-        self.input_seed_val.viewport().installEventFilter(self)
-        self._graph_seed_tooltip_cache_key = None
-        self._graph_seed_tooltip_cache_text = ""
         # Visual-only code feedback: parsable-looking tokens and nested brackets
         # use a light→dark neutral grey hierarchy. Keep a strong reference so Qt
         # does not garbage-collect the highlighter while the editor is alive.
@@ -32038,6 +31852,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "audio_present": bool(v.get("audio_present", True))}
                 for k, v in (getattr(self, "instrument_media_samples", {}) or {}).items() if isinstance(v, dict) and v.get("path")
             }),
+            "project_title": __import__("groovebox_paths").project_name(getattr(self, "_current_project_path", None)),
+            "project_path": str(getattr(self, "_current_project_path", "") or ""),
             "project_notes": notes,
             "last_videogame_identity": _safe_json(getattr(self, "_last_videogame_identity", None)),
             "last_videogame_path": getattr(self, "_last_videogame_path", None),
@@ -32745,44 +32561,97 @@ class MathematiciansGrooveboxApp(QMainWindow):
             pass
 
     def _check_project_recovery(self):
-        """CRASH_RECOVERY_2026: find leftover .part documents and offer to finish
-        the interrupted save. Runs after boot so the UI is ready for dialogs."""
+        """Offer explicit Recover / Delete / Ignore handling for durable autosaves.
+
+        The prompt identifies the working project with its title and Project Notes.
+        Recover restores the snapshot without overwriting the user's last explicit
+        project save. Delete removes only the selected autosave/recovery file.
+        """
         try:
-            d = self._projects_dir()
-            candidates = []
-            for name in sorted(os.listdir(d)):
-                # Only project recovery documents (*.MCC.part or legacy *.mgpr.part), never video
-                # segment leftovers or pid tmp files.
-                if ((name.endswith(".MCC.part") or name.endswith(".mcc.part") or name.endswith(".mgpr.part"))
-                        and not name.endswith(".tmp")
-                        and os.path.isfile(os.path.join(d, name))):
-                    candidates.append(os.path.join(d, name))
+            import groovebox_paths
+            candidates = groovebox_paths.autosave_candidates()
             if not candidates:
                 return
-            newest = max(candidates, key=lambda p: os.path.getmtime(p))
-            try:
-                with open(newest, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-            except Exception:
-                data = None
-            if not isinstance(data, dict):
-                return
-            label = f"Recover {len(candidates)} interrupted save(s)?" if len(candidates) > 1 else "Recover interrupted save?"
-            msg = (f"An interrupted project save was found:\n{newest}\n\n"
-                   "Load it back into the workspace?")
-            if QMessageBox.question(self, label, msg, QMessageBox.StandardButton.Yes, QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
-                self._apply_project_snapshot(data)
+            # Only the newest recovery artifact per working project is prompted at
+            # boot. Older artifacts remain visible in Storage Maintenance.
+            unique = []
+            seen = set()
+            for row in candidates:
+                p = Path(row.get("path", ""))
+                key = str(p.parent.parent if p.name == "autosave.MCC" and p.parent.name == "metadata" else p.parent)
+                if key in seen:
+                    continue
+                seen.add(key); unique.append(row)
+
+            for row in unique:
+                recovery_path = str(row.get("path", ""))
+                title = str(row.get("title") or "Untitled Project")
+                notes = str(row.get("notes") or "").strip()
+                when = "Unknown time"
                 try:
-                    self.reload_active_instrument_sequencer_ui()
+                    when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(row.get("mtime", 0))))
                 except Exception:
                     pass
                 try:
-                    self._refresh_after_file_input(reason="recovery")
+                    with open(recovery_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
                 except Exception:
-                    pass
-                print(f"[Recovery] restored project from {newest}")
-        except Exception:
-            pass
+                    data = None
+
+                kind = "Autosave" if row.get("kind") == "autosave" else "Interrupted save"
+                box = QMessageBox(self)
+                box.setIcon(QMessageBox.Icon.Warning)
+                box.setWindowTitle("Groovebox Project Recovery")
+                box.setText(f"{kind} found for: {title}")
+                details = [f"Last recovery write: {when}", f"File: {recovery_path}"]
+                if notes:
+                    preview = notes if len(notes) <= 1400 else notes[:1400] + "…"
+                    details.append("\nProject Notes:\n" + preview)
+                else:
+                    details.append("\nProject Notes: (none)")
+                details.append("\nRecover restores this working state without overwriting your last explicit project save.")
+                box.setInformativeText("\n".join(details))
+                recover_btn = box.addButton("Recover", QMessageBox.ButtonRole.AcceptRole)
+                delete_btn = box.addButton("Delete Autosave" if row.get("kind") == "autosave" else "Delete Recovery File", QMessageBox.ButtonRole.DestructiveRole)
+                ignore_btn = box.addButton("Ignore for Now", QMessageBox.ButtonRole.RejectRole)
+                if not isinstance(data, dict):
+                    recover_btn.setEnabled(False)
+                    box.setInformativeText(box.informativeText() + "\n\nThis recovery file could not be parsed, so Recover is disabled.")
+                box.exec()
+                clicked = box.clickedButton()
+                if clicked is delete_btn:
+                    try:
+                        groovebox_paths.delete_autosave(recovery_path)
+                        print(f"[Recovery] deleted {recovery_path}")
+                    except Exception as exc:
+                        QMessageBox.warning(self, "Delete autosave failed", str(exc))
+                    continue
+                if clicked is ignore_btn or clicked is None:
+                    return
+                if clicked is recover_btn and isinstance(data, dict):
+                    self._apply_project_snapshot(data)
+                    # Prefer the local project file beside metadata; a stored path
+                    # may refer to a different machine or an older mount point.
+                    local_project = None
+                    rp = Path(recovery_path)
+                    if rp.name == "autosave.MCC" and rp.parent.name == "metadata":
+                        proot = rp.parent.parent
+                        mcc = sorted(proot.glob("*.MCC")) + sorted(proot.glob("*.mcc"))
+                        if mcc: local_project = str(mcc[0])
+                        else: local_project = str(proot / f"{groovebox_paths._safe_project_name(title)}.MCC")
+                    elif recovery_path.lower().endswith(".part"):
+                        local_project = recovery_path[:-5]
+                    if local_project:
+                        self._current_project_path = local_project
+                    try: self.reload_active_instrument_sequencer_ui()
+                    except Exception: pass
+                    try: self._refresh_after_file_input(reason="recovery")
+                    except Exception: pass
+                    self._last_autosave_fp = getattr(self, "lbl_canonical_fp", None)
+                    print(f"[Recovery] restored project from {recovery_path}")
+                    return
+        except Exception as exc:
+            print(f"[Recovery] scan skipped: {exc}")
 
     def _current_program_identity(self):
         try:
@@ -38308,8 +38177,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "# Canonical Unison Superwrite\n"
                 f"# engines={engine_expr}\n"
                 f"# composition={sig:08x}\n"
-                "def global_script(t, name, i):\n"
-                f"    return ot_sin_vec_equiv((t + {phase:.9f}) * MEUM) * ot_cos_vec_equiv((i + 1) * {0.125 + 0.5*phase:.9f})\n"
+                "def global_script(t, name, i, x=0.0, y=0.0, z=0.0, t_norm=None, seed=0.0, seed_w=0.0, graph_radius=0.0, graph_phase=0.0, graph_energy=0.0):\n"
+                "    tn = t if t_norm is None else t_norm\n"
+                f"    return ot_sin_vec_equiv((t + {phase:.9f} + x*MEUM_NORM) * MEUM) * ot_cos_vec_equiv((i + 1 + y + tn) * {0.125 + 0.5*phase:.9f}) + 0.25*tanh(z + seed_w + graph_energy)\n"
             )
             gas["domain"] = (
                 'equation = "sin((t + %.9f) * MEUM) + cos(x * %.9f)"\n'
@@ -40526,8 +40396,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "heuristic_value": v,
             })
             mem["synth"] = synth
-            mem["script"] = f"# heuristic:{family}:{bias}\n({seed:.12g} * MEUM + t * {1.0+v:.12g})"
-            mem["domain"] = {"axis":"time","equation":f"sin(t*MEUM*{1.0+v:.12g})","weight":v,"source":"heuristic_seq_synth"}
+            mem["script"] = (
+                f"# heuristic:{family}:{bias} · full-graph\n"
+                f"def evaluate_wave(x, y, z, t=0.0, t_norm=0.0, seed={seed:.12g}, seed_w=0.0, graph_radius=0.0, graph_phase=0.0, graph_energy=0.0, graph_u=0.0, graph_v=0.0, graph_w=0.0):\n"
+                f"    base = sin((x+t_norm)*MEUM*{1.0+v:.12g}) * cos((y-t_norm)*PHI)\n"
+                f"    return {{'value': base - z*{0.25+0.5*v:.12g}, 'pitch': 1.0 + {v:.12g}*graph_u, 'amp': 0.5 + 0.5*tanh(graph_energy+seed_w)}}"
+            )
+            mem["domain"] = {"axis":"both","equation":f"sin((x+t_norm)*MEUM*{1.0+v:.12g})*cos((y-t_norm)*PHI)+tanh(z+seed_w)","weight":v,"source":"heuristic_seq_synth","graph_context_version":GRAPH_CONTEXT_VERSION}
             mem["patch"] = {"source":"heuristic_seq_synth","mod_depth":v,"ratio":float(1.0+MEUM_MINUS_1*v)}
             mem["heuristic_seq_synth"] = {"family":family,"bias":bias,"value":v,"span":span}
             if int((getattr(self,"instrument_selected_sequence",{}) or {}).get(name,1)) == int(sid):
@@ -42171,6 +42046,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "step_algorithm_fingerprint": step_algo_fingerprint,
             "live_dj_goava": bool(getattr(self, "live_dj_goava", False)),
             "live_dj_random": bool(getattr(self, "live_dj_random", False)),
+            "seed_script": self._seed_text() if hasattr(self, "_seed_text") else "",
+            "graph_context_version": GRAPH_CONTEXT_VERSION,
+            "graph_script_fingerprint": context_fingerprint({"seed": self._seed_text() if hasattr(self,"_seed_text") else "", "scripts": getattr(self,"instrument_scripts",{}) or {}, "algo": gas}),
             "project_notes": notes,
             "master_vector": master_vector,
             "master_vector_drive": float(st.get("drive", 0.50) or 0.50),
@@ -42257,6 +42135,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             step_algorithms=meta.get("step_algorithms"),
             live_dj_goava=meta.get("live_dj_goava"),
             live_dj_random=meta.get("live_dj_random"),
+            seed_script=meta.get("seed_script"),
+            graph_context_fingerprint=meta.get("graph_script_fingerprint"),
         )
         if _opt is not None:
             identity = _opt.memoized_result("game", _game_payload, _produce_game_identity, max_entries=24)

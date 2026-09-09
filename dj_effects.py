@@ -144,10 +144,21 @@ class LiveDJEffects:
         d = self.pair
         seed_phase = ((self.seed & 0xFFFF) / 65536.0) * math.tau
         beat = float(bpm) / 60.0
-        lfo1 = np.sin(math.tau * beat * (0.5 + d.spread) * t + d.phase + seed_phase)
-        lfo2 = np.sin(math.tau * beat * (1.0 + d.ratio) * t + seed_phase * 0.37 + d.phase * 1.7)
+        # FULL_GRAPH_RAND_PARAM_20260909: realtime-safe graph coordinates.
+        # These are the streaming equivalents of x/y/z/t_norm/seed_w and
+        # radial/phase aliases used by the script fields; no eval and no RNG.
+        t_norm = np.mod(t * beat, 1.0)
+        seed_w = (self.seed % 1000003) / 1000003.0
+        graph_x = np.sin(math.tau * beat * (0.5 + d.spread) * t + d.phase + seed_phase)
+        graph_y = np.cos(math.tau * beat * (1.0 + d.ratio) * t + seed_phase * 0.37 + d.phase * 1.7)
+        graph_z = np.tanh(graph_x - graph_y + seed_w + (t_norm - 0.5))
+        graph_radius = np.sqrt(graph_x*graph_x + graph_y*graph_y + graph_z*graph_z)
+        graph_phase = np.arctan2(graph_y, graph_x)
+        lfo1 = np.sin(graph_phase + math.tau * t_norm * (0.5 + d.spread))
+        lfo2 = np.sin(math.tau * t_norm * (1.0 + d.ratio) + graph_z * 1.7 + seed_phase * 0.37)
         # Parametric waveshaper + gated tremolo.  No RNG calls in the audio thread.
-        drive = 1.0 + amt * (1.5 + 2.5 * (0.5 + 0.5 * lfo1))
+        graph_complexity = np.clip(0.25*graph_radius + 0.25*(graph_z+1.0) + 0.25*(lfo1+1.0) + 0.25*(lfo2+1.0), 0.0, 2.0)
+        drive = 1.0 + amt * (1.25 + 1.75 * graph_complexity)
         # Dual-mode drive without tanh soft-clip; scale only.
         shaped = x * drive
         trem = 0.72 + 0.28 * (0.5 + 0.5 * lfo2)

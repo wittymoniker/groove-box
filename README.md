@@ -905,7 +905,20 @@ When two radios are present, Groovebox prefers the already-connected adapter for
 
 `CONFIGURE_APPLIANCE_WIFI.sh` can be run manually to print the detected hardware choice. `LAUNCH_GROOVEBOX_SOS.sh` automatically enables the appliance profile, and `run_groovebox.py` performs the same selection before Nearby Groovebox networking is imported. Incoming file writes remain disabled by default.
 
+## Storage Maintenance / Autosave Recovery (2026-09-09)
 
-## Dynamic Graph Seed State
+Performance now includes a **Storage** tab. Groovebox reports its writable data root, total Groovebox-managed storage, disk free space, and separate project/sample/game/export/Nearby/cache/temp/log/network-state usage. **Emergency Free Space (Safe)** removes only regenerable caches, temp/log files, and incomplete recording scratch files; it deliberately preserves projects, imported originals, completed recordings, autosaves, and exports.
 
-Coordinate and parametric seed scripts now carry a whole-graph identity as well as their instantaneous point. Groovebox samples one canonical turn of the curve at a fixed 33 positions to build a deterministic Meum-folded `GraphIdentity`; that identity is independent of instrument count, viewport FPS, audio sample rate, and export resolution. At time `t`, Groovebox combines the identity with x/y/z, r/theta, first and second derivatives, and curvature to produce `DynamicSeed(t)`. Ordinary non-graph seeds keep their existing behavior. Hover a graph function or coordinate assignment in the Global Seed editor to inspect the function, current t, coordinates, derivatives, curvature, GraphIdentity, and DynamicSeed being passed forward. The whole-graph signature is cached, so hover display does not rescan the curve on every mouse movement.
+Autosaves are stored under each named project workspace at `metadata/autosave.MCC`. On startup Groovebox finds the newest recovery artifact for each working project and shows its **Project Title**, **Project Notes**, recovery timestamp, and path before offering **Recover**, **Delete Autosave**, or **Ignore for Now**. Recover restores the working state without overwriting the last explicit project save. The Storage tab can also inspect/delete autosaves later, scan for unreferenced current-project media without deleting it, explicitly remove listed candidates, and separately clean current-project or global generated exports.
+
+Nearby Grooveboxes now keeps a bounded metadata-only known-peer history under `state/known_grooveboxes.json`. **Forget Selected** and **Reset Known Grooveboxes History** never remove received files. Received media remains in the separate `Nearby Grooveboxes/Inbox` tree.
+
+### Appliance writable paths
+
+The standalone sOS appliance sets `GROOVEBOX_DATA_DIR=/var/lib/groovebox`. The launcher creates projects, samples, games, modules, exports, cache, temp, logs, state, and Nearby Inbox directories before Groovebox starts, then calls the same `groovebox_paths.ensure_app_layout()` write probe used by the desktop entry point. The disk installer creates and write-tests that tree on the target filesystem before completing bootloader installation. `/opt/groovebox` remains application/runtime content rather than the user-data destination.
+
+The release archive now includes the complete `APPLIANCE_ISO/` builder tree and its seed initramfs. Use `PACKAGE_GROOVEBOX_RELEASE.sh` to make redistribution ZIP/TAR archives without accidentally omitting the ISO builder again.
+
+### Full-graph scripting compatibility (2026-09-09)
+
+All script-writing surfaces now target the same graph-context contract used by Seed scripts. The common variables are `t`, `t_norm`, `x`, `y`, `z`, `seed`, `seed_w`, `graph_radius`, `graph_phase`, `graph_energy`, `graph_index`, `graph_slot`, `graph_u`, `graph_v`, and `graph_w`. Scalar scripts remain valid; vector/list and named-dictionary outputs are also supported by the compatibility layer. Canonical cross-media metadata carries the graph contract and instrument-script identity into audio/video/game generation. Random Seed Script, Global Algorithm randomization, Canonical superwrite, and Heuristic → Seq Synth can author richer graph-dependent scripts. RAND PARAM uses the same deterministic coordinate family in its realtime-safe parametric path.

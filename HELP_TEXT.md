@@ -2373,7 +2373,18 @@ The Main Window **✎🎙🎥 Draw / Record / Video** button opens the same proj
 ## Canonical Live Overblend default
 Canonical Live Overblend now defaults to **50%**, preserving the net 50/50 user/canonical waveform contract. The control remains adjustable: 0% selects the user waveform branch only, 50% is equal user/canonical waveform share, and 100% selects the canonical waveform branch. The intentional existing master hard clip and its 50% Clip/Gain default are unchanged.
 
+### Storage Maintenance and Recovery
 
-## Dynamic Graph Seed State
+Open **Performance → Storage** to see Groovebox-managed storage and disk free space. Safe emergency cleanup removes only cache/temp/log/incomplete-recording scratch data. Project documents, imported originals, completed recordings, autosaves, and exports are protected from that action. Export cleanup and unreferenced-media deletion are separate, explicit confirmations.
 
-Coordinate and parametric seed scripts now carry a whole-graph identity as well as their instantaneous point. Groovebox samples one canonical turn of the curve at a fixed 33 positions to build a deterministic Meum-folded `GraphIdentity`; that identity is independent of instrument count, viewport FPS, audio sample rate, and export resolution. At time `t`, Groovebox combines the identity with x/y/z, r/theta, first and second derivatives, and curvature to produce `DynamicSeed(t)`. Ordinary non-graph seeds keep their existing behavior. Hover a graph function or coordinate assignment in the Global Seed editor to inspect the function, current t, coordinates, derivatives, curvature, GraphIdentity, and DynamicSeed being passed forward. The whole-graph signature is cached, so hover display does not rescan the curve on every mouse movement.
+Every project autosave carries the working Project Title, Project Notes, and project path. Startup recovery shows those details and offers **Recover**, **Delete Autosave**, or **Ignore for Now**. Recover restores the autosaved workspace without automatically overwriting the last explicit project save.
+
+Known Grooveboxes history is metadata-only and can be cleared in **Performance → Drive / Clone** using **Forget Selected** or **Reset Known Grooveboxes History**. This does not delete anything from the Nearby Inbox.
+
+On the sOS appliance, writable Groovebox data lives under `/var/lib/groovebox`; the launcher and installer auto-create and write-test the required project/media/export/cache/temp/log/state/network directories before ordinary file operations begin.
+
+## Full-graph script compatibility — 2026-09-09
+
+Seed, Instrument, Algorithm, Domain, Canonical, audio, video, and videogame paths share a common deterministic graph context: `t`, `t_norm`, `x`, `y`, `z`, `seed`, `seed_w`, `graph_radius`, `graph_phase`, `graph_energy`, `graph_index`, `graph_slot`, `graph_u`, `graph_v`, and `graph_w`.
+
+Scripts remain backward-compatible with scalar output, but may also return vectors/lists or named mappings. Named output channels may include `value`, `x`, `y`, `z`, `pitch`, `amp`, `pan`, `filter`, `visual`, and `game`; each consumer uses the channels it understands. Canonical writers and random/heuristic authoring now emit richer full-graph forms. RAND PARAM stays realtime-safe: it reads equivalent deterministic graph coordinates without arbitrary script evaluation or random-number generation in the audio callback.

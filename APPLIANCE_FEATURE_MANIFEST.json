@@ -10,6 +10,13 @@
     ]
   },
   "appliance_base": "sOS / Fedora 43 game-ready rootfs",
+  "appliance_storage_boot": {
+    "boot_launcher": "recreates missing directories and Python-validates groovebox_paths before UI startup",
+    "installer": "creates and write-probes all writable Groovebox roots on target before bootloader completion",
+    "network_inbox": "/var/lib/groovebox/Nearby Grooveboxes/Inbox",
+    "persistent_root": "/var/lib/groovebox",
+    "temp": "GROOVEBOX_DATA_DIR/temp"
+  },
   "architecture": "x86_64",
   "author_numeric_font": {
     "base": 16,
@@ -189,5 +196,49 @@
   "scode_optimizer_abi": 9,
   "scode_pool_abi": 3,
   "scode_pool_format_count": 18,
-  "scode_required": true
+  "scode_required": true,
+  "storage_maintenance": {
+    "autosave_recovery": [
+      "Recover",
+      "Delete Autosave",
+      "Ignore for Now",
+      "Project Title",
+      "Project Notes",
+      "timestamp/path/size"
+    ],
+    "data_root": {
+      "appliance": "/var/lib/groovebox",
+      "auto_create": "before FFmpeg/network/UI startup",
+      "desktop": "platform per-user application data"
+    },
+    "exports": "current-project and global export cleanup are separate explicit actions",
+    "known_grooveboxes": "bounded persistent metadata history; forget selected/reset history never deletes received files",
+    "protected_by_safe_cleanup": [
+      "projects",
+      "imported originals",
+      "completed recordings",
+      "autosaves",
+      "exports"
+    ],
+    "safe_emergency_cleanup": [
+      "cache",
+      "project cache",
+      "temp",
+      "logs",
+      "incomplete recording scratch"
+    ],
+    "unused_media": "detect first; explicit confirmed delete only",
+    "usage_categories": [
+      "projects",
+      "samples",
+      "games",
+      "exports",
+      "nearby inbox",
+      "cache",
+      "temp",
+      "logs",
+      "network state",
+      "autosaves/recovery"
+    ]
+  }
 }

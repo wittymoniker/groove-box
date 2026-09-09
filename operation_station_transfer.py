@@ -48,7 +48,8 @@ def _wanted(rel: Path, include_source=True, include_executables=True, include_de
 
 
 def create_clone_bundle(root: str, out_path: str, *, include_source=True, include_executables=True,
-                        include_dependencies=True, include_user_content=False, app_version='V3 Operation Station') -> str:
+                        include_dependencies=True, include_user_content=False, user_data_root: Optional[str]=None,
+                        app_version='V3 Operation Station') -> str:
     rootp=Path(root).resolve(); out=Path(out_path).resolve(); out.parent.mkdir(parents=True,exist_ok=True)
     files=[]
     with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6) as z:
@@ -62,6 +63,19 @@ def create_clone_bundle(root: str, out_path: str, *, include_source=True, includ
             if p.resolve()==out: continue
             z.write(p, arcname=str(Path('payload')/rel))
             files.append({'path':str(rel).replace('\\','/'),'size':p.stat().st_size,'sha256':sha256_file(p)})
+        if include_user_content and user_data_root:
+            udp=Path(user_data_root).expanduser().resolve()
+            # User content is stored separately from executable source so an
+            # appliance clone never confuses mutable projects with /opt code.
+            for top in ('projects','samples','modules','games'):
+                base=udp/top
+                if not base.exists(): continue
+                for p in sorted(base.rglob('*')):
+                    if not p.is_file() or p.is_symlink(): continue
+                    rel=Path('user_data')/p.relative_to(udp)
+                    arc=Path('payload')/rel
+                    z.write(p,arcname=str(arc))
+                    files.append({'path':str(rel).replace('\\','/'),'size':p.stat().st_size,'sha256':sha256_file(p)})
         manifest=CloneManifest(FORMAT,VERSION,time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),
             platform.platform(),platform.python_version(),'operation-station-clone',app_version,files)
         z.writestr('manifest.json',json.dumps(asdict(manifest),indent=2))

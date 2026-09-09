@@ -44,7 +44,7 @@ PEER_TTL = 7.0
 BEACON_INTERVAL = 2.0
 CHUNK = 1024 * 1024
 
-PROJECT_EXT = {".mgpr", ".mg", ".mgb"}
+PROJECT_EXT = {".mcc", ".mgpr", ".meum", ".mg", ".mgb", ".mgproject", ".mgsynth", ".mgprofile"}
 MEDIA_EXT = {".wav", ".flac", ".mp3", ".ogg", ".opus", ".aiff", ".aif", ".caf",
              ".mp4", ".webm", ".avi", ".mov", ".mkv", ".png", ".jpg", ".jpeg",
              ".webp", ".bmp", ".gif", ".tif", ".tiff"}
@@ -135,7 +135,8 @@ class NearbyGrooveboxService:
     def __init__(self, app_root: str, roots: Optional[Dict[str, str]] = None,
                  port: int = DEFAULT_HTTP_PORT, name: Optional[str] = None,
                  optimizer=None):
-        self.app_root = Path(app_root).resolve()
+        self.app_root = Path(app_root).expanduser().resolve()
+        self.app_root.mkdir(parents=True, exist_ok=True)
         self.node_id = _node_id(self.app_root)
         self.name = str(name or f"{socket.gethostname()} Groovebox")
         self.version = "2026.09 Nearby Share v1"
@@ -148,6 +149,15 @@ class NearbyGrooveboxService:
         self.stop_event = threading.Event()
         self.peers: Dict[str, Peer] = {}
         self.peers_lock = threading.Lock()
+        # KNOWN_GROOVEBOX_HISTORY_20260909: persistent discovery history is
+        # metadata only and lives in the writable Groovebox data root, never
+        # beside received files. It is bounded and rate-limited so discovery
+        # cannot turn into a write-amplification source.
+        self.history_lock = threading.Lock()
+        self.history_path = self.app_root / "state" / "known_grooveboxes.json"
+        self.history_path.parent.mkdir(parents=True, exist_ok=True)
+        self.known_history: Dict[str, Dict] = self._load_history()
+        self._history_last_flush = 0.0
         self.catalog_lock = threading.Lock()
         self._catalog_cache: List[Dict] = []
         self._catalog_stamp = 0.0
@@ -159,6 +169,56 @@ class NearbyGrooveboxService:
         self.direct_lock = threading.Lock()
         self.allow_incoming = False
         self.direct = DirectLinkManager(self.node_id) if DirectLinkManager is not None else None
+
+    def _load_history(self) -> Dict[str, Dict]:
+        try:
+            doc=json.loads(self.history_path.read_text(encoding="utf-8"))
+            rows=doc.get("peers", {}) if isinstance(doc,dict) else {}
+            return {str(k):dict(v) for k,v in rows.items() if isinstance(v,dict)}
+        except Exception:
+            return {}
+
+    def _flush_history(self, force: bool=False):
+        now=time.monotonic()
+        if not force and now-self._history_last_flush < 8.0: return
+        with self.history_lock:
+            rows=sorted(self.known_history.items(), key=lambda kv: float(kv[1].get("last_seen",0)), reverse=True)[:512]
+            self.known_history=dict(rows)
+            doc={"version":1,"updated":time.time(),"peers":self.known_history}
+            tmp=self.history_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(doc,indent=2,sort_keys=True),encoding="utf-8")
+            os.replace(tmp,self.history_path); self._history_last_flush=now
+
+    def _remember_peer(self, peer: Peer):
+        row=peer.as_dict(); row["last_seen"]=float(peer.seen); row.pop("seen",None)
+        with self.history_lock:
+            self.known_history[str(peer.node_id)]=row
+        try: self._flush_history(False)
+        except Exception: pass
+
+    def history_list(self) -> List[Dict]:
+        with self.history_lock:
+            rows=[dict(v, node_id=k) for k,v in self.known_history.items()]
+        rows.sort(key=lambda r: float(r.get("last_seen",0)), reverse=True)
+        return rows
+
+    def forget_peer(self, node_id: str) -> bool:
+        node_id=str(node_id or "")
+        with self.history_lock:
+            existed=self.known_history.pop(node_id,None) is not None
+        if existed:
+            try: self._flush_history(True)
+            except Exception: pass
+        return existed
+
+    def reset_history(self) -> int:
+        with self.history_lock:
+            count=len(self.known_history); self.known_history.clear()
+        try:
+            if self.history_path.exists(): self.history_path.unlink()
+            self._history_last_flush=time.monotonic()
+        except Exception: pass
+        return count
 
     def _set_roots(self, roots: Dict[str, str]):
         defaults = {
@@ -261,6 +321,8 @@ class NearbyGrooveboxService:
         return self.urls()
 
     def stop(self):
+        try: self._flush_history(True)
+        except Exception: pass
         self.stop_event.set()
         if self.httpd is not None:
             try: self.httpd.shutdown(); self.httpd.server_close()
@@ -391,6 +453,7 @@ class NearbyGrooveboxService:
                 peer=Peer(str(d.get("node_id","")),str(d.get("name","Groovebox")),ip,port,
                           f"http://{ip}:{port}",str(d.get("platform","")),str(d.get("version","")),time.time(),str(d.get("catalog_id","")))
                 with self.peers_lock: self.peers[peer.node_id]=peer
+                self._remember_peer(peer)
             except Exception: continue
         try:s.close()
         except Exception:pass

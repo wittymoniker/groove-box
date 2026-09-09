@@ -4,6 +4,17 @@ import sys, subprocess
 from pathlib import Path
 from groovebox_media_tools import require_local_pair
 
+# STORAGE_LAYOUT_20260909: make every writable application path exist before
+# FFmpeg, camera, networking, project autosave, or the Qt UI starts. Appliance
+# builds set GROOVEBOX_DATA_DIR=/var/lib/groovebox; desktop builds use the
+# platform-native per-user data location.
+try:
+    import groovebox_paths
+    _GROOVEBOX_PATHS = groovebox_paths.ensure_app_layout()
+    print(f"[Groovebox] writable data root: {_GROOVEBOX_PATHS['base']}")
+except Exception as _path_exc:
+    raise SystemExit(f"Groovebox cannot initialize its writable data directories: {_path_exc}")
+
 # Standalone/sOS appliances select the best installed Wi-Fi radio before the
 # nearby-share service is imported. Desktop installs are left untouched.
 try:

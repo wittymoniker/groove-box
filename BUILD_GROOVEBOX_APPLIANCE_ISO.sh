@@ -18,7 +18,8 @@ done
 
 # Static app preflight before staging.
 python3 -m py_compile "$ROOT/groovebox.py" "$ROOT/run_groovebox.py" "$ROOT/scode_optimizer_bridge.py" \
-  "$ROOT/performance.py" "$ROOT/video_clip_studio.py" "$ROOT/layered_signal_lab.py" "$ROOT/media_layer_engine.py" "$ROOT/parametric_file_remix.py" \
+  "$ROOT/performance.py" "$ROOT/groovebox_paths.py" "$ROOT/operation_station_transfer.py" \
+  "$ROOT/video_clip_studio.py" "$ROOT/layered_signal_lab.py" "$ROOT/media_layer_engine.py" "$ROOT/parametric_file_remix.py" \
   "$ROOT/author_number_codec.py" "$ROOT/author_numeric_font.py" "$ROOT/appliance_wifi.py" "$ROOT/groovebox_direct_link.py" "$ROOT/nearby_groovebox.py"
 
 echo '[Groovebox Appliance] staging application + sCode into ISO rootfs...'
@@ -26,7 +27,8 @@ rm -rf "$ISOBASE/source/rootfs/opt/groovebox" "$ISOBASE/source/sCode"
 mkdir -p "$ISOBASE/source/rootfs/opt/groovebox" "$ISOBASE/source/sCode" "$ROOT/dist"
 # Avoid recursively embedding the ISO builder and transient outputs in /opt/groovebox.
 tar -C "$ROOT" \
-  --exclude='./APPLIANCE_ISO' --exclude='./dist' --exclude='./build_executable' \
+  --exclude='./APPLIANCE_ISO' --exclude='./dist' --exclude='./dist_release' --exclude='./build_executable' \
+  --exclude='./projects' --exclude='./samples' --exclude='./exports' \
   --exclude='./.groovebox-build-venv' --exclude='./__pycache__' --exclude='*.pyc' \
   -cf - . | tar -C "$ISOBASE/source/rootfs/opt/groovebox" -xf -
 cp -a "$ROOT/sCode/." "$ISOBASE/source/sCode/"

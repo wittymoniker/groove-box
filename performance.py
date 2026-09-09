@@ -67,7 +67,7 @@ from PyQt6.QtWidgets import (
 AUDIO_EXT = {".wav", ".flac", ".mp3", ".ogg", ".opus", ".aiff", ".aif", ".caf"}
 VIDEO_EXT = {".mp4", ".webm", ".avi", ".mov", ".mkv"}
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
-PROJECT_EXT = {".mgpr"}
+PROJECT_EXT = {".mcc", ".mgpr", ".meum", ".mg", ".mgproject", ".mgsynth", ".mgprofile"}
 GAME_EXT = {".zip"}
 MEDIA_EXT = AUDIO_EXT | VIDEO_EXT | IMAGE_EXT
 
@@ -616,6 +616,7 @@ class Performance(QDialog):
         right.addTab(self._scroll_page(self._build_outputs_tab()), "▣ Device Manager")
         right.addTab(self._scroll_page(self._build_hardware_tab()), "⌨ Hardware")
         right.addTab(self._scroll_page(self._build_transfer_tab()), "⇄ Drive / Clone")
+        right.addTab(self._scroll_page(self._build_storage_tab()), "🧹 Storage")
         right.addTab(self._scroll_page(self._build_mg_library_tab()), "⌬ .MG Related")
         right.addTab(self._scroll_page(self._build_box_tab()), "⚙ Box Mode")
         right.addTab(self._scroll_page(self._build_batch_tab()), "Batch Re-render")
@@ -2815,6 +2816,12 @@ class Performance(QDialog):
         b=QPushButton("Join Selected Direct Radio"); b.clicked.connect(self._nearby_join_selected); pr.addWidget(b)
         b=QPushButton("Browse Selected Groovebox"); b.clicked.connect(self._nearby_browse_selected); pr.addWidget(b)
         nv.addLayout(pr)
+        hist=QLabel("Known Grooveboxes history (metadata only; received files are separate)"); hist.setWordWrap(True); nv.addWidget(hist)
+        self.lst_nearby_history=QListWidget(); self.lst_nearby_history.setMinimumHeight(90); nv.addWidget(self.lst_nearby_history)
+        hr=QHBoxLayout()
+        b=QPushButton("Forget Selected"); b.clicked.connect(self._nearby_forget_selected_history); hr.addWidget(b)
+        b=QPushButton("Reset Known Grooveboxes History"); b.clicked.connect(self._nearby_reset_history); hr.addWidget(b)
+        nv.addLayout(hr)
         self.lst_nearby_files=QListWidget(); self.lst_nearby_files.setMinimumHeight(130); nv.addWidget(QLabel("Shared files on selected Groovebox")); nv.addWidget(self.lst_nearby_files)
         tr=QHBoxLayout()
         b=QPushButton("Receive Selected File"); b.clicked.connect(self._nearby_download_selected); tr.addWidget(b)
@@ -2856,9 +2863,29 @@ class Performance(QDialog):
                 item=QListWidgetItem(f"◉ {d.get('ssid','Groovebox Direct')} · signal {d.get('signal',0)}% · router-free")
                 item.setData(Qt.ItemDataRole.UserRole,{"kind":"direct","data":d}); self.lst_nearby.addItem(item)
             if self.lst_nearby.count() and old >= 0: self.lst_nearby.setCurrentRow(min(old,self.lst_nearby.count()-1))
+            if hasattr(self,'lst_nearby_history'):
+                self.lst_nearby_history.clear()
+                for h in svc.history_list():
+                    seen=float(h.get('last_seen',0) or 0); when=time.strftime('%Y-%m-%d %H:%M',time.localtime(seen)) if seen else 'unknown'
+                    item=QListWidgetItem(f"{h.get('name','Groovebox')} · last seen {when} · {h.get('platform','')}")
+                    item.setData(Qt.ItemDataRole.UserRole,h); self.lst_nearby_history.addItem(item)
             caps=svc.direct.capabilities() if getattr(svc,'direct',None) is not None else {}
             self.lbl_nearby_direct.setText(f"Direct link: host={'yes' if caps.get('host') else 'no'} · scan={'yes' if caps.get('scan') else 'no'} · join={'yes' if caps.get('join') else 'no'} · SSID {caps.get('ssid','—')}" + (f"\n{caps.get('reason')}" if caps.get('reason') else ""))
         except Exception as e: self.lbl_nearby_progress.setText(f"Nearby refresh: {e}")
+
+    def _nearby_forget_selected_history(self):
+        svc=self._nearby_service(); it=self.lst_nearby_history.currentItem() if hasattr(self,'lst_nearby_history') else None
+        if svc is None or it is None: return
+        row=it.data(Qt.ItemDataRole.UserRole) or {}; name=row.get('name','Groovebox')
+        if QMessageBox.question(self,"Forget Known Groovebox",f"Forget discovery history for {name}?\n\nThis does not delete any files received from that Groovebox.") != QMessageBox.StandardButton.Yes: return
+        svc.forget_peer(str(row.get('node_id',''))); self._refresh_nearby_ui()
+
+    def _nearby_reset_history(self):
+        svc=self._nearby_service()
+        if svc is None: return
+        if QMessageBox.question(self,"Reset Known Grooveboxes History","Clear all remembered Groovebox discovery history?\n\nReceived files, projects, samples and the identity of this Groovebox are not changed.") != QMessageBox.StandardButton.Yes: return
+        n=svc.reset_history(); self.lbl_nearby_progress.setText(f"Cleared {n} remembered Groovebox(es).")
+        self._refresh_nearby_ui()
 
     def _nearby_scan_now(self):
         svc=self._nearby_service()
@@ -2908,7 +2935,8 @@ class Performance(QDialog):
         svc=self._nearby_service(); sel=self._nearby_selected_payload()
         if svc is None or not sel or sel.get('kind')!='peer':
             QMessageBox.information(self,"Send File","Select a connected ● Groovebox peer first."); return
-        path,_=QFileDialog.getOpenFileName(self,"Send file to nearby Groovebox",self._cwd or os.path.dirname(__file__),"All files (*)")
+        import groovebox_paths
+        path,_=QFileDialog.getOpenFileName(self,"Send file to nearby Groovebox",self._cwd or groovebox_paths.base_dir(),"All files (*)")
         if not path:return
         peer=sel['data']; self._nearby_active_peer=peer; self.lbl_nearby_progress.setText(f"Sending {os.path.basename(path)}…")
         def progress(done,total,phase): self._nearby_bridge.progress.emit(int(done),int(total),phase)
@@ -2938,16 +2966,18 @@ class Performance(QDialog):
     def _create_clone_bundle(self):
         try:
             from operation_station_transfer import create_clone_bundle
-            outdir=Path(os.path.dirname(__file__))/"exports"/"clones"; outdir.mkdir(parents=True,exist_ok=True)
+            import groovebox_paths
+            outdir=Path(groovebox_paths.clones_dir()); outdir.mkdir(parents=True,exist_ok=True)
             stamp=time.strftime('%Y%m%d-%H%M%S'); out=outdir/f"MathematiciansGroovebox_V3_OperationStation_{stamp}.mgbclone.zip"
-            self._last_clone_bundle=create_clone_bundle(os.path.dirname(__file__),str(out),include_source=self.chk_clone_source.isChecked(),include_executables=self.chk_clone_exec.isChecked(),include_dependencies=self.chk_clone_deps.isChecked(),include_user_content=self.chk_clone_content.isChecked())
+            self._last_clone_bundle=create_clone_bundle(os.path.dirname(__file__),str(out),include_source=self.chk_clone_source.isChecked(),include_executables=self.chk_clone_exec.isChecked(),include_dependencies=self.chk_clone_deps.isChecked(),include_user_content=self.chk_clone_content.isChecked(),user_data_root=groovebox_paths.base_dir())
             self.lbl_clone.setText(self._last_clone_bundle); self.lbl_status.setText("Versioned Operation Station clone created with SHA-256 manifest.")
         except Exception as e: QMessageBox.warning(self,"Create clone",str(e))
 
     def _verify_clone_bundle(self):
         path=self._last_clone_bundle
         if not path:
-            path,_=QFileDialog.getOpenFileName(self,"Verify Operation Station clone",os.path.dirname(__file__),"Groovebox clone (*.mgbclone.zip *.zip)")
+            import groovebox_paths
+            path,_=QFileDialog.getOpenFileName(self,"Verify Operation Station clone",groovebox_paths.clones_dir(),"Groovebox clone (*.mgbclone.zip *.zip)")
         if not path: return
         try:
             from operation_station_transfer import verify_clone_bundle
@@ -2986,6 +3016,137 @@ class Performance(QDialog):
         except Exception as e: QMessageBox.warning(self,"Copy clone",str(e))
 
     # ------------------------------------------------------------------ hardware
+    # ------------------------------------------------------------------ storage maintenance
+    def _build_storage_tab(self) -> QWidget:
+        w=QWidget(); lay=QVBoxLayout(w)
+        lay.addWidget(QLabel("<b>Groovebox Storage Maintenance</b>"))
+        note=QLabel("Storage cleanup keeps projects, imported originals, completed recordings and exports protected unless you explicitly choose a destructive category. Cache/temp/log cleanup is regenerable. Autosaves are managed separately so crash recovery is never silently erased.")
+        note.setWordWrap(True); lay.addWidget(note)
+        self.lbl_storage_summary=QLabel("Scanning storage…"); self.lbl_storage_summary.setWordWrap(True); self.lbl_storage_summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse); lay.addWidget(self.lbl_storage_summary)
+        row=QHBoxLayout()
+        b=QPushButton("↻ Refresh Usage"); b.clicked.connect(self._refresh_storage_usage); row.addWidget(b)
+        b=QPushButton("Emergency Free Space (Safe)"); b.clicked.connect(self._storage_safe_cleanup); row.addWidget(b)
+        lay.addLayout(row)
+
+        auto=QGroupBox("Autosaves / recovery files"); av=QVBoxLayout(auto)
+        self.lst_storage_autosaves=QListWidget(); self.lst_storage_autosaves.setMinimumHeight(130); av.addWidget(self.lst_storage_autosaves)
+        ar=QHBoxLayout(); b=QPushButton("Recover Selected"); b.clicked.connect(self._storage_recover_autosave); ar.addWidget(b); b=QPushButton("Delete Selected Autosave"); b.clicked.connect(self._storage_delete_autosave); ar.addWidget(b); av.addLayout(ar)
+        lay.addWidget(auto)
+
+        media=QGroupBox("Project media / exports"); mv=QVBoxLayout(media)
+        mr=QHBoxLayout(); b=QPushButton("Find Unused Current-Project Media"); b.clicked.connect(self._storage_find_unused_media); mr.addWidget(b); b=QPushButton("Delete Listed Unused Media"); b.clicked.connect(self._storage_delete_unused_media); mr.addWidget(b); mv.addLayout(mr)
+        self.lst_storage_unused=QListWidget(); self.lst_storage_unused.setMinimumHeight(115); mv.addWidget(self.lst_storage_unused)
+        er=QHBoxLayout(); b=QPushButton("Delete Current Project Exports"); b.clicked.connect(self._storage_delete_project_exports); er.addWidget(b); b=QPushButton("Delete Global Exports"); b.clicked.connect(self._storage_delete_global_exports); er.addWidget(b); mv.addLayout(er)
+        lay.addWidget(media); lay.addStretch(1)
+        QTimer.singleShot(0,self._refresh_storage_usage)
+        return w
+
+    def _refresh_storage_usage(self):
+        if not hasattr(self,'lbl_storage_summary'): return
+        try:
+            import groovebox_paths
+            r=groovebox_paths.storage_report(); c=r['categories']; d=r['disk']; a=r['autosaves']
+            parts=[f"Data root: {r['base']}", f"Groovebox data: {_safe_size_bytes(r['groovebox_bytes'])} in {r['groovebox_files']} files · disk free: {_safe_size_bytes(d['free'])}"]
+            parts.append(" · ".join(f"{k.replace('_',' ').title()}: {_safe_size_bytes(v['bytes'])}" for k,v in c.items()))
+            parts.append(f"Autosaves/recovery: {a['files']} · {_safe_size_bytes(a['bytes'])} (included within project data)")
+            self.lbl_storage_summary.setText("\n".join(parts))
+            if hasattr(self,'lst_storage_autosaves'):
+                self.lst_storage_autosaves.clear()
+                for row in a['items']:
+                    when=time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(float(row.get('mtime',0) or 0)))
+                    notes=str(row.get('notes','') or '').strip().replace('\n',' ')
+                    if len(notes)>90: notes=notes[:90]+'…'
+                    text=f"{row.get('title','Untitled Project')} · {when} · {_safe_size_bytes(row.get('size',0))}"
+                    if notes: text += f" · Notes: {notes}"
+                    item=QListWidgetItem(text); item.setData(Qt.ItemDataRole.UserRole,row); self.lst_storage_autosaves.addItem(item)
+        except Exception as e:
+            self.lbl_storage_summary.setText(f"Storage scan failed: {e}")
+
+    def _storage_safe_cleanup(self):
+        if QMessageBox.question(self,"Emergency Free Space","Clear regenerable cache, temporary files, logs and incomplete recording scratch data?\n\nProjects, imported originals, completed recordings, autosaves and exports are preserved.") != QMessageBox.StandardButton.Yes: return
+        try:
+            import groovebox_paths
+            r=groovebox_paths.cleanup_disposable(("cache","temp","logs","recording_scratch"))
+            QMessageBox.information(self,"Storage cleanup",f"Freed {_safe_size_bytes(r['bytes'])} from {r['files']} file(s).")
+            self._refresh_storage_usage()
+        except Exception as e: QMessageBox.warning(self,"Storage cleanup failed",str(e))
+
+    def _selected_storage_autosave(self):
+        it=self.lst_storage_autosaves.currentItem() if hasattr(self,'lst_storage_autosaves') else None
+        return it.data(Qt.ItemDataRole.UserRole) if it is not None else None
+
+    def _storage_recover_autosave(self):
+        row=self._selected_storage_autosave()
+        if not row: return
+        path=str(row.get('path','')); title=str(row.get('title','Untitled Project')); notes=str(row.get('notes','') or '')
+        msg=f"Recover autosave for {title}?\n\nProject Notes:\n{notes[:1200] if notes else '(none)'}\n\nThis restores the working state without overwriting the last explicit save."
+        if QMessageBox.question(self,"Recover Autosave",msg) != QMessageBox.StandardButton.Yes: return
+        try:
+            data=json.loads(Path(path).read_text(encoding='utf-8'))
+            self.host._apply_project_snapshot(data)
+            rp=Path(path)
+            if rp.name=='autosave.MCC' and rp.parent.name=='metadata':
+                proot=rp.parent.parent; mcc=sorted(proot.glob('*.MCC'))+sorted(proot.glob('*.mcc'))
+                self.host._current_project_path=str(mcc[0] if mcc else proot/(title+'.MCC'))
+            elif path.lower().endswith('.part'): self.host._current_project_path=path[:-5]
+            try: self.host.reload_active_instrument_sequencer_ui()
+            except Exception: pass
+            try: self.host._refresh_after_file_input(reason='storage_recovery')
+            except Exception: pass
+            self.lbl_status.setText(f"Recovered working autosave: {title}")
+        except Exception as e: QMessageBox.warning(self,"Recover failed",str(e))
+
+    def _storage_delete_autosave(self):
+        row=self._selected_storage_autosave()
+        if not row: return
+        if QMessageBox.question(self,"Delete Autosave",f"Delete only this recovery file for {row.get('title','Untitled Project')}?\n\nThe saved project and project media are not deleted.") != QMessageBox.StandardButton.Yes: return
+        try:
+            import groovebox_paths
+            groovebox_paths.delete_autosave(str(row.get('path',''))); self._refresh_storage_usage()
+        except Exception as e: QMessageBox.warning(self,"Delete autosave failed",str(e))
+
+    def _storage_find_unused_media(self):
+        if not hasattr(self,'lst_storage_unused'): return
+        self.lst_storage_unused.clear(); self._storage_unused_candidates=[]
+        path=str(getattr(self.host,'_current_project_path','') or '')
+        if not path:
+            QMessageBox.information(self,"Unused Media","Save or open the working project first so Groovebox can compare media references against its project document."); return
+        try:
+            import groovebox_paths
+            rows=groovebox_paths.find_unreferenced_project_media(path); self._storage_unused_candidates=rows
+            for row in rows:
+                item=QListWidgetItem(f"{row.get('relative',row.get('path',''))} · {_safe_size_bytes(row.get('size',0))}"); item.setData(Qt.ItemDataRole.UserRole,row); self.lst_storage_unused.addItem(item)
+            self.lbl_status.setText(f"Found {len(rows)} unreferenced media candidate(s); nothing was deleted.")
+        except Exception as e: QMessageBox.warning(self,"Unused media scan failed",str(e))
+
+    def _storage_delete_unused_media(self):
+        rows=list(getattr(self,'_storage_unused_candidates',[]) or [])
+        if not rows: return
+        total=sum(int(r.get('size',0) or 0) for r in rows)
+        if QMessageBox.question(self,"Delete Unused Media",f"Delete {len(rows)} listed unreferenced media file(s), totaling {_safe_size_bytes(total)}?\n\nOnly the files currently listed by the reference scan will be removed.") != QMessageBox.StandardButton.Yes: return
+        try:
+            import groovebox_paths
+            r=groovebox_paths.delete_unreferenced_project_media(rows,str(getattr(self.host,'_current_project_path','') or ''))
+            self._storage_unused_candidates=[]; self.lst_storage_unused.clear(); self._refresh_storage_usage(); self.refresh()
+            QMessageBox.information(self,"Unused media",f"Deleted {r['files']} file(s), {_safe_size_bytes(r['bytes'])}.")
+        except Exception as e: QMessageBox.warning(self,"Delete unused media failed",str(e))
+
+    def _storage_delete_project_exports(self):
+        path=str(getattr(self.host,'_current_project_path','') or '')
+        if not path: QMessageBox.information(self,"Project Exports","No saved/open current project."); return
+        if QMessageBox.question(self,"Delete Current Project Exports","Delete all generated exports for the current project?\n\nThe project, samples, recordings and autosaves are preserved.") != QMessageBox.StandardButton.Yes: return
+        try:
+            import groovebox_paths
+            r=groovebox_paths.delete_project_exports(path); self._refresh_storage_usage(); self.refresh(); QMessageBox.information(self,"Project Exports",f"Deleted {r['files']} export file(s), {_safe_size_bytes(r['bytes'])}.")
+        except Exception as e: QMessageBox.warning(self,"Delete exports failed",str(e))
+
+    def _storage_delete_global_exports(self):
+        if QMessageBox.question(self,"Delete Global Exports","Delete generated exports stored outside individual project folders?\n\nProject-local exports are not touched by this action.") != QMessageBox.StandardButton.Yes: return
+        try:
+            import groovebox_paths
+            r=groovebox_paths.delete_all_global_exports(); self._refresh_storage_usage(); self.refresh(); QMessageBox.information(self,"Global Exports",f"Deleted {r['files']} file(s), {_safe_size_bytes(r['bytes'])}.")
+        except Exception as e: QMessageBox.warning(self,"Delete exports failed",str(e))
+
     def _build_hardware_tab(self) -> QWidget:
         w=QWidget(); lay=QVBoxLayout(w)
         lay.addWidget(QLabel("<b>⌨ Hardware · keyboard · touch · controllers · audio · MIDI</b>"))
@@ -3034,7 +3195,8 @@ class Performance(QDialog):
     def _save_box_service(self):
         try:
             from performance_box import systemd_unit
-            path,_=QFileDialog.getSaveFileName(self,"Save Performance Box service",os.path.join(os.path.dirname(__file__),"groovebox-performance.service"),"systemd service (*.service)")
+            import groovebox_paths
+            path,_=QFileDialog.getSaveFileName(self,"Save Performance Box service",os.path.join(groovebox_paths.state_dir(),"groovebox-performance.service"),"systemd service (*.service)")
             if not path: return
             with open(path,'w',encoding='utf-8') as f: f.write(systemd_unit(os.path.dirname(__file__)))
             self.lbl_status.setText(f"Saved box service template: {path}")
