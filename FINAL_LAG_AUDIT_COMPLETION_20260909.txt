@@ -1,0 +1,51 @@
+Mathematician's Groovebox — Final Lag Audit Completion
+Date: 2026-09-09
+
+Scope
+-----
+Final code-level pass for idle CPU, realtime audio callback safety, audiovisual frame-time contention, hidden timers, camera/media ownership, Performance polling, and large-project control-rate work.
+
+New fixes in this completion pass
+---------------------------------
+1. Realtime GOAVA/Parametric DJ scalar path fully isolated from Qt and waveform analysis.
+   - _live_dj_goava_scalar() no longer reads BPM/row widgets.
+   - It no longer calls _dj_row_samples(), _media_carrier_energy(), or get_numeric_seed() from PortAudio.
+   - Row duration is cached as _rt_dj_row_samples.
+   - Imported media RMS steering is precomputed into _rt_media_energy_rows before realtime playback.
+   - Audio callback now performs only scalar/index lookups for this feature.
+
+2. Full-project live canonical modulation moved to control rate.
+   - Previously _live_canonical_offset_and_effects() walked the playlist and instrument parameter state on every scope tick.
+   - Normal scope cadence is ~20 FPS; canonical project traversal is now every 2nd tick (~10 Hz).
+   - Low-power scope cadence is ~6.7 FPS; canonical project traversal is now every 3rd tick (~2.2 Hz).
+   - Audio callback rate and output are not throttled.
+
+3. Prior final-pass fixes retained and verified.
+   - PortAudio clip/BPM/seed controls cached outside callback.
+   - ParametricMathBackground starts only when shown.
+   - Duplicate Domain-editor math-background construction removed.
+   - Camera/mic ownership and release fixes retained.
+   - Cutup/Parametric DJ/Performance hidden polling optimizations retained.
+   - COMPONENT_CLASS_REGISTRY restoration is present.
+
+Expected performance effect
+---------------------------
+- Large-project canonical traversal work during normal audiovisual playback: ~50% fewer full walks.
+- Low-power canonical traversal work: ~67% fewer full walks relative to the already-reduced scope cadence.
+- At 44.1 kHz with 1024-sample audio blocks, PortAudio requests ~43 callbacks/sec. Imported-carrier RMS is no longer computed on those callbacks; it is prepared at transport/control time instead.
+- Idle state has no newly discovered high-frequency hidden polling loops. Persistent intended activity is limited to low-frequency scheduling/autosave paths.
+
+Validation
+----------
+- python -m compileall -q . : PASS
+- Targeted static lag/camera/UI regression contracts: 17 passed
+- COMPONENT_CLASS_REGISTRY assignment present in groovebox.py
+
+Environment limitations / unrelated known test item
+----------------------------------------------------
+- Physical FPS, camera driver release, GPU/Qt paint cost, and audio underrun behavior still require real hardware.
+- This archive still contains julia/GrooveboxHybrid.jl and julia/smoke_test.jl but not julia/src/GrooveboxMeumOT.jl, so test_julia_parity.py cannot perform that source parity check. This is not a lag regression.
+
+Conclusion
+----------
+The static/code-level lag audit is complete. The remaining meaningful optimization work is hardware profiling (actual GUI frame time, GPU/video decode, PortAudio underruns, camera driver behavior, and per-device thermal/CPU limits), not another broad search for always-on background work.

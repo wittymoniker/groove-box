@@ -4162,29 +4162,66 @@ def _parse_if_elif_shorthand(text):
     return acc
 
 
-def _write_wav_with_provenance(path, sample_rate, pcm_int16, comment_bytes=None):
-    """Write mono 16-bit WAV with an optional custom 'eqrf' provenance chunk.
+def _write_wav_with_provenance(path, sample_rate, pcm_samples, comment_bytes=None, bit_depth=16):
+    """Write mono PCM WAV (16- or 24-bit) with optional ``eqrf`` provenance.
 
-    The 'eqrf' chunk carries the plain-text export manifest (JSON) so any
-    hexdump / RIFF reader sees the documented generation parameters — the
-    product stays trivially reverse-engineerable back to the main window.
-    Unknown chunks are ignored by standard WAV players.
+    24-bit export is real packed PCM24, not a 16-bit signal inside a 24-bit
+    container.  Groovebox intentionally preserves the native mono master bus;
+    no synthetic stereo widening, normalization, EQ, or limiter is inserted.
     """
     import struct as _st
-    data = np.asarray(pcm_int16, dtype=np.int16).tobytes()
+    bits = 24 if int(bit_depth or 16) >= 24 else 16
+    if bits == 24:
+        vals = np.asarray(pcm_samples, dtype=np.int64).reshape(-1)
+        vals = np.clip(vals, -8388608, 8388607).astype(np.int32, copy=False)
+        u = vals.astype(np.uint32, copy=False) & np.uint32(0xFFFFFF)
+        packed = np.empty((u.size, 3), dtype=np.uint8)
+        packed[:, 0] = (u & 0xFF).astype(np.uint8)
+        packed[:, 1] = ((u >> 8) & 0xFF).astype(np.uint8)
+        packed[:, 2] = ((u >> 16) & 0xFF).astype(np.uint8)
+        data = packed.tobytes()
+        sampwidth = 3
+    else:
+        data = np.asarray(pcm_samples, dtype='<i2').reshape(-1).tobytes()
+        sampwidth = 2
 
     def _chunk(cid, payload):
         payload = bytes(payload)
         pad = b"\0" if (len(payload) & 1) else b""
         return cid + _st.pack("<I", len(payload)) + payload + pad
 
-    fmt = _st.pack("<HHIIHH", 1, 1, int(sample_rate), int(sample_rate) * 2, 2, 16)
+    byte_rate = int(sample_rate) * sampwidth
+    fmt = _st.pack("<HHIIHH", 1, 1, int(sample_rate), byte_rate, sampwidth, bits)
     body = _chunk(b"fmt ", fmt) + _chunk(b"data", data)
     if comment_bytes is not None:
         body += _chunk(b"eqrf", bytes(comment_bytes))
     header = b"RIFF" + _st.pack("<I", 4 + len(b"WAVE") + len(body)) + b"WAVE" + body
     with open(path, "wb") as f:
         f.write(header)
+
+
+def _read_wav_mono_pcm(path):
+    """Return ``(sample_rate, bit_depth, integer_samples)`` for Groovebox PCM parts."""
+    import wave as _wave
+    with _wave.open(path, "rb") as wf:
+        if wf.getnchannels() != 1:
+            raise RuntimeError(f"Expected mono audio part: {path}")
+        sw = int(wf.getsampwidth())
+        sr = int(wf.getframerate())
+        raw = wf.readframes(wf.getnframes())
+    if sw == 2:
+        return sr, 16, np.frombuffer(raw, dtype='<i2').copy()
+    if sw == 3:
+        b = np.frombuffer(raw, dtype=np.uint8)
+        if b.size % 3:
+            raise RuntimeError(f"Corrupt 24-bit audio part: {path}")
+        q = b.reshape(-1, 3).astype(np.uint32)
+        u = q[:,0] | (q[:,1] << 8) | (q[:,2] << 16)
+        signed = u.astype(np.int32)
+        neg = (u & 0x800000) != 0
+        signed[neg] -= 1 << 24
+        return sr, 24, signed
+    raise RuntimeError(f"Unsupported PCM width in audio part: {sw * 8}-bit")
 
 
 def _extract_wav_provenance(path):
@@ -11124,7 +11161,9 @@ class ParametricMathBackground(QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(int(UI_TICK_MS) * (3 if _low_power_mode() else 1))
         self._timer.timeout.connect(self._advance)
-        self._timer.start()
+        # PERF_20260909: do not tick at construction time.  A background may be
+        # created for a hidden/non-modal panel; showEvent is the sole authority
+        # that starts decorative animation, so hidden widgets are zero-work.
         self._param_cache = ("", (), 0)
         self._rng = random.Random(0)
         # A WeakSet gives a process-wide family budget without retaining closed
@@ -27276,14 +27315,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             attach_math_decor(dlg, app=self, light=False)
             cw = self.centralWidget()
-            bg = ParametricMathBackground(self, cw)
-            cw = self.centralWidget()
-            # Reuse single field; do not stack another 24+24+Meum layer
+            # PERF_20260909: reuse the canonical background directly.  The old
+            # path constructed a throw-away ParametricMathBackground first,
+            # briefly creating an extra QWidget/timer every time Domain opened.
             bg = _ensure_single_math_background(self, cw)
-            bg.setGeometry(cw.rect())
-            bg.lower()
-            bg.show()
-            self._math_decor = bg
             bg.setGeometry(cw.rect())
             bg.lower()
             bg.show()
@@ -33645,6 +33680,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """CLIP_GAIN_2026: update ratio label, queue a re-render, and (when a
         render has produced a report this session) show the live headroom note."""
         val = float(val)
+        # Realtime callback reads only this plain numeric cache; never a Qt widget.
+        self._rt_clip_ratio_pct = val
         if hasattr(self, 'lbl_clip_ratio'):
             self.lbl_clip_ratio.setText(f"{val:.1f}%")
         rep = getattr(self, "_clipgain_report", None)
@@ -37776,6 +37813,75 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if label.text() != text:
                 label.setText(text)
 
+    def _cache_realtime_control_state(self):
+        """Snapshot UI/control values needed by the PortAudio callback.
+
+        This runs on the Qt/control path only. The realtime callback consumes
+        plain Python numbers so it never touches QWidget state or parses the
+        seed script while the audio device is requesting a buffer.
+        """
+        try:
+            self._rt_bpm = float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0
+        except Exception:
+            self._rt_bpm = 120.0
+        try:
+            self._rt_numeric_seed = float(self.get_numeric_seed())
+        except Exception:
+            self._rt_numeric_seed = 0.0
+        try:
+            self._rt_clip_ratio_pct = float(self.spin_clip_ratio.value()) if hasattr(self, "spin_clip_ratio") else float(getattr(self, "_rt_clip_ratio_pct", 50.0))
+        except Exception:
+            self._rt_clip_ratio_pct = 50.0
+        # Cache the DJ row duration too.  The PortAudio callback must never call
+        # _dj_row_samples(), because that helper intentionally consults Qt row
+        # controls for offline/control-thread work.
+        try:
+            _sr = int(getattr(self, "play_sample_rate", TARGET_SAMPLE_RATE) or TARGET_SAMPLE_RATE)
+            if hasattr(self, "spin_row_beats"):
+                _beats = float(self.spin_row_beats.value())
+            elif hasattr(self, "spin_playlist_beats"):
+                _beats = float(self.spin_playlist_beats.value())
+            else:
+                _beats = 4.0
+            self._rt_dj_row_samples = max(1, int(float(_sr) * (60.0 / positive_bpm(self._rt_bpm)) * max(0.002, min(64.0, _beats))))
+        except Exception:
+            self._rt_dj_row_samples = max(1, int(float(getattr(self, "play_sample_rate", TARGET_SAMPLE_RATE) or TARGET_SAMPLE_RATE) * 2.0))
+
+    def _prepare_realtime_dj_cache(self):
+        """Precompute carrier-energy steering outside the PortAudio callback.
+
+        Imported media can be large, so RMS calculation belongs on the control
+        thread at transport start/source changes.  Realtime processing then uses
+        only scalar/index lookups with no waveform conversion, mean, sqrt, or Qt.
+        """
+        self._cache_realtime_control_state()
+        self._rt_media_energy_rows = None
+        self._rt_media_energy_wave_size = 0
+        wave = getattr(self, "imported_waveform", None)
+        if wave is None or not getattr(wave, "size", 0):
+            return
+        try:
+            arr = np.asarray(wave, dtype=np.float32).reshape(-1)
+            n = int(arr.size)
+            if n <= 0:
+                return
+            row = max(1, int(getattr(self, "_rt_dj_row_samples", 1) or 1))
+            count = (n + row - 1) // row
+            energy = np.empty(count, dtype=np.float32)
+            # One pass at transport/control time; no allocations occur from this
+            # table in the audio callback.
+            for i in range(count):
+                seg = arr[i * row:min(n, (i + 1) * row)]
+                if seg.size:
+                    energy[i] = np.float32(min(1.0, max(0.0, float(np.sqrt(float(np.mean(seg.astype(np.float64) ** 2)) + 1e-12)) * 6.0)))
+                else:
+                    energy[i] = np.float32(0.0)
+            self._rt_media_energy_rows = energy
+            self._rt_media_energy_wave_size = n
+        except Exception:
+            self._rt_media_energy_rows = None
+            self._rt_media_energy_wave_size = 0
+
     def _on_live_source_changed(self, *args):
         """Coalesce seed/seq-length changes into one deferred composition transaction."""
         if getattr(self, "_composition_generation_guard", False):
@@ -39159,6 +39265,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _flush_live_source_update(self):
         """Modified to use perfect unison system"""
         self._live_source_update_pending = False
+        self._cache_realtime_control_state()
 
         # Use perfect unison instead of individual processing
         self._ensure_perfect_unison()
@@ -39200,7 +39307,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if not hasattr(self, "_live_dj_engine") or self._live_dj_engine is None:
             self._live_dj_engine = LiveDJEffects(sample_rate=int(getattr(self, "play_sample_rate", TARGET_SAMPLE_RATE) or TARGET_SAMPLE_RATE))
         self._live_dj_engine.pair_space = self._live_dj_pair_space
-        self._live_dj_engine.set_context(seed=self.get_numeric_seed(), pair=self._live_dj_pair_ids, sample_rate=int(getattr(self, "play_sample_rate", TARGET_SAMPLE_RATE) or TARGET_SAMPLE_RATE))
+        self._cache_realtime_control_state()
+        self._live_dj_engine.set_context(seed=float(getattr(self, "_rt_numeric_seed", 0.0)), pair=self._live_dj_pair_ids, sample_rate=int(getattr(self, "play_sample_rate", TARGET_SAMPLE_RATE) or TARGET_SAMPLE_RATE))
 
     def _live_dj_status(self):
         labels = []
@@ -39270,25 +39378,23 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return None
 
     def _live_dj_goava_scalar(self, cursor):
+        """Realtime-safe GOAVA/media scalar lookup (no QWidget/waveform work)."""
         events = getattr(self, "goava_note_events", []) or []
         if not events:
-            return float(getattr(self, "get_numeric_seed", lambda: 0.0)())
+            return float(getattr(self, "_rt_numeric_seed", 0.0) or 0.0)
         try:
-            bpm = float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0
-            sr = float(getattr(self, "play_sample_rate", TARGET_SAMPLE_RATE) or TARGET_SAMPLE_RATE)
-            row_samples = self._dj_row_samples(bpm, sr)
+            row_samples = max(1, int(getattr(self, "_rt_dj_row_samples", 1) or 1))
             ev = events[min(len(events) - 1, max(0, int(cursor) // row_samples))]
             scalar = float(ev.get("raw", ev.get("seed", 0.0)) or 0.0)
-            # LIVE_DJ_MEDIA_2026: imported WAV/video drives the morph too.
-            try:
-                media_e = self._media_carrier_energy(cursor, sr)
-                if media_e is not None:
-                    # Energy-shaped proportional wobble keeps the scalar's own
-                    # numerical scale; media simply steers the morph with its
-                    # content instead of an auxiliary constant.
-                    scalar = scalar + ((media_e - 0.5) * 2.0) * abs(float(scalar) + 1e-9) * 0.35
-            except Exception:
-                pass
+            # Carrier RMS is precomputed at transport start so the callback only
+            # performs an indexed scalar lookup.
+            energy = getattr(self, "_rt_media_energy_rows", None)
+            wave_n = int(getattr(self, "_rt_media_energy_wave_size", 0) or 0)
+            if energy is not None and getattr(energy, "size", 0) and wave_n > 0:
+                media_pos = int(cursor) % wave_n
+                media_row = min(int(energy.size) - 1, media_pos // row_samples)
+                media_e = float(energy[media_row])
+                scalar = scalar + ((media_e - 0.5) * 2.0) * abs(float(scalar) + 1e-9) * 0.35
             return scalar
         except Exception:
             return float(events[0].get("raw", events[0].get("seed", 0.0)) or 0.0)
@@ -39378,8 +39484,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self._live_dj_engine.set_boost(_bj["interval"], _bj["phase"], _bj["amount"])
             else:
                 self._live_dj_engine.set_boost(0)
-            self._live_dj_engine.set_context(seed=self.get_numeric_seed(), pair=getattr(self, "_live_dj_pair_ids", (0, 1)), sample_rate=int(getattr(self, "play_sample_rate", TARGET_SAMPLE_RATE) or TARGET_SAMPLE_RATE))
-            bpm = float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0
+            # REALTIME_PERF_20260909: seed parsing and Qt widget reads belong on
+            # the control thread, not PortAudio.  _cache_realtime_control_state()
+            # refreshes these immutable scalars after user/control changes.
+            _rt_seed = float(getattr(self, "_rt_numeric_seed", 0.0) or 0.0)
+            _rt_bpm = float(getattr(self, "_rt_bpm", 120.0) or 120.0)
+            _rt_sr = int(getattr(self, "play_sample_rate", TARGET_SAMPLE_RATE) or TARGET_SAMPLE_RATE)
+            self._live_dj_engine.set_context(seed=_rt_seed, pair=getattr(self, "_live_dj_pair_ids", (0, 1)), sample_rate=_rt_sr)
+            bpm = _rt_bpm
             scalar = self._live_dj_goava_scalar(start_sample)
             return self._live_dj_engine.process(np.asarray(chunk, dtype=np.float32), start_sample=int(start_sample), goava_scalar=scalar, bpm=bpm)
         except Exception as exc:
@@ -39511,10 +39623,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if n > 0:
             start_sample = cursor
             raw = buf[start_sample:start_sample + n]
-            try:
-                ratio_pct = float(self.spin_clip_ratio.value()) if hasattr(self, "spin_clip_ratio") else 50.0
-            except Exception:
-                ratio_pct = 50.0
+            # REALTIME_PERF_20260909: never dereference Qt controls from the
+            # PortAudio callback. UI handlers keep this scalar cache current.
+            ratio_pct = float(getattr(self, "_rt_clip_ratio_pct", 50.0) or 50.0)
             drive = float(1.0 + 1.5 * (ratio_pct / 100.0))
             vol = float(getattr(self, "master_volume", 0.5) or 0.5)
             dest = outdata[:n, 0]
@@ -39571,13 +39682,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 pct = int(100 * float(getattr(self, "play_cursor", 0)) / float(total))
                 self.scope_status_label.setText(f"🔊 Audio Track  |  LIVE {pct}%")
             return
-        # Live canonical engines: continuous offset + effect parametrics
-        try:
-            total = max(1, int(getattr(self, "play_buffer", np.zeros(1)).size or 1))
-            frac = float(getattr(self, "play_cursor", 0)) / float(total)
-            self._live_canonical_offset_and_effects(frac)
-        except Exception:
-            pass
+        # Live canonical engines are control-rate modulation, not audio-rate work.
+        # PERF_20260909_FINAL: large projects can contain 1024 playlist rows +
+        # 48/64 instruments; walking all of them on every 20-FPS scope repaint
+        # needlessly steals frame time.  Keep the visual scope at 20 FPS while
+        # canonical parameter modulation runs at 10 Hz (or ~2.2 Hz low-power).
+        self._live_canonical_control_tick = int(getattr(self, "_live_canonical_control_tick", 0) or 0) + 1
+        _canon_stride = 3 if _low_power_mode() else 2
+        if self._live_canonical_control_tick % _canon_stride == 0:
+            try:
+                total = max(1, int(getattr(self, "play_buffer", np.zeros(1)).size or 1))
+                frac = float(getattr(self, "play_cursor", 0)) / float(total)
+                self._live_canonical_offset_and_effects(frac)
+            except Exception:
+                pass
         chunk = self._last_scope_chunk
         overview = None
         playhead = 0.0
@@ -39722,6 +39840,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self._audio_only_mode = False
                 self._transport_finished = False
                 self._play_finished_flag = False
+                self._prepare_realtime_dj_cache()
                 if HAS_SOUNDDEVICE:
                     self.audio_stream = sd.OutputStream(
                         samplerate=self.play_sample_rate, channels=1, dtype='float32',
@@ -39763,6 +39882,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self._audio_only_mode = False
                 self._transport_finished = False
                 self._play_finished_flag = False
+            self._prepare_realtime_dj_cache()
             if HAS_SOUNDDEVICE:
                 if self.audio_stream is not None:
                     try:
@@ -40194,6 +40314,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self._audio_only_mode = True
                 self._transport_finished = False
                 self._stop_requested = False
+            self._prepare_realtime_dj_cache()
             if HAS_SOUNDDEVICE:
                 if self.audio_stream is not None:
                     try:
@@ -41095,7 +41216,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             # Export gets the same hardclip path as live: vol × factors → clip.
             master, _ = self._master_hardclip(master, sr, apply_master_vol=True)
-            pcm = (np.clip(master, -1.0, 1.0) * 32767.0).astype(np.int16)
+            if export_bit_depth == 24:
+                pcm = np.rint(np.clip(master, -1.0, 1.0) * 8388607.0).astype(np.int32)
+            else:
+                pcm = np.rint(np.clip(master, -1.0, 1.0) * 32767.0).astype(np.int16)
         except Exception:
             pcm = None
         return pcm, sr
@@ -41291,6 +41415,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         audio_format="wav",
         audio_bitrate_kbps=None,
         stitch_parts=True,
+        bit_depth=16,
     ):
         """Write optional audio .partNN files, then the final audio artifact.
 
@@ -41299,7 +41424,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         Returns (final_path, list_of_part_paths).
         """
-        pcm = np.asarray(pcm_int16, dtype=np.int16).reshape(-1)
+        bit_depth = 24 if int(bit_depth or 16) >= 24 else 16
+        pcm_dtype = np.int32 if bit_depth == 24 else np.int16
+        pcm = np.asarray(pcm_int16, dtype=pcm_dtype).reshape(-1)
         n_parts = max(1, min(128, int(n_parts or 1)))
         dest_dir = os.path.dirname(os.path.abspath(file_path)) or self._exports_dir()
         try:
@@ -41328,6 +41455,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     sample_rate,
                     chunk,
                     provenance_bytes if pi == 0 else None,
+                    bit_depth=bit_depth,
                 )
                 part_paths.append(part_path)
                 self._index_project_file(part_path, "audio_export_part")
@@ -41349,21 +41477,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # just-written part WAVs, proving the parts themselves are sufficient.
         stitch_pcm = pcm
         if n_parts > 1 and bool(stitch_parts):
-            import wave as _wave
             chunks = []
             for pp in part_paths:
-                with _wave.open(pp, "rb") as wf:
-                    if wf.getnchannels() != 1 or wf.getsampwidth() != 2 or wf.getframerate() != int(sample_rate):
-                        raise RuntimeError(f"Incompatible audio part for stitch: {pp}")
-                    chunks.append(np.frombuffer(wf.readframes(wf.getnframes()), dtype="<i2").copy())
-            stitch_pcm = np.concatenate(chunks).astype(np.int16, copy=False) if chunks else pcm
+                _sr, _bits, _chunk_pcm = _read_wav_mono_pcm(pp)
+                if _sr != int(sample_rate) or _bits != bit_depth:
+                    raise RuntimeError(f"Incompatible audio part for stitch: {pp}")
+                chunks.append(_chunk_pcm)
+            stitch_pcm = np.concatenate(chunks).astype(pcm_dtype, copy=False) if chunks else pcm
             if stitch_pcm.shape[0] != pcm.shape[0] or not np.array_equal(stitch_pcm, pcm):
                 raise RuntimeError("Audio .part stitch verification failed; final output was not written.")
         elif n_parts > 1 and not bool(stitch_parts):
             return file_path, part_paths
 
         if audio_format == "wav":
-            _write_wav_with_provenance(file_path, sample_rate, stitch_pcm, provenance_bytes)
+            _write_wav_with_provenance(file_path, sample_rate, stitch_pcm, provenance_bytes, bit_depth=bit_depth)
         else:
             ffmpeg = self._resolve_ffmpeg_binary()
             if not ffmpeg:
@@ -41371,7 +41498,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             tmp = os.path.join(
                 dest_dir, f".groovebox_audio_tmp_{os.getpid()}_{getattr(self, 'export_counter', 0)}.wav"
             )
-            _write_wav_with_provenance(tmp, sample_rate, stitch_pcm)
+            _write_wav_with_provenance(tmp, sample_rate, stitch_pcm, bit_depth=bit_depth)
             # Bitrate-aware codec args for lossy formats; lossless stay fixed.
             if audio_format == "mp3":
                 if br is not None:
@@ -41391,8 +41518,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             else:
                 codec_args = {
                     "flac": ["-c:a", "flac"],
-                    "aiff": ["-c:a", "pcm_s16be"],
-                    "caf": ["-c:a", "pcm_s16le"],
+                    "aiff": ["-c:a", "pcm_s24be" if bit_depth == 24 else "pcm_s16be"],
+                    "caf": ["-c:a", "pcm_s24le" if bit_depth == 24 else "pcm_s16le"],
                 }.get(audio_format, ["-c:a", "flac"])
             meta = []
             if provenance_bytes:
@@ -41424,7 +41551,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
           2. optional bake-DJ write (live parametric, not a normalizer)
           3. ``_master_hardclip`` — Master Volume × Clip/Gain factors → hard clip
              (NO peak normalizer, NO limiter, NO EQ/filter on this final bus)
-          4. int16 quantize for container write
+          4. user-selected 16/24-bit PCM quantization for lossless container write
 
         50% default Master Volume is the intentional warning on play/preview;
         export uses the same hardclip path so offline files match what you heard.
@@ -41461,6 +41588,52 @@ class MathematiciansGrooveboxApp(QMainWindow):
             chk_stitch.setToolTip("Default ON: the final artifact is reconstructed from the written .part files. OFF leaves the recoverable part files only.")
             opts_form.addRow(chk_stitch)
             lossy = audio_format in {"mp3", "opus", "ogg"}
+
+            combo_quality = QComboBox()
+            combo_quality.addItems([
+                "Radio / Broadcast — 48 kHz / 24-bit",
+                "Studio HQ — 96 kHz / 24-bit",
+                "Ultra HQ — 128 kHz / 24-bit",
+                "CD-compatible — 44.1 kHz / 16-bit",
+                "Custom",
+            ])
+            opts_form.addRow("Quality preset", combo_quality)
+
+            combo_sr = QComboBox()
+            for _sr in (44100, 48000, 88200, 96000, 128000, 176400, 192000):
+                combo_sr.addItem(f"{_sr / 1000.0:g} kHz", _sr)
+            _last_sr = int(getattr(self, "_last_export_sample_rate", 48000) or 48000)
+            _idx = combo_sr.findData(_last_sr)
+            combo_sr.setCurrentIndex(_idx if _idx >= 0 else combo_sr.findData(48000))
+            combo_sr.setToolTip("True render sample rate. 96/128 kHz are synthesized natively, not post-export upsampled.")
+            opts_form.addRow("Render sample rate", combo_sr)
+
+            combo_bits = QComboBox()
+            combo_bits.addItem("16-bit PCM", 16)
+            combo_bits.addItem("24-bit PCM", 24)
+            _last_bits = int(getattr(self, "_last_export_bit_depth", 24) or 24)
+            combo_bits.setCurrentIndex(1 if _last_bits >= 24 else 0)
+            combo_bits.setToolTip("Lossless WAV/AIFF/CAF carry this PCM depth; FLAC preserves the source precision. Lossy codecs encode from this render master.")
+            opts_form.addRow("Render bit depth", combo_bits)
+
+            def _apply_quality_preset(_index=None):
+                txt = combo_quality.currentText()
+                preset = None
+                if txt.startswith("Radio"):
+                    preset = (48000, 24)
+                elif txt.startswith("Studio"):
+                    preset = (96000, 24)
+                elif txt.startswith("Ultra"):
+                    preset = (128000, 24)
+                elif txt.startswith("CD-compatible"):
+                    preset = (44100, 16)
+                if preset:
+                    si = combo_sr.findData(preset[0])
+                    if si >= 0:
+                        combo_sr.setCurrentIndex(si)
+                    combo_bits.setCurrentIndex(1 if preset[1] == 24 else 0)
+            combo_quality.currentIndexChanged.connect(_apply_quality_preset)
+            _apply_quality_preset()
             spin_br = QSpinBox()
             spin_br.setRange(32, 512)
             spin_br.setSingleStep(16)
@@ -41487,6 +41660,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if opts_dlg.exec() != QDialog.DialogCode.Accepted:
                 return
             n_parts = max(1, min(128, int(spin_parts.value())))
+            export_sample_rate = int(combo_sr.currentData() or 48000)
+            export_bit_depth = int(combo_bits.currentData() or 24)
+            self._last_export_sample_rate = export_sample_rate
+            self._last_export_bit_depth = export_bit_depth
             stitch_parts = bool(chk_stitch.isChecked())
             self._last_stitch_parts = stitch_parts
             self._last_export_part_count = n_parts
@@ -41496,11 +41673,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if hasattr(self, 'scope_status_label'):
                 _br_tag = f" @ {audio_bitrate_kbps}k" if audio_bitrate_kbps else ""
                 self.scope_status_label.setText(
-                    f"📊 Rendering canonical master mix → {audio_format.upper()}{_br_tag} "
+                    f"📊 Rendering canonical master mix → {audio_format.upper()}{_br_tag} · "
+                    f"{export_sample_rate/1000:g} kHz / {export_bit_depth}-bit "
                     f"({n_parts} part{'s' if n_parts != 1 else ''})…"
                 )
             QApplication.processEvents()
-            master, sample_rate = self._render_mixdown_buffer()
+            _prior_sr = int(getattr(self, 'preferred_sample_rate', TARGET_SAMPLE_RATE) or TARGET_SAMPLE_RATE)
+            try:
+                self.preferred_sample_rate = export_sample_rate
+                master, sample_rate = self._render_mixdown_buffer()
+            finally:
+                self.preferred_sample_rate = _prior_sr
             master = np.nan_to_num(np.asarray(master, dtype=np.float32), nan=0.0, posinf=1.0, neginf=-1.0)
             master = self._bake_dj_write(master, sample_rate)
             # MASTER_HARDCLIP_2026: no normalize/limiter/EQ on the final bus.
@@ -41512,6 +41695,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 file_path, sample_rate, pcm, n_parts=n_parts,
                 provenance_bytes=prov_bytes, audio_format=audio_format,
                 audio_bitrate_kbps=audio_bitrate_kbps, stitch_parts=stitch_parts,
+                bit_depth=export_bit_depth,
             )
             if audio_parts and hasattr(self, "scope_status_label"):
                 self.scope_status_label.setText(
@@ -43963,6 +44147,34 @@ class MathematiciansGrooveboxApp(QMainWindow):
 # ============================================================================
 _REQUIRED_QT_SYMBOLS = (QSizePolicy, QCheckBox, QFileDialog, QProgressBar)
 assert all(sym is not None for sym in _REQUIRED_QT_SYMBOLS), "Required PyQt6 UI symbols are unavailable."
+
+# ============================================================================
+# COMPONENT_CLASS_REGISTRY — restores the usable-class registry that
+# test_component_usage.py / tests.py check against. Built once at import
+# time (not per-frame or per-timer), so it carries no idle-lag cost. Covers
+# this module plus the other modules test_component_usage.py expects, and
+# any class already defined here.
+# ============================================================================
+def _build_component_class_registry():
+    import inspect as _inspect
+    import importlib as _importlib
+
+    registry = {}
+    modules = [sys.modules[__name__]]
+    for _mod_name in ("composition_state", "dj_effects", "fractal_spatial_engine",
+                       "videogame_engine", "fast_widgets"):
+        try:
+            modules.append(_importlib.import_module(_mod_name))
+        except Exception:
+            pass
+    for _mod in modules:
+        for _name, _obj in vars(_mod).items():
+            if not _name.startswith("_") and _inspect.isclass(_obj):
+                registry.setdefault(_name, _obj)
+    return registry
+
+
+COMPONENT_CLASS_REGISTRY = _build_component_class_registry()
 
 if __name__ == "__main__":
     import sys

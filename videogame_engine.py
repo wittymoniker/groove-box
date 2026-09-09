@@ -1619,7 +1619,7 @@ def seed_script_channels(seed_script, t=0.0):
 # two shared (Python / PyQt6) system dependencies.
 # ---------------------------------------------------------------------------
 try:
-    from PyQt6.QtCore import QTimer, Qt, QPointF, QRect, QUrl
+    from PyQt6.QtCore import QTimer, Qt, QPointF, QRect, QUrl, QEvent
     from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QBrush, QPolygonF, QImage
     from PyQt6.QtWidgets import (
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -3223,9 +3223,6 @@ class Game:
         # Procedural level geometry from seed + level_type (generative, not fixed mesh)
         self.level_geometry = self._generate_level_geometry(
             _safe_int_seed(self.id["seed"]) & 0x7FFFFFFF, self.level_type)
-        self.planetary = PlanetaryWorld(_safe_int_seed(self.id["seed"]))
-        self.sprite_grammar = SpriteGrammar(_safe_int_seed(self.id["seed"]))
-        self.physics_mode = "planetary_gravity"
         self.planetary = PlanetaryWorld(_safe_int_seed(self.id["seed"]))
         self.sprite_grammar = SpriteGrammar(_safe_int_seed(self.id["seed"]))
         self.physics_mode = "planetary_gravity"
@@ -6642,6 +6639,7 @@ if HAS_UI:
             self.players = []
             self.video_players = []
             self.audio_players = []
+            self._active = True
             if not HAS_MEDIA_UI:
                 return
             vp = dict(self.meta.get("visual_policy") or {})
@@ -6700,6 +6698,33 @@ if HAS_UI:
                 if key == "carrier": self.carrier_image = img
                 else: self.instrument_images[str(key)] = img
             except Exception: pass
+
+        def set_active(self, active):
+            """Suspend package-local media while the game is hidden/minimized.
+
+            Decoders are deliberately kept allocated so resume is cheap, but Qt is
+            not asked to decode/mix frames that cannot be seen or heard.
+            """
+            active = bool(active)
+            if active == self._active:
+                return
+            self._active = active
+            for player in list(self.players):
+                try:
+                    if active:
+                        player.play()
+                    else:
+                        player.pause()
+                except Exception:
+                    pass
+
+        def shutdown(self):
+            self._active = False
+            for player in list(self.players):
+                try:
+                    player.stop()
+                except Exception:
+                    pass
 
         def _start(self):
             car = dict(self.meta.get("carrier") or {})
@@ -7700,6 +7725,12 @@ if HAS_UI:
             self.timer.timeout.connect(self._tick)
             self.timer.start()
             self._last = time.monotonic()
+            # World/viewport remains ~30 FPS, but text/status widgets are control
+            # rate only.  Rewriting dozens of QLabel values every frame causes
+            # needless layout/paint traffic on integrated GPUs and tablets.
+            self._panel_interval = 0.10
+            self._next_panel_refresh = self._last
+            self._net_per_frame = 64
             if game.online:
                 name, ok = QInputDialog.getText(self, "Player name", "Name on the orbit:", text="Player")
                 if ok and name.strip():
@@ -7732,21 +7763,60 @@ if HAS_UI:
             self.panel.append_status("--- PLAY ---")
 
         def _tick(self):
+            # Hidden/minimized windows should consume effectively no game render
+            # budget.  show/change events restart timing without a giant dt jump.
+            if not self.isVisible() or self.isMinimized():
+                return
             g = self.game
             now = time.monotonic()
             dt = max(1/120, min(1/20, now - self._last))
             self._last = now
             if self.timer.isActive() and g.running:
                 g.tick(dt)
-            while True:
+            # Bound queue work per frame.  Bursts are preserved in the queue and
+            # drained over subsequent frames instead of monopolising the GUI loop.
+            for _ in range(self._net_per_frame):
                 try:
                     obj = g.net.in_queue.get_nowait()
                 except queue.Empty:
                     break
                 if obj.get("type") in ("chat", "sys"):
                     self.panel.append_status(f"[{g.t:.1f}] {obj.get('sender', 'sys')}: {obj.get('text', '')}")
-            self.panel.refresh()
+            if now >= self._next_panel_refresh:
+                self._next_panel_refresh = now + self._panel_interval
+                self.panel.refresh()
             self.view.update()
+
+        def _set_runtime_active(self, active):
+            media = getattr(self.game, "bound_media", None)
+            if media is not None:
+                try:
+                    media.set_active(bool(active))
+                except Exception:
+                    pass
+            self._last = time.monotonic()
+            self._next_panel_refresh = self._last
+
+        def showEvent(self, e):
+            super().showEvent(e)
+            self._set_runtime_active(True)
+            if not self.timer.isActive():
+                self.timer.start()
+
+        def hideEvent(self, e):
+            self.timer.stop()
+            self._set_runtime_active(False)
+            super().hideEvent(e)
+
+        def changeEvent(self, e):
+            super().changeEvent(e)
+            if e.type() == QEvent.Type.WindowStateChange:
+                minimized = self.isMinimized()
+                self._set_runtime_active(not minimized)
+                if minimized:
+                    self.timer.stop()
+                elif self.isVisible() and not self.timer.isActive():
+                    self.timer.start()
 
         def keyPressEvent(self, e):
             g = self.game
@@ -7784,6 +7854,12 @@ if HAS_UI:
 
         def closeEvent(self, e):
             self.timer.stop()
+            media = getattr(self.game, "bound_media", None)
+            if media is not None:
+                try:
+                    media.shutdown()
+                except Exception:
+                    pass
             if getattr(self.game, "record_path", None):
                 try:
                     path = self.game.save_recording(

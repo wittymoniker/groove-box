@@ -67,6 +67,26 @@ CHANGES MADE
    - The GUI completion pump idles at 100 ms and switches to 16 ms cadence only
      while actual callbacks are flowing, replacing a permanent empty 60-Hz poll.
 
+8. REALTIME AUDIO CALLBACK THREAD
+   - Removed Qt widget reads from the PortAudio callback for Clip Master and BPM.
+   - Removed seed-script evaluation/get_numeric_seed() from the live DJ callback.
+   - Added cached realtime scalar state refreshed on the Qt/control path, so the
+     audio callback consumes plain numbers only. This reduces callback jitter and
+     avoids cross-thread QWidget access while GOAVA DJ / Parametric DJ is active.
+
+9. PARAMETRIC BACKGROUND CONSTRUCTION
+   - Main ParametricMathBackground no longer starts its animation timer in __init__.
+     showEvent is now the sole start point, so hidden/newly-created backgrounds do
+     zero work before they are actually shown.
+   - Removed a duplicate throw-away ParametricMathBackground construction in the
+     Domain editor path; the editor now reuses the canonical background directly.
+
+10. FINAL TIMER / POLLING PASS
+   - Persistent QTimer construction sites were re-audited. Remaining always-on work
+     is limited to the intentional 3-minute autosave and low-frequency sCode host/UI
+     scheduling. Performance, Cutup, camera/mic, live-engine and game timers remain
+     demand-driven.
+
 INTENTIONALLY ACTIVE / NOT REMOVED
 ----------------------------------
 - Main autosave: one durability request every 3 minutes.
@@ -84,6 +104,7 @@ VALIDATION
 ----------
 - Python compile check passed for modified Groovebox modules.
 - Whole package compileall completed without syntax errors.
+- Final static hot-path assertions passed: component registry present; no constructor-started main math timer; no duplicate Domain math background; no Clip/BPM QWidget read or seed parsing inside the realtime audio/DJ callback.
 - Added test_idle_lag_camera_contract.py.
 - Relevant source/contract test run: 5 passed.
 - Existing video/game/project/subwindow/sCode contract tests remained passing in
@@ -96,3 +117,22 @@ or a physical Windows/macOS camera available, so the actual OS camera privacy
 indicator/device handoff must still be verified on the user's machine. The code
 now explicitly performs the stop/detach/delete lifecycle expected to release the
 device rather than retaining a preview capture after recording.
+
+VIDEO-GAME REALTIME LAG EXTENSION — 2026-09-09
+------------------------------------------------
+Applied the desktop realtime/idle discipline to every newly generated Groovebox game:
+* Visible world/viewport simulation remains ~30 FPS (33 ms timer).
+* HUD/control-panel refresh is independently throttled to 10 Hz, avoiding redundant Qt label/layout/paint traffic every frame.
+* Hidden/minimized game windows stop the simulation/render timer and reset their dt clock on resume.
+* Bound carrier/instrument QMediaPlayer instances pause while hidden/minimized and resume when visible; close performs an explicit media shutdown.
+* Network UI queue draining is capped at 64 messages/frame. Bursts remain queued rather than freezing one render frame.
+* Duplicate PlanetaryWorld/SpriteGrammar construction in generated-game startup was removed.
+* Game media still uses bounded decoder/player counts and cached QImage frames; paintEvent blits cached images rather than decoding video itself.
+
+Validation:
+* python -m compileall -q . : PASS
+* python test_game_runtime.py : PASS (tick, instant video frame, MusicBed headroom, LiveSFX)
+* targeted pytest lag/video contracts : 12 passed
+* test_game_lag_contract.py added to prevent regression of pause/throttle/bounded-drain behavior.
+
+Hardware note: real GPU/Qt decoder FPS, thermals, camera/media driver latency, and audio underruns still require physical-device profiling.

@@ -1,0 +1,250 @@
+===== test_algorithm_automation_parity.py =====
+PASS algorithm XMOD step/automation variable parity without lane composition
+RC=0
+
+===== test_author_number_codec.py =====
+PASS author number codec crossbars 5188
+PASS integer crossbar authored packets
+PASS full-cycle 16 invariant: 12 solid main strokes + 4 solid subdividers
+RC=0
+
+===== test_camera_hard_release_contract.py =====
+RC=0
+
+===== test_component_usage.py =====
+Traceback (most recent call last):
+  File "/mnt/data/groovebox_lag_audit/groovebox/test_component_usage.py", line 5, in <module>
+    import groovebox
+  File "/mnt/data/groovebox_lag_audit/groovebox/groovebox.py", line 71, in <module>
+    from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer, QObject, QEvent, pyqtSignal, QRunnable, QThreadPool
+ModuleNotFoundError: No module named 'PyQt6'
+RC=1
+
+===== test_composition_parity.py =====
+PASS
+  fractal_set=starburst
+  xyz=(0.0807044591848225, -0.987000000000009, -0.24640817563645356)
+  goava_count_policy=seed_count example=5
+  book_sets=['divergent_space', 'wormhole', 'wormhill', 'worms', 'star', 'starburst']
+  alignment_slots=8
+  N-independence: compositional_xyz/mode/set ignore instrument count
+RC=0
+
+===== test_final_determinism.py =====
+PASS: pure visual path is deterministic
+PASS: existing instrument identities are N-invariant
+PASS: inverse-count compensation conserves total weight
+PASS: numeric inputs preserve their full normalized range
+PASS: sequence permutation changes data assignment, not identity
+PASS: finite-pixel precision is explicitly bounded
+PASS: golden structural fingerprints are stable
+RESULT: 7/7 final determinism purity groups passed
+RC=0
+
+===== test_fractal_spatial_engine.py =====
+RC=0
+
+===== test_full_cycle_renderer_contract.py =====
+PASS renderer full-cycle 16 = 12 solid main strokes + invariant 4 solid subdividers
+RC=0
+
+===== test_game_runtime.py =====
+PASS: safe inactive-arcade report
+PASS: player tick + video frame
+PASS: MusicBed dynamic headroom
+PASS: LiveSFX audible burst
+RC=0
+
+===== test_heuristic_writer_split.py =====
+PASS heuristic STEP/AUTOMATION independent revert + LOCAL/GLOBAL shared scope contract
+PASS: exactly two heuristic writer controls; legacy third Step writer retired
+RC=0
+
+===== test_idle_lag_camera_contract.py =====
+RC=0
+
+===== test_instrument_translation_determinism.py =====
+PASS: deterministic instrument→visual translation
+PASS: existing master-slot identity is N-invariant
+PASS: inverse-count compensation sums exactly to 1
+PASS: sequential numeric range spans 0..1 without clipping
+PASS: translation contract contains no harmonic/gameplay/audio state
+RESULT: 5/5 final determinism purity groups passed
+RC=0
+
+===== test_julia_parity.py =====
+RC=0
+
+===== test_open_world_sandbox.py =====
+sandbox note: hello sandbox
+{
+  "arcade": {
+    "active": null,
+    "mario": null,
+    "poker": {
+      "games": 0,
+      "wins": {
+        "Player 1": 0,
+        "Player 2": 0,
+        "tie": 0
+      }
+    },
+    "race": null,
+    "slots": null,
+    "snake": null
+  },
+  "camera": "first_person",
+  "chess_active": false,
+  "chess_games": 0,
+  "coins": 31,
+  "composition_fingerprint": "e97d5925c0dbed1f",
+  "controls": "controls/2026.2-auto",
+  "difficulty": "master",
+  "equipped": null,
+  "fn_status": "viz  lattice point=0.1566",
+  "friend_called": 0,
+  "genre": "open_world",
+  "host_port": 33436,
+  "hp": 100.0,
+  "invites_fired": 0,
+  "items": 3,
+  "level": 1,
+  "level_type": "dungeon",
+  "loom_materialized": 1,
+  "loom_regions": 9,
+  "mood": "industrial",
+  "multimodal": {
+    "sound": true,
+    "ui": true,
+    "visual": true
+  },
+  "net_transport": "idle",
+  "npcs_met": 1,
+  "objective": "escort",
+  "online": false,
+  "points": 0,
+  "pve_remaining": 1,
+  "pvp": {
+    "deaths": 0,
+    "duel_score": 0.0,
+    "kills": 0,
+    "tag": "peaceful"
+  },
+  "quest": "Harvest x3",
+  "quest_progress": "0/3",
+  "sandbox": {
+    "current_region": "stave",
+    "edited_regions": 2,
+    "enabled": true,
+    "placed_objects": 0
+  },
+  "score": 117.125,
+  "selfgen": "selfgen seed-functions live this session: selfgen.regenerate, triad.quantify, loom.materialise, micro.lexicon, hotseat.invites, scenograph.relight, level.geometry, npc.dialogue, prop.scatter, palette.relight, variant.codes, live_sfx.re-bank  (generations=0 active_seed=42)",
+  "sigil_count": 0,
+  "social": "local_coop",
+  "software_kind": "data_viz",
+  "t": 4.33,
+  "tags": [
+    "explorer",
+    "pve",
+    "starter",
+    "trade"
+  ],
+  "title": "Glass Pilgrimage of Thread [e97d59]",
+  "topology": "open_world",
+  "triad": {
+    "audio": {
+      "bass_heft": 0.7656,
+      "bed_loud": 0.6846,
+      "brightness": 0.3553,
+      "dj_goava": 0.3943,
+      "dj_random": 0.13,
+      "music_energy": 0.9544,
+      "rhythm_drive": 0.4823,
+      "sfx_density": 0.7613,
+      "spatial_width": 0.7038
+    },
+    "game": {
+      "chess_offer": 0.3575,
+      "difficulty": 2.3873,
+      "hazard_pressure": 0.8772,
+      "invite_frequency": 0.5318,
+      "npc_density": 0.8834,
+      "pve_pressure": 0.755,
+      "resource_density": 0.7306,
+      "selfgen_rate": 0.3429,
+      "shop_volume": 0.6656,
+      "sigil_count": 9.0,
+      "speed_scale": 0.8322
+    },
+    "visual": {
+      "camera_pan": 0.3494,
+      "depth_parallax": 0.3837,
+      "glitch": 0.9939,
+      "hue_spread": 0.7966,
+      "layer_density": 0.5832,
+      "neon_glow": 0.589,
+      "opacity_floor": 0.592,
+      "particles": 0.135
+    }
+  },
+  "triad_paths": [
+    "audio",
+    "game",
+    "visual"
+  ],
+  "world_fingerprint": "c2b9aa092c50ba4c"
+}
+PASS: free-roam idle stability
+PASS: player-authored movement
+PASS: region sandbox place/remove/note
+PASS: sandbox report
+RC=0
+
+===== test_project_media_contract.py =====
+PASS project-local paths + media index contract
+RC=0
+
+===== test_scode_completion_bridge.py =====
+PASS sCode completion bridge ABI9 {'plans': 1, 'plan_cache_hits': 0, 'work_claims': 0, 'work_skips': 0, 'memo_hits': 0, 'memo_misses': 0, 'pool_hits': 0, 'pool_misses': 0, 'completion_submitted': 10, 'completion_cache_hits': 1, 'completion_coalesced': 1, 'completion_published': 8, 'completion_stale_dropped': 2, 'completion_errors': 0, 'completion_ui_delivered': 0}
+RC=0
+
+===== test_scode_pool_descriptor_parity.py =====
+PASS 0: generic fmt=0 key=9669647 slot=15 gen=151088
+PASS 1: audio_render fmt=7 key=124512578 slot=2 gen=1944704
+PASS 2: visual_frame fmt=8 key=24171877 slot=101 gen=187904
+PASS 3: video_frame fmt=9 key=81208550 slot=14 gen=3382259
+PASS 4: symbols_face fmt=12 key=66293021 slot=29 gen=258688
+PASS 5: project_save fmt=13 key=73257284 slot=4 gen=2289290
+PASS 6: canonical_sequence fmt=14 key=94582076 slot=60 gen=738654
+PASS 7: world_chunk fmt=16 key=105442226 slot=18 gen=3282198
+PASS 8: media_stream fmt=17 key=39868535 slot=23 gen=828806
+PASS: host universal pool descriptor parity with sCode stage-0
+RC=0
+
+===== test_sequence_conductor.py =====
+PASS: deterministic sequence conductor
+PASS: sequence drives visual object movement
+PASS: sound vibration is bounded to 0.5 factor
+RC=0
+
+===== test_subwindow_return_spacing_contract.py =====
+RC=0
+
+===== test_video_render_contract.py =====
+PASS: caller-authoritative alpha
+PASS: explicit deterministic render frame identity
+PASS: live GOAVA seed-list evaluation contract
+PASS: fresh-engine rawvideo export pipeline
+PASS: no process-salted hash in numeric fractal path
+RC=0
+
+===== test_visual_determinism.py =====
+PASS: deterministic mapping
+PASS: 128/128 exact unique camera states
+PASS: deterministic max-min view selection
+PASS: order-independent composition fingerprint
+PASS: unique visual projection identities
+RESULT: 5/5 invariant groups passed
+RC=0
+
