@@ -6221,9 +6221,12 @@ PLAYLIST_STRUCT_COL_INDICES = (2, 3, 4, 5)  # indices into PLAYLIST_COLUMNS
 # seed transduction weight remains 0.72: this preserves dynamic headroom for
 # minute seed-derived secondary structure without making those secondaries
 # authoritative. The adjacent Full-Unison OFF fallback remains 0.55.
+DEFAULT_SEQUENCE_LENGTH = 8
+DEFAULT_PLAYLIST_ROWS = 32
+CANONICAL_SIGNAL_CONTROL_DEFAULT = 1.00
 CANONICAL_RESONANCE_DEFAULT = 1.00
 CANONICAL_CONVOLVE_DEFAULT_PCT = 50.0
-CANONICAL_LIVE_OVERBLEND_DEFAULT_PCT = 50.0  # legacy/default net waveform crossfade: 50% user + 50% canonical
+CANONICAL_LIVE_OVERBLEND_DEFAULT_PCT = 50.0  # equal user/canonical waveform boundary
 CANONICAL_SEED_WEIGHT_DEFAULT = math.e - 2.0
 CANONICAL_ADHERENCE_FALLBACK = 0.55
 EQR_DEFAULT = 0.4014
@@ -8439,7 +8442,7 @@ class VideoSynthEngine:
                 "harmonic_lattice": float(state.get("harmonic_lattice", state.get("fractalizer", 0.5))),
             },
             "sequence": {
-                "length": int(seq.get("pattern_length", len(steps) or 8)),
+                "length": int(seq.get("pattern_length", len(steps) or DEFAULT_SEQUENCE_LENGTH)),
                 "steps_on": sum(1 for x in steps if x),
                 "amp_mean": float(sum(float(x) for x in amps)/len(amps)) if amps else 0.0,
                 "pitch_mean": float(sum(float(x) for x in pitches)/len(pitches)) if pitches else 1.0,
@@ -11900,7 +11903,7 @@ class PhaseLockedWavefieldEngine:
 
     def compute_wavefield(self):
         app = self.app
-        count = int(app.spin_seq_length.value()) if hasattr(app, 'spin_seq_length') else 16
+        count = int(app.spin_seq_length.value()) if hasattr(app, 'spin_seq_length') else DEFAULT_SEQUENCE_LENGTH
         seed = self.get_numeric_seed()
         names = list(getattr(app, 'instrument_names_48', []) or [])
         self.wavefield = {}
@@ -11964,7 +11967,7 @@ class PhaseLockedWavefieldEngine:
         if not self.wavefield:
             self.compute_wavefield()
         app = self.app
-        count = int(app.spin_seq_length.value()) if hasattr(app, 'spin_seq_length') else 16
+        count = int(app.spin_seq_length.value()) if hasattr(app, 'spin_seq_length') else DEFAULT_SEQUENCE_LENGTH
         hits = total = 0
         for name, wf in self.wavefield.items():
             mem = app.instrument_sequencer_memory.get(name, {})
@@ -11981,7 +11984,7 @@ class PhaseLockedWavefieldEngine:
     def apply_phase_locked_randomization(self):
         """Correct non-user slots toward a seed-specific harmonic/geometric field."""
         app = self.app
-        count = int(app.spin_seq_length.value()) if hasattr(app, 'spin_seq_length') else 16
+        count = int(app.spin_seq_length.value()) if hasattr(app, 'spin_seq_length') else DEFAULT_SEQUENCE_LENGTH
         self.compute_wavefield()
         before = self.evaluate_wavefront()
         seed = int(self.get_numeric_seed()) if hasattr(self, "get_numeric_seed") else 1
@@ -12436,7 +12439,7 @@ class ReadmeGuideDialog(QDialog):
 - Canonical Signal Control defaults to Full Canonical / 100% authority and self-heals missing canonical coverage through canonical-owned runtime overlays without rewriting user data.
 - Canonical Resonance / Activity is 50–150%, independent of the 50/50 source coefficients; 150% is activity/continuation drive, not output volume.
 - Canonical→Instrument convolution influence is 0–100%.
-- Maximum active instruments: 128. Default playlist row duration: 16 beats.
+- Maximum active instruments: 128. Default sequence/playlist row duration: 8 beats; Playlist Rows defaults to 32.
 - ParametricMathBackground is integrated with a deep navy gradient field.
 - Performance controls are consolidated into one horizontal deck; Automator controls are compacted into a multi-row grid.
 - UI initialization order and Qt stylesheet declarations were hardened; division-by-zero-sensitive paths use explicit degenerate-case handling rather than epsilon denominators where practical.
@@ -15116,10 +15119,10 @@ class MultiLaneSequencerCanvas(QWidget):
     """Sequencer canvas with built-in modulation patch outputs per track."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.step_count = 16
+        self.step_count = DEFAULT_SEQUENCE_LENGTH
         self.setMinimumHeight(200)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.steps = [{"amp": 0.9, "pitch": 440.0, "gate": True} for _ in range(16)]
+        self.steps = [{"amp": 0.9, "pitch": 440.0, "gate": True} for _ in range(DEFAULT_SEQUENCE_LENGTH)]
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -15136,12 +15139,12 @@ class StepPainterSequencerCanvas(QWidget):
     """Sequencer supporting color-coded step painting for frequency, amplitude, and duration."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.step_count = 16
+        self.step_count = DEFAULT_SEQUENCE_LENGTH
         self.setMinimumHeight(300)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.steps = [
             {"freq": 220.0 + i*30, "amp": 0.7, "duration": 1.0, "color": QColor("#00ffcc" if i%2==0 else "#58a6ff")}
-            for i in range(32)
+            for i in range(DEFAULT_SEQUENCE_LENGTH)
         ]
         self.painting_mode = "amplitude"
 
@@ -19038,9 +19041,9 @@ class PaintbrushTable(QWidget):
             except Exception:
                 bpm_val = 120.0
             try:
-                seq_len_val = int(self.app.spin_seq_length.value()) if hasattr(self.app, "spin_seq_length") else 16
+                seq_len_val = int(self.app.spin_seq_length.value()) if hasattr(self.app, "spin_seq_length") else DEFAULT_SEQUENCE_LENGTH
             except Exception:
-                seq_len_val = 16
+                seq_len_val = DEFAULT_SEQUENCE_LENGTH
             step_dur_est = (60.0 / positive_bpm(bpm_val)) / 4.0
             row_dur_est = step_dur_est * max(seq_len_val, 1)
             # Continuous offset from seed-derived rng only (retoggle-stable).
@@ -20921,7 +20924,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             f"Canonical Operator {i:03d}" for i in range(len(self.instrument_names_48) + 1, 129)
         ]
         self.instrument_names_48.extend(_extra_operator_names)
-        default_seq_len = 16
+        default_seq_len = DEFAULT_SEQUENCE_LENGTH
         self.instrument_sequencer_memory = {}
         self.instrument_sequence_banks = {}
         self.instrument_selected_sequence = {}
@@ -21059,7 +21062,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # USERDATA_CANONICAL_BRIDGE_2026: local sample conversion controls.
         # User sample floor is fixed at 50%; canonical composition remains the
         # other 50% owner. These settings shape the transform, never ownership.
-        self.canonical_signal_control = 1.00
+        self.canonical_signal_control = CANONICAL_SIGNAL_CONTROL_DEFAULT
         # CANONICAL_CONTINUATION_2026: persistent canonical activity survives user
         # cessation. This is state, not a post-mix gain clamp.
         self.canonical_continuation_enabled = True
@@ -21427,7 +21430,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def initialize_default_playlist_memory(self):
         # Playlist capacity is present, but the musical program is empty on boot.
-        rows = 64
+        rows = DEFAULT_PLAYLIST_ROWS
         # POWER_V3_EMPTY_BOOT: capacity exists, but there is no musical program.
         self.master_playlist_data = [{} for _ in range(rows)]
         self.playlist_automation = [{} for _ in range(rows)]
@@ -21942,10 +21945,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if isinstance(_mem, dict) and str(_mem.get("canonical_owner", "")) == "canonical:goava":
                     bank.pop(_sid, None)
             if not bank:
-                bank[1] = {"sequence_id": 1, "pattern_length": 8,
-                           "steps": [False]*8, "gates": [True]*8,
-                           "amplitudes": [1.0]*8, "pitches": [1.0]*8,
-                           "probabilities": [100]*8, "offsets": [0.0]*8,
+                bank[1] = {"sequence_id": 1, "pattern_length": DEFAULT_SEQUENCE_LENGTH,
+                           "steps": [False]*DEFAULT_SEQUENCE_LENGTH, "gates": [True]*DEFAULT_SEQUENCE_LENGTH,
+                           "amplitudes": [1.0]*DEFAULT_SEQUENCE_LENGTH, "pitches": [1.0]*DEFAULT_SEQUENCE_LENGTH,
+                           "probabilities": [100]*DEFAULT_SEQUENCE_LENGTH, "offsets": [0.0]*DEFAULT_SEQUENCE_LENGTH,
                            "sequence_envelope_attack": 0.5, "sequence_envelope_release": 0.5,
                            "user_owned": True}
 
@@ -22131,7 +22134,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         RECOMMENDED_POWER_LAYER: called only by explicit generation actions.
         User-locked velocity and existing automation remain authoritative.
         """
-        capacity = int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else 96
+        capacity = int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else DEFAULT_PLAYLIST_ROWS
         rows = capacity if rows is None else max(0, min(int(rows), capacity))
         if not hasattr(self, 'master_playlist_data'):
             self.master_playlist_data = []
@@ -22168,7 +22171,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         mem = self.instrument_sequencer_memory.get(name)
         if not isinstance(mem, dict):
             return 0
-        count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 48
+        count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else DEFAULT_SEQUENCE_LENGTH
         self._ensure_seq_mem_length(mem, count)
         rng = rng or np.random.default_rng(_safe_int_seed(self.get_numeric_seed()))
         changed = 0
@@ -22897,7 +22900,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if rng is None:
             channel = 0x51 if "random" in source else (0xA7 if "phase" in source else 0xD3)
             rng = np.random.default_rng((seed ^ channel) & 0x7FFFFFFF)
-        rows = int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else 32
+        rows = int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else DEFAULT_PLAYLIST_ROWS
         rows = max(1, min(1024, rows))
         if hasattr(self, 'spin_playlist_length'):
             try:
@@ -23072,7 +23075,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 _owned = [sid for sid in _ids if isinstance(_bank.get(sid), dict) and _bank[sid].get("canonical_owner") == _owner]
                 pool = _owned or _ids
                 _sid = pool[(r + int(seed) + source_hash) % len(pool)]
-                _plen = int((_bank.get(_sid, {}) or {}).get("pattern_length", 8))
+                _plen = int((_bank.get(_sid, {}) or {}).get("pattern_length", DEFAULT_SEQUENCE_LENGTH))
                 _phase = int((r * (1 + (_sid % 5)) + (seed & 0xFFFF)) % max(_plen, 1))
                 sequence_refs.append(f"{_op}#S{_sid}")
                 phase_offsets[_op] = _phase
@@ -24977,7 +24980,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.top_layout_row2.addWidget(self.lbl_playlist_length_caption)
         self.spin_playlist_length = QSpinBox()
         self.spin_playlist_length.setRange(1, 1024)
-        self.spin_playlist_length.setValue(32)
+        self.spin_playlist_length.setValue(DEFAULT_PLAYLIST_ROWS)
         self.spin_playlist_length.setMinimumHeight(38)
         self.spin_playlist_length.setMinimumWidth(96)
         self.spin_playlist_length.setStyleSheet("font-size: 12pt; font-weight: 700; padding: 4px 6px;")
@@ -25151,7 +25154,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         self.spin_seq_length = QSpinBox()
         self.spin_seq_length.setRange(1, 1024)
-        self.spin_seq_length.setValue(8)
+        self.spin_seq_length.setValue(DEFAULT_SEQUENCE_LENGTH)
 
         sizing_layout.addStretch(1)
         sizing_container = QWidget()
@@ -25244,7 +25247,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         self.spin_pattern_length = QSpinBox()
         self.spin_pattern_length.setRange(1, 1024)
-        self.spin_pattern_length.setValue(8)
+        self.spin_pattern_length.setValue(DEFAULT_SEQUENCE_LENGTH)
         self.spin_pattern_length.setToolTip("Compatibility alias for the selected sequence length.")
         self.spin_pattern_length.setVisible(False)
         self.spin_pattern_length.valueChanged.connect(self._on_pattern_length_changed)
@@ -25849,9 +25852,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_canonical_live_overblend.setMinimumWidth(100)
         self.spin_canonical_live_overblend.setToolTip(
             "Optional final canonical waveform crossfade at the live composition boundary. "
-            "0% (default) preserves maximum user/live dynamics while canonical math can still "
+            "0% selects the user waveform branch only while canonical math can still "
             "modify timing, phase, synthesis, convolution, modulation and other transforms. "
-            "50% reproduces the legacy 50/50 waveform blend; 100% selects the canonical waveform. "
+            "50% is the default equal user/canonical waveform blend; 100% selects the canonical waveform. "
             "If no user waveform is present, the canonical branch remains audible as a fallback."
         )
         canonical_resonance_row.addWidget(self.spin_canonical_live_overblend)
@@ -25945,7 +25948,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
         self.spin_seq_length.blockSignals(True)
-        self.spin_seq_length.setValue(int(self._current_sequence_mem().get('pattern_length', 8)))
+        self.spin_seq_length.setValue(int(self._current_sequence_mem().get('pattern_length', DEFAULT_SEQUENCE_LENGTH)))
         self.spin_seq_length.blockSignals(False)
         self.rebuild_sequencer_steps(self._current_sequence_mem().get('pattern_length', self.spin_seq_length.value()))
         self.spin_seq_length.valueChanged.connect(self._on_sequence_length_changed)
@@ -26946,7 +26949,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return
         curr_inst = self.instrument_selector_dropdown.currentText()
         mem = self._current_sequence_mem(curr_inst) if hasattr(self, '_current_sequence_mem') else self.instrument_sequencer_memory[curr_inst]
-        count = int(mem.get('pattern_length', len(self.seq_step_buttons) or 8))
+        count = int(mem.get('pattern_length', len(self.seq_step_buttons) or DEFAULT_SEQUENCE_LENGTH))
         self._ensure_seq_mem_length(mem, count)
         if len(self.seq_step_buttons) != count:
             self.rebuild_sequencer_steps(count)
@@ -27063,7 +27066,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             seed = int(_safe_int_seed(self.get_numeric_seed() if hasattr(self, "get_numeric_seed") else 1))
             self._pkp_voice_rng = random.Random(seed & 0xFFFFFFFF)
-            seq_len = max(1, int(self.spin_seq_length.value())) if hasattr(self, "spin_seq_length") else 16
+            seq_len = max(1, int(self.spin_seq_length.value())) if hasattr(self, "spin_seq_length") else DEFAULT_SEQUENCE_LENGTH
             self._pkp_boost_cursor = float(getattr(self, "pkp_boost_step_offset", 0.0)) * float(seq_len)
         except Exception:
             pass
@@ -27072,7 +27075,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             t.timeout.connect(self._pkp_boost_beat_tick)
             self._pkp_boost_timer = t
             self._reschedule_pkp_boost_timer(float(getattr(self, "pkp_boost_step_increment", 1.0)),
-                                         max(1, int(self.spin_seq_length.value())) if hasattr(self, "spin_seq_length") else 16)
+                                         max(1, int(self.spin_seq_length.value())) if hasattr(self, "spin_seq_length") else DEFAULT_SEQUENCE_LENGTH)
 
     def _reschedule_pkp_boost_timer(self, inc, seq_len):
         """Recompute the inter-beat interval from BPM, row length and step increment."""
@@ -27113,7 +27116,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 rng = random.Random()
                 self._pkp_voice_rng = rng
             voice = names[rng.randrange(len(names))]
-            seq_len = max(1, int(self.spin_seq_length.value())) if hasattr(self, "spin_seq_length") else 16
+            seq_len = max(1, int(self.spin_seq_length.value())) if hasattr(self, "spin_seq_length") else DEFAULT_SEQUENCE_LENGTH
             step_idx = int(getattr(self, "_pkp_boost_cursor", 0.0)) % seq_len
             self._pkp_fire_step_hit(voice, step_idx, amp=1.0)
             cur = float(getattr(self, "_pkp_boost_cursor", 0.0))
@@ -28233,7 +28236,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if not bank:
             mem = self.instrument_sequencer_memory.setdefault(name, {
                 "steps": [], "gates": [], "amplitudes": [], "pitches": [],
-                "probabilities": [], "offsets": [], "pattern_length": 8,
+                "probabilities": [], "offsets": [], "pattern_length": DEFAULT_SEQUENCE_LENGTH,
                 "track_offset": 0.0,
                 "sequence_playlist_mode": "wrap",
                 "sequence_force_wrap": False, "sequence_force_schedule": False,
@@ -28555,7 +28558,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if not bank:
             mem = self.instrument_sequencer_memory.setdefault(name, {
                 "steps": [], "gates": [], "amplitudes": [], "pitches": [],
-                "probabilities": [], "offsets": [], "pattern_length": 8,
+                "probabilities": [], "offsets": [], "pattern_length": DEFAULT_SEQUENCE_LENGTH,
                 "track_offset": 0.0,
                 "sequence_envelope_attack": 0.5, "sequence_envelope_release": 0.5
             })
@@ -28585,7 +28588,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         pos = max(0, sorted(bank).index(selected)) if selected in bank else 0
         self.sequence_selector.setCurrentIndex(pos)
         self.sequence_selector.blockSignals(False)
-        seq_len = int(bank[selected].get("pattern_length", 8)) if selected in bank else 8
+        seq_len = int(bank[selected].get("pattern_length", DEFAULT_SEQUENCE_LENGTH)) if selected in bank else DEFAULT_SEQUENCE_LENGTH
         self.spin_seq_length.blockSignals(True)
         self.spin_seq_length.setValue(seq_len)
         self.spin_seq_length.blockSignals(False)
@@ -28603,7 +28606,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         src["user_owned"] = True
         src["canonical_owner"] = None
         new_idx = max(bank.keys(), default=0) + 1
-        src["pattern_length"] = int(src.get("pattern_length", len(src.get("steps", [])) or 8))
+        src["pattern_length"] = int(src.get("pattern_length", len(src.get("steps", [])) or DEFAULT_SEQUENCE_LENGTH))
         bank[new_idx] = src
         self.instrument_selected_sequence[name] = new_idx
         self.instrument_sequencer_memory[name] = src
@@ -29140,7 +29143,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return
         self.instrument_selected_sequence[name] = idx
         self.instrument_sequencer_memory[name] = bank[idx]
-        seq_len = int(bank[idx].get("pattern_length", 8))
+        seq_len = int(bank[idx].get("pattern_length", DEFAULT_SEQUENCE_LENGTH))
         self.spin_seq_length.blockSignals(True)
         self.spin_seq_length.setValue(seq_len)
         self.spin_seq_length.blockSignals(False)
@@ -29761,10 +29764,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             bank = banks.setdefault(name, {})
             if not bank:
                 bank[1] = copy.deepcopy(self.instrument_sequencer_memory.get(name, {}) or
-                                        {"pattern_length": 8, "steps": [False]*8,
-                                         "gates": [True]*8, "amplitudes": [1.0]*8,
-                                         "pitches": [1.0]*8, "probabilities": [100]*8,
-                                         "offsets": [0.0]*8, "sequence_envelope_attack": 0.5, "sequence_envelope_release": 0.5})
+                                        {"pattern_length": DEFAULT_SEQUENCE_LENGTH, "steps": [False]*DEFAULT_SEQUENCE_LENGTH,
+                                         "gates": [True]*DEFAULT_SEQUENCE_LENGTH, "amplitudes": [1.0]*DEFAULT_SEQUENCE_LENGTH,
+                                         "pitches": [1.0]*DEFAULT_SEQUENCE_LENGTH, "probabilities": [100]*DEFAULT_SEQUENCE_LENGTH,
+                                         "offsets": [0.0]*DEFAULT_SEQUENCE_LENGTH, "sequence_envelope_attack": 0.5, "sequence_envelope_release": 0.5})
 
             # Preserve user-owned/non-canonical IDs exactly.  Canonical IDs occupy a
             # deterministic contiguous range after the highest user sequence ID.
@@ -29773,10 +29776,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                               and not str(v.get("canonical_owner", "")).startswith("canonical:"))
             if not user_ids:
                 user_ids = [1]
-                bank.setdefault(1, {"sequence_id": 1, "pattern_length": 8,
-                                     "steps": [False]*8, "gates": [True]*8,
-                                     "amplitudes": [1.0]*8, "pitches": [1.0]*8,
-                                     "probabilities": [100]*8, "offsets": [0.0]*8,
+                bank.setdefault(1, {"sequence_id": 1, "pattern_length": DEFAULT_SEQUENCE_LENGTH,
+                                     "steps": [False]*DEFAULT_SEQUENCE_LENGTH, "gates": [True]*DEFAULT_SEQUENCE_LENGTH,
+                                     "amplitudes": [1.0]*DEFAULT_SEQUENCE_LENGTH, "pitches": [1.0]*DEFAULT_SEQUENCE_LENGTH,
+                                     "probabilities": [100]*DEFAULT_SEQUENCE_LENGTH, "offsets": [0.0]*DEFAULT_SEQUENCE_LENGTH,
                                      "user_owned": True})
             # During ensemble resize, preserve canonical sequence objects for every
             # surviving instrument/source pair.  Their exact steps, offsets, amplitudes
@@ -29837,7 +29840,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # derives its own length from the same seed/instrument factors it
                 # uses to place steps and pitches; phase_lock still tracks the
                 # established user grid on purpose (it is meant to lock to it).
-                base_len = int(bank.get(user_ids[0], {}).get("pattern_length", 8) or 8)
+                base_len = int(bank.get(user_ids[0], {}).get("pattern_length", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH)
                 if source == "euclidean":
                     stride = max(2, int(2 + (inst_seed_i % 5)))
                     reps = max(1, 2 + (inst_seed_i // 5) % 6)
@@ -30076,7 +30079,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if not isinstance(bank, dict):
                 continue
             canon_ns = [
-                max(1, int(m.get("pattern_length", 8) or 8))
+                max(1, int(m.get("pattern_length", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH))
                 for m in bank.values()
                 if isinstance(m, dict) and str(m.get("canonical_owner", "")).startswith("canonical:")
             ]
@@ -30097,7 +30100,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             mem = self._current_sequence_mem()
             if mem and not self._sequence_is_user_locked(mem) and hasattr(self, "spin_seq_length"):
-                n = max(1, int(mem.get("pattern_length", 8) or 8))
+                n = max(1, int(mem.get("pattern_length", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH))
                 if int(self.spin_seq_length.value()) != n:
                     self.spin_seq_length.blockSignals(True)
                     self.spin_seq_length.setValue(n)
@@ -30484,7 +30487,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 try:
                     seq_n = int(self._current_sequence_mem().get("pattern_length", self.spin_seq_length.value()))
                 except Exception:
-                    seq_n = int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else 16
+                    seq_n = int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else DEFAULT_SEQUENCE_LENGTH
                 delta = int(self.spin_auto_syncopate.value()) if hasattr(self, "spin_auto_syncopate") else 0
                 self.spin_auto_point_length.setValue(max(1, min(1024, seq_n + delta)))
             self.spin_auto_point_length.blockSignals(False)
@@ -30565,7 +30568,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         self.instrument_selected_sequence[inst] = sid
                         self.instrument_sequencer_memory[inst] = target_bank[sid]
                     self._load_sequence_envelope_controls(target_bank.get(sid, {}))
-                    self.rebuild_sequencer_steps(int(target_bank[sid].get("pattern_length", 8)))
+                    self.rebuild_sequencer_steps(int(target_bank[sid].get("pattern_length", DEFAULT_SEQUENCE_LENGTH)))
         except Exception:
             pass
         if hasattr(self, "lbl_automator_teleport"):
@@ -30844,7 +30847,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             name = str(self.auto_to_instrument.currentText())
             sid = int(self.spin_auto_to_sequence.value())
             bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(name, {})
-            n = max(1, min(1024, int(getattr(self, "spin_auto_point_length", None).value() if hasattr(self, "spin_auto_point_length") else ((bank.get(sid) or {}).get("pattern_length", 8)))))
+            n = max(1, min(1024, int(getattr(self, "spin_auto_point_length", None).value() if hasattr(self, "spin_auto_point_length") else ((bank.get(sid) or {}).get("pattern_length", DEFAULT_SEQUENCE_LENGTH)))))
             seed = _safe_int_seed(self.get_numeric_seed()) ^ int.from_bytes(hashlib.sha256(f"{name}:{sid}".encode()).digest()[:4], "little")
             rng = np.random.default_rng(seed)
             # Fill the selected sequence itself — not just the automation references.
@@ -30883,7 +30886,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         "step": step, "from_instrument": name, "from_sequence": sid,
                         "to_instrument": ref_op, "to_sequence": ref_sid, "instrument": ref_op,
                         "morph": float(rng.uniform(0.35, 1.0)),
-                        "step_offset": int(rng.integers(-8, 9)), "playlist_row": int(rng.integers(0, max(1, int(getattr(self, "spin_playlist_length", None).value() if hasattr(self, "spin_playlist_length") else 64)))),
+                        "step_offset": int(rng.integers(-8, 9)), "playlist_row": int(rng.integers(0, max(1, int(getattr(self, "spin_playlist_length", None).value() if hasattr(self, "spin_playlist_length") else DEFAULT_PLAYLIST_ROWS)))),
                         "composition_blend": float(rng.uniform(0.35, 0.75)), "canonical_owner": "user:sequencer_automation",
                         "length": n, "reference_offsets": {}, "enabled": True,
                     })
@@ -30916,7 +30919,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 for sid, mem in (bank or {}).items():
                     if not isinstance(mem, dict):
                         continue
-                    n = max(1, min(1024, int(mem.get("pattern_length", 8) or 8)))
+                    n = max(1, min(1024, int(mem.get("pattern_length", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH)))
                     self._ensure_seq_mem_length(mem, n)
                     mem["pattern_length"] = n
                     mem["steps"] = [bool(rng.random() > 0.50) for _ in range(n)]
@@ -30936,7 +30939,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             for name, bank in banks.items():
                 for sid, mem in (bank or {}).items():
                     if not isinstance(mem, dict): continue
-                    sid = int(sid); n = max(1, min(1024, int(mem.get("pattern_length", 8) or 8)))
+                    sid = int(sid); n = max(1, min(1024, int(mem.get("pattern_length", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH)))
                     for step in range(1, n+1):
                         if float(rng.random()) < 0.55:
                             ref_op = str(rng.choice(roster)) if roster else str(name)
@@ -30947,7 +30950,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                                 "step": step, "from_instrument": str(name), "from_sequence": sid,
                                 "to_instrument": ref_op, "to_sequence": ref_sid, "instrument": ref_op,
                                 "morph": float(rng.uniform(0.35, 1.0)), "step_offset": int(rng.integers(-8, 9)),
-                                "playlist_row": int(rng.integers(0, max(1, int(getattr(self, "spin_playlist_length", None).value() if hasattr(self, "spin_playlist_length") else 64)))),
+                                "playlist_row": int(rng.integers(0, max(1, int(getattr(self, "spin_playlist_length", None).value() if hasattr(self, "spin_playlist_length") else DEFAULT_PLAYLIST_ROWS)))),
                                 "composition_blend": float(rng.uniform(0.35, 0.75)), "canonical_owner": "user:sequencer_automation",
                                 "length": n, "reference_offsets": {}, "enabled": True,
                             })
@@ -31944,8 +31947,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """Stable snapshot of user-visible inputs; engines write only once per new snapshot."""
         seed = self._seed_text() if hasattr(self, 'input_seed_val') else "0.0"
         inst = self.instrument_selector_dropdown.currentText() if hasattr(self, 'instrument_selector_dropdown') else ""
-        seq_len = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16
-        rows = int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else 32
+        seq_len = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else DEFAULT_SEQUENCE_LENGTH
+        rows = int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else DEFAULT_PLAYLIST_ROWS
         return (which, seed, inst, seq_len, rows, repr(getattr(self, 'instrument_sequencer_memory', {})), repr(getattr(self, 'master_playlist_data', [])))
 
     def _apply_live_engine_once(self, which, force=False):
@@ -32134,7 +32137,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 finally:
                     _w.blockSignals(False)
 
-        default_seq_len = 16
+        default_seq_len = DEFAULT_SEQUENCE_LENGTH
         self.instrument_sequencer_memory = {
             name: {
                 "steps": [False] * default_seq_len,
@@ -32752,9 +32755,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "version": "3.9.0-project-state-integrated",
             "seed": self._seed_text() if hasattr(self, "input_seed_val") else "",
             "bpm": float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0,
-            "seq_length": int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else 16,
+            "seq_length": int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else DEFAULT_SEQUENCE_LENGTH,
             "track_offset": float(self.spin_track_offset.value()) if hasattr(self, "spin_track_offset") else 0.0,
-            "playlist_rows": int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else 64,
+            "playlist_rows": int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else DEFAULT_PLAYLIST_ROWS,
             "base_frequency": float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0,
             "global_convolve": float(self.spin_global_convolve.value()) if hasattr(self, "spin_global_convolve") else 0.0,
             "instrument_sequencer_memory": {
@@ -32833,7 +32836,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "algorithm_xmod_local": float(getattr(self, "local_algorithm_xmod", 1.0)),
             "algorithm_xmod_global": float(getattr(self, "global_algorithm_xmod", 1.0)),
             "canonical_factory_defaults": _safe_json(getattr(self, "canonical_factory_defaults", {})),
-            "canonical_signal_control": float(getattr(self, "canonical_signal_control", 0.50)),
+            "canonical_signal_control": float(getattr(self, "canonical_signal_control", CANONICAL_SIGNAL_CONTROL_DEFAULT)),
             "canonical_control_strategy": str(getattr(self, "canonical_control_strategy", "Full Canonical")),
             "canonical_runtime_overlays": _safe_json(getattr(self, "canonical_runtime_overlays", {})),
             "blend_contract": {
@@ -33074,13 +33077,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.canonical_control_strategy = "Full Canonical"
         if "canonical_signal_control" in data:
             try:
-                self.canonical_signal_control = float(data.get("canonical_signal_control", 1.00))
+                self.canonical_signal_control = float(data.get("canonical_signal_control", CANONICAL_SIGNAL_CONTROL_DEFAULT))
                 if not 0.50 <= self.canonical_signal_control <= 1.00:
-                    self.canonical_signal_control = 1.00
+                    self.canonical_signal_control = CANONICAL_SIGNAL_CONTROL_DEFAULT
                 if hasattr(self, "lbl_canonical_signal_control"):
                     self.lbl_canonical_signal_control.setText(f"CANONICAL SIGNAL CONTROL: {self.canonical_signal_control * 100:.0f}%")
             except Exception:
-                self.canonical_signal_control = 1.00
+                self.canonical_signal_control = CANONICAL_SIGNAL_CONTROL_DEFAULT
 
         if "canonical_resonance_factor" in data:
             try:
@@ -34083,7 +34086,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         dependency source into one) and has at least one audible step.
         """
         if count is None:
-            count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16
+            count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else DEFAULT_SEQUENCE_LENGTH
         effective = self._playlist_effective_instruments()
         if name not in effective:
             return False
@@ -34137,7 +34140,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _fingerprint_program(self):
         """Fingerprint only steps with net effect on the playlist timeline."""
         parts = []
-        count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16
+        count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else DEFAULT_SEQUENCE_LENGTH
         effective = self._playlist_effective_instruments()
         for name in getattr(self, 'instrument_names_48', []):
             if name not in effective:
@@ -34151,7 +34154,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _program_has_net_effect(self):
         """True only if some instrument both appears on the playlist and has audible steps."""
-        count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16
+        count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else DEFAULT_SEQUENCE_LENGTH
         for name in getattr(self, 'instrument_names_48', []):
             if self._instrument_has_net_effect(name, count):
                 return True
@@ -34187,7 +34190,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         Kit-provided program parameters from seed — sparse Euclidean-ish carriers
         so the playlist editor has structure to write against. Only fills empty fields.
         """
-        count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16
+        count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else DEFAULT_SEQUENCE_LENGTH
         names = list(getattr(self, 'instrument_names_48', []))
 
         for i, name in enumerate(names):
@@ -34226,7 +34229,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             except Exception:
                 pass
 
-        rows = int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else 32
+        rows = int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else DEFAULT_PLAYLIST_ROWS
         if not hasattr(self, 'master_playlist_data') or self.master_playlist_data is None:
             self.master_playlist_data = []
         while len(self.master_playlist_data) < rows:
@@ -34280,7 +34283,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
           5. Merge domain partitions that share identical equation+logic+bounds
           6. Collapse stock-identical instrument scripts to a single shared template text
         """
-        count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16
+        count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else DEFAULT_SEQUENCE_LENGTH
         stats = {"amps_quantized": 0, "patterns_linked": 0, "patches_deduped": 0,
                  "domains_merged": 0, "scripts_collapsed": 0}
 
@@ -34388,7 +34391,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         seed = self.bootstrap_seed_and_program_parameters()
         self.simplify_redundant_user_definitions()
 
-        count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16
+        count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else DEFAULT_SEQUENCE_LENGTH
         rng = np.random.default_rng(_safe_int_seed(seed))
 
         filled = 0
@@ -34484,7 +34487,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """
         if not hasattr(self, 'playlist_automation') or self.playlist_automation is None:
             self.playlist_automation = []
-        rows = min(1024, max(1, int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else 96))
+        rows = min(1024, max(1, int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else DEFAULT_PLAYLIST_ROWS))
         while len(self.playlist_automation) < rows:
             self.playlist_automation.append({})
         names = list(getattr(self, 'instrument_names_48', []))
@@ -34547,7 +34550,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         seed_bits = _safe_int_seed(numeric_seed)
         self.simplify_redundant_user_definitions()
         rng = np.random.default_rng(_safe_int_seed(numeric_seed))
-        count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16
+        count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else DEFAULT_SEQUENCE_LENGTH
 
         # Do NOT forcibly change the user's selected instrument.
         # (Previously this jumped the dropdown — that was destructive UX.)
@@ -34765,7 +34768,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         # Which instruments look "active" (have user-programmed pads)?
         active_ops = set()
-        count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16
+        count = int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else DEFAULT_SEQUENCE_LENGTH
         for name in names:
             mem = self.instrument_sequencer_memory.get(name, {})
             steps = mem.get("steps", [])
@@ -35784,7 +35787,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # fully reproducible — a reverse engineer needs only base, depth,
                 # rows and the seed.
                 try:
-                    _rows = int(getattr(self, 'spin_playlist_length').value()) if getattr(self, 'spin_playlist_length', None) is not None else 32
+                    _rows = int(getattr(self, 'spin_playlist_length').value()) if getattr(self, 'spin_playlist_length', None) is not None else DEFAULT_PLAYLIST_ROWS
                 except Exception:
                     _rows = 32
                 _rows = max(1, int(_rows))
@@ -36020,7 +36023,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         old_mem = dict(getattr(self, "instrument_sequencer_memory", {}) or {})
         old_banks = copy.deepcopy(getattr(self, "instrument_sequence_banks", {}) or {})
         old_selected = dict(getattr(self, "instrument_selected_sequence", {}) or {})
-        seq_len = int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else 48
+        seq_len = int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else DEFAULT_SEQUENCE_LENGTH
         new_mem = {}
         new_banks = {}
         new_selected = {}
@@ -36318,7 +36321,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # consult an ambient ``mem`` variable: that was undefined on the
             # reconciled-ref path and caused toggle-time crashes.
             selected_mem = bank.get(sid, {}) if isinstance(bank, dict) else {}
-            plen = max(1, int((selected_mem or {}).get("pattern_length", 8) or 8))
+            plen = max(1, int((selected_mem or {}).get("pattern_length", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH))
             phase = (r + (sid - 1)) % plen
             ref = f"{op}#S{sid}"
 
@@ -36601,7 +36604,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             except Exception:
                 pass
             import copy
-            rows = max(1, min(1024, int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else 96))
+            rows = max(1, min(1024, int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else DEFAULT_PLAYLIST_ROWS))
             if not hasattr(self, "master_playlist_data") or self.master_playlist_data is None:
                 self.master_playlist_data = []
             while len(self.master_playlist_data) < rows:
@@ -37115,7 +37118,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         mem = self.instrument_sequencer_memory.get(instrument_name, {})
         count = int(mem.get("pattern_length", len(mem.get("steps", [])) or 1))
         is_user = any(self._step_has_net_effect(mem, i) for i in range(count)) if hasattr(self, "_step_has_net_effect") else False
-        control = float(getattr(self, "canonical_signal_control", 0.50))
+        control = float(getattr(self, "canonical_signal_control", CANONICAL_SIGNAL_CONTROL_DEFAULT))
         active = self._active_engine_sources()
         total = sum(self._canonical_level(k) for k in active)
         if not active or total <= 1e-9:
@@ -37264,7 +37267,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # remain readable; canonical-owned slots receive a deterministic polyphonic chord.
         try:
             mem = self._current_sequence_mem(instrument_name)
-            user_owned = bool(mem.get("user_owned", False)) or any(self._step_has_net_effect(mem, i) for i in range(int(mem.get("pattern_length", 8) or 8)) if hasattr(self, "_step_has_net_effect"))
+            user_owned = bool(mem.get("user_owned", False)) or any(self._step_has_net_effect(mem, i) for i in range(int(mem.get("pattern_length", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH)) if hasattr(self, "_step_has_net_effect"))
             if not user_owned:
                 st["canonical_amp"] = float(np.clip(generated.get("amp", generated.get("amplitude", 1.0)), 0.0, 2.0))
                 st["canonical_pitch"] = float(generated.get("pitch", generated.get("frequency_ratio", 1.0)))
@@ -37397,7 +37400,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         sample_rate = int(getattr(self, 'preferred_sample_rate', TARGET_SAMPLE_RATE) or TARGET_SAMPLE_RATE)
         sample_rate = max(44100, min(192000, sample_rate))
         bpm = self.spin_bpm.value() if hasattr(self, 'spin_bpm') else 120
-        rows = self.spin_playlist_length.value() if hasattr(self, 'spin_playlist_length') else 32
+        rows = self.spin_playlist_length.value() if hasattr(self, 'spin_playlist_length') else DEFAULT_PLAYLIST_ROWS
         if max_rows is not None:
             rows = min(rows, int(max_rows))
         # Reference grid length (legacy max-pattern) — used only as a fallback
@@ -37405,7 +37408,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         seq_len = max(
             [int((m or {}).get("pattern_length", len((m or {}).get("steps", [])) or 1))
              for m in (getattr(self, "instrument_sequencer_memory", {}) or {}).values()] or
-            [int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else 16]
+            [int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else DEFAULT_SEQUENCE_LENGTH]
         )
         global_playlist_enabled = self.chk_global_playlist.isChecked() if hasattr(self, 'chk_global_playlist') else True
 
@@ -37801,7 +37804,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 try:
                     _explicit_map = str((_playlist_entry or {}).get("sequence_mapping", "auto") or "auto").strip().lower()
                     _has_force = bool(mem.get("sequence_force_wrap", False) or mem.get("sequence_force_schedule", False)) or _explicit_map in ("force_wrap", "force_schedule")
-                    _cctrl = float(getattr(self, "canonical_signal_control", 0.50))
+                    _cctrl = float(getattr(self, "canonical_signal_control", CANONICAL_SIGNAL_CONTROL_DEFAULT))
                     if not _has_force and _explicit_map == "auto" and str(getattr(self, "canonical_control_strategy", "Full Canonical")) in ("Coverage Adaptive", "Full Canonical"):
                         if str(getattr(self, "canonical_control_strategy", "Full Canonical")) == "Full Canonical" or (_cctrl >= 0.80 and int(mem.get("pattern_length", _pat) or _pat) != int(getattr(self, "spin_seq_length", None).value()) if getattr(self, "spin_seq_length", None) is not None else False):
                             _seq_map = "schedule"
@@ -39831,8 +39834,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             seed,
             f"{float(self.spin_bpm.value()) if hasattr(self, 'spin_bpm') else 120:.4f}",
             f"{float(self.spin_base_frequency.value()) if hasattr(self, 'spin_base_frequency') else 432:.6f}",
-            f"{int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16}",
-            f"{int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else 32}",
+            f"{int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else DEFAULT_SEQUENCE_LENGTH}",
+            f"{int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else DEFAULT_PLAYLIST_ROWS}",
             f"{float(self.spin_row_beats.value()) if hasattr(self, 'spin_row_beats') else 4.0:.3f}",
             _json.dumps(list(getattr(self, "instrument_names_48", []) or []), sort_keys=True),
             "|".join(sorted((getattr(self, "instrument_scripts", {}) or {}).values()) or []),
@@ -40101,8 +40104,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         state_sig = (
             seed,
             self._seed_text() if hasattr(self, 'input_seed_val') else "0.0",
-            int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16,
-            int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else 32
+            int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else DEFAULT_SEQUENCE_LENGTH,
+            int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else DEFAULT_PLAYLIST_ROWS
         )
 
         self._unison_engine_signatures[engine] = state_sig
@@ -40117,8 +40120,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         current_sig = (
             seed,
             self._seed_text() if hasattr(self, 'input_seed_val') else "0.0",
-            int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else 16,
-            int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else 32
+            int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else DEFAULT_SEQUENCE_LENGTH,
+            int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else DEFAULT_PLAYLIST_ROWS
         )
 
         # Compare with stored signature
@@ -40485,7 +40488,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "synth_pitch": synth.get("pitch", synth.get("frequency_ratio", 1.0)),
                 "synth_amp": synth.get("amp", synth.get("amplitude", synth.get("volume", synth.get("gain", 1.0)))),
                 "canonical_control_strategy": str(getattr(self, "canonical_control_strategy", "Full Canonical")),
-                "canonical_signal_control": float(getattr(self, "canonical_signal_control", 0.50)),
+                "canonical_signal_control": float(getattr(self, "canonical_signal_control", CANONICAL_SIGNAL_CONTROL_DEFAULT)),
                 "canonical_lanes": ["sequence", "automation", "pitch", "amp", "phase", "trigger", "AM", "FM", "PM", "effect_layer"],
                 "instrument_script": str((getattr(self, "instrument_scripts", {}) or {}).get(name, "") or ""),
                 "graph_context_contract": "full_graph_v1",
@@ -40647,7 +40650,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 for sid, mem in (bank or {}).items():
                     if not isinstance(mem, dict):
                         continue
-                    n = max(1, min(1024, int(mem.get("pattern_length", 8) or 8)))
+                    n = max(1, min(1024, int(mem.get("pattern_length", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH)))
                     mem["steps"] = [bool(rng.random() > 0.55) for _ in range(n)]
                     mem["gates"] = [True] * n
                     mem["amplitudes"] = [float(rng.uniform(0.35, 1.0)) for _ in range(n)]
@@ -41335,9 +41338,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if n <= 0:
             return None
         try:
-            plen = int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else 64
+            plen = int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else DEFAULT_PLAYLIST_ROWS
         except Exception:
-            plen = 64
+            plen = DEFAULT_PLAYLIST_ROWS
         return max(1, min(int(n), max(1, plen)))
 
     def toggle_playback(self):
@@ -43461,8 +43464,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         _hyper = self._hyperdrive_state(0.0, 0) if hasattr(self, "_hyperdrive_state") else {"enabled": False}
         return {
             "bpm": float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0,
-            "seq_length": int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else 16,
-            "playlist_rows": int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else 64,
+            "seq_length": int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else DEFAULT_SEQUENCE_LENGTH,
+            "playlist_rows": int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else DEFAULT_PLAYLIST_ROWS,
             "n_instruments": len(getattr(self, "instrument_names_48", []) or []),
             "goava_active": bool(getattr(self, "goava_active", False)),
             "randomizer_active": rnd_on,
@@ -45128,7 +45131,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 main_layout.addLayout(time_scale_layout)
 
                 # 48 rows unbound to a fixed instrument — activity painted freely
-                rows = min(1024, max(1, int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else 96))
+                rows = min(1024, max(1, int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else DEFAULT_PLAYLIST_ROWS))
                 if hasattr(self, 'spin_playlist_length'):
                     self.spin_playlist_length.setValue(rows)
                 track_table = PaintbrushTable(self, rows, PLAYLIST_COLUMN_COUNT)
