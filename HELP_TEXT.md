@@ -2440,3 +2440,17 @@ Every project autosave carries the working Project Title, Project Notes, and pro
 Known Grooveboxes history is metadata-only and can be cleared in **Performance → Drive / Clone** using **Forget Selected** or **Reset Known Grooveboxes History**. This does not delete anything from the Nearby Inbox.
 
 On the sOS appliance, writable Groovebox data lives under `/var/lib/groovebox`; the launcher and installer auto-create and write-test the required project/media/export/cache/temp/log/state/network directories before ordinary file operations begin.
+
+## Four Canonicals + 3D Voxel Draw/Record (2026-09-10)
+
+The public composition canonical row is now exactly **SEEDED / RAND / LOCK / GOAVA**. All four buttons are independently selectable, color-coded, and use the same button footprint. **Euclidean Rhythm Assist** remains available as a rhythm helper but is not a fifth canonical vote.
+
+- **SEEDED** is deterministic from the project seed.
+- **RAND** captures one fresh operating-system entropy token when switched ON. That token is then frozen into project/Undo/export provenance so playback and renders reproduce the generated state until RAND is deliberately reactivated.
+- **LOCK** controls phase/relationship behavior. Its main level is joined by tuned characteristic controls: Coupling 62%, Timing Pull 50%, Pitch/Detune Link 62%, Velocity Link 65%, Phase Spread 20%.
+- **GOAVA** remains independently selectable. When RAND and GOAVA are both active, the entropy still originates from RAND; GOAVA shapes/maps that captured random state.
+- **Canonical Levels** for SEEDED, RAND, LOCK, and GOAVA live in the bottom **CANONICAL MORPH BRIDGE**. These are real engine contribution levels, not display-only controls.
+
+The four levels and LOCK characteristics are first-class composition state: they are included in project save/load, Undo/Redo snapshots, canonical fingerprints, export provenance, and the same render state used for WAV, MP3, and MP4 output.
+
+**Draw / Record · 3D Voxel Kit** is available from the shared media controls. It supports X/Y voxel drawing and erasing on selectable Z slices, a project-wide **Overall Alias** control, video-frame voxelization, OBJ/PLY/STL import plus glTF/GLB model references, and OBJ/PLY geometry export. The same project-owned voxel state is rendered by the video/scenograph path and is available to the game/export context. Voxel geometry, model reference, grid size, alias amount, and canonical contribution state all round-trip with the project.

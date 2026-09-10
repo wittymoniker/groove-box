@@ -2,161 +2,21 @@
 
 A deterministic generative music, visual, and game engine driven by mathematical seeds.
 
-## Build Groovebox yourself
+## 1. Run it and get sound
 
-If you do not want to build from source, use a prebuilt release for Windows, Linux, or macOS.
+You do **not** need to understand the math to use Groovebox.
 
-If you **do** want to create a build yourself, the main build script is:
+### Download a build
 
-```text
-BUILD_KIT/build.py
-```
+Go to the repository's **Releases** page and download the build for your system:
 
-You normally do not need to run the individual internal build scripts manually.
+| Platform | What to download | How to launch |
+|---|---|---|
+| Windows | Windows x64 build | Extract it and open the included Groovebox `.exe` |
+| Linux | Linux x86_64 build | Extract it and run the included Groovebox launcher |
+| macOS | macOS build | Extract it and open the Groovebox `.app` |
 
-### Linux
-
-Open a terminal in the Groovebox project folder.
-
-First install the required Linux dependencies:
-
-```bash
-chmod +x BUILD_KIT/install_dependencies_linux.sh
-./BUILD_KIT/install_dependencies_linux.sh
-```
-
-Then run the builder:
-
-```bash
-cd BUILD_KIT
-python3 build.py
-```
-
-When the script finishes, check the build/output directory reported by the script for the finished package.
-
-### macOS
-
-Open Terminal in the Groovebox project folder.
-
-Install the required macOS dependencies:
-
-```bash
-chmod +x BUILD_KIT/install_dependencies_macos.sh
-./BUILD_KIT/install_dependencies_macos.sh
-```
-
-Then run:
-
-```bash
-cd BUILD_KIT
-python3 build.py
-```
-
-The builder will print the location of the generated build when it completes.
-
-### Windows
-
-Install Python if it is not already available, then open **PowerShell** or **Command Prompt** in the Groovebox project folder.
-
-Run:
-
-```powershell
-cd BUILD_KIT
-py build.py
-```
-
-If your installation uses `python` instead of the Windows `py` launcher:
-
-```powershell
-python build.py
-```
-
-The builder will print where it placed the completed Windows build.
-
-### If the build fails
-
-The build kit also includes:
-
-```text
-BUILD_KIT/BUILD_DIAGNOSTIC.sh
-```
-
-On Linux/macOS, you can run the diagnostic with:
-
-```bash
-chmod +x BUILD_KIT/BUILD_DIAGNOSTIC.sh
-./BUILD_KIT/BUILD_DIAGNOSTIC.sh
-```
-
-When reporting a build problem, include:
-
-```text
-Operating system:
-Groovebox version:
-Command you ran:
-Last part of the terminal output:
-```
-
-### sOS / native sCode build
-
-The sOS/sCode project has its own native build process.
-
-Build it with:
-
-```bash
-./build/build_native.sh
-```
-
-Then run its test suite:
-
-```bash
-./tests/run_all.sh
-```
-
-For the optional static native build:
-
-```bash
-SOS_STATIC=1 ./build/build_native.sh
-```
-
-To generate the native `.sapp` package repository:
-
-```bash
-./scripts/build_sapp_repo.sh
-```
-
-Packages are written to:
-
-```text
-build/sapp-repo-native/
-```
-
-To create the source release archives:
-
-```bash
-./scripts/make_source_release.sh
-```
-
-These sOS scripts are separate from the normal Windows/Linux/macOS Groovebox application builder.
-
----
-
-### Short version
-
-For most developers:
-
-```bash
-cd BUILD_KIT
-python3 build.py
-```
-
-For Windows:
-
-```powershell
-cd BUILD_KIT
-py build.py
-```
-
+If your operating system warns about an unsigned application, use the normal system option to allow an application you trust.
 
 ### Make sound
 
@@ -242,6 +102,30 @@ Try seeds such as:
 - **Patch Modular** — modular routing and patching.
 
 You do not need to use all four editors to make music.
+
+---
+
+## Four canonical engines
+
+The current public canonical row is:
+
+**SEEDED · RAND · LOCK · GOAVA**
+
+Each is an independent toggle and each has its own contribution level in the bottom **Canonical Morph Bridge**. RAND captures fresh operating-system entropy when you activate it, then stores that random instance with the project so playback and exports can reproduce it. LOCK also provides Coupling, Timing Pull, Pitch/Detune Link, Velocity Link, and Phase Spread controls.
+
+The default LOCK character is tuned to **62% / 50% / 62% / 65% / 20%** respectively.
+
+Euclidean Rhythm Assist remains available as a rhythm helper; it is not a fifth canonical engine.
+
+---
+
+## Draw / Record 3D Voxel Kit
+
+The shared Draw/Record media workspace also includes a **3D Voxel Kit**. You can draw or erase voxels on selectable Z slices, voxelize a video frame, import supported 3D model files, and control the overall crisp-to-smooth appearance with **Overall Alias**.
+
+Supported 3D input includes OBJ, PLY, STL, glTF, and GLB references. Authored voxel geometry can be exported as OBJ or PLY, and the same project-owned voxel scene participates in audiovisual/video rendering.
+
+Voxel geometry, model reference, grid size, Overall Alias, canonical levels, and LOCK settings are stored with the project and carried into render provenance.
 
 ---
 
@@ -344,6 +228,56 @@ Technical mathematical documentation should live separately so musicians can lea
 
 ---
 
+## Build Groovebox yourself
+
+Prebuilt releases are recommended for musicians and testers. Developers can build the application with the included **BUILD_KIT**.
+
+### Linux
+
+```bash
+chmod +x BUILD_KIT/install_dependencies_linux.sh
+./BUILD_KIT/install_dependencies_linux.sh
+cd BUILD_KIT
+python3 build.py
+```
+
+### macOS
+
+```bash
+chmod +x BUILD_KIT/install_dependencies_macos.sh
+./BUILD_KIT/install_dependencies_macos.sh
+cd BUILD_KIT
+python3 build.py
+```
+
+### Windows
+
+From PowerShell or Command Prompt in the project folder:
+
+```powershell
+cd BUILD_KIT
+py build.py
+```
+
+If your Python installation uses `python` instead of the Windows `py` launcher:
+
+```powershell
+python build.py
+```
+
+The builder prints the generated output location when it completes. On Linux/macOS you can also run `BUILD_KIT/BUILD_DIAGNOSTIC.sh` if the build environment needs checking.
+
+### sOS / sCode native build
+
+```bash
+./sCode/build/build_native.sh
+./sCode/tests/run_all.sh
+```
+
+The sOS/sCode native build is separate from the normal Windows/Linux/macOS Groovebox application builder.
+
+---
+
 ## Running from source
 
 Release builds are recommended for musicians and testers.
@@ -432,4 +366,4 @@ The short version:
 
 **Make something interesting from a number, hear it immediately, and be able to reproduce it later.**
 
-The deeper mathematical, scripting, rendering, networking, and engine documentation belongs in dedicated documentation rather than between a new user and the Play button.
+The deeper mathematical, scripting, rendering, networking, and engine documentation is preserved in `docs/TECHNICAL_REFERENCE_20260909.md` rather than sitting between a new user and the Play button.

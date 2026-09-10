@@ -1,0 +1,37 @@
+Mathematician's Groovebox — 4 Canonical + 3D Voxel forward-port validation
+Authoritative base: groovebox_CANONICAL_USERDATA_SAFE_20260909.zip
+Date: 2026-09-10
+
+PASS: python3 -m py_compile groovebox.py test_four_canonical_voxel_20260910.py
+PASS: python3 test_four_canonical_voxel_20260910.py (18 checks)
+PASS: pytest relevant existing contracts batch 1 (14 tests)
+  test_canonical_userdata_ownership_contract.py
+  test_project_state_integration_20260909.py
+  test_project_media_contract.py
+  test_video_render_contract.py
+  test_idle_lag_camera_contract.py
+  test_algorithm_automation_parity.py
+PASS: pytest relevant existing contracts batch 2 (14 tests)
+  test_full_graph_script_compat.py
+  test_heuristic_writer_split.py
+  test_radio_quality_export_contract.py
+  test_game_lag_contract.py
+  test_appliance_storage_contract.py
+  test_storage_maintenance_contract.py
+
+New release-contract checks cover:
+- SEEDED / RAND / LOCK / GOAVA public canonicals
+- matched canonical button footprint + distinct colors
+- RAND OS entropy capture and frozen replay token
+- four canonical level sliders
+- LOCK characteristic sliders and defaults
+- Undo/Redo coverage for slider interaction
+- project save/load state
+- export provenance
+- 3D model import
+- Draw/Record voxel kit + Overall Alias
+- OBJ/PLY export
+- voxel participation in video rendering
+- maximum four public canonical engines
+
+Runtime limitation: full GUI/audio/camera/device execution is not available in the build container because PyQt6 and target hardware devices are unavailable. Source compilation and static/contract tests passed.
