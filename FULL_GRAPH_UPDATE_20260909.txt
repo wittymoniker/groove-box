@@ -1,0 +1,28 @@
+Mathematician's Groovebox — Full Graph Script / Writer Compatibility Update
+2026-09-09
+
+Added shared full-graph variables across Seed, Instrument, Algorithm, Domain, Canonical and cross-media paths:
+t, t_norm, x, y, z, seed, seed_w, graph_radius, graph_phase, graph_energy, graph_index, graph_slot, graph_u, graph_v, graph_w.
+
+Writer upgrades:
+- Random Seed Script: richer full-graph/vector/radial/phase templates.
+- Random Global Algorithm: graph-aware script and domain templates, including named-output forms.
+- Canonical Global Algorithm superwrite: writes graph-aware functions.
+- Heuristic -> Seq Synth: writes graph-aware sequence-local synth script + both-axis domain state.
+- RAND PARAM: realtime-safe deterministic x/y/z/t_norm/seed_w/radius/phase parameter field; no arbitrary eval/RNG in callback.
+
+Cross-media upgrades:
+- Scenograph/video live snapshot carries graph_context.
+- canonical_cross_media v14 retains instrument scripts and graph contract.
+- game identity accepts graph-context/script fingerprint and exposes a full-graph hook.
+
+Documentation:
+- in-app HELP_TEXT updated.
+- HELP_TEXT.md updated.
+- README.md updated.
+- FULL_GRAPH_SCRIPT_COMPATIBILITY_20260909.md added.
+
+Validation in packaging environment:
+- 7/7 non-Qt full-graph contract tests passed.
+- groovebox.py, dj_effects.py, videogame_engine.py, canonical_cross_media.py, graph_context.py all py_compile + AST parse PASS.
+- GUI-dependent pytest collection is not available in the packaging container because PyQt6 is not installed there; this is an environment limitation, not a source syntax failure.

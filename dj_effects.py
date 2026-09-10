@@ -134,7 +134,7 @@ class LiveDJEffects:
         wet += x * (0.16 * amt) * mod
         return self._mix(x, wet, 0.55 * amt)
 
-    def random_parametric(self, x: np.ndarray, *, start_sample: int, bpm: float = 120.0, amount: float | None = None) -> np.ndarray:
+    def random_parametric(self, x: np.ndarray, *, start_sample: int, bpm: float = 120.0, random_scalar: float = 0.0, amount: float | None = None) -> np.ndarray:
         """Seeded, continuously moving DJ macro; random-looking but repeatable."""
         amt = self.amount_random if amount is None else float(amount)
         if amt <= 1e-6 or x.size == 0:
@@ -144,21 +144,15 @@ class LiveDJEffects:
         d = self.pair
         seed_phase = ((self.seed & 0xFFFF) / 65536.0) * math.tau
         beat = float(bpm) / 60.0
-        # FULL_GRAPH_RAND_PARAM_20260909: realtime-safe graph coordinates.
-        # These are the streaming equivalents of x/y/z/t_norm/seed_w and
-        # radial/phase aliases used by the script fields; no eval and no RNG.
-        t_norm = np.mod(t * beat, 1.0)
-        seed_w = (self.seed % 1000003) / 1000003.0
-        graph_x = np.sin(math.tau * beat * (0.5 + d.spread) * t + d.phase + seed_phase)
-        graph_y = np.cos(math.tau * beat * (1.0 + d.ratio) * t + seed_phase * 0.37 + d.phase * 1.7)
-        graph_z = np.tanh(graph_x - graph_y + seed_w + (t_norm - 0.5))
-        graph_radius = np.sqrt(graph_x*graph_x + graph_y*graph_y + graph_z*graph_z)
-        graph_phase = np.arctan2(graph_y, graph_x)
-        lfo1 = np.sin(graph_phase + math.tau * t_norm * (0.5 + d.spread))
-        lfo2 = np.sin(math.tau * t_norm * (1.0 + d.ratio) + graph_z * 1.7 + seed_phase * 0.37)
+        # RAND_PARAM_GRAPH_2026: a pre-evaluated full-graph control scalar steers
+        # the realtime-safe LFO family without parsing/evaluating code here.
+        gs = float(np.clip(random_scalar, -4.0, 4.0))
+        graph_rate = 1.0 + 0.18 * abs(gs)
+        graph_phase = 0.35 * gs
+        lfo1 = np.sin(math.tau * beat * (0.5 + d.spread) * graph_rate * t + d.phase + seed_phase + graph_phase)
+        lfo2 = np.sin(math.tau * beat * (1.0 + d.ratio + 0.08*gs) * t + seed_phase * 0.37 + d.phase * 1.7 - graph_phase)
         # Parametric waveshaper + gated tremolo.  No RNG calls in the audio thread.
-        graph_complexity = np.clip(0.25*graph_radius + 0.25*(graph_z+1.0) + 0.25*(lfo1+1.0) + 0.25*(lfo2+1.0), 0.0, 2.0)
-        drive = 1.0 + amt * (1.25 + 1.75 * graph_complexity)
+        drive = 1.0 + amt * (1.5 + 2.5 * (0.5 + 0.5 * lfo1)) * (1.0 + 0.08 * abs(gs))
         # Dual-mode drive without tanh soft-clip; scale only.
         shaped = x * drive
         trem = 0.72 + 0.28 * (0.5 + 0.5 * lfo2)
@@ -167,12 +161,12 @@ class LiveDJEffects:
         wet += x * (0.035 * amt) * np.sin(lfo1 + lfo2 + d.phase)
         return self._mix(x, wet, 0.68 * amt)
 
-    def process(self, x: np.ndarray, *, start_sample: int, goava_scalar: float = 0.0, bpm: float = 120.0) -> np.ndarray:
+    def process(self, x: np.ndarray, *, start_sample: int, goava_scalar: float = 0.0, random_scalar: float = 0.0, bpm: float = 120.0) -> np.ndarray:
         y = np.asarray(x, dtype=np.float32)
         if self.amount_goava > 1e-6:
             y = self.goava_pair_morph(y, start_sample=start_sample, goava_scalar=goava_scalar, bpm=bpm)
         if self.amount_random > 1e-6:
-            y = self.random_parametric(y, start_sample=start_sample, bpm=bpm)
+            y = self.random_parametric(y, start_sample=start_sample, bpm=bpm, random_scalar=random_scalar)
         gain = self._boost_gain(y.size, start_sample)
         if gain is not None:
             y = y * gain

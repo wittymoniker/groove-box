@@ -20629,8 +20629,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "params": {"mix": 0.35, "enable_script": True, "enable_domain": True, "enable_wire": True, "script_amount": 1.0, "domain_amount": 1.0, "wire_amount": 1.0},
             "apply_enabled": False,
             "user_data": True,
-            "canonical_superwrite": True,
+            "canonical_superwrite": False,
         }
+        # Canonical Algorithm-Bay output is an ephemeral projection.  It is
+        # intentionally separate from global_algo_state so engine toggles can
+        # never mutate/reclassify user-authored algorithm data.
+        self._canonical_global_algo_projection = None
+        self._canonical_last_active_set = frozenset()
         try:
             if getattr(self, "qe_notes", None) is not None:
                 self.qe_notes.clear()
@@ -25298,7 +25303,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.lbl_gp_domain_hints.setText("hints: " + " · ".join(hint_text[:5]))
             self.global_algo_state["apply_enabled"] = bool(self.btn_apply_algo_master.isChecked())
             self.global_algo_state["user_data"] = True
-            self.global_algo_state["canonical_superwrite"] = True
+            self.global_algo_state["canonical_superwrite"] = False
 
         def _apply_master_algo(checked=True):
             if not getattr(self, "_undo_in_flight", False):
@@ -25306,7 +25311,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             _sync_inline_algo()
             self.global_algo_state["apply_enabled"] = bool(checked)
             self.global_algo_state["user_data"] = True
-            self.global_algo_state["canonical_superwrite"] = True
+            self.global_algo_state["canonical_superwrite"] = False
             if checked:
                 for kind, enabled in (("script", self.gp_script_slider.value()>0), ("domain", self.gp_domain_slider.value()>0), ("wire", self.gp_wire_slider.value()>0)):
                     if enabled:
@@ -38302,7 +38307,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                          e.get("step_algorithm_scope"), e.get("step_algorithm"),
                          tuple(e.get("global_algorithm_kinds") or []),
                          bool(e.get("global_algorithm_applied"))))
-        gas = getattr(self, "global_algo_state", {}) or {}
+        gas = self._effective_global_algo_state()
         return {"rows": rows, "global_algo": {
             "apply_enabled": bool(gas.get("apply_enabled", False)),
             "script": str(gas.get("script", "")), "domain": str(gas.get("domain", "")),
@@ -38522,11 +38527,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 return
 
         active_engines = self._get_active_engine_set()
+        _prev_active = frozenset(getattr(self, "_canonical_last_active_set", frozenset()) or ())
 
         if not active_engines:
-            # No engines active - clean slate
+            # No engines active: restore user-owned core, then discard every
+            # canonical projection/ownership store.  The restored state becomes
+            # the next cycle's baseline so repeated sessions cannot evolve.
             self._reset_to_clean_baseline()
+            self._clear_canonical_global_algo_projection()
+            self._canonical_last_active_set = frozenset()
+            self._canonical_user_rows_snapshot = copy.deepcopy(getattr(self, "master_playlist_data", []) or [])
+            self._canonical_pattern_user_store = copy.deepcopy(getattr(self, "instrument_sequencer_memory", {}) or {})
+            self._canonical_panels_user_store = copy.deepcopy(getattr(self, "instrument_sequence_banks", {}) or {})
+            self._canonical_macro_user_store = copy.deepcopy(getattr(self, "instrument_param_state", {}) or {})
             return
+
+        if not _prev_active:
+            # First engine entering from a fully-off state: freeze the exact live
+            # userdata once.  Mixed engine changes reuse this immutable baseline.
+            self._canonical_user_rows_snapshot = copy.deepcopy(getattr(self, "master_playlist_data", []) or [])
+            self._canonical_pattern_user_store = copy.deepcopy(getattr(self, "instrument_sequencer_memory", {}) or {})
+            self._canonical_panels_user_store = copy.deepcopy(getattr(self, "instrument_sequence_banks", {}) or {})
+            self._canonical_macro_user_store = copy.deepcopy(getattr(self, "instrument_param_state", {}) or {})
 
         # Unified composition guard prevents re-entrancy
         if getattr(self, "_unison_composition_guard", False):
@@ -38535,7 +38557,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._unison_composition_guard = True
 
         try:
-            # Step 0: restore the pre-canonical core (order/history independent).
+            # Step 0: discard stale projections and restore the pre-canonical
+            # core (order/history independent).
+            self._clear_canonical_global_algo_projection()
             self._reset_canonical_engine_derived_state()
 
             # Step 1: Establish clean baseline (history-free)
@@ -38570,32 +38594,50 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self._refresh_canonical_fingerprint()
             except Exception:
                 pass
+            self._canonical_last_active_set = frozenset(active_engines)
 
         finally:
             self._unison_composition_guard = False
 
-    def _canonical_superwrite_global_algo(self):
-        """Superwrite the Global Play Algorithm Bay from the canonical unison state.
+    def _effective_global_algo_state(self):
+        """Return canonical Algorithm-Bay projection when engines are active.
 
-        The Algorithm Bay is always userdata: user edits are valid input to the
-        composition and the master Apply toggle controls whether that userdata is
-        audible/applied.  Unlike the old *protectable userdata* mode, there is no
-        second ownership switch.  Whenever the canonical unison transaction
-        completes, the engine deterministically rewrites the algorithm bay from
-        the resulting canonical state, so the bay remains a unique, reproducible
-        projection of the composition and is naturally superwritable by the engine.
+        ``global_algo_state`` is strictly user-owned project data.  Canonical
+        engines may derive an effective projection, but that projection never
+        becomes userdata and is never serialized as the user's Algorithm Bay.
+        """
+        proj = getattr(self, "_canonical_global_algo_projection", None)
+        try:
+            active = bool(self._get_active_engine_set())
+        except Exception:
+            active = False
+        if active and isinstance(proj, dict):
+            return proj
+        gas = getattr(self, "global_algo_state", None)
+        return gas if isinstance(gas, dict) else {}
+
+    def _clear_canonical_global_algo_projection(self):
+        """Discard all canonical Algorithm-Bay output without touching userdata."""
+        self._canonical_global_algo_projection = None
+
+    def _canonical_superwrite_global_algo(self):
+        """Derive an ephemeral Global Algorithm projection from canonical unison.
+
+        Ownership rule: the user-authored ``global_algo_state`` is read-only to
+        this operation.  Canonical output lives in
+        ``_canonical_global_algo_projection`` and is tagged canonical-owned.
+        Repeated toggles therefore re-derive from the same user baseline instead
+        of feeding a previous projection back into the next transaction.
         """
         try:
-            gas = getattr(self, "global_algo_state", None)
-            if not isinstance(gas, dict):
-                gas = {}
-                self.global_algo_state = gas
+            user_gas = getattr(self, "global_algo_state", None)
+            if not isinstance(user_gas, dict):
+                user_gas = {}
+            gas = copy.deepcopy(user_gas)
             seed = _safe_int_seed(self.get_numeric_seed())
             active = sorted(self._get_active_engine_set())
             pl = getattr(self, "master_playlist_data", None) or []
             n = len(pl)
-            # Stable composition signature intentionally excludes the existing
-            # Global Algorithm Bay so a user edit cannot recursively feed itself.
             rows_sig = []
             for i, e in enumerate(pl[:64]):
                 if not isinstance(e, dict):
@@ -38607,7 +38649,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             phase = (sig % 1000003) / 1000003.0
             engine_expr = " + ".join(active) if active else "identity"
             gas["script"] = (
-                "# Canonical Unison Superwrite\n"
+                "# Canonical Unison Projection\n"
                 f"# engines={engine_expr}\n"
                 f"# composition={sig:08x}\n"
                 "def global_script(t, name, i):\n"
@@ -38617,8 +38659,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 'equation = "sin((t + %.9f) * MEUM) + cos(x * %.9f)"\n'
                 % (phase, 0.25 + 0.75 * phase)
             )
-            # One deterministic canonical wire is enough to make the bay a
-            # concrete writable projection without duplicating every engine edge.
             names = list(getattr(self, "instrument_names_48", []) or [])
             if names:
                 a = int(sig % len(names)); b = int((sig // max(1, len(names))) % len(names))
@@ -38631,26 +38671,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     "question": "How should canonical unison redistribute harmonic detail?",
                     "subject": "canonical_unison",
                     "origin": "canonical_unison",
-                    "user_defined": True,
-                    "user_data": True,
+                    "user_defined": False,
+                    "user_data": False,
                     "canonical_superwrite": True,
-                    "apply_enabled": bool(gas.get("apply_enabled", False)),
+                    "canonical_owner": "unison",
+                    "apply_enabled": bool(user_gas.get("apply_enabled", False)),
                 }]
+            else:
+                gas["wire"] = []
             gas.setdefault("params", {})
             gas["params"]["mix"] = round(0.35 + 0.65 * phase, 6)
             gas["params"]["script_amount"] = 1.0
             gas["params"]["domain_amount"] = 1.0
             gas["params"]["wire_amount"] = 1.0
-            gas["user_data"] = True
+            gas["user_data"] = False
+            gas["user_defined"] = False
             gas["canonical_superwrite"] = True
+            gas["canonical_owner"] = "unison"
             gas.pop("protectable_userdata", None)
-            # Keep the visible fields synchronized if the main bay is open.
-            if getattr(self, "gp_script_field", None) is not None:
-                self.gp_script_field.blockSignals(True); self.gp_script_field.setPlainText(gas["script"]); self.gp_script_field.blockSignals(False)
-            if getattr(self, "gp_domain_field", None) is not None:
-                self.gp_domain_field.blockSignals(True); self.gp_domain_field.setText(str(gas["domain"]).replace("\n", " ")); self.gp_domain_field.blockSignals(False)
+            self._canonical_global_algo_projection = gas
         except Exception as exc:
-            print(f"[Canonical] Global Algorithm superwrite skipped: {exc}")
+            self._canonical_global_algo_projection = None
+            print(f"[Canonical] Global Algorithm projection skipped: {exc}")
 
     def _get_active_engine_set(self):
         """Get set of currently active engines in deterministic order"""
@@ -42447,7 +42489,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         Global Player algo fingerprint is included so the video-game interpreter
         responds to Script/Domain/Wire/Params without ever mutating the seed.
         """
-        gas = getattr(self, "global_algo_state", {}) or {}
+        gas = self._effective_global_algo_state()
         try:
             algo_fp = hashlib.sha256(
                 json.dumps(gas, sort_keys=True, default=str).encode("utf-8")
@@ -43785,7 +43827,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "params": {"mix": 0.35, "enable_script": True, "enable_domain": True, "enable_wire": True, "script_amount": 1.0, "domain_amount": 1.0, "wire_amount": 1.0},
             "apply_enabled": False,
             "user_data": True,
-            "canonical_superwrite": True,
+            "canonical_superwrite": False,
             }
 
         window = QWidget(None, Qt.WindowType.Window)
@@ -44036,7 +44078,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """
         which = str(which or "").lower()
         names = list(getattr(self, "instrument_names_48", []) or [])
-        gas = getattr(self, "global_algo_state", {}) or {}
+        gas = self._effective_global_algo_state()
         params = gas.get("params") if isinstance(gas.get("params"), dict) else {}
         mix = float(params.get("mix", 0.35))
         amount_key = {"script":"script_amount", "domain":"domain_amount", "wire":"wire_amount"}.get(which)

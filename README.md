@@ -495,6 +495,13 @@ return isn(t*MEUM) + 0.25*ics(t*PHI)
 script evaluators. Use the Help panel as the authoritative list for the build
 being run.
 
+
+### 17.2a Full-graph script compatibility (`full_graph_v1`)
+
+Seed, Instrument, applied Algorithm, Domain, audio, video/scenograph, and generated-game readers now share one graph context. Existing `evaluate_wave(x,y,z)` and `global_script(t,name,i)` programs remain valid. New programs may additionally read `t_norm`, `graph`, `graph_vector`, `graph_x/y/z`, `graph_scalar`, `graph_radius`, `graph_angle`, `graph_energy`, `graph_curvature`, `graph_phase`, normalized `graph_u/v/w`, graph/sequence/step indexes, `domain_value`, `domain_weight`, graph/domain IDs, BPM, and sample rate.
+
+Scripts may return a scalar or named channels (`wave`, `amp`, `pitch`, `pan`, `x/y/z`, `opacity`, `scale`, `rotation`, `drive`, `speed`, `world_z`). The same varying graph is consumed by sound, video, and game pathways. Canonical payloads advertise `full_graph_v1`, and Canonical/Seeded writers, Random Seed, Global Algorithm randomization, Randomize All/RAND PARAM, and Heuristic Write to Seq Synth can author richer multivariate programs. Engine writers replace only stock/engine-authored Instrument Scripts; user-authored scripts remain protected. RAND PARAM graph programs are evaluated on the control lattice and cached for the realtime audio callback. See `HELP_TEXT.md` / the in-app Help dialog for the complete variable list.
+
 ### 17.3 How generated math reaches sound
 
 The canonical pipeline is conceptually:
@@ -918,7 +925,3 @@ Nearby Grooveboxes now keeps a bounded metadata-only known-peer history under `s
 The standalone sOS appliance sets `GROOVEBOX_DATA_DIR=/var/lib/groovebox`. The launcher creates projects, samples, games, modules, exports, cache, temp, logs, state, and Nearby Inbox directories before Groovebox starts, then calls the same `groovebox_paths.ensure_app_layout()` write probe used by the desktop entry point. The disk installer creates and write-tests that tree on the target filesystem before completing bootloader installation. `/opt/groovebox` remains application/runtime content rather than the user-data destination.
 
 The release archive now includes the complete `APPLIANCE_ISO/` builder tree and its seed initramfs. Use `PACKAGE_GROOVEBOX_RELEASE.sh` to make redistribution ZIP/TAR archives without accidentally omitting the ISO builder again.
-
-### Full-graph scripting compatibility (2026-09-09)
-
-All script-writing surfaces now target the same graph-context contract used by Seed scripts. The common variables are `t`, `t_norm`, `x`, `y`, `z`, `seed`, `seed_w`, `graph_radius`, `graph_phase`, `graph_energy`, `graph_index`, `graph_slot`, `graph_u`, `graph_v`, and `graph_w`. Scalar scripts remain valid; vector/list and named-dictionary outputs are also supported by the compatibility layer. Canonical cross-media metadata carries the graph contract and instrument-script identity into audio/video/game generation. Random Seed Script, Global Algorithm randomization, Canonical superwrite, and Heuristic → Seq Synth can author richer graph-dependent scripts. RAND PARAM uses the same deterministic coordinate family in its realtime-safe parametric path.
