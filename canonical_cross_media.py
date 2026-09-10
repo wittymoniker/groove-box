@@ -8,9 +8,8 @@ from __future__ import annotations
 import hashlib, json, math
 from typing import Any
 import numpy as np
-from graph_context import GRAPH_CONTEXT_VERSION, GRAPH_VARIABLES, context_fingerprint
 
-VERSION = "cross_media_v14_full_graph"
+VERSION = "cross_media_v13"
 
 def _stable(obj: Any) -> str:
     return hashlib.sha256(json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()[:16]
@@ -90,8 +89,6 @@ def build_canonical_document(app, waveform=None, sample_rate=48000):
         "playlist":playlist,
         "playlist_automation":cp(getattr(app,"playlist_automation",[]) or []),
         "instrument_params":params,
-        "instrument_scripts":cp(getattr(app,"instrument_scripts",{}) or {}),
-        "graph_context":{"version":GRAPH_CONTEXT_VERSION,"variables":list(GRAPH_VARIABLES)},
         "instrument_samples":samples,
         "patch_connections":patches,
         "global_algo":global_algo,
@@ -139,8 +136,6 @@ def build_cross_media_from_canonical(document, waveform=None, sample_rate=48000)
         "sequence_banks": d.get("instrument_sequence_banks", d.get("sequence_banks", {})),
         "playlist": d.get("master_playlist_data", d.get("playlist", [])),
         "instrument_params": d.get("instrument_param_state", d.get("instrument_params", {})),
-        "instrument_scripts": d.get("instrument_scripts", {}),
-        "graph_context": d.get("graph_context", {"version":GRAPH_CONTEXT_VERSION,"variables":list(GRAPH_VARIABLES)}),
         "instrument_samples": d.get("instrument_sample_paths", d.get("instrument_samples", {})),
         "patch_connections": d.get("patch_connections", []),
         "global_algo": d.get("global_algo", {}),
