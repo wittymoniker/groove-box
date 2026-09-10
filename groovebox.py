@@ -52,7 +52,6 @@ import re
 import weakref
 import numpy as np
 from groovebox_media_tools import resolve_local_tool
-from graph_context import GRAPH_CONTEXT_VERSION, GRAPH_VARIABLES, build_graph_context, context_fingerprint, coerce_graph_output
 from meum_constants import (
     MEUM, M, MEUM_DECIMAL, MEUM_MINUS_1, MEUM_INV, MEUM_TWO_MINUS,
     MEUM_NORM, MEUM_SQ, MEUM_CUBE, MEUM_FOURTH, MEUM_TWO_POW, MEUM_LOG2,
@@ -67,6 +66,11 @@ from visual_determinism import (
     instruments_handler,
 )
 from fractal_spatial_engine import FractalSpatialEngine
+
+from graph_script_context import (
+    build_graph_context, graph_context_env, evaluate_graph_script,
+    coerce_graph_result, GRAPH_SCRIPT_VARIABLES,
+)
 
 from dj_effects import CommutativePairSpace, LiveDJEffects
 from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer, QObject, QEvent, pyqtSignal, QRunnable, QThreadPool
@@ -120,6 +124,11 @@ class SeedScriptSyntaxHighlighter(QSyntaxHighlighter):
         "exp", "floor", "ceil", "pow", "mod", "clamp", "sign",
         "polar", "cartesian", "cylindrical", "spherical", "isn", "ics",
         "MEUM", "M", "PHI", "PI", "E", "SQRT2", "SQRT3",
+        "t_norm", "seed", "seed_w", "graph", "graph_x", "graph_y", "graph_z",
+        "graph_scalar", "graph_radius", "graph_angle", "graph_energy", "graph_curvature",
+        "graph_phase", "graph_u", "graph_v", "graph_w", "graph_index", "graph_count",
+        "graph_slot", "sequence_index", "step_index", "domain_value", "domain_weight",
+        "graph_id", "domain_id", "graph_vector", "bpm", "sample_rate",
     }
     _TOKEN_RE = re.compile(
         r"(?P<comment>\#.*$)|"
@@ -4709,11 +4718,7 @@ def _seed_script_env(t_scalar=0.0, canonical_context=None):
         "AUTHOR_NUMBER_SCHEME": AUTHOR_NUMBER_SCHEME,
         "op_theory_enabled": operator_theory_enabled,
         "set_op_theory": set_operator_theory,
-        "t": float(t_scalar), "t_norm": float(max(0.0, min(1.0, t_scalar))),
-        "x": float(t_scalar), "y": 0.0, "z": 0.0, "seed": 0.0, "seed_w": 0.0,
-        "graph_radius": abs(float(t_scalar)), "graph_phase": 0.0, "graph_energy": 0.0,
-        "graph_index": 0, "graph_slot": 0, "graph_u": float(t_scalar), "graph_v": 0.0, "graph_w": 0.0,
-        "GRAPH_CONTEXT_VERSION": GRAPH_CONTEXT_VERSION,
+        "t": float(t_scalar), "x": float(t_scalar), "y": 0.0, "z": 0.0,
         "True": True, "False": False, "None": None,
         "carrier_present": 0,
         "carrier_rms": 0.0,
@@ -4732,6 +4737,28 @@ def _seed_script_env(t_scalar=0.0, canonical_context=None):
         "len": len, "sum": sum, "range": range, "enumerate": enumerate,
         "zip": zip, "sorted": sorted, "reversed": reversed,
     }
+    # FULL_GRAPH_SCRIPT_CONTEXT_2026: Seed, Instrument, Algorithm, Domain,
+    # Canonical, video and game scripts share one graph-variable vocabulary.
+    # Preserve the historical Seed Script default x=t when no explicit graph x
+    # is supplied, while allowing render/canonical callers to inject true XYZ.
+    _cc = canonical_context if isinstance(canonical_context, dict) else {}
+    _gx = _cc.get("x", _cc.get("graph_x", t_scalar))
+    _gy = _cc.get("y", _cc.get("graph_y", 0.0))
+    _gz = _cc.get("z", _cc.get("graph_z", 0.0))
+    _gseed = _cc.get("seed", 0.0)
+    _gctx = build_graph_context(
+        t=t_scalar, t_norm=_cc.get("t_norm", t_scalar),
+        x=_gx, y=_gy, z=_gz, seed=_gseed, seed_w=_cc.get("seed_w"),
+        graph_index=_cc.get("graph_index", 0), graph_count=_cc.get("graph_count", 1),
+        slot=_cc.get("graph_slot", _cc.get("slot", 0)),
+        sequence=_cc.get("sequence_index", _cc.get("sequence", 1)),
+        step=_cc.get("step_index", _cc.get("step", 0)),
+        bpm=_cc.get("bpm", 120.0), sample_rate=_cc.get("sample_rate", 44100.0),
+        domain_value=_cc.get("domain_value", 0.0), domain_weight=_cc.get("domain_weight", 1.0),
+        graph_id=_cc.get("graph_id", "seed"), domain_id=_cc.get("domain_id", ""),
+        canonical_context=_cc,
+    )
+    env.update(graph_context_env(_gctx))
     if isinstance(canonical_context, dict):
         for _k, _v in canonical_context.items():
             if isinstance(_k, str) and _k.isidentifier() and isinstance(_v, (int, float, bool)):
@@ -4947,6 +4974,123 @@ def evaluate_seed_expression_at_time(seed_text, t_value, canonical_context=None)
         t_scalar = 0.0
     idx = int(math.floor(abs(t_scalar) * max(1.0, len(vals)))) % len(vals)
     return float(vals[idx])
+
+
+def _app_full_graph_context(app, t_value=0.0, *, t_norm=None, slot=0, row=0, sequence=1, step=0, name=""):
+    """Resolve the current composition into the shared script graph payload.
+
+    This is the bridge that prevents Seed/Instrument/Algorithm/Domain/Video/Game
+    paths from collapsing a varying graph to one unrelated scalar too early.
+    """
+    try:
+        t = float(t_value)
+    except Exception:
+        t = 0.0
+    if t_norm is None:
+        t_norm = float(np.clip(t, 0.0, 1.0))
+    try:
+        seed = float(app.get_numeric_seed()) if app is not None and hasattr(app, "get_numeric_seed") else 0.0
+    except Exception:
+        seed = 0.0
+    seed_text = ""
+    try:
+        seed_text = app._seed_text() if app is not None and hasattr(app, "_seed_text") else ""
+    except Exception:
+        seed_text = ""
+    # GRAPH_CONTEXT_CACHE_2026: Instrument + Algorithm commonly evaluate at
+    # the exact same control point. Cache the expensive seed/domain projection
+    # once so richer graph coverage does not double script-parsing work.
+    _cache = getattr(app, "_graph_context_cache", None) if app is not None else None
+    if app is not None and not isinstance(_cache, dict):
+        _cache = {}
+        app._graph_context_cache = _cache
+    _cache_key = None
+    if isinstance(_cache, dict):
+        try:
+            _cache_key = (round(float(t), 12), round(float(t_norm), 12), int(slot), int(row),
+                          int(sequence), int(step), round(float(seed), 12), seed_text)
+            _hit = _cache.get(_cache_key)
+            if isinstance(_hit, dict):
+                _ctx_hit = dict(_hit)
+                _ctx_hit["name"] = str(name or "")
+                return _ctx_hit
+        except Exception:
+            _cache_key = None
+    canonical = {}
+    try:
+        canonical = dict(app._canonical_input_context()) if app is not None and hasattr(app, "_canonical_input_context") else {}
+    except Exception:
+        canonical = {}
+    vals = []
+    try:
+        if seed_text.strip():
+            vals = _eval_seed_python(seed_text, t_value=t, canonical_context=canonical, allow_scrape=False) or []
+    except Exception:
+        vals = []
+    if not vals:
+        try:
+            vals = list(app.get_seed_values(t_value=t) or []) if app is not None and hasattr(app, "get_seed_values") else []
+        except Exception:
+            vals = []
+    seq = [float(v) for v in vals if isinstance(v, (int, float, np.number)) and math.isfinite(float(v))]
+    if not seq:
+        seq = [seed]
+    if _seed_script_is_coordinate(seed_text) and len(seq) >= 2:
+        x, y = float(seq[0]), float(seq[1])
+        z = float(seq[2]) if len(seq) >= 3 else 0.0
+    else:
+        try:
+            x, y, z = compositional_xyz(seed, sequential_nums=seq, t=t, slot=int(slot))
+        except Exception:
+            x, y, z = t, 0.0, 0.0
+    domain_value = 0.0
+    domain_weight = 1.0
+    domain_id = ""
+    try:
+        engine = getattr(app, "domain_eq_engine", None) if app is not None else None
+        if engine is not None:
+            _gc = max(1, len(getattr(app, "master_playlist_data", []) or [1])) if app is not None else 1
+            domain_value = float(engine.evaluate(
+                t, x=x, y=y, z=z, t_norm=float(t_norm), graph_index=int(row),
+                graph_count=_gc, slot=int(slot), sequence=int(sequence), step=int(step),
+                bpm=float(getattr(app, "_rt_bpm", 120.0) or 120.0) if app is not None else 120.0,
+                sample_rate=float(getattr(app, "sample_rate", 44100.0) or 44100.0) if app is not None else 44100.0,
+            ))
+            domain_id = repr(engine.to_json())
+    except Exception:
+        domain_value = 0.0
+    try:
+        bpm = float(app.spin_bpm.value()) if hasattr(app, "spin_bpm") else float(getattr(app, "bpm", 120.0))
+    except Exception:
+        bpm = 120.0
+    sample_rate = float(getattr(app, "sample_rate", 44100.0) or 44100.0) if app is not None else 44100.0
+    ctx = build_graph_context(
+        t=t, t_norm=float(t_norm), x=x, y=y, z=z, seed=seed,
+        graph_index=int(row), graph_count=max(1, len(getattr(app, "master_playlist_data", []) or [1])) if app is not None else 1,
+        slot=int(slot), sequence=int(sequence), step=int(step), bpm=bpm, sample_rate=sample_rate,
+        domain_value=domain_value, domain_weight=domain_weight, graph_id=seed_text or seed, domain_id=domain_id,
+        canonical_context=canonical, values=seq,
+    )
+    if isinstance(_cache, dict) and _cache_key is not None:
+        try:
+            if len(_cache) >= 2048:
+                _cache.clear()
+            _base_store = dict(ctx)
+            _base_store.pop("name", None)
+            _cache[_cache_key] = _base_store
+        except Exception:
+            pass
+    ctx["name"] = str(name or "")
+    return ctx
+
+
+def _evaluate_app_graph_script(app, script, t_value=0.0, *, t_norm=None, slot=0, row=0, sequence=1, step=0, name="", function_names=("evaluate_wave", "global_script", "evaluate", "main")):
+    """Evaluate one script against the same graph context used by all media."""
+    ctx = _app_full_graph_context(app, t_value, t_norm=t_norm, slot=slot, row=row, sequence=sequence, step=step, name=name)
+    extra = _seed_script_env(t_scalar=float(ctx.get("t", 0.0)), canonical_context=ctx)
+    return evaluate_graph_script(script, ctx, function_names=function_names, extra_env=extra)
+
+
 def goava_get_note(number_assigned, step, numbers):
     """Return the scalar note value produced by GOAVA Composer.getNote()."""
     nums = [float(x) for x in numbers if math.isfinite(float(x))]
@@ -5584,6 +5728,9 @@ def generate_random_seed_script(rng=None):
     vars_ = (
         "t", "pi", "e", "tau", "PHI", "MEUM", "MEUM_NORM", "MEUM_INV",
         "MEUM_SQ", "MEUM_LOG2", "SILVER", "SQRT2", "SQRT3", "x", "y", "z",
+        "t_norm", "graph_x", "graph_y", "graph_z", "graph_scalar",
+        "graph_radius", "graph_angle", "graph_energy", "graph_curvature",
+        "graph_phase", "graph_u", "graph_v", "graph_w", "domain_value",
     )
     def _nums():
         return [
@@ -5640,6 +5787,10 @@ def generate_random_seed_script(rng=None):
                 f"x(t) = {n1} * sin(t * MEUM)\ny(t) = {n2} * cos(t * PHI)",
                 f"polar({n1} * (1 + 0.25 * sin(t * {a})), MEUM * t)",
                 f"spherical({n1}, MEUM * t, 0.5 * pi + 0.25 * sin(t * {a}))",
+                f"x(t) = {n1} * sin(t * MEUM * {a}) + graph_y * MEUM_NORM\ny(t) = {n2} * cos(t * PHI * {b}) - graph_z * MEUM_INV\nz(t) = {n3} * sin(t_norm * tau + graph_x)",
+                f"cartesian({n1} * sin(t * {a}) + graph_x, {n2} * cos(t * {b}) + graph_y, {n3} * sin(graph_phase + t) + graph_z)",
+                f"(graph_scalar * {mix_w} + domain_value * {round(1.0-mix_w,3)}) * {n1} + graph_energy * {n2}",
+                f"clamp((graph_u-graph_v+graph_w) * {n1} + isn(graph_phase * MEUM) * {n2}, {-max(n1,n2)}, {max(n1,n2)})",
                 f"(MEUM_NORM * {n1} + (1 - MEUM_NORM) * {n2}) * (0.5 + 0.5 * sin(t * {a}))",
                 # Scriptable seed parameters shared with GLOBAL PLAY PATCHER
                 f"# domain-path\n{f1}(t * MEUM) * {mix_w} + {f2}(t * PHI) * {round(1.0 - mix_w, 3)}",
@@ -5647,9 +5798,6 @@ def generate_random_seed_script(rng=None):
                 f"# seed-weight path\n({n1} * MEUM_NORM + {n2} * (1 - MEUM_NORM)) * (0.5 + 0.5 * {f1}(t))",
                 f"if({cond}) {n1} * MEUM elif {n2} * MEUM_INV",
                 f"# transmutor\nlog2(abs({f1}(t * MEUM)) + 1) * {n1} + sqrt(abs({f2}(t))) * {n2}",
-                f"# full-graph vector path\nparametric(sin((x + t_norm) * MEUM) * {mix_w}, cos((y - t_norm) * PHI) * {round(1.0-mix_w,3)}, tanh(z + seed_w))",
-                f"# radial/phase graph path\n({n1} * (0.5 + 0.5*sin(graph_phase + t*MEUM)) + {n2} * clamp(graph_radius,0,1)) * (0.5 + 0.5*seed_w)",
-                f"# graph-channel list\n{n1}*(0.5+0.5*graph_u), {n2}*(0.5+0.5*graph_v), {n3}*(0.5+0.5*graph_w), {n4}*(0.5+0.5*t_norm)",
             ]
             cand = pool[rng.randrange(0, len(pool))]
         try:
@@ -5659,6 +5807,67 @@ def generate_random_seed_script(rng=None):
             pass
     return f"P(isn(t), ics(t)) * {rng.randint(32, 400)} + E(sin(t), MEUM) * {rng.randint(16, 200)}"
 
+
+
+def generate_random_instrument_graph_script(name="Instrument", seed=1.0, slot=0, rng=None):
+    """Author a complex but bounded Instrument Script over the full graph context."""
+    if rng is None:
+        rng = random.Random((_safe_int_seed(seed) ^ (int(slot) * 0x9E3779B1)) & 0xFFFFFFFF)
+    a = round(rng.uniform(0.5, 6.0), 4)
+    b = round(rng.uniform(0.5, 5.0), 4)
+    c = round(rng.uniform(0.05, 0.35), 4)
+    mix = round(rng.uniform(0.35, 0.85), 4)
+    family = rng.randrange(4)
+    if family == 0:
+        body = (
+            f"    spatial = sin((x + {c}*graph_z) * MEUM * {a}) * cos((y - {c}*graph_x) * PHI * {b})\n"
+            f"    temporal = isn(graph_phase + t_norm * tau)\n"
+            f"    wave = spatial * ({mix} + {round(1-mix,4)} * temporal)\n"
+        )
+    elif family == 1:
+        body = (
+            f"    radial = ics(graph_radius * {a} + t * MEUM)\n"
+            f"    angular = sin(graph_angle * {b} + graph_phase)\n"
+            f"    wave = {mix} * radial + {round(1-mix,4)} * angular\n"
+        )
+    elif family == 2:
+        body = (
+            f"    field = sin((graph_x + graph_y) * {a} + t) * cos((graph_z - graph_x) * {b} - t)\n"
+            f"    wave = field * (0.5 + 0.5 * graph_energy) + domain_value * {c}\n"
+        )
+    else:
+        body = (
+            f"    uvw = (graph_u - graph_v + graph_w) * {a}\n"
+            f"    wave = isn(uvw + graph_phase) * {mix} + ics(t * {b}) * {round(1-mix,4)}\n"
+        )
+    return (
+        f"# Random full-graph Instrument Script · {name}\n"
+        f"# Inputs: t,t_norm,x,y,z,seed,seed_w,graph_*,domain_value\n"
+        f"def evaluate_wave(x, y, z, t=0.0, t_norm=0.0, graph=None):\n"
+        + body
+        + f"    return {{'wave': wave, 'amp': 0.55 + 0.45*graph_u, 'pitch': 1.0 + {c}*graph_curvature, 'pan': 2.0*graph_v-1.0, 'opacity': 0.5+0.5*graph_energy, 'scale': 0.75+0.5*graph_w}}"
+    )
+
+def generate_random_param_graph_script(seed=0.0, pair_signature=0, generation=0):
+    """Author the RAND PARAM macro as a full-graph program, not a scalar LFO.
+
+    The generated source is saved with the project so realtime and offline
+    playback remain deterministic after the random authoring event.
+    """
+    rr = random.Random(_safe_int_seed(f"rand-param|{seed}|{pair_signature}|{generation}"))
+    a = round(rr.uniform(0.35, 4.75), 5)
+    b = round(rr.uniform(0.5, 6.5), 5)
+    c = round(rr.uniform(0.08, 0.42), 5)
+    m = round(rr.uniform(0.25, 0.78), 5)
+    return (
+        "# RAND PARAM full-graph performance script\n"
+        "# Authored once on engagement; evaluated outside the realtime audio callback.\n"
+        "def global_script(t, name, i, graph=None):\n"
+        f"    radial = isn(graph_radius * MEUM * {a} + graph_phase)\n"
+        f"    spatial = cos((graph_x-graph_y+graph_z) * PHI * {b} + t_norm*tau)\n"
+        f"    field = {m}*radial + {round(1.0-m,5)}*spatial + {c}*domain_value\n"
+        f"    return {{'drive': field, 'wave': field, 'amp': 0.70+0.30*graph_u, 'pitch': 1.0+{c}*graph_curvature, 'pan': 2*graph_v-1, 'rotation': graph_angle, 'opacity': 0.45+0.55*graph_energy, 'speed': 0.8+0.4*graph_w, 'world_z': graph_z}}"
+    )
 
 def generate_random_global_play_algo(rng=None):
     """Deterministic-vocabulary random state for GLOBAL PLAY PATCHER.
@@ -5677,13 +5886,11 @@ def generate_random_global_play_algo(rng=None):
     da = round(rng.uniform(0.40, 1.0), 3)
     wa = round(rng.uniform(0.25, 1.0), 3)
     script_pool = [
-        f"# Global script algo\ndef global_script(t, name, i):\n    return sin(t * MEUM * {a}) * {mix} + cos(t * PHI) * {round(1 - mix, 3)}\n",
-        f"# Global script algo\ndef global_script(t, name, i):\n    return (MEUM_NORM * sin(t * {a}) + (1 - MEUM_NORM) * cos(t * {b})) * {mix}\n",
-        f"# Global script algo\ndef global_script(t, name, i):\n    v = isn(t * MEUM) * {a} + ics(t * PHI) * {b}\n    return v * {mix}\n",
-        f"# Global script algo\ndef global_script(t, name, i):\n    if sin(t * MEUM) >= 0:\n        return {mix} * cos(t * {a})\n    return {round(1 - mix, 3)} * sin(t * {b})\n",
-        f"# Global script algo\ndef global_script(t, name, i):\n    return isn(sin(t * MEUM * {a}) * cos(t * PHI * {b})) * {mix}\n",
-        f"# Full-graph Global script algo\ndef global_script(t, name, i, x=0.0, y=0.0, z=0.0, t_norm=None, seed=0.0, seed_w=0.0, graph_radius=0.0, graph_phase=0.0, graph_energy=0.0):\n    tn = t if t_norm is None else t_norm\n    return (sin((x+tn)*MEUM*{a}) + cos((y-tn)*PHI*{b}) + tanh(z+seed_w) + graph_radius*cos(graph_phase)) * {mix} / 4.0\n",
-        f"# Vector-aware Global script algo\ndef global_script(t, name, i, x=0.0, y=0.0, z=0.0, t_norm=None, seed=0.0, seed_w=0.0, graph_radius=0.0, graph_phase=0.0, graph_energy=0.0):\n    return {{'value': sin(t*MEUM+graph_phase)*{mix}, 'x': x, 'y': y, 'z': z, 'amp': 0.5+0.5*tanh(graph_energy+seed_w)}}\n",
+        f"# Global graph script algo\ndef global_script(t, name, i, graph=None):\n    spatial = sin(graph_x * MEUM * {a} + graph_y * PHI)\n    temporal = cos(graph_phase + t * {b})\n    return {{'wave': spatial * {mix} + temporal * {round(1-mix,3)}, 'amp': 0.75 + 0.25 * graph_u, 'pan': 2*graph_v-1}}\n",
+        f"# Global graph script algo\ndef global_script(t, name, i, graph=None):\n    v = isn(graph_radius * MEUM + t * {a}) + ics(graph_angle * PHI + t_norm * {b})\n    return {{'scalar': v * {mix}, 'pitch': 1.0 + 0.125 * graph_curvature, 'drive': graph_energy}}\n",
+        f"# Global graph script algo\ndef global_script(t, name, i, graph=None):\n    xyz = graph_vector\n    field = MEUM_NORM * sin(xyz[0] * {a} + t) + (1-MEUM_NORM) * cos(xyz[1] * {b} - t)\n    return {{'wave': field, 'x': xyz[0], 'y': xyz[1], 'z': xyz[2], 'opacity': 0.5 + 0.5*graph_energy}}\n",
+        f"# Global graph script algo\ndef global_script(t, name, i, graph=None):\n    if graph_energy >= graph_curvature:\n        return {{'scalar': {mix} * cos(graph_phase * {a}), 'scale': 1.0 + 0.2*graph_u}}\n    return {{'scalar': {round(1-mix,3)} * sin((domain_value + t) * {b}), 'rotation': graph_angle}}\n",
+        f"# Global graph script algo\ndef global_script(t, name, i, graph=None):\n    v = isn(sin((graph_x+graph_z) * MEUM * {a}) * cos((graph_y+t) * PHI * {b}))\n    return {{'wave': v * {mix}, 'speed': 0.75 + 0.5*graph_w, 'world_z': graph_z}}\n",
     ]
     domain_pool = [
         f"sin(t * MEUM) * {mix} + cos(t * PHI) * {round(1 - mix, 3)}",
@@ -5692,8 +5899,9 @@ def generate_random_global_play_algo(rng=None):
         f"log2(abs(sin(t * MEUM)) + 1) * {a} + sqrt(abs(cos(t))) * {b}",
         f"sin(t * MEUM * {a}) * cos(t * {b}) + MEUM_INV * sin(t * PHI)",
         f"sin(t * MEUM) * {a} * cos(t * PHI * {b})",
-        f"sin((x+t_norm)*MEUM*{a}) * cos((y-t_norm)*PHI*{b}) + tanh(z+seed_w)",
-        f"graph_radius * cos(graph_phase + t*MEUM) * {mix} + graph_energy * {round(1-mix,3)}",
+        f"sin(graph_x * MEUM + t * {a}) * cos(graph_y * PHI - t * {b}) + 0.25 * graph_z",
+        f"(graph_energy - graph_curvature) * {mix} + isn(graph_phase + t) * {round(1-mix,3)}",
+        f"(graph_u + graph_v + graph_w) / 3.0 + domain_value * MEUM_NORM",
     ]
     detectors = ("phase", "energy", "spectrum", "goava", "euclidean", "seed", "bpm", "pair")
     targets = ("master_mix", "fractallizer", "eqr", "pkp", "ensemble", "scenograph", "domain", "unison")
@@ -7791,19 +7999,6 @@ class VideoSynthEngine:
                 except Exception:
                     snap["global_track_offset"] = 0.0
                     snap["track_offset"] = 0.0
-                # FULL_GRAPH_CONTEXT_20260909: video/scenograph reads the same
-                # deterministic graph coordinates as script/domain/audio/game paths.
-                _gt = float(getattr(self, "t", 0.0) or 0.0)
-                _gseed = float(snap.get("seed", 0.0) or 0.0)
-                _gx = math_sin(_gt * MEUM + _gseed * MEUM_NORM)
-                _gy = math_cos(_gt * PHI - _gseed * MEUM_INV)
-                _gz = math_tanh(_gx - _gy + (_gseed % 1.0))
-                snap["graph_context"] = build_graph_context(
-                    t=_gt, t_norm=_gt % 1.0, x=_gx, y=_gy, z=_gz, seed=_gseed,
-                    graph_index=int(_gt * max(1, snap.get("bpm", 120.0)) / 60.0),
-                    graph_slot=int(snap.get("live_dj_pair_index", 0)),
-                    energy=float(getattr(self, "_rms", 0.0) or 0.0),
-                )
             except Exception:
                 pass
         except Exception:
@@ -9296,7 +9491,34 @@ class VideoSynthEngine:
                 phase0 = float(obj.get("phase0", 0.0) or 0.0)
                 ratio = float(obj.get("ratio", 1.0) or 1.0)
                 sx, sy, sz = compositional_xyz(seed, sequential_nums=seq, t=t, slot=i)
-                live_phase = phase0 + t * (0.30 + 0.70 * ent)  # tracks composition time
+                # FULL_GRAPH_SCRIPT_CONTEXT_2026 — video consumes the same
+                # Instrument/Algorithm graph program as sound. Named x/y/z,
+                # opacity, scale, rotation and scalar/wave outputs are optional.
+                _graph_visual = {}
+                try:
+                    _names_graph = list(getattr(self.app, "instrument_names_48", []) or []) if self.app is not None else []
+                    _gname = _names_graph[i % len(_names_graph)] if _names_graph else f"Instrument {i+1}"
+                    _iscript = str((getattr(self.app, "instrument_scripts", {}) or {}).get(_gname, "") or "") if self.app is not None else ""
+                    if _iscript.strip():
+                        _graph_visual.update(_evaluate_app_graph_script(self.app, _iscript, t, t_norm=(t % 1.0), slot=i, row=0, sequence=1, step=0, name=_gname))
+                    _gasv = getattr(self.app, "global_algo_state", {}) or {} if self.app is not None else {}
+                    if isinstance(_gasv, dict) and bool(_gasv.get("apply_enabled", False)) and str(_gasv.get("script") or "").strip():
+                        _av = _evaluate_app_graph_script(self.app, str(_gasv.get("script") or ""), t, t_norm=(t % 1.0), slot=i, row=0, sequence=1, step=0, name=_gname, function_names=("global_script", "evaluate_wave", "evaluate", "main"))
+                        _mixv = float(np.clip((_gasv.get("params") or {}).get("mix", 0.35), 0.0, 1.0))
+                        for _k, _v in _av.items():
+                            if isinstance(_v, (int, float, np.number)):
+                                _graph_visual[_k] = float(_graph_visual.get(_k, 0.0)) + _mixv * float(_v)
+                    if bool(getattr(self.app, "live_dj_random", False)) and str(getattr(self.app, "live_dj_random_script", "") or "").strip():
+                        _rv = _evaluate_app_graph_script(self.app, self.app.live_dj_random_script, t, t_norm=(t % 1.0), slot=i, row=0, sequence=1, step=0, name="RAND PARAM", function_names=("global_script", "evaluate_wave", "evaluate", "main"))
+                        for _k, _v in _rv.items():
+                            if isinstance(_v, (int, float, np.number)):
+                                _graph_visual[_k] = float(_graph_visual.get(_k, 0.0)) + 0.35 * float(_v)
+                    sx += 0.12 * math.tanh(float(_graph_visual.get("x", _graph_visual.get("scalar", 0.0)) or 0.0))
+                    sy += 0.12 * math.tanh(float(_graph_visual.get("y", 0.0) or 0.0))
+                    sz += 0.12 * math.tanh(float(_graph_visual.get("z", 0.0) or 0.0))
+                except Exception:
+                    _graph_visual = {}
+                live_phase = phase0 + t * (0.30 + 0.70 * ent) + 0.10 * float(_graph_visual.get("rotation", 0.0) or 0.0)  # tracks composition time + graph script
                 mode = instrument_geometry_mode(
                     i, live_phase, (sx, sy, sz), flags=flags, fractal_set=set_name)
                 zs, n_done, escaped = eski_fractal_iterate_z(
@@ -9316,12 +9538,15 @@ class VideoSynthEngine:
                 alpha *= (0.5 + 0.5 * lat_w + 0.5 * book_w)
                 if mode.get("near_phase_point"):
                     alpha = min(1.0, alpha + 0.12 * float(mode.get("snap", 0)))
+                if "opacity" in _graph_visual:
+                    alpha *= float(np.clip(_graph_visual.get("opacity", 1.0), 0.0, 2.0))
                 alpha = max(0.5, min(1.0, alpha))
                 hue_m = (hue + self._video_hue_shift + abs(z_last) * 6
                          + 25.0 * float(mode.get("goava", 0))
                          + 15.0 * float(mode.get("phase_lock", 0))) % 360
                 col = self._hsv(hue_m, 0.5 + 0.5 * ent, 0.5 + 0.5 * ent)
-                rad = max(1, int(2 + 4 * ent * boost * (0.5+ 0.5 * lat_w)))
+                _gscale = float(np.clip(_graph_visual.get("scale", 1.0), 0.25, 4.0)) if _graph_visual else 1.0
+                rad = max(1, int((2 + 4 * ent * boost * (0.5+ 0.5 * lat_w)) * _gscale))
                 self._dot(img, px, py, col, alpha, r=rad)
                 # Child sample — stronger when scatter/goava mode weight is up
                 child_a = alpha * (0.35 + 0.25 * float(mode.get("scatter", 0))
@@ -9620,6 +9845,8 @@ class VideoSynthEngine:
             # User-owned TrackOffset (not a canonical modification handle)
             "global_track_offset": float(getattr(self.app, "global_track_offset", 0.0) if self.app is not None else 0.0),
             "track_offset": float(getattr(self.app, "global_track_offset", 0.0) if self.app is not None else 0.0),
+            "graph_context": _app_full_graph_context(self.app, t, t_norm=(t % 1.0), slot=0, row=0, sequence=1, step=0, name="visual") if self.app is not None else build_graph_context(t=t, x=ox, y=oy, z=oz, seed=seed),
+            "graph_script_variables": list(GRAPH_SCRIPT_VARIABLES),
         }
 
     def composition_readout_lines(self, t=None):
@@ -10428,8 +10655,18 @@ class DomainPartitionEquationEngine:
         "sqrt": np.sqrt,
         "exp": np.exp,
         "log": np.log,
+        "log2": np.log2,
+        "floor": np.floor,
+        "ceil": np.ceil,
+        "atan2": np.arctan2,
         "pi": np.pi,
+        "tau": math.tau,
         "e": np.e,
+        "isn": isn,
+        "ics": ics,
+        "PHI": PHI,
+        "MEUM_NORM": MEUM_NORM,
+        "MEUM_INV": MEUM_INV,
         "clip": np.clip,
         "minimum": np.minimum,
         "maximum": np.maximum,
@@ -10535,19 +10772,29 @@ class DomainPartitionEquationEngine:
             print(f"[DomainEQ] equation error '{eq_str}': {e}")
             return 0.0
 
-    def evaluate(self, t, x=0.0, y=0.0, z=0.0, t_norm=None):
-        """
-        Evaluate all matching domains at a point and blend by weight.
-        t: absolute or normalized time; t_norm used for longitudinal seed bias (0..1).
+    def evaluate(self, t, x=0.0, y=0.0, z=0.0, t_norm=None, *,
+                 graph_index=0, graph_count=1, slot=0, sequence=1, step=0,
+                 bpm=120.0, sample_rate=44100.0):
+        """Evaluate matching domains at one point using the shared full graph context.
+
+        The historical t/x/y/z/seed/seed_w names remain valid. Domain equations
+        additionally see graph_*, graph, sequence/step indexes and runtime
+        metadata. ``domain_value`` is 0 while a domain computes itself (avoids
+        recursive/order-dependent self-feedback); downstream scripts receive the
+        final blended domain_value.
         """
         if t_norm is None:
             t_norm = float(np.clip(t, 0.0, 1.0))
 
         seed_w = abs(self.seed) % 1.0 if abs(self.seed) > 1.0 else abs(self.seed)
-        local_base = build_graph_context(
+        _base_ctx = build_graph_context(
             t=float(t), t_norm=float(t_norm), x=float(x), y=float(y), z=float(z),
-            seed=float(self.seed), seed_w=float(seed_w)
+            seed=float(self.seed), seed_w=float(seed_w), graph_index=int(graph_index),
+            graph_count=max(1, int(graph_count or 1)), slot=int(slot), sequence=int(sequence),
+            step=int(step), bpm=float(bpm), sample_rate=float(sample_rate),
+            domain_value=0.0, domain_weight=1.0, graph_id=self.seed, domain_id="",
         )
+        local_base = graph_context_env(_base_ctx)
 
         weighted_sum = 0.0
         weight_total = 0.0
@@ -10563,10 +10810,20 @@ class DomainPartitionEquationEngine:
                 else:
                     continue
 
-            if not self._eval_logic(dom.get("logic", "True"), local_base):
+            _dw = float(dom.get("weight", 1.0) or 1.0)
+            _dom_ctx = build_graph_context(
+                t=float(t), t_norm=float(t_norm), x=float(x), y=float(y), z=float(z),
+                seed=float(self.seed), seed_w=float(seed_w), graph_index=int(graph_index),
+                graph_count=max(1, int(graph_count or 1)), slot=int(slot), sequence=int(sequence),
+                step=int(step), bpm=float(bpm), sample_rate=float(sample_rate),
+                domain_value=0.0, domain_weight=_dw, graph_id=self.seed,
+                domain_id=str(dom.get("name", "") or dom.get("source", "")),
+            )
+            local_vars = graph_context_env(_dom_ctx)
+            if not self._eval_logic(dom.get("logic", "True"), local_vars):
                 continue
 
-            val = self._eval_equation(dom.get("equation", "0"), local_base)
+            val = self._eval_equation(dom.get("equation", "0"), local_vars)
             if isinstance(val, np.ndarray):
                 val = float(np.mean(val))
 
@@ -12134,6 +12391,64 @@ class ReadmeGuideDialog(QDialog):
 - Performance controls are consolidated into one horizontal deck; Automator controls are compacted into a multi-row grid.
 - UI initialization order and Qt stylesheet declarations were hardened; division-by-zero-sensitive paths use explicit degenerate-case handling rather than epsilon denominators where practical.
 
+
+--------------------------------------------------------------------------------
+FULL GRAPH SCRIPT CONTEXT — SEED / INSTRUMENT / ALGORITHM / DOMAIN / AV / GAME
+--------------------------------------------------------------------------------
+All programmable graph readers now share one coordinate contract. Old scripts
+remain valid (including `evaluate_wave(x, y, z)` and `global_script(t,name,i)`),
+but new scripts may read the complete graph context at the same evaluation point.
+
+Core variables:
+  t, t_norm, x, y, z, seed, seed_w, graph, graph_vector
+  graph_x, graph_y, graph_z, graph_scalar, graph_radius, graph_angle
+  graph_energy, graph_curvature, graph_phase, graph_u, graph_v, graph_w
+  graph_index, graph_count, graph_slot, sequence_index, step_index
+  domain_value, domain_weight, graph_id, domain_id, bpm, sample_rate
+
+`graph` is the same context as an attribute/dictionary view (for example
+`graph.x`, `graph.energy`). A script may still return one scalar, or may
+return named channels such as `wave`, `amp`, `pitch`, `pan`, `x`, `y`, `z`,
+`opacity`, `scale`, `rotation`, `drive`, `speed`, and `world_z`. Consumers use
+only channels that make sense for them; extra channels are harmless.
+
+Cross-media rule: the graph is sampled as a varying mathematical object rather
+than being prematurely collapsed to one seed number. Instrument and applied
+Algorithm scripts can therefore influence actual sound, video/scenograph
+geometry, and generated-game audiovisual/gameplay fields from the same graph
+coordinate. Domain values are resolved at that coordinate too. While a Domain equation evaluates
+itself, `domain_value` is 0 to prevent recursive/order-dependent self-feedback;
+downstream Instrument/Algorithm/AV/Game scripts receive the final blended value.
+
+Canonical/writer rule: Canonical sequence payloads carry the Instrument Script,
+the `full_graph_v1` contract, and the public graph-variable list. Seeded/Canonical
+writers, Random Seed, Global Algorithm randomization, Randomize All/Rand Params,
+and Heuristic Write to Seq Synth may author multivariate/time-varying graph
+programs. Stock/engine-authored Instrument Scripts may be upgraded; user-authored
+Instrument Scripts are not replaced by these writers.
+
+RAND PARAM is now itself an authored full-graph performance program. It is
+pre-evaluated on the control/row lattice so realtime audio reads cached scalars
+instead of parsing Python in the PortAudio callback. The same authored program
+is saved/loaded and is exported to video/game composition metadata.
+
+Examples:
+
+    def evaluate_wave(x, y, z, t=0.0, t_norm=0.0, graph=None):
+        field = sin(graph_x*MEUM + graph_y*PHI + graph_phase)
+        return {'wave': field, 'amp': 0.7 + 0.3*graph_u,
+                'pitch': 1.0 + 0.1*graph_curvature,
+                'pan': 2*graph_v-1, 'opacity': graph_energy}
+
+    def global_script(t, name, i, graph=None):
+        v = isn(graph_radius*MEUM + t*tau) + domain_value*0.2
+        return {'drive': v, 'rotation': graph_angle,
+                'speed': 0.8 + 0.4*graph_w, 'world_z': graph_z}
+
+Compatibility: scalar-only scripts and the previous function signatures are
+still accepted. Full-graph fields add capability; they do not require projects
+to be rewritten.
+
 --------------------------------------------------------------------------------
 FINITE INFINITY GREP + FINITE INFINITY–MEUM HYPERDRIVE
 --------------------------------------------------------------------------------
@@ -12319,21 +12634,7 @@ generative structure, and mathematically guided composition.
   • Non-numeric text that cannot be evaluated is hashed into a seed token.
   • The seed field is a **full script panel** (scrollable QTextEdit).
 
-  FULL-GRAPH SCRIPT CONTEXT (2026-09-09)
-  Seed, Instrument, Algorithm, Domain, Canonical, audio, video and game paths now
-  share one graph-reading vocabulary. Available values include:
-    t, t_norm, x, y, z, seed, seed_w, graph_radius, graph_phase, graph_energy,
-    graph_index, graph_slot, graph_u, graph_v, graph_w.
-  Scripts may return one scalar, a vector/list, or a named dict. Named outputs can
-  describe value/x/y/z plus parameter intentions such as pitch, amp, pan/filter,
-  visual and game channels. Consumers use the channels they understand and ignore
-  the rest, preserving compatibility with older scalar scripts.
-  Canonical writers, Random Seed Script, Global Algorithm randomization, and
-  Heuristic → Seq Synth may author this richer form. RAND PARAM consumes the same
-  deterministic graph coordinate family in realtime without arbitrary eval/RNG in
-  the audio callback. Full graph identity is carried into video/game fingerprints.
-
-RANDOM SEED BUTTON
+  RANDOM SEED BUTTON
   ------------------
   "🎲 Random Seed Script" (directly above the seed field) inserts a new random
   script each click: pure numbers, time-conditional if/elif branches, math in t,
@@ -20310,7 +20611,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         self.active_instrument_memory = self.instrument_sequencer_memory[self.instrument_names_48[0]]
         self.instrument_scripts = {
-            name: f"# Script workspace for {name} based on operator rules\ndef evaluate_wave(x, y, z):\n    return ot_sin_vec_equiv(x * {1 + int(identity_unit(name, 'default_script_k') * 12)}.0) * ot_cos_vec_equiv(y) - z"
+            name: f"# Script workspace for {name} based on operator rules\n# Full graph context: t,t_norm,x,y,z,seed,seed_w,graph_*,domain_value\ndef evaluate_wave(x, y, z, t=0.0, t_norm=0.0, graph=None):\n    base = ot_sin_vec_equiv(x * {1 + int(identity_unit(name, 'default_script_k') * 12)}.0) * ot_cos_vec_equiv(y) - z\n    return {{'wave': base * (0.75 + 0.25 * graph_u), 'amp': 0.75 + 0.25 * graph_v, 'pan': 2.0 * graph_w - 1.0}}"
             for name in self.instrument_names_48
         }
 
@@ -20349,6 +20650,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.live_dj_random = False
         self.live_dj_goava_amount = 0.0
         self.live_dj_random_amount = 0.0
+        self.live_dj_random_script = ""
+        self._live_dj_random_generation = 0
+        self._rt_live_dj_random_rows = None
         self._live_dj_pair_space = CommutativePairSpace(len(self.instrument_names_48))
         self._live_dj_pair_ids = (0, 1)
         self._live_dj_pair_index = 0
@@ -23173,6 +23477,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "Syntax feedback: recognized keywords, variables, numbers/operators, and nested parentheses/brackets "
             "shade from light to dark grey while you type. Unknown variables/presets or confident syntax errors "
             "are highlighted red and reported at the bottom of this panel; feedback never evaluates or changes the seed. "
+            "Full-graph aliases are also available: graph_x/y/z, graph_scalar/radius/angle/energy/curvature/phase, "
+            "graph_u/v/w, sequence_index, step_index, domain_value/domain_weight, bpm/sample_rate and graph itself. "
             "Use 🎲 Random Seed Script above for examples. Field scrolls."
         )
         self.input_seed_val.setAcceptRichText(False)
@@ -23232,8 +23538,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         seed_header.addWidget(QLabel("GLOBAL SEED / PARAMETRIC SCRIPT (USER CONTROLLED):"), 1)
         self.btn_random_seed = QPushButton("🎲 Random Seed Script")
         self.btn_random_seed.setToolTip(
-            "Generate a random scriptable seed: pure number, if/elif over t, math expressions, "
-            "return-scripts, or value lists. In composition t is the absolute beat; in continuous DSP modulation t is seconds."
+            "Generate a random scriptable seed: pure number, conditional/list form, or a richer time-varying/multivariate full-graph program. "
+            "Generated candidates may use graph_x/y/z, radius/phase/energy/curvature, normalized graph_u/v/w and domain_value. "
+            "In composition t is the absolute beat; in continuous DSP modulation t is seconds."
         )
         self.btn_random_seed.setStyleSheet(
             "QPushButton { background-color:#1a2a22; color:#7dffa0; border:1px solid #3a7a55; "
@@ -23365,9 +23672,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_heuristic_seq_synth = QPushButton("APPLY HEURISTIC → SEQ SYNTH")
         self.btn_heuristic_seq_synth.setMinimumHeight(38)
         self.btn_heuristic_seq_synth.setToolTip(
-            "One-shot reversible project edit: deterministically authors per-sequence synth preset, "
-            "mod/patch context, script and domain using the selected heuristic family/scope. "
-            "It does not create or toggle step/automation lanes."
+            "One-shot reversible project edit: deterministically authors per-sequence synth preset, mod/patch context, "
+            "a full-graph Instrument Script and a full-graph Domain using the selected heuristic family/scope. "
+            "The script can return named sound/video/game channels; it does not create or toggle step/automation lanes."
         )
         self.btn_heuristic_seq_synth.clicked.connect(self._on_heuristic_seq_synth)
         heur_row.addWidget(self.btn_heuristic_seq_synth)
@@ -24039,7 +24346,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         )
         self.btn_live_dj_random = _make_global_operator_button(
             "RAND PARAM",
-            "Live deterministic parametric macro. It sounds random but is seed/pair/BPM stable and never calls RNG from the audio thread.",
+            "Authors a full-graph RAND PARAM program on engagement (t/x/y/z, graph geometry, domain and named output channels). "
+            "The program is saved with the project and pre-evaluated on the control-row lattice, so the realtime audio callback only reads cached scalars; "
+            "the same graph program also reaches scenograph/video and generated-game behavior.",
             checkable=True, active_color="#ff1493"
         )
         # PINK_DJ_BUTTONS: both live-DJ macros share one identical pink engaged
@@ -24215,9 +24524,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         local_context_layout.addLayout(local_alg_xmod_row)
 
         self.btn_edit_synth = self._make_local_context_button("EDIT\nSYNTH", "Edit synth settings and wavetable for the active instrument")
-        self.btn_script_inst = self._make_local_context_button("WRITE\nSCRIPT", "Edit the script attached to the active instrument")
+        self.btn_script_inst = self._make_local_context_button("WRITE\nSCRIPT", "Edit the active Instrument Script. Legacy evaluate_wave(x,y,z) works; full_graph_v1 adds t_norm, graph_*, domain/sequence/step context and named AV/game/sound outputs.")
         self.btn_view_patchbay = self._make_local_context_button("PATCH\nMODULAR", "Open modular routing for the active instrument context")
-        self.btn_domain_eq = self._make_local_context_button("CALC\nDOMAIN", "Edit time/space equations used as contextual modulation")
+        self.btn_domain_eq = self._make_local_context_button("CALC\nDOMAIN", "Edit time/space equations. Domain expressions now read the same full_graph_v1 aliases (graph_x/y/z, energy, curvature, phase, indexes, etc.).")
         # EDIT_PANELS_PER_SEQUENCE: when checked, the four panel editors (synth /
         # script / modular patch / domain) read+write the *current sequence's*
         # panel overrides, and canonical engines may generate per-sequence panel
@@ -24871,8 +25180,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_randomize_global_play = QPushButton("🎲 RANDOMIZE ALL PATCH")
         self.btn_randomize_global_play.setFixedSize(220, 38)
         self.btn_randomize_global_play.setToolTip(
-            "Write a new global patch: Script Algo, Domain Algo, Wire routing, and amount params "
-            "from the same Meum/PED vocabulary as the seed randomizer, then apply "
+            "Write a new global patch: full-graph Script Algo, full-graph Domain Algo, Wire routing, and amount params. "
+            "Randomized scripts may return named sound/video/game channels from the same graph sampled by Seed/Instrument readers, then apply "
             "to the project (respecting As Protectable Userdata)."
         )
         self.btn_randomize_global_play.setStyleSheet(
@@ -24915,13 +25224,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.gp_script_field.setPlainText(str(self.global_algo_state.get("script") or ""))
         self.gp_script_field.setFixedHeight(52)
         self.gp_script_field.setAcceptRichText(False)
-        self.gp_script_field.setPlaceholderText("scriptable algo over t · MEUM · seed …")
+        self.gp_script_field.setPlaceholderText("full graph algo · t/x/y/z · graph_* · named outputs …")
+        self.gp_script_field.setToolTip("Global Algorithm Script supports legacy t/name/i plus full_graph_v1 variables. Named outputs such as wave/drive, pitch/amp/pan, x/y/z, opacity/scale/rotation and speed/world_z are routed to compatible consumers.")
         gp_grid.addWidget(self.gp_script_field, 1, 0)
 
         self.gp_domain_field = QLineEdit()
         domain_text = str(self.global_algo_state.get("domain") or "")
         self.gp_domain_field.setText(domain_text.replace("\n", " "))
-        self.gp_domain_field.setPlaceholderText("equation = sin(t * MEUM) + …")
+        self.gp_domain_field.setPlaceholderText("equation over t/x/y/z · graph_* · domain context …")
+        self.gp_domain_field.setToolTip("Domain Algorithm supports the shared full graph aliases. During a Domain's own evaluation domain_value is 0; downstream scripts receive the final blended domain_value.")
         self.gp_domain_field.setFixedHeight(28)
         gp_grid.addWidget(self.gp_domain_field, 1, 1)
         self.lbl_gp_domain_hints = QLabel("hints: sin/cos → phase · log/exp → scale · domain → transmutor")
@@ -29344,6 +29655,24 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try: phase=float(point.get("morph",point.get("value",0.5))) if isinstance(point,dict) else 0.5
         except Exception: pass
         factor=1.0 + (phase-0.5)*2.0*MEUM_MINUS_1*amount
+        # FULL_GRAPH_SCRIPT_CONTEXT_2026: when Algorithm Script is applied,
+        # evaluate it at the same graph coordinate used by audio/video/game.
+        # This augments the old morph-only factor without creating notes or
+        # automation points. Scalar/wave/drive outputs become bounded XMOD.
+        try:
+            _algo_script = str(gas.get("script") or "")
+            if _algo_script.strip():
+                _gres = _evaluate_app_graph_script(
+                    self, _algo_script, t_value=phase, t_norm=phase,
+                    slot=0, row=int(point.get("row", 0) if isinstance(point, dict) else 0),
+                    sequence=int(point.get("ref_sequence", 1) if isinstance(point, dict) else 1),
+                    step=int(point.get("step", 0) if isinstance(point, dict) else 0),
+                    name=str(instrument_name), function_names=("global_script", "evaluate_wave", "evaluate", "main"),
+                )
+                _drv = float(_gres.get("scalar", _gres.get("wave", _gres.get("drive", 0.0))) or 0.0)
+                factor *= 1.0 + 0.25 * math.tanh(_drv) * amount
+        except Exception:
+            pass
         out=copy.deepcopy(state)
         for bucket in ("synth","sequence"):
             obj=out.get(bucket)
@@ -30557,6 +30886,32 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "sequencer_automation_enabled",
             "automator_timing_mode",
             "_selected_automation_step",
+            # PROJECT_STATE_INTEGRATION_20260909: state added by recent media,
+            # graph, Performance, canonical, modulation and game work. These are
+            # lightweight authoritative values/caches, never live device objects.
+            "automation_patterns",
+            "master_vector_state",
+            "wavetable_projector_state",
+            "sample_morph_state",
+            "global_mod_state",
+            "algorithm_xmod_local",
+            "algorithm_xmod_global",
+            "media_carrier_slot",
+            "carrier_binding_mode",
+            "carrier_binding_source",
+            "carrier_bound_layers_state",
+            "live_dj_random_script",
+            "_live_dj_random_generation",
+            "canonical_continuation_enabled",
+            "canonical_continuation_mode",
+            "canonical_resonance_factor",
+            "canonical_resonance_handoff",
+            "meum_spatial_resolution_enabled",
+            "meum_spatial_activity_modulus",
+            "_canonical_user_blend_ledger",
+            "_canonical_activity_ledger",
+            "_last_videogame_identity",
+            "_last_videogame_path",
         ):
             try:
                 full_state[key] = copy.deepcopy(getattr(self, key, None))
@@ -31180,7 +31535,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         }
         self.instrument_selected_sequence = {name: 1 for name in self.instrument_names_48}
         self.instrument_scripts = {
-            name: f"# Script workspace for {name} based on operator rules\ndef evaluate_wave(x, y, z):\n    return ot_sin_vec_equiv(x * {1 + int(identity_unit(name, 'default_script_k') * 12)}.0) * ot_cos_vec_equiv(y) - z"
+            name: f"# Script workspace for {name} based on operator rules\n# Full graph context: t,t_norm,x,y,z,seed,seed_w,graph_*,domain_value\ndef evaluate_wave(x, y, z, t=0.0, t_norm=0.0, graph=None):\n    base = ot_sin_vec_equiv(x * {1 + int(identity_unit(name, 'default_script_k') * 12)}.0) * ot_cos_vec_equiv(y) - z\n    return {{'wave': base * (0.75 + 0.25 * graph_u), 'amp': 0.75 + 0.25 * graph_v, 'pan': 2.0 * graph_w - 1.0}}"
             for i, name in enumerate(self.instrument_names_48)
         }
         self.instrument_param_state = {}
@@ -31202,6 +31557,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.live_dj_random = False
         self.live_dj_goava_amount = 0.0
         self.live_dj_random_amount = 0.0
+        self.live_dj_random_script = ""
+        self._live_dj_random_generation = 0
+        self._rt_live_dj_random_rows = None
         self._live_dj_pair_ids = (0, 1)
         self._live_dj_pair_index = 0
         self._live_dj_pair_signature = 0
@@ -31384,6 +31742,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "gp_mix_slider", "gp_script_slider", "gp_domain_slider", "gp_wire_slider",
             "spin_clip_ratio", "spin_import_speed", "spin_sparse_density", "spin_speed_scrub",
             "spin_hyperdrive_drive", "spin_hyperdrive_resonance",
+            # PROJECT_STATE_INTEGRATION_20260909: these newer project controls
+            # must round-trip through Save/Load and the shared Undo/Redo UI state.
+            "spin_track_offset", "spin_canonical_convolve", "spin_canonical_live_overblend",
+            "global_xmod_slider", "global_input_xmod_slider",
         ):
             obj = getattr(self, name, None)
             if obj is not None and hasattr(obj, "value"):
@@ -31737,7 +32099,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             algo_fp = "0" * 16
 
         data = {
-            "version": "3.8.0-canonical-unified",
+            "version": "3.9.0-project-state-integrated",
             "seed": self._seed_text() if hasattr(self, "input_seed_val") else "",
             "bpm": float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0,
             "seq_length": int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else 16,
@@ -31794,6 +32156,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "goava_active": bool(getattr(self, "goava_active", False)),
             "live_dj_goava": bool(getattr(self, "live_dj_goava", False)),
             "live_dj_random": bool(getattr(self, "live_dj_random", False)),
+            "live_dj_random_script": str(getattr(self, "live_dj_random_script", "") or ""),
+            "live_dj_random_generation": int(getattr(self, "_live_dj_random_generation", 0) or 0),
             # MEDIA_CARRIER_2026: paths only (never the buffers) — the WAV/video
             # carrier is re-loaded from disk on apply so audio and video exports
             # see the exact same reference material the saved session had.
@@ -32241,6 +32605,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.goava_active = bool(data.get("goava_active", False))
         self.live_dj_goava = bool(data.get("live_dj_goava", False))
         self.live_dj_random = bool(data.get("live_dj_random", False))
+        self.live_dj_random_script = str(data.get("live_dj_random_script") or getattr(self, "live_dj_random_script", "") or "")
+        self._live_dj_random_generation = int(data.get("live_dj_random_generation", getattr(self, "_live_dj_random_generation", 0)) or 0)
         self._last_videogame_identity = data.get("last_videogame_identity")
         self._last_videogame_path = data.get("last_videogame_path")
         if hasattr(self, "_restore_project_ui_state") and isinstance(data.get("ui_state"), dict):
@@ -33634,10 +34000,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         harmonic_multiplier = float((i % 7) + 1) * MEUM_OVER_1_5
                         self.instrument_scripts[name] = (
                             f"# Seeded Geometric Resonance Script [{self._seed_text()}] for {name}\n"
-                            f"# (additive — user carrier preserved; fractal fill only)\n"
-                            f"def evaluate_wave(x, y, z):\n"
+                            f"# Canonical full-graph writer; additive user carrier remains protected.\n"
+                            f"def evaluate_wave(x, y, z, t=0.0, t_norm=0.0, graph=None):\n"
                             f"    m = {harmonic_multiplier}\n"
-                            f"    return ot_sin_vec_equiv(x * m) * ot_cos_vec_equiv(y / m) - isn(z * 0.5)"
+                            f"    spatial = ot_sin_vec_equiv((x + 0.25*graph_z) * m) * ot_cos_vec_equiv((y + 0.25*graph_x) / m) - isn(z * 0.5)\n"
+                            f"    longitudinal = 0.5 + 0.5 * ics(graph_phase + t_norm * MEUM)\n"
+                            f"    return {{'wave': spatial * (0.65 + 0.35*longitudinal), 'amp': 0.70 + 0.30*graph_u, 'pitch': 1.0 + 0.125*graph_curvature, 'pan': 2.0*graph_v-1.0}}"
                         )
                         scripts_written += 1
 
@@ -34774,8 +35142,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if name not in self.instrument_scripts:
                 self.instrument_scripts[name] = (
                     f"# Script workspace for {name}\n"
-                    f"def evaluate_wave(x, y, z):\n"
-                    f"    return ot_sin_vec_equiv(x * {((i) % 12) + 1}.0) * ot_cos_vec_equiv(y) - z"
+                    f"# Full graph context: t,t_norm,x,y,z,seed,seed_w,graph_*,domain_value\n"
+                    f"def evaluate_wave(x, y, z, t=0.0, t_norm=0.0, graph=None):\n"
+                    f"    base = ot_sin_vec_equiv(x * {((i) % 12) + 1}.0) * ot_cos_vec_equiv(y) - z\n"
+                    f"    return {{'wave': base * (0.75 + 0.25 * graph_u), 'amp': 0.75 + 0.25 * graph_v, 'pan': 2.0 * graph_w - 1.0}}"
                 )
         # Update dropdown
         if hasattr(self, "instrument_selector_dropdown"):
@@ -37177,6 +37547,46 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 except Exception:
                     pass
 
+                # FULL_GRAPH_SCRIPT_CONTEXT_2026 — actual sound consumption.
+                # Instrument and applied Algorithm scripts are sampled at control
+                # rate against the SAME varying XYZ/t/domain graph used by video
+                # and game. Existing evaluate_wave(x,y,z) scripts stay valid.
+                try:
+                    _inst_script = str((getattr(self, "instrument_scripts", {}) or {}).get(op_name, "") or "")
+                    try:
+                        _seq_panels_graph = self._sequence_panel_slot(op_name) if hasattr(self, "_sequence_panel_slot") else None
+                        if isinstance(_seq_panels_graph, dict) and str(_seq_panels_graph.get("script") or "").strip():
+                            _inst_script = str(_seq_panels_graph.get("script") or "")
+                    except Exception:
+                        pass
+                    _gas_graph = getattr(self, "global_algo_state", {}) or {}
+                    _algo_script = str(_gas_graph.get("script") or "") if bool(_gas_graph.get("apply_enabled", False)) else ""
+                    if (_inst_script.strip() or _algo_script.strip()) and local_t.size:
+                        _cn = min(24, max(4, int(local_t.size // 1024) + 4))
+                        _ci = np.unique(np.linspace(0, local_t.size - 1, _cn).astype(int))
+                        _cv = []
+                        _seq_id_graph = int((getattr(self, "instrument_selected_sequence", {}) or {}).get(op_name, 1) or 1)
+                        for _jj in _ci:
+                            _ct = float(local_t[_jj])
+                            _tn = float(_jj) / float(max(1, local_t.size - 1))
+                            _gain = 1.0
+                            if _inst_script.strip():
+                                _gr = _evaluate_app_graph_script(self, _inst_script, _ct, t_norm=_tn, slot=op_idx, row=row_idx, sequence=_seq_id_graph, step=int(_tn*max(1, pattern_len-1)), name=op_name)
+                                _drv = float(_gr.get("scalar", _gr.get("wave", _gr.get("drive", 0.0))) or 0.0)
+                                _amp = float(_gr.get("amp", _gr.get("gain", 1.0)) or 1.0)
+                                _gain *= float(np.clip(_amp, 0.25, 2.0)) * (1.0 + 0.10 * math.tanh(_drv))
+                            if _algo_script.strip():
+                                _ar = _evaluate_app_graph_script(self, _algo_script, _ct, t_norm=_tn, slot=op_idx, row=row_idx, sequence=_seq_id_graph, step=int(_tn*max(1, pattern_len-1)), name=op_name, function_names=("global_script", "evaluate_wave", "evaluate", "main"))
+                                _adrv = float(_ar.get("scalar", _ar.get("wave", _ar.get("drive", 0.0))) or 0.0)
+                                _amix = float(np.clip((_gas_graph.get("params") or {}).get("mix", 0.35), 0.0, 1.0))
+                                _gain *= 1.0 + 0.10 * _amix * math.tanh(_adrv)
+                            _cv.append(float(np.clip(_gain, 0.20, 2.50)))
+                        if _cv:
+                            _curve = np.interp(np.arange(local_t.size), _ci.astype(float), np.asarray(_cv, dtype=float)).astype(np.float32)
+                            voice = (voice * _curve).astype(np.float32)
+                except Exception as _graph_script_exc:
+                    print(f"[GraphScript] audio control-rate evaluation skipped: {_graph_script_exc}")
+
                 # IMPORT_PHASELOCK_50_2026: loaded sample contributes phase only
                 # at 50%; canonical synthesis remains the complete authoritative
                 # composition and keeps its scalar pitch/amp/envelope.
@@ -38014,6 +38424,26 @@ class MathematiciansGrooveboxApp(QMainWindow):
         only scalar/index lookups with no waveform conversion, mean, sqrt, or Qt.
         """
         self._cache_realtime_control_state()
+        # RAND_PARAM_GRAPH_2026: pre-evaluate its authored graph program at the
+        # row/control lattice. PortAudio only performs an indexed scalar lookup.
+        self._rt_live_dj_random_rows = None
+        if bool(getattr(self, "live_dj_random", False)) and str(getattr(self, "live_dj_random_script", "") or "").strip():
+            try:
+                _events_n = len(getattr(self, "goava_note_events", []) or [])
+                _rows_n = len(getattr(self, "master_playlist_data", []) or [])
+                _count = max(1, min(256, max(_events_n, _rows_n, 32)))
+                _vals = np.zeros(_count, dtype=np.float32)
+                for _ri in range(_count):
+                    _tn = float(_ri) / float(max(1, _count - 1))
+                    _gr = _evaluate_app_graph_script(
+                        self, self.live_dj_random_script, _tn, t_norm=_tn,
+                        slot=int(getattr(self, "_live_dj_pair_index", 0) or 0), row=_ri, sequence=1, step=_ri,
+                        name="RAND PARAM", function_names=("global_script", "evaluate_wave", "evaluate", "main"),
+                    )
+                    _vals[_ri] = np.float32(np.clip(float(_gr.get("drive", _gr.get("wave", _gr.get("scalar", 0.0))) or 0.0), -4.0, 4.0))
+                self._rt_live_dj_random_rows = _vals
+            except Exception:
+                self._rt_live_dj_random_rows = None
         self._rt_media_energy_rows = None
         self._rt_media_energy_wave_size = 0
         wave = getattr(self, "imported_waveform", None)
@@ -38043,6 +38473,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _on_live_source_changed(self, *args):
         """Coalesce seed/seq-length changes into one deferred composition transaction."""
+        # Any authoring/control change may alter seed/domain/canonical inputs.
+        # Invalidate shared graph projections before debounce/guard decisions.
+        self._graph_context_cache = {}
         if getattr(self, "_composition_generation_guard", False):
             return
         if getattr(self, "_live_source_update_pending", False):
@@ -38177,9 +38610,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "# Canonical Unison Superwrite\n"
                 f"# engines={engine_expr}\n"
                 f"# composition={sig:08x}\n"
-                "def global_script(t, name, i, x=0.0, y=0.0, z=0.0, t_norm=None, seed=0.0, seed_w=0.0, graph_radius=0.0, graph_phase=0.0, graph_energy=0.0):\n"
-                "    tn = t if t_norm is None else t_norm\n"
-                f"    return ot_sin_vec_equiv((t + {phase:.9f} + x*MEUM_NORM) * MEUM) * ot_cos_vec_equiv((i + 1 + y + tn) * {0.125 + 0.5*phase:.9f}) + 0.25*tanh(z + seed_w + graph_energy)\n"
+                "def global_script(t, name, i):\n"
+                f"    return ot_sin_vec_equiv((t + {phase:.9f}) * MEUM) * ot_cos_vec_equiv((i + 1) * {0.125 + 0.5*phase:.9f})\n"
             )
             gas["domain"] = (
                 'equation = "sin((t + %.9f) * MEUM) + cos(x * %.9f)"\n'
@@ -38289,7 +38721,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         seeded_block_pat = _re.compile(
             r"# Seeded Geometric Resonance Script[^\n]*\n"
             r"(?:[^\n]*\n){0,6}"
-            r"def evaluate_wave\(x, y, z\):\n"
+            r"def evaluate_wave\([^\n]*\):\n"
             r"(?:[^\n]*\n){0,6}"
         )
 
@@ -39143,6 +39575,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "canonical_control_strategy": str(getattr(self, "canonical_control_strategy", "Full Canonical")),
                 "canonical_signal_control": float(getattr(self, "canonical_signal_control", 0.50)),
                 "canonical_lanes": ["sequence", "automation", "pitch", "amp", "phase", "trigger", "AM", "FM", "PM", "effect_layer"],
+                "instrument_script": str((getattr(self, "instrument_scripts", {}) or {}).get(name, "") or ""),
+                "graph_context_contract": "full_graph_v1",
+                "graph_script_variables": list(GRAPH_SCRIPT_VARIABLES),
                 "track_offset": _user_track_off,
                 "global_track_offset": _user_global_track_off,
                 "track_offset_user_owned": True,
@@ -39321,6 +39756,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 params["pitch"] = float(rng.uniform(0.5, 2.0))
                 params["volume"] = float(rng.uniform(0.45, 1.0))
                 params["amplitude"] = float(params["volume"])
+                # RAND_PARAMS_GRAPH_2026: stock/engine-authored scripts graduate
+                # to the same full graph contract. User-authored scripts stay untouched.
+                _existing_script = str((getattr(self, "instrument_scripts", {}) or {}).get(name, "") or "")
+                _stock_script = (not _existing_script or _existing_script.strip().startswith("# Script workspace for") or "Seeded Geometric Resonance Script" in _existing_script or "Random full-graph Instrument Script" in _existing_script)
+                if _stock_script and hasattr(self, "instrument_scripts"):
+                    _slot = list((getattr(self, "instrument_param_state", {}) or {}).keys()).index(name) if name in (getattr(self, "instrument_param_state", {}) or {}) else 0
+                    self.instrument_scripts[name] = generate_random_instrument_graph_script(name, self.get_numeric_seed(), _slot)
                 bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(name, {})
                 for sid in sorted(bank):
                     self._canonical_write_sequence_runtime(name, sid)
@@ -39488,9 +39930,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _on_live_dj_random_toggled(self, checked):
         self.live_dj_random = bool(checked)
         self.live_dj_random_amount = 0.68 if checked else 0.0
+        if checked:
+            self._live_dj_random_generation = int(getattr(self, "_live_dj_random_generation", 0) or 0) + 1
+            self.live_dj_random_script = generate_random_param_graph_script(
+                self.get_numeric_seed() if hasattr(self, "get_numeric_seed") else 0.0,
+                getattr(self, "_live_dj_pair_signature", 0),
+                self._live_dj_random_generation,
+            )
         self._refresh_live_dj_pair()
+        try:
+            self._prepare_realtime_dj_cache()
+        except Exception:
+            pass
         if hasattr(self, "scope_status_label"):
-            self.scope_status_label.setText(f"🎛 LIVE DJ · {self._live_dj_status()} · pair #{self._live_dj_pair_index + 1}")
+            self.scope_status_label.setText(f"🎛 LIVE DJ · {self._live_dj_status()} · full-graph param script · pair #{self._live_dj_pair_index + 1}")
 
     def _dj_row_samples(self, bpm, sr):
         """Row length in samples, measured in BEATS (master canonicals / user).
@@ -39559,6 +40012,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             return float(events[0].get("raw", events[0].get("seed", 0.0)) or 0.0)
 
+    def _live_dj_random_scalar(self, cursor):
+        """Realtime-safe row lookup for the pre-evaluated RAND PARAM graph."""
+        try:
+            vals = getattr(self, "_rt_live_dj_random_rows", None)
+            if vals is None or not getattr(vals, "size", 0):
+                return 0.0
+            row_samples = max(1, int(getattr(self, "_rt_dj_row_samples", 1) or 1))
+            idx = min(int(vals.size) - 1, max(0, int(cursor) // row_samples))
+            return float(vals[idx])
+        except Exception:
+            return 0.0
+
     def _bake_dj_write(self, master, sample_rate):
         """Deterministic full-buffer DJ write for offline masters.
 
@@ -39597,7 +40062,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 return master
             if not events:
                 scalar = float(self.get_numeric_seed() if hasattr(self, "get_numeric_seed") else 0.0)
-                return engine.process(arr, start_sample=0, goava_scalar=scalar, bpm=bpm)
+                _rr = _evaluate_app_graph_script(self, str(getattr(self, "live_dj_random_script", "") or ""), 0.0, t_norm=0.0, slot=int(getattr(self, "_live_dj_pair_index", 0) or 0), row=0, sequence=1, step=0, name="RAND PARAM", function_names=("global_script", "evaluate_wave", "evaluate", "main")) if getattr(self, "live_dj_random", False) else {}
+                _rs = float(_rr.get("drive", _rr.get("wave", _rr.get("scalar", 0.0))) or 0.0)
+                return engine.process(arr, start_sample=0, goava_scalar=scalar, random_scalar=_rs, bpm=bpm)
             row_samples = self._dj_row_samples(bpm, sample_rate)
             scalars = np.asarray(
                 [float(ev.get("raw", ev.get("seed", 0.0)) or 0.0) for ev in events],
@@ -39621,8 +40088,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if media_rows is not None:
                     me = float(media_rows[min(row, media_rows.size - 1)])
                     sc = sc + (max(0.0, min(1.0, me * 6.0)) - 0.5) * 1.0 * abs(sc + 1e-9)
+                _tn = float(row) / float(max(1, int((n + row_samples - 1) // row_samples) - 1))
+                _rr = _evaluate_app_graph_script(self, str(getattr(self, "live_dj_random_script", "") or ""), _tn, t_norm=_tn, slot=int(getattr(self, "_live_dj_pair_index", 0) or 0), row=row, sequence=1, step=row, name="RAND PARAM", function_names=("global_script", "evaluate_wave", "evaluate", "main")) if getattr(self, "live_dj_random", False) else {}
+                _rs = float(_rr.get("drive", _rr.get("wave", _rr.get("scalar", 0.0))) or 0.0)
                 out[pos:pos + seg_len] = engine.process(
-                    arr[pos:pos + seg_len], start_sample=pos, goava_scalar=sc, bpm=bpm
+                    arr[pos:pos + seg_len], start_sample=pos, goava_scalar=sc, random_scalar=_rs, bpm=bpm
                 )
                 pos += seg_len
                 row += 1
@@ -39653,7 +40123,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._live_dj_engine.set_context(seed=_rt_seed, pair=getattr(self, "_live_dj_pair_ids", (0, 1)), sample_rate=_rt_sr)
             bpm = _rt_bpm
             scalar = self._live_dj_goava_scalar(start_sample)
-            return self._live_dj_engine.process(np.asarray(chunk, dtype=np.float32), start_sample=int(start_sample), goava_scalar=scalar, bpm=bpm)
+            random_scalar = self._live_dj_random_scalar(start_sample)
+            return self._live_dj_engine.process(np.asarray(chunk, dtype=np.float32), start_sample=int(start_sample), goava_scalar=scalar, random_scalar=random_scalar, bpm=bpm)
         except Exception as exc:
             print(f"[LiveDJ] chunk skipped: {exc}")
             return chunk
@@ -40397,12 +40868,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
             })
             mem["synth"] = synth
             mem["script"] = (
-                f"# heuristic:{family}:{bias} · full-graph\n"
-                f"def evaluate_wave(x, y, z, t=0.0, t_norm=0.0, seed={seed:.12g}, seed_w=0.0, graph_radius=0.0, graph_phase=0.0, graph_energy=0.0, graph_u=0.0, graph_v=0.0, graph_w=0.0):\n"
-                f"    base = sin((x+t_norm)*MEUM*{1.0+v:.12g}) * cos((y-t_norm)*PHI)\n"
-                f"    return {{'value': base - z*{0.25+0.5*v:.12g}, 'pitch': 1.0 + {v:.12g}*graph_u, 'amp': 0.5 + 0.5*tanh(graph_energy+seed_w)}}"
+                f"# heuristic:{family}:{bias} · full graph\n"
+                f"def evaluate_wave(x, y, z, t=0.0, t_norm=0.0, graph=None):\n"
+                f"    spatial = sin((x + graph_z) * MEUM * {1.0+v:.12g}) * cos((y - graph_x) * PHI)\n"
+                f"    temporal = isn(graph_phase + t * {1.0+v:.12g})\n"
+                f"    return {{'wave': spatial * (0.5 + 0.5*temporal), 'amp': 0.5 + 0.5*graph_u, 'pitch': 1.0 + {0.125*v:.12g}*graph_curvature, 'pan': 2.0*graph_v-1.0}}"
             )
-            mem["domain"] = {"axis":"both","equation":f"sin((x+t_norm)*MEUM*{1.0+v:.12g})*cos((y-t_norm)*PHI)+tanh(z+seed_w)","weight":v,"source":"heuristic_seq_synth","graph_context_version":GRAPH_CONTEXT_VERSION}
+            mem["domain"] = {"domains": [{
+                "name": "heuristic_full_graph", "axis": "both",
+                "t0": 0.0, "t1": 1.0, "x0": -1.0, "x1": 1.0, "y0": -1.0, "y1": 1.0,
+                "logic": "True",
+                "equation": f"sin((x+graph_z)*MEUM*{1.0+v:.12g})*cos((y+t)*PHI)+0.25*graph_energy",
+                "limit_lo": -1.0, "limit_hi": 1.0, "weight": v,
+                "source": "heuristic_seq_synth", "user_defined": False,
+            }], "source": "heuristic_seq_synth"}
             mem["patch"] = {"source":"heuristic_seq_synth","mod_depth":v,"ratio":float(1.0+MEUM_MINUS_1*v)}
             mem["heuristic_seq_synth"] = {"family":family,"bias":bias,"value":v,"span":span}
             if int((getattr(self,"instrument_selected_sequence",{}) or {}).get(name,1)) == int(sid):
@@ -41975,6 +42454,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
             ).hexdigest()[:16]
         except Exception:
             algo_fp = "0" * 16
+        try:
+            graph_scripts_fp = hashlib.sha256(json.dumps({
+                "instrument_scripts": getattr(self, "instrument_scripts", {}) or {},
+                "rand_param_script": str(getattr(self, "live_dj_random_script", "") or ""),
+                "contract": "full_graph_v1",
+            }, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
+        except Exception:
+            graph_scripts_fp = "0" * 16
         live_p = ""
         try:
             pl = getattr(self, "master_playlist_data", None) or []
@@ -42035,6 +42522,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "randomizer_active": rnd_on,
             "phase_lock_active": pl_on,
             "seed": float(self.get_numeric_seed()) if hasattr(self, "get_numeric_seed") else 0.0,
+            "seed_script": str(self._seed_text() if hasattr(self, "_seed_text") else ""),
+            "instrument_scripts": dict(getattr(self, "instrument_scripts", {}) or {}),
+            "graph_script_variables": list(GRAPH_SCRIPT_VARIABLES),
+            "graph_context_contract": "full_graph_v1",
+            "graph_scripts_fingerprint": graph_scripts_fp,
             "hyperdrive": _hyper,
             "live_parametrics": live_p,
             "goava_group_phase": bool(getattr(self, "goava_active", False)),
@@ -42046,9 +42538,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "step_algorithm_fingerprint": step_algo_fingerprint,
             "live_dj_goava": bool(getattr(self, "live_dj_goava", False)),
             "live_dj_random": bool(getattr(self, "live_dj_random", False)),
-            "seed_script": self._seed_text() if hasattr(self, "_seed_text") else "",
-            "graph_context_version": GRAPH_CONTEXT_VERSION,
-            "graph_script_fingerprint": context_fingerprint({"seed": self._seed_text() if hasattr(self,"_seed_text") else "", "scripts": getattr(self,"instrument_scripts",{}) or {}, "algo": gas}),
+            "live_dj_random_script": str(getattr(self, "live_dj_random_script", "") or ""),
             "project_notes": notes,
             "master_vector": master_vector,
             "master_vector_drive": float(st.get("drive", 0.50) or 0.50),
@@ -42135,8 +42625,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             step_algorithms=meta.get("step_algorithms"),
             live_dj_goava=meta.get("live_dj_goava"),
             live_dj_random=meta.get("live_dj_random"),
-            seed_script=meta.get("seed_script"),
-            graph_context_fingerprint=meta.get("graph_script_fingerprint"),
+            graph_scripts_fingerprint=meta.get("graph_scripts_fingerprint"),
         )
         if _opt is not None:
             identity = _opt.memoized_result("game", _game_payload, _produce_game_identity, max_entries=24)
@@ -43597,7 +44086,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         "t0": 0.0, "t1": 1.0,
                         "x0": -1.0, "x1": 1.0, "y0": -1.0, "y1": 1.0,
                         "logic": "True",
-                        "equation": body.split("equation =")[-1].strip().strip('"').strip("'") if "equation" in body else "sin(t * MEUM)",
+                        "equation": (body.split("equation =", 1)[-1].strip().strip('"').strip("'") if "equation =" in body else (body.strip() or "sin(t * MEUM)")),
                         "limit_lo": -1.0, "limit_hi": 1.0,
                         "weight": mix,
                         "user_defined": False,
@@ -44004,6 +44493,61 @@ class MathematiciansGrooveboxApp(QMainWindow):
     # ----------------------------------------------------------------------
     # PROJECT_UNDO_2026 — full-project snapshot history
     # ----------------------------------------------------------------------
+    def _project_history_media_samples(self):
+        """Small, JSON-safe operator-media history records (never PCM/frame buffers)."""
+        out = {}
+        for name, rec in (getattr(self, "instrument_media_samples", {}) or {}).items():
+            if not isinstance(rec, dict):
+                continue
+            out[str(name)] = {
+                "path": str(rec.get("path", "") or ""),
+                "sample_rate": int(rec.get("sample_rate", 44100) or 44100),
+                "user_owned": bool(rec.get("user_owned", True)),
+                "source_kind": str(rec.get("source_kind", "audio") or "audio"),
+                "video_path": str(rec.get("video_path", "") or ""),
+                "video_input_enabled": bool(rec.get("video_input_enabled", False)),
+                "layered_state": copy.deepcopy(rec.get("layered_state", {})) if isinstance(rec.get("layered_state"), dict) else {},
+                "binding_mode": str(rec.get("binding_mode", "") or ""),
+                "binding_source": str(rec.get("binding_source", "") or ""),
+                "bound_layers_state": copy.deepcopy(rec.get("bound_layers_state", {})) if isinstance(rec.get("bound_layers_state"), dict) else {},
+                "audio_present": bool(rec.get("audio_present", True)),
+            }
+        return out
+
+    def _restore_project_history_media_samples(self, saved):
+        """Restore media metadata cheaply; only decode when the referenced path changed."""
+        saved = saved if isinstance(saved, dict) else {}
+        current = getattr(self, "instrument_media_samples", {}) or {}
+        rebuilt = {}
+        for name, rec in saved.items():
+            if not isinstance(rec, dict):
+                continue
+            path = str(rec.get("path", "") or "")
+            old = current.get(name) if isinstance(current.get(name), dict) else None
+            if old is not None and str(old.get("path", "") or "") == path:
+                item = copy.deepcopy(old)
+                # Preserve derived waveform bytes while restoring authoritative metadata.
+                for k, v in rec.items():
+                    item[k] = copy.deepcopy(v)
+                rebuilt[str(name)] = item
+                continue
+            arr = np.zeros(1, dtype=np.float32)
+            sr = int(rec.get("sample_rate", 44100) or 44100)
+            if path and os.path.isfile(path):
+                try:
+                    arr, sr = self._decode_media_audio(path)
+                except Exception:
+                    pass
+            item = copy.deepcopy(rec)
+            item["waveform"] = arr if getattr(arr, "size", 0) else np.zeros(1, dtype=np.float32)
+            item["sample_rate"] = int(sr)
+            rebuilt[str(name)] = item
+        self.instrument_media_samples = rebuilt
+        try:
+            self._refresh_operator_sample_ui()
+        except Exception:
+            pass
+
     def _project_history_snapshot(self):
         """Authoritative deep snapshot of everything undo/redo must preserve.
 
@@ -44043,6 +44587,32 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "sequencer_automation_enabled",
             "automator_timing_mode",
             "_selected_automation_step",
+            # PROJECT_STATE_INTEGRATION_20260909: state added by recent media,
+            # graph, Performance, canonical, modulation and game work. These are
+            # lightweight authoritative values/caches, never live device objects.
+            "automation_patterns",
+            "master_vector_state",
+            "wavetable_projector_state",
+            "sample_morph_state",
+            "global_mod_state",
+            "algorithm_xmod_local",
+            "algorithm_xmod_global",
+            "media_carrier_slot",
+            "carrier_binding_mode",
+            "carrier_binding_source",
+            "carrier_bound_layers_state",
+            "live_dj_random_script",
+            "_live_dj_random_generation",
+            "canonical_continuation_enabled",
+            "canonical_continuation_mode",
+            "canonical_resonance_factor",
+            "canonical_resonance_handoff",
+            "meum_spatial_resolution_enabled",
+            "meum_spatial_activity_modulus",
+            "_canonical_user_blend_ledger",
+            "_canonical_activity_ledger",
+            "_last_videogame_identity",
+            "_last_videogame_path",
         ):
             try:
                 snap[key] = _c.deepcopy(getattr(self, key, None))
@@ -44059,6 +44629,30 @@ class MathematiciansGrooveboxApp(QMainWindow):
             )
         except Exception:
             snap["domain_eq_domains"] = []
+        # Save/Load parity fields that live behind UI/workbench adapters.
+        # They are captured here without raw media buffers, device handles or
+        # render caches, keeping history cheap enough for normal interaction.
+        try:
+            snap["ui_state"] = _c.deepcopy(self._collect_project_ui_state())
+        except Exception:
+            snap["ui_state"] = {}
+        try:
+            snap["media_workbench_state"] = _c.deepcopy(self._collect_media_workbench_state())
+        except Exception:
+            snap["media_workbench_state"] = _c.deepcopy(getattr(self, "media_workbench_state", {}) or {})
+        try:
+            snap["instrument_media_samples_state"] = self._project_history_media_samples()
+        except Exception:
+            snap["instrument_media_samples_state"] = {}
+        try:
+            snap["visual_view_state"] = _c.deepcopy(self.video_synth_engine.get_camera_state()) if getattr(self, "video_synth_engine", None) is not None else {}
+        except Exception:
+            snap["visual_view_state"] = {}
+        try:
+            snap["project_notes"] = self.qe_notes.toPlainText() if getattr(self, "qe_notes", None) is not None else ""
+        except Exception:
+            snap["project_notes"] = ""
+
         btn_state = {}
         for attr in (
             "btn_goava", "btn_local_randomize", "btn_local_phase_lock",
@@ -44123,6 +44717,34 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.domain_eq_engine.domains = dom
         except Exception:
             pass
+        # Restore adapters shared with normal project Save/Load.  These calls
+        # intentionally happen before repaint/rebuild so consumers see one state.
+        try:
+            if isinstance(snap.get("ui_state"), dict):
+                self._restore_project_ui_state(_c.deepcopy(snap["ui_state"]))
+        except Exception:
+            pass
+        try:
+            self._restore_media_workbench_state(_c.deepcopy(snap.get("media_workbench_state", {})))
+        except Exception:
+            pass
+        try:
+            self._restore_project_history_media_samples(_c.deepcopy(snap.get("instrument_media_samples_state", {})))
+        except Exception:
+            pass
+        try:
+            if getattr(self, "qe_notes", None) is not None and "project_notes" in snap:
+                self.qe_notes.blockSignals(True)
+                self.qe_notes.setPlainText(str(snap.get("project_notes") or ""))
+                self.qe_notes.blockSignals(False)
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "_apply_visual_view_state"):
+                self._apply_visual_view_state(_c.deepcopy(snap.get("visual_view_state", {})))
+        except Exception:
+            pass
+
         # Seed field (user-controlled; block so no spurious recomposition).
         try:
             if hasattr(self, "input_seed_val") and self.input_seed_val is not None:
@@ -44224,13 +44846,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return False
         self._undo_in_flight = True
         try:
+            # Redo mirrors Undo: capture the state we are leaving, restore the
+            # redo target, then put the pre-redo state on Undo.  Storing `snap`
+            # itself here made a subsequent Undo restore the already-redone state.
+            prior = self._project_history_snapshot()
             label, snap = self._redo_stack.pop()
             self._project_history_restore(snap)
-            self._undo_stack.append((label, snap))
+            clean_label = str(label).replace(" (redo)", "")
+            self._undo_stack.append((clean_label, prior))
             if len(self._undo_stack) > self._undo_max:
                 self._undo_stack.pop(0)
             if hasattr(self, "scope_status_label"):
-                self.scope_status_label.setText(f"↩ Redo: {label}")
+                self.scope_status_label.setText(f"↪ Redo: {clean_label}")
             return True
         finally:
             self._undo_in_flight = False

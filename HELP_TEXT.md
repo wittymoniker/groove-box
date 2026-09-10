@@ -11,6 +11,64 @@
 - Performance controls are consolidated into one horizontal deck; Automator controls are compacted into a multi-row grid.
 - UI initialization order and Qt stylesheet declarations were hardened; division-by-zero-sensitive paths use explicit degenerate-case handling rather than epsilon denominators where practical.
 
+
+--------------------------------------------------------------------------------
+FULL GRAPH SCRIPT CONTEXT — SEED / INSTRUMENT / ALGORITHM / DOMAIN / AV / GAME
+--------------------------------------------------------------------------------
+All programmable graph readers now share one coordinate contract. Old scripts
+remain valid (including `evaluate_wave(x, y, z)` and `global_script(t,name,i)`),
+but new scripts may read the complete graph context at the same evaluation point.
+
+Core variables:
+  t, t_norm, x, y, z, seed, seed_w, graph, graph_vector
+  graph_x, graph_y, graph_z, graph_scalar, graph_radius, graph_angle
+  graph_energy, graph_curvature, graph_phase, graph_u, graph_v, graph_w
+  graph_index, graph_count, graph_slot, sequence_index, step_index
+  domain_value, domain_weight, graph_id, domain_id, bpm, sample_rate
+
+`graph` is the same context as an attribute/dictionary view (for example
+`graph.x`, `graph.energy`). A script may still return one scalar, or may
+return named channels such as `wave`, `amp`, `pitch`, `pan`, `x`, `y`, `z`,
+`opacity`, `scale`, `rotation`, `drive`, `speed`, and `world_z`. Consumers use
+only channels that make sense for them; extra channels are harmless.
+
+Cross-media rule: the graph is sampled as a varying mathematical object rather
+than being prematurely collapsed to one seed number. Instrument and applied
+Algorithm scripts can therefore influence actual sound, video/scenograph
+geometry, and generated-game audiovisual/gameplay fields from the same graph
+coordinate. Domain values are resolved at that coordinate too. While a Domain equation evaluates
+itself, `domain_value` is 0 to prevent recursive/order-dependent self-feedback;
+downstream Instrument/Algorithm/AV/Game scripts receive the final blended value.
+
+Canonical/writer rule: Canonical sequence payloads carry the Instrument Script,
+the `full_graph_v1` contract, and the public graph-variable list. Seeded/Canonical
+writers, Random Seed, Global Algorithm randomization, Randomize All/Rand Params,
+and Heuristic Write to Seq Synth may author multivariate/time-varying graph
+programs. Stock/engine-authored Instrument Scripts may be upgraded; user-authored
+Instrument Scripts are not replaced by these writers.
+
+RAND PARAM is now itself an authored full-graph performance program. It is
+pre-evaluated on the control/row lattice so realtime audio reads cached scalars
+instead of parsing Python in the PortAudio callback. The same authored program
+is saved/loaded and is exported to video/game composition metadata.
+
+Examples:
+
+    def evaluate_wave(x, y, z, t=0.0, t_norm=0.0, graph=None):
+        field = sin(graph_x*MEUM + graph_y*PHI + graph_phase)
+        return {'wave': field, 'amp': 0.7 + 0.3*graph_u,
+                'pitch': 1.0 + 0.1*graph_curvature,
+                'pan': 2*graph_v-1, 'opacity': graph_energy}
+
+    def global_script(t, name, i, graph=None):
+        v = isn(graph_radius*MEUM + t*tau) + domain_value*0.2
+        return {'drive': v, 'rotation': graph_angle,
+                'speed': 0.8 + 0.4*graph_w, 'world_z': graph_z}
+
+Compatibility: scalar-only scripts and the previous function signatures are
+still accepted. Full-graph fields add capability; they do not require projects
+to be rewritten.
+
 --------------------------------------------------------------------------------
 FINITE INFINITY GREP + FINITE INFINITY–MEUM HYPERDRIVE
 --------------------------------------------------------------------------------
@@ -2382,9 +2440,3 @@ Every project autosave carries the working Project Title, Project Notes, and pro
 Known Grooveboxes history is metadata-only and can be cleared in **Performance → Drive / Clone** using **Forget Selected** or **Reset Known Grooveboxes History**. This does not delete anything from the Nearby Inbox.
 
 On the sOS appliance, writable Groovebox data lives under `/var/lib/groovebox`; the launcher and installer auto-create and write-test the required project/media/export/cache/temp/log/state/network directories before ordinary file operations begin.
-
-## Full-graph script compatibility — 2026-09-09
-
-Seed, Instrument, Algorithm, Domain, Canonical, audio, video, and videogame paths share a common deterministic graph context: `t`, `t_norm`, `x`, `y`, `z`, `seed`, `seed_w`, `graph_radius`, `graph_phase`, `graph_energy`, `graph_index`, `graph_slot`, `graph_u`, `graph_v`, and `graph_w`.
-
-Scripts remain backward-compatible with scalar output, but may also return vectors/lists or named mappings. Named output channels may include `value`, `x`, `y`, `z`, `pitch`, `amp`, `pan`, `filter`, `visual`, and `game`; each consumer uses the channels it understands. Canonical writers and random/heuristic authoring now emit richer full-graph forms. RAND PARAM stays realtime-safe: it reads equivalent deterministic graph coordinates without arbitrary script evaluation or random-number generation in the audio callback.

@@ -1,0 +1,16 @@
+Mathematician's Groovebox — Full Graph Script Compatibility — 2026-09-09
+
+- Added shared full_graph_v1 context and graph attribute/dict view.
+- Old Instrument/Algorithm signatures remain compatible.
+- Named graph outputs now reach actual audio, scenograph/video, and generated games.
+- Game sequence-influence mechanics consume graph drive/world channels.
+- Canonical sequence payloads carry script + graph contract metadata.
+- Seeded/Canonical, Random Seed, Global Algorithm, Randomize All and Heuristic Seq Synth writers author richer graph programs.
+- RAND PARAM authors a saved full-graph program; realtime audio consumes cached row values.
+- Updated in-app HELP_TEXT, HELP_TEXT.md, README.md, platform/build/appliance docs.
+
+Validation performed for this release:
+- 22/22 expanded focused compatibility/realtime-lag tests passed.
+- 12/12 targeted full-graph/writer/cache/game tests passed after final assertions.
+- py_compile passed for groovebox.py, graph_script_context.py, dj_effects.py and videogame_engine.py.
+- Appliance/root runtime parity and release-script shell syntax checks passed.

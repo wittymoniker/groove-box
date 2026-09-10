@@ -1,0 +1,23 @@
+Mathematician's Groovebox — Project State Integration 2026-09-09
+
+Baseline
+- Patched the exact attached groovebox_FULL_GRAPH_SCRIPT_COMPAT_20260909.zip lineage.
+
+Integrated state contract
+- Project Save/Load schema bumped to 3.9.0-project-state-integrated.
+- Undo/Redo now includes newer graph/media/Performance/canonical/modulation/game state families.
+- Added project UI persistence for Global Track Offset, Canonical Convolve, Canonical Live Overblend,
+  Global XMOD and Global Input XMOD controls.
+- Performance/Target Profile/reference-profile and Draw/Record media-workbench state participate in history.
+- Instrument media history stores only authoritative metadata/layer/binding state; decoded PCM/frame buffers are excluded.
+- Visual camera/view state and project notes participate in Undo/Redo.
+- Corrected Redo stack semantics so Undo after Redo restores the pre-redo state.
+
+Optimization policy
+- Runtime media buffers, render caches, hardware/device handles and derived waveform/frame data are not serialized into history.
+- Existing decoded instrument audio is reused during history restore when its source path did not change.
+- Media is decoded on history restore only when a referenced path actually changes.
+
+Validation
+- groovebox.py passes Python bytecode compilation.
+- 15 focused project/media/storage/full-graph/heuristic contract tests pass.

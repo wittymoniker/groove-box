@@ -1088,7 +1088,7 @@ def classify_from_composition(
     step_algorithms: Optional[List[Dict[str, Any]]] = None,
     live_dj_goava: bool = False,
     live_dj_random: bool = False,
-    graph_context_fingerprint: Optional[str] = None,
+    graph_scripts_fingerprint: Optional[str] = None,
 ) -> GameIdentity:
     """Map composition state → unique game identity (group action on Z/n factors).
 
@@ -1113,9 +1113,9 @@ def classify_from_composition(
         f"|G={int(bool(goava_active))}|RND={int(bool(randomizer_active))}"
         f"|PL={int(bool(phase_lock_active))}"
         f"|DJG={int(live_dj_goava)}|DJR={int(live_dj_random)}"
+        f"|GS={graph_scripts_fingerprint or '0'}"
         f"|GA={global_algo_fingerprint or '0'}"
         f"|SA={step_algorithm_fingerprint or '0'}"
-        f"|GRAPH={graph_context_fingerprint or '0'}"
     )
     if live_parametrics:
         fp_src += f"|lp={str(live_parametrics)[:120]}"
@@ -1199,8 +1199,6 @@ def classify_from_composition(
         hooks.append("hook_live_dj_goava")
     if live_dj_random:
         hooks.append("hook_live_dj_parametric")
-    if graph_context_fingerprint:
-        hooks.append(f"hook_full_graph_{str(graph_context_fingerprint)[:8]}")
     if global_algo_fingerprint and global_algo_fingerprint != "0" * 16:
         hooks.append(f"hook_global_algo_{global_algo_fingerprint[:8]}")
     if step_algorithm_fingerprint and step_algorithm_fingerprint != "0" * 16:
@@ -1615,6 +1613,110 @@ def seed_script_channels(seed_script, t=0.0):
     except Exception:
         return {"scalar":0.0,"x":0.0,"y":0.0,"z":0.0,"values":[]}
 
+
+# FULL_GRAPH_SCRIPT_CONTEXT_2026 ---------------------------------------------
+def composition_graph_context(t=0.0, slot=0):
+    """One graph-variable contract shared with the host Groovebox."""
+    sc = seed_script_channels(COMPOSITION_META.get("seed_script", ""), t)
+    x, y, z = float(sc.get("x", 0.0)), float(sc.get("y", 0.0)), float(sc.get("z", 0.0))
+    seed = float(COMPOSITION_META.get("seed", USER_SEED) or USER_SEED)
+    radius = math.sqrt(x*x + y*y + z*z)
+    angle = math.atan2(y, x)
+    ctx = {
+        "t": float(t), "t_norm": float(t) % 1.0,
+        "x": x, "y": y, "z": z, "seed": seed,
+        "seed_w": (abs(seed) % 1.0) if abs(seed) > 1.0 else abs(seed),
+        "graph_x": x, "graph_y": y, "graph_z": z,
+        "graph_scalar": float(sc.get("scalar", 0.0)), "graph_radius": radius,
+        "graph_angle": angle, "graph_energy": math.tanh(0.5*(x*x+y*y+z*z)),
+        "graph_curvature": math.tanh(abs(x*y+y*z+z*x)),
+        "graph_phase": math.fmod(float(t)+angle, math.tau),
+        "graph_u": 0.5+0.5*math.tanh(x), "graph_v": 0.5+0.5*math.tanh(y), "graph_w": 0.5+0.5*math.tanh(z),
+        "graph_index": 0, "graph_count": max(1, int(COMPOSITION_META.get("playlist_rows", 1) or 1)),
+        "graph_slot": int(slot), "sequence_index": 1, "step_index": 0,
+        "domain_value": 0.0, "domain_weight": 1.0,
+        "bpm": float(COMPOSITION_META.get("bpm", BPM) or BPM), "sample_rate": 44100.0,
+        "graph_vector": (x, y, z),
+    }
+    return ctx
+
+
+def graph_script_channels(script, t=0.0, slot=0, name="", function_names=("evaluate_wave", "global_script", "evaluate", "main")):
+    """Evaluate host-authored Instrument/Algorithm graph scripts in the game."""
+    import ast as _ast, inspect as _inspect
+    raw = str(script or "").strip()
+    if not raw:
+        return {}
+    ctx = composition_graph_context(t, slot)
+    env = dict(ctx)
+    env.update({
+        "graph": type("Graph", (), ctx)(), "abs": abs, "min": min, "max": max, "sum": sum, "len": len,
+        "range": range, "float": float, "int": int, "bool": bool, "round": round,
+        "sin": vg_sin, "cos": vg_cos, "isn": book_isn, "ics": book_ics,
+        "ot_sin_vec_equiv": vg_sin, "ot_cos_vec_equiv": vg_cos,
+        "sqrt": math.sqrt, "exp": math.exp, "log": math.log, "log2": math.log2,
+        "atan2": math.atan2, "floor": math.floor, "ceil": math.ceil,
+        "pi": math.pi, "tau": math.tau, "e": math.e, "MEUM": MEUM, "PHI": PHI,
+        "MEUM_INV": 1.0/MEUM, "MEUM_NORM": MEUM-1.0,
+        "name": str(name), "i": int(slot),
+    })
+    local = {"__builtins__": {}}
+    local.update(env)
+    try:
+        exec(compile(_ast.parse(raw, mode="exec"), "<groovebox-game-graph-script>", "exec"), local, local)
+    except Exception:
+        return {}
+    result = None
+    for fname in function_names:
+        fn = local.get(fname)
+        if not callable(fn):
+            continue
+        try:
+            sig = _inspect.signature(fn); kwargs = {}
+            for pname, par in sig.parameters.items():
+                if pname == "name": kwargs[pname] = str(name)
+                elif pname == "i": kwargs[pname] = int(slot)
+                elif pname in local: kwargs[pname] = local[pname]
+                elif par.default is not _inspect._empty: continue
+                else: raise KeyError(pname)
+            result = fn(**kwargs); break
+        except Exception:
+            continue
+    if result is None:
+        return {}
+    if isinstance(result, dict):
+        return {str(k): float(v) for k,v in result.items() if isinstance(v,(int,float)) and math.isfinite(float(v))}
+    if isinstance(result, (list,tuple)):
+        vals=[float(v) for v in result if isinstance(v,(int,float)) and math.isfinite(float(v))]
+        out={"scalar": vals[0]} if vals else {}
+        if len(vals)>=2: out.update({"x":vals[0],"y":vals[1]})
+        if len(vals)>=3: out["z"]=vals[2]
+        return out
+    if isinstance(result,(int,float)) and math.isfinite(float(result)):
+        return {"scalar":float(result)}
+    return {}
+
+
+def composition_script_channels(t=0.0, slot=0):
+    """Combine the selected Instrument script and applied Algorithm script."""
+    out = {}
+    scripts = COMPOSITION_META.get("instrument_scripts", {}) or {}
+    names = sorted(scripts)
+    if names:
+        name = names[int(slot) % len(names)]
+        out.update(graph_script_channels(scripts.get(name, ""), t, slot, name))
+    gas = COMPOSITION_META.get("global_algo", {}) or {}
+    if bool(gas.get("apply_enabled", False)) and str(gas.get("script") or "").strip():
+        ar = graph_script_channels(str(gas.get("script") or ""), t, slot, names[int(slot)%len(names)] if names else "", ("global_script","evaluate_wave","evaluate","main"))
+        mix = max(0.0, min(1.0, float((gas.get("params") or {}).get("mix", 0.35) or 0.35)))
+        for k,v in ar.items():
+            out[k] = float(out.get(k, 0.0)) + mix*float(v)
+    if bool(COMPOSITION_META.get("live_dj_random", False)) and str(COMPOSITION_META.get("live_dj_random_script") or "").strip():
+        rr = graph_script_channels(str(COMPOSITION_META.get("live_dj_random_script") or ""), t, slot, "RAND PARAM", ("global_script","evaluate_wave","evaluate","main"))
+        for k,v in rr.items():
+            out[k] = float(out.get(k, 0.0)) + 0.35*float(v)
+    return out
+
 # ---------------------------------------------------------------------------
 # Optional UI framework (scene viewport + control panel). Only the standard
 # library is required to *run* a session: without PyQt6 the game plays the
@@ -1771,7 +1873,14 @@ class SequenceInfluence:
         phase=(tt%plen)/float(plen); r=_residue(self.seed,f"sequence:{step}:{plen}")
         motion=0.18+0.82*(0.5+0.5*vg_sin(math.tau*phase+math.tau*r))
         vibration=0.04+0.46*(0.5+0.5*vg_cos(math.tau*phase*MEUM+math.tau*r))
-        return {"step":step,"pattern":plen,"phase":phase,"motion":max(1e-9,min(1.0,motion)),"vibration":max(1e-9,min(0.5,vibration))}
+        # FULL_GRAPH_SCRIPT_CONTEXT_2026: the same authored graph that moves
+        # audio/video also changes the gameplay motion/vibration field.
+        gc=composition_script_channels(tt, step % 12)
+        drive=float(gc.get("speed",gc.get("drive",gc.get("wave",gc.get("scalar",0.0)))) or 0.0)
+        world=float(gc.get("world_z",gc.get("z",0.0)) or 0.0)
+        motion *= 1.0 + 0.12*max(-1.0,min(1.0,drive))
+        vibration += 0.04*max(-1.0,min(1.0,world))
+        return {"step":step,"pattern":plen,"phase":phase,"motion":max(1e-9,min(1.0,motion)),"vibration":max(1e-9,min(0.5,vibration)),"graph_drive":drive,"graph_world_z":world}
 
 class TemporalSeedDynamics:
     def __init__(self, seed): self.seed=_safe_int_seed(seed); self.stage="build"; self.intensity=0.0
@@ -2278,7 +2387,10 @@ class MusicBed:
         if self.dj_random:
             self.dj = (self.dj + 0.15 * vg_sin(self.phase * PHI + self._algo_spin)) % 1.0
         try:
-            _seed_drive = float(seed_script_channels(COMPOSITION_META.get("seed_script", ""), self.phase / math.tau)["scalar"])
+            _gt = self.phase / math.tau
+            _seed_drive = float(seed_script_channels(COMPOSITION_META.get("seed_script", ""), _gt)["scalar"])
+            _gs = composition_script_channels(_gt, 0)
+            _seed_drive += 0.5 * float(_gs.get("scalar", _gs.get("wave", _gs.get("drive", 0.0))) or 0.0)
         except Exception:
             _seed_drive = 0.0
         g = self.mix * vg_sin(self.phase * (1.0 + self._algo_spin) * MEUM)
@@ -4288,8 +4400,15 @@ class Game:
             _sc = seed_script_channels((self.meta or {}).get("seed_script", ""), float(getattr(self, "t", 0.0) or 0.0))
         except Exception:
             _sc = {"x": 0.0, "y": 0.0, "z": 0.0, "scalar": 0.0}
+        try:
+            _gsc = composition_script_channels(float(getattr(self, "t", 0.0) or 0.0), 0)
+        except Exception:
+            _gsc = {}
         seq = [
-            float(_sc.get("x", 0.0)), float(_sc.get("y", 0.0)), float(_sc.get("z", 0.0)), float(_sc.get("scalar", 0.0)),
+            float(_sc.get("x", 0.0)) + 0.15*float(_gsc.get("x", 0.0) or 0.0),
+            float(_sc.get("y", 0.0)) + 0.15*float(_gsc.get("y", 0.0) or 0.0),
+            float(_sc.get("z", 0.0)) + 0.15*float(_gsc.get("z", 0.0) or 0.0),
+            float(_sc.get("scalar", 0.0)) + 0.25*float(_gsc.get("scalar", _gsc.get("wave", 0.0)) or 0.0),
             float(self.id.get("seed", 0.0) or 0.0),
             float(int(str(self.id.get("composition_fingerprint", "0") or "0")[:8], 16) % 10000)
             if str(self.id.get("composition_fingerprint", "") or "").isalnum() else 0.0,

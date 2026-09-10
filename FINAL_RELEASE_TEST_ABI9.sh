@@ -83,7 +83,7 @@ pass 'Linux/macOS shell syntax'
 
 # The staged ISO payload must be byte-identical for the critical pair.
 for rel in \
-  scode_optimizer_bridge.py author_number_codec.py author_numeric_font.py groovebox.py groovebox_paths.py groovebox_media_tools.py layered_signal_lab.py performance.py performance_box.py media_output_router.py media_layer_engine.py media_cutup_engine.py parametric_file_remix.py radio_station.py videogame_engine.py standalone_import_audit.py bin/README.txt run_groovebox.py test_project_media_contract.py test_algorithm_automation_parity.py launch_desktop.sh launch_mobile.sh run_hybrid.sh scripts/provision_first_launch.py HELP_TEXT.md \
+  scode_optimizer_bridge.py author_number_codec.py author_numeric_font.py groovebox.py graph_script_context.py dj_effects.py groovebox_paths.py groovebox_media_tools.py layered_signal_lab.py performance.py performance_box.py media_output_router.py media_layer_engine.py media_cutup_engine.py parametric_file_remix.py radio_station.py videogame_engine.py standalone_import_audit.py bin/README.txt run_groovebox.py test_project_media_contract.py test_algorithm_automation_parity.py launch_desktop.sh launch_mobile.sh run_hybrid.sh scripts/provision_first_launch.py HELP_TEXT.md \
   sCode/apps/groovebox/groovebox_optimizer.sC sCode/apps/groovebox/pool_catalog.sC \
   sCode/apps/groovebox/pool_request_probe.sC sCode/scode/libs/runtime/pool.sC \
   sCode/scode/libs/runtime/completion.sC sCode/scode/libs/groovebox/symbols.sC \
