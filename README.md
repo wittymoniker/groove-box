@@ -157,8 +157,6 @@ cd BUILD_KIT
 py build.py
 ```
 
-For ordinary musicians and testers, downloading the appropriate **prebuilt release is recommended**. Building from source is mainly for developers, contributors, and people creating their own distributions.
-
 
 ### Make sound
 
