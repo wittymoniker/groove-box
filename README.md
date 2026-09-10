@@ -2,22 +2,123 @@
 
 A deterministic generative music, visual, and game engine driven by mathematical seeds.
 
-## 1. Run it and get sound
+Build Groovebox yourself
 
-You do **not** need to understand the math to use Groovebox.
+If you do not want to build from source, use a prebuilt release for Windows, Linux, or macOS.
 
-### Download a build
+If you do want to create a build yourself, the main build script is:
 
-Go to the repository's **Releases** page and download the build for your system:
+BUILD_KIT/build.py
 
-| Platform | What to download | How to launch |
-|---|---|---|
-| Windows | Windows x64 build | Extract it and open the included Groovebox `.exe` |
-| Linux | Linux x86_64 build | Extract it and run the included Groovebox launcher |
-| macOS | macOS build | Extract it and open the Groovebox `.app` |
+You normally do not need to run the individual internal build scripts manually.
 
-If your operating system warns about an unsigned application, use the normal system option to allow an application you trust.
+Linux
 
+Open a terminal in the Groovebox project folder.
+
+First install the required Linux dependencies:
+
+chmod +x BUILD_KIT/install_dependencies_linux.sh
+./BUILD_KIT/install_dependencies_linux.sh
+
+Then run the builder:
+
+cd BUILD_KIT
+python3 build.py
+
+When the script finishes, check the build/output directory reported by the script for the finished package.
+
+macOS
+
+Open Terminal in the Groovebox project folder.
+
+Install the required macOS dependencies:
+
+chmod +x BUILD_KIT/install_dependencies_macos.sh
+./BUILD_KIT/install_dependencies_macos.sh
+
+Then run:
+
+cd BUILD_KIT
+python3 build.py
+
+The builder will print the location of the generated build when it completes.
+
+Windows
+
+Install Python if it is not already available, then open PowerShell or Command Prompt in the Groovebox project folder.
+
+Run:
+
+cd BUILD_KIT
+py build.py
+
+If your installation uses python instead of the Windows py launcher:
+
+python build.py
+
+The builder will print where it placed the completed Windows build.
+
+If the build fails
+
+The build kit also includes:
+
+BUILD_KIT/BUILD_DIAGNOSTIC.sh
+
+On Linux/macOS, you can run the diagnostic with:
+
+chmod +x BUILD_KIT/BUILD_DIAGNOSTIC.sh
+./BUILD_KIT/BUILD_DIAGNOSTIC.sh
+
+When reporting a build problem, include:
+
+Operating system:
+Groovebox version:
+Command you ran:
+Last part of the terminal output:
+sOS / native sCode build
+
+The sOS/sCode project has its own native build process.
+
+Build it with:
+
+./build/build_native.sh
+
+Then run its test suite:
+
+./tests/run_all.sh
+
+For the optional static native build:
+
+SOS_STATIC=1 ./build/build_native.sh
+
+To generate the native .sapp package repository:
+
+./scripts/build_sapp_repo.sh
+
+Packages are written to:
+
+build/sapp-repo-native/
+
+To create the source release archives:
+
+./scripts/make_source_release.sh
+
+These sOS scripts are separate from the normal Windows/Linux/macOS Groovebox application builder.
+
+Short version
+
+For most developers:
+
+cd BUILD_KIT
+python3 build.py
+
+For Windows:
+
+cd BUILD_KIT
+py build.py
+
+For ordinary musicians and testers, downloading the appropriate prebuilt release is recommended. Building from source is mainly for developers, contributors, and people creating their own distributions.
 ### Make sound
 
 1. Launch **Mathematician's Groovebox**.
