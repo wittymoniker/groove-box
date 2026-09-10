@@ -1,0 +1,56 @@
+MATHEMATICIAN'S GROOVEBOX — SHARED V4L2 / MULTI-RECORD FIX
+2026-09-10
+=================================================================
+
+Problem fixed
+-------------
+The Linux/Fedora Record/Import/Draw path still opened the physical V4L2 camera
+once per media workspace. Many webcams are exclusive-open devices, so a second
+Preview/Record request could receive "Device or resource busy". Preview ->
+Record also had to stop and reopen the same /dev/video node, creating a driver
+release race. Simultaneous recordings started in the same second could also
+collide on the same output filename.
+
+New camera ownership model
+--------------------------
+* One process-wide FFmpeg/V4L2 reader now owns each physical Linux camera node.
+* Main Draw/Record and Performance media workspaces subscribe to that same frame
+  stream when they select the same camera.
+* Multiple simultaneous Groovebox recordings can consume one camera open and
+  each writes its own independent project recording.
+* Different cameras use separate shared readers and can operate concurrently.
+* Starting Record while Preview is already active no longer reopens /dev/video.
+* Snapshots can use the same live shared stream.
+* The final subscriber releases the physical device; stopping one recording does
+  not interrupt another recording/preview still using the same camera.
+* Camera ownership is released before MP4 finalization/encoding starts.
+
+Performance / output safety
+---------------------------
+* The shared reader emits MJPEG. Simultaneous recorders spool those compressed
+  JPEG frames directly instead of re-encoding every frame in the Qt GUI thread.
+* Each take gets a millisecond + studio-identity recording stamp, preventing
+  same-second output collisions.
+* Existing verified-MP4 publication and project recording indexing remain in the
+  finalization path.
+
+Busy-device recovery
+--------------------
+* Transient V4L2 busy/open failures are retried automatically with short backoff.
+* Groovebox may reclaim only FFmpeg V4L2 holders proven to be descendants of the
+  current Groovebox process. It never kills unrelated camera applications.
+* After retries, Linux /proc holder diagnostics identify the PID/program holding
+  the selected device when visible, making a genuinely external conflict clear.
+
+Scope note
+----------
+The shared reader is process-wide. It supports simultaneous media windows inside
+one Groovebox process. Two entirely separate Groovebox application processes are
+still separate OS clients and a single-open webcam may reject the second process.
+
+Validation
+----------
+* video_clip_studio.py py_compile: PASS
+* package compileall: PASS
+* camera hard-release / idle-camera / project-media / video-render tests: PASS
+* shared V4L2 multi-record contract tests: PASS

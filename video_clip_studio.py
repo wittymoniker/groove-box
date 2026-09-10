@@ -21,6 +21,7 @@ import array
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -33,7 +34,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from PyQt6.QtCore import Qt, QTimer, QPointF, QUrl, pyqtSignal, QProcess
+from PyQt6.QtCore import Qt, QTimer, QPointF, QUrl, pyqtSignal, QProcess, QObject
 from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QTransform, QBrush
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QLabel,
@@ -317,6 +318,286 @@ class GraphLane(QWidget):
         q.end()
 
 
+# Linux camera sharing -------------------------------------------------------
+#
+# V4L2 devices are commonly exclusive-open.  Opening one FFmpeg process per
+# Record/Import/Draw window therefore guarantees EBUSY on many webcams and also
+# makes Preview -> Record handoffs race the kernel/driver.  Keep exactly one
+# FFmpeg reader per physical node and fan its decoded frames out to every
+# VideoClipStudio that selected that camera.  Each studio can independently
+# preview, take snapshots, and record those frames to its own project file.
+_SHARED_V4L2_STREAMS = {}
+
+
+def _linux_camera_holders(device: str):
+    """Return best-effort (pid, command) diagnostics for processes holding device."""
+    if not sys.platform.startswith('linux') or not device:
+        return []
+    target=os.path.realpath(device)
+    out=[]
+    try:
+        proc_root=Path('/proc')
+        for ent in proc_root.iterdir():
+            if not ent.name.isdigit():
+                continue
+            pid=int(ent.name)
+            held=False
+            try:
+                for fd in (ent/'fd').iterdir():
+                    try:
+                        if os.path.realpath(os.readlink(fd)) == target:
+                            held=True; break
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+            if not held:
+                continue
+            cmd=''
+            try:
+                raw=(ent/'cmdline').read_bytes().replace(b'\0',b' ').strip()
+                cmd=raw.decode('utf-8','replace')
+            except Exception:
+                pass
+            out.append((pid,cmd))
+    except Exception:
+        pass
+    return out
+
+
+def _pid_is_descendant(pid: int, ancestor: int) -> bool:
+    """True only for a live Linux process descended from ancestor."""
+    seen=set()
+    cur=int(pid)
+    for _ in range(32):
+        if cur <= 1 or cur in seen:
+            return False
+        if cur == int(ancestor):
+            return True
+        seen.add(cur)
+        try:
+            text=Path(f'/proc/{cur}/status').read_text(errors='ignore')
+            m=re.search(r'^PPid:\s*(\d+)',text,re.M)
+            if not m:
+                return False
+            cur=int(m.group(1))
+        except Exception:
+            return False
+    return False
+
+
+def _reclaim_own_v4l2_holders(device: str):
+    """Terminate only orphan/stale FFmpeg holders created under this Groovebox.
+
+    Never kills unrelated camera applications.  This is intentionally narrow:
+    the process must be a descendant of this Groovebox process *and* its command
+    line must clearly be an FFmpeg V4L2 capture of the same device.
+    """
+    if not sys.platform.startswith('linux'):
+        return
+    me=os.getpid(); target=os.path.realpath(device)
+    for pid,cmd in _linux_camera_holders(device):
+        low=cmd.lower()
+        if pid == me or not _pid_is_descendant(pid,me):
+            continue
+        if 'ffmpeg' not in low or 'v4l2' not in low:
+            continue
+        if target not in cmd and str(device) not in cmd:
+            continue
+        try:
+            os.kill(pid,15)
+        except Exception:
+            pass
+
+
+class _SharedV4L2Capture(QObject):
+    """One FFmpeg/V4L2 reader shared by all studios selecting one physical node."""
+    def __init__(self, device: str, ffmpeg: str):
+        super().__init__(None)
+        self.device=str(device)
+        self.key=os.path.realpath(self.device)
+        self.ffmpeg=str(ffmpeg)
+        self.subscribers=weakref.WeakSet()
+        self.proc=None
+        self.buf=bytearray()
+        self.frame_count=0
+        self.last_image=None
+        self.last_error=''
+        self._generation=0
+        self._retry=0
+        self._stopping=False
+
+    def is_running(self) -> bool:
+        try:
+            return self.proc is not None and self.proc.state()!=QProcess.ProcessState.NotRunning
+        except Exception:
+            return False
+
+    def add(self, studio):
+        self.subscribers.add(studio)
+        if isinstance(self.last_image,QImage) and not self.last_image.isNull():
+            try: QTimer.singleShot(0,lambda st=studio,im=self.last_image.copy():st._on_shared_v4l2_frame(im))
+            except Exception: pass
+        if not self.is_running():
+            self.start()
+
+    def remove(self, studio):
+        try: self.subscribers.discard(studio)
+        except Exception: pass
+        if not list(self.subscribers):
+            self.stop()
+
+    def _broadcast_status(self, text: str, failure: bool=False):
+        for st in list(self.subscribers):
+            try:
+                if failure: st._on_shared_v4l2_failure(text)
+                else: st._on_shared_v4l2_status(text)
+            except Exception:
+                pass
+
+    def start(self):
+        if self.is_running():
+            return
+        self._stopping=False
+        self._generation += 1
+        gen=self._generation
+        self.buf=bytearray(); self.frame_count=0; self.last_error=''
+        _reclaim_own_v4l2_holders(self.device)
+        proc=QProcess(self)
+        self.proc=proc
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
+        proc.readyReadStandardOutput.connect(self._read_stdout)
+        proc.readyReadStandardError.connect(self._read_stderr)
+        proc.errorOccurred.connect(lambda err,g=gen:self._process_error(g,err))
+        proc.finished.connect(lambda *args,g=gen,p=proc:self._finished(g,p,*args))
+        args=['-hide_banner','-loglevel','error','-f','v4l2','-i',self.device,
+              '-map','0:v:0','-vf','scale=1280:-2',
+              '-c:v','mjpeg','-q:v','5','-f','image2pipe','pipe:1']
+        proc.start(self.ffmpeg,args)
+        self._broadcast_status(f'Opening shared camera stream: {self.device}')
+        QTimer.singleShot(2400,lambda g=gen:self._watchdog(g))
+
+    def _read_stderr(self):
+        proc=self.proc
+        if proc is None: return
+        try:
+            t=bytes(proc.readAllStandardError()).decode('utf-8','replace')
+            if t: self.last_error=(self.last_error+t)[-4000:]
+        except Exception:
+            pass
+
+    def _read_stdout(self):
+        proc=self.proc
+        if proc is None: return
+        try: chunk=bytes(proc.readAllStandardOutput())
+        except Exception: chunk=b''
+        if not chunk: return
+        self.buf.extend(chunk)
+        if len(self.buf)>12*1024*1024:
+            del self.buf[:-3*1024*1024]
+        while True:
+            a=self.buf.find(b'\xff\xd8')
+            if a<0:
+                if len(self.buf)>1: del self.buf[:-1]
+                break
+            b=self.buf.find(b'\xff\xd9',a+2)
+            if b<0:
+                if a>0: del self.buf[:a]
+                break
+            jpg=bytes(self.buf[a:b+2]); del self.buf[:b+2]
+            image=QImage.fromData(jpg,'JPG')
+            if image.isNull():
+                continue
+            self.frame_count += 1
+            self._retry=0
+            self.last_image=image.copy()
+            for st in list(self.subscribers):
+                try: st._on_shared_v4l2_frame(image,jpg)
+                except Exception: pass
+
+    def _process_error(self, generation: int, err=None):
+        if generation != self._generation or self._stopping: return
+        self._read_stderr()
+        if not self.last_error:
+            self.last_error=str(err or 'V4L2 process error')
+
+    def _watchdog(self, generation: int):
+        if generation != self._generation or self._stopping: return
+        if self.frame_count>0: return
+        self._read_stderr()
+        if self.is_running():
+            msg='Camera opened but no V4L2 frames arrived.'
+            if self.last_error: msg += ' '+self.last_error[-700:]
+            self._broadcast_status(msg)
+
+    def _finished(self, generation: int, proc, *_args):
+        if generation != self._generation:
+            try: proc.deleteLater()
+            except Exception: pass
+            return
+        try:
+            t=bytes(proc.readAllStandardError()).decode('utf-8','replace')
+            if t: self.last_error=(self.last_error+t)[-4000:]
+        except Exception: pass
+        if self.proc is proc: self.proc=None
+        try: proc.deleteLater()
+        except Exception: pass
+        if self._stopping:
+            self._drop_if_idle(); return
+        if not list(self.subscribers):
+            self._drop_if_idle(); return
+        # Camera drivers can take a short moment to release a previous handle.
+        # Retry transient busy/open failures without making the user toggle twice.
+        low=self.last_error.lower()
+        transient=('device or resource busy' in low or 'resource busy' in low or
+                   'cannot open video device' in low or 'no such device' in low)
+        if self.frame_count==0 and self._retry<3 and transient:
+            self._retry += 1
+            delay=(250,650,1300)[self._retry-1]
+            self._broadcast_status(f'Camera is busy; reclaiming Groovebox handles and retrying ({self._retry}/3)…')
+            _reclaim_own_v4l2_holders(self.device)
+            QTimer.singleShot(delay,self.start)
+            return
+        holders=[(pid,cmd) for pid,cmd in _linux_camera_holders(self.device) if pid!=os.getpid()]
+        detail=self.last_error.strip() or 'FFmpeg could not open the selected V4L2 device.'
+        if holders:
+            shown=', '.join(f'PID {pid} ({Path((cmd.split() or ["unknown"])[0]).name})' for pid,cmd in holders[:4])
+            detail += f' Device currently held by: {shown}.'
+        self._broadcast_status(detail[-1200:],True)
+
+    def stop(self):
+        self._stopping=True
+        self._generation += 1
+        gen=self._generation
+        proc=self.proc
+        if proc is None:
+            self._drop_if_idle(); return
+        self.proc=None
+        try: proc.write(b'q\n')
+        except Exception:
+            try: proc.terminate()
+            except Exception: pass
+        def term(p=proc,g=gen):
+            if g!=self._generation: return
+            try:
+                if p.state()!=QProcess.ProcessState.NotRunning: p.terminate()
+            except Exception: pass
+        def kill(p=proc,g=gen):
+            if g!=self._generation: return
+            try:
+                if p.state()!=QProcess.ProcessState.NotRunning: p.kill()
+            except Exception: pass
+            self._drop_if_idle()
+        QTimer.singleShot(700,term)
+        QTimer.singleShot(1500,kill)
+
+    def _drop_if_idle(self):
+        if list(self.subscribers): return
+        if _SHARED_V4L2_STREAMS.get(self.key) is self:
+            _SHARED_V4L2_STREAMS.pop(self.key,None)
+
+
+
 class VideoClipStudio(QWidget):
     """Project-aware Record / Import / Draw Video Clip workspace."""
 
@@ -354,6 +635,8 @@ class VideoClipStudio(QWidget):
         self._sw_frame_index = 0
         self._sw_last_frame_t = 0.0
         self._sw_audio_fh = None
+        self._sw_mjpeg_fh = None
+        self._sw_mjpeg_path = ''
         self._sw_audio_rate = 48000
         self._sw_audio_channels = 1
         self._sw_started_mic = False
@@ -377,6 +660,8 @@ class VideoClipStudio(QWidget):
         self._v4l_frame_count = 0
         self._v4l_stop_generation = 0
         self._v4l_stop_callback = None
+        self._v4l_shared_stream = None
+        self._v4l_shared_key = ''
         self.last_rendered_video = ''
         self.recording_layers: List[str] = []
         self.draw_layers: List[Dict[str, Any]] = []
@@ -712,21 +997,45 @@ class VideoClipStudio(QWidget):
                     or getattr(self, '_sw_recording', False)
                     or getattr(self, '_snapshot_pending', False))
 
-    def _prepare_camera_ownership(self):
-        """Release stale camera owners in other Groovebox media workspaces.
+    def _camera_selection_key(self) -> str:
+        """Stable selected-camera identity used for multi-window ownership checks."""
+        if sys.platform.startswith('linux'):
+            dev=self._selected_v4l2_device()
+            return os.path.realpath(dev) if dev else ''
+        try:
+            if self._camera_devices:
+                idx=max(0,min(self.cmb_camera.currentIndex(),len(self._camera_devices)-1))
+                raw=self._camera_devices[idx].id()
+                try: ident=bytes(raw).decode('utf-8','ignore')
+                except Exception: ident=str(raw or '')
+                return ident
+        except Exception:
+            pass
+        return ''
 
-        Groovebox can have one VideoClipStudio in Performance and another in the
-        main Draw/Record dialog.  An idle hidden instance must not keep a device
-        handle.  If another instance is *actively* recording/previewing we leave
-        it alone and fail with a clear message rather than stealing its camera.
+    def _prepare_camera_ownership(self):
+        """Release stale owners while allowing intentional concurrent capture.
+
+        Linux uses the process-wide shared V4L2 reader below, so multiple media
+        windows may intentionally consume the same physical camera without opening
+        the kernel device more than once.  Other platforms may concurrently use
+        different cameras; only the *same* device remains exclusive there.
         """
         active_other = None
+        my_key=self._camera_selection_key()
+        linux_shared=sys.platform.startswith('linux') and bool(_ffmpeg())
         for other in list(VideoClipStudio._capture_instances):
             if other is self:
                 continue
             try:
                 if other._camera_intentionally_active():
-                    active_other = other
+                    if linux_shared:
+                        # Same-device Linux consumers will subscribe to one FFmpeg
+                        # stream; different devices naturally get separate streams.
+                        continue
+                    other_key=other._camera_selection_key()
+                    if not my_key or not other_key or other_key==my_key:
+                        active_other = other
                     continue
                 other._release_capture_devices(True)
             except Exception:
@@ -734,7 +1043,7 @@ class VideoClipStudio(QWidget):
         if active_other is not None:
             raise RuntimeError(
                 'The camera is already active in another Groovebox media window. '
-                'Stop Camera Preview/Recording there first.')
+                'Use a different camera there, or stop its Preview/Recording first.')
 
     @staticmethod
     def _destroy_qobject(obj):
@@ -850,38 +1159,90 @@ class VideoClipStudio(QWidget):
                 if self.cmb_tablet.itemData(i)==oldt: self.cmb_tablet.setCurrentIndex(i); break
         self.lbl_render.setText(f'Devices refreshed · {len(self._camera_devices)} camera(s), {len(self._audio_devices)} mic(s), {max(0,self.cmb_tablet.count()-1)} mounted tablet/media source(s).')
 
-    def _on_video_frame(self, frame):
-        """Paint camera frames inside the normal Qt widget hierarchy and feed recording."""
+    def _consume_camera_image(self, image: QImage, encoded_jpeg: bytes=None):
+        """Display one decoded frame and fan it into this studio's recorder/snapshot."""
+        if image is None or image.isNull():
+            return
+        self._last_video_frame_t=time.monotonic()
+        self._last_video_image=image.copy()
         try:
-            if frame is None or not frame.isValid():
-                return
-            # Mark receipt before conversion: some backends can deliver a valid GPU-backed
-            # frame whose first toImage() conversion is temporarily unavailable.  The old
-            # code never updated this timestamp at all, so the watchdog always reported
-            # a dead camera even when frames were flowing.
-            self._last_video_frame_t = time.monotonic()
-            image = frame.toImage()
-            if image.isNull():
-                return
-            self._last_video_image = image.copy()
-            target = self.video_preview.size()
-            pix = QPixmap.fromImage(image).scaled(
+            target=self.video_preview.size()
+            pix=QPixmap.fromImage(image).scaled(
                 target, Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation)
             self.video_preview.setPixmap(pix)
-            if getattr(self, '_sw_recording', False):
-                fps = max(1, min(60, int(self.spin_fps.value()) if hasattr(self, 'spin_fps') else 24))
-                now = time.monotonic()
-                if now - float(getattr(self, '_sw_last_frame_t', 0.0)) >= (1.0 / fps):
-                    self._sw_last_frame_t = now
-                    d = str(getattr(self, '_sw_record_dir', '') or '')
-                    if d:
-                        fn = os.path.join(d, f'frame_{self._sw_frame_index:08d}.jpg')
-                        im = image.convertToFormat(QImage.Format.Format_RGB888)
-                        if im.save(fn, 'JPG', 88):
-                            self._sw_frame_index += 1
         except Exception:
             pass
+        if getattr(self,'_sw_recording',False):
+            fps=max(1,min(60,int(self.spin_fps.value()) if hasattr(self,'spin_fps') else 24))
+            now=time.monotonic()
+            if now-float(getattr(self,'_sw_last_frame_t',0.0)) >= (1.0/fps):
+                self._sw_last_frame_t=now
+                mj=getattr(self,'_sw_mjpeg_fh',None)
+                if mj is not None and encoded_jpeg:
+                    try:
+                        mj.write(encoded_jpeg); self._sw_frame_index += 1
+                        return
+                    except Exception:
+                        pass
+                d=str(getattr(self,'_sw_record_dir','') or '')
+                if d:
+                    fn=os.path.join(d,f'frame_{self._sw_frame_index:08d}.jpg')
+                    im=image.convertToFormat(QImage.Format.Format_RGB888)
+                    if im.save(fn,'JPG',90):
+                        self._sw_frame_index += 1
+
+    def _on_video_frame(self, frame):
+        """Qt camera frame -> the same consumer used by shared V4L2."""
+        try:
+            if frame is None or not frame.isValid(): return
+            self._last_video_frame_t=time.monotonic()
+            image=frame.toImage()
+            if image.isNull(): return
+            self._consume_camera_image(image)
+        except Exception:
+            pass
+
+    def _on_shared_v4l2_frame(self, image: QImage, encoded_jpeg: bytes=None):
+        try:
+            self._v4l_frame_count=int(getattr(self,'_v4l_frame_count',0))+1
+            self._consume_camera_image(image,encoded_jpeg)
+        except Exception:
+            pass
+
+    def _on_shared_v4l2_status(self, text: str):
+        try: self.lbl_render.setText(str(text))
+        except Exception: pass
+
+    def _on_shared_v4l2_failure(self, text: str):
+        msg=str(text or 'Could not open the selected V4L2 camera.')
+        try:
+            self.video_preview.clear(); self.video_preview.setText('Camera unavailable: '+msg)
+            self.lbl_render.setText('Camera/V4L2 error: '+msg)
+        except Exception: pass
+        # A failed automatic open must not leave controls pretending that capture
+        # is active.  Recording temp state is cleaned without publishing an empty MP4.
+        if getattr(self,'_sw_recording',False):
+            self._sw_recording=False
+            d=str(getattr(self,'_sw_record_dir','') or ''); self._sw_record_dir=''
+            try:
+                if self._sw_audio_fh: self._sw_audio_fh.close()
+            except Exception: pass
+            self._sw_audio_fh=None
+            try:
+                if self._sw_mjpeg_fh: self._sw_mjpeg_fh.close()
+            except Exception: pass
+            self._sw_mjpeg_fh=None; self._sw_mjpeg_path=''
+            try: shutil.rmtree(d,ignore_errors=True)
+            except Exception: pass
+            self._record_path=''; self._record_final_path=''
+        for name,text in (("btn_record",'● Record Camera + Mic'),("btn_camera_preview",'▶ Camera Preview')):
+            try:
+                b=getattr(self,name); b.blockSignals(True); b.setChecked(False); b.setText(text); b.blockSignals(False)
+            except Exception: pass
+
+        self._detach_shared_v4l2_stream()
+
 
     def _configure_camera_for_preview(self, camera, device):
         """Choose a conservative supported camera format for reliable sink delivery."""
@@ -930,6 +1291,34 @@ class VideoClipStudio(QWidget):
         except Exception:
             pass
 
+    def _detach_shared_v4l2_stream(self):
+        stream=getattr(self,'_v4l_shared_stream',None)
+        self._v4l_shared_stream=None; self._v4l_shared_key=''
+        if stream is not None:
+            try: stream.remove(self)
+            except Exception: pass
+
+    def _attach_shared_v4l2_stream(self, device: str):
+        key=os.path.realpath(device)
+        cur=getattr(self,'_v4l_shared_stream',None)
+        if cur is not None and getattr(cur,'key','')==key:
+            cur.add(self); return cur
+        self._detach_shared_v4l2_stream()
+        stream=_SHARED_V4L2_STREAMS.get(key)
+        if stream is None:
+            ff=_ffmpeg()
+            if not ff: return None
+            stream=_SharedV4L2Capture(device,ff)
+            _SHARED_V4L2_STREAMS[key]=stream
+        self._v4l_shared_stream=stream; self._v4l_shared_key=key
+        stream.add(self)
+        return stream
+
+    def _recording_stamp(self) -> str:
+        """Collision-resistant human-readable take id for simultaneous recordings."""
+        frac=(time.time_ns()//1_000_000)%1000
+        return time.strftime('%Y%m%d_%H%M%S')+f'_{frac:03d}_{id(self)&0xffff:04x}'
+
     def _selected_v4l2_device(self) -> str:
         """Best-effort mapping from the selected Qt camera to a Linux V4L2 node."""
         if not sys.platform.startswith('linux'):
@@ -945,8 +1334,27 @@ class VideoClipStudio(QWidget):
                 else:
                     try: ident=bytes(raw).decode('utf-8','ignore')
                     except Exception: ident=str(raw or '')
-                if ident.startswith('/dev/video') and os.path.exists(ident):
-                    return ident
+                if ident.startswith('/dev/') and os.path.exists(ident):
+                    real=os.path.realpath(ident)
+                    if os.path.basename(real).startswith('video'):
+                        return ident
+                m=re.search(r'(/dev/video\d+)',ident)
+                if m and os.path.exists(m.group(1)):
+                    return m.group(1)
+        except Exception:
+            pass
+        # If Qt gave only a descriptive ID, match the selected camera description
+        # against Linux video4linux sysfs names before falling back to first node.
+        try:
+            want=self.cmb_camera.currentText().strip().lower()
+            if want and 'no qt camera' not in want:
+                import glob
+                for node in sorted(glob.glob('/dev/video*')):
+                    namep=Path('/sys/class/video4linux')/Path(node).name/'name'
+                    try: label=namep.read_text(errors='ignore').strip().lower()
+                    except Exception: label=''
+                    if label and (label in want or want in label):
+                        return node
         except Exception:
             pass
         # Prefer stable by-id symlinks, then direct nodes.
@@ -1061,96 +1469,64 @@ class VideoClipStudio(QWidget):
         except Exception: pass
 
     def _start_v4l2_capture(self, record: bool=False, recdir: str='', stamp: str='') -> bool:
-        """Start one FFmpeg/V4L2 process that feeds the QLabel preview and optionally records video."""
+        """Subscribe to one process-wide Linux V4L2 reader.
+
+        Recording is intentionally frame-fed from that shared reader instead of
+        launching a second FFmpeg input.  This removes Preview->Record EBUSY races
+        and permits multiple simultaneous Groovebox recordings from one webcam.
+        """
         if not sys.platform.startswith('linux') or not _ffmpeg():
             return False
         self._prepare_camera_ownership()
         dev=self._selected_v4l2_device()
         if not dev:
             return False
+        # Retire any legacy per-studio FFmpeg reader left by a partial transition.
         old_proc=getattr(self,'_v4l_proc',None)
         if old_proc is not None:
-            try: running=(old_proc.state()!=QProcess.ProcessState.NotRunning)
-            except Exception: running=False
-            if running:
-                # Serialize V4L2 ownership. Start the replacement only after the
-                # previous FFmpeg process reports finished, avoiding device-busy races.
-                self._stop_v4l2_process(lambda:self._start_v4l2_capture(record,recdir,stamp))
-                return True
+            self._stop_v4l2_process()
             self._v4l_proc=None
-        # A Qt camera cannot hold the V4L2 node at the same time. Fully destroy
-        # any prior Qt capture graph; dropping Python references is not sufficient
-        # on Windows/Media Foundation and can also keep Linux backends open.
-        if getattr(self,'_camera',None) is not None or getattr(self,'_capture_session',None) is not None:
-            self._release_capture_devices(False)
-        self._v4l_device=dev; self._v4l_buf=bytearray(); self._v4l_frame_count=0
-        self._last_video_frame_t=0.0
-        ff=_ffmpeg(); proc=QProcess(self)
-        proc.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
-        proc.readyReadStandardOutput.connect(self._read_v4l2_preview)
-        proc.errorOccurred.connect(self._v4l2_process_error)
-        args=['-hide_banner','-loglevel','error','-y','-f','v4l2','-i',dev]
-        # First output is a low-cost preview stream. It is generated from the same
-        # camera input as recording, so preview and saved video cannot diverge.
-        args += ['-map','0:v:0','-vf','fps=12,scale=640:-2','-c:v','mjpeg','-q:v','6','-f','image2pipe','pipe:1']
+        stream=self._attach_shared_v4l2_stream(dev)
+        if stream is None:
+            return False
+        self._v4l_device=dev; self._v4l_frame_count=0; self._last_video_frame_t=0.0
+        self._v4l_recording=False
         if record:
             if not recdir: recdir=self._recordings_dir()
             os.makedirs(recdir,exist_ok=True)
-            if not stamp: stamp=time.strftime('%Y%m%d_%H%M%S')
-            d=tempfile.mkdtemp(prefix=f'groovebox_v4l2_{stamp}_',dir=recdir)
-            self._v4l_record_dir=d
-            self._v4l_video_tmp=os.path.join(d,'video.mkv')
-            self._v4l_audio_path=os.path.join(d,'audio.s16le')
-            self._record_final_path=os.path.join(recdir,f'camera_{stamp}.mp4')
-            self._record_path=self._record_final_path
-            fps=max(1,min(60,int(self.spin_fps.value()) if hasattr(self,'spin_fps') else 24))
-            args += ['-map','0:v:0','-an','-r',str(fps),'-c:v','libx264','-preset','veryfast','-pix_fmt','yuv420p','-f','matroska',self._v4l_video_tmp]
-            # Record the selected microphone through Qt into raw PCM; this avoids
-            # guessing PipeWire/Pulse source names in FFmpeg.
-            self._sw_started_mic=False; self._sw_audio_fh=None
-            try:
-                if self._mic_io is None and self._audio_devices:
-                    mi=max(0,min(self.cmb_mic.currentIndex(),len(self._audio_devices)-1))
-                    adev=self._audio_devices[mi]; fmt=adev.preferredFormat()
-                    self._mic_source=QAudioSource(adev,fmt,self); self._mic_format=fmt
-                    self._mic_io=self._mic_source.start(); self._mic_io.readyRead.connect(self._read_mic_level)
-                    self._set_mic_meter_timer_active(True)
-                    self._sw_started_mic=True
-                if self._mic_io is not None:
-                    self._sw_audio_rate=int(self._mic_format.sampleRate()) or 48000
-                    self._sw_audio_channels=max(1,int(self._mic_format.channelCount()))
-                    self._sw_audio_fh=open(self._v4l_audio_path,'wb')
-            except Exception:
-                self._sw_audio_fh=None
-            self._v4l_recording=True
+            if not stamp: stamp=self._recording_stamp()
+            if not self._start_software_recording(recdir,stamp):
+                self._detach_shared_v4l2_stream()
+                return False
+            self.lbl_render.setText(f'Recording shared camera stream: {dev}')
         else:
-            self._v4l_recording=False
-        self._v4l_proc=proc
-        proc.start(ff,args)
-        # QProcess startup is asynchronous. errorOccurred handles a failed open;
-        # the frame watchdog independently catches a process that starts but yields
-        # no camera frames. No waitForStarted() is needed.
+            self.lbl_render.setText(f'Previewing shared camera stream: {dev}')
         self.video_preview.setText(f'Opening {dev}…')
-        self.lbl_render.setText(('Recording' if record else 'Previewing')+f' camera through FFmpeg/V4L2: {dev}')
         self._camera_watchdog_generation += 1
         gen=self._camera_watchdog_generation
-        QTimer.singleShot(2200,lambda g=gen:self._v4l2_watchdog(g))
+        QTimer.singleShot(2600,lambda g=gen:self._v4l2_watchdog(g))
         return True
 
     def _v4l2_watchdog(self, generation: int):
         if generation != int(getattr(self,'_camera_watchdog_generation',0)):
             return
-        if self._v4l_proc is None:
+        stream=getattr(self,'_v4l_shared_stream',None)
+        if stream is not None:
+            if int(getattr(self,'_v4l_frame_count',0))>0 or int(getattr(stream,'frame_count',0))>0:
+                return
+            # Shared stream owns retry/error reporting; do not race it with a second
+            # open attempt here.
+            text=str(getattr(stream,'last_error','') or 'Waiting for camera frames…')
+            self.lbl_render.setText(text[-900:])
             return
-        if int(getattr(self,'_v4l_frame_count',0)) > 0:
-            return
+        if self._v4l_proc is None: return
+        if int(getattr(self,'_v4l_frame_count',0))>0: return
         text='FFmpeg opened the camera device but no V4L2 frames arrived.'
         try:
             err=bytes(self._v4l_proc.readAllStandardError()).decode('utf-8','replace').strip()
             if err: text += ' '+err[-500:]
         except Exception: pass
-        self.video_preview.clear(); self.video_preview.setText(text)
-        self.lbl_render.setText(text)
+        self.video_preview.clear(); self.video_preview.setText(text); self.lbl_render.setText(text)
 
     def _finish_v4l2_recording(self):
         if not getattr(self,'_v4l_recording',False):
@@ -1366,7 +1742,11 @@ class VideoClipStudio(QWidget):
         self._snapshot_pending=False
         self._capture_release_generation += 1
         gen=self._capture_release_generation
-        # V4L2/FFmpeg owns the Linux device directly. Preview-only processes can
+        # Shared Linux V4L2 ownership is reference-counted across media windows.
+        # Releasing this studio must never tear the device out from another active
+        # preview/recording; the shared stream stops itself after its last subscriber.
+        self._detach_shared_v4l2_stream()
+        # Legacy per-studio V4L2/FFmpeg cleanup retained for old partial sessions.
         # be terminated immediately; recording finalization keeps its graceful
         # callback and will release when FFmpeg reports finished.
         try:
@@ -1586,10 +1966,19 @@ class VideoClipStudio(QWidget):
         This deliberately avoids QMediaRecorder/GStreamer encoders, which may advertise
         formats but still fail with `Could not initialize encoder`.
         """
-        if not _ffmpeg() or self._video_sink is None:
+        if not _ffmpeg() or (self._video_sink is None and getattr(self,'_v4l_shared_stream',None) is None):
             return False
         d = tempfile.mkdtemp(prefix=f'groovebox_camera_{stamp}_', dir=recdir)
         self._sw_record_dir=d; self._sw_frame_index=0; self._sw_last_frame_t=0.0
+        self._sw_mjpeg_path=''
+        try:
+            if getattr(self,'_v4l_shared_stream',None) is not None:
+                self._sw_mjpeg_path=os.path.join(d,'video.mjpeg')
+                self._sw_mjpeg_fh=open(self._sw_mjpeg_path,'wb')
+            else:
+                self._sw_mjpeg_fh=None
+        except Exception:
+            self._sw_mjpeg_fh=None; self._sw_mjpeg_path=''
         self._record_final_path=os.path.join(recdir,f'camera_{stamp}.mp4')
         self._record_path=self._record_final_path
         self._sw_started_mic=False
@@ -1618,20 +2007,28 @@ class VideoClipStudio(QWidget):
         if not getattr(self,'_sw_recording',False) and not getattr(self,'_sw_record_dir',''):
             return
         self._sw_recording=False
-        # Frames are already on disk; release the physical camera before FFmpeg
-        # encoding/finalization so other apps can use it immediately.
+        # Frames are already on disk/spooled as MJPEG. Unsubscribe from the shared
+        # Linux camera immediately; if this was the final subscriber the physical
+        # V4L2 node is released before MP4 encoding/finalization begins.
+        self._detach_shared_v4l2_stream()
         self._release_camera_stream_only()
         try:
             if self._sw_audio_fh:
                 self._sw_audio_fh.flush(); self._sw_audio_fh.close()
         except Exception: pass
         self._sw_audio_fh=None
+        try:
+            if self._sw_mjpeg_fh:
+                self._sw_mjpeg_fh.flush(); self._sw_mjpeg_fh.close()
+        except Exception: pass
+        self._sw_mjpeg_fh=None
         if getattr(self,'_sw_started_mic',False):
             try:
                 if self._mic_source: self._mic_source.stop()
             except Exception: pass
             self._mic_source=None; self._mic_io=None; self._sw_started_mic=False
         d=str(getattr(self,'_sw_record_dir','') or ''); self._sw_record_dir=''
+        mjpeg=str(getattr(self,'_sw_mjpeg_path','') or ''); self._sw_mjpeg_path=''
         final=str(getattr(self,'_record_final_path','') or '')
         n=int(getattr(self,'_sw_frame_index',0)); ff=_ffmpeg()
         if not d or not ff or n < 1:
@@ -1647,7 +2044,10 @@ class VideoClipStudio(QWidget):
         self.lbl_render.setText('Finalizing camera recording…')
 
         def work():
-            cmd=[ff,'-y','-v','error','-framerate',str(fps),'-i',os.path.join(d,'frame_%08d.jpg')]
+            if mjpeg and os.path.isfile(mjpeg) and os.path.getsize(mjpeg)>0:
+                cmd=[ff,'-y','-v','error','-f','mjpeg','-framerate',str(fps),'-i',mjpeg]
+            else:
+                cmd=[ff,'-y','-v','error','-framerate',str(fps),'-i',os.path.join(d,'frame_%08d.jpg')]
             has_audio=os.path.isfile(audio) and os.path.getsize(audio)>0
             if has_audio:
                 cmd += ['-f','s16le','-ar',str(audio_rate),'-ac',str(audio_channels),'-i',audio]
@@ -1829,11 +2229,11 @@ class VideoClipStudio(QWidget):
             self.btn_record.blockSignals(True); self.btn_record.setChecked(False); self.btn_record.blockSignals(False)
             self.btn_record.setText('● Record Camera + Mic')
             QMessageBox.warning(self,'Camera busy',str(e)); return
-        # Linux/Fedora: record directly from V4L2 with bundled FFmpeg. This is
-        # independent of QVideoSink/GStreamer frame delivery and shares one camera
-        # input between live preview and the encoded file.
+        # Linux/Fedora: subscribe to the shared V4L2 reader. Preview, snapshots
+        # and any number of Groovebox recording windows consume the same physical
+        # camera open instead of racing separate FFmpeg/QCamera handles.
         if sys.platform.startswith('linux') and _ffmpeg():
-            stamp=time.strftime('%Y%m%d_%H%M%S'); recdir=self._recordings_dir(); os.makedirs(recdir,exist_ok=True)
+            stamp=self._recording_stamp(); recdir=self._recordings_dir(); os.makedirs(recdir,exist_ok=True)
             if self._start_v4l2_capture(True,recdir,stamp):
                 self.btn_record.setText('■ Stop Recording'); return
         if not QT_MULTIMEDIA or not self._camera_devices:
@@ -1859,7 +2259,7 @@ class VideoClipStudio(QWidget):
                 mi=max(0,min(self.cmb_mic.currentIndex(),len(self._audio_devices)-1))
                 self._record_audio_input=QAudioInput(self._audio_devices[mi],self); self._capture_session.setAudioInput(self._record_audio_input)
 
-            stamp=time.strftime('%Y%m%d_%H%M%S')
+            stamp=self._recording_stamp()
             recdir=self._recordings_dir(); os.makedirs(recdir, exist_ok=True)
             self._record_final_path=os.path.join(recdir,f'camera_{stamp}.mp4')
             self._record_container='auto'
