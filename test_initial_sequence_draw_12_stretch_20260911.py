@@ -19,7 +19,8 @@ def test_primary_grid_not_resized_to_canonical_length():
 
 def test_step_cells_expand_and_scroll_when_needed():
     block = SRC[SRC.index('def rebuild_sequencer_steps'):SRC.index('def _canonical_level')]
-    assert 'step_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)' in block
+    assert 'step_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)' in block or 'btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)' in SRC
     assert 'self.steps_inner_layout.addWidget(step_btn, 1)' in block
     assert 'step_btn.setMaximumWidth(110)' not in block
     assert 'self.steps_layout_widget.setMinimumWidth' in block
+    assert 'ScrollBarAlwaysOn' in SRC

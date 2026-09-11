@@ -12,11 +12,14 @@ assert 'self.steps_scroll.setWidgetResizable(False)' in SRC
 assert 'self.sequencer_automation_scroll.setWidgetResizable(False)' in SRC
 assert 'def _sync_step_strip_geometry(self):' in SRC
 assert 'def _sync_automation_strip_geometry(self):' in SRC
-assert 'target_w = max(viewport_w, min_content)' in SRC
+assert 'scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)' in SRC
+assert 'widget.setMaximumWidth(target_w)' in SRC
 
-# Manual length edits cannot be snapped back to a canonical seed-derived count (e.g. 24).
+# Manual length edits cannot be snapped back to a canonical seed-derived count (e.g. 14/24).
 assert 'mem["length_user_locked"] = True' in SRC
 assert 'bool(mem.get("length_user_locked"))' in SRC
+assert 'def _commit_selected_sequence_user_baseline' in SRC
+assert 'self._commit_selected_sequence_user_baseline(promote=True)' in SRC
 
 # Grown/new Automator cells are stored ON and carry their own selection/parameter snapshot.
 assert 'def _new_automation_point(self, step, instrument_name=None, sequence_id=None):' in SRC

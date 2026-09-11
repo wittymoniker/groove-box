@@ -98,7 +98,7 @@ from author_number_codec import (
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QVBoxLayout,
     QHBoxLayout, QLabel, QSlider, QPushButton, QComboBox, QScrollArea,
-    QTabWidget, QLineEdit, QListWidget, QFormLayout, QSpinBox, QDoubleSpinBox,
+    QTabWidget, QLineEdit, QListWidget, QFormLayout, QSpinBox, QDoubleSpinBox, QAbstractSpinBox,
     QGridLayout, QLayout, QFileDialog, QSplitter, QGroupBox, QTextEdit, QMenu,
     QMessageBox, QTableWidget, QTableWidgetItem, QCheckBox, QDial, QMenuBar,
     QDialog, QInputDialog, QColorDialog, QHeaderView, QProgressBar, QSizePolicy, QToolButton,
@@ -1378,13 +1378,41 @@ class _OTMixedNumericTextOverlay(OTNumberGlyphWidget):
                 x += fm.horizontalAdvance(token)
 
 
-class _MathSymbolSpinWatcher(QObject):
-    """Event-driven installer for *actual numeric controls* only.
+def _configure_spinbox_input_behavior(widget):
+    """Apply the project-wide deliberate spinbox editing contract.
 
-    PUBLIC_SYMBOL_PERF_FINAL_20260906: labels/buttons/readouts are deliberately
-    not overpainted.  This keeps author notation confined to editable numeric
-    fields and avoids an application-wide paint tax.  When Math Symbols is OFF
-    this filter returns immediately and creates no overlay widgets.
+    Numeric controls must never behave like a nearby keyboard sink.  Typing is
+    committed only on Return/Enter or focus-out, spinboxes are skipped by Tab
+    traversal, and keyboard stepping is available only after an intentional
+    mouse click gives the control focus.  Qt's accelerated key-repeat stepping
+    is disabled so a held arrow cannot race through values.
+
+    The host event filter separately rejects wheel stepping unless the spinbox
+    is deliberately focused and clears that focus when the pointer leaves it.
+    """
+    if not isinstance(widget, QAbstractSpinBox):
+        return widget
+    try:
+        widget.setKeyboardTracking(False)
+    except Exception:
+        pass
+    try:
+        widget.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+    except Exception:
+        pass
+    try:
+        widget.setAccelerated(False)
+    except Exception:
+        pass
+    return widget
+
+
+class _MathSymbolSpinWatcher(QObject):
+    """Application-wide spinbox behavior + optional author-symbol installer.
+
+    Every QAbstractSpinBox gets the low-churn keyboard editing contract, even
+    when Math Symbols are disabled.  Symbol overlays remain opt-in and are only
+    installed for actual numeric QSpinBox/QDoubleSpinBox controls.
     """
     TEXT_TYPES = ()
 
@@ -1409,16 +1437,14 @@ class _MathSymbolSpinWatcher(QObject):
             self._pending_ids.discard(key)
 
     def eventFilter(self, obj, event):
-        # Absolute fast path: public/default Symbols OFF performs no overlay
-        # discovery, scheduling, layout or paint-related work.
-        if not MATH_SYMBOLS_ENABLED:
-            return False
         try:
-            if event.type() == QEvent.Type.Show and isinstance(obj, (QSpinBox, QDoubleSpinBox)):
-                oid = id(obj)
-                if oid not in self._pending_ids:
-                    self._pending_ids.add(oid)
-                    QTimer.singleShot(0, lambda w=obj, key=oid: self._install(w, key))
+            if event.type() == QEvent.Type.Show and isinstance(obj, QAbstractSpinBox):
+                _configure_spinbox_input_behavior(obj)
+                if MATH_SYMBOLS_ENABLED and isinstance(obj, (QSpinBox, QDoubleSpinBox)):
+                    oid = id(obj)
+                    if oid not in self._pending_ids:
+                        self._pending_ids.add(oid)
+                        QTimer.singleShot(0, lambda w=obj, key=oid: self._install(w, key))
         except RuntimeError:
             pass
         except Exception:
@@ -21586,7 +21612,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         for w in widgets:
             try:
                 w.installEventFilter(self)
-                w.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+                if isinstance(w, (QSpinBox, QDoubleSpinBox)):
+                    _configure_spinbox_input_behavior(w)
+                else:
+                    w.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
             except Exception:
                 pass
 
@@ -26320,6 +26349,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.steps_scroll.setWidgetResizable(False)
         self.steps_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.steps_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.steps_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.steps_scroll.setWidget(self.steps_layout_widget)
         self.steps_scroll.setMinimumHeight(112)
         seq_inner.addWidget(self.steps_scroll, stretch=1)
@@ -27786,24 +27816,55 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._style_pad_button(btn, s_idx, is_on)
 
     def _sync_step_strip_geometry(self):
-        """Fill spare row width, but expose a real horizontal scrollbar for long sequences."""
+        """Stretch STEP cells while they fit; use a real fixed-width overflow lane when they do not.
+
+        Qt can otherwise satisfy a nested QScrollArea by repeatedly shrinking the
+        child/layout toward its size hint.  On a ~1200 px viewport that looked like
+        a hard 14-step ceiling.  Here the content widget owns an exact width:
+        small lanes divide the viewport equally; long lanes keep readable cells
+        and become wider than the viewport, which guarantees horizontal range.
+        """
         scroll = getattr(self, "steps_scroll", None)
         widget = getattr(self, "steps_layout_widget", None)
         layout = getattr(self, "steps_inner_layout", None)
-        if scroll is None or widget is None or layout is None:
+        buttons = list(getattr(self, "seq_step_buttons", []) or [])
+        if scroll is None or widget is None or layout is None or not buttons:
             return
         try:
-            count = max(1, len(getattr(self, "seq_step_buttons", []) or []))
+            count = max(1, len(buttons))
             spacing = max(0, int(layout.spacing()))
             margins = layout.contentsMargins()
             margin_w = int(margins.left() + margins.right())
-            min_content = margin_w + count * 86 + max(0, count - 1) * spacing
             viewport_w = max(1, int(scroll.viewport().width()))
             viewport_h = max(60, int(scroll.viewport().height()))
-            target_w = max(viewport_w, min_content)
-            widget.setMinimumWidth(min_content)
+            usable = max(1, viewport_w - margin_w - max(0, count - 1) * spacing)
+            readable_w = 86
+            fit_w = usable // count
+            if fit_w >= readable_w:
+                cell_w = max(readable_w, int(fit_w))
+                target_w = viewport_w
+                scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            else:
+                # Fixed readable width is intentional here: never compress a long
+                # sequence to the number of cells that happen to fit on-screen.
+                cell_w = readable_w
+                target_w = margin_w + count * cell_w + max(0, count - 1) * spacing
+                scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+            for btn in buttons:
+                btn.setMinimumWidth(cell_w)
+                btn.setMaximumWidth(cell_w)
+                btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            # Exact width, not just a minimum, prevents an outer scroll/layout from
+            # negotiating this lane back down to the viewport's ~14-cell size.
+            widget.setMinimumWidth(target_w)
+            widget.setMaximumWidth(target_w)
             widget.resize(target_w, viewport_h)
+            layout.invalidate()
             widget.updateGeometry()
+            bar = scroll.horizontalScrollBar()
+            if bar is not None:
+                bar.setSingleStep(max(24, cell_w // 2))
+                bar.setPageStep(max(cell_w, viewport_w - cell_w))
         except Exception:
             pass
 
@@ -27843,7 +27904,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         curr_inst = self.instrument_selector_dropdown.currentText() if hasattr(self, 'top_sequencer') else self.instrument_names_48[0]
         mem = self._current_sequence_mem(curr_inst) if hasattr(self, '_current_sequence_mem') else self.instrument_sequencer_memory[curr_inst]
-        count = int(mem.get('pattern_length', count))
+        count = max(1, min(1024, int(mem.get('pattern_length', count) or count or DEFAULT_SEQUENCE_LENGTH)))
         self._ensure_seq_mem_length(mem, count)
         if "pitches" not in mem:
             mem["pitches"] = [1.0] * count
@@ -30140,6 +30201,37 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception as exc:
             print(f"[Track Offset] update failed: {exc}")
 
+    def _commit_selected_sequence_user_baseline(self, instrument_name=None, sequence_id=None, promote=False):
+        """Commit a manual sequence edit into the pre-canonical user baseline.
+
+        Perfect-unison intentionally restores the pre-canonical bank before each
+        deterministic engine pass.  Without updating that baseline, a manual resize
+        made while engines are active is reverted ~75 ms later to the old length
+        (for example 14 or 24), which looks like a STEP maximum/wrap bug.
+        """
+        try:
+            name = instrument_name or self._current_instrument_name()
+            sid = int(sequence_id or self._current_sequence_index(name))
+            bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(name, {})
+            mem = bank.get(sid) if isinstance(bank, dict) else None
+            if not isinstance(mem, dict):
+                return
+            if promote and self._canonical_protect_user():
+                # A human edit under Canonical Protect becomes userdata.  This
+                # prevents the next reconcile from deleting/re-seeding the lane.
+                mem["user_owned"] = True
+                mem["canonical_owner"] = None
+            snap_banks = getattr(self, "_canonical_panels_user_store", None)
+            if isinstance(snap_banks, dict):
+                snap_bank = snap_banks.setdefault(name, {})
+                snap_bank[sid] = copy.deepcopy(mem)
+            snap_patterns = getattr(self, "_canonical_pattern_user_store", None)
+            if isinstance(snap_patterns, dict):
+                # This store mirrors the currently selected/live bank per instrument.
+                snap_patterns[name] = copy.deepcopy(mem)
+        except Exception as exc:
+            print(f"[Sequencer] user-baseline commit skipped: {exc}")
+
     def _on_sequence_length_changed(self, value):
         """Resize only the selected sequence, then refresh every dependent panel."""
         # PROJECT_UNDO_2026: full snapshot before the resize; all existing steps
@@ -30151,9 +30243,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         mem["pattern_length"] = n
         # A manual length edit is user data even if no individual pad has been
         # clicked yet.  Without this flag the canonical resize pass can snap the
-        # spinner back to a seed-derived bank length (commonly 24).
+        # spinner back to a seed-derived bank length.
         mem["length_user_locked"] = True
         self._ensure_seq_mem_length(mem, n)
+        # USER_BASELINE_LENGTH_2026: perfect-unison restores its frozen user bank
+        # before every engine pass. Commit this edit there BEFORE the 75 ms live
+        # source flush, otherwise the old baseline (14/24/etc.) wins again.
+        self._commit_selected_sequence_user_baseline(promote=True)
         if hasattr(self, "spin_auto_point_length"):
             _old_auto_n = int(self.spin_auto_point_length.value())
             self.spin_auto_point_length.blockSignals(True)
@@ -30186,6 +30282,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if hasattr(self, "_refresh_sequencer_automation_row"):
             self._refresh_sequencer_automation_row()
         self._canonical_write_sequence_runtime()
+        # Reassert from authoritative selected memory after every dependent refresh;
+        # never derive the editor length from another/shorter sequence.
+        try:
+            live_mem = self._current_sequence_mem()
+            live_mem["pattern_length"] = n
+            self.spin_seq_length.blockSignals(True)
+            self.spin_seq_length.setValue(n)
+            self.spin_seq_length.blockSignals(False)
+            self.rebuild_sequencer_steps(n)
+            self._sync_step_strip_geometry()
+            QTimer.singleShot(0, self._sync_step_strip_geometry)
+        except Exception:
+            pass
         self._on_live_source_changed()
 
     def _refresh_sequence_dependent_panels(self):
@@ -30457,9 +30566,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
             mem["automation_lane"] = []
 
     def _sequence_is_user_locked(self, mem):
-        """True only when a human has edited at least one step of this sequence."""
+        """True when a non-canonical sequence carries user/editor-owned state."""
         if not isinstance(mem, dict):
             return False
+        owner = str(mem.get("canonical_owner", "") or "")
+        if owner.startswith("canonical:"):
+            return False
+        if bool(mem.get("user_owned")) or bool(mem.get("length_user_locked")):
+            return True
         touched = mem.get("touched") or set()
         try:
             return len(touched) > 0
@@ -30540,54 +30654,34 @@ class MathematiciansGrooveboxApp(QMainWindow):
         return False
 
     def _engine_resize_untouched_sequences(self):
-        """Canonical engines may resize any sequence the user has not touched."""
+        """Normalize engine-owned banks without ever resizing a user/editor sequence.
+
+        Sequence length is editor/user state. Canonical engines may create their own
+        canonical:* sequence objects at seed-derived lengths, but they must never
+        rewrite pattern_length on an existing non-canonical bank or drive the visible
+        Sequence Length control. This keeps STEP length stable across toggles,
+        randomizers, automation edits, render refreshes and canonical reconciliation.
+        """
         banks = getattr(self, "instrument_sequence_banks", {}) or {}
-        names = list(getattr(self, "instrument_names_48", []) or [])
-        for name in names:
-            bank = banks.get(name) or {}
+        for name, bank in list(banks.items()):
             if not isinstance(bank, dict):
                 continue
-            canon_ns = [
-                max(1, int(m.get("pattern_length", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH))
-                for m in bank.values()
-                if isinstance(m, dict) and str(m.get("canonical_owner", "")).startswith("canonical:")
-            ]
-            if not canon_ns:
-                continue
-            adopt = int(canon_ns[0])
             for _sid, mem in list(bank.items()):
-                if not isinstance(mem, dict) or self._sequence_is_user_locked(mem) or bool(mem.get("length_user_locked")):
+                if not isinstance(mem, dict):
                     continue
-                owner = str(mem.get("canonical_owner", ""))
-                if owner.startswith("canonical:"):
-                    # Canonical-owned banks may keep their seed-derived lengths.
-                    n = int(mem.get("pattern_length", adopt) or adopt)
-                else:
-                    # DEFAULT_GRID_12STEP_2026: never resize the primary/user bank
-                    # merely because a canonical bank happens to imply another length.
-                    # A fresh project therefore remains visibly 12 steps before any click.
-                    n = int(mem.get("pattern_length", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH)
-                n = max(1, min(1024, n))
-                mem["pattern_length"] = n
+                owner = str(mem.get("canonical_owner", "") or "")
+                n = max(1, min(1024, int(mem.get("pattern_length", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH)))
+                # Engine-owned sequences keep the length with which they were created.
+                # User/non-canonical sequences are only array-normalized to their
+                # existing authoritative length; no engine code writes pattern_length.
                 self._ensure_seq_mem_length(mem, n)
+                if owner.startswith("canonical:"):
+                    mem.setdefault("sequence_id", int(_sid) if str(_sid).isdigit() else _sid)
             sel = (getattr(self, "instrument_selected_sequence", {}) or {}).get(name)
             if sel in bank:
                 self.instrument_sequencer_memory[name] = bank[sel]
-        try:
-            mem = self._current_sequence_mem()
-            if mem and not self._sequence_is_user_locked(mem) and not bool(mem.get("length_user_locked")) and hasattr(self, "spin_seq_length"):
-                n = max(1, int(mem.get("pattern_length", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH))
-                if int(self.spin_seq_length.value()) != n:
-                    self.spin_seq_length.blockSignals(True)
-                    self.spin_seq_length.setValue(n)
-                    self.spin_seq_length.blockSignals(False)
-                    if hasattr(self, "spin_pattern_length"):
-                        self.spin_pattern_length.blockSignals(True)
-                        self.spin_pattern_length.setValue(n)
-                        self.spin_pattern_length.blockSignals(False)
-                    self.rebuild_sequencer_steps(n)
-        except Exception:
-            pass
+        # Deliberately do not touch spin_seq_length here. UI length is refreshed only
+        # by explicit sequence selection/load or by _on_sequence_length_changed().
 
     # =====================================================================
     # STEP_ISOLATION_FIX
@@ -31411,27 +31505,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
             name = str(self.auto_to_instrument.currentText())
             sid = int(self.spin_auto_to_sequence.value())
             bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(name, {})
-            n = max(1, min(1024, int(getattr(self, "spin_auto_point_length", None).value() if hasattr(self, "spin_auto_point_length") else ((bank.get(sid) or {}).get("pattern_length", DEFAULT_SEQUENCE_LENGTH)))))
+            auto_n = max(1, min(1024, int(getattr(self, "spin_auto_point_length", None).value() if hasattr(self, "spin_auto_point_length") else ((bank.get(sid) or {}).get("automation_lane_length", DEFAULT_AUTOMATION_LENGTH)))))
             seed = _safe_int_seed(self.get_numeric_seed()) ^ int.from_bytes(hashlib.sha256(f"{name}:{sid}".encode()).digest()[:4], "little")
             rng = np.random.default_rng(seed)
-            # Fill the selected sequence itself — not just the automation references.
+            # Fill sequence content at its own authoritative length. Automation length
+            # is independent and must never resize the STEP sequence.
             mem = bank.get(sid) if isinstance(bank, dict) else None
+            seq_n = max(1, min(1024, int((mem or {}).get("pattern_length", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH)))
             if isinstance(mem, dict):
-                self._ensure_seq_mem_length(mem, n)
-                mem["pattern_length"] = n
-                mem["steps"] = [bool(rng.random() > 0.50) for _ in range(n)]
+                self._ensure_seq_mem_length(mem, seq_n)
+                mem["steps"] = [bool(rng.random() > 0.50) for _ in range(seq_n)]
                 if not any(mem["steps"]):
-                    mem["steps"][int(rng.integers(0, n))] = True
-                mem["gates"] = [True] * n
-                mem["amplitudes"] = [float(rng.uniform(0.35, 1.0)) for _ in range(n)]
-                mem["pitches"] = [float(rng.uniform(0.75, 1.5)) for _ in range(n)]
-                mem["probabilities"] = [int(rng.integers(45, 101)) for _ in range(n)]
-                mem["offsets"] = [float(rng.uniform(-0.25, 0.25)) for _ in range(n)]
+                    mem["steps"][int(rng.integers(0, seq_n))] = True
+                mem["gates"] = [True] * seq_n
+                mem["amplitudes"] = [float(rng.uniform(0.35, 1.0)) for _ in range(seq_n)]
+                mem["pitches"] = [float(rng.uniform(0.75, 1.5)) for _ in range(seq_n)]
+                mem["probabilities"] = [int(rng.integers(45, 101)) for _ in range(seq_n)]
+                mem["offsets"] = [float(rng.uniform(-0.25, 0.25)) for _ in range(seq_n)]
                 mem["sequence_envelope_attack"] = float(rng.random())
                 mem["sequence_envelope_release"] = float(rng.random())
                 mem["attack"] = float(rng.random())
                 mem["decay"] = float(rng.random())
-                mem["automation_lane_length"] = n
+                mem["automation_lane_length"] = auto_n
                 self.instrument_sequencer_memory[name] = mem
                 self.instrument_selected_sequence[name] = sid
             # Local scope: keep the source instrument/sequence fixed, but randomize
@@ -31440,7 +31535,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             roster = list(getattr(self, "instrument_names_48", []) or [name])
             old = getattr(self, "sequencer_automation_points", []) or []
             self.sequencer_automation_points = [p for p in old if not (isinstance(p, dict) and str(p.get("from_instrument") or p.get("instrument") or "") == name and int(p.get("from_sequence", 1) or 1) == sid)]
-            for step in range(1, n+1):
+            for step in range(1, auto_n+1):
                 if float(rng.random()) < 0.55:
                     ref_op = str(rng.choice(roster))
                     ref_bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(ref_op, {})
@@ -31452,7 +31547,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         "morph": float(rng.uniform(0.35, 1.0)),
                         "step_offset": int(rng.integers(-8, 9)), "playlist_row": int(rng.integers(0, max(1, int(getattr(self, "spin_playlist_length", None).value() if hasattr(self, "spin_playlist_length") else DEFAULT_PLAYLIST_ROWS)))),
                         "composition_blend": float(rng.uniform(0.35, 0.75)), "canonical_owner": "user:sequencer_automation",
-                        "length": n, "reference_offsets": {}, "enabled": True,
+                        "length": auto_n, "reference_offsets": {}, "enabled": True,
                     })
             self._canonical_write_sequencer_automation_state()
             self.reload_active_instrument_sequencer_ui()
@@ -31485,7 +31580,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         continue
                     n = max(1, min(1024, int(mem.get("pattern_length", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH)))
                     self._ensure_seq_mem_length(mem, n)
-                    mem["pattern_length"] = n
+                    # Preserve the sequence's authoritative length; randomize content only.
                     mem["steps"] = [bool(rng.random() > 0.50) for _ in range(n)]
                     if not any(mem["steps"]):
                         mem["steps"][int(rng.integers(0, n))] = True
@@ -34707,6 +34802,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """
         touched = mem.setdefault("touched", set())
         touched.add(s)
+        try:
+            # Manual STEP edits obey the same protection rule as manual length edits;
+            # otherwise perfect-unison can resurrect the frozen pre-edit sequence.
+            if mem is self._current_sequence_mem():
+                self._commit_selected_sequence_user_baseline(promote=True)
+        except Exception:
+            pass
 
     def _step_has_net_effect(self, mem, s):
         """
@@ -38455,7 +38557,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     _has_force = bool(mem.get("sequence_force_wrap", False) or mem.get("sequence_force_schedule", False)) or _explicit_map in ("force_wrap", "force_schedule")
                     _cctrl = float(getattr(self, "canonical_signal_control", CANONICAL_SIGNAL_CONTROL_DEFAULT))
                     if not _has_force and _explicit_map == "auto" and str(getattr(self, "canonical_control_strategy", "Full Canonical")) in ("Coverage Adaptive", "Full Canonical"):
-                        if str(getattr(self, "canonical_control_strategy", "Full Canonical")) == "Full Canonical" or (_cctrl >= 0.80 and int(mem.get("pattern_length", _pat) or _pat) != int(getattr(self, "spin_seq_length", None).value()) if getattr(self, "spin_seq_length", None) is not None else False):
+                        # EDITOR_GRID_ISOLATION_2026: render timing must never depend on
+                        # whichever Sequence Length spinner happens to be visible in the UI.
+                        # `seq_len` is the stable render-pass reference grid (maximum active
+                        # selected-bank length), so selecting a shorter sequence cannot fold
+                        # longer STEP lanes down to that shorter GUI value.
+                        if str(getattr(self, "canonical_control_strategy", "Full Canonical")) == "Full Canonical" or (_cctrl >= 0.80 and int(mem.get("pattern_length", _pat) or _pat) != int(seq_len)):
                             _seq_map = "schedule"
                 except Exception:
                     pass
@@ -38469,7 +38576,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # sequence whose length differs from that grid can cross/cut a
                 # row boundary instead of being silently re-fit.
                 try:
-                    _schedule_slots = max(1, int(round(float(self.spin_seq_length.value())))) if hasattr(self, "spin_seq_length") else _pat
+                    # Use the render-pass reference grid, never the currently selected
+                    # editor sequence. This keeps scheduling invariant under UI selection
+                    # and prevents STEP N from wrapping to N % shorter_selected_length.
+                    _schedule_slots = max(1, int(seq_len))
                 except Exception:
                     _schedule_slots = _pat
                 inst_step_duration = float(row_duration) / float(_pat)
@@ -40956,28 +41066,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return None
 
     def _install_math_symbol_numeric_overlays(self):
-        """Install overlays only when explicitly enabled.
+        """Install global spinbox behavior and optional author-symbol overlays.
 
-        PUBLIC_SYMBOL_PERF_2026: numeric author notation defaults OFF and creates
-        zero overlay widgets in that state.  When enabled, only actual numeric
-        fields are masked; arbitrary labels/buttons keep ordinary text. This
-        removes the largest UI repaint cost while preserving author notation
-        where it is semantically useful and editable.
+        Keyboard tracking is disabled for every existing and future spinbox so
+        typed edits publish only committed values.  Math-symbol overlays remain
+        optional and retain their zero-paint-cost OFF path.
         """
         if getattr(self, "_math_symbol_numeric_overlays", None) is None:
             self._math_symbol_numeric_overlays = []
         if getattr(self, "_math_symbol_text_overlays", None) is None:
             self._math_symbol_text_overlays = []
-        if not MATH_SYMBOLS_ENABLED:
-            self._apply_math_symbol_display_transform(False)
-            return
         try:
-            widgets = list(self.findChildren(QSpinBox)) + list(self.findChildren(QDoubleSpinBox))
+            all_spinboxes = list(self.findChildren(QAbstractSpinBox))
         except Exception:
-            widgets = []
-        for w in widgets:
-            self._ensure_math_symbol_overlay(w)
-        self._apply_math_symbol_display_transform(True)
+            all_spinboxes = []
+        for w in all_spinboxes:
+            _configure_spinbox_input_behavior(w)
         try:
             if getattr(self, "_math_symbol_spin_watcher", None) is None:
                 self._math_symbol_spin_watcher = _MathSymbolSpinWatcher(self)
@@ -40986,6 +41090,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     app.installEventFilter(self._math_symbol_spin_watcher)
         except Exception:
             self._math_symbol_spin_watcher = None
+        if not MATH_SYMBOLS_ENABLED:
+            self._apply_math_symbol_display_transform(False)
+            return
+        for w in all_spinboxes:
+            if isinstance(w, (QSpinBox, QDoubleSpinBox)):
+                self._ensure_math_symbol_overlay(w)
+        self._apply_math_symbol_display_transform(True)
 
     def _refresh_math_symbol_numeric_overlays(self):
         """Refresh only changed field glyphs; OFF is an absolute zero-work path."""
@@ -42204,31 +42315,51 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 mem.pop(field, None)
 
     def _heuristic_write_step_into_sequence(self, name, sid, values, family, bias):
-        """Write only the discrete/step-side heuristic layer."""
+        """Write heuristic step content without changing the sequence's editor length."""
         bank = (getattr(self, "instrument_sequence_banks", {}) or {}).setdefault(name, {})
         mem = bank.get(int(sid))
         if not isinstance(mem, dict):
+            # New target: inherit the current editor grid (or the canonical default),
+            # never infer editor length from the heuristic sample count.
+            try:
+                inherited_n = max(1, min(1024, int(self.spin_seq_length.value())))
+            except Exception:
+                inherited_n = DEFAULT_SEQUENCE_LENGTH
             mem = copy.deepcopy((getattr(self, "instrument_sequencer_memory", {}) or {}).get(name, {}))
+            if not isinstance(mem, dict):
+                mem = {}
+            mem.setdefault("pattern_length", inherited_n)
             bank[int(sid)] = mem
-        n = max(1, len(values))
-        self._ensure_seq_mem_length(mem, n)
+        target_n = max(1, min(1024, int(mem.get("pattern_length", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH)))
+        raw = [float(v) for v in (values or [0.0])]
+        if len(raw) == target_n:
+            vals = raw
+        elif len(raw) == 1:
+            vals = raw * target_n
+        else:
+            # Deterministic linear resampling writes the heuristic across the existing
+            # grid without making sample count an implicit sequence-resize command.
+            src_x = np.linspace(0.0, 1.0, num=len(raw), dtype=np.float64)
+            dst_x = np.linspace(0.0, 1.0, num=target_n, dtype=np.float64)
+            vals = np.interp(dst_x, src_x, np.asarray(raw, dtype=np.float64)).tolist()
+        self._ensure_seq_mem_length(mem, target_n)
         threshold = 0.58
         if bias == "Sparse": threshold = 0.70
         elif bias == "Dense": threshold = 0.42
         elif bias in ("Self-Similar", "T-Independent"): threshold = 0.52
-        steps = [bool(v >= threshold) for v in values]
+        steps = [bool(v >= threshold) for v in vals]
         if not any(steps):
-            steps[max(range(n), key=lambda i: values[i])] = True
+            steps[max(range(target_n), key=lambda i: vals[i])] = True
         mem["steps"] = steps
-        mem["gates"] = [True] * n
-        mem["amplitudes"] = [float(0.20 + 0.80 * v) for v in values]
-        mem["pitches"] = [float(np.clip(2.0 ** ((v - 0.5) * 2.0), 1.0 / 32.0, 32.0)) for v in values]
-        mem["probabilities"] = [int(np.clip(round(35.0 + 65.0 * v), 1, 100)) for v in values]
-        mem["offsets"] = [float((v - 0.5) * 0.5) for v in values]
-        mem["pattern_length"] = n
+        mem["gates"] = [True] * target_n
+        mem["amplitudes"] = [float(0.20 + 0.80 * v) for v in vals]
+        mem["pitches"] = [float(np.clip(2.0 ** ((v - 0.5) * 2.0), 1.0 / 32.0, 32.0)) for v in vals]
+        mem["probabilities"] = [int(np.clip(round(35.0 + 65.0 * v), 1, 100)) for v in vals]
+        mem["offsets"] = [float((v - 0.5) * 0.5) for v in vals]
         mem["heuristic_family"] = str(family)
         mem["heuristic_bias"] = str(bias)
-        mem["canonical_owner"] = "heuristic:step"
+        if not bool(mem.get("user_owned")):
+            mem["canonical_owner"] = "heuristic:step"
         if int((getattr(self, "instrument_selected_sequence", {}) or {}).get(name, 1)) == int(sid):
             self.instrument_sequencer_memory[name] = mem
         return mem
