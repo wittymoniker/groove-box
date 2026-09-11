@@ -13300,8 +13300,8 @@ AUTOMATION STEP EDITOR — SEQUENCER-STYLE CONTROL
   The automation strip is a second step sequencer directly under the main
   sequencer. It is intentionally simple and behaves like the normal step pads.
 
-  • Length controls how many automation steps are shown. The orange strip grows
-    or scrolls horizontally to match that count.
+  • Length controls 1–1024 automation steps. The orange strip fills the row when it fits
+    and scrolls horizontally at readable cell width when it does not.
   • Sequence Attack and Sequence Release default to 50% each and remain directly
     controllable per sequence by the canonical composition state.
   • First click on an automation step = SELECT + TELEPORT. The Step, Operator,
@@ -13332,7 +13332,7 @@ AUTOMATION STEP EDITOR — SEQUENCER-STYLE CONTROL
       1. Set Length (for example 12).
       2. Click AUTO 1 once to select it.
       3. Choose Operator / Sequence / Offset ±.
-      4. Click AUTO 1 again to turn that automation step ON.
+      4. A newly created AUTO cell is stored ON by default; click the same cell again to toggle it OFF.
       5. Click another step once to teleport to it, edit it, then click it again
          when you want it ON.
 
@@ -21757,6 +21757,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
             QTimer.singleShot(0, self._sync_square_visuals)
         except Exception:
             pass
+        try:
+            self._sync_step_strip_geometry()
+            self._sync_automation_strip_geometry()
+            QTimer.singleShot(0, self._sync_step_strip_geometry)
+            QTimer.singleShot(0, self._sync_automation_strip_geometry)
+        except Exception:
+            pass
 
     def apply_hardcoded_compositions(self):
         # POWER_V3_EMPTY_BOOT: compatibility hook intentionally does nothing.
@@ -26305,12 +26312,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # it must never re-randomize or phase-fill the sequence.
 
         self.steps_scroll = QScrollArea()
-        self.steps_scroll.setWidgetResizable(True)
+        # SEQUENCE_SCROLL_1024_2026: the lane owns its content width.  With
+        # widgetResizable=True Qt can keep squeezing the child to the viewport,
+        # which suppresses the horizontal scrollbar on long lanes.  We resize
+        # explicitly instead: fill the viewport when cells fit, exceed it at the
+        # readable cell minimum when they do not.
+        self.steps_scroll.setWidgetResizable(False)
         self.steps_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.steps_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.steps_scroll.setWidget(self.steps_layout_widget)
         self.steps_scroll.setMinimumHeight(112)
         seq_inner.addWidget(self.steps_scroll, stretch=1)
+        QTimer.singleShot(0, self._sync_step_strip_geometry)
 
         # SEQUENCE_ENVELOPE_2026: sequence-wide predictive attack/release.
         # Keep these structurally BETWEEN the Step strip and Automation strip so
@@ -26487,10 +26500,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         seq_inner.addLayout(automation_row)
 
         self.sequencer_automation_scroll = QScrollArea()
-        self.sequencer_automation_scroll.setWidgetResizable(True)
+        # Same explicit geometry contract as the Step strip.  The old 58px
+        # fixed viewport also left no room for a horizontal scrollbar.
+        self.sequencer_automation_scroll.setWidgetResizable(False)
         self.sequencer_automation_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.sequencer_automation_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.sequencer_automation_scroll.setFixedHeight(58)
+        self.sequencer_automation_scroll.setFixedHeight(82)
         self.sequencer_automation_widget = QWidget()
         self.sequencer_automation_layout = QHBoxLayout(self.sequencer_automation_widget)
         self.sequencer_automation_layout.setContentsMargins(2, 2, 2, 2)
@@ -27319,7 +27334,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.spin_auto_point_length.blockSignals(True)
                 self.spin_auto_point_length.setValue(auto_count)
                 self.spin_auto_point_length.blockSignals(False)
+                mem["automation_lane_length"] = auto_count
+                self._remember_automation_length(auto_count)
+                # Fresh cells are stored ON with complete default state. Existing
+                # project/canonical points are preserved and are never overwritten.
+                self._materialize_new_automation_steps(1, auto_count)
                 self._refresh_sequencer_automation_row()
+            QTimer.singleShot(0, self._sync_step_strip_geometry)
+            QTimer.singleShot(0, self._sync_automation_strip_geometry)
         except Exception as exc:
             print(f"[Sequencer] initial draw sync skipped: {exc}")
 
@@ -27763,6 +27785,50 @@ class MathematiciansGrooveboxApp(QMainWindow):
             is_on = mem["steps"][s_idx] if s_idx < len(mem.get("steps", [])) else False
             self._style_pad_button(btn, s_idx, is_on)
 
+    def _sync_step_strip_geometry(self):
+        """Fill spare row width, but expose a real horizontal scrollbar for long sequences."""
+        scroll = getattr(self, "steps_scroll", None)
+        widget = getattr(self, "steps_layout_widget", None)
+        layout = getattr(self, "steps_inner_layout", None)
+        if scroll is None or widget is None or layout is None:
+            return
+        try:
+            count = max(1, len(getattr(self, "seq_step_buttons", []) or []))
+            spacing = max(0, int(layout.spacing()))
+            margins = layout.contentsMargins()
+            margin_w = int(margins.left() + margins.right())
+            min_content = margin_w + count * 86 + max(0, count - 1) * spacing
+            viewport_w = max(1, int(scroll.viewport().width()))
+            viewport_h = max(60, int(scroll.viewport().height()))
+            target_w = max(viewport_w, min_content)
+            widget.setMinimumWidth(min_content)
+            widget.resize(target_w, viewport_h)
+            widget.updateGeometry()
+        except Exception:
+            pass
+
+    def _sync_automation_strip_geometry(self):
+        """Fill the Automator row when possible and scroll it when cells no longer fit."""
+        scroll = getattr(self, "sequencer_automation_scroll", None)
+        widget = getattr(self, "sequencer_automation_widget", None)
+        layout = getattr(self, "sequencer_automation_layout", None)
+        if scroll is None or widget is None or layout is None:
+            return
+        try:
+            length = max(1, int(self.spin_auto_point_length.value())) if hasattr(self, "spin_auto_point_length") else DEFAULT_AUTOMATION_LENGTH
+            spacing = max(0, int(layout.spacing()))
+            margins = layout.contentsMargins()
+            margin_w = int(margins.left() + margins.right())
+            min_content = margin_w + length * 96 + max(0, length - 1) * spacing
+            viewport_w = max(1, int(scroll.viewport().width()))
+            viewport_h = max(60, int(scroll.viewport().height()))
+            target_w = max(viewport_w, min_content)
+            widget.setMinimumWidth(min_content)
+            widget.resize(target_w, viewport_h)
+            widget.updateGeometry()
+        except Exception:
+            pass
+
     def rebuild_sequencer_steps(self, count):
         while self.steps_inner_layout.count():
             item = self.steps_inner_layout.takeAt(0)
@@ -27813,6 +27879,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             spacing = max(0, int(self.steps_inner_layout.spacing()))
             self.steps_layout_widget.setMinimumWidth(max(0, int(count) * 86 + max(0, int(count) - 1) * spacing))
+            QTimer.singleShot(0, self._sync_step_strip_geometry)
         except Exception:
             pass
 
@@ -30082,8 +30149,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         mem = self._current_sequence_mem()
         n = max(1, min(1024, int(value)))
         mem["pattern_length"] = n
+        # A manual length edit is user data even if no individual pad has been
+        # clicked yet.  Without this flag the canonical resize pass can snap the
+        # spinner back to a seed-derived bank length (commonly 24).
+        mem["length_user_locked"] = True
         self._ensure_seq_mem_length(mem, n)
         if hasattr(self, "spin_auto_point_length"):
+            _old_auto_n = int(self.spin_auto_point_length.value())
             self.spin_auto_point_length.blockSignals(True)
             self.spin_auto_point_length.setRange(1, 1024)
             if str(getattr(self, "automator_timing_mode", "wrap")) == "wrap" and bool(getattr(self, "chk_auto_sync_sequencer", None) is not None and self.chk_auto_sync_sequencer.isChecked()):
@@ -30092,6 +30164,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             else:
                 self.spin_auto_point_length.setValue(min(max(1, self.spin_auto_point_length.value()), 1024))
             self.spin_auto_point_length.blockSignals(False)
+            _new_auto_n = int(self.spin_auto_point_length.value())
+            mem["automation_lane_length"] = _new_auto_n
+            if _new_auto_n > _old_auto_n:
+                self._materialize_new_automation_steps(_old_auto_n + 1, _new_auto_n)
+            self._remember_automation_length(_new_auto_n)
         # Keep the hidden compatibility alias synchronized without a second UI concept.
         if hasattr(self, "spin_pattern_length"):
             self.spin_pattern_length.blockSignals(True)
@@ -30106,6 +30183,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.rebuild_sequencer_steps(n)
         self._refresh_sequence_selector()
         self._refresh_sequence_dependent_panels()
+        if hasattr(self, "_refresh_sequencer_automation_row"):
+            self._refresh_sequencer_automation_row()
         self._canonical_write_sequence_runtime()
         self._on_live_source_changed()
 
@@ -30477,7 +30556,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 continue
             adopt = int(canon_ns[0])
             for _sid, mem in list(bank.items()):
-                if not isinstance(mem, dict) or self._sequence_is_user_locked(mem):
+                if not isinstance(mem, dict) or self._sequence_is_user_locked(mem) or bool(mem.get("length_user_locked")):
                     continue
                 owner = str(mem.get("canonical_owner", ""))
                 if owner.startswith("canonical:"):
@@ -30496,7 +30575,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.instrument_sequencer_memory[name] = bank[sel]
         try:
             mem = self._current_sequence_mem()
-            if mem and not self._sequence_is_user_locked(mem) and hasattr(self, "spin_seq_length"):
+            if mem and not self._sequence_is_user_locked(mem) and not bool(mem.get("length_user_locked")) and hasattr(self, "spin_seq_length"):
                 n = max(1, int(mem.get("pattern_length", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH))
                 if int(self.spin_seq_length.value()) != n:
                     self.spin_seq_length.blockSignals(True)
@@ -30654,6 +30733,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         synth[key] = float(synth[key]) + 0.5 * float(off)
                 except Exception:
                     pass
+        # Per-step Automator values are stored on the point, not only in the
+        # shared target sequence.  This lets newly extended cells inherit a
+        # complete parameter snapshot while remaining independently editable.
+        point_values = point.get("synth_values", {}) if isinstance(point.get("synth_values", {}), dict) else {}
+        for key, value in point_values.items():
+            try:
+                synth[str(key)] = float(value)
+            except Exception:
+                pass
         patch = copy.deepcopy((getattr(self, "instrument_param_state", {}) or {}).get(instrument_name, {}) or {})
         synth = self._automation_lerp_dict(patch, synth, 0.5)
         return {"sequence": seq, "synth": synth, "point": point}
@@ -30870,6 +30958,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _on_automation_length_changed(self, value):
         n = max(1, min(1024, int(value)))
+        src_inst, src_sid = self._automation_scope_key()
+        mem = self._sequence_state_for_automation(src_inst, src_sid)
+        store = getattr(self, "_automation_length_by_scope", {}) or {}
+        old_n = int((mem.get("automation_lane_length") if isinstance(mem, dict) else None) or store.get((src_inst, src_sid), DEFAULT_AUTOMATION_LENGTH) or DEFAULT_AUTOMATION_LENGTH)
+        old_n = max(1, min(1024, old_n))
+        if n > old_n:
+            self._materialize_new_automation_steps(old_n + 1, n, src_inst, src_sid)
+        if isinstance(mem, dict):
+            mem["automation_lane_length"] = n
+        self._remember_automation_length(n, src_inst, src_sid)
         if hasattr(self, "spin_auto_point_step"):
             self.spin_auto_point_step.setRange(1, n)
             self.spin_auto_point_step.setValue(min(max(1, self.spin_auto_point_step.value()), n))
@@ -30911,6 +31009,99 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # another source track. This is the key source-scope invariant for the
         # two-click Automator teleport editor.
         return None
+
+    def _automation_scope_key(self, instrument_name=None, sequence_id=None):
+        inst = str(instrument_name if instrument_name is not None else (self.instrument_selector_dropdown.currentText() if hasattr(self, "instrument_selector_dropdown") else (self.auto_to_instrument.currentText() if hasattr(self, "auto_to_instrument") else "")))
+        sid = int(sequence_id if sequence_id is not None else (self.sequence_selector.currentData() or 1 if hasattr(self, "sequence_selector") and self.sequence_selector.currentData() is not None else (self.spin_auto_to_sequence.value() if hasattr(self, "spin_auto_to_sequence") else 1)))
+        return inst, sid
+
+    def _remember_automation_length(self, length, instrument_name=None, sequence_id=None):
+        store = getattr(self, "_automation_length_by_scope", None)
+        if not isinstance(store, dict):
+            store = self._automation_length_by_scope = {}
+        store[self._automation_scope_key(instrument_name, sequence_id)] = max(1, min(1024, int(length)))
+
+    def _new_automation_point(self, step, instrument_name=None, sequence_id=None):
+        """Create one fully stored user automation point, ON by default.
+
+        New cells inherit the selected/nearest point so extending a lane preserves
+        Operator, Sequence, Offset, morph, envelope and synth-parameter choices.
+        """
+        step = int(step)
+        src_inst, src_sid = self._automation_scope_key(instrument_name, sequence_id)
+        scoped = [p for p in (getattr(self, "sequencer_automation_points", []) or [])
+                  if isinstance(p, dict)
+                  and str(p.get("from_instrument") or p.get("instrument") or "") == src_inst
+                  and int(p.get("from_sequence", 1) or 1) == src_sid]
+        template = None
+        selected = getattr(self, "_selected_automation_step", None)
+        if selected is not None:
+            template = next((p for p in scoped if int(p.get("step", 0) or 0) == int(selected)), None)
+        if template is None and scoped:
+            before = [p for p in scoped if int(p.get("step", 0) or 0) < step]
+            template = max(before or scoped, key=lambda p: int(p.get("step", 0) or 0))
+        point = copy.deepcopy(template) if isinstance(template, dict) else {}
+
+        if template is None:
+            dst_inst = src_inst if self._is_local_context() else (str(self.auto_to_instrument.currentText()) if hasattr(self, "auto_to_instrument") else src_inst)
+            dst_sid = int(self.spin_auto_to_sequence.value()) if hasattr(self, "spin_auto_to_sequence") else src_sid
+            point.update({
+                "to_instrument": dst_inst, "to_sequence": dst_sid, "instrument": dst_inst,
+                "morph": float(self.popup_auto_morph.value()) / 100.0 if hasattr(self, "popup_auto_morph") else 1.0,
+                "step_offset": int(self.spin_auto_offset.value()) if hasattr(self, "spin_auto_offset") else 0,
+                "playlist_row": 0, "composition_blend": 0.5, "reference_offsets": {},
+            })
+        point.update({
+            "step": step, "from_instrument": src_inst, "from_sequence": src_sid,
+            "canonical_owner": "user:sequencer_automation", "user_owned": True,
+            "length": int(self.spin_auto_point_length.value()) if hasattr(self, "spin_auto_point_length") else DEFAULT_AUTOMATION_LENGTH,
+            "enabled": True,
+        })
+        point.setdefault("to_instrument", src_inst)
+        point.setdefault("to_sequence", src_sid)
+        point["instrument"] = str(point.get("to_instrument") or src_inst)
+
+        dst_inst = str(point.get("to_instrument") or src_inst)
+        dst_sid = int(point.get("to_sequence", src_sid) or src_sid)
+        bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(dst_inst, {})
+        target = bank.get(dst_sid, {}) if isinstance(bank, dict) else {}
+        default_att = float(target.get("sequence_envelope_attack", 0.5) or 0.0) if isinstance(target, dict) else 0.5
+        default_rel = float(target.get("sequence_envelope_release", 0.5) or 0.0) if isinstance(target, dict) else 0.5
+        if template is None and hasattr(self, "popup_auto_attack"):
+            default_att = float(self.popup_auto_attack.value()) / 100.0
+        if template is None and hasattr(self, "popup_auto_release"):
+            default_rel = float(self.popup_auto_release.value()) / 100.0
+        point.setdefault("sequence_envelope_attack", default_att)
+        point.setdefault("sequence_envelope_release", default_rel)
+
+        if template is None and hasattr(self, "popup_auto_param"):
+            key = str(self.popup_auto_param.currentText() or "morph")
+            point["synth_param"] = key
+            if hasattr(self, "popup_auto_param_value"):
+                val = float(self.popup_auto_param_value.value())
+                point["synth_param_value"] = val
+                point["synth_values"] = {key: val}
+        else:
+            point.setdefault("synth_values", copy.deepcopy(point.get("synth_values", {}) or {}))
+        return point
+
+    def _materialize_new_automation_steps(self, start_step, end_step, instrument_name=None, sequence_id=None):
+        """Persist missing cells in a newly grown automation range as ON points."""
+        start_step = max(1, int(start_step)); end_step = max(start_step - 1, int(end_step))
+        if end_step < start_step:
+            return 0
+        src_inst, src_sid = self._automation_scope_key(instrument_name, sequence_id)
+        existing = {(int(p.get("step", 0) or 0), str(p.get("from_instrument") or p.get("instrument") or ""), int(p.get("from_sequence", 1) or 1))
+                    for p in (getattr(self, "sequencer_automation_points", []) or []) if isinstance(p, dict)}
+        made = 0
+        for step in range(start_step, end_step + 1):
+            if (step, src_inst, src_sid) in existing:
+                continue
+            self.sequencer_automation_points.append(self._new_automation_point(step, src_inst, src_sid))
+            existing.add((step, src_inst, src_sid)); made += 1
+        if made and hasattr(self, "_canonical_write_sequencer_automation_state"):
+            self._canonical_write_sequencer_automation_state()
+        return made
 
     def _teleport_to_sequencer_automation_point(self, point, reposition=True):
         if not isinstance(point, dict):
@@ -30991,36 +31182,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._selected_automation_step = step
         point = self._automation_point_for_step(step)
         if point is None:
-            # SOURCE scope = active sequencer instrument/sequence (matches row filter).
-            # DESTINATION = Automator Operator/Sequence selectors.
-            _src_inst = str(self.instrument_selector_dropdown.currentText()) if hasattr(self, "instrument_selector_dropdown") else (
-                str(self.auto_to_instrument.currentText()) if hasattr(self, "auto_to_instrument") else ""
-            )
-            _src_sid = int(self.sequence_selector.currentData() or 1) if hasattr(self, "sequence_selector") and self.sequence_selector.currentData() is not None else (
-                int(self.spin_auto_to_sequence.value()) if hasattr(self, "spin_auto_to_sequence") else 1
-            )
-            _dst_inst = (
-                _src_inst if self._is_local_context() else
-                (str(self.auto_to_instrument.currentText()) if hasattr(self, "auto_to_instrument") else _src_inst)
-            )
-            _dst_sid = int(self.spin_auto_to_sequence.value()) if hasattr(self, "spin_auto_to_sequence") else _src_sid
-            point = {
-                "step": step,
-                "from_instrument": _src_inst,
-                "from_sequence": _src_sid,
-                "to_instrument": _dst_inst,
-                "to_sequence": _dst_sid,
-                "instrument": _src_inst,
-                "morph": 1.0,
-                "step_offset": 0,
-                "playlist_row": 0,
-                "composition_blend": 0.5,
-                "canonical_owner": "user:sequencer_automation",
-                "length": int(self.spin_auto_point_length.value()) if hasattr(self, "spin_auto_point_length") else DEFAULT_AUTOMATION_LENGTH,
-                "reference_offsets": {},
-                "enabled": False,
-            }
+            # A newly created cell is a real stored automation point immediately.
+            # It starts ON and inherits the current/nearest Automator selections
+            # and parameters instead of appearing as an empty OFF placeholder.
+            point = self._new_automation_point(step)
             self.sequencer_automation_points.append(point)
+            self._canonical_write_sequencer_automation_state()
         self._teleport_to_sequencer_automation_point(point)
         if same_step:
             point["enabled"] = not bool(point.get("enabled", True))
@@ -31217,7 +31384,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._selected_automation_step = step
         point = self._automation_point_for_step(step)
         if point is None:
-            point = {"step": step, "enabled": True, "canonical_owner": "user:sequencer_automation"}
+            point = self._new_automation_point(step)
             self.sequencer_automation_points.append(point)
         point.update({
             "from_instrument": str(self.auto_to_instrument.currentText()),
@@ -31379,17 +31546,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         sid = int(point.get("to_sequence", point.get("from_sequence", 1)) or 1)
         morph = float(point.get("morph", 1.0) or 0.0)
         off = int(point.get("step_offset", 0) or 0)
-        # Target sequence envelope is editable directly from the teleport menu.
         bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(inst, {})
         mem = bank.get(sid, {}) if isinstance(bank, dict) else {}
-        att = float(mem.get("sequence_envelope_attack", 0.5) or 0.0) if isinstance(mem, dict) else 0.5
-        rel = float(mem.get("sequence_envelope_release", 0.5) or 0.0) if isinstance(mem, dict) else 0.5
+        att = float(point.get("sequence_envelope_attack", mem.get("sequence_envelope_attack", 0.5) if isinstance(mem, dict) else 0.5) or 0.0)
+        rel = float(point.get("sequence_envelope_release", mem.get("sequence_envelope_release", 0.5) if isinstance(mem, dict) else 0.5) or 0.0)
         synth = mem.get("panels", {}).get("synth", {}) if isinstance(mem, dict) and isinstance(mem.get("panels", {}), dict) else {}
         if not isinstance(synth, dict) or not synth:
             synth = (getattr(self, "instrument_param_state", {}) or {}).get(inst, {}) or {}
-        numeric_params = [str(k) for k,v in synth.items() if isinstance(v, (int,float,np.number)) and not isinstance(v,bool)]
-        # Automator sequence can route the full canonical command surface:
-        # Master Vector, Wavetable Projector, XMOD windows, Algo XMOD, Resonance.
+        numeric_params = [str(k) for k, v in synth.items() if isinstance(v, (int, float, np.number)) and not isinstance(v, bool)]
         for extra in (
             "master_vector_x", "master_vector_y", "master_vector_z", "master_vector_drive",
             "wavetable_frame", "wavetable_phase", "wavetable_curvature", "wavetable_twist", "wavetable_fold",
@@ -31398,35 +31562,53 @@ class MathematiciansGrooveboxApp(QMainWindow):
         ):
             if extra not in numeric_params:
                 numeric_params.append(extra)
-        if hasattr(self, "popup_auto_param"):
-            self.popup_auto_param.blockSignals(True); self.popup_auto_param.clear(); self.popup_auto_param.addItems(numeric_params or ["morph"]); self.popup_auto_param.blockSignals(False)
-            chosen = str(point.get("synth_param", numeric_params[0] if numeric_params else "morph"))
-            pos = self.popup_auto_param.findText(chosen)
-            if pos < 0 and numeric_params:
-                pos = 0
-            if pos >= 0:
-                self.popup_auto_param.setCurrentIndex(pos)
-            key = self.popup_auto_param.currentText()
-            try: self.popup_auto_param_value.setValue(float(synth.get(key, 0.0)))
-            except Exception: self.popup_auto_param_value.setValue(0.0)
-        for w in (getattr(self, "popup_auto_operator", None), getattr(self, "popup_auto_sequence", None),
-                  getattr(self, "popup_auto_morph", None), getattr(self, "popup_auto_attack", None),
-                  getattr(self, "popup_auto_release", None), getattr(self, "popup_auto_offset", None), getattr(self, "popup_auto_param", None), getattr(self, "popup_auto_param_value", None)):
-            if w is not None: w.blockSignals(True)
+
+        widgets = (getattr(self, "popup_auto_operator", None), getattr(self, "popup_auto_sequence", None),
+                   getattr(self, "popup_auto_morph", None), getattr(self, "popup_auto_attack", None),
+                   getattr(self, "popup_auto_release", None), getattr(self, "popup_auto_offset", None),
+                   getattr(self, "popup_auto_param", None), getattr(self, "popup_auto_param_value", None))
+        # TELEPORT_LOAD_SIGNAL_FIX_20260911: block every editor before loading,
+        # then unblock every editor afterward.  The old code left Param/Value
+        # permanently blocked after the first teleport, so subsequent edits did
+        # not persist.
+        for w in widgets:
+            if w is not None:
+                w.blockSignals(True)
         try:
-            if self.popup_auto_operator is not None:
+            if getattr(self, "popup_auto_operator", None) is not None:
                 idx = self.popup_auto_operator.findText(inst)
-                if idx >= 0: self.popup_auto_operator.setCurrentIndex(idx)
-            self.popup_auto_sequence.setValue(max(1, min(128, sid)))
-            self.popup_auto_morph.setValue(max(0, min(100, int(round(morph*100))))); self.lbl_popup_auto_morph.setText(f"{int(round(morph*100))}%")
-            self.popup_auto_attack.setValue(max(0, min(100, int(round(att*100)))))
-            self.popup_auto_release.setValue(max(0, min(100, int(round(rel*100)))))
-            self.popup_auto_offset.setValue(max(-1024, min(1024, off)))
+                if idx >= 0:
+                    self.popup_auto_operator.setCurrentIndex(idx)
+            if getattr(self, "popup_auto_sequence", None) is not None:
+                self.popup_auto_sequence.setValue(max(1, min(128, sid)))
+            if getattr(self, "popup_auto_morph", None) is not None:
+                self.popup_auto_morph.setValue(max(0, min(100, int(round(morph * 100)))))
+                self.lbl_popup_auto_morph.setText(f"{int(round(morph * 100))}%")
+            if getattr(self, "popup_auto_attack", None) is not None:
+                self.popup_auto_attack.setValue(max(0, min(100, int(round(att * 100)))))
+            if getattr(self, "popup_auto_release", None) is not None:
+                self.popup_auto_release.setValue(max(0, min(100, int(round(rel * 100)))))
+            if getattr(self, "popup_auto_offset", None) is not None:
+                self.popup_auto_offset.setValue(max(-1024, min(1024, off)))
+            if getattr(self, "popup_auto_param", None) is not None:
+                self.popup_auto_param.clear()
+                self.popup_auto_param.addItems(numeric_params or ["morph"])
+                chosen = str(point.get("synth_param", numeric_params[0] if numeric_params else "morph"))
+                pos = self.popup_auto_param.findText(chosen)
+                if pos < 0 and numeric_params:
+                    pos = 0
+                if pos >= 0:
+                    self.popup_auto_param.setCurrentIndex(pos)
+                key = self.popup_auto_param.currentText()
+                stored_values = point.get("synth_values", {}) if isinstance(point.get("synth_values", {}), dict) else {}
+                try:
+                    self.popup_auto_param_value.setValue(float(stored_values.get(key, point.get("synth_param_value", synth.get(key, 0.0)))))
+                except Exception:
+                    self.popup_auto_param_value.setValue(0.0)
         finally:
-            for w in (getattr(self, "popup_auto_operator", None), getattr(self, "popup_auto_sequence", None),
-                      getattr(self, "popup_auto_morph", None), getattr(self, "popup_auto_attack", None),
-                      getattr(self, "popup_auto_release", None), getattr(self, "popup_auto_offset", None)):
-                if w is not None: w.blockSignals(False)
+            for w in widgets:
+                if w is not None:
+                    w.blockSignals(False)
 
     def _on_automator_popup_changed(self, _value=None):
         step = getattr(self, "_selected_automation_step", None)
@@ -31439,6 +31621,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "to_instrument": inst, "instrument": inst, "to_sequence": sid,
             "morph": float(self.popup_auto_morph.value())/100.0,
             "step_offset": int(self.popup_auto_offset.value()),
+            "sequence_envelope_attack": float(self.popup_auto_attack.value())/100.0,
+            "sequence_envelope_release": float(self.popup_auto_release.value())/100.0,
+            "enabled": bool(point.get("enabled", True)), "user_owned": True,
         })
         bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(inst, {})
         mem = bank.get(sid) if isinstance(bank, dict) else None
@@ -31460,6 +31645,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         sid = int(self.popup_auto_sequence.value())
         key = str(self.popup_auto_param.currentText())
         point["synth_param"] = key
+        try:
+            _stored_val = float(self.popup_auto_param_value.value())
+            point["synth_param_value"] = _stored_val
+            point.setdefault("synth_values", {})[key] = _stored_val
+            point["user_owned"] = True
+        except Exception:
+            pass
         bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(inst, {})
         mem = bank.get(sid) if isinstance(bank, dict) else None
         if isinstance(mem, dict):
@@ -31590,6 +31782,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Keep a minimum content width so a long automation lane scrolls instead of squeezing cells.
         try:
             self.sequencer_automation_widget.setMinimumWidth(max(0, int(length) * 96 + 8))
+            QTimer.singleShot(0, self._sync_automation_strip_geometry)
         except Exception:
             pass
         if selected is not None and 1 <= int(selected) <= max(1, length):
@@ -31986,12 +32179,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     pass
         mems = getattr(self, "instrument_sequencer_memory", None) or {}
         for mem in mems.values():
-            if isinstance(mem, dict) and "touched" in mem:
-                try:
-                    if isinstance(mem["touched"], (list, set)):
-                        mem["touched"] = type(mem["touched"])()
-                except Exception:
-                    pass
+            if isinstance(mem, dict):
+                mem.pop("length_user_locked", None)
+                if "touched" in mem:
+                    try:
+                        if isinstance(mem["touched"], (list, set)):
+                            mem["touched"] = type(mem["touched"])()
+                    except Exception:
+                        pass
+        for bank in (getattr(self, "instrument_sequence_banks", {}) or {}).values():
+            if isinstance(bank, dict):
+                for mem in bank.values():
+                    if isinstance(mem, dict):
+                        mem.pop("length_user_locked", None)
         print(f"[Canonical Overwrite] wiped user locks on {wiped} playlist rows — unison may rewrite all")
         return wiped
 

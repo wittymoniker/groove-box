@@ -1,0 +1,16 @@
+SEQUENCE SCROLL + AUTOMATION GROWTH FIX — 2026-09-11
+
+- Sequence Length remains user-resizable from 1 through 1024.
+- A manual length edit now receives its own user length lock, preventing canonical
+  bank refreshes from snapping a manually chosen value back to a seed-derived
+  length (the observed value was commonly 24).
+- Step and Automation strips now use explicit content geometry. Cells stretch
+  equally to fill the viewport when they fit; when their readable minimum width
+  exceeds the viewport, a real horizontal scrollbar is exposed.
+- The Automation viewport reserves enough height for its horizontal scrollbar.
+- Growing Automation creates each missing new cell as a persisted ON point.
+- New Automation points inherit the selected/nearest point's Operator, Sequence,
+  Offset, Morph, envelope and synth-parameter state.
+- Attack, Release, selected synth parameter and value are persisted on the
+  individual Automation point and consumed by automation resolution.
+- Fresh synchronized Automation cells are materialized with complete stored state.

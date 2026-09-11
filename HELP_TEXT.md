@@ -531,8 +531,8 @@ AUTOMATION STEP EDITOR — SEQUENCER-STYLE CONTROL
   The automation strip is a second step sequencer directly under the main
   sequencer. It is intentionally simple and behaves like the normal step pads.
 
-  • Length controls how many automation steps are shown. The orange strip grows
-    or scrolls horizontally to match that count.
+  • Length controls 1–1024 automation steps. The orange strip fills the row when it fits
+    and scrolls horizontally at readable cell width when it does not.
   • Sequence Attack and Sequence Release default to 50% each and remain directly
     controllable per sequence by the canonical composition state.
   • First click on an automation step = SELECT + TELEPORT. The Step, Operator,
@@ -563,7 +563,7 @@ AUTOMATION STEP EDITOR — SEQUENCER-STYLE CONTROL
       1. Set Length (for example 12).
       2. Click AUTO 1 once to select it.
       3. Choose Operator / Sequence / Offset ±.
-      4. Click AUTO 1 again to turn that automation step ON.
+      4. A newly created AUTO cell is stored ON by default; click the same cell again to toggle it OFF.
       5. Click another step once to teleport to it, edit it, then click it again
          when you want it ON.
 
