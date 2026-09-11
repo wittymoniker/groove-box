@@ -70,14 +70,14 @@ def _ffmpeg() -> Optional[str]:
     try:
         return resolve_local_tool('ffmpeg', required=False)
     except Exception:
-        return shutil.which('ffmpeg')
+        return None
 
 
 def _ffprobe() -> Optional[str]:
     try:
         return resolve_local_tool('ffprobe', required=False)
     except Exception:
-        return shutil.which('ffprobe')
+        return None
 
 
 def _probe_duration(path: str) -> float:

@@ -2444,11 +2444,12 @@ def ot_equiv_hypot(a, b):
 # ---------------------------------------------------------------------------
 
 def math_add(a, b):
-    """Composition add — OT uses book ot_add (numeric significance on sums).
+    """Seed/composition add — interpretation depends only on OT toggle.
 
-    isn/ics/EQR still use ot_equiv_* so the oscillator identity stays stable.
-    Playlist algorithms, FX drives, and seed folds that call math_* get real
-    OT arithmetic when the toggle is on.
+    Seed expressions are rewritten to ``math_*`` (never directly to ``ot_*``).
+    OT ON  → book Operations substitution (``ot_add``).
+    OT OFF → ordinary arithmetic.
+    No further re-expression is applied to force same-result with IEEE.
     """
     if OP_THEORY_ENABLED:
         return ot_add(a, b)
@@ -2456,39 +2457,35 @@ def math_add(a, b):
 
 
 def math_sub(a, b):
-    """Composition sub — OT uses book ot_sub."""
+    """Seed/composition sub — OT ON → ot_sub; OFF → ordinary -."""
     if OP_THEORY_ENABLED:
         return ot_sub(a, b)
     return float(a) - float(b)
 
 
 def math_mul(a, b):
-    """Composition product — OT uses book ot_prod (signed product rules).
-
-    This is where OT changes the *music*: gains, drives, and ratio folds that
-    multiply through math_mul inherit OT significance.  Ordinary * when off.
-    """
+    """Seed/composition product — OT ON → ot_prod; OFF → ordinary *."""
     if OP_THEORY_ENABLED:
         return ot_prod(a, b)
     return float(a) * float(b)
 
 
 def math_div(a, b):
-    """Composition division — OT uses book ot_div (0/0→1 rule)."""
+    """Seed/composition division — OT ON → ot_div; OFF → ordinary /."""
     if OP_THEORY_ENABLED:
         return ot_div(a, b)
     return safe_divide(a, b, zero_policy="zero")
 
 
 def math_pow(b, e):
-    """Composition power — OT uses book ot_pow (same-hand / opposite-hand)."""
+    """Seed/composition power — OT ON → ot_pow; OFF → ordinary **."""
     if OP_THEORY_ENABLED:
         return ot_pow(b, e)
     return math.pow(float(b), float(e))
 
 
 def math_scale(x, gain):
-    """Scale without soft saturation; OT uses book ot_prod for gain significance."""
+    """Seed/composition scale — OT ON → ot_prod; OFF → ordinary *."""
     if OP_THEORY_ENABLED:
         return ot_prod(x, gain)
     return float(x) * float(gain)
@@ -4813,89 +4810,14 @@ def _seed_script_env(t_scalar=0.0, canonical_context=None):
 
 
 def _ot_rewrite_seed_ast(tree):
-    """Rewrite binary/unary arithmetic in seed ASTs to math_* when OT is ON.
+    """Seed text is never expression-rewritten.
 
-    When Operator Theory is enabled, seed scripts must use the book's
-    Operations substitutions (ot_add / ot_sub / ot_prod / ot_div / ot_pow)
-    rather than ordinary IEEE operators.  Named math_* helpers already route
-    to those book ops; this transformer rewrites +, -, *, /, //, %, ** and
-    unary +/- into the corresponding math_* calls so ordinary seed text
-    inherits the same rules without forcing the user to write math_add(...).
-
-    When Operator Theory is OFF the tree is returned unchanged so behaviour
-    stays identical to ordinary Python arithmetic.
+    Operators and names stay exactly as the author wrote them.  Interpretation
+    of named math_* / ot_* calls is defined by those functions and the OT
+    toggle at evaluation time — not by mutating the seed AST.
     """
-    if not operator_theory_enabled():
-        return tree
+    return tree
 
-    class _OTOps(ast.NodeTransformer):
-        _BIN = {
-            ast.Add: "math_add",
-            ast.Sub: "math_sub",
-            ast.Mult: "math_mul",
-            ast.Div: "math_div",
-            ast.FloorDiv: "math_div",
-            # Mod left as ordinary % — book OT has no distinct remainder rule.
-            ast.Pow: "math_pow",
-        }
-
-        def visit_BinOp(self, node):
-            self.generic_visit(node)
-            name = self._BIN.get(type(node.op))
-            if name is None:
-                return node
-            # math_pow(base, exp); math_add/sub/mul/div(a, b)
-            return ast.copy_location(
-                ast.Call(
-                    func=ast.Name(id=name, ctx=ast.Load()),
-                    args=[node.left, node.right],
-                    keywords=[],
-                ),
-                node,
-            )
-
-        def visit_UnaryOp(self, node):
-            self.generic_visit(node)
-            if isinstance(node.op, ast.USub):
-                # -x  →  math_sub(0, x)  so sign follows book OT sub rules
-                return ast.copy_location(
-                    ast.Call(
-                        func=ast.Name(id="math_sub", ctx=ast.Load()),
-                        args=[ast.Constant(value=0.0), node.operand],
-                        keywords=[],
-                    ),
-                    node,
-                )
-            if isinstance(node.op, ast.UAdd):
-                return node.operand
-            return node
-
-        def visit_AugAssign(self, node):
-            # a += b  →  a = math_*(a, b) when the op is arithmetic
-            self.generic_visit(node)
-            name = self._BIN.get(type(node.op))
-            if name is None:
-                return node
-            target = node.target
-            # Only plain Name targets are rewritten (safe for seed scripts).
-            if not isinstance(target, ast.Name):
-                return node
-            call = ast.Call(
-                func=ast.Name(id=name, ctx=ast.Load()),
-                args=[ast.Name(id=target.id, ctx=ast.Load()), node.value],
-                keywords=[],
-            )
-            return ast.copy_location(
-                ast.Assign(targets=[ast.Name(id=target.id, ctx=ast.Store())], value=call),
-                node,
-            )
-
-    try:
-        new_tree = _OTOps().visit(tree)
-        ast.fix_missing_locations(new_tree)
-        return new_tree
-    except Exception:
-        return tree
 
 
 def _normalize_seed_script_text(seed_text):
@@ -6359,8 +6281,13 @@ PLAYLIST_STRUCT_COL_INDICES = (2, 3, 4, 5)  # indices into PLAYLIST_COLUMNS
 # seed transduction weight remains 0.72: this preserves dynamic headroom for
 # minute seed-derived secondary structure without making those secondaries
 # authoritative. The adjacent Full-Unison OFF fallback remains 0.55.
-DEFAULT_SEQUENCE_LENGTH = 8
+DEFAULT_BPM = 120.0
+DEFAULT_SEQUENCE_LENGTH = 12
+DEFAULT_AUTOMATION_LENGTH = 12
 DEFAULT_PLAYLIST_ROWS = 32
+DEFAULT_PLAYLIST_ROW_BEATS = 8.0
+DEFAULT_BASE_FREQUENCY = 432.0
+DEFAULT_GLOBAL_CONVOLVE_PCT = 0.0
 CANONICAL_SIGNAL_CONTROL_DEFAULT = 1.00
 CANONICAL_RESONANCE_DEFAULT = 1.00
 CANONICAL_CONVOLVE_DEFAULT_PCT = 50.0
@@ -7981,9 +7908,9 @@ class VideoSynthEngine:
             if not math.isfinite(_bpm) or _bpm <= 0.0:
                 _bpm = 120.0
             try:
-                _row_beats = float(getattr(self.app, "spin_row_beats", None).value()) if self.app is not None and hasattr(self.app, "spin_row_beats") else 8.0
+                _row_beats = float(getattr(self.app, "spin_row_beats", None).value()) if self.app is not None and hasattr(self.app, "spin_row_beats") else DEFAULT_PLAYLIST_ROW_BEATS
             except Exception:
-                _row_beats = 8.0
+                _row_beats = DEFAULT_PLAYLIST_ROW_BEATS
             _row_beats = max(0.25, _row_beats)
             t = float(t) + gto * (60.0 / _bpm)
             ph = (float(ph) + gto / _row_beats) % 1.0
@@ -21949,6 +21876,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "global_input_xmod": abs(float(getattr(self, "global_mod_state", {}).get("input_xmod", -1.0)) - 1.0) < 1e-9,
             "window_mod_100": all(abs(float(getattr(self, "global_mod_state", {}).get(k, -1.0)) - 1.0) < 1e-9 for k in ("synth", "patch", "script", "domain")),
             "sequence_phase_lock_always_on": bool(getattr(self, "sequence_phase_lock_always_on", False)),
+            "sequence_default_12": int(DEFAULT_SEQUENCE_LENGTH) == 12,
+            "automation_default_12": int(DEFAULT_AUTOMATION_LENGTH) == 12,
         }
         if hasattr(self, "slider_sample_adaptive_fit"):
             checks["ui_adaptive_fit_50"] = int(self.slider_sample_adaptive_fit.value()) == 50
@@ -21958,6 +21887,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             checks["ui_global_xmod_100"] = int(self.global_xmod_slider.value()) == 100
         if hasattr(self, "global_input_xmod_slider"):
             checks["ui_input_xmod_100"] = int(self.global_input_xmod_slider.value()) == 100
+        if hasattr(self, "spin_seq_length"):
+            checks["ui_sequence_default_12"] = int(self.spin_seq_length.value()) == DEFAULT_SEQUENCE_LENGTH
+        if hasattr(self, "spin_auto_point_length"):
+            checks["ui_automation_default_12"] = int(self.spin_auto_point_length.value()) == DEFAULT_AUTOMATION_LENGTH
         if hasattr(self, "btn_load_sample_operator"):
             checks["ui_operator_sample_loader"] = True
         if hasattr(self, "spin_global_track_offset"):
@@ -22233,11 +22166,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         depend on BPM, so changing tempo cannot silently recompose the song.
         """
         try:
-            row_beats = float(self.spin_row_beats.value()) if hasattr(self, "spin_row_beats") else 4.0
+            row_beats = float(self.spin_row_beats.value()) if hasattr(self, "spin_row_beats") else DEFAULT_PLAYLIST_ROW_BEATS
         except Exception:
-            row_beats = 4.0
+            row_beats = DEFAULT_PLAYLIST_ROW_BEATS
         if not math.isfinite(row_beats) or row_beats <= 0.0:
-            row_beats = 4.0
+            row_beats = DEFAULT_PLAYLIST_ROW_BEATS
         try:
             offset_beats = float(getattr(self, "global_track_offset", 0.0) or 0.0)
         except Exception:
@@ -24047,7 +23980,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_bpm.setRange(0.0, 512.0)
         self.spin_bpm.setDecimals(3)
         self.spin_bpm.setSingleStep(0.1)
-        self.spin_bpm.setValue(120.0)  # ordinary baseline
+        self.spin_bpm.setValue(DEFAULT_BPM)  # ordinary baseline
         self.spin_bpm.setMinimumHeight(32)
         self.spin_bpm.setStyleSheet(
             "QDoubleSpinBox { background-color:#1a1608; color:#f5d97d; border:2px solid #c9a030; "
@@ -24950,7 +24883,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_base_frequency.setRange(0.0, 50000.0)
         self.spin_base_frequency.setDecimals(4)
         self.spin_base_frequency.setSingleStep(0.1)
-        self.spin_base_frequency.setValue(432.0)  # ordinary baseline tuning
+        self.spin_base_frequency.setValue(DEFAULT_BASE_FREQUENCY)  # ordinary baseline tuning
         self.spin_base_frequency.setMinimumHeight(32)
         self.spin_base_frequency.setStyleSheet(
             "QDoubleSpinBox { background-color:#0a121a; color:#9fd4ff; border:2px solid #3a7aaa; "
@@ -25400,7 +25333,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_row_beats.setRange(0.25, 64.0)
         self.spin_row_beats.setDecimals(2)
         self.spin_row_beats.setSingleStep(0.25)
-        self.spin_row_beats.setValue(8.0)  # V3 playtest default playlist row length = 8 beats
+        self.spin_row_beats.setValue(DEFAULT_PLAYLIST_ROW_BEATS)  # V3 playtest default playlist row length = 8 beats
         self.spin_row_beats.setMinimumHeight(38)
         self.spin_row_beats.setMinimumWidth(88)
         self.spin_row_beats.setToolTip(
@@ -25414,7 +25347,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_global_convolve.setRange(0.0, 100.0)
         self.spin_global_convolve.setDecimals(2)
         self.spin_global_convolve.setSuffix("%")
-        self.spin_global_convolve.setValue(0.0)
+        self.spin_global_convolve.setValue(DEFAULT_GLOBAL_CONVOLVE_PCT)
         self.spin_global_convolve.setFixedWidth(82)
         self.spin_global_convolve.setToolTip("Cross-convolve the structural wave result; user-edited material remains protected.")
         self.top_layout_row2.addWidget(self.spin_global_convolve)
@@ -26465,7 +26398,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         _auto_add(QLabel("Length"))
         self.spin_auto_point_length = QSpinBox()
         self.spin_auto_point_length.setRange(1, 1024)
-        self.spin_auto_point_length.setValue(16)
+        self.spin_auto_point_length.setValue(DEFAULT_AUTOMATION_LENGTH)
         self.spin_auto_point_length.setFixedWidth(62)
         self.spin_auto_point_length.setToolTip("Number of automation steps. The orange automation strip resizes to this count.")
         self.spin_auto_point_length.valueChanged.connect(self._on_automation_length_changed)
@@ -29635,7 +29568,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         key = f"{name}:{int(row_idx)}"
         overlay = overlays.setdefault(key, {})
         try:
-            auto_len = int(self.spin_auto_point_length.value()) if hasattr(self, "spin_auto_point_length") else 16
+            auto_len = int(self.spin_auto_point_length.value()) if hasattr(self, "spin_auto_point_length") else DEFAULT_AUTOMATION_LENGTH
         except Exception:
             auto_len = 16
         auto_len = max(1, min(1024, int(auto_len) or 16))
@@ -31028,7 +30961,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "playlist_row": 0,
                 "composition_blend": 0.5,
                 "canonical_owner": "user:sequencer_automation",
-                "length": int(self.spin_auto_point_length.value()) if hasattr(self, "spin_auto_point_length") else 16,
+                "length": int(self.spin_auto_point_length.value()) if hasattr(self, "spin_auto_point_length") else DEFAULT_AUTOMATION_LENGTH,
                 "reference_offsets": {},
                 "enabled": False,
             }
@@ -31540,7 +31473,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 item.widget().deleteLater()
         self._automator_popup_anchor = None
         self._automator_popup_anchor_step = None
-        length = int(self.spin_auto_point_length.value()) if hasattr(self, "spin_auto_point_length") else 16
+        length = int(self.spin_auto_point_length.value()) if hasattr(self, "spin_auto_point_length") else DEFAULT_AUTOMATION_LENGTH
         points = getattr(self, "sequencer_automation_points", []) or []
         _ui_inst = str(self.instrument_selector_dropdown.currentText()) if hasattr(self, "instrument_selector_dropdown") else (str(self.auto_to_instrument.currentText()) if hasattr(self, "auto_to_instrument") else "")
         _ui_sid = int(self.sequence_selector.currentData() or 1) if hasattr(self, "sequence_selector") and self.sequence_selector.currentData() is not None else (int(self.spin_auto_to_sequence.value()) if hasattr(self, "spin_auto_to_sequence") else 1)
@@ -32471,6 +32404,33 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 try: w.blockSignals(False)
                 except Exception: pass
 
+        # Core project/timing defaults are part of the same fresh-boot contract.
+        # Keeping them here makes Clear Memory numerically identical to a new launch
+        # instead of only resetting the canonical-effect controls.
+        _set_value("spin_bpm", DEFAULT_BPM)
+        _set_value("spin_seq_length", DEFAULT_SEQUENCE_LENGTH)
+        _set_value("spin_pattern_length", DEFAULT_SEQUENCE_LENGTH)
+        _set_value("spin_playlist_length", DEFAULT_PLAYLIST_ROWS)
+        _set_value("spin_row_beats", DEFAULT_PLAYLIST_ROW_BEATS)
+        _set_value("spin_base_frequency", DEFAULT_BASE_FREQUENCY)
+        _set_value("spin_global_convolve", DEFAULT_GLOBAL_CONVOLVE_PCT)
+        _set_value("spin_track_offset", 0.0)
+        _set_value("spin_global_track_offset", 0.0)
+        self.global_track_offset = 0.0
+        _set_value("spin_auto_point_length", DEFAULT_AUTOMATION_LENGTH)
+        _set_value("spin_auto_point_step", 1)
+        _set_value("spin_auto_syncopate", 0)
+        _set_checked("chk_auto_sync_sequencer", True)
+        self.automator_timing_mode = "wrap"
+        if hasattr(self, "combo_automator_timing"):
+            try:
+                self.combo_automator_timing.blockSignals(True)
+                self.combo_automator_timing.setCurrentIndex(0)
+                self.combo_automator_timing.blockSignals(False)
+            except Exception:
+                try: self.combo_automator_timing.blockSignals(False)
+                except Exception: pass
+
         _set_value("spin_canonical_resonance", CANONICAL_RESONANCE_DEFAULT * 100.0)
         _set_value("spin_canonical_convolve", CANONICAL_CONVOLVE_DEFAULT_PCT)
         _set_value("spin_canonical_live_overblend", CANONICAL_LIVE_OVERBLEND_DEFAULT_PCT)
@@ -32601,6 +32561,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.op_theory_enabled = False
         self.master_volume = 0.5
         self.playlist_automation = []
+        self.sequencer_automation_points = []
+        self._selected_automation_step = None
+        self._selected_automation_source_instrument = None
+        self._selected_automation_source_sequence = None
+        self._automator_popup_anchor = None
+        self._automator_popup_anchor_step = None
+        self.automator_timing_mode = "wrap"
 
         self.imported_waveform = None
         self.imported_sample_rate = 44100
@@ -32768,7 +32735,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """Serialize named UI handles so save/load restores the complete live surface."""
         state = {}
         for name in (
-            "spin_bpm", "spin_seq_length", "spin_playlist_length", "spin_base_frequency",
+            "spin_bpm", "spin_seq_length", "spin_playlist_length", "spin_row_beats", "spin_base_frequency",
+            "spin_auto_point_length", "spin_auto_point_step", "spin_auto_syncopate",
             "spin_global_convolve", "spin_synth_count", "slider_eqr", "slider_fractalizer",
             "slider_pkp_envelope", "slider_pkp_boost", "slider_pkp_boost_pitch",
             "slider_pkp_boost_steps", "slider_pkp_boost_offset",
@@ -32800,7 +32768,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "btn_edit_panels_per_sequence",
             "btn_meum_engine_simplify", "btn_trigonometry_engine", "btn_operator_theory",
             "btn_math_symbols", "btn_hyperdrive",
-            "chk_sparse_mask", "chk_speed_scrub",
+            "chk_sparse_mask", "chk_speed_scrub", "chk_auto_sync_sequencer",
         ):
             obj = getattr(self, name, None)
             if obj is not None and hasattr(obj, "isChecked"):
@@ -32809,7 +32777,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Combo boxes store {index, text} — restored by text first so a changed
         # item list in a newer build still lands on the intended mode.
         state["combos"] = {}
-        for name in ("mode_combo", "viz_mode_combo", "paint_sequence_mapping_combo", "paint_tempo_combo", "blend_max_combo"):
+        for name in ("mode_combo", "viz_mode_combo", "paint_sequence_mapping_combo", "paint_tempo_combo", "blend_max_combo", "combo_automator_timing"):
             obj = getattr(self, name, None)
             if obj is not None:
                 try:
@@ -33165,8 +33133,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "seed": self._seed_text() if hasattr(self, "input_seed_val") else "",
             "bpm": float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0,
             "seq_length": int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else DEFAULT_SEQUENCE_LENGTH,
+            "automation_length": int(self.spin_auto_point_length.value()) if hasattr(self, "spin_auto_point_length") else DEFAULT_AUTOMATION_LENGTH,
+            "automation_sync_to_sequencer": bool(self.chk_auto_sync_sequencer.isChecked()) if hasattr(self, "chk_auto_sync_sequencer") else True,
+            "automation_syncopate": int(self.spin_auto_syncopate.value()) if hasattr(self, "spin_auto_syncopate") else 0,
             "track_offset": float(self.spin_track_offset.value()) if hasattr(self, "spin_track_offset") else 0.0,
             "playlist_rows": int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else DEFAULT_PLAYLIST_ROWS,
+            "row_beats": float(self.spin_row_beats.value()) if hasattr(self, "spin_row_beats") else DEFAULT_PLAYLIST_ROW_BEATS,
             "base_frequency": float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0,
             "global_convolve": float(self.spin_global_convolve.value()) if hasattr(self, "spin_global_convolve") else 0.0,
             "instrument_sequencer_memory": {
@@ -33532,8 +33504,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
             try:
                 self.automator_timing_mode = "syncopate" if str(data.get("automator_timing_mode")) == "syncopate" else "wrap"
                 if hasattr(self, "combo_automator_timing"):
+                    self.combo_automator_timing.blockSignals(True)
                     self.combo_automator_timing.setCurrentIndex(1 if self.automator_timing_mode == "syncopate" else 0)
+                    self.combo_automator_timing.blockSignals(False)
             except Exception: pass
+        if "automation_sync_to_sequencer" in data and hasattr(self, "chk_auto_sync_sequencer"):
+            try:
+                self.chk_auto_sync_sequencer.blockSignals(True)
+                self.chk_auto_sync_sequencer.setChecked(bool(data.get("automation_sync_to_sequencer", True)))
+                self.chk_auto_sync_sequencer.blockSignals(False)
+            except Exception:
+                try: self.chk_auto_sync_sequencer.blockSignals(False)
+                except Exception: pass
 
         if isinstance(data.get("sample_morph_state"), dict):
             self.sample_morph_state.update({k: data["sample_morph_state"][k] for k in ("enabled", "adaptive_fit", "phase_lock", "guard") if k in data["sample_morph_state"]})
@@ -33590,8 +33572,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         for spin, key in (
             ("spin_bpm", "bpm"),
             ("spin_seq_length", "seq_length"),
+            ("spin_auto_point_length", "automation_length"),
+            ("spin_auto_syncopate", "automation_syncopate"),
             ("spin_track_offset", "track_offset"),
             ("spin_playlist_length", "playlist_rows"),
+            ("spin_row_beats", "row_beats"),
             ("spin_base_frequency", "base_frequency"),
             ("spin_global_convolve", "global_convolve"),
         ):
@@ -35829,7 +35814,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _voxelize_imported_video_frame(self, grid_size=None, z_slice=0):
         path = str(getattr(self, 'imported_video_path', '') or '')
         if not path or not os.path.isfile(path): raise RuntimeError('Load or record a video first.')
-        ffmpeg = self._resolve_ffmpeg_binary() if hasattr(self, '_resolve_ffmpeg_binary') else shutil.which('ffmpeg')
+        ffmpeg = self._resolve_ffmpeg_binary() if hasattr(self, '_resolve_ffmpeg_binary') else resolve_local_tool('ffmpeg', required=False)
         if not ffmpeg: raise RuntimeError('FFmpeg is required to voxelize a video frame.')
         n = max(4, min(64, int(grid_size or getattr(self, 'voxel_grid_size', 16) or 16)))
         cmd = [ffmpeg, '-v', 'error', '-ss', '0.25', '-i', path, '-frames:v', '1',
@@ -40245,7 +40230,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             f"{float(self.spin_base_frequency.value()) if hasattr(self, 'spin_base_frequency') else 432:.6f}",
             f"{int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else DEFAULT_SEQUENCE_LENGTH}",
             f"{int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else DEFAULT_PLAYLIST_ROWS}",
-            f"{float(self.spin_row_beats.value()) if hasattr(self, 'spin_row_beats') else 4.0:.3f}",
+            f"{float(self.spin_row_beats.value()) if hasattr(self, 'spin_row_beats') else DEFAULT_PLAYLIST_ROW_BEATS:.3f}",
             _json.dumps(list(getattr(self, "instrument_names_48", []) or []), sort_keys=True),
             "|".join(sorted((getattr(self, "instrument_scripts", {}) or {}).values()) or []),
             _json.dumps(sorted([
@@ -42489,7 +42474,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "source_project_path": str(getattr(self, "_current_project_path", "") or "") or None,
             "seed": _txt("input_seed_val", ""),
             "bpm": _num("spin_bpm", 120.0),
-            "seq_length": _num("spin_seq_length", 16.0),
+            "seq_length": _num("spin_seq_length", float(DEFAULT_SEQUENCE_LENGTH)),
             "track_offset": float(getattr(self, "global_track_offset", 0.0)),
             "base_frequency": _num("spin_base_frequency", 432.0),
             "global_convolve": _num("spin_global_convolve", 0.0),

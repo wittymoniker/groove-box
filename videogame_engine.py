@@ -1074,7 +1074,7 @@ def classify_from_composition(
     seed: float,
     *,
     bpm: float = 120.0,
-    seq_length: int = 16,
+    seq_length: int = 12,
     playlist_rows: int = 32,
     n_instruments: int = 8,  # accepted for API compat; NEVER enters identity
     goava_active: bool = False,

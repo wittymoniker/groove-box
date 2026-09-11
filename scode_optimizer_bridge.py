@@ -354,7 +354,7 @@ class SCodeOptimizerBridge:
             seed_text,
             self._widget_value(host, "spin_bpm", 120.0),
             self._widget_value(host, "spin_base_frequency", 432.0),
-            self._widget_value(host, "spin_seq_length", 16),
+            self._widget_value(host, "spin_seq_length", 12),
             self._widget_value(host, "spin_playlist_length", len(playlist)),
             toggles, _algo_id, _step_id, _banks_id, _mem_id, _playlist_id, _hyper_id,
         )
