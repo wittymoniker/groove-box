@@ -1,8 +1,5 @@
 # Mathematician's Groovebox
 
-<img width="1920" height="1080" alt="Screenshot_20260911_103102" src="https://github.com/user-attachments/assets/06fdd747-b0a8-4249-9d2c-23b65646e8a2" />
-
-
 A deterministic generative music, visual, and game engine driven by mathematical seeds.
 
 ## 1. Run it and get sound
@@ -255,7 +252,7 @@ You do not need to use all four editors to make music.
 
 The current public canonical row is:
 
-**SEEDED · RAND · LOCK · GOAVA**
+**SEEDED · RAND · LOCK ·EUCKLIDEAN · GOAVA**
 
 Each is an independent toggle and each has its own contribution level in the bottom **Canonical Morph Bridge**. RAND captures fresh operating-system entropy when you activate it, then stores that random instance with the project so playback and exports can reproduce it. LOCK also provides Coupling, Timing Pull, Pitch/Detune Link, Velocity Link, and Phase Spread controls.
 
@@ -505,7 +502,6 @@ Console/error text:
 Small reproducible reports are much easier to fix than broad descriptions.
 
 ---
-<img width="1920" height="1080" alt="Screenshot_20260911_103158" src="https://github.com/user-attachments/assets/3303c813-bb61-40a7-a250-bd5516f38b5f" />
 
 ## Project philosophy
 
