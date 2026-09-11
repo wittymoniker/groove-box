@@ -5458,6 +5458,11 @@ def canonical_visual_instrument(slot, ctx, flags):
         "euclidean": float(np.clip(levels.get("euclidean", 1.0), 0.0, 1.0)),
         "goava": float(np.clip(levels.get("goava", 1.0), 0.0, 1.0)),
     }
+    # Keep the historical engine-count metadata alongside the newer level-
+    # weighted influence sum.  MP4/carrier-video rendering reads this value
+    # while constructing its first canonical visual layers.
+    n5 = sum(1 for _k in _VISUAL_ENGINE_CHANNELS if eng.get(_k))
+    n_eng = max(1, n5) if n5 else 6  # idle reference remains the legacy 1/6 scale
     total_level = sum(_lev[k] for k in _VISUAL_ENGINE_CHANNELS if eng.get(k))
     k5 = 1.0 / float(total_level) if total_level > 1e-9 else (1.0 / 6.0)
     # Canonical slot lattice (irrational fractional index, never repeats).
