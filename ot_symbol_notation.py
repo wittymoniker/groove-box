@@ -27,11 +27,16 @@ class Role(str, Enum):
     DEPENDENT_VARIABLE='dependent_variable'
 
 ROLE_COLORS = {
-    Role.INDEPENDENT_VARIABLE: '#ff3b30',  # red
-    Role.INDEPENDENT_CONSTANT: '#34c759',  # green
-    Role.RESULT: '#2f80ff',                # blue
-    Role.DEPENDENT_CONSTANT: '#000000',    # black
-    Role.DEPENDENT_VARIABLE: '#ffffff',    # white
+    # High-contrast palette tuned for dark appliance UIs while remaining
+    # distinct under both light and dark host themes.  Dependent-constant
+    # uses near-black with a guaranteed light cell fill in the painter so
+    # strokes stay readable; dependent-variable uses off-white with a
+    # dark cell fill for the same reason.
+    Role.INDEPENDENT_VARIABLE: '#ff4d4d',  # vivid red
+    Role.INDEPENDENT_CONSTANT: '#30d158',  # vivid green
+    Role.RESULT: '#5ac8fa',                # bright sky blue (was #2f80ff)
+    Role.DEPENDENT_CONSTANT: '#1c1c1e',    # near-black
+    Role.DEPENDENT_VARIABLE: '#f2f2f7',    # off-white
 }
 
 class Border(str, Enum):

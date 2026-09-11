@@ -447,11 +447,14 @@ class OTNumberGlyphWidget(QWidget):
         self._continued = False
         self._multiplicity = 1
         self._variable_letter = ""
-        self.setMinimumSize(124, 34)
-        self.setMaximumHeight(40)
+        # READABILITY_20260911: larger minimum cell so the 12-stroke + 4-separator
+        # author glyphs remain legible on laptop and HDMI displays.
+        self.setMinimumSize(148, 42)
+        self.setMaximumHeight(52)
         self.setToolTip(
             "OT symbol readout: 12 directional strokes (4×3), four separator bits, "
-            "four-way up/right/down/left orientation. Math Symbols OFF shows base-10."
+            "four-way up/right/down/left orientation. Tiny base-10 cue in each cell "
+            "aids learning. Math Symbols OFF shows ordinary base-10."
         )
 
     def setValue(self, value):
@@ -554,24 +557,47 @@ class OTNumberGlyphWidget(QWidget):
         quadrant carries its three contextual strokes.  The dashed cross and
         center circle are structural landmarks, so every glyph remains easy to
         compare at a glance even when some quadrants are absent.
+
+        READABILITY_20260911:
+          - guaranteed cell fill for near-black / near-white roles
+          - slightly heavier strokes at small sizes
+          - clearer empty-zero (distinct corner marks, no interior clutter)
+          - tiny base-10 digit cue in the lower-right of each cell so the
+            mapping is learnable without leaving symbol mode
         """
-        color = OT_ROLE_COLORS.get(glyph.role, '#2f80ff')
-        if color == '#000000':
-            painter.fillRect(QRectF(x, y, size, size), QColor('#b8b8b8'))
-        # Permanent outer author box.  Zero is intentionally the EMPTY cell:
-        # no solid fill, no center ring, no separators and no count strokes.
-        painter.setPen(self._pen(color, 2.55))
+        color = OT_ROLE_COLORS.get(glyph.role, '#5ac8fa')
+        role = glyph.role
+        # Ensure high-contrast cell backgrounds for roles that would otherwise
+        # disappear on typical dark or light host themes.
+        if role == OTRole.DEPENDENT_CONSTANT or color in ('#000000', '#1c1c1e'):
+            painter.fillRect(QRectF(x, y, size, size), QColor('#d0d0d4'))
+        elif role == OTRole.DEPENDENT_VARIABLE or color in ('#ffffff', '#f2f2f7'):
+            painter.fillRect(QRectF(x, y, size, size), QColor('#2c2c2e'))
+        # Permanent outer author box.  Zero is intentionally sparse but no longer
+        # completely invisible: a light outer box + two corner ticks remain.
+        stroke_w = 2.85 if size >= 28 else 2.35
+        painter.setPen(self._pen(color, stroke_w))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(QRectF(x+1.5, y+1.5, size-3.0, size-3.0))
         cx, cy = x + size/2.0, y + size/2.0
         empty_zero = int(getattr(glyph, 'value', 0)) == 0
-        if not empty_zero:
+        if empty_zero:
+            # Distinct zero: two short corner ticks so the cell is not mistaken
+            # for a missing/blank slot while still reading as "empty count".
+            tick = size * 0.12
+            painter.setPen(self._pen(color, 1.6))
+            painter.drawLine(QPointF(x+3, y+3), QPointF(x+3+tick, y+3))
+            painter.drawLine(QPointF(x+3, y+3), QPointF(x+3, y+3+tick))
+            painter.drawLine(QPointF(x+size-3, y+size-3), QPointF(x+size-3-tick, y+size-3))
+            painter.drawLine(QPointF(x+size-3, y+size-3), QPointF(x+size-3, y+size-3-tick))
+        else:
             # Dashed quadrant separators and center ring (literal sketch format).
-            painter.setPen(self._pen(color, 1.15, dotted=True))
+            painter.setPen(self._pen(color, 1.25, dotted=True))
             painter.drawLine(QPointF(cx, y+3), QPointF(cx, y+size-3))
             painter.drawLine(QPointF(x+3, cy), QPointF(x+size-3, cy))
-            painter.setPen(self._pen(color, 1.75))
-            painter.drawEllipse(QRectF(cx-size*.055, cy-size*.055, size*.11, size*.11))
+            painter.setPen(self._pen(color, 1.9))
+            r = size * 0.065
+            painter.drawEllipse(QRectF(cx-r, cy-r, r*2, r*2))
 
         # Quadrant stroke groups: UL, UR, LL are vertical; LR is horizontal,
         # matching the supplied handwritten reference.  Each nibble bit turns
@@ -595,6 +621,22 @@ class OTNumberGlyphWidget(QWidget):
                     x1,y1=x+size*ax,y+size*ay; x2,y2=x+size*bx,y+size*by
                     self._draw_stroke(painter, x1, y1, x2-x1, y2-y1,
                                       bool(glyph.squiggly_mask & (1<<i)), color)
+
+        # Tiny base-10 learning cue (does not alter encoded value or arithmetic).
+        # Only shown when the cell is large enough to remain uncluttered.
+        if size >= 26:
+            dig = int(getattr(glyph, 'value', 0)) % 10
+            painter.save()
+            cue = QColor(color)
+            cue.setAlpha(160)
+            painter.setPen(QPen(cue, 1.0))
+            painter.setFont(QFont('Sans Serif', max(7, int(size * 0.18)), QFont.Weight.Bold))
+            painter.drawText(
+                QRectF(x + size * 0.62, y + size * 0.72, size * 0.34, size * 0.24),
+                Qt.AlignmentFlag.AlignCenter,
+                str(dig),
+            )
+            painter.restore()
 
         # Operation metadata stays outside the value-carrying four quadrants.
         if glyph.operation == OTOperation.MUL:
@@ -631,7 +673,9 @@ class OTNumberGlyphWidget(QWidget):
                                    continued=self._continued, multiplicity=self._multiplicity,
                                    variable_letter=self._variable_letter)
         count = max(1, len(glyphs))
-        cell = min(42.0, max(20.0, (self.width()-4.0)/count))
+        # READABILITY_20260911: prefer larger cells (min 26, max 48) so strokes
+        # and the tiny base-10 cue stay legible on laptop / HDMI output.
+        cell = min(48.0, max(26.0, (self.width()-4.0)/count))
         total = cell*count
         x = max(2.0, (self.width()-total)/2.0)
         y = max(1.0, (self.height()-cell)/2.0)
@@ -997,7 +1041,7 @@ class _OTMixedNumericTextOverlay(OTNumberGlyphWidget):
         # deleted C++ QWidget.
         self._sync_timer = QTimer(self)
         self._sync_timer.setSingleShot(True)
-        self._sync_timer.setInterval(16)  # PERF: coalesce symbol-overlay churn to one GUI frame
+        self._sync_timer.setInterval(33 if _low_power_mode() else 16)  # PERF: 16ms normal, 33ms low-power/symbols
         self._sync_timer.timeout.connect(self._deferred_sync)
         self.setMinimumSize(0, 0)
         self.setMaximumSize(16777215, 16777215)
@@ -4478,6 +4522,7 @@ def _eval_coordinate_seed_script(raw, env):
         expr = m.group(2).strip()
         try:
             tree = ast.parse(expr, mode='eval')
+            tree = _ot_rewrite_seed_ast(tree)
             value = eval(compile(tree, '<groovebox-coordinate-seed>', 'eval'), env)
             nums = _coerce_numeric_values(value)
             if not nums:
@@ -4767,6 +4812,92 @@ def _seed_script_env(t_scalar=0.0, canonical_context=None):
     return env
 
 
+def _ot_rewrite_seed_ast(tree):
+    """Rewrite binary/unary arithmetic in seed ASTs to math_* when OT is ON.
+
+    When Operator Theory is enabled, seed scripts must use the book's
+    Operations substitutions (ot_add / ot_sub / ot_prod / ot_div / ot_pow)
+    rather than ordinary IEEE operators.  Named math_* helpers already route
+    to those book ops; this transformer rewrites +, -, *, /, //, %, ** and
+    unary +/- into the corresponding math_* calls so ordinary seed text
+    inherits the same rules without forcing the user to write math_add(...).
+
+    When Operator Theory is OFF the tree is returned unchanged so behaviour
+    stays identical to ordinary Python arithmetic.
+    """
+    if not operator_theory_enabled():
+        return tree
+
+    class _OTOps(ast.NodeTransformer):
+        _BIN = {
+            ast.Add: "math_add",
+            ast.Sub: "math_sub",
+            ast.Mult: "math_mul",
+            ast.Div: "math_div",
+            ast.FloorDiv: "math_div",
+            # Mod left as ordinary % — book OT has no distinct remainder rule.
+            ast.Pow: "math_pow",
+        }
+
+        def visit_BinOp(self, node):
+            self.generic_visit(node)
+            name = self._BIN.get(type(node.op))
+            if name is None:
+                return node
+            # math_pow(base, exp); math_add/sub/mul/div(a, b)
+            return ast.copy_location(
+                ast.Call(
+                    func=ast.Name(id=name, ctx=ast.Load()),
+                    args=[node.left, node.right],
+                    keywords=[],
+                ),
+                node,
+            )
+
+        def visit_UnaryOp(self, node):
+            self.generic_visit(node)
+            if isinstance(node.op, ast.USub):
+                # -x  →  math_sub(0, x)  so sign follows book OT sub rules
+                return ast.copy_location(
+                    ast.Call(
+                        func=ast.Name(id="math_sub", ctx=ast.Load()),
+                        args=[ast.Constant(value=0.0), node.operand],
+                        keywords=[],
+                    ),
+                    node,
+                )
+            if isinstance(node.op, ast.UAdd):
+                return node.operand
+            return node
+
+        def visit_AugAssign(self, node):
+            # a += b  →  a = math_*(a, b) when the op is arithmetic
+            self.generic_visit(node)
+            name = self._BIN.get(type(node.op))
+            if name is None:
+                return node
+            target = node.target
+            # Only plain Name targets are rewritten (safe for seed scripts).
+            if not isinstance(target, ast.Name):
+                return node
+            call = ast.Call(
+                func=ast.Name(id=name, ctx=ast.Load()),
+                args=[ast.Name(id=target.id, ctx=ast.Load()), node.value],
+                keywords=[],
+            )
+            return ast.copy_location(
+                ast.Assign(targets=[ast.Name(id=target.id, ctx=ast.Store())], value=call),
+                node,
+            )
+
+    try:
+        new_tree = _OTOps().visit(tree)
+        ast.fix_missing_locations(new_tree)
+        return new_tree
+    except Exception:
+        return tree
+
+
 def _normalize_seed_script_text(seed_text):
     """Normalize multiline seed scripts into a single evaluable expression.
 
@@ -4860,6 +4991,7 @@ def _eval_seed_python(seed_text, t_value=0.0, canonical_context=None, allow_scra
             pass
         try:
             tree = ast.parse(expr, mode="eval")
+            tree = _ot_rewrite_seed_ast(tree)
             val = eval(compile(tree, "<groovebox-seed>", "eval"), env)
             nums = _coerce_numeric_values(val)
             return nums if nums else None
@@ -4911,6 +5043,7 @@ def _eval_seed_python(seed_text, t_value=0.0, canonical_context=None, allow_scra
             local["_result"] = None
             # allow limited statement forms
             tree = ast.parse(body, mode="exec")
+            tree = _ot_rewrite_seed_ast(tree)
             exec(compile(tree, "<groovebox-seed-exec>", "exec"), local, local)
             if local.get("_result") is not None:
                 nums = _coerce_numeric_values(local["_result"])
@@ -11428,18 +11561,33 @@ def _ensure_single_math_background(app, host):
 
 
 def _low_power_mode() -> bool:
-    """True on hardware where full-effort decorative rendering causes lag.
+    """True on hardware or modes where full-effort decorative rendering causes lag.
 
-    Checked once per paint tick (cheap: just an env lookup + platform string
-    match), so a user can flip GROOVEBOX_LOW_POWER without restarting.
-    Auto-detects common single-board-computer / mini-PC ARM targets
-    (Raspberry Pi, Orange Pi, and other aarch64/armv7 boards) since the
-    animated math background is by far the heaviest per-frame QPainter cost
-    in the app and isn't needed for audio/DJ/game functionality.
+    Checked once per paint tick (cheap: env lookup + platform / CPU / mode
+    checks), so a user can flip GROOVEBOX_LOW_POWER or GROOVEBOX_SMOOTH
+    without restarting.
+
+    Auto-detects:
+      - common single-board / mini-PC ARM targets (Pi, Orange Pi, aarch64/armv7)
+      - machines with ≤ 6 logical CPUs
+      - GROOVEBOX_SMOOTH=1 (appliance / live-performance preference)
+      - Math Symbols ON (glyph overlays are expensive; bias toward lower rates)
+
+    The animated math background is the heaviest per-frame QPainter cost and
+    is not required for audio / DJ / game functionality.
     """
     override = os.environ.get("GROOVEBOX_LOW_POWER")
     if override is not None:
         return override.strip().lower() not in ("0", "false", "no", "")
+    smooth = os.environ.get("GROOVEBOX_SMOOTH")
+    if smooth is not None and smooth.strip().lower() not in ("0", "false", "no", ""):
+        return True
+    try:
+        # Author symbols are paint-heavy; prefer lower rates while they are active.
+        if bool(globals().get("MATH_SYMBOLS_ENABLED", False)):
+            return True
+    except Exception:
+        pass
     try:
         import platform
         machine = platform.machine().lower()
@@ -11449,7 +11597,7 @@ def _low_power_mode() -> bool:
         pass
     try:
         import os as _os
-        if (_os.cpu_count() or 8) <= 4:
+        if (_os.cpu_count() or 8) <= 6:
             return True
     except Exception:
         pass
@@ -27063,7 +27211,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.update()  # Trigger repaint
         # PERF_2026: ~20 fps scopes is enough for playhead feedback; 33ms was a
         # constant paint tax even when the wave barely changed.
-        self._scope_update_timer.setInterval(150 if _low_power_mode() else 50)
+        self._scope_update_timer.setInterval(200 if _low_power_mode() else 50)
         self._scope_update_timer.timeout.connect(self._update_scope_from_playhead)
         QTimer.singleShot(0, self._sync_square_visuals)
         QTimer.singleShot(120, self._sync_square_visuals)

@@ -147,6 +147,82 @@ def coerce_graph_result(result: Any) -> Dict[str, float]:
     return out
 
 
+
+def _ot_rewrite_graph_ast(tree, scope):
+    """When dual math helpers are present, rewrite arithmetic to math_*.
+
+    Graph scripts receive the seed env (including math_add/math_mul/...) when
+    evaluated through the app.  If those helpers exist in scope, Operator
+    Theory substitutions are active and binary ops should use them so seed /
+    instrument / domain / algorithm scripts share one OT path.
+    """
+    if not isinstance(scope, dict) or "math_add" not in scope:
+        return tree
+
+    class _OTOps(ast.NodeTransformer):
+        _BIN = {
+            ast.Add: "math_add",
+            ast.Sub: "math_sub",
+            ast.Mult: "math_mul",
+            ast.Div: "math_div",
+            ast.FloorDiv: "math_div",
+            ast.Pow: "math_pow",
+        }
+
+        def visit_BinOp(self, node):
+            self.generic_visit(node)
+            name = self._BIN.get(type(node.op))
+            if name is None or name not in scope:
+                return node
+            return ast.copy_location(
+                ast.Call(
+                    func=ast.Name(id=name, ctx=ast.Load()),
+                    args=[node.left, node.right],
+                    keywords=[],
+                ),
+                node,
+            )
+
+        def visit_UnaryOp(self, node):
+            self.generic_visit(node)
+            if isinstance(node.op, ast.USub) and "math_sub" in scope:
+                return ast.copy_location(
+                    ast.Call(
+                        func=ast.Name(id="math_sub", ctx=ast.Load()),
+                        args=[ast.Constant(value=0.0), node.operand],
+                        keywords=[],
+                    ),
+                    node,
+                )
+            if isinstance(node.op, ast.UAdd):
+                return node.operand
+            return node
+
+        def visit_AugAssign(self, node):
+            self.generic_visit(node)
+            name = self._BIN.get(type(node.op))
+            if name is None or name not in scope:
+                return node
+            if not isinstance(node.target, ast.Name):
+                return node
+            call = ast.Call(
+                func=ast.Name(id=name, ctx=ast.Load()),
+                args=[ast.Name(id=node.target.id, ctx=ast.Load()), node.value],
+                keywords=[],
+            )
+            return ast.copy_location(
+                ast.Assign(targets=[ast.Name(id=node.target.id, ctx=ast.Store())], value=call),
+                node,
+            )
+
+    try:
+        new_tree = _OTOps().visit(tree)
+        ast.fix_missing_locations(new_tree)
+        return new_tree
+    except Exception:
+        return tree
+
+
 def evaluate_graph_script(script: str, context: Mapping[str, Any], *,
                           function_names=("evaluate_wave", "global_script", "evaluate", "main"),
                           extra_env: Optional[Mapping[str, Any]] = None) -> Dict[str, float]:
@@ -172,11 +248,13 @@ def evaluate_graph_script(script: str, context: Mapping[str, Any], *,
     local = scope
     try:
         tree = ast.parse(raw, mode="exec")
+        tree = _ot_rewrite_graph_ast(tree, scope)
         exec(compile(tree, "<groovebox-graph-script>", "exec"), scope, scope)
     except Exception:
         # Expression-only compatibility.
         try:
-            return coerce_graph_result(eval(compile(ast.parse(raw, mode="eval"), "<groovebox-graph-expr>", "eval"), scope, scope))
+            etree = _ot_rewrite_graph_ast(ast.parse(raw, mode="eval"), scope)
+            return coerce_graph_result(eval(compile(etree, "<groovebox-graph-expr>", "eval"), scope, scope))
         except Exception:
             return {}
     for fname in function_names:
