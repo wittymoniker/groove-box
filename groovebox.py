@@ -13329,7 +13329,7 @@ AUTOMATION STEP EDITOR — SEQUENCER-STYLE CONTROL
     untouched. Both randomizers create one undoable edit.
 
   Typical use:
-      1. Set Length (for example 16).
+      1. Set Length (for example 12).
       2. Click AUTO 1 once to select it.
       3. Choose Operator / Sequence / Offset ±.
       4. Click AUTO 1 again to turn that automation step ON.
@@ -16380,7 +16380,7 @@ class GrooveboxEngine:
         rendered_buffer = self.reality_synth.render_reality_patch(dummy_patch)
         return rendered_buffer
 
-    def add_instrument_sequence_bank(self, instrument_name, seq_name, pitch=0.0, amp=1.0, math_chord="Unit Harmonic Stack (+/- 1, 2, 3)", stretch=1.0, length_steps=16):
+    def add_instrument_sequence_bank(self, instrument_name, seq_name, pitch=0.0, amp=1.0, math_chord="Unit Harmonic Stack (+/- 1, 2, 3)", stretch=1.0, length_steps=DEFAULT_SEQUENCE_LENGTH):
         if instrument_name not in self.instrument_sequence_banks:
             self.instrument_sequence_banks[instrument_name] = []
 
@@ -16401,7 +16401,7 @@ class GrooveboxEngine:
 
     def get_instrument_banks(self, instrument_name):
         if instrument_name not in self.instrument_sequence_banks:
-            self.add_instrument_sequence_bank(instrument_name, "Primary Bank", 0.0, 1.0, "Unit Harmonic Stack (+/- 1, 2, 3)", 1.0, 16)
+            self.add_instrument_sequence_bank(instrument_name, "Primary Bank", 0.0, 1.0, "Unit Harmonic Stack (+/- 1, 2, 3)", 1.0, DEFAULT_SEQUENCE_LENGTH)
         return self.instrument_sequence_banks[instrument_name]
 
     def save_custom_wavetable(self, instrument_name, points):
@@ -17259,7 +17259,7 @@ class SynthModulePage(QWidget):
             math_chord_combo.setStyleSheet("background-color: #161b22; color: #00ffcc; border: 1px solid #30363d;")
             math_chord_combo.addItems(list(self.engine.math_chord_library.keys()))
 
-            length_spin = QSpinBox(); length_spin.setRange(4, 128); length_spin.setValue(16)
+            length_spin = QSpinBox(); length_spin.setRange(4, 128); length_spin.setValue(DEFAULT_SEQUENCE_LENGTH)
             length_spin.setStyleSheet("background-color: #161b22; color: #00ffcc; border: 1px solid #30363d;")
 
             param_grid.addWidget(QLabel("Pitch Shift:"), 0, 0); param_grid.addWidget(pitch_spin, 0, 1)
@@ -26565,6 +26565,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.popup_auto_param_value.valueChanged.connect(self._on_automator_popup_param_changed)
         self.automator_teleport_popup.hide()
         self._refresh_sequencer_automation_row()
+        # INITIAL_DRAW_SYNC_12STEP_2026: one post-layout pass removes any stale
+        # pre-layout button count. This runs before user interaction and reads the
+        # authoritative active sequence bank, so loaded non-default projects retain
+        # their own lengths while a fresh project draws 12 immediately.
+        QTimer.singleShot(0, self._finalize_initial_sequencer_draw)
 
         # Step editor is a floating/teleporting inspector. It follows the selected
         # pad and places itself above or below the pad so the controls remain visible.
@@ -27286,6 +27291,38 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._refresh_sequence_selector()
         self.reload_active_instrument_sequencer_ui()
 
+    def _finalize_initial_sequencer_draw(self):
+        """Synchronize both visible lanes from the active bank after first layout."""
+        if not hasattr(self, "top_sequencer"):
+            return
+        try:
+            mem = self._current_sequence_mem()
+            count = max(1, min(1024, int(mem.get("pattern_length", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH)))
+            if hasattr(self, "spin_seq_length"):
+                self.spin_seq_length.blockSignals(True)
+                self.spin_seq_length.setValue(count)
+                self.spin_seq_length.blockSignals(False)
+            if hasattr(self, "spin_pattern_length"):
+                self.spin_pattern_length.blockSignals(True)
+                self.spin_pattern_length.setValue(count)
+                self.spin_pattern_length.blockSignals(False)
+            # Always rebuild once after the scroll-area viewport has been created.
+            # This prevents a stale pre-layout 16-cell draw from surviving until an
+            # automation teleport happens to reload the sequence context.
+            self.rebuild_sequencer_steps(count)
+
+            if (hasattr(self, "spin_auto_point_length") and
+                    hasattr(self, "chk_auto_sync_sequencer") and
+                    self.chk_auto_sync_sequencer.isChecked()):
+                delta = int(self.spin_auto_syncopate.value()) if hasattr(self, "spin_auto_syncopate") else 0
+                auto_count = max(1, min(1024, count + delta))
+                self.spin_auto_point_length.blockSignals(True)
+                self.spin_auto_point_length.setValue(auto_count)
+                self.spin_auto_point_length.blockSignals(False)
+                self._refresh_sequencer_automation_row()
+        except Exception as exc:
+            print(f"[Sequencer] initial draw sync skipped: {exc}")
+
     def reload_active_instrument_sequencer_ui(self):
         if not hasattr(self, 'top_sequencer'):
             return
@@ -27756,7 +27793,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             step_btn.setToolTip("1st click = SELECT / TELEPORT · 2nd click = ON/OFF")
             step_btn.setMinimumSize(86, 58)
             step_btn.setFixedHeight(58)
-            step_btn.setMaximumWidth(110)
+            # ROW_FILL_12STEP_2026: cells share all spare horizontal space equally.
+            # Their minimum width preserves readability; the scroll area takes over
+            # only when the complete lane cannot fit at that minimum.
+            step_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             self._style_pad_button(step_btn, s, mem["steps"][s])
 
             def make_handler(s_idx):
@@ -27765,8 +27805,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 return on_click
 
             step_btn.clicked.connect(make_handler(s))
-            self.steps_inner_layout.addWidget(step_btn)
+            self.steps_inner_layout.addWidget(step_btn, 1)
             self.seq_step_buttons.append(step_btn)
+
+        # Explicit minimum content width gives QScrollArea an unambiguous hand-off:
+        # stretch equally when there is room; scroll rather than crush cells when not.
+        try:
+            spacing = max(0, int(self.steps_inner_layout.spacing()))
+            self.steps_layout_widget.setMinimumWidth(max(0, int(count) * 86 + max(0, int(count) - 1) * spacing))
+        except Exception:
+            pass
 
     def _canonical_level(self, source):
         """Normalized 0..1 level for SEEDED / RAND / LOCK / GOAVA."""
@@ -29570,8 +29618,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             auto_len = int(self.spin_auto_point_length.value()) if hasattr(self, "spin_auto_point_length") else DEFAULT_AUTOMATION_LENGTH
         except Exception:
-            auto_len = 16
-        auto_len = max(1, min(1024, int(auto_len) or 16))
+            auto_len = DEFAULT_AUTOMATION_LENGTH
+        auto_len = max(1, min(1024, int(auto_len) or DEFAULT_AUTOMATION_LENGTH))
         try:
             sid = int(self._current_sequence_index(name)) if hasattr(self, "_current_sequence_index") else 1
         except Exception:
@@ -30432,7 +30480,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if not isinstance(mem, dict) or self._sequence_is_user_locked(mem):
                     continue
                 owner = str(mem.get("canonical_owner", ""))
-                n = int(mem.get("pattern_length", adopt) or adopt) if owner.startswith("canonical:") else adopt
+                if owner.startswith("canonical:"):
+                    # Canonical-owned banks may keep their seed-derived lengths.
+                    n = int(mem.get("pattern_length", adopt) or adopt)
+                else:
+                    # DEFAULT_GRID_12STEP_2026: never resize the primary/user bank
+                    # merely because a canonical bank happens to imply another length.
+                    # A fresh project therefore remains visibly 12 steps before any click.
+                    n = int(mem.get("pattern_length", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH)
                 n = max(1, min(1024, n))
                 mem["pattern_length"] = n
                 self._ensure_seq_mem_length(mem, n)

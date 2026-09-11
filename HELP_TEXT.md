@@ -560,7 +560,7 @@ AUTOMATION STEP EDITOR — SEQUENCER-STYLE CONTROL
     untouched. Both randomizers create one undoable edit.
 
   Typical use:
-      1. Set Length (for example 16).
+      1. Set Length (for example 12).
       2. Click AUTO 1 once to select it.
       3. Choose Operator / Sequence / Offset ±.
       4. Click AUTO 1 again to turn that automation step ON.

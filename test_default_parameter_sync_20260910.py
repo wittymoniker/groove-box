@@ -26,6 +26,10 @@ def test_no_legacy_spin_fallback_defaults():
     assert not re.search(r"spin_seq_length[^\n]*else\s+(?:16|48)\b", SRC)
     assert not re.search(r"spin_playlist_length[^\n]*else\s+(?:64|96)\b", SRC)
     assert "default_seq_len = 16" not in SRC
+    assert "auto_len = 16" not in SRC
+    assert "int(auto_len) or 16" not in SRC
+    assert "length_steps=16" not in SRC
+    assert "length_spin.setValue(16)" not in SRC
     assert "Default playlist row duration: 16 beats." not in SRC
 
 

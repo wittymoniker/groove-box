@@ -1,0 +1,16 @@
+AUTOMATION 12-STEP DEFAULT FIX — 2026-09-11
+
+The authoritative defaults remain:
+  DEFAULT_SEQUENCE_LENGTH = 12
+  DEFAULT_AUTOMATION_LENGTH = 12
+
+Fixed remaining legacy 16-step initializers/fallbacks that could override those defaults:
+- canonical automation materialization exception fallback
+- canonical automation zero/false fallback
+- synth sequence-bank constructor default
+- primary sequence-bank creation default
+- synth-bank Steps control default
+- in-app/help example updated from 16 to 12
+
+Both the desktop source and APPLIANCE_ISO rootfs source were synchronized.
+Regression tests now reject these legacy 16-step fallbacks.
