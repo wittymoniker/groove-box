@@ -75,6 +75,9 @@ Write-Host "==> Installing Python packages..."
 Write-Host "==> Verify:"
 & $py -c "import numpy, PyQt6.QtCore, sounddevice, PIL; print('python deps OK')"
 & (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source -hide_banner -version | Select-Object -First 1
+Write-Host "==> Provision/verify native sCode stage-0..."
+& $py (Join-Path $ROOT "scripts\provision_scode_stage0.py")
+if ($LASTEXITCODE -ne 0) { throw "Native Windows sCode stage-0 provisioning failed (exit $LASTEXITCODE)." }
 Write-Host "==> Done."
 Write-Host "==> Host dependency provisioning complete."
 Write-Host "    The launcher will now verify the matching native sCode stage-0 automatically."

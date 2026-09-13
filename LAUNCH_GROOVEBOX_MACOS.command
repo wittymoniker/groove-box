@@ -9,13 +9,18 @@ command -v python3 >/dev/null 2>&1 || needs_provision=1
 [ -x "bin/ffmpeg" ] || needs_provision=1
 [ -x "bin/ffprobe" ] || needs_provision=1
 [ -f ".groovebox_provisioned_macos" ] || needs_provision=1
+arch="$(uname -m)"; [ "$arch" = "aarch64" ] && arch="arm64"
+[ -x "sCode/bootstrap/macos-$arch/scode0" ] || needs_provision=1
 
 if [ "$needs_provision" -eq 1 ]; then
   echo "[Groovebox] Provisioning macOS dependencies automatically..."
   chmod +x ./install_deps_macos.sh
   ./install_deps_macos.sh
   "${PYTHON:-python3}" ./scripts/provision_first_launch.py
+  "${PYTHON:-python3}" ./scripts/provision_scode_stage0.py
   : > .groovebox_provisioned_macos
 fi
 
+# Verify native sCode on every launch; this catches stale/wrong-architecture copies.
+"${PYTHON:-python3}" ./scripts/provision_scode_stage0.py
 exec "${PYTHON:-python3}" launch_groovebox.py "$@"

@@ -1,0 +1,22 @@
+Mathematician's Groovebox — native sCode stage-0 cross-platform launcher validation
+Date: 2026-09-13
+
+PASS Linux bundled stage-0 executable-format and ABI-9 optimizer probe
+PASS common launcher makes native sCode stage-0 mandatory
+PASS Windows launcher invokes native stage-0 provisioner
+PASS macOS launcher invokes native stage-0 provisioner and verifies every launch
+PASS Windows dependency installer invokes native stage-0 provisioner
+PASS macOS dependency installer invokes native stage-0 provisioner
+PASS provisioner rejects Linux ELF substitution on Windows/macOS by executable-format check
+PASS provisioner supports bundled native package, explicit local source, or URL + SHA-256
+PASS no Python/NumPy fallback when required native sCode stage-0 is unavailable
+PASS Python syntax for launcher/provisioner
+PASS macOS shell syntax
+
+RELEASE LIMITATION / NOT FAKED:
+The uploaded 20260913 source contains only the genuine Linux x86-64 stage-0 ELF.
+It does NOT contain a genuine Windows PE scode0.exe or macOS Mach-O scode0.
+Therefore those OSes now provision and REQUIRE the correct native runtime, but a complete
+Windows/macOS native-stage-0 distribution still requires those native binaries to be built
+or supplied. The package intentionally does not rename/copy the Linux ELF or claim it runs
+natively on Windows/macOS.

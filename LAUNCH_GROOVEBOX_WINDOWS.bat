@@ -16,6 +16,7 @@ if not exist ".groovebox_provisioned_windows" goto :PROVISION
 if not exist "bin\ffmpeg.exe" goto :PROVISION
 if not exist "bin\ffprobe.exe" goto :PROVISION
 if not defined PYEXE goto :PROVISION
+if not exist "sCode\bootstrap\windows-x86_64\scode0.exe" goto :PROVISION
 goto :AFTER_PROVISION
 
 :PROVISION
@@ -37,6 +38,8 @@ if not defined PYEXE (
 )
 
 %PYEXE% "%~dp0scripts\provision_first_launch.py"
+if errorlevel 1 exit /b %errorlevel%
+%PYEXE% "%~dp0scripts\provision_scode_stage0.py"
 if errorlevel 1 exit /b %errorlevel%
 > ".groovebox_provisioned_windows" echo provisioned
 
