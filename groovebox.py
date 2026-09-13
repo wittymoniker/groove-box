@@ -11289,10 +11289,10 @@ def attach_math_decor(host_window, app=None, light=False):
         style = DAW_STYLE
         if light:
             style = DAW_STYLE + """
-            QDialog { background-color: rgba(8, 12, 18, 285); }
-            QWidget { background-color: rgba(12, 18, 26, 280); }
-            QGroupBox { background-color: rgba(12, 18, 26, 280); }
-            QTableWidget { background-color: rgba(10, 14, 20, 300); }
+            QDialog { background-color: rgba(8, 12, 18, 235); }
+            QWidget { background-color: rgba(12, 18, 26, 230); }
+            QGroupBox { background-color: rgba(12, 18, 26, 230); }
+            QTableWidget { background-color: rgba(10, 14, 20, 240); }
             """
         host_window.setStyleSheet(style)
     except Exception:
@@ -21370,7 +21370,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.parametric_background.setObjectName("ParametricMathBackground")
                 self.parametric_background.setGeometry(0, 0, self.width(), self.height())
                 self.parametric_background.lower()
-                self.parametric_background.show()
+                # WINDOWS_STARTUP_FIRST_PAINT_20260913:
+                # On Windows, do not start the animated/decorative background in
+                # the same native paint pass that realizes thousands of controls.
+                # Let the real top-level window survive at least one event-loop
+                # turn first; then attach/start decoration. This also makes a
+                # startup failure distinguishable from a decorative paint fault.
+                if sys.platform.startswith("win"):
+                    self.parametric_background.hide()
+                    QTimer.singleShot(750, self._activate_startup_math_background)
+                else:
+                    self.parametric_background.show()
                 # Re-apply once more after the event loop does its first real
                 # layout pass, and keep it synced on every future resize via
                 # resizeEvent (see below) — belt-and-suspenders against timing.
@@ -21850,6 +21860,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         except Exception:
             pass
+
+    def _activate_startup_math_background(self):
+        """Start decorative math painting only after Windows first-show settles."""
+        bg = getattr(self, "parametric_background", None)
+        if bg is None:
+            return
+        try:
+            self._sync_parametric_background_geometry()
+            bg.lower()
+            bg.show()
+            print("[Startup] deferred math background activated")
+        except Exception as exc:
+            print(f"[Startup] deferred math background skipped: {exc}")
 
     def _sync_parametric_background_geometry(self):
         """Keep the full-window math field sized to the central widget.
@@ -24084,7 +24107,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """
         # UI_INIT_ORDER_FIX_V32: lbl_master_vol is constructed in the Master Volume row below.
         # Never style/reference it before construction.
-        if QApplication.instance():
+        # WINDOWS_QSS_STARTUP_20260913: applying the identical large stylesheet
+        # both globally and to the main window forces Windows/Qt to parse and
+        # repolish every QPushButton twice during first realization. The main
+        # window stylesheet already inherits to its descendants, so keep one
+        # authoritative pass on Windows. Other platforms retain prior behavior.
+        if QApplication.instance() and not sys.platform.startswith("win"):
             QApplication.instance().setStyleSheet(high_contrast_stylesheet)
         self.setStyleSheet(high_contrast_stylesheet)
 
@@ -27471,7 +27499,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 btn.setText(f"STEP {s_idx+1}\nV:{amp:.2f} P:{pitch:.2f}×\nO:{offset:+.2f} step")
                 self._style_pad_button(btn, s_idx, mem["steps"][s_idx])
                 if self.selected_step_idx == s_idx:
-                    btn.setStyleSheet(btn.styleSheet() + " border: 3px solid #f5d97d;")
+                    # WINDOWS_QSS_STABILITY_20260913: avoid incrementally appending
+                    # declarations to whatever QSS a button happens to carry. Rebuild
+                    # the selected-pad style as one complete declaration block.
+                    if mem["steps"][s_idx]:
+                        btn.setStyleSheet(
+                            "background-color: #d4af37; color: #16120a; "
+                            "border: 3px solid #f5d97d; font-weight: bold;"
+                        )
+                    else:
+                        btn.setStyleSheet(
+                            "background-color: #071a38; color: #8ea9d0; "
+                            "border: 3px solid #f5d97d; font-weight: bold;"
+                        )
 
     def _style_pad_button(self, btn, s_idx, is_active_step):
         """Style a STEP: playhead (orange) > programmed on (cyan) > off (dark)."""

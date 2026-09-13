@@ -51,4 +51,15 @@ if not defined PYEXE (
 )
 
 %PYEXE% "%~dp0launch_groovebox.py" %*
-exit /b %errorlevel%
+set "GBRC=%errorlevel%"
+if not "%GBRC%"=="0" (
+  echo.
+  echo [Groovebox] ERROR: Groovebox exited abnormally with code %GBRC%.
+  echo [Groovebox] Crash logs are under:
+  echo [Groovebox]   %%APPDATA%%\MathematiciansGroovebox\logs
+  echo [Groovebox] Open LATEST_CRASH_LOG.txt first.
+  echo.
+  echo [Groovebox] This window will stay open so the error cannot disappear.
+  pause
+)
+exit /b %GBRC%

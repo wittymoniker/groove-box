@@ -9,6 +9,15 @@ ROOT=Path(__file__).resolve().parent
 def main():
     s,m=platform_key()
     print(f'[launcher] detected {platform.system()} {platform.machine()}')
+    # Always finish local runtime provisioning before verifying/starting sCode.
+    # Platform launchers also invoke dependency installers on first launch; this
+    # common pass keeps direct launch_groovebox.py use consistent on every OS.
+    provision=ROOT/'scripts'/'provision_first_launch.py'
+    pr=subprocess.run([sys.executable,str(provision)],cwd=ROOT,check=False)
+    if pr.returncode:
+        print(f'[launcher] ERROR: local runtime provisioning failed ({pr.returncode})', file=sys.stderr)
+        return pr.returncode
+
     accel=find_accel(ROOT)
     if accel:
         print(f'[launcher] native accelerator: {accel.name}')
@@ -28,8 +37,6 @@ def main():
         try: stage0.chmod(stage0.stat().st_mode | 0o755)
         except OSError: pass
     print(f'[launcher] sCode stage-0: {stage0}')
-    provision=ROOT/'scripts'/'provision_first_launch.py'
-    subprocess.run([sys.executable,str(provision)],cwd=ROOT,check=False)
     return subprocess.call([sys.executable,str(ROOT/'run_groovebox.py'),*sys.argv[1:]],cwd=ROOT)
 
 if __name__=='__main__': raise SystemExit(main())
