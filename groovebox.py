@@ -27962,9 +27962,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.canonical_engine_levels[key] = float(np.clip(float(value)/100.0, 0.0, 1.0))
         if label is not None:
             label.setText(f"{int(value)}%")
+        # PERF_20260913: control feedback is immediate, but canonical identity
+        # refresh/recomposition is coalesced by _on_live_source_changed().  Do not
+        # recalculate the fingerprint on every slider tick while the user drags.
         try: self._on_live_source_changed()
-        except Exception: pass
-        try: self._refresh_canonical_fingerprint()
         except Exception: pass
 
     def _on_lock_characteristic_pressed(self, key):
@@ -27991,9 +27992,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.phase_lock_characteristics[str(key)] = float(np.clip(float(value)/100.0, 0.0, 1.0))
         if label is not None:
             label.setText(f"{int(value)}%")
+        # PERF_20260913: control feedback is immediate, but canonical identity
+        # refresh/recomposition is coalesced by _on_live_source_changed().  Do not
+        # recalculate the fingerprint on every slider tick while the user drags.
         try: self._on_live_source_changed()
-        except Exception: pass
-        try: self._refresh_canonical_fingerprint()
         except Exception: pass
 
     def _sync_canonical_widgets_from_state(self):
@@ -39988,19 +39990,37 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._rt_media_energy_wave_size = 0
 
     def _on_live_source_changed(self, *args):
-        """Coalesce seed/seq-length changes into one deferred composition transaction."""
-        # Any authoring/control change may alter seed/domain/canonical inputs.
-        # Invalidate shared graph projections before debounce/guard decisions.
+        """Idle-debounce authoring changes into one canonical transaction.
+
+        UI edits may emit dozens of signals while a slider is dragged or text is
+        typed.  A one-shot scheduled from the *first* event still fires mid-edit,
+        so active canonicals can repeatedly deep-copy/rebuild the playlist while
+        the user is interacting.  Use one restartable single-shot timer instead:
+        every new edit pushes the expensive deterministic rebuild to the end of
+        the edit burst.  No canonical math or output identity is approximated.
+        """
         self._graph_context_cache = {}
         if getattr(self, "_composition_generation_guard", False):
             return
-        if getattr(self, "_live_source_update_pending", False):
-            return
         self._live_source_update_pending = True
-        # PERF_2026: debounce ~75ms so typing seed / dragging spins does not
-        # re-run perfect-unison every keystroke. Fingerprint refreshes once
-        # inside the flush, not on every intermediate event.
-        QTimer.singleShot(75, self._flush_live_source_update)
+        try:
+            timer = getattr(self, "_canonical_authoring_debounce_timer", None)
+            if timer is None:
+                timer = QTimer(self)
+                timer.setSingleShot(True)
+                timer.timeout.connect(self._flush_live_source_update)
+                self._canonical_authoring_debounce_timer = timer
+            # 140 ms is short enough to feel immediate after release/key pause,
+            # but long enough to collapse dense wheel/drag/text-edit bursts.
+            timer.start(140)
+        except Exception:
+            # Headless/minimal Qt fallback retains the prior safe behavior.
+            if not getattr(self, "_live_source_fallback_scheduled", False):
+                self._live_source_fallback_scheduled = True
+                def _fallback_flush():
+                    self._live_source_fallback_scheduled = False
+                    self._flush_live_source_update()
+                QTimer.singleShot(140, _fallback_flush)
 
         # =========================================================================
 

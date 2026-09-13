@@ -1,0 +1,25 @@
+Mathematician's Groovebox — canonical authoring lag pass validation
+Date: 2026-09-13
+Baseline: MP3-AUDIO-FIX 2026-09-13
+
+Scheduling change:
+- Restartable 140 ms idle debounce for authoring/control edit bursts.
+- Expensive deterministic canonical rebuild occurs after the editing burst, not mid-drag/mid-typing.
+- Canonical level and LOCK sliders no longer recalculate fingerprint on every tick.
+- UI values/labels remain immediate.
+- No canonical math, synthesis identity, or output quality approximation introduced.
+- No timeout/quiet/black/static-output rejection introduced.
+
+Validation run:
+PASS py_compile groovebox.py
+PASS test_final_determinism.py (7/7 groups)
+PASS test_canonical_userdata_ownership_contract.py
+PASS test_final_lag_realtime_contract.py
+PASS test_nan_video_exit_regression_20260912.py (19/19)
+PASS test_mp3_export_integrity_20260913.py (5/5)
+
+ISO strategy:
+- Existing MP3-AUDIO-FIX bootable ISO used as boot-layout baseline.
+- Refreshed rootfs initramfs appended at a new ISO extent.
+- ISO9660 initramfs directory extent/size and PVD volume-sector count updated.
+- Existing boot catalog, boot image and kernel extents left untouched.
