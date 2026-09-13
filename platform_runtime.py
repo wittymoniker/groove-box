@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import os, platform, shutil, subprocess, sys
+import os, platform, shutil, subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -19,26 +19,17 @@ def scode_stage0_candidates(root: Path|None=None):
     else: names=[]
     return names
 
-def find_scode_stage0(root: Path|None=None):
-    return next((p for p in scode_stage0_candidates(root) if p.is_file()), None)
+def stage0_binary_matches_host(path: Path) -> bool:
+    try: head=Path(path).read_bytes()[:8]
+    except Exception: return False
+    s,m=platform_key()
+    if s=='windows': return head[:2]==b'MZ'
+    if s=='linux': return head[:4]==b'\x7fELF'
+    if s=='darwin': return head[:4] in (b'\xcf\xfa\xed\xfe',b'\xfe\xed\xfa\xcf')
+    return False
 
-def ensure_scode_stage0(root: Path|None=None, force: bool=False):
-    root=Path(root or ROOT)
-    current=find_scode_stage0(root)
-    if current and not force:
-        try:
-            p=subprocess.run([str(current),'--version'],capture_output=True,text=True,timeout=10)
-            if p.returncode==0: return current
-        except Exception: pass
-    builder=root/'sCode'/'scripts'/'build_stage0.py'
-    if not builder.is_file(): return None
-    cmd=[sys.executable,str(builder)] + (['--force'] if force else [])
-    try:
-        p=subprocess.run(cmd,cwd=root,check=False)
-        if p.returncode: return None
-    except Exception:
-        return None
-    return find_scode_stage0(root)
+def find_scode_stage0(root: Path|None=None):
+    return next((p for p in scode_stage0_candidates(root) if p.is_file() and stage0_binary_matches_host(p)), None)
 
 def accel_candidates(root: Path|None=None):
     root=Path(root or ROOT); s,_=platform_key()

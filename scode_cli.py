@@ -8,7 +8,7 @@ def main():
     ap=argparse.ArgumentParser(prog='scode')
     sub=ap.add_subparsers(dest='cmd',required=True)
     c=sub.add_parser('compile'); c.add_argument('file'); c.add_argument('-o','--output')
-    n=sub.add_parser('number'); n.add_argument('value'); n.add_argument('--profile',default='default')
+    n=sub.add_parser('number'); n.add_argument('value'); n.add_argument('--profile','default')
     a=ap.parse_args()
     if a.cmd=='compile':
         ir=compile_file(a.file); text=json.dumps(ir,indent=2,ensure_ascii=False)+'\n'
