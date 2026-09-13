@@ -509,6 +509,7 @@ Small reproducible reports are much easier to fix than broad descriptions.
 ---
 
 
+<img width="1920" height="1080" alt="groovebox1" src="https://github.com/user-attachments/assets/9ad6684c-39b3-4d99-b8cd-66a0b0f95d1f" />
 
 
 
