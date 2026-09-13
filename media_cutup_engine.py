@@ -105,7 +105,7 @@ def estimate_pitch_hz(path: str, min_hz: float = 45.0, max_hz: float = 1200.0) -
     nfft = 1 << int(math.ceil(math.log2(y.size * 2 - 1)))
     spec = np.fft.rfft(y, n=nfft)
     ac = np.fft.irfft(spec * np.conj(spec), n=nfft)[:y.size]
-    if ac[0] <= 1e-12:
+    if ac[0] == 0.0:
         return None
     ac /= ac[0]
     min_lag = max(1, int(sr / max_hz))
@@ -133,14 +133,17 @@ def estimate_pitch_hz(path: str, min_hz: float = 45.0, max_hz: float = 1200.0) -
     if 1 <= lag < len(ac) - 1:
         a, b, c = float(ac[lag - 1]), float(ac[lag]), float(ac[lag + 1])
         den = a - 2.0 * b + c
-        if abs(den) > 1e-12:
+        if den != 0.0:
             lag = lag + 0.5 * (a - c) / den
     hz = sr / float(lag)
     return hz if min_hz <= hz <= max_hz else None
 
 
 def nearest_midi_pitch(hz: float, root_midi: int = 60, scale: Sequence[int] = (0, 2, 4, 5, 7, 9, 11)) -> Tuple[int, float]:
-    midi = 69.0 + 12.0 * math.log2(max(1e-9, hz) / 440.0)
+    
+    if hz <= 0.0:
+        return None
+    midi = 69.0 + 12.0 * math.log2(hz / 440.0)
     candidates: List[int] = []
     root_pc = root_midi % 12
     for octv in range(-5, 7):

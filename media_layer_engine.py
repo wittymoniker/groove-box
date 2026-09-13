@@ -114,29 +114,54 @@ def render_layers(state:Dict[str,Any])->Tuple[np.ndarray,int]:
     mode=str(state.get('heuristic','Linear')); expr=str(state.get('parametric',''))
     blend=str(state.get('blend_mode','Morph Between Layers') or 'Morph Between Layers').lower()
     if 'overlay' in blend or 'pool' in blend or 'layer' in blend and 'morph' not in blend:
-        raw=np.array([max(1e-9,float(l.get('time_scalar',1.0) or 1.0)) for l in layers],float)
-        raw=raw/max(float(np.sum(raw)),1e-15)
+        raw=[]
+        for l in layers:
+            value=float(l.get('time_scalar',1.0))
+            if value < 0.0:
+                value=0.0
+            raw.append(value)
+        raw=np.asarray(raw,float)
+        raw_total=float(np.sum(raw))
+        if raw_total == 0.0:
+            raw=np.full(len(layers),1.0/float(len(layers)),dtype=float)
+        else:
+            raw=raw/raw_total
         # Give the heuristic a deterministic normalized layer coordinate. The
         # resulting scalar is a weighting curve, not a time-varying RNG branch.
         coord=np.linspace(0.0,1.0,len(layers),endpoint=True)
-        shaped=_alpha(coord,mode,expr)
-        shaped=np.maximum(1e-12,np.asarray(shaped,float)+1e-12)
+        shaped=np.asarray(_alpha(coord,mode,expr),float)
+        shaped=np.where(shaped < 0.0, 0.0, shaped)
         weights=raw*shaped
-        weights=weights/max(float(np.sum(weights)),1e-15)
+        weight_total=float(np.sum(weights))
+        if weight_total == 0.0:
+            weights=raw.copy()
+        else:
+            weights=weights/weight_total
         out=np.zeros(n,float)
         for w,x in zip(weights,waves): out += float(w)*x
     else:
         # N layers imply N-1 transition intervals. The scalar attached to each
         # preceding layer defines that interval's share of the requested total.
-        weights=[max(1e-9,float(l.get('time_scalar',1.0) or 1.0)) for l in layers[:-1]]
-        total=sum(weights); bounds=[0.0]; acc=0.0
+        weights=[]
+        for l in layers[:-1]:
+            value=float(l.get('time_scalar',1.0))
+            if value < 0.0:
+                value=0.0
+            weights.append(value)
+        total=sum(weights)
+        if total == 0.0:
+            weights=[1.0 for _ in weights]
+            total=float(len(weights))
+        bounds=[0.0]; acc=0.0
         for w in weights: acc+=w/total; bounds.append(acc)
         bounds[-1]=1.0
         pos=np.linspace(0,1,n,endpoint=False); out=np.empty(n,float)
         for i in range(len(waves)-1):
             a,b=bounds[i],bounds[i+1]; mask=(pos>=a)&((pos<b) if i<len(waves)-2 else (pos<=b))
             if not np.any(mask): continue
-            u=(pos[mask]-a)/max(1e-15,b-a); al=_alpha(u,mode,expr)
+            span=b-a
+            if span == 0.0: continue
+            u=(pos[mask]-a)/span; al=_alpha(u,mode,expr)
             out[mask]=waves[i][mask]*(1-al)+waves[i+1][mask]*al
     finite=np.isfinite(out); out=np.where(finite,out,0.0)
     peak=float(np.max(np.abs(out))) if out.size else 0.0

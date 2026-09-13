@@ -6,7 +6,7 @@
 - Canonical Signal Control defaults to Full Canonical / 100% authority and self-heals missing canonical coverage through canonical-owned runtime overlays without rewriting user data.
 - Canonical Resonance / Activity is 50–150%, independent of the 50/50 source coefficients; 150% is activity/continuation drive, not output volume.
 - Canonical→Instrument convolution influence is 0–100%.
-- Maximum active instruments: 128. Default Step Sequence Length: 12 steps. Default Automation Sequence Length: 12 steps. Playlist row duration remains 8 beats; Playlist Rows defaults to 32.
+- Maximum active instruments: 128. Default sequence/playlist row duration: 8 beats; Playlist Rows defaults to 32.
 - ParametricMathBackground is integrated with a deep navy gradient field.
 - Performance controls are consolidated into one horizontal deck; Automator controls are compacted into a multi-row grid.
 - UI initialization order and Qt stylesheet declarations were hardened; division-by-zero-sensitive paths use explicit degenerate-case handling rather than epsilon denominators where practical.
@@ -195,7 +195,7 @@ MAIN MEDIA IMPORT — carrier/reference inputs
   Video: .mp4 .mov .mkv .webm .avi .m4v .mpeg .mpg .flv .ts .m2ts
          .mts .3gp .3g2 .ogv .vob
 WAV is read natively when possible; other audio/video decoding routes through FFmpeg.
-Video-only files are valid visual carriers and receive a silent carrier stream.
+Video-only files are valid visual carriers but do not create a synthetic silent audio carrier.
 
 PROJECT / PROGRAM FORMATS
   .MCC       canonical transparent Groovebox composition/project document
@@ -531,8 +531,8 @@ AUTOMATION STEP EDITOR — SEQUENCER-STYLE CONTROL
   The automation strip is a second step sequencer directly under the main
   sequencer. It is intentionally simple and behaves like the normal step pads.
 
-  • Length controls 1–1024 automation steps. The orange strip fills the row when it fits
-    and scrolls horizontally at readable cell width when it does not.
+  • Length controls how many automation steps are shown. The orange strip grows
+    or scrolls horizontally to match that count.
   • Sequence Attack and Sequence Release default to 50% each and remain directly
     controllable per sequence by the canonical composition state.
   • First click on an automation step = SELECT + TELEPORT. The Step, Operator,
@@ -560,10 +560,10 @@ AUTOMATION STEP EDITOR — SEQUENCER-STYLE CONTROL
     untouched. Both randomizers create one undoable edit.
 
   Typical use:
-      1. Set Length (for example 12).
+      1. Set Length (for example 16).
       2. Click AUTO 1 once to select it.
       3. Choose Operator / Sequence / Offset ±.
-      4. A newly created AUTO cell is stored ON by default; click the same cell again to toggle it OFF.
+      4. Click AUTO 1 again to turn that automation step ON.
       5. Click another step once to teleport to it, edit it, then click it again
          when you want it ON.
 
@@ -1599,7 +1599,8 @@ mathematical or physical truth is part of its documentation standard.
 
 
 ### v15 User Media + Canonical Morph Bridge
-- **Load Carrier** accepts common audio and video containers. Audio is decoded as the carrier; video audio becomes the carrier while the original video path remains available to the audiovisual export path.
+- **Load Carrier** accepts common audio and video containers. Audio is decoded as the global carrier; video audio becomes the carrier while the original video path remains available to audiovisual export. Video-only files remain visual-only and do not manufacture silent PCM.
+- **Clear Global Carrier** detaches the project-wide carrier/video reference and carrier bindings without deleting the source file. **Clear Local Carrier** detaches only the selected operator sample/carrier. Both clear actions are undoable.
 - **Load Sample → Selected Operator** accepts audio and video files per operator. Video samples are represented as user-owned per-operator media; their decoded audio stream participates in the selected operator's render path.
 - **PRE-CANONICAL SAMPLE MORPH** uses the selected operator's synth parameter state, script, incident patch topology/gains, and domain definition to shape a transformed sample branch.
 - The local sample bridge is explicitly **50% untouched user waveform + 50% transformed branch**, so user sample material has a minimum 50% local contribution. Adaptive Fit and Phase Lock only shape the transformed branch.

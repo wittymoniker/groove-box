@@ -73,13 +73,13 @@ def _pitch(x,sr):
 def describe(x,sr):
     x=np.asarray(x,float); n=len(x); rms=float(np.sqrt(np.mean(x*x))) if n else 0.; peak=float(np.max(np.abs(x))) if n else 0.; dc=float(np.mean(x)) if n else 0.
     if n:
-        w=x*np.hanning(n); sp=np.abs(np.fft.rfft(w)); f=np.fft.rfftfreq(n,1/sr); s=float(sp.sum())+1e-15
-        cen=float((f*sp).sum()/s); spr=float(np.sqrt((((f-cen)**2)*sp).sum()/s)); cs=np.cumsum(sp); roll=float(f[min(len(f)-1,int(np.searchsorted(cs,.85*cs[-1])))]) if len(f) else 0
+        w=x*np.hanning(n); sp=np.abs(np.fft.rfft(w)); f=np.fft.rfftfreq(n,1/sr); s=float(sp.sum())
+        cen=float((f*sp).sum()/s) if s != 0.0 else 0.0; spr=float(np.sqrt((((f-cen)**2)*sp).sum()/s)) if s != 0.0 else 0.0; cs=np.cumsum(sp); roll=float(f[min(len(f)-1,int(np.searchsorted(cs,.85*cs[-1])))]) if len(f) and cs[-1] != 0.0 else 0.0
         zcr=float(np.mean(np.signbit(x[1:])!=np.signbit(x[:-1]))) if n>1 else 0
         dx=np.abs(np.diff(x)); thr=float(np.mean(dx)+2*np.std(dx)); trans=float(np.mean(dx>thr)) if len(dx) else 0
-        edge=max(1,min(n//8,int(sr*.05))); le=float(np.sqrt(np.mean((x[:edge]-x[-edge:])**2))/(rms+1e-12))
+        edge=max(1,min(n//8,int(sr*.05))); le=float(np.sqrt(np.mean((x[:edge]-x[-edge:])**2))/rms if rms != 0.0 else 0.0)
         # multi-lag normalized autocorrelation maximum excluding tiny lags
-        y=x-x.mean(); den=float(np.dot(y,y))+1e-12; lags=np.linspace(max(1,n//128),max(2,n//2),64,dtype=int); cor=[float(np.dot(y[:-l],y[l:])/den) for l in lags if l<n]; ss=max([0.0]+cor)
+        y=x-x.mean(); den=float(np.dot(y,y)); lags=np.linspace(max(1,n//128),max(2,n//2),64,dtype=int); cor=[float(np.dot(y[:-l],y[l:])/den) for l in lags if l<n and den != 0.0]; ss=max([0.0]+cor)
     else: cen=spr=roll=zcr=trans=le=ss=0.
     return SignalDescriptor(sr,n,n/sr if sr else 0,rms,peak,dc,_pitch(x,sr),cen,spr,roll,zcr,trans,le,float(max(0,min(1,ss))))
 
@@ -89,21 +89,21 @@ def _partials(x,sr,k=24):
     if len(sp)<3:return []
     inds=np.where((sp[1:-1]>sp[:-2])&(sp[1:-1]>=sp[2:]))[0]+1
     inds=inds[np.argsort(sp[inds])[-k:]][::-1]
-    mx=float(np.max(sp))+1e-15
-    return [{"hz":float(f[i]),"amplitude":float(sp[i]/mx)} for i in inds]
+    mx=float(np.max(sp))
+    return [{"hz":float(f[i]),"amplitude":float(sp[i]/mx) if mx != 0.0 else 0.0} for i in inds]
 
 def analyze(path: str, max_instruments: int=16, simplicity_weight: float=.35, loop_weight: float=.15, self_similarity_weight: float=.15, t_independence_weight: float=.15):
     x,sr=load_wav_mono(path); d=describe(x,sr); pts=_partials(x,sr,max(24,max_instruments*3))
     # Candidate reconstruction uses strongest partial groups as the simplest realizable additive explanation.
     nfft=len(x); target=np.abs(np.fft.rfft(x*np.hanning(len(x)))) if len(x) else np.array([0.])
-    target=target/(np.linalg.norm(target)+1e-15)
+    target_norm=float(np.linalg.norm(target)); target=target/target_norm if target_norm != 0.0 else np.zeros_like(target)
     cands=[]
     for ninst in range(1,max(1,max_instruments)+1):
         chosen=pts[:max(1,ninst*2)]; synth=np.zeros_like(target)
         freqs=np.fft.rfftfreq(len(x),1/sr) if len(x) else np.array([0.])
         for p in chosen:
             idx=int(np.argmin(np.abs(freqs-p['hz']))); width=max(1,int(len(freqs)*0.0006)); lo=max(0,idx-width); hi=min(len(synth),idx+width+1); synth[lo:hi]+=p['amplitude']
-        synth=synth/(np.linalg.norm(synth)+1e-15)
+        synth_norm=float(np.linalg.norm(synth)); synth=synth/synth_norm if synth_norm != 0.0 else np.zeros_like(synth)
         specsim=float(max(0,min(1,np.dot(target,synth))))
         wavsim=max(0.0, specsim*(1.0-min(1.0,d.loop_error*.08)))
         complexity=min(1.0,(ninst/max(max_instruments,1))*.72 + len(chosen)/(max_instruments*3)*.28)

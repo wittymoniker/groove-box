@@ -62,7 +62,7 @@ def _vdot(a,b): return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]
 def _vlen(a): return math.sqrt(max(0.0,_vdot(a,a)))
 def _vnorm(a):
     n=_vlen(a)
-    return (a[0]/n,a[1]/n,a[2]/n) if n>1e-12 else (0.0,1.0,0.0)
+    return (a[0]/n,a[1]/n,a[2]/n) if n != 0.0 else (0.0,1.0,0.0)
 def _vcross(a,b): return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
 
 class PlanetaryWorld:
@@ -84,7 +84,7 @@ class PlanetaryWorld:
         # Tangential launch: stable enough for gameplay, then gravity takes over.
         p=self._planet_pos(self.planets[0],0.0); radial=_vnorm(_vsub(self.pos,p));
         tangent=_vnorm(_vcross((0.0,1.0,0.0),radial))
-        if _vlen(tangent)<1e-5: tangent=(1.0,0.0,0.0)
+        if _vlen(tangent) == 0.0: tangent=(1.0,0.0,0.0)
         self.vel=_vmul(tangent, math.sqrt(self.G*self.planets[0]['mass']/max(1.0,self.planets[0]['radius']+7.0))*0.86)
         self.thrust=0.0
         self.accel=(0.0,0.0,0.0)
@@ -109,7 +109,7 @@ class PlanetaryWorld:
         return out
 
     def acceleration_at(self,pos):
-        g=(0.0,0.0,0.0); strongest=None; best=1e99
+        g=(0.0,0.0,0.0); strongest=None; best=math.inf
         for i,p,pp,_d0 in self.bodies_near(pos, radius=5000.0):
             r=_vsub(self._planet_pos(p,self.t),pos); d=max(2.0,_vlen(r))
             a=self.G*p['mass']/(d*d)
@@ -137,16 +137,16 @@ class PlanetaryWorld:
     def local_frame(self):
         """Camera frame whose image plane is perpendicular to gravity.
         Up is opposite gravity; forward is velocity projected into the tangent plane."""
-        up=_vnorm(_vmul(self.gravity,-1.0)) if _vlen(self.gravity)>1e-8 else (0.0,1.0,0.0)
+        up=_vnorm(_vmul(self.gravity,-1.0)) if _vlen(self.gravity) != 0.0 else (0.0,1.0,0.0)
         forward=_vsub(self.vel,_vmul(up,_vdot(self.vel,up)))
-        if _vlen(forward)<1e-8: forward=(0.0,0.0,1.0)
+        if _vlen(forward) == 0.0: forward=(0.0,0.0,1.0)
         forward=_vnorm(forward)
         right=_vnorm(_vcross(forward,up))
         forward=_vnorm(_vcross(up,right))
         return right,up,forward
 
     def target_planet(self):
-        best=None; bd=1e99
+        best=None; bd=math.inf
         for i,p,pp,d in self.bodies_near(self.pos,10000.0):
             if i==self.current_planet: continue
             if d<bd: best=(i,p,pp,d); bd=d
@@ -186,7 +186,7 @@ def _vdot(a,b): return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]
 def _vlen(a): return math.sqrt(max(0.0,_vdot(a,a)))
 def _vnorm(a):
     n=_vlen(a)
-    return (a[0]/n,a[1]/n,a[2]/n) if n>1e-12 else (0.0,1.0,0.0)
+    return (a[0]/n,a[1]/n,a[2]/n) if n != 0.0 else (0.0,1.0,0.0)
 def _vcross(a,b): return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
 
 class PlanetaryWorld:
@@ -208,7 +208,7 @@ class PlanetaryWorld:
         # Tangential launch: stable enough for gameplay, then gravity takes over.
         p=self._planet_pos(self.planets[0],0.0); radial=_vnorm(_vsub(self.pos,p));
         tangent=_vnorm(_vcross((0.0,1.0,0.0),radial))
-        if _vlen(tangent)<1e-5: tangent=(1.0,0.0,0.0)
+        if _vlen(tangent) == 0.0: tangent=(1.0,0.0,0.0)
         self.vel=_vmul(tangent, math.sqrt(self.G*self.planets[0]['mass']/max(1.0,self.planets[0]['radius']+7.0))*0.86)
         self.thrust=0.0
         self.accel=(0.0,0.0,0.0)
@@ -232,7 +232,7 @@ class PlanetaryWorld:
         return out
 
     def acceleration_at(self,pos):
-        g=(0.0,0.0,0.0); strongest=None; best=1e99
+        g=(0.0,0.0,0.0); strongest=None; best=math.inf
         for i,p,pp,_d0 in self.bodies_near(pos, radius=5000.0):
             r=_vsub(self._planet_pos(p,self.t),pos); d=max(2.0,_vlen(r))
             a=self.G*p['mass']/(d*d)
@@ -260,16 +260,16 @@ class PlanetaryWorld:
     def local_frame(self):
         """Camera frame whose image plane is perpendicular to gravity.
         Up is opposite gravity; forward is velocity projected into the tangent plane."""
-        up=_vnorm(_vmul(self.gravity,-1.0)) if _vlen(self.gravity)>1e-8 else (0.0,1.0,0.0)
+        up=_vnorm(_vmul(self.gravity,-1.0)) if _vlen(self.gravity) != 0.0 else (0.0,1.0,0.0)
         forward=_vsub(self.vel,_vmul(up,_vdot(self.vel,up)))
-        if _vlen(forward)<1e-8: forward=(0.0,0.0,1.0)
+        if _vlen(forward) == 0.0: forward=(0.0,0.0,1.0)
         forward=_vnorm(forward)
         right=_vnorm(_vcross(forward,up))
         forward=_vnorm(_vcross(up,right))
         return right,up,forward
 
     def target_planet(self):
-        best=None; bd=1e99
+        best=None; bd=math.inf
         for i,p,pp,d in self.bodies_near(self.pos,10000.0):
             if i==self.current_planet: continue
             if d<bd: best=(i,p,pp,d); bd=d
@@ -378,8 +378,6 @@ def eski_fractal_eval(set_name, x, c):
         y = 0.0
     if not math.isfinite(y):
         y = 0.0
-    if abs(y) > 1e6:
-        y = math.copysign(1e6, y)
     return float(y)
 
 def eski_fractal_pick(seed_key, sequential_nums=None, playlist_hash=0):
@@ -1074,7 +1072,7 @@ def classify_from_composition(
     seed: float,
     *,
     bpm: float = 120.0,
-    seq_length: int = 12,
+    seq_length: int = 16,
     playlist_rows: int = 32,
     n_instruments: int = 8,  # accepted for API compat; NEVER enters identity
     goava_active: bool = False,
@@ -1239,7 +1237,7 @@ def classify_from_composition(
     if _sk_r < 0.55:
         software_kind = "videogame"
     else:
-        _idx = 1 + int((_sk_r - 0.55) / max(1e-9, 0.45) * (len(SOFTWARE_KINDS) - 1))
+        _idx = 1 + int((_sk_r - 0.55) / 0.45 * (len(SOFTWARE_KINDS) - 1))
         software_kind = SOFTWARE_KINDS[min(len(SOFTWARE_KINDS) - 1, max(1, _idx))]
 
     texture_family = TEXTURE_FAMILIES[_res_idx(s, f"tex|{fingerprint}", len(TEXTURE_FAMILIES))]
@@ -1345,8 +1343,8 @@ class SequenceInfluence:
             "step": step,
             "pattern": plen,
             "phase": phase,
-            "motion": max(1e-9, min(1.0, motion)),
-            "vibration": max(1e-9, min(0.5, vibration)),
+            "motion": max(0.0, min(1.0, motion)),
+            "vibration": max(0.0, min(0.5, vibration)),
         }
 
 
@@ -1797,7 +1795,6 @@ def eski_fractal_eval(set_name,x,c):
         else: y=_g_fractal_add(x,c)
     except Exception: y=0.0
     if not math.isfinite(y): y=0.0
-    if abs(y)>1e6: y=math.copysign(1e6,y)
     return float(y)
 
 def eski_fractal_pick(seed_key,sequential_nums=None,playlist_hash=0):
@@ -1846,7 +1843,7 @@ def _vdot(a,b): return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]
 def _vlen(a): return math.sqrt(max(0.0, _vdot(a,a)))
 def _vnorm(a):
     n=_vlen(a)
-    return (a[0]/n,a[1]/n,a[2]/n) if n>1e-12 else (0.0,1.0,0.0)
+    return (a[0]/n,a[1]/n,a[2]/n) if n != 0.0 else (0.0,1.0,0.0)
 def _vcross(a,b): return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
 
 class SeedScribedGOAVA:
@@ -1880,7 +1877,7 @@ class SequenceInfluence:
         world=float(gc.get("world_z",gc.get("z",0.0)) or 0.0)
         motion *= 1.0 + 0.12*max(-1.0,min(1.0,drive))
         vibration += 0.04*max(-1.0,min(1.0,world))
-        return {"step":step,"pattern":plen,"phase":phase,"motion":max(1e-9,min(1.0,motion)),"vibration":max(1e-9,min(0.5,vibration)),"graph_drive":drive,"graph_world_z":world}
+        return {"step":step,"pattern":plen,"phase":phase,"motion":max(0.0,min(1.0,motion)),"vibration":max(0.0,min(0.5,vibration)),"graph_drive":drive,"graph_world_z":world}
 
 class TemporalSeedDynamics:
     def __init__(self, seed): self.seed=_safe_int_seed(seed); self.stage="build"; self.intensity=0.0
@@ -1904,7 +1901,7 @@ class PlanetaryWorld:
             self.planets.append({"id":f"P{i}","orbit":orbit,"angle":a,"mass":mass,"radius":radius,"inclination":inc})
         self.t=0.0; p0=self._planet_pos(self.planets[0],0.0)
         self.pos=_vadd(p0,(0.0,self.planets[0]["radius"]+7.0,0.0)); radial=_vnorm(_vsub(self.pos,p0))
-        tangent=_vnorm(_vcross((0.0,1.0,0.0),radial)); tangent=tangent if _vlen(tangent)>=1e-5 else (1.0,0.0,0.0)
+        tangent=_vnorm(_vcross((0.0,1.0,0.0),radial)); tangent=tangent if _vlen(tangent) != 0.0 else (1.0,0.0,0.0)
         self.vel=_vmul(tangent,math.sqrt(self.G*self.planets[0]["mass"]/max(1.0,self.planets[0]["radius"]+7.0))*0.86)
         self.accel=(0.0,0.0,0.0); self.gravity=(0.0,0.0,0.0); self.current_planet=0; self.landed=True
         self.gravity,self.current_planet=self.acceleration_at(self.pos)
@@ -1918,7 +1915,7 @@ class PlanetaryWorld:
             if d<=radius: out.append((i,p,pp,d))
         return out
     def acceleration_at(self,pos):
-        g=(0.0,0.0,0.0); strongest=None; best=1e99
+        g=(0.0,0.0,0.0); strongest=None; best=math.inf
         for i,p,pp,_ in self.bodies_near(pos,5000.0):
             r=_vsub(pp,pos); d=max(2.0,_vlen(r)); g=_vadd(g,_vmul(_vnorm(r),self.G*p["mass"]/(d*d)))
             if d<best: best=d; strongest=i
@@ -1931,8 +1928,8 @@ class PlanetaryWorld:
             self.landed=d<=r+2.0
             if self.landed and _vlen(self.vel)<2.5: self.pos=_vadd(pp,_vmul(_vnorm(_vsub(self.pos,pp)),r+1.5))
     def local_frame(self):
-        up=_vnorm(_vmul(self.gravity,-1.0)) if _vlen(self.gravity)>1e-8 else (0.0,1.0,0.0)
-        forward=_vsub(self.vel,_vmul(up,_vdot(self.vel,up))); forward=_vnorm(forward if _vlen(forward)>=1e-8 else (0.0,0.0,1.0))
+        up=_vnorm(_vmul(self.gravity,-1.0)) if _vlen(self.gravity) != 0.0 else (0.0,1.0,0.0)
+        forward=_vsub(self.vel,_vmul(up,_vdot(self.vel,up))); forward=_vnorm(forward if _vlen(forward) != 0.0 else (0.0,0.0,1.0))
         right=_vnorm(_vcross(forward,up)); return right,up,_vnorm(_vcross(up,right))
     def to_dict(self):
         return {"t":round(self.t,6),"pos":[round(x,6) for x in self.pos],"vel":[round(x,6) for x in self.vel],"gravity":[round(x,6) for x in self.gravity],"accel":[round(x,6) for x in self.accel],"planet":self.current_planet,"landed":self.landed}
@@ -4501,7 +4498,7 @@ class Game:
 
     def _fire_invites(self):
         for e in self.invites:
-            if not e.get("fired") and self.t >= float(e.get("t", 1e9)):
+            if not e.get("fired") and self.t >= float(e.get("t", math.inf)):
                 e["fired"] = True
                 self.push_status(str(e.get("text", "")))
 
@@ -4711,7 +4708,7 @@ class Game:
                 _right,_up,_forward = self.planetary.local_frame()
                 _th = _vadd(_vmul(_right,float(self.move["dx"])),
                             _vadd(_vmul(_forward,float(self.move["dz"])),_vmul(_up,float(self.move["dy"]))))
-                _player_motion = (abs(float(self.steer)) > 1e-12 or _vlen(_th) > 1e-12)
+                _player_motion = (float(self.steer) != 0.0 or _vlen(_th) != 0.0)
                 if _player_motion:
                     self.planetary.step(dt,_th)
                     # Legacy angle remains a compatibility signal, but only
@@ -5699,7 +5696,7 @@ class CrossCorrelationKernel:
 
         # Shared field coordinates
         field = {
-            "u": (phase / max(math.tau, 1e-9) + _residue(self.seed, "cc/u")) % 1.0,
+            "u": (phase / math.tau + _residue(self.seed, "cc/u")) % 1.0,
             "rho": 0.35 + 0.65 * ent,
             "energy": 0.25 * rms + 0.75 * (0.4 + 0.6 * ent),
             "t": t,
@@ -5811,7 +5808,7 @@ def instant_video_frame(seed, t=0.0, w=320, h=180, *,
         _c = 0.0
         _set = "wormhill"
     # Radial + angular field modulated by energy, spin, and book fractal Y
-    rr = _np.sqrt(xx * xx + yy * yy) + 1e-6
+    rr = _np.sqrt(xx * xx + yy * yy)
     ang = _np.arctan2(yy, xx)
     wave = _np.sin(ang * (2.0 + 3.0 * grid) + float(t) * spin * math.tau
                    + field["u"] * math.tau + float(_yf)) * 0.5 + 0.5

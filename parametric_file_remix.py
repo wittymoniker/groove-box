@@ -56,7 +56,7 @@ def _process_audio(x,sr,script,seed,pair,bpm,control_hz):
         go=max(0,min(1,float(v.get('goava',0))/100.0)); ra=max(0,min(1,float(v.get('rand',0))/100.0)); bo=max(0,min(1,float(v.get('boost',0))/100.0)); speed=max(.25,min(4.0,float(v.get('speed',1.0))))
         eng.amount_goava=go; eng.amount_random=ra; eng.set_boost(max(1,int(sr*2.0)),0.0,bo)
         wet=eng.process(chunk,start_sample=start,goava_scalar=1.1975807343,bpm=bpm)
-        if abs(speed-1.0)>1e-6 and len(wet)>2:
+        if speed != 1.0 and len(wet)>2:
             n=max(2,int(round(len(wet)/speed)))
             wet=np.interp(np.linspace(0,len(wet)-1,n),np.arange(len(wet)),wet).astype(np.float32)
         pieces.append(wet); start+=len(chunk); step+=1

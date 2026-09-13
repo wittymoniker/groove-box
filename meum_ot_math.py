@@ -56,8 +56,18 @@ def modulation_basis(seed, label):
     return k, MEUM_BASIS[k]
 
 def temporal_stage(t: float, period: float=64.0):
-    """Build → modulate → stabilize over each deterministic seed epoch."""
-    p=(max(0.0,float(t)) % max(1e-9,float(period)))/float(period)
+    """Build → modulate → stabilize over each deterministic seed epoch.
+
+    Range scope is exact: zero period has its own branch; negative periods are
+    mirrored to their real positive duration rather than replaced by epsilon.
+    """
+    tt = float(t)
+    if tt < 0.0:
+        tt = 0.0
+    per = abs(float(period))
+    if per == 0.0:
+        return 'build', 0.0
+    p=(tt % per)/per
     if p < MEUM_MINUS_1: return 'build', p/MEUM_MINUS_1
     if p < MEUM_INV: return 'modulate', (p-MEUM_MINUS_1)/(MEUM_INV-MEUM_MINUS_1)
     return 'stabilize', (p-MEUM_INV)/(1.0-MEUM_INV)
@@ -107,11 +117,11 @@ def simplify_transforms(transforms: Iterable[Mapping]):
         elif typ in ('add','offset'): add+=val
         elif typ in ('sub','subtract'): add-=val
         elif typ in ('phase','phase_offset'): phase+=val
-    # exact-ish identity snapping without throwing away provenance
-    if abs(mul-1.0)<1e-12: mul=1.0
-    if abs(add)<1e-12: add=0.0
+    # Exact identities only: do not reinterpret small nonzero transforms as 0.
+    if mul == 1.0: mul=1.0
+    if add == 0.0: add=0.0
     phase=math.fmod(phase, math.tau)
-    if abs(phase)<1e-12: phase=0.0
+    if phase == 0.0: phase=0.0
     return {'multiply':mul,'add':add,'phase':phase,'sources':tuple(sorted(provenance))}
 
 def numeric_signature(seed, label, values=()):

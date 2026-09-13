@@ -70,14 +70,14 @@ def _ffmpeg() -> Optional[str]:
     try:
         return resolve_local_tool('ffmpeg', required=False)
     except Exception:
-        return None
+        return shutil.which('ffmpeg')
 
 
 def _ffprobe() -> Optional[str]:
     try:
         return resolve_local_tool('ffprobe', required=False)
     except Exception:
-        return None
+        return shutil.which('ffprobe')
 
 
 def _probe_duration(path: str) -> float:
@@ -974,7 +974,7 @@ class VideoClipStudio(QWidget):
         if 0<=i<len(self.draw_layers):
             self.draw_layers[i].update(start=float(self.spin_layer_start.value()),end=float(self.spin_layer_end.value()),fade=float(self.spin_layer_fade.value()))
     def _draw_layer_time_gain(self,rec,tsec):
-        start=float(rec.get('start',0)); end=float(rec.get('end',1e9)); fade=max(0.0,float(rec.get('fade',0)))
+        start=float(rec.get('start',0)); end=float(rec.get('end',math.inf)); fade=max(0.0,float(rec.get('fade',0)))
         if tsec<start or tsec>end:return 0.0
         g=1.0
         if fade>0:g=min(g,max(0.0,min(1.0,(tsec-start)/fade)),max(0.0,min(1.0,(end-tsec)/fade)))
@@ -1932,7 +1932,7 @@ class VideoClipStudio(QWidget):
         # Human-readable meter: map -60 dBFS..0 dBFS to 0..100.  A linear
         # amplitude meter makes normal microphone speech appear misleadingly tiny.
         level=max(0.0,min(1.0,float(getattr(self,'_mic_level',0.0) or 0.0)))
-        if level <= 1e-6:
+        if level <= 0.0:
             pct=0
         else:
             db=20.0*math.log10(level)
@@ -2818,9 +2818,9 @@ class VideoClipStudio(QWidget):
         im=self.canvas.image.scaled(48,27,Qt.AspectRatioMode.IgnoreAspectRatio,Qt.TransformationMode.SmoothTransformation).convertToFormat(QImage.Format.Format_RGBA8888)
         ptr=im.bits(); ptr.setsize(im.sizeInBytes()); a=np.frombuffer(ptr,dtype=np.uint8).reshape(im.height(),im.width(),4)
         alpha=a[:,:,3].astype(np.float64)/255.0
-        if float(alpha.sum())<1e-9:return []
+        if float(alpha.sum()) == 0.0:return []
         def region_stats(block):
-            aa=block[:,:,3].astype(np.float64)/255.0; denom=max(1e-9,float(aa.sum())); rgb=(block[:,:,:3].astype(np.float64)*aa[:,:,None]).sum(axis=(0,1))/denom
+            aa=block[:,:,3].astype(np.float64)/255.0; denom=float(aa.sum()); rgb=(block[:,:,:3].astype(np.float64)*aa[:,:,None]).sum(axis=(0,1))/denom if denom != 0.0 else np.zeros(3,dtype=np.float64)
             c=QColor(int(rgb[0]),int(rgb[1]),int(rgb[2])); h,s,v,_=c.getHsvF(); return (0.0 if h<0 else h,s,v)
         if detail!='Detailed':return [region_stats(a)]
         out=[]
@@ -2843,7 +2843,7 @@ class VideoClipStudio(QWidget):
                 seg=x[i*chunk:min(x.size,(i+1)*chunk)]
                 vals.append(float(np.sqrt(np.mean(seg*seg))) if seg.size else 0.0)
             out=np.asarray(vals,dtype=np.float64); mx=float(out.max()) if out.size else 0.0
-            if mx>1e-12:out/=mx
+            if mx != 0.0:out/=mx
         except Exception:pass
         return out
 
@@ -2881,7 +2881,7 @@ class VideoClipStudio(QWidget):
         scale=0.25 + sc*1.75; angle=(rot-.5)*720.0; dx=(xcurve-.5)*w; dy=(ycurve-.5)*h
         q=QPainter(frame); q.setRenderHint(QPainter.RenderHint.Antialiasing,True); q.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform,True)
         tsec=t01*float(self.spin_duration.value())
-        pairs=list(zip(self.draw_layers,self.draw_canvases)) or [({'start':0,'end':1e9,'fade':0},self.canvas)]
+        pairs=list(zip(self.draw_layers,self.draw_canvases)) or [({'start':0,'end':math.inf,'fade':0},self.canvas)]
         for rec,canvas in pairs:
             tg=self._draw_layer_time_gain(rec,tsec)
             if tg<=0:continue

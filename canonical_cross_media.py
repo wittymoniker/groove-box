@@ -36,11 +36,11 @@ def analyze_waveform(waveform, sample_rate=48000, max_points=128):
     seg=x[:nfft]
     win=np.hanning(len(seg)); mag=np.abs(np.fft.rfft(seg*win))
     freqs=np.fft.rfftfreq(len(seg),1.0/sr)
-    sm=float(np.sum(mag))+1e-12
-    centroid=float(np.sum(freqs*mag)/sm)
-    gm=float(np.exp(np.mean(np.log(np.maximum(mag,1e-12)))))
-    am=float(np.mean(mag)+1e-12)
-    flatness=float(gm/am)
+    sm=float(np.sum(mag))
+    centroid=float(np.sum(freqs*mag)/sm) if sm != 0.0 else 0.0
+    gm=0.0 if np.any(mag == 0.0) else float(np.exp(np.mean(np.log(mag))))
+    am=float(np.mean(mag))
+    flatness=float(gm/am) if am != 0.0 else 0.0
     bins=max(8,int(max_points))
     edges=np.linspace(0,x.size,bins+1).astype(np.int64)
     env=[]
@@ -49,7 +49,7 @@ def analyze_waveform(waveform, sample_rate=48000, max_points=128):
         env.append(float(np.sqrt(np.mean(y*y))) if y.size else 0.0)
     sbins=min(bins,64)
     si=np.linspace(0,len(mag)-1,sbins).astype(np.int64)
-    spectrum=[float(mag[i]/(np.max(mag)+1e-12)) for i in si]
+    mag_peak=float(np.max(mag)); spectrum=[float(mag[i]/mag_peak) if mag_peak != 0.0 else 0.0 for i in si]
     out={"available":True,"sample_rate":sr,"samples":int(x.size),"duration":float(x.size/sr),"rms":rms,"peak":peak,"zero_cross_rate":zc,"spectral_centroid":centroid,"spectral_flatness":flatness,"energy_envelope":env,"spectrum":spectrum}
     out["fingerprint"]=_stable(out)
     return out
@@ -79,8 +79,8 @@ def build_canonical_document(app, waveform=None, sample_rate=48000):
         "version":VERSION,
         "seed":seed_text,
         "bpm":val("spin_bpm",120.0),
-        "seq_length":int(round(val("spin_seq_length",12))),
-        "playlist_rows":int(round(val("spin_playlist_length",32))),
+        "seq_length":int(round(val("spin_seq_length",16))),
+        "playlist_rows":int(round(val("spin_playlist_length",64))),
         "base_frequency":val("spin_base_frequency",432.0),
         "global_convolve":val("spin_global_convolve",0.0),
         "sequences":sequences,
@@ -130,8 +130,8 @@ def build_cross_media_from_canonical(document, waveform=None, sample_rate=48000)
         "version": VERSION,
         "seed": d.get("seed", ""),
         "bpm": d.get("bpm", 120.0),
-        "seq_length": d.get("seq_length", 12),
-        "playlist_rows": d.get("playlist_rows", 32),
+        "seq_length": d.get("seq_length", 16),
+        "playlist_rows": d.get("playlist_rows", 64),
         "sequences": d.get("instrument_sequencer_memory", d.get("sequences", {})),
         "sequence_banks": d.get("instrument_sequence_banks", d.get("sequence_banks", {})),
         "playlist": d.get("master_playlist_data", d.get("playlist", [])),

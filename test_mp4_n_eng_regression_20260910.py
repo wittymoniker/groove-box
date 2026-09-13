@@ -17,7 +17,7 @@ checks = {
     "n_eng is used by canonical visual metadata": "n_eng" in loaded and '"engines": n_eng' in text,
     "active canonical engine count is deterministic": "n5 = sum(1 for _k in _VISUAL_ENGINE_CHANNELS if eng.get(_k))" in text,
     "level-weighted influence remains separate": "total_level = sum(_lev[k] for k in _VISUAL_ENGINE_CHANNELS if eng.get(k))" in text,
-    "idle visual reference remains 1/6": "if total_level > 1e-9 else (1.0 / 6.0)" in text,
+    "idle visual reference remains 1/6 with exact zero test": "if total_level != 0.0 else (1.0 / 6.0)" in text,
 }
 failed = []
 for name, ok in checks.items():

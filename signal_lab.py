@@ -160,10 +160,10 @@ class SignalLab(QWidget):
             if n<128: raise ValueError('Reference too short')
             y=x-x.mean(); minlag=max(16,int(sr/2000)); maxlag=min(n//2,int(sr*8.0));
             # coarse-to-fine normalized correlation search
-            lags=np.unique(np.linspace(minlag,maxlag,min(2048,maxlag-minlag+1),dtype=int)); den=float(np.dot(y,y))+1e-15
+            lags=np.unique(np.linspace(minlag,maxlag,min(2048,maxlag-minlag+1),dtype=int)); den=float(np.dot(y,y))
             scores=[]
             for lag in lags:
-                a=y[:-lag]; b=y[lag:]; scores.append(float(np.dot(a,b)/(math.sqrt(np.dot(a,a)*np.dot(b,b))+1e-15)))
+                a=y[:-lag]; b=y[lag:]; ab_den=math.sqrt(np.dot(a,a)*np.dot(b,b)); scores.append(float(np.dot(a,b)/ab_den) if ab_den != 0.0 else 0.0)
             lag=int(lags[int(np.argmax(scores))]); score=float(max(scores)); hz=sr/lag
             self.report.setPlainText(f'Fundamental loop estimate\nlag: {lag} samples\nduration: {lag/sr:.9f} s\nrepeat rate: {hz:.9f} Hz\nnormalized similarity: {score:.9f}')
         except Exception as e: QMessageBox.warning(self,'Loop detect failed',str(e))
@@ -180,9 +180,9 @@ class SignalLab(QWidget):
             magS=np.abs(S); magR=np.abs(R); phase=np.angle(S)
             if mode=='Sounds Like': mag=(1-a)*magS+a*magR
             elif mode=='Harmonic Complement':
-                scale=(np.mean(magS)+1e-15)/(np.mean(magR)+1e-15); mag=magS*(1-a)+a*np.maximum(0.0,magS-(magR*scale))
+                ref_mean=float(np.mean(magR)); scale=(float(np.mean(magS))/ref_mean) if ref_mean != 0.0 else 0.0; mag=magS*(1-a)+a*np.maximum(0.0,magS-(magR*scale))
             else: # Opposite: invert normalized reference spectral emphasis around its mean
-                nr=magR/(np.max(magR)+1e-15); mag=magS*((1-a)+a*(1.0-nr))
+                ref_peak=float(np.max(magR)); nr=magR/ref_peak if ref_peak != 0.0 else np.zeros_like(magR); mag=magS*((1-a)+a*(1.0-nr))
             out=np.fft.irfft(mag*np.exp(1j*phase),n=n); self._write_wav(p,out,self.sr.value()); self.last_generated=os.path.abspath(p)
             self.report.setPlainText(f'Derived {mode} transform saved:\n{self.last_generated}\nStrength {a:.3f}; canonical/userdata unchanged.')
         except Exception as e: QMessageBox.warning(self,'Transform failed',str(e))

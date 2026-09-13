@@ -1021,7 +1021,7 @@ class Performance(QDialog):
         if ext in AUDIO_EXT and hasattr(self.host, "play_buffer"):
             # Prefer host buffer play for dry 1× WAV. At any other speed use
             # mpv so rate changes remain live/responsive through IPC.
-            if ext == ".wav" and abs(self._live_speed - 1.0) < 1e-9:
+            if ext == ".wav" and self._live_speed == 1.0:
                 try:
                     self._play_wav_on_host(path)
                     self.lbl_status.setText(f"Playing on host: {os.path.basename(path)}")
@@ -1983,7 +1983,7 @@ class Performance(QDialog):
                             sample_rate=int(getattr(host, "play_sample_rate", 48000) or 48000))
             eng.amount_goava = float(goava)
             eng.amount_random = float(rand)
-            if boost > 1e-6:
+            if boost > 0.0:
                 # ~1 bar at 120 BPM default
                 sr = float(getattr(host, "play_sample_rate", 48000) or 48000)
                 interval = int(sr * 2.0)

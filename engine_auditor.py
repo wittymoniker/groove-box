@@ -318,7 +318,7 @@ def app_meta_checks(app):
     ok = True
     labels = {
         "cl_meta_report": ("F4 bake meta (report present)", lambda a, v: isinstance(v, dict) and "ratio_pct" in v),
-        "eqr_z": ("F3 EQR z readout (P·E+D present)", lambda a, v: isinstance(v, (int, float)) and v > 1e-9),
+        "eqr_z": ("F3 EQR z readout (P·E+D present)", lambda a, v: isinstance(v, (int, float)) and v != 0.0),
         "dpi_peak": ("F3 peak-hold present", lambda a, v: isinstance(v, (int, float))),
     }
     for attr, (label, pred) in labels.items():

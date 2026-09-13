@@ -103,7 +103,7 @@ class LiveDJEffects:
         self.boost_amount = float(np.clip(amount, 0.0, 1.0))
 
     def _boost_gain(self, n: int, start_sample: int) -> np.ndarray | None:
-        if self.boost_interval <= 0 or self.boost_amount <= 1e-6 or n <= 0:
+        if self.boost_interval <= 0 or self.boost_amount <= 0.0 or n <= 0:
             return None
         t = float(start_sample) + np.arange(n, dtype=np.float32)
         pos = (t - self.boost_phase) % float(self.boost_interval)
@@ -119,7 +119,7 @@ class LiveDJEffects:
     def goava_pair_morph(self, x: np.ndarray, *, start_sample: int, goava_scalar: float = 0.0, bpm: float = 120.0, amount: float | None = None) -> np.ndarray:
         """GOAVA-derived ring/drive morph; the unordered pair selects its timbre."""
         amt = self.amount_goava if amount is None else float(amount)
-        if amt <= 1e-6 or x.size == 0:
+        if amt <= 0.0 or x.size == 0:
             return x.astype(np.float32, copy=False)
         n = x.size
         t = (float(start_sample) + np.arange(n, dtype=np.float32)) / float(self.sample_rate)
@@ -137,7 +137,7 @@ class LiveDJEffects:
     def random_parametric(self, x: np.ndarray, *, start_sample: int, bpm: float = 120.0, random_scalar: float = 0.0, amount: float | None = None) -> np.ndarray:
         """Seeded, continuously moving DJ macro; random-looking but repeatable."""
         amt = self.amount_random if amount is None else float(amount)
-        if amt <= 1e-6 or x.size == 0:
+        if amt <= 0.0 or x.size == 0:
             return x.astype(np.float32, copy=False)
         n = x.size
         t = (float(start_sample) + np.arange(n, dtype=np.float32)) / float(self.sample_rate)
@@ -163,9 +163,9 @@ class LiveDJEffects:
 
     def process(self, x: np.ndarray, *, start_sample: int, goava_scalar: float = 0.0, random_scalar: float = 0.0, bpm: float = 120.0) -> np.ndarray:
         y = np.asarray(x, dtype=np.float32)
-        if self.amount_goava > 1e-6:
+        if self.amount_goava > 0.0:
             y = self.goava_pair_morph(y, start_sample=start_sample, goava_scalar=goava_scalar, bpm=bpm)
-        if self.amount_random > 1e-6:
+        if self.amount_random > 0.0:
             y = self.random_parametric(y, start_sample=start_sample, bpm=bpm, random_scalar=random_scalar)
         gain = self._boost_gain(y.size, start_sample)
         if gain is not None:

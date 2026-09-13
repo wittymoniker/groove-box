@@ -98,7 +98,7 @@ from author_number_codec import (
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QVBoxLayout,
     QHBoxLayout, QLabel, QSlider, QPushButton, QComboBox, QScrollArea,
-    QTabWidget, QLineEdit, QListWidget, QFormLayout, QSpinBox, QDoubleSpinBox, QAbstractSpinBox,
+    QTabWidget, QLineEdit, QListWidget, QFormLayout, QSpinBox, QDoubleSpinBox,
     QGridLayout, QLayout, QFileDialog, QSplitter, QGroupBox, QTextEdit, QMenu,
     QMessageBox, QTableWidget, QTableWidgetItem, QCheckBox, QDial, QMenuBar,
     QDialog, QInputDialog, QColorDialog, QHeaderView, QProgressBar, QSizePolicy, QToolButton,
@@ -1378,41 +1378,13 @@ class _OTMixedNumericTextOverlay(OTNumberGlyphWidget):
                 x += fm.horizontalAdvance(token)
 
 
-def _configure_spinbox_input_behavior(widget):
-    """Apply the project-wide deliberate spinbox editing contract.
-
-    Numeric controls must never behave like a nearby keyboard sink.  Typing is
-    committed only on Return/Enter or focus-out, spinboxes are skipped by Tab
-    traversal, and keyboard stepping is available only after an intentional
-    mouse click gives the control focus.  Qt's accelerated key-repeat stepping
-    is disabled so a held arrow cannot race through values.
-
-    The host event filter separately rejects wheel stepping unless the spinbox
-    is deliberately focused and clears that focus when the pointer leaves it.
-    """
-    if not isinstance(widget, QAbstractSpinBox):
-        return widget
-    try:
-        widget.setKeyboardTracking(False)
-    except Exception:
-        pass
-    try:
-        widget.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-    except Exception:
-        pass
-    try:
-        widget.setAccelerated(False)
-    except Exception:
-        pass
-    return widget
-
-
 class _MathSymbolSpinWatcher(QObject):
-    """Application-wide spinbox behavior + optional author-symbol installer.
+    """Event-driven installer for *actual numeric controls* only.
 
-    Every QAbstractSpinBox gets the low-churn keyboard editing contract, even
-    when Math Symbols are disabled.  Symbol overlays remain opt-in and are only
-    installed for actual numeric QSpinBox/QDoubleSpinBox controls.
+    PUBLIC_SYMBOL_PERF_FINAL_20260906: labels/buttons/readouts are deliberately
+    not overpainted.  This keeps author notation confined to editable numeric
+    fields and avoids an application-wide paint tax.  When Math Symbols is OFF
+    this filter returns immediately and creates no overlay widgets.
     """
     TEXT_TYPES = ()
 
@@ -1437,14 +1409,16 @@ class _MathSymbolSpinWatcher(QObject):
             self._pending_ids.discard(key)
 
     def eventFilter(self, obj, event):
+        # Absolute fast path: public/default Symbols OFF performs no overlay
+        # discovery, scheduling, layout or paint-related work.
+        if not MATH_SYMBOLS_ENABLED:
+            return False
         try:
-            if event.type() == QEvent.Type.Show and isinstance(obj, QAbstractSpinBox):
-                _configure_spinbox_input_behavior(obj)
-                if MATH_SYMBOLS_ENABLED and isinstance(obj, (QSpinBox, QDoubleSpinBox)):
-                    oid = id(obj)
-                    if oid not in self._pending_ids:
-                        self._pending_ids.add(oid)
-                        QTimer.singleShot(0, lambda w=obj, key=oid: self._install(w, key))
+            if event.type() == QEvent.Type.Show and isinstance(obj, (QSpinBox, QDoubleSpinBox)):
+                oid = id(obj)
+                if oid not in self._pending_ids:
+                    self._pending_ids.add(oid)
+                    QTimer.singleShot(0, lambda w=obj, key=oid: self._install(w, key))
         except RuntimeError:
             pass
         except Exception:
@@ -1846,22 +1820,31 @@ def isy(x):
 # ---------------------------------------------------------------------------
 # MEUM SPATIAL PRIMITIVES — compact x/y/z computational forms
 # ---------------------------------------------------------------------------
-def meum_spatial_potential(x, y, z, q=1.0, epsilon=1e-9):
-    """Direct bounded field-potential form: Φ = q / sqrt(x²+y²+z²).
+def meum_spatial_potential(x, y, z, q=1.0, epsilon=None):
+    """Direct field-potential form: Φ = q / sqrt(x²+y²+z²).
 
-    This is a computational geometric potential, not a claim of physical
-    equivalence to Coulomb/QFT normalization.  It is deliberately finite.
+    Scope is exact.  ``r == 0`` is handled as the actual singular boundary;
+    no epsilon radius is substituted.  ``epsilon`` is accepted only for old
+    project-call compatibility and is intentionally ignored.
     """
+    qv=float(q)
     r = math.sqrt(float(x)*float(x) + float(y)*float(y) + float(z)*float(z))
-    return float(q) / max(float(epsilon), r)
+    if r == 0.0:
+        if qv == 0.0:
+            return math.nan
+        return math.copysign(math.inf, qv)
+    return qv / r
 
 
 def meum_bounded_wave_xyz(x, y, z, lx=1.0, ly=1.0, lz=1.0, n=1, m=1, k=1):
     """Bounded standing-wave form over x/y/z spatial limits."""
+    lx=float(lx); ly=float(ly); lz=float(lz)
+    if lx == 0.0 or ly == 0.0 or lz == 0.0:
+        return math.nan
     return (
-        series_sin(float(n) * math.pi * float(x) / max(float(lx), 1e-9))
-        * series_sin(float(m) * math.pi * float(y) / max(float(ly), 1e-9))
-        * series_sin(float(k) * math.pi * float(z) / max(float(lz), 1e-9))
+        series_sin(float(n) * math.pi * float(x) / lx)
+        * series_sin(float(m) * math.pi * float(y) / ly)
+        * series_sin(float(k) * math.pi * float(z) / lz)
     )
 
 
@@ -2095,13 +2078,14 @@ def eqr_tensor_step(sample, neighbours, t=0.0):
     sum_p = 0.0
     sum_e = 0.0
     for v in pts:
-        dn = abs(v - s) + 1e-9
+        dn = abs(v - s)
         sum_p += book_isn_inv((book_isn(dn) + book_isn(t)) * 0.5)
-        sum_e += book_isn(v) / dn
+        e_num = book_isn(v)
+        sum_e += (e_num / dn) if dn != 0.0 else 0.0
     P = sum_p / float(k)
     E = sum_e / float(k)
     D = 0.0
-    if abs(P) > 1e-12:
+    if P != 0.0:
         acc = 0.0
         for v in pts:
             acc += book_isn_inv(book_isn(v) * E / (_I * P))
@@ -2128,14 +2112,15 @@ def eqr_tensor_audio(sample, d_char, theta_char, t=0.0):
 
     Same identities as the book; O(1) per sample after one sliding-window pass.
     """
-    d = abs(float(d_char)) + 1e-9
+    d = abs(float(d_char))
     th = float(theta_char)
     tt = float(t)
     _I = EQR_FINITE_INFINITY
     P = book_isn_inv((book_isn(d) + book_isn(tt)) * 0.5)
-    E = book_isn(th) / d
+    e_num = book_isn(th)
+    E = (e_num / d) if d != 0.0 else 0.0
     D = 0.0
-    if abs(P) > 1e-12:
+    if P != 0.0:
         D = book_isn_inv(book_isn(th) * E / (_I * P))
     Z = P * E + D
     return float(P), float(E), float(D), float(Z)
@@ -2587,7 +2572,7 @@ def _fractal_root(x, n=2.0):
     n = float(n) if float(n) != 0.0 else 2.0
     if OP_THEORY_ENABLED:
         return ot_pow(max(x, 0.0) if x < 0 else x, 1.0 / n)
-    if x < 0.0 and abs(n - 2.0) < 1e-12:
+    if x < 0.0 and n == 2.0:
         return float("nan")
     try:
         return math.pow(max(x, 0.0), 1.0 / n) if x < 0 else math.pow(x, 1.0 / n)
@@ -2629,9 +2614,6 @@ def eski_fractal_eval(set_name, x, c):
         y = 0.0
     if not math.isfinite(y):
         y = 0.0
-    # Soft bound for graphing (does not change the expression — display only)
-    if abs(y) > 1e6:
-        y = math.copysign(1e6, y)
     return float(y)
 
 
@@ -2906,8 +2888,9 @@ def ot_acos_via_arcics(y):
 
 def ot_tan_via_isn_ics(x):
     c = ot_cos_via_ics(x)
-    if abs(c) < 1e-18:
-        return math.copysign(1e18, ot_sin_via_isn(x))
+    if c == 0.0:
+        s = ot_sin_via_isn(x)
+        return math.copysign(math.inf, s if s != 0.0 else 1.0)
     return ot_equiv_div(ot_sin_via_isn(x), c)
 
 
@@ -3031,12 +3014,15 @@ def book_isn_envelope_shape(u, decay):
         env = np.ones_like(uu)
         m = uu <= cycle_frac
         if np.any(m):
-            env[m] = _isn_cycle(uu[m] / max(cycle_frac, 1e-9))
+            if cycle_frac == 0.0:
+                env[m] = 1.0
+            else:
+                env[m] = _isn_cycle(uu[m] / cycle_frac)
         return env
 
-    if d <= 1e-9:
+    if d <= 0.0:
         shape = _isn_cycle(u)
-    elif d >= 1.0 - 1e-9:
+    elif d >= 1.0:
         shape = _cycle_then_sustain(u)
     elif d <= 0.5:
         a = d / 0.5
@@ -3047,12 +3033,12 @@ def book_isn_envelope_shape(u, decay):
 
     # Balance crest to 1.0 so every decay setting fits the same step height.
     peak = float(np.max(shape)) if shape.size else 1.0
-    if peak > 1e-12:
+    if peak != 0.0:
         shape = shape / peak
     # Soft mean balance toward ~0.5 so step energy is comparable across morphs
     # without a hard equalizer (scale only, no compression).
     mean = float(np.mean(shape)) if shape.size else 0.5
-    if mean > 1e-12:
+    if mean != 0.0:
         target_mean = 0.50
         bal = target_mean / mean
         # Keep peak ≤ 1 after balance.
@@ -4590,9 +4576,14 @@ def _seed_script_env(t_scalar=0.0, canonical_context=None):
     arcisn/arcics, and Equation-of-Reality tensor handles P/E/D.
     Numeric-Python subset: no builtins except safe math helpers.
     """
-    def _clamp(v, lo=-1e9, hi=1e9):
+    def _clamp(v, lo=None, hi=None):
         try:
-            return max(float(lo), min(float(hi), float(v)))
+            out=float(v)
+            if lo is not None and out < float(lo):
+                out=float(lo)
+            if hi is not None and out > float(hi):
+                out=float(hi)
+            return out
         except Exception:
             return 0.0
 
@@ -4693,7 +4684,10 @@ def _seed_script_env(t_scalar=0.0, canonical_context=None):
         return float(_clamp(z, 0.05, 3.0))
 
     def tensor_rel(s, c=0.0, z_ref=1.5):
-        return tensor_z(s, c) / max(float(z_ref), 1e-9)
+        zr=float(z_ref)
+        if zr == 0.0:
+            return 0.0
+        return tensor_z(s, c) / zr
 
     def _parametric(*coords):
         vals = []
@@ -5251,7 +5245,7 @@ def goava_irrational_stream(t_values, numbers, base_frequency=432.0, channel=0):
     # ~ sum(1/denom) whatever the seed magnitude, so dividing by that exact
     # scale (NOT an adaptive peak-ride) makes the stream span [-1, 1] for any
     # seed list.  The final gain is a fixed MEUM-family constant.
-    d = (note - ref) / max(scale, 1e-9)
+    d = (note - ref) / scale if scale != 0.0 else np.zeros_like(note, dtype=np.float64)
     # Dual-mode scale, no soft-clip / no saturation.
     gain = (1.0 + MEUM_NORM) * 0.9
     if operator_theory_enabled():
@@ -5526,7 +5520,7 @@ def canonical_visual_instrument(slot, ctx, flags):
     fu = bool(ctx.get("full_unison"))
     seedv = float(ctx.get("seed", 0.0))
     s_int = int(ctx.get("s_int", int(_safe_int_seed(seedv)) or 1))
-    s_abs = abs(seedv) + 1e-9
+    s_abs = abs(seedv)
     s_frac = s_abs - math.floor(s_abs)
     base = float(ctx.get("base", 432.0))
     ratio = float(ctx.get("ratio", 1.0))
@@ -5545,7 +5539,7 @@ def canonical_visual_instrument(slot, ctx, flags):
     n5 = sum(1 for _k in _VISUAL_ENGINE_CHANNELS if eng.get(_k))
     n_eng = max(1, n5) if n5 else 6  # idle reference remains the legacy 1/6 scale
     total_level = sum(_lev[k] for k in _VISUAL_ENGINE_CHANNELS if eng.get(k))
-    k5 = 1.0 / float(total_level) if total_level > 1e-9 else (1.0 / 6.0)
+    k5 = 1.0 / float(total_level) if total_level != 0.0 else (1.0 / 6.0)
     # Canonical slot lattice (irrational fractional index, never repeats).
     _tpos = (i * MEUM * 3.0) % 36.0
     _tlo = int(_tpos) % 36
@@ -6307,13 +6301,8 @@ PLAYLIST_STRUCT_COL_INDICES = (2, 3, 4, 5)  # indices into PLAYLIST_COLUMNS
 # seed transduction weight remains 0.72: this preserves dynamic headroom for
 # minute seed-derived secondary structure without making those secondaries
 # authoritative. The adjacent Full-Unison OFF fallback remains 0.55.
-DEFAULT_BPM = 120.0
-DEFAULT_SEQUENCE_LENGTH = 12
-DEFAULT_AUTOMATION_LENGTH = 12
+DEFAULT_SEQUENCE_LENGTH = 8
 DEFAULT_PLAYLIST_ROWS = 32
-DEFAULT_PLAYLIST_ROW_BEATS = 8.0
-DEFAULT_BASE_FREQUENCY = 432.0
-DEFAULT_GLOBAL_CONVOLVE_PCT = 0.0
 CANONICAL_SIGNAL_CONTROL_DEFAULT = 1.00
 CANONICAL_RESONANCE_DEFAULT = 1.00
 CANONICAL_CONVOLVE_DEFAULT_PCT = 50.0
@@ -6369,20 +6358,19 @@ def simplify_scalar_transforms(transforms, *, phase_cycle=None):
             phase += v
         else:
             extras.append((op, v))
-    eps = 1e-12
     out = []
-    if abs(mul - 1.0) > eps:
+    if mul != 1.0:
         out.append(("mul", mul))
-    if abs(add) > eps:
+    if add != 0.0:
         out.append(("add", add))
     if phase_cycle is not None:
         try:
             cyc = abs(float(phase_cycle))
-            if cyc > eps:
+            if cyc != 0.0:
                 phase = math.fmod(phase, cyc)
         except Exception:
             pass
-    if abs(phase) > eps:
+    if phase != 0.0:
         out.append(("phase", phase))
     out.extend(extras)
     return out
@@ -6939,8 +6927,8 @@ class VisualOscilloscope(QFrame):
                 np.arange(new_data.size),
                 new_data.astype(np.float32),
             ).astype(np.float32)
-            self._rms = float(np.sqrt(np.mean(self.wave_data ** 2)) + 1e-12)
-            self._peak = float(np.max(np.abs(self.wave_data)) + 1e-12)
+            self._rms = float(np.sqrt(np.mean(self.wave_data ** 2)))
+            self._peak = float(np.max(np.abs(self.wave_data)))
             if getattr(self, "_phosphor", None) is None or self._phosphor.size != 256:
                 self._phosphor = np.zeros(256, dtype=np.float32)
             self._phosphor = (0.82 * self._phosphor + 0.18 * self.wave_data).astype(np.float32)
@@ -7457,7 +7445,10 @@ class InstrumentVisualObject:
     @staticmethod
     def _norm(v, lo, hi):
         try:
-            return float(np.clip((float(v) - lo) / max(1e-9, hi-lo), 0.0, 1.0))
+            span=float(hi)-float(lo)
+            if span == 0.0:
+                return 0.0
+            return float(np.clip((float(v) - lo) / span, 0.0, 1.0))
         except Exception:
             return 0.0
 
@@ -7826,12 +7817,49 @@ class VideoSynthEngine:
         self._render_n = current
         self._n_resize_alpha = float(np.clip(1.0 - abs(target - current) / max(abs(target - getattr(self, "_resize_start_n", target)), 1.0), 0.0, 1.0))
 
+    @staticmethod
+    def _finite_float(value, default=0.0, lo=None, hi=None):
+        """Return a finite float without changing any already-finite value.
+
+        Video rendering sits at the end of several user-script/media/canonical
+        routes.  A NaN from any one of them must not become ``int(NaN)`` in a
+        raster primitive and abort an otherwise recoverable multi-part export.
+        """
+        try:
+            v = float(value)
+        except Exception:
+            v = float(default)
+        if not math.isfinite(v):
+            v = float(default)
+        if lo is not None and v < float(lo):
+            v = float(lo)
+        if hi is not None and v > float(hi):
+            v = float(hi)
+        return v
+
+    @classmethod
+    def _finite_int(cls, value, default=0, lo=None, hi=None):
+        v = cls._finite_float(value, float(default))
+        try:
+            i = int(round(v))
+        except Exception:
+            i = int(default)
+        if lo is not None and i < int(lo):
+            i = int(lo)
+        if hi is not None and i > int(hi):
+            i = int(hi)
+        return i
+
     def set_waveform(self, data, playhead=None):
         if data is None:
             return
         arr = np.asarray(data, dtype=np.float32).ravel()
         if arr.size == 0:
             return
+        # Imported/carrier math and user scripts may legitimately hit singular
+        # points.  Keep those points silent for analysis instead of allowing a
+        # NaN/Inf to poison all later visual geometry.
+        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
         self.wave = np.interp(
             np.linspace(0, arr.size - 1, 256),
             np.arange(arr.size),
@@ -7879,35 +7907,42 @@ class VideoSynthEngine:
         return tuple(mean_rgb[:3]), energy
 
     def _analyze(self):
-        w = self.wave
-        self._rms = float(np.sqrt(np.mean(w ** 2)) + 1e-9)
-        self._peak = float(np.max(np.abs(w)) + 1e-9)
+        w = np.nan_to_num(np.asarray(self.wave, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+        if w.size == 0:
+            w = np.zeros(256, dtype=np.float32)
+        self.wave = w
+        self._rms = self._finite_float(np.sqrt(np.mean(w ** 2)), 0.0, 0.0)
+        self._peak = self._finite_float(np.max(np.abs(w)), 0.0, 0.0)
         # Harmonic/octave-ish bands: use the spectral domain rather than
         # eight arbitrary waveform slices.  This makes visual population follow
         # actual doubling boundaries (and keeps the response stable as FFT
         # content changes).
-        spec = np.abs(np.fft.rfft(w * np.hanning(len(w)))) + 1e-9
+        spec = np.abs(np.fft.rfft(w * np.hanning(len(w))))
         freqs = np.fft.rfftfreq(len(w), d=1.0 / 256.0)
         edges = np.geomspace(1.0, max(2.0, float(freqs[-1])), 9)
         bands = []
         for b in range(8):
             mask = (freqs >= edges[b]) & (freqs < edges[b + 1])
-            bands.append(float(np.sqrt(np.mean(spec[mask] ** 2))) if np.any(mask) else 1e-9)
-        self._band = np.asarray(bands, dtype=np.float32)
+            bands.append(float(np.sqrt(np.mean(spec[mask] ** 2))) if np.any(mask) else 0.0)
+        self._band = np.nan_to_num(np.asarray(bands, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
         # Preserve the actual spectral distribution.  Peak-normalizing each
         # frame forced its loudest band to 1.0 and distorted every other band.
         # Energy-share normalization keeps all eight bands proportional to the
         # measured spectrum and does not invent a per-frame reference level.
         band_total = float(np.sum(self._band))
-        if band_total > 1e-12:
+        if band_total != 0.0:
             self._band /= band_total
-        self._harmonic_activity = float(1.0 - float(np.max(self._band)))
-        self._octave_boundary = (
-            float(self._band[1] / self._band[0]) if self._band[0] > 1e-12 else float("inf")
+        self._harmonic_activity = self._finite_float(1.0 - float(np.max(self._band)), 0.5, 0.0, 1.0)
+        # A silent/near-silent low band previously produced +Inf here.  Several
+        # subscenes later multiplied the ratio and converted it to int.
+        _oct = float(self._band[1] / self._band[0]) if self._band[0] != 0.0 else 1.0
+        self._octave_boundary = self._finite_float(_oct, 1.0, 0.0, 4.0)
+        idx = np.arange(w.size, dtype=np.float32)
+        mag = np.abs(w)
+        self._centroid = self._finite_float(
+            (np.sum(idx * mag) / (np.sum(mag) * float(max(w.size - 1, 1)))) if np.sum(mag) != 0.0 else 0.5,
+            0.5, 0.0, 1.0
         )
-        idx = np.arange(256, dtype=np.float32)
-        mag = np.abs(w) + 1e-9
-        self._centroid = float(np.sum(idx * mag) / (np.sum(mag) * 255.0))
 
     def energy(self):
         return self._rms
@@ -7934,9 +7969,9 @@ class VideoSynthEngine:
             if not math.isfinite(_bpm) or _bpm <= 0.0:
                 _bpm = 120.0
             try:
-                _row_beats = float(getattr(self.app, "spin_row_beats", None).value()) if self.app is not None and hasattr(self.app, "spin_row_beats") else DEFAULT_PLAYLIST_ROW_BEATS
+                _row_beats = float(getattr(self.app, "spin_row_beats", None).value()) if self.app is not None and hasattr(self.app, "spin_row_beats") else 8.0
             except Exception:
-                _row_beats = DEFAULT_PLAYLIST_ROW_BEATS
+                _row_beats = 8.0
             _row_beats = max(0.25, _row_beats)
             t = float(t) + gto * (60.0 / _bpm)
             ph = (float(ph) + gto / _row_beats) % 1.0
@@ -8005,7 +8040,7 @@ class VideoSynthEngine:
             rho = float(np.clip(rho * (0.80 + 0.20 * resonance), 0.05, 2.0))
             line_d = float(np.clip(line_d * (0.85 + 0.15 * resonance), 0.05, 2.0))
             # Master vector XYZ tilts formation and scale
-            if master_drive > 1e-6:
+            if master_drive > 0.0:
                 vx, vy, vz = master_vector
                 form = float(np.clip(form * (1.0 + 0.12 * master_drive * vx), 0.05, 1.5))
                 rho = float(np.clip(rho * (1.0 + 0.10 * master_drive * vy), 0.05, 2.0))
@@ -8076,9 +8111,13 @@ class VideoSynthEngine:
                     pass
             if not snap["seed_list"] and hasattr(app, "get_numeric_seed"):
                 try:
-                    snap["seed"] = float(app.get_numeric_seed() or 0.0)
+                    _seed_fallback = float(app.get_numeric_seed() or 0.0)
+                    # NaN is truthy in Python, so ``value or 0.0`` alone does
+                    # not protect this fallback.  This was a direct route from a
+                    # singular seed graph into int(NaN) during video rendering.
+                    snap["seed"] = _seed_fallback if math.isfinite(_seed_fallback) else 0.0
                 except Exception:
-                    pass
+                    snap["seed"] = 0.0
             if getattr(app, "imported_waveform", None) is not None:
                 snap["carrier"] = 1.0
             rows = getattr(app, "master_playlist_data", None) or []
@@ -8113,6 +8152,35 @@ class VideoSynthEngine:
                 pass
         except Exception:
             pass
+        # Last-mile finite contract for every numeric value consumed by the
+        # renderer.  Finite authored values are unchanged.
+        _defaults = {
+            "eqr": 0.2247, "fractal": 0.40, "struct": 0.0, "bpm": 120.0,
+            "carrier": 0.0, "pkp": 0.5, "seed": 0.0, "ensemble": 1,
+            "canonical_resonance_factor": 1.5, "global_xmod": 1.0,
+            "global_input_xmod": 1.0, "master_vector_drive": 0.5,
+            "global_track_offset": 0.0, "track_offset": 0.0,
+        }
+        for _k, _d in _defaults.items():
+            if _k in snap:
+                snap[_k] = self._finite_float(snap.get(_k), _d)
+        snap["bpm"] = self._finite_float(snap.get("bpm", 120.0), 120.0, 1.0, 1000.0)
+        snap["struct"] = self._finite_float(snap.get("struct", 0.0), 0.0, 0.0, 1.0)
+        snap["eqr"] = self._finite_float(snap.get("eqr", 0.2247), 0.2247, 0.0)
+        snap["fractal"] = self._finite_float(snap.get("fractal", 0.40), 0.40, 0.0)
+        snap["pkp"] = self._finite_float(snap.get("pkp", 0.5), 0.5, 0.0)
+        snap["ensemble"] = self._finite_int(snap.get("ensemble", 1), 1, 1, 128)
+        if isinstance(snap.get("master_vector"), (tuple, list)) and len(snap["master_vector"]) >= 3:
+            snap["master_vector"] = tuple(self._finite_float(v, 0.0) for v in snap["master_vector"][:3])
+        _clean_seed_list = []
+        for _v in (snap.get("seed_list") or []):
+            try:
+                _fv = float(_v)
+            except Exception:
+                continue
+            if math.isfinite(_fv):
+                _clean_seed_list.append(_fv)
+        snap["seed_list"] = _clean_seed_list
         return snap
 
     def _reset_fit(self, w, h):
@@ -8321,8 +8389,11 @@ class VideoSynthEngine:
         """Scale every part so the union bbox fills the frame (padded outer bounds)."""
         if not pts:
             return
-        xs = [p[0] for p in pts]
-        ys = [p[1] for p in pts]
+        pts = [p for p in pts if len(p) >= 2 and math.isfinite(float(p[0])) and math.isfinite(float(p[1]))]
+        if not pts:
+            return
+        xs = [float(p[0]) for p in pts]
+        ys = [float(p[1]) for p in pts]
         minx, maxx = min(xs), max(xs)
         miny, maxy = min(ys), max(ys)
         bw = max(maxx - minx, 1.0)
@@ -8340,10 +8411,19 @@ class VideoSynthEngine:
         self._fit_oy = h * 0.5
 
     def _project(self, x, y, z, w, h, fov=None):
+        x = self._finite_float(x, 0.0)
+        y = self._finite_float(y, 0.0)
+        z = self._finite_float(z, 1.0)
         if fov is None:
-            fov = series_tan(math.radians(float(getattr(self, "_cam_fov_deg", 48.0))) * 0.5) * 2.0
-        x, y, z = self._camera_transform(float(x), float(y), float(z))
-        z = max(z, 0.5)
+            _fov_deg = self._finite_float(getattr(self, "_cam_fov_deg", 48.0), 48.0, 1.0, 179.0)
+            fov = series_tan(math.radians(_fov_deg) * 0.5) * 2.0
+        fov = self._finite_float(fov, 1.0)
+        if fov == 0.0:
+            fov = 1.0
+        x, y, z = self._camera_transform(x, y, z)
+        x = self._finite_float(x, 0.0)
+        y = self._finite_float(y, 0.0)
+        z = self._finite_float(z, 1.0, 0.5)
         inv = 1.0 / z
         sx = (x * inv) * fov
         sy = (y * inv) * fov
@@ -8354,14 +8434,28 @@ class VideoSynthEngine:
         return px, py, inv
 
     def _hsv(self, h, s, v):
-        c = QColor.fromHsv(int(h) % 360, int(max(0, min(1, s)) * 255), int(max(0, min(1, v)) * 255))
+        h = self._finite_float(h, 0.0)
+        s = self._finite_float(s, 0.0, 0.0, 1.0)
+        v = self._finite_float(v, 0.0, 0.0, 1.0)
+        c = QColor.fromHsv(int(h) % 360, int(s * 255), int(v * 255))
         return (c.red(), c.green(), c.blue())
 
     def _line(self, img, x0, y0, x1, y1, col, alpha=1.0):
         hh, ww, _ = img.shape
+        vals = (x0, y0, x1, y1, alpha)
+        try:
+            if not all(math.isfinite(float(v)) for v in vals):
+                return
+        except Exception:
+            return
+        # Bound pathological but finite geometry so one bad script cannot turn
+        # a frame into millions of raster iterations.  Normal in-frame values
+        # are untouched.
+        x0 = float(np.clip(x0, -ww, ww * 2)); x1 = float(np.clip(x1, -ww, ww * 2))
+        y0 = float(np.clip(y0, -hh, hh * 2)); y1 = float(np.clip(y1, -hh, hh * 2))
         steps = max(abs(int(x1) - int(x0)), abs(int(y1) - int(y0)), 1)
-        a = float(np.clip(alpha, 0.0, 1.0))
-        c = np.array(col, dtype=np.float32)
+        a = self._finite_float(alpha, 0.0, 0.0, 1.0)
+        c = np.nan_to_num(np.array(col, dtype=np.float32), nan=0.0, posinf=255.0, neginf=0.0)
         for ti in range(int(steps) + 1):
             u = ti / steps
             x = int(x0 + (x1 - x0) * u)
@@ -8371,31 +8465,43 @@ class VideoSynthEngine:
 
     def _dot(self, img, x, y, col, alpha=1.0, r=1):
         hh, ww, _ = img.shape
-        a = float(np.clip(alpha, 0.0, 1.0))
-        c = np.array(col, dtype=np.float32)
+        try:
+            if not math.isfinite(float(x)) or not math.isfinite(float(y)):
+                return
+        except Exception:
+            return
+        a = self._finite_float(alpha, 0.0, 0.0, 1.0)
+        c = np.nan_to_num(np.array(col, dtype=np.float32), nan=0.0, posinf=255.0, neginf=0.0)
+        r = self._finite_int(r, 1, 0, max(1, min(64, max(hh, ww))))
+        ix = int(float(x)); iy = int(float(y))
         for dy in range(-r, r + 1):
             for dx in range(-r, r + 1):
-                xx, yy = int(x) + dx, int(y) + dy
+                xx, yy = ix + dx, iy + dy
                 if 0 <= xx < ww and 0 <= yy < hh:
                     img[yy, xx] = img[yy, xx] * (1 - a) + c * a
 
     def _fill_tri(self, img, p0, p1, p2, col, alpha):
         """Real rasterized face fill, followed by a crisp mathematical edge."""
-        a = float(np.clip(alpha, 0.0, 1.0))
-        pts = np.asarray([[p0[0], p0[1]], [p1[0], p1[1]], [p2[0], p2[1]]], dtype=np.float32)
+        try:
+            pts = np.asarray([[p0[0], p0[1]], [p1[0], p1[1]], [p2[0], p2[1]]], dtype=np.float32)
+            if pts.shape != (3, 2) or not np.all(np.isfinite(pts)):
+                return
+        except Exception:
+            return
+        a = self._finite_float(alpha, 0.0, 0.0, 1.0)
         xmin = max(0, int(np.floor(np.min(pts[:, 0])))); xmax = min(img.shape[1]-1, int(np.ceil(np.max(pts[:, 0]))))
         ymin = max(0, int(np.floor(np.min(pts[:, 1])))); ymax = min(img.shape[0]-1, int(np.ceil(np.max(pts[:, 1]))))
         if xmin <= xmax and ymin <= ymax:
             yy, xx = np.mgrid[ymin:ymax+1, xmin:xmax+1]
             x0,y0=pts[0]; x1,y1=pts[1]; x2,y2=pts[2]
-            den=((y1-y2)*(x0-x2)+(x2-x1)*(y0-y2))
-            if abs(float(den)) >= 0.0:
+            den=float((y1-y2)*(x0-x2)+(x2-x1)*(y0-y2))
+            if math.isfinite(den) and den != 0.0:
                 w0=((y1-y2)*(xx-x2)+(x2-x1)*(yy-y2))/den
                 w1=((y2-y0)*(xx-x2)+(x0-x2)*(yy-y2))/den
                 w2=1.0-w0-w1
-                mask=(w0>=0)&(w1>=0)&(w2>=0)
+                mask=(w0>=0)&(w1>=0)&(w2>=0)&np.isfinite(w0)&np.isfinite(w1)&np.isfinite(w2)
                 region=img[ymin:ymax+1,xmin:xmax+1]
-                c=np.asarray(col,dtype=np.float32)
+                c=np.nan_to_num(np.asarray(col,dtype=np.float32), nan=0.0, posinf=255.0, neginf=0.0)
                 region[mask]=region[mask]*(1-a)+c*a
         for i in range(3):
             self._line(img, pts[i,0], pts[i,1], pts[(i+1)%3,0], pts[(i+1)%3,1], col, min(1.0, a*1.5))
@@ -8571,7 +8677,7 @@ class VideoSynthEngine:
     def _subscene_particles(self, img, w, h, st):
         """Seed / engine particle field from Meum residual + seed value."""
         snap = st["snap"]
-        if abs(snap["seed"]) < 1e-9 and not snap["seeded"] and not snap["euclid"]:
+        if snap["seed"] == 0.0 and not snap["seeded"] and not snap["euclid"]:
             n_part = 12 + int(16 * self._rms)
         else:
             n_part = 20 + int(28 * self._rms) + (10 if snap["seeded"] else 0)
@@ -9009,9 +9115,13 @@ class VideoSynthEngine:
                     events = getattr(self.app, "goava_note_events", []) or []
                     for j, ev in enumerate(events[:8]):
                         hz = float(ev.get("frequency", 432.0) or 432.0)
+                        hz_scope = hz
+                        if hz_scope < 20.0:
+                            hz_scope = 20.0
+                        if hz_scope > 20000.0:
+                            hz_scope = 20000.0
                         key = _full_hue(
-                            _range_unit(math.log2(max(hz, 1e-12)),
-                                         math.log2(20.0), math.log2(20000.0)) / 360.0,
+                            _range_unit(math.log2(hz_scope), math.log2(20.0), math.log2(20000.0)) / 360.0,
                             float(ev.get("raw", j) or j) * 0.01,
                         )
                         try:
@@ -9121,7 +9231,12 @@ class VideoSynthEngine:
             seed = float(ev.get("seed", 0.0) or 0.0)
             raw_u = raw_units[j] if j < len(raw_units) else 0.5
             seed_u = seed_units[j] if j < len(seed_units) else 0.5
-            freq_u = _range_unit(math.log2(max(hz, 1e-12)), math.log2(freq_lo), math.log2(freq_hi))
+            hz_scope = hz
+            if hz_scope < freq_lo:
+                hz_scope = freq_lo
+            if hz_scope > freq_hi:
+                hz_scope = freq_hi
+            freq_u = _range_unit(math.log2(hz_scope), math.log2(freq_lo), math.log2(freq_hi))
             # Direct normalized identity: raw, seed and frequency each occupy
             # the complete numeric visual range before composition is applied.
             key = (raw_u + seed_u + freq_u) / 3.0
@@ -10170,6 +10285,10 @@ class VideoSynthEngine:
         except Exception:
             pass
 
+        # Absolute last line of defense: no non-finite pixel leaves the
+        # deterministic renderer, even if a future visual module forgets its
+        # own finite guard.
+        img = np.nan_to_num(img, nan=0.0, posinf=255.0, neginf=0.0)
         return np.clip(img, 0, 255).astype(np.uint8)
 
 
@@ -10243,6 +10362,8 @@ class VideoSynthViewer(QFrame):
 
     def _request_async_frame(self, width=None, height=None, export=None):
         """Schedule a latest-only frame render; never block the Qt paint path."""
+        if getattr(self, "_render_shutdown", False):
+            return
         ww = max(int(width if width is not None else self.width()), 180)
         hh = max(int(height if height is not None else self.height()), 180)
         ex = self.engine.export_mode if export is None else bool(export)
@@ -10270,6 +10391,12 @@ class VideoSynthViewer(QFrame):
             self._render_pool.start(_VideoRenderTask(self.engine, ww, hh, ex, request[3], self._render_signals))
 
     def _on_async_frame_ready(self, frame, width, height, generation):
+        # An optimizer/QThread completion can arrive after a child window has
+        # begun closing. Never touch Qt widgets once rendering is shut down.
+        if getattr(self, "_render_shutdown", False):
+            self._render_inflight = False
+            self._render_pending = None
+            return
         self._render_inflight = False
         # Ignore stale frames if a newer request was made while rendering.
         if frame is not None and int(generation) == int(self._render_generation):
@@ -10299,6 +10426,9 @@ class VideoSynthViewer(QFrame):
 
     def shutdown_rendering(self):
         """Stop preview rendering before Qt destroys the viewer/signals QObject."""
+        if getattr(self, "_render_shutdown", False):
+            return
+        self._render_shutdown = True
         try:
             self._render_pending = None
             self._render_generation += 1
@@ -11217,13 +11347,14 @@ class AsymmetryCorrection:
         max_s = min(0.22, abs(cls.MAX_SHIFT) + abs(MEUM_IDENTITY_RESIDUAL) * 0.05)
         left = sum(scalars[i] for i in range(0, len(scalars), 2))
         right = sum(scalars[i] for i in range(1, len(scalars), 2))
-        denom = max(left + right, 1e-9)
-        lr = (left - right) / denom
+        denom = left + right
+        lr = (left - right) / denom if denom != 0.0 else 0.0
         temporal = series_sin(phase * MEUM_LOG2 + index * PHI_INV) * MEUM_NORM
         x = max(-max_s, min(max_s, -(lr * MEUM_NORM * 0.5 + temporal * UI_DRIFT)))
         top = sum(scalars[i] for i in range(len(scalars)//2))
         bottom = sum(scalars[i] for i in range(len(scalars)//2, len(scalars)))
-        tb = (top - bottom) / max(top + bottom, 0)
+        tb_den = top + bottom
+        tb = (top - bottom) / tb_den if tb_den != 0.0 else 0.0
         y = max(-max_s, min(max_s, -(tb * MEUM_NORM * 0.5)))
         return x, y
 
@@ -12990,7 +13121,7 @@ MAIN MEDIA IMPORT — carrier/reference inputs
   Video: .mp4 .mov .mkv .webm .avi .m4v .mpeg .mpg .flv .ts .m2ts
          .mts .3gp .3g2 .ogv .vob
 WAV is read natively when possible; other audio/video decoding routes through FFmpeg.
-Video-only files are valid visual carriers and receive a silent carrier stream.
+Video-only files are valid visual carriers but do not create a synthetic silent audio carrier.
 
 PROJECT / PROGRAM FORMATS
   .MCC       canonical transparent Groovebox composition/project document
@@ -13326,8 +13457,8 @@ AUTOMATION STEP EDITOR — SEQUENCER-STYLE CONTROL
   The automation strip is a second step sequencer directly under the main
   sequencer. It is intentionally simple and behaves like the normal step pads.
 
-  • Length controls 1–1024 automation steps. The orange strip fills the row when it fits
-    and scrolls horizontally at readable cell width when it does not.
+  • Length controls how many automation steps are shown. The orange strip grows
+    or scrolls horizontally to match that count.
   • Sequence Attack and Sequence Release default to 50% each and remain directly
     controllable per sequence by the canonical composition state.
   • First click on an automation step = SELECT + TELEPORT. The Step, Operator,
@@ -13355,10 +13486,10 @@ AUTOMATION STEP EDITOR — SEQUENCER-STYLE CONTROL
     untouched. Both randomizers create one undoable edit.
 
   Typical use:
-      1. Set Length (for example 12).
+      1. Set Length (for example 16).
       2. Click AUTO 1 once to select it.
       3. Choose Operator / Sequence / Offset ±.
-      4. A newly created AUTO cell is stored ON by default; click the same cell again to toggle it OFF.
+      4. Click AUTO 1 again to turn that automation step ON.
       5. Click another step once to teleport to it, edit it, then click it again
          when you want it ON.
 
@@ -14394,7 +14525,8 @@ mathematical or physical truth is part of its documentation standard.
 
 
 ### v15 User Media + Canonical Morph Bridge
-- **Load Carrier** accepts common audio and video containers. Audio is decoded as the carrier; video audio becomes the carrier while the original video path remains available to the audiovisual export path.
+- **Load Carrier** accepts common audio and video containers. Audio is decoded as the global carrier; video audio becomes the carrier while the original video path remains available to audiovisual export. Video-only files remain visual-only and do not manufacture silent PCM.
+- **Clear Global Carrier** detaches the project-wide carrier/video reference and carrier bindings without deleting the source file. **Clear Local Carrier** detaches only the selected operator sample/carrier. Both clear actions are undoable.
 - **Load Sample → Selected Operator** accepts audio and video files per operator. Video samples are represented as user-owned per-operator media; their decoded audio stream participates in the selected operator's render path.
 - **PRE-CANONICAL SAMPLE MORPH** uses the selected operator's synth parameter state, script, incident patch topology/gains, and domain definition to shape a transformed sample branch.
 - The local sample bridge is explicitly **50% untouched user waveform + 50% transformed branch**, so user sample material has a minimum 50% local contribution. Adaptive Fit and Phase Lock only shape the transformed branch.
@@ -15302,7 +15434,7 @@ The supplied book explicitly describes four sets of three lines, conflicting/non
                 src = ref
         act = float(np.clip(activation, 0.0, 1.0))
         wet_mix = 0.5 * act  # hard cap 50%
-        if wet_mix < 1e-6:
+        if wet_mix <= 0.0:
             return dry.copy()
         strength = 0.5 + 0.5 * float(gamma) / 4.0
         companion = self._contextual_sub_super(src, self.sample_rate, strength=strength)
@@ -15364,7 +15496,7 @@ class MusicFractallizer:
             ref=np.asarray(reference_buffer,dtype=np.float32).ravel()
             if ref.size==n: src=ref
         wet_mix=0.5*float(np.clip(activation,0.0,1.0))
-        if wet_mix<1e-6: return dry.copy()
+        if wet_mix<=0.0: return dry.copy()
         strength=0.5+0.5*float(gamma)/4.0
         companion=self._contextual_sub_super(src,self.sample_rate,strength=strength)
         if pkp_env is not None:
@@ -15427,7 +15559,7 @@ class EQRTensorEngine:
             return dry
         act = float(np.clip(activation, 0.0, 1.0))
         wet_mix = 0.5 * act  # hard cap 50%
-        if wet_mix < 1e-6:
+        if wet_mix <= 0.0:
             return dry.copy()
 
         # Characteristic distance d̄: sliding mean-abs-deviation (local context).
@@ -16406,7 +16538,7 @@ class GrooveboxEngine:
         rendered_buffer = self.reality_synth.render_reality_patch(dummy_patch)
         return rendered_buffer
 
-    def add_instrument_sequence_bank(self, instrument_name, seq_name, pitch=0.0, amp=1.0, math_chord="Unit Harmonic Stack (+/- 1, 2, 3)", stretch=1.0, length_steps=DEFAULT_SEQUENCE_LENGTH):
+    def add_instrument_sequence_bank(self, instrument_name, seq_name, pitch=0.0, amp=1.0, math_chord="Unit Harmonic Stack (+/- 1, 2, 3)", stretch=1.0, length_steps=16):
         if instrument_name not in self.instrument_sequence_banks:
             self.instrument_sequence_banks[instrument_name] = []
 
@@ -16427,7 +16559,7 @@ class GrooveboxEngine:
 
     def get_instrument_banks(self, instrument_name):
         if instrument_name not in self.instrument_sequence_banks:
-            self.add_instrument_sequence_bank(instrument_name, "Primary Bank", 0.0, 1.0, "Unit Harmonic Stack (+/- 1, 2, 3)", 1.0, DEFAULT_SEQUENCE_LENGTH)
+            self.add_instrument_sequence_bank(instrument_name, "Primary Bank", 0.0, 1.0, "Unit Harmonic Stack (+/- 1, 2, 3)", 1.0, 16)
         return self.instrument_sequence_banks[instrument_name]
 
     def save_custom_wavetable(self, instrument_name, points):
@@ -17285,7 +17417,7 @@ class SynthModulePage(QWidget):
             math_chord_combo.setStyleSheet("background-color: #161b22; color: #00ffcc; border: 1px solid #30363d;")
             math_chord_combo.addItems(list(self.engine.math_chord_library.keys()))
 
-            length_spin = QSpinBox(); length_spin.setRange(4, 128); length_spin.setValue(DEFAULT_SEQUENCE_LENGTH)
+            length_spin = QSpinBox(); length_spin.setRange(4, 128); length_spin.setValue(16)
             length_spin.setStyleSheet("background-color: #161b22; color: #00ffcc; border: 1px solid #30363d;")
 
             param_grid.addWidget(QLabel("Pitch Shift:"), 0, 0); param_grid.addWidget(pitch_spin, 0, 1)
@@ -21612,10 +21744,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         for w in widgets:
             try:
                 w.installEventFilter(self)
-                if isinstance(w, (QSpinBox, QDoubleSpinBox)):
-                    _configure_spinbox_input_behavior(w)
-                else:
-                    w.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+                w.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             except Exception:
                 pass
 
@@ -21786,13 +21915,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
             QTimer.singleShot(0, self._sync_square_visuals)
         except Exception:
             pass
-        try:
-            self._sync_step_strip_geometry()
-            self._sync_automation_strip_geometry()
-            QTimer.singleShot(0, self._sync_step_strip_geometry)
-            QTimer.singleShot(0, self._sync_automation_strip_geometry)
-        except Exception:
-            pass
 
     def apply_hardcoded_compositions(self):
         # POWER_V3_EMPTY_BOOT: compatibility hook intentionally does nothing.
@@ -21904,16 +22026,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         instead of silently allowing UI/state mismatches.
         """
         checks = {
-            "sample_adaptive_fit": abs(float(getattr(self, "sample_morph_state", {}).get("adaptive_fit", -1.0)) - 0.50) < 1e-9,
-            "sample_phase_lock": abs(float(getattr(self, "sample_morph_state", {}).get("phase_lock", -1.0)) - 0.50) < 1e-9,
+            "sample_adaptive_fit": float(getattr(self, "sample_morph_state", {}).get("adaptive_fit", -1.0)) == 0.50,
+            "sample_phase_lock": float(getattr(self, "sample_morph_state", {}).get("phase_lock", -1.0)) == 0.50,
             "sample_morph_enabled": bool(getattr(self, "sample_morph_state", {}).get("enabled", False)),
             "sample_guard": bool(getattr(self, "sample_morph_state", {}).get("guard", False)),
-            "global_xmod": abs(float(getattr(self, "global_mod_state", {}).get("xmod", -1.0)) - 1.0) < 1e-9,
-            "global_input_xmod": abs(float(getattr(self, "global_mod_state", {}).get("input_xmod", -1.0)) - 1.0) < 1e-9,
-            "window_mod_100": all(abs(float(getattr(self, "global_mod_state", {}).get(k, -1.0)) - 1.0) < 1e-9 for k in ("synth", "patch", "script", "domain")),
+            "global_xmod": float(getattr(self, "global_mod_state", {}).get("xmod", -1.0)) == 1.0,
+            "global_input_xmod": float(getattr(self, "global_mod_state", {}).get("input_xmod", -1.0)) == 1.0,
+            "window_mod_100": all(float(getattr(self, "global_mod_state", {}).get(k, -1.0)) == 1.0 for k in ("synth", "patch", "script", "domain")),
             "sequence_phase_lock_always_on": bool(getattr(self, "sequence_phase_lock_always_on", False)),
-            "sequence_default_12": int(DEFAULT_SEQUENCE_LENGTH) == 12,
-            "automation_default_12": int(DEFAULT_AUTOMATION_LENGTH) == 12,
         }
         if hasattr(self, "slider_sample_adaptive_fit"):
             checks["ui_adaptive_fit_50"] = int(self.slider_sample_adaptive_fit.value()) == 50
@@ -21923,10 +22043,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
             checks["ui_global_xmod_100"] = int(self.global_xmod_slider.value()) == 100
         if hasattr(self, "global_input_xmod_slider"):
             checks["ui_input_xmod_100"] = int(self.global_input_xmod_slider.value()) == 100
-        if hasattr(self, "spin_seq_length"):
-            checks["ui_sequence_default_12"] = int(self.spin_seq_length.value()) == DEFAULT_SEQUENCE_LENGTH
-        if hasattr(self, "spin_auto_point_length"):
-            checks["ui_automation_default_12"] = int(self.spin_auto_point_length.value()) == DEFAULT_AUTOMATION_LENGTH
         if hasattr(self, "btn_load_sample_operator"):
             checks["ui_operator_sample_loader"] = True
         if hasattr(self, "spin_global_track_offset"):
@@ -22202,11 +22318,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         depend on BPM, so changing tempo cannot silently recompose the song.
         """
         try:
-            row_beats = float(self.spin_row_beats.value()) if hasattr(self, "spin_row_beats") else DEFAULT_PLAYLIST_ROW_BEATS
+            row_beats = float(self.spin_row_beats.value()) if hasattr(self, "spin_row_beats") else 4.0
         except Exception:
-            row_beats = DEFAULT_PLAYLIST_ROW_BEATS
+            row_beats = 4.0
         if not math.isfinite(row_beats) or row_beats <= 0.0:
-            row_beats = DEFAULT_PLAYLIST_ROW_BEATS
+            row_beats = 4.0
         try:
             offset_beats = float(getattr(self, "global_track_offset", 0.0) or 0.0)
         except Exception:
@@ -22275,8 +22391,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             step = float(true_idx) + float(t_value)
             hz, raw = goava_frequency(number, step, numbers, base)
             # GOAVA: no pitch-ratio clip — report true mapped ratio.
-            _den = max(float(base), 1e-12)
-            pitch = float(hz / _den) if math.isfinite(hz) else 1.0
+            _den = float(base)
+            pitch = float(hz / _den) if math.isfinite(hz) and _den != 0.0 else 1.0
             if not math.isfinite(pitch) or pitch <= 0.0:
                 pitch = 1.0
             # Build a small pitched-sine chord (root + 5th + octave) from the
@@ -23116,7 +23232,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if _src_key == "goava":
                 try:
                     _goava_delta = float(c.get("goava_time_offset", c.get("tempo_offset", 0.0)) or 0.0)
-                    if math.isfinite(_goava_delta) and abs(_goava_delta) > 1e-12:
+                    if math.isfinite(_goava_delta) and _goava_delta != 0.0:
                         entry["_goava_time_delta"] = float(_goava_delta)
                 except Exception:
                     pass
@@ -23217,7 +23333,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             _anchor = _base_time if _base_time is not None else _canonical_time
             entry["time_offset"] = float(_anchor + _goava_delta)
             entry["time_marker"] = f"e:{entry['time_offset']:.4f}s"
-        elif _base_time is not None or abs(_goava_delta) > 1e-12:
+        elif _base_time is not None or _goava_delta != 0.0:
             # No canonical timing owner: preserve the row constraint and allow
             # GOAVA's own tempo-relative timing only as an additive delta.
             entry["time_offset"] = float((_base_time if _base_time is not None else 0.0) + _goava_delta)
@@ -24016,7 +24132,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_bpm.setRange(0.0, 512.0)
         self.spin_bpm.setDecimals(3)
         self.spin_bpm.setSingleStep(0.1)
-        self.spin_bpm.setValue(DEFAULT_BPM)  # ordinary baseline
+        self.spin_bpm.setValue(120.0)  # ordinary baseline
         self.spin_bpm.setMinimumHeight(32)
         self.spin_bpm.setStyleSheet(
             "QDoubleSpinBox { background-color:#1a1608; color:#f5d97d; border:2px solid #c9a030; "
@@ -24919,7 +25035,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_base_frequency.setRange(0.0, 50000.0)
         self.spin_base_frequency.setDecimals(4)
         self.spin_base_frequency.setSingleStep(0.1)
-        self.spin_base_frequency.setValue(DEFAULT_BASE_FREQUENCY)  # ordinary baseline tuning
+        self.spin_base_frequency.setValue(432.0)  # ordinary baseline tuning
         self.spin_base_frequency.setMinimumHeight(32)
         self.spin_base_frequency.setStyleSheet(
             "QDoubleSpinBox { background-color:#0a121a; color:#9fd4ff; border:2px solid #3a7aaa; "
@@ -25369,7 +25485,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_row_beats.setRange(0.25, 64.0)
         self.spin_row_beats.setDecimals(2)
         self.spin_row_beats.setSingleStep(0.25)
-        self.spin_row_beats.setValue(DEFAULT_PLAYLIST_ROW_BEATS)  # V3 playtest default playlist row length = 8 beats
+        self.spin_row_beats.setValue(8.0)  # V3 playtest default playlist row length = 8 beats
         self.spin_row_beats.setMinimumHeight(38)
         self.spin_row_beats.setMinimumWidth(88)
         self.spin_row_beats.setToolTip(
@@ -25383,7 +25499,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_global_convolve.setRange(0.0, 100.0)
         self.spin_global_convolve.setDecimals(2)
         self.spin_global_convolve.setSuffix("%")
-        self.spin_global_convolve.setValue(DEFAULT_GLOBAL_CONVOLVE_PCT)
+        self.spin_global_convolve.setValue(0.0)
         self.spin_global_convolve.setFixedWidth(82)
         self.spin_global_convolve.setToolTip("Cross-convolve the structural wave result; user-edited material remains protected.")
         self.top_layout_row2.addWidget(self.spin_global_convolve)
@@ -25410,6 +25526,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_load_wav = QPushButton("📂 Load Carrier")
         self.btn_load_wav.setToolTip("Load an audio or video file as the global carrier/reference waveform. Audio is decoded; video audio becomes the carrier and its video stream remains available for export.")
         self.btn_load_wav.clicked.connect(self.load_wav_carrier_dialog)
+        self.btn_clear_global_carrier = QPushButton("Clear Global Carrier")
+        self.btn_clear_global_carrier.setToolTip(
+            "Detach the global audio/video carrier from this project without deleting the source file. "
+            "This clears the decoded carrier buffer, video reference, bindings and render caches."
+        )
+        self.btn_clear_global_carrier.clicked.connect(self.clear_global_carrier)
 
         self.lbl_wav_carrier = QLabel("Carrier: none")
         self.lbl_wav_carrier.setMinimumWidth(130)
@@ -25424,12 +25546,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
         media_import_row = QHBoxLayout()
         media_import_row.setContentsMargins(0, 0, 0, 4)
         media_import_row.addWidget(self.btn_load_wav)
+        media_import_row.addWidget(self.btn_clear_global_carrier)
         media_import_row.addWidget(self.lbl_wav_carrier)
         media_import_row.addWidget(self.btn_load_media)
         self.btn_load_sample_operator = QPushButton("Load Sample → Selected Operator")
         self.btn_load_sample_operator.setToolTip("Decode an audio or video file and attach its audio stream to the selected operator. The sample is user-owned and is morphed 50/50 with the operator's canonical voice before canonical gain/playlist composition.")
         self.btn_load_sample_operator.clicked.connect(self.load_sample_to_selected_operator)
         media_import_row.addWidget(self.btn_load_sample_operator)
+        self.btn_clear_local_carrier = QPushButton("Clear Local Carrier")
+        self.btn_clear_local_carrier.setToolTip(
+            "Detach the audio/video sample carrier from the currently selected operator only. "
+            "Other operators and the global carrier are unchanged."
+        )
+        self.btn_clear_local_carrier.clicked.connect(self.clear_local_carrier)
+        media_import_row.addWidget(self.btn_clear_local_carrier)
         self.lbl_operator_sample = QLabel("OP SAMPLE: none")
         self.lbl_operator_sample.setMinimumWidth(135)
         self.lbl_operator_sample.setToolTip("Selected operator's user-owned sample source. Synth knobs, script, patch and domain shape its 50% morph contribution.")
@@ -26341,19 +26471,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # it must never re-randomize or phase-fill the sequence.
 
         self.steps_scroll = QScrollArea()
-        # SEQUENCE_SCROLL_1024_2026: the lane owns its content width.  With
-        # widgetResizable=True Qt can keep squeezing the child to the viewport,
-        # which suppresses the horizontal scrollbar on long lanes.  We resize
-        # explicitly instead: fill the viewport when cells fit, exceed it at the
-        # readable cell minimum when they do not.
-        self.steps_scroll.setWidgetResizable(False)
+        self.steps_scroll.setWidgetResizable(True)
         self.steps_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.steps_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.steps_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.steps_scroll.setWidget(self.steps_layout_widget)
         self.steps_scroll.setMinimumHeight(112)
         seq_inner.addWidget(self.steps_scroll, stretch=1)
-        QTimer.singleShot(0, self._sync_step_strip_geometry)
 
         # SEQUENCE_ENVELOPE_2026: sequence-wide predictive attack/release.
         # Keep these structurally BETWEEN the Step strip and Automation strip so
@@ -26441,7 +26564,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         _auto_add(QLabel("Length"))
         self.spin_auto_point_length = QSpinBox()
         self.spin_auto_point_length.setRange(1, 1024)
-        self.spin_auto_point_length.setValue(DEFAULT_AUTOMATION_LENGTH)
+        self.spin_auto_point_length.setValue(16)
         self.spin_auto_point_length.setFixedWidth(62)
         self.spin_auto_point_length.setToolTip("Number of automation steps. The orange automation strip resizes to this count.")
         self.spin_auto_point_length.valueChanged.connect(self._on_automation_length_changed)
@@ -26530,12 +26653,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         seq_inner.addLayout(automation_row)
 
         self.sequencer_automation_scroll = QScrollArea()
-        # Same explicit geometry contract as the Step strip.  The old 58px
-        # fixed viewport also left no room for a horizontal scrollbar.
-        self.sequencer_automation_scroll.setWidgetResizable(False)
+        self.sequencer_automation_scroll.setWidgetResizable(True)
         self.sequencer_automation_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.sequencer_automation_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.sequencer_automation_scroll.setFixedHeight(82)
+        self.sequencer_automation_scroll.setFixedHeight(58)
         self.sequencer_automation_widget = QWidget()
         self.sequencer_automation_layout = QHBoxLayout(self.sequencer_automation_widget)
         self.sequencer_automation_layout.setContentsMargins(2, 2, 2, 2)
@@ -26610,11 +26731,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.popup_auto_param_value.valueChanged.connect(self._on_automator_popup_param_changed)
         self.automator_teleport_popup.hide()
         self._refresh_sequencer_automation_row()
-        # INITIAL_DRAW_SYNC_12STEP_2026: one post-layout pass removes any stale
-        # pre-layout button count. This runs before user interaction and reads the
-        # authoritative active sequence bank, so loaded non-default projects retain
-        # their own lengths while a fresh project draws 12 immediately.
-        QTimer.singleShot(0, self._finalize_initial_sequencer_draw)
 
         # Step editor is a floating/teleporting inspector. It follows the selected
         # pad and places itself above or below the pad so the controls remain visible.
@@ -27336,45 +27452,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._refresh_sequence_selector()
         self.reload_active_instrument_sequencer_ui()
 
-    def _finalize_initial_sequencer_draw(self):
-        """Synchronize both visible lanes from the active bank after first layout."""
-        if not hasattr(self, "top_sequencer"):
-            return
-        try:
-            mem = self._current_sequence_mem()
-            count = max(1, min(1024, int(mem.get("pattern_length", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH)))
-            if hasattr(self, "spin_seq_length"):
-                self.spin_seq_length.blockSignals(True)
-                self.spin_seq_length.setValue(count)
-                self.spin_seq_length.blockSignals(False)
-            if hasattr(self, "spin_pattern_length"):
-                self.spin_pattern_length.blockSignals(True)
-                self.spin_pattern_length.setValue(count)
-                self.spin_pattern_length.blockSignals(False)
-            # Always rebuild once after the scroll-area viewport has been created.
-            # This prevents a stale pre-layout 16-cell draw from surviving until an
-            # automation teleport happens to reload the sequence context.
-            self.rebuild_sequencer_steps(count)
-
-            if (hasattr(self, "spin_auto_point_length") and
-                    hasattr(self, "chk_auto_sync_sequencer") and
-                    self.chk_auto_sync_sequencer.isChecked()):
-                delta = int(self.spin_auto_syncopate.value()) if hasattr(self, "spin_auto_syncopate") else 0
-                auto_count = max(1, min(1024, count + delta))
-                self.spin_auto_point_length.blockSignals(True)
-                self.spin_auto_point_length.setValue(auto_count)
-                self.spin_auto_point_length.blockSignals(False)
-                mem["automation_lane_length"] = auto_count
-                self._remember_automation_length(auto_count)
-                # Fresh cells are stored ON with complete default state. Existing
-                # project/canonical points are preserved and are never overwritten.
-                self._materialize_new_automation_steps(1, auto_count)
-                self._refresh_sequencer_automation_row()
-            QTimer.singleShot(0, self._sync_step_strip_geometry)
-            QTimer.singleShot(0, self._sync_automation_strip_geometry)
-        except Exception as exc:
-            print(f"[Sequencer] initial draw sync skipped: {exc}")
-
     def reload_active_instrument_sequencer_ui(self):
         if not hasattr(self, 'top_sequencer'):
             return
@@ -27786,7 +27863,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 target_rms = self._estimate_other_47_rms(step_idx, hit_dur, len(hit), sr)
             except Exception:
                 pass
-            if target_rms > 1e-9 and hit_rms > 1e-9:
+            if target_rms > 0.0 and hit_rms > 0.0:
                 hit *= target_rms / hit_rms
             hit *= float(getattr(self, 'master_volume', 1.0))
 
@@ -27815,81 +27892,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
             is_on = mem["steps"][s_idx] if s_idx < len(mem.get("steps", [])) else False
             self._style_pad_button(btn, s_idx, is_on)
 
-    def _sync_step_strip_geometry(self):
-        """Stretch STEP cells while they fit; use a real fixed-width overflow lane when they do not.
-
-        Qt can otherwise satisfy a nested QScrollArea by repeatedly shrinking the
-        child/layout toward its size hint.  On a ~1200 px viewport that looked like
-        a hard 14-step ceiling.  Here the content widget owns an exact width:
-        small lanes divide the viewport equally; long lanes keep readable cells
-        and become wider than the viewport, which guarantees horizontal range.
-        """
-        scroll = getattr(self, "steps_scroll", None)
-        widget = getattr(self, "steps_layout_widget", None)
-        layout = getattr(self, "steps_inner_layout", None)
-        buttons = list(getattr(self, "seq_step_buttons", []) or [])
-        if scroll is None or widget is None or layout is None or not buttons:
-            return
-        try:
-            count = max(1, len(buttons))
-            spacing = max(0, int(layout.spacing()))
-            margins = layout.contentsMargins()
-            margin_w = int(margins.left() + margins.right())
-            viewport_w = max(1, int(scroll.viewport().width()))
-            viewport_h = max(60, int(scroll.viewport().height()))
-            usable = max(1, viewport_w - margin_w - max(0, count - 1) * spacing)
-            readable_w = 86
-            fit_w = usable // count
-            if fit_w >= readable_w:
-                cell_w = max(readable_w, int(fit_w))
-                target_w = viewport_w
-                scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-            else:
-                # Fixed readable width is intentional here: never compress a long
-                # sequence to the number of cells that happen to fit on-screen.
-                cell_w = readable_w
-                target_w = margin_w + count * cell_w + max(0, count - 1) * spacing
-                scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
-            for btn in buttons:
-                btn.setMinimumWidth(cell_w)
-                btn.setMaximumWidth(cell_w)
-                btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-            # Exact width, not just a minimum, prevents an outer scroll/layout from
-            # negotiating this lane back down to the viewport's ~14-cell size.
-            widget.setMinimumWidth(target_w)
-            widget.setMaximumWidth(target_w)
-            widget.resize(target_w, viewport_h)
-            layout.invalidate()
-            widget.updateGeometry()
-            bar = scroll.horizontalScrollBar()
-            if bar is not None:
-                bar.setSingleStep(max(24, cell_w // 2))
-                bar.setPageStep(max(cell_w, viewport_w - cell_w))
-        except Exception:
-            pass
-
-    def _sync_automation_strip_geometry(self):
-        """Fill the Automator row when possible and scroll it when cells no longer fit."""
-        scroll = getattr(self, "sequencer_automation_scroll", None)
-        widget = getattr(self, "sequencer_automation_widget", None)
-        layout = getattr(self, "sequencer_automation_layout", None)
-        if scroll is None or widget is None or layout is None:
-            return
-        try:
-            length = max(1, int(self.spin_auto_point_length.value())) if hasattr(self, "spin_auto_point_length") else DEFAULT_AUTOMATION_LENGTH
-            spacing = max(0, int(layout.spacing()))
-            margins = layout.contentsMargins()
-            margin_w = int(margins.left() + margins.right())
-            min_content = margin_w + length * 96 + max(0, length - 1) * spacing
-            viewport_w = max(1, int(scroll.viewport().width()))
-            viewport_h = max(60, int(scroll.viewport().height()))
-            target_w = max(viewport_w, min_content)
-            widget.setMinimumWidth(min_content)
-            widget.resize(target_w, viewport_h)
-            widget.updateGeometry()
-        except Exception:
-            pass
-
     def rebuild_sequencer_steps(self, count):
         while self.steps_inner_layout.count():
             item = self.steps_inner_layout.takeAt(0)
@@ -27904,7 +27906,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         curr_inst = self.instrument_selector_dropdown.currentText() if hasattr(self, 'top_sequencer') else self.instrument_names_48[0]
         mem = self._current_sequence_mem(curr_inst) if hasattr(self, '_current_sequence_mem') else self.instrument_sequencer_memory[curr_inst]
-        count = max(1, min(1024, int(mem.get('pattern_length', count) or count or DEFAULT_SEQUENCE_LENGTH)))
+        count = int(mem.get('pattern_length', count))
         self._ensure_seq_mem_length(mem, count)
         if "pitches" not in mem:
             mem["pitches"] = [1.0] * count
@@ -27920,10 +27922,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             step_btn.setToolTip("1st click = SELECT / TELEPORT · 2nd click = ON/OFF")
             step_btn.setMinimumSize(86, 58)
             step_btn.setFixedHeight(58)
-            # ROW_FILL_12STEP_2026: cells share all spare horizontal space equally.
-            # Their minimum width preserves readability; the scroll area takes over
-            # only when the complete lane cannot fit at that minimum.
-            step_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            step_btn.setMaximumWidth(110)
             self._style_pad_button(step_btn, s, mem["steps"][s])
 
             def make_handler(s_idx):
@@ -27932,17 +27931,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 return on_click
 
             step_btn.clicked.connect(make_handler(s))
-            self.steps_inner_layout.addWidget(step_btn, 1)
+            self.steps_inner_layout.addWidget(step_btn)
             self.seq_step_buttons.append(step_btn)
-
-        # Explicit minimum content width gives QScrollArea an unambiguous hand-off:
-        # stretch equally when there is room; scroll rather than crush cells when not.
-        try:
-            spacing = max(0, int(self.steps_inner_layout.spacing()))
-            self.steps_layout_widget.setMinimumWidth(max(0, int(count) * 86 + max(0, int(count) - 1) * spacing))
-            QTimer.singleShot(0, self._sync_step_strip_geometry)
-        except Exception:
-            pass
 
     def _canonical_level(self, source):
         """Normalized 0..1 level for SEEDED / RAND / LOCK / GOAVA."""
@@ -28934,9 +28924,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             weights[param] = weights.get(param, 0.0) + w
 
         def _norm(p, default=0.5):
-            if weights.get(p, 0) <= 1e-9:
+            if weights.get(p, 0) <= 0.0:
                 return default
-            return float(np.clip(0.5 + accum[p] / max(weights[p], 1e-9) * 0.5, 0.0, 1.0))
+            return float(np.clip(0.5 + accum[p] / weights[p] * 0.5, 0.0, 1.0))
 
         # Map onto main macros when present
         if hasattr(self, 'slider_eqr'):
@@ -28975,12 +28965,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
             st = getattr(self, "master_vector_state", None)
             if isinstance(st, dict):
                 for axis, key in (("master_vector_x", "x"), ("master_vector_y", "y"), ("master_vector_z", "z")):
-                    if weights.get(axis, 0) > 1e-9:
+                    if weights.get(axis, 0) > 0.0:
                         # Map normalized 0..1 influence to -1..+1 vector axis
                         st[key] = float(np.clip((_norm(axis, 0.5) - 0.5) * 2.0, -1.0, 1.0))
                         if hasattr(self, "_canonical_field_touched"):
                             self._canonical_field_touched.add(f"master_vector:{key}")
-                if weights.get("master_vector_drive", 0) > 1e-9:
+                if weights.get("master_vector_drive", 0) > 0.0:
                     st["drive"] = float(np.clip(_norm("master_vector_drive", 0.5), 0.0, 1.0))
                     if hasattr(self, "slider_master_vector_drive"):
                         self.slider_master_vector_drive.blockSignals(True)
@@ -28999,7 +28989,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     ("wavetable_twist", "twist"),
                     ("wavetable_fold", "fold"),
                 ):
-                    if weights.get(src, 0) > 1e-9:
+                    if weights.get(src, 0) > 0.0:
                         wt[dst] = float(np.clip(_norm(src, float(wt.get(dst, 0.5))), 0.0, 1.0 if dst != "phase" else 1.0))
                 self.wavetable_projector_state = wt
                 if hasattr(self, "_update_wavetable_projector"):
@@ -29015,33 +29005,33 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     ("script_mod", "script"),
                     ("domain_mod", "domain"),
                 ):
-                    if weights.get(src, 0) > 1e-9:
+                    if weights.get(src, 0) > 0.0:
                         # 0..1 norm -> 0..2 depth (100% center)
                         gms[dst] = float(np.clip(_norm(src, 0.5) * 2.0, 0.0, 2.0))
                 self.global_mod_state = gms
-                if hasattr(self, "global_xmod_slider") and weights.get("global_xmod", 0) > 1e-9:
+                if hasattr(self, "global_xmod_slider") and weights.get("global_xmod", 0) > 0.0:
                     self.global_xmod_slider.blockSignals(True)
                     self.global_xmod_slider.setValue(int(gms.get("xmod", 1.0) * 100))
                     self.global_xmod_slider.blockSignals(False)
-                if hasattr(self, "global_input_xmod_slider") and weights.get("global_input_xmod", 0) > 1e-9:
+                if hasattr(self, "global_input_xmod_slider") and weights.get("global_input_xmod", 0) > 0.0:
                     self.global_input_xmod_slider.blockSignals(True)
                     self.global_input_xmod_slider.setValue(int(gms.get("input_xmod", 1.0) * 100))
                     self.global_input_xmod_slider.blockSignals(False)
 
-            if weights.get("algorithm_xmod_local", 0) > 1e-9:
+            if weights.get("algorithm_xmod_local", 0) > 0.0:
                 self.local_algorithm_xmod = float(np.clip(_norm("algorithm_xmod_local", 0.5) * 2.0, 0.0, 2.0))
                 if hasattr(self, "local_algorithm_xmod_slider"):
                     self.local_algorithm_xmod_slider.blockSignals(True)
                     self.local_algorithm_xmod_slider.setValue(int(self.local_algorithm_xmod * 100))
                     self.local_algorithm_xmod_slider.blockSignals(False)
-            if weights.get("algorithm_xmod_global", 0) > 1e-9:
+            if weights.get("algorithm_xmod_global", 0) > 0.0:
                 self.global_algorithm_xmod = float(np.clip(_norm("algorithm_xmod_global", 0.5) * 2.0, 0.0, 2.0))
                 if hasattr(self, "global_algorithm_xmod_slider"):
                     self.global_algorithm_xmod_slider.blockSignals(True)
                     self.global_algorithm_xmod_slider.setValue(int(self.global_algorithm_xmod * 100))
                     self.global_algorithm_xmod_slider.blockSignals(False)
 
-            if weights.get("canonical_resonance", 0) > 1e-9:
+            if weights.get("canonical_resonance", 0) > 0.0:
                 # Automation follows the currently active protection domain.
                 # Protect OFF exposes the complete 0–200% lane; protect ON 50–150%.
                 _rlo, _rhi = self._canonical_resonance_range()
@@ -29312,8 +29302,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             finite = bool(np.isfinite(arr).all()) if arr.size else True
             rms = float(np.sqrt(np.mean(np.square(safe)))) if safe.size else 0.0
             peak = float(np.max(np.abs(safe))) if safe.size else 0.0
-            nonzero = bool(np.any(np.abs(safe) > 1e-12)) if safe.size else False
-            headroom_db = 120.0 if peak <= 1e-12 else float(max(-120.0, -20.0 * math.log10(max(peak, 1e-12))))
+            nonzero = bool(np.any(safe != 0.0)) if safe.size else False
+            headroom_db = 120.0 if peak == 0.0 else float(max(-120.0, -20.0 * math.log10(peak)))
             self.signal_monitor_state = {"rms": rms, "peak": peak, "headroom_db": headroom_db, "finite": finite, "nonzero": nonzero}
             if hasattr(self, "lbl_signal_rms"): self.lbl_signal_rms.setText(f"RMS {rms:.4f}  |  PEAK {peak:.4f}")
             if hasattr(self, "lbl_signal_headroom"): self.lbl_signal_headroom.setText(f"HEADROOM {headroom_db:.1f} dB  |  FINITE {'YES' if finite else 'NO'}")
@@ -29336,7 +29326,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             v = self._master_vector_effective()
             drive = float(np.clip(st.get("drive", 0.5), 0.0, 1.0))
             norm = float(np.linalg.norm(v))
-            if norm < 1e-9:
+            if norm == 0.0:
                 return arr
             vn = v / norm
             # XYZ -> deterministic phase/ring coefficients. The transform is
@@ -29355,8 +29345,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if bool(st.get("guard", True)):
                 # Never erase a genuinely nonzero signal merely because the
                 # vector field is active; preserve its sign and finite support.
-                nz = np.abs(arr) > 1e-12
-                out[nz & (np.abs(out) < 1e-12)] = arr[nz & (np.abs(out) < 1e-12)]
+                nz = arr != 0.0
+                out[nz & (out == 0.0)] = arr[nz & (out == 0.0)]
             return out.astype(np.float32)
         except Exception:
             return arr
@@ -29620,7 +29610,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _sequence_envelope_factor(self, local_t, step_start, step_end, row_duration, mem):
         """Predictive attack before trigger + release through at most one playlist row."""
-        row = max(float(row_duration), 1e-9)
+        row = float(row_duration)
+        if row < 0.0:
+            row = 0.0
         a_seq = float(np.clip(float(mem.get("sequence_envelope_attack", 0.5) or 0.0), 0.0, 1.0))
         r_seq = float(np.clip(float(mem.get("sequence_envelope_release", 0.5) or 0.0), 0.0, 1.0))
         # Existing instrument/pattern envelope fields contribute equally; missing
@@ -29630,10 +29622,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         attack = min(row, row * 0.5 * (a_seq + p_attack))
         release = min(row, row * 0.5 * (r_seq + p_release))
         out = np.ones_like(local_t, dtype=np.float32)
-        if attack > 1e-9:
+        if attack > 0.0:
             pre = (local_t >= step_start - attack) & (local_t < step_start)
             out[pre] = (local_t[pre] - (step_start - attack)) / attack
-        if release > 1e-9:
+        if release > 0.0:
             post = (local_t >= step_end) & (local_t < step_end + release)
             out[post] = 1.0 - (local_t[post] - step_end) / release
         # Longitudinal fallback: with no painted automation, remain linear over one row.
@@ -29744,10 +29736,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         key = f"{name}:{int(row_idx)}"
         overlay = overlays.setdefault(key, {})
         try:
-            auto_len = int(self.spin_auto_point_length.value()) if hasattr(self, "spin_auto_point_length") else DEFAULT_AUTOMATION_LENGTH
+            auto_len = int(self.spin_auto_point_length.value()) if hasattr(self, "spin_auto_point_length") else 16
         except Exception:
-            auto_len = DEFAULT_AUTOMATION_LENGTH
-        auto_len = max(1, min(1024, int(auto_len) or DEFAULT_AUTOMATION_LENGTH))
+            auto_len = 16
+        auto_len = max(1, min(1024, int(auto_len) or 16))
         try:
             sid = int(self._current_sequence_index(name)) if hasattr(self, "_current_sequence_index") else 1
         except Exception:
@@ -30201,37 +30193,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception as exc:
             print(f"[Track Offset] update failed: {exc}")
 
-    def _commit_selected_sequence_user_baseline(self, instrument_name=None, sequence_id=None, promote=False):
-        """Commit a manual sequence edit into the pre-canonical user baseline.
-
-        Perfect-unison intentionally restores the pre-canonical bank before each
-        deterministic engine pass.  Without updating that baseline, a manual resize
-        made while engines are active is reverted ~75 ms later to the old length
-        (for example 14 or 24), which looks like a STEP maximum/wrap bug.
-        """
-        try:
-            name = instrument_name or self._current_instrument_name()
-            sid = int(sequence_id or self._current_sequence_index(name))
-            bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(name, {})
-            mem = bank.get(sid) if isinstance(bank, dict) else None
-            if not isinstance(mem, dict):
-                return
-            if promote and self._canonical_protect_user():
-                # A human edit under Canonical Protect becomes userdata.  This
-                # prevents the next reconcile from deleting/re-seeding the lane.
-                mem["user_owned"] = True
-                mem["canonical_owner"] = None
-            snap_banks = getattr(self, "_canonical_panels_user_store", None)
-            if isinstance(snap_banks, dict):
-                snap_bank = snap_banks.setdefault(name, {})
-                snap_bank[sid] = copy.deepcopy(mem)
-            snap_patterns = getattr(self, "_canonical_pattern_user_store", None)
-            if isinstance(snap_patterns, dict):
-                # This store mirrors the currently selected/live bank per instrument.
-                snap_patterns[name] = copy.deepcopy(mem)
-        except Exception as exc:
-            print(f"[Sequencer] user-baseline commit skipped: {exc}")
-
     def _on_sequence_length_changed(self, value):
         """Resize only the selected sequence, then refresh every dependent panel."""
         # PROJECT_UNDO_2026: full snapshot before the resize; all existing steps
@@ -30241,17 +30202,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         mem = self._current_sequence_mem()
         n = max(1, min(1024, int(value)))
         mem["pattern_length"] = n
-        # A manual length edit is user data even if no individual pad has been
-        # clicked yet.  Without this flag the canonical resize pass can snap the
-        # spinner back to a seed-derived bank length.
-        mem["length_user_locked"] = True
         self._ensure_seq_mem_length(mem, n)
-        # USER_BASELINE_LENGTH_2026: perfect-unison restores its frozen user bank
-        # before every engine pass. Commit this edit there BEFORE the 75 ms live
-        # source flush, otherwise the old baseline (14/24/etc.) wins again.
-        self._commit_selected_sequence_user_baseline(promote=True)
         if hasattr(self, "spin_auto_point_length"):
-            _old_auto_n = int(self.spin_auto_point_length.value())
             self.spin_auto_point_length.blockSignals(True)
             self.spin_auto_point_length.setRange(1, 1024)
             if str(getattr(self, "automator_timing_mode", "wrap")) == "wrap" and bool(getattr(self, "chk_auto_sync_sequencer", None) is not None and self.chk_auto_sync_sequencer.isChecked()):
@@ -30260,11 +30212,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
             else:
                 self.spin_auto_point_length.setValue(min(max(1, self.spin_auto_point_length.value()), 1024))
             self.spin_auto_point_length.blockSignals(False)
-            _new_auto_n = int(self.spin_auto_point_length.value())
-            mem["automation_lane_length"] = _new_auto_n
-            if _new_auto_n > _old_auto_n:
-                self._materialize_new_automation_steps(_old_auto_n + 1, _new_auto_n)
-            self._remember_automation_length(_new_auto_n)
         # Keep the hidden compatibility alias synchronized without a second UI concept.
         if hasattr(self, "spin_pattern_length"):
             self.spin_pattern_length.blockSignals(True)
@@ -30279,22 +30226,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.rebuild_sequencer_steps(n)
         self._refresh_sequence_selector()
         self._refresh_sequence_dependent_panels()
-        if hasattr(self, "_refresh_sequencer_automation_row"):
-            self._refresh_sequencer_automation_row()
         self._canonical_write_sequence_runtime()
-        # Reassert from authoritative selected memory after every dependent refresh;
-        # never derive the editor length from another/shorter sequence.
-        try:
-            live_mem = self._current_sequence_mem()
-            live_mem["pattern_length"] = n
-            self.spin_seq_length.blockSignals(True)
-            self.spin_seq_length.setValue(n)
-            self.spin_seq_length.blockSignals(False)
-            self.rebuild_sequencer_steps(n)
-            self._sync_step_strip_geometry()
-            QTimer.singleShot(0, self._sync_step_strip_geometry)
-        except Exception:
-            pass
         self._on_live_source_changed()
 
     def _refresh_sequence_dependent_panels(self):
@@ -30485,9 +30417,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     _ph = (j + 1) * MEUM + inst_seed_i * 0.001317
                     _ph2 = (j + 1) * MEUM_INV + inst_seed_i * 1.713e-5
                     mem["amplitudes"][j] = float(0.5 + 0.5 * series_sin(_ph) * series_cos(_ph2 * 0.37))
-                    mem["amplitudes"][j] = float(abs(mem["amplitudes"][j]))  # (0,1]
-                    if mem["amplitudes"][j] < 1e-6:
-                        mem["amplitudes"][j] = 1e-6
+                    mem["amplitudes"][j] = float(abs(mem["amplitudes"][j]))
+                    if mem["amplitudes"][j] < 0.0:
+                        mem["amplitudes"][j] = 0.0
+                    if mem["amplitudes"][j] > 1.0:
+                        mem["amplitudes"][j] = 1.0
                     mem["offsets"][j] = float(0.5 * series_sin(_ph2) * series_cos(_ph * MEUM_NORM))
                     mem["engine_step_sources"][int(j)] = {f"canonical:{source}"}
                 bank[idx] = mem
@@ -30566,14 +30500,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             mem["automation_lane"] = []
 
     def _sequence_is_user_locked(self, mem):
-        """True when a non-canonical sequence carries user/editor-owned state."""
+        """True only when a human has edited at least one step of this sequence."""
         if not isinstance(mem, dict):
             return False
-        owner = str(mem.get("canonical_owner", "") or "")
-        if owner.startswith("canonical:"):
-            return False
-        if bool(mem.get("user_owned")) or bool(mem.get("length_user_locked")):
-            return True
         touched = mem.get("touched") or set()
         try:
             return len(touched) > 0
@@ -30585,7 +30514,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         amount = float(np.clip(float(amount), 0.0, 1.0))
         out = dict(master or {})
         addon = addon or {}
-        if amount <= 1e-9 or not addon:
+        if amount <= 0.0 or not addon:
             return out
         for k, v in addon.items():
             if k == "meum_modulation" and isinstance(v, dict) and isinstance(out.get(k), dict):
@@ -30654,34 +30583,47 @@ class MathematiciansGrooveboxApp(QMainWindow):
         return False
 
     def _engine_resize_untouched_sequences(self):
-        """Normalize engine-owned banks without ever resizing a user/editor sequence.
-
-        Sequence length is editor/user state. Canonical engines may create their own
-        canonical:* sequence objects at seed-derived lengths, but they must never
-        rewrite pattern_length on an existing non-canonical bank or drive the visible
-        Sequence Length control. This keeps STEP length stable across toggles,
-        randomizers, automation edits, render refreshes and canonical reconciliation.
-        """
+        """Canonical engines may resize any sequence the user has not touched."""
         banks = getattr(self, "instrument_sequence_banks", {}) or {}
-        for name, bank in list(banks.items()):
+        names = list(getattr(self, "instrument_names_48", []) or [])
+        for name in names:
+            bank = banks.get(name) or {}
             if not isinstance(bank, dict):
                 continue
+            canon_ns = [
+                max(1, int(m.get("pattern_length", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH))
+                for m in bank.values()
+                if isinstance(m, dict) and str(m.get("canonical_owner", "")).startswith("canonical:")
+            ]
+            if not canon_ns:
+                continue
+            adopt = int(canon_ns[0])
             for _sid, mem in list(bank.items()):
-                if not isinstance(mem, dict):
+                if not isinstance(mem, dict) or self._sequence_is_user_locked(mem):
                     continue
-                owner = str(mem.get("canonical_owner", "") or "")
-                n = max(1, min(1024, int(mem.get("pattern_length", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH)))
-                # Engine-owned sequences keep the length with which they were created.
-                # User/non-canonical sequences are only array-normalized to their
-                # existing authoritative length; no engine code writes pattern_length.
+                owner = str(mem.get("canonical_owner", ""))
+                n = int(mem.get("pattern_length", adopt) or adopt) if owner.startswith("canonical:") else adopt
+                n = max(1, min(1024, n))
+                mem["pattern_length"] = n
                 self._ensure_seq_mem_length(mem, n)
-                if owner.startswith("canonical:"):
-                    mem.setdefault("sequence_id", int(_sid) if str(_sid).isdigit() else _sid)
             sel = (getattr(self, "instrument_selected_sequence", {}) or {}).get(name)
             if sel in bank:
                 self.instrument_sequencer_memory[name] = bank[sel]
-        # Deliberately do not touch spin_seq_length here. UI length is refreshed only
-        # by explicit sequence selection/load or by _on_sequence_length_changed().
+        try:
+            mem = self._current_sequence_mem()
+            if mem and not self._sequence_is_user_locked(mem) and hasattr(self, "spin_seq_length"):
+                n = max(1, int(mem.get("pattern_length", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH))
+                if int(self.spin_seq_length.value()) != n:
+                    self.spin_seq_length.blockSignals(True)
+                    self.spin_seq_length.setValue(n)
+                    self.spin_seq_length.blockSignals(False)
+                    if hasattr(self, "spin_pattern_length"):
+                        self.spin_pattern_length.blockSignals(True)
+                        self.spin_pattern_length.setValue(n)
+                        self.spin_pattern_length.blockSignals(False)
+                    self.rebuild_sequencer_steps(n)
+        except Exception:
+            pass
 
     # =====================================================================
     # STEP_ISOLATION_FIX
@@ -30827,15 +30769,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         synth[key] = float(synth[key]) + 0.5 * float(off)
                 except Exception:
                     pass
-        # Per-step Automator values are stored on the point, not only in the
-        # shared target sequence.  This lets newly extended cells inherit a
-        # complete parameter snapshot while remaining independently editable.
-        point_values = point.get("synth_values", {}) if isinstance(point.get("synth_values", {}), dict) else {}
-        for key, value in point_values.items():
-            try:
-                synth[str(key)] = float(value)
-            except Exception:
-                pass
         patch = copy.deepcopy((getattr(self, "instrument_param_state", {}) or {}).get(instrument_name, {}) or {})
         synth = self._automation_lerp_dict(patch, synth, 0.5)
         return {"sequence": seq, "synth": synth, "point": point}
@@ -30994,8 +30927,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             slope_scale = 0.5 + env_a
             hold_start = 0.25 * env_a
             hold_end = 0.25 * env_r
-            active_span = max(1e-6, 1.0 - hold_start - hold_end)
-            f = (frac - hold_start) / active_span
+            active_span = 1.0 - hold_start - hold_end
+            if active_span == 0.0:
+                f = 0.0
+            else:
+                f = (frac - hold_start) / active_span
             f = float(np.clip(f, 0.0, 1.0))
             # Linear around the midpoint; preserve exact endpoints and never leave 0..1.
             frac = float(np.clip(0.5 + (f - 0.5) * slope_scale, 0.0, 1.0))
@@ -31052,16 +30988,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _on_automation_length_changed(self, value):
         n = max(1, min(1024, int(value)))
-        src_inst, src_sid = self._automation_scope_key()
-        mem = self._sequence_state_for_automation(src_inst, src_sid)
-        store = getattr(self, "_automation_length_by_scope", {}) or {}
-        old_n = int((mem.get("automation_lane_length") if isinstance(mem, dict) else None) or store.get((src_inst, src_sid), DEFAULT_AUTOMATION_LENGTH) or DEFAULT_AUTOMATION_LENGTH)
-        old_n = max(1, min(1024, old_n))
-        if n > old_n:
-            self._materialize_new_automation_steps(old_n + 1, n, src_inst, src_sid)
-        if isinstance(mem, dict):
-            mem["automation_lane_length"] = n
-        self._remember_automation_length(n, src_inst, src_sid)
         if hasattr(self, "spin_auto_point_step"):
             self.spin_auto_point_step.setRange(1, n)
             self.spin_auto_point_step.setValue(min(max(1, self.spin_auto_point_step.value()), n))
@@ -31103,99 +31029,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # another source track. This is the key source-scope invariant for the
         # two-click Automator teleport editor.
         return None
-
-    def _automation_scope_key(self, instrument_name=None, sequence_id=None):
-        inst = str(instrument_name if instrument_name is not None else (self.instrument_selector_dropdown.currentText() if hasattr(self, "instrument_selector_dropdown") else (self.auto_to_instrument.currentText() if hasattr(self, "auto_to_instrument") else "")))
-        sid = int(sequence_id if sequence_id is not None else (self.sequence_selector.currentData() or 1 if hasattr(self, "sequence_selector") and self.sequence_selector.currentData() is not None else (self.spin_auto_to_sequence.value() if hasattr(self, "spin_auto_to_sequence") else 1)))
-        return inst, sid
-
-    def _remember_automation_length(self, length, instrument_name=None, sequence_id=None):
-        store = getattr(self, "_automation_length_by_scope", None)
-        if not isinstance(store, dict):
-            store = self._automation_length_by_scope = {}
-        store[self._automation_scope_key(instrument_name, sequence_id)] = max(1, min(1024, int(length)))
-
-    def _new_automation_point(self, step, instrument_name=None, sequence_id=None):
-        """Create one fully stored user automation point, ON by default.
-
-        New cells inherit the selected/nearest point so extending a lane preserves
-        Operator, Sequence, Offset, morph, envelope and synth-parameter choices.
-        """
-        step = int(step)
-        src_inst, src_sid = self._automation_scope_key(instrument_name, sequence_id)
-        scoped = [p for p in (getattr(self, "sequencer_automation_points", []) or [])
-                  if isinstance(p, dict)
-                  and str(p.get("from_instrument") or p.get("instrument") or "") == src_inst
-                  and int(p.get("from_sequence", 1) or 1) == src_sid]
-        template = None
-        selected = getattr(self, "_selected_automation_step", None)
-        if selected is not None:
-            template = next((p for p in scoped if int(p.get("step", 0) or 0) == int(selected)), None)
-        if template is None and scoped:
-            before = [p for p in scoped if int(p.get("step", 0) or 0) < step]
-            template = max(before or scoped, key=lambda p: int(p.get("step", 0) or 0))
-        point = copy.deepcopy(template) if isinstance(template, dict) else {}
-
-        if template is None:
-            dst_inst = src_inst if self._is_local_context() else (str(self.auto_to_instrument.currentText()) if hasattr(self, "auto_to_instrument") else src_inst)
-            dst_sid = int(self.spin_auto_to_sequence.value()) if hasattr(self, "spin_auto_to_sequence") else src_sid
-            point.update({
-                "to_instrument": dst_inst, "to_sequence": dst_sid, "instrument": dst_inst,
-                "morph": float(self.popup_auto_morph.value()) / 100.0 if hasattr(self, "popup_auto_morph") else 1.0,
-                "step_offset": int(self.spin_auto_offset.value()) if hasattr(self, "spin_auto_offset") else 0,
-                "playlist_row": 0, "composition_blend": 0.5, "reference_offsets": {},
-            })
-        point.update({
-            "step": step, "from_instrument": src_inst, "from_sequence": src_sid,
-            "canonical_owner": "user:sequencer_automation", "user_owned": True,
-            "length": int(self.spin_auto_point_length.value()) if hasattr(self, "spin_auto_point_length") else DEFAULT_AUTOMATION_LENGTH,
-            "enabled": True,
-        })
-        point.setdefault("to_instrument", src_inst)
-        point.setdefault("to_sequence", src_sid)
-        point["instrument"] = str(point.get("to_instrument") or src_inst)
-
-        dst_inst = str(point.get("to_instrument") or src_inst)
-        dst_sid = int(point.get("to_sequence", src_sid) or src_sid)
-        bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(dst_inst, {})
-        target = bank.get(dst_sid, {}) if isinstance(bank, dict) else {}
-        default_att = float(target.get("sequence_envelope_attack", 0.5) or 0.0) if isinstance(target, dict) else 0.5
-        default_rel = float(target.get("sequence_envelope_release", 0.5) or 0.0) if isinstance(target, dict) else 0.5
-        if template is None and hasattr(self, "popup_auto_attack"):
-            default_att = float(self.popup_auto_attack.value()) / 100.0
-        if template is None and hasattr(self, "popup_auto_release"):
-            default_rel = float(self.popup_auto_release.value()) / 100.0
-        point.setdefault("sequence_envelope_attack", default_att)
-        point.setdefault("sequence_envelope_release", default_rel)
-
-        if template is None and hasattr(self, "popup_auto_param"):
-            key = str(self.popup_auto_param.currentText() or "morph")
-            point["synth_param"] = key
-            if hasattr(self, "popup_auto_param_value"):
-                val = float(self.popup_auto_param_value.value())
-                point["synth_param_value"] = val
-                point["synth_values"] = {key: val}
-        else:
-            point.setdefault("synth_values", copy.deepcopy(point.get("synth_values", {}) or {}))
-        return point
-
-    def _materialize_new_automation_steps(self, start_step, end_step, instrument_name=None, sequence_id=None):
-        """Persist missing cells in a newly grown automation range as ON points."""
-        start_step = max(1, int(start_step)); end_step = max(start_step - 1, int(end_step))
-        if end_step < start_step:
-            return 0
-        src_inst, src_sid = self._automation_scope_key(instrument_name, sequence_id)
-        existing = {(int(p.get("step", 0) or 0), str(p.get("from_instrument") or p.get("instrument") or ""), int(p.get("from_sequence", 1) or 1))
-                    for p in (getattr(self, "sequencer_automation_points", []) or []) if isinstance(p, dict)}
-        made = 0
-        for step in range(start_step, end_step + 1):
-            if (step, src_inst, src_sid) in existing:
-                continue
-            self.sequencer_automation_points.append(self._new_automation_point(step, src_inst, src_sid))
-            existing.add((step, src_inst, src_sid)); made += 1
-        if made and hasattr(self, "_canonical_write_sequencer_automation_state"):
-            self._canonical_write_sequencer_automation_state()
-        return made
 
     def _teleport_to_sequencer_automation_point(self, point, reposition=True):
         if not isinstance(point, dict):
@@ -31276,12 +31109,36 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._selected_automation_step = step
         point = self._automation_point_for_step(step)
         if point is None:
-            # A newly created cell is a real stored automation point immediately.
-            # It starts ON and inherits the current/nearest Automator selections
-            # and parameters instead of appearing as an empty OFF placeholder.
-            point = self._new_automation_point(step)
+            # SOURCE scope = active sequencer instrument/sequence (matches row filter).
+            # DESTINATION = Automator Operator/Sequence selectors.
+            _src_inst = str(self.instrument_selector_dropdown.currentText()) if hasattr(self, "instrument_selector_dropdown") else (
+                str(self.auto_to_instrument.currentText()) if hasattr(self, "auto_to_instrument") else ""
+            )
+            _src_sid = int(self.sequence_selector.currentData() or 1) if hasattr(self, "sequence_selector") and self.sequence_selector.currentData() is not None else (
+                int(self.spin_auto_to_sequence.value()) if hasattr(self, "spin_auto_to_sequence") else 1
+            )
+            _dst_inst = (
+                _src_inst if self._is_local_context() else
+                (str(self.auto_to_instrument.currentText()) if hasattr(self, "auto_to_instrument") else _src_inst)
+            )
+            _dst_sid = int(self.spin_auto_to_sequence.value()) if hasattr(self, "spin_auto_to_sequence") else _src_sid
+            point = {
+                "step": step,
+                "from_instrument": _src_inst,
+                "from_sequence": _src_sid,
+                "to_instrument": _dst_inst,
+                "to_sequence": _dst_sid,
+                "instrument": _src_inst,
+                "morph": 1.0,
+                "step_offset": 0,
+                "playlist_row": 0,
+                "composition_blend": 0.5,
+                "canonical_owner": "user:sequencer_automation",
+                "length": int(self.spin_auto_point_length.value()) if hasattr(self, "spin_auto_point_length") else 16,
+                "reference_offsets": {},
+                "enabled": False,
+            }
             self.sequencer_automation_points.append(point)
-            self._canonical_write_sequencer_automation_state()
         self._teleport_to_sequencer_automation_point(point)
         if same_step:
             point["enabled"] = not bool(point.get("enabled", True))
@@ -31478,7 +31335,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._selected_automation_step = step
         point = self._automation_point_for_step(step)
         if point is None:
-            point = self._new_automation_point(step)
+            point = {"step": step, "enabled": True, "canonical_owner": "user:sequencer_automation"}
             self.sequencer_automation_points.append(point)
         point.update({
             "from_instrument": str(self.auto_to_instrument.currentText()),
@@ -31505,28 +31362,27 @@ class MathematiciansGrooveboxApp(QMainWindow):
             name = str(self.auto_to_instrument.currentText())
             sid = int(self.spin_auto_to_sequence.value())
             bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(name, {})
-            auto_n = max(1, min(1024, int(getattr(self, "spin_auto_point_length", None).value() if hasattr(self, "spin_auto_point_length") else ((bank.get(sid) or {}).get("automation_lane_length", DEFAULT_AUTOMATION_LENGTH)))))
+            n = max(1, min(1024, int(getattr(self, "spin_auto_point_length", None).value() if hasattr(self, "spin_auto_point_length") else ((bank.get(sid) or {}).get("pattern_length", DEFAULT_SEQUENCE_LENGTH)))))
             seed = _safe_int_seed(self.get_numeric_seed()) ^ int.from_bytes(hashlib.sha256(f"{name}:{sid}".encode()).digest()[:4], "little")
             rng = np.random.default_rng(seed)
-            # Fill sequence content at its own authoritative length. Automation length
-            # is independent and must never resize the STEP sequence.
+            # Fill the selected sequence itself — not just the automation references.
             mem = bank.get(sid) if isinstance(bank, dict) else None
-            seq_n = max(1, min(1024, int((mem or {}).get("pattern_length", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH)))
             if isinstance(mem, dict):
-                self._ensure_seq_mem_length(mem, seq_n)
-                mem["steps"] = [bool(rng.random() > 0.50) for _ in range(seq_n)]
+                self._ensure_seq_mem_length(mem, n)
+                mem["pattern_length"] = n
+                mem["steps"] = [bool(rng.random() > 0.50) for _ in range(n)]
                 if not any(mem["steps"]):
-                    mem["steps"][int(rng.integers(0, seq_n))] = True
-                mem["gates"] = [True] * seq_n
-                mem["amplitudes"] = [float(rng.uniform(0.35, 1.0)) for _ in range(seq_n)]
-                mem["pitches"] = [float(rng.uniform(0.75, 1.5)) for _ in range(seq_n)]
-                mem["probabilities"] = [int(rng.integers(45, 101)) for _ in range(seq_n)]
-                mem["offsets"] = [float(rng.uniform(-0.25, 0.25)) for _ in range(seq_n)]
+                    mem["steps"][int(rng.integers(0, n))] = True
+                mem["gates"] = [True] * n
+                mem["amplitudes"] = [float(rng.uniform(0.35, 1.0)) for _ in range(n)]
+                mem["pitches"] = [float(rng.uniform(0.75, 1.5)) for _ in range(n)]
+                mem["probabilities"] = [int(rng.integers(45, 101)) for _ in range(n)]
+                mem["offsets"] = [float(rng.uniform(-0.25, 0.25)) for _ in range(n)]
                 mem["sequence_envelope_attack"] = float(rng.random())
                 mem["sequence_envelope_release"] = float(rng.random())
                 mem["attack"] = float(rng.random())
                 mem["decay"] = float(rng.random())
-                mem["automation_lane_length"] = auto_n
+                mem["automation_lane_length"] = n
                 self.instrument_sequencer_memory[name] = mem
                 self.instrument_selected_sequence[name] = sid
             # Local scope: keep the source instrument/sequence fixed, but randomize
@@ -31535,7 +31391,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             roster = list(getattr(self, "instrument_names_48", []) or [name])
             old = getattr(self, "sequencer_automation_points", []) or []
             self.sequencer_automation_points = [p for p in old if not (isinstance(p, dict) and str(p.get("from_instrument") or p.get("instrument") or "") == name and int(p.get("from_sequence", 1) or 1) == sid)]
-            for step in range(1, auto_n+1):
+            for step in range(1, n+1):
                 if float(rng.random()) < 0.55:
                     ref_op = str(rng.choice(roster))
                     ref_bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(ref_op, {})
@@ -31547,7 +31403,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         "morph": float(rng.uniform(0.35, 1.0)),
                         "step_offset": int(rng.integers(-8, 9)), "playlist_row": int(rng.integers(0, max(1, int(getattr(self, "spin_playlist_length", None).value() if hasattr(self, "spin_playlist_length") else DEFAULT_PLAYLIST_ROWS)))),
                         "composition_blend": float(rng.uniform(0.35, 0.75)), "canonical_owner": "user:sequencer_automation",
-                        "length": auto_n, "reference_offsets": {}, "enabled": True,
+                        "length": n, "reference_offsets": {}, "enabled": True,
                     })
             self._canonical_write_sequencer_automation_state()
             self.reload_active_instrument_sequencer_ui()
@@ -31580,7 +31436,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         continue
                     n = max(1, min(1024, int(mem.get("pattern_length", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH)))
                     self._ensure_seq_mem_length(mem, n)
-                    # Preserve the sequence's authoritative length; randomize content only.
+                    mem["pattern_length"] = n
                     mem["steps"] = [bool(rng.random() > 0.50) for _ in range(n)]
                     if not any(mem["steps"]):
                         mem["steps"][int(rng.integers(0, n))] = True
@@ -31641,14 +31497,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
         sid = int(point.get("to_sequence", point.get("from_sequence", 1)) or 1)
         morph = float(point.get("morph", 1.0) or 0.0)
         off = int(point.get("step_offset", 0) or 0)
+        # Target sequence envelope is editable directly from the teleport menu.
         bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(inst, {})
         mem = bank.get(sid, {}) if isinstance(bank, dict) else {}
-        att = float(point.get("sequence_envelope_attack", mem.get("sequence_envelope_attack", 0.5) if isinstance(mem, dict) else 0.5) or 0.0)
-        rel = float(point.get("sequence_envelope_release", mem.get("sequence_envelope_release", 0.5) if isinstance(mem, dict) else 0.5) or 0.0)
+        att = float(mem.get("sequence_envelope_attack", 0.5) or 0.0) if isinstance(mem, dict) else 0.5
+        rel = float(mem.get("sequence_envelope_release", 0.5) or 0.0) if isinstance(mem, dict) else 0.5
         synth = mem.get("panels", {}).get("synth", {}) if isinstance(mem, dict) and isinstance(mem.get("panels", {}), dict) else {}
         if not isinstance(synth, dict) or not synth:
             synth = (getattr(self, "instrument_param_state", {}) or {}).get(inst, {}) or {}
-        numeric_params = [str(k) for k, v in synth.items() if isinstance(v, (int, float, np.number)) and not isinstance(v, bool)]
+        numeric_params = [str(k) for k,v in synth.items() if isinstance(v, (int,float,np.number)) and not isinstance(v,bool)]
+        # Automator sequence can route the full canonical command surface:
+        # Master Vector, Wavetable Projector, XMOD windows, Algo XMOD, Resonance.
         for extra in (
             "master_vector_x", "master_vector_y", "master_vector_z", "master_vector_drive",
             "wavetable_frame", "wavetable_phase", "wavetable_curvature", "wavetable_twist", "wavetable_fold",
@@ -31657,53 +31516,35 @@ class MathematiciansGrooveboxApp(QMainWindow):
         ):
             if extra not in numeric_params:
                 numeric_params.append(extra)
-
-        widgets = (getattr(self, "popup_auto_operator", None), getattr(self, "popup_auto_sequence", None),
-                   getattr(self, "popup_auto_morph", None), getattr(self, "popup_auto_attack", None),
-                   getattr(self, "popup_auto_release", None), getattr(self, "popup_auto_offset", None),
-                   getattr(self, "popup_auto_param", None), getattr(self, "popup_auto_param_value", None))
-        # TELEPORT_LOAD_SIGNAL_FIX_20260911: block every editor before loading,
-        # then unblock every editor afterward.  The old code left Param/Value
-        # permanently blocked after the first teleport, so subsequent edits did
-        # not persist.
-        for w in widgets:
-            if w is not None:
-                w.blockSignals(True)
+        if hasattr(self, "popup_auto_param"):
+            self.popup_auto_param.blockSignals(True); self.popup_auto_param.clear(); self.popup_auto_param.addItems(numeric_params or ["morph"]); self.popup_auto_param.blockSignals(False)
+            chosen = str(point.get("synth_param", numeric_params[0] if numeric_params else "morph"))
+            pos = self.popup_auto_param.findText(chosen)
+            if pos < 0 and numeric_params:
+                pos = 0
+            if pos >= 0:
+                self.popup_auto_param.setCurrentIndex(pos)
+            key = self.popup_auto_param.currentText()
+            try: self.popup_auto_param_value.setValue(float(synth.get(key, 0.0)))
+            except Exception: self.popup_auto_param_value.setValue(0.0)
+        for w in (getattr(self, "popup_auto_operator", None), getattr(self, "popup_auto_sequence", None),
+                  getattr(self, "popup_auto_morph", None), getattr(self, "popup_auto_attack", None),
+                  getattr(self, "popup_auto_release", None), getattr(self, "popup_auto_offset", None), getattr(self, "popup_auto_param", None), getattr(self, "popup_auto_param_value", None)):
+            if w is not None: w.blockSignals(True)
         try:
-            if getattr(self, "popup_auto_operator", None) is not None:
+            if self.popup_auto_operator is not None:
                 idx = self.popup_auto_operator.findText(inst)
-                if idx >= 0:
-                    self.popup_auto_operator.setCurrentIndex(idx)
-            if getattr(self, "popup_auto_sequence", None) is not None:
-                self.popup_auto_sequence.setValue(max(1, min(128, sid)))
-            if getattr(self, "popup_auto_morph", None) is not None:
-                self.popup_auto_morph.setValue(max(0, min(100, int(round(morph * 100)))))
-                self.lbl_popup_auto_morph.setText(f"{int(round(morph * 100))}%")
-            if getattr(self, "popup_auto_attack", None) is not None:
-                self.popup_auto_attack.setValue(max(0, min(100, int(round(att * 100)))))
-            if getattr(self, "popup_auto_release", None) is not None:
-                self.popup_auto_release.setValue(max(0, min(100, int(round(rel * 100)))))
-            if getattr(self, "popup_auto_offset", None) is not None:
-                self.popup_auto_offset.setValue(max(-1024, min(1024, off)))
-            if getattr(self, "popup_auto_param", None) is not None:
-                self.popup_auto_param.clear()
-                self.popup_auto_param.addItems(numeric_params or ["morph"])
-                chosen = str(point.get("synth_param", numeric_params[0] if numeric_params else "morph"))
-                pos = self.popup_auto_param.findText(chosen)
-                if pos < 0 and numeric_params:
-                    pos = 0
-                if pos >= 0:
-                    self.popup_auto_param.setCurrentIndex(pos)
-                key = self.popup_auto_param.currentText()
-                stored_values = point.get("synth_values", {}) if isinstance(point.get("synth_values", {}), dict) else {}
-                try:
-                    self.popup_auto_param_value.setValue(float(stored_values.get(key, point.get("synth_param_value", synth.get(key, 0.0)))))
-                except Exception:
-                    self.popup_auto_param_value.setValue(0.0)
+                if idx >= 0: self.popup_auto_operator.setCurrentIndex(idx)
+            self.popup_auto_sequence.setValue(max(1, min(128, sid)))
+            self.popup_auto_morph.setValue(max(0, min(100, int(round(morph*100))))); self.lbl_popup_auto_morph.setText(f"{int(round(morph*100))}%")
+            self.popup_auto_attack.setValue(max(0, min(100, int(round(att*100)))))
+            self.popup_auto_release.setValue(max(0, min(100, int(round(rel*100)))))
+            self.popup_auto_offset.setValue(max(-1024, min(1024, off)))
         finally:
-            for w in widgets:
-                if w is not None:
-                    w.blockSignals(False)
+            for w in (getattr(self, "popup_auto_operator", None), getattr(self, "popup_auto_sequence", None),
+                      getattr(self, "popup_auto_morph", None), getattr(self, "popup_auto_attack", None),
+                      getattr(self, "popup_auto_release", None), getattr(self, "popup_auto_offset", None)):
+                if w is not None: w.blockSignals(False)
 
     def _on_automator_popup_changed(self, _value=None):
         step = getattr(self, "_selected_automation_step", None)
@@ -31716,9 +31557,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "to_instrument": inst, "instrument": inst, "to_sequence": sid,
             "morph": float(self.popup_auto_morph.value())/100.0,
             "step_offset": int(self.popup_auto_offset.value()),
-            "sequence_envelope_attack": float(self.popup_auto_attack.value())/100.0,
-            "sequence_envelope_release": float(self.popup_auto_release.value())/100.0,
-            "enabled": bool(point.get("enabled", True)), "user_owned": True,
         })
         bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(inst, {})
         mem = bank.get(sid) if isinstance(bank, dict) else None
@@ -31740,13 +31578,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         sid = int(self.popup_auto_sequence.value())
         key = str(self.popup_auto_param.currentText())
         point["synth_param"] = key
-        try:
-            _stored_val = float(self.popup_auto_param_value.value())
-            point["synth_param_value"] = _stored_val
-            point.setdefault("synth_values", {})[key] = _stored_val
-            point["user_owned"] = True
-        except Exception:
-            pass
         bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(inst, {})
         mem = bank.get(sid) if isinstance(bank, dict) else None
         if isinstance(mem, dict):
@@ -31815,7 +31646,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 item.widget().deleteLater()
         self._automator_popup_anchor = None
         self._automator_popup_anchor_step = None
-        length = int(self.spin_auto_point_length.value()) if hasattr(self, "spin_auto_point_length") else DEFAULT_AUTOMATION_LENGTH
+        length = int(self.spin_auto_point_length.value()) if hasattr(self, "spin_auto_point_length") else 16
         points = getattr(self, "sequencer_automation_points", []) or []
         _ui_inst = str(self.instrument_selector_dropdown.currentText()) if hasattr(self, "instrument_selector_dropdown") else (str(self.auto_to_instrument.currentText()) if hasattr(self, "auto_to_instrument") else "")
         _ui_sid = int(self.sequence_selector.currentData() or 1) if hasattr(self, "sequence_selector") and self.sequence_selector.currentData() is not None else (int(self.spin_auto_to_sequence.value()) if hasattr(self, "spin_auto_to_sequence") else 1)
@@ -31877,7 +31708,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Keep a minimum content width so a long automation lane scrolls instead of squeezing cells.
         try:
             self.sequencer_automation_widget.setMinimumWidth(max(0, int(length) * 96 + 8))
-            QTimer.singleShot(0, self._sync_automation_strip_geometry)
         except Exception:
             pass
         if selected is not None and 1 <= int(selected) <= max(1, length):
@@ -32274,19 +32104,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     pass
         mems = getattr(self, "instrument_sequencer_memory", None) or {}
         for mem in mems.values():
-            if isinstance(mem, dict):
-                mem.pop("length_user_locked", None)
-                if "touched" in mem:
-                    try:
-                        if isinstance(mem["touched"], (list, set)):
-                            mem["touched"] = type(mem["touched"])()
-                    except Exception:
-                        pass
-        for bank in (getattr(self, "instrument_sequence_banks", {}) or {}).values():
-            if isinstance(bank, dict):
-                for mem in bank.values():
-                    if isinstance(mem, dict):
-                        mem.pop("length_user_locked", None)
+            if isinstance(mem, dict) and "touched" in mem:
+                try:
+                    if isinstance(mem["touched"], (list, set)):
+                        mem["touched"] = type(mem["touched"])()
+                except Exception:
+                    pass
         print(f"[Canonical Overwrite] wiped user locks on {wiped} playlist rows — unison may rewrite all")
         return wiped
 
@@ -32754,33 +32577,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 try: w.blockSignals(False)
                 except Exception: pass
 
-        # Core project/timing defaults are part of the same fresh-boot contract.
-        # Keeping them here makes Clear Memory numerically identical to a new launch
-        # instead of only resetting the canonical-effect controls.
-        _set_value("spin_bpm", DEFAULT_BPM)
-        _set_value("spin_seq_length", DEFAULT_SEQUENCE_LENGTH)
-        _set_value("spin_pattern_length", DEFAULT_SEQUENCE_LENGTH)
-        _set_value("spin_playlist_length", DEFAULT_PLAYLIST_ROWS)
-        _set_value("spin_row_beats", DEFAULT_PLAYLIST_ROW_BEATS)
-        _set_value("spin_base_frequency", DEFAULT_BASE_FREQUENCY)
-        _set_value("spin_global_convolve", DEFAULT_GLOBAL_CONVOLVE_PCT)
-        _set_value("spin_track_offset", 0.0)
-        _set_value("spin_global_track_offset", 0.0)
-        self.global_track_offset = 0.0
-        _set_value("spin_auto_point_length", DEFAULT_AUTOMATION_LENGTH)
-        _set_value("spin_auto_point_step", 1)
-        _set_value("spin_auto_syncopate", 0)
-        _set_checked("chk_auto_sync_sequencer", True)
-        self.automator_timing_mode = "wrap"
-        if hasattr(self, "combo_automator_timing"):
-            try:
-                self.combo_automator_timing.blockSignals(True)
-                self.combo_automator_timing.setCurrentIndex(0)
-                self.combo_automator_timing.blockSignals(False)
-            except Exception:
-                try: self.combo_automator_timing.blockSignals(False)
-                except Exception: pass
-
         _set_value("spin_canonical_resonance", CANONICAL_RESONANCE_DEFAULT * 100.0)
         _set_value("spin_canonical_convolve", CANONICAL_CONVOLVE_DEFAULT_PCT)
         _set_value("spin_canonical_live_overblend", CANONICAL_LIVE_OVERBLEND_DEFAULT_PCT)
@@ -32911,13 +32707,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.op_theory_enabled = False
         self.master_volume = 0.5
         self.playlist_automation = []
-        self.sequencer_automation_points = []
-        self._selected_automation_step = None
-        self._selected_automation_source_instrument = None
-        self._selected_automation_source_sequence = None
-        self._automator_popup_anchor = None
-        self._automator_popup_anchor_step = None
-        self.automator_timing_mode = "wrap"
 
         self.imported_waveform = None
         self.imported_sample_rate = 44100
@@ -33085,8 +32874,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """Serialize named UI handles so save/load restores the complete live surface."""
         state = {}
         for name in (
-            "spin_bpm", "spin_seq_length", "spin_playlist_length", "spin_row_beats", "spin_base_frequency",
-            "spin_auto_point_length", "spin_auto_point_step", "spin_auto_syncopate",
+            "spin_bpm", "spin_seq_length", "spin_playlist_length", "spin_base_frequency",
             "spin_global_convolve", "spin_synth_count", "slider_eqr", "slider_fractalizer",
             "slider_pkp_envelope", "slider_pkp_boost", "slider_pkp_boost_pitch",
             "slider_pkp_boost_steps", "slider_pkp_boost_offset",
@@ -33118,7 +32906,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "btn_edit_panels_per_sequence",
             "btn_meum_engine_simplify", "btn_trigonometry_engine", "btn_operator_theory",
             "btn_math_symbols", "btn_hyperdrive",
-            "chk_sparse_mask", "chk_speed_scrub", "chk_auto_sync_sequencer",
+            "chk_sparse_mask", "chk_speed_scrub",
         ):
             obj = getattr(self, name, None)
             if obj is not None and hasattr(obj, "isChecked"):
@@ -33127,7 +32915,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Combo boxes store {index, text} — restored by text first so a changed
         # item list in a newer build still lands on the intended mode.
         state["combos"] = {}
-        for name in ("mode_combo", "viz_mode_combo", "paint_sequence_mapping_combo", "paint_tempo_combo", "blend_max_combo", "combo_automator_timing"):
+        for name in ("mode_combo", "viz_mode_combo", "paint_sequence_mapping_combo", "paint_tempo_combo", "blend_max_combo"):
             obj = getattr(self, name, None)
             if obj is not None:
                 try:
@@ -33483,12 +33271,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "seed": self._seed_text() if hasattr(self, "input_seed_val") else "",
             "bpm": float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0,
             "seq_length": int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else DEFAULT_SEQUENCE_LENGTH,
-            "automation_length": int(self.spin_auto_point_length.value()) if hasattr(self, "spin_auto_point_length") else DEFAULT_AUTOMATION_LENGTH,
-            "automation_sync_to_sequencer": bool(self.chk_auto_sync_sequencer.isChecked()) if hasattr(self, "chk_auto_sync_sequencer") else True,
-            "automation_syncopate": int(self.spin_auto_syncopate.value()) if hasattr(self, "spin_auto_syncopate") else 0,
             "track_offset": float(self.spin_track_offset.value()) if hasattr(self, "spin_track_offset") else 0.0,
             "playlist_rows": int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else DEFAULT_PLAYLIST_ROWS,
-            "row_beats": float(self.spin_row_beats.value()) if hasattr(self, "spin_row_beats") else DEFAULT_PLAYLIST_ROW_BEATS,
             "base_frequency": float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0,
             "global_convolve": float(self.spin_global_convolve.value()) if hasattr(self, "spin_global_convolve") else 0.0,
             "instrument_sequencer_memory": {
@@ -33854,18 +33638,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             try:
                 self.automator_timing_mode = "syncopate" if str(data.get("automator_timing_mode")) == "syncopate" else "wrap"
                 if hasattr(self, "combo_automator_timing"):
-                    self.combo_automator_timing.blockSignals(True)
                     self.combo_automator_timing.setCurrentIndex(1 if self.automator_timing_mode == "syncopate" else 0)
-                    self.combo_automator_timing.blockSignals(False)
             except Exception: pass
-        if "automation_sync_to_sequencer" in data and hasattr(self, "chk_auto_sync_sequencer"):
-            try:
-                self.chk_auto_sync_sequencer.blockSignals(True)
-                self.chk_auto_sync_sequencer.setChecked(bool(data.get("automation_sync_to_sequencer", True)))
-                self.chk_auto_sync_sequencer.blockSignals(False)
-            except Exception:
-                try: self.chk_auto_sync_sequencer.blockSignals(False)
-                except Exception: pass
 
         if isinstance(data.get("sample_morph_state"), dict):
             self.sample_morph_state.update({k: data["sample_morph_state"][k] for k in ("enabled", "adaptive_fit", "phase_lock", "guard") if k in data["sample_morph_state"]})
@@ -33922,11 +33696,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         for spin, key in (
             ("spin_bpm", "bpm"),
             ("spin_seq_length", "seq_length"),
-            ("spin_auto_point_length", "automation_length"),
-            ("spin_auto_syncopate", "automation_syncopate"),
             ("spin_track_offset", "track_offset"),
             ("spin_playlist_length", "playlist_rows"),
-            ("spin_row_beats", "row_beats"),
             ("spin_base_frequency", "base_frequency"),
             ("spin_global_convolve", "global_convolve"),
         ):
@@ -34009,15 +33780,23 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             mc = data.get("media_carrier")
             if isinstance(mc, dict):
+                # The saved carrier state is authoritative. Clear any carrier from
+                # the previously open project before applying these paths so stale
+                # media cannot bleed into Play/Export when this project stores none.
+                self._clear_global_carrier_state(refresh=False, update_ui=True)
                 wav_p = str(mc.get("wav_path") or "")
                 vid_p = str(mc.get("video_path") or "")
                 self.carrier_binding_mode = str(mc.get("binding_mode") or "")
                 self.carrier_binding_source = str(mc.get("binding_source") or "")
                 self.carrier_bound_layers_state = copy.deepcopy(mc.get("bound_layers_state", {})) if isinstance(mc.get("bound_layers_state"), dict) else {}
-                if wav_p and os.path.isfile(wav_p) and hasattr(self, "_load_wav_path"):
-                    self._load_wav_path(wav_p)
-                elif vid_p and os.path.isfile(vid_p) and hasattr(self, "_load_video_path"):
+                # Prefer the video loader when a video source exists. It restores
+                # both the visual source and (when present) its audio stream.
+                if vid_p and os.path.isfile(vid_p) and hasattr(self, "_load_video_path"):
                     self._load_video_path(vid_p)
+                elif wav_p and os.path.isfile(wav_p) and hasattr(self, "_load_wav_path"):
+                    self._load_wav_path(wav_p)
+                else:
+                    self._refresh_after_file_input(reason="project_carrier_cleared")
         except Exception as _mc_exc:
             print(f"[Load] media carrier: {_mc_exc}")
         self.goava_active = bool(data.get("goava_active", False))
@@ -34802,13 +34581,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """
         touched = mem.setdefault("touched", set())
         touched.add(s)
-        try:
-            # Manual STEP edits obey the same protection rule as manual length edits;
-            # otherwise perfect-unison can resurrect the frozen pre-edit sequence.
-            if mem is self._current_sequence_mem():
-                self._commit_selected_sequence_user_baseline(promote=True)
-        except Exception:
-            pass
 
     def _step_has_net_effect(self, mem, s):
         """
@@ -35896,9 +35668,98 @@ class MathematiciansGrooveboxApp(QMainWindow):
         arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
         if arr.size:
             peak = float(np.max(np.abs(arr)))
-            if peak > 1e-9:
+            if peak > 0.0:
                 arr /= peak
         return arr, 44100
+
+    def clear_local_carrier(self):
+        """Detach the selected operator's local media carrier/sample.
+
+        The source file is never deleted.  The mutation is project-undoable and
+        invalidates live/render state immediately so an old sample cannot remain
+        audible through a cached play/export buffer.
+        """
+        name = self._current_instrument_name()
+        store = getattr(self, "instrument_media_samples", {}) or {}
+        if name not in store:
+            self._refresh_operator_sample_ui()
+            if hasattr(self, "scope_status_label"):
+                self.scope_status_label.setText(f"📂 Local carrier already clear · {name}")
+            return
+        try:
+            self._push_undo(f"Clear local carrier · {name}")
+        except Exception:
+            pass
+        try:
+            store.pop(name, None)
+            self.instrument_media_samples = store
+        finally:
+            self._refresh_operator_sample_ui()
+        self._refresh_after_file_input(reason="local_carrier_cleared")
+        if hasattr(self, "scope_status_label"):
+            self.scope_status_label.setText(f"📂 Local carrier cleared · {name}")
+
+    def _clear_global_carrier_state(self, refresh=True, update_ui=True):
+        """Clear all global carrier references/buffers without deleting media.
+
+        This internal form intentionally does not create an undo snapshot; callers
+        such as project-load and undo/redo use it while applying authoritative state.
+        """
+        self.imported_waveform = None
+        self.imported_sample_rate = 44100
+        self.imported_wav_path = ""
+        self.imported_video_path = ""
+        self.imported_video_meta = {}
+        self.media_carrier_slot = {}
+        self.carrier_binding_mode = ""
+        self.carrier_binding_source = ""
+        self.carrier_bound_layers_state = {}
+        if update_ui:
+            if hasattr(self, "lbl_wav_carrier"):
+                self.lbl_wav_carrier.setText("Carrier: none")
+                self.lbl_wav_carrier.setToolTip("")
+            # Do not leave the previous carrier waveform painted after detach.
+            try:
+                if hasattr(self, "visual_oscilloscope"):
+                    self.visual_oscilloscope.update_waveform(np.zeros(100, dtype=np.float32))
+                if hasattr(self, "video_synth_viewer"):
+                    self.video_synth_viewer.update_from_audio(np.zeros(100, dtype=np.float32))
+            except Exception:
+                pass
+        # Explicit cache invalidation makes detach authoritative even if refresh
+        # is suppressed while a larger project/undo state is being restored.
+        for attr in ("play_buffer", "_canonical_unison_effect_buffer", "_seed_time_curve"):
+            if hasattr(self, attr):
+                try:
+                    setattr(self, attr, None)
+                except Exception:
+                    pass
+        if refresh:
+            self._refresh_after_file_input(reason="global_carrier_cleared")
+
+    def clear_global_carrier(self):
+        """Detach the project-wide audio/video carrier and all carrier bindings."""
+        has_state = bool(
+            getattr(self, "imported_waveform", None) is not None
+            or getattr(self, "imported_wav_path", "")
+            or getattr(self, "imported_video_path", "")
+            or getattr(self, "media_carrier_slot", None)
+            or getattr(self, "carrier_binding_mode", "")
+            or getattr(self, "carrier_binding_source", "")
+            or getattr(self, "carrier_bound_layers_state", None)
+        )
+        if not has_state:
+            self._clear_global_carrier_state(refresh=False, update_ui=True)
+            if hasattr(self, "scope_status_label"):
+                self.scope_status_label.setText("📂 Global carrier already clear")
+            return
+        try:
+            self._push_undo("Clear global carrier")
+        except Exception:
+            pass
+        self._clear_global_carrier_state(refresh=True, update_ui=True)
+        if hasattr(self, "scope_status_label"):
+            self.scope_status_label.setText("📂 Global carrier cleared · source file kept")
 
     def load_sample_to_selected_operator(self):
         """Attach an audio/video-derived user sample to the active operator."""
@@ -35980,18 +35841,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
         tilt = (-0.25 + 0.50*u[2]) * (0.25 + 0.75*fit)
         mod = 0.50 + 0.50*ot_sin_vec_equiv(math.tau*(1.0 + 3.0*u[3])*y + phase)
         transformed = base * (1.0 + depth*(2.0*mod-1.0))
-        if abs(tilt) > 1e-6 and n > 8:
+        if tilt != 0.0 and n > 8:
             spec = np.fft.rfft(transformed)
             freqs = np.linspace(0.0, 1.0, spec.size)
             spec *= np.power(np.maximum(freqs, 1.0/n), tilt)
             transformed = np.fft.irfft(spec, n=n)
-        peak = max(float(np.max(np.abs(transformed))), 1e-9)
+        peak = float(np.max(np.abs(transformed)))
         transformed = transformed / max(1.0, peak)
         # Optional phase-lock is capped at 50% and acts only on the transformed
         # branch. It therefore cannot displace the untouched 50% user waveform.
         try:
             pl = float(np.clip(morph_cfg.get("phase_lock", 0.50), 0.0, 1.0))
-            if pl > 1e-6 and transformed.size > 8:
+            if pl > 0.0 and transformed.size > 8:
                 ref = np.fft.rfft(base)
                 spec = np.fft.rfft(transformed)
                 mag = np.abs(spec); ph = np.angle(spec); rph = np.angle(ref)
@@ -36137,7 +35998,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if a.size == 0:
             return []
         lo = a.min(axis=0); hi = a.max(axis=0)
-        span = np.maximum(hi-lo, 1e-12)
+        span = hi-lo
+        span = np.where(span == 0.0, 1.0, span)
         q = np.rint((a-lo)/span * (n-1)).astype(int)
         return [list(v) + [80,220,200,220] for v in sorted(set(tuple(map(int,row)) for row in q.tolist()))]
 
@@ -36171,7 +36033,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _voxelize_imported_video_frame(self, grid_size=None, z_slice=0):
         path = str(getattr(self, 'imported_video_path', '') or '')
         if not path or not os.path.isfile(path): raise RuntimeError('Load or record a video first.')
-        ffmpeg = self._resolve_ffmpeg_binary() if hasattr(self, '_resolve_ffmpeg_binary') else resolve_local_tool('ffmpeg', required=False)
+        ffmpeg = self._resolve_ffmpeg_binary() if hasattr(self, '_resolve_ffmpeg_binary') else shutil.which('ffmpeg')
         if not ffmpeg: raise RuntimeError('FFmpeg is required to voxelize a video frame.')
         n = max(4, min(64, int(grid_size or getattr(self, 'voxel_grid_size', 16) or 16)))
         cmd = [ffmpeg, '-v', 'error', '-ss', '0.25', '-i', path, '-frames:v', '1',
@@ -36350,7 +36212,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if arr.size == 0:
             raise RuntimeError("The selected WAV contains no audio samples.")
         peak = float(np.max(np.abs(arr)))
-        if peak > 1e-9:
+        if peak > 0.0:
             arr /= peak
         self.imported_waveform = arr
         self.imported_sample_rate = int(sample_rate)
@@ -36402,30 +36264,36 @@ class MathematiciansGrooveboxApp(QMainWindow):
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if proc.returncode != 0 and bool(meta.get("has_audio", False)):
             raise RuntimeError(proc.stderr.decode(errors="replace")[-1200:] or "ffmpeg could not decode the video audio stream.")
-        # A video-only carrier is valid. ffmpeg reports 'Output file does not
-        # contain any stream' when asked to extract nonexistent audio; synthesize
-        # silence instead of turning that expected condition into an app crash.
+        # A video-only import is a valid VISUAL carrier, but it is not an audio
+        # carrier.  Older builds synthesized a duration-sized all-zero waveform;
+        # that stale "carrier" could then be exported as a perfectly valid but
+        # multi-megabyte silent MP3.  Keep visual identity and audio identity
+        # separate instead of manufacturing silence.
         arr = np.frombuffer(proc.stdout, dtype=np.float32).copy() if proc.returncode == 0 else np.zeros(0, dtype=np.float32)
         arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
-        if arr.size == 0:
-            # Video-only files are still valid visual carriers; use a silent audio stream.
-            duration = float(meta.get("duration", 0.0))
-            arr = np.zeros(max(1, int(duration * 44100.0)), dtype=np.float32)
-        peak = float(np.max(np.abs(arr)))
-        if peak > 1e-9:
-            arr /= peak
-        self.imported_waveform = arr
+        has_audio = bool(meta.get("has_audio", False))
+        if has_audio and arr.size == 0:
+            raise RuntimeError("The video reports an audio stream, but it decoded to no audio samples.")
+        if arr.size:
+            peak = float(np.max(np.abs(arr)))
+            if peak > 0.0:
+                arr /= peak
+            self.imported_waveform = arr
+            self.imported_wav_path = file_path
+        else:
+            self.imported_waveform = None
+            self.imported_wav_path = ""
         self.imported_sample_rate = 44100
-        self.imported_wav_path = file_path
         self.imported_video_path = file_path
         self.imported_video_meta = meta
         self._update_imported_media_ui(file_path, 44100, arr.size, is_video=True)
-        print(f"[Video Carrier] Parsed {file_path}: {meta}; audio samples={arr.size}")
+        print(f"[Video Carrier] Parsed {file_path}: {meta}; audio samples={arr.size}; visual_only={not bool(arr.size)}")
         self._refresh_after_file_input(reason="video_carrier")
 
     def _update_imported_media_ui(self, file_path, sample_rate, sample_count, is_video=False):
         name = os.path.basename(file_path)
-        tag = "VIDEO" if is_video else "WAV"
+        visual_only = bool(is_video and int(sample_count or 0) == 0)
+        tag = "VIDEO (visual)" if visual_only else ("VIDEO" if is_video else "WAV")
         if hasattr(self, "lbl_wav_carrier"):
             self.lbl_wav_carrier.setText(f"{tag}: {name[:22]}")
             self.lbl_wav_carrier.setToolTip(file_path)
@@ -36434,11 +36302,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if is_video:
                 m = self.imported_video_meta
                 extra = f" · {m.get('width',0)}×{m.get('height',0)} · {m.get('fps',0.0):.2f} fps"
+                if visual_only:
+                    extra += " · no audio carrier"
             self.scope_status_label.setText(
                 f"📂 {tag} carrier loaded · {name} · {sample_rate} Hz{extra}"
             )
+        waveform = getattr(self, "imported_waveform", None)
         if hasattr(self, "visual_oscilloscope"):
-            preview = self.imported_waveform[:min(self.imported_waveform.size, max(1, int(sample_rate * 0.5)))]
+            if waveform is None:
+                try:
+                    self.visual_oscilloscope.update_waveform(np.zeros(100, dtype=np.float32))
+                except Exception:
+                    pass
+                return
+            preview = waveform[:min(waveform.size, max(1, int(sample_rate * 0.5)))]
             if preview.size:
                 idx = np.linspace(0, preview.size - 1, 100).astype(int)
                 self.visual_oscilloscope.update_waveform(preview[idx])
@@ -36510,13 +36387,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 scrub_depth = float(getattr(self, "spin_speed_scrub", None).value()) if getattr(self, "spin_speed_scrub", None) is not None else 0.0
             except Exception:
                 scrub_depth = 0.0
-        scrub_on = scrub_on and scrub_depth > 1e-6
+        scrub_on = scrub_on and scrub_depth > 0.0
         if not scrub_on:
             scrub_depth = 0.0
-        if abs(import_speed - 1.0) < 1e-9 and not scrub_on:
+        if import_speed == 1.0 and not scrub_on:
             desired = max(2, int(round(target_duration * src_rate)))
             if src_duration < target_duration:
-                src = np.tile(src, int(np.ceil(target_duration / max(src_duration, 1e-9))))
+                if src_duration == 0.0:
+                    return np.zeros(target_len, dtype=np.float32)
+                src = np.tile(src, int(np.ceil(target_duration / src_duration)))
             src = src[:desired]
             if src.size != desired:
                 src = src[:desired]
@@ -36559,18 +36438,23 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 _m1 = _mults[np.clip(_row_sel + 1, 0, _rows - 1)]
                 _speed_curve = (_m0 + (_m1 - _m0) * _f0).astype(np.float64)
                 advance = (import_speed * D0) / float(target_len)
-                step = np.maximum(advance * _speed_curve, 1e-9)
+                step = advance * _speed_curve
+                step = np.where(step < 0.0, 0.0, step)
                 pos = np.cumsum(step) - step[0]
                 need = max(D0, int(np.ceil(np.max(pos))) + 2)
                 if src.size < need:
-                    src = np.tile(src, int(np.ceil(need / max(src.size, 1e-9))))
+                    if src.size == 0:
+                        return np.zeros(target_len, dtype=np.float32)
+                    src = np.tile(src, int(np.ceil(need / float(src.size))))
                 src = src[:need]
                 idx = np.arange(need, dtype=np.float64)
                 src = np.interp(np.clip(pos, 0.0, float(need - 1)), idx, src).astype(np.float32)
             else:
                 need = max(D0, int(round(D0 * import_speed)))
                 if src.size < need:
-                    src = np.tile(src, int(np.ceil(need / max(src.size, 1e-9))))
+                    if src.size == 0:
+                        return np.zeros(target_len, dtype=np.float32)
+                    src = np.tile(src, int(np.ceil(need / float(src.size))))
                 src = src[:need]
                 pos = np.arange(target_len, dtype=np.float64) * (import_speed * D0) / float(target_len)
                 idx = np.arange(need, dtype=np.float64)
@@ -36604,7 +36488,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         smooth = max(3, min(63, int(nfft / 2048) * 2 + 3))
         kernel = np.ones(smooth, dtype=np.float32) / float(smooth)
         t_mag = np.convolve(t_mag, kernel, mode="same")
-        ratio = np.clip(t_mag / (v_mag + 1e-4), 0.65, 1.8)
+        ratio_raw = np.divide(t_mag, v_mag, out=np.ones_like(t_mag), where=v_mag != 0.0)
+        ratio = np.clip(ratio_raw, 0.65, 1.8)
 
         # ON-PHASE invariant: never blend target phase into the carrier.  Only
         # magnitude is fitted, so the carrier's instantaneous phase/frequency
@@ -36750,7 +36635,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     tr = float(prior.get("tuning_ratio", prior.get("tuning", 1.0)))
                 except Exception:
                     tr = 1.0
-                tr = max(tr, 1e-6)
+                if tr < 0.0:
+                    tr = 0.0
                 try:
                     # harmonic_freq is the actual oscillator carrier before the
                     # tuning ratio is applied in the renderer.
@@ -36810,7 +36696,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             params = dict((getattr(self, "instrument_param_state", {}) or {}).get(name, {}) or {})
             params["tuning_ratio"] = stable_ratios[name]
             params["frequency_identity_hz"] = stable_freq_hz[name]
-            params["harmonic_freq"] = stable_freq_hz[name] / max(stable_ratios[name], 1e-6)
+            _stable_ratio = stable_ratios[name]
+            params["harmonic_freq"] = (stable_freq_hz[name] / _stable_ratio) if _stable_ratio != 0.0 else 0.0
             if not hasattr(self, "instrument_param_state"):
                 self.instrument_param_state = {}
             self.instrument_param_state[name] = params
@@ -36896,7 +36783,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             base = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
             carrier = (ot_sin_vec_equiv(2*np.pi*base*t) + 0.5*ot_sin_vec_equiv(2*np.pi*base*MEUM*t)).astype(np.float32)
         spec = np.abs(np.fft.rfft(carrier * np.hanning(carrier.size)))
-        norm = float(np.max(spec) + 1e-9)
+        norm = float(np.max(spec))
         for i, name in enumerate(final_names):
             if name in locked:
                 continue
@@ -37233,7 +37120,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     if v is None or norm(v) == "": continue
                     k = norm(v)
                     groups.setdefault(k, {"weight":0.0, "values":[]})
-                    groups[k]["weight"] += max(1e-9, self._canonical_level(source))
+                    groups[k]["weight"] += max(0.0, self._canonical_level(source))
                     groups[k]["values"].append(v)
                 if groups:
                     best = max(groups.items(), key=lambda kv: (kv[1]["weight"], len(kv[1]["values"]), kv[0]))
@@ -37846,8 +37733,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             cw = np.asarray(canonical_wave, dtype=np.float64)
             uw = np.asarray(user_wave, dtype=np.float64)
-            ca = float(np.mean(np.abs(cw) > 1e-7)) if cw.size else 0.0
-            ua = float(np.mean(np.abs(uw) > 1e-7)) if uw.size else 0.0
+            ca = float(np.mean(cw != 0.0)) if cw.size else 0.0
+            ua = float(np.mean(uw != 0.0)) if uw.size else 0.0
             if canonical_gate is not None:
                 cg = np.asarray(canonical_gate, dtype=bool)
                 ca = max(ca, float(np.mean(cg)))
@@ -37872,7 +37759,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         control = float(getattr(self, "canonical_signal_control", CANONICAL_SIGNAL_CONTROL_DEFAULT))
         active = self._active_engine_sources()
         total = sum(self._canonical_level(k) for k in active)
-        if not active or total <= 1e-9:
+        if not active or total == 0.0:
             return 1.0 / max(cluster_count, 1)
         if is_user:
             return 0.5 / max(user_count, 1)
@@ -37880,7 +37767,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         source = owner.split(":", 1)[1] if owner.startswith("canonical:") and ":" in owner else ""
         if source == "phase-lock": source = "phase_lock"
         level = self._canonical_level(source) if source in active else (total / max(len(active), 1))
-        return control * level / max(total, 1e-9)
+        return control * level / total
 
     def _hdcd_node_field(self, op_idx, row_idx, seed_value, mem=None):
         """Hierarchical node field driven by five canonical levels and LOCK character."""
@@ -38102,7 +37989,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "canonical_overblend_optional": True,
             "canonical_overblend_default": CANONICAL_LIVE_OVERBLEND_DEFAULT_PCT / 100.0,
             "canonical_activity_authority_separate_from_waveform_share": True,
-            "coefficients_sum_to_one": abs((c + u) - 1.0) < 1e-15,
+            "coefficients_sum_to_one": (c + u) == 1.0,
             "carrier_is_modulation_source": bool(carrier_present),
             "carrier_is_third_additive_bus": False,
             "carrier_phase_lock": 0.50,
@@ -38415,7 +38302,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # (the audio/video symmetry is by construction, not coincidence).
             if full_unison:
                 try:
-                    _uabs = abs(_unison_seed) + 1e-9
+                    _uabs = abs(_unison_seed)
                     _ufrac = _uabs - math.floor(_uabs)
                     self._union_identity = {
                         "seed": _unison_seed, "s_int": _unison_s_int,
@@ -38557,12 +38444,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     _has_force = bool(mem.get("sequence_force_wrap", False) or mem.get("sequence_force_schedule", False)) or _explicit_map in ("force_wrap", "force_schedule")
                     _cctrl = float(getattr(self, "canonical_signal_control", CANONICAL_SIGNAL_CONTROL_DEFAULT))
                     if not _has_force and _explicit_map == "auto" and str(getattr(self, "canonical_control_strategy", "Full Canonical")) in ("Coverage Adaptive", "Full Canonical"):
-                        # EDITOR_GRID_ISOLATION_2026: render timing must never depend on
-                        # whichever Sequence Length spinner happens to be visible in the UI.
-                        # `seq_len` is the stable render-pass reference grid (maximum active
-                        # selected-bank length), so selecting a shorter sequence cannot fold
-                        # longer STEP lanes down to that shorter GUI value.
-                        if str(getattr(self, "canonical_control_strategy", "Full Canonical")) == "Full Canonical" or (_cctrl >= 0.80 and int(mem.get("pattern_length", _pat) or _pat) != int(seq_len)):
+                        if str(getattr(self, "canonical_control_strategy", "Full Canonical")) == "Full Canonical" or (_cctrl >= 0.80 and int(mem.get("pattern_length", _pat) or _pat) != int(getattr(self, "spin_seq_length", None).value()) if getattr(self, "spin_seq_length", None) is not None else False):
                             _seq_map = "schedule"
                 except Exception:
                     pass
@@ -38576,10 +38458,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # sequence whose length differs from that grid can cross/cut a
                 # row boundary instead of being silently re-fit.
                 try:
-                    # Use the render-pass reference grid, never the currently selected
-                    # editor sequence. This keeps scheduling invariant under UI selection
-                    # and prevents STEP N from wrapping to N % shorter_selected_length.
-                    _schedule_slots = max(1, int(seq_len))
+                    _schedule_slots = max(1, int(round(float(self.spin_seq_length.value())))) if hasattr(self, "spin_seq_length") else _pat
                 except Exception:
                     _schedule_slots = _pat
                 inst_step_duration = float(row_duration) / float(_pat)
@@ -38641,11 +38520,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         # Wrap only the row-local WRAP mode. SCHEDULE is allowed to
                         # begin before 0 or extend beyond the row and is clipped by
                         # the row mask, preserving the through-boundary phase.
-                        if _seq_map == "wrap" and row_duration > 1e-9:
+                        if _seq_map == "wrap" and row_duration > 0.0:
                             s_start = float(s_start % row_duration)
                         s_end = s_start + _dur
                         if _seq_map == "wrap":
-                            s_start = float(np.clip(s_start, 0.0, max(0.0, row_duration - 1e-6)))
+                            s_start = float(np.clip(s_start, 0.0, row_duration))
                             s_end = min(row_duration, s_start + _dur)
                         else:
                             if s_end <= 0.0 or s_start >= row_duration:
@@ -38676,18 +38555,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             if not (s_idx < len(steps) and steps[s_idx]) and _canonical_on:
                                 amp *= float(0.25 + 0.75 * float(_node_field.get("trigger_probability", 0.0)))
                             # PKP hold relative to THIS instrument's step length
-                            _sw = max(float(inst_step_duration), 1e-6)
+                            _sw = float(inst_step_duration)
+                            if _sw < 0.0:
+                                _sw = 0.0
                             _hold = float(inst_step_duration) * (float(max(_pat, 1)) ** (2.0 * float(pkp_envelope) - 1.0))
                             _note_end = s_start + _hold
                             _lo = s_start - _sw
                             _hi = _note_end + _sw
                             _fo = np.zeros_like(local_t, dtype=np.float32)
                             _pre = (local_t >= _lo) & (local_t < s_start)
-                            _fo[_pre] = (local_t[_pre] - _lo) / _sw
+                            if _sw != 0.0:
+                                _fo[_pre] = (local_t[_pre] - _lo) / _sw
                             _sust = (local_t >= s_start) & (local_t < _note_end)
                             _fo[_sust] = 1.0
                             _post = (local_t >= _note_end) & (local_t < _hi)
-                            _fo[_post] = 1.0 - (local_t[_post] - _note_end) / _sw
+                            if _sw != 0.0:
+                                _fo[_post] = 1.0 - (local_t[_post] - _note_end) / _sw
                             _seq_env = self._sequence_envelope_factor(
                                 local_t, s_start, _note_end, row_duration, mem
                             )
@@ -38698,7 +38581,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # retain a deterministic canonical voice. Filled pattern slots
                 # can recover/add the marginal user 50%, but an empty pattern
                 # cannot collapse the row to silence.
-                if not np.any(step_env > 1e-9):
+                if not np.any(step_env != 0.0):
                     _fallback_idx = int(_safe_int_seed(_voice_seed + row_idx + op_idx)) % _pat
                     _fallback_start = float(_fallback_idx * inst_step_duration)
                     _fallback_end = min(row_duration, _fallback_start + inst_step_duration)
@@ -38849,16 +38732,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     try:
                         # Identity anchor still respected, but scaled by seed ratio
                         # so list seeds remain distinct across the ensemble.
-                        seed_freq = float(identity_hz) * pitch_track * (_seed_ratio / max(
-                            _seed_to_pitch_ratio(0.0, op_idx, 0), 1e-6
-                        ))
+                        _identity_ratio = _seed_to_pitch_ratio(0.0, op_idx, 0)
+                        seed_freq = float(identity_hz) * pitch_track * ((_seed_ratio / _identity_ratio) if _identity_ratio != 0.0 else 0.0)
                     except Exception:
-                        seed_freq = _seed_hz * pitch_track * max(tuning_ratio, 1e-6)
+                        seed_freq = _seed_hz * pitch_track * (tuning_ratio if tuning_ratio >= 0.0 else 0.0)
                 elif harm_hz > 20.0 and abs(harm_hz - base_freq) > 1.0:
                     # Panel has a real harmonic_freq — blend with seed identity
-                    seed_freq = (0.45 * float(harm_hz) + 0.55 * _seed_hz) * pitch_track * max(tuning_ratio, 1e-6)
+                    seed_freq = (0.45 * float(harm_hz) + 0.55 * _seed_hz) * pitch_track * (tuning_ratio if tuning_ratio >= 0.0 else 0.0)
                 else:
-                    seed_freq = _seed_hz * pitch_track * max(tuning_ratio, 1e-6)
+                    seed_freq = _seed_hz * pitch_track * (tuning_ratio if tuning_ratio >= 0.0 else 0.0)
 
                 # Seed-driven harmonic ↔ entropy continuum (authoritative voice).
                 # Engines / seed scripts define character HERE. Later stages must
@@ -38936,7 +38818,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     phase = phase + _pm_offset + _voice_phase0 + _canonical_phase
 
                 _sv = float(_voice_seed)
-                _s_abs = abs(_sv) + 1e-9
+                _s_abs = abs(_sv)
                 _s_frac = _s_abs - math.floor(_s_abs)
                 # _s_int was established from _voice_seed before the voice field.
                 # Under full unison the draw is the union's single shared point
@@ -39106,7 +38988,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 _tau = max(MEUM_CONSTANT * _voice_decay, 0.5)
                 env_f = (0.5 + 0.5 * np.exp(-local_t / max(_tau * 8.0, 1.0))).astype(np.float32)
                 gate = step_env
-                if not np.any(gate > 1e-9):
+                if not np.any(gate != 0.0):
                     continue
                 # AM: post-waveform amplitude gain, applied once here for the
                 # canonical voice (feeds the same meum_modulation context as
@@ -39146,11 +39028,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     _rate = 1.0 + 5.0*_mu[0]
                     _phase_m = math.tau*_mu[1]
                     _cross = ot_sin_vec_equiv(local_t * math.tau * _rate + _phase_m)
-                    if imported_carrier is not None and np.any(np.abs(voice) > 1e-9):
+                    if imported_carrier is not None and np.any(voice != 0.0):
                         _seg = imported_carrier[mask]
                         if _seg.shape == voice.shape:
-                            _ipk = max(float(np.max(np.abs(_seg))), 1e-6)
-                            _inp = (_seg / _ipk).astype(np.float32)
+                            _ipk = float(np.max(np.abs(_seg)))
+                            _inp = (_seg / _ipk).astype(np.float32) if _ipk != 0.0 else np.zeros_like(_seg, dtype=np.float32)
                             _cross = (1.0-0.12*gi)*_cross + (0.12*gi)*_inp
                     _depth = float(np.clip(_depth, 0.0, 0.08))
                     _alg_xmod = 1.0
@@ -39219,16 +39101,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # IMPORT_PHASELOCK_50_2026: loaded sample contributes phase only
                 # at 50%; canonical synthesis remains the complete authoritative
                 # composition and keeps its scalar pitch/amp/envelope.
-                if imported_carrier is not None and np.any(np.abs(voice) > 1e-9):
+                if imported_carrier is not None and np.any(voice != 0.0):
                     try:
                         _carrier_seg = imported_carrier[mask]
-                        if _carrier_seg.shape == voice.shape and np.any(np.abs(_carrier_seg) > 1e-9):
+                        if _carrier_seg.shape == voice.shape and np.any(_carrier_seg != 0.0):
                             voice = self._phase_lock_voice_to_import(voice, _carrier_seg, amount=0.5)
                     except Exception:
                         pass
                 # Harmonic Lattice is detail only. Cap wet so it cannot overwrite
                 # seed-defined harmonic/entropy identity (was homogenizing voices).
-                if synth_lattice > 1e-6:
+                if synth_lattice > 0.0:
                     try:
                         _lat_act = float(np.clip(synth_lattice, 0.0, 1.0)) * 0.70  # freer lattice wet
                         gamma = 1.25 + MEUM_NORM * 2.0 + 0.35 * chaos + 0.08 * fold_depth
@@ -39261,11 +39143,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         is_canonical_voice
                         and convolve_fit_enabled
                         and imported_carrier is not None
-                        and convolve_fit_amount > 1e-6
+                        and convolve_fit_amount > 0.0
                     ):
                         try:
                             target = imported_carrier[mask]
-                            if target.shape == voice.shape and np.any(np.abs(target) > 1e-9):
+                            if target.shape == voice.shape and np.any(target != 0.0):
                                 tpk = float(np.max(np.abs(target))) if target.size else 0.0
                                 target_n = (target / tpk).astype(np.float32) if tpk > 0.0 and math.isfinite(tpk) else np.zeros_like(target, dtype=np.float32)
                                 # Cap wet at 50% so the canonical voice's own seed-derived
@@ -39275,7 +39157,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                                 # so the fit tracks its specific step/trigger time and
                                 # never bleeds into the silence between its own hits.
                                 voice = np.where(
-                                    gate > 1e-9,
+                                    gate != 0.0,
                                     (1.0 - fit_wet) * voice + fit_wet * target_n * gate,
                                     voice,
                                 ).astype(np.float32)
@@ -39294,7 +39176,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     op_offset_sec = float(op_time_offsets.get(op_name, 0.0) or 0.0)
                     _contrib = (voice * voice_gain).astype(np.float32)
                     _target_bus = userdata_bus if _mem_has_user else canonical_bus
-                    if abs(op_offset_sec) < 1e-9:
+                    if op_offset_sec == 0.0:
                         # Default: unchanged timing, but now the contribution is
                         # explicitly accounted for in the canonical/user ledger.
                         row_mix += _contrib
@@ -39398,7 +39280,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 _live_overblend = 0.0
             _urow = userdata_bus[mask]
             _crow = canonical_bus[mask]
-            if _urow.size and bool(np.any(np.abs(_urow) > 1e-12)):
+            if _urow.size and bool(np.any(_urow != 0.0)):
                 master[mask] += (1.0 - _live_overblend) * _urow + _live_overblend * _crow
             else:
                 master[mask] += _crow
@@ -39482,7 +39364,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             c_rms = float(np.sqrt(np.mean(np.square(canonical_bus.astype(np.float64))))) if canonical_bus.size else 0.0
             u_rms = float(np.sqrt(np.mean(np.square(userdata_bus.astype(np.float64))))) if userdata_bus.size else 0.0
-            carrier_present = imported_carrier is not None and bool(np.any(np.abs(imported_carrier) > 1e-9))
+            carrier_present = imported_carrier is not None and bool(np.any(imported_carrier != 0.0))
             self._canonical_user_blend_ledger = {
                 **self._verify_canonical_user_carrier_contract(carrier_present),
                 "canonical_minimum": 0.0,
@@ -39555,7 +39437,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             _vis = _shared_env[:: max(1, len(_shared_env) // 512)][:512]
             self._last_master_env = np.asarray(_vis, dtype=np.float32)
             self._last_master_env_norm = np.clip(_vis, 0.0, 1.0).astype(np.float32)
-            self._last_master_env_db = float(np.mean(np.abs(master)) + 1e-9)
+            self._last_master_env_db = float(np.mean(np.abs(master)))
         except Exception as _env_exc:
             print(f"[ENV] shared follow envelope skipped: {_env_exc}")
             _t_tmp = np.arange(len(master), dtype=np.float32) / float(sample_rate)
@@ -39563,7 +39445,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             _shared_env = (0.55 + _sw_tmp * ot_cos_vec_equiv(2.0 * np.pi * (float(bpm) / 60.0) * _t_tmp)).astype(np.float32)
             self._last_master_env = _shared_env[:: max(1, len(_shared_env) // 512)][:512]
             self._last_master_env_norm = np.clip(self._last_master_env, 0.0, 1.0)
-            self._last_master_env_db = float(np.mean(np.abs(master)) + 1e-9)
+            self._last_master_env_db = float(np.mean(np.abs(master)))
 
         # Global Convolve: deterministic geometric cross-convolution of the rendered carrier.
         # User-edited controls remain upstream; this stage only mixes the structural wave result.
@@ -39584,13 +39466,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
                               0.5*ot_sin_vec_equiv(2*np.pi*(gf*MEUM_CONSTANT/max(sample_rate,1))*np.arange(klen)))
                     kernel = kernel.astype(np.float32)
                 kn = np.linalg.norm(kernel)
-                if kn > 1e-9:
+                if kn != 0.0:
                     kernel /= kn
                     nfft = 1 << int(np.ceil(np.log2(len(master) + len(kernel) - 1)))
                     spec = np.fft.rfft(master, nfft) * np.fft.rfft(kernel, nfft)
                     conv = np.fft.irfft(spec, nfft)[:len(master)].astype(np.float32)
                     cn = np.max(np.abs(conv))
-                    if cn > 1e-9:
+                    if cn != 0.0:
                         conv *= np.max(np.abs(master)) / cn
                     # Cap wet when a seed script is active so bus convolve cannot
                     # wash out per-voice seed/engine character into one spectrum.
@@ -39645,7 +39527,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # curve by absolute time if it wants finer-grained access.
                 self._seed_time_curve = seed_time_curve
                 peak_curve = np.max(np.abs(seed_time_curve))
-                if peak_curve > 1e-9:
+                if peak_curve != 0.0:
                     seed_mod = (seed_time_curve / peak_curve).astype(np.float32)
                     master = master * (1.0 + 0.20 * MEUM_NORM * seed_mod * _shared_env)
         except Exception as e:
@@ -39658,7 +39540,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # not allowed to run alongside plain Master Volume + hard clip.
         if False:
             try:
-                if fractalizer_val > 1e-6 and hasattr(self, "_music_fractallizer"):
+                if fractalizer_val > 0.0 and hasattr(self, "_music_fractallizer"):
                     master = self._music_fractallizer.process(
                         master,
                         activation=fractalizer_val,
@@ -39714,7 +39596,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 _z = np.asarray([meum_phase_field(i / max(1, len(master)-1), rate=MEUM_INV) for i in range(len(master))], dtype=np.float64)
                 # Field potential Φ(x,y,z) supplies the bounded geometric weight.
                 _r = np.sqrt(_x * _x + _local * _local + _z * _z)
-                _phi = 1.0 / np.maximum(_r, 1e-9)
+                _phi = np.divide(1.0, _r, out=np.zeros_like(_r, dtype=np.float64), where=_r != 0.0)
                 _potential_weight = np.clip(_phi / (1.0 + _phi), 0.0, 1.0)
                 # Bounded wave mechanics supplies a deterministic xyz standing-wave term.
                 _xx = np.arange(len(_x), dtype=np.float64) / max(1, len(_x)-1)
@@ -39742,7 +39624,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             try:
                 if len(master) > 0:
                     zrel = float(getattr(self, "_eqr_z_rel", 0.0) or 0.0)
-                    if zrel > 1e-9:
+                    if zrel != 0.0:
                         t = float(np.clip((zrel - 0.35) / 1.2, 0.0, 1.0))
                         if operator_theory_enabled():
                             ped = 1.0 + 0.14 * math_scale(float(t - 0.5), 1.0)
@@ -39852,7 +39734,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             self._eqr_peak_db = None
             _pk = float(np.max(np.abs(out))) if n else 0.0
-            self._eqr_peak_db = float(20.0 * math.log10(max(_pk, 1e-9)))
+            self._eqr_peak_db = float(20.0 * math.log10(_pk)) if _pk > 0.0 else -math.inf
             self._eqr_z_rel = dens_after
             self._eqr_z_db = dens_after
         except Exception:
@@ -40095,7 +39977,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             for i in range(count):
                 seg = arr[i * row:min(n, (i + 1) * row)]
                 if seg.size:
-                    energy[i] = np.float32(min(1.0, max(0.0, float(np.sqrt(float(np.mean(seg.astype(np.float64) ** 2)) + 1e-12)) * 6.0)))
+                    energy[i] = np.float32(min(1.0, max(0.0, float(np.sqrt(float(np.mean(seg.astype(np.float64) ** 2)))) * 6.0)))
                 else:
                     energy[i] = np.float32(0.0)
             self._rt_media_energy_rows = energy
@@ -40595,7 +40477,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             f"{float(self.spin_base_frequency.value()) if hasattr(self, 'spin_base_frequency') else 432:.6f}",
             f"{int(self.spin_seq_length.value()) if hasattr(self, 'spin_seq_length') else DEFAULT_SEQUENCE_LENGTH}",
             f"{int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else DEFAULT_PLAYLIST_ROWS}",
-            f"{float(self.spin_row_beats.value()) if hasattr(self, 'spin_row_beats') else DEFAULT_PLAYLIST_ROW_BEATS:.3f}",
+            f"{float(self.spin_row_beats.value()) if hasattr(self, 'spin_row_beats') else 4.0:.3f}",
             _json.dumps(list(getattr(self, "instrument_names_48", []) or []), sort_keys=True),
             "|".join(sorted((getattr(self, "instrument_scripts", {}) or {}).values()) or []),
             _json.dumps(sorted([
@@ -41066,22 +40948,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return None
 
     def _install_math_symbol_numeric_overlays(self):
-        """Install global spinbox behavior and optional author-symbol overlays.
+        """Install overlays only when explicitly enabled.
 
-        Keyboard tracking is disabled for every existing and future spinbox so
-        typed edits publish only committed values.  Math-symbol overlays remain
-        optional and retain their zero-paint-cost OFF path.
+        PUBLIC_SYMBOL_PERF_2026: numeric author notation defaults OFF and creates
+        zero overlay widgets in that state.  When enabled, only actual numeric
+        fields are masked; arbitrary labels/buttons keep ordinary text. This
+        removes the largest UI repaint cost while preserving author notation
+        where it is semantically useful and editable.
         """
         if getattr(self, "_math_symbol_numeric_overlays", None) is None:
             self._math_symbol_numeric_overlays = []
         if getattr(self, "_math_symbol_text_overlays", None) is None:
             self._math_symbol_text_overlays = []
+        if not MATH_SYMBOLS_ENABLED:
+            self._apply_math_symbol_display_transform(False)
+            return
         try:
-            all_spinboxes = list(self.findChildren(QAbstractSpinBox))
+            widgets = list(self.findChildren(QSpinBox)) + list(self.findChildren(QDoubleSpinBox))
         except Exception:
-            all_spinboxes = []
-        for w in all_spinboxes:
-            _configure_spinbox_input_behavior(w)
+            widgets = []
+        for w in widgets:
+            self._ensure_math_symbol_overlay(w)
+        self._apply_math_symbol_display_transform(True)
         try:
             if getattr(self, "_math_symbol_spin_watcher", None) is None:
                 self._math_symbol_spin_watcher = _MathSymbolSpinWatcher(self)
@@ -41090,13 +40978,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     app.installEventFilter(self._math_symbol_spin_watcher)
         except Exception:
             self._math_symbol_spin_watcher = None
-        if not MATH_SYMBOLS_ENABLED:
-            self._apply_math_symbol_display_transform(False)
-            return
-        for w in all_spinboxes:
-            if isinstance(w, (QSpinBox, QDoubleSpinBox)):
-                self._ensure_math_symbol_overlay(w)
-        self._apply_math_symbol_display_transform(True)
 
     def _refresh_math_symbol_numeric_overlays(self):
         """Refresh only changed field glyphs; OFF is an absolute zero-work path."""
@@ -41665,7 +41546,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             a = int(cursor_samples) % max(1, arr.size)
             b = min(arr.size, a + max(1, row_samples))
             seg = arr[a:b]
-            return float(np.clip(float(np.sqrt(float(np.mean(seg.astype(np.float64) ** 2)) + 1e-12)) * 6.0, 0.0, 1.0))
+            return float(np.clip(float(np.sqrt(float(np.mean(seg.astype(np.float64) ** 2)))) * 6.0, 0.0, 1.0))
         except Exception:
             return None
 
@@ -41686,7 +41567,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 media_pos = int(cursor) % wave_n
                 media_row = min(int(energy.size) - 1, media_pos // row_samples)
                 media_e = float(energy[media_row])
-                scalar = scalar + ((media_e - 0.5) * 2.0) * abs(float(scalar) + 1e-9) * 0.35
+                scalar = scalar + ((media_e - 0.5) * 2.0) * abs(float(scalar)) * 0.35
             return scalar
         except Exception:
             return float(events[0].get("raw", events[0].get("seed", 0.0)) or 0.0)
@@ -41755,7 +41636,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 for r_i in range(media_rows.size):
                     seg = arr[r_i * row_samples:(r_i + 1) * row_samples]
                     if seg.size:
-                        media_rows[r_i] = float(np.sqrt(float(np.mean(seg.astype(np.float64) ** 2)) + 1e-12))
+                        media_rows[r_i] = float(np.sqrt(float(np.mean(seg.astype(np.float64) ** 2))))
             out = np.empty(n, dtype=np.float32)
             pos = 0
             row = 0
@@ -41766,7 +41647,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # its per-row energy (normalized after a 6× gain, like live).
                 if media_rows is not None:
                     me = float(media_rows[min(row, media_rows.size - 1)])
-                    sc = sc + (max(0.0, min(1.0, me * 6.0)) - 0.5) * 1.0 * abs(sc + 1e-9)
+                    sc = sc + (max(0.0, min(1.0, me * 6.0)) - 0.5) * 1.0 * abs(sc)
                 _tn = float(row) / float(max(1, int((n + row_samples - 1) // row_samples) - 1))
                 _rr = _evaluate_app_graph_script(self, str(getattr(self, "live_dj_random_script", "") or ""), _tn, t_norm=_tn, slot=int(getattr(self, "_live_dj_pair_index", 0) or 0), row=row, sequence=1, step=row, name="RAND PARAM", function_names=("global_script", "evaluate_wave", "evaluate", "main")) if getattr(self, "live_dj_random", False) else {}
                 _rs = float(_rr.get("drive", _rr.get("wave", _rr.get("scalar", 0.0))) or 0.0)
@@ -42058,15 +41939,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             if hasattr(self, 'lbl_eqr_bands'):
                 z_rel = float(getattr(self, "_eqr_z_rel", 0.0) or 0.0)
-                if z_rel > 1e-9:
+                if z_rel != 0.0:
                     self.lbl_eqr_bands.setText(
                         f"Z {z_rel:+.3f}  (P·E+D)"
                     )
             if hasattr(self, 'lbl_peak_hold'):
                 _ph = float(getattr(self, "_live_peak_hold", 0.0) or 0.0)
                 _pk = float(getattr(self, "_live_peak", 0.0) or 0.0)
-                _db = 20.0 * math.log10(max(max(_ph, _pk), 1e-9)) if max(_ph, _pk) > 1e-9 else -120.0
-                self.lbl_peak_hold.setText(f"{_db:.1f} dBFS  (hold {100.0 * _ph:.0f}%)" if _ph > 1e-9 else f"{max(_db, -120.0):.1f} dBFS")
+                _peak_for_db = max(_ph, _pk)
+                _db = 20.0 * math.log10(_peak_for_db) if _peak_for_db > 0.0 else -math.inf
+                _display_db = max(_db, -120.0) if math.isfinite(_db) else -120.0
+                self.lbl_peak_hold.setText(f"{_display_db:.1f} dBFS  (hold {100.0 * _ph:.0f}%)" if _ph != 0.0 else f"{_display_db:.1f} dBFS")
         except Exception:
             pass
         # PERF_BACKPRESSURE_2026: learn from actual paint cost. If this callback
@@ -42315,51 +42198,31 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 mem.pop(field, None)
 
     def _heuristic_write_step_into_sequence(self, name, sid, values, family, bias):
-        """Write heuristic step content without changing the sequence's editor length."""
+        """Write only the discrete/step-side heuristic layer."""
         bank = (getattr(self, "instrument_sequence_banks", {}) or {}).setdefault(name, {})
         mem = bank.get(int(sid))
         if not isinstance(mem, dict):
-            # New target: inherit the current editor grid (or the canonical default),
-            # never infer editor length from the heuristic sample count.
-            try:
-                inherited_n = max(1, min(1024, int(self.spin_seq_length.value())))
-            except Exception:
-                inherited_n = DEFAULT_SEQUENCE_LENGTH
             mem = copy.deepcopy((getattr(self, "instrument_sequencer_memory", {}) or {}).get(name, {}))
-            if not isinstance(mem, dict):
-                mem = {}
-            mem.setdefault("pattern_length", inherited_n)
             bank[int(sid)] = mem
-        target_n = max(1, min(1024, int(mem.get("pattern_length", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH)))
-        raw = [float(v) for v in (values or [0.0])]
-        if len(raw) == target_n:
-            vals = raw
-        elif len(raw) == 1:
-            vals = raw * target_n
-        else:
-            # Deterministic linear resampling writes the heuristic across the existing
-            # grid without making sample count an implicit sequence-resize command.
-            src_x = np.linspace(0.0, 1.0, num=len(raw), dtype=np.float64)
-            dst_x = np.linspace(0.0, 1.0, num=target_n, dtype=np.float64)
-            vals = np.interp(dst_x, src_x, np.asarray(raw, dtype=np.float64)).tolist()
-        self._ensure_seq_mem_length(mem, target_n)
+        n = max(1, len(values))
+        self._ensure_seq_mem_length(mem, n)
         threshold = 0.58
         if bias == "Sparse": threshold = 0.70
         elif bias == "Dense": threshold = 0.42
         elif bias in ("Self-Similar", "T-Independent"): threshold = 0.52
-        steps = [bool(v >= threshold) for v in vals]
+        steps = [bool(v >= threshold) for v in values]
         if not any(steps):
-            steps[max(range(target_n), key=lambda i: vals[i])] = True
+            steps[max(range(n), key=lambda i: values[i])] = True
         mem["steps"] = steps
-        mem["gates"] = [True] * target_n
-        mem["amplitudes"] = [float(0.20 + 0.80 * v) for v in vals]
-        mem["pitches"] = [float(np.clip(2.0 ** ((v - 0.5) * 2.0), 1.0 / 32.0, 32.0)) for v in vals]
-        mem["probabilities"] = [int(np.clip(round(35.0 + 65.0 * v), 1, 100)) for v in vals]
-        mem["offsets"] = [float((v - 0.5) * 0.5) for v in vals]
+        mem["gates"] = [True] * n
+        mem["amplitudes"] = [float(0.20 + 0.80 * v) for v in values]
+        mem["pitches"] = [float(np.clip(2.0 ** ((v - 0.5) * 2.0), 1.0 / 32.0, 32.0)) for v in values]
+        mem["probabilities"] = [int(np.clip(round(35.0 + 65.0 * v), 1, 100)) for v in values]
+        mem["offsets"] = [float((v - 0.5) * 0.5) for v in values]
+        mem["pattern_length"] = n
         mem["heuristic_family"] = str(family)
         mem["heuristic_bias"] = str(bias)
-        if not bool(mem.get("user_owned")):
-            mem["canonical_owner"] = "heuristic:step"
+        mem["canonical_owner"] = "heuristic:step"
         if int((getattr(self, "instrument_selected_sequence", {}) or {}).get(name, 1)) == int(sid):
             self.instrument_sequencer_memory[name] = mem
         return mem
@@ -42860,7 +42723,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "source_project_path": str(getattr(self, "_current_project_path", "") or "") or None,
             "seed": _txt("input_seed_val", ""),
             "bpm": _num("spin_bpm", 120.0),
-            "seq_length": _num("spin_seq_length", float(DEFAULT_SEQUENCE_LENGTH)),
+            "seq_length": _num("spin_seq_length", 16.0),
             "track_offset": float(getattr(self, "global_track_offset", 0.0)),
             "base_frequency": _num("spin_base_frequency", 432.0),
             "global_convolve": _num("spin_global_convolve", 0.0),
@@ -43688,10 +43551,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             fp_cur = ""
         report = (
             f"Current main window (A)\n"
-            f"  duration {dur_a:.2f}s · peak {20.0 * math.log10(max(peak_a, 1e-9)):+.1f} dBFS\n"
+            f"  duration {dur_a:.2f}s · peak {20.0 * math.log10(peak_a) if peak_a > 0.0 else -math.inf:+.1f} dBFS\n"
             f"  fingerprint {fp_cur or '—'}\n\n"
             f"Artifact manifest (B) from {os.path.basename(file_path)}\n"
-            f"  duration {dur_b:.2f}s · peak {20.0 * math.log10(max(peak_b, 1e-9)):+.1f} dBFS\n"
+            f"  duration {dur_b:.2f}s · peak {20.0 * math.log10(peak_b) if peak_b > 0.0 else -math.inf:+.1f} dBFS\n"
             f"  fingerprint {fp_tgt or '—'}\n\n"
             f"Diff (first {n} samples)\n"
             f"  identical: {'yes — bit-for-bit' if identical else 'no'}\n"
@@ -44061,6 +43924,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
             master = self._bake_dj_write(master, sample_rate)
             # MASTER_HARDCLIP_2026: no normalize/limiter/EQ on the final bus.
             master, _ = self._master_hardclip(master, sample_rate, apply_master_vol=True)
+            _export_peak = float(np.max(np.abs(master))) if master.size else 0.0
+            if _export_peak == 0.0:
+                # A lossless/lossy container can be megabytes even when every PCM
+                # sample is zero. Make that condition explicit instead of implying
+                # file size means audio content exists.
+                print("[Export] Warning: rendered master is exactly silent (peak=0).")
+                if hasattr(self, "scope_status_label"):
+                    self.scope_status_label.setText("📊 Warning: rendered master is exactly silent · exporting explicit silence")
+                QApplication.processEvents()
             pcm = (np.clip(master, -1.0, 1.0) * 32767.0).astype(np.int16)
             provenance = self._export_provenance_payload()
             prov_bytes = provenance.encode("utf-8") if isinstance(provenance, str) else provenance
@@ -45272,9 +45144,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         b = min(len(master), a + frame_samples)
                         ph = fi / max(n_frames - 1, 1)
                         eng.set_waveform(master[a:b], playhead=ph)
-                        frame = eng.render_frame(w, h, export=True, frame_index=fi)
+                        try:
+                            frame = eng.render_frame(w, h, export=True, frame_index=fi)
+                        except Exception as _frame_exc:
+                            raise RuntimeError(
+                                f"Part {pi+1}/{N_PARTS}, frame {fi+1}/{n_frames} "
+                                f"(t={float(fi)/float(max(1,fps)):.3f}s) render failed: {_frame_exc}"
+                            ) from _frame_exc
                         if frame.dtype != np.uint8:
                             frame = np.asarray(frame, dtype=np.uint8)
+                        frame = np.nan_to_num(frame, nan=0, posinf=255, neginf=0).astype(np.uint8, copy=False)
                         # PROJECT_VIDEO_BINDINGS_2026: carrier video participates
                         # as a global 50/50 visual source; every instrument with
                         # video_input_enabled contributes a deliberately smaller
@@ -45324,7 +45203,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 os.replace(part_tmp, part_out)
 
             if not stitch_video_parts:
-                elapsed = max(1e-9, time.perf_counter() - _render_wall_start)
+                elapsed = time.perf_counter() - _render_wall_start
+                if elapsed < 0.0:
+                    elapsed = 0.0
                 self._video_render_seconds_per_frame = elapsed / max(1, n_frames)
                 if hasattr(self, "scope_status_label"):
                     self.scope_status_label.setText(f"🎬 Parts complete ({elapsed:.1f}s) · stitching OFF · {len(part_paths)} files kept")
@@ -45408,7 +45289,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             os.replace(final_tmp, out_path)
             self._index_project_file(out_path, "video_export")
             try:
-                _elapsed = max(1e-9, time.perf_counter() - _render_wall_start)
+                _elapsed = time.perf_counter() - _render_wall_start
+                if elapsed < 0.0:
+                    elapsed = 0.0
                 self._video_render_seconds_per_frame = _elapsed / max(1, n_frames)
             except Exception:
                 pass
@@ -45455,7 +45338,27 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # leave .part segments on disk for recovery
 
     def closeEvent(self, event):
-        """Ensure audio, PKP, and background video rendering are torn down on close."""
+        """Idempotent application shutdown with workers/devices stopped first.
+
+        Qt may deliver close/destruction through both the main window and child
+        windows.  Cleanup therefore runs exactly once; background callbacks are
+        disconnected before their QObjects disappear.
+        """
+        if getattr(self, "_groovebox_shutdown_started", False):
+            try: event.accept()
+            except Exception: pass
+            return
+        self._groovebox_shutdown_started = True
+
+        # Stop every Qt timer owned below the main window first.  This includes
+        # autosave, live canonical timers, scope refresh, and optimizer publish
+        # timers, preventing new work from being scheduled during teardown.
+        try:
+            for _timer in self.findChildren(QTimer):
+                try: _timer.stop()
+                except Exception: pass
+        except Exception:
+            pass
         try:
             viewer = getattr(self, "video_synth_viewer", None)
             if viewer is not None:
@@ -45470,13 +45373,51 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.pkp_pad_bank_active = False
         except Exception:
             pass
+
+        # The main Draw / Record / Video dialog owns its own camera + mic
+        # workbench. Close it explicitly so its custom closeEvent releases
+        # capture devices before the parent window starts disappearing.
+        try:
+            _media = getattr(self, "_main_signal_lab_dialog", None)
+            if _media is not None:
+                _media.close()
+        except Exception:
+            try:
+                _studio = getattr(self, "_main_video_clip_studio", None)
+                if _studio is not None:
+                    _studio._release_capture_devices(True)
+            except Exception:
+                pass
+
+        # Performance owns camera/recording/radio/player resources.  Give that
+        # panel its normal cleanup path while Qt objects are still valid.
+        try:
+            _perf = getattr(self, "_performance_panel", None)
+            if _perf is not None:
+                _perf.close()
+        except Exception:
+            pass
         try:
             _nearby = getattr(self, "_nearby_share_service", None)
             if _nearby is not None:
                 _nearby.stop()
         except Exception:
             pass
-        super().closeEvent(event)
+
+        # sCode owns Python worker pools and the GUI completion queue.  Shut it
+        # down last so earlier subsystem cleanup can still use it, but before Qt
+        # destroys the widgets that queued completions might otherwise touch.
+        try:
+            _opt = getattr(self, "_scode_optimizer", None)
+            if _opt is not None and hasattr(_opt, "shutdown"):
+                _opt.shutdown(wait=False)
+        except Exception:
+            pass
+        try:
+            super().closeEvent(event)
+        finally:
+            try: event.accept()
+            except Exception: pass
 
 
     def _open_global_algo_panel(self, which):
@@ -46376,6 +46317,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             snap["instrument_media_samples_state"] = {}
         try:
+            snap["media_carrier_state"] = {
+                "wav_path": str(getattr(self, "imported_wav_path", "") or ""),
+                "video_path": str(getattr(self, "imported_video_path", "") or ""),
+                "sample_rate": int(getattr(self, "imported_sample_rate", 44100) or 44100),
+                "video_meta": _c.deepcopy(getattr(self, "imported_video_meta", {}) or {}),
+                "binding_mode": str(getattr(self, "carrier_binding_mode", "") or ""),
+                "binding_source": str(getattr(self, "carrier_binding_source", "") or ""),
+                "bound_layers_state": _c.deepcopy(getattr(self, "carrier_bound_layers_state", {}) or {}),
+            }
+        except Exception:
+            snap["media_carrier_state"] = {}
+        try:
             snap["visual_view_state"] = _c.deepcopy(self.video_synth_engine.get_camera_state()) if getattr(self, "video_synth_engine", None) is not None else {}
         except Exception:
             snap["visual_view_state"] = {}
@@ -46465,6 +46418,23 @@ class MathematiciansGrooveboxApp(QMainWindow):
             pass
         try:
             self._restore_project_history_media_samples(_c.deepcopy(snap.get("instrument_media_samples_state", {})))
+        except Exception:
+            pass
+        try:
+            mc = _c.deepcopy(snap.get("media_carrier_state", {}))
+            if isinstance(mc, dict):
+                self._clear_global_carrier_state(refresh=False, update_ui=True)
+                self.carrier_binding_mode = str(mc.get("binding_mode") or "")
+                self.carrier_binding_source = str(mc.get("binding_source") or "")
+                self.carrier_bound_layers_state = _c.deepcopy(mc.get("bound_layers_state", {})) if isinstance(mc.get("bound_layers_state"), dict) else {}
+                vid_p = str(mc.get("video_path") or "")
+                wav_p = str(mc.get("wav_path") or "")
+                if vid_p and os.path.isfile(vid_p):
+                    self._load_video_path(vid_p)
+                elif wav_p and os.path.isfile(wav_p):
+                    self._load_wav_path(wav_p)
+                else:
+                    self._refresh_after_file_input(reason="undo_carrier_restore")
         except Exception:
             pass
         try:

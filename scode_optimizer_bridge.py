@@ -354,7 +354,7 @@ class SCodeOptimizerBridge:
             seed_text,
             self._widget_value(host, "spin_bpm", 120.0),
             self._widget_value(host, "spin_base_frequency", 432.0),
-            self._widget_value(host, "spin_seq_length", 12),
+            self._widget_value(host, "spin_seq_length", 16),
             self._widget_value(host, "spin_playlist_length", len(playlist)),
             toggles, _algo_id, _step_id, _banks_id, _mem_id, _playlist_id, _hyper_id,
         )
@@ -909,6 +909,30 @@ class SCodeOptimizerBridge:
         return {"generation": int(item[0]), "frame": int(item[1])}
 
     def shutdown(self, wait: bool = False) -> None:
+        """Idempotently stop timers, completion publication, and worker pools."""
+        if getattr(self, "_shutdown_started", False):
+            return
+        self._shutdown_started = True
+        # Prevent any further GUI delivery before host QObjects are destroyed.
+        for timer in (getattr(self, "_host_timer", None), getattr(self, "_completion_timer", None)):
+            try:
+                if timer is not None:
+                    timer.stop()
+            except Exception:
+                pass
+        try:
+            with self._ui_lock:
+                self._ui_callbacks.clear()
+        except Exception:
+            pass
+        try:
+            with self._inflight_lock:
+                for fut in list(self._inflight.values()):
+                    try: fut.cancel()
+                    except Exception: pass
+                self._inflight_callbacks.clear()
+        except Exception:
+            pass
         try:
             self._completion_stop.set()
             self._completion_queue.put(None)
@@ -922,6 +946,13 @@ class SCodeOptimizerBridge:
             self._work_workers.shutdown(wait=bool(wait), cancel_futures=True)
         except Exception:
             pass
+        if wait:
+            try:
+                th = getattr(self, "_completion_thread", None)
+                if th is not None and th.is_alive():
+                    th.join(timeout=1.5)
+            except Exception:
+                pass
 
     @staticmethod
     def editing_active(host) -> bool:
