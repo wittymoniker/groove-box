@@ -1,6 +1,3 @@
-<img width="1920" height="1080" alt="groovebox2" src="https://github.com/user-attachments/assets/cc0edaa0-b87a-4504-b774-95341fbf62f9" />
-
-
 # Mathematician's Groovebox
 
 A deterministic generative music, visual, and game engine driven by mathematical seeds.
@@ -505,9 +502,6 @@ Console/error text:
 Small reproducible reports are much easier to fix than broad descriptions.
 
 ---
-
-<img width="1920" height="1080" alt="groovebox1" src="https://github.com/user-attachments/assets/1d2b3c52-2cf3-4aa6-9523-1fab2704ebcf" />
-
 
 ## Project philosophy
 

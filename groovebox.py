@@ -52,6 +52,7 @@ import colorsys
 import re
 import weakref
 import numpy as np
+from audio_export_integrity import quantize_float_master, normalized_pcm_peak, verify_encoded_level
 from groovebox_media_tools import resolve_local_tool
 from meum_constants import (
     MEUM, M, MEUM_DECIMAL, MEUM_MINUS_1, MEUM_INV, MEUM_TWO_MINUS,
@@ -43452,10 +43453,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             # Export gets the same hardclip path as live: vol × factors → clip.
             master, _ = self._master_hardclip(master, sr, apply_master_vol=True)
-            if export_bit_depth == 24:
-                pcm = np.rint(np.clip(master, -1.0, 1.0) * 8388607.0).astype(np.int32)
-            else:
-                pcm = np.rint(np.clip(master, -1.0, 1.0) * 32767.0).astype(np.int16)
+            # Bake/Compare's public contract is int16 PCM; do not reference
+            # the audio-export dialog's local bit-depth variable here.
+            pcm = quantize_float_master(master, 16)
         except Exception:
             pcm = None
         return pcm, sr
@@ -43652,6 +43652,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         audio_bitrate_kbps=None,
         stitch_parts=True,
         bit_depth=16,
+        expected_float_peak=None,
     ):
         """Write optional audio .partNN files, then the final audio artifact.
 
@@ -43775,6 +43776,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 pass
             if proc.returncode != 0:
                 raise RuntimeError(proc.stderr or f"FFmpeg failed for {audio_format.upper()}")
+            # ENCODED_AUDIO_INTEGRITY_20260913: for a non-silent rendered
+            # master, verify the final lossy/lossless encoded artifact did not
+            # collapse to silence or suffer gross level loss.  This is a read-
+            # only check; it never normalizes or rewrites the result.
+            try:
+                _expected_peak = (
+                    float(expected_float_peak)
+                    if expected_float_peak is not None
+                    else normalized_pcm_peak(stitch_pcm, bit_depth)
+                )
+                _ok_level, _level_note = verify_encoded_level(
+                    ffmpeg, file_path, _expected_peak
+                )
+                print(f"[Export] {_level_note}")
+                if not _ok_level:
+                    raise RuntimeError(
+                        f"{audio_format.upper()} audio integrity check failed: {_level_note}"
+                    )
+            except RuntimeError:
+                raise
+            except Exception as _verify_exc:
+                print(f"[Export] encoded-level verification unavailable: {_verify_exc}")
         self._index_project_file(file_path, "audio_export")
         return file_path, part_paths
 
@@ -43933,7 +43956,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if hasattr(self, "scope_status_label"):
                     self.scope_status_label.setText("📊 Warning: rendered master is exactly silent · exporting explicit silence")
                 QApplication.processEvents()
-            pcm = (np.clip(master, -1.0, 1.0) * 32767.0).astype(np.int16)
+            # AUDIO_DEPTH_SCALE_FIX_20260913: quantize at the actual selected
+            # PCM depth.  The old path always used ±32767 and then wrote that
+            # integer stream as PCM24 for the default 24-bit preset, attenuating
+            # the source by ~48 dB before MP3/Opus/OGG encoding.
+            pcm = quantize_float_master(master, export_bit_depth)
             provenance = self._export_provenance_payload()
             prov_bytes = provenance.encode("utf-8") if isinstance(provenance, str) else provenance
             file_path, audio_parts = self._write_audio_parts_and_final(
@@ -43941,6 +43968,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 provenance_bytes=prov_bytes, audio_format=audio_format,
                 audio_bitrate_kbps=audio_bitrate_kbps, stitch_parts=stitch_parts,
                 bit_depth=export_bit_depth,
+                expected_float_peak=_export_peak,
             )
             if audio_parts and hasattr(self, "scope_status_label"):
                 self.scope_status_label.setText(

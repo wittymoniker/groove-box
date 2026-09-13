@@ -9,9 +9,7 @@ Authoritative synchronized defaults:
 - EQR: 0.4014
 - Fractallizer: 0.5995
 - PKP Envelope: 0.5000
-- Step Sequence Length: 12 steps
-- Automation Sequence Length: 12 steps
-- Playlist row duration: 8 beats
+- Sequence / playlist row length: 8 beats/steps
 - Playlist Rows: 32
 - Canonical Signal Control: Full Canonical / 100%
 - Canonical Resonance: 100%
@@ -21,9 +19,8 @@ Authoritative synchronized defaults:
 
 The stale Canonical Live Overblend tooltip that described 0% as the default has been
 corrected; 0% is user-waveform-only and 50% is the default equal waveform boundary.
-Legacy 8/16/48 sequence and 64/96 playlist fallback values were removed from the main
-sequence/automation/project-sync paths and replaced by named authoritative constants. The
-playlist row duration remains independently fixed at its 8-beat default.
+Legacy 16/48 sequence and 64/96 playlist fallback values were removed from the main
+sequence/playlist default paths and replaced by named authoritative constants.
 
 Validation performed in this release:
 
