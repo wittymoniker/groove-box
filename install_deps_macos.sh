@@ -25,6 +25,7 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 echo "==> brew python + ffmpeg (full codec suite)..."
 brew install python ffmpeg || brew upgrade python ffmpeg
+if ! command -v clang >/dev/null 2>&1; then brew install llvm; export PATH="$(brew --prefix llvm)/bin:$PATH"; fi
 
 echo "==> pip dependencies (shared: host app + exported games)..."
 PIP_DEPS="numpy PyQt6 sounddevice Pillow"
@@ -45,8 +46,6 @@ echo "==> Verify:"
 python3 -c "import numpy, PyQt6.QtCore, sounddevice, PIL; print('python deps OK')"
 command -v ffmpeg; command -v ffprobe
 ffmpeg -hide_banner -encoders >/dev/null 2>&1 && echo "ffmpeg OK"
-echo "==> Provision/verify native sCode stage-0..."
-python3 "$ROOT/scripts/provision_scode_stage0.py"
 echo "==> Done."
 echo "==> Host dependency provisioning complete."
 echo "    The launcher will now verify the matching native sCode stage-0 automatically."

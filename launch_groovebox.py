@@ -3,7 +3,7 @@ from __future__ import annotations
 import os, platform, subprocess, sys
 from pathlib import Path
 from datetime import datetime
-from platform_runtime import find_scode_stage0, find_accel, build_accel, platform_key
+from platform_runtime import find_scode_stage0, ensure_scode_stage0, find_accel, build_accel, platform_key
 
 ROOT=Path(__file__).resolve().parent
 
@@ -39,20 +39,22 @@ def main():
         built=build_accel(ROOT)
         if built: _log(f'[launcher] built native accelerator: {built.name}')
         else: _log('[launcher] no matching native accelerator; NumPy/Python fallback will be used')
-    # Native sCode stage-0 is mandatory on every supported desktop OS.
-    sp=ROOT/'scripts'/'provision_scode_stage0.py'
-    sr=subprocess.run([sys.executable,str(sp)],cwd=ROOT,check=False)
-    if sr.returncode:
-        _log(f'[launcher] ERROR: native sCode stage-0 provisioning/ABI verification failed ({sr.returncode})')
-        return sr.returncode
     stage0=find_scode_stage0(ROOT)
     if not stage0:
-        _log('[launcher] ERROR: native sCode stage-0 provisioner returned success without an installed runtime')
-        return 11
-    if os.name!='nt':
-        try: stage0.chmod(stage0.stat().st_mode | 0o755)
-        except OSError: pass
-    _log(f'[launcher] verified native sCode stage-0: {stage0}')
+        expected = {'windows':'sCode/bootstrap/windows-x86_64/scode0.exe',
+                    'darwin':f'sCode/bootstrap/macos-{m}/scode0',
+                    'linux':f'sCode/bootstrap/linux-{m}/scode0'}.get(s,'sCode/bootstrap/<platform>/scode0')
+        _log(f'[launcher] native sCode stage-0 missing: {expected}; building host-native stage-0 now...')
+        stage0=ensure_scode_stage0(ROOT)
+        if not stage0:
+            _log('[launcher] ERROR: native sCode stage-0 build/install failed. Run the bundled sCode installer/repair tool and inspect launcher.log.')
+            return 3
+        _log(f'[launcher] built and installed native sCode stage-0: {stage0}')
+    if stage0:
+        if os.name!='nt':
+            try: stage0.chmod(stage0.stat().st_mode | 0o755)
+            except OSError: pass
+        _log(f'[launcher] sCode stage-0: {stage0}')
     return subprocess.call([sys.executable,str(ROOT/'run_groovebox.py'),*sys.argv[1:]],cwd=ROOT)
 
 if __name__=='__main__': raise SystemExit(main())

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import os, platform, shutil, subprocess
+import os, platform, shutil, subprocess, sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -21,6 +21,24 @@ def scode_stage0_candidates(root: Path|None=None):
 
 def find_scode_stage0(root: Path|None=None):
     return next((p for p in scode_stage0_candidates(root) if p.is_file()), None)
+
+def ensure_scode_stage0(root: Path|None=None, force: bool=False):
+    root=Path(root or ROOT)
+    current=find_scode_stage0(root)
+    if current and not force:
+        try:
+            p=subprocess.run([str(current),'--version'],capture_output=True,text=True,timeout=10)
+            if p.returncode==0: return current
+        except Exception: pass
+    builder=root/'sCode'/'scripts'/'build_stage0.py'
+    if not builder.is_file(): return None
+    cmd=[sys.executable,str(builder)] + (['--force'] if force else [])
+    try:
+        p=subprocess.run(cmd,cwd=root,check=False)
+        if p.returncode: return None
+    except Exception:
+        return None
+    return find_scode_stage0(root)
 
 def accel_candidates(root: Path|None=None):
     root=Path(root or ROOT); s,_=platform_key()

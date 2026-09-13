@@ -16,7 +16,6 @@ if not exist ".groovebox_provisioned_windows" goto :PROVISION
 if not exist "bin\ffmpeg.exe" goto :PROVISION
 if not exist "bin\ffprobe.exe" goto :PROVISION
 if not defined PYEXE goto :PROVISION
-if not exist "sCode\bootstrap\windows-x86_64\scode0.exe" goto :PROVISION
 goto :AFTER_PROVISION
 
 :PROVISION
@@ -39,11 +38,18 @@ if not defined PYEXE (
 
 %PYEXE% "%~dp0scripts\provision_first_launch.py"
 if errorlevel 1 exit /b %errorlevel%
-%PYEXE% "%~dp0scripts\provision_scode_stage0.py"
-if errorlevel 1 exit /b %errorlevel%
 > ".groovebox_provisioned_windows" echo provisioned
 
 :AFTER_PROVISION
+rem Architecture-aware native sCode installer. It is idempotent and returns
+rem immediately when the correct host binary already passed verification.
+echo [Groovebox] Verifying native sCode for Windows...
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0sCode\INSTALL_SCODE_WINDOWS.ps1"
+if errorlevel 1 (
+  echo [Groovebox] ERROR: native sCode installation/verification failed.
+  exit /b 3
+)
+
 if not defined PYEXE (
   where py >nul 2>nul && set "PYEXE=py -3"
   if not defined PYEXE where python >nul 2>nul && set "PYEXE=python"

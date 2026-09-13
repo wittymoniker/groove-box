@@ -46,6 +46,16 @@ if (-not $py) {
 }
 if (-not $py) { throw "Python is required - re-run after installing Python 3.9+." }
 
+# --- native sCode bootstrap compiler --------------------------------------
+if (-not (Get-Command cl -ErrorAction SilentlyContinue) -and -not (Get-Command clang -ErrorAction SilentlyContinue) -and -not (Get-Command gcc -ErrorAction SilentlyContinue)) {
+    Write-Host "==> Installing LLVM/clang for native sCode bootstrap..."
+    if (-not $SkipWinget) {
+        winget install --id LLVM.LLVM --silent --accept-package-agreements --accept-source-agreements
+        $llvm = "C:\Program Files\LLVM\bin"
+        if (Test-Path $llvm) { $env:Path = $llvm + ";" + $env:Path }
+    }
+}
+
 # --- ffmpeg codec suite --------------------------------------------------
 Write-Host "==> Installing ffmpeg codec suite..."
 if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
@@ -75,9 +85,6 @@ Write-Host "==> Installing Python packages..."
 Write-Host "==> Verify:"
 & $py -c "import numpy, PyQt6.QtCore, sounddevice, PIL; print('python deps OK')"
 & (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source -hide_banner -version | Select-Object -First 1
-Write-Host "==> Provision/verify native sCode stage-0..."
-& $py (Join-Path $ROOT "scripts\provision_scode_stage0.py")
-if ($LASTEXITCODE -ne 0) { throw "Native Windows sCode stage-0 provisioning failed (exit $LASTEXITCODE)." }
 Write-Host "==> Done."
 Write-Host "==> Host dependency provisioning complete."
 Write-Host "    The launcher will now verify the matching native sCode stage-0 automatically."
