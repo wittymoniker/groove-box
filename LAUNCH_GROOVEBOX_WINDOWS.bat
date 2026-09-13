@@ -41,6 +41,11 @@ if errorlevel 1 exit /b %errorlevel%
 > ".groovebox_provisioned_windows" echo provisioned
 
 :AFTER_PROVISION
+%PYEXE% "%~dp0sCode\scripts\ensure-stage0.py" >nul
+if errorlevel 1 (
+  echo [Groovebox] ERROR: unified native sCode stage-0 provisioning failed.
+  exit /b %errorlevel%
+)
 %PYEXE% "%~dp0scripts\ensure_native_scode_stage0.py"
 if errorlevel 1 (
   echo [Groovebox] ERROR: native Windows sCode stage-0 provisioning/ABI verification failed.
