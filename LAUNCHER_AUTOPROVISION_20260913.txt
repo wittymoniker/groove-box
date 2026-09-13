@@ -1,0 +1,31 @@
+Mathematician's Groovebox launcher integration — 2026-09-13
+
+Windows:
+  Double-click LAUNCH_GROOVEBOX_WINDOWS.bat.
+  The launcher automatically invokes install_deps_windows.ps1 when needed,
+  provisions project-local bin/ffmpeg + bin/ffprobe, then runs the common
+  launch_groovebox.py runtime verification and Groovebox entrypoint.
+
+macOS:
+  Double-click LAUNCH_GROOVEBOX_MACOS.command (or run it from Terminal).
+  The launcher automatically invokes install_deps_macos.sh when needed,
+  provisions project-local bin/ffmpeg + bin/ffprobe, then runs the common
+  launch_groovebox.py runtime verification and Groovebox entrypoint.
+
+Linux:
+  LAUNCH_GROOVEBOX_LINUX.sh continues to use launch_groovebox.py.
+
+sCode stage-0 integrity:
+  The common launcher requires a native stage-0 matching the current host and
+  refuses to substitute the Linux ELF on Windows/macOS.
+  Expected package paths are:
+    Windows x86-64: sCode/bootstrap/windows-x86_64/scode0.exe
+    macOS x86-64:   sCode/bootstrap/macos-x86_64/scode0
+    macOS arm64:    sCode/bootstrap/macos-arm64/scode0
+    Linux x86-64:   sCode/bootstrap/linux-x86_64/scode0
+
+Current source archive limitation:
+  This source tree currently contains the Linux x86-64 stage-0 only. The
+  Windows/macOS launchers are now self-provisioning, but native sCode cannot be
+  truthfully marked installed on those hosts until their matching stage-0
+  binaries are packaged at the paths above.

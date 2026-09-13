@@ -13,6 +13,9 @@ if [ "$(id -u)" -eq 0 ]; then
   exit 4
 fi
 
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+mkdir -p "$ROOT/bin"
+
 echo "==> Groovebox installer: macOS"
 if ! command -v brew >/dev/null 2>&1; then
   echo "==> Homebrew missing — installing the official one-liner..."
@@ -34,7 +37,7 @@ FP=$(command -v ffprobe || true)
 for pair in "ffmpeg|$FF" "ffprobe|$FP"; do
   name="${pair%%|*}"; path="${pair#*|}"
   if [ -n "$path" ]; then
-    ln -sf "$path" "/bin/$name" 2>/dev/null || ln -sf "$path" "/usr/local/bin/$name" 2>/dev/null || true
+    ln -sf "$path" "$ROOT/bin/$name"
   fi
 done
 
@@ -43,6 +46,5 @@ python3 -c "import numpy, PyQt6.QtCore, sounddevice, PIL; print('python deps OK'
 command -v ffmpeg; command -v ffprobe
 ffmpeg -hide_banner -encoders >/dev/null 2>&1 && echo "ffmpeg OK"
 echo "==> Done."
-echo "    This distribution requires sCode. The shipped native stage-0 is Linux x86_64."
-echo "    To make the standalone appliance on macOS, run:"
-echo "      ./appliance_tools/BUILD_AND_BURN_MACOS.command"
+echo "==> Host dependency provisioning complete."
+echo "    The launcher will now verify the matching native sCode stage-0 automatically."

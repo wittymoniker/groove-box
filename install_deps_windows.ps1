@@ -15,7 +15,8 @@ $ErrorActionPreference = "Continue"
 
 Write-Host "==> Groovebox installer: Windows"
 
-$BIN = Join-Path $env:LOCALAPPDATA "Groovebox\bin"
+$ROOT = Split-Path -Parent $MyInvocation.MyCommand.Path
+$BIN = Join-Path $ROOT "bin"
 New-Item -ItemType Directory -Force -Path $BIN | Out-Null
 
 function Add-ToUserPath([string]$dir) {
@@ -75,6 +76,5 @@ Write-Host "==> Verify:"
 & $py -c "import numpy, PyQt6.QtCore, sounddevice, PIL; print('python deps OK')"
 & (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source -hide_banner -version | Select-Object -First 1
 Write-Host "==> Done."
-Write-Host "    This distribution requires sCode. The shipped native stage-0 is Linux x86_64."
-Write-Host "    To make the standalone appliance on Windows, run:"
-Write-Host "      .\appliance_tools\BUILD_AND_BURN_WINDOWS.ps1"
+Write-Host "==> Host dependency provisioning complete."
+Write-Host "    The launcher will now verify the matching native sCode stage-0 automatically."
