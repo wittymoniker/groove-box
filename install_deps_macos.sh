@@ -25,7 +25,6 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 echo "==> brew python + ffmpeg (full codec suite)..."
 brew install python ffmpeg || brew upgrade python ffmpeg
-if ! command -v clang >/dev/null 2>&1; then brew install llvm; export PATH="$(brew --prefix llvm)/bin:$PATH"; fi
 
 echo "==> pip dependencies (shared: host app + exported games)..."
 PIP_DEPS="numpy PyQt6 sounddevice Pillow"

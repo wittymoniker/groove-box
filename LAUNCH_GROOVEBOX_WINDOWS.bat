@@ -41,15 +41,11 @@ if errorlevel 1 exit /b %errorlevel%
 > ".groovebox_provisioned_windows" echo provisioned
 
 :AFTER_PROVISION
-rem Architecture-aware native sCode installer. It is idempotent and returns
-rem immediately when the correct host binary already passed verification.
-echo [Groovebox] Verifying native sCode for Windows...
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0sCode\INSTALL_SCODE_WINDOWS.ps1"
+%PYEXE% "%~dp0scripts\ensure_native_scode_stage0.py"
 if errorlevel 1 (
-  echo [Groovebox] ERROR: native sCode installation/verification failed.
-  exit /b 3
+  echo [Groovebox] ERROR: native Windows sCode stage-0 provisioning/ABI verification failed.
+  exit /b %errorlevel%
 )
-
 if not defined PYEXE (
   where py >nul 2>nul && set "PYEXE=py -3"
   if not defined PYEXE where python >nul 2>nul && set "PYEXE=python"

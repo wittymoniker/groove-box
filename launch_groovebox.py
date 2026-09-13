@@ -3,7 +3,7 @@ from __future__ import annotations
 import os, platform, subprocess, sys
 from pathlib import Path
 from datetime import datetime
-from platform_runtime import find_scode_stage0, ensure_scode_stage0, find_accel, build_accel, platform_key
+from platform_runtime import find_scode_stage0, find_accel, build_accel, platform_key
 
 ROOT=Path(__file__).resolve().parent
 
@@ -44,13 +44,9 @@ def main():
         expected = {'windows':'sCode/bootstrap/windows-x86_64/scode0.exe',
                     'darwin':f'sCode/bootstrap/macos-{m}/scode0',
                     'linux':f'sCode/bootstrap/linux-{m}/scode0'}.get(s,'sCode/bootstrap/<platform>/scode0')
-        _log(f'[launcher] native sCode stage-0 missing: {expected}; building host-native stage-0 now...')
-        stage0=ensure_scode_stage0(ROOT)
-        if not stage0:
-            _log('[launcher] ERROR: native sCode stage-0 build/install failed. Run the bundled sCode installer/repair tool and inspect launcher.log.')
-            return 3
-        _log(f'[launcher] built and installed native sCode stage-0: {stage0}')
-    if stage0:
+        _log(f'[launcher] WARNING: native sCode stage-0 not present for this host: {expected}')
+        _log('[launcher] Continuing with the supported Python/NumPy Groovebox fallback; native sCode acceleration is disabled for this run.')
+    else:
         if os.name!='nt':
             try: stage0.chmod(stage0.stat().st_mode | 0o755)
             except OSError: pass

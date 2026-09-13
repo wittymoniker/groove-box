@@ -18,8 +18,4 @@ if [ "$needs_provision" -eq 1 ]; then
   : > .groovebox_provisioned_macos
 fi
 
-echo "[Groovebox] Verifying native sCode for macOS..."
-chmod +x ./sCode/INSTALL_SCODE_MACOS.command
-./sCode/INSTALL_SCODE_MACOS.command
-
 exec "${PYTHON:-python3}" launch_groovebox.py "$@"
