@@ -18,8 +18,4 @@ if [ "$needs_provision" -eq 1 ]; then
   : > .groovebox_provisioned_macos
 fi
 
-echo "[Groovebox] Verifying native macOS sCode stage-0..."
-"${PYTHON:-python3}" ./sCode/scripts/ensure-stage0.py >/dev/null
-"${PYTHON:-python3}" ./scripts/ensure_native_scode_stage0.py
-
 exec "${PYTHON:-python3}" launch_groovebox.py "$@"
