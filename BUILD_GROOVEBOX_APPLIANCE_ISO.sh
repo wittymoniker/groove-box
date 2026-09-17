@@ -2,6 +2,12 @@
 set -Eeuo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ISOBASE="$ROOT/APPLIANCE_ISO"
+# BUILD_ISO is distributed separately to keep the main Groovebox archive small.
+# Accept either APPLIANCE_ISO inside Groovebox or as a sibling extracted next to it.
+if [ ! -d "$ISOBASE" ] && [ -d "$ROOT/../APPLIANCE_ISO" ]; then
+  ISOBASE="$(cd "$ROOT/../APPLIANCE_ISO" && pwd)"
+fi
+[ -d "$ISOBASE" ] || { echo "Missing APPLIANCE_ISO. Extract BUILD_ISO.zip next to the groovebox folder (or inside it)." >&2; exit 2; }
 OUT="${1:-$ROOT/dist/Groovebox-sCode-Appliance-x86_64.iso}"
 [ "$(id -u)" -eq 0 ] || { echo "Run with sudo/root: sudo ./BUILD_GROOVEBOX_APPLIANCE_ISO.sh" >&2; exit 3; }
 [ -x "$ROOT/sCode/bootstrap/linux-x86_64/scode0" ] || { echo "Bundled required sCode runtime missing." >&2; exit 4; }
@@ -42,9 +48,14 @@ printf '%s\n' "$_STAGE_PLAN" | grep -q '^scode_optimizer_abi=9$'
 for _k in pool_slot audio_lane visual_lane game_lane media_lane run_audio run_media coalesce_bucket canonical_pool_slot background_cadence parallel_width symbol_pool_slot symbol_base symbol_full_cycle symbol_half_denominator symbol_subscale_bits symbol_variant_count symbol_pool_key completion_abi completion_policy_count pool_abi scheduler_abi symbol_abi symbol_crossbar_count symbol_crossbar_state_count symbol_full_cycle_main_strokes symbol_full_cycle_main_strokes_solid symbol_full_cycle_solid_mask symbol_full_cycle_dotted_mask; do
   printf '%s\n' "$_STAGE_PLAN" | grep -Eq "^${_k}=[0-9-]+$"
 done
-# Build using the hardened Fedora43/sOS fat-rootfs path (usr-merge, /var/tmp,
-# mounted virtual filesystems, native-transfer hash parser fixes).
-"$ISOBASE/BUILD_GAME_READY_ISO.sh" --profile game-ready --output "$OUT"
+# Build using the hardware-hardened Fedora/sOS fat-rootfs path. The Latitude
+# wrapper is the preferred appliance path for Dell 3560/3570 and remains a
+# generic x86-64 UEFI+BIOS image for other supported PCs.
+if [ -x "$ISOBASE/BUILD_LATITUDE_35X0_ISO.sh" ]; then
+  "$ISOBASE/BUILD_LATITUDE_35X0_ISO.sh" "$OUT"
+else
+  "$ISOBASE/BUILD_GAME_READY_ISO.sh" --profile game-ready --output "$OUT"
+fi
 sha256sum "$OUT" > "$OUT.sha256"
 echo "Groovebox appliance ISO: $OUT"
 cat "$OUT.sha256"

@@ -1,0 +1,35 @@
+Mathematician's Groovebox — bounded long render + Dell Latitude 35x0 appliance validation
+Date: 2026-09-17
+
+SOURCE BASE
+- Groovebox app: groovebox-WINDOWS-MAC-SCODE-POOL-BOOT-FIX-20260913.zip
+- BUILD_ISO base: BUILD_ISO-CANONICAL-LAG-PASS-20260913.zip
+
+GROOVEBOX PATCH
+PASS Python compile: groovebox.py
+PASS pytest: 14 targeted contract/regression tests
+PASS former 30-minute video-frame ceiling removed
+PASS long renders avoid a whole-render float64 time grid
+PASS render block size adapts to installed RAM without changing project duration
+PASS temporary PCM16 WAV conversion writes in chunks instead of allocating a second full int16 render
+PASS long convolve/EQR/seed-domain post passes use bounded blocks/overlap where required
+PASS canonical/user proof RMS is chunked and proof-only buses are released before long post-processing
+PASS MP3 integrity/default parameter regression contracts remain passing
+
+APPLIANCE / LATITUDE 35x0 BUILD KIT
+PASS one x86_64 target for Latitude 3560 and 3570; 8 GiB and 16 GiB use the same image
+PASS Fedora hardware rootfs profile includes matching kernel modules, firmware, Intel graphics/audio/network support, Python/PyQt/NumPy/PortAudio/FFmpeg and UEFI+BIOS boot/install tooling
+PASS build script validates matching vmlinuz + /usr/lib/modules release
+PASS Latitude bring-up preloads common AHCI, xHCI, i915, Ethernet/Wi-Fi and HDA modules best-effort
+PASS memory profile supports 8/16 GiB and best-effort zram
+PASS install entry invokes an explicit installer path with destructive confirmation
+
+BUILD STATUS / LIMITATION
+A new hardware-ready ISO was not fabricated in this execution environment because grub-mkrescue/xorriso and Fedora package repositories are unavailable here. The existing small ISO was inspected and is not being relabeled as Latitude-hardware-ready because its initramfs does not contain the complete fat hardware/runtime stack. Build the supplied BUILD_ISO kit on Fedora with:
+
+  sudo ./BUILD_LATITUDE_35X0_ISO.sh
+
+Do not use --no-fetch for the appliance image. The builder now refuses hardware-ready output when the kernel/modules/runtime contract is incomplete.
+
+FINAL CHECK
+Before installing to the laptop's internal disk, boot the resulting USB on the actual Latitude 3570 in UEFI mode and verify display, keyboard/touchpad, storage, Wi-Fi/Ethernet, audio and Groovebox launch. Software validation cannot guarantee a specific optional Wi-Fi card, BIOS revision or storage device without a physical boot test.

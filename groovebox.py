@@ -3069,7 +3069,9 @@ def build_master_follow_env(
     so the envelope always *fits* an integer number of tiles in the buffer
     as closely as possible.  No peak-norm.
     """
-    m = np.asarray(master, dtype=np.float64).ravel()
+    # Only the signal length is needed to construct this deterministic envelope.
+    # Do not duplicate a long render as float64 merely to read ``size``.
+    m = np.asarray(master).ravel()
     n = m.size
     if n == 0:
         return np.ones(1, dtype=np.float32)
@@ -4225,6 +4227,109 @@ def _parse_if_elif_shorthand(text):
     for cond_i, expr_i in reversed(branches[:-1]):
         acc = f"({_wrap(expr_i)} if ({cond_i}) else {acc})"
     return acc
+
+
+def _available_ram_bytes():
+    """Best-effort physical RAM total without an optional psutil dependency."""
+    try:
+        if os.path.isfile("/proc/meminfo"):
+            with open("/proc/meminfo", "r", encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    if line.startswith("MemTotal:"):
+                        return int(line.split()[1]) * 1024
+    except Exception:
+        pass
+    try:
+        pages = int(os.sysconf("SC_PHYS_PAGES"))
+        psize = int(os.sysconf("SC_PAGE_SIZE"))
+        if pages > 0 and psize > 0:
+            return pages * psize
+    except Exception:
+        pass
+    return 0
+
+
+def _bounded_render_block_samples(sample_rate=48000):
+    """Block size for long DSP passes; smaller on <= 8 GiB appliances."""
+    ram = _available_ram_bytes()
+    if ram and ram <= (10 << 30):
+        return max(65536, min(262144, int(sample_rate) * 6))
+    return max(131072, min(524288, int(sample_rate) * 10))
+
+
+def _chunked_rms(values, chunk_samples=1_000_000):
+    """RMS without materializing a full float64 copy of a long signal."""
+    a = np.asarray(values).ravel()
+    if a.size == 0:
+        return 0.0
+    total = 0.0
+    count = 0
+    step = max(1, int(chunk_samples))
+    for lo in range(0, a.size, step):
+        x = np.asarray(a[lo:lo + step], dtype=np.float64)
+        total += float(np.dot(x, x))
+        count += int(x.size)
+    return math.sqrt(total / float(max(1, count)))
+
+
+def _moving_average_same_bounded(values, window):
+    """O(n) zero-padded moving average matching np.convolve(..., mode='same')."""
+    x = np.asarray(values, dtype=np.float64).ravel()
+    n = int(x.size)
+    if n == 0:
+        return x
+    w = max(1, min(int(window), n))
+    if w == 1:
+        return x.copy()
+    left = w // 2
+    right = w - 1 - left
+    padded = np.pad(x, (left, right), mode="constant")
+    cs = np.empty(padded.size + 1, dtype=np.float64)
+    cs[0] = 0.0
+    np.cumsum(padded, out=cs[1:])
+    return (cs[w:] - cs[:-w]) / float(w)
+
+
+def _fft_convolve_prefix_bounded(signal, kernel, block_samples=262144):
+    """Linear convolution prefix, overlap-add, with bounded FFT scratch memory."""
+    x = np.asarray(signal, dtype=np.float32).ravel()
+    h = np.asarray(kernel, dtype=np.float32).ravel()
+    if x.size == 0 or h.size == 0:
+        return np.zeros_like(x, dtype=np.float32)
+    block = max(int(h.size), int(block_samples))
+    nfft = 1 << int(math.ceil(math.log2(block + int(h.size) - 1)))
+    H = np.fft.rfft(h.astype(np.float64), nfft)
+    out = np.zeros(x.size + h.size - 1, dtype=np.float32)
+    for lo in range(0, x.size, block):
+        chunk = x[lo:lo + block].astype(np.float64, copy=False)
+        y = np.fft.irfft(np.fft.rfft(chunk, nfft) * H, nfft)[:chunk.size + h.size - 1]
+        hi = min(out.size, lo + y.size)
+        out[lo:hi] += y[:hi - lo].astype(np.float32)
+    return out[:x.size]
+
+
+def _write_wav_float32_streaming(path, sample_rate, samples, chunk_samples=1_000_000):
+    """Write mono PCM16 WAV from float samples without a whole-file PCM copy."""
+    import struct as _st
+    a = np.asarray(samples, dtype=np.float32).ravel()
+    n = int(a.size)
+    data_bytes = n * 2
+    if data_bytes > 0xFFFFFFFF - 44:
+        raise RuntimeError("PCM16 WAV exceeds RIFF 4 GiB limit; export more parts or use a shorter segment")
+    sr = int(sample_rate)
+    byte_rate = sr * 2
+    header = (
+        b"RIFF" + _st.pack("<I", 36 + data_bytes) + b"WAVE" +
+        b"fmt " + _st.pack("<IHHIIHH", 16, 1, 1, sr, byte_rate, 2, 16) +
+        b"data" + _st.pack("<I", data_bytes)
+    )
+    step = max(1, int(chunk_samples))
+    with open(path, "wb") as fh:
+        fh.write(header)
+        for lo in range(0, n, step):
+            block = np.asarray(a[lo:lo + step], dtype=np.float32)
+            pcm = (np.clip(block, -1.0, 1.0) * np.float32(32767.0)).astype("<i2")
+            fh.write(pcm.tobytes())
 
 
 def _write_wav_with_provenance(path, sample_rate, pcm_samples, comment_bytes=None, bit_depth=16):
@@ -15548,7 +15653,7 @@ class EQRTensorEngine:
         self._last_z = float(z)
         return float(z)
 
-    def process(self, dry, activation=0.0, pkp_env=None):
+    def process(self, dry, activation=0.0, pkp_env=None, sample_offset=0, total_samples=None):
         """Mix origin-z contribution into contextual audio; max 50% wet.
 
         Uses the closed-form audio reduction (eqr_tensor_audio): one sliding
@@ -15565,23 +15670,25 @@ class EQRTensorEngine:
 
         # Characteristic distance d̄: sliding mean-abs-deviation (local context).
         win = max(8, min(256, n // 64))
-        kernel = np.ones(win, dtype=np.float64) / float(win)
         abs_x = np.abs(dry.astype(np.float64))
-        d_char = np.convolve(abs_x, kernel, mode='same')  # ≈ local MAD around origin
+        d_char = _moving_average_same_bounded(abs_x, win)  # ≈ local MAD around origin
 
-        # Sparse control grid for z, then interpolate (keeps cost tiny).
+        # Sparse control grid for z, then interpolate. ``sample_offset`` keeps
+        # chunked long renders on the exact same global 0..1 time coordinate.
+        total_n = max(n, int(total_samples or n))
+        offset = max(0, int(sample_offset or 0))
         ctrl_n = min(128, max(4, n // 128))
         idxs = np.linspace(0, n - 1, ctrl_n).astype(np.int32)
         Z_ctrl = np.empty(ctrl_n, dtype=np.float64)
         for i, ix in enumerate(idxs):
-            t = float(ix) / float(max(1, n - 1))
+            t = float(offset + int(ix)) / float(max(1, total_n - 1))
             _p, _e, _d, zi = eqr_tensor_audio(
                 float(dry[ix]), float(d_char[ix]), float(dry[ix]), t=t
             )
             Z_ctrl[i] = zi
-        z_full = np.interp(
-            np.arange(n, dtype=np.float64), idxs.astype(float), Z_ctrl
-        )
+        global_ctrl = offset + idxs.astype(np.float64)
+        global_idx = offset + np.arange(n, dtype=np.float64)
+        z_full = np.interp(global_idx, global_ctrl, Z_ctrl)
 
         env_gain = np.ones(n, dtype=np.float64)
         if pkp_env is not None:
@@ -15590,15 +15697,11 @@ class EQRTensorEngine:
                 env_ = np.resize(env_, n)
             env_gain = env_
 
-        # Contribution harmonic mix of origin-z into the wave at time t.
-        if operator_theory_enabled():
-            contrib = np.empty(n, dtype=np.float64)
-            for i in range(n):
-                contrib[i] = math_mul(float(z_full[i]), float(dry[i])) * float(env_gain[i])
-        else:
-            contrib = z_full * dry.astype(np.float64) * env_gain
-
-        out = (1.0 - wet_mix) * dry.astype(np.float64) + wet_mix * contrib
+        # OT is numerically equivalent at this DSP boundary; use the vector
+        # route so long appliance renders do not execute one Python call/sample.
+        dry64 = dry.astype(np.float64)
+        contrib = z_full * dry64 * env_gain
+        out = (1.0 - wet_mix) * dry64 + wet_mix * contrib
         return out.astype(np.float32)
 
 
@@ -38124,16 +38227,24 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         n_samples = int(sample_rate * total_duration)
         _opt = getattr(self, "_scode_optimizer", None)
-        # SCODE_FULL_ACCEL_V4: the render-time coordinate grid is deterministic
-        # and read-only. Reuse it for normal-sized repeated Play/Export renders.
-        # Very long renders bypass the cache to keep memory bounded.
-        if _opt is not None and n_samples <= 2_000_000:
+        # BOUNDED_LONG_RENDER_20260917: normal renders keep their historical
+        # full coordinate grid for byte-compatible behavior. Long renders use
+        # exact integer row boundaries and per-row/per-block time vectors, so
+        # 25+ minute appliance exports do not allocate a 0.5–2+ GiB float64 t[].
+        _bounded_long_render = n_samples > 2_000_000
+        _render_block = _bounded_render_block_samples(sample_rate)
+        _sample_dt = total_duration / float(max(1, n_samples))
+        if not _bounded_long_render and _opt is not None:
             t = _opt.memoized_result(
                 "audio_time_grid", (sample_rate, round(total_duration, 12), n_samples),
                 lambda: np.linspace(0.0, total_duration, n_samples, endpoint=False), max_entries=4
             )
-        else:
+        elif not _bounded_long_render:
             t = np.linspace(0.0, total_duration, n_samples, endpoint=False)
+        else:
+            t = None
+        self._last_render_memory_mode = "bounded-block" if _bounded_long_render else "normal"
+        self._last_render_block_samples = int(_render_block)
         master = np.zeros(n_samples, dtype=np.float32)
         canonical_bus = np.zeros(n_samples, dtype=np.float32)
         userdata_bus = np.zeros(n_samples, dtype=np.float32)
@@ -38179,12 +38290,23 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # PERF + SCODE_FULL_ACCEL_V4: rows are contiguous by construction.
             # Use an O(1) slice instead of allocating/scanning an n_samples-wide
             # Boolean mask for every row. This preserves the exact same t samples.
-            start_idx = max(0, min(n_samples, int(np.searchsorted(t, start_time, side="left"))))
-            end_idx = max(start_idx, min(n_samples, int(np.searchsorted(t, end_time, side="left"))))
+            if t is None:
+                # searchsorted(linspace(..., endpoint=False), row boundary) in
+                # integer arithmetic: ceil(row*n_samples/rows), with no grid.
+                start_idx = (row_idx * n_samples + rows - 1) // max(1, rows)
+                end_idx = ((row_idx + 1) * n_samples + rows - 1) // max(1, rows)
+                start_idx = max(0, min(n_samples, int(start_idx)))
+                end_idx = max(start_idx, min(n_samples, int(end_idx)))
+            else:
+                start_idx = max(0, min(n_samples, int(np.searchsorted(t, start_time, side="left"))))
+                end_idx = max(start_idx, min(n_samples, int(np.searchsorted(t, end_time, side="left"))))
             if end_idx <= start_idx:
                 continue
             mask = slice(start_idx, end_idx)
-            local_t = t[mask] - start_time
+            if t is None:
+                local_t = (np.arange(start_idx, end_idx, dtype=np.float64) * _sample_dt) - start_time
+            else:
+                local_t = t[mask] - start_time
             if _opt is not None:
                 row_mix = _opt.borrow_array(f"audio_row_mix_{threading.get_ident()}", local_t.shape, np.float32, zero=True)
             else:
@@ -39372,9 +39494,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # effect can transform it. Every downstream global effect reads this
         # transaction snapshot, so effect buffering cannot depend on activation
         # order or on a partially composed playlist.
-        unison_buffer = master.copy().astype(np.float32)
-        self._canonical_unison_effect_buffer = unison_buffer.copy()
-        self._canonical_unison_effect_length = int(unison_buffer.size)
+        if _bounded_long_render:
+            # No active downstream stage consumes the full snapshot (the legacy
+            # global Fractallizer pass is disabled). Retain a bounded inspection
+            # preview instead of two more full-duration float32 buffers.
+            _snap_stride = max(1, int(math.ceil(master.size / 2_000_000.0)))
+            self._canonical_unison_effect_buffer = master[::_snap_stride].copy()
+            self._canonical_unison_effect_preview_stride = int(_snap_stride)
+            self._canonical_unison_effect_preview_only = True
+            unison_buffer = None
+        else:
+            unison_buffer = master.copy().astype(np.float32)
+            self._canonical_unison_effect_buffer = unison_buffer.copy()
+            self._canonical_unison_effect_preview_stride = 1
+            self._canonical_unison_effect_preview_only = False
+        self._canonical_unison_effect_length = int(master.size)
         self._canonical_unison_effect_seed = _safe_int_seed(seed_val)
 
         # Ensemble-size invariant headroom: adding surviving voices must not make
@@ -39405,8 +39539,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # user-controlled crossfade. Default 50% canonical live overblend preserves
         # the user/live envelope; canonical-only rows fall back to canonical audio.
         try:
-            c_rms = float(np.sqrt(np.mean(np.square(canonical_bus.astype(np.float64))))) if canonical_bus.size else 0.0
-            u_rms = float(np.sqrt(np.mean(np.square(userdata_bus.astype(np.float64))))) if userdata_bus.size else 0.0
+            c_rms = float(_chunked_rms(canonical_bus)) if canonical_bus.size else 0.0
+            u_rms = float(_chunked_rms(userdata_bus)) if userdata_bus.size else 0.0
             carrier_present = imported_carrier is not None and bool(np.any(imported_carrier != 0.0))
             self._canonical_user_blend_ledger = {
                 **self._verify_canonical_user_carrier_contract(carrier_present),
@@ -39436,6 +39570,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
             }
         except Exception as _blend_proof_exc:
             self._canonical_user_blend_ledger = {"proof_status": False, "error": str(_blend_proof_exc)}
+
+        # BOUNDED_LONG_RENDER_20260917: these proof/composition buses have no
+        # downstream consumers after the ledger. Releasing them here returns two
+        # full float32 render-length allocations before effects/export begin.
+        if _bounded_long_render:
+            del canonical_bus, userdata_bus
 
         # FULL ENV-FOLLOW SYMMETRY — ONE shared time-predictive follow env.
         # Built once from the canonical unison snapshot (before any global
@@ -39511,9 +39651,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 kn = np.linalg.norm(kernel)
                 if kn != 0.0:
                     kernel /= kn
-                    nfft = 1 << int(np.ceil(np.log2(len(master) + len(kernel) - 1)))
-                    spec = np.fft.rfft(master, nfft) * np.fft.rfft(kernel, nfft)
-                    conv = np.fft.irfft(spec, nfft)[:len(master)].astype(np.float32)
+                    if _bounded_long_render:
+                        conv = _fft_convolve_prefix_bounded(master, kernel, _render_block)
+                    else:
+                        nfft = 1 << int(np.ceil(np.log2(len(master) + len(kernel) - 1)))
+                        spec = np.fft.rfft(master, nfft) * np.fft.rfft(kernel, nfft)
+                        conv = np.fft.irfft(spec, nfft)[:len(master)].astype(np.float32)
                     cn = np.max(np.abs(conv))
                     if cn != 0.0:
                         conv *= np.max(np.abs(master)) / cn
@@ -39529,15 +39672,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception as e:
             print(f"[Global Convolve] skipped: {e}")
 
+        if _bounded_long_render and imported_carrier is not None:
+            # Carrier has completed all active render-time roles by this point.
+            imported_carrier = None
+
         # Domain partition equations: longitudinal multivariate modulation (additive blend)
         if hasattr(self, 'domain_eq_engine') and self.domain_eq_engine.domains:
             try:
                 self.domain_eq_engine.set_seed(self.get_numeric_seed())
-                # Normalize time axis 0..1 across the full buffer for partition logic
-                t_norm = np.linspace(0.0, 1.0, len(master))
-                domain_mod = self.domain_eq_engine.evaluate_series(t_norm, x=0.0, y=0.0, z=0.0)
-                # Soft convolution: carrier * (1 + 0.45 * domain) — accentuates without erasing
-                master = master * (1.0 + 0.45 * domain_mod.astype(np.float32) * _shared_env)
+                # Normalize time axis 0..1 across the full buffer for partition logic.
+                # Long renders evaluate it in blocks instead of retaining t_norm +
+                # domain_mod for the entire 25+ minute signal at once.
+                if _bounded_long_render:
+                    _den = float(max(1, len(master) - 1))
+                    for _lo in range(0, len(master), _render_block):
+                        _hi = min(len(master), _lo + _render_block)
+                        t_norm = np.arange(_lo, _hi, dtype=np.float64) / _den
+                        domain_mod = self.domain_eq_engine.evaluate_series(t_norm, x=0.0, y=0.0, z=0.0)
+                        master[_lo:_hi] *= (1.0 + 0.45 * np.asarray(domain_mod, dtype=np.float32) * _shared_env[_lo:_hi])
+                else:
+                    t_norm = np.linspace(0.0, 1.0, len(master))
+                    domain_mod = self.domain_eq_engine.evaluate_series(t_norm, x=0.0, y=0.0, z=0.0)
+                    master = master * (1.0 + 0.45 * domain_mod.astype(np.float32) * _shared_env)
             except Exception as e:
                 print(f"[DomainEQ] render modulation skipped: {e}")
 
@@ -39565,14 +39721,27 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 control_vals = np.array([
                     evaluate_seed_expression_at_time(seed_script_text, ct, _seed_canonical_context) for ct in control_t
                 ], dtype=np.float64)
-                seed_time_curve = np.interp(t, control_t, control_vals)
-                # Keep on self so per-voice code elsewhere can sample the same
-                # curve by absolute time if it wants finer-grained access.
-                self._seed_time_curve = seed_time_curve
-                peak_curve = np.max(np.abs(seed_time_curve))
-                if peak_curve != 0.0:
-                    seed_mod = (seed_time_curve / peak_curve).astype(np.float32)
-                    master = master * (1.0 + 0.20 * MEUM_NORM * seed_mod * _shared_env)
+                if _bounded_long_render:
+                    # The extrema of linear interpolation are at control points,
+                    # so this peak is equivalent to scanning the full curve.
+                    peak_curve = float(np.max(np.abs(control_vals))) if control_vals.size else 0.0
+                    _preview_n = min(2048, max(2, len(master)))
+                    _preview_t = np.linspace(0.0, total_duration, _preview_n, endpoint=False)
+                    self._seed_time_curve = np.interp(_preview_t, control_t, control_vals).astype(np.float32)
+                    if peak_curve != 0.0:
+                        for _lo in range(0, len(master), _render_block):
+                            _hi = min(len(master), _lo + _render_block)
+                            _bt = np.arange(_lo, _hi, dtype=np.float64) * _sample_dt
+                            _curve = np.interp(_bt, control_t, control_vals)
+                            seed_mod = (_curve / peak_curve).astype(np.float32)
+                            master[_lo:_hi] *= (1.0 + 0.20 * MEUM_NORM * seed_mod * _shared_env[_lo:_hi])
+                else:
+                    seed_time_curve = np.interp(t, control_t, control_vals)
+                    self._seed_time_curve = seed_time_curve
+                    peak_curve = np.max(np.abs(seed_time_curve))
+                    if peak_curve != 0.0:
+                        seed_mod = (seed_time_curve / peak_curve).astype(np.float32)
+                        master = master * (1.0 + 0.20 * MEUM_NORM * seed_mod * _shared_env)
         except Exception as e:
             print(f"[SeedScript] T-axis modulation skipped: {e}")
 
@@ -39590,7 +39759,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         gamma=1.5 + MEUM_NORM * 2.0,
                         pkp_env=_shared_env,
                         bpm=float(bpm),
-                        reference_buffer=unison_buffer,
+                        reference_buffer=(master if unison_buffer is None else unison_buffer),
                     )
             except Exception as _gf_exc:
                 print(f"[Global Fractallizer] master pass skipped: {_gf_exc}")
@@ -39598,9 +39767,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Final effect-buffer integrity: effects may transform their working
         # copy, but the canonical unison snapshot remains available for the next
         # deterministic render transaction.
-        if getattr(self, "_canonical_unison_effect_length", 0) != len(unison_buffer):
-            self._canonical_unison_effect_buffer = unison_buffer.copy()
-            self._canonical_unison_effect_length = int(unison_buffer.size)
+        if getattr(self, "_canonical_unison_effect_length", 0) != len(master):
+            if _bounded_long_render:
+                _snap_stride = max(1, int(math.ceil(master.size / 2_000_000.0)))
+                self._canonical_unison_effect_buffer = master[::_snap_stride].copy()
+                self._canonical_unison_effect_preview_stride = int(_snap_stride)
+                self._canonical_unison_effect_preview_only = True
+            else:
+                self._canonical_unison_effect_buffer = (master if unison_buffer is None else unison_buffer).copy()
+            self._canonical_unison_effect_length = int(master.size)
 
         # AMPLITUDE_FIX_2026: the master-bus EQR tensor pass, the PKP
         # tempo-locked amplitude-envelope multiply, and the PED "tint"
@@ -39629,31 +39804,64 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if act > 0.01 and len(master) > 0:
                 if not hasattr(self, "_eqr_tensor") or self._eqr_tensor is None:
                     self._eqr_tensor = EQRTensorEngine()
-                _eqr_base = self._eqr_tensor.process(master, activation=act, pkp_env=_shared_env)
-                # Direct x,y,z spatial form: x=current sample, y=local field,
-                # z=Meum phase field.  The bounded projection is deliberately
-                # limited to the EQR wet amount already capped at 50%.
-                _x = master.astype(np.float64)
                 _win = max(8, min(128, len(master) // 128))
-                _local = np.convolve(np.abs(_x), np.ones(_win, dtype=np.float64) / float(_win), mode="same")
-                _z = np.asarray([meum_phase_field(i / max(1, len(master)-1), rate=MEUM_INV) for i in range(len(master))], dtype=np.float64)
-                # Field potential Φ(x,y,z) supplies the bounded geometric weight.
-                _r = np.sqrt(_x * _x + _local * _local + _z * _z)
-                _phi = np.divide(1.0, _r, out=np.zeros_like(_r, dtype=np.float64), where=_r != 0.0)
-                _potential_weight = np.clip(_phi / (1.0 + _phi), 0.0, 1.0)
-                # Bounded wave mechanics supplies a deterministic xyz standing-wave term.
-                _xx = np.arange(len(_x), dtype=np.float64) / max(1, len(_x)-1)
-                _wave = ot_sin_vec_equiv(np.pi * _xx) * ot_sin_vec_equiv(np.pi * _local) * ot_sin_vec_equiv(np.pi * ((_z + 1.0) * 0.5))
-                _spatial_raw = _x * (0.5 + 0.5 * _potential_weight) + MEUM_INV * _wave
-                # Direct Meum x,y,z expression is also sampled explicitly here;
-                # this keeps the named field/potential/wave/state forms in the
-                # actual EQR effect path.
-                _mf = np.asarray([meum_spatial_operator_field(a, b, c) for a,b,c in zip(_xx*2.0-1.0, _local, _z)], dtype=np.float64)
-                _spatial_raw = _spatial_raw + 0.08 * _mf
-                # Neighbor state transition is the final compact x/y/z propagation step.
-                _spatial = meum_state_transition(_spatial_raw, geometry_weight=0.35).astype(np.float64)
                 _meum_mix = min(0.50, 0.50 * act)
-                master = ((1.0 - _meum_mix) * _eqr_base.astype(np.float64) + _meum_mix * _spatial).astype(np.float32)
+
+                def _eqr_spatial_block(_src, _env, _global_start, _total_n):
+                    _x = np.asarray(_src, dtype=np.float64).ravel()
+                    _local = _moving_average_same_bounded(np.abs(_x), _win)
+                    _g = _global_start + np.arange(len(_x), dtype=np.float64)
+                    _xx = _g / float(max(1, _total_n - 1))
+                    # Vector form of meum_phase_field(t, rate=MEUM_INV, phase=0).
+                    _z = 0.5 * (
+                        series_sin(2.0 * np.pi * _xx * MEUM_INV) +
+                        MEUM_NORM * series_sin(2.0 * np.pi * _xx * MEUM_INV * MEUM_INV)
+                    )
+                    _r = np.sqrt(_x * _x + _local * _local + _z * _z)
+                    _phi = np.divide(1.0, _r, out=np.ones_like(_r), where=_r != 0.0)
+                    _potential_weight = np.clip(_phi / (1.0 + _phi), 0.0, 1.0)
+                    _wave = (ot_sin_vec_equiv(np.pi * _xx) *
+                             ot_sin_vec_equiv(np.pi * _local) *
+                             ot_sin_vec_equiv(np.pi * ((_z + 1.0) * 0.5)))
+                    _spatial_raw = _x * (0.5 + 0.5 * _potential_weight) + MEUM_INV * _wave
+                    _xc = _xx * 2.0 - 1.0
+                    _rr = np.sqrt(_xc * _xc + _local * _local + _z * _z)
+                    _potential = np.divide(1.0, _rr, out=np.ones_like(_rr), where=_rr != 0.0)
+                    _mf_wave = (series_sin(np.pi * _xc) * series_sin(np.pi * _local) * series_sin(np.pi * _z))
+                    _mf_state = (
+                        series_sin(2.0*np.pi*(_xc + 1.0/3.0)) +
+                        series_sin(2.0*np.pi*(_local + 1.0/3.0)) +
+                        series_sin(2.0*np.pi*(_z + 1.0/3.0))
+                    ) / 3.0
+                    _mf = 0.34 * _potential + 0.33 * _mf_wave + 0.33 * _mf_state
+                    _spatial_raw = _spatial_raw + 0.08 * _mf
+                    _spatial = meum_state_transition(_spatial_raw, geometry_weight=0.35).astype(np.float64)
+                    _eqr_base = self._eqr_tensor.process(
+                        _src, activation=act, pkp_env=_env,
+                        sample_offset=_global_start, total_samples=_total_n,
+                    )
+                    return ((1.0 - _meum_mix) * _eqr_base.astype(np.float64) +
+                            _meum_mix * _spatial).astype(np.float32)
+
+                if _bounded_long_render:
+                    # Overlap by the largest local-neighborhood radius so each
+                    # emitted core block has the same local context as a monolithic pass.
+                    # Keep one float32 source snapshot: writing a completed core back
+                    # into ``master`` must never contaminate the next block's overlap.
+                    _eqr_src = master.copy()
+                    _overlap = max(512, _win * 2)
+                    for _lo in range(0, len(master), _render_block):
+                        _hi = min(len(master), _lo + _render_block)
+                        _elo = max(0, _lo - _overlap)
+                        _ehi = min(len(master), _hi + _overlap)
+                        _tmp = _eqr_spatial_block(
+                            _eqr_src[_elo:_ehi], _shared_env[_elo:_ehi], _elo, len(master)
+                        )
+                        _a = _lo - _elo
+                        master[_lo:_hi] = _tmp[_a:_a + (_hi - _lo)]
+                    del _eqr_src
+                else:
+                    master = _eqr_spatial_block(master, _shared_env, 0, len(master))
         except Exception as _eqr_exc:
             print(f"[EQR/Meum] mixdown: {_eqr_exc}")
             try:
@@ -45080,7 +45288,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         fps = max(1, min(120, fps))
         frame_samples = max(1, int(sr / fps))
         n_frames = max(1, int(np.ceil(len(master) / frame_samples)))
-        n_frames = min(n_frames, fps * 60 * 30)  # soft 30 min ceiling
+        # BOUNDED_LONG_RENDER_20260917: no arbitrary duration ceiling. Frames
+        # are streamed directly to ffmpeg; project duration and available disk
+        # space, not RAM retention, determine how long an export may be.
         duration_s = n_frames / float(fps)
 
         # --- size prediction ---
@@ -45088,10 +45298,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         bpp = 0.22
         est_video_bytes = int(n_frames * w * h * bpp / 8.0)
         est_audio_bytes = int(duration_s * 192000 / 8.0) if include_audio else 0
-        # Peak intermediate: one part's frames as PNG (~0.4 of raw RGB) + that part video
+        # Frames are raw-streamed to ffmpeg and never accumulated as PNGs. Peak
+        # temp-disk estimate is one encoded part + optional mux WAV; RAM only
+        # needs a few frame-sized working buffers plus bounded DSP blocks.
         frames_per_part = (n_frames + N_PARTS - 1) // N_PARTS
-        est_peak_part_png = int(frames_per_part * w * h * 3 * 0.35)
-        est_peak = est_peak_part_png + (est_video_bytes // N_PARTS) + est_audio_bytes
+        est_frame_work = int(w * h * 3 * 6)
+        est_peak = est_frame_work + (est_video_bytes // N_PARTS) + est_audio_bytes
         def _fmt(n):
             for unit, div in (("GB", 1<<30), ("MB", 1<<20), ("KB", 1<<10)):
                 if n >= div:
@@ -45145,28 +45357,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if include_audio:
             n_audio = min(len(master), int(round(duration_s * sr)))
             audio_clip = master[:max(1, n_audio)]
-            pcm = (np.clip(audio_clip, -1, 1) * 32767).astype(np.int16)
-            # Full mux source (kept for final concat with video).
+            # Full mux source: float32→PCM16 conversion is chunked directly to
+            # disk, eliminating a second whole-render int16 allocation.
             audio_path = os.path.join(dest_dir, f".{stem}.audio.full.part.wav")
             try:
-                _write_wav_with_provenance(audio_path, sr, pcm)
+                _write_wav_float32_streaming(audio_path, sr, audio_clip)
             except Exception as e:
                 raise RuntimeError(f"Could not write audio temp: {e}")
             # Matching recoverable audio .partNN files alongside video parts.
-            total = int(pcm.shape[0])
+            total = int(audio_clip.shape[0])
             base = max(1, total // max(1, N_PARTS))
             rem = total % max(1, N_PARTS)
             offset = 0
             for pi in range(N_PARTS):
                 take = base + (1 if pi < rem else 0)
                 if offset >= total:
-                    chunk = pcm[-1:]
+                    chunk = audio_clip[-1:]
                 else:
-                    chunk = pcm[offset:offset + max(1, take)]
+                    chunk = audio_clip[offset:offset + max(1, take)]
                     offset += max(1, take)
                 ap = os.path.join(dest_dir, f"{stem}.audio.part{pi:02d}.wav")
                 try:
-                    _write_wav_with_provenance(ap, sr, chunk)
+                    _write_wav_float32_streaming(ap, sr, chunk)
                     audio_part_paths.append(ap)
                 except Exception as e:
                     print(f"[Export] audio part {pi}: {e}")
