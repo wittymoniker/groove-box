@@ -1,61 +1,9 @@
 #!/usr/bin/env bash
-set -Eeuo pipefail
+# v35.22: legacy entry point forwards to the maintained zero-state sOS builder.
+set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-ISOBASE="$ROOT/APPLIANCE_ISO"
-# BUILD_ISO is distributed separately to keep the main Groovebox archive small.
-# Accept either APPLIANCE_ISO inside Groovebox or as a sibling extracted next to it.
-if [ ! -d "$ISOBASE" ] && [ -d "$ROOT/../APPLIANCE_ISO" ]; then
-  ISOBASE="$(cd "$ROOT/../APPLIANCE_ISO" && pwd)"
-fi
-[ -d "$ISOBASE" ] || { echo "Missing APPLIANCE_ISO. Extract BUILD_ISO.zip next to the groovebox folder (or inside it)." >&2; exit 2; }
-OUT="${1:-$ROOT/dist/Groovebox-sCode-Appliance-x86_64.iso}"
-[ "$(id -u)" -eq 0 ] || { echo "Run with sudo/root: sudo ./BUILD_GROOVEBOX_APPLIANCE_ISO.sh" >&2; exit 3; }
-[ -x "$ROOT/sCode/bootstrap/linux-x86_64/scode0" ] || { echo "Bundled required sCode runtime missing." >&2; exit 4; }
-# Verify the optimizer before spending time downloading/installing the rootfs.
-_SCODE_PLAN=$(cd "$ROOT/sCode" && GB_OPT_ID=1 GB_OPT_DIRTY=255 GB_OPT_FRAME=0 GB_OPT_LANES=4 GB_OPT_POOL=64 GB_OPT_SHAPE=1 \
-  ./bootstrap/linux-x86_64/scode0 run apps/groovebox/groovebox_optimizer.sC) \
-  || { echo "sCode optimizer execution failed." >&2; exit 5; }
-printf '%s\n' "$_SCODE_PLAN" | grep -q '^scode_optimizer_abi=9$' \
-  || { echo "sCode optimizer ABI9 preflight failed." >&2; exit 5; }
-for _k in pool_slot audio_lane visual_lane game_lane media_lane run_audio run_media coalesce_bucket canonical_pool_slot background_cadence parallel_width symbol_pool_slot symbol_base symbol_full_cycle symbol_half_denominator symbol_subscale_bits symbol_variant_count symbol_pool_key completion_abi completion_policy_count pool_abi scheduler_abi symbol_abi symbol_crossbar_count symbol_crossbar_state_count symbol_full_cycle_main_strokes symbol_full_cycle_main_strokes_solid symbol_full_cycle_solid_mask symbol_full_cycle_dotted_mask; do
-  printf '%s\n' "$_SCODE_PLAN" | grep -Eq "^${_k}=[0-9-]+$" \
-    || { echo "sCode optimizer returned a non-concrete field: $_k" >&2; printf '%s\n' "$_SCODE_PLAN" >&2; exit 5; }
-done
-
-# Static app preflight before staging.
-python3 -m py_compile "$ROOT/groovebox.py" "$ROOT/run_groovebox.py" "$ROOT/scode_optimizer_bridge.py" \
-  "$ROOT/performance.py" "$ROOT/groovebox_paths.py" "$ROOT/operation_station_transfer.py" \
-  "$ROOT/video_clip_studio.py" "$ROOT/layered_signal_lab.py" "$ROOT/media_layer_engine.py" "$ROOT/parametric_file_remix.py" \
-  "$ROOT/author_number_codec.py" "$ROOT/author_numeric_font.py" "$ROOT/appliance_wifi.py" "$ROOT/groovebox_direct_link.py" "$ROOT/nearby_groovebox.py"
-
-echo '[Groovebox Appliance] staging application + sCode into ISO rootfs...'
-rm -rf "$ISOBASE/source/rootfs/opt/groovebox" "$ISOBASE/source/sCode"
-mkdir -p "$ISOBASE/source/rootfs/opt/groovebox" "$ISOBASE/source/sCode" "$ROOT/dist"
-# Avoid recursively embedding the ISO builder and transient outputs in /opt/groovebox.
-tar -C "$ROOT" \
-  --exclude='./APPLIANCE_ISO' --exclude='./dist' --exclude='./dist_release' --exclude='./build_executable' \
-  --exclude='./projects' --exclude='./samples' --exclude='./exports' \
-  --exclude='./.groovebox-build-venv' --exclude='./__pycache__' --exclude='*.pyc' \
-  -cf - . | tar -C "$ISOBASE/source/rootfs/opt/groovebox" -xf -
-cp -a "$ROOT/sCode/." "$ISOBASE/source/sCode/"
-# sCode optimizer is required, not optional.
-install -m755 "$ROOT/sCode/bootstrap/linux-x86_64/scode0" "$ISOBASE/source/rootfs/opt/groovebox/sCode/bootstrap/linux-x86_64/scode0"
-# Offline runtime check from the staged copy. Imports resolve from the sCode
-# root; running from /opt/groovebox would leave imported optimizer helpers null.
-_STAGE_PLAN=$(cd "$ISOBASE/source/rootfs/opt/groovebox/sCode" && GB_OPT_ID=2 GB_OPT_DIRTY=255 GB_OPT_FRAME=0 GB_OPT_LANES=4 GB_OPT_POOL=64 GB_OPT_SHAPE=2 \
-  ./bootstrap/linux-x86_64/scode0 run apps/groovebox/groovebox_optimizer.sC)
-printf '%s\n' "$_STAGE_PLAN" | grep -q '^scode_optimizer_abi=9$'
-for _k in pool_slot audio_lane visual_lane game_lane media_lane run_audio run_media coalesce_bucket canonical_pool_slot background_cadence parallel_width symbol_pool_slot symbol_base symbol_full_cycle symbol_half_denominator symbol_subscale_bits symbol_variant_count symbol_pool_key completion_abi completion_policy_count pool_abi scheduler_abi symbol_abi symbol_crossbar_count symbol_crossbar_state_count symbol_full_cycle_main_strokes symbol_full_cycle_main_strokes_solid symbol_full_cycle_solid_mask symbol_full_cycle_dotted_mask; do
-  printf '%s\n' "$_STAGE_PLAN" | grep -Eq "^${_k}=[0-9-]+$"
-done
-# Build using the hardware-hardened Fedora/sOS fat-rootfs path. The Latitude
-# wrapper is the preferred appliance path for Dell 3560/3570 and remains a
-# generic x86-64 UEFI+BIOS image for other supported PCs.
-if [ -x "$ISOBASE/BUILD_LATITUDE_35X0_ISO.sh" ]; then
-  "$ISOBASE/BUILD_LATITUDE_35X0_ISO.sh" "$OUT"
-else
-  "$ISOBASE/BUILD_GAME_READY_ISO.sh" --profile game-ready --output "$OUT"
-fi
-sha256sum "$OUT" > "$OUT.sha256"
-echo "Groovebox appliance ISO: $OUT"
-cat "$OUT.sha256"
+[[ -x "$ROOT/BUILD_ISO/RUN_ME_ZERO_STATE.sh" ]] || {
+  echo 'FAIL: BUILD_ISO/RUN_ME_ZERO_STATE.sh is missing or not executable.' >&2
+  exit 4
+}
+exec "$ROOT/BUILD_ISO/RUN_ME_ZERO_STATE.sh" "$ROOT"

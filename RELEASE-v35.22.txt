@@ -1,0 +1,43 @@
+Mathematician's Groovebox v35.22 — 2026-09-21
+
+DETERMINISTIC PLAYER
+- mpv exits at EOF so queued playback advances reliably.
+- Audio/video FX are emitted in declaration order, never Python set iteration order.
+- Equal-power or linear crossfade selectable; Deck B has independent volume.
+- Still images have explicit deterministic duration.
+- Deck B matching supports deterministic pitch-class/texture analysis and Canonical Match metadata/provenance.
+- Display routing uses stable connector/output names (for example HDMI-A-1), not hot-plug-sensitive list indices.
+
+FILE MANAGER
+- Media probing is asynchronous/cached rather than synchronous ffprobe-per-row UI blocking.
+- Normal mode is constrained to Groovebox/user/media roots; full system traversal is explicit Advanced/System Files mode.
+- Destructive recursive Delete is replaced by Trash + Undo Trash.
+- Rename/new-folder leaf names reject path traversal/separators and existing-destination collisions.
+- Player/playlist actions accept supported media only; projects/games have explicit open/launch routing.
+
+BROWSER / SOS SHELL
+- PyQt6-WebEngine is a required first-launch dependency on Linux, Windows and macOS and in zero-state sOS.
+- Persistent WebEngine profile stores cookies/local storage/cache under Groovebox state.
+- Downloads route to Groovebox Downloads; camera/mic permissions prompt explicitly; fullscreen/new-window requests are handled.
+- Chromium plugins are disabled; HTML5 media remains available.
+- sOS runs the creative/browser shell as dedicated unprivileged user `groovebox`, retaining the Chromium sandbox.
+- Labwc is preferred when available for a lightweight multi-output appliance shell; direct Qt DRM/framebuffer remains fallback.
+
+LAN / TV PLAYER
+- File serving is bounded-memory (1 MiB chunks), with HEAD and byte-range/suffix-range support.
+- Static images transcode to finite-duration H.264 video for TV/browser playback.
+- TV tag selection follows served media kind rather than original filename extension.
+
+SOS / BUILD_ISO v35.22
+- One authoritative RUN_ME_v35_22.sh and RUN_ME_ZERO_STATE.sh route; no silent v35.21 overlay failure.
+- Final ISO name: Groovebox-sOS-x86_64-YYYYMMDD-GAME-READY-v35.22.iso.
+- Real udev/libinput/seatd readiness occurs before compositor startup.
+- Storage readiness never unbinds an already-working NVMe/AHCI/xHCI controller.
+- Exact-kernel live storage modules remain staged.
+- Exact-kernel Intel i915/DRM/KMS + HDA/HDMI audio module closure is staged for Dell Latitude 3510-class Intel graphics.
+- HDMI/DP readiness supports hot-plug; no cable is nonfatal.
+- PipeWire + pipewire-pulse + WirePlumber + ALSA utilities are present; Player can expose Pulse/PipeWire or direct ALSA HDMI targets.
+
+COMPOSITION SAFETY
+- The v35.20 Step Sequence Length single-writer/composition-preservation contract is retained.
+- These shell/player/file/browser changes do not change canonical composition generation or audio-engine mathematical form.

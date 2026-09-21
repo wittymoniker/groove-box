@@ -1,0 +1,18 @@
+Mathematician's Groovebox v35.22a — 2026-09-21
+
+SCODE STAGE-0 STARTUP REPAIR
+- Fixes run_hybrid.sh startup abort:
+  sCode pool catalog execution failed: ... usage: scode0 run apps/groovebox/groovebox_optimizer.sC ...
+- Native stage-0 now dispatches groovebox_optimizer.sC, pool_catalog.sC, and pool_request_probe.sC.
+- Linux run_hybrid.sh verifies/repairs the native stage-0 before starting Groovebox.
+- Direct Python launcher gets the same preflight.
+- Frozen deterministic 18-format pool catalog compatibility mirror covers stale Windows/macOS ABI-9 binaries when no C compiler is installed.
+- No composition, canonical, sequence, randomizer, DSP, or export behavior changed.
+
+VALIDATED
+- Native stage0 pool catalog ABI 1 / pool ABI 3 / 18 formats.
+- Native stage0 universal pool request probe.
+- Host/native pool descriptor parity: 9/9 cases.
+- sCode completion bridge ABI 9.
+- require_scode_runtime(): PASS with 18 formats.
+- Legacy ABI-9 stage0 compatibility fallback: PASS.

@@ -1,0 +1,12 @@
+Mathematician's Groovebox v35.20 — 2026-09-21
+
+STEP SEQUENCE LENGTH CONTRACT
+- Step length uses a single human-owned writer once the user changes it.
+- Canonical/refresh/autosave paths may determine length only until user ownership.
+- No Step-length undo/history snapshot is created by the spinner itself.
+- Resizing phase-repartitions sequence values instead of truncating/replacing form.
+- Canonical companion sequences are repartitioned to the same phase resolution.
+- Automation length remains independent and retains its existing spinner behavior.
+- Default Step and Automation length remains 12.
+
+BUILD_ISO is distributed separately; pair this application archive with BUILD_ISO v35.18e or newer.

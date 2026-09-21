@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
-set -e
-cd "$(dirname "$0")"
-exec "${PYTHON:-python3}" launch_groovebox.py "$@"
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+exec "$ROOT/run_hybrid.sh" "$@"

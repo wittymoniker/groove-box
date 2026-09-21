@@ -1,0 +1,5 @@
+Groovebox application: v35.20b
+BUILD_ISO: v35.18f real-udev + live-storage repair
+Date: 2026-09-21
+
+This full package keeps the v35.20b cross-platform Pillow/video-export fix and replaces the BUILD_ISO tree with v35.18f.

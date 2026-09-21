@@ -48,6 +48,7 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -168,6 +169,142 @@ def _probe_media_kind_sync(path: str) -> str:
         return KIND_UNKNOWN
 
 
+def _analyze_signal_descriptor(path: str, cache: Dict[str, Tuple[float, int, Optional[dict]]]) -> Optional[dict]:
+    """Real DSP analysis (fundamental/centroid/rms/zcr/etc.) via
+    reverse_engineer.describe(), used for reverse-engineer-style matching
+    between playlist tracks rather than name/size heuristics alone.
+    Non-WAV media is down-mixed to a short mono WAV with ffmpeg first.
+    Cached by (path, mtime, size) like the kind-probe cache."""
+    try:
+        st = os.stat(path)
+        key = (st.st_mtime, st.st_size)
+    except Exception:
+        return None
+    cached = cache.get(path)
+    if cached is not None and cached[0] == key[0] and cached[1] == key[1]:
+        return cached[2]
+    result: Optional[dict] = None
+    try:
+        import reverse_engineer as _re
+        ext = os.path.splitext(path)[1].lower()
+        tmp_wav = None
+        wav_path = path
+        if ext != ".wav":
+            from groovebox_media_tools import resolve_local_tool
+            ffmpeg = resolve_local_tool("ffmpeg")
+            if not ffmpeg:
+                cache[path] = (key[0], key[1], None)
+                return None
+            tmp_wav = os.path.join(tempfile.gettempdir(), f"groovebox_analyze_{abs(hash(path))}.wav")
+            subprocess.run(
+                [ffmpeg, "-y", "-i", path, "-t", "30", "-ac", "1", "-ar", "22050", tmp_wav],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20, check=True,
+            )
+            wav_path = tmp_wav
+        x, sr = _re.load_wav_mono(wav_path)
+        desc = _re.describe(x, sr)
+        result = {
+            "fundamental_hz": desc.fundamental_hz,
+            "centroid_hz": desc.centroid_hz,
+            "rms": desc.rms,
+            "zcr": desc.zcr,
+            "duration_s": desc.duration_s,
+            "transient_density": desc.transient_density,
+        }
+        if tmp_wav:
+            try:
+                os.remove(tmp_wav)
+            except OSError:
+                pass
+    except Exception:
+        result = None
+    cache[path] = (key[0], key[1], result)
+    return result
+
+
+def _pitch_class_distance(a_hz: float, b_hz: float) -> float:
+    """Circular pitch-class distance in semitones (0..6), octave independent."""
+    try:
+        if float(a_hz) <= 0.0 or float(b_hz) <= 0.0:
+            return 6.0
+        a = (69.0 + 12.0 * math.log2(float(a_hz) / 440.0)) % 12.0
+        b = (69.0 + 12.0 * math.log2(float(b_hz) / 440.0)) % 12.0
+        d = abs(a - b)
+        return min(d, 12.0 - d)
+    except Exception:
+        return 6.0
+
+
+def _descriptor_distance(a: dict, b: dict) -> float:
+    """Deterministic key/texture distance between analyzed tracks.
+
+    Pitch uses circular pitch-class distance rather than raw-Hz subtraction so
+    octave-equivalent material is treated as harmonically close. Remaining
+    terms preserve brightness, loudness and rhythmic-density matching.
+    """
+    def norm(v, scale):
+        return float(v) / scale if scale else 0.0
+    d_key = _pitch_class_distance(a.get("fundamental_hz", 0.0), b.get("fundamental_hz", 0.0)) / 6.0
+    # A small octave/register term keeps an exact-key bass line distinguishable
+    # from an extreme-register equivalent without overpowering key identity.
+    try:
+        ar=max(float(a.get("fundamental_hz",0.0)),1e-9); br=max(float(b.get("fundamental_hz",0.0)),1e-9)
+        d_register=min(4.0, abs(math.log2(ar/br))) / 4.0
+    except Exception:
+        d_register=1.0
+    d_centroid = abs(norm(a.get("centroid_hz",0.0), 4000.0) - norm(b.get("centroid_hz",0.0), 4000.0))
+    d_rms = abs(float(a.get("rms",0.0)) - float(b.get("rms",0.0)))
+    d_zcr = abs(float(a.get("zcr",0.0)) - float(b.get("zcr",0.0)))
+    d_trans = abs(float(a.get("transient_density",0.0)) - float(b.get("transient_density",0.0)))
+    return d_key * 1.8 + d_register * 0.25 + d_centroid * 1.2 + d_rms + d_zcr * 0.6 + d_trans * 0.8
+
+
+def _canonical_media_signature(path: str) -> dict:
+    """Read deterministic Groovebox provenance for Canonical Match mode."""
+    prov = _extract_json_comment(path) or {}
+    if not isinstance(prov, dict):
+        prov = {}
+    nested = prov.get("canonical") if isinstance(prov.get("canonical"), dict) else {}
+    def first(*keys):
+        for key in keys:
+            if key in prov and prov.get(key) not in (None, ""):
+                return prov.get(key)
+            if key in nested and nested.get(key) not in (None, ""):
+                return nested.get(key)
+        return None
+    return {
+        "fingerprint": str(first("fingerprint", "canonical_fingerprint", "composition_fingerprint") or ""),
+        "canonical_id": str(first("canonical_id", "composition_id", "identity") or ""),
+        "seed": first("seed", "canonical_seed"),
+        "bpm": first("bpm", "tempo"),
+        "eqr": first("eqr", "EQR"),
+        "goava": first("goava", "GOAVA"),
+    }
+
+
+def _canonical_media_distance(a_path: str, b_path: str) -> Optional[float]:
+    a=_canonical_media_signature(a_path); b=_canonical_media_signature(b_path)
+    evidence=0; score=0.0
+    if a["fingerprint"] and b["fingerprint"]:
+        evidence += 1; score += 0.0 if a["fingerprint"] == b["fingerprint"] else 4.0
+    if a["canonical_id"] and b["canonical_id"]:
+        evidence += 1; score += 0.0 if a["canonical_id"] == b["canonical_id"] else 2.5
+    for key,scale,weight in (("bpm",120.0,1.0),("eqr",1.0,0.8),("goava",1.0,0.6)):
+        try:
+            if a[key] is not None and b[key] is not None:
+                evidence += 1; score += min(2.0, abs(float(a[key])-float(b[key]))/scale) * weight
+        except Exception:
+            pass
+    try:
+        if a["seed"] is not None and b["seed"] is not None:
+            evidence += 1
+            sa=int(float(a["seed"])) & 0x7fffffff; sb=int(float(b["seed"])) & 0x7fffffff
+            score += (abs(sa-sb)/2147483647.0) * 0.5
+    except Exception:
+        pass
+    return score if evidence else None
+
+
 def _kind_icon(kind: str) -> str:
     return {
         KIND_AUDIO: "🔊", KIND_VIDEO: "🎬(mute)", KIND_AV: "🎬🔊", KIND_IMAGE: "🖼", KIND_PENDING: "⏳",
@@ -221,7 +358,7 @@ def _find_player() -> Optional[List[str]]:
         p = shutil.which(cand)
         if p:
             if cand == "mpv":
-                return [p, "--force-window=yes", "--keep-open=yes"]
+                return [p, "--force-window=yes", "--keep-open=no"]
             if cand == "vlc":
                 return [p, "--no-one-instance", "--no-video-title-show"]
             return [p, "-autoexit", "-nodisp"]
@@ -241,7 +378,7 @@ def _player_cmd_with_volume(volume_pct: int, want_video: bool = True) -> Optiona
             continue
         vol = max(0, min(200, int(volume_pct)))
         if cand == "mpv":
-            return [p, "--force-window=yes", "--keep-open=yes", f"--volume={vol}"]
+            return [p, "--force-window=yes", "--keep-open=no", f"--volume={vol}"]
         if cand == "vlc":
             return [p, "--no-one-instance", "--no-video-title-show", f"--gain={vol / 100.0:.2f}"]
         # ffplay
@@ -450,6 +587,11 @@ class Performance(QDialog):
         # Fine-grained (audio/video/av) stream-kind cache, keyed by path:
         # (mtime, size, kind) so a probe is only redone if the file changed.
         self._kind_cache: Dict[str, Tuple[float, int, str]] = {}
+        # REAL_ANALYSIS_MATCH_2026: fundamental/centroid/rms/zcr descriptors
+        # from reverse_engineer.describe(), used by the "Analyzed match"
+        # arrangement mode and by the Player Window's Deck B suggestion —
+        # actual signal measurement, not just filename/size heuristics.
+        self._analysis_cache: Dict[str, Tuple[float, int, Optional[dict]]] = {}
         self._refresh_generation = 0
         self._kind_worker = _KindProbeWorker()
         self._kind_worker.progress.connect(self._on_kind_probe_progress)
@@ -537,6 +679,17 @@ class Performance(QDialog):
         btn_refresh.clicked.connect(self.refresh)
         top.addWidget(btn_up)
         top.addWidget(btn_refresh)
+        # BROWSE_FILES_MENU_2026: dedicated file-management window (rename,
+        # delete, create/delete folder) separate from the always-visible
+        # inline browser, with its own launcher into the Player Window.
+        btn_browse_files = QPushButton("📁 Browse Files…")
+        btn_browse_files.setToolTip(
+            "Open a dedicated file-management window: rename, delete, "
+            "create/delete folders, and launch the media Player Window "
+            "directly on a selected file."
+        )
+        btn_browse_files.clicked.connect(self._open_file_manager)
+        top.addWidget(btn_browse_files)
         root.addLayout(top)
 
         # --- filter/sort bar: audio vs video, audioless/videoless vs both ---
@@ -612,6 +765,11 @@ class Performance(QDialog):
         except Exception as e:
             self.video_clip_studio = None
             fallback = QWidget(); fl = QVBoxLayout(fallback); msg = QLabel(f"Video Clip Studio unavailable: {e}"); msg.setWordWrap(True); fl.addWidget(msg); fl.addStretch(1); right.addTab(self._scroll_page(fallback), "🎥 Record / Import / Draw Clip")
+        try:
+            from web_browser_tab import WebBrowserTab
+            right.addTab(WebBrowserTab(self), "🌐 Web Browser")
+        except Exception as e:
+            fallback = QWidget(); fl = QVBoxLayout(fallback); msg = QLabel(f"Web Browser unavailable: {e}"); msg.setWordWrap(True); fl.addWidget(msg); fl.addStretch(1); right.addTab(self._scroll_page(fallback), "🌐 Web Browser")
         right.addTab(self._scroll_page(self._build_performance_tab()), "◉ Live Broadcast")
         right.addTab(self._scroll_page(self._build_outputs_tab()), "▣ Device Manager")
         right.addTab(self._scroll_page(self._build_hardware_tab()), "⌨ Hardware")
@@ -1002,6 +1160,25 @@ class Performance(QDialog):
             return
         self._play_path(paths[0])
 
+    # ------------------------------------------------------------------ Browse Files menu / Player Window
+    def _open_file_manager(self):
+        """Dedicated file-management window: rename, delete, create/delete
+        folders. Independent window from the always-visible inline browser
+        so file upkeep doesn't require leaving whatever tab is active."""
+        dlg = FileManagerDialog(self, self._cwd)
+        dlg.exec()
+        self.refresh()
+
+    def _open_player_window_for_playlist(self):
+        """Launch the dedicated media Player Window, seeded with the current
+        Performance playlist and destination device selection."""
+        if not self._playlist:
+            QMessageBox.information(self, "Player Window", "The playlist is empty. Add media first.")
+            return
+        start = self._playlist_index if self._playlist_index >= 0 else 0
+        dlg = MediaPlayerWindow(self, list(self._playlist), start)
+        dlg.exec()
+
     def _routed_player(self, cmd: list, want_video: bool = True):
         """Apply selected per-process display/audio routing without changing OS defaults."""
         env = os.environ.copy()
@@ -1301,10 +1478,26 @@ class Performance(QDialog):
             row.addWidget(b)
         lay.addLayout(row)
 
+        # PLAYER_WINDOW_LAUNCH_2026: dedicated player window with its own
+        # destination-device (display/audio sink) selector, seeded from this
+        # playlist and the currently selected row.
+        player_row = QHBoxLayout()
+        btn_player_window = QPushButton("🖥 Open Player Window…")
+        btn_player_window.setToolTip(
+            "Open the playlist in a dedicated Player Window with its own "
+            "destination display/audio-sink selection, independent of the "
+            "always-on inline preview."
+        )
+        btn_player_window.clicked.connect(self._open_player_window_for_playlist)
+        player_row.addWidget(btn_player_window)
+        player_row.addStretch(1)
+        lay.addLayout(player_row)
+
         arrange_row = QHBoxLayout()
         self.cmb_playlist_arrange = QComboBox()
         self.cmb_playlist_arrange.addItems([
             "Energy arc (size)", "Interleave A/V", "Deterministic shuffle", "Geometric phaselock seeded", "Name order",
+            "Analyzed match (reverse-engineer)",
         ])
         self.spin_playlist_arrange_seed = QSpinBox()
         self.spin_playlist_arrange_seed.setRange(0, 2147483647)
@@ -1441,6 +1634,39 @@ class Performance(QDialog):
             except Exception as e:
                 self.lbl_status.setText(f"Geometric playlist error: {e}")
                 return
+        elif mode == "Analyzed match (reverse-engineer)":
+            # Real-signal greedy nearest-neighbor chain: each next track is the
+            # closest-measured match (pitch/brightness/loudness/rhythm) to the
+            # previous one, via reverse_engineer.describe() rather than name
+            # or file-size heuristics. The seed only picks the start when
+            # several tracks tie or lack a usable descriptor (images, unreadable
+            # media), so results stay reproducible.
+            self.lbl_status.setText("Analyzing tracks (real signal descriptors)…")
+            descs: Dict[int, dict] = {}
+            for i, it in enumerate(self._playlist):
+                if it.get("kind") in (KIND_AUDIO, KIND_VIDEO, KIND_AV) and os.path.isfile(it["path"]):
+                    d = _analyze_signal_descriptor(it["path"], self._analysis_cache)
+                    if d:
+                        descs[i] = d
+            rng = random.Random(int(self.spin_playlist_arrange_seed.value()))
+            remaining = list(range(len(self._playlist)))
+            analyzable = [i for i in remaining if i in descs]
+            unanalyzable = [i for i in remaining if i not in descs]
+            ordered: List[int] = []
+            if analyzable:
+                start = rng.choice(analyzable)
+                pool = set(analyzable)
+                pool.discard(start)
+                ordered.append(start)
+                while pool:
+                    last = descs[ordered[-1]]
+                    nxt = min(pool, key=lambda i: _descriptor_distance(last, descs[i]))
+                    ordered.append(nxt)
+                    pool.discard(nxt)
+            rng.shuffle(unanalyzable)
+            ordered.extend(unanalyzable)
+            self._playlist = [self._playlist[i] for i in ordered]
+            self.lbl_status.setText(f"Analyzed match: {len(analyzable)} track(s) measured, {len(unanalyzable)} placed by seed.")
         elif mode == "Interleave A/V":
             aud = [it for it in self._playlist if it.get("kind") == KIND_AUDIO]
             vis = [it for it in self._playlist if it.get("kind") in (KIND_VIDEO, KIND_AV)]
@@ -3586,6 +3812,781 @@ class Performance(QDialog):
         except Exception: pass
         self._stop_player()
         super().closeEvent(event)
+
+
+class _Deck:
+    """One playback deck: an external mpv process (for live IPC control),
+    its own destination-routing, volume, speed and a set of toggleable
+    onboard DJ FX filters. VLC/ffplay remain usable for plain playback but
+    only mpv exposes the runtime property/filter control DJ mixing needs."""
+
+    AUDIO_FX = {
+        "Echo": "aecho=0.8:0.9:1000:0.3",
+        "Flanger": "flanger",
+        "Bass Boost": "bass=g=15",
+        "Telephone": "highpass=f=300,lowpass=f=3000",
+        "Reverb": "aecho=0.8:0.88:60:0.4",
+    }
+    VIDEO_FX = {
+        "Invert": "negate",
+        "Hue Spin": "hue=h=120:s=2",
+        "Strobe": "fps=6",
+        "Mirror": "hflip",
+        "Contrast Pop": "eq=contrast=1.6:saturation=1.4",
+    }
+
+    def __init__(self, name: str):
+        self.name = name
+        self.proc: Optional[subprocess.Popen] = None
+        self.ipc_path: Optional[str] = None
+        self.path: str = ""
+        self.base_volume = 100.0     # 0..150, this deck's own fader
+        self.mix_gain = 1.0          # 0..1, crossfader contribution
+        self.speed = 1.0
+        self.active_audio_fx: set = set()
+        self.active_video_fx: set = set()
+        self.want_video = True
+        self.image_duration_s = 5.0
+
+    def is_running(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
+    def _af_chain(self) -> str:
+        # Sets store membership only. Emission follows declaration order so the
+        # DSP/filter chain is bit-for-bit stable regardless of toggle history.
+        return ",".join(self.AUDIO_FX[f] for f in self.AUDIO_FX if f in self.active_audio_fx)
+
+    def _vf_chain(self) -> str:
+        return ",".join(self.VIDEO_FX[f] for f in self.VIDEO_FX if f in self.active_video_fx)
+
+    def effective_volume(self) -> int:
+        return max(0, min(150, int(round(self.base_volume * self.mix_gain))))
+
+    def send(self, command: list) -> bool:
+        if not self.ipc_path or not os.path.exists(self.ipc_path):
+            return False
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(0.06)
+            sock.connect(self.ipc_path)
+            sock.sendall((json.dumps({"command": command}) + "\n").encode("utf-8"))
+            sock.close()
+            return True
+        except Exception:
+            return False
+
+    def play(self, path: str, routed: Callable[[list, bool], Tuple[list, dict]]):
+        self.stop()
+        self.path = path
+        ext = os.path.splitext(path)[1].lower()
+        self.want_video = ext in VIDEO_EXT or ext in IMAGE_EXT
+        cmd = _player_cmd_with_volume(int(self.effective_volume()), want_video=self.want_video) or _find_player()
+        if not cmd:
+            return False, "Install mpv, vlc, or ffplay for media playback."
+        is_mpv = os.path.basename(cmd[0]).startswith("mpv")
+        self.ipc_path = None
+        if is_mpv:
+            self.ipc_path = os.path.join(tempfile.gettempdir(), f"groovebox_deck_{self.name}_{os.getpid()}_{id(self)}.sock")
+            try:
+                os.unlink(self.ipc_path)
+            except OSError:
+                pass
+            extra = [f"--input-ipc-server={self.ipc_path}", f"--speed={self.speed:.6f}"]
+            if ext in IMAGE_EXT:
+                extra.extend([f"--image-display-duration={max(0.1,float(self.image_duration_s)):.3f}", "--loop-file=no"])
+            af = self._af_chain()
+            vf = self._vf_chain()
+            if af:
+                extra.append(f"--af={af}")
+            if vf and self.want_video:
+                extra.append(f"--vf={vf}")
+            cmd = list(cmd) + extra
+        cmd, env = routed(cmd, self.want_video)
+        try:
+            self.proc = subprocess.Popen(cmd + [path], env=env)
+            return True, ""
+        except Exception as e:
+            return False, str(e)
+
+    def stop(self):
+        proc, self.proc = self.proc, None
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        if self.ipc_path:
+            try:
+                os.unlink(self.ipc_path)
+            except OSError:
+                pass
+        self.ipc_path = None
+
+    def set_speed(self, speed: float):
+        self.speed = max(0.25, min(4.0, speed))
+        self.send(["set_property", "speed", self.speed])
+
+    def set_mix_gain(self, gain: float):
+        self.mix_gain = max(0.0, min(1.0, gain))
+        self.send(["set_property", "volume", self.effective_volume()])
+
+    def set_base_volume(self, vol: float):
+        self.base_volume = max(0.0, min(150.0, vol))
+        self.send(["set_property", "volume", self.effective_volume()])
+
+    def toggle_audio_fx(self, name: str, on: bool):
+        if on:
+            self.active_audio_fx.add(name)
+        else:
+            self.active_audio_fx.discard(name)
+        chain = self._af_chain()
+        self.send(["af", "set", chain if chain else "@dj_af_none:!lavfi=[anull]"])
+
+    def toggle_video_fx(self, name: str, on: bool):
+        if on:
+            self.active_video_fx.add(name)
+        else:
+            self.active_video_fx.discard(name)
+        chain = self._vf_chain()
+        self.send(["vf", "set", chain if chain else ""])
+
+
+class MediaPlayerWindow(QDialog):
+    """Dedicated media Player Window: destination device selection, a linear
+    playback queue (Deck A), a second load-anything deck (Deck B) for live
+    mixing, a crossfader, onboard DJ FX per deck, and an optional live sync
+    to the Performance Parametric Remix panel (GOAVA/RAND/boost/speed).
+
+    Self-contained: it re-detects displays/audio sinks via
+    ``media_output_router`` rather than assuming the parent Performance
+    dialog's routing state, so it works whether it was opened from the
+    Playlist tab or straight from the Browse Files window on a single file.
+    """
+
+    def __init__(self, parent: Optional[QWidget], items: List[Dict[str, Any]], start_index: int = 0):
+        super().__init__(parent)
+        self.setWindowTitle("Groovebox Player · DJ Decks")
+        self.resize(760, 720)
+        self.setStyleSheet(
+            "QDialog { background:rgba(7,16,25,232); color:#d9edf5; }"
+            "QGroupBox { border:1px solid #284c62; border-radius:7px; margin-top:8px; padding-top:7px; font-weight:700; }"
+            "QGroupBox::title { color:#f1ce68; subcontrol-origin:margin; left:9px; padding:0 4px; }"
+            "QPushButton { background:#102838; color:#d9f7ff; border:1px solid #39708a; border-radius:11px; padding:6px 10px; font-weight:700; }"
+            "QPushButton:hover { background:#17405a; border-color:#62bfd0; }"
+            "QPushButton:checked { background:#5a3a12; border-color:#f1ce68; color:#ffe8a6; }"
+            "QComboBox,QSpinBox,QLineEdit { background:#08141e; color:#e6f8ff; border:1px solid #335b70; border-radius:8px; padding:5px; }"
+        )
+        self._items: List[Dict[str, Any]] = [dict(it) if isinstance(it, dict) else {"path": it} for it in items]
+        self._index = max(0, min(start_index, len(self._items) - 1)) if self._items else -1
+        self._manual_stop = False
+        self._paused = False
+        self._displays: list = []
+        self._audio_targets: list = []
+        self._deckA = _Deck("A")
+        self._deckB = _Deck("B")
+        self._sync_enabled = False
+        self._analysis_cache: Dict[str, Tuple[float, int, Optional[dict]]] = {}
+
+        root = QVBoxLayout(self)
+
+        dev = QGroupBox("Destination device")
+        df = QFormLayout(dev)
+        self.cmb_display = QComboBox()
+        self.cmb_audio = QComboBox()
+        df.addRow("Display", self.cmb_display)
+        df.addRow("Audio sink", self.cmb_audio)
+        btn_refresh_dev = QPushButton("↻ Detect devices")
+        btn_refresh_dev.clicked.connect(self._refresh_devices)
+        df.addRow(btn_refresh_dev)
+        root.addWidget(dev)
+
+        # -------------------------------------------------------------- Deck A (queue-driven)
+        deckA_box = QGroupBox("Deck A · Queue")
+        da = QVBoxLayout(deckA_box)
+        self.lbl_now = QLabel("Nothing loaded")
+        self.lbl_now.setWordWrap(True)
+        self.lbl_now.setStyleSheet("color:#f1ce68; font-weight:700;")
+        da.addWidget(self.lbl_now)
+        self.queue_widget = QListWidget()
+        self.queue_widget.setMaximumHeight(110)
+        self.queue_widget.itemDoubleClicked.connect(self._on_queue_double_click)
+        da.addWidget(self.queue_widget)
+        transport = QHBoxLayout()
+        self.btn_prev = QPushButton("⏮")
+        self.btn_playpause = QPushButton("▶ Play")
+        self.btn_stop = QPushButton("⏹ Stop")
+        self.btn_next = QPushButton("⏭")
+        self.btn_prev.clicked.connect(self._prev)
+        self.btn_playpause.clicked.connect(self._toggle_play_pause)
+        self.btn_stop.clicked.connect(self._stop)
+        self.btn_next.clicked.connect(self._next)
+        for b in (self.btn_prev, self.btn_playpause, self.btn_stop, self.btn_next):
+            transport.addWidget(b)
+        da.addLayout(transport)
+        da.addLayout(self._build_deck_fx_row(self._deckA))
+        root.addWidget(deckA_box)
+
+        # -------------------------------------------------------------- Deck B (load-anything mix partner)
+        deckB_box = QGroupBox("Deck B · Mix partner (load any video/music file)")
+        db = QVBoxLayout(deckB_box)
+        self.lbl_deckB = QLabel("Deck B empty — Browse Files → Add to Deck B, or use the button below.")
+        self.lbl_deckB.setWordWrap(True)
+        db.addWidget(self.lbl_deckB)
+        b_row = QHBoxLayout()
+        btn_load_b = QPushButton("📂 Load into Deck B…")
+        btn_load_b.clicked.connect(self._load_deck_b_dialog)
+        btn_play_b = QPushButton("▶ Play B")
+        btn_play_b.clicked.connect(self._play_deck_b)
+        btn_stop_b = QPushButton("⏹ Stop B")
+        btn_stop_b.clicked.connect(lambda: self._deckB.stop())
+        self.cmb_deck_b_match = QComboBox()
+        self.cmb_deck_b_match.addItems(["Analyzed key/texture", "Canonical metadata"])
+        self.cmb_deck_b_match.setToolTip("Analyzed mode uses deterministic pitch-class/texture distance. Canonical mode prefers Groovebox render provenance, then falls back to analyzed distance.")
+        btn_suggest_b = QPushButton("🔬 Suggest Deck B")
+        btn_suggest_b.setToolTip("Deterministically selects the closest queue partner using the selected matching mode.")
+        btn_suggest_b.clicked.connect(self._suggest_deck_b_match)
+        b_row.addWidget(btn_load_b); b_row.addWidget(btn_play_b); b_row.addWidget(btn_stop_b); b_row.addWidget(self.cmb_deck_b_match); b_row.addWidget(btn_suggest_b)
+        db.addLayout(b_row)
+        db.addLayout(self._build_deck_fx_row(self._deckB))
+        root.addWidget(deckB_box)
+
+        # -------------------------------------------------------------- Crossfader + live mixing
+        mix_box = QGroupBox("Live mixing")
+        mf = QFormLayout(mix_box)
+        self.sld_crossfade = QSlider(Qt.Orientation.Horizontal)
+        self.sld_crossfade.setRange(0, 100)
+        self.sld_crossfade.setValue(0)
+        self.sld_crossfade.setToolTip("0 = Deck A only, 100 = Deck B only. Both decks can play simultaneously through the OS mixer.")
+        self.sld_crossfade.valueChanged.connect(self._on_crossfade_changed)
+        mf.addRow("Crossfader A ↔ B", self.sld_crossfade)
+        self.cmb_crossfade_curve = QComboBox()
+        self.cmb_crossfade_curve.addItems(["Equal-power", "Linear"])
+        self.cmb_crossfade_curve.setToolTip("Equal-power keeps perceived loudness steadier through the middle; Linear preserves the original arithmetic fade.")
+        self.cmb_crossfade_curve.currentIndexChanged.connect(lambda _i: self._on_crossfade_changed(self.sld_crossfade.value()))
+        mf.addRow("Crossfade curve", self.cmb_crossfade_curve)
+        self.spin_player_image_duration = QDoubleSpinBox()
+        self.spin_player_image_duration.setRange(0.25, 3600.0); self.spin_player_image_duration.setDecimals(2); self.spin_player_image_duration.setValue(5.0); self.spin_player_image_duration.setSuffix(" s")
+        self.spin_player_image_duration.setToolTip("Still-image duration for Player queues and Deck B. Playlist rows with an explicit duration override this for Deck A.")
+        mf.addRow("Still-image duration", self.spin_player_image_duration)
+        xrow = QHBoxLayout()
+        btn_auto_x = QPushButton("↔ Auto-crossfade to B (4s)")
+        btn_auto_x.clicked.connect(lambda: self._auto_crossfade(1, 4.0))
+        btn_auto_x_back = QPushButton("↔ Auto-crossfade to A (4s)")
+        btn_auto_x_back.clicked.connect(lambda: self._auto_crossfade(0, 4.0))
+        xrow.addWidget(btn_auto_x); xrow.addWidget(btn_auto_x_back)
+        mf.addRow(xrow)
+
+        self.chk_sync_remix = QCheckBox("🔗 Sync both decks to Performance Parametric Remix (GOAVA/RAND/boost → FX, speed → tempo)")
+        self.chk_sync_remix.toggled.connect(self._on_toggle_sync)
+        mf.addRow(self.chk_sync_remix)
+        root.addWidget(mix_box)
+
+        vol_row = QHBoxLayout()
+        vol_row.addWidget(QLabel("Deck A"))
+        self.sld_volume = QSlider(Qt.Orientation.Horizontal); self.sld_volume.setRange(0,150); self.sld_volume.setValue(100)
+        self.sld_volume.valueChanged.connect(self._on_deckA_volume_changed); vol_row.addWidget(self.sld_volume, stretch=1)
+        self.lbl_volume = QLabel("100%"); self.lbl_volume.setMinimumWidth(40); vol_row.addWidget(self.lbl_volume)
+        vol_row.addWidget(QLabel("Deck B"))
+        self.sld_volume_b = QSlider(Qt.Orientation.Horizontal); self.sld_volume_b.setRange(0,150); self.sld_volume_b.setValue(100)
+        self.sld_volume_b.valueChanged.connect(self._on_deckB_volume_changed); vol_row.addWidget(self.sld_volume_b, stretch=1)
+        self.lbl_volume_b = QLabel("100%"); self.lbl_volume_b.setMinimumWidth(40); vol_row.addWidget(self.lbl_volume_b)
+        root.addLayout(vol_row)
+
+        self.lbl_status = QLabel("Idle")
+        self.lbl_status.setWordWrap(True)
+        self.lbl_status.setStyleSheet("color:#8ab4c8; font-size:9pt;")
+        root.addWidget(self.lbl_status)
+
+        self._poll_timer = QTimer(self)
+        self._poll_timer.setInterval(400)
+        self._poll_timer.timeout.connect(self._poll_process)
+        self._poll_timer.start()
+
+        self._sync_timer = QTimer(self)
+        self._sync_timer.setInterval(80)
+        self._sync_timer.timeout.connect(self._apply_remix_sync)
+
+        self._refresh_queue_widget()
+        self._refresh_devices()
+        if self._index >= 0:
+            self._load_current(autoplay=False)
+
+    # -- FX row builder ---------------------------------------------------
+    def _build_deck_fx_row(self, deck: "_Deck") -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.addWidget(QLabel("FX:"))
+        for fx_name in deck.AUDIO_FX:
+            b = QPushButton(fx_name)
+            b.setCheckable(True)
+            b.toggled.connect(lambda on, d=deck, n=fx_name: d.toggle_audio_fx(n, on))
+            row.addWidget(b)
+        for fx_name in deck.VIDEO_FX:
+            b = QPushButton(fx_name)
+            b.setCheckable(True)
+            b.toggled.connect(lambda on, d=deck, n=fx_name: d.toggle_video_fx(n, on))
+            row.addWidget(b)
+        row.addStretch(1)
+        return row
+
+    # -- devices --------------------------------------------------------
+    def _refresh_devices(self):
+        try:
+            from media_output_router import detect_displays, detect_audio_targets
+            self._displays = detect_displays()
+            self._audio_targets = detect_audio_targets()
+            self.cmb_display.clear()
+            for d in self._displays:
+                tag = f" · {d.geometry}" if getattr(d, "geometry", None) else ""
+                self.cmb_display.addItem(d.name + tag)
+            self.cmb_audio.clear()
+            for a in self._audio_targets:
+                tag = f" [{a.kind}]" if getattr(a, "kind", None) and a.kind != "default" else ""
+                self.cmb_audio.addItem(a.description + tag)
+            self.lbl_status.setText(f"{len(self._displays)} display target(s) · {len(self._audio_targets)} audio target(s) detected.")
+        except Exception as e:
+            self.lbl_status.setText(f"Device scan unavailable: {e}")
+
+    def _selected_display(self):
+        i = self.cmb_display.currentIndex()
+        return self._displays[i] if 0 <= i < len(self._displays) else None
+
+    def _selected_audio(self):
+        i = self.cmb_audio.currentIndex()
+        return self._audio_targets[i] if 0 <= i < len(self._audio_targets) else None
+
+    def _routed(self, cmd: list, want_video: bool) -> Tuple[list, dict]:
+        env = os.environ.copy()
+        try:
+            from media_output_router import player_routing
+            extra, overlay = player_routing(self._selected_display(), self._selected_audio(), want_video=want_video)
+            if cmd and os.path.basename(cmd[0]).lower().startswith("mpv"):
+                cmd = list(cmd) + list(extra)
+            env.update(overlay)
+        except Exception:
+            pass
+        return cmd, env
+
+    # -- queue (Deck A) ------------------------------------------------
+    def _refresh_queue_widget(self):
+        self.queue_widget.clear()
+        for i, it in enumerate(self._items):
+            marker = "▶ " if i == self._index else "   "
+            self.queue_widget.addItem(f"{marker}{os.path.basename(it.get('path', '?'))}")
+
+    def _on_queue_double_click(self, item: QListWidgetItem):
+        row = self.queue_widget.row(item)
+        if 0 <= row < len(self._items):
+            self._index = row
+            self._load_current(autoplay=True)
+
+    def _load_current(self, autoplay: bool):
+        if not (0 <= self._index < len(self._items)):
+            return
+        path = self._items[self._index].get("path", "")
+        self.lbl_now.setText(f"{self._index + 1}/{len(self._items)} · {os.path.basename(path)}")
+        self._refresh_queue_widget()
+        if autoplay:
+            self._play_current()
+
+    def _play_current(self):
+        if not (0 <= self._index < len(self._items)):
+            return
+        self._stop()
+        item = self._items[self._index]
+        path = item.get("path", "")
+        if not path or not os.path.isfile(path):
+            self.lbl_status.setText(f"Missing file: {path}")
+            return
+        self._deckA.base_volume = float(self.sld_volume.value())
+        explicit_duration = float(item.get("duration_s", 0.0) or 0.0)
+        self._deckA.image_duration_s = explicit_duration if explicit_duration > 0 else float(self.spin_player_image_duration.value())
+        ok, err = self._deckA.play(path, self._routed)
+        if not ok:
+            QMessageBox.warning(self, "Play failed", err)
+            return
+        self._paused = False
+        self._manual_stop = False
+        self.btn_playpause.setText("⏸ Pause")
+        self._load_current(autoplay=False)
+        dname = getattr(self._selected_display(), "name", "default") if self._selected_display() else "default"
+        aname = getattr(self._selected_audio(), "description", "System default") if self._selected_audio() else "System default"
+        self.lbl_status.setText(f"Deck A playing → display={dname} · audio={aname}")
+
+    def _toggle_play_pause(self):
+        if not self._deckA.is_running():
+            self._play_current()
+            return
+        if self._deckA.ipc_path:
+            self._paused = not self._paused
+            self._deckA.send(["set_property", "pause", self._paused])
+            self.btn_playpause.setText("▶ Play" if self._paused else "⏸ Pause")
+            self.lbl_status.setText("Deck A paused" if self._paused else "Deck A playing")
+        else:
+            self._stop()
+            self._play_current()
+
+    def _stop(self):
+        self._manual_stop = True
+        self._deckA.stop()
+        self._paused = False
+        self.btn_playpause.setText("▶ Play")
+
+    def _next(self):
+        if not self._items:
+            return
+        self._index = (self._index + 1) % len(self._items)
+        self._load_current(autoplay=True)
+
+    def _prev(self):
+        if not self._items:
+            return
+        self._index = (self._index - 1) % len(self._items)
+        self._load_current(autoplay=True)
+
+    def _poll_process(self):
+        if self._deckA.proc is None:
+            return
+        rc = self._deckA.proc.poll()
+        if rc is not None and not self._manual_stop:
+            self._deckA.proc = None
+            if self._index < len(self._items) - 1:
+                self._next()
+            else:
+                self.lbl_status.setText("Queue finished.")
+                self.btn_playpause.setText("▶ Play")
+
+    def _on_deckA_volume_changed(self, v: int):
+        self.lbl_volume.setText(f"{v}%")
+        self._deckA.set_base_volume(float(v))
+
+    def _on_deckB_volume_changed(self, v: int):
+        self.lbl_volume_b.setText(f"{v}%")
+        self._deckB.set_base_volume(float(v))
+
+    # -- Deck B -----------------------------------------------------------
+    def _load_deck_b_dialog(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Load into Deck B")
+        if path:
+            self._deckB.path = path
+            self.lbl_deckB.setText(f"Loaded: {os.path.basename(path)}")
+
+    def load_deck_b(self, path: str):
+        """External hook (e.g. from Browse Files) to load a file straight into Deck B."""
+        self._deckB.path = path
+        self.lbl_deckB.setText(f"Loaded: {os.path.basename(path)}")
+
+    def _suggest_deck_b_match(self):
+        if not (0 <= self._index < len(self._items)):
+            QMessageBox.information(self, "Suggest Deck B", "Load something into Deck A's queue first.")
+            return
+        a_path = self._items[self._index].get("path", "")
+        if not os.path.isfile(a_path):
+            QMessageBox.information(self, "Suggest Deck B", "Deck A's current track is missing on disk.")
+            return
+        candidates = sorted(
+            (it.get("path", "") for i,it in enumerate(self._items) if i != self._index and os.path.isfile(it.get("path", ""))),
+            key=lambda x: (os.path.basename(x).casefold(), os.path.abspath(x)),
+        )
+        if not candidates:
+            QMessageBox.information(self, "Suggest Deck B", "No other queue track is available.")
+            return
+        mode = self.cmb_deck_b_match.currentText() if hasattr(self,"cmb_deck_b_match") else "Analyzed key/texture"
+        self.lbl_status.setText(f"Matching Deck B · {mode}…")
+        a_desc = _analyze_signal_descriptor(a_path, self._analysis_cache)
+        scored=[]
+        for cand in candidates:
+            canonical = _canonical_media_distance(a_path, cand) if mode.startswith("Canonical") else None
+            d = _analyze_signal_descriptor(cand, self._analysis_cache)
+            analyzed = _descriptor_distance(a_desc, d) if a_desc and d else 9999.0
+            # Canonical evidence dominates when requested; deterministic analyzed
+            # distance and then path provide stable fallbacks/tie breaks.
+            primary = canonical if canonical is not None else analyzed
+            scored.append((float(primary), float(analyzed), os.path.basename(cand).casefold(), os.path.abspath(cand), cand, canonical))
+        best = min(scored)
+        best_path=best[4]; canonical=best[5]
+        if best[0] >= 9999.0:
+            QMessageBox.information(self, "Suggest Deck B", "No analyzable/provenance-compatible track found in the queue.")
+            return
+        self._deckB.path = best_path
+        if canonical is not None and mode.startswith("Canonical"):
+            note=f"canonical distance {canonical:.3f}; analyzed {best[1]:.3f}"
+        else:
+            note=f"key/texture distance {best[1]:.3f}"
+        self.lbl_deckB.setText(f"Suggested match: {os.path.basename(best_path)} ({note})")
+        self.lbl_status.setText(f"Deck B suggestion loaded deterministically: {os.path.basename(best_path)}")
+
+    def _play_deck_b(self):
+        if not self._deckB.path or not os.path.isfile(self._deckB.path):
+            QMessageBox.information(self, "Deck B", "Load a file into Deck B first.")
+            return
+        self._deckB.base_volume = float(self.sld_volume_b.value()) if hasattr(self,"sld_volume_b") else 100.0
+        self._deckB.image_duration_s = float(self.spin_player_image_duration.value())
+        ok, err = self._deckB.play(self._deckB.path, self._routed)
+        if not ok:
+            QMessageBox.warning(self, "Deck B play failed", err)
+            return
+        self.lbl_status.setText(f"Deck B playing: {os.path.basename(self._deckB.path)}")
+
+    # -- crossfader / live mixing -----------------------------------------
+    def _on_crossfade_changed(self, v: int):
+        x = max(0.0, min(1.0, v / 100.0))
+        curve = self.cmb_crossfade_curve.currentText() if hasattr(self,"cmb_crossfade_curve") else "Linear"
+        if curve.startswith("Equal"):
+            a_gain = math.cos(x * math.pi / 2.0)
+            b_gain = math.sin(x * math.pi / 2.0)
+        else:
+            b_gain = x; a_gain = 1.0 - x
+        self._deckA.set_mix_gain(a_gain); self._deckB.set_mix_gain(b_gain)
+        self.lbl_status.setText(f"Crossfader ({curve}): A {a_gain*100:.0f}% · B {b_gain*100:.0f}%")
+
+    def _auto_crossfade(self, target_side: int, duration_s: float):
+        start = self.sld_crossfade.value()
+        end = 100 if target_side == 1 else 0
+        if start == end:
+            return
+        steps = max(1, int(duration_s * 20))
+        delta = (end - start) / steps
+        state = {"i": 0, "val": float(start)}
+        timer = QTimer(self)
+        timer.setInterval(int(1000 / 20))
+
+        def tick():
+            state["i"] += 1
+            state["val"] += delta
+            self.sld_crossfade.setValue(max(0, min(100, int(round(state["val"])))))
+            if state["i"] >= steps:
+                self.sld_crossfade.setValue(end)
+                timer.stop()
+                timer.deleteLater()
+        timer.timeout.connect(tick)
+        timer.start()
+
+    # -- Parametric Remix sync --------------------------------------------
+    def _on_toggle_sync(self, on: bool):
+        self._sync_enabled = on
+        if on:
+            self._sync_timer.start()
+            self.lbl_status.setText("Synced to Performance Parametric Remix.")
+        else:
+            self._sync_timer.stop()
+
+    def _apply_remix_sync(self):
+        """Read the parent Performance's GOAVA/RAND/boost/speed sliders (if
+        present) each tick and translate them into deck tempo + FX intensity,
+        so the same parametric-remix control surface driving the host's
+        internal Live DJ engine also drives both external playback decks."""
+        host = self.parent()
+        if host is None:
+            return
+        try:
+            goava = host.sld_goava.value() / 100.0 if hasattr(host, "sld_goava") else 0.0
+            rand = host.sld_rand.value() / 100.0 if hasattr(host, "sld_rand") else 0.0
+            boost = host.sld_boost.value() / 100.0 if hasattr(host, "sld_boost") else 0.0
+            speed = host._live_speed if hasattr(host, "_live_speed") else 1.0
+        except Exception:
+            return
+        self._deckA.set_speed(speed)
+        self._deckB.set_speed(speed)
+        # GOAVA morph amount -> echo/flanger intensity proxy (toggle at threshold)
+        self._deckA.toggle_audio_fx("Echo", goava > 0.5)
+        self._deckB.toggle_audio_fx("Flanger", rand > 0.5)
+        if boost > 0.6:
+            self._deckA.toggle_video_fx("Strobe", True)
+        else:
+            self._deckA.toggle_video_fx("Strobe", False)
+
+    def closeEvent(self, event):
+        self._sync_timer.stop()
+        self._stop()
+        self._deckB.stop()
+        super().closeEvent(event)
+
+
+class FileManagerDialog(QDialog):
+    """Safe asynchronous Groovebox file manager.
+
+    Normal mode is confined to Groovebox/home/removable-media roots, video
+    probing never blocks Qt, destructive actions go to an app-local Trash with
+    one-click Undo, and media/project/game actions validate their file types.
+    System-wide browsing is explicit through Advanced/System Files.
+    """
+    def __init__(self, parent: Optional[QWidget], start_dir: str):
+        super().__init__(parent)
+        self.setWindowTitle("Browse Files")
+        self.resize(650, 540)
+        self.setStyleSheet(
+            "QDialog { background:rgba(7,16,25,232); color:#d9edf5; }"
+            "QPushButton { background:#102838; color:#d9f7ff; border:1px solid #39708a; border-radius:11px; padding:8px 11px; font-weight:700; }"
+            "QPushButton:hover { background:#17405a; border-color:#62bfd0; }"
+        )
+        self._dir = os.path.abspath(start_dir if os.path.isdir(start_dir) else os.path.expanduser("~"))
+        self._kind_cache: Dict[str, Tuple[float,int,str]] = {}
+        self._kind_generation = 0
+        self._kind_worker = _KindProbeWorker()
+        self._kind_worker.progress.connect(self._on_probe_progress)
+        self._kind_worker.batch_done.connect(self._on_probe_done)
+        self._last_trash_moves: List[Tuple[str,str]] = []
+        try:
+            import groovebox_paths
+            data_root=os.path.realpath(groovebox_paths.base_dir())
+            self._trash_dir=os.path.join(data_root,"Trash")
+        except Exception:
+            data_root=os.path.realpath(os.path.expanduser("~"))
+            self._trash_dir=os.path.join(data_root,".groovebox-trash")
+        os.makedirs(self._trash_dir,exist_ok=True)
+        roots=[data_root,os.path.realpath(os.path.expanduser("~"))]
+        for x in ("/media","/run/media","/mnt"):
+            if os.path.isdir(x): roots.append(os.path.realpath(x))
+        if not any(self._inside(self._dir,r) for r in roots): roots.append(os.path.realpath(self._dir))
+        self._safe_roots=tuple(dict.fromkeys(roots))
+
+        root = QVBoxLayout(self)
+        top = QHBoxLayout(); self.lbl_path=QLabel(self._dir); self.lbl_path.setWordWrap(True); self.lbl_path.setStyleSheet("color:#8ab4c8; font-size:9pt;"); top.addWidget(self.lbl_path,stretch=1)
+        self.chk_advanced=QCheckBox("Advanced/System Files"); self.chk_advanced.setToolTip("Off = stay inside Groovebox/home/removable-media roots. On = allow navigation toward filesystem root."); top.addWidget(self.chk_advanced)
+        btn_up=QPushButton("⬆ Up"); btn_up.clicked.connect(self._go_up); top.addWidget(btn_up); root.addLayout(top)
+        self.list_widget=QListWidget(); self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection); self.list_widget.itemDoubleClicked.connect(self._on_double_click); root.addWidget(self.list_widget,stretch=1)
+        row1=QHBoxLayout()
+        for text,slot in (("New Folder…",self._new_folder),("Rename…",self._rename_selected),("Move to Trash",self._delete_selected),("↶ Undo Trash",self._undo_trash),("↻ Refresh",self.refresh)):
+            b=QPushButton(text); b.clicked.connect(slot); row1.addWidget(b)
+        root.addLayout(row1)
+        row2=QHBoxLayout()
+        btn_player=QPushButton("▶ Open in Player"); btn_player.clicked.connect(self._open_in_player)
+        btn_add_playlist=QPushButton("→ Add to Performance Playlist"); btn_add_playlist.clicked.connect(self._add_to_performance_playlist)
+        btn_open=QPushButton("Open Project / Launch Game"); btn_open.clicked.connect(self._open_project_or_game)
+        row2.addWidget(btn_player); row2.addWidget(btn_add_playlist); row2.addWidget(btn_open); root.addLayout(row2)
+        self.lbl_status=QLabel(""); self.lbl_status.setWordWrap(True); self.lbl_status.setStyleSheet("color:#8ab4c8; font-size:9pt;"); root.addWidget(self.lbl_status)
+        self.refresh()
+
+    @staticmethod
+    def _inside(path: str, root: str) -> bool:
+        try: return os.path.commonpath([os.path.realpath(path),os.path.realpath(root)]) == os.path.realpath(root)
+        except Exception: return False
+    def _allowed(self,path: str) -> bool:
+        return self.chk_advanced.isChecked() or any(self._inside(path,r) for r in self._safe_roots)
+    @staticmethod
+    def _valid_leaf(name: str) -> bool:
+        n=name.strip()
+        return bool(n and n not in (".","..") and "\x00" not in n and "/" not in n and "\\" not in n and os.path.basename(n)==n)
+    def _entries(self)->List[str]:
+        try: return sorted(os.listdir(self._dir),key=lambda n:(not os.path.isdir(os.path.join(self._dir,n)),n.casefold()))
+        except Exception as e: self.lbl_status.setText(f"Cannot list {self._dir}: {e}"); return []
+    def _cached_kind(self,path: str)->str:
+        ext=os.path.splitext(path)[1].lower()
+        if ext in AUDIO_EXT:return KIND_AUDIO
+        if ext in IMAGE_EXT:return KIND_IMAGE
+        if ext not in VIDEO_EXT:return KIND_UNKNOWN
+        try: st=os.stat(path); c=self._kind_cache.get(path); return c[2] if c and c[0]==st.st_mtime and c[1]==st.st_size else KIND_PENDING
+        except OSError:return KIND_UNKNOWN
+    def refresh(self):
+        if not self._allowed(self._dir):
+            self._dir=next((r for r in self._safe_roots if os.path.isdir(r)),os.path.expanduser("~"))
+        self._kind_generation+=1; generation=self._kind_generation; self.lbl_path.setText(self._dir); self.list_widget.clear(); pending=[]
+        for name in self._entries():
+            full=os.path.join(self._dir,name)
+            if os.path.isdir(full): kind="dir"; icon="📁 "
+            else:
+                kind=self._cached_kind(full); icon=_kind_icon(kind)+" "; pending.append(full) if kind==KIND_PENDING else None
+            item=QListWidgetItem(icon+name); item.setData(Qt.ItemDataRole.UserRole,full); item.setData(Qt.ItemDataRole.UserRole+1,kind); self.list_widget.addItem(item)
+        self.lbl_status.setText(f"{self.list_widget.count()} item(s)" + (f" · classifying {len(pending)} video file(s)…" if pending else ""))
+        if pending: threading.Thread(target=self._kind_worker.run_batch,args=(generation,pending),daemon=True).start()
+    def _on_probe_progress(self,generation:int,path:str,kind:str):
+        if generation!=self._kind_generation:return
+        try: st=os.stat(path); self._kind_cache[path]=(st.st_mtime,st.st_size,kind)
+        except OSError:self._kind_cache[path]=(0.0,0,kind)
+        for i in range(self.list_widget.count()):
+            it=self.list_widget.item(i)
+            if it and it.data(Qt.ItemDataRole.UserRole)==path:
+                it.setData(Qt.ItemDataRole.UserRole+1,kind); it.setText(_kind_icon(kind)+" "+os.path.basename(path)); break
+    def _on_probe_done(self,generation:int):
+        if generation==self._kind_generation:self.lbl_status.setText(f"{self.list_widget.count()} item(s) · classification complete")
+    def _selected_paths(self)->List[str]: return [str(it.data(Qt.ItemDataRole.UserRole)) for it in self.list_widget.selectedItems() if it.data(Qt.ItemDataRole.UserRole)]
+    def _go_up(self):
+        parent=os.path.dirname(self._dir.rstrip(os.sep)) or os.sep
+        if parent==self._dir:return
+        if not self._allowed(parent): self.lbl_status.setText("Normal mode stops at a safe root. Enable Advanced/System Files to go higher."); return
+        self._dir=parent; self.refresh()
+    def _on_double_click(self,item:QListWidgetItem):
+        path=item.data(Qt.ItemDataRole.UserRole)
+        if not path:return
+        if os.path.isdir(path):
+            if self._allowed(path): self._dir=path; self.refresh()
+            return
+        ext=os.path.splitext(path)[1].lower()
+        if ext in MEDIA_EXT:self._open_in_player()
+        elif ext in PROJECT_EXT or ext in GAME_EXT:self._open_project_or_game()
+        else:self.lbl_status.setText("This file type is not a Groovebox media/project/game target.")
+    def _new_folder(self):
+        name,ok=QInputDialog.getText(self,"New Folder","Folder name:"); name=name.strip()
+        if not ok:return
+        if not self._valid_leaf(name): QMessageBox.warning(self,"New Folder","Use a simple folder name without path separators or '..'."); return
+        dest=os.path.join(self._dir,name)
+        if os.path.exists(dest): QMessageBox.warning(self,"New Folder","An item with that name already exists."); return
+        try: os.mkdir(dest); self.refresh(); self.lbl_status.setText(f"Created folder: {name}")
+        except Exception as e: QMessageBox.warning(self,"New Folder failed",str(e))
+    def _rename_selected(self):
+        paths=self._selected_paths()
+        if len(paths)!=1: QMessageBox.information(self,"Rename","Select exactly one file or folder to rename."); return
+        old_path=paths[0]; old_name=os.path.basename(old_path.rstrip(os.sep)); new_name,ok=QInputDialog.getText(self,"Rename","New name:",text=old_name); new_name=new_name.strip()
+        if not ok or new_name==old_name:return
+        if not self._valid_leaf(new_name): QMessageBox.warning(self,"Rename","Use a simple name without path separators or '..'."); return
+        new_path=os.path.join(os.path.dirname(old_path.rstrip(os.sep)),new_name)
+        if os.path.exists(new_path): QMessageBox.warning(self,"Rename","The destination already exists; nothing was overwritten."); return
+        try: os.rename(old_path,new_path); self.refresh(); self.lbl_status.setText(f"Renamed to: {new_name}")
+        except Exception as e: QMessageBox.warning(self,"Rename failed",str(e))
+    def _trash_target(self,path:str)->str:
+        stamp=time.strftime("%Y%m%d-%H%M%S"); base=os.path.basename(path.rstrip(os.sep)) or "item"; dest=os.path.join(self._trash_dir,f"{stamp}-{base}"); n=2
+        while os.path.exists(dest): dest=os.path.join(self._trash_dir,f"{stamp}-{n}-{base}"); n+=1
+        return dest
+    def _delete_selected(self):
+        paths=self._selected_paths()
+        if not paths:return
+        if QMessageBox.question(self,"Move to Trash",f"Move {len(paths)} item(s) to Groovebox Trash?\nYou can undo the most recent operation.",QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No)!=QMessageBox.StandardButton.Yes:return
+        moved=[]
+        for path in paths:
+            if os.path.realpath(path) in self._safe_roots: QMessageBox.warning(self,"Protected root",f"Will not move protected root:\n{path}"); continue
+            try:
+                dest=self._trash_target(path); shutil.move(path,dest); moved.append((dest,path))
+            except Exception as e: QMessageBox.warning(self,"Trash failed",f"{path}\n{e}")
+        self._last_trash_moves=moved; self.refresh(); self.lbl_status.setText(f"Moved {len(moved)} item(s) to Groovebox Trash.")
+    def _undo_trash(self):
+        if not self._last_trash_moves: self.lbl_status.setText("Nothing to undo."); return
+        restored=0; remaining=[]
+        for src,dst in reversed(self._last_trash_moves):
+            try:
+                if os.path.exists(dst): remaining.append((src,dst)); continue
+                if os.path.exists(src): os.makedirs(os.path.dirname(dst),exist_ok=True); shutil.move(src,dst); restored+=1
+            except Exception: remaining.append((src,dst))
+        self._last_trash_moves=list(reversed(remaining)); self.refresh(); self.lbl_status.setText(f"Restored {restored} item(s) from Trash.")
+    def _open_in_player(self):
+        paths=[p for p in self._selected_paths() if os.path.isfile(p) and os.path.splitext(p)[1].lower() in MEDIA_EXT]
+        if not paths: QMessageBox.information(self,"Open in Player","Select one or more supported audio/video/image files first."); return
+        dlg=MediaPlayerWindow(self,[{"path":p,"duration_s":5.0 if os.path.splitext(p)[1].lower() in IMAGE_EXT else 0.0} for p in paths],0); dlg.exec()
+    def _open_project_or_game(self):
+        host=self.parent(); paths=[p for p in self._selected_paths() if os.path.isfile(p)]
+        if not paths:return
+        for path in paths:
+            ext=os.path.splitext(path)[1].lower()
+            try:
+                if ext in PROJECT_EXT:
+                    if host is not None and hasattr(host,"_open_project"): host._open_project(path)
+                    elif host is not None and hasattr(host,"host") and hasattr(host.host,"open_project_path"): host.host.open_project_path(path)
+                    else: raise RuntimeError("No project loader is available")
+                elif ext in GAME_EXT:
+                    if host is not None and hasattr(host,"_play_game_package"): host._play_game_package(path)
+                    else: raise RuntimeError("No game player is available")
+            except Exception as e: QMessageBox.warning(self,"Open failed",f"{path}\n{e}")
+    def _add_to_performance_playlist(self):
+        host=self.parent()
+        if host is None or not hasattr(host,"_playlist"): QMessageBox.information(self,"Add to Playlist","No Performance playlist is available from this window."); return
+        paths=[p for p in self._selected_paths() if os.path.isfile(p) and os.path.splitext(p)[1].lower() in MEDIA_EXT]
+        if not paths: QMessageBox.information(self,"Add to Playlist","Select supported audio/video/image files first."); return
+        added=0
+        for path in paths:
+            kind=self._cached_kind(path)
+            if kind==KIND_PENDING: kind=KIND_UNKNOWN
+            if not any(it["path"]==path for it in host._playlist):
+                host._playlist.append({"path":path,"volume":100,"mix":False,"kind":kind,"time_s":float(len(host._playlist)*5.0),"duration_s":5.0 if kind==KIND_IMAGE else 0.0}); added+=1
+        host._refresh_playlist_widget(); host._sync_project_state(); self.lbl_status.setText(f"Added {added} supported media item(s) to the Performance playlist.")
 
 
 def open_performance(host) -> Performance:

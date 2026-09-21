@@ -47,6 +47,7 @@ class AudioTarget:
     description: str
     state: str = ""
     kind: str = "audio"
+    backend: str = "pulse"
 
 
 def _run_text(cmd: Sequence[str], timeout: float = 2.0) -> str:
@@ -63,40 +64,51 @@ def detect_displays() -> List[DisplayTarget]:
         txt = _run_text(["xrandr", "--query"])
         for line in txt.splitlines():
             m = re.match(r"^(\S+)\s+connected(?:\s+(primary))?(?:\s+(\d+x\d+\+[-\d]+\+[-\d]+))?", line)
-            if not m:
-                continue
-            out.append(DisplayTarget(m.group(1), True, bool(m.group(2)), m.group(3) or "", len(out), "xrandr"))
+            if m: out.append(DisplayTarget(m.group(1),True,bool(m.group(2)),m.group(3) or "",len(out),"xrandr"))
     if not out and shutil.which("wlr-randr"):
-        txt = _run_text(["wlr-randr"])
-        current = None
+        txt=_run_text(["wlr-randr"]); current=None
         for line in txt.splitlines():
             if line and not line[0].isspace():
-                name = line.split()[0]
-                current = DisplayTarget(name=name, index=len(out), backend="wlr-randr")
-                out.append(current)
-            elif current and "current" in line.lower():
-                current.geometry = line.strip()
+                name=line.split()[0]; current=DisplayTarget(name=name,index=len(out),backend="wlr-randr"); out.append(current)
+            elif current and "current" in line.lower(): current.geometry=line.strip()
+    # Bare-metal sOS fallback: DRM connector sysfs remains available even when
+    # xrandr/wlr-randr is absent. This is the important Latitude 3510 HDMI path.
     if not out:
-        # A virtual/default screen keeps routing usable on headless/test systems.
-        out.append(DisplayTarget("Default display", True, True, "", 0, "default"))
+        drm=Path("/sys/class/drm")
+        if drm.is_dir():
+            for status in sorted(drm.glob("card*-*/status")):
+                try:
+                    if status.read_text(errors="ignore").strip() != "connected": continue
+                    connector=status.parent.name.split("-",1)[1] if "-" in status.parent.name else status.parent.name
+                    modes=status.parent/"modes"; geometry=""
+                    if modes.is_file(): geometry=(modes.read_text(errors="ignore").splitlines() or [""])[0]
+                    primary=connector.lower().startswith(("edp","lvds"))
+                    out.append(DisplayTarget(connector,True,primary,geometry,len(out),"drm-sysfs"))
+                except Exception: pass
+    if not out: out.append(DisplayTarget("Default display",True,True,"",0,"default"))
     return out
 
 
 def detect_audio_targets() -> List[AudioTarget]:
-    out: List[AudioTarget] = [AudioTarget("", "System default", kind="default")]
+    out: List[AudioTarget] = [AudioTarget("", "System default", kind="default", backend="default")]
+    seen=set()
     if shutil.which("pactl"):
-        txt = _run_text(["pactl", "list", "short", "sinks"])
+        txt=_run_text(["pactl","list","short","sinks"])
         for line in txt.splitlines():
-            parts = line.split("\t")
-            if len(parts) < 2:
-                parts = line.split()
-            if len(parts) < 2:
-                continue
-            name = parts[1]
-            state = parts[-1] if parts else ""
-            low = name.lower()
-            kind = "bluetooth" if ("bluez" in low or "bluetooth" in low) else ("hdmi" if "hdmi" in low else ("usb" if "usb" in low else "audio"))
-            out.append(AudioTarget(name, name, state=state, kind=kind))
+            parts=line.split("\t") if "\t" in line else line.split()
+            if len(parts)<2: continue
+            name=parts[1]; state=parts[-1] if parts else ""; low=name.lower()
+            kind="bluetooth" if ("bluez" in low or "bluetooth" in low) else ("hdmi" if "hdmi" in low else ("usb" if "usb" in low else "audio"))
+            out.append(AudioTarget(name,name,state=state,kind=kind,backend="pulse")); seen.add(name)
+    # ALSA fallback is essential on a minimal appliance before PipeWire/Pulse
+    # compatibility has published sinks. Expose HDMI devices directly to mpv.
+    if shutil.which("aplay"):
+        txt=_run_text(["aplay","-L"],timeout=4.0); current=None
+        for line in txt.splitlines():
+            if line and not line[0].isspace():
+                current=line.strip(); low=current.lower()
+                if ("hdmi" in low or "displayport" in low) and current not in seen:
+                    out.append(AudioTarget("alsa/"+current,current,kind="hdmi",backend="alsa")); seen.add(current)
     return out
 
 
@@ -105,13 +117,15 @@ def player_routing(display: Optional[DisplayTarget], audio: Optional[AudioTarget
     args: List[str] = []
     env: Dict[str, str] = {}
     if want_video and display and display.backend in {"xrandr", "wlr-randr"}:
-        # mpv indexes detected screens. This is intentionally advisory because
-        # compositor/driver layouts can remap connectors at runtime.
-        args.extend(["--fullscreen", f"--fs-screen={max(0, int(display.index))}"])
+        # Bind by connector/output name instead of enumeration order. This stays
+        # deterministic when HDMI is hot-plugged and output indices reshuffle.
+        args.extend(["--fullscreen", f"--fs-screen-name={display.name}"])
+    elif want_video and display and display.backend == "drm-sysfs" and display.name:
+        # Bare-metal mpv path for Intel i915/DRM connectors such as HDMI-A-1.
+        args.extend(["--fullscreen","--vo=gpu-next","--gpu-context=drm",f"--drm-connector={display.name}"])
     if audio and audio.name:
-        # PipeWire commonly exposes Pulse compatibility, and PULSE_SINK applies
-        # only to this subprocess rather than changing the machine-wide default.
-        env["PULSE_SINK"] = audio.name
+        if getattr(audio,"backend","pulse") == "alsa": args.append(f"--audio-device={audio.name}")
+        else: env["PULSE_SINK"] = audio.name
     return args, env
 
 
@@ -152,6 +166,8 @@ class MediaShareServer:
                     "volume": int(it.get("volume", 100) or 100),
                     "rate": float(it.get("rate", 1.0) or 1.0),
                     "pitch_semitones": float(it.get("pitch_semitones", 0.0) or 0.0),
+                    "duration_s": float(it.get("duration_s", 5.0) or 5.0),
+                    "media_kind": ("audio" if Path(p).suffix.lower() in {".mp3",".wav",".ogg",".flac",".opus",".m4a",".aac",".aiff",".aif",".caf"} else "video"),
                 })
         self.playlist = clean
 
@@ -175,7 +191,7 @@ class MediaShareServer:
     def game_url(self, key: str) -> str:
         return f"{self.base_url()}/game/{quote(key)}?token={quote(self.token)}"
 
-    def compatible_media(self, path: str) -> str:
+    def compatible_media(self, path: str, duration_s: float = 5.0) -> str:
         """Return a TV/browser-friendly file, transcoding once on demand when needed."""
         path = os.path.abspath(path)
         ext = Path(path).suffix.lower()
@@ -187,13 +203,17 @@ class MediaShareServer:
         st = os.stat(path)
         key = hashlib.sha256(f"{path}|{st.st_mtime_ns}|{st.st_size}".encode()).hexdigest()[:20]
         is_audio = ext in {".flac", ".opus", ".aiff", ".aif", ".caf", ".m4a", ".aac"}
+        is_image = ext in {".png",".jpg",".jpeg",".webp",".bmp",".gif",".tif",".tiff"}
+        if is_image: key = hashlib.sha256(f"{key}|duration={max(.25,float(duration_s)):.3f}".encode()).hexdigest()[:20]
         out = os.path.join(self.compat_cache_dir, key + (".mp3" if is_audio else ".mp4"))
         if os.path.isfile(out) and os.path.getsize(out) > 0:
             return out
         if is_audio:
-            cmd = [ffmpeg, "-y", "-v", "error", "-i", path, "-vn", "-c:a", "libmp3lame", "-b:a", "192k", out]
+            cmd=[ffmpeg,"-y","-v","error","-i",path,"-vn","-c:a","libmp3lame","-b:a","192k",out]
+        elif is_image:
+            cmd=[ffmpeg,"-y","-v","error","-loop","1","-framerate","30","-i",path,"-t",f"{max(.25,float(duration_s)):.3f}","-c:v","libx264","-preset","veryfast","-crf","22","-pix_fmt","yuv420p","-an",out]
         else:
-            cmd = [ffmpeg, "-y", "-v", "error", "-i", path, "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-c:a", "aac", "-b:a", "160k", "-pix_fmt", "yuv420p", out]
+            cmd=[ffmpeg,"-y","-v","error","-i",path,"-c:v","libx264","-preset","veryfast","-crf","22","-c:a","aac","-b:a","160k","-pix_fmt","yuv420p",out]
         p = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if p.returncode != 0:
             try: os.unlink(out)
@@ -208,37 +228,43 @@ class MediaShareServer:
 
         class Handler(BaseHTTPRequestHandler):
             def _send(self, code: int, ctype: str, data: bytes, extra: Optional[Dict[str, str]] = None):
-                self.send_response(code)
-                self.send_header("Content-Type", ctype)
-                self.send_header("Content-Length", str(len(data)))
-                self.send_header("Cache-Control", "no-store")
+                self.send_response(code); self.send_header("Content-Type",ctype); self.send_header("Content-Length",str(len(data))); self.send_header("Cache-Control","no-store")
                 if extra:
-                    for k, v in extra.items(): self.send_header(k, v)
+                    for k,v in extra.items(): self.send_header(k,v)
                 self.end_headers()
-                self.wfile.write(data)
+                if self.command != "HEAD": self.wfile.write(data)
 
             def _authorized(self, parsed) -> bool:
                 return parse_qs(parsed.query).get("token", [""])[0] == owner.token
 
             def _serve_file(self, path: str):
                 try:
-                    size = os.path.getsize(path)
-                    ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
-                    range_h = self.headers.get("Range", "")
-                    if range_h.startswith("bytes="):
-                        m = re.match(r"bytes=(\d*)-(\d*)", range_h)
+                    size=os.path.getsize(path); ctype=mimetypes.guess_type(path)[0] or "application/octet-stream"; start=0; end=max(0,size-1); code=200
+                    range_h=self.headers.get("Range","")
+                    if range_h.startswith("bytes=") and size>0:
+                        spec=range_h[6:].split(",",1)[0].strip(); m=re.match(r"^(\d*)-(\d*)$",spec)
                         if m:
-                            start = int(m.group(1) or 0)
-                            end = int(m.group(2) or (size - 1))
-                            start = max(0, min(start, size - 1)); end = max(start, min(end, size - 1))
-                            with open(path, "rb") as f:
-                                f.seek(start); data = f.read(end - start + 1)
-                            self._send(206, ctype, data, {"Accept-Ranges":"bytes", "Content-Range":f"bytes {start}-{end}/{size}"})
-                            return
-                    with open(path, "rb") as f: data = f.read()
-                    self._send(200, ctype, data, {"Accept-Ranges":"bytes"})
+                            a,b=m.groups()
+                            if not a and b:
+                                length=max(1,min(size,int(b))); start=size-length; end=size-1
+                            else:
+                                start=int(a or 0); end=int(b) if b else size-1; start=max(0,min(start,size-1)); end=max(start,min(end,size-1))
+                            code=206
+                    length=0 if size==0 else end-start+1
+                    self.send_response(code); self.send_header("Content-Type",ctype); self.send_header("Content-Length",str(length)); self.send_header("Cache-Control","no-store"); self.send_header("Accept-Ranges","bytes")
+                    if code==206:self.send_header("Content-Range",f"bytes {start}-{end}/{size}")
+                    self.end_headers()
+                    if self.command=="HEAD" or length<=0:return
+                    with open(path,"rb") as f:
+                        f.seek(start); remaining=length
+                        while remaining>0:
+                            chunk=f.read(min(1024*1024,remaining))
+                            if not chunk:break
+                            self.wfile.write(chunk); remaining-=len(chunk)
+                except (BrokenPipeError,ConnectionResetError):
+                    return
                 except Exception as e:
-                    self._send(500, "application/json", json.dumps({"error":str(e)}).encode())
+                    self._send(500,"application/json",json.dumps({"error":str(e)}).encode())
 
             def do_GET(self):
                 parsed = urlparse(self.path)
@@ -267,7 +293,7 @@ class MediaShareServer:
                     i = int(m.group(1))
                     if 0 <= i < len(owner.playlist):
                         try:
-                            self._serve_file(owner.compatible_media(owner.playlist[i]["path"]))
+                            self._serve_file(owner.compatible_media(owner.playlist[i]["path"], owner.playlist[i].get("duration_s",5.0)))
                         except Exception as e:
                             self._send(500, "application/json", json.dumps({"error":str(e)}).encode())
                         return
@@ -279,6 +305,10 @@ class MediaShareServer:
                 if m and m.group(1) in owner.shared_games:
                     self._serve_file(owner.shared_games[m.group(1)]); return
                 self._send(404, "application/json", b'{"error":"not found"}')
+
+            def do_HEAD(self):
+                # Same authorization/routing as GET, but _send/_serve_file omit bodies.
+                return self.do_GET()
 
             def log_message(self, *_args):
                 pass
@@ -303,7 +333,7 @@ class MediaShareServer:
 <script>
 const token={token}; let items=[],i=0,el=null;
 async function boot(){{let m=await (await fetch('/manifest.json?token='+encodeURIComponent(token))).json();items=m.items||[]; if(items.length) play(0);}}
-function play(n){{if(!items.length)return;i=(n+items.length)%items.length;let it=items[i],ext=(it.name.split('.').pop()||'').toLowerCase();let tag=['mp4','webm','mov','mkv','avi'].includes(ext)?'video':'audio';document.getElementById('stage').innerHTML='<'+tag+' id=p controls autoplay playsinline></'+tag+'>';el=document.getElementById('p');el.src=it.url;el.volume=Math.max(0,Math.min(1,(it.volume||100)/100));try{{el.playbackRate=Math.max(.25,Math.min(4,it.rate||1));}}catch(e){{}}el.onended=()=>next();document.getElementById('label').textContent=(i+1)+'/'+items.length+' '+it.name+' · '+(it.rate||1).toFixed(2)+'×';el.play().catch(()=>{{}});}}
+function play(n){{if(!items.length)return;i=(n+items.length)%items.length;let it=items[i];let tag=(it.media_kind==='audio')?'audio':'video';document.getElementById('stage').innerHTML='<'+tag+' id=p controls autoplay playsinline></'+tag+'>';el=document.getElementById('p');el.src=it.url;el.volume=Math.max(0,Math.min(1,(it.volume||100)/100));try{{el.playbackRate=Math.max(.25,Math.min(4,it.rate||1));}}catch(e){{}}el.onended=()=>next();document.getElementById('label').textContent=(i+1)+'/'+items.length+' '+it.name+' · '+(it.rate||1).toFixed(2)+'×';el.play().catch(()=>{{}});}}
 function next(){{play(i+1)}} function prev(){{play(i-1)}} boot();
 </script>"""
 

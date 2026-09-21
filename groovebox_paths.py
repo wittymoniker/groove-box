@@ -191,7 +191,7 @@ def ingest_file(source: str, role: str='sample', project_path: Optional[str]=Non
 APP_LAYOUT = (
     "projects", "samples", "games", "modules",
     "exports", "exports/audio", "exports/video", "exports/games", "exports/clones",
-    "cache", "temp", "logs", "state",
+    "cache", "temp", "logs", "state", "downloads", "Trash",
     "Nearby Grooveboxes", "Nearby Grooveboxes/Inbox",
 )
 
@@ -221,6 +221,8 @@ def cache_dir() -> str: return _global_dir("cache")
 def temp_dir() -> str: return _global_dir("temp")
 def logs_dir() -> str: return _global_dir("logs")
 def state_dir() -> str: return _global_dir("state")
+def downloads_dir() -> str: return _global_dir("downloads")
+def trash_dir() -> str: return _global_dir("Trash")
 def nearby_dir() -> str: return _global_dir("Nearby Grooveboxes")
 def nearby_inbox_dir() -> str: return _global_dir("Nearby Grooveboxes/Inbox")
 def global_samples_dir() -> str: return _global_dir("samples")

@@ -153,6 +153,16 @@ if __name__ == "__main__":
     _exit_code = 1
     try:
         print("[Startup] creating QApplication")
+        # WEBENGINE_GL_SHARE_2026: QtWebEngine (used by the Performance "Web
+        # Browser" tab) requires AA_ShareOpenGLContexts set before the very
+        # first QApplication/QGuiApplication instance is created, or it
+        # raises ImportError the first time it's imported later. Setting it
+        # here is a no-op if WebEngine is never used.
+        try:
+            from PyQt6.QtCore import Qt as _Qt, QCoreApplication as _QCoreApplication
+            _QCoreApplication.setAttribute(_Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
+        except Exception:
+            pass
         app = QApplication(sys.argv)
         if sys.platform.startswith("win"):
             try:
