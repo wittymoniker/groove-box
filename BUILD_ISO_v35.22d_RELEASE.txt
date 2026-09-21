@@ -1,0 +1,11 @@
+Groovebox BUILD_ISO v35.22d — Debian Qt WebEngine native runtime fix — 2026-09-21
+
+Fixes zero-state BUILD_ISO failure after successful PyQt6-WebEngine wheel install:
+  ImportError: libnspr4.so: cannot open shared object file
+
+Changes:
+- Adds Debian 13 native Qt WebEngine/Chromium runtime libraries, including NSPR/NSS.
+- Adds X11/XCB/image/font/XML dependencies used by the wheel-bundled Qt WebEngine.
+- Audits QtWebEngineProcess and libQt6WebEngine*.so with ldd before import/packing.
+- Retains PyQt6/PyQt6-WebEngine 6.11.0 wheel provisioning and existing v35.22 runtime behavior.
+- Final appliance ISO remains GAME-READY-v35.22.iso; only the builder revision changes.

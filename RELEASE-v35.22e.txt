@@ -1,0 +1,13 @@
+Mathematician's Groovebox v35.22e — Fedora Qt ABI isolation repair
+2026-09-21
+
+Fixes Fedora WebEngine startup when legacy user-site pip PyQt6 under ~/.local
+shadows Fedora's matched RPM PyQt6/QtWebEngine bindings and causes:
+  Qt_6_PRIVATE_API not found
+
+Fedora launchers now disable user-site Python packages and PYTHONPATH for the
+Groovebox process, use the synchronized Fedora PyQt6/WebEngine stack, and force
+an existing project .venv to expose system-site-packages.
+
+No composition, canonical, sequencing, randomizer, DSP, or deterministic math
+behavior changed.

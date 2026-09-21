@@ -1,0 +1,9 @@
+v35.21 FIX applied 2026-09-21
+- Web Browser tab styled to Performance dark-teal/gold theme
+- ISO: v35.18e no longer overwrites v35.18f input-ready
+- ISO: seatd started before compositor (fixes wlroots backend disconnect)
+- ISO: aggressive live storage probe (fixes "No whole disk devices")
+- ISO: installer runs sos-storage-ready first
+
+Build:  sudo ./BUILD_ISO/RUN_ME_ZERO_STATE.sh
+See:    BUILD_ISO/README-START-HERE-v35.21.txt

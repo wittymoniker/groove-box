@@ -1,0 +1,1 @@
+Groovebox v35.22e — Fedora Qt ABI isolation + WebEngine/runtime repair + deterministic sOS shell/player/files/HDMI — 2026-09-21

@@ -1,4 +1,7 @@
-PyQt6
 numpy
+scipy
+cffi
+PyQt6
+PyQt6-WebEngine
 sounddevice
 Pillow

@@ -1,112 +1,90 @@
 #!/usr/bin/env bash
-# =============================================================================
-# Groovebox dependency installer - Linux
-# -----------------------------------------------------------------------------
-# Installs every host-app / exported-game dependency onto this machine and puts
-# the ffmpeg codec binaries into /bin (the directory VideoSynthEngine's codec
-# resolver checks first), so audio+video export work with real encoders.
-#
-# Usage:
-#   ./install_deps_linux.sh            auto-detect Fedora vs Ubuntu-family
-#   ./install_deps_linux.sh --fedora   force the DNF/Fedora path
-#   ./install_deps_linux.sh --ubuntu   force the apt/Ubuntu-family path
-#   ./install_deps_linux.sh --distro=<name>  force any supported family
-# =============================================================================
-set -u
-
+# Groovebox complete Linux desktop runtime installer (v35.22e).
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd)"
 DISTRO="auto"
+# Accepted so a command copied from dnf's suggestion does not get forwarded to
+# Groovebox itself. The required transaction deliberately does NOT use
+# --allowerasing: Groovebox should never replace the host multimedia stack.
+REQUEST_SKIP_BROKEN=0
 for arg in "$@"; do
   case "$arg" in
-    --fedora)  DISTRO="fedora";;
-    --ubuntu)  DISTRO="ubuntu";;
-    --distro=*) DISTRO="${arg#--distro=}";;
+    --fedora) DISTRO="fedora" ;;
+    --ubuntu) DISTRO="ubuntu" ;;
+    --distro=*) DISTRO="${arg#--distro=}" ;;
+    --skip-broken) REQUEST_SKIP_BROKEN=1 ;;
+    --allowerasing)
+      echo "[runtime] NOTE: --allowerasing accepted but intentionally not used; Groovebox will not erase/replace Fedora multimedia packages." >&2
+      ;;
     -h|--help)
-      sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
-      exit 0;;
-    *) echo "Unknown argument: $arg"; exit 2;;
+      echo "Usage: $0 [--fedora|--ubuntu|--distro=NAME] [--skip-broken] [--allowerasing]"
+      exit 0
+      ;;
+    *) echo "Unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
-
-if [ "$DISTRO" = "auto" ]; then
-  if [ -f /etc/os-release ]; then
-    . /etc/os-release
-    case "${ID:-} ${ID_LIKE:-}" in
-      *fedora*|*centos*|*rhel*) DISTRO="fedora";;
-      *ubuntu*|*debian*)        DISTRO="ubuntu";;
-    esac
-  fi
+if [[ "$DISTRO" == auto && -f /etc/os-release ]]; then
+  . /etc/os-release
+  case "${ID:-} ${ID_LIKE:-}" in
+    *fedora*|*centos*|*rhel*) DISTRO="fedora" ;;
+    *ubuntu*|*debian*) DISTRO="ubuntu" ;;
+  esac
 fi
-
-case "$DISTRO" in
-  fedora|ubuntu) : ;;
-  *)
-    echo "Unsupported or undetectable distribution '$DISTRO'."
-    echo "Use the toggle:  $0 --fedora   |   $0 --ubuntu"
-    exit 3;;
-esac
+case "$DISTRO" in fedora|ubuntu) ;; *) echo "Unsupported Linux distribution '$DISTRO'." >&2; exit 3;; esac
+if [[ "$DISTRO" == fedora ]]; then
+  export PYTHONNOUSERSITE=1
+  unset PYTHONPATH || true
+fi
+SUDO=""; [[ "$(id -u)" -eq 0 ]] || SUDO="sudo"
 
 echo "==> Groovebox installer: Linux/$DISTRO"
-
-# This script needs root for system packages and the /bin codec drop.
-if [ "$(id -u)" -ne 0 ]; then
-  echo "Re-running with sudo..."
-  exec sudo "$0" "$@"
-fi
-
-set -e
-
-PIP_DEPS="numpy PyQt6 sounddevice Pillow"
-
-if [ "$DISTRO" = "fedora" ]; then
-  echo "==> Enabling RPM Fusion (free + nonfree) for full ffmpeg codecs..."
-  dnf install -y \
-    "https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm" \
-    "https://download1.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm"
-  dnf install -y \
+if [[ "$DISTRO" == fedora ]]; then
+  echo "==> Installing required Fedora runtime (no RPM Fusion multimedia replacement)"
+  # Fedora 44 ships a synchronized Python 3.14 / PyQt6 / QtWebEngine stack.
+  # Prefer it over mixing pip Qt wheels with distro Qt shared libraries.
+  $SUDO dnf install -y \
     python3 python3-pip python3-devel gcc gcc-c++ \
-    ffmpeg ffmpeg-libs alsa-lib-devel portaudio portaudio-devel openssl-devel libffi-devel \
-    pipewire wireplumber pipewire-alsa pipewire-pulseaudio mesa-dri-drivers mesa-vulkan-drivers \
-    SDL2 SDL2_mixer openal-soft gamescope mpv qt6-qtwayland xorg-x11-server-Xwayland
+    python3-pyqt6-base python3-pyqt6-webengine \
+    qt6-qtbase qt6-qtbase-gui qt6-qtdeclarative qt6-qtwebchannel qt6-qtwebengine qt6-qtwayland \
+    alsa-lib alsa-lib-devel portaudio portaudio-devel openssl-devel libffi-devel \
+    pipewire wireplumber pipewire-alsa pipewire-pulseaudio \
+    mesa-dri-drivers mesa-vulkan-drivers mesa-libgbm libdrm \
+    nss nspr fontconfig freetype dbus-libs \
+    libXcomposite libXcursor libXdamage libXext libXi libXrandr libXrender libXtst \
+    libxcb libxkbcommon libxkbcommon-x11 xcb-util-cursor
+
+  # Fedora's ffmpeg-free already provides ffmpeg, ffprobe AND ffplay. Do not
+  # install RPM Fusion ffmpeg/ffmpeg-libs here; that is what caused the user's
+  # ffmpeg-free/libswscale transaction conflict. Optional players must never
+  # block the required browser/runtime repair.
+  OPTIONAL_FLAGS=(--skip-broken)
+  [[ "$REQUEST_SKIP_BROKEN" -eq 1 ]] && OPTIONAL_FLAGS+=(--setopt=skip_if_unavailable=True)
+  $SUDO dnf install -y "${OPTIONAL_FLAGS[@]}" gamescope mpv SDL2 SDL2_mixer openal-soft || \
+    echo "[runtime] optional player/game packages skipped; ffplay fallback remains available when provided by ffmpeg-free." >&2
 else
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y \
+  $SUDO apt-get update -y
+  $SUDO apt-get install -y \
     python3 python3-pip python3-venv python3-dev build-essential \
-    ffmpeg mpv pipewire wireplumber libasound2-dev portaudio19-dev libssl-dev libffi-dev \
+    ffmpeg pipewire wireplumber libasound2-dev portaudio19-dev libssl-dev libffi-dev \
+    libnss3 libxkbcommon-x11-0 libgbm1 libxcomposite1 libxdamage1 libxrandr2 \
     libsdl2-2.0-0 libsdl2-mixer-2.0-0 libopenal1
-  # Broad codec pack (mp3 / mp4 / aac / av1 / h264 …). Best effort: this is a
-  # multiverse package; if it fails, core ffmpeg above already covers WAV/PNG
-  # frame muxing and the common containers.
-  apt-get install -y ubuntu-restricted-extras || true
+  $SUDO apt-get install -y mpv || true
+  $SUDO apt-get install -y ubuntu-restricted-extras || true
 fi
 
-echo "==> Installing Python packages: $PIP_DEPS"
-python3 -m pip install --upgrade pip wheel
-python3 -m pip install $PIP_DEPS
-
-echo "==> Placing codec binaries into /bin ..."
-FF=$(command -v ffmpeg || true)
-FP=$(command -v ffprobe || true)
-if [ -n "$FF" ]; then cp -f "$FF" /bin/ffmpeg || ln -sf "$FF" /bin/ffmpeg; fi
-if [ -n "$FP" ]; then cp -f "$FP" /bin/ffprobe || ln -sf "$FP" /bin/ffprobe; fi
-
-echo "==> Verify:"
-python3 -c "import numpy, PyQt6.QtCore, sounddevice, PIL; print('python deps OK')"
-command -v ffmpeg; command -v ffprobe
-ffmpeg -hide_banner -encoders 2>/dev/null | grep -E "libx264|aac|libvpx|libvorbis" | sed 's/^/  encoder: /' | head -6
-echo "==> Verifying bundled required sCode optimizer..."
-if [ -x "$(dirname "$0")/sCode/bootstrap/linux-x86_64/scode0" ]; then
-  PLAN=$(cd "$(dirname "$0")/sCode" && GB_OPT_ID=5 GB_OPT_DIRTY=255 GB_OPT_FRAME=0 GB_OPT_LANES=4 GB_OPT_POOL=64 GB_OPT_SHAPE=1 ./bootstrap/linux-x86_64/scode0 run apps/groovebox/groovebox_optimizer.sC)
-  printf '%s\n' "$PLAN" | grep -q '^scode_optimizer_abi=9$'
-  printf '%s\n' "$PLAN" | grep -Eq '^pool_slot=[0-9-]+$'
-  printf '%s\n' "$PLAN" | grep -Eq '^audio_lane=[0-9-]+$'
-  printf '%s\n' "$PLAN" | grep -q '^pool_abi=3$'
-  printf '%s\n' "$PLAN" | grep -q '^completion_abi=1$'
-  printf '%s\n' "$PLAN" | grep -q '^symbol_abi=4$'
-  printf '%s\n' "$PLAN" | grep -q '^symbol_variant_count=5188$'
-  echo "    bundled sCode optimizer OK"
+if [[ "$DISTRO" == fedora ]]; then
+  SELECTED="$(python3 "$ROOT/scripts/ensure_runtime_dependencies.py" --force-install --prefer-system-qt)"
 else
-  echo "ERROR: bundled Linux x86_64 sCode runtime missing." >&2; exit 6
+  SELECTED="$(python3 "$ROOT/scripts/ensure_runtime_dependencies.py" --force-install)"
 fi
-echo "==> Done."
-echo "    Run the required-sCode app:   python3 run_groovebox.py"
+"$SELECTED" "$ROOT/scripts/provision_first_launch.py"
+
+echo "==> Verify complete runtime:"
+"$SELECTED" -c "import numpy, scipy, cffi, sounddevice, PIL; import PyQt6.QtCore, PyQt6.QtWebEngineWidgets; print('Groovebox Python/browser runtime OK')"
+"$ROOT/bin/ffmpeg" -hide_banner -version | head -1
+"$ROOT/bin/ffprobe" -hide_banner -version | head -1
+
+echo "==> Verifying bundled required sCode optimizer..."
+"$SELECTED" "$ROOT/scripts/ensure_native_scode_stage0.py"
+echo "==> Done. Launch with ./run_hybrid.sh"

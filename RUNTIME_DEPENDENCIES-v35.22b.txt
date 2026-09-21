@@ -1,0 +1,17 @@
+Groovebox desktop runtime manifest — v35.22b
+
+Every normal launcher now verifies and repairs the same Python/browser runtime on every start:
+- numpy
+- scipy
+- cffi
+- PyQt6
+- PyQt6-WebEngine
+- sounddevice
+- Pillow (PIL)
+
+Linux/macOS/Windows launchers use scripts/ensure_runtime_dependencies.py.
+Missing Python packages are installed into project-local .venv and Groovebox is launched with that exact interpreter.
+Local bin/ffmpeg + bin/ffprobe are still provisioned/verified separately.
+Native sCode ABI-9 / 18-pool-catalog verification remains mandatory.
+
+BUILD_ISO remains v35.22: its zero-state appliance runtime already provisions and validates PyQt6-WebEngine and the browser/session dependencies.

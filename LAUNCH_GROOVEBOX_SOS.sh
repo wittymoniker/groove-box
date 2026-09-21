@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-set -e
-cd "$(dirname "$0")"
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd)"
 export GROOVEBOX_PROFILE=sos
-exec "${PYTHON:-python3}" launch_groovebox.py "$@"
+# Appliance images already contain the complete runtime. launch_groovebox.py
+# verifies the shared manifest but will not reinstall anything when it is intact.
+exec "${PYTHON:-python3}" "$ROOT/launch_groovebox.py" "$@"

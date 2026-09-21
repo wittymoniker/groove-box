@@ -7,6 +7,24 @@ from platform_runtime import find_scode_stage0, find_accel, build_accel, platfor
 
 ROOT=Path(__file__).resolve().parent
 
+def _is_fedora_host():
+    try:
+        text=Path('/etc/os-release').read_text(errors='ignore').lower()
+    except Exception:
+        return False
+    return 'id=fedora' in text or 'id_like=fedora' in text or ' fedora' in text
+
+def _ensure_fedora_qt_isolation():
+    if not (sys.platform.startswith('linux') and _is_fedora_host()):
+        return
+    if os.environ.get('GROOVEBOX_FEDORA_QT_ISOLATED') == '1':
+        return
+    env=os.environ.copy()
+    env['PYTHONNOUSERSITE']='1'
+    env['GROOVEBOX_FEDORA_QT_ISOLATED']='1'
+    env.pop('PYTHONPATH',None)
+    os.execve(sys.executable,[sys.executable,'-s',str(Path(__file__).resolve()),*sys.argv[1:]],env)
+
 def _launcher_log_path():
     base = Path(os.environ.get('APPDATA') or (Path.home()/'.local'/'share')) / 'MathematiciansGroovebox' / 'logs'
     base.mkdir(parents=True, exist_ok=True)
@@ -21,8 +39,31 @@ def _log(msg):
         pass
 
 def main():
+    _ensure_fedora_qt_isolation()
     s,m=platform_key()
     _log(f'[launcher] detected {platform.system()} {platform.machine()}')
+
+    # V35.22b_RUNTIME_MANIFEST: direct Python launches get the same dependency
+    # verification/repair as the platform launchers. If the checker selects a
+    # project-local interpreter, restart this launcher under that exact Python.
+    runtime_check = ROOT/'scripts'/'ensure_runtime_dependencies.py'
+    rr = subprocess.run([sys.executable, str(runtime_check)], cwd=ROOT, text=True, capture_output=True, check=False)
+    if rr.stderr:
+        for line in rr.stderr.splitlines(): _log(line)
+    if rr.returncode:
+        _log(f'[launcher] ERROR: runtime dependency provisioning failed ({rr.returncode})')
+        return rr.returncode
+    selected = (rr.stdout or '').strip().splitlines()[-1] if (rr.stdout or '').strip() else ''
+    if not selected:
+        _log('[launcher] ERROR: runtime checker returned no Python interpreter')
+        return 12
+    try:
+        same = Path(selected).resolve() == Path(sys.executable).resolve()
+    except Exception:
+        same = os.path.abspath(selected) == os.path.abspath(sys.executable)
+    if not same:
+        _log(f'[launcher] switching to provisioned runtime: {selected}')
+        os.execv(selected, [selected, str(Path(__file__).resolve()), *sys.argv[1:]])
     # Always finish local runtime provisioning before verifying/starting sCode.
     # Platform launchers also invoke dependency installers on first launch; this
     # common pass keeps direct launch_groovebox.py use consistent on every OS.
@@ -31,6 +72,14 @@ def main():
     if pr.returncode:
         _log(f'[launcher] ERROR: local runtime provisioning failed ({pr.returncode})')
         return pr.returncode
+
+    # V35.22a_SCODE_POOL_CATALOG: direct Python launches get the same
+    # native stage-0 repair/compatibility preflight as platform launchers.
+    scode_check=ROOT/'scripts'/'ensure_native_scode_stage0.py'
+    sr=subprocess.run([sys.executable,str(scode_check)],cwd=ROOT,check=False)
+    if sr.returncode:
+        _log(f'[launcher] ERROR: native sCode ABI preflight failed ({sr.returncode})')
+        return sr.returncode
 
     accel=find_accel(ROOT)
     if accel:

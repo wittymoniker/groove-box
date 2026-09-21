@@ -1,0 +1,1 @@
+Groovebox sOS appliance v35.22; BUILD_ISO revision v35.22g active-bootstrap enforcement.

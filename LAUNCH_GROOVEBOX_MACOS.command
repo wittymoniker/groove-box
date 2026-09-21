@@ -1,21 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")"
-
-echo "[Groovebox] macOS launcher - automatic first-run provisioning"
-
-needs_provision=0
-command -v python3 >/dev/null 2>&1 || needs_provision=1
-[ -x "bin/ffmpeg" ] || needs_provision=1
-[ -x "bin/ffprobe" ] || needs_provision=1
-[ -f ".groovebox_provisioned_macos" ] || needs_provision=1
-
-if [ "$needs_provision" -eq 1 ]; then
-  echo "[Groovebox] Provisioning macOS dependencies automatically..."
-  chmod +x ./install_deps_macos.sh
-  ./install_deps_macos.sh
-  "${PYTHON:-python3}" ./scripts/provision_first_launch.py
-  : > .groovebox_provisioned_macos
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT"
+echo "[Groovebox] macOS launcher - runtime verification/provisioning"
+if ! command -v python3 >/dev/null 2>&1; then
+  chmod +x "$ROOT/install_deps_macos.sh"
+  "$ROOT/install_deps_macos.sh"
 fi
-
-exec "${PYTHON:-python3}" launch_groovebox.py "$@"
+if ! SELECTED="$(python3 "$ROOT/scripts/ensure_runtime_dependencies.py")"; then
+  chmod +x "$ROOT/install_deps_macos.sh"
+  "$ROOT/install_deps_macos.sh"
+  SELECTED="$(python3 "$ROOT/scripts/ensure_runtime_dependencies.py")"
+fi
+PYTHON_BIN="$SELECTED"
+"$PYTHON_BIN" "$ROOT/scripts/provision_first_launch.py"
+"$PYTHON_BIN" "$ROOT/sCode/scripts/ensure-stage0.py" >/dev/null
+"$PYTHON_BIN" "$ROOT/scripts/ensure_native_scode_stage0.py"
+exec "$PYTHON_BIN" "$ROOT/launch_groovebox.py" "$@"

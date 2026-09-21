@@ -532,22 +532,20 @@ class SCodeOptimizerBridge:
 
     @staticmethod
     def _builtin_pool_catalog() -> Dict[int, Dict[str, int]]:
-        """Exact host mirror of sCode runtime/pool.sC ABI-3 format metadata.
-
-        Native Windows/macOS stage-0 is intentionally tiny and may only execute
-        the Groovebox optimizer seed.  Pool metadata is still canonical sCode
-        data; this mirror lets those native bootstraps start Groovebox without
-        incorrectly treating an unsupported auxiliary .sC entry point as a
-        fatal runtime failure.
-        """
-        sizes = [64, 256, 128, 64, 32, 64, 256, 64, 32, 24, 64, 128, 256, 32, 128, 128, 32, 48]
-        out: Dict[int, Dict[str, int]] = {}
+        # SCODE_POOL_CATALOG_COMPAT_V35_22A: exact frozen ABI-3/format-ABI-1
+        # mirror. It is used only when an older ABI-9 stage-0 understands the
+        # optimizer but predates direct pool_catalog.sC dispatch (notably an
+        # already-installed Windows bootstrap). Keeping this table fixed makes
+        # compatibility deterministic and byte-for-byte equivalent to
+        # sCode/scode/libs/runtime/pool.sC.
+        sizes = [64,256,128,64,32,64,256,64,32,24,64,128,256,32,128,128,32,48]
+        out = {}
         for fid, size in enumerate(sizes):
             out[fid] = {
                 "size": int(size),
-                "buffers": 2 if fid in (7, 8) else (3 if fid in (9, 17) else 1),
-                "streaming": 1 if fid in (7, 9, 17) else 0,
-                "persistent": 1 if fid in (11, 12, 13, 14, 15, 16) else 0,
+                "buffers": 2 if fid in (7,8) else (3 if fid in (9,17) else 1),
+                "streaming": 1 if fid in (7,9,17) else 0,
+                "persistent": 1 if 11 <= fid <= 16 else 0,
             }
         return out
 
@@ -558,15 +556,17 @@ class SCodeOptimizerBridge:
             cwd=str(self.root), env=env, capture_output=True, text=True, timeout=10,
         )
         if proc.returncode != 0:
-            # The compact native Windows/macOS ABI-9 bootstrap deliberately
-            # recognizes groovebox_optimizer.sC but not every auxiliary sCode
-            # program.  Falling back here is safe because the table below is an
-            # exact mirror of scode/libs/runtime/pool.sC and the optimizer ABI
-            # has already been verified above.
-            msg = (proc.stderr or proc.stdout or "").lower()
-            if "usage:" in msg or "groovebox_optimizer.sc" in msg:
-                return self._builtin_pool_catalog()
-            raise SCodeRequiredError("sCode pool catalog execution failed: " + (proc.stderr or proc.stdout).strip())
+            detail = (proc.stderr or proc.stdout).strip()
+            # Older ABI-9 stage-0 binaries shipped before pool_catalog.sC was
+            # added to the bootstrap dispatcher. The optimizer probe already
+            # passed above, so only this narrow unsupported-command signature
+            # is eligible for the frozen deterministic compatibility catalog.
+            low = detail.lower()
+            if ("usage:" in low or "optimizer execution only" in low or "unsupported first-stage" in low) and "groovebox_optimizer.sc" in low:
+                catalog = self._builtin_pool_catalog()
+                print("[sCode] legacy ABI-9 stage-0 detected; using frozen deterministic pool catalog compatibility mirror")
+                return catalog
+            raise SCodeRequiredError("sCode pool catalog execution failed: " + detail)
         header = self._parse(proc.stdout)
         if int(header.get("pool_catalog_abi", -1)) != 1 or int(header.get("pool_abi", -1)) != 3 or int(header.get("pool_format_count", -1)) != 18:
             raise SCodeRequiredError("sCode pool catalog ABI mismatch")

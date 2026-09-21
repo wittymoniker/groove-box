@@ -40,8 +40,9 @@ grep -q 'PASS project-local paths + media index contract' /tmp/groovebox-project
 ! grep -R --include='*.py' -nE 'shutil\.which\(["'"'"']ff(mpeg|probe)|\[["'"'"']ff(mpeg|probe)["'"'"']' . --exclude-dir=APPLIANCE_ISO --exclude=videogame_engine.py --exclude=provision_first_launch.py >/tmp/groovebox-ffmpeg-fallbacks.log || { cat /tmp/groovebox-ffmpeg-fallbacks.log; fail 'system ffmpeg/ffprobe fallback remains'; }
 grep -q 'require_local_pair' run_groovebox.py || fail 'first-launch local ffmpeg preflight'
 grep -q 'ensure_local_ffmpeg' BUILD_KIT/build.py || fail 'build local ffmpeg preflight'
-grep -q 'setup_ffmpeg' launch_desktop.sh || fail 'desktop local ffmpeg preflight'
-grep -q 'setup_ffmpeg' launch_mobile.sh || fail 'mobile local ffmpeg preflight'
+grep -q 'run_hybrid.sh' launch_desktop.sh || fail 'desktop unified runtime launcher'
+grep -q 'run_hybrid.sh' launch_mobile.sh || fail 'mobile unified runtime launcher'
+grep -q 'ensure_runtime_dependencies.py' run_hybrid.sh || fail 'hybrid shared runtime dependency preflight'
 ! grep -q 'provision_first_launch.py.*|| true' run_hybrid.sh || fail 'hybrid launcher ignores codec provision failure'
 python3 test_algorithm_automation_parity.py >/tmp/groovebox-algorithm-parity.log
 grep -q 'PASS algorithm XMOD step/automation variable parity without lane composition' /tmp/groovebox-algorithm-parity.log || fail 'algorithm step/automation parity'

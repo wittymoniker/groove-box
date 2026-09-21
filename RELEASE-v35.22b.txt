@@ -1,0 +1,10 @@
+Mathematician's Groovebox v35.22b — desktop runtime provisioning consistency
+2026-09-21
+
+- Linux run_hybrid.sh verifies/repairs the complete runtime every launch.
+- Windows and macOS launchers do the same; stale first-run markers are no longer trusted.
+- Direct launch_groovebox.py launches are also routed to the selected project runtime.
+- One shared dependency manifest covers NumPy, SciPy, cffi, PyQt6, PyQt6-WebEngine, sounddevice and Pillow.
+- Local FFmpeg/ffprobe and native sCode stage-0 verification remain required.
+- No composition, canonical, sequencer, DSP, randomizer, Player determinism, browser behavior, File Manager behavior, HDMI, or BUILD_ISO logic changed.
+- BUILD_ISO remains v35.22.

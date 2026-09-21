@@ -1,0 +1,15 @@
+Mathematician's Groovebox v35.22d — Fedora 44 browser/runtime repair
+
+Desktop runtime repair only; composition/canonical/DSP behavior is unchanged.
+
+Fixes:
+- Fedora 44 uses distro-synchronized python3-pyqt6-base + python3-pyqt6-webengine + Qt6 WebEngine instead of mixing pip Qt wheels with distro Qt shared libraries.
+- Required Fedora transaction no longer enables/installs RPM Fusion ffmpeg or ffmpeg-libs.
+- Existing Fedora ffmpeg-free is preserved; ffmpeg-free supplies ffmpeg, ffprobe, and ffplay.
+- mpv/gamescope/SDL/OpenAL are optional and cannot block WebEngine/runtime repair.
+- project .venv keeps system-site-packages and removes local pip Qt wheels on Fedora so distro PyQt6 is authoritative.
+- runtime import failures now print the real import/shared-library traceback tail.
+- dependency provisioning output is redirected to stderr, preserving the selected interpreter as the only stdout line for launcher capture.
+- run_hybrid.sh consumes --allowerasing/--skip-broken as installer-recovery flags and does not forward them to Groovebox. --allowerasing is intentionally not used against the host package set.
+
+BUILD_ISO remains v35.22c; this release changes desktop launch/provisioning, not the ISO builder architecture.

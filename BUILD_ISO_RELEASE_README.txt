@@ -1,23 +1,10 @@
-Groovebox GitHub release layout
-===============================
+Groovebox BUILD_ISO v35.22d — Debian Qt WebEngine native runtime fix — 2026-09-21
+Run from the extracted Groovebox root:
+  sudo ./BUILD_ISO/RUN_ME_ZERO_STATE.sh
+Expected final ISO:
+  BUILD_ISO/dist/Groovebox-sOS-x86_64-YYYYMMDD-GAME-READY-v35.22.iso
 
-The release is split into two complementary downloads:
-
-  groovebox.zip / groovebox.tar.gz
-      Main Groovebox application and cross-platform source/runtime files.
-      APPLIANCE_ISO is intentionally omitted from these archives.
-
-  BUILD_ISO.zip / BUILD_ISO.tar.gz
-      The APPLIANCE_ISO builder tree only. Extract this archive into the same
-      parent directory as the main release. Its paths begin with
-      groovebox/APPLIANCE_ISO/, so it merges directly into the extracted
-      groovebox folder.
-
-Recommended ISO build entry point after both archives are extracted:
-
-  cd groovebox
-  sudo ./BUILD_GROOVEBOX_APPLIANCE_ISO.sh
-
-The top-level builder restages the current Groovebox and sCode trees into the
-ISO rootfs before building, so the separate BUILD_ISO package does not need to
-carry a second duplicate /opt/groovebox or source/sCode copy.
+Builder v35.22d adds the Debian 13 native runtime libraries required by the
+PyQt6-WebEngine wheel (including NSPR/NSS) and audits QtWebEngineProcess/
+libQt6WebEngine shared-library dependencies with ldd before packing.
+The appliance/runtime release remains v35.22.
