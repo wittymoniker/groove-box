@@ -112,6 +112,22 @@ class NetworkSettingsPanel(QWidget):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setStyleSheet(_PERF_STYLE)
+        self._webengine_shutting_down = False
+        # Performance is intentionally hidden/reused on normal close, so do not
+        # tear WebEngine down on the parent dialog's closeEvent.  Tear it down
+        # only when the owning dialog/application is actually being destroyed.
+        try:
+            if parent is not None:
+                parent.destroyed.connect(self.shutdown_webengine)
+        except Exception:
+            pass
+        try:
+            from PyQt6.QtCore import QCoreApplication
+            app = QCoreApplication.instance()
+            if app is not None:
+                app.aboutToQuit.connect(self.shutdown_webengine)
+        except Exception:
+            pass
         root = QVBoxLayout(self)
 
         status_box = QGroupBox("Current connection")
@@ -291,6 +307,9 @@ class WebBrowserTab(QWidget):
         for b in (btn_back,btn_fwd,btn_reload,btn_home): nav.addWidget(b)
         nav.addWidget(self.edit_url,stretch=1); bl.addLayout(nav)
 
+        # Keep explicit ownership so the page is torn down before its profile.
+        # QtWebEngine can otherwise warn/crash when profile destruction races a
+        # still-live QWebEnginePage/request object during Performance shutdown.
         self.profile=QWebEngineProfile("Groovebox",self)
         try:
             self.profile.setPersistentStoragePath(str(state_root/"storage"))
@@ -327,6 +346,71 @@ class WebBrowserTab(QWidget):
         try: self.page.newWindowRequested.connect(self._on_new_window_requested)
         except Exception: pass
         self._load_home()
+
+
+    def shutdown_webengine(self):
+        """Synchronously detach page/request objects before profile teardown.
+
+        QWebEngineProfile must outlive every QWebEnginePage using it.  Performance
+        can be closed while download/permission/new-window requests are being
+        destroyed, so merely relying on QObject parent order/deleteLater() is not
+        deterministic enough here.
+        """
+        if getattr(self, "_webengine_shutting_down", False):
+            return
+        self._webengine_shutting_down = True
+        page = getattr(self, "page", None)
+        profile = getattr(self, "profile", None)
+        view = getattr(self, "view", None)
+        # First disconnect request-producing signals so no Python callback can
+        # retain/use a request wrapper after Chromium destroys the request.
+        for obj, signal_name, slot in (
+            (profile, "downloadRequested", self._on_download_requested),
+            (page, "permissionRequested", self._on_permission_requested),
+            (page, "fullScreenRequested", self._on_fullscreen_requested),
+            (page, "newWindowRequested", self._on_new_window_requested),
+        ):
+            try:
+                if obj is not None:
+                    getattr(obj, signal_name).disconnect(slot)
+            except Exception:
+                pass
+        try:
+            if view is not None:
+                view.stop()
+                view.setHtml("", QUrl("about:blank"))
+        except Exception:
+            pass
+        # Detach the custom page before deleting it; this breaks view->page->
+        # profile references before the profile QObject starts destruction.
+        try:
+            if view is not None:
+                view.setPage(None)
+        except Exception:
+            pass
+        try:
+            if page is not None:
+                page.deleteLater()
+        except Exception:
+            pass
+        self.page = None
+        # Flush deferred page deletion while the profile is still guaranteed
+        # alive. Avoid a nested long event loop; one Qt turn is sufficient.
+        try:
+            from PyQt6.QtCore import QCoreApplication, QEvent
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        except Exception:
+            pass
+        try:
+            if profile is not None:
+                profile.deleteLater()
+        except Exception:
+            pass
+        self.profile = None
+
+    def closeEvent(self, event):
+        self.shutdown_webengine()
+        super().closeEvent(event)
 
     def _home_html(self)->str:
         cards=[

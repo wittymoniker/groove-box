@@ -39,6 +39,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from visual_determinism import fibonacci_view, select_views, visual_signal_id, composition_fingerprint as visual_composition_fingerprint
 from fractal_spatial_engine import FractalSpatialEngine, build_spatial_state
+from trig_series import (
+    cyclic_isn_scalar as _book_cyclic_isn, isx_scalar as _book_isx,
+    isy_scalar as _book_isy, tan_scalar as _book_tan,
+    inverse_isn_scalar as _book_isn_inv, inverse_ics_scalar as _book_ics_inv,
+)
 
 # Meum lattice (same constants as the signal generator — identity partner)
 MEUM = 1.1975807343385265
@@ -758,43 +763,56 @@ def operator_theory_enabled():
 
 # isn / ics / arcisn / arcics — book forms; OT video/game trig routes through these.
 def book_isn(x):
-    return 2.0 * math.sin(0.5 * float(x))
+    return _book_cyclic_isn(float(x))
 
 def book_ics(x):
-    return 2.0 * math.cos(0.5 * float(x))
+    # Compatibility companion name maps to the book X component.
+    return _book_isx(float(x))
+
+def book_isx(x):
+    return _book_isx(float(x))
+
+def book_isy(x):
+    return _book_isy(float(x))
 
 def book_isn_inv(y):
-    a = max(-1.0, min(1.0, 0.5 * float(y)))
-    return 2.0 * math.asin(a)
+    return _book_isn_inv(float(y))
 
 def book_ics_inv(y):
-    a = max(-1.0, min(1.0, 0.5 * float(y)))
-    return 2.0 * math.acos(a)
+    return _book_ics_inv(float(y))
 
 def ot_sin_via_isn(x):
-    return 0.5 * book_isn(2.0 * float(x))
+    # Forward trig equivalence is direct isy, not the legacy 2*sin(x/2) route.
+    return _book_isy(float(x))
 
 def ot_cos_via_ics(x):
-    return 0.5 * book_ics(2.0 * float(x))
+    return _book_isx(float(x))
+
+def ot_tan_via_isx_isy(x):
+    return _book_tan(float(x))
 
 def ot_asin_via_arcisn(y):
     y = max(-1.0, min(1.0, float(y)))
-    return 0.5 * book_isn_inv(2.0 * y)
+    return 0.5 * _book_isn_inv(2.0 * y)
 
 def ot_acos_via_arcics(y):
     y = max(-1.0, min(1.0, float(y)))
-    return 0.5 * book_ics_inv(2.0 * y)
+    return 0.5 * _book_ics_inv(2.0 * y)
 
 def vg_sin(x):
-    """Game/video sine: isn-route when Operator Theory is ON."""
     if OP_THEORY_ENABLED:
-        return ot_sin_via_isn(x)
+        return _book_isy(float(x))
     return math.sin(float(x))
 
 def vg_cos(x):
     if OP_THEORY_ENABLED:
-        return ot_cos_via_ics(x)
+        return _book_isx(float(x))
     return math.cos(float(x))
+
+def vg_tan(x):
+    if OP_THEORY_ENABLED:
+        return _book_tan(float(x))
+    return math.tan(float(x))
 
 def vg_asin(x):
     if OP_THEORY_ENABLED:
@@ -805,8 +823,6 @@ def vg_acos(x):
     if OP_THEORY_ENABLED:
         return ot_acos_via_arcics(x)
     return math.acos(max(-1.0, min(1.0, float(x))))
-
-
 
 def ot_band(x):
     ax = abs(float(x))
@@ -1512,42 +1528,56 @@ def operator_theory_enabled():
     return OP_THEORY_ENABLED
 
 def book_isn(x):
-    return 2.0 * math.sin(0.5 * float(x))
+    return _book_cyclic_isn(float(x))
 
 def book_ics(x):
-    return 2.0 * math.cos(0.5 * float(x))
+    # Compatibility companion name maps to the book X component.
+    return _book_isx(float(x))
+
+def book_isx(x):
+    return _book_isx(float(x))
+
+def book_isy(x):
+    return _book_isy(float(x))
 
 def book_isn_inv(y):
-    a = max(-1.0, min(1.0, 0.5 * float(y)))
-    return 2.0 * math.asin(a)
+    return _book_isn_inv(float(y))
 
 def book_ics_inv(y):
-    a = max(-1.0, min(1.0, 0.5 * float(y)))
-    return 2.0 * math.acos(a)
+    return _book_ics_inv(float(y))
 
 def ot_sin_via_isn(x):
-    return 0.5 * book_isn(2.0 * float(x))
+    # Forward trig equivalence is direct isy, not the legacy 2*sin(x/2) route.
+    return _book_isy(float(x))
 
 def ot_cos_via_ics(x):
-    return 0.5 * book_ics(2.0 * float(x))
+    return _book_isx(float(x))
+
+def ot_tan_via_isx_isy(x):
+    return _book_tan(float(x))
 
 def ot_asin_via_arcisn(y):
     y = max(-1.0, min(1.0, float(y)))
-    return 0.5 * book_isn_inv(2.0 * y)
+    return 0.5 * _book_isn_inv(2.0 * y)
 
 def ot_acos_via_arcics(y):
     y = max(-1.0, min(1.0, float(y)))
-    return 0.5 * book_ics_inv(2.0 * y)
+    return 0.5 * _book_ics_inv(2.0 * y)
 
 def vg_sin(x):
     if OP_THEORY_ENABLED:
-        return ot_sin_via_isn(x)
+        return _book_isy(float(x))
     return math.sin(float(x))
 
 def vg_cos(x):
     if OP_THEORY_ENABLED:
-        return ot_cos_via_ics(x)
+        return _book_isx(float(x))
     return math.cos(float(x))
+
+def vg_tan(x):
+    if OP_THEORY_ENABLED:
+        return _book_tan(float(x))
+    return math.tan(float(x))
 
 def vg_asin(x):
     if OP_THEORY_ENABLED:
@@ -1650,7 +1680,7 @@ def graph_script_channels(script, t=0.0, slot=0, name="", function_names=("evalu
     env.update({
         "graph": type("Graph", (), ctx)(), "abs": abs, "min": min, "max": max, "sum": sum, "len": len,
         "range": range, "float": float, "int": int, "bool": bool, "round": round,
-        "sin": vg_sin, "cos": vg_cos, "isn": book_isn, "ics": book_ics,
+        "sin": vg_sin, "cos": vg_cos, "tan": vg_tan, "isn": book_isn, "ics": book_ics, "isx": book_isx, "isy": book_isy,
         "ot_sin_vec_equiv": vg_sin, "ot_cos_vec_equiv": vg_cos,
         "sqrt": math.sqrt, "exp": math.exp, "log": math.log, "log2": math.log2,
         "atan2": math.atan2, "floor": math.floor, "ceil": math.ceil,

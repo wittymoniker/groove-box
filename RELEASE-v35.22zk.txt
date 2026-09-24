@@ -1,0 +1,11 @@
+Mathematician's Groovebox v35.22zk — SHM verifier synchronization (2026-09-24)
+
+This fixes the false build failure:
+  FAIL: mountpoint-independent SHM bootstrap absent from final /init
+
+Cause: v35.22zj injected an /init carrying the v35.22zi mountpoint-independent marker, while its final verifier incorrectly demanded a v35.22zj-specific marker. The actual /dev/shm bootstrap was already present.
+
+v35.22zk removes that brittle version-marker dependency. Final validation now checks a stable SHM contract plus the actual /dev/shm tmpfs command, verifies no external `mountpoint -q` dependency, and still validates dynamic Groovebox UID/XDG_RUNTIME_DIR, allocation preflight, PID-1 supervision, strict Labwc session, local ffmpeg/ffprobe, storage/input/HDMI/EGL, and Install-to-SSD.
+
+Build: bash BUILD_ISO/RUN_ME_ZERO_STATE.sh
+Expected final ISO suffix: GAME-READY-v35.22zk.iso

@@ -1,0 +1,7 @@
+Mathematician's Groovebox v35.22zj
+2026-09-23
+
+sOS/BUILD_ISO first-boot fix: project-local ffmpeg + ffprobe are now baked
+from the coherent Debian runtime into /opt/groovebox/bin and revalidated again
+at final initramfs mastering. This preserves the local-only media contract while
+removing live network/write provisioning from the boot path.
