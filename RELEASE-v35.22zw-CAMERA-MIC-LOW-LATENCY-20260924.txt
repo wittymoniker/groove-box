@@ -1,0 +1,11 @@
+Mathematician's Groovebox / sOS v35.22zw — Camera/Mic Low-Latency Record Page
+Date: 2026-09-24
+
+- Record page paints before media discovery begins.
+- Mic/audio inputs enumerate first; camera and removable-media discovery are deferred until Camera Preview, Record Camera, Take Picture or Refresh Devices.
+- Camera preview redraw is capped near 12 FPS and uses FastTransformation; capture/recording FPS is unchanged.
+- Qt camera toImage conversion is skipped between preview/recording deadlines.
+- Mic level stays automatic and live, but drains QAudioSource at 20 Hz instead of waking the GUI for every PipeWire readyRead burst.
+- External recovery strip, hide/preserve window session, fast File Browser/Player-DJ, full media/Wi-Fi/HDMI stack and SSD installer lineage are retained.
+
+Expected ISO: Groovebox-sOS-x86_64-YYYYMMDD-GAME-READY-v35.22zw.iso

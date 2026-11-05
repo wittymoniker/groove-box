@@ -1,0 +1,19 @@
+Groovebox R28.4.50 HF20 — Scroll-safe controls and volume sync audit
+
+Changes
+- Wheel/trackpad scrolling over sliders, dials, spin boxes, double spin boxes, and combo boxes now scrolls the nearest containing QScrollArea rather than changing parameter values accidentally. If no scroll area contains the control, the wheel event is consumed safely.
+- Copied the same updated groovebox.py into BUILD_ISO/app-overlay-v35.22zz.
+- Confirmed Performance's synth Master Volume UI writes through the main app's shared master-volume state. This is intentionally distinct from hardware/system speaker volume; those are separate controls and must not be conflated.
+- Hardware-volume widgets use the shared sOS state file and poll for external changes, supporting synchronization across any simultaneously visible instances.
+
+Validation performed
+- Python syntax compilation.
+- Focused static contract tests for scroll routing, root/ISO overlay parity, Performance master-volume sharing, and hardware-volume state synchronization.
+- Existing Trigger All media-audition contract retained; this does not change or claim to fix the already-working speaker output path.
+
+Not claimed as complete
+- No GUI automation session or real-device run was available to verify every dialog/panel scrolls at every DPI.
+- No physical WAV/MP4 playback was performed. Trigger All's existing media-sample path remains a source-level change, not a runtime-verified codec/import repair.
+- Geometric synth levels have not been objectively loudness-matched across all content; their current independent trims are retained rather than replaced with unmeasured guesses.
+- Explorer expansion and a further threading performance change were not implemented in this focused HF20 package; these need separate behavior/performance validation.
+- No fresh ISO was built or booted.

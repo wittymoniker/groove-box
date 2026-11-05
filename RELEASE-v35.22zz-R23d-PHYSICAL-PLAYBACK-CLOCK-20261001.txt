@@ -1,0 +1,7 @@
+v35.22zz-R23d PHYSICAL PLAYBACK CLOCK — 2026-10-01
+
+- Leaves the now-working recording/capture path unchanged.
+- Fixes the Player/DJ safe-recovery bug that discarded the physical ALSA --audio-device endpoint after discovery.
+- Prefers direct ALSA plughw internal/analog playback parsed from `aplay -l`, retaining 48 kHz stereo conversion while bypassing stale Pulse/default aliases.
+- Treats mpv time-pos=None at startup as a clock failure and automatically restarts once on the physical playback endpoint.
+- Video detaches from audio only after normal and direct-physical recovery both fail.

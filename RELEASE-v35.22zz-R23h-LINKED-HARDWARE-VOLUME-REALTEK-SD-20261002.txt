@@ -1,0 +1,8 @@
+Mathematician's Groovebox / sOS v35.22zz-R23h
+
+- Adds linked Main + Performance hardware volume/mute controls.
+- Dell Latitude XF86 volume up/down/mute keys drive the same ALSA + PipeWire/Pulse state.
+- Initializes an effectively-silent restored system volume to 70% after PipeWire/WirePlumber is ready.
+- Playback preparation preserves the user's linked volume/mute state instead of resetting it.
+- microSD recovery keeps the Realtek reader awake, performs one safe rtsx_pci rebind if no block device appears, and keeps the root mount-request watcher alive even if udev monitoring exits.
+- Recording/input behavior is unchanged.

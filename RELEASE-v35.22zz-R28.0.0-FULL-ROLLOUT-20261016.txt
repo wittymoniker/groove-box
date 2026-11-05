@@ -1,0 +1,17 @@
+Groovebox / sOS v35.22zz-R28.0.0 — FULL ROLLOUT PATCH
+Date: 2026-10-16
+
+This release consolidates today's requested export/media/game-install, HDMI audio, UI-responsiveness, and removable-media inventory changes on the recovered R23r source lineage. It preserves known-good R23r/R8/R23p hardware/installer code and retains the R27.0.0/R27.0.1/R27.0.2 patches.
+
+User-facing updates:
+1. WebM output now chooses an available WebM-compatible audio encoder and validates audio presence before final publication.
+2. MP4/WebM output keeps a suffix-preserving temporary filename, validates duration/audio, atomically replaces the destination only on success, and cleans old partial artifacts without deleting final media.
+3. Frame generation runs on an independent background worker into a disk-backed PNG buffer with bounded progress notifications; FFmpeg encoding is polled so the GUI continues processing events while the external encoder runs.
+4. Game WAV/asset installation runs off the GUI thread with bounded progress messages, preventing a single expensive WAV synthesis from blocking the loading UI.
+5. Removable-media inventory now exposes whole-device/partition rows, filesystem, label, UUID, mountpoints, partition flags/type, and boot/EFI hints. Existing sOS privileged mount/format guardrails remain the only path for destructive actions.
+6. A startup project launcher offers Continue, Load Project, New Blank Project, Randomize New Project, and Save Current Project. File-association launches skip the launcher; `--skip-startup-launcher` is available for scripted launches.
+7. Existing HDMI/DP routing, media-player format recognition/fallbacks, export/install recovery, and preserved audio/mic/performance lineage are retained.
+
+Build/validation status: focused regression and compile checks pass; test WebM/MP4 encodes contain audio. Physical HDMI playback, actual Dell microSD operations, ISO boot/install, and full GUI/end-to-end testing remain unverified.
+
+Source lineage note: R24-R26 payloads were not present in the recovery workspace. R28.0.0 is a reconstructed consolidated release based on the recovered R23r archive plus preserved local patches; it is not claimed to be byte-equivalent to the missing R26 FULL3 payload.

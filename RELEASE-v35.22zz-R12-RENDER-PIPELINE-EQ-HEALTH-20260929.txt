@@ -1,0 +1,25 @@
+Mathematician's Groovebox / sOS v35.22zz-R12 — 2026-09-29
+
+Baseline: R10 native-resolution scrolling + Dell 3510 SOF/DMIC/storage recovery, retaining R9/R8/R7/R6 lineage.
+
+R12 performance / workflow pass:
+- System / Performance Health panel with render-buffer status, worker lanes, audio metrics, removable-device visibility, Recover Audio, Rescan SD/removable, and diagnostic export.
+- Shared authoritative float32 mixdown buffer reused by Play and audio/video export preparation when composition state is unchanged.
+- Playlist and sequencer planning copied concurrently on dedicated worker lanes; canonical write plans retain their own ordered lane.
+- PortAudio realtime playback remains its own callback thread; live-audio FX preparation and live-audio meter analysis use two separate support lanes.
+- Waveform and spectrum preparation remain latest-only worker lanes.
+- Video raster hot paths for line and dot drawing are NumPy-vectorized; independent bound-video object transforms use the video-object pool.
+- Per-export progress is shown during audio preparation, synth rows, video frame rendering, and final stitch.
+- Return to Main Window now hides the actual source tool window before restoring Main, including non-modal pages.
+
+Cross-media EQ:
+- Every instrument gains an 8-band EQ with Flat/Smile/Tilt/Bass/Air/Custom shapes, amount, Per-Instrument/Global scope, local-automation binding, and global-envelope binding.
+- Canonicals control EQ amount and band targets through the same canonical-authority preparation path used by synth controls.
+- EQ is applied to audio before the final master boundary and is projected into visual color/spatial/detail behavior and game-export composition metadata.
+- Flat/zero-depth EQ remains an exact no-op.
+
+Video stitching:
+- Recovery video/audio .part files remain beside the target while a render is incomplete.
+- After a successful stitched A/V export, all <stem>.audio.partNN.wav recovery files are deleted.
+- One final <stem>.audio.wav is retained beside the completed video by default.
+- Video .part segments and concat staging are also removed after a successful stitch.

@@ -1,0 +1,9 @@
+R27.0.0 — Export & Asset Install Recovery
+
+Base: v35.22zz-R23r (latest complete source archive currently recoverable)
+Date: 2026-10-16
+
+This reconstruction improves render publication safety and generated game-asset
+installation. See BUILD_REVISION-v35.22zz-R27.0.0-EXPORT-INSTALL-RECOVERY-20261016.txt
+for exact scope and validation caveats. R24-R26 patches were unavailable, so this
+is explicitly a new reconstruction release rather than a reproduced R26 FULL3.

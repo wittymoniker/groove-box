@@ -1,0 +1,10 @@
+Mathematician's Groovebox / sOS v35.22zv-R1 — verifier lineage sync
+Date: 2026-09-24
+
+Runtime identity remains v35.22zv. This R1 source-package correction fixes a historical
+v35.22zt verifier assumption that required the frozen zt video_clip_studio.py overlay
+to be byte-identical to the current project file. v35.22zv legitimately supersedes
+that file to add automatic live microphone metering while retaining all zt external-audio contracts.
+
+Current v35.22zv overlay verification remains byte-exact for groovebox.py and video_clip_studio.py.
+No runtime/UI/audio/install behavior was changed by R1.

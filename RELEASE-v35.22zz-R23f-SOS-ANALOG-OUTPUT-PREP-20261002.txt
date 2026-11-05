@@ -1,0 +1,6 @@
+Mathematician's Groovebox / sOS v35.22zz-R23f — sOS analog output preparation
+
+- On sOS, System default playback now prefers the internal physical analog ALSA endpoint when present; explicit HDMI/USB/Pulse selections still override it.
+- Before direct physical playback, Groovebox initializes ALSA/UCM playback state, enables the UCM Speaker route when available, disables stale Auto-Mute, and unmutes Master/Speaker/PCM controls. Capture controls are untouched.
+- PortAudio output selection on sOS now ranks physical analog/SOF/HDA/PCH endpoints above PipeWire/Pulse/HDMI defaults, so synth/sample preview uses the same physical-speaker preference as the media player.
+- R23e storage/recording fixes are retained unchanged.

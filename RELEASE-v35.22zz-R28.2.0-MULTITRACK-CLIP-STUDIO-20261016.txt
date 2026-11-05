@@ -1,0 +1,11 @@
+Groovebox v35.22zz-R28.2.0 — Multitrack Clip Studio
+
+Additive feature: a separately opened, lazy-loaded multitrack audio/video timeline.
+- Import multiple local audio/video sources.
+- Per-clip timeline start, source in/out boundaries, track/layer order, gain, opacity and mute.
+- Non-destructive JSON timeline save/load.
+- MP4 render with stacked video layers and mixed audio, using Groovebox-local FFmpeg.
+- Existing record/import/draw studio and Performance/audio paths are not rewritten; new editor is opened only on request.
+
+Validation scope: Python syntax compilation, source/ISO-overlay parity and feature-contract tests.
+Not yet validated here: live Qt GUI interaction, actual FFmpeg renders on target hardware, or physical ISO boot.

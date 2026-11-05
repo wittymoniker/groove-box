@@ -1,0 +1,5 @@
+Groovebox R28.4.50 HF13
+
+Fixes the v35.22 verifier contract regression from HF12: PyQt6.QtWebEngineWidgets and PyQt6-WebEngine remain explicitly listed as OPTIONAL dependencies for browser provisioning, but are excluded from the mandatory startup import probe because QtWebEngine/Chromium initialization can time out on Fedora.
+
+Audio note: the hardware-volume first-launch default remains 72% intentionally; do not force 100% to mask audio routing. Trigger All currently submits its generated mixed buffer through the existing audio submission path. Hardware output, Trigger All audibility, and thread scheduling still require live runtime testing.

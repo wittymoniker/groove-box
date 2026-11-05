@@ -1,0 +1,21 @@
+Mathematician's Groovebox / sOS v35.22zz-R16 — Physical Audio I/O Acceptance
+2026-09-30
+
+R16 adds a target-hardware acceptance test rather than treating enumeration as proof of working audio.
+
+Performance -> Hardware -> Physical Audio I/O Test:
+- rejects Dummy/Null outputs and monitor/loopback inputs;
+- chooses a real PortAudio/PipeWire output + microphone;
+- validates a 48 kHz full-duplex stream;
+- plays a short 997 Hz test tone at modest level;
+- records the microphone simultaneously;
+- measures microphone RMS and peak;
+- measures captured 997 Hz energy relative to nearby room-noise spectrum;
+- PASS requires actual acoustic/electrical return of the emitted tone.
+
+The test runs on a worker pool, never the Qt GUI thread. It does not change canonical state.
+It is also available at /usr/bin/sos-audio-io-test in sOS.
+
+No claim is made that the Dell Latitude hardware has already physically passed inside the build environment; that proof is intentionally generated on the booted target by this test.
+
+Retained lineage: R15 EFI/VFAT/NLS installer closure; R14 audio/video/Performance/microSD; R13a ext4 source revalidation; R10/R9 concurrency + SOF audio; R8 installer console quieting; R7 microSD; R6 player/event-loop.

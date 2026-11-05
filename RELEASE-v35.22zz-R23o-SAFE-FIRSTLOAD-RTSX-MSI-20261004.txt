@@ -1,0 +1,5 @@
+Mathematician's Groovebox / sOS v35.22zz-R23o
+- Fixes zero-state build failure: storage readiness no longer unbinds an active Realtek PCI controller.
+- Applies rtsx_pci msi_en=0 before the reader first binds.
+- Runtime recovery repairs only the rtsx_pci_sdmmc platform child and reprobes unbound devices.
+- R23n hardware-UCM speaker/mic and sample-proven mic lineage retained.

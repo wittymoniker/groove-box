@@ -1,0 +1,29 @@
+Groovebox R28.4.50 HF28.1 — QTimer constructor-scope crash fix
+
+Confirmed crash from the Run_hybrid HF28 log:
+  UnboundLocalError: cannot access local variable 'QTimer' where it is not associated with a value
+  at QTimer.singleShot(0, self._main_window_relaunch_filter.ensure_window_strip)
+
+Root cause
+  MathematiciansGrooveboxApp.__init__ imported QTimer inside a later try block.
+  Python treats that name as local throughout the whole constructor, so the earlier
+  HF28 QTimer.singleShot call failed before the UI was constructed.
+
+Fix
+  Use the already-present module-level PyQt6.QtCore.QTimer import; remove the
+  constructor-local import and keep both early hardware-prime callbacks intact.
+  Synchronized root groovebox.py and the active HF28 ISO app-overlay copy.
+  Re-synchronized active ISO overlay performance.py with root source; the previous
+  overlay copy was stale and failed the existing release-integrity check.
+
+Validation in this environment
+  - Python AST parse / bytecode compilation: passed.
+  - Focused QTimer scope and active-overlay sync tests: passed.
+  - Existing HF25 release-integrity tests: passed.
+  - Combined targeted suite: 13 passed (QTimer scope, HF25 release integrity, R28 rollout contract).
+  - run_hybrid.sh shell syntax check: passed.
+
+Limitations
+  A complete GUI session, physical hardware test, ISO rebuild, and Dell live-boot
+  test are not claimed here. Re-run Run_hybrid on the patched source to verify the
+  original traceback is gone in the user's runtime environment.

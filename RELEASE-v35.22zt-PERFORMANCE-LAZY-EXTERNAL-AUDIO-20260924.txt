@@ -1,0 +1,32 @@
+Mathematician's Groovebox v35.22zt — Performance lazy-load + microphone/external audio
+Date: 2026-09-24
+
+Preserved baseline
+- v35.22zs full-system PipeWire/WirePlumber/NetworkManager/mpv/HDMI/camera runtime retained.
+- v35.22zr VFAT/NLS copyover installer and v35.22zq CRC32C/ext4 installer retained.
+
+Performance responsiveness
+- Video Clip Studio, Signal Lab and Web Browser are no longer constructed when Performance merely opens.
+- QMediaDevices camera/audio enumeration now occurs only after Record / Import / Draw Clip is selected or Refresh devices is pressed.
+- Nearby Groovebox UI polling starts only while Game / Wi-Fi is visible.
+- Hidden Device Manager, Hardware, Drive/Clone, Storage, .MG and Box tabs no longer schedule immediate hardware/filesystem scans.
+- Project-state restore no longer performs synchronous HDMI/Pulse/Bluetooth detection; saved routing names are applied on the next explicit device scan.
+
+Microphone / external audio
+- Audio input is independent of camera capture.
+- Internal microphones, headset/line inputs and class-compliant USB audio interfaces exposed through Qt/PipeWire are selectable.
+- Audio input preview has a live level meter.
+- New Record Audio Input button writes 16-bit WAV directly into the current project's recordings directory without requiring a camera.
+- Camera+audio recording uses the same selected input device.
+- Input selection survives save/load by the underlying device description rather than the decorated UI label.
+
+Validation
+- 22/22 focused Performance/WebEngine/camera/Wi-Fi/project-media/v35.22zt tests pass.
+- BUILD_ISO cumulative v35.22 verifier passes.
+- Dedicated v35.22zt source/overlay verifier passes.
+- The final remaster overlays the authoritative v35.22zt Performance and Video Clip Studio sources after the v35.22zs system-runtime stamp, so a reusable old runtime cache cannot reintroduce the slow code.
+
+Build
+  bash BUILD_ISO/RUN_ME_ZERO_STATE.sh
+Expected ISO
+  BUILD_ISO/dist/Groovebox-sOS-x86_64-YYYYMMDD-GAME-READY-v35.22zt.iso

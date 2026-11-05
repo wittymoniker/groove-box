@@ -1,0 +1,18 @@
+Mathematician's Groovebox / sOS v35.22zq — EXT4 CRC32C Install-to-SSD fix
+Date: 2026-09-24
+
+Hardware failure addressed:
+  EXT4-fs (nvme0n1p2): Cannot load crc32c driver
+  mount: /mnt/sos-install: fsconfig() failed
+
+Fix:
+  - Exact-kernel crc32c_generic / crc32c_intel / crc32c_x86_64 provider closure is injected into the final live initramfs when available.
+  - Installer explicitly loads CRC32C providers before ext4 and checks /proc/crypto for the crc32c algorithm BEFORE the erase confirmation.
+  - Installed-disk mini-initramfs also carries and loads the CRC32C providers before ext4.
+  - Final-image verifier refuses release unless a CRC32C provider exists and is depmod-resolvable.
+  - Existing threading, Performance, strict Wayland, input, storage, HDMI, EGL, ffmpeg, ext4, VFAT and NLS behavior is retained.
+
+Build:
+  bash BUILD_ISO/RUN_ME_ZERO_STATE.sh
+Expected ISO:
+  BUILD_ISO/dist/Groovebox-sOS-x86_64-YYYYMMDD-GAME-READY-v35.22zq.iso

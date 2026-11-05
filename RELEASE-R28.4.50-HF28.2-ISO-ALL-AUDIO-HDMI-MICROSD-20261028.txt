@@ -1,0 +1,53 @@
+Groovebox R28.4.50 HF28.2 — ISO-ready All Audio Devices + HDMI + MicroSD
+
+Build date: 2026-10-28
+
+Summary
+- Audio device menus are locked to "All detected outputs" so Performance,
+  Player, and Trigger All cannot diverge.
+- First play in the Performance window is primed the same way Trigger All is.
+- Hardware refresh primes the combined Pulse/PipeWire sink and unmutes
+  preferred ALSA/HDMI in the background for generic ISO and laptop boots.
+- MicroSD helper wakes generic SDHCI hosts (not only Realtek) and keeps
+  settle timeouts short for faster card visibility.
+
+Audio / All devices
+1. performance.py — Outputs tab + MediaPlayerWindow audio combos forced to
+   All detected outputs and disabled; _apply_output_routing always re-asserts
+   All; _play_path applies routing before external player launch.
+2. media_output_router.player_routing — None / empty / __all_detected__ all
+   take the aggregate path; when a combine sink exists, preferred physical
+   (incl. HDMI) is still prepared so digital mute is cleared; ALSA-only
+   fallback uses --volume=100 and never null; mpv audio-buffer 0.12s.
+3. hardware_runtime — parallel threads for removable rescan and
+   _prime_all_audio_route during first refresh; ensure_audio_ready also
+   kicks a non-blocking All/HDMI prime.
+
+HDMI
+- Existing DRM connector detection and aplay/proc PCM enumeration retained.
+- Preferred ALSA path prefers connected HDMI/DP when present.
+- Background prime prepares HDMI PCM when DRM reports connected.
+
+MicroSD / removable
+- sos-removable-media: remaining 3s udevadm settle capped to 2s; wake
+  sdhci-pci / sdhci-acpi hosts in addition to Realtek rtsx; MSI-safe load
+  order unchanged.
+
+ISO / most computers
+- Paths above do not depend on the Performance UI being opened first.
+- Works with PipeWire/Pulse when present, ALSA-only when not.
+- Initramfs already seeds rtsx_*, sdhci_*, mmc_*, fat/exfat/ntfs3 modules
+  (unchanged build scripts).
+
+Validation
+- py_compile passed for performance.py, media_output_router.py,
+  hardware_runtime.py (overlay + root).
+- Physical Dell Latitude 3510 / generic laptop ISO boot still required on
+  target hardware after packaging.
+
+Files touched
+- BUILD_ISO/app-overlay-v35.22zz/performance.py
+- BUILD_ISO/app-overlay-v35.22zz/media_output_router.py
+- BUILD_ISO/app-overlay-v35.22zz/hardware_runtime.py
+- BUILD_ISO/app-overlay-v35.22zz/sos-removable-media-v35_22zz_r7
+- Matching root copies under groovebox_rebuild_work/

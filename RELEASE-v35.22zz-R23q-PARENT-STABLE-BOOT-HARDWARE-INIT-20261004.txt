@@ -1,0 +1,6 @@
+Mathematician's Groovebox / sOS v35.22zz-R23q
+- Retains R23p authoritative boot audio/mic/volume initialization.
+- Removes every Realtek PCI parent unbind/unload from canonical storage readiness.
+- Applies rtsx_pci msi_en=0 only on first load.
+- MMC recovery is limited to rtsx_pci_sdmmc child probe/bind plus MMC/block uevents.
+- Final initramfs stamp rejects any reintroduced parent unbind.

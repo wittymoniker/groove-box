@@ -1,0 +1,8 @@
+Mathematician's Groovebox / sOS v35.22zz-R23n — 2026-10-04
+
+- Fixes SOF-HDA UCM selection by addressing the real hardware card as hw:N before card-id fallbacks.
+- Speaker UCM therefore targets the physical card profile instead of a sofhdadsp virtual/conf lookup that can silently miss Speaker.
+- Performance Audio Input now promotes UCM's exact Internal Microphone CapturePCM when available.
+- ALSA mic meter accepts only a capture route that produces real PCM bytes and adapts across 48/16 kHz and 2/4/1-channel DMIC modes.
+- If a Realtek PCIe reader still creates no MMC host, only that reader is reset and rtsx_pci is reprobed once with msi_en=0 before the SD/MMC platform child is rebound.
+- R23l fixed Performance controls/browser isolation and R23m UCM Speaker PCM / SDMMC-platform lineage remain retained.

@@ -1,0 +1,7 @@
+v35.22zz-R23i — Latitude 3510 HDA/ALC3204 + Realtek SD LUN
+
+- Normal live/install/scode boot now selects Intel HDA (dsp_driver=1), matching Dell Latitude 3510 documentation for Intel HDA + Realtek ALC3204.
+- SOF remains a bounded fallback only when HDA fails to expose a playback PCM.
+- Realtek SD cards exposed as fixed-flag sdX LUNs are recognized by sysfs/udev ancestry instead of requiring removable=1.
+- Adds safe rtsx_usb interface rebind alongside existing rtsx_pci recovery.
+- Retains R23h linked hardware volume/media keys and all recording/file-manager behavior.

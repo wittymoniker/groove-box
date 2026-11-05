@@ -1,0 +1,16 @@
+Mathematician's Groovebox / sOS v35.22zz-R8 — Installer Console Quiet
+2026-09-29
+
+Fixes the Dell Latitude Install-to-SSD screen where repeated:
+  atkbd serio0: Unknown key pressed ...
+messages could overwrite the whole-disk target and ERASE prompts.
+
+R8 behavior:
+- Installer continues to read/write directly from the active Linux virtual console.
+- While the installer owns that console, kernel console_loglevel is temporarily capped at 4.
+  KERN_WARNING/info/debug chatter (including the harmless atkbd extended-key warnings) is hidden.
+- KERN_ERR and more severe kernel faults remain visible.
+- The exact previous /proc/sys/kernel/printk settings are restored when the installer returns.
+- The active final-initramfs stamp now re-injects the installer wrapper, preventing stale-cache regressions.
+- v35.22zr CRC32C/ext4/VFAT SSD install/copyover behavior is unchanged.
+- v35.22zz-R7b removable Copy Over, R7 microSD, R6 Performance/player, R4 Dell HDA, and v35.22zt+ media/session behavior are preserved.

@@ -1,0 +1,46 @@
+Mathematician's Groovebox v35.22za — Author book-series correction + Rust/sCode optimization — 2026-09-22
+
+v35.22za builds on v35.22z and corrects the book-trig definition/tests to the author-written summation-series contract.
+
+RUST EXECUTION
+- `auto` now prefers Rust, with C++ then NumPy/Python as deterministic fallbacks.
+- Filled the native ABI that Python already expected: phase integration, accumulation,
+  OT division/apply, Meum-space, and Meum/book trig in addition to voice/modulation.
+- Added bounded O(n) boxcar context and bounded overlap-add finite-kernel convolution.
+- Added exact existing-orientation Euclidean generation and deterministic SplitMix64 utility.
+- Large independent vector kernels use a bounded standard-library worker pool width.
+- Rust crate has no third-party dependencies and keeps Cargo.lock deterministic.
+- Rust build runs release unit/parity tests before producing the cdylib.
+
+SCODE EXECUTION POLICY
+- ABI remains 9.
+- Planner emits rust_plan_abi=1, rust_workers, rust_fft_block, rust_stream_chunk,
+  and rust_native_threshold while retaining all prior pool/scheduler fields.
+- Bundled compact stage-0 self-test now tests the actual supported optimizer/pool
+  surface instead of incorrectly treating stage-0 as the full arbitrary-sCode interpreter.
+
+SEMANTIC SAFETY
+- Book isn is defined directly by the author-selected sum Σ(-1)^n x^(2n+1)/(2^(2n)(2n+1)!), not by calling sine.
+- Book ics uses its direct even-power companion series. Both principal inverses use
+  Maclaurin/binomial inverse-series kernels; Rust book modes call no std sin/cos/asin/acos.
+- Operator Theory routes call the same book-series definitions rather than redefining them.
+- Euclidean Rust execution preserves the current Groovebox phase/orientation exactly.
+- No reference-build hidden limiter was imported; master hard-clip policy is unchanged.
+- No alternate EQR/lattice formula replaces Groovebox's established DSP.
+
+EXECUTABLE BUILD KIT
+- Fixed direct BUILD_KIT/build.py root-module imports used by --doctor/build helpers.
+- Linux/macOS shell launch/build scripts pass shell syntax checks and executable bits
+  are normalized, including appliance_tools/BUILD_AND_BURN_MACOS.command.
+- Rust is compiled/tested by the common build.py before PyInstaller packaging.
+- QtWebEngine import gate remains in place before packaging.
+
+ISO
+- Retains one-pass bounded-memory Rust newc scanner, pooled manifest, concurrent
+  verifier fan-out, strict one-Labwc Wayland, EGL/i915/HDMI, recovery and Install-to-SSD.
+- Cargo builds remain isolated from the source tree under sudo.
+
+Validation in the packaging environment: 27 focused project contracts/scripts plus
+cumulative v35.22 ISO source validation passed. Cargo/rustc are not installed in the
+packaging container, so the Rust crate cannot be compiled here; the actual release
+builder will compile and run the included Rust unit tests on the target build host.

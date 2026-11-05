@@ -1,0 +1,21 @@
+Mathematician's Groovebox / sOS — v35.22zz-R28.3.0
+Date: 2026-10-16
+
+R28.3.0 implementation update:
+- Added Patch Motion / Performance Matrix dialog accessible from the main window.
+- Added eight per-route canonical patch controls: source, destination, signed depth percentage, rate percentage, direction (forward/reverse/ping-pong/random/drift), clock division, and enabled state.
+- Added an 8-scene × 8-slot sequence matrix. Cells select an assigned sequence bank without overwriting patterns; transport remains under user control.
+- Added per-step signed MOD amount and destination to the automation step editor. MOD can address vector X/Y/Z, wavetable phase/fold, EQ low/mid/high, pitch, amplitude, filter cutoff and resonance.
+- Patch motion state is included in project save/load. The render-side control-rate modulation path is deterministic and bounded, and route rates/directions/depths combine with per-step MOD when a route targets the selected parameter.
+- Aligned active mpv runtime arguments with the R20/R22 low-latency verifier contract: 1-second cache, 1-second demuxer readahead, 32 MiB demuxer cap, and cache-pause disabled.
+- Updated stale R19/R22 checks so they validate the active bounded runtime arguments and current R23r/R28 lineage rather than obsolete historical values.
+- Added final-initramfs release-gate checks for the new modulation/matrix feature, project persistence, and bounded media-player arguments.
+
+Validation performed in this workspace:
+- Python syntax compilation: PASS for groovebox.py and performance.py.
+- Shell syntax: PASS for all BUILD_ISO/*.sh scripts.
+- R19, R20, R21, R22, R23, and R28.3 contract checks: PASS.
+- Full Qt GUI interaction, physical audio, complete ISO build, ISO boot, and SSD installation: NOT RUN / NOT VERIFIED in this workspace. PyQt6 is not installed here, and the extracted build kit does not include the populated runtime-cache/initramfs and kernel payload required for a real final ISO build.
+
+Baseline protections:
+- Retain the known-good R8 installer lineage and R35.22zt/R28 current runtime/audio lineage. This release does not claim that the physical ISO has been built or boot-tested.

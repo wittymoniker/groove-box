@@ -1,0 +1,21 @@
+Mathematician's Groovebox — R28.4.50 HF23
+Date: 2026-10-28
+
+Implemented in this focused update
+- Added chord-note count − / + and numeric controls directly to the floating Step/Automation teleport inspector.
+- Main sequencer and teleport inspector now share the same sequence-local chord-note handler; no separate shadow voicing state is used.
+- Teleport context refresh now reloads the chord count from the selected instrument/sequence after instrument and sequence selection is applied.
+- The selected sequence's authored chord intervals remain deterministic and are persisted through the existing canonical sequence runtime path.
+- Synchronized BUILD_ISO/app-overlay-v35.22zz/groovebox.py byte-for-byte with the active groovebox.py.
+
+Validation performed
+- Python compile: groovebox.py, performance.py, audio_os_backend.py, media_output_router.py, spatial_synth_engines.py — PASS.
+- Focused chord/teleport contract + existing chord budget + spatial synth pure-function tests: 14 passed.
+- Active source and ISO overlay SHA-256 match: a7e301e0399acbe57d62f770ec066defee13b5d71981195afd4215e880b5b1dc.
+
+Not claimed complete by this HF23 patch
+- No live PyQt GUI test was possible in this environment; PyQt6 runtime availability is a known constraint.
+- No physical audio device route probing or hardware audition was performed in this patch.
+- HF20 wheel protection remains the global event-filter implementation; this patch did not add a live GUI wheel-event matrix for every dynamically-created widget.
+- Spatial synth helper functions remain pure deterministic algorithms; full parameter UI / canonical persistence / live playlist and performance-panel integration is not certified complete by this patch.
+- No full ISO build or boot test was run.

@@ -1,0 +1,55 @@
+Mathematician's Groovebox / sOS v35.22zs validation
+Date: 2026-09-24
+Scope: full-system media/network appliance layer on the hardware-successful v35.22zr installer lineage.
+
+Preserved baseline
+  PASS: v35.22zr VFAT nls_ascii + UTF-8 EFI mount + existing-sOS GPT copyover contracts retained.
+  PASS: v35.22zq CRC32C/ext4 install contracts retained.
+  PASS: strict one-Labwc + one-Wayland-client session, PID-1 supervisor, SHM/XDG, threading/Performance, WebEngine, HDMI/EGL and local ffmpeg/ffprobe contracts retained.
+
+v35.22zs full-system provisioning
+  PASS: runtime cache now invalidates unless it contains NetworkManager/nmcli, WPA support, Intel iwlwifi firmware, PipeWire, pipewire-pulse, WirePlumber, libcamera SPA, V4L tools, ALSA tools, mpv, ffmpeg/ffprobe, D-Bus and sudo.
+  PASS: NetworkManager hotspot dependencies dnsmasq-base + iptables are explicit despite --no-install-recommends.
+  PASS: coherent Debian PyQt6/Qt6 ABI remains authoritative; no wheel-bundled second Qt stack is introduced.
+  PASS: Qt capture API imports QMediaDevices, QCamera and QAudioSource during runtime construction.
+
+Exact-kernel hardware closure
+  PASS: new final-stage bundler requires UVC/V4L2 webcam modules.
+  PASS: requires ALSA PCM + USB audio and either Intel HDA or Intel SOF laptop-audio path.
+  PASS: requires cfg80211 + mac80211 + iwlwifi + iwlmvm for the target Intel Wi-Fi path.
+  PASS: dependency closure is copied from the exact ISO kernel module tree and depmod is rerun.
+  PASS: existing Intel i915 + HDMI codec/display closure remains unchanged.
+
+Boot/session behavior
+  PASS: new root-side sos-system-media-ready helper creates system D-Bus and the groovebox user's session D-Bus under the dynamic XDG runtime directory.
+  PASS: NetworkManager is started explicitly under custom PID 1 before Groovebox launches.
+  PASS: PipeWire -> WirePlumber -> pipewire-pulse session is started before Qt launches and is validated through pactl.
+  PASS: /dev/video*, /dev/media* and /dev/snd/* permissions are normalized for the groovebox user's video/audio groups.
+  PASS: physical camera/mic/Wi-Fi hardware may be absent without blocking boot; missing service infrastructure is fatal.
+  PASS: launcher passes DBUS_SESSION_BUS_ADDRESS, PULSE_SERVER and QT_MEDIA_BACKEND=ffmpeg to the unprivileged Groovebox client.
+
+DJ / media / export / HDMI / Wi-Fi
+  PASS: mpv is mandatory in the runtime so Groovebox Player/DJ Decks get their preferred live-control backend instead of plain ffplay fallback.
+  PASS: local /opt/groovebox/bin/ffmpeg + ffprobe export contract is retained.
+  PASS: existing media_output_router HDMI/DP display selection and PipeWire/Pulse/ALSA audio-sink routing contracts retained.
+  PASS: existing Groovebox Wi-Fi UI and Direct Wi-Fi hotspot use nmcli/rfkill through a narrowly scoped sudo bridge; the rest of Groovebox stays unprivileged.
+
+Validation executed here
+  PASS: BUILD_ISO/verify_v35_22.py cumulative source verifier.
+  PASS: v35.22r Install-to-SSD source verifier.
+  PASS: v35.22zq CRC32C installer verifier.
+  PASS: v35.22zr VFAT/copyover verifier.
+  PASS: v35.22zf PID-1 supervisor verifier on the active /init source.
+  PASS: shell syntax on active bootstrap, runtime setup, session launcher, media readiness helper, active runners, v35.22zs final stamp and master.
+  PASS: Python compile on v35.22zs runtime-cache verifier and exact-kernel media/network bundler.
+  PASS: synthetic initramfs exercise of the v35.22zs full-system runtime-cache verifier.
+  PASS: 18/18 focused pytest contracts: appliance Wi-Fi, camera hard release, camera idle/lag, Performance thread lifecycle, project media.
+
+Hardware/build limitation
+  NOT RUN HERE: final multi-hundred-MB ISO build, physical Qt camera/microphone enumeration, Wi-Fi association/hotspot, HDMI sink playback, or destructive SSD install. The source archive contains no completed runtime cache/exact-kernel module payload. Run the normal builder on the Fedora machine; v35.22zs will rebuild a stale cache and the final stamp will refuse release if the required userspace/firmware/kernel-module closure is missing.
+
+Build command
+  bash BUILD_ISO/RUN_ME_ZERO_STATE.sh
+
+Expected ISO
+  BUILD_ISO/dist/Groovebox-sOS-x86_64-YYYYMMDD-GAME-READY-v35.22zs.iso

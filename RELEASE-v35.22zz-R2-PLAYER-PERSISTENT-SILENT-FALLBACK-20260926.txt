@@ -1,0 +1,15 @@
+Mathematician's Groovebox / sOS v35.22zz-R2
+PLAYER-PERSISTENT-SILENT-FALLBACK — 2026-09-26
+
+- Player/DJ Deck A no longer tears down and reopens mpv between playlist videos.
+- Next/Prev/double-click and automatic EOF advance use mpv IPC loadfile/replace in the same process/window.
+- mpv remains open across EOF and Groovebox detects eof-reached through IPC to advance the queue.
+- End of queue retains the player window and resets to a paused/replayable state.
+- mpv is launched with --audio-fallback-to-null=yes so missing/unavailable speaker routing can degrade to silent video instead of freezing playback.
+- Explicit user Stop still terminates the deck normally.
+- v35.22zz Performance/Hardware/Rust ISO, Dell audio fallback detection, zU historical verifier fix, camera/mic low-latency, and Install-to-SSD lineage are retained.
+
+Validation:
+PASS: verify_v35_22zu.py
+PASS: verify_v35_22zz.py
+PASS: 17/17 focused pytest contracts

@@ -1,0 +1,22 @@
+Mathematician's Groovebox / sOS v35.22zz-R5 — Performance Memory + Hidden-Work Efficiency
+Date: 2026-09-27
+
+Built directly on v35.22zz-R4 Dell Latitude 3510 HDA Audio.
+
+Changes
+- Fix retained Performance close/hide path: hidden Performance now suspends its own timers, servers, selected-media process, and idle capture resources before the window is reused.
+- Preserve the separate persistent Player/DJ child window and its loadfile/reuse behavior.
+- Build only Playlist, Parametric Remix, and Info eagerly; 14 secondary Performance workspaces are first-use lazy.
+- Record workspace releases idle mic/camera preview resources when another Performance tab is selected; active recordings/snapshots are not interrupted by tab switching.
+- Default All/Name file browsing no longer launches ffprobe against every video in the folder; stream probing remains on-demand for stream-kind filtering/sorting and explicit media actions.
+- Performance fallback worker pool reduced from 4 threads to 2.
+- Performance stream-kind cache capped at 256 entries; signal-analysis cache capped at 128 entries; File Manager stream-kind cache capped at 256 entries.
+- Ambient Performance background reduced from ~5.5 FPS to ~2.5 FPS.
+- Persistent Player/DJ EOF poll is inactive while Deck A is idle/paused and starts only during active Deck A playback.
+- Close button now routes through the same suspend-aware close path as the window manager.
+
+Preserved
+- v35.22zz-R4 Dell Latitude 3510 legacy-HDA/Realtek audio correction.
+- Persistent Player/DJ same-window playlist load/reload behavior.
+- v35.22zx encoded-camera-packet fast path and v35.22zw low-lag camera/mic work.
+- File Move / Copy Over, Qt hardware detection, full-system and Install-to-SSD lineage.

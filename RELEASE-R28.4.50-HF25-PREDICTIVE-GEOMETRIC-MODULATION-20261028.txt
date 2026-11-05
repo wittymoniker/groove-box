@@ -1,0 +1,47 @@
+Mathematician's Groovebox — R28.4.50 HF25
+Predictive geometric modulation, per-note chord features, and ISO build resilience
+Build date: 2026-10-28
+
+WHAT IS INCLUDED
+
+1. Chord-slot editing and note-level controls
+- Chord count remains synchronized between the sequencer and floating STEP/Automation teleport inspector.
+- Previous/next navigation, direct slot selection, and interval editing operate on the currently selected instrument/sequence.
+- Each active chord note has independent sliders for semitone interval, fine cents, velocity, gate %, probability %, timbre %, attack %, and release %.
+- Note feature data is sequence-local, included in canonical sequence-runtime writes and project snapshots, and retained when the visible chord count is reduced then increased.
+- Pitch, fine tuning, velocity, gate, deterministic probability, per-note attack/release, and timbre are connected to the renderer; chord-slot pitch/envelope/timbre tracks share the same deterministic subdivision.
+- The canonical note budget remains bounded to 512 notes across the participating ensemble. Slot controls clamp safely to the active budget.
+
+2. Geometric synth engines and shared ensemble modulation
+- Vector, wavetable, bouncing-ball, and cellular geometric carriers render as single-note global sources using the global base-frequency anchor.
+- The four carriers exchange bounded cross-modulation symmetrically; none is made the priority/master lane.
+- A canonical, project-persisted ensemble modulation amount is available from 0–50%. Ensemble energy/onsets and BPM guide deterministic beat-aware lane scheduling; the ensemble reference modulates geometric carriers, and the normalized geometric carrier lane modulates both canonical and user ensemble buses with a bounded gain.
+- Existing individual geometric mixer trims and cross-modulation settings persist through project save/restore.
+- Spatial/shared synth context, Performance publishing, instrument identity anchors, and geometric carriers use the same global base-frequency policy. Instrument identity ratios now record the base frequency against which their absolute identity was authored, avoiding the historical implicit 432 Hz denominator for projects authored at another base frequency.
+- Cellular carrier generation is vectorized for the supported grid/generation limits, avoiding nested Python cell loops in the render path.
+
+3. Threading and deterministic canonical writes
+- Canonical engine preparation uses persistent single-worker lanes per engine.
+- Engine preparation receives immutable seed inputs; canonical project writes still commit in deterministic sorted order on the control thread.
+- Existing worker-pool teardown remains in the application close path.
+
+4. Build/download resilience and packaging integrity
+- Debian package-index reads use longer timeouts and retries. Package archives use 360-second socket timeouts, bounded retries, expected-size/SHA-256 validation, and partial-file cleanup.
+- BusyBox, kernel and kernel-module staging paths use expanded transfer timeouts/retries. The legacy v32q copy-tools helper was brought into line with the active v32t helper to avoid a short-timeout fallback trap.
+- The main application sources and the v35.22zz ISO overlay are synchronized for groovebox.py, performance.py, shared_synth_context.py, and spatial_synth_engines.py.
+- Wheel events on sliders, dials, spin boxes, double spin boxes, and combo boxes remain protected from accidental value changes during scrolling.
+
+VALIDATION PERFORMED IN THIS ENVIRONMENT
+- 48 focused tests passed across chord controls/features, per-note rendering, shared base-frequency propagation, geometric cross-modulation, wheel safety, canonical note budget, spatial helper behavior, and ISO timeout/overlay contracts.
+- Python compilation passed for groovebox.py, performance.py, audio_os_backend.py, media_output_router.py, shared_synth_context.py, spatial_synth_engines.py, and active ISO download helpers.
+- The v35.22zz R9 ISO contract verifier passed all 13 checks, including canonical per-engine lanes and deterministic canonical commits.
+- The active Groovebox, Performance, shared-context, and spatial-synth files match their ISO overlay copies byte-for-byte.
+- Maximum configured 64x64 / 256-generation cellular carrier produced finite deterministic output in an approximately 0.03-second local helper test (environment-specific measurement, not a real-time guarantee).
+
+NOT CLAIMED / TARGET-HARDWARE ACCEPTANCE STILL REQUIRED
+- PyQt6 is not installed in this environment, so no live Qt widget/event-loop test was run.
+- Physical audio-device enumeration, real speaker/headphone output, and WAV/MP4 playback/open testing were not performed here.
+- A complete ISO image was not built and booted on a physical or virtual target during this package validation.
+- The Wasmer full-site ZIP is prepared as a deployable package; it is not evidence that the live host has been updated.
+
+Recommended final acceptance on the target machine: open an existing project with a non-432 Hz base, change the base and confirm all canonical/shared/geometric carriers follow it; edit all eight per-note sliders on several chord slots, reduce then restore chord count, save/reload, and confirm values/rendering; test ensemble modulation at 0%, a midpoint, and 50%; test slider/dial/spin/combo wheel scrolling inside and outside scroll areas; then probe physical audio endpoints and actual media playback; finally build and boot the ISO.

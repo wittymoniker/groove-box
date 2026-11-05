@@ -1,0 +1,6 @@
+Mathematician's Groovebox / sOS v35.22zz-R18 — 2026-09-30
+
+- Canonical render/export sample rate is unchanged (including 192 kHz). Physical playback alone negotiates the highest supported device rate: requested -> 192 -> 96 -> 48 -> 44.1 kHz -> device default, then resamples only the hardware-bound copy.
+- Physical Audio I/O Test now negotiates the highest common input/output rate instead of failing PortAudio -9997 on one fixed rate.
+- File Manager forwards the selected /dev/mmcblk* device to the root automounter. The helper performs bounded Realtek/MMC partition-settle retries and repeated mount attempts; USB behavior is retained.
+- Main-window responsiveness is prioritized: Performance/File Browser secondary pools are capped at 2-3 workers rather than each consuming up to 8, while device/player workers remain isolated. Main monitor repaint requests move from 20 fps to ~15 fps with existing latest-only waveform/FFT/render workers retained. DSP, audio callbacks, canonical math, rendering, export, and game state are unchanged.

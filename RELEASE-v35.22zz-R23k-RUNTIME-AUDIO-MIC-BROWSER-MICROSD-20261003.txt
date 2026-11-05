@@ -1,0 +1,26 @@
+Mathematician's Groovebox / sOS v35.22zz-R23k
+RUNTIME-AUDIO-MIC-BROWSER-MICROSD
+Date: 2026-10-03
+
+R23k is a runtime-fix release built on the R23j1 verifier-synchronized lineage.
+
+FIXES
+- Microphone live level: resolves the selected input by stable device name in the GUI process rather than reusing a PortAudio integer obtained in the isolated device-probe process.
+- Microphone continuity: level is updated directly from the sounddevice callback; stale/inactive streams are restarted instead of remaining nominally open with a frozen meter.
+- Physical playback: ranks real ALSA playback endpoints, strongly prefers the same physical card used by hardware volume, penalizes HDMI/digital-only endpoints for laptop-speaker playback, and proves that aplay remains open before attaching FFmpeg.
+- Web Browser tab: first navigation is deferred until after the tab can paint, and the QWebEngineView/profile/renderer is retained when leaving the tab rather than being stopped/evicted and recreated.
+- microSD reader rescan: removes reader-only automatic rescans, bounds explicit reader discovery to four short attempts with one controlled Realtek rebind, and always returns the Rescan Reader button/UI to a completed state.
+
+PRESERVED
+- Dell Latitude 3510 HDA/ALC3204 first audio policy and linked hardware/system volume/media keys.
+- R23j universal FFmpeg -> 48 kHz stereo PCM -> physical ALSA fallback.
+- R23i Realtek SD reader support, removable storage UI, Install-to-SSD, camera/media, Performance, and prior sOS lineage.
+- Project/export sample rates remain unchanged; only physical playback is adapted to a compatible hardware boundary.
+
+BUILD
+  sudo ./BUILD_ISO/RUN_ME_ZERO_STATE.sh
+
+EXPECTED ISO IDENTITY
+  GAME-READY-v35.22zz-R23k-RUNTIME-AUDIO-MIC-BROWSER-MICROSD-HARDWARE-VOLUME-REALTEK-SD-R15-EFI-VFAT-NLS-DELL-3510
+
+Physical speaker, microphone, WebEngine compositor behavior, and Realtek microSD timing still require final validation on the target Dell Latitude 3510 hardware.

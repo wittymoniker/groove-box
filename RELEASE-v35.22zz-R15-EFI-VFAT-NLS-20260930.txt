@@ -1,0 +1,12 @@
+Groovebox/sOS v35.22zz-R15 — 2026-09-30
+
+SSD EFI filesystem closure fix on top of R14.
+
+- Preserves the complete R14 audio/video/Performance/microSD lineage.
+- Stages fat, vfat, nls_ascii, nls_cp437 and nls_utf8 from the exact kernel module tree.
+- Required loadable EFI modules are materialized as plain .ko files so the minimal live userspace does not depend on compressed-module support.
+- Regenerates modules.dep after staging.
+- Revalidates the module manifest, plain module files and modules.dep in the final R15 initramfs after every later overlay/repack stage.
+- The SSD installer keeps its pre-destructive strict preflight and adds an exact-running-kernel insmod fallback if modprobe cannot resolve a required EFI module.
+- /dev/sda boot/removable-media exclusion and the existing whole-disk validation remain unchanged.
+- Fix target: real-hardware rc=16: required EFI filesystem module nls_ascii is unavailable.

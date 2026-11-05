@@ -1,0 +1,53 @@
+Groovebox R28.4.50 HF26 — Dell Latitude 3510 hardware startup, Trigger All, HDMI, MicroSD
+
+Build date: 2026-10-28
+
+Goals addressed
+- Reduce hardware-related lag on first start of the built ISO on Dell Latitude 3510.
+- Ensure video and sound players use real audio hardware (including HDMI).
+- MicroSD (Realtek rtsx) path remains MSI-safe with shorter udev settle times.
+- Devices initialize without opening Performance: Trigger All and media open can get sound immediately after the brief background prime.
+- Threading: hardware scan prioritizes audio; other families run with fewer workers.
+
+Changes
+1. MathematiciansGrooveboxApp (groovebox.py, root + ISO overlay)
+   - After UI construction, two non-blocking QTimer callbacks (120 ms / 900 ms)
+     call _ensure_hardware_use so PortAudio/ALSA/PipeWire enumeration and the
+     removable-media rescan start in the background without blocking first paint.
+   - trigger_all_instruments_hit now calls _ensure_hardware_use("trigger-all")
+     before opening the persistent poly stream.
+
+2. hardware_runtime.py (root + ISO overlay)
+   - _scan_all refreshes the audio cache first, then scans audio synchronously
+     for the snapshot, then video/display/input on a 3-worker pool (was 4 equal).
+   - ensure_audio_ready forces one extra PortAudio snapshot when the cache is
+     still empty after cold boot (common on appliance PipeWire bring-up).
+
+3. media_output_router.py (root + ISO overlay)
+   - player_routing always runs _prepare_physical_alsa_output for ALSA targets,
+     including HDMI/DP. The prepare function already has an is_digital branch
+     that only unmutes iec958/spdif/hdmi/pcm controls and never activates
+     internal-speaker UCM. Previously HDMI targets skipped prepare entirely,
+     which left digital outputs muted on some Latitude + external display setups.
+
+4. sos-removable-media-v35_22zz_r7 (ISO overlay)
+   - udevadm settle --timeout=8 reduced to 3; timeout=4 reduced to 2.
+   - Marker HF26_MICROSD_FAST_SETTLE_DELL3510. MSI-off and power-on paths for
+     rtsx_pci on the 3510 reader are unchanged; only settle latency was cut.
+
+ISO builder
+- No changes required to master_final_iso_v35_22zz.sh or stamp scripts.
+- Overlay sources under BUILD_ISO/app-overlay-v35.22zz remain the authoritative
+  copy consumed by the ISO; root copies were kept in sync for desktop/hybrid
+  packaging contracts.
+
+Validation in this environment
+- py_compile passed for groovebox.py (root + overlay), hardware_runtime.py,
+  media_output_router.py.
+- Physical Dell Latitude 3510 / HDMI / MicroSD acceptance still required on
+  target hardware after ISO build.
+
+Not claimed
+- Full ISO image build and boot were not run in this packaging environment.
+- Subjective speaker/HDMI loudness and card-insertion timing on a specific
+  3510 BIOS remain field-acceptance items.

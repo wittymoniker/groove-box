@@ -1,0 +1,23 @@
+Groovebox R28.4.50 HF16 — Media readiness and cross-platform diagnostics
+Date: 2026-10-27
+
+Changes
+- Expanded scripts/diagnose_platform.py to enumerate PortAudio devices and, when Qt can initialize, Qt Multimedia audio inputs, audio outputs, and camera inputs.
+- Added OS-specific diagnostic commands for Linux audio services/ALSA/FFmpeg, Windows sound devices/FFmpeg, and macOS audio/camera inventory.
+- Kept the diagnostic read-only: it does not install software, alter routing, or open playback/capture streams.
+- Windows installer now checks Qt Multimedia independently from the core runtime and warns if the video-player/device-enumeration modules are missing.
+- macOS installer now emits a non-fatal Qt Multimedia availability warning.
+- Updated README.md, HELP_TEXT.md, and PLATFORM_RUNTIME_README.txt with the current media troubleshooting flow, default-output guidance, ISO release gates, and an explicit limitation that listing endpoints is not the same as synchronized playback to every physical output.
+- Added test_hf16_media_readiness_contract.py.
+
+Validation performed in the build container
+- Python compilation: scripts/diagnose_platform.py and scripts/media_runtime_bootstrap.py passed.
+- Shell syntax: install_deps_macos.sh and BUILD_ISO/stamp_final_initramfs_v35_22zz.sh passed bash -n.
+- Targeted tests: 12 passed (HF14 bootstrap, HF15 cross-platform, HF16 media-readiness contracts).
+- Diagnostic CLI ran and emitted JSON with exit code 0. This container reported zero PortAudio devices and no importable Qt Multimedia; this is an environment limitation, not a successful hardware playback test.
+
+Not claimed / still required
+- No native Windows/macOS test was run.
+- No Acer Nitro 5 or Dell Latitude physical playback/video test was run.
+- No booted HF16 ISO test was run; run the complete ISO verifier chain and test boot/audio/video on target hardware.
+- This release does not implement or certify synchronized simultaneous playback to every physical audio output. Default OS output plus explicit device selection remains the supported routing claim until a true fan-out engine is implemented and validated.

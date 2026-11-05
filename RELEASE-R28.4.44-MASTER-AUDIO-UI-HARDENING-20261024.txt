@@ -1,0 +1,18 @@
+Groovebox R28.4.44 — Master Audio/UI Hardening
+
+Scope: requested work excluding clip management. The existing clip-management implementation and controls are intentionally untouched.
+
+Changes in this pass:
+- Master volume remains a single visible control in Performance; the main-window slider is a hidden compatibility/state bridge only.
+- Performance master-volume initialization falls back to 100%, not 50%.
+- Corrected zero-gain handling in the master hard-clip/export snapshot path: literal 0.0 is preserved rather than replaced by a nonzero fallback through Python's `or` operator.
+- Corrected real-time transport fallback gain to unity when state is absent/non-finite; explicit 0% remains zero output.
+- Added source-contract regression tests for the single visible master control, zero gain, global EQ project save/restore/mixdown path, transport/audition gain path, and geometric UI presence.
+- Existing global EQ remains project-saved, restored, and applied in the shared mixdown before master volume/clip processing. Ball and CA interactive UI remains in place with deterministic controls and 50/50 canonical/user share defaults.
+
+Validation performed in this environment:
+- Python compilation: groovebox.py, performance.py, shared_synth_context.py, spatial_synth_engines.py.
+- Unit tests: test_r28_4_44_master_audio_contract.py plus existing R28.4.43 project reset/volume sync, R28.4.42 canonical seed/audio UI contract, shared synth context, and spatial synth engine suites.
+- ZIP integrity checked after packaging.
+
+Not claimed/verified here: physical audio device playback, GUI interactive session, device hot-unplug/recovery, real-time EQ audibility on hardware, ISO build/boot, or deployment. Those require runtime/hardware validation. The code-level fixes remove a concrete zero-volume fallback bug, but cannot honestly guarantee every audio device will work without those tests.

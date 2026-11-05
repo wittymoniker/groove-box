@@ -1,0 +1,22 @@
+Groovebox R28.4.50 HF24 — Chord Slot Editor
+Build date: 2026-10-28
+
+Implemented
+- Added previous/next chord-slot controls and direct slot selection to the floating STEP/Automation teleport inspector.
+- Added per-slot semitone interval editing (-96 to +96 semitones).
+- Slot count and interval controls follow the active instrument/sequence context; selection resets safely on context changes and clamps as note count changes.
+- Chord slot intervals remain in sequence-local memory and are included in the canonical sequence runtime payload.
+- The rendered pitch track consumes the sequence's chord intervals across equal-duration STEP subdivisions through a deterministic vectorized helper. The default [0, 4, 7] slots therefore render root/third/fifth subdivisions; custom intervals update the audible pitch path.
+- Retained existing global wheel-event protection for sliders, dials, spin boxes, double spin boxes and combo boxes so wheel scrolling does not edit parameter values.
+- Kept the geometric synth's existing independent mixer trims, shared cross-mod control, and project save/restore pathways intact.
+- Synchronized the active source with BUILD_ISO/app-overlay-v35.22zz/groovebox.py.
+
+Validation performed in this environment
+- 30 focused tests passed across chord slot behavior/contracts, chord count budget, spatial synth helpers, geometric mixer persistence contracts, and wheel-safe controls.
+- Python compilation passed for groovebox.py, performance.py, audio_os_backend.py, media_output_router.py, and spatial_synth_engines.py.
+- The chord slot pitch helper tests verify equal subdivisions, interval-to-pitch ratios, budget clamping, and empty-mask handling.
+- Main/ISO-overlay source identity is covered by a test.
+
+Limitations
+- This is a source release. Automated contract and helper tests do not replace a live Qt GUI/audio acceptance pass.
+- Physical audio endpoint probing, WAV/MP4 device playback, a complete ISO build/boot, and deployment to the live Wasmer host were not performed here.

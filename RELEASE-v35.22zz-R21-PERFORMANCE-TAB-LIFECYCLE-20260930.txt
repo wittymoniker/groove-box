@@ -1,0 +1,9 @@
+Groovebox v35.22zz-R21 — Performance tab lifecycle / retained-resource fix — 2026-09-30
+
+- Heavy Performance tabs no longer remain resident forever after first access.
+- Web Browser tears down its WebEngine renderer/page/profile when left and restores the last URL on return.
+- Record Video releases camera/mic resources when left and is evicted when idle.
+- Hardware/Device/Storage/Transfer/Game/Batch tabs return to tiny lazy placeholders after leaving.
+- Loaded lazy-page LRU is bounded to 5 pages as a backstop.
+- Explicit recording work is never evicted mid-recording.
+- Retains R20 bounded camera spool, low-latency player cache, R19 capture isolation, R18 adaptive audio/microSD/Main-UI reserve.

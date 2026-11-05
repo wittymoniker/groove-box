@@ -1,0 +1,8 @@
+Mathematician's Groovebox / sOS v35.22zi — final-cache reinjection hardening
+
+Fixes:
+- Final initramfs forcibly re-injects the current init-v33a, strict Wayland launcher, input readiness helper, and recovery helper after all historical cache layers.
+- Prevents stale initramfs.v33c-limine-scode.img content from producing the SHM bootstrap marker failure.
+- /dev/shm tmpfs validation no longer depends on the external `mountpoint` utility; it validates /proc/mounts and performs real groovebox-user allocations.
+- Limine ISO verifier now proves bundled limine-bios.sys is physically embedded at the ISO root byte-for-byte. The bios-install reminder therefore requires no manual copy for the ISO.
+- RUN_ME_ZERO_STATE.sh has a valid first-line shebang and is wired to v35.22zi.

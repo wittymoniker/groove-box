@@ -1,0 +1,20 @@
+Groovebox R28.4.50 HF17 — Audio Device Enumeration Repair
+
+Purpose
+- Address reports that Fedora run_hybrid.sh detects no audio devices and Qt Multimedia/video is unavailable.
+
+Changes
+- The Linux hybrid installer now explicitly provisions the OS-level ALSA, PortAudio, PipeWire/WirePlumber, Qt Multimedia, and GStreamer runtime components instead of relying on Python packages alone.
+- Audio backend enumeration no longer silently erases its exception: audio_device_diagnostics() reports PortAudio host APIs, default device, enumerated devices, and the exact last enumeration error.
+- Startup bootstrap invalidates stale device cache before probing, records backend/host-API details, and emits actionable no-output guidance after bounded retries.
+- Platform diagnostics report PipeWire/WirePlumber user-service status and PulseAudio/PipeWire compatibility information on Linux.
+- Regression contracts cover dependency provisioning and device enumeration error visibility.
+
+Validation
+- Python compilation and shell syntax checked.
+- Targeted regression tests run as part of packaging.
+- ZIP integrity checked after archive creation.
+
+Limitations
+- This is not a physical-device certification. The packaging environment may have no sound card, desktop audio session, or Qt Multimedia plugin stack. Successful device discovery and playback must be confirmed on the Acer Nitro 5 and Dell Latitude.
+- No device can be fabricated in software if the host kernel/desktop exposes none. If the report remains empty after this repair, the diagnostic now distinguishes a missing Python/native backend, a zero-device PortAudio response, and missing PipeWire/ALSA services.

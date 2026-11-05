@@ -1,0 +1,7 @@
+R27.0.2 — HDMI AUDIO
+
+Adds explicit HDMI/DisplayPort output discovery and routing resilience to the R27.0.1 media playback patch. When `aplay -L` omits HDMI aliases, Groovebox now inspects `aplay -l` and exposes matching HDMI/DisplayPort hardware PCMs in the output selector. Selecting one routes mpv directly to that ALSA PCM and does not run the internal-speaker UCM/mixer preparation path against the digital endpoint.
+
+The default route remains conservative to avoid breaking internal laptop speakers. Use the existing Player output-device selector and refresh/detect devices to select HDMI/DisplayPort. For HDMI audio, the display/TV must support audio and its audio input/volume must be enabled.
+
+Validation: 17 focused regression tests pass. Physical HDMI sound and bootable ISO are not verified here. See VALIDATION-v35.22zz-R27.0.2-20261016.txt.

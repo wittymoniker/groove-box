@@ -1,0 +1,21 @@
+Mathematician's Groovebox v35.22y — 2026-09-22
+
+Rust compile + sudo-isolation repair over v35.22w/x.
+
+Fixed from real Fedora Cargo 1.98.1 / rustc 1.98.1 build output:
+- Rust float literals now use 0.99 / 0.999.
+- OT band tensor fixes the ambiguous copysign numeric type with explicit f64.
+- Rust accelerator builds use an isolated temporary CARGO_TARGET_DIR, never rust/groovebox_accel/target/.
+- Installed native Rust libraries are atomically replaced, so a stale root-owned output file cannot block an ordinary user build when the native/ directory is writable.
+- sudo builds normalize the installed Rust library owner back to the invoking/source-tree user when possible.
+- platform_runtime no longer treats crate-local target/release as a runnable accelerator location.
+- BUILD_ISO's Rust newc scanner builds from a temporary source copy and temporary target, so sudo cannot leave a root-owned scanner Cargo.lock or target tree inside BUILD_ISO.
+
+Retained:
+- one-pass bounded-memory initramfs pool + parallel verifier fan-out;
+- strict single-Labwc Wayland session, coherent Mesa/EGL/Intel i915+HDMI path;
+- root recovery and Limine Install-to-SSD contracts;
+- explicit WebEngine request/page/profile teardown ordering;
+- first-class Rust/C++/Julia/sCode source/toolchain support across Linux, macOS and Windows dependency/launcher paths.
+
+The final ISO runtime identity remains the validated v35.22v remaster lineage; v35.22y is a builder/toolchain repair.

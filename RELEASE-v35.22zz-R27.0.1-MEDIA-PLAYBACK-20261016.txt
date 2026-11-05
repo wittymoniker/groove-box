@@ -1,0 +1,22 @@
+R27.0.1 — Media Playback Coverage
+Date: 2026-10-16
+Base: reconstructed R27.0.0 / recovered v35.22zz-R23r source lineage
+
+Changes:
+- Expanded Performance media classification to 44 audio extensions and 47 video/container extensions, including common broadcast, mobile, legacy, lossless, and streaming playlist containers.
+- Expanded Record/Draw video import and append-layer filters to 42 video/container extensions.
+- Player discovery now tries Groovebox's project-local tool resolver, PATH, and conventional app-local bin/tools directories, then selects mpv, VLC, or FFplay in that order.
+- Improved mpv readahead/cache bounds for smoother playback of larger/remote media without changing the low-latency audio path contract.
+- Retained FFplay as an FFmpeg decoding fallback and preserve video display for video-bearing containers.
+- Added test_r27_media_playback_coverage.py with extension-routing checks and actual FFmpeg encode/probe/decode smoke tests.
+- Root application and ISO overlay copies of performance.py and video_clip_studio.py are synchronized.
+
+Format scope:
+The listed formats are selected by extension and handed to the available mpv/VLC/FFmpeg backend. Actual playback depends on the codecs enabled in the shipped backend build and OS audio/video output. This is broad practical coverage, not a guarantee for every codec ever placed in every container.
+
+Validation:
+- Python syntax compilation passed for root and ISO-overlay player/recording modules.
+- R27 export/install static regression contract passed.
+- 13 representative media samples passed ffprobe and full FFmpeg decode: WAV, MP3, FLAC, OGG/Vorbis, Opus, M4A/AAC, AIFF, MP4/MPEG-4 video with AAC, MOV, AVI, MKV, WebM/VP9+Opus, and MPEG-TS.
+- Extension-routing checks passed for 44 audio, 47 video, and 42 Record/Draw video extensions.
+- GUI player playback on the target OS, physical sound output, hardware-accelerated video, unusual proprietary codecs, and ISO boot were not tested in this environment.

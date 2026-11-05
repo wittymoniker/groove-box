@@ -1,0 +1,5 @@
+Groovebox/sOS v35.22zz-R23p BOOT-HARDWARE-INIT
+
+Boot now establishes one authoritative internal-audio card, UCM Speaker PCM, microphone capture PCM, mixer volume/mute state, and PipeWire default endpoints before Groovebox starts. Normal boot initializes a sensible saved-or-70% output level and starts unmuted, primes the physical speaker PCM without a chime, and proves the microphone capture PCM can return bytes.
+
+Storage readiness separately proves a real MMC host. If a Realtek rtsx_pci reader binds without creating its MFD SD/MMC child, one boot-only guarded reset is allowed only when that reader has no block descendants. Runtime never detaches the PCI parent.

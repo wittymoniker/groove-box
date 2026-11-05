@@ -1,0 +1,7 @@
+Mathematician's Groovebox / sOS v35.22zz-R23r
+
+R23r retains the R23q parent-stable storage and R23p deterministic boot initialization, while fixing three hardware-path bugs found by physical Latitude 3510 testing:
+- SOF UCM internal DMIC route Mic:sof-dsp is discovered and its channel count is carried into arecord.
+- Negative sentinel indices used for authoritative boot/UCM ALSA routes are no longer discarded by Video Recorder.
+- Speaker + internal DMIC are enabled in one UCM session, Speaker Playback Switch is reasserted, and WirePlumber prefers a UCM profile that explicitly contains Speaker.
+- Realtek RTS525A-compatible boot adds rtsx_pci.msi_en=0 and pcie_aspm=off at the kernel command line so the settings apply before automatic PCI driver binding. No live Realtek PCI parent is unbound.

@@ -1,0 +1,13 @@
+Groovebox R28.4.50 HF14 — Fedora Media Startup Bootstrap
+Date: 2026-10-27
+
+Purpose
+- Address reports that run_hybrid.sh on Fedora can start without a visible/usable video-media path and without audio output.
+- Delay Qt Multimedia and PortAudio device discovery until after QApplication construction and event-loop startup. Retry a bounded number of times to accommodate PipeWire/WirePlumber and Wayland startup ordering.
+- Record device lists, backend import failures, and system audio-service diagnostics to ~/.local/state/groovebox/media-bootstrap.log and stderr. The probe does not block the UI and does not fail app startup.
+- Add Qt Multimedia runtime packages to Linux dependency provisioning where distro package names are available.
+
+Important limits
+- This patch adds late initialization diagnostics and dependency provisioning. It does not yet implement simultaneous fan-out of one audio stream to every hardware sink; current stream routing remains a selected/default endpoint. A true all-sinks mode requires synchronized multi-stream fan-out with per-device rate/channel negotiation.
+- It does not prove hardware output or video playback on the Acer Nitro 5. Validate on that laptop after launching run_hybrid.sh.
+- If video player still does not appear, inspect the log and Qt Multimedia/GStreamer runtime packages.

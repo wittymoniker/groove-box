@@ -1,0 +1,16 @@
+Groovebox R28.4.50 HF19 — Trigger All Media Audition
+
+Fix
+- Trigger All previously generated only synthetic oscillator test tones and ignored imported WAV/MP4 carrier audio.
+- Trigger All now prefers each operator's loaded audio/video-derived waveform, falls back to the shared imported carrier, and uses the prior oscillator audition tone only when no media is available.
+- The mixed audition signal is finite-value sanitized and peak-bounded before submission to the persistent audio mixer.
+- Synchronized the updated groovebox.py into BUILD_ISO/app-overlay-v35.22zz so the ISO overlay receives the same fix as the source tree.
+
+Validation performed in this package build
+- Python compilation: groovebox.py and audio_os_backend.py (root and ISO overlay) passed.
+- Focused hotfix + thread lifecycle tests: 11 passed.
+- HF19 media-audition source contract tests added; see validation note.
+
+Limitations
+- No physical audio device, actual WAV/MP4 sample, GUI session, or booted ISO was available for runtime playback verification here.
+- This is a focused Trigger All media-routing repair, not a claim that the full UI redesign, every geometric synth control, all mix defaults, Explorer feature expansion, or additional threading work is complete.

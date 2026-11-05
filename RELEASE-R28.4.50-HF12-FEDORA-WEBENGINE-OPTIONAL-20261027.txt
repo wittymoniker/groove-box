@@ -1,0 +1,5 @@
+Groovebox R28.4.50 HF12 — Fedora QtWebEngine launcher repair
+
+Fix: PyQt6.QtWebEngineWidgets is no longer a hard prerequisite in the launch-time dependency probe. QtWebEngine/Chromium import can time out while initializing on some Fedora systems; the embedded browser is lazy-loaded and already handles a missing WebEngine backend. This prevents an optional browser component from aborting the main Groovebox audio/video app launch.
+
+The required runtime probe still checks NumPy, SciPy, cffi, PyQt6.QtCore, sounddevice, and Pillow. This is a source archive, not a built ISO. Python/shell syntax checks passed in the packaging environment. Fedora target-machine runtime, full executable build, ISO build, audio/video playback, and physical hardware boot remain to be tested.

@@ -1,0 +1,22 @@
+Groovebox BUILD_ISO v35.22zh — Wayland SHM + dynamic XDG runtime + final wiring — 2026-09-23
+
+This revision keeps the correct v35.22zg diagnosis: the photographed Labwc/wlroots crash occurs after STORAGE_READY, EGL_READY and INPUT_READY because wlroots cannot allocate its shared-memory format table/keymap. /dev/shm is now mounted as tmpfs mode 1777 before Labwc.
+
+v35.22zh corrects two release defects in the initial zg patch:
+1. Groovebox is created with `useradd --system`, so its uid is not guaranteed to be 1000. XDG_RUNTIME_DIR is now `/run/user/$GB_UID`, derived from `id -u groovebox`, owned by the actual uid/gid, mode 0700, and passed explicitly into the runuser preflight and compositor/client processes.
+2. The normal `RUN_ME_ZERO_STATE.sh` -> `RUN_ME_v35_22.sh` path is now wired to `master_final_iso_v35_22zh.sh`; the initial zg files were present but the standard runner still mastered v35.22zf.
+
+Retained unchanged: PID-1 supervisor, strict one-Labwc/one-Wayland-client path, input revalidation, storage, i915/HDMI, Debian Qt/Mesa coherence, Install to SSD, bounded streaming extraction, sCode/Rust engine path.
+
+Build from Groovebox root:
+  bash BUILD_ISO/RUN_ME_ZERO_STATE.sh
+
+Expected final ISO:
+  BUILD_ISO/dist/Groovebox-sOS-x86_64-YYYYMMDD-GAME-READY-v35.22zh.iso
+
+Expected boot sequence includes:
+  STORAGE_READY|PASS
+  EGL_READY|PASS
+  INPUT_READY|PASS
+  SHM_RUNTIME_READY|PASS
+  SESSION_READY|PASS|wayland=...

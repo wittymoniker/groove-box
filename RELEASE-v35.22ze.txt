@@ -1,0 +1,34 @@
+Groovebox v35.22ze — BOOK ISX/ISY CANONICAL — 2026-09-23
+
+This revision makes the author's written summation series authoritative for the
+Trig Math Engine forward route across Python, Rust, C++, Julia, sCode, OT
+helpers, script environments, audio helpers, and generated-game math.
+
+Canonical forward contract:
+  isn(gamma) = gamma^2/2! - gamma^4/4! + gamma^6/6! - ...
+  isx(gamma) = 1 - isn(gamma)
+  isy(gamma) = 1 - isn(gamma - pi/2)
+  cos(gamma) = isx(gamma)
+  sin(gamma) = isy(gamma)
+  tan(gamma) = isy(gamma) / isx(gamma)
+
+The old half-angle forward shortcut 2*func(x/2), including sin(x)=isn(2x)/2,
+is not used by the Trig Math Engine ON path. The inverse-isosceles coordinate is
+kept separate and is evaluated with its corresponding Maclaurin/binomial series.
+
+Retained hardening:
+- v35.22zc stale input-marker revalidation and deterministic input permissions
+- v35.22zb bounded-memory layered newc extraction
+- v35.22w pooled one-stream verifier fan-out
+- Rust Cargo target/sudo isolation
+- WebEngine request/page/profile teardown ordering
+- coherent Debian Qt/Mesa/EGL, strict Labwc Wayland, i915/HDMI and Install-to-SSD
+
+The final appliance remaster filename remains on the validated v35.22v lineage;
+RUN_ME_ZERO_STATE.sh rebuilds it from the current v35.22ze sources.
+
+Packaging note: prebuilt Rust accelerator binaries from older revisions are not
+carried into v35.22ze. Normal launch/dependency scripts provision Cargo when
+needed, run the locked Rust unit tests, build the current source in an isolated
+target directory, and atomically install the resulting native library. This
+prevents a failed first-launch rebuild from silently using stale trig math.

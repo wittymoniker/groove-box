@@ -1,0 +1,17 @@
+Groovebox R28.4.50 HF15 — Cross-platform, ISO preflight and current help
+Date: 2026-10-27
+
+Changes
+- Added scripts/diagnose_platform.py: read-only OS/Python/import/audio and host-service report for Windows, macOS, and Linux. It does not install packages or change routing.
+- Updated README.md, HELP_TEXT.md, and PLATFORM_RUNTIME_README.txt with launch entry points, audio/video dependency separation, laptop portability checklist, ISO validation stages, and defect-report requirements.
+- Clarified that device discovery is not proof of successful playback, and that simultaneous playback to every output is not implemented/verified by this patch.
+- Kept platform-specific launchers and ISO builder source in place; no claim of physical-device validation is made.
+
+Validation planned/performed for this source archive
+- Python syntax compilation for diagnostic utility.
+- Targeted HF14 media bootstrap contract tests.
+- ISO source verifier and selected overlay sync contracts where executable in this environment.
+- ZIP integrity and SHA-256 generation.
+
+Not validated here
+- Windows GUI/audio/video run, macOS run, Acer Nitro 5 playback, Dell Latitude playback, physical ISO boot, and simultaneous multi-output audio. These require native OS/hardware testing.

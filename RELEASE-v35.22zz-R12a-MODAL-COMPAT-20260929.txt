@@ -1,0 +1,5 @@
+Mathematician's Groovebox / sOS v35.22zz-R12a — 2026-09-29
+
+R12a is a compatibility hotfix over R12. The source-aware Return to Main Window fix remains in place, but modal dialogs now alias the source dialog as `modal` and call `modal.done(0)`. This preserves the historical v35.22zv verifier contract without rolling back the R12 navigation repair.
+
+No render, EQ, Health, audio, storage, sequencing, canonical, or project-memory behavior is otherwise changed from R12.

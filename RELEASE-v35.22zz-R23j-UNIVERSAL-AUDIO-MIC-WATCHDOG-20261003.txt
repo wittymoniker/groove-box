@@ -1,0 +1,9 @@
+Groovebox/sOS v35.22zz-R23j — UNIVERSAL AUDIO + CONTINUOUS MIC
+Date: 2026-10-03
+
+- Main window keeps the linked hardware volume slider/value/mute controls but removes the redundant compact "HW" volume label.
+- Physical playback preparation re-applies the saved volume/mute state to ALSA before each route opens, preventing UI state from drifting away from the real codec mixer.
+- Inline audio playback on sOS handles every supported audio format through local FFmpeg -> 48 kHz stereo PCM -> physical ALSA, not WAV-only aplay.
+- Player/DJ direct recovery uses the same format-independent pipeline for WAV/MP3/FLAC/OGG/OPUS/AIFF/CAF and other FFmpeg-readable audio streams.
+- Mic Level detects a stream that stops producing frames after its initial burst and restarts the selected input, with stale-level decay and bounded restart cadence.
+- R23i Latitude 3510 HDA/ALC3204 + Realtek SD lineage retained.

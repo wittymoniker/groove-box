@@ -1,0 +1,19 @@
+Mathematician's Groovebox / sOS v35.22p TRUE-REMASTER
+Date: 2026-09-21
+
+This release fixes the ISO identity bug where later release wrappers copied the
+same mastered ISO under multiple version filenames.
+
+Active build path:
+  BUILD_ISO/RUN_ME_ZERO_STATE.sh
+    -> RUN_ME_v35_22.sh
+    -> RUN_ME_v33c.sh (current integrated runtime build)
+    -> stamp_final_initramfs_v35_22p.sh
+    -> master_final_iso_v35_22p.sh
+
+Expected final ISO:
+  BUILD_ISO/dist/Groovebox-sOS-x86_64-YYYYMMDD-GAME-READY-v35.22p.iso
+
+The final master contains an embedded v35.22p build marker, is remastered with
+Limine rather than copied from a prior ISO, recalculates SHA-256 from the exact
+final output, and refuses success if it is byte-identical to the v33c baseline.

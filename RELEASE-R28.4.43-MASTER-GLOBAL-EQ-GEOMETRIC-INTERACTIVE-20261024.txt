@@ -1,0 +1,21 @@
+Groovebox R28.4.43 — Master Global EQ + Interactive Geometric Synth Panels
+Date: 2026-10-24
+
+Changes:
+- Added top-of-main-window Master Global EQ curve editor with a linear 10 Hz–24 kHz frequency axis and -18 to +18 dB gain axis.
+- Supports adding an arbitrary number of control points, dragging points, resetting to a flat baseline, and deterministic FFT-bin curve application to the shared rendered master signal.
+- Added global EQ curve to the canonical project snapshot and restore path for save/load/autosave reverse decoding.
+- Added interactive Bouncing Ball phase-space preview (click to set position) alongside gravity, angle, radius, velocity, collision polarity, and activity lock/reset controls.
+- Added interactive Cellular Automata grid (click to toggle deterministic seed cells) alongside dimensions, states, generations, rule, neighborhood, and activity lock/reset controls.
+- Ball and Cellular Automata UI/model expose fixed 50% canonical / 50% user contribution defaults; this split is not user-adjustable.
+- Ball/CA parameters and manually selected cells are included in project snapshots.
+
+Validation:
+- Python compilation passed for groovebox.py, performance.py, shared_synth_context.py, spatial_synth_engines.py.
+- 19 existing shared-context, spatial-engine, and R28.4.42 contract tests passed.
+- Archive integrity checked after packaging.
+
+Limitations:
+- No GUI session was launched in this environment, so visual interaction and audio playback were not runtime-tested.
+- Ball/CA preview interaction stores deterministic model inputs; it does not claim the physical/audio engine is fully wired to consume every new parameter or that activity locks call the shared engine lock API.
+- No ISO build/boot or live Wasmer deployment was performed.

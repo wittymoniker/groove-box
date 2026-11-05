@@ -1,0 +1,20 @@
+Mathematician's Groovebox / sOS v35.22zr — VFAT ASCII + deterministic copyover fix
+Date: 2026-09-24
+
+Real-hardware failure addressed:
+  FAT-fs (nvme0n1p1): IO charset ascii not found
+  mount: /mnt/sos-install/boot/efi: wrong fs type / missing helper
+
+Fix:
+  - Bundles exact-kernel nls_ascii in addition to fat, vfat, nls_cp437, nls_iso8859_1 and nls_utf8.
+  - Installer explicitly loads nls_ascii and uses iocharset=utf8 for EFI mounts and installed fstab.
+  - Performs a real mount/unmount of the freshly formatted EFI filesystem BEFORE copying 1+ GiB of root data.
+  - Preserves the v35.22zq CRC32C/ext4 fix.
+  - Installed-disk mini-initramfs carries FAT/VFAT/NLS modules too.
+  - Future copyovers recognize the existing sOS GPT layout, reuse the same partitions, reformat them, and lay down the current live image cleanly.
+  - Foreign or blank disks still receive a fresh GPT layout and the same ERASE confirmation remains mandatory.
+
+Build:
+  bash BUILD_ISO/RUN_ME_ZERO_STATE.sh
+Expected ISO:
+  BUILD_ISO/dist/Groovebox-sOS-x86_64-YYYYMMDD-GAME-READY-v35.22zr.iso

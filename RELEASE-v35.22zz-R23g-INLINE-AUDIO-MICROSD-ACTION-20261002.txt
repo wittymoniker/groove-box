@@ -1,0 +1,7 @@
+Groovebox v35.22zz-R23g — Inline Audio + microSD Action
+
+- Performance inline Play sends dry WAV directly to the prepared physical ALSA plughw endpoint on sOS before any host callback/PipeWire route.
+- File Manager automatically selects a newly detected unmounted microSD or reader row so Mount / Retry or Rescan Reader is immediately enabled.
+- sOS exposes a generic microSD reader action even when the reader controller has not yet emitted a block node.
+- Reader-only rescan requests now perform bounded 12-step controller/block-device discovery before handing the card to the existing exact whole-device mount retry.
+- R23f analog output preparation, R23e recording/file refresh, and all capture behavior are retained.

@@ -1,0 +1,14 @@
+Mathematician's Groovebox / sOS v35.22zz-R5a — Verifier Lineage Sync
+Date: 2026-09-27
+
+Surgical packaging/verifier repair on the R5 Performance-memory baseline.
+
+Changes
+- Restores historical marker GROOVEBOX_V35_22ZZ_R4_DELL_3510_HDA_AUDIO_20260927 in stamp_final_initramfs_v35_22zz.sh so verify_dell_3510_audio_v35_22zz_r4.py can prove R4 audio lineage inside R5.
+- Restores the historical R4 ISO output literal as a comment-only compatibility token in master_final_iso_v35_22zz.sh.
+- Actual output remains v35.22zz-R5-PERFORMANCE-MEMORY-DELL-3510-HDA; no runtime rollback and no duplicate R4 ISO is produced.
+- No Performance, Player/DJ, HDA/Realtek, Install-to-SSD, Rust ISO, or media runtime behavior changed.
+
+Validation
+- PASS: v35.22zz-R4 Dell Latitude 3510 legacy-HDA/Realtek + installed-disk persistence contracts
+- PASS: v35.22zz-R5 cumulative Dell-HDA + persistent Player/DJ + Performance-memory + Rust-ISO contracts

@@ -1,0 +1,19 @@
+Groovebox/sOS v35.22zz-R13 — VARIABLE EQ POLES — 2026-09-29
+
+Cumulative from R12a.
+
+EQ:
+- Every instrument owns an arbitrary-length EQ pole list.
+- Add/remove/reorder poles; each pole stores stable ID, type, frequency, gain, Q, enabled, label, automation enable/depth and order.
+- Default 8-band EQ remains as a preset/legacy compatibility shape, not a topology limit.
+- Canonical engines may deterministically create/remove/reorder/define EQ poles and blend them with user topology without destroying the saved user source state.
+- EQ continues to affect audio plus the visual/game cross-media metrics.
+- Instrument-local EQ is serialized in instrument_param_state and therefore project save/load retains full topology.
+- Sequence-tray EQ presets are separate from the instrument-local source and contribute at a fixed 50/50 effective blend, including topology via stable pole IDs.
+- Local automation and global envelope controls remain active; each pole additionally has automation enable/depth metadata.
+
+BUILD_ISO:
+- Exact-kernel module source preparation no longer caches a partial lib/modules tree as complete merely because the directory exists.
+- Cached/local module trees must prove ext4 is present (loadable or builtin) before becoming READY_MODULE_TREE.
+- If incomplete, the builder falls through to the official Debian linux-image package extraction path.
+- ext4 bundling also recognizes explicit CONFIG_EXT4_FS=y evidence when modules.builtin is absent.

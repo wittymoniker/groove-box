@@ -1,0 +1,8 @@
+Mathematician's Groovebox v35.22zz-R10 — 2026-09-29
+
+- Main window uses native usable display size; complete top and bottom main subwindows scroll independently in both axes without stretching controls to resolution.
+- Dedicated ordered project-memory/savefile lane for MCC deep-copy/serialization/fsync; GUI widget reads stay on Qt thread.
+- Waveform and spectrum preparation have independent latest-only worker threads; obsolete frames are coalesced.
+- File Browser adds Mount / Retry for detected but unmounted storage. Root helper mounts both mmcblk and removable sdX media, preserving writable Copy Over behavior.
+- Dell Latitude 3510 normal live boot forces SOF/cAVS (dsp_driver=3) before legacy HDA can claim the controller; UCM/ALSA speaker + internal/digital mic routes are initialized and WirePlumber can re-enumerate once. Safe/Recovery explicitly retain legacy dsp_driver=1.
+- R9 per-canonical worker lanes, media worker separation, R8 installer-console quieting, R7b copy/replace, and the SSD installer lineage are preserved.

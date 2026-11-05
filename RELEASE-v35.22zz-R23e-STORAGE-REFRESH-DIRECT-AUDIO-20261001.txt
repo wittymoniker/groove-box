@@ -1,0 +1,9 @@
+v35.22zz-R23e STORAGE REFRESH + DIRECT AUDIO — 2026-10-01
+
+- Leaves the confirmed-working audio/video recording capture path intact.
+- Makes retained File Manager windows relist on reopen and refresh even when the selected directory did not change.
+- Adds a low-cost directory mtime watcher to both the standalone File Manager and the inline Performance browser, so completed recordings/imports appear without closing/reopening the UI.
+- Adds first-class Recordings and Groovebox Data roots, exposing the appliance main data disk (/var/lib/groovebox in sOS) instead of defaulting users into the mostly-empty /home/groovebox.
+- Finalized audio/video recordings are indexed and notify visible file browsers immediately.
+- microSD requests now forward the containing whole device, automatically request one safe root-side mount when a card appears, retry partition-table/filesystem settle up to eight bounded attempts, and keep refreshing the UI for delayed Realtek/MMC enumeration.
+- If mpv still cannot acquire a playback clock after the R23/R23d recovery route, recorded WAV audio falls back to direct ALSA aplay on the selected physical plughw device.

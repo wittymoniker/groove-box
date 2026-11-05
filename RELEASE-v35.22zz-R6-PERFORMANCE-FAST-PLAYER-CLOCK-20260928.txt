@@ -1,0 +1,11 @@
+Mathematician's Groovebox v35.22zz-R6 — Performance Fast / Player Clock
+
+R6 is a CPU/event-loop optimization pass on top of R5a/R5/R4.
+- Performance mathematical background is static while idle: no periodic full-window repaint timer.
+- Player EOF/time-pos reads run in one non-overlapping QThreadPool worker, never on the Qt GUI thread.
+- Parametric Remix -> Player sync is change-driven at 180 ms and suppresses identical deck commands.
+- Deck speed/volume/FX setters suppress redundant IPC writes.
+- mpv uses --hwdec=auto-safe, --autosync=30, --audio-fallback-to-null=yes and --cache-pause=no.
+- A 4-second numeric time-pos watchdog attempts video-sync=desync once if a video clock is proven stalled.
+- Performance/Player primary dialog surfaces are opaque to reduce Wayland compositor alpha work.
+- R5 hidden-resource suspension/lazy workspaces/cache bounds and R4 Dell Latitude 3510 HDA remain intact.

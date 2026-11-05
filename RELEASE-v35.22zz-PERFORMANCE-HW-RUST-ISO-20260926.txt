@@ -1,0 +1,4 @@
+Mathematician's Groovebox / sOS v35.22zz
+Date: 2026-09-26
+
+Web Browser first selection keeps the tab object stable and does not auto-rescan Wi-Fi. Hardware rescans run on the Qt worker pool. Dell/Intel built-in audio has PipeWire/Pulse/ALSA fallback enumeration. Performance scroll areas use cheaper opaque/frameless repainting. Desktop launcher/installer paths retain Rust provisioning. Final sOS initramfs embeds the stable Rust sysroot under /opt/sos/rust. Final mastering chains through v35.22zy before applying zz overlays.

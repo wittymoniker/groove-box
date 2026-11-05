@@ -1,0 +1,6 @@
+Groovebox/sOS v35.22zz-R23b — stale null-audio verifier sweep — 2026-10-01
+
+- Runtime playback behavior is unchanged from R23/R23a: real audio first, 48 kHz stereo boundary, physical ALSA fallback, stalled-clock restart, video-only detachment only after hardware recovery fails.
+- Fixes R14/R17/R22/cumulative verifiers and regression tests that still required --audio-fallback-to-null=yes.
+- Removes the obsolete flag from compatibility comments so token-only checks cannot pass accidentally.
+- Adds verify_v35_22zz_r23b.py and runs it in both zero-state and full-build verifier chains.

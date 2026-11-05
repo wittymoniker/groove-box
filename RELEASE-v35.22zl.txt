@@ -1,0 +1,14 @@
+Mathematician's Groovebox v35.22zl — active runner/master/verifier contract synchronization (2026-09-24)
+
+Fixes the false source-preflight failure:
+  FAIL: RUN_ME_v35_22.sh missing contract: master_final_iso_v35_22zj.sh
+
+Cause: v35.22zk correctly advanced the active build output to master_final_iso_v35_22zk.sh, but verify_v35_22.py still required the historical v35.22zj finalizer name inside the active runner and zero-state contract.
+
+v35.22zl makes the active chain unambiguous and deterministic:
+  RUN_ME_ZERO_STATE.sh -> RUN_ME_v35_22.sh -> master_final_iso_v35_22zl.sh -> stamp_final_initramfs_v35_22zl.sh
+
+Historical v35.22zj local-FFmpeg components remain validated as lineage components, but the active runner is no longer required to invoke an obsolete finalizer. The v35.22zk stable SHM contract, dynamic XDG/UID wiring, PID-1 supervision, strict one-Labwc/one-Wayland-client session, local ffmpeg/ffprobe repair, Rust+sCode build path, input/storage/HDMI/EGL, and Install-to-SSD checks are retained.
+
+Build: bash BUILD_ISO/RUN_ME_ZERO_STATE.sh
+Expected final ISO suffix: GAME-READY-v35.22zl.iso

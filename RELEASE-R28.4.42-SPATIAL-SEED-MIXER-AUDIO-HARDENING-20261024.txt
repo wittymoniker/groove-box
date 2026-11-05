@@ -1,0 +1,6 @@
+Groovebox R28.4.42 — Spatial controls, seed handles, and audio hardening
+Date: 2026-10-24
+
+Changes: added Ball gravity/angle/radius/velocity/polarity controls; Cellular Automata width/height/states/generations/rule/neighborhood controls; documented safe Seed Script scalar handles for Vector, Wavetable, Ball, Cellular Automata, sidechain, EQ, and canonical mixer; added GOAVA active-amplitude contract 0.19758; clamped master-volume input and sanitized/capped audition buffers; added focused source-contract tests.
+
+Validation boundary: source-level and syntax tests only. No live audio device, Qt GUI, microSD hardware, ISO build/boot, or Wasmer publish was performed. The activity-lock widgets still need end-to-end wiring to shared_synth_context, and each seed variable must be bound into the corresponding live renderer/mixer before claiming full runtime integration.

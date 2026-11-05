@@ -1,0 +1,20 @@
+Groovebox / sOS v35.22zz-R28.1.0 — MATHEMATICAL COMPOSITION LAB — 2026-10-16
+
+Base: R28.0.0 FULL ROLLOUT, preserved unchanged except for the isolated additive feature described below.
+
+Added:
+- New Mathematical Composition Lab button in the Main Window.
+- Standalone deterministic pattern engine: Euclidean rhythms, polyrhythm overlays, Fibonacci contours, recursive/fractal subdivision, and seeded probability patterns.
+- Editable event preview with beat position, duration, MIDI note, velocity, bar and step.
+- Export of versioned JSON or event CSV; bounded inputs and deterministic seeded generation.
+- The tool is non-destructive: it does not modify active project state, transport, audio devices, canonical identity, or Performance state.
+- Root app and ISO overlay copies are synchronized.
+
+Validation:
+- Focused new feature + R28 rollout + HDMI audio + known-good performance contract tests: 13 passed.
+- Python compileall for groovebox.py and mathematical_composition_lab.py passed.
+- Full pytest collection was attempted but cannot run cleanly in this environment: PyQt6 is not installed, and duplicate test basenames in BUILD_ISO cause pytest import-file mismatch. This is an environment/collection limitation, not a claimed test pass.
+- GUI launch and live playback were not tested here. Generated patterns export as editable JSON/CSV and are not yet automatically injected into the live sequencer or MIDI hardware.
+- No ISO boot, physical hardware, or install-to-SSD validation is claimed.
+
+Safety: R28.0.0 artifacts are retained as rollback baseline. This is an additive source/package update only; no hosted deployment or physical installation was performed.

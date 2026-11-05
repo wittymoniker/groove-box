@@ -1,0 +1,20 @@
+Groovebox R28.4.50 HF28 — Canonical write → live UI sync
+
+When the canonical document is written (sequence runtime, sequencer automation,
+or sequence panels applied to live state), the UI must reflect that data without
+requiring instrument re-selection.
+
+Changes
+- New MathematiciansGrooveboxApp._schedule_ui_after_canonical_write(reason):
+  coalesces refreshes on a 40 ms QTimer so multi-instrument engine writes do not
+  thrash the GUI thread.
+- Refresh set: reload_active_instrument_sequencer_ui, sequence selector,
+  automation row, sequence envelope controls, sequence-dependent panels,
+  optional synth/param sync hooks, paint-table sequence choices, fingerprint.
+- Called at end of:
+  - _canonical_write_sequence_runtime
+  - _canonical_write_sequencer_automation_state
+  - _apply_sequence_panels_to_live
+
+Validation
+- py_compile passed for root and ISO-overlay groovebox.py.

@@ -1,0 +1,8 @@
+Mathematician's Groovebox v35.22zz-R23 — Playback Output Recovery (2026-10-01)
+
+- Removes the eager --ao=null Player route that could guarantee silent playback while ALSA hardware was already present.
+- Adds internal-speaker/ALSA targets, not HDMI-only ALSA fallback.
+- Physical media playback is converted to 48,000 Hz stereo without changing canonical render/export rates.
+- Normal playback requires a real output first; silent video detachment is last-resort only after verified clock failure.
+- A stalled or failed mpv output is restarted once at the same position with a direct safe AO chain (ALSA -> Pulse -> PipeWire).
+- Preserves R22 isolated probing, R21 lifecycle/resource bounds, microphone/camera work, microSD and Install-to-SSD lineage.

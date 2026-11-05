@@ -1,0 +1,3 @@
+Mathematician's Groovebox v35.22zz-R16
+Physical Audio I/O target-hardware acceptance test added to Performance > Hardware.
+R15 EFI/VFAT/NLS, R14 audio/video/Performance/microSD and prior verified lineages retained.

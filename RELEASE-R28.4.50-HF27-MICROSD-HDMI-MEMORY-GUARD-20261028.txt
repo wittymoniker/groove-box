@@ -1,0 +1,56 @@
+Groovebox R28.4.50 HF27 — MicroSD mount, HDMI audible, memory-safe exports
+
+Build date: 2026-10-28
+
+User-reported issues addressed
+1. MicroSD: UI/status looked like “host … failed to mount”
+2. HDMI: video played but audio missing or insanely quiet
+3. Memory: exports/activities that would exhaust RAM should abort cleanly
+4. Performance player could stay silent while Trigger All (PortAudio) worked
+
+Changes
+
+MicroSD (sos-removable-media-v35_22zz_r7)
+- Before mount attempts, modprobe nls_utf8 / nls_cp437 / nls_iso8859_1 / fat / vfat / exfat / ntfs3
+  (common Latitude 3510 ISO failure: card visible, VFAT mount fails without NLS modules).
+- When blkid reports no TYPE: try auto mount, then explicit vfat → exfat → ntfs3 with uid/gid
+  options for the groovebox user.
+- VFAT mount options now include codepage=437.
+- Clearer MOUNT_FAILED / NO_* status text (no longer reads like a generic “host” error).
+
+Performance UI
+- MMC host row label: “microSD controller (waiting for card/block device)” instead of “MMC host”.
+- Empty-reader detail explains re-seat / Rescan Reader.
+
+HDMI audio (media_output_router.py)
+- Digital (HDMI/DP/IEC958) prepare path treats many controls as SWITCHES: set on/unmute first,
+  then percentage/100% (percentage-only previously failed silently → mute/quiet).
+- Also unmute and raise matching PipeWire/Pulse HDMI sinks to ≥90% and set default sink.
+- mpv ALSA HDMI routes get --volume=100 --softvol-max=200 --audio-fallback-to-null=no.
+
+Performance player vs Trigger All
+- On Performance open: ensure_audio_ready in addition to background hardware refresh.
+- On every _play_path: if _output_audio_target is still None, auto-bind preferred physical ALSA
+  (or first detected target) and run prepare so in-app video/player audio matches real hardware
+  without requiring Device Manager first.
+
+Memory guard (new memory_guard.py)
+- Reads MemAvailable/MemTotal; keeps a 384 MiB reserve and refuses work under 12% free.
+- estimate_pcm_bytes / estimate_video_frame_bytes helpers.
+- guard_or_raise / would_exceed raise or return CANCELLED:… messages.
+- Wired into audio export write path and video export size-prediction gate (abort with dialog
+  before allocating peak frame/part buffers).
+- adaptive_workers() scales hardware scan pool down on low-RAM/low-CPU hosts.
+
+Threading
+- Hardware scan non-audio workers use adaptive_workers(3).
+
+ISO builder
+- No script changes; overlay remains authoritative for master_final_iso_v35_22zz.
+
+Validation
+- py_compile passed for memory_guard, media_output_router, hardware_runtime, performance, groovebox.
+
+Still required on target
+- Physical MicroSD insert/mount on Latitude 3510, HDMI loudness with external display, and a
+  long/high-res export that should abort when RAM is tight.

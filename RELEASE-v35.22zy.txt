@@ -1,0 +1,8 @@
+Mathematician's Groovebox v35.22zy — 2026-09-25
+
+• Hardware page now uses Qt Multimedia for audio outputs, audio inputs, and cameras—the same device family used by Groovebox media/capture tools.
+• Hardware displays are enumerated from Qt screens first, with wlr-randr/xrandr fallbacks.
+• VIDEO is now an explicit Hardware section instead of being omitted.
+• sounddevice and /dev/video* remain compatibility fallbacks rather than the primary truth source.
+• File Browser adds Move… and Copy Over… for files/folders, with safe-root enforcement and overwrite confirmation.
+• Preserves v35.22zx camera packet fast path and prior media/Performance/SSD-install lineage.

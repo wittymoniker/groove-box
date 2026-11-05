@@ -1,0 +1,19 @@
+Mathematician's Groovebox / sOS v35.22zm — explicit ext4 install compatibility
+Date: 2026-09-24
+
+Observed hardware failure addressed:
+  Install to SSD created GPT/partitions and formatted the target, then returned rc=32 with "unknown filesystem type 'ext4'" while mounting the new root.
+
+v35.22zm changes:
+  - Exact-kernel ext4 module/dependency closure is injected into the final live initramfs (ext4 + jbd2 + mbcache + dependencies).
+  - Final image carries /opt/sos/lib/kernel-ext4-modules-v35.22zm.txt and refuses release if ext4 is unavailable.
+  - Install-to-SSD explicitly modprobes ext4/vfat and verifies /proc/filesystems BEFORE destructive partitioning.
+  - Installer emits INSTALL_FS_READY|PASS ext4 vfat before allowing the erase/install sequence.
+  - The Limine installer backend is re-injected at the final stamp so stale runtime caches cannot lose the fix.
+  - The installed-disk initramfs retains its existing ext4 storage family + dependency closure for booting the new ext4 root.
+  - v35.22zl PID-1, SHM/dynamic XDG, strict Labwc/Wayland, local FFmpeg, input, HDMI, Debian Qt/EGL and SSD-target protections are retained.
+
+Build:
+  bash BUILD_ISO/RUN_ME_ZERO_STATE.sh
+Expected ISO:
+  BUILD_ISO/dist/Groovebox-sOS-x86_64-YYYYMMDD-GAME-READY-v35.22zm.iso

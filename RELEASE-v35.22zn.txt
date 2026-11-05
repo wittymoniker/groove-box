@@ -1,0 +1,12 @@
+Mathematician's Groovebox v35.22zn — Teleport Outside-Click Dismiss
+Date: 2026-09-24
+
+Scope is intentionally UI-only on top of the validated v35.22zm boot/install path.
+
+- Step teleport inspector hides immediately when the user clicks outside it.
+- Automation teleport inspector hides immediately when the user clicks outside it.
+- Clicks inside either inspector remain active.
+- Automation QComboBox dropdowns count as inside the inspector, so choosing Operator/parameter values does not dismiss it.
+- Dismissal does not mutate selected step, automation point, gate, sequence length, or composition state.
+- v35.22zm ext4/vfat preflight and exact-kernel ext4+jbd2+mbcache compatibility are retained unchanged.
+- Proven Groovebox boot/session path is retained unchanged.

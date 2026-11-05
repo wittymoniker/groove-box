@@ -1,0 +1,13 @@
+Mathematician's Groovebox / sOS v35.22zv — External Wayland Window Strip
+Date: 2026-09-24
+
+- Always-on-top parentless window strip remains visible outside Main/Performance/tool windows.
+- Permanent Main tab plus dynamic tabs restore minimized or hidden retained windows.
+- Closing Main or managed tool windows hides/preserves them for the session.
+- Explicit Quit Groovebox on the strip is the only normal teardown path.
+- Return to Main dismisses an active retained modal loop before restoring Main.
+- Keeps v35.22zu low-lag File Browser / Player-DJ launch behavior unchanged.
+- Keeps microphone/external audio, PipeWire/Wi-Fi/HDMI/media, and SSD install/copyover fixes.
+
+- Mic Level is live automatically on the Record workspace; no Camera Preview/Audio Preview step is required.
+- Changing the selected internal/headset/line/USB input restarts the meter on that device; hiding Record releases the idle mic handle.

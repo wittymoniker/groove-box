@@ -1,0 +1,24 @@
+Groovebox/sOS R28.4.0 rollout patch — 2026-10-17
+
+Implemented in this patch:
+- Startup mode selector: Main Groovebox, Performance/DJ, Both Workspaces, Load Project, New Blank Project, Randomize New Project.
+- Main and Performance windows initially fit the screen's available geometry, which excludes desktop panels when the platform reports that geometry.
+- Audio export offers a separate output sample rate and uses scipy.signal.resample_poly for anti-aliased downsampling before PCM quantization. The render rate may exceed the output file rate; upsampling through this control is rejected.
+- Canonical project snapshots persist global/local sidechain routing state with default amount 0.1975807343, and userdata-protection metadata for the playlist math-writer layer.
+- Added a Canonical Sidechain Routing dialog for global amount/source and local instrument/sequencer overrides.
+- Added a prominent deterministic playlist + parametric DJ randomizer and an undo snapshot in Performance; the existing Clear action is now labelled Clear Playlist.
+- Added read-only selected-card diagnosis using lsblk/blkid. Existing explicit per-partition formatting safeguards remain; diagnosis never repairs or formats media.
+- ISO final-stamp contract now checks the R28.4 selector, downsampling, sidechain UI, playlist randomizer and storage diagnostics.
+
+Validation performed in this workspace:
+- python3 -m py_compile groovebox.py performance.py: PASS
+- Targeted regression/contract tests: 18 passed.
+- Full GUI/Qt interaction test: NOT RUN (PyQt6 unavailable in this workspace).
+- Full ISO build and boot: NOT RUN; this tree does not contain the populated runtime-cache/initramfs and required kernel payload.
+- Hardware audio, scrolling during long exports, microSD repair/reformat on physical cards, and SSD installer: NOT TESTED.
+
+Important limitations:
+- This patch persists canonical sidechain parameters and exposes controls; it does not claim every source/target combination is audible until that route is implemented by the active audio engine and verified by signal tests.
+- UI-thread-free full offline rendering is not yet certified. The existing mixdown path still performs render preparation in the calling thread; a safe full fix requires separating the renderer from QWidget reads and running it on immutable project snapshots, followed by UI stress tests. Do not claim UI remains fully responsive during every export until that work is completed and tested.
+- Storage repair is intentionally not automatic. Diagnosis is read-only; filesystem repair and whole-card repartitioning need filesystem-specific tooling and explicit destructive confirmations.
+- Existing R8 installer and R35.22zt/R28.3 audio/performance baselines must remain the rollback points until a full build and target-hardware validation pass.

@@ -1,0 +1,3 @@
+Groovebox/sOS v35.22zz-R23c — Hardware VIDEO semantic verifier sync — 2026-10-01
+
+Fixes the v35.22zy/R9 false negative at Hardware VIDEO section. Runtime playback remains R23.

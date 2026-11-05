@@ -1,0 +1,7 @@
+Groovebox R28.4.2 — canonical asynchronous export pipeline — 2026-10-17
+
+Adds a frozen render-to-export boundary and a dedicated single-worker Qt export lane. Master hardclip, output-rate polyphase resampling, PCM quantization, recoverable part writes, stitch verification, FFmpeg encoding and available encoded-level verification run off the GUI thread. Adds non-modal progress/cancellation and atomic publication of the final artifact.
+
+Targeted contracts, resampling sample-count/anti-alias smoke checks, source compilation, root/overlay sync and R23b/R23/R12/R12a/R28.3/R28.4 verifiers pass. PyQt6 is unavailable here, so GUI runtime interactions, end-to-end encode under Qt, benchmark, full ISO build/boot and physical hardware validation remain unverified.
+
+The canonical `_render_mixdown_buffer()` call and optional active `_bake_dj_write()` remain synchronous. This is a partial export responsiveness improvement, not a claim that all synthesis is worker-threaded.

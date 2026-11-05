@@ -1,0 +1,53 @@
+Groovebox R28.4.50 HF28.2 — Always All Audio Devices / Performance player silence
+
+Build date: 2026-10-28
+
+Goals
+- Eliminate audio-device menu drift: every UI that previously offered an audio
+  sink selector now defaults to (and stays locked on) "All detected outputs".
+- Make Performance window audio/video player audible on first play, matching
+  Trigger All which already worked via the primed sounddevice path.
+
+Root cause (Trigger All audible, Performance player initially silent)
+1. Different backends
+   - Trigger All → sounddevice / PortAudio via _pkp_poly_submit after
+     _ensure_hardware_use (HF26 early QTimer primes this path).
+   - Performance / MediaPlayerWindow → external mpv/VLC/FFplay routed by
+     media_output_router.player_routing().
+2. Async device scan race
+   - PerformanceWindow started with _output_audio_target = None.
+   - player_routing(None, …) did not always establish the aggregate Pulse
+     "all sinks" mirror before the first mpv process was spawned, so the
+     player could attach to a silent default (auto_null / wrong HDMI profile)
+     while Trigger All already had a live PortAudio stream.
+3. Menu desync
+   - Outputs tab, MediaPlayerWindow, and quick selectors each rebuilt their
+     own combo lists and could retain an older explicit sink while another
+     menu showed "All detected outputs".
+
+Changes
+1. performance.py (overlay + root)
+   - PerformanceWindow initializes _output_audio_target to AudioTarget
+    ("__all_detected__", …) before any scan.
+   - Outputs-tab and MediaPlayerWindow audio combos are populated with only
+     the All entry and setEnabled(False) so selection cannot diverge.
+   - _on_output_devices_ready / MediaPlayerWindow._on_device_scan_done force
+     a single All entry and lock the combo.
+   - _apply_output_routing always re-asserts All and calls
+     _ensure_all_pulse_outputs_sink() + pactl set-default-sink.
+   - _play_path calls _apply_output_routing() immediately before launching
+     the external player so the first play inherits the aggregate sink.
+
+2. media_output_router.py (overlay + root)
+   - player_routing treats audio is None or name in ("", "__all_detected__")
+     as the All-detected path (create combined Pulse sink, set default, or
+     fall back to preferred physical ALSA). Explicit ALSA/Pulse named routes
+     remain available for internal call sites that still pass them.
+
+Validation
+- py_compile passed for performance.py and media_output_router.py (overlay + root).
+- Physical Dell Latitude 3510 / Fedora hybrid acceptance still required on
+  target hardware after packaging.
+
+Not claimed
+- Full ISO rebuild and boot were not run in this environment.

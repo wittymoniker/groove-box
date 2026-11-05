@@ -1,0 +1,26 @@
+Mathematician's Groovebox / sOS v35.22zu — Wayland window session + fast browser/player
+Date: 2026-09-24
+
+Preserved baseline
+- v35.22zt Performance lazy-load + microphone/external audio remains the application baseline.
+- v35.22zs PipeWire/WirePlumber/NetworkManager/mpv/HDMI/camera system layer remains intact.
+- v35.22zr VFAT/NLS copyover and v35.22zq CRC32C/ext4 SSD installer remain intact.
+
+Wayland window session
+- Performance now has an Open Windows tab listing retained Groovebox tool windows as open, minimized, or closed/hidden.
+- Restore/Focus, Restore All and Hide Selected work without a desktop taskbar.
+- Opened Groovebox dialogs/windows are retained for the application session with WA_DeleteOnClose disabled.
+- Performance, Browse Files and Player/DJ recover from Wayland minimize using showNormal + activation requests.
+- Player/DJ and Browse Files X/Close hide rather than destroy their live session state.
+- Only quitting the main Groovebox application runs destructive shutdown/worker/process cleanup.
+
+Launch responsiveness
+- Browse Files is non-modal and reusable; its directory scan starts after first paint and runs through the Qt worker pool using os.scandir.
+- Video/media classification remains background work.
+- Player/DJ is non-modal and reusable. It opens on system-default output without HDMI/Pulse/Bluetooth probes.
+- Detect devices is explicit and asynchronous for HDMI/USB/Bluetooth routing.
+
+Build
+  bash BUILD_ISO/RUN_ME_ZERO_STATE.sh
+Expected ISO
+  BUILD_ISO/dist/Groovebox-sOS-x86_64-YYYYMMDD-GAME-READY-v35.22zu.iso

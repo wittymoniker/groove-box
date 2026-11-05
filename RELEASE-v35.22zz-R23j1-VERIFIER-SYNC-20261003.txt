@@ -1,0 +1,16 @@
+Groovebox/sOS v35.22zz-R23j1 VERIFIER-SYNC — 2026-10-03
+
+Runtime payload remains R23j. This packaging correction synchronizes two historical
+verifiers with the stronger R23j universal playback implementation:
+
+- R23e now accepts the universal FFmpeg -> 48 kHz stereo PCM -> physical ALSA
+  fallback instead of requiring the retired WAV-only play_direct_audio signature.
+- R23g now validates universal inline audio playback instead of requiring the
+  retired WAV-only direct `aplay path.wav` command.
+- No audio, microphone, volume, microSD, installer, or UI runtime behavior was
+  rolled back or weakened.
+- Full cumulative verifier chain R9/R10 through R23j passes after synchronization.
+
+For an already-extracted R23j tree:
+  bash BUILD_ISO/APPLY_R23J1_VERIFIER_SYNC_FIX.sh
+  bash BUILD_ISO/RUN_ME_ZERO_STATE.sh
