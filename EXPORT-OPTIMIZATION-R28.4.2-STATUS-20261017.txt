@@ -1,0 +1,28 @@
+Groovebox R28.4.2 — canonical asynchronous export pipeline (2026-10-17)
+
+Implemented in this update
+- Adds a frozen AudioExportSnapshot boundary: a private contiguous float32 render buffer is marked read-only, and output format/rates/bit depth/parts/bitrate/provenance/master controls are copied as scalar/bytes fields. No QWidget is passed to the export worker.
+- Adds a dedicated single-thread QThreadPool for audio export, isolated from the live-audio, playlist, sequencer and project-save lanes.
+- Moves canonical master hardclip (using captured Master Volume and Clip/Gain values), duration-exact polyphase resampling, PCM quantization, part-file I/O, part stitching/verification, FFmpeg encode, and encoded-level verification into the background worker.
+- Adds non-modal progress reporting and cancellation. FFmpeg is terminated on cancellation; completed .part files remain recoverable.
+- Publishes the final WAV/encoded artifact atomically only after writing/encoding and available integrity verification succeeds, preserving an existing destination if the new candidate fails.
+- Worker performs no widget reads, label updates, processEvents calls, or project-file indexing. Completion/error/progress is handed back to the UI thread through Qt signals; indexing and waveform/status updates happen in the UI completion handler.
+- Application close is deferred while the export worker is active so Qt owners are not destroyed mid-write.
+- Root and BUILD_ISO/app-overlay-v35.22zz/groovebox.py are byte-for-byte synchronized. RUN_ME_ZERO_STATE.sh now invokes the R28.4.2 source/overlay/worker verifier.
+- R28.4 duration-exact resampling remains: desired sample count is round(N * output_rate / render_rate), using scipy.signal.resample_poly anti-aliasing and trimming/padding only the final rounding delta.
+
+Validation completed
+- Python compilation passed for root and overlay groovebox.py, verifier, and new source-contract tests.
+- Seven R28.4.2 structural/contract tests passed.
+- Direct sample-count/contiguity checks passed for short, long, same-rate and edge cases.
+- 30 kHz tone anti-alias rejection smoke test passed at 96→48 kHz (RMS 0.001621).
+- R23b, R23, R12, R12a, R28.3, and R28.4 rollout verifiers passed.
+- RUN_ME_ZERO_STATE.sh passed bash -n syntax validation.
+
+Still not complete / not certified
+- The expensive canonical synthesis call `_render_mixdown_buffer()` still runs synchronously because it reads numerous live widgets and mutates render-local app state. The optional `_bake_dj_write()` also still runs before the worker when enabled. Moving these safely requires extracting all required controls and mutable DSP state into a pure render context; simply wrapping the existing method in a worker is unsafe.
+- No before/after wall-clock benchmark has been run, so export-speed gains are not quantified. The output-writing/encoding phase is now asynchronous, but total export can still pause the UI during synthesis/DJ bake.
+- PyQt6 is unavailable in this preparation environment. The GUI, progress/cancel interaction, thread shutdown under real Qt, audio artifact end-to-end encoding, and project-edit stress test were not run here.
+- Full ISO build, boot, physical audio, hardware, Dell install, SSD install, and physical removable-card workflows remain unverified.
+
+This is a real partial worker-path improvement, not a claim that the entire renderer is asynchronous or that an ISO/hardware release has been validated. Preserve the R8 installer lineage and R35.22zt/R28.3 audio/performance baseline for rollback.

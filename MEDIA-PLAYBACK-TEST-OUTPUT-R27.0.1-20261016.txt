@@ -1,0 +1,23 @@
+Executed: python -m py_compile performance.py video_clip_studio.py BUILD_ISO/app-overlay-v35.22zz/performance.py BUILD_ISO/app-overlay-v35.22zz/video_clip_studio.py
+Result: PASS
+Executed: python test_r27_transactional_export_game_install.py
+Result: PASS — 10 static contract checks
+Executed: python BUILD_ISO/test_r27_media_playback_coverage.py
+Result: PASS — 13 representative generated media samples probed and fully decoded by FFmpeg; 44 audio / 47 video / 42 Record/Draw video extension routing checks passed.
+
+Decoded samples:
+- tone.wav: PCM s16le
+- tone.mp3: MP3
+- tone.flac: FLAC
+- tone.ogg: Vorbis
+- tone.opus: Opus
+- tone.m4a: AAC
+- tone.aiff: PCM s16be
+- clip.mp4: MPEG-4 video + AAC
+- clip.mov: MPEG-4 video + AAC
+- clip.avi: MPEG-4 video + MP3
+- clip.mkv: MPEG-4 video + FLAC
+- clip.webm: VP9 video + Opus
+- clip.ts: MPEG-2 video + MP2
+
+Limit: These are decoder smoke tests, not GUI/hardware playback tests. Player rendering, physical sound output, hardware acceleration and every proprietary codec remain to be tested on the target installation.

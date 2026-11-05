@@ -137,7 +137,22 @@ class CompositionEngine:
             layer = self.layers[name]
 
             for key, value in layer.writes.items():
-                result[key] = value
+                # STEP automation is user-authored musical state. A composition
+                # helper may replace a whole instrument/sequence record while
+                # only intending to update note/gate data. In that case retain
+                # any automation lanes it did not explicitly author. Explicit
+                # writes to a lane remain authoritative.
+                previous = result.get(key)
+                if isinstance(previous, dict) and isinstance(value, dict):
+                    merged = dict(value)
+                    for lane_key in ("step_controls", "phase_shift", "eq_gain_db",
+                                     "eq_frequency", "eq_q", "sidechain_depth",
+                                     "phase_mod_depth", "automation"):
+                        if lane_key in previous and lane_key not in merged:
+                            merged[lane_key] = previous[lane_key]
+                    result[key] = merged
+                else:
+                    result[key] = value
 
         return result
 

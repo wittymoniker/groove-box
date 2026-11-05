@@ -61,11 +61,37 @@
       "sample"
     ],
     "layered": true,
-    "merged_main_control": "\u270e\ud83c\udf99 Draw / Record Layers",
+    "merged_main_control": "✎🎙 Draw / Record Layers",
     "project_storage": [
       "recordings",
       "layers"
     ]
+  },
+  "fractal_seed_mode_v3": {
+    "authored_hit_policy": "generated Fractal Seed events are tagged with symbol/lineage provenance; authored events are not overwritten by Explorer preview scenarios",
+    "default_enabled_for_new_or_legacy_projects": true,
+    "deliberate_scenarios": {
+      "allowed": [
+        "none",
+        "omit_every_third",
+        "phase_plus_one"
+      ],
+      "require_both": [
+        "mode_enabled",
+        "canonical_controls"
+      ]
+    },
+    "explicit_saved_off_preserved": true,
+    "generation": "deterministic bounded L-system; explicit truncation causes refusal rather than silent partial material",
+    "gui_entry": "Musical Explorer button opens docs/fractal-seed-mode/musical_explorer.html without mutating live audio",
+    "project_round_trip": [
+      "fractal_seed_mode_enabled",
+      "engines.fractal_seed",
+      "master_volume",
+      "master_volume_percent"
+    ],
+    "random_probability_gates": false,
+    "symbolic_seed_identity": "SHA-256 of axiom + rewrite table; independent of evaluation depth/window/tempo"
   },
   "full_acceleration": {
     "abi": 9,
@@ -189,6 +215,33 @@
     ],
     "scrollbars": "horizontal + vertical as needed"
   },
+  "release_candidate": {
+    "base_asset": "Groovebox-R28.4.50-GAME-MEDIA-OUTPUT-BRIDGE-20261024.2.zip",
+    "base_asset_sha256": "f1e1d316e538646feae4b579c83e4cbf9ecf4d04da63d008b53ad6f83fa0d69f",
+    "base_asset_size_bytes": 21345662,
+    "base_release": "R28.4.50",
+    "fresh_iso_built": false,
+    "hotfix": "HF2",
+    "physical_boot_tested": false,
+    "physical_microphone_tested": false,
+    "physical_speaker_audio_tested": false,
+    "release_kind": "patched source archive",
+    "validation_summary": {
+      "targeted_regression_tests_passed": 71,
+      "euclidean_fifth_canonical_checks_passed": "24/24",
+      "crc32c_installer_source_checks_passed": "10/10",
+      "python_compile": "passed",
+      "shell_syntax": "passed",
+      "full_repository_pytest": "not_claimed_pass_due_to_historical_snapshot_test_paths_duplicate test names and missing PyQt6",
+      "fresh_iso_built": false,
+      "physical_boot_tested": false,
+      "physical_speaker_audio_tested": false,
+      "physical_microphone_tested": false,
+      "r23h_volume_verifier": "passed all source-contract predicates",
+      "r23j_saved_volume_verifier": "passed all source-contract predicates"
+    },
+    "verifier_hotfix": "R23h/R23j volume verifier contract predicates updated to match 72% first-launch default and current playback mixer command syntax; runtime audio code unchanged."
+  },
   "release_contract": "sCode ABI 9 -> Groovebox project-local media runtime -> sOS staged /opt/groovebox appliance",
   "scode_appliance_installer_abi": 1,
   "scode_completion_abi": 1,
@@ -197,6 +250,14 @@
   "scode_pool_abi": 3,
   "scode_pool_format_count": 18,
   "scode_required": true,
+  "sos_audio_volume_contract": {
+    "boot_initialization": "one-time alsactl init remains in sos-system-media-ready; persisted desired volume is restored afterward",
+    "fresh_hardware_default_percent": 72,
+    "live_slider_behavior": "set updates ALSA/PipeWire without alsactl init or route reset",
+    "microphone_capture_controls_modified_by_playback_router": false,
+    "playback_route_behavior": "media_output_router does not rerun alsactl init on each playback; it preserves stored desired volume and only prepares UCM on a route change",
+    "saved_volume_range": "0..100 inclusive, explicit 0 preserved"
+  },
   "storage_maintenance": {
     "autosave_recovery": [
       "Recover",

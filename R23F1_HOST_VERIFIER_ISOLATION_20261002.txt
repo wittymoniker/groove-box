@@ -1,0 +1,11 @@
+Groovebox/sOS v35.22zz-R23f1 HOST VERIFIER ISOLATION — 2026-10-02
+
+Runtime lineage: R23f SOS ANALOG OUTPUT PREP (unchanged).
+Build/verifier correction:
+- R23f routing/scoring test no longer requires NumPy in the Fedora host Python.
+- The R23f verifier runs the routing test with `python -S` to prove host site-packages are unnecessary.
+- When NumPy is absent, the routing-only test injects an inert import shim; no NumPy DSP/WAV function is executed by this test.
+- Appliance/runtime NumPy remains bundled and required normally.
+
+PASS: python3 -S test_r23f_sos_analog_output.py
+PASS: verify_v35_22zz_r23f.py with host-site-package isolation

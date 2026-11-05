@@ -1,0 +1,12 @@
+R28.4.42 GLOBAL CARRIER RESET + HELP UPDATE
+
+Help / Readme in the application now documents global single-instance carrier intent,
+User/Canonical Vector and Wavetable balance, lane-specific Ball and Cellular Automata
+activity-lock/reset semantics, and the 0.5 sidechain-depth policy.
+
+IMPORTANT RELEASE STATUS
+The shared context provides reset_activity_lock(context, lane_name), but actual
+Performance-window Ball Reset and Cellular Automata Reset button wiring is not yet
+verified in this source snapshot. The help text describes the required behavior; do not
+interpret it as proof those buttons are already present. Likewise, live DSP sidechain
+application, a built ISO, and a published Wasmer site remain unverified.

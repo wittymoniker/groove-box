@@ -31,15 +31,47 @@ def stage0_binary_matches_host(path: Path) -> bool:
 def find_scode_stage0(root: Path|None=None):
     return next((p for p in scode_stage0_candidates(root) if p.is_file() and stage0_binary_matches_host(p)), None)
 
-def accel_candidates(root: Path|None=None):
+def cpp_accel_candidates(root: Path|None=None):
     root=Path(root or ROOT); s,_=platform_key()
     if s=='windows': names=['groovebox_accel.dll']
     elif s=='darwin': names=['libgroovebox_accel.dylib']
     else: names=['libgroovebox_accel.so']
     return [root/d/n for d in ('native','cpp','') for n in names]
 
+def rust_accel_candidates(root: Path|None=None):
+    root=Path(root or ROOT); s,_=platform_key()
+    if s=='windows': names=['groovebox_rust_accel.dll']
+    elif s=='darwin': names=['libgroovebox_rust_accel.dylib']
+    else: names=['libgroovebox_rust_accel.so']
+    # Crate-local target/ is intentionally excluded: sudo ISO builds used to leave
+    # it root-owned and poison later desktop launches. Only installed runtime
+    # artifacts are candidates.
+    return [root/d/n for d in ('native','') for n in names]
+
+def accel_candidates(root: Path|None=None):
+    # GROOVEBOX_NATIVE_BACKEND=rust|cpp|auto.  v35.22z makes Rust the
+    # preferred auto backend now that it implements the complete accelerator ABI;
+    # C++ and NumPy remain deterministic fallbacks.
+    pref=os.environ.get('GROOVEBOX_NATIVE_BACKEND','auto').strip().lower()
+    cpp=cpp_accel_candidates(root); rust=rust_accel_candidates(root)
+    if pref=='rust': return rust+cpp
+    if pref=='cpp': return cpp+rust
+    return rust+cpp
+
 def find_accel(root: Path|None=None):
     return next((p for p in accel_candidates(root) if p.is_file()), None)
+
+def find_rust_accel(root: Path|None=None):
+    return next((p for p in rust_accel_candidates(root) if p.is_file()), None)
+
+def build_rust_accel(root: Path|None=None):
+    root=Path(root or ROOT); helper=root/'scripts'/'build_rust_accel.py'
+    if not helper.is_file(): return None
+    try:
+        subprocess.run([os.fspath(shutil.which('python3') or shutil.which('python') or os.sys.executable),str(helper)],cwd=root,check=True)
+    except Exception:
+        return None
+    return find_rust_accel(root)
 
 def build_accel(root: Path|None=None):
     root=Path(root or ROOT); src=root/'cpp'/'groovebox_accel.cpp'; outdir=root/'native'; outdir.mkdir(exist_ok=True)

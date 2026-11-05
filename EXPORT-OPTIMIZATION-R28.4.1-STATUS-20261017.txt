@@ -1,0 +1,20 @@
+Groovebox R28.4.1 — export optimization status (2026-10-17)
+
+Implemented and verified in this update:
+- Output-rate resampling now uses a duration-exact helper around scipy.signal.resample_poly.
+- Desired output sample count is round(input_samples * output_rate / render_rate); only the final resampler rounding delta is trimmed or zero-padded.
+- Output remains contiguous float32 before the existing quantization/writer stage.
+- Existing anti-aliasing behavior is retained (polyphase resampling; no sample dropping or relabeling).
+- Root groovebox.py and BUILD_ISO/app-overlay-v35.22zz/groovebox.py synchronized.
+- Added BUILD_ISO/test_audio_export_exact_resample.py, which passed five sample-count/contiguity cases and a 30 kHz tone 96→48 kHz anti-alias rejection smoke test (RMS 0.001621).
+- Python compilation passed for root and overlay source.
+- Targeted verify_v35_22zz_r23b.py, verify_v35_22zz_r12.py and verify_v35_22zz_r12a.py passed.
+
+Not yet implemented / certified:
+- The main _render_mixdown_buffer() still executes synchronously from export_mixdown_dialog().
+- Immutable whole-project render snapshot plus worker-thread synthesis is NOT complete. The renderer reads numerous UI controls and mutates render state, so simply calling it from QRunnable would be unsafe. This requires a deliberate render-context extraction and isolation refactor rather than a blind thread wrapper.
+- No asynchronous export progress/cancel dialog has been integrated for the full audio-export lifecycle.
+- No end-to-end timing benchmark comparing the previous and new full exports has been run; the added tests validate sample count and anti-alias behavior only.
+- GUI/runtime tests and full ISO build were not run in this environment (PyQt6/runtime payload limitations from the existing validation baseline still apply).
+
+This is a partial export correctness/efficiency update, not a claim that the full export optimization request is complete.

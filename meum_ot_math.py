@@ -7,6 +7,7 @@ where their role is creative/structural and reversible.
 """
 from __future__ import annotations
 import hashlib, math
+from trig_series import (chord_isn_scalar, chord_ics_scalar, inverse_isn_scalar, inverse_ics_scalar, isx_scalar, isy_scalar, tan_scalar)
 from dataclasses import dataclass
 from typing import Iterable, Mapping, Sequence
 from meum_constants import (
@@ -15,26 +16,31 @@ from meum_constants import (
 )
 
 def isn_inv(x: float) -> float:
-    """Book inverse-isosceles-sine: 2*asin(x/2), clamped to real domain."""
-    x=max(-2.0,min(2.0,float(x)))
-    return 2.0*math.asin(x/2.0)
+    """Inverse-isosceles coordinate evaluated from its Maclaurin/binomial series."""
+    return inverse_isn_scalar(float(x))
 
 def isn(theta: float) -> float:
-    """Analytic inverse pair used by Groovebox: 2*sin(theta/2)."""
-    return 2.0*math.sin(float(theta)/2.0)
+    """Legacy chord coordinate, evaluated directly from its own series.
+
+    Forward Trigonometry Engine sin/cos/tan do not use this half-angle family.
+    """
+    return chord_isn_scalar(float(theta))
 
 def ics(theta: float) -> float:
-    """Isosceles complementary coordinate used for symmetric phase indexing.
+    """Legacy complementary chord coordinate, direct series evaluation."""
+    return chord_ics_scalar(float(theta))
 
-    The book discusses ics/ics^-1 as a complementary, handedness-relative geometry.
-    Groovebox uses this conservative companion definition rather than claiming an
-    externally-standard identity: 2*cos(theta/2).
-    """
-    return 2.0*math.cos(float(theta)/2.0)
+def isx(theta: float) -> float:
+    return isx_scalar(float(theta))
+
+def isy(theta: float) -> float:
+    return isy_scalar(float(theta))
+
+def book_tan(theta: float) -> float:
+    return tan_scalar(float(theta))
 
 def ics_inv(x: float, handedness: float=1.0) -> float:
-    x=max(-2.0,min(2.0,float(x)))
-    a=2.0*math.acos(x/2.0)
+    a=inverse_ics_scalar(float(x))
     return a if handedness >= 0 else -a
 
 def _u(seed, label):

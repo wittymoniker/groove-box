@@ -9,7 +9,7 @@ import hashlib, json, math
 from typing import Any
 import numpy as np
 
-VERSION = "cross_media_v13"
+VERSION = "cross_media_v14_eq"
 
 def _stable(obj: Any) -> str:
     return hashlib.sha256(json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()[:16]
@@ -93,6 +93,7 @@ def build_canonical_document(app, waveform=None, sample_rate=48000):
         "patch_connections":patches,
         "global_algo":global_algo,
         "domain_eq":cp(getattr(getattr(app,"domain_eq_engine",None),"to_json",lambda:{})()),
+        "global_eq":cp(getattr(app,"global_eq_state",{}) or {}),
         "media":{
             "wav_path":str(getattr(app,"imported_wav_path","") or ""),
             "video_path":str(getattr(app,"imported_video_path","") or ""),
@@ -110,13 +111,36 @@ def build_canonical_document(app, waveform=None, sample_rate=48000):
     state["cross_media_fingerprint"]=_stable({"composition":state["composition_fingerprint"],"waveform":state["waveform_fingerprint"]})
     return state
 
+def _eq_projection(document):
+    d=document or {}
+    params=d.get("instrument_params") or d.get("instrument_param_state") or {}
+    curves=[]
+    for st in params.values() if isinstance(params,dict) else []:
+        if not isinstance(st,dict):
+            continue
+        cv=st.get("eq_curve") or ((st.get("eq") or {}).get("curve") if isinstance(st.get("eq"),dict) else None)
+        if isinstance(cv,(list,tuple)) and cv:
+            vals=[_finite(v) for v in cv[:8]]
+            if vals: curves.append(vals + [vals[-1]]*(8-len(vals)))
+    gst=d.get("global_eq") or {}
+    gcv=gst.get("eq_curve") or gst.get("curve") if isinstance(gst,dict) else None
+    if isinstance(gcv,(list,tuple)) and gcv:
+        vals=[_finite(v) for v in gcv[:8]]; curves.append(vals+[vals[-1]]*(8-len(vals)))
+    if not curves:
+        return {"energy":0.0,"low":0.0,"mid":0.0,"high":0.0,"tilt":0.0}
+    a=np.asarray(curves,dtype=np.float64)
+    m=np.mean(a,axis=0)
+    low=float(np.mean(m[:3])); mid=float(np.mean(m[3:6])); high=float(np.mean(m[6:]))
+    return {"energy":float(np.mean(np.abs(m))),"low":low,"mid":mid,"high":high,"tilt":high-low}
+
 def frame_projection(document, t=0.0):
     """Small per-frame projection shared conceptually by visual/game consumers."""
     d=document or {}; wf=d.get("waveform") or {}; env=wf.get("energy_envelope") or [0.0]
     idx=int(abs(_finite(t))*max(1,len(env)))%len(env)
     energy=_finite(env[idx])
     centroid=_finite(wf.get("spectral_centroid"),0.0)
-    return {"energy":energy,"spectral_centroid":centroid,"rms":_finite(wf.get("rms")),"phase":(float(t)*_finite(d.get("bpm"),120.0)/60.0)%1.0,"composition_fingerprint":d.get("composition_fingerprint",""),"cross_media_fingerprint":d.get("cross_media_fingerprint","")}
+    eq=_eq_projection(d)
+    return {"energy":energy,"spectral_centroid":centroid,"rms":_finite(wf.get("rms")),"phase":(float(t)*_finite(d.get("bpm"),120.0)/60.0)%1.0,"eq":eq,"eq_energy":eq.get("energy",0.0),"eq_tilt":eq.get("tilt",0.0),"composition_fingerprint":d.get("composition_fingerprint",""),"cross_media_fingerprint":d.get("cross_media_fingerprint","")}
 
 
 def build_cross_media_from_canonical(document, waveform=None, sample_rate=48000):
@@ -139,6 +163,7 @@ def build_cross_media_from_canonical(document, waveform=None, sample_rate=48000)
         "instrument_samples": d.get("instrument_sample_paths", d.get("instrument_samples", {})),
         "patch_connections": d.get("patch_connections", []),
         "global_algo": d.get("global_algo", {}),
+        "global_eq": d.get("global_eq", {}),
         "operator_time_offsets": d.get("operator_time_offsets", {}),
         "media_carrier": d.get("media_carrier", d.get("media", {})),
         "project_notes": d.get("project_notes", ""),

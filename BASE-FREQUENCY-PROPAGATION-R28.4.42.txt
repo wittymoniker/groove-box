@@ -1,0 +1,7 @@
+R28.4.42 BASE-FREQUENCY PROPAGATION CONTRACT
+
+The shared canonical context now retunes frequency-bearing events across synth, math, video, and game lanes when events carry pitch or opt into frequency_derived. Events explicitly marked user_data_protected or frequency_user_owned are preserved. Non-musical visual fields are not modified. Four geometric carriers retain global-singleton metadata and canonical base-frequency parameters.
+
+Validation: 15 shared-context/spatial tests pass; Python compilation passes.
+
+Limitation: this validates the shared context contract only. The Qt spinner signal is not yet verified as connected to every runtime renderer, playlist, video, and game consumer; perform end-to-end GUI/audio/video/game playback testing before claiming complete live integration. ISO not built.

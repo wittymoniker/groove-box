@@ -8,12 +8,12 @@ ZIP="$OUTDIR/groovebox_STORAGE_RECOVERY_APPLIANCE_${STAMP}.zip"
 TGZ="$OUTDIR/groovebox_STORAGE_RECOVERY_APPLIANCE_${STAMP}.tar.gz"
 cd "$(dirname "$ROOT")"
 BASE="$(basename "$ROOT")"
-# Keep the complete APPLIANCE_ISO builder tree and its seed initramfs. Exclude
+# Keep the complete BUILD_ISO builder/source tree and its seed initramfs. Exclude
 # only transient build roots, generated ISO images, caches and user data.
 EX=(
   "$BASE/__pycache__/*" "$BASE/.pytest_cache/*" "$BASE/.groovebox-build-venv/*"
-  "$BASE/dist_release/*" "$BASE/APPLIANCE_ISO/.fat-build/*" "$BASE/APPLIANCE_ISO/dist/*.iso"
-  "$BASE/APPLIANCE_ISO/dist/*.iso.sha256" "$BASE/projects/*" "$BASE/samples/*" "$BASE/exports/*"
+  "$BASE/dist_release/*" "$BASE/BUILD_ISO/.fat-build/*" "$BASE/BUILD_ISO/dist/*.iso"
+  "$BASE/BUILD_ISO/dist/*.iso.sha256" "$BASE/projects/*" "$BASE/samples/*" "$BASE/exports/*"
 )
 rm -f "$ZIP" "$TGZ"
 if command -v zip >/dev/null 2>&1; then
