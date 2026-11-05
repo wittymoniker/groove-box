@@ -1,0 +1,12 @@
+MATHEMATICIANS GROOVEBOX — R29F
+2026-11-04
+
+Changes
+- Live Keyboard key chart now accepts input from any active Groovebox top-level window.
+- Key handling remains non-invasive: no window activation/raise; text editors, editable combos, spin boxes, modal dialogs, and popups are excluded.
+- Live Player pitch bend state is applied to key-chart notes even when another Groovebox window is active.
+- Updated in-app and standalone help with global keyboard behavior, Jam capture, and performance caveats.
+
+Validation caveats
+- This patch changes event routing and help only. It does not claim to remove every canonical-engine refresh stall, nor claim a measured 1080p/3D live-stream target. Those require profiling the specific refresh call graph and testing on the target GPU/decoder.
+- Native PyQt6 GUI/audio runtime is not available in this environment.

@@ -1,0 +1,16 @@
+R29F validation record — 2026-11-04
+
+PASS
+- test_r29f_global_keychart_contract_20261104.py: 3 passed
+- test_live_player_pitch_bend_20261104.py: 2 passed
+- py_compile: groovebox.py, live_jam_ui.py, live_jam.py, live_player.py, thread_budget.py, streaming_runtime.py
+- Matching application-wide key-chart routing change applied to source groovebox.py and BUILD_ISO/app-overlay-v35.22zz/groovebox.py.
+- Embedded in-app help and standalone HELP_TEXT.md updated.
+
+INCOMPLETE / NOT CLAIMED
+- Broader canonical regression batch began but exceeded the execution time limit after 13 tests; it is not recorded as a pass.
+- PyQt6 GUI/audio runtime is unavailable here; no interactive multi-window test was possible.
+- No target-device 1080p/1/2/3D direct-stream benchmark was run.
+- Canonical engine generation still has synchronous mutation phases. Moving those phases wholesale to worker threads would race Qt widgets and shared project state; this release does NOT claim the canonical refresh freeze is eliminated.
+- No app-side showMinimized()/WindowMinimized-on-background-click handler was found. Desktop window-manager minimize gestures are external to the app and cannot be disabled safely from this code patch.
+- Assignable Jam Zoom Bind selector / actual routing to envelope, macro, sample, effects and timeline zoom is not implemented in this patch; help text describes current behavior only and does not claim a selector exists.

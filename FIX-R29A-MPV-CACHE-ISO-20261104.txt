@@ -1,0 +1,26 @@
+Groovebox R29a ISO preflight correction
+Date: 2026-11-04
+
+Problem:
+  RUN_ME_ZERO_STATE.sh failed the R19 contract "mpv bounded low-latency cache".
+  The two mpv launcher profiles in performance.py had drifted to 8-second cache,
+  6-second demuxer readahead, and a 96 MiB demuxer cap, while R19/R20 and the
+  final initramfs stamper require the bounded 1-second / 1-second / 32 MiB policy.
+
+Correction:
+  Both mpv launch profiles now use:
+    --cache-secs=1
+    --demuxer-readahead-secs=1
+    --demuxer-max-bytes=32MiB
+    --cache-pause=no
+  Playlist prefetch and gapless-audio options are retained.
+  The active BUILD_ISO/app-overlay-v35.22zz/performance.py copy matches root.
+
+Validation performed on the source tree:
+  PASS: BUILD_ISO/verify_v35_22zz_r19.py
+  PASS: BUILD_ISO/verify_v35_22zz_r20.py
+  PASS: Python compilation for root and active-overlay performance.py
+  PASS: root and active-overlay performance.py byte-for-byte match
+
+Not performed:
+  No ISO image build, boot, or hardware playback test was run.

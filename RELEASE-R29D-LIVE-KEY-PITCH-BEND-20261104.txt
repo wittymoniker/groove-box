@@ -1,0 +1,17 @@
+MATHEMATICIAN'S GROOVEBOX — R29d Live Keyboard Pitch Bend
+Date: 2026-11-04
+
+Changes
+- Live Player Ctrl+wheel is no longer a zoom gesture; it adjusts live keyboard pitch bend.
+- Bend range is -12 to +12 semitones, one semitone per wheel detent, with a visible slider/readout.
+- The bend affects only key-chart / live keyboard trigger notes while the Live Player is the active window.
+- The composition, loaded media, microphone, and backing mix remain unchanged.
+- Generated key notes use equal-tempered frequency scaling. Pre-rendered key-bank notes use sampler-style playback-rate bending (pitch and one-shot duration change together).
+- Plain wheel scrolling remains available; Ctrl+wheel is reserved for bend.
+
+Validation
+- Python compilation passed for groovebox.py and live_player.py.
+- Focused pitch-bend math/buffer tests: 2 passed.
+- R10 native top/bottom scroll ISO source verifier passed.
+- Full GUI/audio integration was not run in this environment because PyQt6 is unavailable.
+- No ISO was assembled or booted.

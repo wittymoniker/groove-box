@@ -1,0 +1,23 @@
+Mathematician's Groovebox — R29e update
+Date: 2026-11-04
+
+Live Player tuner
+- Ctrl+wheel over the Live Player bends live keyboard-triggered notes ±12 semitones.
+- Native trackpad pinch/zoom gestures over the Live Player also act as the tuner.
+- Backing composition, media playback and microphone input are not shifted.
+
+Live Jam performance patterns
+- Jam recording now stores live key hits, key/sample binding identity, and pitch-bend automation on one monotonic timeline.
+- Save Take as Pattern stores the take as multiple timed entries.
+- The pattern time envelope equals the actual recorded take duration.
+- Assign a saved pattern to F1–F12; Shift+F1–F12 replays that pattern. Plain F1–F12 retain their existing morph-macro behavior.
+- Pattern notes replay with their recorded semitone bend and key/sample binding.
+
+Help
+- Expanded the in-app Help/Readme with tuner gestures, Live Jam macros, event recording, multi-entry patterns, and timing behavior.
+
+Validation
+- Python compilation passed for groovebox.py, live_player.py, live_jam.py and live_jam_ui.py, including active ISO overlay copies.
+- Four focused unit tests passed (Jam pattern envelope/macro persistence and pitch-bend helpers).
+- R29c layout verifier passed 14/14 checks.
+- Native Qt GUI/audio runtime remains unverified in this container because PyQt6 is not installed; a full ISO was not built or boot-tested.

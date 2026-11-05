@@ -1,3 +1,5 @@
+# GROOVEBOX_V35_22ZZ_R23K_RUNTIME_AUDIO_MIC_BROWSER_SD_20261003
+# GROOVEBOX_V35_22ZZ_BROWSER_NO_FIRST_ENTRY_RESCAN_20260926
 #!/usr/bin/env python3
 """Basic HTML5 web browser for Groovebox Performance.
 
@@ -175,7 +177,8 @@ class NetworkSettingsPanel(QWidget):
         root.addStretch(1)
 
         self.list_networks.itemDoubleClicked.connect(self._on_network_double_click)
-        QTimer.singleShot(0, self.refresh)
+        # ZZ: first browser entry must not launch nmcli --rescan.
+        self.lbl_status.setText('Network status is deferred. Press ↻ Scan when you need Wi-Fi discovery.')
 
     def _have_nmcli(self) -> bool:
         return bool(shutil.which("nmcli"))
@@ -345,7 +348,11 @@ class WebBrowserTab(QWidget):
         except Exception: pass
         try: self.page.newWindowRequested.connect(self._on_new_window_requested)
         except Exception: pass
-        self._load_home()
+        # R23k: let the parent Performance window finish its tab switch/paint
+        # before Chromium starts the first navigation. The browser object/profile
+        # itself is retained for the session, so this cost is paid only once.
+        self.lbl_browser_status.setText("Browser ready · opening home…")
+        QTimer.singleShot(140, self._load_home)
 
 
     def shutdown_webengine(self):
@@ -407,6 +414,24 @@ class WebBrowserTab(QWidget):
         except Exception:
             pass
         self.profile = None
+        # PERF_THREAD_LIFECYCLE_20260924: complete profile/view deferred deletes
+        # before QApplication starts dismantling Chromium worker thread storage.
+        try:
+            from PyQt6.QtCore import QCoreApplication, QEvent
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        except Exception:
+            pass
+        try:
+            if view is not None:
+                view.deleteLater()
+        except Exception:
+            pass
+        self.view = None
+        try:
+            from PyQt6.QtCore import QCoreApplication, QEvent
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        except Exception:
+            pass
 
     def closeEvent(self, event):
         self.shutdown_webengine()
@@ -466,3 +491,11 @@ class WebBrowserTab(QWidget):
     def _on_load_finished(self,ok:bool):
         self.lbl_browser_status.setText("Loaded." if ok else "Failed to load page.")
 
+
+
+# GROOVEBOX_R23R_NONMODAL_DIALOGS_20261103: no dialog may block other windows.
+try:
+    import nonmodal_dialogs as _gb_nonmodal
+    _gb_nonmodal.install()
+except Exception:
+    pass

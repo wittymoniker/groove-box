@@ -42,5 +42,5 @@ def test_96k_and_128k_are_real_pcm24_roundtrips(tmp_path):
 
 def test_export_render_rate_is_applied_before_mixdown():
     assert 'self.preferred_sample_rate = export_sample_rate' in SRC
-    assert 'master, sample_rate = self._render_mixdown_buffer()' in SRC
+    assert 'master, sample_rate = self._export_render_buffer("Export prepare", export_sample_rate)' in SRC   # EXPORT_WORKER_20261102 wrapper (falls back to the in-window render)
     assert 'self.preferred_sample_rate = _prior_sr' in SRC

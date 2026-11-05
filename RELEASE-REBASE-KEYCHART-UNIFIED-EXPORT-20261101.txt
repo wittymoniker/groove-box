@@ -1,0 +1,129 @@
+Rebase 2026-11-01: work done after the sandbox reset, re-applied on the newer MATHEMATICIANS_GROOVEBOX_V3 tree (R23r RAM-ROOT-IO-HARDENING).
+Kept from the newer tree (already contained equivalents): play-sequence guard, instrument rename, audio-open NameError fix, QProgressDialog/Path/QRect/SERIES_PI fixes, device-list fix, run_bounded process-group kill, MCC media codec, GLOBAL_XMOD retirement.
+Added on top:
+- Keyboard key chart (letters + top-row numbers -> linear scale of the selected instrument) + "Key Chart" button + test.
+- Unified Export dialog (all formats, parts/stitch, audio/video bitrate, sample rate, bit depth, size/FPS, integrity, MCC project, MEUM, plus MCC lossless audio and MCC lossless video entries) + test.
+- media_output_router: whole-process-group kill for short probes, 900 s bound on TV transcode.
+Verified: full test suite 363 passed (test_hw_freeze_crash passes alone; it fails only when run after tests that monkeypatch audio_os_backend.sd, as in the original tree), build verifier chain OK, overlay files byte-identical to root.
+
+Round 2 (2026-11-02, from Latitude/Acer reports)
+- audio_os_backend.resolve_output_device_index: on sOS, first resolve the PortAudio row of the SAME physical ALSA PCM that video (mpv) is pinned to (boot state / UCM, cached 15 s); name-scoring remains the fallback. Targets Latitude: video audible, audio player/main window silent.
+- audio_check: added tests 1b (file-player stream settings) and 1c (key/trigger stream settings) so the report shows which stream profile a machine cannot make audible.
+- audio_check (round 3): added 1d (the running main window's own note engine) and the report now names the resolved PortAudio device and the proven speaker PCM.
+- Audio check answers window is now non-modal + always-on-top (the modal exec could hide behind the main window and look like a freeze); the report file is written before it appears.
+- Key notes: no fade, no limiter, no soft saturation, no audition peak scaling (all removed at user request; project policy is no limiter/soft-clip)
+- All devices, all the time (round 3): every PortAudio output (main window, key notes, Trigger, audio-file player, Audio check) now resolves to the pipewire/pulse device and the "groovebox_all_outputs" combine sink (speaker + HDMI/DP + 3.5 mm + USB/BT) - the same route Performance video uses. The route is built in a background thread at startup (warm_all_outputs_route), the physical speaker's UCM path is prepared like the video path does. Without a sound server it falls back to the proven physical speaker. GROOVEBOX_OUTPUT_SINGLE=1 disables it.
+- Round 4: Latitude report - "System default" works for the main window; video needs groovebox_all_outputs or the main ALSA out. The PortAudio "default" device (what a System-default choice resolves to by partial name match) is now preferred before any direct hw PCM and before pipewire/pulse rows, both when the all-outputs route exists (it becomes the default sink) and with no explicit choice. Video routing is unchanged (all-outputs / physical ALSA).
+- Round 5: Latitude WAV player was silent while the video player was audible. Audio files in Performance now skip the inline paths (direct-ALSA PCM pipeline and host PortAudio file player) and take the video player route (external player + selected output routing). GROOVEBOX_AUDIO_VIA_PLAYER=0 restores the inline paths. "Play together" (multi-file mix) still uses the host file player.
+- Round 6 (all devices, stronger): (1) FOUND THE ERROR SOURCE: open_output_stream raised "selected device is not a usable playback endpoint" whenever the preferred name was "groovebox_all_outputs" (which Performance stores as the preferred name), so every open failed once Performance had run. Bad preferred names now mean "all outputs / no specific device". (2) The output open no longer sits behind the 1.5 s failure cooldown and no longer gives up on the first refusal: it tries the resolved device, system default, pipewire/pulse, every hw output, then re-enumerates and tries again; only when all refuse does it raise. (3) New multi_output.FanOutStream: with no combined sink, one callback plays on every physical output that accepts the same rate/channels (primary drives the callback, secondaries replay it from bounded rings; refusing/failed devices are skipped). Selection is ignored; GROOVEBOX_OUTPUT_SINGLE=1 restores single-device behaviour.
+
+ROUND 7 (20261102) - GOAVA bridge level
+- The GOAVA level on the canonical bridge now defaults to 33% (was 100%) and is a real linear gain on the GOAVA audio, not an on/off switch.
+- 100% = GOAVA's own fixed chord amplitudes (root 0.33), its maximum influence; 0% = silent; the 33% default is a third of that.
+- No limiter, soft-clip or saturation. Saved projects keep their saved level.
+- Test: test_goava_third_20261102.py
+
+ROUND 8 (20261102) - threading, standalone tuning, no default over/undertones
+- thread_budget.py: one CPU budget (all usable logical threads + 1 spare for the maths libraries / OpenMP voice kernel,
+  2x threads for the helper pools). Applied before NumPy loads. GROOVEBOX_THREADS=<n> and explicit OMP/BLAS variables win.
+- appliance_tuning.py: on the standalone OS only - performance CPU governor / Intel EPP and nice -5, before any worker thread.
+  GROOVEBOX_APPLIANCE_TUNING=0 disables.
+- Inharmonic partials (Geometric mixer, default 0%): the seeded per-voice entropy no longer adds the off-harmonic partial bank
+  or FM term unless this amount is raised. Blank project + canonicals + a seed now renders a pure harmonic series (GOAVA included).
+  Randomize All draws the amount across the full 0-100% and Instance x Main cross-mod 0-0.008 (was 0-0.02).
+- Tests: test_thread_budget_20261102.py, test_appliance_tuning_20261102.py, test_inharmonic_gate_20261102.py
+
+ROUND 9 (20261102) - Latitude audio, speed, compatibility, drives, autosave, startup
+- sos-hardware-volume: every sound card is initialised and levelled, Headphones UCM enabled when the jack is plugged in,
+  new `jack` command; the volume widget re-reads the jack every 3 s. (Takes effect after an ISO rebuild; verified against stubs only.)
+- Default instrument roster stays 48 (spinner still reaches 128).
+- Speed: exact scalar clip, content-keyed EQ-pole normalisation cache, fractal raster cache for canonical updates.
+- Carrier video: export now reports how many frames actually contained carrier video and why any were dropped.
+- Compatibility (main window, startup screen): compat_settings.py saves smooth mode (auto = on for <=4 threads), math threads,
+  audio block size/latency, all-outputs, audio-via-video-player, compiled voice kernel, standalone tuning. Environment variables still win.
+- Startup screen: clearer text, always shown (no skip; Quit -> Back to startup screen on desktop and standalone OS), project name + location
+  (a USB/SD location works; existing name opens that project, new/randomize never overwrite), Compatibility button, smooth-mode choice.
+  --skip-startup-launcher is honoured only with GROOVEBOX_ALLOW_STARTUP_SKIP=1 (automated runs).
+- Autosave box next to Save/Load Project: ticked = the open project is saved into itself every 3 min and on quit (original kept once per
+  session as metadata/before-autosave.MCC; a recovered snapshot is never written over a project). Unticked = nothing is autosaved.
+- USB / SD (drive_targets.py): 1) every Save/Open/Folder dialog lists connected drives in its sidebar; 2) "Copy to USB / SD" button
+  (main window + Performance): project folder, latest exports, files or a folder, each file SHA-256 checked, optional eject;
+  3) Compatibility option "copy each project save to a connected drive". Nothing on the drive is deleted.
+- Performance: Notes / Diary button.
+- Tests: test_update_speed_defaults, test_latitude_jack_all_devices, test_compat_settings, test_drive_targets, test_notes_button (all 20261102)
+- Video (Compatibility): carrier video mix (default 0.46) and instrument-video tile size (default 0.18 of frame width, up to 0.5) are now adjustable.
+- GOAVA -> ensemble box in the bridge mixer (previously unconnected) now sets the GOAVA ensemble modulation amount: separate from the
+  GOAVA level (sine gain), saved with the project, enabled only while GOAVA is on; no ensemble modulation exists while GOAVA is off.
+- GOAVA chord tones keep their true seeded frequencies at every ensemble-mod amount (the blend no longer pulls them toward the chord mean).
+- Retired the canonical "continuation" voice: a synthetic ~0.3-peak sine hard-gated on/off 16x per row, added to the canonical bus outside the
+  instrument ensembles (the square-amplitude beeping on blank patches with seeds + canonicals). Runs only if GROOVEBOX_CANONICAL_CONTINUATION=1;
+  an old project's saved "enabled" flag is ignored. Test: test_no_continuation_voice_20261102.py
+- Canonical branch: MEUM spatial resolver off by default (it smoothed/rescaled the canonical bus to the user bus loudness, cancelling the level
+  sliders, and injected a low sine when silent); old saves cannot re-enable it. Tests: test_no_spatial_resolve_20261102.py
+- Only the listed effects run by default (PKP Envelope, Fractallizer, EQR, Master Hard Clipper, Finite Infinity Meum hyperdrive, plus anything the
+  user sets in its own UI): row-boundary master fade, master vector AM, automatic canonical sidechain and the default 50% canonical->instrument
+  convolution are off (env GROOVEBOX_ROW_CROSSFADE / GROOVEBOX_MASTER_VECTOR_FX / GROOVEBOX_CANONICAL_SIDECHAIN=1 restore the first three).
+  Test: test_only_listed_fx_20261102.py
+- Cleanup: removed two dead legacy classes (PlaylistWindow, FloatingSynthWindow) that referenced undefined names; fixed an unbound local in the
+  terrain/spectrogram painter.
+- Stall guards: the five ffmpeg/ffprobe decode, probe and export calls that had no timeout now do (a corrupt file or stalled USB stick can no longer hang them).
+- Autosave builds the project snapshot once per cycle for both the in-place project write and the recovery copy (was twice on the GUI thread).
+
+ROUND 10 (20261102) - GLOBAL PLAY PATCHER KINDS, GEOMETRIC/PANEL BALANCE, TIME STATE, PROBE GUARD
+- Global Play Patcher: Synth Algo, Mod Algo, Geometric Algo and Sequencer Algo join Script / Domain / Wire.
+  Each has a script field, an amount slider, an enable switch in Algo Params, randomize, apply/unapply,
+  project save/load, Edit Together sync (the whole project snapshot) and a canonical-unison projection.
+  They only scale values the project already holds (synth panel values, modulation depth, the four geometric
+  instances, sequence values); they add no notes, steps, automation points or audio effects. Default = no change.
+- Algo Params "Save Params" used to wipe script/domain/wire amounts back to defaults; it now keeps and edits them.
+- Heuristic Write -> Edit Synth: "APPLY HEURISTIC -> SEQ SYNTH" also writes the four geometric synths
+  ("incl. 4 geometrics" box), and "HEURISTIC -> 4 GEOMETRICS" writes only them. Hand-drawn cycles, placed
+  cells and locked ball/cellular activity are never rewritten. Edit Synth Per Seq ON writes the sequence's own
+  instances; OFF writes the instrument's and records it as authored in the canonical macro user store.
+- Reverse Time now saves with the project (it was lost on load) and travels in Edit Together. Time Offset already did.
+- Panel <-> Geometric balance slider per instrument (geo_panel_mix), default 50/50, range 25..75 so each side
+  keeps at least a quarter. Used by the render voice and Trigger Note, saved with the project, a canonical macro
+  (canonical engines may write it; a user value stays authored) and kept across load.
+- Geometric voice pitch tracking verified: it receives the same note phase as the panel synth voice.
+- Probe crash guard: a device-probe child killed by a signal (-3 = SIGQUIT, -6, -11) is retried once and reported
+  by name; Performance keeps starting. JACK never auto-starts from the probe.
+- Tests: test_global_algo_kinds, test_geometrics_track_pitch, test_probe_crash_guard (all 20261102).
+- Profile finding (not changed): series_cyclic_isn and ~12M scalar ot_prod/math_mul calls dominate full-random renders.
+- Fileshare over Device Hotspot (Performance window, bottom row): toggle starts / stops this Groovebox's own Wi-Fi
+  network through the existing Direct hotspot. appliance_wifi.hotspot_plan() names the Wi-Fi activity it would
+  cancel and the toggle asks first (no prompt when a spare radio exists or nothing is connected). While on, the
+  host serves a read-only HTML file browser at its hotspot address (categories, filter box, tap-to-download,
+  shared roots only, traversal refused, blocked peers refused); off again when the toggle is off.
+  Needs Linux + NetworkManager; elsewhere it says so. Test: test_hotspot_share_20261102.
+- Library tuning (library_tuning.py): BLAS / OpenMP / NumExpr / vecLib thread counts, OpenMP and KMP wait modes
+  and the video encoder thread cap now follow the Smooth level through compat_settings (one callback path;
+  the Compatibility dialog reports them). Smooth ON keeps one logical thread free for audio / UI; OFF uses the
+  thread budget. Real-environment variables still win. Export encoder uses -threads when Smooth caps it.
+  Import cost measured at ~250 ms for the whole app, so no import changes were made. Test: test_library_tuning_20261102.
+
+ROUND 10 addendum (20261102)
+- Global Sidechain default is now 0 (was 0.1975807343, which is the GOAVA ensemble amount). Global Sidechain and Global EQ are user-only: canonical engines no longer write them; they still shape per-instrument EQ and local/per-step sidechain.
+- ot_prod / math_mul vectorized (ot_prod_vec, math_mul_vec): bit-identical to the scalar path, replaces four per-sample Python loops.
+- sCode exact memoization (SCODE_EXACT_MEMO_20261102): the EQ gain curve and the sequence envelope are routed through the sCode bridge memoized_result with exact keys and read-only cached arrays; output is bit-identical to uncached (test_scode_exact_memo_20261102).
+- Export encoder thread count follows the Smooth level (library_tuning.ffmpeg_threads_args).
+- sCode memo also covers meum_modulation_vectors (read-only cached AM/FM/PM arrays) and eqr_tensor_audio (pure scalar closed form); bit-identical, tested.
+- EQR Fractallizer control grid vectorized (eqr_tensor_audio_z_vec), bit-identical to the scalar loop.
+- Meum FM/PM/AM branches run side by side on a shared compute pool for large buffers (identical output). The render voice loop itself stays sequential (shared per-instrument phase carry).
+- Sidechain window: projects/autosaves saved with the old 0.1975807343 default now read back as 0 (migration); test_sidechain_default_zero_20261102.
+- Convert MCC media -> WAV / MP4 / PNG menu item (mcc_media.convert_mcc_file); in-app Help section for the Round 10 features.
+- Geometric voice now carries its share for every non-GOAVA waveform (saw / square / triangle / cosine too); two unused demo patchbay canvases removed.
+- Reverse Time now actually reverses the rendered track (play, export, video all use the shared mixdown); previously it only changed the visual playhead / script context. Time Offset still applies. The playhead inversion was removed (the buffer itself is reversed).
+- Geometric Algo now drives the geometric synths in the render itself (vector / wavetable / ball values), not only the automation state.
+- Trigger Note, key / pad hits and Trigger All now play the render voice (panel synth + four geometrics by the balance, with Synth / Geometric Algo drives) via _audition_voice, instead of a bare sine.
+- FIRST RENDER FIX: the first render after launch lacked the canonical default coverage that later renders had (it was created after the render read it), so the first play/export differed from later ones. Coverage is now materialized before it is read; every render of the same project is identical.
+- Render Queue (Export menu): schedule several exports (any unified-export preset) and run them one after another; formats of the same project share one render of the audio.
+- Audition paths (Trigger Note, Trigger All, pad/key hits) no longer fade or peak-limit; fixed gain only.
+- Randomize All also randomizes the Heuristic Composer family / bias / span and the number-theory lattice / modulus / depth.
+- Convert MCC media can take a whole folder.
+- 51 unused legacy UI/engine classes removed (nothing referenced them).
+- Updated old source-text tests (hf19, hf25, r28_4_12) to the no-limiter / audition-voice code; added test_render_queue.
+- Round 10c: _eq_default_poles memoized (12x, exact); FanOutStream watcher keeps every audio output playing (restart/drop/retry/hotplug join); tests added to test_fanout_20261102.
+- Round 11 (2026-11-02): MCC picture codec v2 + picture->MCC; all-sinks volume + join-time sync; Fractallizer/wavespace threading (exact);
+  lower pane resizes with scenograph/scopes; UI scale + window size (compat settings, startup window first, Limine entries via sos.ui_scale / sos.window_scale);
+  Export Window; export worker process (opt-in, parity check built in, NOT yet run).
+- Window tabs: Close / Force Close even when a window is stalled; restore no longer runs a nested event loop.

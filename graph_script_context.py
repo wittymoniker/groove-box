@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import functools
 import math
 from typing import Any, Dict, Iterable, Mapping, Optional
 
@@ -30,9 +31,16 @@ def _finite(value: Any, default: float = 0.0) -> float:
 
 
 def _stable_numeric_id(text: Any) -> float:
+    # GROOVEBOX_R23R_STABLE_ID_MEMO_20261031: pure function of the text; memoized
+    # because render-time graph contexts re-hash the same names per sample.
+    return _stable_numeric_id_str(str(text or ""))
+
+
+@functools.lru_cache(maxsize=8192)
+def _stable_numeric_id_str(text: str) -> float:
     # Deterministic FNV-1a style fold represented exactly enough for script use.
     h = 2166136261
-    for b in str(text or "").encode("utf-8", "replace"):
+    for b in text.encode("utf-8", "replace"):
         h ^= b
         h = (h * 16777619) & 0xFFFFFFFF
     return float(h)
@@ -149,12 +157,12 @@ def coerce_graph_result(result: Any) -> Dict[str, float]:
 
 
 def _ot_rewrite_graph_ast(tree, scope):
-    """Graph/seed expression trees are not rewritten.
-
-    Author text is evaluated as written.  Named math_* / ot_* in the env
-    follow their own OT-toggle definitions at call time.
-    """
-    return tree
+    """Author text is evaluated as written, except that /, //, % run through OT division
+    (exact for non-zero divisors; the zero case defined while OT is on).
+    GROOVEBOX_R23R_OT_SCRIPT_DIVISION_20261103."""
+    import ot_script_math
+    ot_script_math.install(scope)
+    return ot_script_math.rewrite(tree)
 
 
 
@@ -191,7 +199,18 @@ def evaluate_graph_script(script: str, context: Mapping[str, Any], *,
             etree = _ot_rewrite_graph_ast(ast.parse(raw, mode="eval"), scope)
             return coerce_graph_result(eval(compile(etree, "<groovebox-graph-expr>", "eval"), scope, scope))
         except Exception:
-            return {}
+            pass
+        # GROOVEBOX_R23R_GRAPH_TOPLEVEL_RETURN_20261103: script-style bodies with a
+        # top-level `return` (as the seed box accepts) run as a function body.
+        if "return" in raw:
+            try:
+                body = "def __gb_body__():\n" + "\n".join("    " + ln for ln in raw.split("\n"))
+                wtree = _ot_rewrite_graph_ast(ast.parse(body, mode="exec"), scope)
+                exec(compile(wtree, "<groovebox-graph-body>", "exec"), scope, scope)
+                return coerce_graph_result(scope["__gb_body__"]())
+            except Exception:
+                return {}
+        return {}
     for fname in function_names:
         fn = local.get(fname)
         if not callable(fn):

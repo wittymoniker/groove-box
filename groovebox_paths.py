@@ -204,6 +204,10 @@ def ensure_app_layout() -> dict:
         out[rel] = str(p)
     # A tiny write/delete probe catches read-only appliance/media errors early
     # while leaving no persistent scratch file behind.
+    try:
+        hide_system_dirs(root)      # GROOVEBOX_R23R_HIDE_SYSTEM_FILES_20261103
+    except Exception:
+        pass
     probe = root / "temp" / ".write_probe"
     try:
         probe.write_bytes(b"ok")
@@ -418,3 +422,191 @@ def delete_unreferenced_project_media(candidates: list[dict], project_path: Opti
                 b+=int(p.stat().st_size); p.unlink(); n+=1
         except OSError: pass
     return {"bytes":b,"files":n}
+
+# ---------------------------------------------------------------------------
+# GROOVEBOX_R23R_HIDE_SYSTEM_FILES_20261103 — what the user sees vs system files
+# ---------------------------------------------------------------------------
+# Folders/files Groovebox needs but the user never has to touch.  They are
+# hidden in Groovebox's own browsers and file dialogs, and marked hidden for
+# the OS file managers (.hidden list on Linux, hidden attribute on Windows,
+# UF_HIDDEN on macOS).  Nothing is moved or deleted.
+SYSTEM_DIR_NAMES = frozenset({"cache", "temp", "logs", "state", "Trash", "metadata", "__pycache__",
+                              "build_tmp", "work", ".groovebox", "recording_scratch"})
+SYSTEM_FILE_SUFFIXES = (".part", ".part.mp4", ".part.wav", ".tmp", ".lock", ".pyc", ".sha256", ".autosave.bak")
+SYSTEM_FILE_NAMES = frozenset({"index.json", ".hidden", "desktop.ini", ".DS_Store", "Thumbs.db",
+                               "compat-settings.json", "last_dirs.json", "known_grooveboxes.json"})
+
+
+MEDIA_EXTS = frozenset({
+    "wav", "wave", "mp3", "flac", "ogg", "oga", "opus", "m4a", "aac", "aif", "aiff", "wma", "alac", "caf",
+    "mp4", "m4v", "mkv", "webm", "mov", "avi", "mpg", "mpeg", "ts", "m2ts", "wmv", "flv", "3gp", "gif",
+    "png", "jpg", "jpeg", "bmp", "webp", "tif", "tiff", "svg", "obj", "mtl", "mcc", "mid", "midi"})
+
+
+def is_media_name(name) -> bool:
+    """True when any dotted part of the name is a media extension (so "a.part00.mp4",
+    "b.mp4.part", "c.part.wav" all count as media)."""
+    parts = str(name).lower().split(".")[1:]
+    return any(x in MEDIA_EXTS for x in parts)
+
+
+def is_system_path(path) -> bool:
+    """True for Groovebox system files/folders (and dot-files) that users should not see."""
+    try:
+        p = Path(path)
+    except Exception:
+        return False
+    name = p.name
+    if not name:
+        return False
+    # GROOVEBOX_R23R_MEDIA_NEVER_HIDDEN_20261103: a media file is never hidden — partial export
+    # parts ("song.part00.mp4", "x.wav.part"), video stems, takes, MCC media — whatever its suffix.
+    if is_media_name(name):
+        return False
+    if name.startswith("."):
+        return True
+    if name in SYSTEM_FILE_NAMES:
+        return True
+    low = name.lower()
+    if any(low.endswith(suf) for suf in SYSTEM_FILE_SUFFIXES):
+        return True
+    if name in SYSTEM_DIR_NAMES:
+        try:
+            root = _data_root().resolve()
+            rp = p.resolve()
+            return rp == root / name or root in rp.parents
+        except Exception:
+            return True
+    return False
+
+
+def visible_entries(directory, names=None, show_system=False):
+    """Filter a directory listing down to what the user should see."""
+    names = list(names if names is not None else os.listdir(directory))
+    if show_system:
+        return names
+    return [n for n in names if not is_system_path(os.path.join(str(directory), n))]
+
+
+def hide_system_dirs(root=None) -> int:
+    """Mark the system folders hidden for OS file managers (idempotent)."""
+    root = Path(root) if root else _data_root()
+    hidden = sorted(n for n in SYSTEM_DIR_NAMES if (root / n).exists())
+    n = 0
+    try:   # Linux file managers (Nautilus, Dolphin, Thunar) honour a .hidden list
+        hf = root / ".hidden"
+        cur = set(hf.read_text(encoding="utf-8").split()) if hf.exists() else set()
+        if not set(hidden) <= cur:
+            hf.write_text("\n".join(sorted(cur | set(hidden))) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+    for name in hidden:
+        p = root / name
+        try:
+            if os.name == "nt":
+                import ctypes
+                FILE_ATTRIBUTE_HIDDEN = 0x02
+                attrs = ctypes.windll.kernel32.GetFileAttributesW(str(p))
+                if attrs != -1 and not attrs & FILE_ATTRIBUTE_HIDDEN:
+                    ctypes.windll.kernel32.SetFileAttributesW(str(p), attrs | FILE_ATTRIBUTE_HIDDEN)
+            elif __import__("sys").platform == "darwin" and hasattr(os, "chflags"):
+                import stat as _st
+                os.chflags(str(p), os.stat(str(p)).st_flags | _st.UF_HIDDEN)
+            n += 1
+        except Exception:
+            pass
+    return n
+
+
+# Default folder for every kind of file dialog; the last folder used for each
+# kind is remembered (state/last_dirs.json) and preferred when it still exists.
+DIALOG_KINDS = ("project_save", "project_load", "audio_export", "video_export", "frame_export",
+                "game", "sample", "recording", "media", "export", "any")
+
+
+def _last_dirs_path() -> Path:
+    return Path(state_dir()) / "last_dirs.json"
+
+
+def default_dir(kind="any", project_path: Optional[str]=None) -> str:
+    kind = str(kind or "any")
+    try:
+        import json as _json
+        last = _json.loads(_last_dirs_path().read_text(encoding="utf-8")).get(kind)
+        if last and os.path.isdir(last) and not is_system_path(last):
+            return last
+    except Exception:
+        pass
+    try:
+        if kind in ("project_save", "project_load"):
+            return projects_dir()
+        if kind == "audio_export":
+            return audio_exports_dir(project_path)
+        if kind == "video_export":
+            return video_exports_dir(project_path)
+        if kind == "frame_export":
+            return frame_exports_dir(project_path)
+        if kind == "game":
+            return games_dir(project_path)
+        if kind == "sample":
+            return samples_dir(project_path)
+        if kind == "recording":
+            return recordings_dir(project_path)
+        if kind == "export":
+            return global_exports_dir()
+    except Exception:
+        pass
+    return projects_dir()
+
+
+def remember_dir(kind, path) -> None:
+    try:
+        import json as _json
+        d = os.path.dirname(str(path)) if os.path.isfile(str(path)) or os.path.splitext(str(path))[1] else str(path)
+        if not d or not os.path.isdir(d) or is_system_path(d):
+            return
+        p = _last_dirs_path()
+        data = {}
+        try:
+            data = _json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        data[str(kind)] = d
+        p.write_text(_json.dumps(data, indent=1), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def dialog_kind_for(caption: str, filter_text: str = "", saving: bool = False) -> str:
+    """Infer the dialog's purpose from its caption / filter (used by every Groovebox file dialog)."""
+    c = (str(caption) + " " + str(filter_text)).lower()
+    if "project" in c or ".mgpr" in c or "load project" in c or "save project" in c:
+        return "project_save" if saving else "project_load"
+    if "video" in c or ".mp4" in c or ".webm" in c:
+        return "video_export" if saving else "media"
+    if "frame" in c or "image" in c or ".png" in c:
+        return "frame_export" if saving else "media"
+    if "game" in c or "videogame" in c:
+        return "game"
+    if "sample" in c or "carrier" in c:
+        return "sample"
+    if "record" in c:
+        return "recording"
+    if "audio" in c or ".wav" in c or ".flac" in c or ".mp3" in c or "stem" in c or "mixdown" in c:
+        return "audio_export" if saving else "media"
+    if "export" in c:
+        return "export"
+    return "any"
+
+
+def user_places() -> list:
+    """(label, path) shortcuts shown in every Groovebox file dialog sidebar."""
+    out = []
+    for label, fn in (("Projects", projects_dir), ("Exports", global_exports_dir), ("Samples", global_samples_dir),
+                      ("Games", global_games_dir), ("Downloads", downloads_dir), ("Nearby Grooveboxes", nearby_dir)):
+        try:
+            out.append((label, fn()))
+        except Exception:
+            pass
+    out.append(("Home", str(Path.home())))
+    return out
