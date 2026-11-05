@@ -21,9 +21,12 @@ if 'PYTHONNOUSERSITE' not in os.environ:
 run=(root/'run_hybrid.sh').read_text()
 linux=(root/'install_deps_linux.sh').read_text()
 launch=(root/'launch_groovebox.py').read_text()
+runner=(root/'run_groovebox.py').read_text()
 ensure=(root/'scripts'/'ensure_runtime_dependencies.py').read_text()
 assert 'export PYTHONNOUSERSITE=1' in run and 'unset PYTHONPATH' in run
 assert 'export PYTHONNOUSERSITE=1' in linux and 'unset PYTHONPATH' in linux
-assert 'GROOVEBOX_FEDORA_QT_ISOLATED' in launch and "'-s'" in launch
+assert 'run_groovebox.py' in launch and 'runpy.run_path' in launch
+assert 'PYTHONNOUSERSITE' in runner and 'sys.flags.no_user_site' in runner
+assert 'GROOVEBOX_RUNTIME_CLEAN_REEXEC' in runner and 'os.execve' in runner
 assert 'include-system-site-packages = true' in ensure
 print('PASS: v35.22e Fedora Qt ABI isolation behavior')

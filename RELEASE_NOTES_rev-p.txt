@@ -1,0 +1,26 @@
+MATHEMATICIAN'S GROOVEBOX — rev-p source handoff
+Date: 2026-11-04
+
+Based on rev-o_best-effort. This handoff intentionally precedes testing, as
+requested. No tests, application launch, ISO build, or boot test were run.
+
+Changes in this handoff:
+- Multidimensional synth panel now paints an opaque dark base and explicitly
+  disables translucent/no-system-background widget attributes. The arc view
+  likewise has an opaque base, preventing compositor transparency bleed-through.
+- Replaced remaining process-salted Python hash() use in the main UI's shared
+  mixdown spill key, game playlist/world fingerprint, and media-analysis temp
+  WAV filename with stable SHA/FNV-derived identifiers.
+- Synchronized the changed runtime modules into the active v35.22zz ISO overlay
+  where overlay counterparts exist.
+
+Existing multidimensional master panel continues to expose the complete 11
+parameter set; the compact embedded panel retains its five quick controls.
+
+Release status / limitations:
+- This is an untested source handoff, not a certified release.
+- No claim is made that the previously identified broad master-synth multi-target
+  routing, every modulation-family bidirectional route, QProcess shutdown edge
+  cases, ISO flag correctness, or end-to-end Live Jam/Random Object workflows
+  are fully resolved by this pass.
+- No ISO image was built and no hardware playback was verified.

@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from typing import Callable, Optional
 
+from qt_painting import owned_painter
 from PyQt6.QtCore import Qt, QPointF, QRectF, QEvent
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap, QPalette, QFont
 from PyQt6.QtWidgets import QLabel, QDoubleSpinBox
@@ -318,26 +319,29 @@ class AuthorNumericFontLibrary:
         pix = QPixmap(max(1,int(round(size_px*dpr))), max(1,int(round(size_px*dpr))))
         pix.setDevicePixelRatio(dpr)
         pix.fill(QColor(0,0,0,0))
-        p = QPainter(pix); p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        color = _role_color(role)
-        if variant.value == FULL_CYCLE_VALUE:
-            self._draw_full_cycle(p, 0, 0, size_px, color, operation, continued, multiplicity, variable_letter)
-        else:
-            direction = ot_direction_for(-1.0 if negative else 1.0, int(direction_index))
-            glyph = ot_encode_nibble(
-                int(variant.value), direction=direction, operation=operation,
-                continued=continued, multiplicity=multiplicity, role=role,
-                variable_letter=str(variable_letter)[:1],
-            )
-            self._draw_glyph(p, glyph, 0, 0, size_px)
-        self._draw_crossbars(p, variant, 0, 0, size_px, color)
-        if variant.squiggle:
-            self._draw_incell_squiggle(p, 0, 0, size_px, color)
-        p.end()
-        self._face_cache[key] = QPixmap(pix); self._face_cache.move_to_end(key)
-        while len(self._face_cache) > self.face_cache_limit:
-            self._face_cache.popitem(last=False)
-        return pix
+        with owned_painter(pix) as p:
+            if p is None:
+                return
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            color = _role_color(role)
+            if variant.value == FULL_CYCLE_VALUE:
+                self._draw_full_cycle(p, 0, 0, size_px, color, operation, continued, multiplicity, variable_letter)
+            else:
+                direction = ot_direction_for(-1.0 if negative else 1.0, int(direction_index))
+                glyph = ot_encode_nibble(
+                    int(variant.value), direction=direction, operation=operation,
+                    continued=continued, multiplicity=multiplicity, role=role,
+                    variable_letter=str(variable_letter)[:1],
+                )
+                self._draw_glyph(p, glyph, 0, 0, size_px)
+            self._draw_crossbars(p, variant, 0, 0, size_px, color)
+            if variant.squiggle:
+                self._draw_incell_squiggle(p, 0, 0, size_px, color)
+            p.end()
+            self._face_cache[key] = QPixmap(pix); self._face_cache.move_to_end(key)
+            while len(self._face_cache) > self.face_cache_limit:
+                self._face_cache.popitem(last=False)
+            return pix
 
     def render_number(
         self,
@@ -401,22 +405,25 @@ class AuthorNumericFontLibrary:
 
         pix = QPixmap(max(1,int(round(width*dpr))),max(1,int(round(height*dpr))))
         pix.setDevicePixelRatio(dpr); pix.fill(bg)
-        p=QPainter(pix); p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        for i, variant in enumerate(variants):
-            dx,dy,_inward,_phase = quarter_cycle_state(i,negative=spelling.negative,cell=cell)
-            face = self._face_pixmap(
-                variant, role=role, operation=operation, continued=continued,
-                multiplicity=multiplicity, variable_letter=(variable_letter if i==0 else ""),
-                size=cell, direction_index=i, negative=spelling.negative, dpr=dpr,
-            )
-            p.drawPixmap(QPointF(x+dx,y+dy),face)
-            if i+1 < n:
-                x += cell + gaps[i]
-        p.end()
-        self._cache[key]=QPixmap(pix); self._cache.move_to_end(key)
-        while len(self._cache)>self.cache_limit:
-            self._cache.popitem(last=False)
-        return pix
+        with owned_painter(pix) as p:
+            if p is None:
+                return
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            for i, variant in enumerate(variants):
+                dx,dy,_inward,_phase = quarter_cycle_state(i,negative=spelling.negative,cell=cell)
+                face = self._face_pixmap(
+                    variant, role=role, operation=operation, continued=continued,
+                    multiplicity=multiplicity, variable_letter=(variable_letter if i==0 else ""),
+                    size=cell, direction_index=i, negative=spelling.negative, dpr=dpr,
+                )
+                p.drawPixmap(QPointF(x+dx,y+dy),face)
+                if i+1 < n:
+                    x += cell + gaps[i]
+            p.end()
+            self._cache[key]=QPixmap(pix); self._cache.move_to_end(key)
+            while len(self._cache)>self.cache_limit:
+                self._cache.popitem(last=False)
+            return pix
 
     def project_manifest(self) -> dict:
         out = scheme_manifest()
@@ -450,7 +457,7 @@ class AuthorNumericFieldAdapter(QLabel):
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus); self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setScaledContents(False); self.setMargin(0); self.setStyleSheet("border:none;padding:0;margin:0;")
         try:
-            owner.installEventFilter(self); owner.valueChanged.connect(self._value_changed); owner.destroyed.connect(self.deleteLater)
+            owner.installEventFilter(self); owner.valueChanged.connect(self._value_changed)
         except Exception: pass
         if self._editor is not None:
             try: self._editor.installEventFilter(self)

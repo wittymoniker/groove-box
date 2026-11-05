@@ -1,0 +1,9 @@
+R29J validation summary
+
+PASS: py_compile core modules (groovebox.py, multidim_ui.py, dj_effects.py, run_groovebox.py, mcc_integrity.py)
+PASS: focused pytest set — 9 passed
+PASS: DJ three-processor finite-output smoke test
+PASS: Spectral Tilt whole-buffer/chunk-continuity comparison
+PARTIAL: broader focused pytest set — 8 passed, 4 failed; failures are stale source-contract assertions (old size literal/class name/modulation snippets)
+BLOCKED: PyQt6 unavailable; no live GUI, painter stress, audio device, or ISO boot test
+NOT CERTIFIED: QBackingStore active-painter segfault resolution

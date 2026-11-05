@@ -1,1 +1,19 @@
-Groovebox v35.22e — Fedora Qt ABI isolation + WebEngine/runtime repair + deterministic sOS shell/player/files/HDMI — 2026-09-21
+Mathematician's Groovebox: Safe V3 feature merge
+Date: 2026-11-05
+
+GUI base: the working MATH_GROOVEBOX-v3 archive, not either alternate GUI.
+Feature references: R41.2i Claude full merge and V3 rev-m/rev-p.
+
+Includes layout/scroll fixes, native responsive panel grids, Workspace navigation,
+Live Jam and Random Object entry points, jam audio/video hooks, asynchronous
+coalesced sCode planning, private-buffer fill optimization, corrected shared-lane
+cancellation, pooled-viewer lifetime guards, and a shared ISO/BUILD_KIT runtime
+module inventory.
+
+Read RELEASE-NOTES-SAFE-V3-MERGE.md before building.
+ISO source/boot-contract preflight passed at a tested checkpoint. The full ISO
+attempt could not finish in this sandbox because of container networking/service
+restrictions. No boot/install/hardware test is claimed.
+BUILD_KIT produced a Linux executable at a tested checkpoint. That generated
+binary is not included in this source archive; rebuild to include the final edits.
+Further final test passes were skipped at the user's request.

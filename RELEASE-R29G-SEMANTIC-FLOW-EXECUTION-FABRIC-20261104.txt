@@ -1,0 +1,14 @@
+GROOVEBOX R29G — SEMANTIC FLOW + EXECUTION-FABRIC MAP
+Date: 2026-11-04
+Base: MATGROOVEBOX_R29f_GLOBAL_KEYBOARD_RESPONSIVE_BASELINE(1).tar.gz
+
+Implemented:
+- Formalized stable operational meanings for the existing Flow connector colors.
+- Updated workflow stage labels to identify INPUT, TRANSFORM, VECTOR, BLEND, ROUTE, TRANSPORT and RENDER stages.
+- Updated Flow button help text with the color legend and connector visibility behavior.
+- Synchronized root groovebox.py into BUILD_ISO/app-overlay-v35.22zz/groovebox.py.
+- Added EXECUTION_FABRIC_MAP_R29F.md documenting existing shared work lanes, audio/video buffers, audio bus, render queue, vectorized/native math pathways, real-time constraints, and remaining integration gaps.
+- Added test_r29g_semantic_flow_contract_20261104.py.
+
+Important scope boundary:
+This release does NOT claim that every subsystem has been converted to one universal typed scheduler. Existing pathways are reusable but partially separate; the fractal runtime's pool family still coexists with thread_budget.py. A typed descriptor/adapter layer remains the next safe integration step. Audio callbacks remain nonblocking and Qt/shared-project mutations remain on their owning thread.

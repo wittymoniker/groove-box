@@ -4,7 +4,7 @@ linux=(root/'install_deps_linux.sh').read_text()
 run=(root/'run_hybrid.sh').read_text()
 ensure=(root/'scripts/ensure_runtime_dependencies.py').read_text()
 assert 'python3-pyqt6-webengine' in linux
-assert 'python3-pyqt6-base' in linux
+assert 'python3-pyqt6 ' in linux
 assert 'ffmpeg ffmpeg-libs' not in linux.replace('RPM Fusion `ffmpeg` / `ffmpeg-libs`','')
 assert 'optional player/game packages skipped' in linux
 assert '--allowerasing' in run and 'APP_ARGS' in run
@@ -19,5 +19,9 @@ assert 'unset PYTHONPATH' in run
 assert 'PYTHONNOUSERSITE' in ensure and '_runtime_env' in ensure
 assert 'include-system-site-packages = true' in ensure
 launch=(root/'launch_groovebox.py').read_text()
-assert 'GROOVEBOX_FEDORA_QT_ISOLATED' in launch and "'-s'" in launch
+runner=(root/'run_groovebox.py').read_text()
+assert 'run_groovebox.py' in launch and 'runpy.run_path' in launch
+assert 'PYTHONNOUSERSITE' in runner and 'sys.flags.no_user_site' in runner
+assert 'GROOVEBOX_RUNTIME_CLEAN_REEXEC' in runner and 'os.execve' in runner
+assert '"--install", "--print-python"' not in runner
 print('PASS: v35.22e Fedora Qt ABI isolation contract')

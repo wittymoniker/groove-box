@@ -13,6 +13,25 @@ from typing import Iterable, Sequence
 
 import numpy as np
 
+EXTRA_DJ_EFFECTS = ("beat_gate", "harmonic_fold", "spectral_tilt")
+
+
+def extra_dj_enabled(host):
+    return any(bool(getattr(host, f"live_dj_{key}", False)) for key in EXTRA_DJ_EFFECTS)
+
+def global_dj_enabled(host):
+    boost = getattr(host, "_live_dj_boost", None) or {}
+    return (getattr(host, "live_dj_goava", False) or getattr(host, "live_dj_random", False)
+            or extra_dj_enabled(host) or float(boost.get("amount", 0.0)) > 1e-9)
+
+
+def configure_extra_dj(engine, host):
+    """Copy plain control values only; never read Qt widgets on the audio lane."""
+    for key in EXTRA_DJ_EFFECTS:
+        value = float(getattr(host, f"live_dj_{key}_amount", 0.0) or 0.0)
+        value = max(0.0, min(1.0, value)) if math.isfinite(value) else 0.0
+        setattr(engine, f"amount_{key}", value if getattr(host, f"live_dj_{key}", False) else 0.0)
+
 
 @dataclass(frozen=True)
 class PairDescriptor:
@@ -68,13 +87,17 @@ class CommutativePairSpace:
 
 
 class LiveDJEffects:
-    """Two deterministic, realtime-safe performance processors."""
+    """Deterministic, realtime-safe performance processors and DJ FX."""
 
     def __init__(self, sample_rate: int = 48000):
         self.sample_rate = int(max(8000, sample_rate))
         self.seed = 0
         self.amount_goava = 0.0
         self.amount_random = 0.0
+        self.amount_beat_gate = 0.0
+        self.amount_harmonic_fold = 0.0
+        self.amount_spectral_tilt = 0.0
+        self._tilt_previous = 0.0
         self.pair_space = CommutativePairSpace(48)
         self.pair = self.pair_space.descriptor(0, 1)
         # DJ Boost Hit: a periodic raised window with period = interval samples.
@@ -88,7 +111,10 @@ class LiveDJEffects:
     def set_context(self, *, seed: float = 0.0, pair: tuple[int, int] = (0, 1), sample_rate: int | None = None) -> None:
         self.seed = int(abs(float(seed)) * 1000003) & 0xFFFFFFFF
         if sample_rate is not None:
-            self.sample_rate = int(max(8000, sample_rate))
+            new_rate = int(max(8000, sample_rate))
+            if new_rate != self.sample_rate:
+                self._tilt_previous = 0.0
+            self.sample_rate = new_rate
         self.pair = self.pair_space.descriptor(*pair)
 
     def set_boost(self, interval: int = 0, phase: float = 0.0, amount: float = 0.0) -> None:
@@ -161,12 +187,78 @@ class LiveDJEffects:
         wet += x * (0.035 * amt) * np.sin(lfo1 + lfo2 + d.phase)
         return self._mix(x, wet, 0.68 * amt)
 
+
+    def reset_state(self) -> None:
+        """Reset chunk-continuity state at a new transport/render boundary."""
+        self._tilt_previous = 0.0
+
+    def beat_gate(self, x: np.ndarray, *, start_sample: int, bpm: float = 120.0,
+                  amount: float | None = None) -> np.ndarray:
+        """Tempo-locked sixteenth-note gate with soft edges and absolute phase."""
+        amt = self.amount_beat_gate if amount is None else float(amount)
+        if amt <= 0.0 or x.size == 0:
+            return x.astype(np.float32, copy=False)
+        n = int(x.size)
+        rate = max(1.0, float(bpm))
+        t = (float(start_sample) + np.arange(n, dtype=np.float64)) * (rate / 15.0) / float(self.sample_rate)
+        phase = np.mod(t, 1.0)
+        duty = 0.68
+        edge = 0.055
+        gate = np.ones(n, dtype=np.float32)
+        gate[phase >= duty + edge] = 0.08
+        fade_in = (phase >= duty - edge) & (phase < duty + edge)
+        if np.any(fade_in):
+            u = np.clip((phase[fade_in] - (duty - edge)) / (2.0 * edge), 0.0, 1.0)
+            smooth = u * u * (3.0 - 2.0 * u)
+            gate[fade_in] = (1.0 - smooth * 0.92).astype(np.float32)
+        # Smoothly reopen at each sixteenth boundary.
+        fade_out = phase < edge
+        if np.any(fade_out):
+            u = np.clip(phase[fade_out] / edge, 0.0, 1.0)
+            smooth = u * u * (3.0 - 2.0 * u)
+            gate[fade_out] = (0.08 + smooth * 0.92).astype(np.float32)
+        wet = x * gate
+        return self._mix(x, wet, 0.85 * amt)
+
+    def harmonic_fold(self, x: np.ndarray, *, amount: float | None = None) -> np.ndarray:
+        """Bounded arcsine wavefold; expands upper harmonics without runaway gain."""
+        amt = self.amount_harmonic_fold if amount is None else float(amount)
+        if amt <= 0.0 or x.size == 0:
+            return x.astype(np.float32, copy=False)
+        drive = 1.0 + 7.0 * float(np.clip(amt, 0.0, 1.0))
+        wet = (2.0 / math.pi) * np.arcsin(np.sin((math.pi / 2.0) * drive * x))
+        return self._mix(x, np.asarray(wet, dtype=np.float32), 0.72 * amt)
+
+    def spectral_tilt(self, x: np.ndarray, *, amount: float | None = None) -> np.ndarray:
+        """Chunk-continuous high-frequency tilt using a one-sample differentiator."""
+        amt = self.amount_spectral_tilt if amount is None else float(amount)
+        if amt <= 0.0 or x.size == 0:
+            return x.astype(np.float32, copy=False)
+        flat = np.asarray(x, dtype=np.float32).reshape(-1)
+        prev = float(self._tilt_previous)
+        diff = np.empty_like(flat)
+        diff[0] = flat[0] - prev
+        if flat.size > 1:
+            diff[1:] = flat[1:] - flat[:-1]
+        self._tilt_previous = float(flat[-1])
+        coef = 0.12 + 0.72 * float(np.clip(amt, 0.0, 1.0))
+        wet = flat + diff * coef
+        wet = wet / (1.0 + 0.10 * coef)
+        mixed = self._mix(flat, wet, 0.75 * amt)
+        return mixed.reshape(np.asarray(x).shape)
+
     def process(self, x: np.ndarray, *, start_sample: int, goava_scalar: float = 0.0, random_scalar: float = 0.0, bpm: float = 120.0) -> np.ndarray:
         y = np.asarray(x, dtype=np.float32)
         if self.amount_goava > 0.0:
             y = self.goava_pair_morph(y, start_sample=start_sample, goava_scalar=goava_scalar, bpm=bpm)
         if self.amount_random > 0.0:
             y = self.random_parametric(y, start_sample=start_sample, bpm=bpm, random_scalar=random_scalar)
+        if self.amount_beat_gate > 0.0:
+            y = self.beat_gate(y, start_sample=start_sample, bpm=bpm)
+        if self.amount_harmonic_fold > 0.0:
+            y = self.harmonic_fold(y)
+        if self.amount_spectral_tilt > 0.0:
+            y = self.spectral_tilt(y)
         gain = self._boost_gain(y.size, start_sample)
         if gain is not None:
             y = y * gain

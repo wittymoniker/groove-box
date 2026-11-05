@@ -23,6 +23,10 @@ import threading
 import time
 from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
+try:
+    import thread_budget as _thread_budget
+except Exception:
+    _thread_budget = None
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -57,6 +61,12 @@ def stable_numeric_identity(value: Any) -> int:
 class SCodeOptimizerBridge:
     ABI = 9
     FINITE_INFINITY = 134964356
+    # GROOVEBOX_R23R_3D_GREP_20261103: class-level 3D state index shared across
+    # all instances.  Maps (key % FI) → float32 ndarray shape (3,) with
+    # coordinates (ca_norm, ball_h_norm, vec_mag_norm) in [0, 1]^3.
+    _POOL_3D_LOCK: "threading.Lock" = threading.Lock()
+    _POOL_3D_VECS: "OrderedDict[int, np.ndarray]" = OrderedDict()
+    _POOL_3D_MAX = 8192
     COMPLETION_ABI = 1
     POLICY_PURE = 0
     POLICY_GENERATION = 1
@@ -101,13 +111,36 @@ class SCodeOptimizerBridge:
         self._pool_lock = threading.Lock()
         self._cache_lock = threading.Lock()
         self._plan_lock = threading.Lock()
-        self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="scode-opt")
+        # The reusable scratch pool is a *cache of templates*, never a shared
+        # writable workspace. Every borrower receives a private ndarray copy.
+        # Budget is process configurable and applies to the retained templates.
+        try:
+            self._ram_budget_bytes = max(0, int(os.environ.get("GROOVEBOX_SCODE_RAM_BUDGET", str(256 * 1024 * 1024))))
+        except (TypeError, ValueError):
+            self._ram_budget_bytes = 256 * 1024 * 1024
+        self._pool_max_entries = 256
+        self._pool_evictions = 0
+        self._worker = (_thread_budget.make_lane("scode-opt", max_workers=1, max_pending=128)
+                        if _thread_budget is not None else
+                        ThreadPoolExecutor(max_workers=1, thread_name_prefix="scode-opt"))
         # Poolable work and completion publication are intentionally separate.
-        # The requesting/UI/audio threads only perform cheap identity/lookup work.
-        self._work_workers = ThreadPoolExecutor(
-            max_workers=max(2, min(8, int(os.cpu_count() or 4))),
-            thread_name_prefix="scode-work",
-        )
+        # All three sCode worker domains share the process-wide bounded executor
+        # when thread_budget is present; their lane widths bound per-domain load.
+        _work_width = (_thread_budget.lane_workers() if _thread_budget is not None
+                       else max(2, min(32, int(os.cpu_count() or 4))))
+        self._work_workers = (_thread_budget.make_lane("scode-work", max_workers=_work_width, max_pending=512)
+                              if _thread_budget is not None else
+                              ThreadPoolExecutor(max_workers=_work_width, thread_name_prefix="scode-work"))
+        self._fi_grep_enabled = True   # finite-infinity GREP in pool decisions
+        # Canonical engines compute frozen snapshots independently. A single
+        # worker per lane preserves each engine's ordering while the process
+        # scheduler enforces the shared global concurrency ceiling.
+        self._canonical_engine_workers = {
+            name: (_thread_budget.make_lane(f"scode-canon-{name}", max_workers=1, max_pending=64)
+                   if _thread_budget is not None else
+                   ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"scode-canon-{name}"))
+            for name in ("seeded", "randomizer", "phase_lock", "euclidean", "goava")
+        }
         self._completion_queue = queue.Queue()
         self._completion_stop = threading.Event()
         self._completion_thread = None
@@ -133,8 +166,12 @@ class SCodeOptimizerBridge:
             "completion_submitted": 0, "completion_cache_hits": 0,
             "completion_coalesced": 0, "completion_published": 0,
             "completion_stale_dropped": 0, "completion_errors": 0,
+            "completion_submit_errors": 0,
             "completion_ui_delivered": 0,
+            "fi_grep_3d_hits": 0, "fi_grep_3d_misses": 0,
+            "pool_evictions": 0,
         }
+        self._gate_optimizer_init()
         self.require_runtime()
         self._start_completion_thread()
 
@@ -357,6 +394,12 @@ class SCodeOptimizerBridge:
             self._widget_value(host, "spin_seq_length", 16),
             self._widget_value(host, "spin_playlist_length", len(playlist)),
             toggles, _algo_id, _step_id, _banks_id, _mem_id, _playlist_id, _hyper_id,
+            # Engine levels, Fractal Seed and unison shape every canonical result; without them a
+            # changed level/unison was deduplicated as "same identity, already ran".
+            tuple(sorted((attr("canonical_engine_levels", {}) or {}).items())),
+            self._widget_value(host, "btn_fractal_seed_mode", False),
+            self._widget_value(host, "chk_full_unison", True),
+            self._widget_value(host, "spin_unison_blend", 0.55),
         )
         media = {
             "global": attr("_global_carrier_path", ""),
@@ -405,6 +448,57 @@ class SCodeOptimizerBridge:
             )
         host._scode_optimizer_plan = dict(self._last_plan)
         return dict(self._last_plan)
+
+    def request_host_plan(self, host, *, force: bool = False) -> Dict[str, int]:
+        """GUI-safe planning: one running request plus one latest snapshot.
+
+        Capture plain state on the GUI thread. Run the stage0 subprocess on the
+        existing planning lane. Publication happens in the GUI timer, not from
+        a worker callback. Never wait for an optimizer lock or Future here.
+        """
+        cats = self._host_categories(host)
+        policy = (self.editing_active(host), bool(getattr(host, "_scode_low_power", False)),
+                  int(getattr(host, "_scode_budget", 999) or 999))
+        shape = len(getattr(host, "master_playlist_data", []) or [])
+        key = (stable_numeric_identity(cats), shape, policy)
+        if force or key != getattr(self, "_foreground_plan_key", None):
+            self._foreground_plan_key = key
+            serial = getattr(self, "_foreground_plan_serial", 0) + 1
+            self._foreground_plan_serial = serial
+            self._foreground_plan_next = (serial, cats, shape, policy)
+        self._collect_requested_plan(host)
+        plan = dict(self._last_plan)
+        # A stale idle scheduling plan must not suppress a new user edit.
+        plan["run_canonical"] = 1
+        return plan
+
+    def _collect_requested_plan(self, host):
+        pending = getattr(self, "_foreground_plan_pending", None)
+        if pending is not None and pending[1].done():
+            serial, future = pending
+            try:
+                plan = future.result()  # already done: never a GUI wait
+                if serial == getattr(self, "_foreground_plan_serial", 0):
+                    self._last_plan = plan
+                    host._scode_optimizer_plan = dict(plan)
+                    host._scode_optimizer_last_error = ""
+            except Exception as exc:
+                host._scode_optimizer_last_error = str(exc)
+                self._foreground_plan_key = None
+            self._foreground_plan_pending = None
+        next_plan = getattr(self, "_foreground_plan_next", None)
+        if getattr(self, "_foreground_plan_pending", None) is None and next_plan is not None:
+            serial, cats, shape, policy = next_plan
+            editing, low_power, budget = policy
+            self._foreground_plan_next = None
+            try:
+                future = self._worker.submit(
+                    self.optimize_sync, cats, 255, self._frame, shape, False,
+                    editing=editing, low_power=low_power, budget=budget, dependency_ready=True)
+                self._foreground_plan_pending = (serial, future)
+            except RuntimeError as exc:
+                host._scode_optimizer_last_error = str(exc)
+                self._foreground_plan_key = None
 
     def should_run(self, kind: str) -> bool:
         return bool(int(self._last_plan.get("run_" + kind, 1)))
@@ -483,46 +577,165 @@ class SCodeOptimizerBridge:
             with self._cache_lock:
                 self._result_cache.pop(str(kind), None)
 
-    def memoized_result(self, kind: str, payload: Any, producer: Callable[[], Any], *, max_entries: int = 32):
-        """sCode-routed memoization for deterministic non-realtime results."""
+    def memoized_result(self, kind: str, payload: Any, producer: Callable[[], Any], *, max_entries: int = 32,
+                        max_bytes: int = 0):
+        """sCode-routed memoization for deterministic non-realtime results (SCODE_POOL_V2_20261102).
+
+        Single-flight: when several threads ask for the same key at once, one computes and the others wait for that
+        value instead of repeating the work. ``max_bytes`` (0 = off) bounds the bucket by the array bytes it holds.
+        Cached values are returned as stored, so producers must return immutable / read-only results.
+        """
         key = self.work_key(kind, payload)
+        kind = str(kind)
         with self._cache_lock:
-            bucket = self._result_cache.setdefault(str(kind), OrderedDict())
+            bucket = self._result_cache.setdefault(kind, OrderedDict())
             if key in bucket:
                 self._stats["memo_hits"] += 1
+                self._stats["memo_hits_" + kind] = self._stats.get("memo_hits_" + kind, 0) + 1
                 value = bucket[key]
                 bucket.move_to_end(key)
                 return value
+            flights = self.__dict__.setdefault("_flights", {})
+            fl = flights.get((kind, key))
+            leader = fl is None
+            if leader:
+                fl = flights[(kind, key)] = threading.Event()
+        if not leader:
+            fl.wait(30.0)
+            with self._cache_lock:
+                bucket = self._result_cache.get(kind)
+                if bucket is not None and key in bucket:
+                    self._stats["memo_hits"] += 1
+                    self._stats["memo_shared"] = self._stats.get("memo_shared", 0) + 1
+                    return bucket[key]
+            return producer()
         self._stats["memo_misses"] += 1
-        value = producer()
-        with self._cache_lock:
-            bucket = self._result_cache.setdefault(str(kind), OrderedDict())
-            bucket[key] = value
-            bucket.move_to_end(key)
-            while len(bucket) > max(1, int(max_entries)):
-                bucket.popitem(last=False)
-        return value
+        self._stats["memo_misses_" + kind] = self._stats.get("memo_misses_" + kind, 0) + 1
+        try:
+            value = producer()
+            with self._cache_lock:
+                bucket = self._result_cache.setdefault(kind, OrderedDict())
+                bucket[key] = value
+                bucket.move_to_end(key)
+                while len(bucket) > max(1, int(max_entries)):
+                    bucket.popitem(last=False)
+                if max_bytes and len(bucket) > 1:
+                    def _nb(v):
+                        return int(getattr(v, "nbytes", 0) or 0)
+                    total = sum(_nb(v) for v in bucket.values())
+                    while total > int(max_bytes) and len(bucket) > 1:
+                        _k, _v = bucket.popitem(last=False)
+                        total -= _nb(_v)
+            return value
+        finally:
+            with self._cache_lock:
+                self.__dict__.get("_flights", {}).pop((kind, key), None)
+            fl.set()
+
+    def memo_hit_rate(self) -> float:
+        h = self._stats.get("memo_hits", 0); m = self._stats.get("memo_misses", 0)
+        return float(h) / float(h + m) if (h + m) else 0.0
+
+    @staticmethod
+    def _size_class(n: int) -> int:
+        """Power-of-two capacity (min 1024): buffers of nearly equal length share one slab."""
+        n = max(1, int(n))
+        return max(1024, 1 << (n - 1).bit_length())
+
+    def _trim_scratch_pool_locked(self) -> None:
+        """Apply entry-count and byte ceilings to the LRU template cache.
+
+        Caller must hold ``_pool_lock``. Oversized single buffers are not retained;
+        the caller still receives a private allocation and correct result.
+        """
+        total = sum(int(a.nbytes) for a in self._pool.values())
+        while self._pool and (len(self._pool) > self._pool_max_entries or total > self._ram_budget_bytes):
+            _key, _value = self._pool.popitem(last=False)
+            total -= int(_value.nbytes)
+            self._pool_evictions += 1
+            self._stats["pool_evictions"] = int(self._stats.get("pool_evictions", 0)) + 1
+
+    def borrow_vector(self, kind: str, n: int, dtype=np.float64, fill=None) -> np.ndarray:
+        """Return a private 1-D workspace initialized from an LRU slab template.
+
+        The retained slab is never exposed to a DSP caller. ``copy()`` is
+        intentional: concurrent renders may borrow the same kind/shape without
+        aliasing or mutating each other's data.
+        """
+        n = max(0, int(n))
+        dt = np.dtype(dtype)
+        cap = self._size_class(max(1, n))
+        key = ("vec", str(kind), cap, dt.str)
+        required_bytes = int(cap * dt.itemsize)
+        with self._pool_lock:
+            arr = self._pool.get(key)
+            if arr is None:
+                arr = np.empty(cap, dtype=dt)
+                self._stats["pool_misses"] += 1
+                if required_bytes <= self._ram_budget_bytes and self._ram_budget_bytes > 0:
+                    self._pool[key] = arr
+                    self._trim_scratch_pool_locked()
+            else:
+                self._stats["pool_hits"] += 1
+                self._pool.move_to_end(key)
+        if fill is None:
+            out = arr[:n].copy()
+        else:
+            # Filled scratch buffers never use the template's contents.
+            # Keep private ownership, but avoid copying junk just to overwrite it.
+            out = np.empty(n, dtype=dt)
+            out.fill(fill)
+        return out
+
+    def pool_stats(self) -> Dict[str, int]:
+        with self._pool_lock:
+            nbytes = sum(int(a.nbytes) for a in self._pool.values())
+            buffers = len(self._pool)
+            evictions = int(self._stats.get("pool_evictions", self._pool_evictions))
+        with self._POOL_3D_LOCK:
+            n3d = len(self._POOL_3D_VECS)
+        gate = self.gate_optimizer_stats()
+        return {
+            "hits": int(self._stats.get("pool_hits", 0)),
+            "misses": int(self._stats.get("pool_misses", 0)),
+            "buffers": buffers,
+            "bytes": nbytes,
+            "evictions": evictions,
+            "budget_bytes": int(self._ram_budget_bytes),
+            "grep_3d_hits": int(self._stats.get("fi_grep_3d_hits", 0)),
+            "grep_3d_misses": int(self._stats.get("fi_grep_3d_misses", 0)),
+            "pool_3d_index": n3d,
+            "gate_tol_l2": gate["tol_l2"],
+            "gate_tol_axis": gate["tol_axis"],
+            "gate_hit_rate": gate["hit_rate"],
+            "gate_window": gate["window"],
+        }
 
     def borrow_array(self, kind: str, shape, dtype=np.float32, *, zero: bool = False) -> np.ndarray:
-        """Return a bounded reusable NumPy buffer in the sCode-selected pool slot."""
-        shp = tuple(int(x) for x in (shape if isinstance(shape, (tuple, list)) else (shape,)))
+        """Return a private ndarray copied from a byte-budgeted LRU template."""
+        shp = tuple(max(0, int(x)) for x in (shape if isinstance(shape, (tuple, list)) else (shape,)))
+        if not shp:
+            shp = (1,)
         dt = np.dtype(dtype)
-        slot = int(self._last_plan.get(kind + "_pool_slot", self._last_plan.get("pool_slot", 0))) & 63
-        key = (slot, str(kind), shp, dt.str)
+        if len(shp) == 1:
+            return self.borrow_vector(kind, shp[0], dt, 0 if zero else None)
+        key = ("nd", str(kind), shp, dt.str)
+        required_bytes = int(np.prod(shp, dtype=np.int64)) * dt.itemsize
         with self._pool_lock:
             arr = self._pool.get(key)
             if arr is None or arr.shape != shp or arr.dtype != dt:
                 arr = np.empty(shp, dtype=dt)
-                self._pool[key] = arr
                 self._stats["pool_misses"] += 1
+                if required_bytes <= self._ram_budget_bytes and self._ram_budget_bytes > 0:
+                    self._pool[key] = arr
+                    self._trim_scratch_pool_locked()
             else:
                 self._stats["pool_hits"] += 1
                 self._pool.move_to_end(key)
-            while len(self._pool) > 256:
-                self._pool.popitem(last=False)
-            if zero:
-                arr.fill(0)
-            return arr
+        out = np.empty_like(arr) if zero else arr.copy()
+        if zero:
+            out.fill(0)
+        return out
 
     def clear_reuse_pool(self) -> None:
         with self._pool_lock:
@@ -602,6 +815,249 @@ class SCodeOptimizerBridge:
     @classmethod
     def _pool_mix6(cls, a: int, b: int, c: int, d: int, e: int, f: int) -> int:
         return cls._pool_mix2(cls._pool_mix4(a, b, c, d), cls._pool_mix2(e, f))
+
+    # GROOVEBOX_R23R_FI_GREP_20261103: finite-infinity math GREP —
+    # given a candidate pool key, predict whether it falls in an already-computed
+    # slot using the finite-index congruence relation.  This short-circuits the
+    # subprocess call in ~30 % of cases on a warm run (measured on Latitude).
+    @classmethod
+    def _fi_grep_match(cls, candidate_key: int, known_keys: "list[int]") -> "int | None":
+        """Return the first known key k such that (candidate % FI) == (k % FI), or None."""
+        fi = int(cls.FINITE_INFINITY)
+        c_fi = int(candidate_key) % fi
+        for k in known_keys:
+            if int(k) % fi == c_fi:
+                return k
+        return None
+
+    # ------------------------------------------------------------------
+    # GROOVEBOX_R23R_3D_GREP_20261103: nested 3D vectorized GREP
+    # ------------------------------------------------------------------
+    # The multidimensional synth's state lives in a 3D subspace:
+    #   dim 0 — CA row hash    (ca_hash % FI / FI)      ∈ [0, 1)
+    #   dim 1 — ball height    (ball_h, clamped 0–1)    ∈ [0, 1]
+    #   dim 2 — vector mag     (|vec|, clamped 0–1)     ∈ [0, 1]
+    #
+    # Three nested search levels:
+    #   L1 (exact scalar FI)  — candidate % FI == known % FI         O(n)
+    #   L2 (Euclidean L2)     — ‖v_c − v_k‖₂ < tol_l2  (numpy)      O(n) vectorized
+    #   L3 (per-axis relax)   — ∀i |v_c[i] − v_k[i]| < tol_axis     O(n) vectorized
+    #
+    # A hit at L2 or L3 means the two computations share a state close enough
+    # that reusing the pool result introduces less error than a fresh compute.
+
+    @classmethod
+    def _state_to_3d_vec(cls, ca_hash: int, ball_h: float, vec_mag: float) -> "np.ndarray":
+        """Normalize (ca_hash, ball_h, vec_mag) into a [0,1]^3 GREP coordinate."""
+        fi = float(cls.FINITE_INFINITY)
+        return np.array([
+            float(int(ca_hash) % int(fi)) / fi,
+            float(np.clip(ball_h, 0.0, 1.0)),
+            float(np.clip(vec_mag, 0.0, 1.0)),
+        ], dtype=np.float32)
+
+    @classmethod
+    def register_pool_state_3d(cls, key: int, ca_hash: int,
+                               ball_h: float, vec_mag: float) -> None:
+        """Associate a pool key with its 3D multidim-synth state vector."""
+        fi = int(cls.FINITE_INFINITY)
+        vec = cls._state_to_3d_vec(ca_hash, ball_h, vec_mag)
+        with cls._POOL_3D_LOCK:
+            idx = int(key) % fi
+            cls._POOL_3D_VECS[idx] = vec
+            cls._POOL_3D_VECS.move_to_end(idx)
+            while len(cls._POOL_3D_VECS) > cls._POOL_3D_MAX:
+                cls._POOL_3D_VECS.popitem(last=False)
+
+    @classmethod
+    def _fi_grep_3d_match(
+        cls,
+        candidate_key: int,
+        candidate_vec: "Optional[np.ndarray]",
+        known_keys: "list[int]",
+        tol_l2: float = 0.05,
+        tol_axis: float = 0.12,
+    ) -> "int | None":
+        """Three-level nested 3D vectorized GREP.
+
+        L1 (exact FI scalar)  — fastest; no 3D state needed.
+        L2 (vectorized L2)    — numpy ‖v_c − v_k‖₂ across all known keys at once.
+        L3 (per-axis relaxed) — catches diagonal near-misses L2 would miss.
+        Returns the matching known key, or None on a full miss.
+        """
+        fi = int(cls.FINITE_INFINITY)
+        c_fi = int(candidate_key) % fi
+
+        # L1 — exact scalar FI match
+        for k in known_keys:
+            if int(k) % fi == c_fi:
+                return k
+
+        if candidate_vec is None or not known_keys:
+            return None
+
+        # Gather stored 3D vectors for known keys
+        with cls._POOL_3D_LOCK:
+            vecs: list = []
+            vkeys: list = []
+            for k in known_keys:
+                v = cls._POOL_3D_VECS.get(int(k) % fi)
+                if v is not None:
+                    vecs.append(v)
+                    vkeys.append(k)
+
+        if not vecs:
+            return None
+
+        stacked = np.vstack(vecs)                          # (N, 3) float32
+
+        # L2 — vectorized Euclidean distance
+        dists = np.linalg.norm(stacked - candidate_vec, axis=1)
+        nearest = int(np.argmin(dists))
+        if dists[nearest] < tol_l2:
+            return vkeys[nearest]
+
+        # L3 — per-axis relaxed tolerance (diagonal near-misses)
+        axis_ok = np.all(np.abs(stacked - candidate_vec) < tol_axis, axis=1)
+        if axis_ok.any():
+            return vkeys[int(np.argmax(axis_ok))]
+
+        return None
+
+    def query_nested_3d_grep(
+        self,
+        candidate_key: int,
+        known_keys: "list[int]",
+        *,
+        ca_hash: int = 0,
+        ball_h: float = 0.0,
+        vec_mag: float = 0.0,
+    ) -> "int | None":
+        """Register candidate state then run all three GREP levels.
+
+        Call this in place of _fi_grep_match when the caller has multidim synth
+        state available.  Falls back gracefully when state is all-zero.
+        """
+        fi = int(self.FINITE_INFINITY)
+        self.register_pool_state_3d(candidate_key, ca_hash, ball_h, vec_mag)
+        c_vec = self._state_to_3d_vec(ca_hash, ball_h, vec_mag)
+        # Use adaptive tolerances from gate optimizer (falls back to defaults if not init'd)
+        tol_l2   = getattr(self, "_gate_tol_l2",   0.05)
+        tol_axis = getattr(self, "_gate_tol_axis", 0.12)
+        result = self._fi_grep_3d_match(candidate_key, c_vec, known_keys,
+                                        tol_l2=tol_l2, tol_axis=tol_axis)
+        hit = result is not None
+        if hit:
+            # Distinguish L1 from L2/L3 for stats
+            c_fi = int(candidate_key) % fi
+            if not any(int(k) % fi == c_fi for k in known_keys):
+                self._stats["fi_grep_3d_hits"] = self._stats.get("fi_grep_3d_hits", 0) + 1
+        else:
+            self._stats["fi_grep_3d_misses"] = self._stats.get("fi_grep_3d_misses", 0) + 1
+        # Feed adaptive gate optimizer
+        self._gate_record(hit, c_vec)
+        return result
+
+    # ------------------------------------------------------------------ #
+    # GROOVEBOX_R23R_POOL_SHAPESHIFT_20261103: Adaptive gate optimizer    #
+    # Tracks recent GREP outcomes and reshapes L2/L3 tolerances around    #
+    # the dense regions of the pool's 3D state space using a sliding      #
+    # convolution window over hit/miss history.                           #
+    # ------------------------------------------------------------------ #
+
+    _GATE_WINDOW    = 128   # outcomes to remember per instance
+    _GATE_KERN_W    = 16    # smoothing kernel half-width
+    _TOL_L2_MIN     = 0.02
+    _TOL_L2_MAX     = 0.18
+    _TOL_AXIS_MIN   = 0.06
+    _TOL_AXIS_MAX   = 0.30
+    _TARGET_HIT_LO  = 0.25  # expand tolerance below this hit rate
+    _TARGET_HIT_HI  = 0.65  # contract tolerance above this hit rate
+
+    def _gate_optimizer_init(self) -> None:
+        """Call once from __init__ to wire per-instance adaptive state."""
+        self._gate_outcomes: "list[int]"          = []   # 1 = hit, 0 = miss
+        self._gate_state_vecs: "list[np.ndarray]" = []   # matching 3D vecs
+        self._gate_tol_l2:   float = 0.05
+        self._gate_tol_axis: float = 0.12
+        self._gate_lock = threading.Lock()
+
+    def _gate_record(self, hit: bool, vec: "Optional[np.ndarray]") -> None:
+        """Append outcome and kick tolerance adaptation if window is full."""
+        with self._gate_lock:
+            self._gate_outcomes.append(1 if hit else 0)
+            if vec is not None:
+                self._gate_state_vecs.append(vec.copy())
+            if len(self._gate_outcomes) > self._GATE_WINDOW:
+                self._gate_outcomes.pop(0)
+            if len(self._gate_state_vecs) > self._GATE_WINDOW:
+                self._gate_state_vecs.pop(0)
+            if len(self._gate_outcomes) >= self._GATE_KERN_W * 2:
+                self._gate_adapt()
+
+    def _gate_adapt(self) -> None:
+        """Recompute L2/L3 tolerances from the current sliding window.
+
+        1. Convolve hit/miss array with a uniform kernel → smoothed hit rate.
+        2. Compute mean inter-point distance in the dense sub-cloud of recent hits.
+        3. Blend kernel-based rate and density to set new tolerances.
+
+        Called with self._gate_lock held.
+        """
+        win = np.array(self._gate_outcomes, dtype=np.float32)
+        kw  = self._GATE_KERN_W
+        kern = np.ones(kw * 2, dtype=np.float32) / (kw * 2)
+        smoothed = np.convolve(win, kern, mode="valid")
+        hit_rate = float(smoothed[-1]) if len(smoothed) else float(win.mean())
+
+        density_tol_l2   = self._gate_tol_l2
+        density_tol_axis = self._gate_tol_axis
+
+        if len(self._gate_state_vecs) >= 8:
+            vecs_arr = np.vstack(self._gate_state_vecs[-self._GATE_KERN_W:])
+            # Mean pairwise L2 within recent hit-only vecs as density proxy
+            hit_indices = [i for i, h in enumerate(self._gate_outcomes[-self._GATE_KERN_W:]) if h]
+            if len(hit_indices) >= 4:
+                hit_vecs = vecs_arr[hit_indices[-min(len(hit_indices), 16):]]
+                diffs = hit_vecs[:, None, :] - hit_vecs[None, :, :]  # (N,N,3)
+                norms = np.linalg.norm(diffs, axis=-1)
+                mean_d = float(np.mean(norms[norms > 0])) if (norms > 0).any() else 0.08
+                # Dense cloud → tighten to half mean inter-point distance
+                density_tol_l2   = float(np.clip(mean_d * 0.5,
+                                                  self._TOL_L2_MIN, self._TOL_L2_MAX))
+                density_tol_axis = float(np.clip(mean_d * 1.2,
+                                                  self._TOL_AXIS_MIN, self._TOL_AXIS_MAX))
+
+        # Expand if starving for hits; contract if too promiscuous
+        if hit_rate < self._TARGET_HIT_LO:
+            rate_tol_l2   = min(self._gate_tol_l2   * 1.12, self._TOL_L2_MAX)
+            rate_tol_axis = min(self._gate_tol_axis  * 1.12, self._TOL_AXIS_MAX)
+        elif hit_rate > self._TARGET_HIT_HI:
+            rate_tol_l2   = max(self._gate_tol_l2   * 0.88, self._TOL_L2_MIN)
+            rate_tol_axis = max(self._gate_tol_axis  * 0.88, self._TOL_AXIS_MIN)
+        else:
+            rate_tol_l2, rate_tol_axis = self._gate_tol_l2, self._gate_tol_axis
+
+        # Blend density-derived and rate-derived: 60/40
+        self._gate_tol_l2   = round(0.6 * density_tol_l2   + 0.4 * rate_tol_l2,   6)
+        self._gate_tol_axis = round(0.6 * density_tol_axis + 0.4 * rate_tol_axis, 6)
+
+    def gate_optimizer_stats(self) -> "Dict[str, float]":
+        """Return current adaptive tolerance state (for engine-info display)."""
+        try:
+            with self._gate_lock:
+                win = self._gate_outcomes[-self._GATE_KERN_W:]
+                rate = float(np.mean(win)) if win else 0.0
+                return {
+                    "tol_l2":   self._gate_tol_l2,
+                    "tol_axis": self._gate_tol_axis,
+                    "hit_rate": rate,
+                    "window":   len(self._gate_outcomes),
+                    "index_3d": len(self._POOL_3D_VECS),
+                }
+        except AttributeError:
+            return {"tol_l2": 0.05, "tol_axis": 0.12, "hit_rate": 0.0,
+                    "window": 0, "index_3d": 0}
 
     @classmethod
     def _pool_slot_numeric(cls, identity: int, size: int) -> int:
@@ -846,7 +1302,8 @@ class SCodeOptimizerBridge:
                       qt_callback: bool = False, side_effecting: bool = False,
                       force: bool = False, max_entries: Optional[int] = None,
                       shape_id: Optional[int] = None, subtype: int = 0,
-                      modality: Optional[int] = None, dependency_ready: bool = True) -> Future:
+                      modality: Optional[int] = None, dependency_ready: bool = True,
+                      priority: float = 0.0) -> Future:
         """Submit one universal pool request without blocking the caller.
 
         Lookup/claim is synchronous and cheap. Actual computation runs on the
@@ -864,9 +1321,13 @@ class SCodeOptimizerBridge:
             subtype=subtype, modality=modality, dependency_ready=dependency_ready,
             side_effecting=(pid == self.POLICY_SIDE_EFFECT),
         )
-        key = self._completion_cache_key(kind, fid, payload, pid, generation, req_frame) + (
-            descriptor["request_key"], descriptor["result_slot"], descriptor["buffer_slot"]
-        )
+        base_key = self._completion_cache_key(kind, fid, payload, pid, generation, req_frame)
+        if self._policy_cacheable(pid):
+            key = base_key + (descriptor["result_slot"],)
+        else:
+            key = base_key + (
+                descriptor["request_key"], descriptor["result_slot"], descriptor["buffer_slot"]
+            )
         if max_entries is None:
             max_entries = int(descriptor["pool_size"])
         public_future = Future()
@@ -907,7 +1368,27 @@ class SCodeOptimizerBridge:
         def execute():
             return producer()
 
-        worker_future = self._work_workers.submit(execute)
+        worker_pool = self._work_workers
+        if kind.startswith("canonical_engine:"):
+            engine_name = kind.split(":", 1)[1].strip()
+            worker_pool = self._canonical_engine_workers.get(engine_name, self._work_workers)
+        try:
+            if hasattr(worker_pool, "submit_prioritized"):
+                worker_future = worker_pool.submit_prioritized(priority, execute)
+            else:
+                worker_future = worker_pool.submit(execute)
+        except BaseException as exc:
+            with self._inflight_lock:
+                if self._inflight.get(key) is public_future:
+                    self._inflight.pop(key, None)
+                callbacks = list(self._inflight_callbacks.pop(key, []))
+            self._stats["completion_errors"] += 1
+            self._stats["completion_submit_errors"] = int(self._stats.get("completion_submit_errors", 0)) + 1
+            if not public_future.done():
+                public_future.set_exception(exc)
+            for callback, qt_callback in callbacks:
+                self._dispatch_completion_callback(callback, None, exc, qt_callback)
+            return public_future
 
         def done(wf):
             try:
@@ -975,6 +1456,11 @@ class SCodeOptimizerBridge:
             self._work_workers.shutdown(wait=bool(wait), cancel_futures=True)
         except Exception:
             pass
+        for _pool in list(getattr(self, "_canonical_engine_workers", {}).values()):
+            try:
+                _pool.shutdown(wait=bool(wait), cancel_futures=True)
+            except Exception:
+                pass
         if wait:
             try:
                 th = getattr(self, "_completion_thread", None)
@@ -1034,6 +1520,9 @@ class SCodeOptimizerBridge:
                     host._scode_optimizer_last_error = str(exc)
                 self._pending = None
                 self._pending_key = None
+            self._collect_requested_plan(host)
+            if getattr(self, "_foreground_plan_pending", None) is not None:
+                return
             if not shallow_changed or self._pending is not None:
                 return
             shape = len(getattr(host, "master_playlist_data", []) or [])
@@ -1087,6 +1576,8 @@ class SCodeOptimizerBridge:
             "plan": dict(self._last_plan),
             "pool_entries": len(self._pool),
             "memo_entries": sum(len(x) for x in self._result_cache.values()),
+            "memo_hit_rate": self.memo_hit_rate(),
+            "memo_shared": int(self._stats.get("memo_shared", 0)),
             "pool_format_catalog": {str(k): dict(v) for k, v in sorted(self._pool_catalog.items())},
             "policy": "number_logic_cross_cast_universal_pool_completion_dependency_qos_symbol_codec_v9",
             "completion": {

@@ -16,6 +16,7 @@ Fast alternatives:
 Speedup: ~10-20x less object creation, ~5ms paint vs ~80ms layout
 """
 
+from qt_painting import owned_painter
 from PyQt6.QtWidgets import QAbstractButton, QWidget, QSizePolicy
 from PyQt6.QtCore import Qt, QRect, QSize, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QFont, QPen
@@ -44,25 +45,27 @@ class FastToggleButton(QAbstractButton):
         return QSize(120, 36)
 
     def paintEvent(self, e):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        checked = self.isChecked()
-        bg = self.color_on if checked else self.color_off
-        # Slight brightness for hover
-        if self.underMouse():
-            bg = bg.lighter(115)
+        with owned_painter(self) as p:
+            if p is None:
+                return
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            checked = self.isChecked()
+            bg = self.color_on if checked else self.color_off
+            # Slight brightness for hover
+            if self.underMouse():
+                bg = bg.lighter(115)
 
-        # Rounded rect
-        rect = self.rect().adjusted(1,1,-1,-1)
-        p.setBrush(bg)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(rect, 6, 6)
+            # Rounded rect
+            rect = self.rect().adjusted(1,1,-1,-1)
+            p.setBrush(bg)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(rect, 6, 6)
 
-        # Text — simplest math, no layout engine
-        p.setPen(QColor("white") if checked else QColor("#2a9d8f") if bg == QColor("#264653") else QColor("black"))
-        p.setFont(QFont("Arial", 10, QFont.Weight.Bold))
-        txt = self.text_on if checked else self.text_off
-        p.drawText(rect, Qt.AlignmentFlag.AlignCenter, txt)
+            # Text — simplest math, no layout engine
+            p.setPen(QColor("white") if checked else QColor("#2a9d8f") if bg == QColor("#264653") else QColor("black"))
+            p.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+            txt = self.text_on if checked else self.text_off
+            p.drawText(rect, Qt.AlignmentFlag.AlignCenter, txt)
 
     def enterEvent(self, e):
         self.update()
@@ -118,38 +121,40 @@ class FastStepGrid(QWidget):
         self.update()
 
     def paintEvent(self, e):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        with owned_painter(self) as p:
+            if p is None:
+                return
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
 
-        # Labels
-        p.setFont(QFont("Arial", 9))
-        p.setPen(QColor("#aaa"))
-        for r, inst in enumerate(self.instrument_ids):
-            y = self.gap + r*(self.cell_h+self.gap)
-            p.drawText(QRect(0, y, self.label_w-6, self.cell_h), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, inst)
-
-        # Cells
-        for r in range(len(self.instrument_ids)):
-            for c in range(self.visible_steps):
-                x = self.label_w + self.gap + c*(self.cell_w+self.gap)
+            # Labels
+            p.setFont(QFont("Arial", 9))
+            p.setPen(QColor("#aaa"))
+            for r, inst in enumerate(self.instrument_ids):
                 y = self.gap + r*(self.cell_h+self.gap)
-                rect = QRect(x, y, self.cell_w, self.cell_h)
+                p.drawText(QRect(0, y, self.label_w-6, self.cell_h), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, inst)
 
-                active = self.grid_state[r][c]
-                sculpted = self.sculptor_mask[r][c]
+            # Cells
+            for r in range(len(self.instrument_ids)):
+                for c in range(self.visible_steps):
+                    x = self.label_w + self.gap + c*(self.cell_w+self.gap)
+                    y = self.gap + r*(self.cell_h+self.gap)
+                    rect = QRect(x, y, self.cell_w, self.cell_h)
 
-                if active:
-                    p.setBrush(QColor("#2a9d8f"))
-                else:
-                    p.setBrush(QColor("#222"))
+                    active = self.grid_state[r][c]
+                    sculpted = self.sculptor_mask[r][c]
 
-                # Border: teal if sculpted trigger exists (deterministic)
-                if sculpted:
-                    p.setPen(QPen(QColor("#2a9d8f"), 1))
-                else:
-                    p.setPen(QPen(QColor("#333"), 1))
+                    if active:
+                        p.setBrush(QColor("#2a9d8f"))
+                    else:
+                        p.setBrush(QColor("#222"))
 
-                p.drawRoundedRect(rect, 4, 4)
+                    # Border: teal if sculpted trigger exists (deterministic)
+                    if sculpted:
+                        p.setPen(QPen(QColor("#2a9d8f"), 1))
+                    else:
+                        p.setPen(QPen(QColor("#333"), 1))
+
+                    p.drawRoundedRect(rect, 4, 4)
 
     def _cell_at(self, pos):
         x = pos.x() - self.label_w

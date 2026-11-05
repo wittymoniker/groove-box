@@ -1,0 +1,32 @@
+GROOVEBOX R29H — INTERACTION / I/O EXECUTION PATHWAYS
+Date: 2026-11-04
+Base: R29G semantic Flow + execution-fabric archive
+
+Implemented:
+- Added execution_fabric.py with typed WorkKind, WorkPacket, BufferContract,
+  CancellationToken, LatencyClass and ExecutionFabric APIs.
+- Added bounded named lanes for input/I/O, process, vector, project, preview,
+  render and encode work, all backed by thread_budget's process-wide executor.
+- Added explicit dtype/shape/contiguity/channel validation for declared buffer inputs.
+- Added cooperative cancellation and monotonic pre-dispatch deadline checks.
+- Kept compute and commit separate; commits are rejected outside the fabric's
+  owner thread, preventing worker-side Qt/project mutations by contract.
+- Migrated fractal UI-offload, project and encode pools to shared bounded lanes;
+  preserved the old pool variable names for existing call-site compatibility.
+- Added tests for packet execution, buffer validation, cancellation and owner-thread
+  commit enforcement.
+- Updated the active overlay sync manifest so execution_fabric.py ships in the
+  v35.22zz application overlay.
+
+Safety boundaries:
+- Real-time audio callbacks do not submit to or wait on this fabric.
+- Existing AudioRingBuffer, VideoFrameQueue and ConcurrentAudioBus remain the
+  appropriate device/streaming paths.
+- RenderQueue remains serial orchestration to avoid duplicate full-project renders
+  and CPU/audio contention.
+- Some legacy one-shot executors remain unmigrated pending measured profiling.
+
+Not claimed:
+- No full application-wide interaction router replacement.
+- No blanket conversion of every legacy executor.
+- No target-hardware latency benchmark or booted ISO validation.

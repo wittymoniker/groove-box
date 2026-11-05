@@ -1,0 +1,13 @@
+R29G VALIDATION — 2026-11-04
+
+PASS: python -m py_compile groovebox.py BUILD_ISO/app-overlay-v35.22zz/groovebox.py
+PASS: pytest -q test_r29g_semantic_flow_contract_20261104.py — 4 passed
+PASS: pytest -q test_r29f_global_keychart_contract_20261104.py test_live_jam_patterns_20261104.py test_fractal_seed_r28_hotfix.py test_concurrent_audio_bus_r28_4_45.py — 13 passed
+PASS: python BUILD_ISO/verify_v35_22zz_r29c.py — 14/14 passed
+PASS: root groovebox.py matches BUILD_ISO/app-overlay-v35.22zz/groovebox.py
+
+ENVIRONMENT LIMITATION:
+PyQt6 is not installed in this build environment. Qt-dependent render-queue tests and live GUI/audio validation could not run. No ISO was assembled or booted, and no target-hardware performance benchmark was performed.
+
+ARCHITECTURE STATUS:
+The execution-fabric map is an audit/documentation of the current pathways and guardrails. It explicitly records that the shared typed scheduler/descriptor layer is not yet implemented.

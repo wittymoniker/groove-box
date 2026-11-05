@@ -1,9 +1,12 @@
+# GROOVEBOX_V35_22ZZ_R19_ADAPTIVE_CAPTURE_NO_TIMEOUT_20260930
+# GROOVEBOX_V35_22ZZ_R17_SIGNAL_LAB_SHARED_AUDIO_20260930
 #!/usr/bin/env python3
 from __future__ import annotations
-import json, math, os, tempfile, threading, time, wave
+import json, math, os, tempfile, threading, time, wave, queue
 from pathlib import Path
 from typing import Any, Dict, List
 import numpy as np
+from qt_painting import owned_painter
 from PyQt6.QtCore import Qt, QPointF, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabel,QPushButton,QComboBox,
@@ -24,14 +27,17 @@ class LayerCanvas(QWidget):
         if emit:self.changed.emit()
     def clear_wave(self): self.set_points([(0,.5),(1,.5)])
     def paintEvent(self,_):
-        p=QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing); w=max(1,self.width()); h=max(1,self.height())
-        p.fillRect(self.rect(),QColor('#0b0f14')); p.setPen(QPen(QColor('#29313a'),1))
-        for i in range(1,8): p.drawLine(int(i*w/8),0,int(i*w/8),h)
-        p.drawLine(0,h//2,w,h//2)
-        if self._pts:
-            path=QPainterPath(); q=self._pts[0]; path.moveTo(q.x()*w,q.y()*h)
-            for q in self._pts[1:]: path.lineTo(q.x()*w,q.y()*h)
-            p.setPen(QPen(QColor('#5ee7d8'),2.5)); p.drawPath(path)
+        with owned_painter(self) as p:
+            if p is None:
+                return
+            p.setRenderHint(QPainter.RenderHint.Antialiasing); w=max(1,self.width()); h=max(1,self.height())
+            p.fillRect(self.rect(),QColor('#0b0f14')); p.setPen(QPen(QColor('#29313a'),1))
+            for i in range(1,8): p.drawLine(int(i*w/8),0,int(i*w/8),h)
+            p.drawLine(0,h//2,w,h//2)
+            if self._pts:
+                path=QPainterPath(); q=self._pts[0]; path.moveTo(q.x()*w,q.y()*h)
+                for q in self._pts[1:]: path.lineTo(q.x()*w,q.y()*h)
+                p.setPen(QPen(QColor('#5ee7d8'),2.5)); p.drawPath(path)
     def _add(self,pos):
         x=max(0,min(1,pos.x()/max(1,self.width()))); y=max(0,min(1,pos.y()/max(1,self.height()))); eps=1.7/max(1,self.width())
         self._pts=[p for p in self._pts if abs(p.x()-x)>eps]; self._pts.append(QPointF(x,y)); self._pts.sort(key=lambda p:p.x()); self.update(); self.changed.emit()
@@ -46,12 +52,15 @@ class SpectrumWidget(QWidget):
     def __init__(self,parent=None): super().__init__(parent); self.setMinimumHeight(120); self._peaks=[]
     def set_peaks(self,peaks): self._peaks=list(peaks); self.update()
     def paintEvent(self,_):
-        p=QPainter(self); p.fillRect(self.rect(),QColor('#070b10')); w=max(1,self.width()); h=max(1,self.height())
-        p.setPen(QPen(QColor('#5ee7d8'),2))
-        if not self._peaks:return
-        mh=max(20.0,max((x[0] for x in self._peaks),default=20000.0))
-        for hz,a in self._peaks:
-            x=int(min(1.0,hz/mh)*(w-10)); y=int((1-max(0,min(1,a)))*(h-18)); p.drawLine(x,h-4,x,y); p.drawText(max(0,x-22),max(12,y-3),f'{hz:.0f}')
+        with owned_painter(self) as p:
+            if p is None:
+                return
+            p.fillRect(self.rect(),QColor('#070b10')); w=max(1,self.width()); h=max(1,self.height())
+            p.setPen(QPen(QColor('#5ee7d8'),2))
+            if not self._peaks:return
+            mh=max(20.0,max((x[0] for x in self._peaks),default=20000.0))
+            for hz,a in self._peaks:
+                x=int(min(1.0,hz/mh)*(w-10)); y=int((1-max(0,min(1,a)))*(h-18)); p.drawLine(x,h-4,x,y); p.drawText(max(0,x-22),max(12,y-3),f'{hz:.0f}')
 
 class LayeredSignalLab(QWidget):
     record_ready=pyqtSignal(str,str)
@@ -278,7 +287,10 @@ class LayeredSignalLab(QWidget):
         if self._preview is None:self._render_preview()
         if self._preview is None:return
         try:
-            from audio_os_backend import sd; sd.play(self._preview,self._preview_sr,blocking=False)
+            from audio_os_backend import play_buffer
+            preferred=str(getattr(self.host,'_preferred_audio_output_name','') or '') if self.host is not None else ''
+            idx=play_buffer(self._preview,self._preview_sr,preferred_name=preferred,blocking=False)
+            self.report.setPlainText(f'Playing preview through output device {idx if idx is not None else 'system default'}.')
         except Exception:
             p=os.path.join(tempfile.gettempdir(),'groovebox_layer_preview.wav'); write_wav(p,self._preview,self._preview_sr)
             import subprocess,shutil
@@ -308,17 +320,18 @@ class LayeredSignalLab(QWidget):
     def _refresh_record_inputs(self):
         old=self.cmb_record_input.currentText() if hasattr(self,'cmb_record_input') and self.cmb_record_input.count() else ''
         self._record_input_devices=[]
-        if hasattr(self,'cmb_record_input'):self.cmb_record_input.clear()
+        if hasattr(self,'cmb_record_input'): self.cmb_record_input.clear()
         try:
-            from audio_os_backend import sd
-            for idx,d in enumerate(sd.query_devices()):
-                if int(d.get('max_input_channels',0) or 0)>0:
-                    name=str(d.get('name') or f'Input {idx}')
-                    self._record_input_devices.append((idx,name))
-                    self.cmb_record_input.addItem(name,idx)
+            from hardware_runtime import ensure_first_hardware_refresh
+            ensure_first_hardware_refresh('draw-record-open', block=False)
+            from audio_os_backend import list_input_devices
+            for idx,name,_meta in list_input_devices(force=True):
+                self._record_input_devices.append((idx,name))
+                self.cmb_record_input.addItem(name,idx)
         except Exception:
             pass
-        if hasattr(self,'cmb_record_input') and self.cmb_record_input.count()==0:self.cmb_record_input.addItem('Default input',None)
+        if hasattr(self,'cmb_record_input') and self.cmb_record_input.count()==0:
+            self.cmb_record_input.addItem('Default physical input',None)
         if old and hasattr(self,'cmb_record_input'):
             i=self.cmb_record_input.findText(old)
             if i>=0:self.cmb_record_input.setCurrentIndex(i)
@@ -393,33 +406,90 @@ class LayeredSignalLab(QWidget):
         self._state_changed(); self.report.setPlainText(f'Bound ALL sound layers → Carrier {mode}: {p}')
 
     def _record_layer(self):
-        # Stream directly to disk instead of sd.rec()+sd.wait().  This keeps RAM
-        # bounded for long takes and completion depends on frames actually read,
-        # not on a backend-global wait primitive.
-        dur=max(.1,min(86400.0,float(self.duration.value()))); sr=int(self.sr.value()); recdir=groovebox_paths.recordings_dir(getattr(self.host,'_current_project_path',None)); path=os.path.join(recdir,f'groovebox_record_layer_{int(time.time()*1000)}.wav'); self.report.setPlainText(f'Recording {dur:.2f}s…')
+        # R17: every recorder uses the same routed PortAudio resolver and an
+        # explicit callback queue.  Passive Video-Record mic meters are released
+        # on the GUI thread first so direct ALSA devices can never deadlock the
+        # second take behind an older capture handle.
+        try:
+            from hardware_runtime import ensure_first_hardware_refresh
+            ensure_first_hardware_refresh('track-record', block=False)
+            from video_clip_studio import VideoClipStudio
+            for st in list(VideoClipStudio._capture_instances):
+                try: st._suspend_passive_mic_for_external_capture()
+                except Exception: pass
+        except Exception:
+            pass
+        dur=max(.1,min(86400.0,float(self.duration.value())))
+        sr=int(self.sr.value())
+        recdir=groovebox_paths.recordings_dir(getattr(self.host,'_current_project_path',None))
+        path=os.path.join(recdir,f'groovebox_record_layer_{int(time.time()*1000)}.wav')
+        self.report.setPlainText(f'Recording {dur:.2f}s…')
         device=self.cmb_record_input.currentData() if hasattr(self,'cmb_record_input') else None
         def work():
-            from audio_os_backend import sd
-            if sd is None:
-                raise RuntimeError('Realtime audio input backend is unavailable.')
-            total=max(1,int(round(dur*sr))); done=0; block=2048
-            kwargs={'samplerate':sr,'channels':1,'dtype':'float32','blocksize':block}
-            if device is not None: kwargs['device']=int(device)
+            from audio_os_backend import open_input_stream_adaptive, resolve_input_device_index
+            # Physical capture is capped at a responsive 48 kHz lane. The WAV is
+            # tagged with the actual negotiated hardware rate; project render/export
+            # rates remain independent and can still be 96/128/192 kHz.
+            capture_request=min(48000,max(8000,int(sr)))
+            done=0; block=1024
+            q=queue.Queue(maxsize=32)
+            chosen=int(device) if device is not None else resolve_input_device_index(force=True)
+            def callback(indata, frames, _time_info, status):
+                try:
+                    a=np.asarray(indata,dtype=np.float32).reshape(-1).copy()
+                    q.put_nowait(a)
+                except queue.Full:
+                    try: q.get_nowait()
+                    except Exception: pass
+                    try: q.put_nowait(a)
+                    except Exception: pass
+                except Exception:
+                    pass
             os.makedirs(os.path.dirname(path),exist_ok=True)
+            deadline=time.monotonic()+dur+5.0
+            stream,actual_rate,chosen=open_input_stream_adaptive(samplerate=capture_request,channels=1,dtype='float32',blocksize=block,
+                                         latency='low',callback=callback,device=chosen)
+            total=max(1,int(round(dur*actual_rate)))
+            self._last_record_input_rate=int(actual_rate)
             with wave.open(path,'wb') as wf:
-                wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr)
-                with sd.InputStream(**kwargs) as stream:
+                wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(int(actual_rate))
+                try:
+                    stream.start()
+                    first_frame_deadline=time.monotonic()+2.0
                     while done < total:
-                        need=min(block,total-done)
-                        data,overflowed=stream.read(need)
-                        if overflowed:
-                            # Overflow is reported as an event, not hidden; keep the
-                            # captured frames and continue rather than deadlocking.
-                            pass
-                        pcm=(np.clip(np.asarray(data,dtype=np.float32).reshape(-1),-1.0,1.0)*32767.0).astype('<i2')
-                        wf.writeframesraw(pcm.tobytes())
-                        done += int(pcm.size)
+                        remain=deadline-time.monotonic()
+                        if remain <= 0:
+                            raise RuntimeError(f'Physical microphone stopped delivering frames before the requested duration completed at {actual_rate} Hz.')
+                        try: data=q.get(timeout=min(.35,max(.05,remain)))
+                        except queue.Empty:
+                            if done==0 and time.monotonic() >= first_frame_deadline:
+                                raise RuntimeError(f'Physical microphone opened at {actual_rate} Hz but delivered no frames. Check the selected input/ALSA card rather than retrying the project sample rate.')
+                            continue
+                        need=min(int(data.size),total-done)
+                        if need<=0: continue
+                        pcm=(np.clip(data[:need],-1.0,1.0)*32767.0).astype('<i2')
+                        wf.writeframesraw(pcm.tobytes()); done += int(pcm.size)
+                finally:
+                    try: stream.stop()
+                    except Exception: pass
+                    try: stream.close()
+                    except Exception: pass
                 wf.writeframes(b'')
+            # Other apps on this machine are hotter. Lift a quiet take to about
+            # -6 dB so the file matches a normal capture at the same speaking volume.
+            try:
+                with wave.open(path,'rb') as rf:
+                    raw=rf.readframes(rf.getnframes())
+                    rate=rf.getframerate()
+                arr=np.frombuffer(raw,dtype='<i2').astype(np.float32)/32768.0
+                peak=float(np.max(np.abs(arr))) if arr.size else 0.0
+                if 0.001 < peak < 0.5:
+                    arr=np.clip(arr*(0.5/peak),-1.0,1.0)
+                    with wave.open(path,'wb') as wf:
+                        wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(int(rate))
+                        wf.writeframes((arr*32767.0).astype('<i2').tobytes())
+            except Exception:
+                pass
             if done <= 0 or not os.path.isfile(path) or os.path.getsize(path) <= 44:
                 raise RuntimeError('Audio input produced no usable frames.')
             return path
@@ -431,9 +501,23 @@ class LayeredSignalLab(QWidget):
             def legacy():
                 try:self.record_ready.emit(work(),'')
                 except Exception as e:self.record_ready.emit('',str(e))
-            threading.Thread(target=legacy,daemon=True).start()
+            threading.Thread(target=legacy,daemon=True,name='GrooveboxAudioRecord').start()
     def _record_finished(self,path,error):
-        if error:QMessageBox.warning(self,'Record failed',error);return
-        groovebox_paths.index_file(path,'recording',getattr(self.host,'_current_project_path',None)); self._add_layer(self._layer_default(f'Record {len(self.layers)+1}','record',path)); self._refresh_recordings_table(); self.report.setPlainText('Recorded layer: '+path)
+        try:
+            from video_clip_studio import VideoClipStudio
+            for st in list(VideoClipStudio._capture_instances):
+                try: st._resume_passive_mic_after_external_capture()
+                except Exception: pass
+        except Exception: pass
+        if error: QMessageBox.warning(self,'Record failed',error); return
+        groovebox_paths.index_file(path,'recording',getattr(self.host,'_current_project_path',None)); self._add_layer(self._layer_default(f'Record {len(self.layers)+1}','record',path)); self._refresh_recordings_table(); self.report.setPlainText('Recorded layer: '+path+f" · capture {int(getattr(self,'_last_record_input_rate',0) or 0)} Hz")
 
 SignalLab=LayeredSignalLab
+
+
+# GROOVEBOX_R23R_NONMODAL_DIALOGS_20261103: no dialog may block other windows.
+try:
+    import nonmodal_dialogs as _gb_nonmodal
+    _gb_nonmodal.install()
+except Exception:
+    pass

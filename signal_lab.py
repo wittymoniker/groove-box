@@ -8,6 +8,7 @@ from meum_constants import M, PHI, MEUM_MINUS_1, MEUM_INV, MEUM_TWO_MINUS, MEUM_
 from pathlib import Path
 from typing import Optional
 import numpy as np
+from qt_painting import owned_painter
 from PyQt6.QtCore import Qt, QPointF, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabel,QPushButton,QComboBox,
@@ -35,17 +36,20 @@ class DrawSignalCanvas(QWidget):
     def clear_wave(self):
         self._pts=[QPointF(0,.5),QPointF(1,.5)]; self.update(); self.changed.emit()
     def paintEvent(self, _e):
-        p=QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w=max(1,self.width()); h=max(1,self.height())
-        p.fillRect(self.rect(), QColor('#0b0f14'))
-        p.setPen(QPen(QColor('#29313a'),1))
-        for i in range(1,8):
-            x=int(i*w/8); p.drawLine(x,0,x,h)
-        p.drawLine(0,h//2,w,h//2)
-        if self._pts:
-            path=QPainterPath(); p0=self._pts[0]; path.moveTo(p0.x()*w,p0.y()*h)
-            for q in self._pts[1:]: path.lineTo(q.x()*w,q.y()*h)
-            p.setPen(QPen(QColor('#5ee7d8'),2.5)); p.drawPath(path)
+        with owned_painter(self) as p:
+            if p is None:
+                return
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            w=max(1,self.width()); h=max(1,self.height())
+            p.fillRect(self.rect(), QColor('#0b0f14'))
+            p.setPen(QPen(QColor('#29313a'),1))
+            for i in range(1,8):
+                x=int(i*w/8); p.drawLine(x,0,x,h)
+            p.drawLine(0,h//2,w,h//2)
+            if self._pts:
+                path=QPainterPath(); p0=self._pts[0]; path.moveTo(p0.x()*w,p0.y()*h)
+                for q in self._pts[1:]: path.lineTo(q.x()*w,q.y()*h)
+                p.setPen(QPen(QColor('#5ee7d8'),2.5)); p.drawPath(path)
     def _add(self,pos):
         x=max(0.0,min(1.0,pos.x()/max(1,self.width()))); y=max(0.0,min(1.0,pos.y()/max(1,self.height())))
         # Replace points in a narrow x-neighborhood so freehand drawing remains compact.
@@ -106,8 +110,8 @@ class SignalLab(QWidget):
         q=np.mod(t*cyc+phase*float(self.traversal.value()),1.0)
         return np.interp(q,xs,ys).astype(np.float64)
     def _write_wav(self,path,x,sr):
-        y=np.asarray(x,float); y=np.clip(y,-1.0,1.0); pcm=np.rint(y*32767.0).astype('<i2')
-        with wave.open(path,'wb') as w: w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr); w.writeframes(pcm.tobytes())
+        from audio_os_backend import write_wav as _ww   # rounded 24-bit PCM
+        _ww(path,int(sr),np.clip(np.asarray(x,float),-1.0,1.0))
     def _save_drawn(self):
         mode=self.mode.currentText(); base='drawn_'+mode.lower()
         if mode in ('Carrier','Sample'):
@@ -193,3 +197,11 @@ def tempfile_dir():
 
 # LAYERED_SIGNAL_LAB_20260906: canonical Draw/Record implementation.
 from layered_signal_lab import LayeredSignalLab as SignalLab
+
+
+# GROOVEBOX_R23R_NONMODAL_DIALOGS_20261103: no dialog may block other windows.
+try:
+    import nonmodal_dialogs as _gb_nonmodal
+    _gb_nonmodal.install()
+except Exception:
+    pass

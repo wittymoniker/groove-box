@@ -1,0 +1,32 @@
+R29G — Runtime Stall Guards — 2026-11-04
+
+Changes
+- Nearby subnet discovery is now single-flight and capped at 12 concurrent
+  GrooveboxSweep workers instead of the former default of 64.
+- TCP connect waits are capped at 120 ms per port; API info reads are capped
+  at 250 ms by default (with bounded upper limits).
+- Discovery probes observe shutdown and do not start additional port attempts
+  once shutdown begins. Nearby service shutdown now joins its sweep/manual
+  loop threads as well as the listener/beacon/direct-scan threads.
+- VideoSynthViewer optimizer completions now use weak widget references and a
+  QObject-destruction lifetime token. A late pooled completion returns without
+  calling into a closing/deleted Qt widget.
+- Updated the active v35.22zz ISO application overlay to match root sources.
+
+Validation
+- test_r29g_runtime_stall_guards_20261104.py: 3 passed.
+- Existing focused R29f/Jam/fractal tests: 9 passed.
+- Python compilation: passed for root and active ISO overlay modules.
+- ISO verifier R10: passed.
+- ISO verifier R29c: 14/14 passed.
+
+Scope / limitations
+- The supplied stack trace is a snapshot, not a complete crash report. It
+  identifies Qt widget destruction during event processing, but cannot alone
+  prove which parent/window lifecycle path initiated it. The lifetime guard
+  addresses late VideoSynthViewer optimizer completions; a full native crash
+  reproduction is still needed to confirm the original crash is eliminated.
+- The rendering worker was observed in triangle/line rasterization. This
+  release does not claim that this hot path has been fully optimized or that
+  the renderer is no longer CPU-bound at high complexity/resolution.
+- No ISO was assembled or boot-tested on target hardware in this validation.

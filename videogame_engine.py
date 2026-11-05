@@ -22,11 +22,15 @@
 # =============================================================================
 from __future__ import annotations
 
+import csv
 import gzip
 import hashlib
 import io
 import json
 import math
+import queue
+import threading
+import time
 import os
 import shutil
 import stat
@@ -60,6 +64,8 @@ PHI_INV = PHI - 1.0
 # planets, moons, stations and encounters.  The player is integrated in metres
 # with semi-implicit Verlet-style stepping; no flat terrain is required.
 # ---------------------------------------------------------------------------
+GOAVA_OFF_BLEED = 0.0   # GROOVEBOX_R23R_GOAVA_ONLY_WHEN_ON_20261103 (main window 'GOAVA while off' slider)
+
 def _vadd(a,b): return (a[0]+b[0], a[1]+b[1], a[2]+b[2])
 def _vsub(a,b): return (a[0]-b[0], a[1]-b[1], a[2]-b[2])
 def _vmul(a,k): return (a[0]*k, a[1]*k, a[2]*k)
@@ -445,7 +451,7 @@ def instrument_geometry_mode(slot, phase, xyz, flags=None, fractal_set=None):
         "book_set": 0.20 + 0.20 * geo,
         "phase_lock": 0.08 * (1.5 if flags.get("phase_lock") else 0.4),
         "scatter": 0.08 * (1.5 if flags.get("randomizer") else 0.4),
-        "goava": 0.08 * (1.6 if flags.get("goava") else 0.3),
+        "goava": 0.08 * 1.6 * (1.0 if flags.get("goava") else float(flags.get("goava_bleed", GOAVA_OFF_BLEED))),   # GROOVEBOX_R23R_GOAVA_ONLY_WHEN_ON_20261103
     }
     if snap > 0.65:
         if int(slot) % 2 == 0:
@@ -502,7 +508,12 @@ GENRES = (
     "storytelling", "gta_like", "platformer", "strategy", "racing", "puzzle",
     "adventure", "dating_sim", "metroidvania",
 )
-# Genre → characteristic content-spec hook so each family the player asked for
+# Any experience is possible. Genre picks a primary hook; the world always
+# exposes the full interaction set so a seed is not locked to one mechanic.
+INTERACTION_MECHANISMS = (
+    "move", "look", "use", "place", "build", "talk", "combat",
+    "vehicle", "puzzle", "craft", "script", "free_roam",
+)
 # (FPS, RPG, storytelling, GTA-style) is always expressed as an observable hook
 # in the identity, not just a name.  open_world drives the giant common agenda.
 GENRE_HOOKS = {
@@ -762,6 +773,35 @@ def operator_theory_enabled():
 
 
 # isn / ics / arcisn / arcics — book forms; OT video/game trig routes through these.
+# GROOVEBOX_R23R_GAME_BOOK_TRIG_20261101: the book series behind isn/ics/isx/isy were
+# referenced but never defined (NameError in game graph scripts and Operator Theory
+# mode). Same scalar series as groovebox.series_cyclic_isn / series_book_isx / isy.
+_BOOK_PI = math.pi
+
+def _book_cyclic_isn(x):
+    a = ((float(x) + _BOOK_PI) % (2.0 * _BOOK_PI)) - _BOOK_PI
+    term = a * a / 2.0; out = term; a2 = a * a
+    for n in range(2, 33):
+        term *= -(a2) / ((2.0 * n - 1.0) * (2.0 * n))
+        out += term
+    return out
+
+def _book_isx(x):
+    return 1.0 - _book_cyclic_isn(float(x))
+
+def _book_isy(x):
+    return 1.0 - _book_cyclic_isn(float(x) - _BOOK_PI / 2.0)
+
+def _book_tan(x):
+    c = _book_isx(x); s_ = _book_isy(x)
+    return s_ / c if c != 0.0 else math.copysign(float("inf"), s_)
+
+def _book_isn_inv(y):
+    return 2.0 * math.asin(max(-1.0, min(1.0, 0.5 * float(y))))
+
+def _book_ics_inv(y):
+    return 2.0 * math.acos(max(-1.0, min(1.0, 0.5 * float(y))))
+
 def book_isn(x):
     return _book_cyclic_isn(float(x))
 
@@ -1137,7 +1177,10 @@ def classify_from_composition(
         fp_src += "|ss=" + hashlib.sha256(str(seed_script).encode("utf-8", "replace")).hexdigest()[:16]
     fingerprint = hashlib.sha256(fp_src.encode("utf-8")).hexdigest()[:16]
 
-    g = GENRES[_mix(s, "genre") % len(GENRES)]
+    # Always open world. Other genres stay in the lattice for hooks, but the
+    # played mode is never a locked sigil/puzzle/arena objective.
+    g = "open_world"
+    top = "open_world"
     # CAMERA_CONTRACT_2026: WASD+mouse is the fixed control scheme for every
     # game (Game.perspective_move / mouse-aim, unconditional), but the *view*
     # only reads as "walking a 3D world" for first_person/third_person — the
@@ -1155,25 +1198,8 @@ def classify_from_composition(
         # first/third-person still reach a bit higher than 50% in total while
         # second_person/top_down/isometric stay fully reachable.
         cam = CAMERAS[_mix(s, "camera") % len(CAMERAS)]
-    # TOPOLOGY_CONTRACT_2026: open world is the primary agenda — give it the
-    # clear majority of seeds while hub_spoke / linear / arena / roguelike stay
-    # reachable so the whole lattice is still covered. These are the "ideal
-    # ratios" the constructor draws topology from — tune here, nowhere else,
-    # so gamemode selectivity stays centralized instead of re-derived per call
-    # site. OPEN_WORLD_SHARE also is what gates Game.free_play (see Game.__init__),
-    # so raising it means more seeds get genuine free-roam, no forced objective.
-    OPEN_WORLD_SHARE = 0.55   # fraction of seeds landing directly on open_world
-    HUB_SPOKE_SHARE = 0.20    # next slice landing on hub_spoke
-    # remaining (1 - OPEN_WORLD_SHARE - HUB_SPOKE_SHARE) fraction draws evenly
-    # from the full TOPOLOGIES lattice (which can itself re-roll open_world/
-    # hub_spoke, so their true totals run a bit higher than the shares above).
-    _topo_r = meum_game_residue(s, "topology_bias")
-    if _topo_r < OPEN_WORLD_SHARE:
-        top = "open_world"
-    elif _topo_r < OPEN_WORLD_SHARE + HUB_SPOKE_SHARE:
-        top = "hub_spoke"
-    else:
-        top = TOPOLOGIES[_mix(s, "topology") % len(TOPOLOGIES)]
+    # Topology is open world. The old share draw is kept only as a comment so
+    # a future change has the ratios; it no longer selects a locked mode.
     soc = SOCIAL[_mix(s, "social") % len(SOCIAL)]
     mood = MOODS[_mix(s, "mood") % len(MOODS)]
     online = soc == "online_multiplayer"
@@ -1200,8 +1226,9 @@ def classify_from_composition(
         f"hook_cam_{cam}",
         f"hook_top_{top}",
     ]
+    hooks.extend(f"interact_{name}" for name in INTERACTION_MECHANISMS)
     _gh = GENRE_HOOKS.get(g)
-    if _gh:
+    if _gh and "sigil" not in _gh:
         hooks.append(_gh)
     if goava_active:
         hooks.append("hook_goava_sine_portal")
@@ -1237,7 +1264,9 @@ def classify_from_composition(
     # so even the same seed yields a different objective/difficulty/level pack
     # whenever the composition changes — highest divergence, still deterministic.
     world_fp = hashlib.sha256(fp_src.encode("utf-8")).hexdigest()[:16]
-    objective = OBJECTIVES[_res_idx(s, f"objective|{world_fp}", len(OBJECTIVES))]
+    # No sigil mode. nexus is the old "clear the ring" objective; it is not drawn.
+    _objectives = tuple(o for o in OBJECTIVES if o != "nexus")
+    objective = _objectives[_res_idx(s, f"objective|{world_fp}", len(_objectives))]
     difficulty = DIFFICULTIES[_res_idx(s, f"difficulty|{world_fp}", len(DIFFICULTIES))]
     level_type = LEVEL_TYPES[_res_idx(s, f"level|{world_fp}", len(LEVEL_TYPES))]
     sigil_count = 5 + _res_idx(s, f"sigils|{world_fp}", 8)  # 5..12
@@ -1414,21 +1443,48 @@ class ScenographLite:
 
 
 class MusicBed:
-    """Host-visible compact mirror; exported games contain the full music bed."""
-    def __init__(self, seed, bpm=120, bars=32, **_kwargs):
+    """Host-visible compact mirror with deterministic GOAVA mutual coupling."""
+    def __init__(self, seed, bpm=120, bars=32, **kwargs):
         self.seed = _safe_int_seed(seed)
         self.bpm = float(bpm)
         self.bars = int(bars)
         self.phase = 0.0
         self.sequence_control = SequenceInfluence(self.seed)
         self.sequence_vibration = 0.0
+        self.dj_goava = bool(kwargs.get("dj_goava", False))
+        try:
+            activation = float(kwargs.get("goava_activation", 1.0 if self.dj_goava else 0.0))
+        except Exception:
+            activation = 1.0 if self.dj_goava else 0.0
+        self.goava_activation = max(0.0, min(1.0, activation)) if self.dj_goava else 0.0
+        self.last_cross_media = {"goava_activation": self.goava_activation,
+                                 "mutual_coupling": 0.0, "composition_coupling": 0.0,
+                                 "energy": 0.0, "phase": 0.0}
 
     def step(self, dt):
         dt = max(0.0, float(dt))
         self.phase = (self.phase + dt * (self.bpm / 60.0) * math.tau) % math.tau
         seq = self.sequence_control.update(self.phase / math.tau * max(1, self.bars))
-        self.sequence_vibration = seq["vibration"]
-        return max(-1.0, min(1.0, math.sin(self.phase * MEUM) * (0.45 + self.sequence_vibration)))
+        self.sequence_vibration = float(seq["vibration"])
+        phase = self.phase * MEUM
+        # A deterministic three-voice GOAVA lattice; each sine modulates both
+        # others, and the sequence vibration cross-modulates the complete set.
+        phases = [phase, phase * (1.0 + 0.5 * MEUM_INV), phase * (1.0 + 0.5 * MEUM)]
+        activation = self.goava_activation
+        coupling = 0.18 * activation
+        drive = max(-1.0, min(1.0, self.sequence_vibration))
+        vals = []
+        for i, p0 in enumerate(phases):
+            mutual = sum(math.sin(p1 - p0) for j, p1 in enumerate(phases) if j != i) / 2.0
+            vals.append(math.sin(p0 + coupling * (mutual + 0.35 * drive * math.sin(p0))))
+        sample = sum(vals) / 3.0
+        self.last_cross_media = {"goava_activation": activation,
+                                 "mutual_coupling": coupling,
+                                 "composition_coupling": coupling * 0.35 * drive,
+                                 "energy": abs(sample), "phase": self.phase / math.tau,
+                                 "partial_count": 3}
+        sample *= 0.45 + self.sequence_vibration
+        return max(-1.0, min(1.0, sample))
 
 
 class ProceduralWorldRenderer:
@@ -1526,6 +1582,35 @@ def set_operator_theory(enabled):
 
 def operator_theory_enabled():
     return OP_THEORY_ENABLED
+
+# GROOVEBOX_R23R_GAME_BOOK_TRIG_20261101: the book series behind isn/ics/isx/isy were
+# referenced but never defined (NameError in game graph scripts and Operator Theory
+# mode). Same scalar series as groovebox.series_cyclic_isn / series_book_isx / isy.
+_BOOK_PI = math.pi
+
+def _book_cyclic_isn(x):
+    a = ((float(x) + _BOOK_PI) % (2.0 * _BOOK_PI)) - _BOOK_PI
+    term = a * a / 2.0; out = term; a2 = a * a
+    for n in range(2, 33):
+        term *= -(a2) / ((2.0 * n - 1.0) * (2.0 * n))
+        out += term
+    return out
+
+def _book_isx(x):
+    return 1.0 - _book_cyclic_isn(float(x))
+
+def _book_isy(x):
+    return 1.0 - _book_cyclic_isn(float(x) - _BOOK_PI / 2.0)
+
+def _book_tan(x):
+    c = _book_isx(x); s_ = _book_isy(x)
+    return s_ / c if c != 0.0 else math.copysign(float("inf"), s_)
+
+def _book_isn_inv(y):
+    return 2.0 * math.asin(max(-1.0, min(1.0, 0.5 * float(y))))
+
+def _book_ics_inv(y):
+    return 2.0 * math.acos(max(-1.0, min(1.0, 0.5 * float(y))))
 
 def book_isn(x):
     return _book_cyclic_isn(float(x))
@@ -1629,7 +1714,8 @@ def seed_script_channels(seed_script, t=0.0):
         if last.lower().startswith("return "): body[-1] = f"_result = ({last[7:].strip()})"
         elif not _re.match(r"^(if|elif|else|for|while|def|class|with|try|except|finally)\b", last) and not _re.match(r"^[A-Za-z_]\w*\s*(?:\+=|-=|\*=|/=|%=|=)(?!=)", last): body[-1] = f"_result = ({last})"
         local = dict(env); local["_result"] = None
-        exec(compile(_ast.parse("\n".join(body), mode="exec"), "<game-seed>", "exec"), {"__builtins__": {}}, local)
+        import ot_script_math as _otm   # GROOVEBOX_R23R_OT_SCRIPT_DIVISION_20261103
+        exec(_otm.compile_script("\n".join(body), "<game-seed>", "exec", local), _otm.install({"__builtins__": {}}), local)
         result = local.get("_result"); vals = list(result) if isinstance(result, (list, tuple)) else ([result] if isinstance(result, (int, float)) else [])
         vals = [float(v) for v in vals if isinstance(v,(int,float)) and math.isfinite(float(v))]
         x,y,z = local.get("x"),local.get("y"),local.get("z")
@@ -1691,7 +1777,8 @@ def graph_script_channels(script, t=0.0, slot=0, name="", function_names=("evalu
     local = {"__builtins__": {}}
     local.update(env)
     try:
-        exec(compile(_ast.parse(raw, mode="exec"), "<groovebox-game-graph-script>", "exec"), local, local)
+        import ot_script_math as _otm
+        exec(_otm.compile_script(raw, "<groovebox-game-graph-script>", "exec", local), local, local)
     except Exception:
         return {}
     result = None
@@ -1849,7 +1936,7 @@ def eski_fractal_iterate_z(set_name,x,y,z0,c,max_iter=None):
 def instrument_geometry_mode(slot,phase,xyz,flags=None,fractal_set=None):
     flags=dict(flags or {}); x,y,z=xyz if xyz and len(xyz)>=3 else (0.0,0.0,0.0); ph=float(phase)%math.tau
     near=min(min(abs(ph),abs(ph-math.tau)),abs(ph-math.pi))/math.pi; snap=1.0-near; geo=(abs(float(x))+abs(float(y))+abs(float(z)))/3.0
-    w={"lattice":0.45+0.25*(1.0-geo),"book_set":0.20+0.20*geo,"phase_lock":0.08*(1.5 if flags.get("phase_lock") else 0.4),"scatter":0.08*(1.5 if flags.get("randomizer") else 0.4),"goava":0.08*(1.6 if flags.get("goava") else 0.3)}
+    w={"lattice":0.45+0.25*(1.0-geo),"book_set":0.20+0.20*geo,"phase_lock":0.08*(1.5 if flags.get("phase_lock") else 0.4),"scatter":0.08*(1.5 if flags.get("randomizer") else 0.4),"goava":0.08*1.6*(1.0 if flags.get("goava") else float(flags.get("goava_bleed",GOAVA_OFF_BLEED)))}
     if snap>0.65: w["lattice" if int(slot)%2==0 else "book_set"]+=0.20*snap
     else: w["lattice"]=w["lattice"]*(1.0-0.3*near)+w["book_set"]*0.15*near
     ss=sum(w.values()) or 1.0
@@ -1919,6 +2006,162 @@ class TemporalSeedDynamics:
         r=_residue(self.seed,f"temporal:{label}:{int(tt)}"); wave=vg_sin(math.tau*(tt*MEUM_INV/32.0+r))
         self.intensity=max(0.0,min(1.0,gain)); return self.intensity*wave
 
+class FeatureGrammar:
+    """An L-system of L-systems of generated features (GROOVEBOX_R23R_FEATURE_LSYSTEMS_20261101).
+
+    Only two kinds of form are predefined: GOAVA polygons and Fractal Seed trees.
+    Everything else is generated from the seed: an alphabet of feature symbols,
+    each with its own rewriting rule that refers to other symbols (so any feature
+    is composed of, or alludes to, other features at any depth); a world-level
+    derivation that a turtle walks to place features in the open world; and each
+    placed feature's own derivation, drawn recursively. Features are interactive:
+    E detaches a branch (you carry it), X attaches what you carry, Z transmutes
+    (one more rewriting step of the feature's own grammar).
+    """
+    MAX_LEN = 240
+
+    def __init__(self, seed):
+        s = _safe_int_seed(seed)
+        self.seed = s
+        n = 4 + int(4 * _residue(s, "fg:n"))
+        self.symbols = [chr(65 + i) for i in range(n)]
+        self.kinds, self.rules = {}, {}
+        for i, c in enumerate(self.symbols):
+            if _residue(s, f"fg:k:{c}") < 0.5:
+                self.kinds[c] = ("goava", 3 + int(6 * _residue(s, f"fg:sides:{c}")))
+            else:
+                self.kinds[c] = ("tree", 2 + int(3 * _residue(s, f"fg:br:{c}")))
+            parts = ["F"]
+            for j in range(2 + int(4 * _residue(s, f"fg:len:{c}"))):
+                v = _residue(s, f"fg:r:{c}:{j}")
+                other = self.symbols[int(_residue(s, f"fg:o:{c}:{j}") * n) % n]
+                if v < 0.22: parts.append("F")
+                elif v < 0.38: parts.append("+")
+                elif v < 0.54: parts.append("-")
+                elif v < 0.74: parts.append(f"[+{other}]")
+                elif v < 0.92: parts.append(f"[-{other}]")
+                else: parts.append(other)
+            self.rules[c] = "".join(parts)
+        world = self.expand(self.symbols[0], 3)
+        self.features = self._place(world)
+        self.held = []
+
+    def expand(self, axiom, iterations):
+        out = str(axiom)
+        for _ in range(max(0, int(iterations))):
+            nxt = "".join(self.rules.get(ch, ch) for ch in out)
+            if len(nxt) > self.MAX_LEN:
+                break
+            out = nxt
+        return out
+
+    def _place(self, world):
+        feats, stack = [], []
+        a = math.tau * _residue(self.seed, "fg:a0"); r = 0.55; hd = 0.0
+        for ch in world:
+            if ch == "F":
+                a = (a + 0.16 * math.cos(hd)) % math.tau
+                r = min(0.95, max(0.18, r + 0.05 * math.sin(hd)))
+            elif ch == "+": hd += 0.62
+            elif ch == "-": hd -= 0.62
+            elif ch == "[": stack.append((a, r, hd))
+            elif ch == "]":
+                if stack: a, r, hd = stack.pop()
+            elif ch in self.rules and len(feats) < 28:
+                k = len(feats)
+                depth = 1 + int(2 * _residue(self.seed, f"fg:d:{k}"))
+                feats.append({"id": k, "sym": ch, "a": a, "r": r, "string": self.expand(ch, depth),
+                              "hue": (self.symbols.index(ch) / max(1, len(self.symbols)) + 0.07 * k) % 1.0})
+        return feats
+
+    def grammar_of(self, f):
+        return (getattr(self, "_sources", None) or [self])[int(f.get("src", 0))]
+
+    @classmethod
+    def blended(cls, own_seed, other_seed, share_own):
+        """World blend (GROOVEBOX_R23R_WORLD_BLEND_20261101): share_own of the features
+        come from this world, the rest from the other player's world (computed locally
+        from their seed). Each feature keeps its own grammar."""
+        a = cls(own_seed); b = cls(other_seed)
+        share = max(0.0, min(1.0, float(share_own)))
+        na = int(round(len(a.features) * share)); nb = int(round(len(b.features) * (1.0 - share)))
+        feats = [dict(f, src=0) for f in a.features[:na]] + [dict(f, src=1, id=100 + f["id"]) for f in b.features[:nb]]
+        a.features = feats
+        a._sources = [a, b]
+        a.share_own = share
+        return a
+
+    def nearest(self, angle, reach=0.35):
+        best, bd = None, reach
+        for f in self.features:
+            d = abs((f["a"] - angle + math.pi) % math.tau - math.pi)
+            if d < bd:
+                best, bd = f, d
+        return best
+
+    def detach(self, angle):
+        f = self.nearest(angle)
+        if f is None:
+            return None
+        gsrc = self.grammar_of(f)
+        s = f["string"]
+        i = s.rfind("[")
+        if i >= 0:
+            depth, j = 0, i
+            while j < len(s):
+                depth += 1 if s[j] == "[" else (-1 if s[j] == "]" else 0)
+                if depth == 0:
+                    break
+                j += 1
+            part = s[i:j + 1]; f["string"] = s[:i] + s[j + 1:]
+        else:
+            k = max((s.rfind(c) for c in gsrc.rules), default=-1)
+            if k < 0:
+                return None
+            part = s[k]; f["string"] = s[:k] + s[k + 1:]
+        self.held.append(part)
+        return f, part
+
+    def attach(self, angle):
+        f = self.nearest(angle)
+        if f is None or not self.held:
+            return None
+        part = self.held.pop()
+        f["string"] = (f["string"] + (part if part.startswith("[") else f"[+{part}]"))[: self.MAX_LEN]
+        return f, part
+
+    def transmute(self, angle):
+        f = self.nearest(angle)
+        if f is None:
+            return None
+        gs = self.grammar_of(f)
+        nxt = "".join(gs.rules.get(ch, ch) for ch in f["string"])
+        if len(nxt) <= self.MAX_LEN:
+            f["string"] = nxt
+        else:   # too large to grow: become the feature its own rule alludes to first
+            refs = [ch for ch in gs.rules[f["sym"]] if ch in gs.rules]
+            f["sym"] = refs[0] if refs else f["sym"]
+            f["string"] = gs.expand(f["sym"], 1)
+        return f
+
+    def glyph_lines(self, string, size):
+        """Line segments + polygon centres of a derivation (turtle), relative to (0,0)."""
+        segs, polys, stack = [], [], []
+        x = y = 0.0; hd = -math.pi / 2; step = size / max(4.0, string.count("F") ** 0.5 * 2.2)
+        for ch in string:
+            if ch == "F":
+                nx, ny = x + step * math.cos(hd), y + step * math.sin(hd)
+                segs.append((x, y, nx, ny)); x, y = nx, ny
+            elif ch == "+": hd += 0.45
+            elif ch == "-": hd -= 0.45
+            elif ch == "[": stack.append((x, y, hd, step)); step *= 0.72
+            elif ch == "]":
+                if stack: x, y, hd, step = stack.pop()
+            elif ch in self.kinds:
+                polys.append((x, y, self.kinds[ch], step * 0.9))
+        return segs, polys
+
+
 class PlanetaryWorld:
     """Small deterministic orbital kernel used by the self-contained game."""
     G=0.00042
@@ -1934,6 +2177,9 @@ class PlanetaryWorld:
         tangent=_vnorm(_vcross((0.0,1.0,0.0),radial)); tangent=tangent if _vlen(tangent) != 0.0 else (1.0,0.0,0.0)
         self.vel=_vmul(tangent,math.sqrt(self.G*self.planets[0]["mass"]/max(1.0,self.planets[0]["radius"]+7.0))*0.86)
         self.accel=(0.0,0.0,0.0); self.gravity=(0.0,0.0,0.0); self.current_planet=0; self.landed=True
+        # Character physics (set from the character number): gravity response,
+        # thrust gain and linear drag. Defaults reproduce the original kernel.
+        self.gravity_scale=1.0; self.thrust_gain=8.0; self.drag=0.0
         self.gravity,self.current_planet=self.acceleration_at(self.pos)
     def _planet_pos(self,p,t):
         ang=p["angle"]+t*math.sqrt(self.G*7000.0/max(1.0,p["orbit"]**3))
@@ -1952,7 +2198,9 @@ class PlanetaryWorld:
         return g,strongest
     def step(self,dt,thrust_vector=(0.0,0.0,0.0)):
         dt=max(0.001,min(0.1,float(dt))); self.t+=dt; self.gravity,self.current_planet=self.acceleration_at(self.pos)
-        self.accel=_vadd(self.gravity,_vmul(thrust_vector,8.0)); self.vel=_vadd(self.vel,_vmul(self.accel,dt)); self.pos=_vadd(self.pos,_vmul(self.vel,dt))
+        self.accel=_vadd(_vmul(self.gravity,getattr(self,"gravity_scale",1.0)),_vmul(thrust_vector,getattr(self,"thrust_gain",8.0))); self.vel=_vadd(self.vel,_vmul(self.accel,dt))
+        if getattr(self,"drag",0.0)>0.0: self.vel=_vmul(self.vel,max(0.0,1.0-self.drag*dt))
+        self.pos=_vadd(self.pos,_vmul(self.vel,dt))
         if self.current_planet is not None:
             pp=self._planet_pos(self.planets[self.current_planet],self.t); d=_vlen(_vsub(self.pos,pp)); r=self.planets[self.current_planet]["radius"]
             self.landed=d<=r+2.0
@@ -2375,7 +2623,7 @@ class MusicBed:
     Output is intentionally loud (soft-clipped) so the game bed is audible
     without external gain.
     """
-    def __init__(self, seed, bpm=BPM, bars=SEQ, algo_fp="0", dj_goava=False, dj_random=False, mix=0.35, master_volume=1.0):
+    def __init__(self, seed, bpm=BPM, bars=SEQ, algo_fp="0", dj_goava=False, dj_random=False, mix=0.35, master_volume=1.0, goava_activation=None):
         self.seed = int(seed) & 0x7FFFFFFF
         self.bpm = bpm
         self.bars = bars
@@ -2383,6 +2631,19 @@ class MusicBed:
         self.dj = 0.0
         self.dj_goava = bool(dj_goava)
         self.dj_random = bool(dj_random)
+        # GOAVA is a continuous coupling field, not merely an on/off accent.
+        # The canonical host may provide partial activation; older packages fall
+        # back to the legacy boolean without changing their saved identity.
+        try:
+            _ga = float(goava_activation if goava_activation is not None else COMPOSITION_META.get("goava_activation", 1.0 if self.dj_goava else 0.0))
+        except Exception:
+            _ga = 1.0 if self.dj_goava else 0.0
+        self.goava_activation = max(0.0, min(1.0, _ga))
+        if not self.dj_goava:
+            self.goava_activation = 0.0
+        self.last_cross_media = {"goava_activation": self.goava_activation,
+                                 "mutual_coupling": 0.0, "composition_coupling": 0.0,
+                                 "energy": 0.0, "phase": 0.0}
         self.mix = float(mix)
         self.master_volume = float(master_volume)
         self._dj_residue = _residue(self.seed, "dj_phase")
@@ -2421,11 +2682,36 @@ class MusicBed:
         except Exception:
             _seed_drive = 0.0
         g = self.mix * vg_sin(self.phase * (1.0 + self._algo_spin) * MEUM)
-        # Harmonic lattice: phase0-offset fundamental + entropy-scaled partials
+        # Harmonic lattice: phase0-offset fundamental + entropy-scaled partials.
+        # GOAVA all-to-all cross-modulation: every partial's instantaneous phase
+        # perturbs every other partial (symmetric pairwise sine coupling). The
+        # bounded mean keeps the interaction independent of partial count and
+        # avoids gain growth; activation scales smoothly from zero to full.
         ph = self.phase + self._phase0
+        osc_phases = [ph * ratio for ratio in self._ratios]
+        activation = self.goava_activation
+        coupling = 0.18 * activation
+        composition_drive = max(-1.0, min(1.0,
+            0.60 * (2.0 * self.dj - 1.0) + 0.40 * self.sequence_vibration))
+        offsets = [0.0] * len(osc_phases)
+        if coupling > 0.0 and len(osc_phases) > 1:
+            denom = float(len(osc_phases) - 1)
+            for i, phase_i in enumerate(osc_phases):
+                mutual = sum(vg_sin(phase_j - phase_i) for j, phase_j in enumerate(osc_phases) if j != i) / denom
+                # Composition signal cross-modulates the GOAVA field; GOAVA's
+                # own pairwise field then cross-modulates each sine in return.
+                offsets[i] = coupling * (mutual + 0.35 * composition_drive * vg_sin(phase_i - self._phase0))
         sample = 0.0
-        for k in range(self._n_partials):
-            sample += self._amps[k] * vg_sin(ph * self._ratios[k])
+        for k, phase_k in enumerate(osc_phases):
+            sample += self._amps[k] * vg_sin(phase_k + offsets[k])
+        self.last_cross_media = {
+            "goava_activation": activation,
+            "mutual_coupling": coupling,
+            "composition_coupling": coupling * 0.35 * composition_drive,
+            "energy": abs(sample),
+            "phase": self.phase / math.tau,
+            "partial_count": len(osc_phases),
+        }
         sample *= (0.65 + 0.55 * self.dj + 0.20 * self.sequence_vibration)
         sample += 0.22 * g
         sample *= (1.0 + 0.16 * _seed_drive)
@@ -3350,15 +3636,16 @@ class Game:
         try:
             fp = str(self.id.get("composition_fingerprint") or "0")
             sa = str(self.id.get("world_fingerprint") or "0")
-            self.scene._playlist_hash = (hash(fp) ^ hash(sa)) & 0x7FFFFFFF
+            self.scene._playlist_hash = int.from_bytes(hashlib.sha256((fp + "\0" + sa).encode("utf-8", "replace")).digest()[:4], "big") & 0x7FFFFFFF
         except Exception:
             self.scene._playlist_hash = 0
         self.music = MusicBed(
             self.id["seed"],
             algo_fp=self.id.get("composition_fingerprint", "0"),
-            dj_goava="hook_live_dj_goava" in (self.id.get("gameplay_hooks") or []),
+            dj_goava=bool(_goava or ("hook_live_dj_goava" in (self.id.get("gameplay_hooks") or []))),
             dj_random="hook_live_dj_parametric" in (self.id.get("gameplay_hooks") or []),
             mix=0.40,
+            goava_activation=(self.meta or {}).get("goava_activation"),
         )
         self.objective = self.id.get("objective", "survey")
         self.difficulty = self.id.get("difficulty", "standard")
@@ -3375,9 +3662,14 @@ class Game:
         # used to still gate progress behind clearing sigils/resources like
         # every other topology, which is why every generated game converged on
         # the same "collect the sigils" feel regardless of genre.
-        self.free_play = _topo in ("open_world", "sandbox") or (
-            "hook_world_free_roam" in (self.id.get("gameplay_hooks") or [])
-        )
+        # GROOVEBOX_R23R_OPEN_WORLD_ALWAYS_20261101: every generated game is open world.
+        self.free_play = True
+        self.features = FeatureGrammar(self.id["seed"])
+        self.avatar = None            # set from the character number (start questionnaire)
+        self.chat_compose = None      # in-frame chat line (Enter)
+        self.world_pref = 0.5         # own-world share wanted: 1 my world, 0 their world, 0.5 blend
+        self.world_peer = None        # {"name","seed","pref"} of the other player
+        self.questionnaire = None
         self.difficulty_mult = {
             "tutorial": 0.5, "standard": 1.0, "master": 1.7, "meum_insane": 2.4,
         }.get(self.difficulty, 1.0)
@@ -3397,10 +3689,7 @@ class Game:
         # ------------------------------------------------------------------
         _obj0 = str(self.objective or "survey").lower()
         _hooks = list(self.id.get("gameplay_hooks") or [])
-        _want_sigils = (
-            (not self.free_play and _obj0 == "nexus")
-            or any("sigil" in str(h).lower() for h in _hooks)
-        )
+        _want_sigils = False   # open world: no sigil loop (historically over-produced)
         _sigil_n = int(self.id.get("sigil_count", 8) or 8) if _want_sigils else 0
         self.sigils = SigilRing(self.id["seed"], count=max(0, _sigil_n))
         self.primary_focus = (
@@ -3965,6 +4254,117 @@ class Game:
             lines.append(f"  {e['label']}: {e['value']}")
         return "\n".join(lines)
 
+    # ---- GROOVEBOX_R23R_CHARACTER_NUMBER_20261101 ---------------------------
+    def set_character(self, number, position=None):
+        """Character number -> look + physics; position number -> a smartly chosen start.
+
+        Character physics (all from the number, equidistributed by irrational
+        rotations): thrust gain, gravity response, drag, carry reach and speed.
+        The start is chosen from the position number (default: the character
+        number): candidate spots around its golden-angle position are scored
+        (far from hazards, near features) and the best one becomes the landing point.
+        """
+        def _num(v, fallback):
+            try:
+                v = float(v)
+                return v if math.isfinite(v) else fallback
+            except Exception:
+                return fallback
+        n = _num(number, float(_safe_int_seed(self.id["seed"]) % 1000))
+        pnum = _num(position, n)
+        fr = lambda x: x - math.floor(x)
+        syms = self.features.symbols
+        self.avatar = {
+            "number": n,
+            "hue": fr(n * PHI_INV),
+            "symbol": syms[int(fr(n * math.sqrt(2.0)) * len(syms)) % len(syms)],
+            "speed": 0.8 + 0.4 * fr(n * MEUM_INV),
+            "reach": 0.25 + 0.2 * fr(n * math.sqrt(3.0)),
+            "thrust_gain": 5.0 + 6.0 * fr(n * math.sqrt(5.0)),
+            "gravity_scale": 0.6 + 0.8 * fr(n * math.sqrt(7.0)),
+            "drag": 0.35 * fr(n * (math.pi - 3.0) * 7.0),
+            "position_number": pnum,
+        }
+        try:
+            self.planetary.thrust_gain = self.avatar["thrust_gain"]
+            self.planetary.gravity_scale = self.avatar["gravity_scale"]
+            self.planetary.drag = self.avatar["drag"]
+        except Exception:
+            pass
+        a0 = math.tau * fr(pnum * PHI_INV + 0.5 * fr(pnum * MEUM_INV))
+        best, best_score = a0, -1e9
+        for k in range(-6, 7):
+            a = (a0 + k * math.tau / 48.0) % math.tau
+            score = -2.0 * self.hazards.damage_at(a, reach=0.35) if hasattr(self, "hazards") else 0.0
+            f = self.features.nearest(a, reach=math.pi)
+            if f is not None:
+                score -= 0.6 * abs((f["a"] - a + math.pi) % math.tau - math.pi)
+            score -= 0.02 * abs(k)
+            if score > best_score:
+                best, best_score = a, score
+        try:
+            pw = self.planetary
+            pl = pw.planets[pw.current_planet]
+            pp = pw._planet_pos(pl, pw.t)
+            rr = pl["radius"] + 1.5
+            pw.pos = _vadd(pp, (rr * math.cos(best), 0.0, rr * math.sin(best)))
+            pw.vel = (0.0, 0.0, 0.0); pw.landed = True
+        except Exception:
+            pass
+        self.angle = best
+        c = self.avatar
+        self.push_status(f"[CHARACTER] #{n:g} · glyph {c['symbol']} · thrust {c['thrust_gain']:.2f} · gravity ×{c['gravity_scale']:.2f} · drag {c['drag']:.2f} · start #{pnum:g} → {math.degrees(best):.1f}°")
+        return self.avatar
+
+    def control_lines(self):
+        """Readable key -> action table for the open-world controls."""
+        out = []
+        for name, spec in sorted((CONTROLS.get("binds") or {}).items()):
+            if isinstance(spec, dict) and spec.get("qt") and spec.get("action"):
+                out.append(f"{str(spec['qt']).replace('Key_', ''):>9}  {spec['action']}")
+        out += ["        E  detach feature branch", "        X  attach carried part", "        Z  transmute feature",
+                "    click  lock mouse (look)", "  Esc/RMB  release mouse", "       F2  main menu"]
+        return out
+
+    def remap_controls(self, text):
+        """Apply 'action=KEY, action=KEY' remaps typed in the start questionnaire."""
+        binds = CONTROLS.get("binds") or {}
+        done = []
+        for part in str(text).replace(";", ",").split(","):
+            if "=" not in part:
+                continue
+            act, key = (x.strip() for x in part.split("=", 1))
+            if not act or not key:
+                continue
+            qt = "Key_" + (key.upper() if len(key) == 1 else key[:1].upper() + key[1:])
+            for name, spec in binds.items():
+                if isinstance(spec, dict) and act.lower() in (str(spec.get("action", "")).lower(), str(name).lower()):
+                    spec["qt"] = qt; done.append(f"{spec.get('action')}→{qt[4:]}")
+        if hasattr(self, "_key_action_index"):
+            del self._key_action_index
+        self.push_status("[CONTROLS] " + (", ".join(done) if done else "no matching actions to remap"))
+        return done
+
+    def feature_action(self, kind):
+        """E detach / X attach / Z transmute the feature nearest to you."""
+        reach_angle = getattr(self, "angle", 0.0)
+        fg = self.features
+        if kind == "detach":
+            res = fg.detach(reach_angle)
+            msg = f"[FEATURE] detached {res[1][:24]} from {res[0]['sym']}{res[0]['id']} · carrying {len(fg.held)}" if res else "[FEATURE] nothing within reach"
+        elif kind == "attach":
+            res = fg.attach(reach_angle)
+            msg = f"[FEATURE] attached {res[1][:24]} to {res[0]['sym']}{res[0]['id']}" if res else "[FEATURE] carry a part and stand near a feature"
+        else:
+            res = fg.transmute(reach_angle)
+            msg = f"[FEATURE] {res['sym']}{res['id']} transmuted ({len(res['string'])} symbols)" if res else "[FEATURE] nothing within reach"
+        if res:
+            self.score += 0.5 * MEUM
+            try: self.sfx.trigger("chime", 0.5)
+            except Exception: pass
+        self.push_status(msg)
+        return res
+
     def toggle_menu(self):
         """ESC menu: pause overlay listing every active element with readout."""
         self.menu_open = not bool(getattr(self, "menu_open", False))
@@ -4399,6 +4799,20 @@ class Game:
                 goava_active=goava,
                 software_kind=sk,
             )
+            # Keep the live synthesis trace attached to the frame-side field.
+            # This is a time-varying feature payload, not an identity hash.
+            trace = dict(getattr(self.music, "last_cross_media", {}) or {})
+            self._xcorr_snap["cross_media"] = trace
+            field = self._xcorr_snap.get("field") or {}
+            field["goava_coupling"] = float(trace.get("mutual_coupling", 0.0) or 0.0)
+            field["composition_coupling"] = float(trace.get("composition_coupling", 0.0) or 0.0)
+            field["audio_energy"] = float(trace.get("energy", 0.0) or 0.0)
+            self._xcorr_snap["field"] = field
+            # GOAVA's coupled spectral field changes the visual hue continuously
+            # while leaving game identity/seed stable.
+            self._xcorr_snap["hue"] = (float(self._xcorr_snap.get("hue", 0.0)) +
+                18.0 * float(trace.get("mutual_coupling", 0.0) or 0.0) *
+                math.sin(float(trace.get("phase", 0.0) or 0.0) * math.tau)) % 360.0
             # Push visual bias into the scenograph so singular scenarios
             # are visible as geometry/color, not only as status text.
             if hasattr(self, "scene") and self.scene is not None:
@@ -4459,6 +4873,28 @@ class Game:
             engine_mask=dict(getattr(self, "engine_mask", {}) or {}),
             seed_script=str((self.meta or {}).get("seed_script", "") or ""),
         )
+        # GROOVEBOX_R23R_MULTIDIM_SCENE_20261103: the composition's multidimensional worlds in the game —
+        # drawn into the frame and exposed as entities (platforms / bouncer / wind / pillars / portals /
+        # pulse) for game logic. Exact at the game's time t (certified orbits, no simulation drift).
+        try:
+            _mdp = (self.meta or {}).get("multidim") or []
+            if _mdp:
+                import multidim_scene as _mds
+                import numpy as np
+                _t = float(getattr(self, "t", 0.0) or 0.0)
+                _clk = (self.meta or {}).get("multidim_clock") or [48000.0, None]
+                _sts = [_mds.state(m.get("params") or {}, m.get("seed", 0), m.get("slot", 0), _t,
+                                   sr=float(_clk[0] or 48000.0), row_dur=_clk[1]) for m in _mdp[:4]]
+                _op = float((self.meta or {}).get("multidim_opacity", 0.4) or 0.0)
+                if _op > 0.0 and frame is not None:
+                    _f = np.asarray(frame, dtype=np.float32)
+                    _scale = 255.0 if float(np.max(_f)) <= 1.0 + 1e-12 else 1.0
+                    _img = _f * _scale
+                    _mds.render_layer(_img, _sts[:2], _t, opacity=_op)
+                    frame = (_img / _scale).astype(_f.dtype)
+                self.multidim_entities = _mds.entities(_sts, _t)
+        except Exception as _mds_exc:
+            self._multidim_error = str(_mds_exc)
         self._last_frame = frame
         return frame
 
@@ -4964,6 +5400,9 @@ class Game:
                 self.remotes = rem if isinstance(rem, dict) else {}
             if self.net.sock is not None:
                 self.net.send({"type": "hello", "name": self.player_name, "seed": self.id["seed"]})
+                if not getattr(self, "_world_shared", False):
+                    self._world_shared = True
+                    self.share_world()
                 self.net.send({"type": "steer", "name": self.player_name, "t": round(self.t, 2), "angle": round(self.angle, 6), "steer": round(self.steer, 4)})
         # GAME_FILE_TASKS_2026: replay feeds recorded inputs back in — the world
         # is f(seed, t), so re-simulating the recorded steer reproduces the
@@ -5037,6 +5476,7 @@ class Game:
                         0.0, 0.0,
                     ]
                     self.push_status(f"{name} joined the orbit.")
+                    self.share_world()
             elif mtype == "steer" and self.net.host_mode:
                 name = str(obj.get("name") or "Player")
                 rec = self._remote_steers.get(name)
@@ -5049,6 +5489,70 @@ class Game:
                     pass
             elif mtype == "snap":
                 self.last_snap = obj
+            elif mtype == "world":
+                self._on_world_info(obj)
+
+    # ---- GROOVEBOX_R23R_WORLD_BLEND_20261101: my world / their world / blend / ratio ----
+    @staticmethod
+    def parse_world_pref(text):
+        t = str(text or "").strip().lower()
+        named = {"my": 1.0, "mine": 1.0, "my world": 1.0, "their": 0.0, "theirs": 0.0, "their world": 0.0,
+                 "blend": 0.5, "world blend": 0.5, "": 0.5}
+        if t in named:
+            return named[t]
+        try:
+            return max(0.0, min(1.0, float(t)))
+        except Exception:
+            return 0.5
+
+    @staticmethod
+    def combined_share(mine, theirs):
+        """Own-world share from both players' simultaneous choices (same rule on both sides)."""
+        mine = max(0.0, min(1.0, float(mine))); theirs = max(0.0, min(1.0, float(theirs)))
+        if mine >= 0.999 and theirs >= 0.999:
+            return 1.0                       # both "my world": minimal coupling, each keeps their own
+        if mine <= 0.001 and theirs <= 0.001:
+            return 0.5                       # both "their world": maximal coupling, full blend
+        return (mine + (1.0 - theirs)) / 2.0
+
+    def share_world(self):
+        if not getattr(self, "online", False):
+            return
+        msg = {"type": "world", "name": getattr(self, "player_name", "Player"),
+               "seed": self.id["seed"], "pref": float(self.world_pref)}
+        try:
+            if self.net.host_mode:
+                self.net.broadcast(msg)
+            else:
+                self.net.send(msg)
+        except Exception as exc:
+            print(f"[world] share failed: {exc}")
+
+    def set_world_pref(self, pref):
+        self.world_pref = max(0.0, min(1.0, float(pref)))
+        self.share_world(); self._apply_world_blend()
+
+    def _on_world_info(self, obj):
+        if obj.get("seed") is None or str(obj.get("seed")) == str(self.id["seed"]) and obj.get("name") == getattr(self, "player_name", None):
+            return
+        peer = {"name": str(obj.get("name") or "Player"), "seed": obj.get("seed"), "pref": float(obj.get("pref", 0.5))}
+        if peer != self.world_peer:
+            first = self.world_peer is None
+            self.world_peer = peer
+            if first:
+                self.share_world()          # answer so both sides know both choices
+            self._apply_world_blend()
+
+    def _apply_world_blend(self):
+        peer = self.world_peer
+        if not peer:
+            return
+        share = self.combined_share(self.world_pref, peer["pref"])
+        held = list(getattr(self.features, "held", []) or [])
+        self.features = FeatureGrammar.blended(self.id["seed"], peer["seed"], share)
+        self.features.held = held
+        mode = "my world" if share >= 0.999 else ("their world" if share <= 0.001 else f"world blend {share:.0%} mine")
+        self.push_status(f"[WORLD] with {peer['name']}: {mode} (you chose {self.world_pref:g}, they chose {peer['pref']:g})")
 
     def reset_world(self):
         # Preserve primary_focus: do not re-inject a full sigil ring into free-play.
@@ -5940,6 +6444,10 @@ def instant_video_frame(seed, t=0.0, w=320, h=180, *,
                 rgb[y2, x2, :] = _np.clip(rgb[y2, x2, :] + 0.08 * boost, 0.0, 1.0)
     except Exception:
         pass
+    # GROOVEBOX_R23R_GRAY_VIDEO_BG_20261103: gray background (dark pixels blend toward it).
+    rgb = _np.clip(rgb, 0.0, 1.0)
+    _bg = _np.asarray((62, 63, 66), dtype=_np.float32) / 255.0
+    rgb = rgb + _bg * (1.0 - rgb.max(axis=2, keepdims=True))
     return _np.clip(rgb, 0.0, 1.0).astype(_np.float32)
 
 
@@ -6404,7 +6912,10 @@ class LocalChess:
         return select_views(int(count), self.id["seed"])
 
     def visual_state(self):
-        return {**self.visual_view, "composition_fingerprint": self.id.get("composition_fingerprint"), "visual_signal_id": self.visual_signal_id, "spatial_fingerprint": self.spatial_state.get("fingerprint", ""), "spatial_version": self.spatial_state.get("version", "")}
+        _sp = getattr(self, "spatial_state", None) or {}
+        return {**dict(getattr(self, "visual_view", {}) or {}), "composition_fingerprint": self.id.get("composition_fingerprint"),
+                "visual_signal_id": getattr(self, "visual_signal_id", ""), "spatial_fingerprint": _sp.get("fingerprint", ""),
+                "spatial_version": _sp.get("version", "")}
 
     def spatial_snapshot(self, depth=3, roots=5):
         """Return a deterministic finite window of the infinite spatial universe."""
@@ -6461,6 +6972,13 @@ class LocalChess:
 def _mixu(seed, label):
     h = hashlib.blake2b(("%s#%s" % (seed, label)).encode("utf-8"), digest_size=8).digest()
     return int.from_bytes(h, "big") / 18446744073709551616.0
+
+
+# GROOVEBOX_R23R_GAME_METHOD_REPAIR_20261101: these Game methods were indented into
+# LocalChess by an old edit, so Game.tick crashed on visual_state(). Re-attach them.
+for _m in ("set_deterministic_view", "deterministic_viewset", "visual_state", "spatial_snapshot"):
+    if not hasattr(Game, _m) and hasattr(LocalChess, _m):
+        setattr(Game, _m, getattr(LocalChess, _m))
 
 
 class SlotReels:
@@ -6877,6 +7395,21 @@ if HAS_UI:
                     pass
 
         def _start(self):
+            # GROOVEBOX_R23R_MCC_MEDIA_CODEC_20261101: the real composition (MCC audio)
+            # is the game's music when the package carries it.
+            try:
+                comp = os.path.join(self.root, "media", "composition.mcc")
+                if os.path.isfile(comp) and len(self.audio_players) < self.max_audio:
+                    wav = os.path.join(self.root, "media", "composition.wav")
+                    if not os.path.isfile(wav):
+                        import sys as _sys
+                        if self.root not in _sys.path:
+                            _sys.path.insert(0, self.root)
+                        import mcc_media as _mm
+                        _mm.audio_to_wav(comp, wav)
+                    self._audio(wav, 1.0)
+            except Exception as _mcc_exc:
+                print(f"[game] composition audio unavailable: {_mcc_exc}")
             car = dict(self.meta.get("carrier") or {})
             cv = car.get("video_path")
             ca = car.get("audio_path")
@@ -6905,6 +7438,44 @@ if HAS_UI:
             self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             self._last_mouse = None
             self.setMouseTracking(True)
+            self._locked = False          # GROOVEBOX_R23R_MOUSE_LOCK_20261101
+
+        # ---- mouse lock: click to capture, Esc/F2/right-click/focus loss releases ----
+        def lock_mouse(self):
+            if self._locked:
+                return
+            self._locked = True
+            self.setCursor(Qt.CursorShape.BlankCursor)
+            try:
+                self.grabMouse()
+            except Exception:
+                pass
+            self._recentre()
+
+        def unlock_mouse(self):
+            if not self._locked:
+                return
+            self._locked = False
+            try:
+                self.releaseMouse()
+            except Exception:
+                pass
+            self.unsetCursor()
+            self._last_mouse = None
+
+        def _recentre(self):
+            from PyQt6.QtGui import QCursor
+            from PyQt6.QtCore import QPoint
+            c = QPoint(self.width() // 2, self.height() // 2)
+            try:
+                QCursor.setPos(self.mapToGlobal(c))      # no-op on Wayland: deltas still work
+            except Exception:
+                pass
+            self._last_mouse = QPointF(c)
+
+        def focusOutEvent(self, e):
+            self.unlock_mouse()
+            super().focusOutEvent(e)
 
         def _cell_at(self, pos):
             w, h = self.width(), self.height()
@@ -6921,6 +7492,12 @@ if HAS_UI:
 
         def mousePressEvent(self, e):
             g = self.game
+            if getattr(g, "questionnaire", None):
+                return
+            if e.button() == Qt.MouseButton.RightButton and self._locked:
+                self.unlock_mouse(); self.update(); return
+            if e.button() == Qt.MouseButton.LeftButton and not self._locked and not getattr(g, "hotseat", {}).get("active"):
+                self.lock_mouse(); self.update(); return
             if e.button() == Qt.MouseButton.LeftButton:
                 if getattr(g, "hotseat", {}).get("active") and hasattr(g, "chess"):
                     sq = self._cell_at(e.position())
@@ -6937,11 +7514,24 @@ if HAS_UI:
         def mouseMoveEvent(self, e):
             g = self.game
             now = e.position()
+            if not self._locked:
+                # Unlocked: hovering never turns the view (that caused drift and
+                # jumps on re-entry); a held left button drag-looks instead.
+                if (e.buttons() & Qt.MouseButton.LeftButton) and self._last_mouse is not None:
+                    g.aim_at(dyaw=float(now.x() - self._last_mouse.x()) * 0.003,
+                             dpitch=float(now.y() - self._last_mouse.y()) * 0.002)
+                self._last_mouse = now
+                super().mouseMoveEvent(e)
+                return
             if self._last_mouse is not None:
                 dx = float(now.x() - self._last_mouse.x())
                 dy = float(now.y() - self._last_mouse.y())
-                g.aim_at(dyaw=dx * 0.003, dpitch=dy * 0.002)
+                if abs(dx) < 250 and abs(dy) < 250:      # ignore warp echoes / re-entry jumps
+                    g.aim_at(dyaw=dx * 0.003, dpitch=dy * 0.002)
             self._last_mouse = now
+            # Re-centre when the cursor drifts toward an edge.
+            if abs(now.x() - self.width() / 2) > self.width() / 4 or abs(now.y() - self.height() / 2) > self.height() / 4:
+                self._recentre()
             self.update()
             super().mouseMoveEvent(e)
 
@@ -7050,433 +7640,661 @@ if HAS_UI:
             p.drawText(QRect(0, int(oy - 20), w, 18), Qt.AlignmentFlag.AlignCenter, status)
 
         def paintEvent(self, e):
+            # GAME_FPS_MENU_20261102: frame timing is measured every paint (two clock reads) but only shown in the ESC menu.
+            import time as _t
+            t0 = _t.perf_counter()
+            try:
+                self._paint_scene(e)
+            finally:
+                t1 = _t.perf_counter()
+                last = getattr(self, "_fps_last", None)
+                self._fps_last = t0
+                st = self.__dict__.setdefault("_fps_stats", {"ema_dt": 0.0, "ema_paint": 0.0, "worst": 0.0, "dts": []})
+                if last is not None and 0.0 < t0 - last < 1.0:
+                    dt = t0 - last
+                    st["ema_dt"] = dt if st["ema_dt"] == 0.0 else st["ema_dt"] * 0.9 + dt * 0.1
+                    st["dts"].append(dt)
+                    if len(st["dts"]) > 240:
+                        del st["dts"][:-240]
+                    st["worst"] = max(st["dts"])
+                pt = t1 - t0
+                st["ema_paint"] = pt if st["ema_paint"] == 0.0 else st["ema_paint"] * 0.9 + pt * 0.1
+
+        def fps_text(self):
+            st = getattr(self, "_fps_stats", None)
+            if not st or st["ema_dt"] <= 0.0:
+                return "FPS: measuring…"
+            return "FPS %.1f · frame %.1f ms (paint %.1f ms) · worst of last %d: %.1f ms" % (
+                1.0 / st["ema_dt"], st["ema_dt"] * 1000.0, st["ema_paint"] * 1000.0, len(st["dts"]), st["worst"] * 1000.0)
+
+        def _paint_scene(self, e):
             super().paintEvent(e)
             g = self.game
             if getattr(g, "hotseat", {}).get("active") and hasattr(g, "chess"):
+                if self.paintingActive():
+                    return
                 p = QPainter(self)
-                p.setRenderHint(QPainter.RenderHint.Antialiasing)
-                self._draw_chess(p, g)
+                try:
+                    if not p.isActive():
+                        return
+                    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+                    self._draw_chess(p, g)
+                    return
+                finally:
+                    if p.isActive():
+                        p.end()
+            if self.paintingActive():
                 return
             p = QPainter(self)
-            p.setRenderHint(QPainter.RenderHint.Antialiasing)
-            pal = g.id.get("ui_palette", {})
-            bg = pal.get("bg", "#0b1020")
-            ac = pal.get("accent", "#3fa7ff")
-            dg = pal.get("danger", "#ff5f5f")
-            tx = pal.get("text", "#e8f0ff")
-            w, h = self.width(), self.height()
-            cx, cy = w / 2.0, h / 2.0
-            # Perspective: zoom (W/S) scales the world radius; pitch (mouse aim)
-            # lifts/lowers the view horizon — the fixed movement+aim contract.
-            R = min(w, h) * 0.42 * max(0.35, float(getattr(g, "zoom", 1.0)))
-            cy = cy - float(getattr(g, "pitch", 0.0)) * R * 0.35
-            p.fillRect(self.rect(), QColor(bg))
-            # GAME_BOUND_MEDIA_2026: carrier video is a subdued full-frame
-            # background.  Instrument videos are drawn later as small tiles.
             try:
-                _mr = getattr(g, "bound_media", None)
-                _ci = getattr(_mr, "carrier_image", None) if _mr is not None else None
-                if _ci is not None and not _ci.isNull():
-                    self._draw_bound_media_fx(p, _ci, self.rect(), getattr(g, "t", 0.0), name="carrier", carrier=True, opacity=0.42)
-                    p.setOpacity(1.0)
-            except Exception:
-                p.setOpacity(1.0)
-            topo = str(g.id.get("topology") or "open_world")
-
-            try:
-                _mr = getattr(g, "bound_media", None)
-                _imgs = list((getattr(_mr, "instrument_images", {}) or {}).items()) if _mr is not None else []
-                _imgs = _imgs[:4]
-                if _imgs:
-                    frac = min(0.18, 0.36 / max(2, len(_imgs)))
-                    tw = max(96, int(w * frac)); th = max(54, int(tw * 9 / 16))
-                    gap = 8
-                    for _i, (_nm, _im) in enumerate(_imgs):
-                        if _im is None or _im.isNull(): continue
-                        x = gap if (_i % 2 == 0) else max(gap, w - tw - gap)
-                        y = gap + (_i // 2) * (th + gap)
-                        self._draw_bound_media_fx(
-                            p, _im, QRect(int(x), int(y), int(tw), int(th)),
-                            getattr(g, "t", 0.0), name=_nm, carrier=False, opacity=0.72
-                        )
+                if not p.isActive():
+                    return
+                p.setRenderHint(QPainter.RenderHint.Antialiasing)
+                pal = g.id.get("ui_palette", {})
+                bg = pal.get("bg", "#0b1020")
+                ac = pal.get("accent", "#3fa7ff")
+                dg = pal.get("danger", "#ff5f5f")
+                tx = pal.get("text", "#e8f0ff")
+                w, h = self.width(), self.height()
+                cx, cy = w / 2.0, h / 2.0
+                # Perspective: zoom (W/S) scales the world radius; pitch (mouse aim)
+                # lifts/lowers the view horizon — the fixed movement+aim contract.
+                R = min(w, h) * 0.42 * max(0.35, float(getattr(g, "zoom", 1.0)))
+                cy = cy - float(getattr(g, "pitch", 0.0)) * R * 0.35
+                p.fillRect(self.rect(), QColor(bg))
+                # GAME_BOUND_MEDIA_2026: carrier video is a subdued full-frame
+                # background.  Instrument videos are drawn later as small tiles.
+                try:
+                    _mr = getattr(g, "bound_media", None)
+                    _ci = getattr(_mr, "carrier_image", None) if _mr is not None else None
+                    if _ci is not None and not _ci.isNull():
+                        self._draw_bound_media_fx(p, _ci, self.rect(), getattr(g, "t", 0.0), name="carrier", carrier=True, opacity=0.42)
                         p.setOpacity(1.0)
-            except Exception:
-                p.setOpacity(1.0)
-
-            # Planetary 3-D view. The projection basis is rebuilt from gravity
-            # every frame: screen space is tangent to the local gravitational field.
-            def project_planet(v):
-                try:
-                    right, up, forward = g.planetary.local_frame()
-                    rel = _vsub(v, g.planetary.pos)
-                    x = _vdot(rel, right); y = _vdot(rel, up); z = _vdot(rel, forward)
-                    z += 180.0
-                    f = math.tan(math.radians(float(g.visual_view.get("fov_deg",48.0)))*0.5)
-                    inv = 1.0/max(25.0,z)
-                    return cx + x*inv*R*0.42, cy - y*inv*R*0.42, max(2.0, 900.0*inv)
                 except Exception:
-                    return cx,cy,3.0
+                    p.setOpacity(1.0)
+                topo = str(g.id.get("topology") or "open_world")
 
-            if hasattr(g, "planetary"):
-                # Deep-space field is deliberately sparse; complexity comes from
-                # deterministic body composition, not a giant prebuilt map.
-                for i, body, bp, bd in g.planetary.bodies_near(g.planetary.pos, 5200.0):
-                    x,y,sz=project_planet(bp)
-                    col=QColor(ac if i==g.planetary.current_planet else tx)
-                    col.setAlpha(230 if bd<2600 else 150)
-                    p.setPen(QPen(col,1)); p.setBrush(col)
-                    rad=max(3.0, min(42.0, body["radius"]*max(0.04,sz/18.0)))
-                    p.drawEllipse(QPointF(x,y),rad,rad)
-                    if i==g.planetary.current_planet:
-                        p.setPen(QPen(QColor(ac),1)); p.setBrush(Qt.BrushStyle.NoBrush)
-                        p.drawEllipse(QPointF(x,y),rad+7,rad+7)
-                    if bd<3200:
-                        p.setPen(QPen(QColor(tx),1)); p.drawText(int(x+rad+4),int(y),body["id"])
-                # Flight vector / gravity vector. These make orbital intuition
-                # visible even with helper-sprite-only content.
                 try:
-                    _,up,forward=g.planetary.local_frame()
-                    gx,gy,_=project_planet(_vadd(g.planetary.pos,_vmul(g.planetary.gravity,900.0)))
-                    vx,vy,_=project_planet(_vadd(g.planetary.pos,_vmul(forward,700.0)))
-                    gp=QColor(dg); gp.setAlpha(170); p.setPen(QPen(gp,2)); p.drawLine(QPointF(cx,cy),QPointF(gx,gy))
-                    vp=QColor(ac); vp.setAlpha(170); p.setPen(QPen(vp,2)); p.drawLine(QPointF(cx,cy),QPointF(vx,vy))
-                except Exception: pass
-                # Player craft is always centered; its attitude is defined by the
-                # gravity-relative frame rather than the old flat-world angle.
-                cp=QColor(ac); cp.setAlpha(255); p.setPen(QPen(cp,2)); p.setBrush(cp)
-                p.drawEllipse(QPointF(cx,cy),7,7)
-                p.drawLine(QPointF(cx-13,cy),QPointF(cx+13,cy))
-
-            _cam_mode = int(getattr(g, "camera_mode", 0) or 0)
-
-            def project(yaw, dist, pitch=0.0, depth=1.0):
-                # Canonical 3D camera projection. Object count never enters the
-                # camera transform; only the canonical view state does.
-                scale = 1.0 / max(0.35, 0.55 + 0.45 * depth)
-                _fov = float(g.visual_view.get("fov_deg", 48.0))
-                if _cam_mode == 2:
-                    # 2D top-down orthographic: planar controls transform.
-                    _f2 = math.tan(math.radians(_fov) * 0.5)
-                    _s2 = scale * 0.8 / max(_f2, 0.05)
-                    _x0 = dist * vg_cos(yaw) * _s2 * R * 0.72
-                    _y0 = -dist * vg_sin(yaw) * _s2 * R * 0.72 - pitch * R * 0.35
-                    _sz2 = max(2.0, (6.0 + 10.0 * (1.2 - min(depth, 1.8))) * scale)
-                    return cx + _x0, cy + _y0, _sz2
-                if _cam_mode == 1:
-                    # First person: pull the eye into the world and widen the lens.
-                    dist = max(0.0, dist - 0.35)
-                    _fov = min(90.0, _fov + 26.0)
-                ox = dist * vg_cos(yaw) * scale
-                oy = pitch * scale
-                oz = dist * vg_sin(yaw) * scale + 1.0
-                cyaw = math.radians(float(g.visual_view.get("yaw_deg",0.0))) + float(g.aim_in.get("yaw",0.0))
-                cpit = math.radians(float(g.visual_view.get("pitch_deg",0.0))) + float(g.aim_in.get("pitch",0.0))
-                croll = math.radians(float(g.visual_view.get("roll_deg",0.0)))
-                c, ss = vg_cos(cyaw), vg_sin(cyaw)
-                x1, z1 = ox*c - oz*ss, ox*ss + oz*c
-                c, ss = vg_cos(cpit), vg_sin(cpit)
-                y1, z2 = oy*c - z1*ss, oy*ss + z1*c
-                c, ss = vg_cos(croll), vg_sin(croll)
-                x2, y2 = x1*c - y1*ss, x1*ss + y1*c
-                f = math.tan(math.radians(_fov) * 0.5)
-                inv = 1.0 / max(0.12, z2)
-                x = cx + (x2 * inv / max(f,0.05)) * R * 0.72
-                y = cy - (y2 * inv / max(f,0.05)) * R * 0.72
-                sz = max(2.0, (6.0 + 10.0 * (1.2 - min(depth, 1.8))) * scale * min(1.8, inv))
-                return x, y, sz
-
-            # Depth-sorted layers for proper 2.5D occlusion
-            on_layers = [L for L in g.scene.layers if L.get("on")]
-            on_layers.sort(key=lambda L: -float(L.get("depth", 1.0)))
-            for L in on_layers:
-                shade = float(L.get("shade", 0.7))
-                life = float(L.get("life", 0.7))
-                depth = float(L.get("depth", 1.2))
-                hue = float(L.get("hue", 0.5))
-                # Instrument→asset color bridge when present
-                try:
-                    _lh, _ls, _lv = g.assets.color_for_layer(hue, shade)
-                    hsv = QColor(ac).toHsv()
-                    # Audio-style finite clamp at the Qt color boundary.
-                    if not math.isfinite(float(_lh)): _lh = 0.0
-                    if not math.isfinite(float(_ls)): _ls = 0.0
-                    if not math.isfinite(float(_lv)): _lv = 0.0
-                    hsv.setHsv(int(round(float(_lh) * 360.0)) % 360,
-                               int(max(0.0, min(1.0, float(_ls))) * 175.0 + 80.0),
-                               int(max(0.0, min(1.0, float(_lv))) * 155.0 + 100.0))
+                    _mr = getattr(g, "bound_media", None)
+                    _imgs = list((getattr(_mr, "instrument_images", {}) or {}).items()) if _mr is not None else []
+                    _imgs = _imgs[:4]
+                    if _imgs:
+                        frac = min(0.18, 0.36 / max(2, len(_imgs)))
+                        tw = max(96, int(w * frac)); th = max(54, int(tw * 9 / 16))
+                        gap = 8
+                        for _i, (_nm, _im) in enumerate(_imgs):
+                            if _im is None or _im.isNull(): continue
+                            x = gap if (_i % 2 == 0) else max(gap, w - tw - gap)
+                            y = gap + (_i // 2) * (th + gap)
+                            self._draw_bound_media_fx(
+                                p, _im, QRect(int(x), int(y), int(tw), int(th)),
+                                getattr(g, "t", 0.0), name=_nm, carrier=False, opacity=0.72
+                            )
+                            p.setOpacity(1.0)
                 except Exception:
-                    hsv = QColor(ac).toHsv()
-                    if not math.isfinite(float(hue)): hue = 0.0
-                    if not math.isfinite(float(shade)): shade = 0.0
-                    shade = max(0.0, min(1.0, float(shade)))
-                    hsv.setHsv(int(round(float(hue) * 360.0)) % 360,
-                               int(90.0 + 165.0 * shade),
-                               int(110.0 + 145.0 * shade))
-                col = hsv
-                # High opacity floor so the scene is always visible
-                col.setAlpha(max(140, min(255, int(110 + 145 * life * shade))))
-                x, y, sz = project(L.get("yaw", 0.0), L.get("dist", 1.0),
-                                   L.get("pitch", 0.0), depth)
-                kind = L.get("kind", "panel")
-                if kind == "filament":
-                    p.setPen(QPen(col, max(1, int(1 + 2.2 * depth))))
-                    p.drawLine(QPointF(cx, cy), QPointF(x, y))
-                elif kind == "polytope":
-                    p.setPen(QPen(col, 2))
-                    p.setBrush(col)
-                    pts = []
-                    for k in range(5):
-                        a = L.get("yaw", 0) + k * math.tau / 5
-                        px = x + sz * 0.7 * vg_cos(a)
-                        py = y + sz * 0.7 * vg_sin(a)
-                        pts.append(QPointF(px, py))
-                    if pts:
-                        p.drawPolygon(*pts) if False else p.drawConvexPolygon(pts)
-                else:
+                    p.setOpacity(1.0)
+
+                # Planetary 3-D view. The projection basis is rebuilt from gravity
+                # every frame: screen space is tangent to the local gravitational field.
+                def project_planet(v):
+                    try:
+                        right, up, forward = g.planetary.local_frame()
+                        rel = _vsub(v, g.planetary.pos)
+                        x = _vdot(rel, right); y = _vdot(rel, up); z = _vdot(rel, forward)
+                        z += 180.0
+                        f = math.tan(math.radians(float(g.visual_view.get("fov_deg",48.0)))*0.5)
+                        inv = 1.0/max(25.0,z)
+                        return cx + x*inv*R*0.42, cy - y*inv*R*0.42, max(2.0, 900.0*inv)
+                    except Exception:
+                        return cx,cy,3.0
+
+                if hasattr(g, "planetary"):
+                    # Deep-space field is deliberately sparse; complexity comes from
+                    # deterministic body composition, not a giant prebuilt map.
+                    for i, body, bp, bd in g.planetary.bodies_near(g.planetary.pos, 5200.0):
+                        x,y,sz=project_planet(bp)
+                        col=QColor(ac if i==g.planetary.current_planet else tx)
+                        col.setAlpha(230 if bd<2600 else 150)
+                        p.setPen(QPen(col,1)); p.setBrush(col)
+                        rad=max(3.0, min(42.0, body["radius"]*max(0.04,sz/18.0)))
+                        p.drawEllipse(QPointF(x,y),rad,rad)
+                        if i==g.planetary.current_planet:
+                            p.setPen(QPen(QColor(ac),1)); p.setBrush(Qt.BrushStyle.NoBrush)
+                            p.drawEllipse(QPointF(x,y),rad+7,rad+7)
+                        if bd<3200:
+                            p.setPen(QPen(QColor(tx),1)); p.drawText(int(x+rad+4),int(y),body["id"])
+                    # Flight vector / gravity vector. These make orbital intuition
+                    # visible even with helper-sprite-only content.
+                    try:
+                        _,up,forward=g.planetary.local_frame()
+                        gx,gy,_=project_planet(_vadd(g.planetary.pos,_vmul(g.planetary.gravity,900.0)))
+                        vx,vy,_=project_planet(_vadd(g.planetary.pos,_vmul(forward,700.0)))
+                        gp=QColor(dg); gp.setAlpha(170); p.setPen(QPen(gp,2)); p.drawLine(QPointF(cx,cy),QPointF(gx,gy))
+                        vp=QColor(ac); vp.setAlpha(170); p.setPen(QPen(vp,2)); p.drawLine(QPointF(cx,cy),QPointF(vx,vy))
+                    except Exception: pass
+                    # Player craft is always centered; its attitude is defined by the
+                    # gravity-relative frame rather than the old flat-world angle.
+                    cp=QColor(ac); cp.setAlpha(255); p.setPen(QPen(cp,2)); p.setBrush(cp)
+                    p.drawEllipse(QPointF(cx,cy),7,7)
+                    p.drawLine(QPointF(cx-13,cy),QPointF(cx+13,cy))
+
+                _cam_mode = int(getattr(g, "camera_mode", 0) or 0)
+
+                def project(yaw, dist, pitch=0.0, depth=1.0):
+                    # Canonical 3D camera projection. Object count never enters the
+                    # camera transform; only the canonical view state does.
+                    scale = 1.0 / max(0.35, 0.55 + 0.45 * depth)
+                    _fov = float(g.visual_view.get("fov_deg", 48.0))
+                    if _cam_mode == 2:
+                        # 2D top-down orthographic: planar controls transform.
+                        _f2 = math.tan(math.radians(_fov) * 0.5)
+                        _s2 = scale * 0.8 / max(_f2, 0.05)
+                        _x0 = dist * vg_cos(yaw) * _s2 * R * 0.72
+                        _y0 = -dist * vg_sin(yaw) * _s2 * R * 0.72 - pitch * R * 0.35
+                        _sz2 = max(2.0, (6.0 + 10.0 * (1.2 - min(depth, 1.8))) * scale)
+                        return cx + _x0, cy + _y0, _sz2
+                    if _cam_mode == 1:
+                        # First person: pull the eye into the world and widen the lens.
+                        dist = max(0.0, dist - 0.35)
+                        _fov = min(90.0, _fov + 26.0)
+                    ox = dist * vg_cos(yaw) * scale
+                    oy = pitch * scale
+                    oz = dist * vg_sin(yaw) * scale + 1.0
+                    cyaw = math.radians(float(g.visual_view.get("yaw_deg",0.0))) + float(g.aim_in.get("yaw",0.0))
+                    cpit = math.radians(float(g.visual_view.get("pitch_deg",0.0))) + float(g.aim_in.get("pitch",0.0))
+                    croll = math.radians(float(g.visual_view.get("roll_deg",0.0)))
+                    c, ss = vg_cos(cyaw), vg_sin(cyaw)
+                    x1, z1 = ox*c - oz*ss, ox*ss + oz*c
+                    c, ss = vg_cos(cpit), vg_sin(cpit)
+                    y1, z2 = oy*c - z1*ss, oy*ss + z1*c
+                    c, ss = vg_cos(croll), vg_sin(croll)
+                    x2, y2 = x1*c - y1*ss, x1*ss + y1*c
+                    f = math.tan(math.radians(_fov) * 0.5)
+                    inv = 1.0 / max(0.12, z2)
+                    x = cx + (x2 * inv / max(f,0.05)) * R * 0.72
+                    y = cy - (y2 * inv / max(f,0.05)) * R * 0.72
+                    sz = max(2.0, (6.0 + 10.0 * (1.2 - min(depth, 1.8))) * scale * min(1.8, inv))
+                    return x, y, sz
+
+                # Depth-sorted layers for proper 2.5D occlusion
+                on_layers = [L for L in g.scene.layers if L.get("on")]
+                on_layers.sort(key=lambda L: -float(L.get("depth", 1.0)))
+                for L in on_layers:
+                    shade = float(L.get("shade", 0.7))
+                    life = float(L.get("life", 0.7))
+                    depth = float(L.get("depth", 1.2))
+                    hue = float(L.get("hue", 0.5))
+                    # Instrument→asset color bridge when present
+                    try:
+                        _lh, _ls, _lv = g.assets.color_for_layer(hue, shade)
+                        hsv = QColor(ac).toHsv()
+                        # Audio-style finite clamp at the Qt color boundary.
+                        if not math.isfinite(float(_lh)): _lh = 0.0
+                        if not math.isfinite(float(_ls)): _ls = 0.0
+                        if not math.isfinite(float(_lv)): _lv = 0.0
+                        hsv.setHsv(int(round(float(_lh) * 360.0)) % 360,
+                                   int(max(0.0, min(1.0, float(_ls))) * 175.0 + 80.0),
+                                   int(max(0.0, min(1.0, float(_lv))) * 155.0 + 100.0))
+                    except Exception:
+                        hsv = QColor(ac).toHsv()
+                        if not math.isfinite(float(hue)): hue = 0.0
+                        if not math.isfinite(float(shade)): shade = 0.0
+                        shade = max(0.0, min(1.0, float(shade)))
+                        hsv.setHsv(int(round(float(hue) * 360.0)) % 360,
+                                   int(90.0 + 165.0 * shade),
+                                   int(110.0 + 145.0 * shade))
+                    col = hsv
+                    # High opacity floor so the scene is always visible
+                    col.setAlpha(max(140, min(255, int(110 + 145 * life * shade))))
+                    x, y, sz = project(L.get("yaw", 0.0), L.get("dist", 1.0),
+                                       L.get("pitch", 0.0), depth)
+                    kind = L.get("kind", "panel")
+                    if kind == "filament":
+                        p.setPen(QPen(col, max(1, int(1 + 2.2 * depth))))
+                        p.drawLine(QPointF(cx, cy), QPointF(x, y))
+                    elif kind == "polytope":
+                        p.setPen(QPen(col, 2))
+                        p.setBrush(col)
+                        pts = []
+                        for k in range(5):
+                            a = L.get("yaw", 0) + k * math.tau / 5
+                            px = x + sz * 0.7 * vg_cos(a)
+                            py = y + sz * 0.7 * vg_sin(a)
+                            pts.append(QPointF(px, py))
+                        if pts:
+                            p.drawPolygon(*pts) if False else p.drawConvexPolygon(pts)
+                    else:
+                        p.setPen(QPen(col, 1))
+                        p.setBrush(col)
+                        p.drawEllipse(QPointF(x, y), sz, sz * 0.72)
+
+                # Soft world ring (less dominant in open_world)
+                ring_a = 90 if topo in ("open_world", "hub_spoke") else 180
+                ring_col = QColor(tx)
+                ring_col.setAlpha(ring_a)
+                p.setPen(QPen(ring_col, 1))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawEllipse(QPointF(cx, cy), R, R)
+
+                # Generative level geometry silhouette (seed + level_type)
+                try:
+                    geom = getattr(g, "level_geometry", None) or {}
+                    gpts = geom.get("points") or []
+                    if len(gpts) >= 2:
+                        gcol = QColor(ac)
+                        gcol.setAlpha(110)
+                        p.setPen(QPen(gcol, 2))
+                        prev = None
+                        for gp in gpts:
+                            gx = cx + vg_cos(float(gp["angle"])) * float(gp["radius"]) * R
+                            gy = cy + vg_sin(float(gp["angle"])) * float(gp["radius"]) * R * (0.85 + 0.3 * float(gp.get("height", 0.1)))
+                            if prev is not None:
+                                p.drawLine(QPointF(prev[0], prev[1]), QPointF(gx, gy))
+                            prev = (gx, gy)
+                            p.drawEllipse(QPointF(gx, gy), 3, 3)
+                except Exception:
+                    pass
+
+                # Hazards (danger glows)
+                for a, r, _d in getattr(g, "hazards", HazardRing(0)).pos:
+                    x = cx + vg_cos(a) * r * R
+                    y = cy + vg_sin(a) * r * R
+                    col = QColor(dg)
+                    col.setAlpha(160)
                     p.setPen(QPen(col, 1))
                     p.setBrush(col)
-                    p.drawEllipse(QPointF(x, y), sz, sz * 0.72)
+                    p.drawEllipse(QPointF(x, y), 5 + int(r * 10), 5 + int(r * 10))
 
-            # Soft world ring (less dominant in open_world)
-            ring_a = 90 if topo in ("open_world", "hub_spoke") else 180
-            ring_col = QColor(tx)
-            ring_col.setAlpha(ring_a)
-            p.setPen(QPen(ring_col, 1))
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawEllipse(QPointF(cx, cy), R, R)
+                # Features — the L-system of L-systems (GROOVEBOX_R23R_FEATURE_LSYSTEMS_20261101)
+                try:
+                    _fg = getattr(g, "features", None)
+                    if _fg is not None:
+                        _near = _fg.nearest(getattr(g, "angle", 0.0))
+                        for _f in _fg.features:
+                            fx = cx + vg_cos(_f["a"]) * _f["r"] * R
+                            fy = cy + vg_sin(_f["a"]) * _f["r"] * R
+                            _hot = _f is _near
+                            col = QColor.fromHsvF(float(_f["hue"]) % 1.0, 0.55, 0.95)
+                            col.setAlpha(240 if _hot else 165)
+                            _segs, _polys = _fg.glyph_lines(_f["string"], 30.0 if _hot else 20.0)
+                            p.setPen(QPen(col, 2 if _hot else 1)); p.setBrush(Qt.BrushStyle.NoBrush)
+                            for x0, y0, x1, y1 in _segs[:160]:
+                                p.drawLine(QPointF(fx + x0, fy + y0), QPointF(fx + x1, fy + y1))
+                            for x0, y0, (_kind, _n), _sz in _polys[:40]:
+                                if _kind == "goava":
+                                    pts = [QPointF(fx + x0 + _sz * math.cos(math.tau * i / _n), fy + y0 + _sz * math.sin(math.tau * i / _n)) for i in range(int(_n))]
+                                    p.drawPolygon(QPolygonF(pts))
+                                else:
+                                    for b in range(int(_n)):
+                                        ang = -math.pi / 2 + (b - (_n - 1) / 2.0) * 0.5
+                                        p.drawLine(QPointF(fx + x0, fy + y0), QPointF(fx + x0 + _sz * math.cos(ang), fy + y0 + _sz * math.sin(ang)))
+                            if _hot:
+                                p.setPen(QPen(QColor(tx), 1)); p.setFont(QFont("Sans", 8))
+                                p.drawText(int(fx + 16), int(fy - 14), f"{_f['sym']}{_f['id']} · E detach · X attach · Z transmute · carrying {len(_fg.held)}")
+                except Exception:
+                    pass
 
-            # Generative level geometry silhouette (seed + level_type)
-            try:
-                geom = getattr(g, "level_geometry", None) or {}
-                gpts = geom.get("points") or []
-                if len(gpts) >= 2:
-                    gcol = QColor(ac)
-                    gcol.setAlpha(110)
-                    p.setPen(QPen(gcol, 2))
-                    prev = None
-                    for gp in gpts:
-                        gx = cx + vg_cos(float(gp["angle"])) * float(gp["radius"]) * R
-                        gy = cy + vg_sin(float(gp["angle"])) * float(gp["radius"]) * R * (0.85 + 0.3 * float(gp.get("height", 0.1)))
-                        if prev is not None:
-                            p.drawLine(QPointF(prev[0], prev[1]), QPointF(gx, gy))
-                        prev = (gx, gy)
-                        p.drawEllipse(QPointF(gx, gy), 3, 3)
-            except Exception:
-                pass
-
-            # Hazards (danger glows)
-            for a, r, _d in getattr(g, "hazards", HazardRing(0)).pos:
-                x = cx + vg_cos(a) * r * R
-                y = cy + vg_sin(a) * r * R
-                col = QColor(dg)
-                col.setAlpha(160)
-                p.setPen(QPen(col, 1))
-                p.setBrush(col)
-                p.drawEllipse(QPointF(x, y), 5 + int(r * 10), 5 + int(r * 10))
-
-            # Resources
-            for k, (a, r, _v) in enumerate(getattr(g, "resources", ResourceField(0)).pos):
-                if k in getattr(g.resources, "taken", set()):
-                    continue
-                col = QColor("#7dff9a")
-                col.setAlpha(220)
-                p.setPen(QPen(col, 1))
-                p.setBrush(col)
-                x = cx + vg_cos(a) * r * R
-                y = cy + vg_sin(a) * r * R
-                p.drawRect(int(x - 4), int(y - 4), 8, 8)
-
-            # Portals
-            for a_in, a_out, r in getattr(g, "portals", PortalGate(0)).gates:
-                col = QColor("#c77dff")
-                col.setAlpha(200)
-                p.setPen(QPen(col, 2))
-                p.setBrush(Qt.BrushStyle.NoBrush)
-                x = cx + vg_cos(a_in) * r * R
-                y = cy + vg_sin(a_in) * r * R
-                p.drawEllipse(QPointF(x, y), 9, 9)
-                # faint exit marker
-                col.setAlpha(90)
-                p.setPen(QPen(col, 1))
-                x2 = cx + vg_cos(a_out) * r * R
-                y2 = cy + vg_sin(a_out) * r * R
-                p.drawEllipse(QPointF(x2, y2), 5, 5)
-
-            # Waypoints (numbered trail)
-            for k, (a, r) in enumerate(getattr(g, "waypoints", WaypointTrail(0)).pos):
-                if k in getattr(g.waypoints, "hit", set()):
-                    continue
-                col = QColor("#ffe066")
-                col.setAlpha(230 if k == getattr(g.waypoints, "next_idx", 0) else 140)
-                p.setPen(QPen(col, 2 if k == getattr(g.waypoints, "next_idx", 0) else 1))
-                p.setBrush(col)
-                x = cx + vg_cos(a) * r * R
-                y = cy + vg_sin(a) * r * R
-                p.drawEllipse(QPointF(x, y), 6, 6)
-                p.setPen(QPen(QColor(tx), 1))
-                p.drawText(int(x + 6), int(y - 4), str(k + 1))
-
-            # Sigils — only when this world actually placed them (nexus / sigil hook)
-            if getattr(g.sigils, "count", 0) > 0:
-                for k, (a, r) in enumerate(g.sigils.pos):
-                    if k in getattr(g.sigils, "collected", set()):
+                # Resources
+                for k, (a, r, _v) in enumerate(getattr(g, "resources", ResourceField(0)).pos):
+                    if k in getattr(g.resources, "taken", set()):
                         continue
-                    col = QColor(ac)
-                    col.setAlpha(240)
+                    col = QColor("#7dff9a")
+                    col.setAlpha(220)
                     p.setPen(QPen(col, 1))
                     p.setBrush(col)
                     x = cx + vg_cos(a) * r * R
                     y = cy + vg_sin(a) * r * R
-                    p.drawEllipse(QPointF(x, y), 4 + int(r * 8), 4 + int(r * 8))
+                    p.drawRect(int(x - 4), int(y - 4), 8, 8)
 
-            # PvE mobs
-            for m in getattr(g, "pve", PveEncounter(0)).mobs:
-                if not m.get("alive", True):
-                    continue
-                col = QColor("#ff6b4a")
-                col.setAlpha(200)
-                p.setPen(QPen(col, 2))
-                p.setBrush(col)
-                x = cx + vg_cos(m["angle"]) * m["radius"] * R
-                y = cy + vg_sin(m["angle"]) * m["radius"] * R
-                p.drawEllipse(QPointF(x, y), 7, 7)
+                # Portals
+                for a_in, a_out, r in getattr(g, "portals", PortalGate(0)).gates:
+                    col = QColor("#c77dff")
+                    col.setAlpha(200)
+                    p.setPen(QPen(col, 2))
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+                    x = cx + vg_cos(a_in) * r * R
+                    y = cy + vg_sin(a_in) * r * R
+                    p.drawEllipse(QPointF(x, y), 9, 9)
+                    # faint exit marker
+                    col.setAlpha(90)
+                    p.setPen(QPen(col, 1))
+                    x2 = cx + vg_cos(a_out) * r * R
+                    y2 = cy + vg_sin(a_out) * r * R
+                    p.drawEllipse(QPointF(x2, y2), 5, 5)
 
-            # NPCs
-            for n in getattr(g, "npcs", NPCRoster(0)).npcs:
-                col = QColor("#66d9ef") if not n.get("met") else QColor("#a6e22e")
-                col.setAlpha(220)
-                p.setPen(QPen(col, 2))
-                p.setBrush(col)
-                x = cx + vg_cos(n["angle"]) * n["radius"] * R
-                y = cy + vg_sin(n["angle"]) * n["radius"] * R
-                p.drawRect(int(x - 5), int(y - 5), 10, 10)
-                p.setPen(QPen(QColor(tx), 1))
-                p.drawText(int(x + 6), int(y - 2), n["name"][:10])
-
-            def draw_face(name, angle, color, size):
-                x = cx + vg_cos(angle) * R * 0.92
-                y = cy + vg_sin(angle) * R * 0.92
-                p.setPen(QPen(color, 2))
-                p.setBrush(QColor(color))
-                p.drawEllipse(QPointF(x, y), size, size)
-                p.drawLine(QPointF(x - size, y + size * 0.6), QPointF(x + size * 0.8, y - size * 0.9))
-                p.setPen(QPen(QColor(tx), 1))
-                p.drawText(int(x - size), int(y - size - 4), str(name)[:12])
-            draw_face(g.player_name or "You", g.angle, QColor(ac), 8)
-            for name, rec in sorted((g.remotes or {}).items()):
-                draw_face(name, float(rec.get("angle", 0.0)), QColor(dg), 6)
-
-            _ay = cx + vg_cos(g.angle) * R * 0.98
-            _ax = cy + vg_sin(g.angle) * R * 0.98
-            _ac = QColor("#ffcc66")
-            _ac.setAlpha(120)
-            p.setPen(QPen(_ac, 1))
-            p.drawLine(QPointF(cx, cy), QPointF(_ay, _ax))
-
-            # ── Persistent HUD overlay: always know what you're doing ──
-            try:
-                elements = g.active_elements() if hasattr(g, "active_elements") else []
-            except Exception:
-                elements = []
-            pos = {}
-            try:
-                pos = g.position_readout() if hasattr(g, "position_readout") else {}
-            except Exception:
-                pos = {}
-            live = []
-            try:
-                live = sorted(getattr(g, "_live_activities", set()) or [])
-            except Exception:
-                live = []
-
-            # Top bar — controls + position
-            p.setPen(QPen(QColor(tx), 1))
-            p.setFont(QFont("Sans", 9))
-            top1 = (f"WASD move · mouse aim · click activate · ESC menu · F1 help  |  "
-                    f"θ={pos.get('angle_deg', 0)}°  zoom={pos.get('zoom', 1)}  "
-                    f"pitch={pos.get('pitch', 0)}  @ {pos.get('region', '?')}")
-            p.drawText(8, 16, top1[:140])
-            top2 = (f"activities: {', '.join(live) if live else 'none'}  ·  "
-                    f"obj={getattr(g, 'objective', 'survey')}  "
-                    f"free={int(bool(getattr(g, 'free_play', True)))}")
-            p.drawText(8, 32, top2[:140])
-
-            # Bottom bar — vitals + world counts
-            hp = getattr(g, "hp", 100.0)
-            coins = getattr(getattr(g, "purse", None), "coins", 0)
-            pts = getattr(getattr(g, "purse", None), "points", 0)
-            aq = g.quests.active() if getattr(g, "quests", None) else None
-            qtxt = f"{aq['title']} {aq['progress']}/{aq['target']}" if aq else "none"
-            focus = getattr(g, "primary_focus", "explore")
-            world_bits = [f"focus={focus}"]
-            if getattr(g.sigils, "count", 0) > 0:
-                world_bits.append(f"sigils={g.sigils.remaining()}/{g.sigils.count}")
-            world_bits.append(f"res={g.resources.remaining()}")
-            if getattr(g.waypoints, "count", 0) > 0:
-                world_bits.append(f"wp={g.waypoints.remaining()}")
-            world_bits.append(f"pve={g.pve.remaining()}")
-            try:
-                pp=g.planetary
-                p.drawText(8, int(h)-40, f"GRAVITY { _vlen(pp.gravity):.3f}  ALT {(_vlen(_vsub(pp.pos, pp._planet_pos(pp.planets[pp.current_planet],pp.t))) - pp.planets[pp.current_planet]['radius']):.1f}  SECTOR {pp.sector}")
-            except Exception: pass
-            try:
-                pp=g.planetary
-                p.drawText(8, int(h)-40, f"GRAVITY { _vlen(pp.gravity):.3f}  ALT {(_vlen(_vsub(pp.pos, pp._planet_pos(pp.planets[pp.current_planet],pp.t))) - pp.planets[pp.current_planet]['radius']):.1f}  SECTOR {pp.sector}")
-            except Exception: pass
-            p.drawText(8, int(h) - 24,
-                       f"{g.id.get('title', '')}  t={g.t:.1f}s  " + "  ".join(world_bits))
-            p.drawText(8, int(h) - 10,
-                       f"HP={hp:.0f}  coins={coins}  pts={pts}  score={getattr(g,'score',0):.1f}  "
-                       f"Lv{getattr(g,'level',1)}  quest={qtxt}  net={g.net.status}")
-
-            # Right-side relevant overlay: only live / non-empty elements
-            relevant = [e for e in elements if e.get("id") in (
-                "activities", "xcorr", "quest", "mini", "chess", "loom", "software"
-            ) or (e.get("id") in ("slots", "snake", "mario", "race", "poker"))]
-            if relevant:
-                p.setFont(QFont("Sans", 8))
-                ry = 48
-                for e in relevant[:10]:
-                    line = f"{e['label']}: {e['value']}"
-                    # semi-transparent strip for readability
-                    bgc = QColor(bg)
-                    bgc.setAlpha(160)
-                    p.fillRect(w - 310, ry - 12, 302, 14, bgc)
+                # Waypoints (numbered trail)
+                for k, (a, r) in enumerate(getattr(g, "waypoints", WaypointTrail(0)).pos):
+                    if k in getattr(g.waypoints, "hit", set()):
+                        continue
+                    col = QColor("#ffe066")
+                    col.setAlpha(230 if k == getattr(g.waypoints, "next_idx", 0) else 140)
+                    p.setPen(QPen(col, 2 if k == getattr(g.waypoints, "next_idx", 0) else 1))
+                    p.setBrush(col)
+                    x = cx + vg_cos(a) * r * R
+                    y = cy + vg_sin(a) * r * R
+                    p.drawEllipse(QPointF(x, y), 6, 6)
                     p.setPen(QPen(QColor(tx), 1))
-                    p.drawText(w - 306, ry, line[:56])
-                    ry += 15
+                    p.drawText(int(x + 6), int(y - 4), str(k + 1))
 
-            # ── ESC menu: full active-element readout ──
-            if getattr(g, "menu_open", False):
-                overlay = QColor(bg)
-                overlay.setAlpha(210)
-                p.fillRect(self.rect(), overlay)
-                p.setPen(QPen(QColor(ac), 2))
-                p.setFont(QFont("Sans", 12, QFont.Weight.Bold))
-                p.drawText(24, 36, "STATUS MENU  (ESC to close)")
-                p.setFont(QFont("Sans", 9))
+                # Sigils — only when this world actually placed them (nexus / sigil hook)
+                if getattr(g.sigils, "count", 0) > 0:
+                    for k, (a, r) in enumerate(g.sigils.pos):
+                        if k in getattr(g.sigils, "collected", set()):
+                            continue
+                        col = QColor(ac)
+                        col.setAlpha(240)
+                        p.setPen(QPen(col, 1))
+                        p.setBrush(col)
+                        x = cx + vg_cos(a) * r * R
+                        y = cy + vg_sin(a) * r * R
+                        p.drawEllipse(QPointF(x, y), 4 + int(r * 8), 4 + int(r * 8))
+
+                # PvE mobs
+                for m in getattr(g, "pve", PveEncounter(0)).mobs:
+                    if not m.get("alive", True):
+                        continue
+                    col = QColor("#ff6b4a")
+                    col.setAlpha(200)
+                    p.setPen(QPen(col, 2))
+                    p.setBrush(col)
+                    x = cx + vg_cos(m["angle"]) * m["radius"] * R
+                    y = cy + vg_sin(m["angle"]) * m["radius"] * R
+                    p.drawEllipse(QPointF(x, y), 7, 7)
+
+                # NPCs
+                for n in getattr(g, "npcs", NPCRoster(0)).npcs:
+                    col = QColor("#66d9ef") if not n.get("met") else QColor("#a6e22e")
+                    col.setAlpha(220)
+                    p.setPen(QPen(col, 2))
+                    p.setBrush(col)
+                    x = cx + vg_cos(n["angle"]) * n["radius"] * R
+                    y = cy + vg_sin(n["angle"]) * n["radius"] * R
+                    p.drawRect(int(x - 5), int(y - 5), 10, 10)
+                    p.setPen(QPen(QColor(tx), 1))
+                    p.drawText(int(x + 6), int(y - 2), n["name"][:10])
+
+                def draw_face(name, angle, color, size):
+                    x = cx + vg_cos(angle) * R * 0.92
+                    y = cy + vg_sin(angle) * R * 0.92
+                    p.setPen(QPen(color, 2))
+                    p.setBrush(QColor(color))
+                    p.drawEllipse(QPointF(x, y), size, size)
+                    p.drawLine(QPointF(x - size, y + size * 0.6), QPointF(x + size * 0.8, y - size * 0.9))
+                    p.setPen(QPen(QColor(tx), 1))
+                    p.drawText(int(x - size), int(y - size - 4), str(name)[:12])
+                draw_face(g.player_name or "You", g.angle, QColor(ac), 8)
+                for name, rec in sorted((g.remotes or {}).items()):
+                    draw_face(name, float(rec.get("angle", 0.0)), QColor(dg), 6)
+
+                _ay = cx + vg_cos(g.angle) * R * 0.98
+                _ax = cy + vg_sin(g.angle) * R * 0.98
+                _ac = QColor("#ffcc66")
+                _ac.setAlpha(120)
+                p.setPen(QPen(_ac, 1))
+                p.drawLine(QPointF(cx, cy), QPointF(_ay, _ax))
+
+                # ── Persistent HUD overlay: always know what you're doing ──
+                try:
+                    elements = g.active_elements() if hasattr(g, "active_elements") else []
+                except Exception:
+                    elements = []
+                pos = {}
+                try:
+                    pos = g.position_readout() if hasattr(g, "position_readout") else {}
+                except Exception:
+                    pos = {}
+                live = []
+                try:
+                    live = sorted(getattr(g, "_live_activities", set()) or [])
+                except Exception:
+                    live = []
+
+                # Top bar — controls + position
                 p.setPen(QPen(QColor(tx), 1))
-                y = 58
-                for e in elements:
-                    line = f"{e['label']}:  {e['value']}"
-                    p.drawText(28, y, line[:90])
-                    y += 16
-                    if y > h - 30:
-                        p.drawText(28, y, "…")
-                        break
-                p.setPen(QPen(QColor(ac), 1))
-                p.drawText(24, min(h - 12, y + 12),
-                           "All features list a readout above · /status reprints in chat")
+                p.setFont(QFont("Sans", 9))
+                top1 = (f"WASD move · mouse aim · click activate · ESC menu · F1 help  |  "
+                        f"θ={pos.get('angle_deg', 0)}°  zoom={pos.get('zoom', 1)}  "
+                        f"pitch={pos.get('pitch', 0)}  @ {pos.get('region', '?')}")
+                p.drawText(8, 16, top1[:140])
+                top2 = (f"activities: {', '.join(live) if live else 'none'}  ·  "
+                        f"obj={getattr(g, 'objective', 'survey')}  "
+                        f"free={int(bool(getattr(g, 'free_play', True)))}")
+                p.drawText(8, 32, top2[:140])
+
+                # Bottom bar — vitals + world counts
+                hp = getattr(g, "hp", 100.0)
+                coins = getattr(getattr(g, "purse", None), "coins", 0)
+                pts = getattr(getattr(g, "purse", None), "points", 0)
+                aq = g.quests.active() if getattr(g, "quests", None) else None
+                qtxt = f"{aq['title']} {aq['progress']}/{aq['target']}" if aq else "none"
+                focus = getattr(g, "primary_focus", "explore")
+                world_bits = [f"focus={focus}"]
+                if getattr(g.sigils, "count", 0) > 0:
+                    world_bits.append(f"sigils={g.sigils.remaining()}/{g.sigils.count}")
+                world_bits.append(f"res={g.resources.remaining()}")
+                if getattr(g.waypoints, "count", 0) > 0:
+                    world_bits.append(f"wp={g.waypoints.remaining()}")
+                world_bits.append(f"pve={g.pve.remaining()}")
+                try:
+                    pp=g.planetary
+                    p.drawText(8, int(h)-40, f"GRAVITY { _vlen(pp.gravity):.3f}  ALT {(_vlen(_vsub(pp.pos, pp._planet_pos(pp.planets[pp.current_planet],pp.t))) - pp.planets[pp.current_planet]['radius']):.1f}  SECTOR {pp.sector}")
+                except Exception: pass
+                try:
+                    pp=g.planetary
+                    p.drawText(8, int(h)-40, f"GRAVITY { _vlen(pp.gravity):.3f}  ALT {(_vlen(_vsub(pp.pos, pp._planet_pos(pp.planets[pp.current_planet],pp.t))) - pp.planets[pp.current_planet]['radius']):.1f}  SECTOR {pp.sector}")
+                except Exception: pass
+                p.drawText(8, int(h) - 24,
+                           f"{g.id.get('title', '')}  t={g.t:.1f}s  " + "  ".join(world_bits))
+                p.drawText(8, int(h) - 10,
+                           f"HP={hp:.0f}  coins={coins}  pts={pts}  score={getattr(g,'score',0):.1f}  "
+                           f"Lv{getattr(g,'level',1)}  quest={qtxt}  net={g.net.status}")
+
+                # Right-side relevant overlay: only live / non-empty elements
+                relevant = [e for e in elements if e.get("id") in (
+                    "activities", "xcorr", "quest", "mini", "chess", "loom", "software"
+                ) or (e.get("id") in ("slots", "snake", "mario", "race", "poker"))]
+                if relevant:
+                    p.setFont(QFont("Sans", 8))
+                    ry = 48
+                    for e in relevant[:10]:
+                        line = f"{e['label']}: {e['value']}"
+                        # semi-transparent strip for readability
+                        bgc = QColor(bg)
+                        bgc.setAlpha(160)
+                        p.fillRect(w - 310, ry - 12, 302, 14, bgc)
+                        p.setPen(QPen(QColor(tx), 1))
+                        p.drawText(w - 306, ry, line[:56])
+                        ry += 15
+
+                # In-frame chat: recent lines + the compose line (Enter).
+                try:
+                    _recent = list(getattr(g, "chat_log", []) or [])[-5:]
+                    p.setFont(QFont("Sans", 9))
+                    _cy = h - 34 - 16 * len(_recent) - (20 if getattr(g, "chat_compose", None) is not None else 0)
+                    for _ent in _recent:
+                        _c = QColor(tx); _c.setAlpha(190); p.setPen(QPen(_c, 1))
+                        p.drawText(12, int(_cy), f"{_ent.get('sender', '')}: {_ent.get('text', '')}"[:110]); _cy += 16
+                    if getattr(g, "chat_compose", None) is not None:
+                        _bgc = QColor(bg); _bgc.setAlpha(210); p.fillRect(8, int(_cy) - 13, min(w - 16, 720), 19, _bgc)
+                        p.setPen(QPen(QColor(ac), 1)); p.drawText(12, int(_cy), "Say: " + g.chat_compose + "▌   (Enter send · Esc cancel)")
+                except Exception:
+                    pass
+                # In-frame hint (all other UI lives in the F2 main menu).
+                p.setFont(QFont("Sans", 8)); p.setPen(QPen(QColor(tx), 1))
+                p.drawText(10, h - 10, "F2 · Main menu   ·   " + ("Esc / right-click · release mouse" if self._locked else "Click · lock mouse (look)"))
+                # Start questionnaire (in-frame).
+                _q = getattr(g, "questionnaire", None)
+                if _q:
+                    ov = QColor(bg); ov.setAlpha(225); p.fillRect(self.rect(), ov)
+                    _field = _q["fields"][_q["step"]]
+                    p.setPen(QPen(QColor(ac), 2)); p.setFont(QFont("Sans", 15, QFont.Weight.Bold))
+                    p.drawText(QRect(0, int(h * 0.30), w, 30), Qt.AlignmentFlag.AlignCenter, str(g.id.get("title", ""))[:60])
+                    p.setFont(QFont("Sans", 12)); p.setPen(QPen(QColor(tx), 1))
+                    p.drawText(QRect(0, int(h * 0.42), w, 26), Qt.AlignmentFlag.AlignCenter, _field["prompt"])
+                    p.setFont(QFont("Sans", 20, QFont.Weight.Bold)); p.setPen(QPen(QColor(ac), 1))
+                    p.drawText(QRect(0, int(h * 0.50), w, 36), Qt.AlignmentFlag.AlignCenter, (_q["buf"] or _field["default"]) + "▌")
+                    p.setFont(QFont("Sans", 9)); p.setPen(QPen(QColor(tx), 1))
+                    p.drawText(QRect(0, int(h * 0.62), w, 22), Qt.AlignmentFlag.AlignCenter, _field["hint"] + "   ·   Enter = confirm · Esc = use default")
+                    # Open-world controls (live table; remaps show immediately after confirming).
+                    try:
+                        _lines = g.control_lines()
+                        p.setFont(QFont("Monospace", 8)); p.setPen(QPen(QColor(ac), 1))
+                        _x = max(10, w - 300); _y = 24
+                        p.drawText(_x, _y, "CONTROLS"); _y += 14
+                        p.setPen(QPen(QColor(tx), 1))
+                        for _ln in _lines[: max(4, (h - 40) // 13)]:
+                            p.drawText(_x, _y, _ln[:44]); _y += 13
+                    except Exception:
+                        pass
+                    return
+
+                # ── ESC menu: full active-element readout ──
+                if getattr(g, "menu_open", False):
+                    overlay = QColor(bg)
+                    overlay.setAlpha(210)
+                    p.fillRect(self.rect(), overlay)
+                    p.setPen(QPen(QColor(ac), 2))
+                    p.setFont(QFont("Sans", 12, QFont.Weight.Bold))
+                    p.drawText(24, 36, "STATUS MENU  (ESC to close)")
+                    p.setFont(QFont("Sans", 9))
+                    p.setPen(QPen(QColor(tx), 1))
+                    p.drawText(28, 54, self.fps_text())     # GAME_FPS_MENU_20261102: shown only here
+                    y = 74
+                    for e in elements:
+                        line = f"{e['label']}:  {e['value']}"
+                        p.drawText(28, y, line[:90])
+                        y += 16
+                        if y > h - 30:
+                            p.drawText(28, y, "…")
+                            break
+                    p.setPen(QPen(QColor(ac), 1))
+                    p.drawText(24, min(h - 12, y + 12),
+                               "All features list a readout above · /status reprints in chat")
+            finally:
+                if p.isActive():
+                    p.end()
 
     class ControlPanel(QWidget):
         def __init__(self, game, window, parent=None):
             super().__init__(parent)
             self.game = game
             self.window = window
-            self.setFixedWidth(360)
+            self.setFixedWidth(400)
             pal = game.id.get("ui_palette", {})
             self._bg = pal.get("bg", "")
             self._build()
+            self._tabify()
+
+        # ---- GROOVEBOX_R23R_GAME_MENU_TABS_20261101: F2 main menu with side tabs ----
+        def _tabify(self):
+            from PyQt6.QtWidgets import QTabWidget, QListWidget, QGroupBox as _QGB
+            old = self.layout()
+            items = []
+            while old.count():
+                items.append(old.takeAt(0))
+            pages = {}
+            tabs = QTabWidget(); tabs.setTabPosition(QTabWidget.TabPosition.West)
+            self._menu_pages = {}
+            def page(name):
+                if name not in pages:
+                    w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(6, 6, 6, 6); pages[name] = v
+                    self._menu_pages[name] = w        # keep the page alive until it is in the tab widget
+                return pages[name]
+            # Inventory (default) and Character are new; existing groups keep their widgets.
+            inv = page("Inventory")
+            inv.addWidget(QLabel("<b>Carried feature parts</b> (E detach · X attach)"))
+            self.inv_parts = QListWidget(); inv.addWidget(self.inv_parts, 1)
+            row = QHBoxLayout()
+            b_att = QPushButton("Attach to nearest"); b_att.clicked.connect(self._inv_attach)
+            b_drop = QPushButton("Drop"); b_drop.clicked.connect(self._inv_drop)
+            b_tr = QPushButton("Transmute nearest"); b_tr.clicked.connect(lambda: (self.game.feature_action("transmute"), self.refresh()))
+            row.addWidget(b_att); row.addWidget(b_drop); row.addWidget(b_tr); inv.addLayout(row)
+            inv.addWidget(QLabel("<b>Items</b> (double-click to equip)"))
+            self.inv_items = QListWidget(); self.inv_items.itemDoubleClicked.connect(self._inv_equip); inv.addWidget(self.inv_items, 1)
+            self.inv_purse = QLabel(""); inv.addWidget(self.inv_purse)
+            ch = page("Character")
+            self.char_lbl = QLabel(""); self.char_lbl.setWordWrap(True); ch.addWidget(self.char_lbl)
+            ch.addWidget(QLabel("<b>Controls</b>"))
+            self.ctrl_view = QPlainTextEdit(); self.ctrl_view.setReadOnly(True); ch.addWidget(self.ctrl_view, 1)
+            rr = QHBoxLayout(); self.ctrl_edit = QLineEdit(); self.ctrl_edit.setPlaceholderText("action=KEY, action=KEY")
+            b_map = QPushButton("Apply"); b_map.clicked.connect(self._remap)
+            rr.addWidget(self.ctrl_edit, 1); rr.addWidget(b_map); ch.addLayout(rr)
+            route = {"World": "World", "Network": "Social", "Chat": "Social", "How to Play (F1)": "Game"}
+            for it in items:
+                wdg = it.widget(); lay = it.layout()
+                if wdg is not None and isinstance(wdg, _QGB) and wdg.title() in route:
+                    page(route[wdg.title()]).addWidget(wdg)
+                elif wdg is not None and wdg in (getattr(self, "title_lbl", None), getattr(self, "ident_lbl", None)):
+                    page("World").insertWidget(0, wdg) if wdg is self.title_lbl else page("World").insertWidget(1, wdg)
+                elif wdg is not None:
+                    page("Game").addWidget(wdg)
+                elif lay is not None:
+                    page("Game").addLayout(lay)
+            for name in ("Inventory", "Character", "World", "Social", "Game"):
+                v = page(name); v.addStretch(1)
+                tabs.addTab(self._menu_pages[name], name)
+            tabs.setCurrentIndex(0)                 # Inventory is the default tab
+            QWidget().setLayout(old)                # discard the old (now empty) layout
+            nl = QVBoxLayout(self); nl.setContentsMargins(0, 0, 0, 0)
+            nl.addWidget(QLabel("<b>MAIN MENU</b> · F2 to return to the world")); nl.addWidget(tabs, 1)
+            self.tabs = tabs
+
+        def _inv_attach(self):
+            g = self.game
+            row = self.inv_parts.currentRow()
+            if 0 <= row < len(g.features.held):
+                g.features.held.append(g.features.held.pop(row))     # attach the selected part
+            g.feature_action("attach"); self.refresh()
+
+        def _inv_drop(self):
+            g = self.game
+            row = self.inv_parts.currentRow()
+            if 0 <= row < len(g.features.held):
+                part = g.features.held.pop(row); g.push_status(f"[FEATURE] dropped {part[:24]}")
+            self.refresh()
+
+        def _inv_equip(self, item):
+            iid = item.data(Qt.ItemDataRole.UserRole)
+            if iid and self.game.items.equip(iid):
+                self.game.push_status(f"[ITEM] equipped {item.text()}")
+            self.refresh()
+
+        def _remap(self):
+            self.game.remap_controls(self.ctrl_edit.text()); self.ctrl_edit.clear(); self.refresh()
+
+        def _refresh_tabs(self):
+            from PyQt6.QtWidgets import QListWidgetItem
+            g = self.game
+            if not hasattr(self, "inv_parts"):
+                return
+            held = list(getattr(g.features, "held", []) or [])
+            if [self.inv_parts.item(i).text() for i in range(self.inv_parts.count())] != [h[:60] for h in held]:
+                cur = self.inv_parts.currentRow(); self.inv_parts.clear()
+                for h in held:
+                    self.inv_parts.addItem(h[:60])
+                self.inv_parts.setCurrentRow(min(cur, self.inv_parts.count() - 1))
+            items = getattr(g, "items", None)
+            if items is not None:
+                rows = [(d["id"], f"{'★ ' if items.equipped == d['id'] else ''}{d['name']} ×{items.inventory.get(d['id'], 0)} · {d['tag']} · power {d['power']:.2f}")
+                        for d in items.defs if items.inventory.get(d["id"], 0) > 0]
+                if [self.inv_items.item(i).text() for i in range(self.inv_items.count())] != [r[1] for r in rows]:
+                    self.inv_items.clear()
+                    for iid, txt in rows:
+                        it = QListWidgetItem(txt); it.setData(Qt.ItemDataRole.UserRole, iid); self.inv_items.addItem(it)
+            purse = getattr(g, "purse", None)
+            if purse is not None:
+                self.inv_purse.setText(f"Coins {purse.coins} · Points {purse.points} · Score {g.score:.2f}")
+            av = getattr(g, "avatar", None)
+            if av:
+                self.char_lbl.setText(
+                    f"Character #{av['number']:g} · glyph {av['symbol']}<br>"
+                    f"thrust {av['thrust_gain']:.2f} · gravity ×{av['gravity_scale']:.2f} · drag {av['drag']:.2f}<br>"
+                    f"reach {av['reach']:.2f} · speed {av['speed']:.2f} · start #{av['position_number']:g}")
+            else:
+                self.char_lbl.setText("Character not chosen yet (start questionnaire).")
+            lines = "\n".join(g.control_lines())
+            if self.ctrl_view.toPlainText() != lines:
+                self.ctrl_view.setPlainText(lines)
 
         def _build(self):
             lay = QVBoxLayout(self)
@@ -7742,6 +8560,13 @@ if HAS_UI:
             self.chat_view.appendPlainText(json.dumps(snap, indent=2, sort_keys=True))
 
         def refresh(self):
+            try:
+                self._refresh_tabs()
+            except Exception as _tab_exc:
+                print(f"[menu] {_tab_exc}")
+            self._refresh_rest()
+
+        def _refresh_rest(self):
             g = self.game
             try:
                 pos = g.position_readout()
@@ -7848,6 +8673,21 @@ if HAS_UI:
             QApplication.processEvents()
 
 
+    def _groovebox_ptt(on):
+        """Ask the local Groovebox (Nearby service) to start/stop push-to-talk."""
+        import threading as _th, urllib.request as _ur
+        def _go():
+            for port in ([int(os.environ["GROOVEBOX_NEARBY_PORT"])] if os.environ.get("GROOVEBOX_NEARBY_PORT", "").isdigit() else []) + list(range(8784, 8797)):
+                try:
+                    req = _ur.Request(f"http://127.0.0.1:{port}/api/v1/ptt?on={1 if on else 0}", data=b"", method="POST")
+                    with _ur.urlopen(req, timeout=1.5) as r:
+                        if r.status == 200:
+                            return
+                except Exception:
+                    continue
+        _th.Thread(target=_go, daemon=True).start()
+
+
     class GameWindow(QMainWindow):
         def __init__(self, game):
             super().__init__()
@@ -7869,7 +8709,11 @@ if HAS_UI:
             split.setStretchFactor(0, 3)
             split.setStretchFactor(1, 0)
             hv = QVBoxLayout(central)
+            hv.setContentsMargins(0, 0, 0, 0)
             hv.addWidget(split)
+            # GROOVEBOX_R23R_INFRAME_UI_20261101: the scene owns the window; the old
+            # side panel is the F2 main menu.
+            self.panel.setVisible(False)
             self.timer = QTimer(self)
             self.timer.setInterval(33)
             self.timer.timeout.connect(self._tick)
@@ -7881,10 +8725,25 @@ if HAS_UI:
             self._panel_interval = 0.10
             self._next_panel_refresh = self._last
             self._net_per_frame = 64
+            # In-frame start questionnaire (character number -> look + physics,
+            # position number -> smart start, player name when online).
+            _default_char = str(int(_safe_int_seed(game.id["seed"]) % 1000))
+            _fields = [
+                {"key": "character", "prompt": "Character number — any number shapes your look and physics",
+                 "default": _default_char, "hint": "digits, decimal point, minus", "numeric": True},
+                {"key": "position", "prompt": "Position number — chooses where you start (smartly)",
+                 "default": _default_char, "hint": "same number = start near your character's home", "numeric": True},
+            ]
             if game.online:
-                name, ok = QInputDialog.getText(self, "Player name", "Name on the orbit:", text="Player")
-                if ok and name.strip():
-                    game.player_name = name.strip()[:24]
+                _fields.append({"key": "name", "prompt": "Player name on the orbit", "default": "Player",
+                                "hint": "letters and digits", "numeric": False})
+                _fields.append({"key": "world", "prompt": "World mode with other players: my / their / blend, or a ratio 0–1 (your share)",
+                                "default": "blend", "hint": "both 'my' = separate worlds · both 'blend' = full merge · otherwise averaged",
+                                "numeric": False, "free": True})
+            _fields.append({"key": "controls", "prompt": "Edit controls (optional) — type action=KEY, action=KEY",
+                            "default": "", "hint": "e.g. jump=J, fire=K · keys listed on the right", "numeric": False,
+                            "free": True})
+            game.questionnaire = {"step": 0, "buf": "", "fields": _fields, "answers": {}}
             # seed the panel with existing chat/status
             for entry in game.chat_log:
                 self.panel.append_status(f"[{entry['t']:.1f}] {entry['sender']}: {entry['text']}")
@@ -7960,6 +8819,9 @@ if HAS_UI:
 
         def changeEvent(self, e):
             super().changeEvent(e)
+            if e.type() == QEvent.Type.ActivationChange and not self.isActiveWindow():
+                try: self.view.unlock_mouse()
+                except Exception: pass
             if e.type() == QEvent.Type.WindowStateChange:
                 minimized = self.isMinimized()
                 self._set_runtime_active(not minimized)
@@ -7968,9 +8830,82 @@ if HAS_UI:
                 elif self.isVisible() and not self.timer.isActive():
                     self.timer.start()
 
+        def _answer_questionnaire(self, e):
+            g = self.game; q = g.questionnaire; k = e.key()
+            field = q["fields"][q["step"]]
+            if k in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape):
+                val = q["buf"].strip() if k != Qt.Key.Key_Escape else ""
+                q["answers"][field["key"]] = val or field["default"]
+                q["buf"] = ""; q["step"] += 1
+                if q["step"] >= len(q["fields"]):
+                    a = q["answers"]
+                    if a.get("name"):
+                        g.player_name = str(a["name"])[:24]
+                    if a.get("controls"):
+                        g.remap_controls(a["controls"])
+                    if a.get("world"):
+                        g.set_world_pref(g.parse_world_pref(a["world"]))
+                    g.questionnaire = None
+                    g.set_character(a.get("character"), a.get("position"))
+                self.view.update(); return
+            if k == Qt.Key.Key_Backspace:
+                q["buf"] = q["buf"][:-1]
+            else:
+                ch = e.text()
+                if ch and (ch.isdigit() or (field["numeric"] and ch in ".-") or (not field["numeric"] and (ch.isalnum() or ch in " _-"))
+                           or (field.get("free") and ch in "=,.")):
+                    q["buf"] = (q["buf"] + ch)[:96 if field.get("free") else 32]
+            self.view.update()
+
+        def keyReleaseEvent(self, e):
+            if e.key() == Qt.Key.Key_F8 and not e.isAutoRepeat():
+                _groovebox_ptt(False)
+                return
+            try:
+                super().keyReleaseEvent(e)
+            except Exception:
+                pass
+
         def keyPressEvent(self, e):
             g = self.game
             k = e.key()
+            if getattr(g, "questionnaire", None):
+                self._answer_questionnaire(e); return
+            # GROOVEBOX_R23R_INFRAME_CHAT_20261101: Enter always opens the local chat
+            # line in the frame; Enter sends (chat or /commands), Esc cancels.
+            if getattr(g, "chat_compose", None) is not None:
+                if k in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                    text = g.chat_compose.strip(); g.chat_compose = None
+                    if text:
+                        try:
+                            self.panel.chat_edit.setText(text); self.panel._send_chat()
+                        except Exception as _chat_exc:
+                            print(f"[chat] {_chat_exc}")
+                elif k == Qt.Key.Key_Escape:
+                    g.chat_compose = None
+                elif k == Qt.Key.Key_Backspace:
+                    g.chat_compose = g.chat_compose[:-1]
+                elif e.text() and e.text().isprintable():
+                    g.chat_compose = (g.chat_compose + e.text())[:160]
+                self.view.update(); return
+            if k in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not self.panel.isVisible():
+                self.view.unlock_mouse(); g.chat_compose = ""; self.view.update(); return
+            # GROOVEBOX_R23R_JAM_PTT_SHARE_20261101: hold F8 = push-to-talk through
+            # the local Groovebox (mic-only live stream heard by nearby players).
+            if k == Qt.Key.Key_F8:
+                if not e.isAutoRepeat():
+                    _groovebox_ptt(True)
+                return
+            # F2 = main menu (the former side panel); releases the mouse.
+            if k == Qt.Key.Key_F2:
+                self.view.unlock_mouse()
+                self.panel.setVisible(not self.panel.isVisible())
+                self.view.update(); return
+            if k == Qt.Key.Key_Escape and getattr(self.view, "_locked", False):
+                self.view.unlock_mouse(); self.view.update(); return
+            if k in (Qt.Key.Key_E, Qt.Key.Key_X, Qt.Key.Key_Z) and hasattr(g, "features"):
+                g.feature_action({Qt.Key.Key_E: "detach", Qt.Key.Key_X: "attach", Qt.Key.Key_Z: "transmute"}[k])
+                self.view.update(); return
             # ESC always opens/closes the status menu (active-element readout).
             if k == Qt.Key.Key_Escape:
                 try:
@@ -8062,15 +8997,31 @@ def parse_args(argv):
 def _write_wav_mono(path, samples, sr=22050):
     """Write a mono float list as 16-bit PCM WAV (stdlib only)."""
     n = len(samples) or 1
-    with wave.open(path, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(sr)
-        frames = bytearray()
-        for s in samples:
-            v = int(max(-1.0, min(1.0, float(s))) * 32767)
-            frames += struct.pack("<h", v)
-        w.writeframes(bytes(frames))
+    # Never leave a zero-byte/half-written WAV that a later launch mistakes for
+    # a completed asset. Write beside the destination, then atomically publish.
+    parent = os.path.dirname(os.path.abspath(path)) or "."
+    os.makedirs(parent, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".wav-install-", suffix=".tmp", dir=parent)
+    os.close(fd)
+    try:
+        with wave.open(tmp, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sr)
+            frames = bytearray()
+            for s in samples:
+                v = int(max(-1.0, min(1.0, float(s))) * 32767)
+                frames += struct.pack("<h", v)
+            w.writeframes(bytes(frames))
+        with wave.open(tmp, "rb") as check:
+            if check.getnframes() < 1 or check.getframerate() != sr:
+                raise wave.Error("generated WAV failed validation")
+        os.replace(tmp, path)
+    finally:
+        try:
+            if os.path.exists(tmp): os.remove(tmp)
+        except OSError:
+            pass
 
 
 def _render_music_mono(seed, seconds=12.0, sr=22050):
@@ -8140,16 +9091,24 @@ def install_game(identity, root_dir=None, progress=None):
             elif kind == "sfx":
                 _write_wav_mono(path, _render_sfx_mono(seeds, os.path.basename(path)[:-4]))
             elif kind == "models":
-                with open(path, "w", encoding="utf-8") as f:
-                    json.dump({
-                        "name": os.path.basename(path)[:-5],
-                        "primitive": prim[i % len(prim)],
-                        "from_seed": True,
-                        "seed": seed_val,
-                    }, f, indent=2)
-            ensured += 1
-        except Exception:
-            pass
+                model_tmp = path + ".tmp"
+                try:
+                    with open(model_tmp, "w", encoding="utf-8") as f:
+                        json.dump({
+                            "name": os.path.basename(path)[:-5],
+                            "primitive": prim[i % len(prim)],
+                            "from_seed": True,
+                            "seed": seed_val,
+                        }, f, indent=2)
+                    os.replace(model_tmp, path)
+                finally:
+                    try:
+                        if os.path.exists(model_tmp): os.remove(model_tmp)
+                    except OSError: pass
+            if os.path.isfile(path) and os.path.getsize(path) > 44:
+                ensured += 1
+        except Exception as err:
+            print(f"[SIM] asset install failed for {os.path.basename(path)}: {err}")
     mpath = os.path.join(dirs["assets"], f"assets_{fp}.json")
     try:
         with open(mpath, "w", encoding="utf-8") as f:
@@ -8236,9 +9195,18 @@ def main(argv=None):
     QApplication.processEvents()
     loading.set_status("Preparing /tmp kit…")
 
+    # Installation is CPU-heavy (WAV synthesis can generate hundreds of thousands
+    # of samples). Run it independently and marshal progress back to the GUI thread;
+    # QApplication.processEvents alone cannot keep up when one WAV takes seconds.
+    _install_events = queue.Queue(maxsize=64)
     def _install_progress(done, total, text):
-        loading.set_status(text)
-        loading.set_progress(done, total)
+        try:
+            _install_events.put_nowait((int(done), int(total), str(text)))
+        except queue.Full:
+            try: _install_events.get_nowait()
+            except queue.Empty: pass
+            try: _install_events.put_nowait((int(done), int(total), str(text)))
+            except queue.Full: pass
 
     # Explicit kit root under /tmp so in-app launches are inspectable:
     #   /tmp/groovebox_games/<fingerprint>/assets/{sfx,media,models}
@@ -8255,13 +9223,38 @@ def main(argv=None):
         _sim_dir = tempfile.mkdtemp(prefix="vg_sim_", dir="/tmp")
 
     loading.set_status(f"Installing assets → {_sim_dir}")
-    _n_assets = 0
+    _install_result = {"assets": 0, "error": None, "done": False}
+    def _install_worker():
+        try:
+            _install_result["assets"] = install_game(IDENTITY, root_dir=_sim_dir, progress=_install_progress)
+        except Exception as err:
+            _install_result["error"] = str(err)
+        finally:
+            _install_result["done"] = True
+    _install_thread = threading.Thread(target=_install_worker, name="GrooveboxGameAssetInstall", daemon=True)
+    _install_thread.start()
+    while _install_thread.is_alive():
+        try:
+            while True:
+                done, total, message = _install_events.get_nowait()
+                loading.set_status(message); loading.set_progress(done, total)
+        except queue.Empty:
+            pass
+        QApplication.processEvents()
+        time.sleep(0.015)
+    _install_thread.join(timeout=0.2)
     try:
-        _n_assets = install_game(IDENTITY, root_dir=_sim_dir, progress=_install_progress)
+        while True:
+            done, total, message = _install_events.get_nowait()
+            loading.set_status(message); loading.set_progress(done, total)
+    except queue.Empty:
+        pass
+    if _install_result["error"]:
+        print(f"[SIM] asset install: {_install_result['error']}")
+        loading.set_status(f"Asset step partially skipped: {_install_result['error']}")
+    else:
+        _n_assets = int(_install_result["assets"] or 0)
         loading.set_status(f"Kit ready ({_n_assets} assets) in {_sim_dir}")
-    except Exception as err:
-        print(f"[SIM] asset install: {err}")
-        loading.set_status(f"Asset step skipped: {err}")
 
     loading.set_status("Building world + network…")
     QApplication.processEvents()
@@ -8715,8 +9708,8 @@ def seed_script_state(seed_script, t=0.0):
         elif not _re.match(r"^(if|elif|else|for|while|def|class|with|try|except|finally)\b", last) and not _re.match(r"^[A-Za-z_]\w*\s*(?:\+=|-=|\*=|/=|%=|=)(?!=)", last):
             body[-1] = f"_result = ({last})"
         local = dict(env); local["_result"] = None
-        tree = _ast.parse("\n".join(body), mode="exec")
-        exec(compile(tree, "<game-seed>", "exec"), {"__builtins__": {}}, local)
+        import ot_script_math as _otm
+        exec(_otm.compile_script("\n".join(body), "<game-seed>", "exec", local), _otm.install({"__builtins__": {}}), local)
         result = local.get("_result"); vals = list(result) if isinstance(result, (list, tuple)) else ([result] if isinstance(result, (int, float)) else [])
         vals = [float(v) for v in vals if isinstance(v, (int, float)) and math.isfinite(float(v))]
         vars_ = {k: float(v) for k,v in local.items() if not k.startswith("_") and k not in env and isinstance(v,(int,float)) and math.isfinite(float(v))}
@@ -8771,6 +9764,62 @@ def game_triad(seed) -> Dict[str, Any]:
     package can be cross-verified to have come from one project (and one seed).
     """
     return build_triad_quantities(seed)
+
+
+def build_game_media_capability_contract(seed, composition_meta=None, identity=None):
+    """Describe the supported audio/video-to-game bridge in a reproducible form.
+
+    This manifest is intentionally data-only: game renderers may consume the
+    same normalized channels to build HUDs, objects, materials, animations,
+    scene transitions, and sound responses without mutating source projects.
+    Unknown future channels can be added without invalidating existing exports.
+    """
+    meta = composition_meta if isinstance(composition_meta, dict) else {}
+    ident = identity if isinstance(identity, dict) else (identity.to_dict() if hasattr(identity, 'to_dict') else {})
+    fingerprint = str(ident.get('composition_fingerprint') or hashlib.sha256((str(_safe_int_seed(seed)) + json.dumps(meta, sort_keys=True, default=str)).encode('utf-8')).hexdigest()[:24])
+    audio = {
+        'analysis_channels': ['rms', 'peak', 'onset', 'beat_phase', 'tempo', 'pitch', 'chord_root', 'chord_intervals', 'spectral_centroid', 'spectral_flux', 'stereo_width', 'instrument_envelopes'],
+        'render_outputs': ['pcm_float', 'wav', 'music_bed', 'live_sfx', 'per_instrument_stems'],
+        'game_bindings': ['ui_pulse', 'object_motion', 'material_emission', 'particle_rate', 'camera_shake', 'animation_rate', 'event_trigger', 'adaptive_music'],
+        'normalization': 'finite_clamped_0_to_1_for_control_signals',
+    }
+    video = {
+        'frame_outputs': ['rgb24', 'rgba32', 'video_file', 'live_frame'],
+        'visual_channels': ['layer_weights', 'opacity', 'hue', 'depth', 'parallax', 'motion_vectors', 'masks', 'scene_phase', 'canonical_identity'],
+        'game_bindings': ['hud_layout', 'sprite_and_mesh_parameters', 'texture_materials', 'world_objects', 'environment', 'particles', 'camera', 'transitions', 'ui_theme'],
+        'asset_families': list(TEXTURE_FAMILIES),
+        'model_primitives': list(MODEL_PRIMITIVES),
+    }
+    media = meta.get('game_bound_media') if isinstance(meta.get('game_bound_media'), dict) else {}
+    return {
+        'schema': 'groovebox.game-media-bridge.v1',
+        'seed': _safe_int_seed(seed),
+        'composition_fingerprint': fingerprint,
+        'deterministic': True,
+        'audio': audio,
+        'video': video,
+        'game_objects': {
+            'procedural_generation': True,
+            'supports': ['ui_components', 'sprites', 'meshes', 'materials', 'objects', 'environments', 'animations', 'particles', 'audio_events', 'scene_graphs'],
+            'seeded_asset_manifest': True,
+            'bound_media_present': bool(media),
+            'user_media_staged_package_relative': True,
+        },
+        'interaction': {
+            'audio_to_visual': True,
+            'visual_to_audio': True,
+            'game_event_to_audio_visual': True,
+            'canonical_context_shared': True,
+            'frame_timing': 'explicit_frame_index',
+            'random_probability': False,
+        },
+        'data_protection': {
+            'source_project_mutated': False,
+            'external_paths_rewritten_to_package_relative': True,
+            'package_local_userdata_boundary': 'ProtectedFS',
+            'private_media_embedded_only_when_explicitly_bound': True,
+        },
+    }
 
 
 _REPLACEMENTS = (
@@ -8962,6 +10011,10 @@ def export_game_files(identity: GameIdentity, out_dir: str, composition_meta: Op
             "triad": triad_of(identity.seed, identity.to_dict()),
             "how_to_play": "HOW_TO_PLAY.md",
         }, f, indent=2, sort_keys=True)
+    # Full audio/video-to-game output capability contract for UI/object generation.
+    media_contract_path = os.path.join(out_dir, "game_media_capabilities.json")
+    with open(media_contract_path, "w", encoding="utf-8") as f:
+        json.dump(build_game_media_capability_contract(identity.seed, composition_meta, identity), f, indent=2, sort_keys=True)
     _write_launchers(out_dir, identity.composition_fingerprint)
     _write_package_readme(out_dir, identity)
     # THREE-PATHWAY_CONTRACT: every package also ships the play guide and the
@@ -9787,6 +10840,51 @@ Write-Host "    Restart your terminal (PATH was updated), then run:   python gro
 }
 
 
+def stage_game_mcc_media(out_dir: str, composition_audio=None) -> Optional[str]:
+    """Put the MCC codec and (when given) the composition audio into a game folder.
+
+    GROOVEBOX_R23R_MCC_MEDIA_CODEC_20261101: composition_audio = (samples, sample_rate)
+    of the real Groovebox mixdown; the game decodes media/composition.mcc and plays
+    it as its music (exact composition, not an approximation).
+    """
+    try:
+        import mcc_media as _mm
+    except Exception:
+        return None
+    try:
+        shutil.copy2(_mm.__file__, os.path.join(out_dir, "mcc_media.py"))
+    except Exception:
+        pass
+    if composition_audio is None:
+        return None
+    samples, sr = composition_audio
+    os.makedirs(os.path.join(out_dir, "media"), exist_ok=True)
+    return _mm.encode_audio(os.path.join(out_dir, "media", "composition.mcc"),
+                            __import__("numpy").asarray(samples, dtype="float32"), int(sr))
+
+
+def package_game_mcc(identity: GameIdentity, out_mcc: str, composition_meta: Optional[Dict[str, Any]] = None,
+                     extra_files: Optional[Dict[str, Any]] = None, composition_audio=None) -> str:
+    """Package a videogame export as one .MCC package (replaces the .zip):
+    the same files as package_game_zip plus the MCC codec and, when available,
+    the real composition audio as media/composition.mcc."""
+    import mcc_media as _mm
+    tmpdir = tempfile.mkdtemp(prefix="groovebox_game_pkg_")
+    try:
+        export_game_files(identity, tmpdir, composition_meta, extra_files)
+        stage_game_mcc_media(tmpdir, composition_audio)
+        for base, _dirs, files in os.walk(tmpdir):
+            for name in files:
+                if name.endswith((".sh", ".command")):
+                    pth = os.path.join(base, name)
+                    os.chmod(pth, os.stat(pth).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        os.makedirs(os.path.dirname(os.path.abspath(out_mcc)) or ".", exist_ok=True)
+        return os.path.abspath(_mm.pack_tree(tmpdir, out_mcc, manifest={
+            "title": identity.title, "fingerprint": identity.composition_fingerprint}))
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def package_game_zip(identity: GameIdentity, out_zip: str, composition_meta: Optional[Dict[str, Any]] = None, extra_files: Optional[Dict[str, Any]] = None) -> str:
     """Package a videogame export as a single .zip: deterministic game script +
     identity JSON + README + Windows/macOS/Linux launchers + the dependency
@@ -9817,3 +10915,10 @@ def package_game_zip(identity: GameIdentity, out_zip: str, composition_meta: Opt
         return os.path.abspath(out_zip)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+# GROOVEBOX_R23R_NONMODAL_DIALOGS_20261103: no dialog may block other windows.
+try:
+    import nonmodal_dialogs as _gb_nonmodal
+    _gb_nonmodal.install()
+except Exception:
+    pass

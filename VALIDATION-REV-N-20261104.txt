@@ -1,0 +1,30 @@
+REV-N PROGRESS VALIDATION — 2026-11-04
+
+Changes in this pass
+- Reconciled the shared thread budget with the repository's explicit contract tests:
+  compute width = usable logical CPUs + one spare (capped at 16; one CPU stays 1),
+  shared task slots = 2x usable CPUs (minimum 8, maximum 32).
+- The main runtime now records the sCode worker-slot budget before NumPy import.
+- Synchronized the active v35.22zz ISO overlay copies for the runtime and supporting
+  modules covered by the overlay synchronization tests, including groovebox.py,
+  performance.py, shared_synth_context.py, hardware helpers, media tools and thread_budget.py.
+- Preserved Live Jam engine module and existing source tree; no claim of complete Qt/audio
+  Live Jam integration is made by this progress release.
+
+Validation performed
+- 37 targeted tests passed, including thread-budget contracts, ISO overlay byte-sync
+  contracts, canonical async export, hardware/thread lifecycle, clip timeline and
+  mathematical composition contracts.
+- py_compile passed for thread_budget.py, live_jam.py, groovebox.py, performance.py,
+  and multidim_synth.py.
+
+Not performed / limitations
+- A bootable ISO image was not built in this environment; validation is source-overlay
+  and contract-test validation, not a boot-on-hardware certification.
+- Full application audio/video live-stream soak tests and physical-device/game latency
+  benchmarks remain outstanding.
+- The 32 figure is a maximum bounded task-slot ceiling, not 32 CPU cores. On an 8-core
+  host the current tested policy exposes 16 shared worker slots, with lane-specific limits
+  and backpressure to protect real-time audio.
+- The Live Jam controller remains an engine-side module; complete GUI/key-event/audio
+  callback integration is still outstanding.

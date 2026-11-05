@@ -1,0 +1,5 @@
+R29H validation status
+
+This report is populated by the release validation run. PyQt6 GUI tests and target
+hardware tests may be unavailable in the build environment; those limitations are
+reported separately and are not counted as passes.

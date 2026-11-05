@@ -1,0 +1,33 @@
+GROOVEBOX R29H — AUTOMATION / DIMENSIONAL / MCC FOLLOW-UP
+Date: 2026-11-04
+
+Implemented in source and active v35.22zz overlay:
+- Ship mcc_integrity.py in the active application overlay and add it to the
+  overlay synchronization manifest. MCC sidecar write and verified-load paths
+  remain enabled; this addresses the repeated missing-module warning at its
+  packaging cause.
+- Separate automation source scope from point destination. Automation-strip
+  refresh now keys from the selected source instrument/sequence, even after a
+  point teleports the main Sequencer to a different destination. Manual source
+  instrument/sequence changes rebind the lane; destination teleports are guarded
+  so they do not masquerade as manual source changes.
+- Replace the previous multi-screen dimensional minimum (2.1975x display width
+  and 3x display width height) with a display-bounded frame capped at 1600x1120.
+  The embedded dimensional view no longer forces a 900x640 minimum. Side rails
+  are housed inside the panel edges and their vertical scrollbar is disabled.
+- Add explicit design intent and acceptance notes to HELP_TEXT.md and
+  NOTES-R29H-DIMENSIONAL-AUTOMATION-FINISH-DIRECTION-20261104.md.
+
+Validation:
+- Python compilation passed for groovebox.py, multidim_ui.py and mcc_integrity.py.
+- Active-overlay mcc_integrity import, sidecar write, verification and tamper
+  rejection smoke check passed.
+- test_algorithm_automation_parity.py, test_hf25_release_integrity.py and
+  test_mcc_convert_20261102.py: 7 passed.
+
+Not claimed:
+- No live Qt GUI/audio session was available; visual fit of all four geometric
+  editors at native size and no-scroll side-panel reachability still need a
+  real display pass.
+- Simultaneous live step-record plus retrigger playback is not validated here.
+- ISO image was not rebuilt or boot-tested in this pass.
