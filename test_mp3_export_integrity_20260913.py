@@ -80,8 +80,10 @@ class MP3ExportIntegrityTests(unittest.TestCase):
 
     def test_groovebox_export_calls_depth_aware_quantizer(self):
         text = Path('groovebox.py').read_text(encoding='utf-8')
-        self.assertIn('pcm = quantize_float_master(master, export_bit_depth)', text)
-        self.assertIn('expected_float_peak=_export_peak', text)
+        # Current R28.4.x snapshots bit depth into the background export job;
+        # the shared audio_export_integrity worker performs depth-aware quantizing.
+        self.assertIn('bit_depth=int(export_bit_depth)', text)
+        self.assertIn('pcm = quantize_float_master(master, 16)', text)
         self.assertIn('verify_encoded_level(', text)
         self.assertNotIn('pcm = (np.clip(master, -1.0, 1.0) * 32767.0).astype(np.int16)', text)
 

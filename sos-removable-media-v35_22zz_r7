@@ -1,0 +1,656 @@
+#!/bin/sh
+# GROOVEBOX_V35_22ZZ_R28_4_5_REPEATABLE_MICROSD_RESCAN_20261017
+# GROOVEBOX_V35_22ZZ_HF26_MICROSD_FAST_SETTLE_DELL3510_20261028
+# GROOVEBOX_V35_22ZZ_HF28.2_ISO_GENERIC_SDHCI_AUDIO_20261028
+# GROOVEBOX_V35_22ZZ_R23P_BOOT_HARDWARE_INIT_20261004
+# GROOVEBOX_V35_22ZZ_R23O_SAFE_FIRSTLOAD_RTSX_MSI_20261004
+# GROOVEBOX_V35_22ZZ_R23N_HWUCM_CAPTURE_MSI_READER_20261004
+# GROOVEBOX_V35_22ZZ_R23M_MFD_PLATFORM_BIND_20261004
+# GROOVEBOX_V35_22ZZ_R23L_SDMMC_CHILD_REBIND_20261003
+# GROOVEBOX_V35_22ZZ_R23K_BOUNDED_READER_RESCAN_20261003
+# GROOVEBOX_V35_22ZZ_R23I_REALTEK_SD_LUN_20261003
+# GROOVEBOX_V35_22ZZ_R23H_REALTEK_REBIND_DAEMON_20261002
+# GROOVEBOX_V35_22ZZ_R23G_READER_DISCOVERY_RETRY_20261002
+# GROOVEBOX_V35_22ZZ_R23E_MICROSD_WHOLE_DEVICE_RETRY_20261001
+# GROOVEBOX_V35_22ZZ_R19_MICROSD_DIAGNOSTIC_STATUS_20260930
+# GROOVEBOX_V35_22ZZ_R18_MICROSD_EXACT_MOUNT_RETRY_20260930
+# GROOVEBOX_V35_22ZZ_R17_PARTITION_AWARE_REMOVABLE_FORMAT_20260930
+# GROOVEBOX_V35_22ZZ_R7_LATITUDE_3510_MICROSD_AUTOMOUNT_20260928
+# GROOVEBOX_V35_22ZZ_R7B_REMOVABLE_WRITABLE_TRANSFER_20260928
+# GROOVEBOX_V35_22ZZ_R10_REMOVABLE_REQUEST_MOUNT_20260929
+set +e
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+ROOT=/run/media/groovebox
+LOG=/var/log/sos/removable-media-v35.22zz-r10.log
+PID=/run/sos/removable-media-v35.22zz-r10.pid
+CTRL=/run/sos/removable-control
+REQ="$CTRL/rescan.request"
+FMTREQ="$CTRL/format.request"
+MOUNTREQ="$CTRL/mount.request"
+STATUSROOT=/run/sos/removable-status
+mkdir -p /run/sos /var/log/sos "$ROOT" "$CTRL" "$STATUSROOT" 2>/dev/null || true
+chmod 0755 "$STATUSROOT" 2>/dev/null || true
+chmod 0755 "$ROOT" 2>/dev/null || true
+if id groovebox >/dev/null 2>&1; then
+  chown groovebox:groovebox "$CTRL" 2>/dev/null || true
+  chmod 0770 "$CTRL" 2>/dev/null || true
+fi
+log(){ printf '%s\n' "$*" >>"$LOG" 2>/dev/null || true; }
+status_write(){ dev="$1"; state="$2"; detail="$3"; [ -n "$dev" ] || return 0; base="$(basename "$dev")"; printf '%s|%s|%s\n' "$state" "$dev" "$detail" >"$STATUSROOT/$base.status" 2>/dev/null || true; chmod 0644 "$STATUSROOT/$base.status" 2>/dev/null || true; }
+
+load_modules(){
+  command -v modprobe >/dev/null 2>&1 || return 0
+  # Dell Latitude 3510 internal Realtek reader may enumerate through PCIe or
+  # USB glue and can surface as either mmcblkN or a removable sdX device.
+  # R28.4.9-HW: force MSI-safe load order and keep controller awake before
+  # any block scan (addresses cards that never appear after EFI boot).
+  modprobe rtsx_pci >>"$LOG" 2>&1 || true
+  # Prefer MSI off on some 3510 BIOSes where MSI leaves the reader silent.
+  if [ -w /sys/module/rtsx_pci/parameters/msi_en ]; then
+    echo 0 >/sys/module/rtsx_pci/parameters/msi_en 2>>"$LOG" || true
+  fi
+  modprobe rtsx_pci_sdmmc >>"$LOG" 2>&1 || true
+  for m in mmc_core mmc_block rtsx_usb rtsx_usb_sdmmc sdhci sdhci_pci sdhci_acpi sd_mod scsi_mod uas usb_storage fat vfat exfat ntfs3 nls_utf8 nls_cp437 nls_iso8859_1; do
+    modprobe "$m" >>"$LOG" 2>&1 || true
+  done
+  # Explicit MMC host rescan — required when the card is present at boot but
+  # the block device was never published.
+  for h in /sys/class/mmc_host/mmc*; do
+    [ -w "$h/rescan" ] && echo 1 >"$h/rescan" 2>>"$LOG" || true
+  done
+  # Generic laptop SDHCI / ACPI hosts (non-Realtek ISO targets).
+  for h in /sys/bus/pci/drivers/sdhci-pci/*:* /sys/bus/platform/drivers/sdhci-acpi/*; do
+    [ -e "$h" ] || continue
+    [ -w "$h/power/control" ] && echo on >"$h/power/control" 2>>"$LOG" || true
+  done
+  for rd in /sys/bus/pci/drivers/rtsx_pci/*:*; do
+    [ -e "$rd" ] || continue
+    [ -w "$rd/power/control" ] && echo on >"$rd/power/control" 2>>"$LOG" || true
+    [ -w "$rd/power/autosuspend_delay_ms" ] && echo -1 >"$rd/power/autosuspend_delay_ms" 2>>"$LOG" || true
+  done
+}
+
+
+deep_rescan(){
+  # GROOVEBOX_V35_22ZZ_R14_MICROSD_DEEP_RESCAN_20260930
+  # Explicit only: rediscover PCIe Realtek readers and SCSI/USB card-reader LUNs
+  # without unbinding a live driver or touching mounted media.
+  [ -w /sys/bus/pci/rescan ] && echo 1 >/sys/bus/pci/rescan 2>>"$LOG" || true
+  # Keep the dedicated Realtek card reader awake while a card is being
+  # discovered. Runtime PM can otherwise leave the controller visible in sysfs
+  # without ever publishing an mmcblk device after insertion.
+  for rd in /sys/bus/pci/drivers/rtsx_pci/*:*; do
+    [ -e "$rd" ] || continue
+    [ -w "$rd/power/control" ] && echo on >"$rd/power/control" 2>>"$LOG" || true
+    [ -w "$rd/power/autosuspend_delay_ms" ] && echo -1 >"$rd/power/autosuspend_delay_ms" 2>>"$LOG" || true
+  done
+  for host in /sys/class/scsi_host/host*; do
+    [ -w "$host/scan" ] && echo '- - -' >"$host/scan" 2>>"$LOG" || true
+  done
+  if command -v udevadm >/dev/null 2>&1; then
+    udevadm trigger --subsystem-match=pci --action=change >>"$LOG" 2>&1 || true
+    udevadm trigger --subsystem-match=mmc --action=add >>"$LOG" 2>&1 || true
+    udevadm trigger --subsystem-match=platform --action=change >>"$LOG" 2>&1 || true
+    udevadm trigger --subsystem-match=block --action=change >>"$LOG" 2>&1 || true
+    udevadm settle --timeout=2 >>"$LOG" 2>&1 || true
+  fi
+  for d in /sys/bus/pci/drivers/rtsx_pci/*:*; do [ -e "$d" ] && log "MICROSD_READER|RTSX_PCI|$(basename "$d")"; done
+  for h in /sys/class/mmc_host/mmc*; do [ -e "$h" ] && log "MICROSD_HOST|$(basename "$h")"; done
+}
+
+
+is_card_reader_disk(){
+  dev="$1"; base="$(basename "$dev")"
+  [ -b "$dev" ] || return 1
+  [ "$(cat "/sys/class/block/$base/removable" 2>/dev/null)" = 1 ] && return 0
+  vendor="$(cat "/sys/class/block/$base/device/vendor" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  model="$(cat "/sys/class/block/$base/device/model" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  case "$vendor $model" in *realtek*|*sd/mmc*|*card*reader*|*usb2.0-crw*) return 0 ;; esac
+  if command -v udevadm >/dev/null 2>&1; then
+    props="$(udevadm info -q property -n "$dev" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+    printf '%s\n' "$props" | grep -Eq '(^id_vendor_id=0bda$|id_vendor=.*realtek|id_model=.*(card|crw|sd|mmc)|id_drive_flash_sd=1|id_drive_media_flash_sd=1)' && return 0
+  fi
+  real="$(readlink -f "/sys/class/block/$base/device" 2>/dev/null)"
+  case "$real" in *rtsx*|*mmc*|*0bda*) return 0 ;; esac
+  return 1
+}
+
+rebind_realtek_usb_reader_once(){
+  [ -d /sys/bus/usb/drivers/rtsx_usb ] || return 0
+  [ -w /sys/bus/usb/drivers/rtsx_usb/unbind ] || return 0
+  [ -w /sys/bus/usb/drivers/rtsx_usb/bind ] || return 0
+  for intf in /sys/bus/usb/drivers/rtsx_usb/*:*; do
+    [ -e "$intf" ] || continue
+    id="$(basename "$intf")"
+    log "MICROSD_USB_READER_REBIND|BEGIN|$id"
+    echo "$id" >/sys/bus/usb/drivers/rtsx_usb/unbind 2>>"$LOG" || continue
+    sleep 0.35
+    echo "$id" >/sys/bus/usb/drivers/rtsx_usb/bind 2>>"$LOG" || true
+    log "MICROSD_USB_READER_REBIND|END|$id"
+  done
+}
+
+sanitize(){ printf '%s' "$1" | tr -cs 'A-Za-z0-9._-' '_' | sed 's/^_*//;s/_*$//' | cut -c1-48; }
+ismounted(){ awk -v d="$1" '$1==d {found=1} END{exit !found}' /proc/mounts 2>/dev/null; }
+
+mount_one(){
+  dev="$1"; [ -b "$dev" ] || return 0
+  ismounted "$dev" && return 0
+  type=''; label=''
+  if command -v blkid >/dev/null 2>&1; then
+    type="$(blkid -o value -s TYPE "$dev" 2>/dev/null | head -1)"
+    label="$(blkid -o value -s LABEL "$dev" 2>/dev/null | head -1)"
+  fi
+  kind=REMOVABLE
+  case "$dev" in /dev/mmcblk*) kind=MICROSD ;; esac
+  if [ -z "$type" ] && command -v lsblk >/dev/null 2>&1; then
+    type="$(lsblk -ndo FSTYPE "$dev" 2>/dev/null | head -1)"
+  fi
+  # HF27: ensure VFAT codepage modules exist before mount attempts (common
+  # Dell Latitude 3510 ISO failure: card visible, mount fails without nls_*).
+  if command -v modprobe >/dev/null 2>&1; then
+    for m in nls_utf8 nls_cp437 nls_iso8859_1 fat vfat exfat ntfs3; do
+      modprobe "$m" >>"$LOG" 2>&1 || true
+    done
+  fi
+  if [ -z "$type" ]; then
+    log "${kind}_DETECTED|FSTYPE_PENDING|$dev"
+    case "$(basename "$dev")" in *p[0-9]*|sd[a-z]*[0-9]*) status_write "$dev" NO_FILESYSTEM "partition present; filesystem not yet readable — retrying mount" ;; *) status_write "$dev" NO_PARTITION_OR_FILESYSTEM "card/block present but no partition table or filesystem yet — rescanning" ;; esac
+    # A newly inserted Realtek/MMC card can exist before blkid sees its partition.
+    # Try auto-detect, then explicit common card filesystems (vfat/exfat).
+    safe="$(basename "$dev")"; mp="$ROOT/$safe"; mkdir -p "$mp" 2>/dev/null || return 0
+    uid="$(id -u groovebox 2>/dev/null)"; gid="$(id -g groovebox 2>/dev/null)"
+    [ -n "$uid" ] || uid=0; [ -n "$gid" ] || gid=0
+    mounted=0
+    if mount -o rw,noatime "$dev" "$mp" >>"$LOG" 2>&1; then
+      mounted=1; type=auto
+    else
+      for try_fs in vfat exfat ntfs3; do
+        case "$try_fs" in
+          vfat) try_opts="rw,noatime,uid=$uid,gid=$gid,fmask=0133,dmask=0022,iocharset=utf8,codepage=437" ;;
+          exfat) try_opts="rw,noatime,uid=$uid,gid=$gid,fmask=0133,dmask=0022" ;;
+          *) try_opts="rw,noatime,uid=$uid,gid=$gid,umask=022" ;;
+        esac
+        if mount -t "$try_fs" -o "$try_opts" "$dev" "$mp" >>"$LOG" 2>&1; then
+          mounted=1; type="$try_fs"; break
+        fi
+      done
+    fi
+    if [ "$mounted" -eq 1 ]; then
+      log "${kind}_MOUNTED|PASS|$dev|$mp|$type"
+      status_write "$dev" MOUNTED "$mp|$type"
+      [ "$kind" = MICROSD ] && log "MICROSD_MOUNTED|PASS|$dev|$mp|$type"
+    else
+      rmdir "$mp" 2>/dev/null || true
+      status_write "$dev" MOUNT_FAILED "no readable filesystem yet (tried auto/vfat/exfat); insert or reformat card, or wait for partition scan"
+      [ "$kind" = MICROSD ] && log "MICROSD_MOUNTED|FAIL|$dev|no-fstype-after-explicit-tries"
+    fi
+    return 0
+  fi
+  # Never mount the optical/ISO filesystem that booted sOS as user storage.
+  case "$type" in iso9660|udf) log "${kind}_SKIP|BOOT_OR_OPTICAL|$dev|$type"; return 0 ;; esac
+  safe="$(sanitize "$label")"; [ -n "$safe" ] || safe="$(basename "$dev")"
+  mp="$ROOT/$safe"
+  if awk -v m="$mp" '$2==m {found=1} END{exit !found}' /proc/mounts 2>/dev/null; then
+    mp="$ROOT/${safe}-$(basename "$dev")"
+  fi
+  mkdir -p "$mp" 2>/dev/null || return 0
+  uid="$(id -u groovebox 2>/dev/null)"; gid="$(id -g groovebox 2>/dev/null)"
+  [ -n "$uid" ] || uid=0; [ -n "$gid" ] || gid=0
+  case "$type" in
+    vfat|msdos) opts="rw,noatime,uid=$uid,gid=$gid,fmask=0133,dmask=0022,iocharset=utf8,codepage=437"; fstype=vfat ;;
+    exfat) opts="rw,noatime,uid=$uid,gid=$gid,fmask=0133,dmask=0022"; fstype=exfat ;;
+    ntfs|ntfs3) opts="rw,noatime,uid=$uid,gid=$gid,umask=022"; fstype=ntfs3 ;;
+    *) opts="rw,noatime"; fstype="$type" ;;
+  esac
+  if mount -t "$fstype" -o "$opts" "$dev" "$mp" >>"$LOG" 2>&1 || mount -o rw,noatime "$dev" "$mp" >>"$LOG" 2>&1; then
+    log "${kind}_MOUNTED|PASS|$dev|$mp|$type"
+    status_write "$dev" MOUNTED "$mp|$type"
+    # Preserve frozen R7 verifier markers for mmc media.
+    [ "$kind" = MICROSD ] && log "MICROSD_MOUNTED|PASS|$dev|$mp|$type"
+    if command -v runuser >/dev/null 2>&1 && id groovebox >/dev/null 2>&1; then
+      if runuser -u groovebox -- test -w "$mp" 2>/dev/null; then
+        log "${kind}_WRITABLE|PASS|$dev|$mp|uid=$uid|gid=$gid|$type"
+        [ "$kind" = MICROSD ] && log "MICROSD_WRITABLE|PASS|$dev|$mp|uid=$uid|gid=$gid|$type"
+      else
+        log "${kind}_WRITABLE|FAIL|$dev|$mp|uid=$uid|gid=$gid|$type"
+        [ "$kind" = MICROSD ] && log "MICROSD_WRITABLE|FAIL|$dev|$mp|uid=$uid|gid=$gid|$type"
+      fi
+    fi
+  else
+    rmdir "$mp" 2>/dev/null || true
+    log "${kind}_MOUNTED|FAIL|$dev|$type"
+    status_write "$dev" MOUNT_FAILED "filesystem=$type"
+    [ "$kind" = MICROSD ] && log "MICROSD_MOUNTED|FAIL|$dev|$type"
+  fi
+}
+
+
+protected_device(){
+  target="$(readlink -f "$1" 2>/dev/null)"
+  [ -n "$target" ] || return 0
+  # Any device mounted outside the dedicated removable root is system/live media.
+  awk -v d="$target" -v r="$ROOT/" '
+    $1==d && index($2,r)!=1 {bad=1}
+    END{exit !bad}' /proc/mounts 2>/dev/null && return 0
+  return 1
+}
+
+safe_partition(){
+  dev="$1"; [ -b "$dev" ] || return 1
+  base="$(basename "$dev")"
+  parent=''
+  case "$base" in
+    mmcblk[0-9]*p[0-9]*) parent="${base%p*}" ;;
+    sd[a-z]*[0-9]*) parent="$(printf '%s' "$base" | sed 's/[0-9][0-9]*$//')" ;;
+    *) return 1 ;;
+  esac
+  [ -n "$parent" ] || return 1
+  if printf '%s' "$parent" | grep -q '^sd'; then
+    [ "$(cat "/sys/class/block/$parent/removable" 2>/dev/null)" = 1 ] || return 1
+  fi
+  protected_device "$dev" && return 1
+  protected_device "/dev/$parent" && return 1
+  return 0
+}
+
+format_one(){
+  dev="$1"; fs="$2"
+  safe_partition "$dev" || { log "REMOVABLE_FORMAT|REFUSED|$dev|unsafe-target"; return 1; }
+  case "$fs" in exfat|vfat|ext4) ;; *) log "REMOVABLE_FORMAT|REFUSED|$dev|bad-fs=$fs"; return 1 ;; esac
+  # It is safe to detach only mounts created under Groovebox's removable root.
+  awk -v d="$(readlink -f "$dev")" -v r="$ROOT/" '$1==d && index($2,r)==1 {print $2}' /proc/mounts 2>/dev/null | while read -r mp; do
+    umount "$mp" >>"$LOG" 2>&1 || exit 1
+    rmdir "$mp" 2>/dev/null || true
+  done
+  ismounted "$dev" && { log "REMOVABLE_FORMAT|REFUSED|$dev|still-mounted"; return 1; }
+  case "$fs" in
+    exfat) tool="$(command -v mkfs.exfat)"; [ -n "$tool" ] || { log "REMOVABLE_FORMAT|FAIL|$dev|mkfs.exfat-missing"; return 1; }; "$tool" "$dev" >>"$LOG" 2>&1 ;;
+    vfat) tool="$(command -v mkfs.vfat)"; [ -n "$tool" ] || tool="$(command -v mkfs.fat)"; [ -n "$tool" ] || { log "REMOVABLE_FORMAT|FAIL|$dev|mkfs.vfat-missing"; return 1; }; "$tool" -F 32 "$dev" >>"$LOG" 2>&1 ;;
+    ext4) tool="$(command -v mkfs.ext4)"; [ -n "$tool" ] || { log "REMOVABLE_FORMAT|FAIL|$dev|mkfs.ext4-missing"; return 1; }; "$tool" -F "$dev" >>"$LOG" 2>&1 ;;
+  esac
+  rc=$?
+  if [ "$rc" -eq 0 ]; then log "REMOVABLE_FORMAT|PASS|$dev|$fs"; scan_once; else log "REMOVABLE_FORMAT|FAIL|$dev|$fs|rc=$rc"; fi
+  return "$rc"
+}
+
+cleanup_removed(){
+  awk -v r="$ROOT/" '$2 ~ ("^" r) {print $1 " " $2}' /proc/mounts 2>/dev/null | while read -r dev mp; do
+    [ -b "$dev" ] && continue
+    umount -l "$mp" >>"$LOG" 2>&1 || true
+    rmdir "$mp" 2>/dev/null || true
+  done
+}
+
+scan_mmc(){
+  for disk in /dev/mmcblk[0-9]*; do
+    [ -b "$disk" ] || continue
+    case "$disk" in *p[0-9]*) continue;; esac
+    have_part=0
+    for part in "${disk}"p[0-9]*; do
+      [ -b "$part" ] || continue
+      have_part=1; mount_one "$part"
+    done
+    [ "$have_part" -eq 1 ] || mount_one "$disk"
+  done
+}
+
+scan_removable_sd(){
+  for disk in /dev/sd[a-z]; do
+    [ -b "$disk" ] || continue
+    base="$(basename "$disk")"
+    removable="$(cat "/sys/class/block/$base/removable" 2>/dev/null)"
+    is_card_reader_disk "$disk" || continue
+    have_part=0
+    for part in "${disk}"[0-9]*; do
+      [ -b "$part" ] || continue
+      have_part=1; mount_one "$part"
+    done
+    [ "$have_part" -eq 1 ] || mount_one "$disk"
+  done
+}
+
+whole_device(){
+  dev="$1"; base="$(basename "$dev")"
+  case "$base" in
+    mmcblk[0-9]*p[0-9]*) printf '/dev/%s\n' "${base%p*}" ;;
+    sd[a-z]*[0-9]*) printf '/dev/%s\n' "$(printf '%s' "$base" | sed 's/[0-9][0-9]*$//')" ;;
+    *) printf '%s\n' "$dev" ;;
+  esac
+}
+
+retry_mount_target(){
+  requested="$1"
+  dev="$(whole_device "$requested")"
+  case "$dev" in /dev/mmcblk[0-9]*|/dev/sd[a-z]) ;; *) log "REMOVABLE_MOUNT_REQUEST|REFUSED|$requested"; return 1 ;; esac
+  attempt=1
+  while [ "$attempt" -le 12 ]; do
+    load_modules
+    # Always settle/reread the containing card, even when the UI selected a
+    # partition. Realtek readers commonly publish p1 before its filesystem is
+    # readable; retrying only p1 misses the partition-table transition.
+    if command -v blockdev >/dev/null 2>&1 && [ -b "$dev" ]; then blockdev --rereadpt "$dev" >>"$LOG" 2>&1 || true; fi
+    if command -v partprobe >/dev/null 2>&1 && [ -b "$dev" ]; then partprobe "$dev" >>"$LOG" 2>&1 || true; fi
+    if command -v udevadm >/dev/null 2>&1; then
+      udevadm trigger --subsystem-match=mmc --action=change >>"$LOG" 2>&1 || true
+      udevadm trigger --subsystem-match=block --action=change >>"$LOG" 2>&1 || true
+      udevadm settle --timeout=2 >>"$LOG" 2>&1 || true
+      for h in /sys/class/mmc_host/mmc*; do
+        [ -w "$h/rescan" ] && echo 1 >"$h/rescan" 2>>"$LOG" || true
+      done
+    fi
+    if [ -b "$dev" ]; then
+      base="$(basename "$dev")"
+      if printf '%s' "$base" | grep -q '^mmcblk'; then
+        found=0; for part in "${dev}"p[0-9]*; do [ -b "$part" ] || continue; found=1; mount_one "$part"; done
+        [ "$found" -eq 1 ] || mount_one "$dev"
+      else
+        found=0; for part in "${dev}"[0-9]*; do [ -b "$part" ] || continue; found=1; mount_one "$part"; done
+        [ "$found" -eq 1 ] || mount_one "$dev"
+      fi
+      if ismounted "$dev" || awk -v d="$dev" '$1 ~ ("^" d "p?[0-9]+$") {ok=1} END{exit !ok}' /proc/mounts 2>/dev/null; then
+        log "REMOVABLE_MOUNT_REQUEST|PASS|$requested|whole=$dev|attempt=$attempt"; return 0
+      fi
+    fi
+    log "REMOVABLE_MOUNT_REQUEST|RETRY|$requested|whole=$dev|attempt=$attempt"
+    deep_rescan
+    sleep 0.75
+    attempt=$((attempt+1))
+  done
+  log "REMOVABLE_MOUNT_REQUEST|FAIL|$requested|whole=$dev|after=12"
+  status_write "$requested" RETRY_EXHAUSTED "device did not produce a mountable filesystem after 12 whole-device attempts"
+  status_write "$dev" RETRY_EXHAUSTED "device did not produce a mountable filesystem after 12 whole-device attempts"
+  return 1
+}
+
+
+# R23o supersedes the old R23h parent-controller unbind/rebind. Keep the
+# Realtek PCI parent bound and repair only its SD/MMC platform child.
+rebind_realtek_reader_once(){
+  ls /dev/mmcblk[0-9]* >/dev/null 2>&1 && return 0
+  log "MICROSD_READER_SAFE_REPROBE|BEGIN"
+  bind_realtek_sdmmc_platform_child 2>/dev/null || true
+  log "MICROSD_READER_SAFE_REPROBE|END"
+}
+
+# R23m: rtsx_pci is an MFD parent. The MMC host exists only after its
+# rtsx_pci_sdmmc platform child is actually bound. Explicitly repair that handoff.
+bind_realtek_sdmmc_platform_child(){
+  command -v modprobe >/dev/null 2>&1 || return 0
+  modprobe mmc_core >>"$LOG" 2>&1 || true
+  modprobe mmc_block >>"$LOG" 2>&1 || true
+  modprobe rtsx_pci >>"$LOG" 2>&1 || true
+  modprobe rtsx_pci_sdmmc >>"$LOG" 2>&1 || true
+  modprobe rtsx_usb >>"$LOG" 2>&1 || true
+  modprobe rtsx_usb_sdmmc >>"$LOG" 2>&1 || true
+
+  # If a matching PCI reader is present but not bound, let the kernel reprobe it.
+  for d in /sys/bus/pci/devices/*; do
+    [ -e "$d/modalias" ] || continue
+    alias="$(cat "$d/modalias" 2>/dev/null)"
+    mods="$(modprobe -R "$alias" 2>/dev/null || true)"
+    printf '%s\n' "$mods" | grep -Eq '(^|[[:space:]])rtsx_pci($|[[:space:]])' || continue
+    id="$(basename "$d")"
+    [ -w "$d/power/control" ] && echo on >"$d/power/control" 2>>"$LOG" || true
+    if [ ! -e "$d/driver" ] && [ -w /sys/bus/pci/drivers_probe ]; then
+      echo "$id" >/sys/bus/pci/drivers_probe 2>>"$LOG" || true
+    fi
+    log "MICROSD_RTSX_PARENT|$id|driver=$(basename "$(readlink -f "$d/driver" 2>/dev/null)" 2>/dev/null)"
+  done
+
+  # MFD children are platform devices. Bind any orphan explicitly, and cycle a
+  # bound child once when no mmc_host exists.
+  for drv in rtsx_pci_sdmmc rtsx_usb_sdmmc; do
+    dpath="/sys/bus/platform/drivers/$drv"
+    [ -d "$dpath" ] || continue
+    for pd in /sys/bus/platform/devices/${drv}*; do
+      [ -e "$pd" ] || continue
+      id="$(basename "$pd")"
+      if [ ! -e "$pd/driver" ] && [ -w "$dpath/bind" ]; then
+        echo "$id" >"$dpath/bind" 2>>"$LOG" || true
+        log "MICROSD_PLATFORM_BIND|$drv|$id"
+      elif ! ls /sys/class/mmc_host/mmc* >/dev/null 2>&1 && [ -w "$dpath/unbind" ] && [ -w "$dpath/bind" ]; then
+        echo "$id" >"$dpath/unbind" 2>>"$LOG" || true
+        sleep 0.15
+        echo "$id" >"$dpath/bind" 2>>"$LOG" || true
+        log "MICROSD_PLATFORM_REBIND|$drv|$id"
+      fi
+    done
+  done
+  if command -v udevadm >/dev/null 2>&1; then
+    udevadm trigger --subsystem-match=platform --action=add >>"$LOG" 2>&1 || true
+    udevadm trigger --subsystem-match=mmc --action=add >>"$LOG" 2>&1 || true
+    udevadm trigger --subsystem-match=block --action=add >>"$LOG" 2>&1 || true
+    udevadm settle --timeout=2 >>"$LOG" 2>&1 || true
+  fi
+  i=0; while [ "$i" -lt 20 ] && ! ls /sys/class/mmc_host/mmc* >/dev/null 2>&1; do i=$((i+1)); sleep 0.10; done
+}
+
+# R23l: the Realtek PCI parent can rebind while rtsx_pci_sdmmc remains stale.
+# Cycle only the dedicated SD/MMC child when no card block node exists, then
+# wait briefly for an mmc_host before asking udev for block devices.
+rebind_realtek_sdmmc_child_once(){
+  ls /dev/mmcblk[0-9]* >/dev/null 2>&1 && return 0
+  log "MICROSD_SDMMC_CHILD_REBIND|BEGIN"
+  bind_realtek_sdmmc_platform_child
+  if command -v modprobe >/dev/null 2>&1; then
+    modprobe -r rtsx_pci_sdmmc >>"$LOG" 2>&1 || true
+    modprobe -r rtsx_usb_sdmmc >>"$LOG" 2>&1 || true
+    sleep 0.20
+    modprobe rtsx_pci >>"$LOG" 2>&1 || true
+    modprobe rtsx_pci_sdmmc >>"$LOG" 2>&1 || true
+    modprobe rtsx_usb >>"$LOG" 2>&1 || true
+    modprobe rtsx_usb_sdmmc >>"$LOG" 2>&1 || true
+    modprobe mmc_block >>"$LOG" 2>&1 || true
+  fi
+  for rd in /sys/bus/pci/drivers/rtsx_pci/*:*; do
+    [ -e "$rd" ] || continue
+    [ -w "$rd/power/control" ] && echo on >"$rd/power/control" 2>>"$LOG" || true
+  done
+  i=0; while [ "$i" -lt 12 ] && ! ls /sys/class/mmc_host/mmc* >/dev/null 2>&1; do i=$((i+1)); sleep 0.10; done
+  if command -v udevadm >/dev/null 2>&1; then
+    udevadm trigger --subsystem-match=mmc --action=add >>"$LOG" 2>&1 || true
+    udevadm trigger --subsystem-match=block --action=add >>"$LOG" 2>&1 || true
+    udevadm trigger --subsystem-match=block --action=change >>"$LOG" 2>&1 || true
+    udevadm settle --timeout=2 >>"$LOG" 2>&1 || true
+  fi
+  hosts="$(find /sys/class/mmc_host -maxdepth 1 -type l -o -type d 2>/dev/null | grep '/mmc[0-9][0-9]*$' | wc -l)"
+  log "MICROSD_SDMMC_CHILD_REBIND|END|hosts=${hosts:-0}"
+}
+
+
+# R23o: msi_en=0 is applied on first module load. If no MMC host appears,
+# never unload or unbind the live PCI parent; repair only the MFD SD/MMC child.
+realtek_reader_msi_fallback(){
+  ls /sys/class/mmc_host/mmc* >/dev/null 2>&1 && return 0
+  command -v modprobe >/dev/null 2>&1 || return 0
+  modprobe rtsx_pci >>"$LOG" 2>&1 || true
+  modprobe rtsx_pci_sdmmc >>"$LOG" 2>&1 || true
+  for d in /sys/bus/pci/devices/*; do
+    [ "$(cat "$d/vendor" 2>/dev/null)" = "0x10ec" ] || continue
+    alias="$(cat "$d/modalias" 2>/dev/null)"; mods="$(modprobe -R "$alias" 2>/dev/null || true)"
+    printf '%s\n' "$mods" | grep -Eq '(^|[[:space:]])rtsx_pci($|[[:space:]])' || continue
+    [ -w "$d/power/control" ] && echo on >"$d/power/control" 2>>"$LOG" || true
+    if [ ! -e "$d/driver" ] && [ -w /sys/bus/pci/drivers_probe ]; then basename "$d" >/sys/bus/pci/drivers_probe 2>>"$LOG" || true; fi
+  done
+  bind_realtek_sdmmc_platform_child 2>/dev/null || true
+  log "MICROSD_RTSX_SAFE_MSI_FIRSTLOAD|msi_en=$(cat /sys/module/rtsx_pci/parameters/msi_en 2>/dev/null || echo unknown)|hosts=$(ls -d /sys/class/mmc_host/mmc* 2>/dev/null | wc -l)"
+}
+
+# R23k: reader-only requests must return quickly even when Linux never emits a
+# block device. Avoid the old 12 x deep-rescan/udev-settle sequence.
+reader_probe_once(){
+  # R28.4.5: make every user-initiated rescan a fresh hardware probe. Do not
+  # short-circuit merely because an old mmcblk pathname or reader-only UI row
+  # exists; refresh controller, MMC, SCSI, and udev discovery each time.
+  log "MICROSD_RESCAN|PROBE_BEGIN|$(date +%s)"
+  load_modules
+  if ! ls /sys/class/mmc_host/mmc* >/dev/null 2>&1; then
+    bind_realtek_sdmmc_platform_child
+  fi
+  [ -w /sys/bus/pci/rescan ] && echo 1 >/sys/bus/pci/rescan 2>>"$LOG" || true
+  for host in /sys/class/scsi_host/host*; do
+    [ -w "$host/scan" ] && echo '- - -' >"$host/scan" 2>>"$LOG" || true
+  done
+  for rd in /sys/bus/pci/drivers/rtsx_pci/*:*; do
+    [ -e "$rd" ] || continue
+    [ -w "$rd/power/control" ] && echo on >"$rd/power/control" 2>>"$LOG" || true
+  done
+  if command -v udevadm >/dev/null 2>&1; then
+    udevadm trigger --subsystem-match=mmc --action=add >>"$LOG" 2>&1 || true
+    udevadm trigger --subsystem-match=block --action=change >>"$LOG" 2>&1 || true
+    udevadm settle --timeout=1 >>"$LOG" 2>&1 || true
+  fi
+  cleanup_removed
+  scan_mmc
+  scan_removable_sd
+  log "MICROSD_RESCAN|PROBE_END|hosts=$(ls -d /sys/class/mmc_host/mmc* 2>/dev/null | wc -l)|devices=$(ls -d /sys/class/block/mmcblk[0-9]* 2>/dev/null | wc -l)"
+}
+
+discover_and_mount_card(){
+  attempt=1
+  while [ "$attempt" -le 4 ]; do
+    reader_probe_once
+    for disk in /dev/mmcblk[0-9]* /dev/sd[a-z]; do
+      [ -b "$disk" ] || continue
+      base="$(basename "$disk")"
+      case "$base" in
+        mmcblk[0-9]*) ;;
+        sd[a-z]) is_card_reader_disk "$disk" || continue ;;
+        *) continue ;;
+      esac
+      log "MICROSD_DISCOVERY|FOUND|$disk|attempt=$attempt"
+      retry_mount_target "$disk" && return 0
+    done
+    log "MICROSD_DISCOVERY|RETRY|attempt=$attempt"
+    # One controlled reader reset is enough. If it still does not publish a
+    # block device, return control to the UI instead of occupying the daemon.
+    [ "$attempt" -eq 2 ] && { rebind_realtek_reader_once; rebind_realtek_usb_reader_once; rebind_realtek_sdmmc_child_once; ls /sys/class/mmc_host/mmc* >/dev/null 2>&1 || realtek_reader_msi_fallback; }
+    sleep 0.35
+    attempt=$((attempt+1))
+  done
+  hosts=0; for h in /sys/class/mmc_host/mmc*; do [ -e "$h" ] && hosts=$((hosts+1)); done
+  if [ "$hosts" -gt 0 ]; then detail="MMC host present but inserted card did not publish a block device"; state=HOST_NO_BLOCK;
+  else detail="Realtek reader present but no MMC host/block device was created"; state=NO_MMC_HOST; fi
+  status_write /dev/microsd-reader "$state" "$detail"
+  log "MICROSD_DISCOVERY|NO_BLOCK_DEVICE|after=4|hosts=$hosts"
+  return 1
+}
+
+scan_once(){
+  load_modules
+  if command -v udevadm >/dev/null 2>&1; then
+    udevadm trigger --subsystem-match=mmc --action=add >>"$LOG" 2>&1 || true
+    udevadm trigger --subsystem-match=block --action=change >>"$LOG" 2>&1 || true
+    udevadm settle --timeout=2 >>"$LOG" 2>&1 || true
+  fi
+  cleanup_removed
+  scan_mmc
+  scan_removable_sd
+}
+
+request_watch(){
+  while :; do
+    if [ -e "$REQ" ]; then
+      target="$(cat "$MOUNTREQ" 2>/dev/null | head -1)"
+      rm -f "$REQ" "$MOUNTREQ" 2>/dev/null || true
+      log "REMOVABLE_MOUNT_REQUEST|RECEIVED|${target:-ALL}"
+      if [ -n "$target" ]; then
+        deep_rescan
+        retry_mount_target "$target" || scan_once
+      else
+        discover_and_mount_card || reader_probe_once
+      fi
+    fi
+    if [ -s "$FMTREQ" ]; then
+      IFS='|' read -r fdev ffs <"$FMTREQ"
+      rm -f "$FMTREQ" 2>/dev/null || true
+      format_one "$fdev" "$ffs"
+    fi
+    sleep 1
+  done
+}
+
+run_daemon(){
+  old="$(cat "$PID" 2>/dev/null)"
+  if [ -n "$old" ] && kill -0 "$old" 2>/dev/null; then return 0; fi
+  echo $$ >"$PID" 2>/dev/null || true
+  request_watch & reqpid=$!
+  monitorpid=''
+  start_monitor(){
+    [ -n "$monitorpid" ] && kill "$monitorpid" 2>/dev/null || true
+    monitorpid=''
+    if command -v udevadm >/dev/null 2>&1; then
+      ( udevadm monitor --udev --subsystem-match=block --property 2>/dev/null | while IFS= read -r line; do
+          case "$line" in DEVNAME=/dev/mmcblk*|DEVNAME=/dev/sd*|ACTION=remove) scan_once ;; esac
+        done ) &
+      monitorpid=$!
+    fi
+  }
+  trap 'kill "$reqpid" "$monitorpid" 2>/dev/null; rm -f "$PID" "$REQ"' EXIT INT TERM
+  # R23p: storage bootstrap owns parent initialization. At daemon start, consume
+  # its MMC-host result and repair only the child if the host is still absent.
+  if [ ! -e /run/sos/microsd-host-ready ]; then
+    bind_realtek_sdmmc_platform_child 2>/dev/null || true
+    if ls /sys/class/mmc_host/mmc* >/dev/null 2>&1; then
+      touch /run/sos/microsd-host-ready 2>/dev/null || true; rm -f /run/sos/microsd-no-host 2>/dev/null || true
+      log "MICROSD_DAEMON_HOST|PASS"
+    else
+      status_write /dev/microsd-reader NO_MMC_HOST "boot initialization did not create an MMC host"
+      log "MICROSD_DAEMON_HOST|FAIL|no-mmc-host"
+    fi
+  fi
+  deep_rescan
+  scan_once
+  start_monitor
+  # R23h heartbeat: the mount request channel must outlive a transient udevadm
+  # monitor failure. Also catch cards whose insertion event was missed entirely.
+  while :; do
+    kill -0 "$reqpid" 2>/dev/null || { request_watch & reqpid=$!; log "REMOVABLE_DAEMON|REQUEST_WATCH_RESTART"; }
+    if command -v udevadm >/dev/null 2>&1 && { [ -z "$monitorpid" ] || ! kill -0 "$monitorpid" 2>/dev/null; }; then
+      start_monitor; log "REMOVABLE_DAEMON|UDEV_MONITOR_RESTART"
+    fi
+    cleanup_removed; scan_mmc; scan_removable_sd
+    sleep 3
+  done
+}
+
+case "${1:-scan}" in
+  --daemon) run_daemon ;;
+  --start-daemon)
+    old="$(cat "$PID" 2>/dev/null)"
+    if [ -z "$old" ] || ! kill -0 "$old" 2>/dev/null; then
+      "$0" --daemon </dev/null >/dev/null 2>&1 &
+    fi
+    ;;
+  --request-scan)
+    # R18 carries the selected safe device hint to the root daemon so an mmcblk
+    # card gets bounded partition-settle retries instead of a generic one-shot scan.
+    target="${2:-}"
+    if [ -n "$target" ]; then
+      case "$target" in /dev/mmcblk[0-9]*|/dev/sd[a-z]*) ;; *) log "REMOVABLE_MOUNT_REQUEST|REFUSED|$target"; exit 2 ;; esac
+    fi
+    if [ "$(id -u)" -eq 0 ]; then
+      log "MICROSD_RESCAN|EXPLICIT_REQUEST|${target:-READER}"
+      deep_rescan
+      reader_probe_once
+      if [ -n "$target" ]; then
+        retry_mount_target "$target" || scan_once
+      else
+        discover_and_mount_card || reader_probe_once
+      fi
+    else
+      [ -n "$target" ] && printf '%s\n' "$target" >"$MOUNTREQ" 2>/dev/null || rm -f "$MOUNTREQ" 2>/dev/null || true
+      : >"$REQ" 2>/dev/null || true
+    fi
+    ;;
+  --request-format)
+    dev="${2:-}"; fs="${3:-}"
+    case "$dev" in /dev/mmcblk[0-9]*p[0-9]*|/dev/sd[a-z]*[0-9]*) ;; *) log "REMOVABLE_FORMAT|REFUSED|$dev|bad-request"; exit 2 ;; esac
+    case "$fs" in exfat|vfat|ext4) ;; *) log "REMOVABLE_FORMAT|REFUSED|$dev|bad-fs=$fs"; exit 2 ;; esac
+    if [ "$(id -u)" -eq 0 ]; then format_one "$dev" "$fs"; else printf '%s|%s\n' "$dev" "$fs" >"$FMTREQ" 2>/dev/null || exit 1; fi
+    ;;
+  --scan|scan) scan_once ;;
+  *) echo "usage: $0 [--scan|--request-scan [DEVICE]|--request-format DEVICE {exfat|vfat|ext4}|--start-daemon|--daemon]" >&2; exit 2 ;;
+esac

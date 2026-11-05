@@ -15,10 +15,12 @@ def test_iso_streamer_has_isolated_cargo_source_and_target():
     assert 'mktemp -d' in sh
     assert 'CARGO_TARGET_DIR' in sh
     assert 'cp -a "$TOOL/." "$CARGO_TMP/src/"' in sh
-    assert '(cd "$CARGO_TMP/src" && cargo build --release)' in sh
+    assert 'GROOVEBOX_V35_22ZP_CARGO_RESOLVER_20260924' in sh
+    assert 'CARGO_EXE' in sh
+    assert '(cd "$CARGO_TMP/src" && "$CARGO_EXE" build --release)' in sh
 
 def test_reported_rust_literals_are_fixed():
     src=(ROOT/'rust'/'groovebox_accel'/'src'/'lib.rs').read_text()
-    assert 'x.abs()>0.99' in src
-    assert 'y.abs()>=0.999' in src
-    assert 'let b: f64=' in src
+    assert 'x.abs() > 0.99' in src
+    assert 'y.abs() >= 0.999' in src
+    assert 'let b: f64 =' in src

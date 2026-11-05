@@ -215,6 +215,63 @@ def all_projections(field: Mapping[str,Any]) -> Dict[str,Dict[str,Any]]:
     return {k:projection(field,k) for k in PROJECTION_TYPES}
 
 
+def concentric_sample(field: Mapping[str, Any], level: int, index: int, count: int) -> Dict[str, Any]:
+    """Return one deterministic sample of the shared direct-concentric field.
+
+    Levels are nested shells, not independent random generators. The source field
+    identity never depends on sample count, medium, or output resolution. At a fixed
+    (field_id, level, index), the sample is stable; count only sets angular sampling
+    density. Radius contracts geometrically by one half per level.
+    """
+    if not field or not field.get("field_id"):
+        raise ValueError("a canonical field with field_id is required")
+    lvl = max(0, min(32, int(level)))
+    n = max(1, int(count))
+    i = int(index) % n
+    coords = field.get("coords") or {}
+    phase = (float(coords.get("phase_x", 0.0)) +
+             (PHI - 1.0) * float(coords.get("phase_y", 0.0))) % 1.0
+    angular_fraction = (i / n + phase + lvl * (PHI - 1.0)) % 1.0
+    angle = 2.0 * math.pi * angular_fraction
+    radius = 0.5 ** lvl
+    weight = 0.5 ** lvl
+    x = radius * math.cos(angle)
+    y = radius * math.sin(angle)
+    shape_payload = f"{field['field_id']}|direct-concentric-v1|{lvl}|{i}|{n}"
+    sample_id = hashlib.sha256(shape_payload.encode("utf-8")).hexdigest()[:24]
+    return {
+        "schema": "direct-concentric-v1", "field_id": str(field["field_id"]),
+        "sample_id": sample_id, "level": lvl, "index": i, "count": n,
+        "radius": radius, "angle": angle, "x": x, "y": y, "weight": weight,
+        "phase": phase,
+    }
+
+
+def concentric_medium_projection(field: Mapping[str, Any], medium: str) -> Dict[str, Any]:
+    """Bind a medium adapter to the same concentric field without changing identity."""
+    name = str(medium).strip().lower()
+    if name not in ("audio", "video", "game"):
+        raise ValueError(f"unsupported medium: {medium}")
+    coords = field.get("coords") or {}
+    channel_map = {
+        "audio": ("rhythm", "energy", "spectral_centroid", "partial_density", "phase_x"),
+        "video": ("lattice_x", "lattice_y", "lattice_z", "flow", "phase_y"),
+        "game": ("sequence_curvature", "lattice_x", "lattice_y", "lattice_z", "temporal_stage"),
+    }
+    channels = {key: float(coords.get(key, 0.0)) for key in channel_map[name]}
+    adapter_id = hashlib.sha256(
+        (f"{field.get('field_id')}|direct-concentric-v1|{name}|" +
+         json.dumps(channels, sort_keys=True, separators=(",", ":"))).encode("utf-8")
+    ).hexdigest()[:24]
+    return {
+        "schema": "direct-concentric-v1", "medium": name,
+        "field_id": str(field.get("field_id") or ""),
+        "shaping_id": hashlib.sha256(f"{field.get('field_id')}|direct-concentric-v1".encode()).hexdigest()[:24],
+        "adapter_id": adapter_id, "channels": channels,
+        "identity_source": "canonical_field",
+    }
+
+
 def game_projection(field: Mapping[str,Any]) -> Dict[str,Any]:
     """Game-facing interpretation. This consumes the field; it does not create it."""
     c=field.get("coords") or {}
@@ -348,19 +405,22 @@ def correspondence_manifest(field: Mapping[str,Any], event: Mapping[str,Any] | N
     plan=self_procedure(field)
     cover=plan["visual_projection_cover"]["chosen"]
     domains={}
+    shared_shaping_id = hashlib.sha256(f"{fid}|direct-concentric-v1".encode()).hexdigest()[:24]
     for name in ("audio","visual","game","ui","network"):
-        payload={"field_id":fid,"domain":name,"event_id":event_id,"parts":plan["part_counts"][name]}
+        payload={"field_id":fid,"domain":name,"event_id":event_id,"parts":plan["part_counts"][name],
+                 "shaping_schema":"direct-concentric-v1","shaping_id":shared_shaping_id}
         if name=="visual": payload["projection_cover"]=cover
         if name=="game": payload["projection_id"]=game_projection(field).get("map_projection",{}).get("projection_id")
         did=hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(",",":")).encode()).hexdigest()[:24]
         domains[name]={**payload,"domain_id":did,"source_field_id":fid}
     ok=bool(fid) and all(d.get("source_field_id")==fid for d in domains.values()) and plan["invariant"]
     return {
-        "version":"total-correspondence-v1", "field_id":fid, "event_id":event_id,
+        "version":"total-correspondence-v2", "field_id":fid, "event_id":event_id,
+        "shaping_schema":"direct-concentric-v1", "shaping_id":shared_shaping_id,
         "domains":domains, "self_procedure":plan,
-        "identity_correspondence":ok,
+        "identity_correspondence":ok and len({d["shaping_id"] for d in domains.values()}) == 1,
         "correspondence_score":1.0 if ok else 0.0,
-        "note":"Identity/provenance correspondence; lossy projections need not be invertible.",
+        "note":"Shared deterministic concentric shaping identity with medium-specific adapters; this establishes correspondence, not a proof that every rendered artifact is an exact mathematical fractal.",
     }
 
 
