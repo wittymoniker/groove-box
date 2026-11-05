@@ -1,0 +1,8 @@
+R23p validation contracts:
+- authoritative /run/sos/audio-hardware.state
+- selected card consumed by Hardware Volume and playback router
+- boot Speaker PCM prime + mic capture read
+- explicit PipeWire sink/source volume + unmute
+- /run/sos/microsd-host-ready requires actual mmc_host
+- guarded boot-only Realtek reset if no host and no block descendant
+- removable daemon consumes boot host state

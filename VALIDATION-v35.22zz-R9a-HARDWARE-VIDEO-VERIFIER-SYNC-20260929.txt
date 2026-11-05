@@ -1,0 +1,9 @@
+v35.22zz-R9a Hardware VIDEO verifier sync - 2026-09-29
+
+PASS target:
+- v35.22zy compatibility verifier accepts the newer R9 Hardware heading "VIDEO / CAMERAS" as well as the legacy "VIDEO" heading.
+- No rollback of the R9 separated AUDIO OUTPUTS / AUDIO INPUTS / VIDEO UI.
+- Qt video-input discovery remains QMediaDevices.videoInputs().
+- R9 Dell 3510 audio recovery, worker threading, canonical engine lanes, R8 installer-console, R7b removable Copy Over and microSD lineage remain unchanged.
+
+This fixes a verifier-lineage false negative only; the failing check did not indicate that video discovery code was absent.

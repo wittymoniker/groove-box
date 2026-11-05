@@ -1,0 +1,12 @@
+Groovebox/sOS v35.22zz-R14 — 2026-09-30
+
+R14 latency/playback/removable-media correction on top of R13a:
+- true independent hardware component scans; audio enumeration is no longer repeated in audio/video/display/input workers
+- short-lived PortAudio device cache suppresses PipeWire/ALSA hotplug scan storms
+- shared physical-output resolver used by Layered Signal Lab Play Sample, PKP/poly audition and main realtime tracks
+- browser first paint no longer runs synchronous nmcli status probes
+- Chromium/QtWebEngine native helper windows are excluded from Groovebox session/relaunch management
+- mpv video routing retains audio-fallback-to-null and autosync so a transient audio hotplug cannot freeze video
+- File Browser surfaces a detected microSD controller even before a block node exists and offers Rescan Reader
+- removable-media helper performs explicit PCI/SCSI/udev deep rescan for Realtek/SDHCI/USB card readers
+- R13 variable EQ topology and R13a exact-kernel ext4 source revalidation retained

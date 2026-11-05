@@ -1,0 +1,10 @@
+PASS: R12 render/EQ/Health regression test retained.
+PASS: R13 variable EQ pole source contract.
+PASS: R13 fixed 50/50 sequence-tray EQ blend contract.
+PASS: R13 canonical variable-topology EQ contract.
+PASS: R13 EQ project-state serialization contract.
+PASS: Python compile for root and active v35.22zz overlay groovebox.py.
+PASS: BUILD_ISO ext4 bundler Python compile.
+PASS: exact-kernel module-source shell syntax.
+PASS: existing verify_v35_22.py contract chain.
+NOTE: physical boot/audio/SSD-install behavior still requires hardware validation on the Latitude.

@@ -1,0 +1,20 @@
+Validation — v35.22zz-R28.0.0 FULL ROLLOUT — 2026-10-16
+
+PASS: 21 focused regression tests passed (R28 rollout, HDMI routing, playback recovery, video render contracts, storage maintenance, preserved performance/audio contracts and fast-launch contract).
+PASS: R27 transactional export/WAV-install static contract updated and passed with background asset-install worker contract.
+PASS: py_compile passed for groovebox.py, performance.py, video_clip_studio.py, videogame_engine.py, removable_media_inventory.py and media_output_router.py.
+PASS: FFmpeg/ffprobe smoke generated WebM with Opus audio and MP4 with AAC audio; both report audio stream and positive duration.
+PASS: removable_media_inventory.inventory()/summarize() smoke test passed in the build container.
+PASS: root and BUILD_ISO/app-overlay-v35.22zz copies of changed GUI/media files are synchronized.
+PASS: video frame generation uses a background worker and disk-backed frame buffer with bounded progress queue.
+PASS: media_output_router.py and its v35.22zz ISO overlay copy remain byte-identical.
+PASS: source package ZIP and TAR.GZ integrity verified after packaging.
+PASS: Wasmer package keeps Tabletime subtree and app.yaml/wasmer.toml/config/php.ini byte-identical to the R23p source; PHP lint and internal link checks are included in companion report.
+
+NOT RUN / NOT CLAIMED:
+- Complete pytest suite (known environment issues: duplicate module names, missing PyQt6 in one test, and legacy import-path test).
+- Physical HDMI/DP sound output.
+- Actual removable-card mount/repair/format on Dell hardware.
+- ISO build/boot and Install-to-SSD end-to-end.
+- Full interactive GUI startup test.
+- Original R24-R26 patch history unavailable; reconstructed from R23r + preserved local patches.

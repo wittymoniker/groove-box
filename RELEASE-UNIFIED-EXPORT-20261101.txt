@@ -1,0 +1,33 @@
+UNIFIED EXPORT + NAMEERROR FIXES 20261101  (on top of R23r UNCOMPRESSED-CPIO-TORAM-V3-BASELINE)
+
+EXPORT (main window, EXPORT menu)
+- New first menu item: "Export... (all formats - parts - bitrate - sample rate)" -> export_dialog.py.
+  One dialog: Format, Save-as path, then ONLY the settings that format has:
+    Audio  WAV/FLAC/MP3/OGG/Opus/AIFF/CAF : parts (1-128), stitch, quality preset, render rate, output rate,
+                                            bit depth, bitrate (enabled for MP3/Opus/OGG)
+    Video  MP4/WebM/AVI, with or without audio : width, height, FPS, audio bitrate (with audio), parts, stitch, integrity gate
+    Image frame : opens the existing image-frame exporter
+    Project MCC / MEUM : save-as, "make current project", confirmation
+- New menu items: "Project (.MCC)..." and "More audio formats" (OGG, Opus, AIFF, CAF).
+- The dialog only collects settings; rendering/writing still uses the existing threaded pipelines
+  (export_mixdown_dialog / export_video_dialog accept the preset and skip their own prompts).
+  The original per-format menu items still work unchanged.
+
+BUG FIXES FOUND WHILE TESTING
+- QProgressDialog was never imported: EVERY audio export failed with "name 'QProgressDialog' is not defined".
+- Path was never imported: project-recovery prompt and media-load path raised NameError.
+- QRect, SERIES_PI, SERIES_TAU undefined (inline editor geometry; wavefold companion).
+- Global-wire "Add Wire" handler referenced undefined 'gas'.
+
+CARRIED FORWARD (re-applied, were in the earlier PLAYGUARD build): play-sequence guards, instrument rename.
+
+KNOWN, NOT CHANGED
+- groovebox.py "GLOBAL_XMOD" pass references undefined nums/script/patch/domain_blob inside try/except: it silently never applies.
+  Fixing it would change audio output, so it needs your decision.
+- PlaylistWindow (legacy) uses undefined TELETUBBY_STYLE / RealtimeOscilloscope; unreachable from the main window.
+- test_r27_hdmi_audio.py and verify_..._r23s_hdmi_microsd_audio.py are stale vs HF27 (identical failure on the original upload; not in the build chain).
+- Device-detection hardening, Latitude main-window audio and the Performance format-probe crash are NOT in this build.
+
+TESTED: dialog behaviour; real app (offscreen) MCC export; WAV (4 parts, 24-bit, stitched / no-stitch parts only);
+MP3 (96 kbps verified), OGG, Opus, FLAC, AIFF, CAF; MP4+AAC (160x120, 2 fps, 2 parts, 64 kbps verified).
+Not tested: real-size video, physical hardware, ISO build.

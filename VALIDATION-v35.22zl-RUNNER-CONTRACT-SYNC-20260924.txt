@@ -1,0 +1,19 @@
+Mathematician's Groovebox v35.22zl static validation
+Date: 2026-09-24
+
+PASS: reproduced v35.22zk false failure: verify_v35_22.py demanded master_final_iso_v35_22zj.sh from the active RUN_ME_v35_22.sh despite the runner correctly advancing to the current finalizer.
+PASS: historical v35.22zj master/stamp/local-FFmpeg components remain independently validated.
+PASS: active RUN_ME_v35_22.sh contract points to master_final_iso_v35_22zl.sh.
+PASS: RUN_ME_ZERO_STATE.sh requires the v35.22zl master/stamp pair and enters RUN_ME_v35_22.sh.
+PASS: master_final_iso_v35_22zl.sh calls stamp_final_initramfs_v35_22zl.sh and emits GAME-READY-v35.22zl.iso.
+PASS: verify_v35_22.py validates the v35.22zl active runner/master/stamp chain.
+PASS: verify_v35_22.py completes successfully on packaged source.
+PASS: shell syntax checks pass for RUN_ME_ZERO_STATE.sh, RUN_ME_v35_22.sh, master_final_iso_v35_22zl.sh, and stamp_final_initramfs_v35_22zl.sh.
+PASS: v35.22zk stable SHM contract, local ffmpeg/ffprobe, PID-1, strict Labwc/Wayland, dynamic XDG, input/storage/HDMI/EGL, coherent Debian Qt, and Install-to-SSD source contracts retained.
+
+Expected build command:
+  bash BUILD_ISO/RUN_ME_ZERO_STATE.sh
+Expected final ISO:
+  BUILD_ISO/dist/Groovebox-sOS-x86_64-YYYYMMDD-GAME-READY-v35.22zl.iso
+
+Limitation: the source package does not contain the user's generated runtime cache/kernel payload, so a full hardware boot of the resulting ISO cannot be performed here.

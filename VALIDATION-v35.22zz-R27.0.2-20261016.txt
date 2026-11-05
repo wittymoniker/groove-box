@@ -1,0 +1,15 @@
+Groovebox R27.0.2 HDMI audio validation
+Date: 2026-10-16
+
+PASS: Python bytecode compilation for media_output_router.py, ISO-overlay media_output_router.py, and test_r27_hdmi_audio.py.
+PASS: 3 new HDMI-specific tests cover discovery from `aplay -l` when aliases are missing, explicit HDMI ALSA routing without internal-speaker mixer activation, and conservative system-default behavior.
+PASS: Existing playback output recovery tests.
+PASS: Existing transactional export/game asset install tests.
+PASS: Existing video-render, storage-maintenance, v35.22zt Performance/audio, and v35.22zu window/session tests.
+PASS: Combined focused suite: 17 passed.
+PASS: Root media_output_router.py and BUILD_ISO/app-overlay-v35.22zz/media_output_router.py are byte-identical.
+
+NOT RUN: Full pytest suite (known collection problems include a BUILD_ISO import-path failure for media_output_router, missing PyQt6 for test_component_usage.py, and duplicate root/BUILD_ISO test module names).
+NOT RUN: Bootable ISO build, VM boot, or physical HDMI TV/monitor playback. No claim is made that audible HDMI output has been verified on target hardware.
+
+Expected behavior: HDMI/DisplayPort audio endpoints exposed by ALSA or PipeWire/Pulse are selectable in the Player's explicit output selector. The system default is not forcibly switched to HDMI. Actual sound still depends on the connected display accepting audio, the kernel driver/profile, and the runtime audio services.

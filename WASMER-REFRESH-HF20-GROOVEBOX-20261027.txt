@@ -1,0 +1,6 @@
+Wasmer full-site archive refresh — HF20 (2026-10-27)
+
+- Preserves the HF19 Wasmer site and Tabletime payload.
+- Adds the HF20 Groovebox source package and SHA-256 file to downloads/software/groovebox/.
+- Updates the downloads page and current-release note to HF20.
+- This is a locally prepared archive, not a live deployment.

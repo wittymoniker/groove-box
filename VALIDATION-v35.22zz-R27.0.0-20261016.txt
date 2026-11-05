@@ -1,0 +1,25 @@
+Groovebox v35.22zz-R27.0.0 validation report
+Date: 2026-10-16
+
+PASS: python -m py_compile video_clip_studio.py videogame_engine.py
+PASS: test_r27_transactional_export_game_install.py (10 named static contract checks)
+PASS: focused pytest regression selection: 11 passed in 1.47s
+  - test_r27_transactional_export_game_install.py
+  - test_video_render_contract.py
+  - test_storage_maintenance_contract.py
+  - test_v35_22zt_performance_audio_contract.py
+  - test_v35_22zu_window_session_fast_launch.py
+
+FULL SUITE: blocked at collection; not reported as passing.
+- BUILD_ISO/test_r23f_sos_analog_output.py could not import media_output_router in the current test path.
+- test_component_usage.py requires PyQt6, not installed in this environment.
+- duplicate test_r23j_universal_audio_mic module exists in root and BUILD_ISO trees and causes pytest import-file mismatch.
+
+NOT RUN:
+- ISO build / VM boot / physical Dell boot verification
+- Real FFmpeg WebM audio playback verification
+- Real MP4 playback and .part cleanup under forced render failure
+- Physical game asset installation responsiveness
+- Dell installer CRC32C/initramfs repair validation
+
+Status: source/package checks passed; release is not hardware-verified.

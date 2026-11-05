@@ -1,0 +1,35 @@
+Groovebox / sOS v35.22zz-R8 — Installer Console Quiet — 2026-09-29
+
+Observed hardware issue fixed:
+- Dell Latitude Install-to-SSD reached STORAGE_READY/CRC32C/ext4/vfat readiness and correctly detected the KIOXIA 256 GB NVMe target.
+- Repeated Linux atkbd "Unknown key pressed" KERN_WARNING messages then overwrote the whole-disk target prompt.
+
+R8 changes:
+- Active installer wrapper still binds stdin/stdout directly to the active Linux VT.
+- While the installer owns the VT, /proc/sys/kernel/printk console_loglevel is temporarily capped at 4.
+- KERN_WARNING/info/debug messages are hidden; KERN_ERR and more severe kernel faults remain visible.
+- The exact previous printk settings are restored when the installer exits, including cancellation/error exits.
+- v35.22zz final-initramfs stamping now re-injects the wrapper so stale v33c cache bytes cannot reintroduce the noisy console path.
+- Existing exact ERASE confirmation remains unchanged.
+
+Validation executed:
+PASS: /bin/sh syntax — sos-install-appliance-v32t
+PASS: bash syntax — stamp_final_initramfs_v35_22zz.sh
+PASS: bash syntax — master_final_iso_v35_22zz.sh
+PASS: bash syntax — RUN_ME_v35_22.sh
+PASS: v35.22zz-R8 installer console quieting + active-VT I/O + SSD/PID1 lineage contracts
+PASS: v35.22zz-R7b removable-media writable Copy Over + portable FAT/exFAT transfer contracts
+PASS: v35.22zz-R7 Latitude 3510 microSD + File Browser + R6/R5/R4 cumulative contracts
+PASS: v35.22zz-R6 Performance event-loop + async Player clock + R5/R4 cumulative contracts
+PASS: v35.22zz-R5 cumulative Dell-HDA + persistent Player/DJ + Performance-memory + Rust-ISO contracts
+PASS: v35.22zr VFAT ASCII + future copyover source contract
+PASS: v35.22zq CRC32C Install-to-SSD source contract
+PASS: cumulative v35.22 verifier through zt/zu/zv/zw/zx contracts
+
+Preserved installer lineage:
+- GROOVEBOX_V35_22ZQ_CRC32C_EXT4_MOUNT_PREFLIGHT_20260924
+- GROOVEBOX_V35_22ZR_VFAT_ASCII_COPYOVER_20260924
+- PID 1 remains /init; sos-install-appliance remains a supervised child.
+
+Expected ISO filename after RUN_ME_ZERO_STATE.sh / RUN_ME_v35_22.sh:
+Groovebox-sOS-x86_64-YYYYMMDD-GAME-READY-v35.22zz-R8-INSTALLER-CONSOLE-QUIET-DELL-3510-MICROSD-PERFORMANCE-FAST-PLAYER-CLOCK-HDA.iso

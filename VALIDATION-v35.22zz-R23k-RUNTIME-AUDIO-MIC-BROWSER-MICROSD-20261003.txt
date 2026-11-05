@@ -1,0 +1,20 @@
+Mathematician's Groovebox / sOS v35.22zz-R23k validation
+Date: 2026-10-03
+
+PASS: Python source compile for performance.py, video_clip_studio.py, media_output_router.py, web_browser_tab.py
+PASS: shell syntax for removable-media helper, zero-state runner, integrated runner, final stamper, and master
+PASS: focused runtime pytest suite: 9/9
+PASS: cumulative verifier sequence R9/R10 through R23k
+PASS: R23k root/app-overlay source synchronization
+PASS: microphone stable-name input re-resolution contract
+PASS: direct callback continuous mic-level contract
+PASS: stale/inactive microphone stream restart contract
+PASS: ranked physical ALSA endpoint + hardware-volume-card affinity contract
+PASS: physical ALSA endpoint-open proof before FFmpeg decoder contract
+PASS: retained Browser WebEngine lifecycle + deferred first navigation contract
+PASS: reader-only automatic microSD rescan suppression
+PASS: bounded explicit Realtek/microSD reader discovery + bounded UI completion contract
+PASS: final initramfs stamper requires R23k runtime markers
+PASS: final ISO identity updated to R23k
+
+NOT RUN HERE: physical Dell Latitude 3510 speaker/microphone acoustic-loop test, real WebEngine/Labwc compositor test, or physical Realtek microSD insertion/rescan. These require the target hardware boot.

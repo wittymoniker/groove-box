@@ -1,0 +1,5 @@
+PASS: stamp_final_initramfs_v35_22zz.sh retains R4 Dell-HDA lineage marker
+PASS: master_final_iso_v35_22zz.sh retains R4 ISO-name compatibility token without changing R5 output
+PASS: verify_dell_3510_audio_v35_22zz_r4.py
+PASS: verify_v35_22zz.py cumulative R5 contracts
+PASS: R5a is source/verifier-lineage only; runtime payload behavior unchanged

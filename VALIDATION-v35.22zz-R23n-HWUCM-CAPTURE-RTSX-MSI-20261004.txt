@@ -1,0 +1,12 @@
+Mathematician's Groovebox / sOS v35.22zz-R23n validation — 2026-10-04
+
+PASS: SOF UCM hardware selector prefers hw:N before card-id fallbacks.
+PASS: Speaker UCM remains a single-session HiFi -> Speaker activation.
+PASS: Performance device probe promotes UCM CapturePCM/Mic/HiFi when available.
+PASS: Quick Mic Level only reports live after real PCM bytes are received and adapts 48/16 kHz, 2/4/1 channel capture.
+PASS: Realtek no-MMC-host fallback resets only matching 10ec rtsx_pci devices and reprobes once with msi_en=0.
+PASS: boot storage helper carries the same bounded reader-only MSI fallback.
+PASS: R23f through R23n cumulative verifier chain passes.
+PASS: root / app-overlay media_output_router.py, device_probe_helper.py, performance.py are synchronized.
+
+Physical Dell speaker/microphone/microSD behavior still requires the next on-device boot test.

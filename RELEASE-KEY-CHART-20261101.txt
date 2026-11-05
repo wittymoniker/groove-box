@@ -1,0 +1,20 @@
+KEY CHART 20261101 (on top of UNIFIED-EXPORT-20261101)
+
+MAIN WINDOW: letter keys and the top-row 1-0 number keys now play the selected instrument.
+- Linear scale, 36 keys low -> high in keyboard order:
+    Z X C V B N M   (degrees 1-7)    A S D F G H J K L   (8-16)
+    Q W E R T Y U I O P   (17-26)    1 2 3 4 5 6 7 8 9 0   (27-36)
+- Pitch = instrument base x (1 + degree/12): equal-Hz steps, 12 per base interval. The instrument's base is the
+  same one its PKP audition uses (Base Global Frequency x the instrument's Meum power). Steps/base is adjustable (1-48).
+- Voice = the existing instrument audition voice on the polyphonic audition stream (chords work, oldest voice is stolen
+  past the limit). Notes are 0.35 s; boost law is bypassed so the scale stays exact; frequency capped at 20 kHz.
+- New "Key Chart" button (transport row 2): shows every key's degree, ratio and Hz for the selected instrument,
+  has an on/off checkbox and the steps setting.
+- Never steals typing: ignored while a text box / spin box / editable combo / item editor is the target, while a
+  popup or dialog is open, for Ctrl/Alt/Meta combos, the numeric keypad, and held-key auto-repeat (one note per press).
+  Only acts when the main window is the active window. Instrument dropdown no longer swallows letters.
+
+NOT DONE / CHOICES FOR YOU: notes are one-shot (no sustain-while-held); on/off and steps are not saved with the project;
+the voice is the audition voice, not the full per-instrument synth render (that code lives inside the mixdown function).
+TESTED: live key events in the real app (offscreen), notes measured by FFT (146.4/341.8/463.6/573.7 Hz vs 146.4/341.7/463.7/573.6 expected);
+27 tests + the full build verifier chain pass. Not tested on the Latitude hardware.

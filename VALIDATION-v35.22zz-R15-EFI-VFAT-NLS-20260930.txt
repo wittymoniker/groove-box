@@ -1,0 +1,33 @@
+Groovebox/sOS v35.22zz-R15 — EFI/VFAT/NLS runtime closure
+Date: 2026-09-30
+
+PASS: R15 static release verifier
+PASS: R15 root regression contract
+PASS: R14 audio/video/performance/microSD regression contracts retained
+PASS: R13a exact-kernel ext4 source revalidation contracts retained
+PASS: R8 installer console quieting + SSD/PID1 lineage retained
+PASS: v35.22zr VFAT ASCII + future copyover source contract retained
+PASS: gpt_disk_v32q.py unchanged from R14; boot/live-media target protection retained
+
+Real Debian module-tree packaging test performed with installed
+6.12.96+deb13-amd64 modules (same Debian .ko.xz packaging path used by the
+exact-kernel bundler):
+PASS: fat -> plain fat.ko
+PASS: vfat -> plain vfat.ko
+PASS: nls_ascii -> plain nls_ascii.ko
+PASS: nls_cp437 -> plain nls_cp437.ko
+PASS: nls_utf8 -> plain nls_utf8.ko
+PASS: depmod regenerated modules.dep
+PASS: modprobe -d <staged-root> -S 6.12.96+deb13-amd64 --show-depends resolves all five modules
+
+R15 fix:
+- EFI-critical FAT/VFAT/NLS modules are materialized uncompressed as plain .ko.
+- Final zz stamper rechecks the module manifest, physical .ko files and modules.dep
+  after the complete later overlay/repack chain.
+- Installer retains pre-destructive hard checks and adds an exact-running-kernel
+  insmod fallback if minimal-userspace modprobe cannot resolve a required module.
+- Targeted real-hardware failure: rc=16 / nls_ascii unavailable.
+
+Full 6.12.107+deb13-amd64 ISO construction is intentionally left to RUN_ME_v35_22.sh
+on the target build machine, where the exact matching Debian kernel package is
+acquired/staged by the existing build pipeline.

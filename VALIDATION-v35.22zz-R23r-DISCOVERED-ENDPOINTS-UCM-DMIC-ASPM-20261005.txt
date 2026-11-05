@@ -1,0 +1,12 @@
+PASS: SOF UCM compatibility alias sofhdadsp -> sof-hda-dsp is established before WirePlumber.
+PASS: Speaker and internal Mic:sof-dsp are activated together in one UCM session.
+PASS: UCM CaptureChannels is carried into the boot audio state and Video Recorder ALSA capture route.
+PASS: authoritative negative-index boot/UCM ALSA routes are retained by Video Recorder.
+PASS: Speaker Playback Switch and linked hardware volume are reasserted on the selected card.
+PASS: WirePlumber/Pulse profile selection prefers a profile explicitly containing Speaker.
+PASS: normal/install/scode/safe/recovery kernel cmdlines include rtsx_pci.msi_en=0 and pcie_aspm=off before PCI autoload.
+PASS: installed initramfs first-load rtsx_pci uses msi_en=0.
+PASS: no Realtek PCI parent unbind/unload path is introduced.
+PASS: early verify_v35_22.py + R23 lineage through R23r pass.
+PASS: R23f direct physical-output simulation passes current single-session UCM behavior.
+Physical Dell speaker, DMIC and RTS525A microSD operation still require boot testing on the target Latitude 3510.

@@ -1,0 +1,27 @@
+Validation report — v35.22zz-R28.4.2 — 2026-10-17
+
+PASS
+- `python3 -m py_compile` for root/overlay groovebox.py, new verifier, and new contract test module.
+- Seven R28.4.2 structural contract tests passed.
+- `BUILD_ISO/test_audio_export_exact_resample.py` passed sample count/contiguity and 30 kHz anti-alias rejection at 96→48 kHz (RMS 0.001621).
+- `verify_v35_22zz_r23b.py`, `verify_v35_22zz_r23.py`, `verify_v35_22zz_r12.py`, `verify_v35_22zz_r12a.py`, `verify_v35_22zz_r28_3.py`, `verify_r28_4_rollout_contract.py`, and `verify_r28_4_2_async_audio_export.py` passed.
+- Root and `BUILD_ISO/app-overlay-v35.22zz/groovebox.py` are byte-for-byte synchronized.
+- `bash -n BUILD_ISO/RUN_ME_ZERO_STATE.sh` passed; runner now calls the R28.4.2 verifier.
+
+IMPLEMENTED
+- Immutable, read-only audio export snapshot with no Qt widgets passed to the worker.
+- Dedicated one-thread Qt export pool separate from real-time audio and persistence lanes.
+- Worker-side hardclip, exact-length anti-aliased resampling, PCM quantization, recoverable part writes, stitching, encoding and encoded-level verification.
+- Non-modal progress and cancellation; cancellable FFmpeg process; recoverable completed parts.
+- Candidate artifact is published with atomic replace only after successful output and available integrity checks.
+- Qt/UI status updates and project file indexing remain on the main thread.
+
+LIMITATIONS / NOT VERIFIED
+- PyQt6 is unavailable; the GUI was not instantiated. Progress dialog interaction, cancellation during a live Qt worker, and UI stress behavior were not runtime-tested.
+- Canonical synthesis `_render_mixdown_buffer()` remains synchronous, and `_bake_dj_write()` remains synchronous when active. Whole-render immutable-context extraction is the next major task; do not claim the whole export path is non-blocking yet.
+- No comparative export timing benchmark has been run.
+- Full ISO build not run because populated runtime-cache/initramfs and required kernel payload are absent.
+- ISO boot, physical audio, HDMI/DP, Dell installer, SSD install, and physical removable-card operations were not tested.
+
+Preservation
+- Keep R8 installer lineage and R35.22zt/R28.3 audio/performance baseline as rollback points. Do not label this a fully verified ISO release.

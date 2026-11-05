@@ -1,0 +1,27 @@
+Mathematician's Groovebox / sOS v35.22zz-R5 validation
+Date: 2026-09-27
+
+PASS: 19 targeted R5/Camera tests.
+PASS: Python compileall for performance.py, video_clip_studio.py and groovebox.py.
+PASS: v35.22zt Performance lazy-load + microphone/external-audio contracts.
+PASS: v35.22zu Wayland window-session + fast File Browser/Player-DJ contracts.
+PASS: v35.22zv external window-strip + session-safe close + live mic-level contracts.
+PASS: v35.22zw low-lag camera/mic + full-rate recording contracts.
+PASS: v35.22zx encoded-camera-packet fast path contracts.
+PASS: v35.22zy Qt hardware + Move/Copy Over contracts.
+PASS: v35.22zz cumulative Dell-HDA + persistent Player/DJ + silent-video + Rust-ISO contracts.
+PASS: v35.22zz-R5 Performance memory/hidden-work contract.
+PASS: final v35.22zz stamper/master shell syntax.
+
+R5 static efficiency contracts
+PASS: retained Performance hide calls suspend_for_hide before reuse.
+PASS: 14 secondary Performance workspaces are first-use lazy.
+PASS: default All/Name browser path does not enqueue per-video ffprobe classification.
+PASS: idle Record page input resources suspend off-tab when no operation is active.
+PASS: fallback Performance worker pool limited to 2 threads.
+PASS: media caches are bounded.
+PASS: decorative Performance repaint interval = 400 ms.
+PASS: retained Player/DJ has no idle 400 ms EOF poll.
+
+Hardware note
+Physical GUI latency, PipeWire/device behavior, and speaker/headset/microphone operation still require boot testing on the Dell Latitude 3510.

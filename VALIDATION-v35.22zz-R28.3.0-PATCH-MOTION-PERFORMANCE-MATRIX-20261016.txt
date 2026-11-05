@@ -1,0 +1,19 @@
+Validation report — v35.22zz-R28.3.0 — 2026-10-16
+
+PASS
+- Python compile: groovebox.py, performance.py, BUILD_ISO/verify_v35_22zz_r28_3.py.
+- Shell parser: every BUILD_ISO/**/*.sh passed `bash -n`.
+- Existing runtime contract gates: R19, R20, R21, R22, R23 passed against the current project root.
+- New R28.3 feature gate passed: Patch Motion dialog, per-route rate/depth/direction/clock, 8×8 matrix, main-window access, project save/load state, signed per-step MOD targets, deterministic bounded modulation path, and low-latency mpv runtime flags.
+- R19/R22 stale assertions were reconciled with the current active 1s/1s/32MiB/cache-pause=no runtime arguments and current R23r lineage.
+- Zero-state ISO preflight now runs R19/R20/R21/R22 and R28.3 contract verifiers before handing off to the builder.
+- Final initramfs stamping now checks for the new UI, MOD integration, project persistence, and bounded player arguments before continuing.
+
+NOT VERIFIED / BLOCKED IN THIS WORKSPACE
+- PyQt6 is not installed in this workspace, so the GUI was not instantiated and interactive widget tests were not run.
+- Full ISO build was not run: the extracted tree does not contain the populated BUILD_ISO/dist/runtime-cache initramfs or required kernel payload.
+- Physical audio, actual ISO boot, Dell installer, HDMI/DP playback, and SSD installation were not tested.
+- The 8×8 matrix currently assigns/selects sequence-bank slots; this package does not claim fully quantized scene/clip launching yet.
+
+Preservation
+- Do not replace the known-good R8 installer lineage or the R35.22zt/R28 audio/performance lineage with an unverified build. Run the full build on the machine containing the complete runtime-cache and kernel payload, then boot-test before treating the ISO as released.

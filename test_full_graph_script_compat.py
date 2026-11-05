@@ -75,7 +75,7 @@ def test_docs_and_canonical_writer_advertise_contract():
     assert "FULL GRAPH SCRIPT CONTEXT" in help_text
     assert "graph_curvature" in help_text and "domain_value" in help_text
     # Domain equations and expensive graph projection use the same shared context.
-    assert "local_base = graph_context_env(_base_ctx)" in source
+    assert "local_vars = graph_context_env(_dom_ctx)" in source and "_compiled(eq_str)" in source  # R23r: one point context, compiled expressions
     assert "_graph_context_cache" in source
     # The requested authoring paths all materialize richer full-graph programs.
     assert "generate_random_seed_script" in source

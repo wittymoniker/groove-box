@@ -1,0 +1,32 @@
+Mathematician's Groovebox / sOS v35.22zz-R4
+Dell Latitude 3510 HDA Audio Patch — 2026-09-27
+
+PATCH CONTRACTS
+PASS: Limine live/diagnostic/safe/recovery boot paths force snd_intel_dspcfg.dsp_driver=1.
+PASS: installed-disk Limine config preserves snd_intel_dspcfg.dsp_driver=1.
+PASS: exact-kernel bundle makes snd_hda_intel, snd_hda_codec_realtek, snd_intel_dspcfg release-critical.
+PASS: forced-HDA bootstrap unloads/skips SOF before loading Intel HDA/Realtek.
+PASS: one bounded HDA retry occurs before PipeWire when /proc/asound/cards is empty.
+PASS: ALSA hardware presence is logged as ALSA_HARDWARE_READY|PASS/FAIL.
+PASS: PipeWire auto_null/Dummy Output is not counted as a physical sink.
+PASS: if ALSA exists but only Dummy Output is exposed, duplex/HiFi analog profile activation is attempted.
+PASS: real sink status is logged as HARDWARE_AUDIO_SINK|PASS/FAIL.
+PASS: player code is unchanged from the v35.22zz-R3/R2 persistent-player baseline.
+PASS: prior zt/zu/zv/zw/zx/zy source verifiers pass.
+PASS: v35.22zz-R4 cumulative source verifier passes.
+
+EXPECTED TARGET-LAPTOP BOOT LOG
+DELL_HDA_MODE|FORCED|dsp_driver=1
+ALSA_HARDWARE_READY|PASS|cards=...
+PIPEWIRE_READY|PASS
+HARDWARE_AUDIO_SINK|PASS|count=...
+
+If the target still reports ALSA_HARDWARE_READY|FAIL, collect:
+  cat /proc/asound/cards
+  aplay -l
+  arecord -l
+  lspci -nnk | grep -A4 -i audio
+  dmesg | grep -Ei 'snd|hda|sof|audio|codec'
+  cat /var/log/sos/system-media-ready-v35.22zs.log
+
+Static/source validation was completed in the packaging environment. Physical Dell Latitude 3510 speaker/headset/microphone operation requires boot testing on the laptop.

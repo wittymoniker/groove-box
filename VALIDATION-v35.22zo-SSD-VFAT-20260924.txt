@@ -1,0 +1,28 @@
+Mathematician's Groovebox / sOS v35.22zo SSD VFAT validation
+Date: 2026-09-24
+
+Observed real-hardware failure addressed:
+  STORAGE_READY|PASS
+  Copy to Disk: vfat kernel filesystem support is unavailable; target disk untouched.
+  installer rc=16
+
+Source validation:
+PASS: installer still fails closed before target writes when ext4/vfat is unavailable.
+PASS: installer explicitly attempts ext4, fat, nls_cp437, nls_iso8859-1/nls_iso8859_1, nls_utf8 and vfat loads.
+PASS: exact-kernel FAT/VFAT/NLS bundler is active in the final initramfs stamper.
+PASS: fat and vfat must be file or builtin; nls_cp437 must be file or builtin.
+PASS: depmod is rerun against the final staged root and modules.dep resolution is checked.
+PASS: active zero-state route ends at master_final_iso_v35_22zo.sh.
+PASS: v35.22zn Performance worker/thread, WebEngine and teleport outside-click contracts remain required.
+PASS: shell syntax, Python compilation, cumulative BUILD_ISO verifier, Performance lifecycle contract,
+      teleport dismissal contract and deterministic sequence conductor tests passed in the source package.
+
+Build command:
+  bash BUILD_ISO/RUN_ME_ZERO_STATE.sh
+
+Expected final ISO:
+  BUILD_ISO/dist/Groovebox-sOS-x86_64-YYYYMMDD-GAME-READY-v35.22zo.iso
+
+Required real-machine proof after building:
+  INSTALL_FS_READY|PASS ext4 vfat
+  then complete the ERASE confirmation only on the intended internal SSD.

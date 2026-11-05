@@ -1,0 +1,4 @@
+PASS: v35.22zv external Wayland window-strip + session-safe close + automatic live mic-level source contracts
+PASS: v35.22zz-R10 native-resolution UI + audio/storage recovery + project/scope thread contracts
+PASS: v35.22zz-R12 render pipeline + cross-media EQ + health + stitch cleanup contracts
+PASS: v35.22zz-R12a modal verifier compatibility + source-aware Return-to-Main contracts

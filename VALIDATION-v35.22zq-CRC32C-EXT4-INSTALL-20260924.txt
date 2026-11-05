@@ -1,0 +1,40 @@
+Mathematician's Groovebox / sOS v35.22zq validation
+Date: 2026-09-24
+
+Observed Latitude hardware result carried forward:
+  PASS: live ISO boot, threading, Performance and the strict Wayland app path work.
+  PASS: installer detects /dev/nvme0n1, accepts ERASE confirmation, writes GPT and formats partitions.
+  FAIL addressed: first ext4 mount emitted "Cannot load crc32c driver" and mount rc=32/fsconfig failure.
+
+Root cause confirmed against the Debian 13 6.12 kernel module layout available in the build environment:
+  ext4 hard dependencies: jbd2, crc16, mbcache
+  crc32c is an algorithm-provider dependency and is not in ext4's hard module dependency list.
+  Debian provides crc32c_generic.ko and crc32c-intel.ko; both advertise the crc32c/crypto-crc32c aliases.
+  Therefore an ext4-only dependency closure can pass /proc/filesystems yet still fail at a real metadata-checksummed mount.
+
+v35.22zq fix:
+  PASS: exact-kernel CRC32C provider bundler added.
+  PASS: crc32c_generic, crc32c_intel and libcrc32c are copied when present; at least one provider is required.
+  PASS: depmod is rerun in the final live initramfs and provider resolution is verified.
+  PASS: installer loads CRC32C providers before ext4 and verifies /proc/crypto before any target erase/write.
+  PASS: installer emits INSTALL_CRC32C_READY|PASS before destructive partitioning.
+  PASS: installed-disk mini-initramfs carries and loads CRC32C before ext4 as well.
+  PASS: active deterministic runner masters v35.22zq, not the previous v35.22zo image.
+  PASS: existing threading/Performance/WebEngine/Wayland/input/storage/HDMI/EGL/FFmpeg/VFAT paths were not rewritten.
+
+Validation performed here:
+  PASS: shell syntax for installer, runners, final stamp and final ISO master.
+  PASS: Python compile for CRC32C bundler and installed-initramfs builder.
+  PASS: v35.22r Install-to-SSD source contract.
+  PASS: v34g installer staging contract.
+  PASS: v35.22 cumulative source contract.
+  PASS: CRC32C bundler exercised against Debian 6.12.96+deb13-amd64 module tree; copied crc32c_generic, crc32c-intel and libcrc32c and generated valid modules.dep entries.
+
+Hardware note:
+  A full destructive SSD installation is not run in this container. The next hardware ISO should show
+  INSTALL_CRC32C_READY|PASS before the ERASE prompt and should no longer emit "Cannot load crc32c driver" when mounting the new root.
+
+Build:
+  bash BUILD_ISO/RUN_ME_ZERO_STATE.sh
+Expected ISO:
+  BUILD_ISO/dist/Groovebox-sOS-x86_64-YYYYMMDD-GAME-READY-v35.22zq.iso

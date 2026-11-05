@@ -218,6 +218,46 @@ class DirectLinkManager:
             return False, "macOS requires creating Internet Sharing / Personal Hotspot in System Settings. Name it " + self.ssid + ". Groovebox will discover peers after association."
         return False, "Direct hotspot hosting is not available on this platform."
 
+    # GROOVEBOX_R23R_ADHOC_20261101: router-free IBSS cell shared by every Groovebox.
+    ADHOC_SSID = "GROOVEBOX-ADHOC"
+    ADHOC_CONNECTION = "Groovebox-Adhoc"
+
+    def start_adhoc(self) -> Tuple[bool, str]:
+        """Create or join the shared ad hoc (IBSS) cell with link-local addressing.
+
+        Every Groovebox uses the same SSID/channel, so any number of devices join
+        one cell without a router or a hotspot host; discovery then runs over
+        169.254.x.x / IPv6 link-local. The cell is open (IBSS has no WPA2 in
+        NetworkManager): only Groovebox traffic should be used on it, and
+        Nearby's block list + incoming-file switch still apply.
+        """
+        sysname = platform.system().lower()
+        if sysname == "linux" and _which("nmcli"):
+            _run(["nmcli", "connection", "delete", self.ADHOC_CONNECTION], 5)
+            cmd = ["nmcli", "connection", "add", "type", "wifi", "ifname", self.wifi_iface or "*",
+                   "con-name", self.ADHOC_CONNECTION, "autoconnect", "no", "ssid", self.ADHOC_SSID,
+                   "802-11-wireless.mode", "adhoc", "802-11-wireless.band", "bg", "802-11-wireless.channel", "6",
+                   "ipv4.method", "link-local", "ipv6.method", "link-local"]
+            rc, out = _run(cmd, 15)
+            if rc != 0:
+                return False, ("This Wi-Fi driver/NetworkManager refused ad hoc mode: " + out.strip())
+            rc2, out2 = _run(["nmcli", "connection", "up", self.ADHOC_CONNECTION], 30)
+            return rc2 == 0, (f"Joined ad hoc cell {self.ADHOC_SSID} (channel 6, link-local addressing). "
+                              if rc2 == 0 else "Ad hoc start failed: ") + out2.strip()
+        if sysname == "windows":
+            return False, ("Windows 10/11 Wi-Fi drivers no longer create ad hoc (IBSS) networks. Use Start Direct Wi-Fi "
+                           "(hosted network), a phone hotspot, or join a Groovebox that runs the ad hoc cell.")
+        if sysname == "darwin":
+            return False, ("Recent macOS removed 'Create Network'. Join the " + self.ADHOC_SSID +
+                           " network from the Wi-Fi menu if another Groovebox hosts it, or use a shared Wi-Fi/hotspot.")
+        return False, "Ad hoc networking is not implemented for this OS."
+
+    def stop_adhoc(self) -> Tuple[bool, str]:
+        if platform.system().lower() == "linux" and _which("nmcli"):
+            rc, out = _run(["nmcli", "connection", "down", self.ADHOC_CONNECTION], 15)
+            return rc == 0, out.strip() or "Left the ad hoc cell."
+        return False, "No Groovebox-managed ad hoc cell is active on this platform."
+
     def stop_hotspot(self) -> Tuple[bool, str]:
         sysname = platform.system().lower()
         if sysname == "linux" and _which("nmcli"):

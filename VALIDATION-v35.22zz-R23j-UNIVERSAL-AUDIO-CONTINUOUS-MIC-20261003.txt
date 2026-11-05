@@ -1,0 +1,33 @@
+Mathematician's Groovebox / sOS v35.22zz-R23j validation — 2026-10-03
+
+FIXED
+- Main-window compact hardware-volume control no longer shows the redundant "HW" volume label; slider, percentage and Mute remain.
+- Before physical playback opens, the saved hardware volume/mute state is re-applied to ALSA mixer controls, preventing a stale UI state from coexisting with an effectively-zero codec mixer.
+- Inline sOS playback now supports all FFmpeg-readable audio formats through local FFmpeg -> signed 16-bit 48 kHz stereo PCM -> physical ALSA, instead of direct fallback being WAV-only.
+- Player/DJ emergency direct-audio recovery uses the same format-independent physical PCM pipeline and preserves a known resume position.
+- Mic Level now detects capture streams that stay open but stop delivering frames, decays stale display values, and restarts the selected input at a bounded cadence.
+- R23i Latitude 3510 HDA/ALC3204-first audio and Realtek fixed-LUN/USB microSD support are retained.
+
+VALIDATION PASSES
+PASS: Python compile — root + final app overlay changed modules
+PASS: shell syntax — final initramfs stamper, final ISO remaster, integrated RUN_ME_v35_22.sh
+PASS: v35.22zz-R14 audio/video/performance/microSD verifier
+PASS: v35.22zz-R17 shared audio/lazy hardware/removable storage verifier
+PASS: v35.22zz-R19 capture isolation/adaptive mic/streaming hardware verifier
+PASS: v35.22zz-R23d physical plughw playback/startup-clock recovery verifier
+PASS: v35.22zz-R23h linked hardware volume + Dell media keys verifier (updated desired-state reassert contract)
+PASS: v35.22zz-R23i Latitude 3510 HDA/ALC3204 + Realtek microSD verifier
+PASS: v35.22zz-R23j universal direct audio + continuous mic verifier
+PASS: focused pytest player/window/R23 suite — 9 passed
+PASS: root/app-overlay byte synchronization for Performance, Record/Draw, hardware volume and media router
+PASS: final initramfs stamper explicitly requires the R23j audio and mic contracts
+PASS: final ISO output identity updated to R23j
+
+BUILD
+  bash BUILD_ISO/RUN_ME_ZERO_STATE.sh
+
+EXPECTED FINAL ISO
+  BUILD_ISO/dist/Groovebox-sOS-x86_64-YYYYMMDD-GAME-READY-v35.22zz-R23j-UNIVERSAL-DIRECT-AUDIO-CONTINUOUS-MIC-HARDWARE-VOLUME-REALTEK-SD-R15-EFI-VFAT-NLS-DELL-3510.iso
+
+HARDWARE NOTE
+Source/build contracts are validated here. Actual speaker output and microphone continuity still require a boot test on the Dell Latitude 3510 physical codec/device path.

@@ -1,0 +1,30 @@
+Groovebox v35.22zz — R28.4.5 Repeatable microSD Rescan + Storage UI + Global Scope Highlight
+Date: 2026-10-17
+
+Changes
+- Added explicit R28.4.5 rescan instrumentation to the sOS removable-media helper.
+- Each explicit reader rescan now records a request and runs a fresh bounded probe across the PCI rescan interface, MMC/platform binding path, SCSI host scan interfaces, udev, and device snapshot.
+- Preserved safe Realtek SD/MMC child recovery. The patch does not unbind the live Realtek PCI parent and does not add destructive repair or formatting behavior.
+- Extended File Manager post-rescan device-list refreshes through 24 seconds to cover slow enumeration and mount discovery.
+- Clarified File Manager labels: Storage target, Mount / Rescan, Rescan microSD Reader, Inspect Device, Format Selected Partition, Refresh List.
+- Recolored the global/local scope selector, canonical sidechain entry, and all-instrument actions in yellow/gold. Local scope remains white; yellow/gold signals multi-instrument/global influence.
+- Synchronized root groovebox.py/performance.py with active app-overlay-v35.22zz and added a final-initramfs marker check plus zero-state verifier.
+- Preserves the R28.4.4 explicit autosave-recovery startup behavior and prior known-good audio/performance/startup contracts.
+
+Validation completed
+- Python compilation for root and active-overlay groovebox.py/performance.py and new verifier: PASS.
+- POSIX shell syntax for sos-removable-media helper: PASS.
+- Bash syntax for RUN_ME_ZERO_STATE.sh and stamp_final_initramfs_v35_22zz.sh: PASS.
+- New R28.4.5 source-contract verifier: PASS.
+- Existing R10, R14, R17, R23g, R23h, R23l, R28.3.0, R28.4.2, R28.4.3, and R28.4.4 targeted verifiers: PASS.
+- ZIP integrity checks are performed after packaging.
+
+Not verified
+- PyQt6 GUI interaction not instantiated in this environment.
+- No full ISO build, ISO boot, physical microSD insertion/removal, or repeated-rescan test on the Dell was performed.
+- Therefore this is a source/build-package fix with contract verification, not a claim of physical hardware confirmation.
+
+Operational intent
+- Every user-initiated Rescan microSD Reader action forces a fresh probe and a longer UI refresh window.
+- If the reader is visible but no block device is created, status should continue to report the no-device condition instead of silently reusing a stale snapshot.
+- Yellow/gold means GLOBAL / multi-instrument influence; white means LOCAL / selected-instrument scope.

@@ -6,7 +6,7 @@ HELP = Path(__file__).with_name("HELP_TEXT.md").read_text(encoding="utf-8")
 
 
 def test_authoritative_default_constants():
-    assert re.search(r"^DEFAULT_SEQUENCE_LENGTH\s*=\s*8\s*$", SRC, re.M)
+    assert re.search(r"^DEFAULT_SEQUENCE_LENGTH\s*=\s*12\s*$", SRC, re.M)
     assert re.search(r"^DEFAULT_PLAYLIST_ROWS\s*=\s*32\s*$", SRC, re.M)
     assert re.search(r"^CANONICAL_SIGNAL_CONTROL_DEFAULT\s*=\s*1\.00\s*$", SRC, re.M)
     assert re.search(r"^CANONICAL_LIVE_OVERBLEND_DEFAULT_PCT\s*=\s*50\.0\b", SRC, re.M)

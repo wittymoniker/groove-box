@@ -1,0 +1,21 @@
+Mathematician's Groovebox v35.22zz-R6 validation — 2026-09-28
+
+PASS: 23 targeted Performance/player/threading regression and efficiency tests
+PASS: v35.22zz-R4 Dell Latitude 3510 legacy-HDA/Realtek + installed-disk persistence contracts
+PASS: v35.22zz-R5 Performance memory/hidden-work + R4 Dell-HDA contracts
+PASS: R6 marker
+PASS: static Performance background — no visible-idle animation timer
+PASS: async mpv status bridge — no GUI-thread recv/query_property EOF poll
+PASS: non-overlapping player poll worker
+PASS: change-driven Parametric Remix -> Player sync
+PASS: redundant deck speed/volume/FX IPC suppression
+PASS: mpv safe hardware decode (--hwdec=auto-safe)
+PASS: mpv audio clock smoothing (--autosync=30)
+PASS: null-audio fallback retained (--audio-fallback-to-null=yes)
+PASS: numeric time-pos clock watchdog with one-shot video-sync=desync recovery
+PASS: R5 lineage retained
+PASS: R4 Dell HDA lineage retained
+PASS: persistent Player/DJ window + loadfile/replace behavior retained
+PASS: Rust ISO bundler/final stamper contracts retained
+
+R6 target: opening Performance while idle should add no periodic repaint, filesystem, hardware, or mpv IPC work to the Qt GUI thread.

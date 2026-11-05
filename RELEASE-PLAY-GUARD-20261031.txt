@@ -1,0 +1,34 @@
+PLAY-GUARD 20261031 (on top of R23r UNCOMPRESSED-CPIO-TORAM-V3-BASELINE)
+- groovebox.py + BUILD_ISO/app-overlay-v35.22zz/groovebox.py (kept byte-identical):
+  * "This Sequence": double-click re-entrancy guard; failures leave transport idle.
+  * Stop during "Rendering track..." now cancels the pending start (generation token).
+  * Removed nested QApplication.processEvents() from the Play click path.
+  * Audio stream open/start failures (device vanished, HDMI hotplug, busy ALSA) no
+    longer raise inside a Qt timer slot; transport resets to idle with a status message.
+  * Empty render buffer no longer leaves is_playing=True.
+  * One-instrument preview override is cleared on Stop, so the next full Play is full.
+- At the play-guard commit, BUILD_ISO scripts were unchanged; later same-day I/O
+  safety changes are listed below. HDMI routing static tests still pass.
+- Needs hardware acceptance: ISO build on x86_64 Fedora, HDMI audible output, Play Sequence on the Dell 3510.
+
+I/O SAFETY (same release, after play guard)
+- BUILD_ISO/v35_18f/sos-storage-ready-v35_18f:
+  * Removed the unconditional VMD pass that wrote power/control=on for every
+    storage-class PCI device/bridge and rescanned every NVMe controller.
+  * VMD/NVMe/SCSI recovery now runs only when no internal/whole disk is visible.
+  * Realtek PCI rescan is skipped when a healthy internal disk already exists.
+- BUILD_ISO/copy_root_v32q.py: retries transient EIO/ESTALE/EINTR/ETIMEDOUT/EBUSY,
+  counts fatal failures, and exits 33 without PASS on an incomplete copy.
+- BUILD_ISO/gpt_disk_v32q.py: completes short pwrite calls, retries EIO, reads
+  back every GPT region, fsyncs, and falls back on BLKRRPART failure.
+- BUILD_ISO/sos-install-appliance-limine-v33a: failure message no longer claims
+  the formatted target was untouched.
+- Added BUILD_ISO/verify_io_safety_20261031.py and wired it into RUN_ME_v35_22.sh.
+- Static/source validation passes; a new ISO must be built and boot-tested.
+
+INSTRUMENT RENAME (same release)
+- The "Instrument name…" box (qe_instrument) was a single cosmetic string; it renamed nothing.
+- Now it renames the SELECTED instrument's display name: Enter commits, empty restores the original,
+  duplicates are rejected, 48 chars max. Canonical keys are untouched (sequences, banks, scripts,
+  identity hash), so sound and saved data cannot break. Saved/loaded as instrument_display_names.
+- Display names appear in the main instrument selector; other panels still list canonical names.

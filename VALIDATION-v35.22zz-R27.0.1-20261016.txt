@@ -1,0 +1,20 @@
+Groovebox v35.22zz-R27.0.1 validation report
+Date: 2026-10-16
+
+PASS: python -m py_compile performance.py video_clip_studio.py and ISO-overlay copies
+PASS: test_r27_transactional_export_game_install.py (10 named static contract checks)
+PASS: test_r27_media_playback_coverage.py
+  - extension routing: 44 audio, 47 video, 42 Record/Draw video extensions
+  - actual FFmpeg decode: tone.wav (PCM), tone.mp3, tone.flac, tone.ogg (Vorbis), tone.opus, tone.m4a (AAC), tone.aiff
+  - actual FFmpeg decode: clip.mp4 (MPEG-4 video + AAC), clip.mov, clip.avi (MPEG-4 video + MP3), clip.mkv (MPEG-4 video + FLAC), clip.webm (VP9 + Opus), clip.ts (MPEG-2 video + MP2)
+PASS: focused pytest regression selection: 11 passed in 1.42s (video render, storage maintenance, Performance audio, window/session)
+PASS: player resolution contract statically checked: project-local resolver -> PATH -> app-local bin/tools; mpv -> VLC -> FFplay
+PASS: root and ISO overlay player/recording source copies synchronized
+
+NOT VERIFIED:
+- GUI-level mpv/VLC/FFplay launch and actual audible output on target hardware
+- Hardware video acceleration, subtitles, external audio device routing, unusual/proprietary codecs
+- ISO build/boot, physical Dell boot/install; the previously known ext4 crc32c initramfs failure remains unresolved
+- Full pytest suite: repository still has prior collection/import-path and optional PyQt6 issues; not represented as passing
+
+Conclusion: source-level routing and representative codec decode smoke tests pass. A target-machine playback pass is still required before claiming all installed backends/codecs work in production.

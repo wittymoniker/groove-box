@@ -1,0 +1,39 @@
+Validation report — v35.22zz-R28.4.0 — 2026-10-17
+
+PASS
+- Python compilation: groovebox.py and performance.py.
+- Shell syntax: all BUILD_ISO/**/*.sh passed bash -n.
+- Targeted tests: 19 passed (R28.4 rollout contract, canonical userdata ownership, R35.22zt Performance audio contract, Performance thread lifecycle contract).
+- ISO stamp checks now require R28.4 startup selector, output downsampling, sidechain controls, Performance randomizer and read-only storage diagnosis.
+- Runtime overlay copies of groovebox.py and performance.py were synchronized with the updated source.
+- Follow-up R12/R12a verification after the user-reported R12 overlay mismatch: all 18 R12/R12a source-contract checks passed after syncing BUILD_ISO/app-overlay-v35.22zz/groovebox.py byte-for-byte from the root groovebox.py.
+
+Implemented
+- Startup mode selector: Main Groovebox, Performance/DJ, Both Workspaces, Load Project, New Blank Project, Randomize New Project.
+- Initial main/Performance geometry uses the screen's availableGeometry when supported by the platform.
+- Separate output sample-rate selector; scipy.signal.resample_poly anti-alias downsampling before PCM quantization; reject output rates above render rate.
+- Canonical sidechain state/default amount 0.1975807343 and userdata-protection metadata saved/restored with project snapshots.
+- Mathematical Composition Lab can commit generated patterns into a separate project math_writer_userdata branch with an explicit Canonical Overwrite protection toggle; project save/load persists it.
+- Global/local sidechain parameter dialog.
+- Seeded playlist + DJ parameter randomization with in-memory undo; clearer Clear Playlist label.
+- Read-only removable-card diagnosis via lsblk/blkid; existing explicit partition formatting guard remains.
+
+NOT VERIFIED / REMAINING BLOCKERS
+- PyQt6 is unavailable in this workspace: GUI was not instantiated; mode-selector/window behavior and button interactions were not run.
+- Full ISO build not run because populated runtime-cache/initramfs and required kernel payload are absent from this tree.
+- Actual ISO boot, physical audio, HDMI/DP, Dell installer, SSD install and physical multi-partition microSD repair/reformat were not tested.
+- Fully UI-responsive long exports are NOT yet certified: mixdown render preparation remains in the calling thread and still needs a renderer separated from QWidget reads, running against immutable snapshots in worker threads, plus scrolling/resize/edit stress tests.
+- Sidechain parameter persistence/UI is implemented; audible processing is NOT guaranteed for all source/target pairs until the active DSP routes are integrated and signal-tested.
+- Playlist randomization persists item parameters and existing player rate path can consume rate; reverse/pitch application is not verified for every media kind.
+- Storage diagnosis is read-only; no automatic repair was added. Filesystem-specific repair and whole-card repartition require safe explicit workflows.
+
+Preservation
+- Keep R8 installer lineage and R35.22zt/R28.3 audio/performance lineage as rollback points. Do not label this ISO released until full build, boot and target-hardware tests pass.
+
+Full-suite note: `pytest -q` collection was blocked by this workspace environment: PyQt6 is not installed, one build test cannot resolve a project module from the current working path, and legacy root/BUILD_ISO test modules share duplicate basenames. These are environment/collection blockers; the targeted 19-test suite passed.
+
+
+Follow-up archive refresh — 2026-10-17
+- Corrected the stale R12 runtime overlay by copying the canonical root groovebox.py into BUILD_ISO/app-overlay-v35.22zz/groovebox.py.
+- Verified: python3 BUILD_ISO/verify_v35_22zz_r12.py . and verify_v35_22zz_r12a.py . both passed.
+- This targeted source-contract fix does not establish a full ISO build, boot, or physical hardware validation.

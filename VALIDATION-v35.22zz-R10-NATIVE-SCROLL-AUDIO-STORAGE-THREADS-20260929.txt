@@ -1,0 +1,18 @@
+PASS: R10 app marker
+PASS: native top scroll
+PASS: native bottom scroll
+PASS: project memory dedicated lane
+PASS: waveform dedicated latest-only lane
+PASS: spectrum dedicated latest-only lane
+PASS: mount retry UI
+PASS: mmc + removable sd automount
+PASS: nonroot mount request channel
+PASS: default live forces SOF
+PASS: safe boot keeps HDA fallback
+PASS: installed live/recovery audio split
+PASS: early HDMI defers HDA controller
+PASS: direct preflight defers HDA controller
+PASS: SOF DMIC closure
+PASS: SOF route recovery
+PASS: R10 final stamp
+PASS: v35.22zz-R10 native-resolution UI + audio/storage recovery + project/scope thread contracts

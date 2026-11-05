@@ -1,0 +1,27 @@
+Mathematician's Groovebox / sOS v35.22zr validation
+Date: 2026-09-24
+Scope: source/build-contract validation for the photographed Dell Install-to-SSD failure.
+
+Observed hardware failure fixed:
+  FAT-fs (nvme0n1p1): IO charset ascii not found
+  mount: /mnt/sos-install/boot/efi: wrong fs type / missing helper
+
+PASS: exact-kernel VFAT bundle includes nls_ascii, nls_cp437, nls_iso8859_1, nls_utf8, fat, vfat.
+PASS: installer hard-preflights fat + nls_ascii + nls_cp437 + nls_utf8 + vfat before touching the disk.
+PASS: EFI mount explicitly uses iocharset=utf8 instead of relying on the kernel's implicit ascii default.
+PASS: freshly formatted EFI partition is really mounted and unmounted before the long root copy begins.
+PASS: installed /etc/fstab carries iocharset=utf8 for SOS_EFI.
+PASS: installed-disk mini-initramfs seeds/loads FAT/VFAT/NLS modules in addition to CRC32C/ext4/storage.
+PASS: v35.22zq CRC32C/ext4 provider fix is retained.
+PASS: future copyover recognizes the existing sOS GPT layout by GPT type GUIDs + partition names and reuses those partitions.
+PASS: copyover reformats both sOS partitions before copying, preventing stale-file carryover.
+PASS: foreign/blank disks still receive a fresh GPT and retain the exact ERASE confirmation.
+PASS: synthetic GPT recognition test returns EFI/ROOT/MODE=COPYOVER correctly.
+PASS: shell syntax checks passed for installer, zero-state runner, v35.22 runner, final stamp, and final master.
+PASS: Python compile checks passed for GPT helper, installed-initramfs builder, VFAT bundler, and v35.22zr verifier.
+PASS: v35.22zr source verifier passed all contracts.
+PASS: v35.22zq CRC32C source verifier still passes through the zr lineage.
+PASS: existing Install-to-SSD menu verifier passes.
+PASS: cumulative v35.22 source verifier passes.
+
+Important: this validates the release source and build contracts in this environment. The final generated ISO still needs the normal BUILD_ISO build and real-hardware boot/install test on the Dell; the final-image stamp will refuse the release if nls_ascii or the required exact-kernel FAT/VFAT/NLS closure is absent.

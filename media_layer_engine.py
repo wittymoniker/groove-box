@@ -170,8 +170,8 @@ def render_layers(state:Dict[str,Any])->Tuple[np.ndarray,int]:
 
 def write_wav(path:str,x:np.ndarray,sr:int)->str:
     path=os.path.abspath(path); os.makedirs(os.path.dirname(path) or '.',exist_ok=True)
-    y=np.clip(np.asarray(x,float),-1,1); pcm=np.rint(y*32767).astype('<i2')
-    with wave.open(path,'wb') as w: w.setnchannels(1); w.setsampwidth(2); w.setframerate(int(sr)); w.writeframes(pcm.tobytes())
+    from audio_os_backend import write_wav as _ww   # rounded 24-bit PCM (GROOVEBOX_R23R_AUDIO_DEPTH_RATE_20261101)
+    _ww(path,int(sr),np.clip(np.asarray(x,dtype=np.float64),-1,1))
     return path
 
 def spectrum_peaks(x:np.ndarray,sr:int,count:int=8):

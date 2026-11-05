@@ -10,7 +10,7 @@ def test_project_schema_bumped():
 def test_new_project_controls_share_ui_state_contract():
     for name in (
         'spin_track_offset', 'spin_canonical_convolve', 'spin_canonical_live_overblend',
-        'global_xmod_slider', 'global_input_xmod_slider',
+        'global_xmod_slider', 'dial_track_energy', 'dial_track_harmonic',
     ):
         assert f'"{name}"' in SRC
 

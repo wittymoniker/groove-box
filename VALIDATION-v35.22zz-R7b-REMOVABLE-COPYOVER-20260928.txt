@@ -1,0 +1,24 @@
+Groovebox / sOS v35.22zz-R7b — Removable Copy Over fix — 2026-09-28
+
+PASS: v35.22zt Performance lazy-load + microphone/external-audio source contracts
+PASS: v35.22zv external Wayland window-strip + session-safe close + automatic live mic-level source contracts
+PASS: v35.22zw low-lag camera/mic page + full-rate recording source contracts
+PASS: v35.22zx encoded-camera-packet fast path + native MJPEG fallback contracts
+PASS: v35.22zy Qt hardware + file Move/Copy Over source contracts
+PASS: v35.22zz-R4 Dell Latitude 3510 HDA/Realtek lineage contracts
+PASS: v35.22zz-R5 Performance memory/hidden-work contracts
+PASS: v35.22zz-R6 Performance event-loop + async Player clock contracts
+PASS: v35.22zz-R7 Latitude 3510 microSD discovery/automount/File Browser contracts
+PASS: v35.22zz-R7b removable-media writable Copy Over + portable FAT/exFAT transfer contracts
+
+R7b changes:
+- Storage Devices selection seeds the Copy Over / Move destination chooser.
+- Destination is tested for actual write access before transfer.
+- Read-only media is reported explicitly.
+- Removable-media copies use byte-copy + fsync + size verification instead of requiring shutil.copy2 POSIX metadata semantics.
+- Directory trees use the same portable copy path.
+- Move to removable media copies/verifies first, then removes the source.
+- microSD automounter logs MICROSD_WRITABLE|PASS/FAIL for the Groovebox session user.
+- Historical QTimer.singleShot(0, self.refresh) first-paint contract remains intact.
+
+Not hardware-proven in this environment: final write test must be performed on the physical Latitude 3510 microSD card.

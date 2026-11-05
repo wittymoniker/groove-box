@@ -45,8 +45,8 @@ def _decode(path,sr=48000):
 def _write_wav(path,x,sr):
     y=np.asarray(x,dtype=np.float32); finite=np.isfinite(y); y=np.where(finite,y,0.0); peak=float(np.max(np.abs(y))) if y.size else 0.0
     if peak>1.0: y=y/peak
-    pcm=np.rint(np.clip(y,-1,1)*32767).astype('<i2')
-    with wave.open(path,'wb') as w: w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr); w.writeframes(pcm.tobytes())
+    from audio_os_backend import write_wav as _ww   # rounded 24-bit PCM
+    _ww(path,int(sr),np.clip(y,-1,1))
 
 def _process_audio(x,sr,script,seed,pair,bpm,control_hz):
     block=max(64,int(round(sr/max(1,control_hz)))); rng=random.Random(int(seed)); eng=LiveDJEffects(sample_rate=sr); eng.set_context(seed=float(seed),pair=pair,sample_rate=sr)
