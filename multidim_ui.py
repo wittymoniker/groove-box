@@ -198,11 +198,13 @@ def _md_clone_defaults():
     # Minimal canonical macro set (the five visible Synth Rack generators) plus
     # local mix / EQ / sidechain. Every clone is fully determined by these keys
     # so randomizers, profiles, and playlist cells can drive them deterministically.
+    # CANONICAL_ON_20261106: defaults check ON so EQ and sidechain are live
+    # unless the user explicitly turns them off.
     return {
-        "enabled": False,
+        "enabled": True,
         "volume": 1.0,
-        "low_db": 0.0, "mid_db": 0.0, "high_db": 0.0,
-        "source": "Off", "depth": 0.0,
+        "low_db": 1.5, "mid_db": 0.0, "high_db": 1.0,
+        "source": "master", "depth": 0.35,
         "attack_ms": 8.0, "release_ms": 120.0,
         # Five generator macros (canonical_macro_defaults / Synth Rack)
         "morph": 0.75,
@@ -343,6 +345,12 @@ class MD3DView(QWidget):
         for part in str(p.get("resonators", "harmonic")).split("+"):
             ratios = ratios + tuple(r for r in md.RESONATOR_RULES.get(part.strip(), ()) if r not in ratios)
         self.res = ratios
+        self.update()
+
+    def pulse(self, amount=0.15):
+        """Nudge the animation (composition, player, live key)."""
+        self.t += float(amount)
+        self._inertia = (self._inertia[0] + amount * 0.4, self._inertia[1] + amount * 0.2)
         self.update()
 
     def tick(self, dt):
@@ -1233,6 +1241,8 @@ class MultidimControlMatrix(QWidget):
             mix = QSlider(Qt.Orientation.Horizontal)
             mix.setRange(0, 100)
             mix.setValue(100 if rule == "harmonic" else 0)
+            if rule == "harmonic":
+                chk.setChecked(True)  # CANONICAL_ON: primary resonator starts on
             mix.setFixedHeight(10)
             mix.setToolTip(f"{rule} mix 0–100%")
             chk.toggled.connect(lambda _v: self._res_changed())
@@ -1941,7 +1951,7 @@ class MDCloneRack(QWidget):
             for key, ctrls in self.rows.items():
                 cfg = dict(_md_clone_defaults())
                 cfg.update(clones.get(key) or {})
-                ctrls["enabled"].setChecked(bool(cfg.get("enabled", False)))
+                ctrls["enabled"].setChecked(bool(cfg.get("enabled", True)))
                 ctrls["volume"].setValue(max(0, min(200, int(round(float(cfg.get("volume", 1.0)) * 100.0)))))
                 ctrls["low"].setValue(max(-18, min(18, int(round(float(cfg.get("low_db", 0.0)))))))
                 ctrls["mid"].setValue(max(-18, min(18, int(round(float(cfg.get("mid_db", 0.0)))))))

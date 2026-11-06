@@ -30,7 +30,8 @@ SELECTED = ""              # "" = [Selected Instrument]
 
 
 def default_binding():
-    return {"inst": SELECTED, "seq": 0, "hz": 0.0, "pitch": 0.0, "vol": 100, "phase": 0, "dur": 0.35}
+    return {"inst": SELECTED, "seq": 0, "hz": 0.0, "pitch": 0.0, "vol": 100, "phase": 0, "dur": 0.35,
+            "pkp": 0.5, "pan": 0, "octave": 0}
 
 
 def is_default(b):
@@ -125,9 +126,31 @@ def render_key(host, ch, degree, b, inst):
                 out[i0:i0 + m] += a * _voice(host, inst, hz, m, ph)
             return (KEY_GAIN * vol * out).astype(np.float32)
     hz = float(b["hz"]) if float(b.get("hz", 0) or 0) > 0 else base * host._keychart_ratio(degree)
+    # Per-key octave
+    octv = int(b.get("octave", 0) or 0)
+    if octv:
+        hz *= 2.0 ** octv
     hz = min(20000.0, hz * shift)
     n = max(64, int(float(b.get("dur", 0.35) or 0.35) * KEY_SR))
-    return (KEY_GAIN * vol * _voice(host, inst, hz, n, ph)).astype(np.float32)
+    voice = _voice(host, inst, hz, n, ph)
+    # PKP envelope: 0 = pluck, 0.5 = held, 1 = swell
+    try:
+        pkp = float(b.get("pkp", 0.5) or 0.5)
+        t = np.arange(n, dtype=np.float64) / KEY_SR
+        dur = n / float(KEY_SR)
+        if hasattr(host, "_pkp_boost_envelope"):
+            env = host._pkp_boost_envelope(t, dur, pkp)
+            voice = voice * np.asarray(env, dtype=np.float64)
+    except Exception:
+        pass
+    # Pan: -100..100 → simple stereo gain (mono buffer gets a constant scale)
+    try:
+        pan = float(b.get("pan", 0) or 0) / 100.0
+        # Keep mono; pan is stored for hosts that mix stereo later
+        voice = voice * (1.0 - 0.3 * abs(pan))
+    except Exception:
+        pass
+    return (KEY_GAIN * vol * voice).astype(np.float32)
 
 
 class KeyBank:
@@ -252,7 +275,7 @@ def open_key_assign(host):
     dlg = QDialog(host)
     dlg.setWindowTitle("⌨ Keyboard Assign — a sound per key")
     dlg.setModal(False)
-    dlg.resize(980, 640)
+    dlg.resize(1180, 640)
     lay = QVBoxLayout(dlg)
     head = QLabel("Each key plays [Selected Instrument] on the key chart unless you harden it here. "
                   "Sequence # > 0 plays that sequence of the instrument as a phrase. Hz 0 = the chart degree. "
@@ -260,7 +283,7 @@ def open_key_assign(host):
     head.setWordWrap(True)
     lay.addWidget(head)
     insts = list(getattr(host, "instrument_names_48", []) or [])
-    cols = ["Key", "Instrument", "Seq #", "Hz (0 = chart)", "Pitch st", "Vol %", "Phase °", "Length s", ""]
+    cols = ["Key", "Instrument", "Seq #", "Hz (0 = chart)", "Pitch st", "Vol %", "Phase °", "Length s", "PKP", "Pan", "Oct", ""]
     table = QTableWidget(len(order), len(cols))
     table.setHorizontalHeaderLabels(cols)
     table.verticalHeader().setVisible(False)
@@ -274,7 +297,8 @@ def open_key_assign(host):
         w = widgets[ch]
         b = {"inst": "" if w["inst"].currentIndex() == 0 else w["inst"].currentText(),
              "seq": int(w["seq"].value()), "hz": float(w["hz"].value()), "pitch": float(w["pitch"].value()),
-             "vol": int(w["vol"].value()), "phase": int(w["phase"].value()), "dur": float(w["dur"].value())}
+             "vol": int(w["vol"].value()), "phase": int(w["phase"].value()), "dur": float(w["dur"].value()),
+             "pkp": float(w["pkp"].value()), "pan": int(w["pan"].value()), "octave": int(w["octave"].value())}
         bank.set(ch, b)
         dlg._dirty.start()
 
@@ -288,14 +312,18 @@ def open_key_assign(host):
         s_vol = QSpinBox(); s_vol.setRange(0, 200)
         s_phase = QSpinBox(); s_phase.setRange(0, 359); s_phase.setWrapping(True)
         s_dur = QDoubleSpinBox(); s_dur.setRange(0.05, 8.0); s_dur.setDecimals(2); s_dur.setSingleStep(0.05)
+        s_pkp = QDoubleSpinBox(); s_pkp.setRange(0.0, 1.0); s_pkp.setDecimals(2); s_pkp.setSingleStep(0.05)
+        s_pkp.setToolTip("PKP envelope: 0 = pluck · 0.5 = held · 1 = swell")
+        s_pan = QSpinBox(); s_pan.setRange(-100, 100); s_pan.setToolTip("Pan −100..100")
+        s_oct = QSpinBox(); s_oct.setRange(-2, 2); s_oct.setToolTip("Octave offset")
         b_test = QPushButton("▶"); b_test.setFixedWidth(34); b_test.setToolTip("Play this key")
         b_test.clicked.connect(lambda _c=False, c=ch: host._keychart_trigger(order.find(c), c))
-        for col, w in enumerate((c_inst, s_seq, s_hz, s_pitch, s_vol, s_phase, s_dur, b_test), start=1):
+        for col, w in enumerate((c_inst, s_seq, s_hz, s_pitch, s_vol, s_phase, s_dur, s_pkp, s_pan, s_oct, b_test), start=1):
             table.setCellWidget(r, col, w)
         widgets[ch] = {"inst": c_inst, "seq": s_seq, "hz": s_hz, "pitch": s_pitch, "vol": s_vol,
-                       "phase": s_phase, "dur": s_dur}
+                       "phase": s_phase, "dur": s_dur, "pkp": s_pkp, "pan": s_pan, "octave": s_oct}
         c_inst.currentIndexChanged.connect(lambda *_a, c=ch: changed(c))
-        for w in (s_seq, s_hz, s_pitch, s_vol, s_phase, s_dur):
+        for w in (s_seq, s_hz, s_pitch, s_vol, s_phase, s_dur, s_pkp, s_pan, s_oct):
             w.valueChanged.connect(lambda *_a, c=ch: changed(c))
 
     def reload():
@@ -308,6 +336,8 @@ def open_key_assign(host):
                 w["seq"].setValue(int(b["seq"])); w["hz"].setValue(float(b["hz"]))
                 w["pitch"].setValue(float(b["pitch"])); w["vol"].setValue(int(b["vol"]))
                 w["phase"].setValue(int(b["phase"])); w["dur"].setValue(float(b["dur"]))
+                w["pkp"].setValue(float(b.get("pkp", 0.5))); w["pan"].setValue(int(b.get("pan", 0)))
+                w["octave"].setValue(int(b.get("octave", 0)))
         finally:
             dlg._loading = False
     dlg._reload = reload

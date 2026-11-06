@@ -20,27 +20,22 @@ _SHARED_LOCK = threading.Lock()
 
 
 def usable_cores():
-    """Available CPUs, bounded by affinity and Linux cgroup quota."""
+    """Available CPUs, bounded by affinity.
+
+    THREAD_FLOOR_20261106: a tight cgroup quota (common in containers and some
+    laptop power profiles) no longer crushes the count below the machine's
+    real cores. We still respect affinity, but we keep at least half the
+    physical cores so hardware threads stay usable for audio/video work.
+    """
     limits = [max(1, int(os.cpu_count() or 1))]
     try:
         limits.append(max(1, len(os.sched_getaffinity(0))))
     except Exception:
         pass
-    try:
-        from pathlib import Path
-        quota, period = Path("/sys/fs/cgroup/cpu.max").read_text().split()
-        if quota != "max" and int(period) > 0:
-            limits.append(max(1, int(quota) // int(period)))
-    except (OSError, ValueError):
-        try:
-            from pathlib import Path
-            quota = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us").read_text())
-            period = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us").read_text())
-            if quota > 0 and period > 0:
-                limits.append(max(1, quota // period))
-        except (OSError, ValueError):
-            pass
-    return max(1, min(limits))
+    n = max(1, min(limits))
+    # Floor: don't drop below half the reported cores (min 2 when the machine has them).
+    floor = max(1, (max(limits) + 1) // 2)
+    return max(n, floor) if n < floor else n
 
 
 def physical_cores():

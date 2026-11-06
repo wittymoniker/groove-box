@@ -290,7 +290,7 @@ class LayeredSignalLab(QWidget):
             from audio_os_backend import play_buffer
             preferred=str(getattr(self.host,'_preferred_audio_output_name','') or '') if self.host is not None else ''
             idx=play_buffer(self._preview,self._preview_sr,preferred_name=preferred,blocking=False)
-            self.report.setPlainText(f'Playing preview through output device {idx if idx is not None else 'system default'}.')
+            self.report.setPlainText('Playing preview through output device %s.' % (idx if idx is not None else 'system default'))
         except Exception:
             p=os.path.join(tempfile.gettempdir(),'groovebox_layer_preview.wav'); write_wav(p,self._preview,self._preview_sr)
             import subprocess,shutil

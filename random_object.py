@@ -198,12 +198,25 @@ def generate_random_object(host, kind: str, seed: Any = 0, *, instrument: Option
         host.voxel_cells = (old + cells)[-1500:]
         record.update(voxels=cells, grid_size=grid, voxel_count=len(cells))
         path = outdir / f"random_{stamp}.json"
-        path.write_text(json.dumps({"grid_size": grid, "voxels": cells, "seed": seed_int}, indent=2), encoding="utf-8")
+        payload = {
+            "grid_size": grid,
+            "voxels": cells,
+            "seed": seed_int,
+            "source": "random_object",
+            "alias_pct": int(getattr(host, "voxel_alias_pct", 0) or 0),
+        }
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         record["path"] = str(path)
+        # Prefer the host's normalizer/importer when available so the editor and
+        # project state stay consistent with the rest of the system.
         try:
-            panel = getattr(host, "_main_voxel_panel", None)
-            if panel is not None and hasattr(panel, "refresh_views"):
-                panel.refresh_views()
+            if hasattr(host, "_load_voxel_json"):
+                host._load_voxel_json(str(path), layered=layered)
+            else:
+                for attr in ("_main_voxel_panel", "_perf_voxel_panel"):
+                    panel = getattr(host, attr, None)
+                    if panel is not None and hasattr(panel, "refresh_views"):
+                        panel.refresh_views()
         except Exception:
             pass
 

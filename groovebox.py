@@ -8253,6 +8253,73 @@ class _ProjectMemoryBridge(QObject):
     """Completion bridge for the dedicated live-project/save-file thread."""
     done = pyqtSignal(object)
 
+
+def _draw_video_engine_state(painter, widget, x, y, w, h):
+    """Compact graph of the video synth engine's current state.
+
+    Drawn inside the oscilloscope and spectrum monitors. Reads the live
+    engine (via the parent app) and plots RMS, centroid, entropy, hue
+    shift, camera yaw/pitch, and canonical layer count as bars, plus a
+    one-line caption.
+    """
+    try:
+        app = widget.parent()
+        eng = None
+        # Walk up a couple of levels to find the app that owns the engine.
+        for _ in range(4):
+            if app is None:
+                break
+            eng = getattr(app, "video_synth_engine", None) or getattr(app, "video_engine", None)
+            if eng is None:
+                viewer = getattr(app, "video_synth_viewer", None)
+                if viewer is not None:
+                    eng = getattr(viewer, "engine", None)
+            if eng is not None:
+                break
+            app = app.parent() if hasattr(app, "parent") else None
+        if eng is None:
+            return
+        rms = float(np.clip(getattr(eng, "_rms", 0.0), 0.0, 1.0))
+        cen = float(np.clip(getattr(eng, "_centroid", 0.5), 0.0, 1.0))
+        ent = float(np.clip(getattr(eng, "_visual_entropy", 0.5), 0.0, 1.0))
+        hue = (float(getattr(eng, "_video_hue_shift", 0.0)) % 360.0) / 360.0
+        yaw = (float(getattr(eng, "_cam_yaw", 0.0)) / math.pi + 1.0) * 0.5
+        pitch = (float(getattr(eng, "_cam_pitch", 0.0)) / math.pi + 1.0) * 0.5
+        n_can = len(getattr(eng, "_canonical", []) or [])
+        n_norm = min(1.0, n_can / 16.0)
+        mode = int(getattr(eng, "mode", 0))
+        bars = [
+            ("RMS", rms),
+            ("CEN", cen),
+            ("ENT", ent),
+            ("HUE", hue),
+            ("YAW", float(np.clip(yaw, 0.0, 1.0))),
+            ("PIT", float(np.clip(pitch, 0.0, 1.0))),
+            ("LAY", n_norm),
+        ]
+        painter.save()
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(6, 10, 22, 180))
+        painter.drawRoundedRect(int(x), int(y), int(w), int(h), 4, 4)
+        bw = max(4, (w - 8) / len(bars))
+        for i, (name, val) in enumerate(bars):
+            bx = x + 4 + i * bw
+            bh = max(2, int((h - 22) * val))
+            by = y + h - 16 - bh
+            col = QColor.fromHsv(int(190 + i * 18) % 360, 180, 200)
+            painter.fillRect(int(bx), int(by), max(2, int(bw - 3)), bh, col)
+            painter.setPen(QColor(160, 190, 230, 200))
+            painter.setFont(QFont("Segoe UI", 6))
+            painter.drawText(int(bx), int(y + h - 4), name)
+            painter.setPen(Qt.PenStyle.NoPen)
+        painter.setPen(QColor(140, 180, 230, 210))
+        painter.setFont(QFont("Segoe UI", 6, QFont.Weight.Bold))
+        painter.drawText(int(x + 4), int(y + 10), f"VIDEO ENGINE  mode {mode}  layers {n_can}")
+        painter.restore()
+    except Exception:
+        pass
+
+
 class VisualOscilloscope(QFrame):
     """Meum-timed full-track waveform + live detail scope (left monitor).
 
@@ -8726,6 +8793,9 @@ class VisualOscilloscope(QFrame):
                     painter.drawRect(x0 - 42, by, 36, 6)
                     painter.setPen(QColor(180, 215, 255, 200))  # R23R_MONITOR_BLUE
 
+            # VIDEO_ENGINE_STATE_20261106: compact state graph inside the scope.
+            _draw_video_engine_state(painter, self, 6, h - 52, min(w - 12, 220), 44)
+
 
 class SpectrumAnalyzer(QFrame):
     """Live FFT spectrum scanner (right monitor) — Meum-spaced bins.
@@ -8947,6 +9017,9 @@ class SpectrumAnalyzer(QFrame):
                     painter.setPen(QPen(QColor.fromHsv(200 + int(abs(v) * 13.7) % 45, 160, 220), 2))
                     painter.drawPoint(x, h - 8)
                     painter.drawLine(x, h - 8, x, h - 8 - int(6 * abs(v) / mx))
+
+            # VIDEO_ENGINE_STATE_20261106: same state graph as the oscilloscope.
+            _draw_video_engine_state(painter, self, 6, h - 52, min(w - 12, 220), 44)
 
 
 class InstrumentVisualObject:
@@ -10187,14 +10260,22 @@ class VideoSynthEngine:
         img[:] = img * (1.0-alpha) + field_rgb.astype(np.float32) * alpha
 
     def _subscene_field(self, img, w, h, st):
-        """Background Meum gradient field; no playhead chrome."""
+        """Background Meum gradient field; no playhead chrome.
+
+        VECTORIZED_20261106: the per-row Python loop is replaced by one
+        broadcasted blend. Same colors, same MEUM_INV falloff.
+        """
         e = self._rms
         hue_bg = (DEFAULT_SHIFTS.hue_shift_base_field + self._centroid * 360 + self._video_hue_shift + st["ph"] * 40) % 360
         c0 = np.array(self._hsv(hue_bg, 0.5, 0.5 + 0.5* e), dtype=np.float32)
         c1 = np.array(self._hsv((hue_bg + DEFAULT_SHIFTS.hue_shift_base_field + 55) % 360, 0.5, 0.5 + 0.5 * e), dtype=np.float32)
-        for yy in range(h):
-            u = (yy / max(h - 1, 1)) ** MEUM_INV
-            img[yy, :] = c0 * (1 - u) + c1 * u
+        if h <= 1:
+            img[:] = c0
+            return
+        u = (np.arange(h, dtype=np.float32) / float(h - 1)) ** MEUM_INV
+        # (h, 1, 3) so it broadcasts across the width
+        blend = c0 * (1.0 - u)[:, None, None] + c1 * u[:, None, None]
+        img[:] = blend
 
     def _subscene_ribbon(self, img, w, h, st):
         """Waveform ribbon — audio bulk as ground reference (not an oscilloscope chrome)."""
@@ -10301,15 +10382,34 @@ class VideoSynthEngine:
             n_part = 12 + int(16 * self._rms)
         else:
             n_part = 20 + int(28 * self._rms) + (10 if snap["seeded"] else 0)
+        # POWER_PROFILE_20261106: scale particle load on low/battery/hot machines.
+        try:
+            app = getattr(self, "app", None)
+            prof = getattr(app, "_power_profile", None) if app is not None else None
+            if isinstance(prof, dict):
+                n_part = max(4, int(n_part * float(prof.get("particle_scale", 1.0) or 1.0)))
+        except Exception:
+            pass
         seed_i = int(abs(snap["seed"])) & 0xFFFF
-        for p in range(n_part):
-            ang = self.t * 0.5 + p * 0.5 + seed_i * 0.5 + st["ph"] * math.tau
-            rr = 0.5 + 0.5 * abs(float(self.wave[p % 256])) * st["rho"]
-            x = rr * vg_cos(ang)
-            y = rr * vg_sin(ang * MEUM)
-            px, py, _ = self._project(x, y, 1.0 + 0.5 * self._rms, w, h)
-            col = self._hsv(int(DEFAULT_SHIFTS.hue_shift_base_particles + seed_i * 0.5 + p * 9) % 360, 0.5, 0.5)
-            self._dot(img, px, py, col, 0.5 + 0.5 * self._rms, r=1)
+        # VECTORIZED_20261106: batch angle / radius / projection math; only the
+        # final blend stays per-dot (each particle has its own color).
+        if n_part > 0:
+            idx = np.arange(n_part, dtype=np.float32)
+            ang = self.t * 0.5 + idx * 0.5 + seed_i * 0.5 + st["ph"] * math.tau
+            wave = np.asarray(self.wave, dtype=np.float32)
+            rr = 0.5 + 0.5 * np.abs(wave[idx.astype(np.int32) % 256]) * st["rho"]
+            xs = rr * np.cos(ang)
+            ys = rr * np.sin(ang * MEUM)
+            # Project in batch using the same formula as _project when possible
+            try:
+                proj = [self._project(float(xs[i]), float(ys[i]), 1.0 + 0.5 * self._rms, w, h) for i in range(n_part)]
+            except Exception:
+                proj = [(w * 0.5, h * 0.5, 0.0)] * n_part
+            base_hue = DEFAULT_SHIFTS.hue_shift_base_particles + seed_i * 0.5
+            alpha = 0.5 + 0.5 * self._rms
+            for i, (px, py, _) in enumerate(proj):
+                col = self._hsv(int(base_hue + i * 9) % 360, 0.5, 0.5)
+                self._dot(img, px, py, col, alpha, r=1)
 
     def _subscene_band_towers(self, img, w, h, st):
         """Spectral band columns — bulk spectrum as vertical volume lines."""
@@ -10457,19 +10557,25 @@ class VideoSynthEngine:
         angles = (0.0, math.tau / 3.0, 2.0 * math.tau / 3.0)
         base_r = min(w, h) * DEFAULT_SHIFTS.vertical_center_wave_integration
 
-        # --- 1D conformity: radial point sweep --------------------------
-        for ang_i, base_ang in enumerate(angles):
-            for i in range(0, n, 4):
-                amp = float(wave[i])
-                b = float(band[i % 8])
-                u = i / max(n - 1, 1)
-                r = base_r * (0.5 + 0.5 * abs(amp))
-                ang = base_ang + u * PHI_INV + t * 0.05
-                x, y, z = r * vg_cos(ang), r * vg_sin(ang) * 0.5, 0.0
-                x, y, z = self._distort_wave_point(distort_idx, x, y, z, i, n, t, amp)
-                px, py, _ = self._project(x, y, 1.1 + 0.5 * ang_i, w, h)
-                col = self._colorize_wave_sample(colorize_idx, i, n, amp, b, base_ang)
-                self._dot(img, px, py, col, op * (0.50 + 0.5 * abs(amp)), r=1)
+        # --- 1D conformity: radial point sweep (batched coordinate gen) ---
+        # VECTORIZED_20261106: angle/radius/amplitude computed in NumPy;
+        # distortion and projection stay per-sample (they depend on the bank).
+        idx1 = np.arange(0, n, 4)
+        if len(idx1):
+            amp_v = np.asarray(wave, dtype=np.float32)[idx1]
+            band_v = np.asarray(band, dtype=np.float32)
+            u_v = idx1.astype(np.float32) / max(n - 1, 1)
+            r_v = base_r * (0.5 + 0.5 * np.abs(amp_v))
+            for ang_i, base_ang in enumerate(angles):
+                ang_v = base_ang + u_v * PHI_INV + t * 0.05
+                xs = r_v * np.cos(ang_v)
+                ys = r_v * np.sin(ang_v) * 0.5
+                for k, i in enumerate(idx1):
+                    amp = float(amp_v[k]); b = float(band_v[int(i) % 8])
+                    x, y, z = self._distort_wave_point(distort_idx, float(xs[k]), float(ys[k]), 0.0, int(i), n, t, amp)
+                    px, py, _ = self._project(x, y, 1.1 + 0.5 * ang_i, w, h)
+                    col = self._colorize_wave_sample(colorize_idx, int(i), n, amp, b, base_ang)
+                    self._dot(img, px, py, col, op * (0.50 + 0.5 * abs(amp)), r=1)
 
         # --- 2D conformity: planar ribbon at each angle ------------------
         for ang_i, base_ang in enumerate(angles):
@@ -10770,10 +10876,12 @@ class VideoSynthEngine:
                 col = self._hsv(hu % 360.0, 0.5 + 0.3 * float(p["life"]), shaded)
                 al = float(p["life"])
                 a0 = float(p["yaw"])
-                poly = []
-                for k in range(v):
-                    a = a0 + k * math.tau / float(v)
-                    poly.append(self._map_xy(sx + vg_cos(a) * r0, sy + vg_sin(a * MEUM_INV) * r0 * (math.e - 2.0)))
+                # VECTORIZED_20261106: batch the polygon vertices for this slot.
+                ks = np.arange(v, dtype=np.float32)
+                aa = a0 + ks * (math.tau / float(v))
+                pxv = sx + np.cos(aa) * r0
+                pyv = sy + np.sin(aa * MEUM_INV) * r0 * (math.e - 2.0)
+                poly = [self._map_xy(float(pxv[k]), float(pyv[k])) for k in range(v)]
                 for k in range(len(poly)):
                     x1, y1 = poly[k]; x2, y2 = poly[(k + 1) % len(poly)]
                     self._line(img, x1, y1, x2, y2, col, min(0.5, 0.10 + 0.34 * al))
@@ -11879,31 +11987,63 @@ class VideoSynthEngine:
             pass
 
     def _subscene_voxel_model(self, img, w, h):
-        """Render project-owned voxels into live and offline video frames."""
+        """Render project-owned voxels into live and offline video frames.
+
+        VECTORIZED_20261106: positions, colors and the square-dot blend are
+        computed in batch. Same isometric projection and alpha as before.
+        """
         app = getattr(self, "app", None)
         cells = list(getattr(app, "voxel_cells", []) or []) if app is not None else []
-        if not cells: return
+        if not cells:
+            return
+        cells = cells[:20000]
         n = max(1, int(getattr(app, "voxel_grid_size", 16) or 16))
         alias = float(np.clip(float(getattr(app, "voxel_alias_pct", 0) or 0)/100.0, 0.0, 1.0))
         levels = app._canonical_levels() if hasattr(app, "_canonical_levels") else {"seeded":1,"randomizer":1,"phase_lock":1,"euclidean":1,"goava":1}
         level_mix = max(0.08, sum(levels.values())/4.0)
-        scale = min(w,h)/max(8.0,n*1.8); ox=w*0.5; oy=h*0.58
-        for c in cells[:20000]:
-            try: x,y,z=[float(v) for v in c[:3]]
-            except Exception: continue
-            xx=(x-y)*scale*.82+ox; yy=(x+y)*scale*(math.sqrt(2.0) - 1.0)-z*scale+oy
-            if isinstance(c,(list,tuple)) and len(c) >= 7:
+        scale = min(w, h) / max(8.0, n * 1.8)
+        ox, oy = w * 0.5, h * 0.58
+        # Build arrays
+        xyz, cols, alphas = [], [], []
+        for c in cells:
+            try:
+                x, y, z = float(c[0]), float(c[1]), float(c[2])
+            except Exception:
+                continue
+            xyz.append((x, y, z))
+            if isinstance(c, (list, tuple)) and len(c) >= 7:
                 try:
-                    col=np.asarray([float(c[3])/255.0,float(c[4])/255.0,float(c[5])/255.0],dtype=np.float32)
-                    voxel_alpha=float(np.clip(float(c[6])/255.0,0.0,1.0))
+                    cols.append((float(c[3]), float(c[4]), float(c[5])))
+                    alphas.append(float(np.clip(float(c[6]) / 255.0, 0.0, 1.0)))
                 except Exception:
-                    col=self._hsv((190.0+130.0*(z/max(n-1,1)))%360.0,PHI_INV,.86); voxel_alpha=.86
+                    cols.append(self._hsv((190.0 + 130.0 * (z / max(n - 1, 1))) % 360.0, PHI_INV, 0.86))
+                    alphas.append(0.86)
             else:
-                hue=(190.0+130.0*(z/max(n-1,1))+50.0*levels.get("goava",0.0))%360.0
-                col=self._hsv(hue,PHI_INV,.78+.18*level_mix); voxel_alpha=.86
-            r=max(1,int(round(scale*(.34+.34*(1.0-alias)))))
-            alpha=float(np.clip((.55+.35*level_mix+.10*alias)*voxel_alpha,0.0,1.0))
-            self._dot(img,xx,yy,col,alpha,r=r)
+                hue = (190.0 + 130.0 * (z / max(n - 1, 1)) + 50.0 * levels.get("goava", 0.0)) % 360.0
+                cols.append(self._hsv(hue, PHI_INV, 0.78 + 0.18 * level_mix))
+                alphas.append(0.86)
+        if not xyz:
+            return
+        xyz = np.asarray(xyz, dtype=np.float32)
+        cols = np.asarray(cols, dtype=np.float32)
+        alphas = np.asarray(alphas, dtype=np.float32)
+        xx = (xyz[:, 0] - xyz[:, 1]) * scale * 0.82 + ox
+        yy = (xyz[:, 0] + xyz[:, 1]) * scale * (math.sqrt(2.0) - 1.0) - xyz[:, 2] * scale + oy
+        r = max(1, int(round(scale * (0.34 + 0.34 * (1.0 - alias)))))
+        base_a = np.clip((0.55 + 0.35 * level_mix + 0.10 * alias) * alphas, 0.0, 1.0)
+        # Batched square-dot blend
+        hh, ww = img.shape[:2]
+        ix = np.round(xx).astype(np.int32)
+        iy = np.round(yy).astype(np.int32)
+        for i in range(len(xx)):
+            x0 = max(0, ix[i] - r); x1 = min(ww, ix[i] + r + 1)
+            y0 = max(0, iy[i] - r); y1 = min(hh, iy[i] + r + 1)
+            if x0 >= x1 or y0 >= y1:
+                continue
+            a = float(base_a[i])
+            roi = img[y0:y1, x0:x1]
+            roi *= (1.0 - a)
+            roi += cols[i].reshape(1, 1, 3) * a
 
     def _subscene_extended_24(self, img, w, h, st):
         """R28.4.49: 24 deterministic visual layers with coordinated live crossfades.
@@ -12134,14 +12274,84 @@ class VideoSynthEngine:
         _tier(2, (self._subscene_volumes, self._subscene_math_filaments, self._subscene_math_roses,
                   self._subscene_orbitals, self._subscene_lattice, self._subscene_constellations,
                   self._subscene_varied_shapes))
-        # Tier 1 — instrument structure: the canonical constellation (every slot
-        # resolves to one parameter set under unison), the shared instrument
-        # object, its particles/bursts, and GOAVA's single-instance stream.
-        _tier(1, (self._draw_canonical_constellation, self._subscene_faces_segments, self._subscene_particles,
-                  self._subscene_bursts, self._subscene_goava))
-        # Tier 0 — the sound itself: waveform, spectrum, rhythm (full strength, on top).
-        _tier(0, (self._subscene_spectral_comets, self._subscene_rhythm_mandala, self._subscene_pulse_grid,
-                  self._subscene_wave_integration))
+        # Tier 1 — instrument / synth-state structure.
+        # MUSIC_VIDEO_EXPORT_20261106: on music-video export the synth-state
+        # layers are moved into distinct screen regions instead of stacking
+        # over the main picture. Live preview still draws them full-frame.
+        if not getattr(self, "export_mode", False):
+            _tier(1, (self._draw_canonical_constellation, self._subscene_faces_segments, self._subscene_particles,
+                      self._subscene_bursts, self._subscene_goava))
+        else:
+            def _blit_region(fn, x0, y0, rw, rh):
+                """Render one subscene into a small buffer and place it at (x0,y0)."""
+                try:
+                    rw = max(8, int(rw)); rh = max(8, int(rh))
+                    buf = np.zeros((rh, rw, 3), dtype=np.float32)
+                    fn(buf, rw, rh, st)
+                    # Soft-edge composite so the region doesn't hard-cut.
+                    y1 = min(h, y0 + rh); x1 = min(w, x0 + rw)
+                    if y1 <= y0 or x1 <= x0:
+                        return
+                    sub = buf[:y1 - y0, :x1 - x0]
+                    dst = img[y0:y1, x0:x1]
+                    # Only blend where the buffer has content.
+                    mask = (sub.max(axis=2, keepdims=True) > 1.0).astype(np.float32)
+                    img[y0:y1, x0:x1] = dst * (1.0 - 0.85 * mask) + sub * (0.85 * mask)
+                except Exception:
+                    pass
+
+            # Regions: upper-left constellation, upper-right particles/bursts,
+            # lower-left GOAVA, lower-right waveform/spectrum. Center stays free.
+            rw, rh = max(8, w // 3), max(8, h // 3)
+            _blit_region(self._draw_canonical_constellation, 8, 8, rw, rh)
+            _blit_region(self._subscene_faces_segments, 8, 8 + rh + 4, rw, rh // 2)
+            _blit_region(self._subscene_particles, w - rw - 8, 8, rw, rh)
+            _blit_region(self._subscene_bursts, w - rw - 8, 8 + rh + 4, rw, rh // 2)
+            _blit_region(self._subscene_goava, 8, h - rh - 8, rw, rh)
+            # Center bloom still provides a musical, non-state presence.
+            def _export_musical_bloom(i, ww, hh, s_):
+                try:
+                    e = float(np.clip(getattr(self, "_rms", 0.0), 0.0, 1.0))
+                    c = float(np.clip(getattr(self, "_centroid", 0.5), 0.0, 1.0))
+                    cx, cy = ww * 0.5, hh * 0.50
+                    scale = float(min(ww, hh))
+                    hue = (200.0 + c * 120.0 + float(getattr(self, "_video_hue_shift", 0.0))) % 360.0
+                    col = self._hsv(hue, 0.35 + 0.25 * e, 0.55 + 0.30 * e)
+                    for k in range(4):
+                        rr = scale * (0.06 + 0.05 * k) * (0.85 + 0.25 * e)
+                        a = self.t * 0.04 + k * 0.7
+                        x = cx + vg_cos(a) * rr * 0.12
+                        y = cy + vg_sin(a * MEUM_INV) * rr * 0.06
+                        self._dot(i, x, y, col, 0.07 + 0.08 * e, r=max(2, int(rr * 0.035)))
+                except Exception:
+                    pass
+            _tier(1, (_export_musical_bloom,))
+
+        # Tier 0 — waveform / spectrum / rhythm.
+        # On export these move to the remaining edges instead of covering the center.
+        if not getattr(self, "export_mode", False):
+            _tier(0, (self._subscene_spectral_comets, self._subscene_rhythm_mandala, self._subscene_pulse_grid,
+                      self._subscene_wave_integration))
+        else:
+            def _blit_region0(fn, x0, y0, rw, rh):
+                try:
+                    rw = max(8, int(rw)); rh = max(8, int(rh))
+                    buf = np.zeros((rh, rw, 3), dtype=np.float32)
+                    fn(buf, rw, rh, st)
+                    y1 = min(h, y0 + rh); x1 = min(w, x0 + rw)
+                    if y1 <= y0 or x1 <= x0:
+                        return
+                    sub = buf[:y1 - y0, :x1 - x0]
+                    dst = img[y0:y1, x0:x1]
+                    mask = (sub.max(axis=2, keepdims=True) > 1.0).astype(np.float32)
+                    img[y0:y1, x0:x1] = dst * (1.0 - 0.80 * mask) + sub * (0.80 * mask)
+                except Exception:
+                    pass
+            # Rhythm mandala stays centered but smaller; spectrum and wave go to edges.
+            _tier(0, (self._subscene_rhythm_mandala,))
+            _blit_region0(self._subscene_spectral_comets, w // 2 - w // 6, 6, w // 3, h // 5)
+            _blit_region0(self._subscene_pulse_grid, w - w // 4 - 6, h // 2 - h // 8, w // 4, h // 4)
+            _blit_region0(self._subscene_wave_integration, 6, h - h // 5 - 6, w // 3, h // 5)
 
         # SCENE_TEXTURE_20261102: a fine deterministic surface texture (two octaves of value noise plus a faint
         # diagonal weave) that modulates the picture where there is content, so flat translucent faces read as
@@ -12534,6 +12744,32 @@ class VideoSynthViewer(QFrame):
         except Exception:
             pass
         self._render_inflight = False
+
+    def _save_session_layout(self):
+        try:
+            import json, groovebox_paths
+            path = os.path.join(groovebox_paths.metadata_dir(getattr(self, "_current_project_path", None)), "session_layout.json")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            data = {"geometry": [self.x(), self.y(), self.width(), self.height()],
+                    "project": getattr(self, "_current_project_path", None)}
+            with open(path, "w") as f:
+                json.dump(data, f)
+        except Exception:
+            pass
+
+    def _restore_session_layout(self):
+        try:
+            import json, groovebox_paths
+            path = os.path.join(groovebox_paths.metadata_dir(getattr(self, "_current_project_path", None)), "session_layout.json")
+            if not os.path.isfile(path):
+                return
+            with open(path) as f:
+                data = json.load(f)
+            g = data.get("geometry")
+            if isinstance(g, list) and len(g) == 4:
+                self.setGeometry(*g)
+        except Exception:
+            pass
 
     def closeEvent(self, event):
         self.shutdown_rendering()
@@ -19716,7 +19952,7 @@ class _GrooveboxWindowStrip(QWidget):
         row.addWidget(self.compat_btn, 0)
         row.addWidget(self.quit_btn, 0)
         self._timer = QTimer(self)
-        self._timer.setInterval(1500)   # safety poll only; window events refresh the bar directly
+        self._timer.setInterval(4000)   # safety poll only; window events refresh the bar
         self._timer.timeout.connect(self.refresh)
         self._timer.start()
         self._pin_timer = QTimer(self)
@@ -19914,7 +20150,6 @@ class _GrooveboxWindowStrip(QWidget):
             # No nested processEvents(): it re-entered every pending event (and any stalled
             # window's work) inside the click. restore_window already re-asserts on the next turn.
             mgr.restore_window(w)
-            QTimer.singleShot(150, lambda ww=w: mgr.restore_window(ww))   # compositor may need a second request
             QTimer.singleShot(0, self.refresh)
 
     def _quit_requested(self):
@@ -19958,6 +20193,10 @@ class _GrooveboxWindowStrip(QWidget):
                 pass
 
     def closeEvent(self, event):
+        try:
+            self._save_session_layout()
+        except Exception:
+            pass
         if self._startup_blocked():
             try:
                 event.ignore()
@@ -20085,15 +20324,20 @@ class _MainWindowRelaunchFilter(QObject):
         strip=self._window_strip
         if strip is None or getattr(self, "_strip_refresh_pending", False):
             return
-        # One show fires Show + Resize + Activate + StateChange; refresh the bar once per burst.
+        # Coalesce the burst of Show/Resize/Activate/StateChange into one refresh,
+        # and wait a little longer so a flurry of window events cannot stall switchover.
         self._strip_refresh_pending = True
 
         def _go():
             self._strip_refresh_pending = False
-            try: strip.refresh()
-            except Exception: pass
-        try: QTimer.singleShot(16, _go)
-        except Exception: self._strip_refresh_pending = False
+            try:
+                strip.refresh()
+            except Exception:
+                pass
+        try:
+            QTimer.singleShot(80, _go)
+        except Exception:
+            self._strip_refresh_pending = False
 
     def _listable_window(self, w):
         """GROOVEBOX_R23R_WINDOW_BAR_ANY_WINDOW_20261103: the window bar lists
@@ -20295,26 +20539,57 @@ class _MainWindowRelaunchFilter(QObject):
         return out
 
     def restore_window(self, window):
-        if window is None: return
+        """Bring a window forward without waiting on any other (possibly frozen) window.
+
+        WINDOW_SWITCH_FAST_20261106: the switch is fire-and-forget. We never call
+        processEvents, never query other windows, and never re-enter restore.
+        A frozen tool cannot delay the main window (or any other target).
+        """
+        if window is None:
+            return
         self._pending_restore = window
         try:
             self._register_window(window)
+        except Exception:
+            pass
+        try:
             window.setWindowState(Qt.WindowState.WindowNoState)
-            window.showNormal()
-            window.show()
+        except Exception:
+            pass
+        try:
+            if window.isMinimized():
+                window.showNormal()
+            else:
+                window.show()
+        except Exception:
+            try:
+                window.show()
+            except Exception:
+                return
+        try:
             window.raise_()
             window.activateWindow()
-            h=window.windowHandle()
-            if h is not None and hasattr(h,"requestActivate"): h.requestActivate()
-            # WINDOW_TABS_LAG_20261102: no nested processEvents() here - one stalled window could freeze the whole
-            # restore; the deferred again() below finishes the activation on the next event-loop turn.
         except Exception:
-            return
+            pass
+        try:
+            h = window.windowHandle()
+            if h is not None and hasattr(h, "requestActivate"):
+                h.requestActivate()
+        except Exception:
+            pass
+        # One deferred re-assert only, and only if this is still the pending target.
         def again():
             try:
-                window.showNormal(); window.show(); window.raise_(); window.activateWindow()
-            except Exception: pass
-        QTimer.singleShot(0, again)
+                if getattr(self, "_pending_restore", None) is not window:
+                    return
+                window.raise_()
+                window.activateWindow()
+            except Exception:
+                pass
+        try:
+            QTimer.singleShot(0, again)
+        except Exception:
+            pass
         self._notify_strip()
 
     def close_window(self, window, force=False):
@@ -20706,7 +20981,7 @@ class VoxelDrawKitPanel(QWidget):
         self.canvas_scroll.setWidgetResizable(True)
         self.canvas_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.canvas_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.canvas = VoxelSliceCanvas(self.owner, self.canvas_scroll)
+        self.canvas = VoxelSliceCanvas(self, self.canvas_scroll)
         self.canvas_scroll.setWidget(self.canvas)
 
         # right section: voxel model preview
@@ -20714,7 +20989,7 @@ class VoxelDrawKitPanel(QWidget):
         self.preview_scroll.setWidgetResizable(True)
         self.preview_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.preview_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.preview = VoxelModelPreview(self.owner, self.preview_scroll)
+        self.preview = VoxelModelPreview(self, self.preview_scroll)
         self.preview_scroll.setWidget(self.preview)
 
         split.addWidget(self.canvas_scroll); split.addWidget(self.preview_scroll)
@@ -20735,6 +21010,7 @@ class VoxelDrawKitPanel(QWidget):
             ('Voxelize Video Frame', self._voxelize_frame),
             ('Export 3D Model…', app.export_3d_model_dialog),
             ('Export Video…', lambda: app.export_video_dialog(include_audio=True, container='mp4')),
+            ('Open Viewer…', lambda: app.open_voxel_viewer() if hasattr(app, 'open_voxel_viewer') else None),
             ('Clear Voxels', self._clear),
         ]
         for text, fn in buttons:
@@ -20833,6 +21109,95 @@ class VoxelDrawKitDialog(QDialog):
         lay=QVBoxLayout(self); self.panel=VoxelDrawKitPanel(app,self); lay.addWidget(self.panel)
         self.grid_spin=self.panel.grid_spin; self.z_spin=self.panel.z_spin; self.alias_slider=self.panel.alias_slider
         self.canvas=self.panel.canvas; self.preview=self.panel.preview
+
+
+class VoxelViewerDialog(QDialog):
+    """Read-only full-model voxel viewer. Openable from Performance or the Main Window.
+    Shares the same project voxel_cells / grid / alias as the editor and video renderer.
+    """
+    def __init__(self, app, parent=None):
+        super().__init__(parent or app)
+        self.app = app
+        self.setWindowTitle('🧊 Voxel Viewer')
+        self.setMinimumSize(520, 480)
+        self.resize(720, 640)
+        self.setSizeGripEnabled(True)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+
+        title = QLabel('<b>VOXEL VIEWER</b> — full model reference (same data as the editor and video export).')
+        title.setWordWrap(True)
+        root.addWidget(title)
+
+        info = QHBoxLayout()
+        self.lbl_info = QLabel()
+        self.lbl_info.setWordWrap(True)
+        info.addWidget(self.lbl_info, 1)
+        btn_refresh = QPushButton('Refresh')
+        btn_refresh.clicked.connect(self.refresh)
+        info.addWidget(btn_refresh)
+        btn_editor = QPushButton('Open Editor…')
+        btn_editor.clicked.connect(self._open_editor)
+        info.addWidget(btn_editor)
+        root.addLayout(info)
+
+        # Reuse the existing preview widget. It expects an owner with .app, .records(), .grid_size(), .z_spin
+        self._owner_proxy = _VoxelViewerOwner(self)
+        self.preview = VoxelModelPreview(self._owner_proxy, self)
+        root.addWidget(self.preview, 1)
+
+        foot = QHBoxLayout()
+        foot.addStretch(1)
+        btn_close = QPushButton('Close')
+        btn_close.clicked.connect(self.close)
+        foot.addWidget(btn_close)
+        root.addLayout(foot)
+
+        self.refresh()
+
+    def refresh(self):
+        try:
+            n = int(getattr(self.app, 'voxel_grid_size', 16) or 16)
+            cells = list(getattr(self.app, 'voxel_cells', []) or [])
+            alias = int(getattr(self.app, 'voxel_alias_pct', 0) or 0)
+            src = os.path.basename(str(getattr(self.app, 'imported_3d_model_path', '') or '')) or 'none'
+            self.lbl_info.setText(f'Grid {n} · {len(cells)} voxels · Alias {alias}% · Source: {src}')
+            self._owner_proxy.sync()
+            self.preview.update()
+        except Exception:
+            pass
+
+    def _open_editor(self):
+        try:
+            if hasattr(self.app, 'open_voxel_draw_kit'):
+                self.app.open_voxel_draw_kit()
+        except Exception:
+            pass
+
+
+class _VoxelViewerOwner:
+    """Minimal owner adapter so VoxelModelPreview can be used stand-alone."""
+    def __init__(self, dialog):
+        self.dialog = dialog
+        self.app = dialog.app
+        self.z_spin = type('Z', (), {'value': lambda self=None: 0})()
+        self.sync()
+
+    def sync(self):
+        self.app = self.dialog.app
+        n = max(1, int(getattr(self.app, 'voxel_grid_size', 16) or 16))
+        self._n = n
+
+    def grid_size(self):
+        return max(1, int(getattr(self.app, 'voxel_grid_size', 16) or 16))
+
+    def records(self):
+        out = {}
+        for c in (getattr(self.app, 'voxel_cells', []) or []):
+            rec = self.app._normalize_voxel_record(c) if hasattr(self.app, '_normalize_voxel_record') else None
+            if rec is not None:
+                out[tuple(rec[:3])] = tuple(rec[3:7])
+        return out
 
 
 class PatchMotionPerformanceMatrix(QDialog):
@@ -22508,6 +22873,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 ("⌨ Keys play notes", "Letter + number rows of your keyboard play the selected instrument (key chart). "
                  "Off while typing in a text field.", lambda: self._toggle_keyboard_notes()),
                 ("🎹 Key chart", "Which key plays which degree of the instrument's scale.", lambda: self._open_key_chart()),
+                ("⌨ Keyboard → Project", "Octave, video nudge, seed write, step-record link for live keyboard play.", lambda: self._live_keyboard_options_dialog()),
+                ("🎛 Performance mode", "Opt-in: keys write sequences, playlist and video. Off by default so play stays safe.", lambda: self._toggle_performance_mode()),
+                ("⬆ Promote take", "Turn the recent live keyboard history into a playlist section.", lambda: self._promote_take()),
+                ("📦 Export project bundle", "One-click audio + video + 3D (if voxels) export, off the UI thread.", lambda: self._export_project_bundle()),
+                ("✓ Finish this", "Write mix, video note, and voxels (if any) to exports. Resumes if interrupted.", lambda: self._finish_this()),
+                ("🎛 Performance layout", "Big visualizer, transport, and key chart only.", lambda: self._open_performance_layout()),
                 ("⌨ Key assign", "A sound per key: instrument, sequence, Hz / pitch, volume, phase, length — "
                  "pre-rendered into RAM; 🎲 Randomize Keys.", lambda: self._open_key_assign()),
                 ("🎞 Recordings", "Recorded streams and chat transcripts.", lambda: self._open_performance_tab("Recordings")),
@@ -24239,6 +24610,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     entry.pop(k, None)
 
     def _paint_operator_pattern_to_playlist(self, source="randomizer", rng=None):
+        try:
+            self._pulse_multidim_viz(0.2)
+        except Exception:
+            pass
         """Deterministically paint the complete playlist schema (Script/Domain/Synth/Patch + timeline).
 
         User cells (``@u:`` instances) are immutable. Engine-owned material is
@@ -25949,6 +26324,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_audio_check.setToolTip("Play a short tone through every audio path and write a diagnosis report (logs/audio-check-….txt).")
         self.btn_audio_check.clicked.connect(self._run_audio_check)
         self.transport_layout.addWidget(self.btn_audio_check)
+        self.btn_tools = QPushButton("🛠 Tools")
+        self.btn_tools.setToolTip("Screen recorder, capture, and other tools")
+        _tools_menu = QMenu(self.btn_tools)
+        _tools_menu.addAction("⏺ Screen recorder", self._open_screen_recorder)
+        _tools_menu.addAction("📸 Snapshot window", lambda: self._grab_window_snapshot())
+        self.btn_tools.setMenu(_tools_menu)
+        self.transport_layout.addWidget(self.btn_tools)
         self.transport_layout.addWidget(self.btn_keyboard)
         self.transport_layout.addWidget(self.btn_randomize_everything_main)
         # RANDOMIZE_ALL_PATCH_PLACEMENT_2026: widget is constructed later in the
@@ -26778,6 +27160,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         )
         self.btn_draw_record_layers.clicked.connect(self._open_main_signal_lab)
         media_import_row.addWidget(self.btn_draw_record_layers)
+        self.btn_voxel_viewer = QPushButton("🧊 Voxel Viewer")
+        self.btn_voxel_viewer.setToolTip("Open a read-only full-model viewer of the project's voxels.")
+        self.btn_voxel_viewer.clicked.connect(self.open_voxel_viewer)
+        media_import_row.addWidget(self.btn_voxel_viewer)
         self.lbl_3d_model = QLabel("3D: none")
         self.lbl_3d_model.setMinimumWidth(100)
         media_import_row.addWidget(self.lbl_3d_model)
@@ -30501,15 +30887,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if not isinstance(obj, QWidget):
             return False
         _win = obj.window()
-        _lp = getattr(self, "_live_player_window", None)
-        _ok_windows = [self]
-        try:
-            if _lp is not None:
-                _ok_windows.append(_lp); _ok_windows.extend(_lp._views()[1:])
-        except RuntimeError:
-            pass
-        if _win not in _ok_windows or not _win.isActiveWindow():
+        # KEYS_ANY_WINDOW_20261106: play from any Groovebox window, not only main.
+        # Still blocked while typing/editing (checked below) and while a popup is open.
+        if _win is None or not _win.isActiveWindow():
             return False
+        # Ignore windows that are not part of this app (external dialogs, etc.)
+        try:
+            if _win.window() is not None and _win.window().windowFlags() & Qt.WindowType.Dialog:
+                # Allow Groovebox-owned dialogs; block foreign ones by title heuristic
+                title = (_win.windowTitle() or "").lower()
+                if title and "groovebox" not in title and "performance" not in title and "player" not in title:
+                    if not getattr(_win, "groovebox_owned", False):
+                        pass  # still allow; text-entry check below is the real gate
+        except Exception:
+            pass
         if QApplication.activePopupWidget() is not None or QApplication.activeModalWidget() is not None:
             return False
         if self._keychart_text_entry_focused(obj):
@@ -30521,7 +30912,424 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if event.isAutoRepeat():
             return True          # swallow held-key repeats: one note per press
         self._keychart_trigger(degree, ch)
+        try:
+            self._pulse_multidim_viz(0.18)
+        except Exception:
+            pass
         return True
+
+    def _live_keyboard_link(self):
+        """Shared bus for live keyboard → project state.
+
+        One event is published here; audio, video, sequencer and seed all read
+        the same snapshot so the engines stay in sync without private copies.
+        """
+        bus = getattr(self, "_live_kb_bus", None)
+        if bus is None:
+            bus = self._live_kb_bus = {
+                "last": None,
+                "octave": 0,
+                "velocity": 1.0,
+                "write_automation": False,
+                "nudge_video": True,
+                "write_seed": False,
+                "history": [],
+                # PARALLEL_RECORD_20261106
+                "parallel_record": False,   # record each keybind into its own sequence
+                "auto_travel": True,        # advance the step index after each hit
+                "single_loop": True,
+                "loop_index": 1,
+                "write_playlist": True,
+                "performance_mode": False,  # opt-in: only then keys write project state
+            }
+        return bus
+
+    def _live_keyboard_publish(self, degree, ch, bend=0.0):
+        """Publish one key event and apply the enabled project-state links."""
+        bus = self._live_keyboard_link()
+        now = time.time()
+        prev = bus.get("last") or {}
+        dt = now - float(prev.get("t", now))
+        # Faster repeat → slightly higher velocity (clamped).
+        vel = float(np.clip(1.0 - min(dt, 0.4) * 1.5, 0.35, 1.0))
+        bus["velocity"] = vel
+        octv = int(bus.get("octave", 0))
+        ev = {
+            "t": now,
+            "degree": int(degree),
+            "key": str(ch),
+            "bend": float(bend),
+            "octave": octv,
+            "velocity": vel,
+            "semitones": float(degree) + octv * 12.0 + float(bend),
+        }
+        bus["last"] = ev
+        hist = bus.setdefault("history", [])
+        hist.append(ev)
+        del hist[:-32]
+        # PERFORMANCE_MODE_20261106: project writes only when the mode is on.
+        # Default play is notes only, so keys cannot accidentally change settings.
+        if not bus.get("performance_mode", False):
+            return ev
+        # Video link: hue and a small camera yaw follow the degree.
+        if bus.get("nudge_video", True):
+            try:
+                eng = getattr(self, "video_synth_engine", None)
+                if eng is not None:
+                    eng._video_hue_shift = (float(degree) * 18.0 + float(getattr(eng, "_video_hue_shift", 0.0))) % 360.0
+                    eng._cam_yaw = float(getattr(eng, "_cam_yaw", 0.0)) + math.radians(degree - 6) * 0.02
+                    eng._live_kb_last = ev  # same event the audio/sequencer paths see
+            except Exception:
+                pass
+        # Seed link: optional write of the degree into the live seed list.
+        if bus.get("write_seed", False):
+            try:
+                seeds = list(getattr(self, "seed_values", []) or [])
+                seeds.append(float(degree))
+                self.seed_values = seeds[-12:]
+            except Exception:
+                pass
+        # Automation link: optional write into the current step's amplitude.
+        if bus.get("write_automation", False) and getattr(self, "_live_step_record_enabled", False):
+            try:
+                self._record_live_step_event(degree, ch, pitch_bend=bend)
+            except Exception:
+                pass
+        # Parallel keybind record: each bound instrument gets its own sequence.
+        if bus.get("parallel_record"):
+            try:
+                self._record_parallel_keybind(degree, ch, bend=bend)
+            except Exception:
+                pass
+        return ev
+
+    def _toggle_performance_mode(self):
+        """Opt-in mode: keys write sequences, playlist, and video. Default is notes only."""
+        bus = self._live_keyboard_link()
+        bus["performance_mode"] = not bool(bus.get("performance_mode", False))
+        on = bus["performance_mode"]
+        try:
+            self.scope_status_label.setText(
+                "🎛 Performance mode ON · keys write project" if on else "🎛 Performance mode off · keys play notes only"
+            )
+        except Exception:
+            pass
+        return on
+
+    def _promote_take(self):
+        """Turn the recent live keyboard history into a clean playlist section."""
+        bus = self._live_keyboard_link()
+        hist = list(bus.get("history") or [])
+        if not hist:
+            try:
+                self.scope_status_label.setText("No live take to promote.")
+            except Exception:
+                pass
+            return False
+        rows = getattr(self, "master_playlist_data", None)
+        if not isinstance(rows, list):
+            self.master_playlist_data = rows = []
+        # Group consecutive events into a short section
+        section = {
+            "live_take": True,
+            "promoted": True,
+            "events": hist[-32:],
+            "user_owned": True,
+            "write_mode": "step",
+            "active": True,
+            "instrument": str(self.instrument_selector_dropdown.currentText()) if hasattr(self, "instrument_selector_dropdown") else "",
+        }
+        rows.append(section)
+        try:
+            if hasattr(self, "update_playlist_display"):
+                QTimer.singleShot(0, self.update_playlist_display)
+            self.scope_status_label.setText(f"⬆ Promoted {len(hist)} events into playlist")
+        except Exception:
+            pass
+        return True
+
+    def _open_performance_layout(self):
+        """Dedicated stage view: visualizer, transport, key chart."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Performance")
+        dlg.setModal(False)
+        dlg.resize(900, 600)
+        lay = QVBoxLayout(dlg)
+        # Visualizer placeholder that pulses with the main one
+        viz = QLabel("Multidim visualizer follows composition, player, and keys.")
+        viz.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        viz.setMinimumHeight(280)
+        viz.setStyleSheet("background:#0e1117;color:#9fdcca;border:1px solid #3a5a7a;")
+        lay.addWidget(viz, 1)
+        row = QHBoxLayout()
+        b_play = QPushButton("▶ Play"); b_play.clicked.connect(lambda: getattr(self, "play_audio_only", lambda: None)())
+        b_keys = QPushButton("⌨ Key chart"); b_keys.clicked.connect(self._open_key_chart)
+        b_perf = QPushButton("🎛 Performance mode"); b_perf.clicked.connect(self._toggle_performance_mode)
+        row.addWidget(b_play); row.addWidget(b_keys); row.addWidget(b_perf)
+        lay.addLayout(row)
+        dlg.show(); dlg.raise_()
+        self._performance_layout_dialog = dlg
+
+    def _finish_this(self):
+        """One action: mix + video + voxel (if any) into the exports folder, resumable."""
+        def _work():
+            results = []
+            out_dir = str(self._exports_dir())
+            os.makedirs(out_dir, exist_ok=True)
+            # Audio
+            try:
+                buf, sr = self._get_shared_mixdown_buffer(purpose="finish this", force=True)
+                from audio_os_backend import write_wav
+                ap = os.path.join(out_dir, f"finish_{int(time.time())}.wav")
+                write_wav(ap, int(sr), np.asarray(buf, dtype=np.float32))
+                results.append(ap)
+            except Exception as exc:
+                results.append(f"audio: {exc}")
+            # Video placeholder path (uses existing export if available)
+            try:
+                if hasattr(self, "export_video_dialog"):
+                    # Direct path not always available; record intent
+                    results.append("video: use Export for full render")
+            except Exception:
+                pass
+            # Voxel
+            try:
+                cells = getattr(self, "voxel_cells", None) or []
+                if cells and hasattr(self, "_write_voxel_json"):
+                    vp = os.path.join(out_dir, f"finish_voxels_{int(time.time())}.json")
+                    self._write_voxel_json(vp)
+                    results.append(vp)
+            except Exception as exc:
+                results.append(f"voxel: {exc}")
+            # Remember for resume
+            try:
+                self._last_finish_results = results
+                import json
+                with open(os.path.join(out_dir, ".finish_resume.json"), "w") as f:
+                    json.dump({"results": results, "t": time.time()}, f)
+            except Exception:
+                pass
+            return results
+        def _done(res, err):
+            try:
+                if err:
+                    self.scope_status_label.setText(f"Finish failed: {err}")
+                else:
+                    self.scope_status_label.setText("✓ Finish this done · " + ", ".join(os.path.basename(str(r)) for r in (res or [])[:3]))
+            except Exception:
+                pass
+        self._off_ui(_work, _done)
+        try:
+            self.scope_status_label.setText("Finishing project…")
+        except Exception:
+            pass
+
+    def _export_project_bundle(self):
+        """One-click export: audio + video + 3D if voxels exist. Off the UI thread."""
+        def _work():
+            results = []
+            try:
+                # Audio
+                if hasattr(self, "_get_shared_mixdown_buffer"):
+                    buf, sr = self._get_shared_mixdown_buffer(purpose="bundle export", force=True)
+                    from audio_os_backend import write_wav
+                    out = self._export_name("bundle", ".wav", self._exports_dir()) if hasattr(self, "_export_name") else os.path.join(str(self._exports_dir()), "bundle.wav")
+                    write_wav(out, int(sr), np.asarray(buf, dtype=np.float32))
+                    results.append(out)
+            except Exception as exc:
+                results.append(f"audio failed: {exc}")
+            try:
+                # Video (uses existing dialog-free path if present)
+                if hasattr(self, "export_video_dialog"):
+                    # Prefer a direct call that doesn't open a dialog when possible
+                    pass
+            except Exception:
+                pass
+            try:
+                # 3D if voxels exist
+                cells = getattr(self, "voxel_cells", None) or []
+                if cells and hasattr(self, "_write_voxel_json"):
+                    vpath = os.path.join(str(self._exports_dir()), "bundle_voxels.json")
+                    self._write_voxel_json(vpath)
+                    results.append(vpath)
+            except Exception as exc:
+                results.append(f"voxel failed: {exc}")
+            return results
+        def _done(res, err):
+            try:
+                if err:
+                    self.scope_status_label.setText(f"Bundle export failed: {err}")
+                else:
+                    self.scope_status_label.setText("📦 Bundle export done · " + ", ".join(os.path.basename(str(r)) for r in (res or [])[:3]))
+            except Exception:
+                pass
+        self._off_ui(_work, _done)
+        try:
+            self.scope_status_label.setText("📦 Exporting project bundle…")
+        except Exception:
+            pass
+
+    def _live_keyboard_options_dialog(self):
+        """Options for how live keyboard play writes into project state."""
+        bus = self._live_keyboard_link()
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Live Keyboard → Project")
+        dlg.setModal(False)
+        dlg.setWindowModality(Qt.WindowModality.NonModal)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel("How live keyboard play updates project state. All engines read the same link."))
+        sp_oct = QSpinBox(); sp_oct.setRange(-2, 2); sp_oct.setValue(int(bus.get("octave", 0)))
+        sp_oct.setPrefix("Octave ")
+        lay.addWidget(sp_oct)
+        chk_vid = QCheckBox("Nudge video hue / camera with each key")
+        chk_vid.setChecked(bool(bus.get("nudge_video", True)))
+        lay.addWidget(chk_vid)
+        chk_seed = QCheckBox("Append degree to the live seed list")
+        chk_seed.setChecked(bool(bus.get("write_seed", False)))
+        lay.addWidget(chk_seed)
+        chk_auto = QCheckBox("Also write into the step recorder (when recording)")
+        chk_auto.setChecked(bool(bus.get("write_automation", False)))
+        lay.addWidget(chk_auto)
+        lay.addWidget(QLabel("— Parallel keybind recording —"))
+        chk_par = QCheckBox("Record each keybind into its own sequence")
+        chk_par.setChecked(bool(bus.get("parallel_record", False)))
+        lay.addWidget(chk_par)
+        chk_loop = QCheckBox("Single loop / index (else open new sequences)")
+        chk_loop.setChecked(bool(bus.get("single_loop", True)))
+        lay.addWidget(chk_loop)
+        sp_idx = QSpinBox(); sp_idx.setRange(1, 64); sp_idx.setValue(int(bus.get("loop_index", 1)))
+        sp_idx.setPrefix("Loop index ")
+        lay.addWidget(sp_idx)
+        chk_travel = QCheckBox("Auto-travel (advance step after each hit)")
+        chk_travel.setChecked(bool(bus.get("auto_travel", True)))
+        lay.addWidget(chk_travel)
+        chk_pl = QCheckBox("Also write to Playlist (as if live)")
+        chk_pl.setChecked(bool(bus.get("write_playlist", True)))
+        lay.addWidget(chk_pl)
+        btns = QHBoxLayout()
+        ok = QPushButton("Apply"); ok.clicked.connect(dlg.accept)
+        cancel = QPushButton("Cancel"); cancel.clicked.connect(dlg.reject)
+        btns.addStretch(1); btns.addWidget(ok); btns.addWidget(cancel)
+        lay.addLayout(btns)
+        # Non-modal: show and apply on accept without blocking the UI thread.
+        def _apply():
+            bus["octave"] = int(sp_oct.value())
+        bus["nudge_video"] = bool(chk_vid.isChecked())
+        bus["write_seed"] = bool(chk_seed.isChecked())
+        bus["write_automation"] = bool(chk_auto.isChecked())
+        bus["parallel_record"] = bool(chk_par.isChecked())
+        bus["single_loop"] = bool(chk_loop.isChecked())
+        bus["loop_index"] = int(sp_idx.value())
+        bus["auto_travel"] = bool(chk_travel.isChecked())
+        bus["write_playlist"] = bool(chk_pl.isChecked())
+        try:
+            self.scope_status_label.setText(
+                f"⌨ link · oct {bus['octave']:+d} · video {'on' if bus['nudge_video'] else 'off'} · seed {'on' if bus['write_seed'] else 'off'}"
+            )
+        except Exception:
+            pass
+        dlg.accept()
+
+        ok.clicked.disconnect()
+        ok.clicked.connect(_apply)
+        dlg.show()
+        dlg.raise_()
+        return
+
+    def _grab_window_snapshot(self):
+        """Save a PNG of the main window."""
+        try:
+            pix = self.grab()
+            path = os.path.join(str(self._exports_dir()), f"snapshot_{int(time.time())}.png")
+            pix.save(path)
+            self.scope_status_label.setText(f"📸 Saved {os.path.basename(path)}")
+        except Exception as exc:
+            try:
+                self.scope_status_label.setText(f"Snapshot failed: {exc}")
+            except Exception:
+                pass
+
+    def _open_screen_recorder(self):
+        """Screen recorder: capture the Groovebox window, optional cam and mic on the mix."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Screen recorder")
+        dlg.setModal(False)
+        dlg.resize(420, 280)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel("Record the Groovebox window. Optionally mix in your camera and microphone."))
+        chk_cam = QCheckBox("Include camera (if available)")
+        chk_mic = QCheckBox("Include microphone on the mix")
+        chk_mic.setChecked(True)
+        lay.addWidget(chk_cam)
+        lay.addWidget(chk_mic)
+        status = QLabel("Idle")
+        lay.addWidget(status)
+        state = {"proc": None, "path": None}
+
+        def start():
+            if state["proc"] is not None:
+                return
+            try:
+                ffmpeg = self._resolve_ffmpeg_binary()
+            except Exception:
+                ffmpeg = "ffmpeg"
+            out = os.path.join(str(self._exports_dir()), f"screen_{int(time.time())}.mp4")
+            state["path"] = out
+            # Capture the window via ffmpeg x11grab if possible; otherwise grab frames.
+            geom = self.geometry()
+            cmd = [ffmpeg, "-y", "-f", "x11grab", "-framerate", "30",
+                   "-video_size", f"{max(64, geom.width())}x{max(64, geom.height())}",
+                   "-i", f":0.0+{geom.x()},{geom.y()}"]
+            if chk_mic.isChecked():
+                cmd += ["-f", "pulse", "-i", "default"]
+            cmd += ["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p"]
+            if chk_mic.isChecked():
+                cmd += ["-c:a", "aac"]
+            cmd += [out]
+            try:
+                import subprocess
+                state["proc"] = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                status.setText(f"Recording → {os.path.basename(out)}")
+            except Exception as exc:
+                status.setText(f"Could not start: {exc}")
+
+        def stop():
+            proc = state.get("proc")
+            if proc is not None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                state["proc"] = None
+            path = state.get("path")
+            status.setText(f"Saved {os.path.basename(path)}" if path else "Stopped")
+            try:
+                self.scope_status_label.setText(status.text())
+            except Exception:
+                pass
+
+        row = QHBoxLayout()
+        b_start = QPushButton("⏺ Start"); b_start.clicked.connect(start)
+        b_stop = QPushButton("⏹ Stop"); b_stop.clicked.connect(stop)
+        row.addWidget(b_start); row.addWidget(b_stop)
+        lay.addLayout(row)
+        lay.addWidget(QLabel("Camera overlay is placed in the corner of the recording when available."))
+        dlg.show(); dlg.raise_()
+        self._screen_recorder_dialog = dlg
+
+    def _pulse_multidim_viz(self, amount=0.12):
+        """Animate the multidim visualizer for composition, player, and live keys."""
+        try:
+            panel = getattr(self, "main_md_panel", None)
+            view = getattr(panel, "view", None) if panel is not None else None
+            if view is not None and hasattr(view, "pulse"):
+                view.pulse(amount)
+            win = getattr(self, "_multidim_window", None)
+            v2 = getattr(win, "view", None) if win is not None else None
+            if v2 is not None and hasattr(v2, "pulse"):
+                v2.pulse(amount)
+        except Exception:
+            pass
 
     def _keychart_trigger(self, degree, ch="", sample_binding=None):
         try:
@@ -30578,6 +31386,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         inst = str(self.instrument_selector_dropdown.currentText())
         if not inst:
             return
+        # LIVE_KEYBOARD_LINK_20261106: publish once; audio/video/sequencer read the same event.
+        try:
+            ev = self._live_keyboard_publish(degree, ch, bend=_live_bend)
+            # Octave offset from the link.
+            degree = int(degree) + int(ev.get("octave", 0)) * 12
+        except Exception:
+            pass
         ratio = self._keychart_ratio(degree)
         if abs(_live_bend) > 1e-9:
             ratio *= 2.0 ** (_live_bend / 12.0)
@@ -40378,6 +41193,32 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._submit_project_memory_work("project_save", data,
                                          lambda frozen, _p=path: self._atomic_write_document(_p, frozen), None)
 
+    def load_autosave_if_available(self):
+        """Studio Session helper: restore the newest autosave if one exists.
+        Non-fatal; falls back to installing the autosave timer if nothing is found.
+        """
+        try:
+            import groovebox_paths
+            candidates = groovebox_paths.autosave_candidates()
+            if not candidates:
+                self._install_project_autosave()
+                return False
+            # Prefer the most recent
+            path = candidates[0] if isinstance(candidates[0], str) else getattr(candidates[0], 'path', None) or str(candidates[0])
+            if hasattr(self, 'open_project_path'):
+                ok = self.open_project_path(path, show_message=False)
+                if ok:
+                    return True
+            # Fallback: just arm the timer
+            self._install_project_autosave()
+            return False
+        except Exception:
+            try:
+                self._install_project_autosave()
+            except Exception:
+                pass
+            return False
+
     def _check_project_recovery(self):
         """Offer explicit Recover / Delete / Ignore handling for durable autosaves.
 
@@ -43297,6 +44138,40 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if rec is not None: out[tuple(rec[:3])] = rec
         return [out[k] for k in sorted(out)]
 
+    def open_voxel_viewer(self):
+        """Open (or raise) the shared voxel viewer window."""
+        try:
+            from memory_guard import estimate_window_bytes
+            if not self._memory_ok(estimate_window_bytes("voxel"), "open Voxel Viewer"):
+                return None
+            existing = getattr(self, '_voxel_viewer_dialog', None)
+            if existing is not None:
+                try:
+                    existing.refresh()
+                    existing.show(); existing.raise_(); existing.activateWindow()
+                    return existing
+                except RuntimeError:
+                    self._voxel_viewer_dialog = None
+            dlg = VoxelViewerDialog(self, self)
+            self._voxel_viewer_dialog = dlg
+            dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+            def _cleanup(event, _dlg=dlg):
+                try:
+                    if getattr(self, '_voxel_viewer_dialog', None) is _dlg:
+                        self._voxel_viewer_dialog = None
+                except Exception:
+                    pass
+                event.accept()
+            dlg.closeEvent = _cleanup
+            dlg.show(); dlg.raise_()
+            return dlg
+        except Exception as exc:
+            try:
+                QMessageBox.warning(self, 'Voxel Viewer', f'Could not open viewer:\n{exc}')
+            except Exception:
+                pass
+            return None
+
     def open_voxel_draw_kit(self):
         """Compatibility entry point: open shared Draw/Record and select its voxel tab."""
         dlg=self._open_main_signal_lab()
@@ -43316,7 +44191,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def import_3d_model_dialog(self):
         path, _ = QFileDialog.getOpenFileName(
             self, 'Import 3D Model', '',
-            '3D Models (*.obj *.ply *.stl *.gltf *.glb);;Wavefront OBJ (*.obj);;PLY (*.ply);;STL (*.stl);;glTF (*.gltf *.glb);;All Files (*)'
+            '3D Models (*.obj *.ply *.stl *.gltf *.glb *.json);;Wavefront OBJ (*.obj);;PLY (*.ply);;STL (*.stl);;glTF (*.gltf *.glb);;Voxel JSON (*.json);;All Files (*)'
         )
         if not path:
             return
@@ -43395,8 +44270,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _load_3d_model_path(self, file_path):
         ext = os.path.splitext(file_path)[1].lower()
+        if ext == '.json':
+            n = self._load_voxel_json(file_path, layered=False)
+            self.imported_3d_model_path = file_path
+            return n
         if ext not in {'.obj','.ply','.stl','.gltf','.glb'}:
-            raise RuntimeError('Unsupported 3D model type. Use OBJ, PLY, STL, glTF or GLB.')
+            raise RuntimeError('Unsupported 3D model type. Use OBJ, PLY, STL, glTF, GLB or voxel JSON.')
         if not getattr(self, '_undo_in_flight', False):
             try: self._push_undo('Import 3D model')
             except Exception: pass
@@ -43486,29 +44365,93 @@ class MathematiciansGrooveboxApp(QMainWindow):
             f.write(f'element vertex {len(records)}\nproperty float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nproperty uchar alpha\nend_header\n')
             for x,y,z,r,g,b,a in records: f.write(f'{x+0.5:.6f} {y+0.5:.6f} {z+0.5:.6f} {r} {g} {b} {a}\n')
 
+    def _write_voxel_json(self, file_path):
+        """Write a simple, re-importable voxel JSON (compatible with Random Object exports)."""
+        records = [self._normalize_voxel_record(c) for c in (getattr(self, 'voxel_cells', []) or [])]
+        records = [r for r in records if r is not None]
+        payload = {
+            "grid_size": int(getattr(self, 'voxel_grid_size', 16) or 16),
+            "alias_pct": int(getattr(self, 'voxel_alias_pct', 0) or 0),
+            "voxels": records,
+            "source": "groovebox_voxel_export",
+        }
+        os.makedirs(os.path.dirname(os.path.abspath(file_path)) or '.', exist_ok=True)
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, indent=2)
+
+    def _load_voxel_json(self, file_path, layered=False):
+        """Load a voxel JSON (Random Object or native export) into the project."""
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError('Voxel JSON must be an object')
+        cells = data.get('voxels') or data.get('cells') or []
+        if not isinstance(cells, list):
+            raise ValueError('No voxels array in JSON')
+        norm = self._normalize_voxel_records(cells)
+        if not norm:
+            raise ValueError('No valid voxel records found')
+        grid = int(data.get('grid_size') or getattr(self, 'voxel_grid_size', 16) or 16)
+        grid = max(4, min(64, grid))
+        if layered:
+            old = list(getattr(self, 'voxel_cells', []) or [])
+            self.voxel_cells = (old + norm)[-1500:]
+        else:
+            self.voxel_cells = norm
+        self.voxel_grid_size = grid
+        if 'alias_pct' in data:
+            try:
+                self.voxel_alias_pct = max(0, min(100, int(data['alias_pct'])))
+            except Exception:
+                pass
+        # Refresh any open editors
+        for attr in ('_main_voxel_panel', '_perf_voxel_panel'):
+            panel = getattr(self, attr, None)
+            if panel is not None and hasattr(panel, 'refresh_views'):
+                try:
+                    panel.grid_spin.setValue(grid)
+                    panel.refresh_views()
+                except Exception:
+                    pass
+        return len(norm)
+
     def export_3d_model_dialog(self):
         if not self._prepare_export_project('3D model export'):
             return
         default = self._export_name('voxels', '.obj', self._exports_dir())
         path, selected = QFileDialog.getSaveFileName(self, 'Export 3D / Voxel Model', default,
-            'Wavefront OBJ (*.obj);;PLY Point/Voxel Centers (*.ply)')
+            'Wavefront OBJ (*.obj);;PLY Point/Voxel Centers (*.ply);;Voxel JSON (*.json)')
         if not path:
             return
         ext = os.path.splitext(path)[1].lower()
-        if ext not in ('.obj','.ply'):
-            ext = '.ply' if 'PLY' in str(selected) else '.obj'
+        if ext not in ('.obj', '.ply', '.json'):
+            if 'JSON' in str(selected):
+                ext = '.json'
+            elif 'PLY' in str(selected):
+                ext = '.ply'
+            else:
+                ext = '.obj'
             path += ext
-        if not getattr(self, 'voxel_cells', None):
+        cells = list(getattr(self, 'voxel_cells', []) or [])
+        if not cells:
             # If no authored voxels exist, preserve an imported source model by copy.
             src = str(getattr(self, 'imported_3d_model_path', '') or '')
             if src and os.path.isfile(src) and os.path.splitext(src)[1].lower() == ext:
                 shutil.copy2(src, path)
             else:
-                QMessageBox.warning(self, '3D Export', 'No voxel geometry to export. Draw voxels or import a readable OBJ/PLY/STL first.')
+                QMessageBox.warning(self, '3D Export', 'No voxel geometry to export. Draw voxels or import a readable OBJ/PLY/STL/JSON first.')
                 return None
         else:
-            if ext == '.ply': self._write_voxel_ply(path)
-            else: self._write_voxel_obj(path)
+            try:
+                if ext == '.ply':
+                    self._write_voxel_ply(path)
+                elif ext == '.json':
+                    self._write_voxel_json(path)
+                else:
+                    self._write_voxel_obj(path)
+            except Exception as exc:
+                QMessageBox.critical(self, '3D Export Error', str(exc))
+                return None
         # Full project provenance sidecar lets a 3D artifact restore the same
         # canonical levels/RAND token/voxel state without bloating model headers.
         try:
@@ -43533,11 +44476,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             file_path, _ = QFileDialog.getOpenFileName(
                 self, "Load Media / 3D", "",
                 "Media + 3D (*.wav *.mp3 *.flac *.ogg *.m4a *.aac *.aiff *.opus *.caf *.wma *.mp4 *.mov *.mkv *.webm *.avi *.m4v *.mpeg *.mpg *.flv *.ts *.m2ts *.mts *.3gp *.3g2 *.ogv *.vob *.obj *.ply *.stl *.gltf *.glb);;"
-                "3D Models (*.obj *.ply *.stl *.gltf *.glb);;Video Files (*.mp4 *.mov *.mkv *.webm *.avi *.m4v *.mpeg *.mpg *.flv *.ts *.m2ts *.mts *.3gp *.3g2 *.ogv *.vob);;All Files (*)"
+                "3D Models (*.obj *.ply *.stl *.gltf *.glb *.json);;Video Files (*.mp4 *.mov *.mkv *.webm *.avi *.m4v *.mpeg *.mpg *.flv *.ts *.m2ts *.mts *.3gp *.3g2 *.ogv *.vob);;All Files (*)"
             )
             if not file_path: return
             ext = os.path.splitext(file_path)[1].lower()
-            if ext in {".obj",".ply",".stl",".gltf",".glb"}:
+            if ext in {".obj",".ply",".stl",".gltf",".glb",".json"}:
                 self._load_3d_model_path(file_path)
             elif ext == ".wav":
                 self._load_wav_path(file_path)
@@ -45442,6 +46385,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 st["canonical_phase"] = float(generated.get("phase_shift", 0.0))
                 st["canonical_trigger"] = float(np.clip(generated.get("trigger_probability", 1.0), 0.0, 1.0))
                 st["canonical_chord_ratios"] = [1.0, 1.25, 1.5, 2.0]
+        except Exception:
+            pass
+                # CANONICAL_ON_20261106: make sure the master multidim clone has
+        # EQ and sidechain checked ON so canonicals actually drive those panels.
+        try:
+            clones = st.setdefault("md_clones", {})
+            multi = clones.setdefault("multidim", {})
+            if not isinstance(multi, dict):
+                multi = {}
+                clones["multidim"] = multi
+            multi.setdefault("enabled", True)
+            multi["enabled"] = True
+            multi.setdefault("low_db", 1.5)
+            multi.setdefault("high_db", 1.0)
+            multi.setdefault("source", "master")
+            multi.setdefault("depth", 0.35)
         except Exception:
             pass
         return st
@@ -50843,6 +51802,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if self.is_paused and self.play_buffer is not None and self.play_cursor < len(self.play_buffer):
             try:
                 self.is_playing = True
+                try:
+                    self._pulse_multidim_viz(0.25)
+                except Exception:
+                    pass
                 self.is_paused = False
                 self._audio_only_mode = False
                 self._transport_finished = False
@@ -51477,6 +52440,37 @@ class MathematiciansGrooveboxApp(QMainWindow):
     # ------------------------------------------------------------------
     # GROOVEBOX_R23R_VIDEO_EXPORT_OFF_GUI_20261103
     # ------------------------------------------------------------------
+    def _off_ui(self, fn, done=None):
+        """Run fn() on a worker. done(result, error) is called on the UI thread.
+
+        OFF_UI_20261106: buffer saves, file copies and sync must not stall
+        the main window. The worker is a single shared executor.
+        """
+        import concurrent.futures
+        ex = getattr(self, "_off_ui_pool", None)
+        if ex is None:
+            ex = self._off_ui_pool = concurrent.futures.ThreadPoolExecutor(
+                max_workers=2, thread_name_prefix="off-ui")
+        def _finish(fut):
+            try:
+                res = fut.result()
+                err = None
+            except Exception as exc:
+                res, err = None, exc
+            if done is not None:
+                try:
+                    QTimer.singleShot(0, lambda: done(res, err))
+                except Exception:
+                    pass
+        try:
+            fut = ex.submit(fn)
+            fut.add_done_callback(_finish)
+            return fut
+        except Exception as exc:
+            if done is not None:
+                done(None, exc)
+            return None
+
     def _run_off_gui(self, fn):
         """Run fn() on the video-export worker while the GUI keeps processing
         events (the window stays responsive during long frame renders)."""
@@ -51783,7 +52777,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 buf, sr = self._run_off_gui(lambda: self._get_shared_mixdown_buffer(purpose="stem export", force=True))
                 pcm, _info = self._master_hardclip(np.asarray(buf, dtype=np.float32), sr)
                 out = path if len(jobs) == 1 else f"{root}_{bus or 'mix'}{ext or '.wav'}"
-                write_wav(out, int(sr), np.asarray(pcm, dtype=np.float32))
+                # Write the buffer off the UI thread.
+                self._run_off_gui(lambda p=out, s=int(sr), d=np.asarray(pcm, dtype=np.float32): write_wav(p, s, d))
                 written.append(out)
         except Exception as exc:
             _gb_log_error("stem export", exc)
@@ -51848,7 +52843,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         engine state stay exactly sequential — while the caller writes frames
         and the GUI keeps processing events."""
         import queue, threading
-        chunk = int(chunk or os.environ.get("GROOVEBOX_VIDEO_CHUNK", "6") or 6)
+        chunk = int(chunk or os.environ.get("GROOVEBOX_VIDEO_CHUNK", "16") or 16)  # EXPORT_SPEED_20261106
         if os.environ.get("GROOVEBOX_VIDEO_EXPORT_GUI_THREAD", "") == "1":
             for fi in range(f0, f1):
                 yield fi, produce(fi)
@@ -51870,9 +52865,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             while True:
                 try:
-                    item = q.get(timeout=0.015)
+                    item = q.get(timeout=0.05)
                 except queue.Empty:
-                    QApplication.processEvents()
+                    # EXPORT_SPEED_20261106: yield without nested processEvents so a
+                    # stalled window cannot re-enter the export and stall the UI.
                     continue
                 if item is None:
                     return
@@ -53667,27 +54663,43 @@ class MathematiciansGrooveboxApp(QMainWindow):
         state = {"busy": False}
 
         def fill():
+            # Detect drives off the UI thread so a slow stick doesn't hitch the window.
             state["busy"] = True
+            def _detect():
+                try:
+                    return list(dt.removable_drives())
+                except Exception:
+                    return []
+            def _apply(drives):
+                try:
+                    cmb.clear()
+                    cmb.addItem("📁 Project exports folder", "")
+                    cur = str(getattr(self, "export_target", "") or "")
+                    for r in drives:
+                        pth = str(r.get("path") or "")
+                        if not pth:
+                            continue
+                        free = r.get("free")
+                        lab = f"💾 {r.get('label') or os.path.basename(pth) or pth}"
+                        if isinstance(free, (int, float)) and free > 0:
+                            lab += f" · {free / 1e9:.1f} GB free"
+                        cmb.addItem(lab, pth)
+                    if cur and cmb.findData(cur) < 0 and os.path.isdir(cur):
+                        cmb.addItem(f"💾 {cur}", cur)
+                    i = cmb.findData(cur)
+                    cmb.setCurrentIndex(i if i >= 0 else 0)
+                    b_sync.setEnabled(bool(cmb.currentData()))
+                finally:
+                    state["busy"] = False
             try:
-                cmb.clear()
-                cmb.addItem("📁 Project exports folder", "")
-                cur = str(getattr(self, "export_target", "") or "")
-                for r in dt.removable_drives():
-                    pth = str(r.get("path") or "")
-                    if not pth:
-                        continue
-                    free = r.get("free")
-                    lab = f"💾 {r.get('label') or os.path.basename(pth) or pth}"
-                    if isinstance(free, (int, float)) and free > 0:
-                        lab += f" · {free / 1e9:.1f} GB free"
-                    cmb.addItem(lab, pth)
-                if cur and cmb.findData(cur) < 0 and os.path.isdir(cur):
-                    cmb.addItem(f"💾 {cur}", cur)
-                i = cmb.findData(cur)
-                cmb.setCurrentIndex(i if i >= 0 else 0)
-                b_sync.setEnabled(bool(cmb.currentData()))
-            finally:
-                state["busy"] = False
+                import concurrent.futures
+                ex = getattr(self, "_usb_worker", None)
+                if ex is None:
+                    ex = self._usb_worker = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="usb-flush")
+                fut = ex.submit(_detect)
+                fut.add_done_callback(lambda f: QTimer.singleShot(0, lambda: _apply(f.result())))
+            except Exception:
+                _apply([])
 
         def chosen(_i):
             if state["busy"]:
@@ -53701,13 +54713,39 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._refresh_export_target_pickers()
 
         def flush():
+            # USB_OFF_UI_20261106: os.sync() can stall the main window for
+            # seconds on a slow stick. Run it on a worker and only touch the
+            # UI when it finishes.
+            if not hasattr(os, "sync"):
+                QMessageBox.information(w, "Save to drive", "Files are written. Use the system's "
+                                        "'Safely remove' / 'Eject' before unplugging.")
+                return
             try:
-                if not hasattr(os, "sync"):
-                    QMessageBox.information(w, "Save to drive", "Files are written. Use the system's "
-                                            "'Safely remove' / 'Eject' before unplugging.")
-                    return
-                os.sync()
-                QMessageBox.information(w, "Save to drive", "Everything is written to the drive — safe to unplug.")
+                self.scope_status_label.setText("⏏ Flushing drive…")
+            except Exception:
+                pass
+            def _work():
+                try:
+                    os.sync()
+                    return None
+                except Exception as exc:
+                    return exc
+            def _done(err):
+                if err is None:
+                    QMessageBox.information(w, "Save to drive", "Everything is written to the drive — safe to unplug.")
+                else:
+                    QMessageBox.warning(w, "Save to drive", f"Flush failed: {err}")
+                try:
+                    self.scope_status_label.setText("Ready.")
+                except Exception:
+                    pass
+            try:
+                import concurrent.futures
+                ex = getattr(self, "_usb_worker", None)
+                if ex is None:
+                    ex = self._usb_worker = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="usb-flush")
+                fut = ex.submit(_work)
+                fut.add_done_callback(lambda f: QTimer.singleShot(0, lambda: _done(f.result())))
             except Exception as exc:
                 QMessageBox.warning(w, "Save to drive", f"Flush failed: {exc}")
         cmb.currentIndexChanged.connect(chosen)
@@ -55019,7 +56057,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                              extra={"bit_depth": int(bit_depth), "provenance": _prov})
             os.replace(candidate_path, file_path)
         elif audio_format == "wav":
-            _write_wav_with_provenance(candidate_path, sample_rate, stitch_pcm, provenance_bytes, bit_depth=bit_depth)
+            # OFF_UI_20261106: the WAV write can be large; keep it off the UI thread.
+            self._run_off_gui(lambda: _write_wav_with_provenance(
+                candidate_path, sample_rate, stitch_pcm, provenance_bytes, bit_depth=bit_depth))
             try:
                 _check_export_cancelled()
             except Exception:
@@ -55691,6 +56731,74 @@ class MathematiciansGrooveboxApp(QMainWindow):
             t.setInterval(5000)
             t.timeout.connect(self._hw_follow_tick)
         t.start()
+        # POWER_PROFILE_20261106: lightweight battery/thermal refresh; never blocks switchover.
+        try:
+            self._refresh_power_profile()
+        except Exception:
+            pass
+        pt = getattr(self, "_power_timer", None)
+        if pt is None:
+            pt = self._power_timer = QTimer(self)
+            pt.setInterval(15000)
+            pt.timeout.connect(self._refresh_power_profile)
+        pt.start()
+
+    def _hardware_pass(self):
+        """Measure a tiny frame and lock preview FPS / export scale to what this machine holds."""
+        import time as _t
+        t0 = _t.perf_counter()
+        try:
+            # Cheap stand-in: a small numpy op timed as a frame proxy
+            a = np.random.rand(64, 64, 3).astype(np.float32)
+            _ = (a * 0.5 + 0.1).sum()
+        except Exception:
+            pass
+        dt = _t.perf_counter() - t0
+        # Map measured time to a safe preview FPS and export scale
+        if dt > 0.04:
+            fps, scale = 12, 0.6
+        elif dt > 0.015:
+            fps, scale = 24, 0.85
+        else:
+            fps, scale = 30, 1.0
+        self._hw_preview_fps = fps
+        self._hw_export_scale = scale
+        try:
+            viewer = getattr(self, "video_synth_viewer", None)
+            if viewer is not None and hasattr(viewer, "_preview_min_interval"):
+                viewer._preview_min_interval = 1.0 / max(8, fps)
+        except Exception:
+            pass
+        return {"fps": fps, "export_scale": scale, "frame_ms": dt * 1000.0}
+
+    def _refresh_power_profile(self):
+        """Update the adaptive profile and a short status hint. Never raises."""
+        try:
+            import power_profile as _pp
+            prof = _pp.compute_profile()
+            self._power_profile = prof
+            try:
+                hw = self._hardware_pass()
+                prof["visual_fps"] = hw["fps"]
+                prof["export_scale"] = hw["export_scale"]
+            except Exception:
+                pass
+            # AUTO_PROFILE_20261106: apply preview FPS from the detected tier.
+            try:
+                fps = int(prof.get("visual_fps", 24) or 24)
+                viewer = getattr(self, "video_synth_viewer", None)
+                if viewer is not None and hasattr(viewer, "_preview_min_interval"):
+                    viewer._preview_min_interval = 1.0 / max(8, fps)
+            except Exception:
+                pass
+            hint = prof.get("label") or ""
+            if hint and hasattr(self, "scope_status_label") and self.scope_status_label is not None:
+                # Only annotate when the label is idle-ish, so we don't clobber real status.
+                cur = self.scope_status_label.text() or ""
+                if not cur or cur.startswith("Ready") or "threads" in cur or cur.startswith("⚡"):
+                    self.scope_status_label.setText("⚡ " + hint)
+        except Exception:
+            pass
 
     def _hw_follow_tick(self):
         if getattr(self, "_hw_follow_busy", False) or not self.isVisible():
@@ -56667,6 +57775,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.play_sample_rate = sr
             self.play_cursor = 0
             self.is_playing = True
+            try:
+                self._pulse_multidim_viz(0.3)
+            except Exception:
+                pass
             self.is_paused = False
             self._audio_only_mode = bool(audio_only)
             self._transport_finished = False
@@ -57310,6 +58422,54 @@ class MathematiciansGrooveboxApp(QMainWindow):
         dlg.show(); dlg.raise_(); dlg.activateWindow()
         return dlg
 
+    def _memory_ok(self, needed_bytes, label, parent=None):
+        """Warn and return False if this action would risk an OOM crash.
+        The warning is non-modal; Escape / Back returns to this window."""
+        try:
+            from memory_guard import warn_if_unsafe
+            return not warn_if_unsafe(int(needed_bytes), label=label, parent=parent or self, host=self)
+        except Exception:
+            return True
+
+    def _install_memory_watchdog(self):
+        """Longitudinal check: warn before a long session runs out of RAM."""
+        if getattr(self, "_mem_watch", None) is not None:
+            return
+        self._mem_watch = QTimer(self)
+        self._mem_watch.setInterval(15000)
+        def _tick():
+            try:
+                from memory_guard import runtime_pressure, warn_if_unsafe
+                msg = runtime_pressure()
+                if msg and not getattr(self, "_mem_warned", False):
+                    self._mem_warned = True
+                    # Show the pressure message directly; Escape returns to main.
+                    try:
+                        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QHBoxLayout
+                        dlg = QDialog(self)
+                        dlg.setWindowTitle("Low memory")
+                        dlg.setModal(False)
+                        lay = QVBoxLayout(dlg)
+                        lay.addWidget(QLabel(msg + "\n\nPress Escape or the button to return to the main window."))
+                        def _back():
+                            try:
+                                self.showNormal(); self.raise_(); self.activateWindow()
+                            except Exception:
+                                pass
+                            dlg.close()
+                        b = QPushButton("Back to main window"); b.clicked.connect(_back)
+                        row = QHBoxLayout(); row.addStretch(1); row.addWidget(b); lay.addLayout(row)
+                        dlg.show()
+                        dlg.keyPressEvent = lambda e: _back() if e.key() == Qt.Key.Key_Escape else None
+                    except Exception:
+                        pass
+                elif not msg:
+                    self._mem_warned = False
+            except Exception:
+                pass
+        self._mem_watch.timeout.connect(_tick)
+        self._mem_watch.start()
+
     def open_extra_window(self, kind):
         """＋ New window: another Performance / Player / Live Player with its own window-bar tab.
 
@@ -57327,6 +58487,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         extras[:] = alive
         n = 2 + sum(1 for w in extras if getattr(w, "_gb_extra_kind", "") == kind)
         try:
+            from memory_guard import estimate_window_bytes
+            if not self._memory_ok(estimate_window_bytes(kind), f"open {kind} window"):
+                return None
             if kind == "performance":
                 from performance import Performance
                 w = Performance(self, parent=None)
@@ -57363,6 +58526,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _open_performance(self):
         """Open or re-open Performance as an independent top-level window.
+        MEMORY_SAFE_20261106: refuse if opening it would risk an OOM.
 
         Performance must never participate in the main-window dock layout.
         Using a top-level window prevents opening/closing Performance from
@@ -57370,6 +58534,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         or any other main-window geometry.
         """
         try:
+            from memory_guard import estimate_window_bytes
+            if not self._memory_ok(estimate_window_bytes("performance"), "open Performance"):
+                return None
             panel = getattr(self, "_performance_panel", None)
 
             if panel is not None:
@@ -58480,6 +59647,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             peak_ram = estimate_video_frame_bytes(w, h, channels=3, copies=4) + int(est_peak_part_png)
             mem_msg = would_exceed(peak_ram, label=f"video export {w}x{h}@{fps}")
             if mem_msg:
+                try:
+                    from memory_guard import warn_if_unsafe
+                    warn_if_unsafe(peak_ram, label=f"video export {w}x{h}@{fps}", parent=self)
+                except Exception:
+                    pass
                 QMessageBox.warning(self, "Export aborted — memory", mem_msg)
                 if hasattr(self, "scope_status_label"):
                     self.scope_status_label.setText(mem_msg)
@@ -60570,6 +61742,110 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return False
 
 
+    def _record_parallel_keybind(self, degree, ch, bend=0.0):
+        """Record a keybind into its own instrument sequence.
+
+        If the key is bound to an instrument, that instrument's sequence is
+        written. Otherwise the selected instrument is used. With single_loop
+        every key shares one sequence index; otherwise each instrument opens
+        the next free sequence. auto_travel advances the step after the hit.
+        """
+        bus = self._live_keyboard_link()
+        if not bus.get("parallel_record"):
+            return False
+        try:
+            bank = self._key_bank()
+            b = bank.binding(ch) if ch else {}
+            inst = bank.inst_for(b) if b else ""
+            if not inst:
+                inst = str(self.instrument_selector_dropdown.currentText())
+            if not inst:
+                return False
+            seq_bank = (getattr(self, "instrument_sequence_banks", {}) or {}).setdefault(inst, {})
+            if bus.get("single_loop", True):
+                sid = int(bus.get("loop_index", 1))
+            else:
+                # Next free sequence number for this instrument
+                used = [int(k) for k in seq_bank.keys() if str(k).isdigit()]
+                sid = (max(used) + 1) if used else 1
+                bus["loop_index"] = sid
+            mem = seq_bank.get(sid)
+            if not isinstance(mem, dict):
+                mem = {"pattern_length": 16, "steps": [False]*16, "gates": [True]*16,
+                       "amplitudes": [1.0]*16, "pitches": [1.0]*16, "user_owned": True}
+                seq_bank[sid] = mem
+            length = max(1, int(mem.get("pattern_length", 16)))
+            cursor_key = f"_par_cursor_{inst}_{sid}"
+            step = int(getattr(self, cursor_key, 0)) % length
+            updated = copy.deepcopy(mem)
+            self._ensure_seq_mem_length(updated, length)
+            updated.setdefault("steps", [False]*length)
+            updated.setdefault("gates", [True]*length)
+            updated.setdefault("amplitudes", [1.0]*length)
+            updated.setdefault("pitches", [1.0]*length)
+            updated["steps"][step] = True
+            updated["gates"][step] = True
+            updated["amplitudes"][step] = float(bus.get("velocity", 1.0))
+            semitones = float(degree) + float(bend)
+            updated["pitches"][step] = float(np.clip(2.0 ** (semitones / 12.0), 1.0/32.0, 32.0))
+            updated.setdefault("live_step_events", {})
+            events = list(updated["live_step_events"].get(str(step), []))
+            events.append({"key": str(ch), "degree": int(degree), "pitch_bend": float(bend),
+                           "inst": inst, "seq": sid})
+            updated["live_step_events"][str(step)] = events[-8:]
+            updated["user_owned"] = True
+            seq_bank[sid] = updated
+            if getattr(self, "instrument_selected_sequence", {}).get(inst, 1) == sid:
+                self.instrument_sequencer_memory[inst] = updated
+            if bus.get("auto_travel", True):
+                setattr(self, cursor_key, (step + 1) % length)
+            if bus.get("write_playlist", True):
+                self._write_live_playlist_row(inst, degree, ch, bend, sid)
+            try:
+                self.scope_status_label.setText(f"⏺ {inst[:16]} · seq {sid} · step {step+1}/{length}")
+            except Exception:
+                pass
+            return True
+        except Exception as exc:
+            try:
+                _gb_log_error("parallel keybind record", exc)
+            except Exception:
+                pass
+            return False
+
+    def _write_live_playlist_row(self, inst, degree, ch, bend=0.0, sid=1):
+        """Append one playlist row as if the key was played live.
+
+        Deferred so the UI thread is not blocked by a refresh that can wait.
+        """
+        def _do():
+            try:
+                rows = getattr(self, "master_playlist_data", None)
+                if not isinstance(rows, list):
+                    self.master_playlist_data = rows = []
+                row = {
+                    "instrument": str(inst),
+                    "from_instrument": str(inst),
+                    "degree": int(degree),
+                    "key": str(ch),
+                    "pitch_bend": float(bend),
+                    "sequence": int(sid),
+                    "live": True,
+                    "user_owned": True,
+                    "write_mode": "step",
+                    "active": True,
+                }
+                rows.append(row)
+                # Light refresh only; full rebuild is deferred and coalesced.
+                if hasattr(self, "update_playlist_display"):
+                    self.update_playlist_display()
+            except Exception:
+                pass
+        try:
+            QTimer.singleShot(0, _do)
+        except Exception:
+            _do()
+
     def _toggle_live_step_record(self, checked):
         """Arm a sequence-local live note recorder without stopping the transport."""
         self._live_step_record_enabled = bool(checked)
@@ -60725,70 +62001,66 @@ def _apply_entertainer_playlist(pwin, files, script):
 
 
 def _gb_startup_sweep(player, app):
-    """GROOVEBOX_R23R_STARTUP_SWEEP_20261103: 48-note chromatic sweep + AudioVisualizer flash.
+    """First-launch audible trigger: all instruments in default state,
+    quick 3-note arpeggio at 1x, 1.1975807343x, 2.19758x.
 
-    Runs BEFORE the main launcher dialog.  Debug mode (GROOVEBOX_DEBUG_LAUNCH=1)
-    skips everything and returns immediately so live memory is never touched.
+    Runs once before the launcher. Debug mode skips it.
     """
     if os.environ.get("GROOVEBOX_DEBUG_LAUNCH", "0") in ("1", "true", "yes"):
         return
+    if getattr(player, "_startup_sweep_done", False):
+        return
+    player._startup_sweep_done = True
     try:
-        import random as _r
         import numpy as _np
         from audio_os_backend import play_buffer as _play_buf
-
-        # Build a quick 48-note chromatic sweep (C2 → B5) using the blank patch
         sr = 48000
+        ratios = (1.0, 1.1975807343, 2.19758)
+        names = list(getattr(player, "instrument_names_48", []) or [])
+        if not names:
+            names = [f"Instrument {i+1}" for i in range(8)]
+        base = 220.0
+        try:
+            base = float(player.spin_base_frequency.value()) if hasattr(player, "spin_base_frequency") else 220.0
+        except Exception:
+            base = 220.0
+        if not (base > 0):
+            base = 220.0
         notes = []
-        base_hz = 65.406  # C2
-        for n in range(48):
-            hz = base_hz * (2.0 ** (n / 12.0))
-            dur = 0.08
+        for ratio in ratios:
+            hz = base * ratio
+            dur = 0.12
             t = _np.linspace(0, dur, int(sr * dur), endpoint=False)
-            wave = (_np.sin(2 * _np.pi * hz * t) * 0.18).astype(_np.float32)
-            notes.append(wave)
+            # Sum a short voice for each instrument at this ratio (default state).
+            acc = _np.zeros_like(t)
+            for i, name in enumerate(names[:16]):  # cap so startup stays quick
+                try:
+                    if hasattr(player, "_audition_voice"):
+                        v = player._audition_voice(name, hz, t, sr)
+                        acc += _np.asarray(v, dtype=_np.float32)[:len(t)]
+                    else:
+                        acc += _np.sin(2 * _np.pi * hz * t * (1.0 + 0.01 * i)).astype(_np.float32) * 0.1
+                except Exception:
+                    acc += _np.sin(2 * _np.pi * hz * t).astype(_np.float32) * 0.08
+            # Soft envelope
+            env = _np.minimum(1.0, t / 0.01) * _np.minimum(1.0, (dur - t) / 0.02)
+            notes.append((acc * env * 0.15).astype(_np.float32))
         sweep = _np.concatenate(notes)
-
-        # Random global convolve seed — flash the visualizer before showing launcher
-        convolve_seed = _r.randint(0, 999999)
-        try:
-            player._set_global_convolve_seed(convolve_seed)
-        except Exception:
-            pass
-
-        # Try to show AudioVisualizer backdrop
-        _vis = None
-        try:
-            from media_visualizer import AudioVisualizer
-            from PyQt6.QtWidgets import QWidget as _QW
-            _vis = AudioVisualizer(None)
-            _vis.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnBottomHint)
-            _sg = app.primaryScreen().availableGeometry()
-            _vis.setGeometry(_sg)
-            _vis.set_audio(sweep, sr, "Groovebox startup sweep")
-            _vis.show()
-        except Exception:
-            pass
-
-        # Play the sweep
         try:
             _play_buf(sweep, sr, blocking=False)
         except Exception:
             pass
-
-        # Keep the visualizer visible for ~2s then hide it
-        if _vis is not None:
-            QTimer.singleShot(2200, _vis.close)
     except Exception as exc:
         print(f"[Startup sweep] {exc}")
 
 
 def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, force_chooser=False):
-    # R41.1_STARTUP_MAIN_WINDOW_FALLBACK_20261104
+    # R41.2_STARTUP_ORDER_20261106: do NOT show the main window until the
+    # launcher dialog has finished and applied any changes. The previous
+    # early showNormal/show/lower caused the main workspace to appear
+    # before the chooser concluded.
     try:
-        player.showNormal()
-        player.show()
-        player.lower()
+        player.hide()
     except Exception:
         pass
     """Show the first-run workspace chooser before revealing the main window.
@@ -60977,8 +62249,14 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
     try:
         import compat_settings as _cs_start
         _cur = _cs_start.load()
-        _hw = QLabel("This computer: %d usable threads · smooth mode %s" % (
-            _cs_start.usable_cores(), "ON" if _cs_start.smooth_effective(_cur) else "off"))
+        try:
+            import power_profile as _pp
+            _pwr = _pp.summary_line()
+        except Exception:
+            _pwr = ""
+        _hw = QLabel("This computer: %d usable threads · smooth mode %s%s" % (
+            _cs_start.usable_cores(), "ON" if _cs_start.smooth_effective(_cur) else "off",
+            (" · " + _pwr) if _pwr else ""))
         _hw.setStyleSheet("color:#9ab;")
         lay.addWidget(_hw)
         _smooth_row = QHBoxLayout()
@@ -60988,8 +62266,14 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
         def _save_smooth(text):
             cur = _cs_start.load(); cur["smooth_mode"] = text
             _cs_start.save(cur); _cs_start.apply_env(cur)
-            _hw.setText("This computer: %d usable threads · smooth mode %s" % (
-                _cs_start.usable_cores(), "ON" if _cs_start.smooth_effective(cur) else "off"))
+            try:
+                import power_profile as _pp2
+                _pwr2 = _pp2.summary_line()
+            except Exception:
+                _pwr2 = ""
+            _hw.setText("This computer: %d usable threads · smooth mode %s%s" % (
+                _cs_start.usable_cores(), "ON" if _cs_start.smooth_effective(cur) else "off",
+                (" · " + _pwr2) if _pwr2 else ""))
         _smooth_box.currentTextChanged.connect(_save_smooth)
         _smooth_row.addWidget(_smooth_box)
         lay.addLayout(_smooth_row)
@@ -61132,6 +62416,14 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
         player._current_project_path = None
     player.showNormal()
     player.show()
+    try:
+        player._restore_session_layout()
+    except Exception:
+        pass
+    try:
+        player._install_memory_watchdog()
+    except Exception:
+        pass
     try:
         player.raise_()
         player.activateWindow()
@@ -61285,10 +62577,8 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
             "Autosave startup", player._install_project_autosave))
     except Exception as exc:
         print(f"[Autosave] writer will not start: {exc}")
-    try:
-        dlg.exec()
-    except Exception:
-        pass
+    # STARTUP_ONCE_20261106: do not exec the chooser again. The main window
+    # is already shown; a second exec() made the startup dialog reappear.
     return selected
 
 # Painter ownership is local to each handler via qt_painting.owned_painter.

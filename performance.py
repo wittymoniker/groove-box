@@ -2152,6 +2152,7 @@ class Performance(QDialog):
         # in its own window.
         self._add_lazy_performance_tab(right, "🎥 Record / Import / Draw Clip", self._build_lazy_video_clip_studio)
         self._add_lazy_performance_tab(right, "🧊 Voxel Editor", self._build_lazy_voxel_editor)
+        self._add_lazy_performance_tab(right, "🧊 Voxel Viewer", self._build_lazy_voxel_viewer)
         right.addTab(self._scroll_page(self._build_shared_synth_context_tab()), "∴ Shared Synth Context")
         right.addTab(self._scroll_page(self._build_remix_tab()), "∿ Parametric Remix")
         self._add_lazy_performance_tab(right, "▤ Open Windows", lambda: self._scroll_page(self._build_open_windows_tab()))
@@ -2192,6 +2193,7 @@ class Performance(QDialog):
             "⚙ Box Mode": "How this window behaves as a box.",
             "📦 Batch Export": "Export many projects to audio / video in one go (opens its own window).",
             "🧊 Voxel Editor": "Draw / record the project's 3D voxel model (same data as the main window's kit).",
+            "🧊 Voxel Viewer": "Open a read-only full-model viewer of the project's voxels.",
             "Info": "What this window is and how to use it.",
         }
         for i in range(right.count()):
@@ -2447,7 +2449,7 @@ class Performance(QDialog):
                 except Exception:
                     pass
                 best = next((u for u in urls if "//10.42." in u or "//192.168.12." in u), urls[0] if urls else "")
-                self.lbl_status.setText(f"📡 Hotspot on · network {ssid} · password {pw} · files at {best or 'this device\'s address'}")
+                self.lbl_status.setText("📡 Hotspot on · network %s · password %s · files at %s" % (ssid, pw, best or "this device's address"))
             else:
                 btn.blockSignals(True); btn.setChecked(False); btn.blockSignals(False)
                 self.lbl_status.setText("Hotspot did not start: " + (str(msg).strip()[:200] or "no details"))
@@ -7366,6 +7368,25 @@ class Performance(QDialog):
         lay.addWidget(b); lay.addStretch(1)
         return w
 
+    def _build_lazy_voxel_viewer(self):
+        """Launcher tab that opens the shared voxel viewer window."""
+        host = getattr(self, "host", None)
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.addWidget(QLabel("<b>🧊 Voxel Viewer</b> — full model reference of the project's voxels."))
+        lay.addWidget(QLabel("The viewer opens in its own window so you can keep it visible while editing or performing."))
+        btn = QPushButton("Open Voxel Viewer")
+        btn.setMinimumHeight(40)
+        def _open():
+            if host is not None and hasattr(host, "open_voxel_viewer"):
+                host.open_voxel_viewer()
+            else:
+                QMessageBox.information(self, "Voxel Viewer", "The viewer needs the main Groovebox window.")
+        btn.clicked.connect(_open)
+        lay.addWidget(btn)
+        lay.addStretch(1)
+        return w
+
     def _build_lazy_voxel_editor(self):
         host = getattr(self, "host", None)
         if host is None:
@@ -7374,6 +7395,10 @@ class Performance(QDialog):
         import groovebox as _gbm
         panel = _gbm.VoxelDrawKitPanel(host, self)
         self._perf_voxel_panel = panel
+        try:
+            host._perf_voxel_panel = panel  # also expose on host for random object etc.
+        except Exception:
+            pass
         try:
             panel.refresh_views()
         except Exception:

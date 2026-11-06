@@ -127,3 +127,83 @@ def adaptive_workers(preferred: int, *, heavy: bool = False) -> int:
     elif avail > 0 and avail < 768 * 1024 * 1024:
         cap = 1
     return max(1, min(preferred, cap))
+
+def estimate_window_bytes(kind: str = "window") -> int:
+    """Rough RAM a new top-level window may need (buffers, widgets, caches)."""
+    kind = (kind or "window").lower()
+    if "performance" in kind:
+        return 180 * 1024 * 1024
+    if "player" in kind or "live" in kind:
+        return 120 * 1024 * 1024
+    if "voxel" in kind or "editor" in kind:
+        return 96 * 1024 * 1024
+    if "export" in kind:
+        return 64 * 1024 * 1024
+    return 48 * 1024 * 1024
+
+
+def warn_if_unsafe(needed_bytes: int, *, label: str = "this action", parent=None, host=None) -> bool:
+    """Show a non-modal warning and return True if the action should be refused.
+
+    Escape / the button returns focus to the main window. Never blocks.
+    """
+    msg = would_exceed(needed_bytes, label=label)
+    if not msg:
+        return False
+    try:
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QHBoxLayout
+        from PyQt6.QtCore import Qt
+        dlg = QDialog(parent)
+        dlg.setWindowTitle("Not enough memory")
+        dlg.setModal(False)
+        dlg.setWindowModality(Qt.WindowModality.NonModal)
+        lay = QVBoxLayout(dlg)
+        text = QLabel(msg + "\n\nGroovebox stopped this action so the program would not crash. "
+                      "Close other windows or apps, or lower the resolution / length, then try again.")
+        text.setWordWrap(True)
+        lay.addWidget(text)
+        row = QHBoxLayout()
+        def _back():
+            try:
+                target = host or parent
+                if target is not None:
+                    target.showNormal(); target.raise_(); target.activateWindow()
+            except Exception:
+                pass
+            dlg.close()
+        b = QPushButton("Back to main window")
+        b.clicked.connect(_back)
+        b.setDefault(True)
+        row.addStretch(1); row.addWidget(b)
+        lay.addLayout(row)
+        dlg.show(); dlg.raise_()
+        # Escape also returns to main
+        try:
+            dlg.keyPressEvent = lambda e: _back() if e.key() == Qt.Key.Key_Escape else None
+        except Exception:
+            pass
+    except Exception:
+        print(f"[Memory] {msg}")
+    return True
+
+
+def safe_or_warn(needed_bytes: int, *, label: str = "this action", parent=None) -> bool:
+    """Return True if it is safe to proceed; warn and return False otherwise."""
+    return not warn_if_unsafe(needed_bytes, label=label, parent=parent)
+
+def runtime_pressure() -> Optional[str]:
+    """Return a warning string if free RAM is trending into the danger zone, else None.
+
+    Used by the longitudinal watchdog so a long session warns before it crashes.
+    """
+    snap = snapshot(force=True)
+    avail, total = snap["available"], snap["total"]
+    if total <= 0:
+        return None
+    frac = avail / float(total)
+    if frac < 0.10 or avail < _RESERVE_BYTES:
+        return (
+            f"Low memory: {avail // (1024*1024)} MiB free of {total // (1024*1024)} MiB. "
+            "Close a window or stop an export before starting anything new."
+        )
+    return None
