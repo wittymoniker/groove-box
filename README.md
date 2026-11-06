@@ -1,4 +1,5 @@
-> **R28.4.50 HF16 cross-platform media diagnostics (2026-10-27):** current guidance covers Windows, macOS, Linux/Fedora, sOS/ISO, and the mobile helper path. This source archive includes a read-only platform/audio diagnostic utility and updated audio/video troubleshooting guidance. It is not a substitute for native OS CI or physical-hardware certification; see the HF15 section below for exact boundaries.
+<img width="1536" height="1024" alt="groovebox_ui_concept" src="https://github.com/user-attachments/assets/62f9fc00-a7f2-48fb-9aa5-cef78a1bb5bb" />
+
 
 # Mathematician's Groovebox
 
