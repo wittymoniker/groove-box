@@ -1,0 +1,12 @@
+R28.4.23 validation report
+
+PASS: python -m py_compile groovebox.py performance.py
+PASS: BUILD_ISO/verify_v35_22zz_r23f.py .
+PASS: BUILD_ISO/verify_v35_22zz_r23j.py .
+PASS: Main window no longer mounts master_volume_primary_row.
+PASS: legacy main slider widgets are hidden and retained only for compatibility/state.
+PASS: Performance exposes a single master-volume slider wired to host scalar updater.
+PASS: app-overlay-v35.22zz groovebox.py/performance.py byte-match root sources.
+PASS: app-overlay-v35.22zt groovebox.py/performance.py byte-match root sources.
+
+Not tested: full ISO build, boot on target Dell, physical analog/HDMI sound, live Wasmer deployment.

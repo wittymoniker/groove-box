@@ -1,0 +1,8 @@
+R28.4.15 validation
+
+PASS: python -m py_compile hardware_volume.py media_output_router.py performance.py
+PASS: pytest -q test_r28_4_12_acceptance_contract.py test_r28_4_13_regressions.py test_r23j_universal_audio_mic.py (17 passed)
+PASS: targeted single-source volume contract tests (added for this release)
+NOT RUN: physical speaker playback, target-device mixer inspection, full ISO build/boot, live Wasmer deployment.
+
+Design: main-window System Volume is the only exposed hardware-volume slider. Performance retains existing hardware access, but no longer creates a second slider instance. Missing state defaults to 100%; a detected physical volume remains authoritative when successfully read.

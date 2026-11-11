@@ -1,0 +1,18 @@
+Mathematician's Groovebox R28.4.13 — 2026-10-23
+
+Focus: audio/output volume reconciliation, persistent visible microphone metering and recording destinations, lower capture-worker priority, deterministic STEP probability, and Math Lab scrolling.
+
+Changes:
+- Master Volume now has a dedicated primary row with a persistent label, larger visible value, and responsive slider; secondary engine/clip/peak tools no longer crowd the same row.
+- Hardware-volume `sync` safely initializes the analog ALSA/UCM route, reads the actual physical level/mute, applies the measured values consistently to Speaker/PCM/Master playback controls, then mirrors that state into PipeWire/Pulse. It does not invent a hardware device if no playback card is present.
+- Video Clip Studio now shows a second mic meter/status adjacent to Record controls so it remains visible while scrolled in Performance. The status reports LIVE/NO SIGNAL and includes the active recording filename/destination.
+- Camera-record startup tries any discovered supported input route, not only the PortAudio list, so Qt Multimedia/direct ALSA inputs are not incorrectly skipped.
+- Video decode/audio analysis and mic/spool workers are lower priority than UI work; software video finalization is CPU-bounded to two threads with the ultrafast preset to reduce Main/Performance stalls.
+- Mathematical Composition Lab is explicitly resizable and scrollable, including the action row and preview.
+- Math Lab generates deterministic density and smooth deterministic probability/EQ/sidechain curves; it no longer uses random draws to assign per-step probability. Authored user STEP hits are never omitted by probability. Probability is consulted only for canonical-only continuation/omit decisions while canonical events are active.
+- Historical R23j and R28.4.12 verifier expectations were synchronized to the current source; a malformed quote in the old R28.4.12 contract test was repaired.
+
+Validation:
+- 65 targeted regression tests passed (see VALIDATION-R28.4.13-20261023.txt).
+- Changed Python modules compile; hardware-volume helper passes `sh -n`.
+- No physical speaker/microphone capture, live camera recording, live GUI responsiveness benchmark, full ISO build/boot, HDMI hotplug, or physical removable-storage test was performed in this environment. This package must not be described as hardware-certified.

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QObject, QEvent, Qt, QTimer
+import threading
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
                              QLabel, QPushButton, QLineEdit, QSlider,
                              QCheckBox, QGroupBox, QWidget, QMessageBox, QProgressBar, QScrollArea)
@@ -81,6 +82,10 @@ class LiveJamDialog(QDialog):
     def __init__(self, host, parent=None):
         super().__init__(parent or host)
         self.host = host
+        self._rec_finalize_state = None
+        self._rec_finalize_timer = QTimer(self)
+        self._rec_finalize_timer.setInterval(100)
+        self._rec_finalize_timer.timeout.connect(self._poll_recorder_finalize)
         self.controller = getattr(host, "_live_jam_controller", None)
         if not isinstance(self.controller, LiveJamController):
             self.controller = LiveJamController(seed=getattr(host, "get_numeric_seed", lambda: 0)(), seeded_mode=True)
@@ -144,7 +149,7 @@ class LiveJamDialog(QDialog):
         self.macro_sliders = {}
         self.macro_labels = {}
         for i, key in enumerate(MACRO_KEYS):
-            lab = QLabel(key); lab.setStyleSheet("color:%s;font-weight:1000;font-size:10pt;" % ("#ff7ca8" if i < 4 else "#6ee7d8" if i < 8 else "#c39cff"))
+            lab = QLabel({"filter": "fractal tilt", "drive": "∞M drive"}.get(key, key)); lab.setStyleSheet("color:%s;font-weight:1000;font-size:10pt;" % ("#ff7ca8" if i < 4 else "#6ee7d8" if i < 8 else "#c39cff"))
             sl = QSlider(Qt.Orientation.Horizontal); sl.setRange(0, 100); sl.setValue(50)
             value = QLabel("0.50"); value.setMinimumWidth(34)
             sl.valueChanged.connect(lambda v, k=key, o=value: self._macro_changed(k, v, o))
@@ -158,7 +163,7 @@ class LiveJamDialog(QDialog):
         controls = QGroupBox("LIVE INPUTS · randomized bindings are jam-only")
         cr = QGridLayout(controls)
         cr.addWidget(QLabel("← / →  release · ↑ / ↓  attack"), 0, 0, 1, 2)
-        cr.addWidget(QLabel("Mouse 1 filter · Mouse 2 damping · Mouse 3 FX"), 1, 0, 1, 2)
+        cr.addWidget(QLabel("Mouse 1 fractal tilt · Mouse 2 damping · Mouse 3 FX"), 1, 0, 1, 2)
         self.randomize = QPushButton("🎲 Randomize jam bindings")
         self.randomize.clicked.connect(self._randomize)
         cr.addWidget(self.randomize, 0, 2, 2, 1)
@@ -176,8 +181,12 @@ class LiveJamDialog(QDialog):
         sg.addWidget(QLabel("Sequence IDs"), 1, 0); sg.addWidget(self.seq_ids, 1, 1)
         sg.addWidget(self.seq_load, 0, 2, 1, 1); sg.addWidget(self.seq_next, 1, 2, 1, 1)
         self.fx_checks = {}
+        # GROOVEBOX_R31_MEUM_FX_CORE_20261109: the four jam toggles are the hardcoded FX.
+        # Keys stay "Delay/Reverb/Chorus/Drive" so saved jam sessions still load.
+        _labels = {"Delay": "PKP gate", "Reverb": "EQR", "Chorus": "Fractallizer", "Drive": "∞M HyperDrive"}
         for i, fx in enumerate(("Delay", "Reverb", "Chorus", "Drive")):
-            cb = QCheckBox(fx)
+            cb = QCheckBox(_labels[fx])
+            cb.setToolTip(f"{_labels[fx]} on the jam voice (hardcoded FX only; FX send scales it)")
             cb.toggled.connect(lambda on, name=fx: self._set_fx(name, on))
             sg.addWidget(cb, 2, i)
             self.fx_checks[fx] = cb
@@ -363,6 +372,30 @@ class LiveJamDialog(QDialog):
         self._pattern_end_timer.start(duration_ms + 25)
         self.status.setText(f"PLAYING {name} · {len(events)} entries · {float(pattern.get('duration', 0.0)):.2f}s")
 
+    def _finalize_recorder_async(self, recorder, label="Finalizing recording…"):
+        """Finish WAV on a daemon writer coordinator; never join on the Qt thread."""
+        self._rec_finalize_state = {"done": False, "result": None, "error": None}
+        state=self._rec_finalize_state
+        self.status.setText(label)
+        self.btn_record.setEnabled(False)
+        def run():
+            try: state["result"] = recorder.finish() if recorder is not None else {"error":"No audio recorder was active"}
+            except Exception as exc: state["error"] = str(exc)
+            finally: state["done"] = True
+        threading.Thread(target=run,daemon=True,name="live-jam-record-finalize").start()
+        self._rec_finalize_timer.start()
+
+    def _poll_recorder_finalize(self):
+        state=self._rec_finalize_state
+        if not state or not state.get("done"): return
+        self._rec_finalize_timer.stop(); self._rec_finalize_state=None
+        self.btn_record.setEnabled(True)
+        result=state.get("result") or {"error":state.get("error") or "Recorder finalization failed"}
+        if state.get("error"): result["error"]=state["error"]
+        self.status.setText("WAV SAVED" if not result.get("error") else "WAV ERROR")
+        self.status.setStyleSheet("color:#65e8b5;font-weight:900;" if not result.get("error") else "color:#ff829d;font-weight:900;")
+        self.audio_info.setText(f"Audio: {result.get('path','')} · {result.get('duration',0):.1f}s · dropped blocks {result.get('dropped_blocks',0)}")
+
     def _toggle_record(self):
         """Record real post-master audio to WAV plus the synchronized event log."""
         import os, time
@@ -388,14 +421,11 @@ class LiveJamDialog(QDialog):
             self.host._live_jam_recording = False
             take = self.controller.finish_performance_recording()
             recorder = getattr(self.host, "_live_jam_audio_recorder", None)
-            result = recorder.finish() if recorder is not None else {"error":"No audio recorder was active"}
-            self.host._live_jam_audio_recorder = None
+            self.host._live_jam_audio_recorder = None  # stop callback submissions before finalization
             self.host._live_jam_render_snapshot = self.controller.snapshot()
             self.host._live_jam_render_log = take.get("events", [])
             self.host._live_jam_render_snapshot["record_duration"] = float(take.get("duration", 0.0))
-            self.status.setText("WAV SAVED" if not result.get("error") else "WAV ERROR")
-            self.status.setStyleSheet("color:#65e8b5;font-weight:900;")
-            self.audio_info.setText(f"Audio: {result.get('path', '')} · {result.get('duration', 0):.1f}s · dropped blocks {result.get('dropped_blocks', 0)}")
+            self._finalize_recorder_async(recorder, "Finalizing WAV in background…")
 
     def _refresh_audio_meter(self):
         try:
@@ -416,8 +446,7 @@ class LiveJamDialog(QDialog):
         try:
             take = self.controller.finish_performance_recording()
             recorder = getattr(self.host, "_live_jam_audio_recorder", None)
-            if recorder is not None:
-                recorder.finish(); self.host._live_jam_audio_recorder = None
+            self.host._live_jam_audio_recorder = None
             snap = self.controller.snapshot()
             log = take.get("events", self.controller.event_log())
             snap["record_duration"] = float(take.get("duration", 0.0))
@@ -425,7 +454,8 @@ class LiveJamDialog(QDialog):
             self.host._live_jam_render_log = log
             self.host._live_jam_recording = False
             self.btn_record.setChecked(False)
-            self.status.setText(f"SAVED {len(log)} EVENTS")
+            self.status.setText(f"SAVED {len(log)} EVENTS · finalizing audio…")
             self.status.setStyleSheet("color:#65d7d0;font-weight:900;")
+            if recorder is not None: self._finalize_recorder_async(recorder, "Finalizing WAV for render…")
         except Exception as e:
             self.status.setText(f"SAVE FAILED: {e}")

@@ -33,11 +33,14 @@ overrides only that key. Scripts and domain equations run with OT division (ot_s
 from __future__ import annotations
 
 import hashlib
+import importlib
 import math
 
 import numpy as np
 
-MIX_MIN, MIX_MAX, MIX_DEFAULT = 0.33, 0.66, 0.50
+# GROOVEBOX_R32_CANONICAL_100_20261109: the canonical programme may own the whole voice (0 … 100 %,
+# default 100 %).  The old 33 … 66 % clamp kept half of every voice identical across seeds.
+MIX_MIN, MIX_MAX, MIX_DEFAULT = 0.0, 1.0, 1.0
 H = 12                                 # partials in the table (= CA cells)
 
 RESONATOR_RULES = {
@@ -56,6 +59,80 @@ PATCH_KEYS = ("ball->pitch", "ball->amp", "vector->phase", "amp->freq", "amp->ph
               # pathways OUT to the main synth and the geometric synths
               "->main.amp", "->main.ring", "->geo.amp")
 PATHWAY_KEYS = PATCH_KEYS[6:]
+
+# Canonical-moderated global cross-modulation bindings. Sources are normalized
+# block-rate control signals; targets are synth dimensions, not widgets.
+XMOD_SOURCES = (
+    "main_envelope", "ball_height", "vector_x", "vector_y", "vector_z",
+    "cellular_density", "previous_amplitude", "domain_weight",
+)
+XMOD_TARGETS = (
+    "pitch", "phase", "script_spectrum", "harmonics", "domain",
+    "resonance", "synth_level",
+)
+
+
+def canonical_xmod_bindings(engines=()):
+    eng = {str(e).lower() for e in (engines or ())}
+    out = []
+    def add(engine, routes):
+        if engine in eng:
+            out.extend({"source": s, "target": t, "amount": float(a), "owner": "canonical"}
+                       for s, t, a in routes)
+    add("goava", (("main_envelope", "script_spectrum", .16), ("main_envelope", "domain", .10),
+                   ("vector_z", "phase", .06), ("main_envelope", "synth_level", .035)))
+    add("euclidean", (("cellular_density", "domain", .15), ("cellular_density", "harmonics", .16),
+                       ("domain_weight", "resonance", .06), ("cellular_density", "script_spectrum", .05)))
+    add("phase_lock", (("vector_x", "pitch", .10), ("vector_y", "phase", .15),
+                        ("vector_z", "domain", .06), ("vector_x", "synth_level", .035)))
+    if eng & {"randomizer", "seeded", "seeded_randomizer", "random"}:
+        out.extend(({"source": "ball_height", "target": "pitch", "amount": .14, "owner": "canonical"},
+                    {"source": "ball_height", "target": "synth_level", "amount": .07, "owner": "canonical"},
+                    {"source": "previous_amplitude", "target": "resonance", "amount": .06, "owner": "canonical"}))
+    if eng & {"fractal_seed", "fractal"}:
+        out.extend(({"source": "cellular_density", "target": "script_spectrum", "amount": .14, "owner": "canonical"},
+                    {"source": "cellular_density", "target": "harmonics", "amount": .10, "owner": "canonical"},
+                    {"source": "domain_weight", "target": "resonance", "amount": .05, "owner": "canonical"},
+                    {"source": "previous_amplitude", "target": "phase", "amount": .04, "owner": "canonical"}))
+    return out
+
+
+def _clean_xmod_bindings(items):
+    out = []
+    for item in items or ():
+        if not isinstance(item, dict):
+            continue
+        source, target = str(item.get("source", "")), str(item.get("target", ""))
+        if source not in XMOD_SOURCES or target not in XMOD_TARGETS:
+            continue
+        try:
+            amount = float(item.get("amount", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(amount):
+            continue
+        out.append({"source": source, "target": target, "amount": float(np.clip(amount, -1.0, 1.0)),
+                    "owner": str(item.get("owner", "user"))})
+        if len(out) >= 32:
+            break
+    return out
+
+
+def _merge_xmod_bindings(canonical, user, share, canonical_active):
+    canonical = _clean_xmod_bindings(canonical if canonical_active else ())
+    user = _clean_xmod_bindings(user)
+    merged = {}
+    for route in canonical:
+        key = (route["source"], route["target"])
+        merged[key] = {**route, "amount": route["amount"]}
+    for route in user:
+        key = (route["source"], route["target"])
+        if key in merged and canonical_active:
+            merged[key]["amount"] = _blend_num(route["amount"], merged[key]["amount"], share)
+            merged[key]["owner"] = "canonical+user"
+        else:
+            merged[key] = {**route, "amount": route["amount"] * (1.0 - share if canonical_active else 1.0)}
+    return [v for v in merged.values() if abs(float(v["amount"])) > 1e-8]
 
 PRESETS = {
     "Prism": {"script": "1/k", "domain": "0.5 + 0.5*z", "ca_rule": 90, "resonators": "harmonic",
@@ -100,7 +177,7 @@ PRESET_NAMES = tuple(PRESETS)
 EDITABLE = ("preset", "script", "domain", "ca_rule", "resonators", "patch", "gravity", "restitution",
             "vector", "rot_hz", "lo", "hi", "up", "down", "phase_shift", "block_ms", "res_q", "res_mix",
             "stochastic", "variation", "fractal_depth", "lock_ms", "trigger_response", "field_rate",
-            "goava_mode")
+            "goava_mode", "xmod_bindings", "xmod_canonical_enabled")
 
 
 def clamp_mix(w):
@@ -228,6 +305,9 @@ def canonical_params(seed_int, slot, engines=(), density=0.5, convolve=0.0):
         p["trigger_response"] = round(0.65 + 0.3 * _u(seed_int, slot, "lktr"), 4)
     p["_owner"] = "canonical"
     p["_engines"] = sorted(eng)
+    p["_canonical_xmod_bindings"] = canonical_xmod_bindings(eng)
+    p["xmod_bindings"] = list(p["_canonical_xmod_bindings"])
+    p["xmod_canonical_enabled"] = True
     # convolved defaults, like the panel and geometric synths (instrument-count density × Global Convolve)
     return convolve_defaults(p, density, convolve, slot)
 
@@ -236,7 +316,7 @@ def _blend_num(u, c, share=0.5):
     return (1.0 - share) * float(u) + share * float(c)
 
 
-def merge_params(canonical, user, canonical_active=True, canon_share=0.5):
+def merge_params(canonical, user, canonical_active=True, canon_share=1.0):
     """Ownership like the sequencer: while canonical engines are active every control the user
     has set mixes 50 / 50 with the canonical programme ("U50"); untouched controls stay fully
     canonical; with canonicals off the user's values own their controls outright.
@@ -250,18 +330,29 @@ def merge_params(canonical, user, canonical_active=True, canon_share=0.5):
     """
     user = dict(user or {})
     canon = dict(canonical)
-    cs = min(MIX_MAX, max(MIX_MIN, float(canon_share)))          # canonical share 33 … 66 % (default 50 %)
+    cs = min(MIX_MAX, max(MIX_MIN, float(canon_share)))          # canonical share 0 … 100 % (default 100 %)
     if user.get("preset") in PRESETS:
         upre = preset_params(user["preset"])
         for k, v in upre.items():
             if k not in user and k in EDITABLE and k != "preset":
                 user[k] = v
     base = dict(canon)
+    # Canonical binding defaults remain active unless explicitly disabled; user
+    # routes are merged on matching source/target pairs with the same ownership
+    # share as other multidimensional controls.
+    canonical_routes = canon.get("_canonical_xmod_bindings", ())
+    user_routes = user.get("xmod_bindings", ())
+    base["xmod_bindings"] = _merge_xmod_bindings(canonical_routes, user_routes, cs, bool(canonical_active))
+    base["xmod_canonical_enabled"] = bool(user.get("xmod_canonical_enabled", True))
+    if not base["xmod_canonical_enabled"]:
+        base["xmod_bindings"] = _clean_xmod_bindings(user_routes)
     owned = []
     for k, v in user.items():
         if k not in EDITABLE or v is None or k == "preset":
             continue
         owned.append(k)
+        if k in ("xmod_bindings", "xmod_canonical_enabled"):
+            continue  # already merged above with explicit route ownership semantics
         cv = canon.get(k)
         if not canonical_active or cv is None:
             base[k] = v
@@ -603,12 +694,13 @@ def _resonate(y, sr, base_hz, rule, q, mix):
     y = np.asarray(y, dtype=np.float64)
     if not ratios or mix <= 0.0 or y.size == 0:
         return y.astype(np.float32, copy=False) if y.dtype != np.float32 else y
-    lfilter = None
-    try:
-        lfilter = importlib.import_module("scipy.signal").lfilter
-    except Exception:
-        lfilter = None
-    out = np.zeros_like(y, dtype=np.float64)
+    # R32.6 SPEED: every resonator is the same 2-pole band-pass biquad; its exact impulse
+    # response has a closed form (poles r·e^{±jθ}: g[n] = rⁿ·sin((n+1)θ)/sin θ). All
+    # resonators' responses are summed and applied with ONE FFT convolution, truncated where
+    # rⁿ < 1e-10. Identical (to ~1e-10) to running the recurrences, without the per-sample
+    # Python loop that ran whenever SciPy was absent (the main cost of a multidim render).
+    n = y.size
+    h_sum = None
     n_ok = 0
     for r in ratios:
         f = float(base_hz) * float(r)
@@ -618,26 +710,26 @@ def _resonate(y, sr, base_hz, rule, q, mix):
         qv = max(0.5, float(q or 30.0))
         alpha = math.sin(w0) / (2.0 * qv)
         a0 = 1.0 + alpha
-        b = np.array([alpha, 0.0, -alpha], dtype=np.float64) / a0
-        a = np.array([1.0, -2.0 * math.cos(w0) / a0, (1.0 - alpha) / a0], dtype=np.float64)
-        if lfilter is not None:
-            out += lfilter(b, a, y)
-        else:
-            # Pure-NumPy biquad (Direct Form I) — deterministic fallback
-            y0 = y
-            n = y0.size
-            x1 = x2 = y1 = y2 = 0.0
-            tmp = np.empty(n, dtype=np.float64)
-            b0, b1, b2 = b
-            a1, a2 = a[1], a[2]
-            for i in range(n):
-                xi = float(y0[i])
-                yi = b0 * xi + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
-                tmp[i] = yi
-                x2, x1 = x1, xi
-                y2, y1 = y1, yi
-            out += tmp
+        b0, b2 = alpha / a0, -alpha / a0
+        a1, a2 = -2.0 * math.cos(w0) / a0, (1.0 - alpha) / a0
+        rad = math.sqrt(max(1e-300, a2))
+        cth = max(-1.0, min(1.0, -a1 / (2.0 * rad)))
+        th = math.acos(cth)
+        sth = math.sin(th) or 1e-12
+        L = int(min(n, max(8, math.log(1e-10) / math.log(min(rad, 1.0 - 1e-12)))))
+        k = np.arange(L + 2, dtype=np.float64)
+        g = (rad ** k) * np.sin((k + 1.0) * th) / sth
+        h = b0 * g[:L].copy()
+        h[2:] += b2 * g[:L - 2]
+        if h_sum is None or h_sum.size < L:
+            hs = np.zeros(L); hs[: (0 if h_sum is None else h_sum.size)] = (0 if h_sum is None else h_sum); h_sum = hs
+        h_sum[:L] += h
         n_ok += 1
+    if n_ok:
+        N = 1 << int(math.ceil(math.log2(n + h_sum.size)))
+        out = np.fft.irfft(np.fft.rfft(y, N) * np.fft.rfft(h_sum, N), N)[:n]
+    else:
+        out = np.zeros_like(y)
     if n_ok == 0:
         return y.astype(np.float32, copy=False)
     wet = out / float(n_ok)
@@ -773,6 +865,59 @@ def _domain_vector(expr, nb, values):
     return np.clip(v, 0.0, 1.0)
 
 
+MD_NET_MOD_DEFAULT = 0.5      # MD_NET_MOD_R31: default ceiling on the summed cross-mod per target
+MD_STOCH_DEFAULT_PROBABILITY = 0.19758   # MD_STOCH_R31: internal default (no canonical probability / activation)
+
+
+def _hash_unit(seed_int, slot, idx, salt):
+    """Vectorised splitmix64 → [0, 1): a pure function of (seed, slot, absolute block, salt)."""
+    with np.errstate(over="ignore"):
+        x = (np.asarray(idx, dtype=np.uint64) * np.uint64(0x9E3779B97F4A7C15)
+             + np.uint64((int(seed_int) * 1000003 + int(slot) * 7919 + int(salt) * 104729) & 0xFFFFFFFFFFFFFFFF))
+        x = (x ^ (x >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
+        x = (x ^ (x >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
+        x = x ^ (x >> np.uint64(31))
+    return (x >> np.uint64(11)).astype(np.float64) / float(1 << 53)
+
+
+def stochastic_probability(p, seed_int, slot):
+    """MD_STOCH_R31: (probability, mode).
+
+    canonical  — any canonical active with level > 0: the canonical decision module's seed/slot value
+                 scaled by the activation level; the internal default is disregarded.
+    fallback   — no canonical probability / activation: MD_STOCH_DEFAULT_PROBABILITY × the Morph
+                 Bridge mix (0–1), time-variant."""
+    # CANONICAL_DECISION_R31_6: the same shared decision layer every module uses.
+    from canonical_decision import decide
+    lvl = float(np.clip(float(p.get("stoch_canon_level", 0.0) or 0.0), 0.0, 1.0))
+    active = bool(p.get("stoch_canon_active", bool(p.get("_engines"))))
+    base = float(p.get("stochastic", 0.0) or 0.0)
+    if active and lvl > 0.0 and base <= 0.0:
+        base = 0.45 + 0.35 * _u(seed_int, slot, "stoch")           # same decision module as canonical_params
+    mix = p.get("stoch_default_mix")
+    return decide("multidim", "stoch", seed=seed_int, slot=slot, active=active, level=lvl,
+                  default=MD_STOCH_DEFAULT_PROBABILITY, mix=(1.0 if mix is None else mix), canonical_value=base)
+
+
+def _xmod_target_delta(bindings, target, sources, n, cap=1.0):
+    delta = np.zeros(int(n), dtype=np.float64)
+    for route in bindings:
+        if route.get("target") != target:
+            continue
+        src = sources.get(route.get("source"))
+        if src is None:
+            continue
+        arr = np.asarray(src, dtype=np.float64).reshape(-1)
+        if arr.size == 1:
+            arr = np.full(n, float(arr[0]), dtype=np.float64)
+        elif arr.size != n:
+            arr = np.resize(arr, n)
+        amount = float(route.get("amount", 0.0))
+        delta += amount * (2.0 * np.clip(arr, 0.0, 1.0) - 1.0)
+    cap = float(np.clip(cap, 0.0, 1.0))        # Max Net Modulation (Canonical Morph Bridge)
+    return np.clip(delta, -cap, cap)
+
+
 def voice(phase, sr, params, t=None, base_hz=432.0, seed_int=0, slot=0, main=None, pool=None, step=None):
     """Render the multidimensional synth over the voice's phase track (radians). float32 (a new array).
 
@@ -790,6 +935,25 @@ def voice(phase, sr, params, t=None, base_hz=432.0, seed_int=0, slot=0, main=Non
         t = np.arange(n, dtype=np.float64) / sr
     p = params
     patch = dict(p.get("patch") or {})
+    gmod = p.get("global_mod_state") or {}
+    try:
+        _net_cap = float(np.clip(float(p.get("xmod_net_max", 1.0)), 0.0, 1.0))
+    except (TypeError, ValueError):
+        _net_cap = 1.0
+    try:
+        gx = float(np.clip(float(gmod.get("xmod", 1.0)), 0.0, 2.0))
+        gi = float(np.clip(float(gmod.get("input_xmod", 1.0)), 0.0, 2.0))
+        gp = float(np.clip(float(gmod.get("patch", 1.0)), 0.0, 2.0))
+        gscript = float(np.clip(float(gmod.get("script", 1.0)), 0.0, 2.0))
+        gdomain = float(np.clip(float(gmod.get("domain", 1.0)), 0.0, 2.0))
+        gsynth = float(np.clip(float(gmod.get("synth", 1.0)), 0.0, 2.0))
+    except (TypeError, ValueError):
+        gx = gi = gp = gscript = gdomain = gsynth = 1.0
+    patch_scale = gx * gp
+    for _key in tuple(patch):
+        patch[_key] = float(patch[_key]) * patch_scale
+        if _key in ("main->freq", "main->phase", "main->amp"):
+            patch[_key] *= gi
     blk = max(16, int(round(float(p.get("block_ms", 12.0)) * 1e-3 * sr)))
     nb = (n + blk - 1) // blk
     N = nb * blk
@@ -803,18 +967,48 @@ def voice(phase, sr, params, t=None, base_hz=432.0, seed_int=0, slot=0, main=Non
     tb = (np.arange(nb) * blk) / sr                                  # block start times
     # dimensions
     flow = table_amplitudes(p.get("script", "1/k"))
+    if abs(gscript - 1.0) > 1e-12:
+        # Unity is an exact no-op; away from unity, tilt the harmonic spectrum
+        # smoothly without changing phase or introducing nondeterministic noise.
+        harmonic_axis = np.linspace(-0.5, 0.5, H, dtype=np.float64)
+        flow *= np.clip(1.0 + (gscript - 1.0) * harmonic_axis, 0.0, 2.0)
     seed_cells = np.array([((int(seed_int) >> (k % 31)) & 1) ^ ((int(slot) + k) % 2) for k in range(H)], dtype=np.uint8)
     if not seed_cells.any():
         seed_cells[H // 2] = 1
     ca = _ca_rows(p.get("ca_rule", 90), nb, seed_cells).astype(np.float64)
     cah = float(patch.get("ca->harmonics", 1.0))
-    structure = flow * (cah * ca + (1.0 - cah))                       # (nb, H)
     hb = _ball(nb, blk / sr, p.get("gravity", 9.8), p.get("restitution", 0.8))
     vx, vy, vz = (list(p.get("vector") or [0.5, 0.5, 0.5]) + [0.5, 0.5, 0.5])[:3]
     rot = float(p.get("rot_hz", 0.1)) * math.tau
     xb = vx * np.cos(rot * tb) - vy * np.sin(rot * tb)
     yb = vx * np.sin(rot * tb) + vy * np.cos(rot * tb)
     zb = vz * np.cos(0.5 * rot * tb)
+    live_early = ca.mean(axis=1)
+    binding_enabled = bool(p.get("xmod_canonical_enabled", True))
+    xmod_bindings = _clean_xmod_bindings(p.get("xmod_bindings") or ()) if binding_enabled else ()
+    early_sources = {
+        "main_envelope": np.clip(block_envelope(main, blk), 0.0, 1.0)
+                          if main is not None and np.size(main) == n else np.full(nb, 0.5),
+        "ball_height": np.clip(hb, 0.0, 1.0),
+        "vector_x": np.clip(0.5 + 0.5 * xb, 0.0, 1.0),
+        "vector_y": np.clip(0.5 + 0.5 * yb, 0.0, 1.0),
+        "vector_z": np.clip(0.5 + 0.5 * zb, 0.0, 1.0),
+        "cellular_density": np.clip(live_early, 0.0, 1.0),
+    }
+    if xmod_bindings:
+        spectrum_delta = _xmod_target_delta(xmod_bindings, "script_spectrum", early_sources, nb, cap=_net_cap)
+        harmonic_delta = _xmod_target_delta(xmod_bindings, "harmonics", early_sources, nb, cap=_net_cap)
+        # Each route is low-depth and normalized; use per-partial profile tilt.
+        _haxis = np.linspace(-0.5, 0.5, H, dtype=np.float64)
+        flow *= np.clip(1.0 + 0.25 * float(np.mean(spectrum_delta)) * _haxis, 0.0, 2.0)
+        _hshape = (np.arange(H, dtype=np.float64) + 1.0) / float(H)
+        # Harmonically scoped influence is combined with the per-block CA gate below.
+        _xmod_harmonic_profile = np.clip(1.0 + harmonic_delta[:, None] * _hshape[None, :] * 0.25, 0.0, 2.0)
+    else:
+        _xmod_harmonic_profile = 1.0
+    structure = flow * (cah * ca + (1.0 - cah))                       # (nb, H)
+    if isinstance(_xmod_harmonic_profile, np.ndarray):
+        structure *= _xmod_harmonic_profile
     _src_step = step
     step = scratch("step", np.float64)
     if _src_step is not None and np.size(_src_step) == n:
@@ -876,10 +1070,16 @@ def voice(phase, sr, params, t=None, base_hz=432.0, seed_int=0, slot=0, main=Non
     # pass 1: no conditionals (ball → pitch and vector → phase only) to hear its own amplitude
     bp = float(patch.get("ball->pitch", 0.0))
     mult0 = 1.0 + bp * (hb - 0.5)
+    if xmod_bindings:
+        _pitch_delta = _xmod_target_delta(xmod_bindings, "pitch", early_sources, nb, cap=_net_cap)
+        mult0 *= 1.0 + 0.14 * _pitch_delta
     # vector → phase: the UNWRAPPED rotation angle (the raw arctan2 difference jumped by 2π at every wrap,
     # i.e. a phase jump — a click — once per rotation)
     _ang = np.unwrap(np.arctan2(yb, xb)) if nb > 0 else np.zeros(0)
     turn0 = float(patch.get("vector->phase", 0.0)) * np.diff(np.concatenate([[_ang[0] if nb else 0.0], _ang]))
+    if xmod_bindings:
+        _phase_delta = _xmod_target_delta(xmod_bindings, "phase", early_sources, nb, cap=_net_cap)
+        turn0 += 0.10 * math.pi * _phase_delta
     if em is not None:
         mult0 = mult0 * (1.0 + float(patch.get("main->freq", 0.0)) * (em - 0.5))
         turn0 = turn0 + float(patch.get("main->phase", 0.0)) * math.pi * np.diff(np.concatenate([[0.0], em]))
@@ -903,6 +1103,21 @@ def voice(phase, sr, params, t=None, base_hz=432.0, seed_int=0, slot=0, main=Non
             except Exception:
                 v = 0.5
             dom[b] = min(1.0, max(0.0, v)) if math.isfinite(v) else 0.5
+    if abs(gdomain - 1.0) > 1e-12:
+        dom = np.clip(0.5 + (dom - 0.5) * gdomain, 0.0, 1.0)
+    if xmod_bindings:
+        _domain_sources = dict(early_sources)
+        _domain_sources["previous_amplitude"] = np.clip(np.r_[0.5, a[:-1]], 0.0, 1.0)
+        _domain_sources["domain_weight"] = np.clip(dom, 0.0, 1.0)
+        dom_delta = _xmod_target_delta(xmod_bindings, "domain", _domain_sources, nb, cap=_net_cap)
+        dom = np.clip(dom + 0.12 * dom_delta, 0.0, 1.0)
+        _res_delta = _xmod_target_delta(xmod_bindings, "resonance", _domain_sources, nb, cap=_net_cap)
+        _synth_delta = _xmod_target_delta(xmod_bindings, "synth_level", _domain_sources, nb, cap=_net_cap)
+        _prev_pitch = _xmod_target_delta(xmod_bindings, "pitch", _domain_sources, nb, cap=_net_cap)
+        _prev_phase = _xmod_target_delta(xmod_bindings, "phase", _domain_sources, nb, cap=_net_cap)
+    else:
+        _res_delta = np.zeros(nb); _synth_delta = np.zeros(nb)
+        _prev_pitch = np.zeros(nb); _prev_phase = np.zeros(nb)
     # conditionals on its own amplitude → frequency and phase of the NEXT block
     lo, hi = float(p.get("lo", 0.25)), float(p.get("hi", 0.7))
     up, down = float(p.get("up", 1.5)), float(p.get("down", 0.75))
@@ -912,6 +1127,9 @@ def voice(phase, sr, params, t=None, base_hz=432.0, seed_int=0, slot=0, main=Non
     loud, quiet = a > hi, a < lo
     cm[1:] = np.where(loud[:-1], up, np.where(quiet[:-1], down, 1.0))
     ct[1:] = np.where(loud[:-1], sh, np.where(quiet[:-1], -sh, 0.0))
+    if xmod_bindings:
+        cm *= 1.0 + 0.10 * _prev_pitch
+        ct += 0.08 * math.pi * _prev_phase
 
     # GOAVA has deterministic project-seed/slot and live-I/O bases. The I/O
     # mode bends the Golden field from the measured main-synth envelope; it
@@ -933,8 +1151,34 @@ def voice(phase, sr, params, t=None, base_hz=432.0, seed_int=0, slot=0, main=Non
         lock_ms = max(0.0, float(p.get("lock_ms", 0.0) or 0.0))
         trigger_response = min(1.0, max(0.0, float(p.get("trigger_response", 0.0) or 0.0)))
         field_rate = min(1.0, max(0.0, float(p.get("field_rate", 0.5) or 0.0)))
+        # MD_STOCH_R31: absolute timeline blocks → the same moment gets the same response however the
+        # render is chunked (rows / voices / live blocks): time-invariant.
+        _t0 = float(t[0]) if t is not None and getattr(t, "size", 0) else 0.0
+        _abs0 = max(0, int(round(_t0 * sr)) // max(1, blk))
+        _abs_idx = np.arange(_abs0, _abs0 + nb, dtype=np.int64)
+        _prob, _mode = stochastic_probability(p, seed_int, slot)
+        if _prob > 0.0 and nb > 0:
+            if _mode == "canonical":
+                # time-invariant decisions: pure hash of (seed, slot, absolute block)
+                fire = _hash_unit(seed_int, slot, _abs_idx, 1) < _prob
+                mag = 2.0 * _hash_unit(seed_int, slot, _abs_idx, 2) - 1.0
+                depth = 0.10 + 0.25 * float(np.clip(variation if variation > 0.0 else 0.5, 0.0, 1.0))
+            else:
+                # time-variant fallback: the probability itself drifts along the timeline (golden-rate
+                # low-discrepancy sequence), still deterministic so play and export match.
+                g = 0.6180339887498949
+                pt = _prob * (0.5 + 0.5 * np.sin(_abs_idx * (g * 0.05) + float(slot) * 0.37))
+                u_ = np.mod(_abs_idx * g + (float(int(seed_int) % 9973) * 1e-4) + float(slot) * 0.37, 1.0)
+                fire = u_ < pt
+                mag = np.sin(_abs_idx * 2.399963229728653 + float(slot))
+                depth = 0.12
+            if np.any(fire):
+                f = fire.astype(np.float64)
+                cm *= 1.0 + depth * f * mag
+                ct += 0.5 * depth * f * mag * sh
+                dom = np.clip(dom + 0.25 * depth * f * mag, 0.0, 1.0)
         if stoch > 0.0 or fractal_depth > 0.0 or lock_ms > 0.0:
-            bidx = np.arange(nb, dtype=np.float64)
+            bidx = _abs_idx.astype(np.float64)
             phase0 = (float(int(seed_int) % 1048576) * 1e-6) + float(slot) * 0.37
             rate = 0.6180339887498949 + 0.9 * field_rate
             r1 = 0.5 + 0.5 * np.sin((bidx + 1.0) * rate * math.tau + phase0)
@@ -979,7 +1223,12 @@ def voice(phase, sr, params, t=None, base_hz=432.0, seed_int=0, slot=0, main=Non
     if em is not None and float(patch.get("main->amp", 0.0)):
         ma = float(patch.get("main->amp", 0.0))
         y = y * (1.0 - ma + ma * np.repeat(em, blk)[:n])
-    y = _resonate(y, sr, base_hz, p.get("resonators", "harmonic"), p.get("res_q", 30.0), float(p.get("res_mix", 0.25)))
+    res_delta = float(np.mean(_res_delta)) if np.size(_res_delta) else 0.0
+    res_q = float(p.get("res_q", 30.0)) * (1.0 + 0.25 * res_delta)
+    res_mix = float(np.clip(float(p.get("res_mix", 0.25)) + 0.08 * res_delta, 0.0, 1.0))
+    y = _resonate(y, sr, base_hz, p.get("resonators", "harmonic"), res_q, res_mix)
+    synth_delta = float(np.mean(_synth_delta)) if np.size(_synth_delta) else 0.0
+    y *= gsynth * float(np.clip(1.0 + 0.16 * synth_delta, 0.0, 2.0))
     out = np.array(y, dtype=np.float32, copy=True)       # never hand out pooled memory
     _memo_put(_mkey, out)
     return out

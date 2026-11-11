@@ -150,6 +150,57 @@ def _iso_candidates(roots) -> List[Path]:
     return out
 
 
+SELF_ISO_PATH = Path("/opt/groovebox/self.iso")
+
+def ensure_self_iso(source: Optional[str] = None, *, force: bool = False) -> Optional[Path]:
+    """Keep a copy of this system's ISO at a known path for Copy to Disk.
+
+    Refuses if free space is under the image size plus 512 MiB. Rebuilds when
+    the source is newer than the self-ISO (stale). Returns the self-ISO path,
+    or None. Writes a .sha256 next to it.
+    """
+    import shutil, hashlib
+    try:
+        SELF_ISO_PATH.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    src = None
+    if source and os.path.isfile(source):
+        src = Path(source)
+    else:
+        found = find_finished_iso()
+        if found and found != SELF_ISO_PATH:
+            src = found
+    if src is None:
+        return SELF_ISO_PATH if SELF_ISO_PATH.is_file() else None
+    if src.resolve() == SELF_ISO_PATH.resolve():
+        return SELF_ISO_PATH
+    # Stale: skip copy if self-ISO is newer, unless forced.
+    try:
+        if (not force) and SELF_ISO_PATH.is_file() and SELF_ISO_PATH.stat().st_mtime >= src.stat().st_mtime:
+            return SELF_ISO_PATH
+    except Exception:
+        pass
+    # Space: need image size + 512 MiB free on the target volume.
+    try:
+        need = src.stat().st_size + 512 * 1024 * 1024
+        free = shutil.disk_usage(str(SELF_ISO_PATH.parent)).free
+        if free < need:
+            return None
+    except Exception:
+        pass
+    try:
+        shutil.copy2(src, SELF_ISO_PATH)
+        h = hashlib.sha256()
+        with open(SELF_ISO_PATH, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        (SELF_ISO_PATH.with_suffix(".iso.sha256")).write_text(h.hexdigest() + "\n")
+        return SELF_ISO_PATH
+    except Exception:
+        return src
+
+
 def find_finished_iso(*extra_roots, prefer_name: Optional[str]=None) -> Optional[Path]:
     """Locate the newest finished Groovebox ISO without prompting the user.
 
@@ -167,6 +218,7 @@ def find_finished_iso(*extra_roots, prefer_name: Optional[str]=None) -> Optional
     for parent in list(here.parents)[:4]:
         roots.extend([parent/'BUILD_ISO'/'dist', parent/'dist'])
     roots.extend([
+        SELF_ISO_PATH,
         Path('/opt/groovebox/BUILD_ISO/dist'), Path('/opt/groovebox/dist'),
         Path.home()/'Downloads', Path.cwd(),
     ])
@@ -259,3 +311,40 @@ class CloneShareServer:
     def stop(self):
         if self.httpd:
             self.httpd.shutdown(); self.httpd.server_close(); self.httpd=None
+
+
+def write_bootable_installer(iso: str, device: str, *, progress=None) -> dict:
+    """Write the ISO as a bootable image to a whole-disk USB device.
+
+    BOOTABLE_20261107: this is the raw write path. It erases the device.
+    Refuses the system disk and any mounted partition of the target.
+    """
+    import subprocess, shutil
+    src = Path(iso).expanduser().resolve()
+    if not src.is_file() or src.suffix.lower() != ".iso":
+        raise ValueError(f"Not an ISO: {src}")
+    dev = str(device).strip()
+    if not dev.startswith("/dev/") or dev in ("/dev/sda", "/dev/nvme0n1"):
+        raise PermissionError(f"Refusing system-looking device: {dev}")
+    # Refuse if any partition of the device is mounted.
+    try:
+        mounts = subprocess.check_output(["findmnt", "-n", "-o", "SOURCE"], text=True)
+        if any(line.startswith(dev) for line in mounts.splitlines()):
+            raise PermissionError(f"{dev} has a mounted partition. Unmount it first.")
+    except FileNotFoundError:
+        pass
+    dd = shutil.which("dd")
+    if not dd:
+        raise RuntimeError("dd not found")
+    total = src.stat().st_size
+    if progress:
+        progress(0, total, "writing")
+    # bs=4M, conv=fsync so the stick is complete before we return.
+    cmd = [dd, f"if={src}", f"of={dev}", "bs=4M", "conv=fsync", "status=progress"]
+    proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, text=True)
+    proc.wait()
+    if proc.returncode != 0:
+        raise RuntimeError(f"dd failed: {proc.returncode}")
+    if progress:
+        progress(total, total, "done")
+    return {"device": dev, "iso": str(src), "bytes": total}

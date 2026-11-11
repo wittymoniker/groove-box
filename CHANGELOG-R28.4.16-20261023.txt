@@ -1,0 +1,8 @@
+R28.4.16 — Remove Trigger All volume control (2026-10-23)
+
+- Removed the separate Trigger All volume slider and percentage label from the main window.
+- Removed the Trigger All volume setting from project snapshots and load/reset paths; older project files containing the legacy field remain loadable because unknown/unused fields are ignored.
+- Restored Trigger All to its fixed baseline hit amplitude (0.15 per voice) without an extra gain multiplier. System Volume remains the single UI for hardware/system output, and Performance keeps no duplicate hardware-volume slider.
+- Left recording and playback paths unchanged.
+
+Validation: focused regression suite and Python compilation passed. Physical speaker/hardware validation and full ISO boot were not performed.

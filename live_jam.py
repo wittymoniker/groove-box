@@ -313,9 +313,9 @@ class LiveJamAudioRecorder:
             a = np.asarray(samples, dtype=np.float32).reshape(-1)
             if a.size == 0 or self._stop.is_set():
                 return
-            # Convert to PCM16 off the file-writing thread; queue remains bounded.
-            pcm = (np.clip(a, -1.0, 1.0) * 32767.0).astype('<i2', copy=True).tobytes()
-            self._queue.put_nowait(pcm)
+            # Realtime callback only copies a bounded float block. PCM packing and
+            # disk writes happen on the dedicated writer thread.
+            self._queue.put_nowait(a.copy())
         except Exception:
             self.dropped_blocks += 1
 
@@ -326,8 +326,10 @@ class LiveJamAudioRecorder:
                 while not self._stop.is_set() or not self._queue.empty():
                     try: block = self._queue.get(timeout=0.1)
                     except Exception: continue
-                    wf.writeframesraw(block)
-                    self.frames_written += len(block) // (2 * self.channels)
+                    import numpy as np
+                    pcm=(np.clip(np.asarray(block,dtype=np.float32),-1.0,1.0)*32767.0).astype('<i2',copy=False).tobytes()
+                    wf.writeframesraw(pcm)
+                    self.frames_written += len(pcm) // (2 * self.channels)
         except Exception as exc:
             self._error = str(exc)
 

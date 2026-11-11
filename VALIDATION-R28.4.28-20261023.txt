@@ -1,0 +1,11 @@
+R28.4.28 validation record
+
+PASS: mathematical_composition_lab.py and groovebox.py compile with Python py_compile.
+PASS: playlist writer deterministic equality test across identical parameters.
+PASS: playlist writer covers canonical-compatible playlist fields and bounds velocity/coverage.
+PASS: algorithm selection yields structurally distinct deterministic playlist plans.
+PASS: heuristic selection changes playlist data deterministically.
+PASS: existing focused Mathematical Composition Lab test suite.
+PASS: overlay copies updated for v35.22zz and v35.22zt.
+
+Not tested in this environment: GUI interaction under a live Qt desktop, live project persistence through a full session, full ISO build/boot, and physical audio hardware. Apply-to-project behavior remains subject to in-app confirmation and project save.

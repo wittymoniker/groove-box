@@ -1,0 +1,20 @@
+R28.4.24 — Main Master Volume removal + live ALSA route recovery
+
+UI:
+- Removed the Main-window Master Volume title/value widgets and row entirely.
+- The only visible synth Master Volume slider is in the Performance window.
+- Kept a parentless, hidden legacy slider solely for compatibility with project-state serialization and existing scalar update hooks.
+- The audio callback continues to read the plain numeric master_volume value; it does not touch Qt widgets.
+
+Audio routing:
+- Live ALSA hardware enumeration and scoring now determine the preferred physical playback route first.
+- A boot-time speaker_pcm value is appended only as a fallback instead of overriding current live detection. This prevents stale boot state (e.g. HDMI DEV=3) from masking an available internal analog endpoint.
+- Existing connected HDMI/DP ranking and physical mixer/UCM preparation remain in place.
+
+Validation:
+- Python compilation: PASS.
+- test_r23f_sos_analog_output.py: PASS.
+- BUILD_ISO/verify_v35_22zz_r23f.py: PASS.
+- BUILD_ISO/verify_v35_22zz_r23j.py: PASS.
+- Root/app-overlay-v35.22zz and root/app-overlay-v35.22zt files synchronized.
+- No ISO build/boot or physical speaker test was performed in this environment.

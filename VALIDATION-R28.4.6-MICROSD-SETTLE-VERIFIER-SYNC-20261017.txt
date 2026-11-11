@@ -1,0 +1,23 @@
+Groovebox R28.4.6 — microSD settle-time verifier synchronization
+Date: 2026-10-17
+
+Issue reproduced from the user's RUN_ME_ZERO_STATE.sh output:
+verify_v35_22zz_r18.py reported FAIL: bounded mmc settle completion.
+
+Cause:
+The active File Manager code schedules repeated storage-list refreshes through 24 seconds and calls _finish_storage_request at 26 seconds. Three older source-contract verifiers still expected a 6.5-second completion timer. The check was stale relative to the newer bounded settling window.
+
+Correction:
+Updated verify_v35_22zz_r18.py, verify_v35_22zz_r23e.py, and verify_v35_22zz_r23k.py in both source and standalone builder trees to assert the active 26-second bounded completion. Runtime behavior was not shortened or weakened. The explicit periodic refreshes through 24 seconds remain intact.
+
+Scope:
+Verifier synchronization only; no changes to runtime microSD mount/rescan logic in this correction.
+
+Validation:
+- Focused R18, R23e, and R23k contracts run against current source.
+- Relevant existing regression contracts run after correction.
+- Python compilation and shell syntax checks.
+- Source and builder ZIP integrity/checksum validation.
+
+Hardware caveat:
+This corrects the false-negative validation failure. It does not prove physical Dell microSD reader behavior; repeated rescans and card removal/reinsertion still need hardware verification.

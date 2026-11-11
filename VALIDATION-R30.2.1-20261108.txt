@@ -1,0 +1,41 @@
+R30.2.1 VALIDATION REPORT
+Date: 2026-11-08
+
+PASS — Focused regression tests: 23 passed in 5.49 seconds.
+Coverage included:
+- screen recorder MP4, MKV, WebM and GIF output, then ffprobe stream/dimension checks;
+- bounded sCode shared-lane execution and private scratch-pool ownership;
+- Live Recorder audio-sample clock, bounded frame queue, owned frame copies;
+- asynchronous Live Recorder video-encoder startup;
+- DJChain effect processing and exact disabled/bypass output;
+- Live Jam, bottom-pane layout and previous stability guards.
+
+PASS — Python compilation: groovebox.py, screen_recorder.py, screen_recording.py,
+scode_optimizer_bridge.py, live_player.py, live_jam.py, multidim_ui.py,
+thread_budget.py.
+
+PASS — ISO runtime sync: 142 canonical sources match BUILD_ISO/app-overlay-v35.22zz
+byte-for-byte.
+
+PASS — BUILD_ISO/verify_hardware_profile_20261108.py:
+Dell Latitude 3510 32 GB RAM profile and staging contract.
+
+PASS — BUILD_ISO/verify_v35_22zt.py: Performance lazy-load + microphone/external-audio.
+
+PASS — BUILD_ISO/verify_v35_22zu.py: Wayland window-session + file browser/player-DJ.
+
+PASS — BUILD_ISO/verify_v35_22zy.py: Qt hardware + file Move/Copy Over contracts.
+
+PASS — bash -n BUILD_ISO/RUN_ME_v35_22.sh.
+
+LIMITATIONS / NOT RUN:
+- PyQt6 is not installed here; interactive Qt startup and screen-recorder dialog
+  operation could not be run end-to-end.
+- No physical Dell Latitude 3510 hardware, PortAudio devices, camera, display-manager
+  window interaction, ISO build/boot, recovery-flash boot or installed-OS update
+  rollback test was available.
+- The wider historical source suite contains version-specific checks that expect
+  older class names and old worker budgets; those are not treated as R30.2.1 passes.
+
+This report records the checks actually run and does not claim a full system or
+hardware certification.

@@ -166,6 +166,28 @@ def _ot_rewrite_graph_ast(tree, scope):
 
 
 
+_CODE_CACHE = {}
+
+
+def _compiled(raw, mode):
+    """R32.6 SPEED: parse + OT-rewrite + compile each script once (it was recompiled for every
+    graph point — ~16 000 compiles per render). Compilation errors are cached too (re-raised)."""
+    key = (mode, raw)
+    hit = _CODE_CACHE.get(key)
+    if hit is None:
+        try:
+            tree = _ot_rewrite_graph_ast(ast.parse(raw, mode=mode), {})
+            hit = compile(tree, "<groovebox-graph-%s>" % mode, mode)
+        except Exception as exc:
+            hit = exc
+        if len(_CODE_CACHE) > 512:
+            _CODE_CACHE.clear()
+        _CODE_CACHE[key] = hit
+    if isinstance(hit, Exception):
+        raise hit
+    return hit
+
+
 def evaluate_graph_script(script: str, context: Mapping[str, Any], *,
                           function_names=("evaluate_wave", "global_script", "evaluate", "main"),
                           extra_env: Optional[Mapping[str, Any]] = None) -> Dict[str, float]:
@@ -190,14 +212,16 @@ def evaluate_graph_script(script: str, context: Mapping[str, Any], *,
     scope.update(env)
     local = scope
     try:
-        tree = ast.parse(raw, mode="exec")
-        tree = _ot_rewrite_graph_ast(tree, scope)
-        exec(compile(tree, "<groovebox-graph-script>", "exec"), scope, scope)
+        import ot_script_math as _otm
+        _otm.install(scope)
+    except Exception:
+        pass
+    try:
+        exec(_compiled(raw, "exec"), scope, scope)
     except Exception:
         # Expression-only compatibility.
         try:
-            etree = _ot_rewrite_graph_ast(ast.parse(raw, mode="eval"), scope)
-            return coerce_graph_result(eval(compile(etree, "<groovebox-graph-expr>", "eval"), scope, scope))
+            return coerce_graph_result(eval(_compiled(raw, "eval"), scope, scope))
         except Exception:
             pass
         # GROOVEBOX_R23R_GRAPH_TOPLEVEL_RETURN_20261103: script-style bodies with a

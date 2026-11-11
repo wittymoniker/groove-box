@@ -1,0 +1,7 @@
+R28.4.32 validation report
+
+Implemented: microphone-only WAV staging to .part, queued PCM drain before close, post-close RIFF/WAV structure and duration/payload validation, atomic publication via os.replace, and writer/close/validation errors surfaced rather than silently marking a damaged take as successful.
+
+Automated checks: Python compilation of root and active v35.22zz overlay; source/overlay byte parity; targeted contracts for bounded background-thread lifecycle, bounded PCM queue integrity, Voxel resizability, atomic audio finalization, and deterministic Mathematical Composition Lab.
+
+Not tested here: physical microphone capture, real hardware playback, long-duration stress capture, live Wasmer deployment, full ISO boot/install, SSD installer CRC32C behavior. Do not treat static tests as hardware acceptance.

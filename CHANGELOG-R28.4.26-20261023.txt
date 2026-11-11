@@ -1,0 +1,5 @@
+R28.4.26 — 2026-10-23
+
+Fix: the final initramfs stamping script still enforced the obsolete R23l requirement that the system Hardware Volume widget be present in Performance. That stale assertion caused the build to fail even though the current UI correctly places system/hardware volume in Main.
+
+The final stamp now verifies the actual current contract: Main creates the HardwareVolumeWidget; hardware_volume.py defines the Hardware Volume label; Performance has no duplicate hardware-volume widget; and Performance retains the synth Master Volume control. The fix changes build-time validation only; it does not alter runtime audio, routing, synth gain, clip/export levels, or UI placement.
