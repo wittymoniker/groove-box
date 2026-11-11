@@ -1,4 +1,6 @@
 # Mathematician's Groovebox
+<img width="1536" height="1024" alt="groovebox_ui_concept" src="https://github.com/user-attachments/assets/95f5f65e-a10d-484d-bc49-3d9f8e23fae2" />
+
 
 
 A deterministic generative music, visual, and game engine driven by mathematical seeds.
@@ -643,3 +645,8 @@ python3 scripts/diagnose_platform.py --json groovebox-platform-report.json
 ```
 
 Check the `audio.enumeration_error`, `audio.host_apis`, `commands.pipewire_service`, `commands.wireplumber_service`, and `commands.pulse_server` fields. The runtime log is `~/.local/state/groovebox/media-bootstrap.log`. A device name in a diagnostic report means the OS/backend enumerated it, not that a stream has successfully opened. If both Qt and PortAudio report zero devices, confirm the laptop's kernel audio driver and user-session audio service before changing Groovebox's selected output.
+
+
+
+<img width="256" height="256" alt="logo" src="https://github.com/user-attachments/assets/072399b1-a612-4247-90f4-55b927beb14a" />
+
