@@ -52,6 +52,8 @@ def capture(host):
         "seed_values": host.get_seed_values(),
         "seed": host.get_numeric_seed(),
         "seed_text": host._seed_text(),
+        # R32.10.3: kernels read the seed program signature; snapshot it (the worker has no host).
+        "signature": int(host._seed_program_signature() or 0) if hasattr(host, "_seed_program_signature") else 0,
         "bpm": host.spin_bpm.value(),
         "frequency": host.spin_base_frequency.value(),
         "shape": float(getattr(host, "contour_shape", 0.0)),
@@ -82,6 +84,7 @@ def project(identity, payload, kernels):
     )
     model._active_engine_sources = lambda: set(data["sources"])
     model.get_numeric_seed = lambda: data["seed"]
+    model._seed_program_signature = lambda: data.get("signature", 0)
     model._seed_text = lambda: data["seed_text"]
     model.get_seed_values = lambda t_value=0.0: list(data["seed_values"])
     model._contour_lane_shape = lambda group: data["lane_shapes"][group]
@@ -154,10 +157,26 @@ class CanonicalPool(QObject):
         self.running_packet = packet
         from scheduling_weights import work_score
         self.running = identity
-        self.future = host._scode_optimizer.submit_pooled(
-            "canonical_projection", {"sha256": identity, "schema": 1},
-            lambda: project(identity, payload, kernels),
-            policy="pure", format_id=7, max_entries=4,
+        def validate(result):
+            if not isinstance(result, dict) or result.get("identity") != identity:
+                raise RuntimeError("canonical projection identity mismatch")
+            for key in ("sources", "names", "banks", "params"):
+                if key not in result:
+                    raise RuntimeError(f"canonical projection missing {key}")
+            if not isinstance(result["banks"], dict) or not isinstance(result["params"], dict):
+                raise TypeError("canonical projection payload is malformed")
+            return result
+
+        def detach(result):
+            # A final ownership boundary: no worker-owned mutable object is
+            # shared with the GUI's canonical commit path.
+            return copy.deepcopy(result)
+
+        self.future = host._scode_optimizer.submit_successive(
+            "canonical_projection", {"sha256": identity, "schema": 2},
+            (("project", lambda _packet: project(identity, payload, kernels)),
+             ("validate", validate), ("detach", detach)),
+            policy="pure", format_id=7, max_stages=3,
             priority=work_score(self.selected, self.activity, 1.0),
         )
         self.timer.start()

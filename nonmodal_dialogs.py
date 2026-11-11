@@ -120,16 +120,37 @@ class _HideSystemProxy(object):
             from PyQt6.QtCore import QSortFilterProxyModel
 
             class _P(QSortFilterProxyModel):
+                """R32.9: hide Groovebox system entries ONLY inside the folder being shown. Qt also runs the filter
+                on every ancestor of the current path (/, /run, /run/media …); hiding one of those made whole trees
+                — including USB / SD drives under /run/media — vanish from the dialog. Results are cached so slow
+                drives are not re-resolved on every repaint."""
+                _cache = {}
+
                 def filterAcceptsRow(self, row, parent):
                     try:
-                        import groovebox_paths as _gp
                         src = self.sourceModel()
                         idx = src.index(row, 0, parent)
-                        return not _gp.is_system_path(src.filePath(idx))
+                        path = src.filePath(idx)
+                        dlg_ = self.parent()
+                        cur = dlg_.directory().absolutePath() if dlg_ is not None else ""
+                        if os.path.dirname(os.path.normpath(path)) != os.path.normpath(cur):
+                            return True                              # an ancestor / sibling tree: never hidden
+                        hit = self._cache.get(path)
+                        if hit is None:
+                            import groovebox_paths as _gp
+                            hit = self._cache[path] = not _gp.is_system_path(path)
+                            if len(self._cache) > 20000:
+                                self._cache.clear()
+                        return hit
                     except Exception:
                         return True
             cls._cls = _P
-        return cls._cls(dlg)
+        p = cls._cls(dlg)
+        try:   # re-filter when the user changes folder (the "current folder" rule depends on it)
+            dlg.directoryEntered.connect(lambda *_a, _p=p: _p.invalidateFilter())
+        except Exception:
+            pass
+        return p
 
 
 def _file_dialog(parent, caption, directory, flt, selected, options, mode, accept):

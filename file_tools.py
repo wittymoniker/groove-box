@@ -22,15 +22,70 @@ PARTIAL = 64 * 1024
 CHUNK = 1024 * 1024
 
 
-def _iter_files(root: str, skip_dirs=(), include_hidden=False, cancel=None):
-    skip = {os.path.abspath(d) for d in skip_dirs if d}
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+def _iter_files(root: str, skip_dirs=(), include_hidden=False, cancel=None, errors=None):
+    """Walk a selected tree without following symlinks or entering protected OS/Groovebox stores.
+
+    The hidden-files checkbox applies only to user data. It must never turn a duplicate
+    scan into a walk through Groovebox's protected state/cache/temp store or OS internals.
+    """
+    def _real(path):
+        try:
+            return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+        except Exception:
+            return os.path.normcase(os.path.abspath(path))
+
+    skip = {_real(d) for d in skip_dirs if d}
+    protected = []
+    # Groovebox's protected store may be on its own partition or in a hidden fallback.
+    try:
+        import groovebox_paths as _gp
+        _store = _gp.system_root()
+        if _store:
+            protected.append(_real(str(_store)))
+    except Exception:
+        pass
+    # Avoid recursively indexing OS-managed locations when the selected root is broad
+    # (e.g. / or a mounted system drive). User libraries outside these locations remain
+    # eligible, including ordinary hidden user files when include_hidden is enabled.
+    if os.name == "nt":
+        _base = os.environ.get("SystemDrive", "C:") + os.sep
+        protected.extend(_real(os.path.join(_base, x)) for x in
+                         ("Windows", "Program Files", "Program Files (x86)", "ProgramData"))
+    else:
+        protected.extend(_real(x) for x in
+                         ("/boot", "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/var/lib", "/System"))
+
+    def _inside(path, roots):
+        rp = _real(path)
+        for r in roots:
+            try:
+                if os.path.commonpath((rp, r)) == r:
+                    return True
+            except (ValueError, OSError):
+                continue
+        return False
+
+    def _onerror(exc):
+        if errors is not None:
+            errors.append({"path": getattr(exc, "filename", None) or str(root), "error": str(exc)})
+
+    # If a user deliberately chooses a protected root, do not scan it at all.
+    if _inside(root, protected) or _inside(root, skip):
+        if errors is not None:
+            errors.append({"path": str(root), "error": "protected system location skipped"})
+        return
+
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False, onerror=_onerror):
         if cancel is not None and cancel.is_set():
             return
+        if _inside(dirpath, protected) or _inside(dirpath, skip):
+            dirnames[:] = []
+            continue
         keep = []
         for d in dirnames:
-            full = os.path.abspath(os.path.join(dirpath, d))
-            if full in skip or (not include_hidden and d.startswith(".")) or os.path.islink(full):
+            full = os.path.join(dirpath, d)
+            if (_inside(full, protected) or _inside(full, skip)
+                    or (not include_hidden and d.startswith(".")) or os.path.islink(full)):
                 continue
             keep.append(d)
         dirnames[:] = keep
@@ -38,7 +93,7 @@ def _iter_files(root: str, skip_dirs=(), include_hidden=False, cancel=None):
             if not include_hidden and f.startswith("."):
                 continue
             p = os.path.join(dirpath, f)
-            if os.path.islink(p):
+            if os.path.islink(p) or _inside(p, protected):
                 continue
             yield p
 
@@ -67,7 +122,8 @@ def _full_hash(path: str, cancel=None) -> str:
 
 
 def find_duplicates(root: str, min_size: int = 1, skip_dirs=(), include_hidden=False,
-                    progress: Optional[Callable[[str, int, int], None]] = None, cancel=None) -> List[Dict]:
+                    progress: Optional[Callable[[str, int, int], None]] = None, cancel=None,
+                    errors=None) -> List[Dict]:
     """Groups of byte-identical files under root, biggest wasted space first.
 
     Each group: {"size", "sha256", "files": [{"path","mtime"}], "wasted"}.
@@ -75,10 +131,12 @@ def find_duplicates(root: str, min_size: int = 1, skip_dirs=(), include_hidden=F
     """
     by_size: Dict[int, List[str]] = {}
     n = 0
-    for p in _iter_files(root, skip_dirs, include_hidden, cancel):
+    for p in _iter_files(root, skip_dirs, include_hidden, cancel, errors=errors):
         try:
             sz = os.path.getsize(p)
-        except OSError:
+        except OSError as exc:
+            if errors is not None:
+                errors.append({"path": p, "error": str(exc)})
             continue
         if sz >= min_size:
             by_size.setdefault(sz, []).append(p)
@@ -95,8 +153,9 @@ def find_duplicates(root: str, min_size: int = 1, skip_dirs=(), include_hidden=F
                 return []
             try:
                 by_partial.setdefault((sz, _partial_hash(p, sz)), []).append(p)
-            except OSError:
-                pass
+            except OSError as exc:
+                if errors is not None:
+                    errors.append({"path": p, "error": str(exc)})
             done += 1
             if progress and done % 50 == 0:
                 progress("fingerprint", done, total)
@@ -113,8 +172,9 @@ def find_duplicates(root: str, min_size: int = 1, skip_dirs=(), include_hidden=F
                 # Files up to PARTIAL bytes were read completely by the fingerprint.
                 key = _full_hash(p, cancel) if sz > PARTIAL else _ph
                 by_full.setdefault(key, []).append(p)
-            except (OSError, InterruptedError):
-                pass
+            except (OSError, InterruptedError) as exc:
+                if errors is not None and not isinstance(exc, InterruptedError):
+                    errors.append({"path": p, "error": str(exc)})
             done += 1
             if progress and done % 20 == 0:
                 progress("verify", done, total2)

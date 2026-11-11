@@ -39,7 +39,7 @@ class ExportWindow(QDialog):
                                    "'Verify worker output' below. If the helper fails the export renders in the window.")
         try:
             import compat_settings as cs
-            self.chk_worker.setChecked(bool(cs.load().get("export_in_worker", False)))
+            self.chk_worker.setChecked(bool(cs.load().get("export_in_worker", True)))
         except Exception:
             pass
         self.chk_worker.toggled.connect(self._worker_toggled)
@@ -63,6 +63,7 @@ class ExportWindow(QDialog):
 
         others = (("🎞 Video + audio (.MCC lossless)", "#c58cff", lambda: self.app.export_video_mcc_dialog()),
                   ("🖼 Image frame (PNG / JPG / WebP / MCC)", "#ffd166", lambda: self.app.export_image_frame_dialog()),
+                  ("🧊 Project → OBJ (3D song model · exact audio + project inside)", "#9be7ff", lambda: self.app.export_project_obj()),
                   ("📦 All formats…", "#5ee0ff", lambda: self.app.export_all_formats_dialog()),
                   ("🗂 Render Queue…", "#5ee0ff", lambda: self.app.render_queue_dialog()),
                   ("🔁 Convert MCC media…", "#ff8cf0", lambda: self.app.convert_mcc_media_dialog()))

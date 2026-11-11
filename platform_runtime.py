@@ -96,3 +96,34 @@ def build_accel(root: Path|None=None):
         return out if out.is_file() else None
     except Exception:
         return None
+
+
+def accelerator_status(root: Path|None=None):
+    """Non-invasive capability snapshot; never builds or initializes a backend."""
+    root=Path(root or ROOT)
+    try:
+        cpp=next((p for p in cpp_accel_candidates(root) if p.is_file()), None)
+    except Exception:
+        cpp=None
+    try:
+        rust=next((p for p in rust_accel_candidates(root) if p.is_file()), None)
+    except Exception:
+        rust=None
+    try:
+        stage0=find_scode_stage0(root)
+    except Exception:
+        stage0=None
+    try:
+        import julia_bridge
+        julia=julia_bridge.julia_status()
+    except Exception as exc:
+        julia=f"unavailable: {exc}"
+    preferred=os.environ.get("GROOVEBOX_NATIVE_BACKEND","auto").strip().lower()
+    selected="rust" if preferred in ("auto","rust") and rust else ("cpp" if cpp else "python")
+    if preferred == "cpp" and cpp:
+        selected="cpp"
+    elif preferred == "rust" and not rust:
+        selected="cpp" if cpp else "python"
+    return {"selected_native":selected, "rust":str(rust) if rust else None,
+            "cpp":str(cpp) if cpp else None, "scode_stage0":str(stage0) if stage0 else None,
+            "julia":julia, "python_fallback":True}

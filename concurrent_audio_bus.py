@@ -52,6 +52,22 @@ class ConcurrentAudioBus:
     def source_names(self):
         return tuple(s.name for s in self._sources)
 
+    def release(self, name, sr, release_s=0.2):
+        """R32.9: fade one (held) source out from where it is playing now (held-key release while the transport runs)."""
+        try:
+            import held_sustain as _hs
+        except Exception:
+            return False
+        with self._publish_lock:
+            srcs = list(self._sources)
+            for i, s in enumerate(srcs):
+                if s.name == str(name):
+                    new = np.asarray(_hs.release_tail(s.samples, int(s.cursor), int(sr), float(release_s)), dtype=np.float32)
+                    srcs[i] = _Source(s.name, new, s.gain, False, min(int(s.cursor), new.size))
+                    self._sources = tuple(srcs)
+                    return True
+        return False
+
     def mix_into(self, destination, frames=None):
         """Add active sources to mono float destination; never clips or opens devices."""
         out=np.asarray(destination).reshape(-1)

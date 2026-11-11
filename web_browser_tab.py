@@ -444,6 +444,15 @@ class WebBrowserTab(QWidget):
             ("Groovebox on Itch","https://eski19758.itch.io/mathematicians-groovebox","Releases and ISO distribution"),
             ("Local files","file://"+self._download_root.replace(os.sep,"/"),"Browser downloads / transfer inbox"),
         ]
+        # GROOVEBOX_R32_MEDIA_NETWORK_20261110: your Groovebox site first, then ads for every Groovebox
+        # you have been in Media Network contact with (live, or their cached page when offline).
+        try:
+            import site_directory as _sd
+            from PyQt6.QtWidgets import QApplication as _QA
+            _app = next((w for w in _QA.topLevelWidgets() if type(w).__name__ == "MathematiciansGrooveboxApp"), None)
+            cards = _sd.homepage_cards(_app) + cards
+        except Exception:
+            pass
         body=''.join(f"<a class=card href='{html.escape(url,quote=True)}'><b>{html.escape(title)}</b><small>{html.escape(note)}</small></a>" for title,url,note in cards)
         return f"""<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'><title>Groovebox Home</title><style>body{{background:#071019;color:#d9edf5;font:16px sans-serif;margin:0;padding:28px}}h1{{color:#f1ce68}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}}.card{{display:block;text-decoration:none;color:#d9f7ff;background:#102838;border:1px solid #39708a;border-radius:14px;padding:18px}}.card:hover{{background:#17405a}}small{{display:block;color:#8ab4c8;margin-top:8px}}</style><h1>Mathematician's Groovebox · sOS</h1><p>Browser, files, media, games and network tools without leaving the appliance.</p><div class=grid>{body}</div>"""
 
@@ -463,6 +472,13 @@ class WebBrowserTab(QWidget):
         self.view.setUrl(QUrl(text))
 
     def _on_download_requested(self,item):
+        try:
+            _nm=item.downloadFileName() if hasattr(item,"downloadFileName") else ""
+            import r32_finish as _rf
+            if not _rf.allowed_download(_nm):   # R32.8: only media / project types Groovebox opens
+                item.cancel(); self.lbl_browser_status.setText(f"Blocked download (not a Groovebox media type): {_nm}"); return
+        except Exception:
+            pass
         try:
             if hasattr(item,"setDownloadDirectory"): item.setDownloadDirectory(self._download_root)
             item.accept(); name=item.downloadFileName() if hasattr(item,"downloadFileName") else "download"

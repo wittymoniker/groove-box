@@ -334,6 +334,13 @@ class NearbyGrooveboxService:
         # blocking socket probes per sweep (up to three ports each), which
         # could leave dozens of GrooveboxSweep threads parked in connect().
         self._sweep_lock = threading.Lock()
+        try:
+            import thread_budget as _tb
+            self._sweep_lane = _tb.make_lane("nearby-subnet-sweep", max_workers=12,
+                                             max_pending=254, kind="bulk")
+        except Exception:
+            from concurrent.futures import ThreadPoolExecutor
+            self._sweep_lane = ThreadPoolExecutor(max_workers=4, thread_name_prefix="GrooveboxSweepFallback")
 
     # ------------------------------------------------ messages (device-to-device)
     def _log_message(self, row: Dict):
@@ -992,6 +999,10 @@ class NearbyGrooveboxService:
                 except Exception: pass
         self.http_thread=self.beacon_thread=self.listen_thread=self.direct_thread=None
         self.manual_thread=self.sweep_thread=None
+        try:
+            self._sweep_lane.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
 
     def urls(self):
         return [f"http://{ip}:{self.port}/" for ip in _local_ipv4()] or [f"http://127.0.0.1:{self.port}/"]
@@ -1178,7 +1189,7 @@ class NearbyGrooveboxService:
         conservative: at most 12 simultaneous probes, short per-port connect
         timeouts, and no overlapping sweeps. It must never starve audio/UI work.
         """
-        from concurrent.futures import ThreadPoolExecutor
+        from concurrent.futures import as_completed
         if self.stop_event.is_set() or not self.discover_enabled:
             return []
         if not self._sweep_lock.acquire(blocking=False):
@@ -1229,15 +1240,24 @@ class NearbyGrooveboxService:
                 return None
 
             found = []
-            # Explicit cap prevents caller-provided values from creating a
-            # large blocking thread fan-out on high-core-count machines.
-            worker_count = max(4, min(12, int(workers)))
-            with ThreadPoolExecutor(max_workers=worker_count,
-                                    thread_name_prefix="GrooveboxSweep") as ex:
-                for result in ex.map(probe, hosts):
-                    if result:
-                        found.append(result)
+            # The process-wide scheduler owns actual thread count. Submit in
+            # bounded batches so a multi-interface host cannot overflow the
+            # lane's pending queue. No per-sweep thread fan-out is created.
+            for start in range(0, len(hosts), 254):
+                if self.stop_event.is_set():
+                    break
+                batch = hosts[start:start + 254]
+                futures = [self._sweep_lane.submit(probe, host) for host in batch]
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                        if result:
+                            found.append(result)
+                    except Exception:
+                        pass
                     if self.stop_event.is_set():
+                        for pending in futures:
+                            pending.cancel()
                         break
             return found
         finally:
@@ -1328,10 +1348,8 @@ class NearbyGrooveboxService:
             return False, "Ad hoc control unavailable."
         r = self.direct.start_adhoc()
         self._last_sweep = 0.0
-        # One subnet sweep at a time. A previous implementation launched 64
-        # blocking socket probes per sweep (up to three ports each), which
-        # could leave dozens of GrooveboxSweep threads parked in connect().
-        self._sweep_lock = threading.Lock()
+        # The constructor-owned shared lane is reused; do not create a second
+        # private pool when the ad-hoc link is toggled.
         return r
 
     def stop_adhoc(self):

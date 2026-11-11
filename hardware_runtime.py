@@ -151,12 +151,20 @@ def _scan_all(gen: int, reason: str):
                 _hw_workers = adaptive_workers(3, heavy=False)
             except Exception:
                 _hw_workers = 3
-            with ThreadPoolExecutor(max_workers=_hw_workers, thread_name_prefix="GrooveboxHW") as ex:
-                futs = {ex.submit(scan_component, k): k for k in ("video", "display", "input")}
-                for fut in as_completed(futs):
-                    k = futs[fut]
-                    try: results[k] = fut.result()
-                    except Exception as exc: results[k] = {"error": str(exc)}
+            try:
+                import thread_budget as _tb
+                scan_lane = _tb.make_lane("hardware-component-scan", max_workers=_hw_workers,
+                                          max_pending=3, kind="bulk")
+            except Exception:
+                scan_lane = ThreadPoolExecutor(max_workers=min(_hw_workers, 2),
+                                                thread_name_prefix="GrooveboxHW-fallback")
+            futs = {scan_lane.submit(scan_component, k): k for k in ("video", "display", "input")}
+            for fut in as_completed(futs):
+                k = futs[fut]
+                try: results[k] = fut.result()
+                except Exception as exc: results[k] = {"error": str(exc)}
+            try: scan_lane.shutdown(wait=False, cancel_futures=True)
+            except Exception: pass
         except Exception as exc:
             results["error"] = str(exc)
     finally:

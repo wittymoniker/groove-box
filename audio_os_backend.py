@@ -755,6 +755,15 @@ def prepare_output_buffer(data, samplerate, *, preferred_name=None, device=None,
     rate,idx=negotiate_output_samplerate(samplerate,channels=channels,dtype=dtype,preferred_name=preferred_name,device=device)
     return _resample_for_hardware(arr,int(samplerate),rate), int(rate), idx
 
+_threading = threading      # R32.8 sweep: the render stream referenced an unbound alias (NameError on start)
+
+
+def _query_physical_rate(device_index, samplerate, channels):
+    """R32.8 sweep: (rate, channels) the device really opens; the requested rate when it is accepted."""
+    rate, _idx = negotiate_output_samplerate(samplerate, channels=channels, device=device_index)
+    return int(rate), int(channels)
+
+
 def stream_tuning(purpose: str = "transport"):
     """(blocksize, latency) per stream purpose (GROOVEBOX_R23R_SMOOTH_STREAMS_20261101).
 
@@ -1312,13 +1321,27 @@ def warm_hardware_parallel(preferred_name: str | None = None) -> None:
         ("resolve",  lambda: resolve_output_device_index(preferred_name, force=False)),
         ("host_api", _detect_host_api),
     ]
-    with _cf.ThreadPoolExecutor(max_workers=len(tasks), thread_name_prefix="gb-hw-warm") as ex:
-        futs = {ex.submit(fn): name for name, fn in tasks}
+    try:
+        import thread_budget as _tb
+        lane = _tb.make_lane("hardware-warmup", max_workers=len(tasks), max_pending=len(tasks), kind="bulk")
+    except Exception as _pool_exc:
+        # Only a missing/broken scheduler takes this compatibility path.
+        print(f"[hw-warm] shared scheduler unavailable; using one-shot fallback: {_pool_exc}")
+        with _cf.ThreadPoolExecutor(max_workers=min(len(tasks), 2), thread_name_prefix="gb-hw-warm-fallback") as ex:
+            futs = {ex.submit(fn): name for name, fn in tasks}
+            for fut in _cf.as_completed(futs):
+                try:
+                    fut.result()
+                except Exception as exc:
+                    print(f"[hw-warm] {futs[fut]}: {exc}")
+    else:
+        futs = {lane.submit(fn): name for name, fn in tasks}
         for fut in _cf.as_completed(futs):
             try:
                 fut.result()
             except Exception as exc:
                 print(f"[hw-warm] {futs[fut]}: {exc}")
+
 
 
 class RenderStreamBridge:

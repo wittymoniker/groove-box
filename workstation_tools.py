@@ -1,7 +1,126 @@
 """Overflow-safe entry points added to the original, working V3 workstation."""
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QAction
-from PyQt6.QtWidgets import QGroupBox, QMenu, QToolBar, QToolButton
+from PyQt6.QtWidgets import QGroupBox, QMenu, QToolBar, QToolButton, QLineEdit, QCompleter
+
+
+class _WorkspaceNav:
+    """GROOVEBOX_R32_WORKSPACE_NAV_20261110 — section navigation for the main workspace.
+
+    * menu rebuilt on every open (all panels, grouped TOP / BOTTOM, incl. R32 side panels & deck)
+    * find box with completion: type part of a title, Enter jumps
+    * ◀ / ▶ step to the previous / next section in screen order
+    * history: Back / Forward through jumps
+    * 3 bookmarks: right-click 🔖n to store the current view, click to return
+    * the target panel's border flashes for a moment after a jump
+    """
+    AREAS = (("top_ui_scroll", "Composition (top)"), ("bottom_render_scroll", "Playback · export · visuals (bottom)"))
+
+    def __init__(self, host):
+        self.host = host; self.back = []; self.fwd = []; self.marks = {}; self._last = None
+
+    def sections(self):
+        out = []
+        for attr, label in self.AREAS:
+            sc = getattr(self.host, attr, None)
+            if sc is None or sc.widget() is None:
+                continue
+            seen = set()
+            for g in sc.widget().findChildren(QGroupBox):
+                t = g.title().strip()
+                if not t or t in seen or not g.isVisibleTo(sc.widget()):
+                    continue
+                seen.add(t)
+                pos = g.mapTo(sc.widget(), g.rect().topLeft())
+                out.append((label, t, sc, g, (pos.y(), pos.x())))
+        out.sort(key=lambda r: (r[0], r[4]))
+        return out
+
+    def _view(self, sc):
+        return (sc, sc.horizontalScrollBar().value(), sc.verticalScrollBar().value())
+
+    def jump(self, sc, g, record=True):
+        if record:
+            self.back.append(self._view(sc)); del self.back[:-50]; self.fwd.clear()
+        sc.ensureWidgetVisible(g, 12, 12); self._last = g; self._flash(g)
+
+    def _flash(self, g):
+        old = g.styleSheet()
+        try:
+            g.setStyleSheet(old + " QGroupBox{border:2px solid #ffd85a;}")
+            QTimer.singleShot(900, lambda: g.setStyleSheet(old))
+        except RuntimeError:
+            pass
+
+    def step(self, d):
+        secs = self.sections()
+        if not secs:
+            return
+        idx = next((i for i, r in enumerate(secs) if r[3] is self._last), -1)
+        r = secs[(idx + d) % len(secs)]
+        self.jump(r[2], r[3])
+
+    def go_back(self):
+        if self.back:
+            sc, x, y = self.back.pop(); self.fwd.append(self._view(sc))
+            sc.horizontalScrollBar().setValue(x); sc.verticalScrollBar().setValue(y)
+
+    def go_fwd(self):
+        if self.fwd:
+            sc, x, y = self.fwd.pop(); self.back.append(self._view(sc))
+            sc.horizontalScrollBar().setValue(x); sc.verticalScrollBar().setValue(y)
+
+    def fill_menu(self, menu):
+        menu.clear(); cur = None
+        for label, t, sc, g, _p in self.sections():
+            if label != cur:
+                if cur is not None:
+                    menu.addSeparator()
+                hdr = menu.addAction("— %s —" % label); hdr.setEnabled(False); cur = label
+            a = menu.addAction(t)
+            a.triggered.connect(lambda _c=False, s=sc, w=g: self.jump(s, w))
+
+    def find(self, text):
+        t = text.strip().lower()
+        if not t:
+            return
+        for _l, title, sc, g, _p in self.sections():
+            if t in title.lower():
+                self.jump(sc, g); return
+
+    def add_controls(self, toolbar):
+        for cap, tip, fn in (("◀", "Previous section", lambda: self.step(-1)), ("▶", "Next section", lambda: self.step(1)),
+                             ("↶", "Back (jump history)", self.go_back), ("↷", "Forward", self.go_fwd)):
+            a = toolbar.addAction(cap); a.setToolTip(tip); a.triggered.connect(lambda _c=False, f=fn: f())
+        box = QLineEdit(); box.setPlaceholderText("Find panel…"); box.setMaximumWidth(170)
+        box.setToolTip("Type part of a panel title, press Enter to jump there")
+
+        def _refresh_completer():
+            comp = QCompleter(sorted({r[1] for r in self.sections()}), box)
+            comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive); comp.setFilterMode(Qt.MatchFlag.MatchContains)
+            comp.activated.connect(self.find); box.setCompleter(comp)
+        box.returnPressed.connect(lambda: self.find(box.text()))
+        QTimer.singleShot(3000, _refresh_completer)
+        box.textEdited.connect(lambda _t: box.completer() is None and _refresh_completer())
+        toolbar.addWidget(box)
+        for n in (1, 2, 3):
+            b = QToolButton(toolbar); b.setText("🔖%d" % n)
+            b.setToolTip("Click: return to bookmark %d · right-click: store the current view" % n)
+            b.clicked.connect(lambda _c=False, k=n: self._recall(k))
+            b.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            b.customContextMenuRequested.connect(lambda _p, k=n, bb=b: self._store(k, bb))
+            toolbar.addWidget(b)
+
+    def _store(self, k, b):
+        sc = getattr(self.host, "top_ui_scroll", None)
+        if sc is not None:
+            self.marks[k] = self._view(sc); b.setText("🔖%d●" % k)
+
+    def _recall(self, k):
+        m = self.marks.get(k)
+        if m:
+            sc, x, y = m; self.back.append(self._view(sc))
+            sc.horizontalScrollBar().setValue(x); sc.verticalScrollBar().setValue(y)
 
 
 def install_workstation_tools(host, layout):
@@ -19,19 +138,12 @@ def install_workstation_tools(host, layout):
     sections.setToolTip("Jump to a control section")
     sections.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
     menu = QMenu(sections)
-    seen = set()
-    for scroll_name in ("top_ui_scroll", "bottom_render_scroll"):
-        scroll = getattr(host, scroll_name)
-        for group in scroll.widget().findChildren(QGroupBox):
-            title = group.title().strip()
-            if not title or title in seen:
-                continue
-            seen.add(title)
-            action = menu.addAction(title)
-            action.triggered.connect(
-                lambda checked=False, s=scroll, target=group: s.ensureWidgetVisible(target, 8, 8))
+    nav = _WorkspaceNav(host)
+    host._workspace_nav = nav
+    menu.aboutToShow.connect(lambda: nav.fill_menu(menu))      # R32.8: rebuilt every time → new panels appear
     sections.setMenu(menu)
     toolbar.addWidget(sections)
+    nav.add_controls(toolbar)
 
     def action(label, callback, description):
         item = toolbar.addAction(label)

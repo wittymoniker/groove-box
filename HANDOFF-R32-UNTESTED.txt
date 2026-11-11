@@ -1,0 +1,41 @@
+MATHEMATICIAN'S GROOVEBOX — R32 ENGINEERING HANDOFF
+Build snapshot: 2026-11-10
+Status: UNTESTED / DEVELOPMENT SNAPSHOT — NOT A VERIFIED RELEASE
+
+This archive contains the current working-tree changes and the corresponding
+v35.22zz ISO app-overlay copies where those files exist. The source tree is
+kept intact; Python cache directories and pytest cache are omitted from this
+archive.
+
+Areas changed in this snapshot (source + overlay where applicable):
+- MP4/video export scheduling, worker lifecycle, shared audio-master handling,
+  and mux/finalization path; adds export_mux.py and targeted recovery tests.
+- File tools / protected duplicate scanning.
+- Performance file browser and window management behavior.
+- Project Blueprint tool and process/resource planning.
+- Screen-recorder and canonical-window handling.
+- Site/network transfer policy: file transfer is download/request oriented;
+  visitor notes are text-only and retention bounded.
+- Dependency/install scripts and R32 release notes.
+
+IMPORTANT LIMITATIONS:
+- This snapshot has NOT passed the complete test suite, a real MP4 export,
+  a 4K stress test, a reboot/resume test, or on-device GUI validation.
+- The screen recorder's successful MP4 path is intended to remain intact;
+  normal export still requires runtime verification, especially part assembly.
+- Full Streamer as a separate application/process-tree handoff with device
+  preselection, dedicated CPU-thread allocation, and complete session reload
+  is NOT implemented as a verified end-to-end feature in this snapshot.
+- Bluetooth pairing still depends on the target OS having BlueZ and its
+  pairing utilities installed and running; this code does not guarantee that
+  every Linux image includes a complete pairing stack.
+- No claim is made that all GUI stalls or all export failure modes are gone.
+
+Recommended first validation on target hardware:
+1. Launch Groovebox and inspect startup logs/import errors.
+2. Run the targeted export recovery and protected-duplicate tests.
+3. Export a short MP4, then a longer project with audio and multiple video parts.
+4. Verify interruption/reboot recovery and output integrity with ffprobe.
+5. Exercise Blueprint creation/open/save, file browser, Open Windows tab,
+   recorder dialog lifecycle, and Bluetooth pairing on the actual OS image.
+6. Only after those pass, build/install the ISO overlay and run hardware tests.

@@ -1,33 +1,42 @@
-# External engineering references / NASA credit
+# Third-party and NASA notes
 
-Mathematician's Groovebox contains **no copied NASA simulator source code** in the
-relativity/native-performance additions in this release. The implementation is
-original Groovebox code built from standard mathematical formulas and general
-simulation-engineering techniques.
+## NASA
 
-NASA projects consulted as engineering references:
+Groovebox contains **no NASA source code**. A search of the project's own source tree (Python, C/C++, Rust,
+JavaScript and documentation) found no copied NASA code, headers or data files. Only two places mention NASA:
 
-- NASA Trick Simulation Environment — C/C++ simulation jobs, multi-rate execution,
-  logging and real-time performance engineering.
-- NASA Core Flight System (cFS) — component boundaries, message-oriented state,
-  health/telemetry style separation. The public cFS distribution is Apache-2.0.
-- NASA Common Model Library (CML) — reusable C++ simulation model organization.
+| File | What it is |
+|---|---|
+| `relativity_projection.py` | Original Groovebox code implementing textbook special-relativity formulas (Lorentz factor, Doppler and aberration-style projections). |
+| `performance.py` (relativity panel credit line) | Shows the credit below inside the app. |
 
-The optional `relativity_projection.py` uses standard special-relativity formulas
-(Lorentz gamma and longitudinal relativistic Doppler factor). It is a downstream
-Performance projection and **does not alter the canonical Universal Field ID**.
+NASA open-source simulation projects were consulted only as **engineering references for simulation
+architecture**: how to structure a deterministic, time-stepped simulation and keep a model separate from
+how it is presented. Credit goes to:
 
-Credit line for UI/docs when Relativity Projection is enabled:
+* **Trick Simulation Environment**, NASA Johnson Space Center — https://github.com/nasa/trick
+  (NASA Open Source Agreement).
+* **core Flight System (cFS)**, NASA Goddard Space Flight Center — https://github.com/nasa/cFS
+  (Apache License 2.0).
+* **CML**: named in the app's credit line as part of the same reference material. The source does not record
+  which project this abbreviation refers to; if you know, add its full name and link here.
 
-> Relativity projection: standard special-relativity mathematics; NASA simulation
-> ecosystems (Trick/cFS/CML) credited as engineering inspiration. No NASA code copied.
+Because none of their code is included, their licenses impose no terms on Groovebox. They are credited here
+out of courtesy and accuracy.
 
-Always inspect the license of any future NASA repository before vendoring code.
-Government-authored U.S. works can be public domain domestically, but NASA software
-may also contain contractor/third-party material or be distributed under a specific
-license such as Apache-2.0 or NOSA.
+Use of the NASA name is for attribution only. It does not imply NASA endorsement of Mathematician's
+Groovebox.
 
-## Math-notation display convention
+## The author's own reference
 
-Math Symbols defaults ON. Author glyphs use 4×3 directional strokes, U/R/D/L pathways, straight=full count, missing=skip, and context-sensitive squiggles (imaginary/decimal/half/doubling); operation/continued/multiplicity enclosures and semantic role colors carry additional context. Math Symbols OFF exposes conventional/base-10 notation; Operator Theory is an independent backend toggle. See `HELP_TEXT.md` → **Author Symbol Language — literal reading guide** for the literal and ASCII grammar and equation-by-equation examples.
+`resources/Scientific_and_Mathematical_Theories_and_Inventions.pdf`: *Scientific and Mathematical Theories
+and Inventions* by Noah Girouard King (Eski), the author of Groovebox. It includes the author's isosceles
+trigonometry (isn / ics and their inverses, used throughout the seed language as `isn`, `ics`, `isx`, `isy`),
+the author's fractal sets and other mathematical works the project draws on.
 
+## Bundled components with their own licenses
+
+* `sCode/LICENSE`: the sCode runtime.
+* `BUILD_ISO/limine-v12.9.0/LICENSE`: the Limine bootloader used by the sOS ISO builder.
+* Python packages (PyQt6, NumPy, SciPy and others) and FFmpeg are installed as dependencies at setup time,
+  not copied into the source, and stay under their own licenses.

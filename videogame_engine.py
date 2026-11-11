@@ -4404,13 +4404,21 @@ class Game:
                 self.aim_in = {"yaw": 0.0, "pitch": 0.0}
             return
         self.steer = self._clamp(self.steer + self.move["dx"] + self.aim_in["yaw"])
-        self.pitch += self.aim_in["pitch"]
+        # R32.6: look up / down holds where you put it (it sprang back to the default view, so you
+        # could mostly only look down); clamped to ±1.2 and Invert Y from the playability settings.
+        _inv = -1.0
+        try:
+            import game_playability as _gpl
+            _inv = 1.0 if _gpl.SETTINGS.get("invert_y") else -1.0
+        except Exception:
+            pass
+        self.pitch = max(-1.2, min(1.2, self.pitch + _inv * self.aim_in["pitch"]))
         self.zoom = self._clamp(self.zoom + self.move["dz"] * dt * 0.25, 0.35, 2.5)
         for key in ("dx", "dy", "dz"):
             self.move[key] *= max(0.0, 1.0 - k)
         self.aim_in["yaw"] *= max(0.0, 1.0 - k)
         self.aim_in["pitch"] *= max(0.0, 1.0 - k)
-        self.pitch *= max(0.0, 1.0 - dt * 2.0)
+        # (no spring-back: the view stays where the player looks)
 
     def camera_mode_name(self):
         return {0: "2.5D (third-person)", 1: "First person", 2: "2D (top-down)"}.get(
@@ -5138,6 +5146,11 @@ class Game:
                             "fov_deg": max(36.0, min(62.0, fov))}
 
     def tick(self, dt=1/30):
+        # GAME_BUDGET_20261107: cap a single tick so a heavy frame cannot
+        # freeze the host. The world still advances; it just yields.
+        t0 = time.monotonic()
+        # GAME_SYNC_20261107: decay the live pulse from keys/pattern.
+        self._live_pulse = float(getattr(self, "_live_pulse", 0.0) or 0.0) * 0.85
         sample = self.music.step(dt)
 
         layers = self.scene.tick(dt, audio_rms=abs(sample))
@@ -5154,10 +5167,32 @@ class Game:
             except Exception:
                 pass
             return sample
+        # R32.6: player motion is applied BEFORE the frame-budget early return. It used to sit after
+        # it, so on any frame over 12 ms (busy machine, first frames) WASD was consumed and dropped.
+        _mv = dict(self.move)
         self._consume_inputs(dt)
+        if self.authoritative and not self.hotseat["active"]:
+            try:
+                _right, _up, _forward = self.planetary.local_frame()
+                _th = _vadd(_vmul(_right, float(_mv["dx"])), _vadd(_vmul(_forward, float(_mv["dz"])), _vmul(_up, float(_mv["dy"]))))
+                if _vlen(_th) != 0.0:
+                    self.planetary.step(dt, _th)
+                    self.angle = math.atan2(self.planetary.pos[2], self.planetary.pos[0]) % math.tau
+                # walking position on the local map follows the same input (heading = steer)
+                _h = float(getattr(self, "steer", 0.0)) * math.pi
+                _sp = 0.9 * dt
+                self.player_x = float(getattr(self, "player_x", 0.0)) + _sp * (math.sin(_h) * _mv["dz"] + math.cos(_h) * _mv["dx"])
+                self.player_z = float(getattr(self, "player_z", 0.0)) + _sp * (math.cos(_h) * _mv["dz"] - math.sin(_h) * _mv["dx"])
+                self._r32_moved_this_tick = True
+            except Exception:
+                self._r32_moved_this_tick = False
         self._update_cinematic_camera(dt, abs(sample))
         self._fire_invites()
         self._tick_arcade(dt)
+        # GAME_BUDGET_20261107: if this tick already used its budget, skip
+        # the remaining non-essential work so the host stays responsive.
+        if time.monotonic() - t0 > 0.012:
+            return sample
         if self.authoritative:
             # FREE-ROAM CONTRACT: movement is player-authored only.  Never
             # auto-advance the player's world position/orbit; that old behavior
@@ -5174,7 +5209,7 @@ class Game:
                 _right,_up,_forward = self.planetary.local_frame()
                 _th = _vadd(_vmul(_right,float(self.move["dx"])),
                             _vadd(_vmul(_forward,float(self.move["dz"])),_vmul(_up,float(self.move["dy"]))))
-                _player_motion = (float(self.steer) != 0.0 or _vlen(_th) != 0.0)
+                _player_motion = (float(self.steer) != 0.0 or _vlen(_th) != 0.0) and not getattr(self, "_r32_moved_this_tick", False)
                 if _player_motion:
                     self.planetary.step(dt,_th)
                     # Legacy angle remains a compatibility signal, but only
@@ -5386,9 +5421,15 @@ class Game:
                         self.planetary.current_planet=_ph.get("planet",self.planetary.current_planet)
                         self.planetary.landed=bool(_ph.get("landed",self.planetary.landed))
                     except Exception: pass
-                self.score = float(snap.get("score", self.score))
-                self.level = int(snap.get("level", self.level))
-                self.combo = int(snap.get("combo", self.combo))
+                # R32.9 SAVESTATE IN SHARED WORLDS: the host is authoritative for the WORLD (physics, sigils,
+                # difficulty, view); a player's own progress (score, level, combo, economy) is theirs — from
+                # their local savestate, or the one the host kept for them ("given"). Never the host's score.
+                if not getattr(self, "_own_progress", False):
+                    mine = (snap.get("remotes") or {}).get(self.player_name) or {}
+                    if "score" in mine:
+                        self.score = float(mine["score"])
+                    if "level" in mine:
+                        self.level = int(mine["level"])
                 if isinstance(snap.get("visual_view"), dict):
                     self.visual_view = dict(snap["visual_view"])
                     self.visual_signal_id = str(self.visual_view.get("visual_signal_id") or self.visual_signal_id)
@@ -5399,11 +5440,15 @@ class Game:
                 rem = snap.get("remotes")
                 self.remotes = rem if isinstance(rem, dict) else {}
             if self.net.sock is not None:
-                self.net.send({"type": "hello", "name": self.player_name, "seed": self.id["seed"]})
+                if not getattr(self, "_hello_sent", False):
+                    self._hello_sent = True
+                    self.net.send({"type": "hello", "name": self.player_name, "seed": self.id["seed"],
+                                   "save": self.economy_snapshot() if getattr(self, "_own_progress", False) else None})
                 if not getattr(self, "_world_shared", False):
                     self._world_shared = True
                     self.share_world()
-                self.net.send({"type": "steer", "name": self.player_name, "t": round(self.t, 2), "angle": round(self.angle, 6), "steer": round(self.steer, 4)})
+                self.net.send({"type": "steer", "name": self.player_name, "t": round(self.t, 2), "angle": round(self.angle, 6),
+                               "steer": round(self.steer, 4), "score": round(self.score, 3), "level": self.level})
         # GAME_FILE_TASKS_2026: replay feeds recorded inputs back in — the world
         # is f(seed, t), so re-simulating the recorded steer reproduces the
         # session exactly on any machine.
@@ -5470,6 +5515,11 @@ class Game:
                 self.push_status(str(obj.get("text", "")))
             elif mtype == "hello" and self.net.host_mode:
                 name = str(obj.get("name") or "Player")
+                saves = self.__dict__.setdefault("_remote_saves", {})
+                if isinstance(obj.get("save"), dict):
+                    saves[name] = obj["save"]                     # their local savestate (recorded on their side)
+                elif name in saves:
+                    self.net.broadcast({"type": "restore", "to": name, "save": saves[name]})   # "given" by this world
                 if name not in self._remote_steers:
                     self._remote_steers[name] = [
                         meum_angle(_safe_int_seed(self.id["seed"]) + len(self._remote_steers) * 31),
@@ -5485,10 +5535,18 @@ class Game:
                     self._remote_steers[name] = rec
                 try:
                     rec[2] = float(obj.get("steer") or 0.0)
+                    if "score" in obj:
+                        rec[1] = float(obj.get("score") or 0.0)     # their own progress, not the host's
+                        sv = self.__dict__.setdefault("_remote_saves", {}).setdefault(name, {})
+                        sv["score"] = rec[1]; sv["level"] = int(obj.get("level", sv.get("level", 1)) or 1)
                 except Exception:
                     pass
             elif mtype == "snap":
                 self.last_snap = obj
+            elif mtype == "restore" and not self.net.host_mode and obj.get("to") == self.player_name:
+                if not getattr(self, "_own_progress", False) and isinstance(obj.get("save"), dict):
+                    self.load_economy(obj["save"]); self._own_progress = True     # the shared world gave our state back
+                    self.push_status("Your progress in this world was restored by the host.")
             elif mtype == "world":
                 self._on_world_info(obj)
 
@@ -8743,7 +8801,23 @@ if HAS_UI:
             _fields.append({"key": "controls", "prompt": "Edit controls (optional) — type action=KEY, action=KEY",
                             "default": "", "hint": "e.g. jump=J, fire=K · keys listed on the right", "numeric": False,
                             "free": True})
-            game.questionnaire = {"step": 0, "buf": "", "fields": _fields, "answers": {}}
+            self._r32_q_fields = _fields
+            # GROOVEBOX_R32_PLAY_NOW_20261110: the character / position seed questions are asked as an
+            # overlay while the game already runs — WASD / arrows move during the numeric questions
+            # (they never typed into a numeric field). F1 re-opens them; GROOVEBOX_GAME_START_QUESTIONS=0
+            # skips them (defaults applied).
+            if os.environ.get("GROOVEBOX_GAME_START_QUESTIONS", "1") != "0" or game.online:
+                game.questionnaire = {"step": 0, "buf": "", "fields": _fields, "answers": {}}
+            else:
+                game.questionnaire = None
+                try:
+                    game.set_character(_default_char, _default_char)
+                except Exception:
+                    pass
+                try:
+                    self.panel.append_status("WASD to move · mouse to look · F1 = character / position / controls")
+                except Exception:
+                    pass
             # seed the panel with existing chat/status
             for entry in game.chat_log:
                 self.panel.append_status(f"[{entry['t']:.1f}] {entry['sender']}: {entry['text']}")
@@ -8781,7 +8855,21 @@ if HAS_UI:
             dt = max(1/120, min(1/20, now - self._last))
             self._last = now
             if self.timer.isActive() and g.running:
-                g.tick(dt)
+                # GROOVEBOX_R32_PLAYABILITY_20261109: player speed / slow-mo / pause and physics feel.
+                try:
+                    import game_playability as _gpl
+                    if getattr(self, "_r32_paused", False):
+                        dt = 0.0
+                    else:
+                        dt = _gpl.dt_scaled(dt)
+                    for _wobj in (getattr(g, "planetary", None), getattr(g, "world", None), getattr(g, "ball", None)):
+                        _gpl.apply_to_world(_wobj)
+                    if not hasattr(g, "_r32_lives"):
+                        g._r32_lives = int(_gpl.SETTINGS.get("lives", 3))
+                except Exception:
+                    pass
+                if dt > 0.0:
+                    g.tick(dt)
             # Bound queue work per frame.  Bursts are preserved in the queue and
             # drained over subsequent frames instead of monopolising the GUI loop.
             for _ in range(self._net_per_frame):
@@ -8857,18 +8945,69 @@ if HAS_UI:
                     q["buf"] = (q["buf"] + ch)[:96 if field.get("free") else 32]
             self.view.update()
 
+        def _r32_key_name(self, e):
+            try:
+                from PyQt6.QtGui import QKeySequence
+                return QKeySequence(e.key()).toString() or e.text()
+            except Exception:
+                return e.text()
+
         def keyReleaseEvent(self, e):
             if e.key() == Qt.Key.Key_F8 and not e.isAutoRepeat():
                 _groovebox_ptt(False)
                 return
             try:
+                import game_playability as _gpl
+                if not e.isAutoRepeat() and self._r32_key_name(e).lower() == str(_gpl.SETTINGS.get("slowmo_key", "Shift")).lower():
+                    _gpl.set_slowmo(False)
+            except Exception:
+                pass
+            try:
                 super().keyReleaseEvent(e)
             except Exception:
                 pass
 
+        _R32_MOVE_KEYS = None
+
         def keyPressEvent(self, e):
             g = self.game
             k = e.key()
+            q = getattr(g, "questionnaire", None)
+            if q:
+                try:
+                    field = q["fields"][q["step"]]
+                    if field.get("numeric") and k in (Qt.Key.Key_W, Qt.Key.Key_A, Qt.Key.Key_S, Qt.Key.Key_D,
+                                                      Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Left, Qt.Key.Key_Right,
+                                                      Qt.Key.Key_Space, Qt.Key.Key_Q, Qt.Key.Key_E):
+                        act = g.resolve_key(int(k.value) if hasattr(k, "value") else int(k)) if hasattr(g, "resolve_key") else None
+                        if act is None:
+                            act = {Qt.Key.Key_W: "move_forward", Qt.Key.Key_Up: "move_forward", Qt.Key.Key_S: "move_back",
+                                   Qt.Key.Key_Down: "move_back", Qt.Key.Key_A: "move_left", Qt.Key.Key_Left: "move_left",
+                                   Qt.Key.Key_D: "move_right", Qt.Key.Key_Right: "move_right"}.get(k)
+                        if act:
+                            g.dispatch_control(act, self.panel)
+                            self.view.update(); return
+                except Exception:
+                    pass
+            if k == Qt.Key.Key_F1 and not getattr(g, "questionnaire", None) and getattr(self, "_r32_q_fields", None):
+                g.questionnaire = {"step": 0, "buf": "", "fields": self._r32_q_fields, "answers": {}}
+                self.view.update(); return
+            # GROOVEBOX_R32_PLAYABILITY_20261109: slow-mo (hold) and pause (toggle) keys.
+            try:
+                import game_playability as _gpl
+                if not e.isAutoRepeat() and getattr(g, "chat_compose", None) is None:
+                    _kn = self._r32_key_name(e).lower()
+                    if _kn == str(_gpl.SETTINGS.get("slowmo_key", "Shift")).lower():
+                        _gpl.set_slowmo(True)
+                    elif _kn == str(_gpl.SETTINGS.get("pause_key", "P")).lower() and not getattr(g, "questionnaire", None):
+                        self._r32_paused = not getattr(self, "_r32_paused", False)
+                        try:
+                            self.panel.append_status("--- PAUSED ---" if self._r32_paused else "--- PLAY ---")
+                        except Exception:
+                            pass
+                        return
+            except Exception:
+                pass
             if getattr(g, "questionnaire", None):
                 self._answer_questionnaire(e); return
             # GROOVEBOX_R23R_INFRAME_CHAT_20261101: Enter always opens the local chat
@@ -9132,6 +9271,36 @@ def install_game(identity, root_dir=None, progress=None):
     return ensured
 
 
+def _r32_savestate(game):
+    """R32.9: one savestate per game per Groovebox — load now, save at exit (both the CLI and the windowed path)."""
+    _sp = os.environ.get("GROOVEBOX_GAME_SAVESTATE", "")
+    if not _sp:
+        return None
+    try:
+        with open(_sp, "r", encoding="utf-8") as _f:
+            _st = json.load(_f)
+        game.load_economy(_st.get("economy") or {})
+        game.angle = float(_st.get("angle", game.angle))
+        game._own_progress = True                       # recorded locally: it wins in shared worlds
+        if isinstance(_st.get("remotes"), dict):
+            game._remote_saves = dict(_st["remotes"])  # as host: the progress of everyone who played here
+    except Exception:
+        pass
+
+    def _save_state(_g=game, _p=_sp):
+        try:
+            os.makedirs(os.path.dirname(_p), exist_ok=True)
+            with open(_p + ".tmp", "w", encoding="utf-8") as _f:
+                json.dump({"economy": _g.economy_snapshot(), "angle": float(getattr(_g, "angle", 0.0)),
+                           "remotes": dict(getattr(_g, "_remote_saves", {}) or {})}, _f)
+            os.replace(_p + ".tmp", _p)
+        except Exception:
+            pass
+    import atexit as _ax
+    _ax.register(_save_state)
+    return _save_state
+
+
 def main(argv=None):
     argv = list(argv or sys.argv[1:])
     A = parse_args(argv)
@@ -9178,7 +9347,10 @@ def main(argv=None):
         if not HAS_UI and not A["cli"]:
             print("[UI] PyQt6 not found — CLI fallback. Install PyQt6 for the panel.")
         # CLI path: splash() is inside Game.run()
+        _save = _r32_savestate(g)
         g.run(seconds=A["seconds"])
+        if _save:
+            _save()
         if g.record_path:
             path = g.save_recording(g.record_path,
                                     make_wav=resolve_codec(g.record_path)[0] in ("wav",))
@@ -9259,6 +9431,12 @@ def main(argv=None):
     loading.set_status("Building world + network…")
     QApplication.processEvents()
     game = Game(host_mode=A["host"], port=A["port"], connect=A["connect"])
+    _save_state = _r32_savestate(game)          # R32.9: same helper as the CLI path
+    if _save_state:
+        try:
+            app.aboutToQuit.connect(_save_state)
+        except Exception:
+            pass
     if A["record_format"] and not A["record"]:
         A["record"] = "gameplay." + (A["record_format"] or "gz")
     game.record_path = A["record"]

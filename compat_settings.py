@@ -31,9 +31,33 @@ DEFAULTS = {
     "video_tile_max": 0.18,         # operator-bound video tiles: largest width as a fraction of the frame (0.05-0.5)
     "autosave": True,               # open project is autosaved in place (main-window Autosave box)
     "auto_copy_to_drive": False,    # also copy each project save to the first connected USB / SD drive
-    "export_in_worker": False,      # EXPORT_WORKER_20261102: render exports in a separate process (window stays smooth)
+    "export_in_worker": True,       # R32.6: exports always run in worker processes (EXPORT_SCHEDULER_R31); EXPORT_WORKER_20261102: render exports in a separate process (window stays smooth)
     "ui_scale": 100,                # DISPLAY_SCALE_20261102: text + controls, percent (applies at next launch)
     "window_scale": 100,            # DISPLAY_SCALE_20261102: main window as a percent of the usable screen area
+    "audio_viz": "full",            # PLAYER_VIZ_20261107: low | full for audio-only files
+    "video_makeup": "low",          # PLAYER_MAKEUP_20261107: off | low | high make-up audio for video-only files
+    "makeup_generator": "drone",
+    "mem_budget_pct": 0,            # R32.8 DYNAMIC_RAM: 0 = auto by tier, else 25-90 % of RAM
+    "color_scheme": "normal",       # R32.8 ACCESSIBILITY: normal | high contrast | protan/deutan/tritan-safe | grayscale | warm night | inverted
+    "color_scheme_outputs": False,  # also transform generated video (exports + live rig)
+    "touch_keyboard": "auto",       # auto (touchscreens only) | on | off
+    "no_mouse": False,              # focus outlines + keyboard navigation + Ctrl+K command palette
+    "no_keyboard": False,           # on-screen keyboard always available for every field
+    "break_reminder_min": 0,        # wellbeing: 0 = off, else minutes of active use
+    "save_history_max": 64,         # R32.8: saves / autosaves kept (shrinks with free disk space); 0 = off
+    "live_autosave": True,          # R32.8: autosave 20 s after each edit    # R32.8: drone | pulse | bed | chord (makeup_audio.py, deterministic per file)
+    "swap_limit": 1.0,              # SWAP_LIMIT_20261107: 0.25 to 4.0 times RAM; default = RAM size
+    "audio_rate": "auto",           # HW_RATE_20261107: auto | 44100 | 48000
+    "scene_size": "auto",           # HW_SIZE_20261107: auto | 720p | 1080p | native
+    "smart_process": True,          # SMART_PROCESS_20261107: unlock the 14 migratory threads
+    "pin_enabled": False,           # PIN_LOCK_R31: optional 4-digit lock (salted PBKDF2 hash only)
+    "pin_salt": "",
+    "pin_hash": "",
+    "pin_lock_on_start": True,      # ask for the PIN when the app starts (if a PIN is set)
+    "pin_idle_minutes": 0,          # lock after this many idle minutes; 0 = never
+    "pin_digits": 4,                # PIN length, 4-8
+    "ask_session_name": False,      # SESSION_NAME_R31: ask for a session name at every startup
+    "startup_chime": True,          # STARTUP_CHIME_R31: 5 s chime of every note at a random Global Convolve %
 }
 
 # Environment variables this module may set. Used to tell "set by us" from "set by the user".
@@ -79,19 +103,80 @@ def _clean(raw):
             out[key] = max(lo, min(hi, int(float(v))))
         except (TypeError, ValueError):
             pass
-    for key, lo, hi in (("carrier_mix", 0.05, 1.0), ("video_tile_max", 0.05, 0.5)):
+    for key, lo, hi in (("carrier_mix", 0.05, 1.0), ("video_tile_max", 0.05, 0.5), ("swap_limit", 0.25, 4.0)):
         try:
             out[key] = round(max(lo, min(hi, float(raw.get(key, out[key])))), 3)
         except (TypeError, ValueError):
             pass
-    for key in ("autosave", "auto_copy_to_drive", "play_all_outputs", "audio_via_video_player", "native_voice", "appliance_tuning", "export_in_worker"):
+    # COMPAT_KEYS_20261107: keep the new player settings.
+    viz = str(raw.get("audio_viz", out.get("audio_viz", "full"))).strip().lower()
+    out["audio_viz"] = viz if viz in ("off", "low", "full") else "full"
+    gen = str(raw.get("makeup_generator", out.get("makeup_generator", "drone"))).strip().lower()
+    out["makeup_generator"] = gen if gen in ("drone", "pulse", "bed", "chord") else "drone"
+    rate = str(raw.get("audio_rate", out.get("audio_rate", "auto"))).strip().lower()
+    out["audio_rate"] = rate if rate in ("auto", "44100", "48000") else "auto"
+    size = str(raw.get("scene_size", out.get("scene_size", "auto"))).strip().lower()
+    out["scene_size"] = size if size in ("auto", "720p", "1080p", "native") else "auto"
+    mk = str(raw.get("video_makeup", out.get("video_makeup", "low"))).strip().lower()
+    out["video_makeup"] = mk if mk in ("off", "low", "high") else "low"
+    try:
+        _mb = int(raw.get("mem_budget_pct", out.get("mem_budget_pct", 0)) or 0)
+        out["mem_budget_pct"] = 0 if _mb <= 0 else max(25, min(90, _mb))
+    except Exception:
+        out["mem_budget_pct"] = 0
+    import accessibility as _a11y
+    cs_ = str(raw.get("color_scheme", out.get("color_scheme", "normal")))
+    out["color_scheme"] = cs_ if cs_ in _a11y.SCHEMES else "normal"
+    tk = str(raw.get("touch_keyboard", out.get("touch_keyboard", "auto"))).lower()
+    out["touch_keyboard"] = tk if tk in ("auto", "on", "off") else "auto"
+    for _k in ("color_scheme_outputs", "no_mouse", "no_keyboard"):
+        if _k in raw:
+            out[_k] = bool(raw[_k])
+    try:
+        out["break_reminder_min"] = max(0, min(240, int(raw.get("break_reminder_min", out.get("break_reminder_min", 0)) or 0)))
+    except Exception:
+        out["break_reminder_min"] = 0
+    # R31: smart_process was missing here, so turning it off never persisted.
+    for key in ("autosave", "auto_copy_to_drive", "play_all_outputs", "audio_via_video_player", "native_voice",
+                "appliance_tuning", "export_in_worker", "smart_process", "pin_enabled", "pin_lock_on_start",
+                "ask_session_name", "startup_chime"):
         if key in raw:
             out[key] = bool(raw[key])
+    try:
+        out["pin_idle_minutes"] = max(0, min(240, int(raw.get("pin_idle_minutes", 0) or 0)))
+        out["pin_digits"] = max(4, min(8, int(raw.get("pin_digits", 4) or 4)))
+    except (TypeError, ValueError):
+        pass
+    for key in ("pin_salt", "pin_hash"):
+        v = str(raw.get(key, "") or "")
+        out[key] = v if all(c in "0123456789abcdef" for c in v) and len(v) <= 128 else ""
+    if not (out["pin_salt"] and out["pin_hash"]):
+        out["pin_enabled"] = False
     return out
 
 
 def boot_overrides(cmdline_path="/proc/cmdline"):
-    """Display options chosen in the Limine boot menu (kernel command line: sos.ui_scale=125 sos.window_scale=90)."""
+    """Options chosen in the Limine boot menu (kernel command line: sos.ui_scale=125 sos.window_scale=90 …).
+
+    GROOVEBOX_R32_SOS_SETTINGS_20261109: every ``sos.<key>=<value>`` that names a compatibility
+    setting is honoured (smooth_mode, threads, audio_rate, scene_size, play_all_outputs,
+    startup_chime, worker_mode, audio_latency, native_voice, smart_process, background, update).
+    """
+    try:
+        import sos_system_settings as _sss
+        with open(cmdline_path, encoding="utf-8", errors="replace") as _f:
+            _ov = _sss.parse_cmdline(_f.read())
+        if _ov:
+            _bg = _ov.pop("background", None)
+            if _bg:
+                try:
+                    _sss.set_background(_bg)
+                except Exception:
+                    pass
+            _ov.pop("update", None)
+            return _ov
+    except Exception:
+        pass
     out = {}
     try:
         with open(cmdline_path, "r", encoding="utf-8", errors="replace") as f:

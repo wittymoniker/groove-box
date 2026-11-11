@@ -1,0 +1,504 @@
+Mathematician's Groovebox — R32 (2026-11-10)   base: R31.7 (MATGROOVEBOX.zip) + R32-WIP
+STATUS: code written, syntax-checked only. Not yet run through the test suite or render tests.
+
+NEW MODULES
+  seed_lang.py            one-program seed compiler/evaluator (cached, function body, free syntax,
+                          budget, result policy, dissect, analyze, program signature)
+  seed_gen.py             grammar-driven random seed programs, 1-256 lines / 32768 chars, validated
+  seed_editor_support.py  auto-indent / tab / shift-tab / smart backspace in the seed editor
+  seed_divergence.py      deterministic per-instrument/domain decorrelation (Divergence 0..1)
+  signal_integration.py   dataforms for stochastic inputs: integrate quantize converge predict det_rand
+  canonical_mode.py       Protected 100% (default) / Unprotected 50% / Direct Seeded 100%
+  held_sustain.py         held keys loop the sustain region; release starts the envelope release
+  synth_macros.py         TONE / MOTION / BODY on every Edit Synth rack unit
+  project_blueprint.py    master project config from 10 inputs + project macros ENERGY/COLOUR/SPACE/DRIVE
+  quick_rack.py           top-panel R32 rack: mode, divergence, Dissect, Post, Blueprint, Play, Arrange, Both
+  postprocess_window.py   hardcoded-FX finishing, batch, loudness compare, take finisher
+  game_playability.py     speed/gravity/thrust/drag/bounce/assist/lives/controls/slow-mo/checkpoints
+  process_policy.py       one spawn policy on every OS, child registry/reap, parent watch,
+                          language backend forwarding (native/julia/scode/python), ProcessPool
+  resource_governor.py    RSS watch, cache trims at 55% RAM, buffer release at 75%
+  audio_both_output.py    labelled ALSA devices: Speakers / HDMI / Both (dmix), Both = default
+  sos_system_settings.py  System Settings window, desktop background, Limine sos.* options, pre-boot update
+  scripts/audit_fx_paths.py  build preflight: fails on non-permitted FX in audio paths
+
+FIXES / CHANGES
+  * Render Queue + Export Jobs: real non-modal OS windows; finish report non-modal; "\n" shown literally fixed;
+    queued jobs without a path no longer stop on a Save-as box; app-wide idle filter installed once.
+  * window_manager: every top-level tool window (not only QDialog/QMainWindow) is independent of Main.
+  * Seeds -> engines: fractional seeds no longer rounded to 1/1000 with sign dropped (64-bit mix);
+    instrument + child seeds fold in the whole-program signature; Divergence decorrelates list slots.
+  * Multidim synth canonical share and voice share: 33-66% clamp -> 0-100%, default 100%;
+    geometric synth canonical_share defaults 50% -> 100%.
+  * Long seed programs: top-level return/early return/defs now evaluate as one program
+    (they were valued by one stray line or failed on `math.isfinite`); `math` namespace provided.
+  * Seed diagnostics run off the GUI thread.
+  * Startup: Project Blueprint, desktop background, System Settings.
+  * labwc: Alt+Tab, Alt+F4, Super+arrows, iconify button.  EXE: hidden imports for new modules.
+  * In-app README: new R32 chapter.
+
+COMPATIBILITY NOTE
+  Projects with fractional seeds or Divergence > 0 render differently from R31.
+  Divergence 0 + multidim sliders at 50% + GROOVEBOX_LEGACY_INT_SEED=1 restores R31 behaviour.
+
+NEXT
+  run test suite (QT_QPA_PLATFORM=offscreen python3 -m pytest -q), python3 scripts/audit_fx_paths.py,
+  render demos, Clip Editor Performance-tab upgrade, ball/geometrics refresh from canonical spinners.
+
+R32.1 ADDITIONS (2026-11-10)
+  * fx_panels.py: LOCAL ▸ FX (per instrument, left) and GLOBAL ▸ FX (master, right) under the geometrics;
+    modes User / Canonical (seeded) / Mix; hardcoded FX only; all 0 = bypass.
+  * Game playability now drives the game loop: speed, slow-mo key (hold), pause key, gravity/thrust/drag/bounce.
+  * Geometric panels (ball, cellular, wavetable) refresh from canonical level sliders, canonical mode and
+    instrument switches (untouched fields follow the canonical values; ball preview updated).
+  * Integer seeds: fractional seeds use all 64 bits; whole-program signature folded into instrument/child seeds.
+  * Startup: Project Blueprint route.  In-app README: R32 chapter.
+
+R32.4 (2026-11-10)
+FIXES
+  * "MathematiciansGrooveboxApp has no attribute _ROW_BEND_IDENTITY": defined (identity row bend). This
+    crashed every playback/export row with no applied algorithm — the likely cause of export part jobs
+    failing after the first parts and the stitch job never getting its audio parts.
+  * Nested project folders: documents inside an existing project workspace (metadata/autosave.MCC,
+    "Song (2).MCC", renamed files) keep that workspace instead of creating a new one inside it.
+  * Autosave: the recovery copy is always written (it was skipped when the canonical fingerprint label
+    did not exist yet); "load last autosave" read dict rows as objects and opened the wrong path;
+    after restoring, work continues in the real project file, not in metadata/autosave.MCC.
+NEW
+  * LOCAL/GLOBAL FX panels now black with white text.
+  * POST ▸ TIME FX (right): granular chorus, granular flanger, forward / reverse / both time reverb;
+    local or global; user or canonical (seeded). time_fx.py (delays + grains, no IIR filters).
+  * SAMPLE ▸ GENERATOR (left): noise (white/pink/brown), static, obfuscated (the instrument's own voice
+    block-shuffled by the seed), structured (seeded partials on harmonic / Meum / golden / prime ratios);
+    layer into the selected synth or every voice; modulation routes source → destination with amount,
+    user or canonical owner; global parameters are route sources and destinations (I/O).
+NOT DONE (next session)
+  * window manager stalls while another window is frozen; canonicals dropping during project changes;
+    MCC save to a non-project folder is relocated to <folder>/<Name>/<Name>.MCC (by design) — reopen it there;
+    process-tree planner, render/stream speed, purple/green sequencer playback/record styles,
+    Seed Morph / Song Form / Tuning Lattice / Diversity Meter, Clip Editor Performance tab.
+
+R32.5 (2026-11-10)
+FIXES
+  * Canonicals dropping while the project changes: edits made during a running canonical commit were
+    discarded (only seed edits restarted it); they are now re-applied as soon as the commit finishes.
+  * Canonical engine ON/OFF states are saved in the project (canonical_engines.engines_on) and restored
+    on load (older projects keep the current state).
+  * "R32" label removed from the quick rack; the toolbar is named "Quick Rack".
+NEW
+  * 🧬 Compose (quick rack) — composition_tools.py:
+      Seed Morph (one program blending seed A and B, fixed m or over the song),
+      Song Form (seeded sections written into playlist rows: section, transpose, level — level now rendered),
+      Tuning Lattice for live keys (12-EDO, just, Meum, golden, harmonic, Bohlen–Pierce; linear = legacy),
+      Diversity Meter (how different this seed is from the session's recent seeds),
+      Playback / export styles (forward, reverse, ping-pong, seeded shuffle, section loop, random walk)
+      applied to the frozen render rows only.
+  * process_planner.py: parallel video exports split parts into balanced groups from measured per-part
+    time on this machine (no idle tail), sized by cores and free memory; history learned per job.
+  * Clip Editor Performance tab: loop clip, follow actions (next / previous / random / same),
+    BPM-synced quantize grid, pad gain recorded with each hit.
+KNOWN LIMIT
+  * Window manager "frozen window" stalls: every Qt window shares the GUI thread, so a window doing long
+    work on that thread blocks the others. The fix is moving that window's work to workers (as done for
+    seed diagnostics, post-process, Quick Rack); remaining offenders need to be found while running.
+
+R32.6 (2026-11-10) — written, compile-checked only (not run)
+  Render ~2.1x faster (FFT resonator, graph-script compile cache, path-layout cache, no stall sampling in workers).
+  Fixes: Blueprint active instruments / base / tempo / refresh; export_in_worker label; project_root nesting;
+         game WASD (motion before frame budget; works during seed questions); look up/down holds.
+  State: r32 section in .MCC (schema 3, migrations, unknown keys kept), engine sync check.
+  New: File Studio · Network Hub · site + relay + UPnP · Media Network directory + homepage ads · caches page ·
+       project registry + startup project list + Quick Launch · Hardware Tools (USB-MIDI, printers, input, USB) ·
+       touch/trackpad support · Context Map · synth engine · time FX · sample generator · Game Editor · clip FX /
+       images / text · seed-structured DJ · deck (8 panels) · Seeded Mod Osc · Layer Mixer + 3-band EQ ·
+       Predictive FX · automation bus · playlist view · 8 playlist columns · synth colours · Media Transmuter +
+       reverse-engineer → project · wave syncer/folder/resampler · image editor · browser share/detect/convert ·
+       housekeeping · UI stall watchdog · identity/determinism proofs (IDENTITY-AND-DETERMINISM-R32.md).
+
+R32.7 (2026-11-10) — protected system store
+  * Installer (fresh sOS installs): GPT now EFI · sOS Root · sOS System (8 GiB; 4 GiB on disks < 64 GiB; none < 16 GiB).
+    sOS System is ext4 labelled sOS_SYSTEM, mounted at /var/lib/groovebox-system (nodev,nosuid,noexec,nofail), owned by
+    the groovebox user, mode 0700. A copy-over reinstall KEEPS this partition (state survives reinstalls).
+  * Existing installs: System Settings ▸ 🔒 Protected system store offers sos-add-system-partition — only in unallocated
+    space after the last partition (≥ 4 GiB); nothing is moved, shrunk or reformatted. Without space, a hidden folder is used.
+  * App: state · cache · logs · temp live in the store (partition, or <data>/.system: dot-hidden, 0700, OS-hidden on
+    Windows/macOS; GROOVEBOX_SYSTEM_DIR overrides). Old folders are migrated once (copy first, marker after).
+    The store is hidden from every in-app file picker, never shared on the site / LAN, never scanned by the DJ.
+  * Update rollbacks go to the system partition when present (newest 3 kept).
+
+R32.8 (2026-11-10) — written and compile-checked; NOT run end-to-end (no renders / exports / ISO build performed)
+  Security
+  * ISO builder asks "Integrate with Secure Boot? [y/N]" (or GROOVEBOX_SECURE_BOOT=1|0). N (default) = the unsigned
+    build, byte-for-byte as before. y = BUILD_ISO/secure_boot_v1.sh: Debian-signed shim → Limine signed with your
+    MOK (config BLAKE2B enrolled, so an edited limine.conf is refused) → kernel (Debian signature kept, else MOK-signed)
+    + initramfs pinned by hash. Installed disks get the same chain. First boot with Secure Boot on: MokManager →
+    Enroll key from disk → EFI/sOS/groovebox-mok.cer. Needs sbsigntool, mtools, shim-signed on the build host.
+  * Signed updates: update_signing.py (pure-Python Ed25519, RFC 8032 vector checked). keygen / sign / verify.
+    With /etc/groovebox/update-signing.pub installed (the ISO build copies ~/.config/groovebox-signing/
+    groovebox-update.pub when present) only packages with a valid .sig are applied, pre-boot and in-app.
+    Without a key, unsigned updates still apply (warned) so existing setups keep working.
+  Windows
+  * Main window: cannot be minimised, does not move once placed, always the lowest layer (labwc rule + Qt).
+  * Windows bar lists external player processes (mpv/VLC/ffplay, decks) — click raises, ✕ closes.
+  * Main window = three resizable panes (deck · controls · monitors/export), each scrolls both ways;
+    minimum heights 1/28 · 1/16 · 1/24 of the screen.
+  Performance / fixes
+  * Two exports at once no longer starve the UI: progress repaint ≤ 4 Hz, workers nice 15 + SCHED_BATCH + idle I/O,
+    2 cores reserved for UI + audio, temp-folder deletion off the GUI thread.
+  * Crash fixes: render stream NameError (_threading / _query_physical_rate), FREQUENCY_432HZ, export-folder link.
+  * Three tool windows (Automation, Transmuter, Stalls) no longer leak a new copy per click.
+  * Mixdown cache now keys on automation + every R32 module state (stale renders after edits fixed).
+  Composition / render
+  * Automation lanes now apply inside offline renders (per playlist row), so exports match live playback.
+    Game overrides and macros are automation targets.
+  * 🎛 Macro knobs on the deck: Drive · Fractal · Tilt · Low · High · Mod; "C" hands a knob to a canonical lane.
+  Live Player
+  * Full-scene camera blends with the generated rig (Tweaks ▸ camera blend, default 50 %) in the view and in takes.
+  * Rig uses the export engine's own configuration (it used defaults before, hence the simpler picture);
+    Scale: auto / 100 % (export-identical) / 75 / 50 / 25 %, saved with the project.
+  * Visualizer modes: ring · Lissajous · radial spectrum · spiral · bars; new palettes; 139 presets incl. camera looks.
+  * Takes are never lost: if the final encode fails the raw recording + WAV are kept (*-video-raw); live-takes.log.
+  Player
+  * Make-up audio is now real sound (makeup_audio.py: drone / pulse / bed / chord, deterministic per file, follows
+    seek/pause); level off / low / high; visualization off / low / full.
+  Tools
+  * Clip Editor: ⏺ New Cam/Mic recording (cam+mic / cam / mic) → clip on the timeline.
+  * Transmuter: + MIDI, text and data (CSV/JSON) kinds; sound→MIDI transcription, MIDI→sound, text→music,
+    data sonification / heat-map, sound→feature CSV, sound→analysis + seed program, image→MIDI; any → any via sound;
+    batch folder.
+  * Game Editor: feel presets (Arcade · Zen · Hardcore · Explorer · Party · Balanced), feel from seed, saved feels.
+  * Audio device lists say what each device is (HDMI / USB / Bluetooth latency / shared vs exclusive / mic array…),
+    channels and rate, with tooltips.
+
+R32.8.1 (2026-11-10) — written and compile-checked; tests deliberately run after this archive
+  * Seed hub (OUTPUT-DOMINION-R32.md): "seed" is a Transmuter kind. Anything → .seed program (reverse-engineered);
+    .seed → sound / video / image rendered by the canonical engine itself (same mixdown + video engine as Export),
+    → project, and → every other kind. The user's own seed and tempo are restored after each render.
+  * Difference A − B: any two files → media of A's kind (sound exact in float WAV; image/video signed per-pixel;
+    other kinds via sound; seeds render canonically first).
+  * "Open result in editor": image → Image Editor (new layer), sound/video → Clip Editor, project → opened,
+    seed → seed field, game → Game Editor, midi/text/data → system app.
+  * Project .MCC files are recognised as projects (not audio) by the Transmuter.
+  * Automation lanes now also move video-engine parameters per frame in video exports (parted + MCC);
+    base values restored after an in-window export.
+  * Follow-up sweep: deck timers idle when hidden or with nothing to drive.
+
+R32.8.2 (2026-11-10) — written; quick offscreen checks of the new widgets only
+  Accessibility & wellbeing (Compatibility ▸ new rows; all off by default)
+  * Colour scheme: normal · high contrast · protan / deutan / tritan-safe (daltonised) · grayscale · warm night ·
+    inverted. Transforms every palette colour and every style-sheet colour of every window (switching back is
+    exact); optional "Scheme on outputs" applies it to generated video (exports + Live rig) too.
+  * Touch keyboard: auto (only on devices with a touchscreen) · on · off. Opens for text / number fields.
+  * No-mouse workaround: focus outlines, keyboard navigation, Ctrl+K command palette of every button / action.
+  * No-keyboard workaround: on-screen keyboard for every field; ⌨ and ⌘ buttons in the Quick Rack.
+  * Break reminder (minutes of active use) and a listening guard for long loud playback.
+  Instruments / resources
+  * 🎚 Instrument Mixer: per-instrument gain · mute · solo · canonical (seeded) balance, in the voice chain
+    (live, Play, every export), saved with the project.
+  * Adjustable RAM: Monitor panel ▸ RAM budget (Auto or 25–90 %); tiers size exports, video chunks and live-rig
+    workers; under system memory pressure everything halves.
+  UI
+  * Quick Rack: hover glow, and its lower edge pulses on the beat while playing.
+  Known (from the running save/load harness): with every control changed at once the project saved as 423 MB and
+  two GUI-thread stalls of several minutes appeared (step-grid teardown through Python layouts; canonical playlist
+  deep copies). Being fixed next.
+
+R32.8.3 (2026-11-10) — fixes for what the save/load harness found
+  * Huge projects: a 9,394-row playlist (≈38 KB per row) saved as 423 MB of indented JSON. Playlists above 2 MB are
+    now stored zlib+base64 inside the .MCC (lossless, typically 20–50× smaller, no indentation for big documents);
+    small projects stay plain JSON for older builds. Applies to Save, autosave and export job documents.
+  * Step-grid / automation-row / chord-slot rebuilds: old widgets are retired synchronously (hide + unparent +
+    deleteLater). Before, each delayed destruction made the layout re-scan every new item — O(N²), minutes for
+    large step counts.
+  * Canonical playlist rebuild: the second deep copy of every row (after copying the whole playlist) is gone — half
+    the copy work. (The pickle copier used for playlist copies measured only ~5 % faster than deepcopy.)
+
+R32.8.4 (2026-11-10) — save/load verified by a real round trip (offscreen app: change every main-window control,
+save, start a fresh app, load, compare)
+  * Before: 234 of 310 changed controls came back at their defaults — the project kept only ~70 named controls.
+    Now ui_autostate saves every input control of the main window (by widget-tree path) and restores it through its
+    own handlers (instrument selector first). Result: 303 of 312 restored exactly; the rest are hardware volume and
+    the workspace find field (deliberately not saved), 6 linked controls that are recomputed from others (±1 step),
+    and the Mod Osc panel's scope-dependent "On" box. Project file 1.08 MB; no control handler took > 1 s.
+  * Transmuter → project: written synchronously (it used to report the path before the background save finished).
+  * Any → any: game → seed file → anything; project → seed → anything; midi / text / data / seed → project or game
+    via the canonical sound; image / video → seed fixed.
+  * Make-up audio stream closes even when the player is destroyed with its parent (leak audit).
+
+R32.8.5 (2026-11-10)
+  * In-app MIDI note editor and text / CSV / JSON / seed editor; every result kind opens in an editor.
+  * Game → anything fixed (reads game_<hash>.json identity); 72/81 conversion pairs measured passing before this fix.
+  * Games: one savestate per game per Groovebox (system store), restored at launch and saved at exit;
+    Game Editor ▸ delete this game's save / all saves. Unpacked game folders are deleted when the game exits;
+    stale game / take / rig / playable-copy extracts are swept at start and every 30 minutes.
+  * README: proven results, equations and guidelines.
+
+R32.8.6 (2026-11-10) — written and compile-checked; measured: any → any conversion matrix 81 / 81 pass
+  * Exports survive a reboot: queued / running jobs are persisted (frozen project + options) in the system store
+    and re-queued at the next start (finished .part segments are reused); the startup screen shows how many.
+  * Save history: the last 64 saves + autosaves in chronological order, copied into the system store; the limit
+    shrinks automatically with free disk space (< 2 GB → 16, < 0.5 GB → 4); Compatibility "save_history_max".
+    Shown on the startup screen (double-click opens one).
+  * Live autosave: 20 s after each edit (Compatibility "live_autosave").
+  * Canonicals drive the master + local mixers (Instrument Mixer "Canonicals drive the mixers") and scale the
+    modulation depth unless "Bind to Modulation Levels" is unchecked.
+  * Structural canonical mapping: Macro knobs ▸ Auto-map structure — level → Drive, brightness → High,
+    low energy → Low, pitch motion → Tilt, texture → Fractal, rhythm → Mod, in one step.
+  * Browser downloads limited to media / project types Groovebox opens.
+  * MIDI: Project → MIDI (all instruments, one channel each) and MIDI → project with register-based instrument morph
+    (Transmuter buttons).
+
+R32.9 (2026-11-10) — video export memory isolation and recovery (source patch; runtime render validation pending)
+  * Final video assembly waits until unrelated export workers finish, retires idle warm workers, and starts
+    the mux in a clean process. The Qt event loop is never blocked while workers retire.
+  * Video worker exit code 9 (SIGKILL/OOM-killer signature) retries the affected part or final-mux stage up
+    to twice, preserving completed .part files for recovery instead of immediately failing the whole export.
+  * Video export releases full-song PCM/audio copies before final mux; FFmpeg re-encode fallback is single-threaded
+    and uses ultrafast x264 when applicable.
+  * Final staged video is size-checked and, when ffprobe is available, must contain a video stream before atomic
+    publication can replace the destination. Failed muxes retain recoverable segments.
+  * Export/process parallelism now respects effective cgroup memory ceilings as well as host RAM.
+  * Added R32.9 regression contracts. PyQt6 and a full live-render environment are not present in this build
+    container, so Qt worker integration and hardware render validation remain to be run on sOS.
+
+R32.9 merge (2026-11-10) — ChatGPT's R32.9 snapshot (based on R32.8.5) merged three-way with R32.8.6
+  Taken from ChatGPT (reviewed): video export memory isolation (export_mux.py: final mux in a clean process,
+  validated with ffprobe before atomic publish, .part files kept on any failure), OOM-kill (exit 9) retries,
+  cgroup-aware memory in the resource governor and process planner, peer file uploads permanently disabled
+  (text-only visitor notes with a 4–64 MB rolling cap; old "uploads" settings forced off), BlueZ in the
+  installers, .MCC in more file pickers, window/file-manager entries in the Actions menu, screen-recorder audio
+  device + gain, protected duplicate scanning, Blueprint and file-browser fixes, two regression test files.
+  Kept from R32.8.6: export resume after reboot (now also skips video_mux jobs, which carry no project),
+  save history, live autosave, canonical mixers + Bind to Modulation Levels, structural auto-map, download
+  filter, MIDI export / import with instrument morph.
+  The one textual conflict (export_scheduler.submit_job) was resolved by keeping both behaviours.
+
+R32.9.1 (2026-11-10) — written and compile-checked; not run
+  Features
+  * Clip Studio renders to MP4 · M4V · MOV · MKV · WebM · AVI · MPEG · OGV · WMV · animated GIF · lossless .MCC
+    (one high-quality master render, then the chosen container with whichever encoders this FFmpeg has).
+  * Clip Studio: "Open folder" after a render.
+  * Quick Rack ⏱ Tap tempo and ⏹ Panic (stops transport, external players, make-up audio, any PortAudio play).
+  * Transmuter ▸ Seed library: keep / use / delete favourite seed programs.
+  Fixes
+  * Site page crashed when built (a bare % in the CSS of the R32.9 notes template).
+  * Save/load restores selector combos first, so scope-dependent panels (Mod Osc) come back right.
+  * The deck installed two app-wide event filters (one per panel); now one shared filter.
+  * A second game launch replaced the first game's cleanup timer; one shared timer now cleans every game folder.
+  * Touch-keyboard device check cached instead of running on every focus change.
+  * Save history keeps at most one autosave copy per 5 minutes (manual saves always kept).
+  * Export resume removes its queued copy only after the job is safely re-queued.
+  * Canonical level (read per rendered voice by the mixers and Mod Osc binding) cached for 0.5 s.
+  * Make-up audio follows the player's volume slider immediately.
+
+R32.9.2 (2026-11-10) — keyboard loop + held-note sustain repaired; written and compile-checked, not run
+  * Why the Return loop stopped working: piano keys moved to an app-wide filter, but Return and key RELEASES
+    still went to whichever control had focus (a button / spin box ate Return; Main never saw releases).
+    Return/Enter and releases now go through the same filter as the notes (active Groovebox window, no popup,
+    not typing in a text field).
+  * Loop logic rewritten: Return ① record · ② close the loop (length = time recorded) and play · ③ clear.
+    (Before, Return after playing re-armed the loop and erased the notes.) Notes keep their pitch (they all
+    played as degree 0 before) and fire exactly once per cycle (the ±60 ms window double- or never-fired).
+  * Envelope time in the loop: each note keeps how long it was held and replays with that length.
+  * Control lanes in the loop: moves of any automatable parameter (FX, EQ, synth engine, Mod Osc, mixers,
+    ball / cellular / wavetable params, expression matrix, game macros …) are recorded at their loop position
+    and replayed every cycle; moves made while it plays are ADDED (overdub); a control you are moving is not
+    overridden for 0.5 s.
+  * Held-note sustain now works on the normal instrument path too (it was only on custom key assignments), and
+    the release finds its voice: the mixer stored a view of the buffer, so the identity match always failed and
+    held notes rang the full 16 s. The submit now reports the exact object it stores; velocity scaling happens
+    before the hold is bound.
+  * Live autosave: at most once every 2 minutes and only after a real edit (no restart storm from continuous
+    changes).
+
+R32.9.3 (2026-11-10) — live play + loop → sequencer; written and compile-checked, not run
+  * Held-note sustain in live play: also while the transport plays (concurrent bus: new release() fades that
+    one source from its cursor) and inside the Live Player (engine.release_key fades that key from its position).
+  * Closing a key loop (Return ②) adds it to the selected instrument's sequencer, additively:
+    steps on the grid · pitch per step · timing feel as step offsets · hold length → sequence envelope release.
+  * Control moves recorded in the loop (FX / morph, EQ, synth engine, Mod Osc, Instrument Mixer strips, ball /
+    cellular / wavetable params, expression matrix, game macros) become user automation lanes with the loop's
+    period — so they play in Play and every export. Overdubs merge into the existing lane for that control.
+
+R32.9.4 (2026-11-10) — written and compile-checked; determinism measured (see below)
+  * Per-sequence workspace variables: blue "Edit Local/PerSeq Global UI Variables" (panel synth area). While ON,
+    changes to any global variable are stored for the selected sequence; OFF restores the globals exactly.
+    Each playlist row morphs global → its sequences' local state by its shift vote (v = g + s·(mean local − g));
+    "Write shift votes" writes uniform or canonical (seeded per row) votes into the playlist. Saved with the project.
+  * Overlay: blue glow + flags on every global-variable panel while blue editing is on; with Edit Synth Per Seq ON,
+    green wires (this sequence, local) and red wires (global mix) from the sequencer to every panel, with flags;
+    Quick Rack 🧭 Flow: plain-language flags on every visible panel (what it controls / routes).
+  * Math Symbols: turning it on now covers every visible numeric field in every Groovebox window, installed in
+    batches of 24 per event-loop turn (no stall); hidden fields get theirs when shown; overlay internals are
+    excluded from project saves.
+  * Determinism (measured): the same seed renders bit-identical canonical audio (SHA-256 equal), a different
+    seed differs, sub-seeds and program signatures are deterministic. Video frames re-rendered in the same
+    process differed because the video engine carried render state; seed renders now use a fresh clone of the
+    export engine that copies settings only (render-time attributes are detected automatically), so every render
+    starts from the same state.
+
+R32.9.5 (2026-11-10)
+  * File browser (from Performance): the directory scan now runs on its own short thread every time (a shared pool
+    busy with canonical / render work left it at "Loading…"); folders on drives mounted after the window opened
+    (/media, /run/media, /mnt, /Volumes or any mount point) are allowed instead of bouncing back to home.
+    Measured offscreen: 3 items + 1 hidden dotfile listed; with "Include hidden / system folders" 4 items.
+  * Measured: seed determinism holds for audio and video, in-process and across processes (README table).
+
+R32.9.6 (2026-11-10) — measured
+  * Live Player (and every Open / Save dialog): the file dialog's "hide system files" filter also ran on every
+    ANCESTOR of the current folder (/, /run, /run/media, dot-folders), so whole trees — including USB / SD drives
+    under /run/media — showed nothing. It now hides entries only inside the folder being shown, cached per path.
+    Measured offscreen: files listed (dotfile hidden); a folder under a hidden parent lists its contents.
+  * Exact symbolic seeds: any finite note sequence → a seed program that reproduces it exactly (step table);
+    MIDI → seed uses it. Measured: 200 / 200 random melodies, max error 0.0 Hz.
+  * Engine sync check passes with defaults and with three canonical engines on.
+
+R32.9.7 (2026-11-10) — sCode pool restructure + the features that need it; offscreen-checked where noted
+  * sCode pool, two work classes. Every lane used to feed ONE process-wide executor with ONE FIFO queue, so a short
+    interactive job (a folder listing, a preview, a live key) waited behind every long bulk job (canonical rebuilds,
+    renders) once the shared threads were busy — the cause of the stuck file browser and of keys not sounding during
+    exports. Lanes are now "interactive" (own 2-thread executor) or "bulk" (the existing pool), by explicit kind or
+    by name. Interactive: file manager / browser / preview / probe / dialog lanes and live-audio-fx (live keys).
+    Bulk stays bulk: ui-background (song decodes), main-preview-render, canonical, export, render lanes.
+  * File browser media previews on the interactive lane: image thumbnails + size, audio / video length, dropped when
+    you change folder. Measured offscreen: "pic.png · 120×80" with a thumbnail, "tone.wav · 1:15"; pool = interactive.
+  * Edit Together as easy as a notification: invites and join requests appear as an always-on-top card with
+    Join / Approve and Not now, in any window (before, only if the Performance window was open). The first time
+    another Groovebox appears on the network, a card offers "Edit together" — one click sends the request, and the
+    owner's approval auto-joins you.
+
+R32.9.8 (2026-11-10) — offscreen-tested (15-feature pass: 13 passed first time, 2 bugs found and fixed)
+  * Online games keep each player's savestate: the host is authoritative for the WORLD (physics, sigils,
+    difficulty, view); a player's own progress (score, level, economy) comes from their local savestate, or —
+    when they have none — the host gives back what it kept for them ("restore"). The host's savestate records
+    every visiting player's progress. Clients no longer copy the host's score, and no longer re-send "hello"
+    on every frame.
+  * Game Editor ▸ 🧬 Multi-game morph: this project's seeded game + any exported games, each with a weight →
+    "Recreate morph" (weighted vote of every identity field, weighted sigil count and seed, mixed macros) →
+    "Play the morph". Same mix → same game (tested). Morph sources are saved with the project.
+  * "Return to Main Window" no longer appears on dropdown lists, menus, tooltips, completers or the touch keyboard.
+  * Fixed (found by the tests): save history lost one of two saves made in the same second; headless / CLI
+    games never wrote their savestate; a Performance background repaint could raise after its widget was deleted.
+  * Measured: Performance file browser (lists, previews, hidden toggle), key loop record → loop → clear with one
+    hit per note per cycle and sequencer write, Return from a focused control, held-key release (mixer + bus),
+    Clip Studio export in all 11 formats, Instrument Mixer, per-sequence morph, MIDI export / import, export resume,
+    download filter, signed updates (tampered package refused), exact A − B, colour schemes, Math Symbols (32 ms).
+  * (Withdrawn: an earlier on-vs-off engine table measured drift from the live video engine's carried state,
+    not the engines. Replaced by the paired measurement in R32.9.9.)
+
+R32.9.9 (2026-11-10) — code complete; tests run after this archive
+  * RAND default patch = FRACTAL: each OFF→ON captures seed_child64(project seed, "rand", generation) — a new
+    variation every time, all reproducible from the seed. Right-click RAND → "Pure — OS entropy" keeps true,
+    unrepeatable randomness for jamming / exploration. Either token is frozen and saved, so a saved project
+    replays exactly. Old projects keep their saved token. The source is saved with the project (rand_source).
+  * Global Convolve tracks the workspace: the kernel is built from the active canonical engines and levels
+    (FRACTAL adds a φ partial, GOAVA a Meum² partial, SEEDED/RAND set the partial phases from a digest of the
+    workspace, PHASE LOCK pulls them back to 0, EUCLIDEAN gates the kernel 5-in-8, Divergence shortens its
+    tail) and from FX / time FX / synth engine / key / tuning / Mod Osc / EQ / automation / instrument mixer /
+    per-sequence state. With nothing on it is the original base + Meum kernel (neutral default). Saved flag
+    convolve_tracks (on); the carrier WAV, when loaded, is still the kernel.
+  * Determinism: the MCC and parted video exports now render on a fresh export-engine clone, like the
+    other exports (no state carried over from the live view or an earlier job).
+  * Paired engine harness: two OFF renders now match exactly (audio Δ 0.000000, video Δ 0.000).
+
+R32.10 (2026-11-10) — code complete; tests run after this archive
+  * Fixed: SEEDED and RAND could not be switched OFF — the restore snapshot (taken just after the click)
+    re-checked the button. OFF now restores the pre-ON state and stays off.
+  * Engines work together on modulation (Canonical Mod Depth, every instrument × playlist row):
+      SEEDED     per-(instrument,row) seed child u blends into the row wave: w ← (1−Lₛ/2)·w + (Lₛ/2)·(2u−1)
+      EUCLIDEAN  now counts in modulation growth; off-pulse rows of E(k,16), k = 3 + seed mod 6, are pulled
+                 back toward neutral by L_e
+      LOCK       instrument slot offsets shrink by coupling·L_lock, so all voices move together
+      LOCK × FRACTAL SEED   locked voices follow the L-system contour by coupling·L_lock·L_fractal
+      RAND × GOAVA          the frozen RAND token indexes GOAVA's curve; the value shifts the row phase
+      LOCK × GOAVA          LOCK's target seed is GOAVA's coordinate for the seed (still seed-only)
+    Each coupling is inert unless both of its engines are on, so the default patch is unchanged.
+  * Global Convolve tracking kernel is Hann-tapered over half its length — the sine kernel's narrow
+    resonant peaks become broad colouring (less ringing).
+  * Fixed (found by the paired engine harness): LOCAL per-instrument FX, the Layer Mixer 3-band EQ and the
+    Seeded Mod Osc only reached live key hits — the mixdown used by every audio / video / A-V export never
+    went through them. They now run on every rendered voice in the mixdown (LOCAL FX → EQ → Mod Osc, the
+    same functions as the live path). GLOBAL FX was already applied at the master stage of every export.
+  * Save to drive (Export, Batch, Live Player "Save to:"): Windows removable drive letters and macOS
+    /Volumes are detected (before, only Linux mounts were). A stick that is plugged in but not mounted
+    shows as "⚠ /dev/sdX1 — not mounted (click to mount)" and mounts with udisksctl; read-only or
+    other-user mounts say why. New "📂 Choose a folder… (any drive)" entry for anything else.
+  * README: release notes moved out (RELEASE-HISTORY-FROM-README.md); the mathematics and the case for the
+    design moved to MATHEMATICS.md.
+  * R32.10.2: fixed a crash introduced in R32.10.1 — the per-voice post stage read the voice frequency as a
+    number, but it can be an array; every render failed. The stage now takes a scalar and can never stop a render.
+  * Tested (R32.10.2, offscreen app): 12 / 12 — Save-to picker and "Choose a folder…", Live Player take path on the
+    chosen drive, Local FX / Layer EQ / Mod Osc act on the export mixdown and undo exactly, Global FX at master,
+    deterministic render. Drive problem detection checked against a simulated mount table (unmounted, read-only,
+    internal disk ignored).
+
+R32.10.3 (2026-11-11) — sweep; code complete, tests run after this archive
+  * Live Player plays the composition on a fresh project: the light engine plays only hand-entered notes,
+    so a project whose music is all seeded/canonical played (and recorded) silence while Export rendered
+    music. With no hand-entered notes it now streams the full mixdown, the same buffer Export uses.
+    (Measured before the fix: record path works — a 440 Hz key recorded at RMS 0.15 — but the composition
+    itself was silent in Live Player.)
+  * Fixed: the playlist table → memory sync never read back the columns after Blend Partner, so edits to
+    Attack, Release, Pitch / Ratio and every R32 per-row column (Section, Row Level, FX Send, Time FX Send,
+    Unison, Sample Layer, Mod Depth, Expression) were replaced by the old value. A blank R32 cell = no override.
+  * New playlist column "Per-Seq Vote" (perseq_shift, 0 … 1): the per-row shift vote that morphs global →
+    the row's sequences' local variables was stored in each row but could not be seen or edited.
+  * Fixed: the canonical worker pool failed on every projection ("SimpleNamespace has no attribute
+    _seed_program_signature") and fell back to the UI thread. The signature is now snapshotted for the worker.
+  * Quick Rack ▸ 🎯 Canonical: what the canonical engines change at render time — the value each control shows
+    next to the value the render uses (canonical values never move the controls; measured: SEEDED changes 6
+    modulation, 24 geometric-synth and 3 master-vector values).
+  * MATHEMATICS.md: the author's book's Meum identities (pp. 63–64), each checked to 80 digits; a table of
+    where Groovebox uses Meum and what is proven about each use. THIRD_PARTY_AND_NASA_NOTES.md (no NASA code is
+    included; Trick and cFS credited as design references). The author's book is in resources/.
+  * R32.10.4: every Save / Open / Choose-folder dialog (Live Player's included) lists where USB sticks and SD
+    cards appear in its sidebar — /media/<user>, /run/media/<user>, /media, /mnt, /Volumes — not only drives
+    that are already mounted and writable. Checked on three dialogs.
+  * R32.10.5: Live Player full-mixdown quick start. The full mode rendered the whole song before the first note
+    (over 4 minutes for 32 rows on a slow machine), so Play looked broken. The first 2 rows now render on their
+    own and play at once; the full song keeps rendering in the background and takes over at the next row
+    boundary (if the preview runs out first, playback waits there instead of jumping).
+  * Sweep: a static check of all 228 modules finds no undefined names, no use-before-assignment and no syntax
+    errors (the generated cooperative kernels are rebound into groovebox's namespace by design).
+
+R32.11 (2026-11-11) — code complete; tests run after this archive
+  * Project ⇄ OBJ (Quick Rack ▸ 🧊 OBJ). Export the song as a Wavefront OBJ: a tube whose rings follow the
+    loudness envelope, which any 3D program opens, and which also carries the exact master audio (float32,
+    zlib + base64 comments, bit-exact) and the whole project. Import: a Groovebox OBJ gives back the exact audio
+    (as the carrier) or the project; any other OBJ is sonified (vertices in file order → waveform, 1 ms each).
+  * OBJs in the video: every frame shows a small mesh built from that frame's own audio, even with no OBJ
+    loaded (on by default, "video_sample_objs"). An OBJ chosen with "Show an OBJ in the video" is drawn large in
+    the centre with a bright outline and a name label, so it cannot be missed. Deterministic; saved.
+  * GOAVA shapes are ON by default in the video ("video_goava_shapes"), while the GOAVA audio engine stays off
+    by default, so the sound is unchanged.
+  * Project load no longer freezes for the canonical rebuild twice. A loaded project already holds its
+    canonical playlist (the rebuild is deterministic), so the synchronous rebuild is skipped and the work is
+    marked done for those inputs; a project saved without canonical output still rebuilds. Measured before:
+    ~2.0 s load + a further 2.2–2.4 s UI stall; export submit 0.6 s; UI stays responsive while exporting.
+  * R32.11.1: exported song OBJs are a fixed-proportion vase (they were a thin line for long songs, so a loaded
+    song OBJ was hard to see in the video). Tested (offscreen app): 12 / 12 — bit-exact audio and project in
+    the OBJ, opens as a mesh, a foreign OBJ imports as sound, OBJ → carrier, sample meshes drawn and
+    deterministic, loaded OBJ drawn large in the centre, GOAVA shapes with the GOAVA engine off, project load
+    0.3 s with no UI stall over 0.32 s, loaded project renders sample-for-sample the same.
+  * R32.11.2: the project's own OBJ plays along in the video. A Groovebox song OBJ shown in the video is drawn as
+    a solid tube rebuilt from its own rings (96 × 16) instead of a thinned mesh, a bulge travels up it with the
+    playhead (bottom = start of the song, top = end) and it pulses with the frame's loudness. 🧊 OBJ ▸ "Use this
+    project as the video OBJ" exports the current project's OBJ and shows it in one click (saved in the project).
+  * R32.11.3 — OBJ everywhere in export, and richer OBJ video layers:
+      - "Project → OBJ" is in the big ⬇ EXPORT dropdown, the Export Window, the unified "All formats" dialog
+        (so the Render Queue can queue it), Batch Export ("Project OBJ": one OBJ per project) and the 🧊 OBJ
+        window. Every route renders in the background export worker (new job kind project_obj) and shows in
+        Export Jobs.
+      - Video meshes are translucent (normal blend; loaded OBJ 85 %, audio meshes 60 %, "OBJ opacity" slider) with
+        a second wireframe layer, screen-blended so it glows — ON by default ("video_obj_wire").
+      - GOAVA and L-system effects on every video mesh: the mesh is cut into 32 height bands; GOAVA's curve
+        (getNote over the seed numbers, moving with time) swells / pinches each band, and the Fractal Seed L-system
+        contour displaces and twists it. Both are video settings, ON by default (video_goava_shapes,
+        video_lsystem), independent of the GOAVA / FRACTAL SEED audio toggles.
+      - The full-song OBJ is NOT shown in the video by default; it appears only after "Use this project as the
+        video OBJ" or "Show an OBJ in the video…". The small audio meshes are on by default.
+  * R32.11.4: Network Hub ▸ 📶 Wi-Fi — host this Groovebox's own Wi-Fi network (Groovebox Direct, WPA2), stop it,
+    find Groovebox networks in range and join one, or open the router-free ad hoc cell. While hosting it shows
+    the network name, the password, the browser address for phones / laptops and the Wi-Fi QR text; Grooveboxes
+    join with one click (the password is derived from the network name). The read-only browser file list is
+    switched on while hosting. Uses the existing Direct-link code (previously only reachable from Performance).

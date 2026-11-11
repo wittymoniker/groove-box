@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 cd "$ROOT"
-# Share one handoff; run_hybrid selects Darwin's installer and library format.
-exec bash "$ROOT/run_hybrid.sh" "$@"
+# Shared launcher selects Darwin provisioning when run_hybrid.sh is present;
+# its source-runner fallback still performs the runtime preflight.
+exec bash "$ROOT/scripts/launch_entry.sh" "$@"

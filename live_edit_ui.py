@@ -100,6 +100,7 @@ class LiveEditController(QObject):
                     self._status(f"🤝 Joined “{inv.get('name', 'shared project')}” (your request was approved)")
             elif ln.startswith(("INVITE:", "REQUEST:")):
                 self._status("📥 New Edit Together " + ("invite" if ln.startswith("INVITE") else "request"))
+                self._notify_pending(ln)                 # R32.9: a real notification card, in any window
             elif ln.startswith("DENIED:"):
                 self._status("⛔ " + ln.split(":", 1)[1])
             else:
@@ -113,11 +114,97 @@ class LiveEditController(QObject):
                 except Exception as exc:
                     self._status(f"Edit Together send failed: {exc}")
         self._update_indicator()
+        self._offer_nearby()
         keys = set(m.pending_invites) | set(m.pending_requests)
         new = keys - getattr(self, "_seen_keys", set())
         if new and self.performance_visible() and self._popup is None:
             self._seen_keys = getattr(self, "_seen_keys", set()) | keys
             self.show_requests(auto=True)
+
+    # ----------------------------------------------------- R32.9 notifications
+    def _card(self, title, body, actions):
+        """Small always-on-top card near the top-right of the main window; never steals focus."""
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+        cards = self.__dict__.setdefault("_cards", [])
+        w = QWidget(None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        w.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        w.setWindowTitle("Groovebox · Edit Together")
+        w.setStyleSheet("QWidget{background:#14202e;color:#eaf6ff;} QLabel#t{font-weight:900;font-size:11pt;color:#2ecc71;}"
+                        "QPushButton{background:#22344a;border:1px solid #2ecc71;border-radius:6px;padding:5px 12px;font-weight:700;}"
+                        "QPushButton:hover{background:#2ecc71;color:#06101a;}")
+        lay = QVBoxLayout(w); lay.setContentsMargins(12, 10, 12, 10)
+        t = QLabel(title); t.setObjectName("t"); lay.addWidget(t)
+        b = QLabel(body); b.setWordWrap(True); b.setMaximumWidth(360); lay.addWidget(b)
+        row = QHBoxLayout()
+
+        def close():
+            try:
+                cards.remove(w)
+            except ValueError:
+                pass
+            w.close(); w.deleteLater(); self._place_cards()
+        for cap, fn in actions:
+            btn = QPushButton(cap); btn.clicked.connect(lambda _c=False, f=fn: (f(), close())); row.addWidget(btn)
+        row.addStretch(1); lay.addLayout(row)
+        w.adjustSize(); cards.append(w); self._place_cards(); w.show()
+        return w
+
+    def _place_cards(self):
+        try:
+            g = self.host.geometry(); y = g.top() + 70
+            for c in list(getattr(self, "_cards", [])):
+                c.move(g.right() - c.width() - 24, y); y += c.height() + 8
+        except Exception:
+            pass
+
+    def _notify_pending(self, line):
+        m = self.mgr
+        if m is None:
+            return
+        key = line.split(":", 1)[1]
+        shown = self.__dict__.setdefault("_carded", set())
+        if key in shown:
+            return
+        shown.add(key)
+        if line.startswith("INVITE:"):
+            inv = m.pending_invites.get(key) or {}
+            who = inv.get("from_name", "A Groovebox")
+            self._card("🤝 Edit Together invite", "%s invites you to edit “%s” together." % (who, inv.get("name", "a project")),
+                       [("Join", lambda: (m.join(inv, self.snapshot, self.apply), self._status("🤝 Joined “%s”" % inv.get("name", "")))),
+                        ("Not now", lambda: m.deny("invite", key))])
+        else:
+            req = m.pending_requests.get(key) or {}
+            who = req.get("from_name", "A Groovebox")
+            self._card("🤝 Edit Together request", "%s asks to edit your project with you.%s" % (who, ("\n“%s”" % req["note"]) if req.get("note") else ""),
+                       [("Approve", lambda: (m.approve_request(key, self.snapshot, self.apply), self._status("🤝 %s joined" % who))),
+                        ("Not now", lambda: m.deny("request", key))])
+
+    def _offer_nearby(self):
+        """The first time another Groovebox appears on the network, offer Edit Together in one click."""
+        m = self.mgr; svc = self.svc
+        if m is None or svc is None or (m.session is not None and m.session.active):
+            return
+        now = time.time()
+        if now - getattr(self, "_last_offer_scan", 0.0) < 5.0:
+            return
+        self._last_offer_scan = now
+        try:
+            peers = svc.peer_list()
+        except Exception:
+            return
+        offered = self.__dict__.setdefault("_offered", set())
+        for p in peers:
+            node = p.get("node") or p.get("node_id")
+            if not node or node == getattr(svc, "node_id", None) or node in offered:
+                continue
+            offered.add(node)
+            name = p.get("name", "Groovebox")
+            self._card("📡 %s is on your network" % name, "Edit a project together live (playlist, sequences, seed, FX …).",
+                       [("Edit together", lambda n=node, nm=name: (m.request(n, "from the nearby notification"),
+                                                                  self._status("📨 Asked %s to edit together" % nm))),
+                        ("Not now", lambda: None)])
+            break                                   # one card at a time
 
     def _status(self, text):
         self._last_lines = (self._last_lines + [text])[-50:]

@@ -48,8 +48,64 @@ def _block_removable(source, sys_class_block="/sys/class/block"):
     return "/usb" in real
 
 
+def _windows_drives():
+    """Windows: removable drive letters (USB sticks, SD cards) — GetDriveTypeW == DRIVE_REMOVABLE (2)."""
+    rows = []
+    try:
+        import ctypes, string
+        k32 = ctypes.windll.kernel32
+        mask = k32.GetLogicalDrives()
+        for i, letter in enumerate(string.ascii_uppercase):
+            if not (mask >> i) & 1:
+                continue
+            root = letter + ":\\"
+            if k32.GetDriveTypeW(ctypes.c_wchar_p(root)) != 2:
+                continue
+            if not os.path.isdir(root) or not os.access(root, os.W_OK):
+                continue
+            try:
+                du = shutil.disk_usage(root)
+            except OSError:
+                continue
+            name = ctypes.create_unicode_buffer(261)
+            try:
+                k32.GetVolumeInformationW(ctypes.c_wchar_p(root), name, 261, None, None, None, None, 0)
+            except Exception:
+                pass
+            rows.append({"path": root, "label": (name.value or "USB") + " (" + letter + ":)", "device": letter + ":",
+                         "fstype": "", "free": int(du.free), "total": int(du.total), "kind": "USB drive"})
+    except Exception:
+        pass
+    return rows
+
+
+def _mac_drives(volumes="/Volumes"):
+    """macOS: every writable volume under /Volumes except the boot disk."""
+    rows = []
+    try:
+        boot = os.stat("/").st_dev
+        for name in sorted(os.listdir(volumes)):
+            p = os.path.join(volumes, name)
+            try:
+                if os.path.islink(p) or os.stat(p).st_dev == boot or not os.access(p, os.W_OK):
+                    continue
+                du = shutil.disk_usage(p)
+            except OSError:
+                continue
+            rows.append({"path": p, "label": name, "device": "", "fstype": "", "free": int(du.free),
+                         "total": int(du.total), "kind": "USB drive"})
+    except OSError:
+        pass
+    return rows
+
+
 def removable_drives(mountinfo="/proc/self/mountinfo", sys_class_block="/sys/class/block"):
     """Writable, mounted removable drives: [{path,label,device,fstype,free,total,kind}]."""
+    import sys as _sys
+    if _sys.platform.startswith("win"):
+        return _windows_drives()
+    if _sys.platform == "darwin":
+        return _mac_drives()
     rows, seen = [], set()
     try:
         with open(mountinfo, "r", encoding="utf-8", errors="replace") as f:
@@ -256,6 +312,21 @@ def auto_copy(path, done=None):
 _INSTALLED = False
 
 
+def mount_places():
+    """Folders where USB sticks / SD cards appear, for file-dialog sidebars: /media/<user>, /run/media/<user>,
+    /media, /mnt, /Volumes — whichever exist (Windows drive letters show in the dialog's own sidebar)."""
+    import getpass
+    try:
+        user = getpass.getuser()
+    except Exception:
+        user = ""
+    out = []
+    for p in ([f"/media/{user}", f"/run/media/{user}"] if user else []) + ["/media", "/mnt", "/Volumes"]:
+        if os.path.isdir(p) and p not in out and not any(p.startswith(q + "/") for q in out):
+            out.append(p)
+    return out
+
+
 def install_file_dialog_support():
     """Make Save / Open / Folder dialogs list connected drives. Idempotent; falls back to the stock dialog."""
     global _INSTALLED
@@ -272,8 +343,12 @@ def install_file_dialog_support():
     orig_dir = QFileDialog.getExistingDirectory
 
     def build(parent, caption, directory, filt, initial_filter, options, mode, accept):
-        drives = removable_drives()
-        if not drives:
+        # Never enumerate removable devices while constructing a GUI dialog.
+        # disk_usage()/mount probing can block on a failing or sleeping USB
+        # filesystem. Expose stable mount roots in the sidebar instead; actual
+        # drive validation remains in the Save-to picker / write path.
+        places = mount_places()
+        if not places:
             return None
         dlg = QFileDialog(parent, caption or "", "", filt or "")
         dlg.setOption(QFileDialog.Option.DontUseNativeDialog, True)
@@ -297,9 +372,9 @@ def install_file_dialog_support():
             dlg.selectNameFilter(str(initial_filter))
         urls = list(dlg.sidebarUrls())
         have = {u.toLocalFile() for u in urls}
-        for row in drives:
-            if row["path"] not in have:
-                urls.append(QUrl.fromLocalFile(row["path"]))
+        for p in places:      # R32.10.4: mount roots always listed, without synchronous device scans
+            if p not in have:
+                urls.append(QUrl.fromLocalFile(p)); have.add(p)
         dlg.setSidebarUrls(urls)
         return dlg
 
@@ -372,3 +447,75 @@ def install_file_dialog_support():
     QFileDialog.getExistingDirectory = staticmethod(pick_dir)
     _INSTALLED = True
     return True
+
+
+# R32.10: why a plugged-in stick is not offered, and a one-click mount for drives nothing mounted.
+def drive_problems(mountinfo="/proc/self/mountinfo", sys_block="/sys/block"):
+    """Linux: removable disks that are NOT usable as a save target, with the reason.
+
+    [{device, reason, fix}] where reason is "not mounted", "mounted read-only" or "no write permission".
+    """
+    import sys as _sys
+    if not _sys.platform.startswith("linux"):
+        return []
+    mounts = {}
+    try:
+        with open(mountinfo, "r", encoding="utf-8", errors="replace") as f:
+            for line in f.read().splitlines():
+                try:
+                    left, right = line.split(" - ", 1)
+                    lf = left.split(); mounts.setdefault(right.split()[1], (_unescape(lf[4]), lf[5].split(",")))
+                except (ValueError, IndexError):
+                    continue
+    except OSError:
+        return []
+    out = []
+    try:
+        disks = sorted(os.listdir(sys_block))
+    except OSError:
+        return []
+    for disk in disks:
+        try:
+            with open(os.path.join(sys_block, disk, "removable")) as f:
+                rem = f.read().strip() == "1"
+        except OSError:
+            rem = False
+        if not (rem or disk.startswith("mmcblk") or "/usb" in os.path.realpath(os.path.join(sys_block, disk))):
+            continue
+        if disk.startswith(("loop", "sr", "ram", "zram")):
+            continue
+        try:
+            with open(os.path.join(sys_block, disk, "size")) as f:
+                if int(f.read().strip() or 0) == 0:
+                    continue                        # empty card reader slot
+        except (OSError, ValueError):
+            pass
+        parts = [p for p in sorted(os.listdir(os.path.join(sys_block, disk))) if p.startswith(disk)] or [disk]
+        for part in parts:
+            dev = "/dev/" + part
+            if dev not in mounts:
+                if len(parts) > 1 and part == disk:
+                    continue
+                out.append({"device": dev, "reason": "not mounted", "fix": "mount"})
+                continue
+            mnt, opts = mounts[dev]
+            if "ro" in opts:
+                out.append({"device": dev, "path": mnt, "reason": "mounted read-only",
+                            "fix": "The drive is read-only (locked SD switch, or a damaged NTFS/exFAT volume — repair it on another computer)."})
+            elif not os.access(mnt, os.W_OK):
+                out.append({"device": dev, "path": mnt, "reason": "no write permission",
+                            "fix": "Mounted for another user. Re-plug it while logged in, or remount it with your user (udisksctl)."})
+    return out
+
+
+def mount_drive(device):
+    """Mount a removable partition for the current user with udisksctl (no root, no partition change)."""
+    exe = shutil.which("udisksctl")
+    if not exe:
+        return False, "udisksctl is not installed — mount the drive with your file manager, or install udisks2."
+    try:
+        r = subprocess.run([exe, "mount", "-b", str(device), "--no-user-interaction"], capture_output=True, text=True, timeout=30)
+    except Exception as exc:
+        return False, str(exc)
+    msg = (r.stdout or r.stderr or "").strip()
+    return r.returncode == 0, msg

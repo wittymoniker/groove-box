@@ -3,6 +3,14 @@
 import sys, subprocess, os, time, traceback, threading, faulthandler
 from pathlib import Path
 
+# Runtime baseline is checked before importing the application tree or Qt.
+from runtime_contract import MIN_PYTHON, interpreter_is_supported, interpreter_error, REQUIRED
+_runtime_error = interpreter_error()
+if _runtime_error:
+    raise SystemExit(_runtime_error)
+os.environ.setdefault("PYTHONUTF8", "1")
+os.environ.setdefault("PYTHONUNBUFFERED", "1")
+
 # A spawned predictive helper must dispatch before provisioning, WebEngine,
 # codec checks or QApplication construction, especially in PyInstaller builds.
 if __name__ == "__main__":
@@ -151,7 +159,6 @@ def _ensure_qt_webengine_runtime():
     verified = os.environ.get("GROOVEBOX_RUNTIME_VERIFIED_PYTHON")
     if verified and os.path.abspath(verified) == os.path.abspath(sys.executable):
         return
-    from scripts.runtime_dependencies import REQUIRED
     modules = [module for module, _package in REQUIRED]
     try:
         probe = subprocess.run(
@@ -402,6 +409,17 @@ if __name__ == "__main__":
         except Exception:
             pass
         app = QApplication(sys.argv)
+        # One queued UI publication path is shared by every application window.
+        from ui_runtime import install_ui_runtime as _install_ui_runtime
+        _install_ui_runtime(app)
+        # SCode window host: one Qt GUI thread, isolated per-window task scopes,
+        # and shared bounded worker pools. Optional host failure never blocks Main.
+        _SCODE_WINDOW_HOST = None
+        try:
+            from scode.window_host import install_scode_window_host
+            _SCODE_WINDOW_HOST = install_scode_window_host(app)
+        except Exception as _scode_host_exc:
+            print(f"[sCodeHost] window host unavailable; legacy shared workers remain active: {_scode_host_exc}", file=sys.stderr)
         # R28.4.50-HF14: let PipeWire/Wayland and Qt Multimedia finish session
         # initialization before enumerating endpoints. This is diagnostic-only
         # and bounded; it must never block window construction or audio rendering.
@@ -418,6 +436,12 @@ if __name__ == "__main__":
                 print(f"[Startup] Fusion style unavailable: {exc}")
         print("[Startup] constructing main window")
         player = MathematiciansGrooveboxApp()
+        if _SCODE_WINDOW_HOST is not None:
+            try:
+                _SCODE_WINDOW_HOST.register_window(player)
+                player.scode_window_host = _SCODE_WINDOW_HOST
+            except Exception as _scode_register_exc:
+                print(f"[sCodeHost] main-window scope unavailable: {_scode_register_exc}", file=sys.stderr)
         print("[Startup] main window constructed")
         _mcc_path = None
         try:
@@ -428,18 +452,60 @@ if __name__ == "__main__":
             _mcc_path = project_argument(sys.argv[1:])
         except Exception as _mcc_exc:
             print(f"[MCC] file association startup: {_mcc_exc}")
-        _startup_choice = launch_startup_mode_selector(
-            player, app,
-            project_path=_mcc_path,
-            skip=("--skip-startup-launcher" in sys.argv[1:]),
-        )
+        try:
+            _startup_choice = launch_startup_mode_selector(
+                player, app,
+                project_path=_mcc_path,
+                skip=("--skip-startup-launcher" in sys.argv[1:]),
+            )
+        except Exception as _selector_exc:
+            # The chooser is an optional first-run surface, not a dependency of
+            # the composition workspace. If a panel/plugin/desktop integration
+            # breaks selector construction, always reveal the already-built
+            # main window and continue into the Qt event loop.
+            print(f"[Startup] selector failed; falling back to Main Groovebox: {_selector_exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            _startup_choice = "main-fallback"
+            try:
+                player.showNormal()
+                player.show()
+                player.raise_()
+                player.activateWindow()
+            except Exception as _show_exc:
+                print(f"[Startup] main-window reveal fallback failed: {_show_exc}", file=sys.stderr)
+            try:
+                player._install_project_autosave()
+            except Exception as _autosave_exc:
+                print(f"[Startup] autosave fallback unavailable: {_autosave_exc}", file=sys.stderr)
         print(f"[Startup] selector complete ({_startup_choice}); entering event loop")
+        # Optional Julia packages may need Pkg activation/instantiation. Warm
+        # them after the main UI has had time to paint; Python/Rust/C++ paths
+        # remain available immediately and no audio callback performs init.
+        try:
+            from PyQt6.QtCore import QTimer as _QTimer
+            def _warm_julia_after_first_paint():
+                try:
+                    import julia_bridge
+                    future = julia_bridge.schedule_julia_warmup()
+                    if future is not None:
+                        future.add_done_callback(lambda f: print(
+                            "[Julia] background warmup " + ("ready" if f.exception() is None and f.result() else "unavailable; Python/native fallback active")))
+                except Exception as exc:
+                    print(f"[Julia] optional warmup skipped: {exc}", file=sys.stderr)
+            _QTimer.singleShot(1200, _warm_julia_after_first_paint)
+        except Exception as _julia_schedule_exc:
+            print(f"[Julia] background warmup scheduling unavailable: {_julia_schedule_exc}", file=sys.stderr)
         if "--restore-windows" in sys.argv[1:]:
             try:
                 player._restore_windows_after_crash()
             except Exception as exc:
                 print(f"[relaunch] window restore skipped: {exc}")
         _exit_code = int(app.exec())
+        try:
+            if _SCODE_WINDOW_HOST is not None:
+                _SCODE_WINDOW_HOST.close()
+        except Exception as _scode_host_close_exc:
+            print(f"[sCodeHost] shutdown warning: {_scode_host_close_exc}", file=sys.stderr)
         print(f"[CrashLog] Qt event loop returned {_exit_code}")
         if _exit_code == 0:
             _write_latest("clean-exit", "Qt event loop returned 0")

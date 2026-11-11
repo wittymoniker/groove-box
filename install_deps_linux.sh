@@ -47,7 +47,7 @@ if [[ "$DISTRO" == fedora ]]; then
   # upgrades it; upgrading qt6-qtbase drags every Qt/KDE package on the host
   # into one large transaction (seen failing on Fedora 44 with the
   # kmime -> kf6-kmime file conflict). Groovebox never upgrades the host stack.
-  FEDORA_REQUIRED=(python3 python3-pip python3-devel gcc gcc-c++ glm-devel curl python3-pyqt6 python3-pyqt6-webengine qt6-qtbase qt6-qtbase-gui qt6-qtdeclarative qt6-qtwebchannel qt6-qtwebengine qt6-qtwayland qt6-qtmultimedia alsa-lib alsa-lib-devel portaudio portaudio-devel openssl-devel libffi-devel pipewire wireplumber pipewire-alsa pipewire-pulseaudio mesa-dri-drivers mesa-vulkan-drivers mesa-libgbm libdrm nss nspr fontconfig freetype dbus-libs libXcomposite libXcursor libXdamage libXext libXi libXrandr libXrender libXtst libxcb libxkbcommon libxkbcommon-x11 xcb-util-cursor)
+  FEDORA_REQUIRED=(python3 python3-pip python3-devel gcc gcc-c++ glm-devel curl python3-pyqt6 python3-pyqt6-webengine qt6-qtbase qt6-qtbase-gui qt6-qtdeclarative qt6-qtwebchannel qt6-qtwebengine qt6-qtwayland qt6-qtmultimedia alsa-lib alsa-lib-devel portaudio portaudio-devel openssl-devel libffi-devel pipewire wireplumber pipewire-alsa pipewire-pulseaudio bluez mesa-dri-drivers mesa-vulkan-drivers mesa-libgbm libdrm nss nspr fontconfig freetype dbus-libs libXcomposite libXcursor libXdamage libXext libXi libXrandr libXrender libXtst libxcb libxkbcommon libxkbcommon-x11 xcb-util-cursor)
   MISSING=()
   for pkg in "${FEDORA_REQUIRED[@]}"; do
     rpm -q --whatprovides "$pkg" >/dev/null 2>&1 || MISSING+=("$pkg")
@@ -88,7 +88,7 @@ if [[ "$DISTRO" == fedora ]]; then
   OPTIONAL_FLAGS=(--skip-broken)
   [[ "$REQUEST_SKIP_BROKEN" -eq 1 ]] && OPTIONAL_FLAGS+=(--setopt=skip_if_unavailable=True)
   OPT_MISSING=()
-  for pkg in gamescope mpv SDL2 SDL2_mixer openal-soft; do rpm -q --whatprovides "$pkg" >/dev/null 2>&1 || OPT_MISSING+=("$pkg"); done
+  for pkg in gamescope mpv SDL2 SDL2_mixer openal-soft bluez-tools blueman; do rpm -q --whatprovides "$pkg" >/dev/null 2>&1 || OPT_MISSING+=("$pkg"); done
   [[ ${#OPT_MISSING[@]} -eq 0 ]] || $SUDO dnf install -y "${OPTIONAL_FLAGS[@]}" "${OPT_MISSING[@]}" || \
     echo "[runtime] optional player/game packages skipped; ffplay fallback remains available when provided by ffmpeg-free." >&2
 else
@@ -96,11 +96,17 @@ else
   $SUDO apt-get update -y
   $SUDO apt-get install -y \
     python3 python3-pip python3-venv python3-dev python3-pyqt6.qtmultimedia build-essential libglm-dev curl \
-    ffmpeg pipewire wireplumber libasound2-dev portaudio19-dev libssl-dev libffi-dev \
+    ffmpeg pipewire wireplumber bluez libasound2-dev portaudio19-dev libssl-dev libffi-dev \
     libnss3 libxkbcommon-x11-0 libgbm1 libxcomposite1 libxdamage1 libxrandr2 \
     libsdl2-2.0-0 libsdl2-mixer-2.0-0 libopenal1
+  $SUDO apt-get install -y bluez-tools blueman || echo "[runtime] optional Bluetooth front-end packages skipped; bluetoothctl remains available." >&2
   $SUDO apt-get install -y mpv || true
   $SUDO apt-get install -y ubuntu-restricted-extras || true
+fi
+
+# The BlueZ daemon provides discovery/pairing; WirePlumber only manages audio routing.
+if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+  $SUDO systemctl enable --now bluetooth.service || echo "[runtime] Bluetooth service could not be enabled; start bluetooth.service from system settings." >&2
 fi
 
 if [[ "$DISTRO" == fedora ]]; then

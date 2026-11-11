@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")" && pwd)"
-exec bash "$ROOT/run_hybrid.sh" "$@"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+export GROOVEBOX_PROFILE="${GROOVEBOX_PROFILE:-desktop}"
+exec bash "$ROOT/scripts/launch_entry.sh" "$@"

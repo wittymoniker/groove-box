@@ -27,14 +27,28 @@ def _data_root() -> Path:
         root = Path.home() / "Library" / "Application Support" / APP_DIRNAME
     else:
         root = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / APP_DIRNAME
-    root.mkdir(parents=True, exist_ok=True)
+    if str(root) not in _ROOT_DONE or not root.is_dir():
+        root.mkdir(parents=True, exist_ok=True); _ROOT_DONE.add(str(root))
     return root
+
+
+_ROOT_DONE = set()
 
 def base_dir() -> str:
     return str(_data_root())
 
+_DIR_DONE = set()
+
+
+def _mk(p: Path) -> str:
+    k = str(p)
+    if k not in _DIR_DONE or not p.is_dir():
+        p.mkdir(parents=True, exist_ok=True); _DIR_DONE.add(k)
+    return k
+
+
 def projects_dir() -> str:
-    p = _data_root() / "projects"; p.mkdir(parents=True, exist_ok=True); return str(p)
+    return _mk(_data_root() / "projects")
 
 def _safe_project_name(value: object) -> str:
     s = str(value or "Untitled").strip()
@@ -53,27 +67,56 @@ def project_name(project_path: Optional[str]=None, project_name: Optional[str]=N
         return _safe_project_name(stem)
     return "Untitled"
 
+def _existing_project_root(p: Path) -> Optional[Path]:
+    """R32.4: a document already inside a project workspace keeps that workspace.
+
+    .../<Project>/metadata/autosave.MCC, .../<Project>/<Project> (2).MCC or a renamed
+    document used to create a NEW nested workspace (with the full folder layout) under the
+    old one on every save / autosave — the "projects save in nested directories" bug."""
+    parent = p.parent
+    if parent.name in ("metadata", "cache") and (parent.parent / "metadata").is_dir():
+        return parent.parent
+    if (parent / "metadata").is_dir() and (parent / "exports").is_dir():
+        return parent
+    return None
+
+
 def project_root(project_path: Optional[str]=None, project_name: Optional[str]=None) -> Path:
     name = globals()['project_name'](project_path, project_name)
     if project_path:
         p = Path(os.path.abspath(os.path.expanduser(str(project_path))))
         # New layout: .../<Project>/<Project>.MCC.  Legacy/external documents keep
         # their document in place but receive a sibling project workspace.
-        root = p.parent if p.parent.name == name else p.parent / name
+        root = _existing_project_root(p) or (p.parent if p.parent.name == name else p.parent / name)
     else:
         root = Path(projects_dir()) / name
+    _ensure_layout(root)
+    return root
+
+
+_LAYOUT_DONE = set()
+
+
+def _ensure_layout(root: Path) -> None:
+    """R32.6: create the project layout once per process (it used to run 11 mkdir + stat calls on
+    every path lookup — thousands per render). Re-created if the folder was deleted."""
+    key = str(root)
+    if key in _LAYOUT_DONE and (root / "metadata").is_dir():
+        return
     root.mkdir(parents=True, exist_ok=True)
     for rel in PROJECT_LAYOUT:
         (root / rel).mkdir(parents=True, exist_ok=True)
-    return root
+    _LAYOUT_DONE.add(key)
 
 def canonical_project_path(path: str) -> str:
     p = Path(os.path.abspath(os.path.expanduser(str(path))))
     suffix = p.suffix or '.MCC'
     name = _safe_project_name(p.stem)
+    existing = _existing_project_root(p)
+    if existing is not None:
+        return str(existing / f"{_safe_project_name(p.stem)}{suffix}") if p.parent.name not in ("metadata", "cache") else str(existing / f"{existing.name}{suffix}")
     root = p.parent if p.parent.name == name else p.parent / name
-    root.mkdir(parents=True, exist_ok=True)
-    for rel in PROJECT_LAYOUT: (root/rel).mkdir(parents=True, exist_ok=True)
+    _ensure_layout(root)
     return str(root / f"{name}{suffix}")
 
 def default_project_path(name: str='Untitled') -> str:
@@ -216,10 +259,90 @@ def ensure_app_layout() -> dict:
         raise OSError(f"Groovebox data directory is not writable: {root}: {exc}") from exc
     return out
 
+# ---------------------------------------------------------------------------
+# GROOVEBOX_R32_SYSTEM_STORE_20261110 — protected system store
+#   sOS: the 'sOS System' partition mounted at /var/lib/groovebox-system (installer)
+#   elsewhere: <data root>/.system  (dot-hidden, mode 0700, OS-hidden on Windows/macOS)
+#   override: GROOVEBOX_SYSTEM_DIR
+# state · cache · logs · temp live there; users only ever see projects / samples / exports /
+# recordings / games. Old <data root>/state|cache|logs|temp are migrated once (copied, then
+# replaced by a marker), never deleted before the copy succeeded.
+# ---------------------------------------------------------------------------
+SYSTEM_MOUNT = "/var/lib/groovebox-system"
+_SYS_ROOT = [None]
+_SYSTEM_RELS = ("state", "cache", "logs", "temp")
+
+
+def _hide_os(path):
+    try:
+        if os.name == "nt":
+            import ctypes
+            ctypes.windll.kernel32.SetFileAttributesW(str(path), 0x02 | 0x04)      # HIDDEN | SYSTEM
+        elif __import__("sys").platform == "darwin":
+            import subprocess
+            subprocess.run(["chflags", "hidden", str(path)], capture_output=True, timeout=3)
+    except Exception:
+        pass
+
+
+def system_root() -> Path:
+    if _SYS_ROOT[0] is not None:
+        return _SYS_ROOT[0]
+    forced = os.environ.get("GROOVEBOX_SYSTEM_DIR", "").strip()
+    cand = []
+    if forced:
+        cand.append(Path(forced).expanduser())
+    if os.path.ismount(SYSTEM_MOUNT) and os.access(SYSTEM_MOUNT, os.W_OK):
+        cand.append(Path(SYSTEM_MOUNT))
+    cand.append(_data_root() / ".system")
+    for c in cand:
+        try:
+            c.mkdir(parents=True, exist_ok=True)
+            if os.access(str(c), os.W_OK):
+                try:
+                    os.chmod(c, 0o700)
+                except Exception:
+                    pass
+                if c.name == ".system":
+                    _hide_os(c)
+                _SYS_ROOT[0] = c
+                _migrate_system_dirs(c)
+                return c
+        except Exception:
+            continue
+    _SYS_ROOT[0] = _data_root()
+    return _SYS_ROOT[0]
+
+
+def _migrate_system_dirs(new_root: Path) -> None:
+    import shutil
+    old_root = _data_root()
+    if old_root.resolve() == new_root.resolve():
+        return
+    for rel in _SYSTEM_RELS:
+        old = old_root / rel
+        if not old.is_dir() or (old / ".moved-to-system-store").exists():
+            continue
+        dst = new_root / rel
+        try:
+            shutil.copytree(old, dst, dirs_exist_ok=True)
+            for child in list(old.iterdir()):
+                if child.name != ".moved-to-system-store":
+                    shutil.rmtree(child, ignore_errors=True) if child.is_dir() else child.unlink(missing_ok=True)
+            (old / ".moved-to-system-store").write_text(str(dst), encoding="utf-8")
+        except Exception:
+            pass                                   # old copy stays authoritative until a later try succeeds
+
+
+def system_store_status() -> dict:
+    r = system_root()
+    return {"path": str(r), "partition": str(r) == SYSTEM_MOUNT, "hidden": r.name == ".system" or str(r) == SYSTEM_MOUNT}
+
+
 def _global_dir(rel: str) -> str:
-    root = _data_root() / rel
-    root.mkdir(parents=True, exist_ok=True)
-    return str(root)
+    if rel in _SYSTEM_RELS:
+        return _mk(system_root() / rel)
+    return _mk(_data_root() / rel)
 
 def cache_dir() -> str: return _global_dir("cache")
 def temp_dir() -> str: return _global_dir("temp")
@@ -459,6 +582,14 @@ def is_system_path(path) -> bool:
     name = p.name
     if not name:
         return False
+    # R32: anything inside the protected system store (partition or .system) is never shown.
+    try:
+        sr = str(system_root().resolve())
+        rp = str(p.resolve())
+        if rp == sr or rp.startswith(sr + os.sep) or rp == SYSTEM_MOUNT or rp.startswith(SYSTEM_MOUNT + os.sep):
+            return True
+    except Exception:
+        pass
     # GROOVEBOX_R23R_MEDIA_NEVER_HIDDEN_20261103: a media file is never hidden — partial export
     # parts ("song.part00.mp4", "x.wav.part"), video stems, takes, MCC media — whatever its suffix.
     if is_media_name(name):

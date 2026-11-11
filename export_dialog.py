@@ -35,6 +35,7 @@ FORMATS = [
     ("mcc-video","Video + Audio — MCC lossless",      "mccvideo", "",     None),
     ("mcc",      "Project — MCC (composition)",       "project", ".MCC",  None),
     ("meum",     "Project — MEUM (compressed)",       "project", ".MEUM", None),
+    ("obj",      "Project — OBJ (3D song model · exact audio + project inside)", "project", ".obj", None),
 ]
 LOSSY_AUDIO = {"mp3", "ogg", "opus"}
 _FMT = {k: (label, fam, ext, inc) for k, label, fam, ext, inc in FORMATS}
@@ -221,6 +222,9 @@ class ExportAllDialog(QDialog):
             self.lbl_note.setText("Opens the MCC lossless video exporter (file, size, FPS) next.")
         elif key == "mcc":
             self.lbl_note.setText("Saves the full composition document (.MCC).")
+        elif key == "obj":
+            self.lbl_note.setText("A 3D model of the song (loudness tube) that also carries the exact audio and the "
+                                  "project. Renders in the background; any 3D program opens it, Groovebox imports it back.")
         else:
             self.lbl_note.setText("Exact-reconstructing Meum compressed project (.MEUM).")
         self.edit_path.setEnabled(not _own_dialog)

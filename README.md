@@ -1,30 +1,39 @@
-<img width="1536" height="1024" alt="groovebox_ui_concept" src="https://github.com/user-attachments/assets/62f9fc00-a7f2-48fb-9aa5-cef78a1bb5bb" />
-
-
 # Mathematician's Groovebox
 
-## Safe V3 merge, 2026-11-05
-
-The working V3 GUI is retained, with compatible features selected from the two comparison archives. See [the safe-merge release notes](RELEASE-NOTES-SAFE-V3-MERGE.md) for layout/features, build commands and validation limits, and [threading and sCode options](THREADING-AND-SCODE-OPTIONS.md) for further optimization ideas with pros and cons.
-
-`BUILD_ISO` and `BUILD_KIT` share a root runtime-module inventory. Run `bash BUILD_ISO/sync_overlay_from_root.sh` after source edits and `bash RUN_ME_ZERO_STATE.sh --check` for the non-installing source/boot-contract preflight.
-
-The current feature guide is embedded in `ReadmeGuideDialog.HELP_TEXT` in
-`groovebox.py` and mirrored in [the full help text](HELP_TEXT.md). It covers the
-merged controls, launcher behavior, data/context limits and remaining overhead;
-see [launcher and context revision notes](LAUNCHER-AND-CONTEXT-NOTES.md) for this
-source revision. No app, verifier suite or release build was run for it.
-
-### HF15 — Cross-platform support and deployment guide
-
-Use the launcher/native package for your operating system and architecture.
-Run `python scripts/diagnose_platform.py` with the selected runtime interpreter
-for read-only diagnostics, optionally adding `--json groovebox-platform-report.json`
-to save a report. Source compatibility and a successful ISO build are not
-physical-hardware audio/video certification; the in-app Help and
-`PLATFORM_RUNTIME_README.txt` explain deployment and troubleshooting boundaries.
 
 A deterministic generative music, visual, and game engine driven by mathematical seeds.
+
+## What is proven
+
+The full mathematics, with equations, and the case for why the design is scientifically sound (and where it is
+only one arbitrary, rather complex choice among many) is in **[MATHEMATICS.md](MATHEMATICS.md)**.
+
+| Claim | Result (offscreen app, real code paths) |
+|---|---|
+| Determinism | Same seed → bit-identical audio **and** video frames, in one process and across processes |
+| Any kind → any kind | **81 / 81** pairs: sound, image, video, MIDI, text, data, seed, project, game |
+| Symbolic completeness | Every finite note sequence is exactly a seed program: 200 / 200 melodies, 0.0 Hz error. MIDI → seed is lossless |
+| Save → load | 303 / 312 changed controls restored exactly (the rest are excluded on purpose or recomputed) |
+| Engine sync | Every engine's saved state survives snapshot → apply → snapshot, with defaults and with every engine on |
+| Clean measurement | Two renders with the engines off differ by 0.000000 (audio) and 0.000 (video), so an engine's effect is measurable on its own |
+| Engines together | SEEDED, EUCLIDEAN and LOCK compose on modulation (19 / 19 checks); couplings do nothing unless both engines are on |
+| Every stage reaches exports | Local FX, Layer EQ and Mod Osc act on the export mixdown and undo exactly; Global FX acts at the master stage (12 / 12 checks) |
+| Project ⇄ OBJ | A song exported as OBJ opens as a normal mesh and gives back the bit-exact audio and the project; any other OBJ imports as sound (12 / 12 checks) |
+| Video meshes | Meshes built from each frame's audio are drawn on every frame and are deterministic; a loaded OBJ is drawn large in the centre with an outline; GOAVA shapes show with the GOAVA sound engine off |
+| Project load | 0.3–0.8 s with no UI stall over 0.6 s afterwards (was ~2 s plus a 2.4 s stall), and the loaded project renders sample-for-sample the same |
+| Signed updates | Ed25519 equals the RFC 8032 test vector; a tampered package is refused |
+
+**Not claimed:** that every recorded sound has a short seed (audio → seed is a structural estimate), or that a measured
+difference means better music.
+
+### Guidelines
+1. Decide with the seed and edit structure on canonical lanes; keep artistic edits on user lanes. The defaults are neutral, so only structural enhancement is heard.
+2. RAND makes reproducible seed children by default. Right-click RAND → **Pure** when you want unrepeatable randomness; the captured value is still saved, so the project replays.
+3. To compare two versions, export both and save A − B. Silence or grey means identical.
+4. On small machines set the RAM budget (Monitor panel). The tiers keep exports serial and video chunks small.
+5. Games keep one savestate each per Groovebox. Delete one or all from the Game Editor.
+6. To record onto a USB stick or SD card, pick it under **Save to:** (Export, Batch or Live Player) *before* recording. Press ↻ after plugging in; an unmounted stick shows as "⚠ … not mounted (click to mount)", and **📂 Choose a folder…** reaches any other location. Press ⏏ Flush before unplugging.
+7. Quick Rack ▸ 🧊 OBJ exports the whole song as a 3D model (with the exact audio and project inside) and imports any OBJ as sound. "Show an OBJ in the video" puts a model in the centre of every frame.
 
 ## 1. Run it and get sound
 
@@ -205,6 +214,15 @@ For the full audiovisual output, use **Play Audiovisual Track** instead.
 Groovebox is a deterministic generative fractal inside its own mathematical dialect (five canonicals + Morph Bridge + sidechain + EQ + shared renderer). It produces a large, organized, non-redundant family of music, visuals, and game states from numeric seeds.
 
 It does **not** claim to cover every possible sound, music video, or interactive experience. See `FRACTAL_COVERAGE_AND_BOUNDARY.md` for the precise boundary.
+
+## Help and project files
+
+The in-app feature guide is `ReadmeGuideDialog.HELP_TEXT` in `groovebox.py`, mirrored in [the full help text](HELP_TEXT.md).
+`BUILD_ISO` and `BUILD_KIT` share a root runtime-module inventory: run `bash BUILD_ISO/sync_overlay_from_root.sh` after source edits
+and `bash RUN_ME_ZERO_STATE.sh --check` for the non-installing preflight. Release history is in the `RELEASE-*` files.
+The author's book, *Scientific and Mathematical Theories and Inventions* (source of `isn` / `ics` and the fractal sets), is in
+[`resources/`](resources/). Credits, including NASA simulation projects consulted as references (no NASA code is included), are in
+[THIRD_PARTY_AND_NASA_NOTES.md](THIRD_PARTY_AND_NASA_NOTES.md).
 
 ## What is Mathematician's Groovebox?
 
@@ -395,9 +413,7 @@ with the project's working Meum value near:
 M = 1.1975807343...
 ```
 
-The README intentionally does not attempt to document the full mathematics.
-
-Technical mathematical documentation should live separately so musicians can learn the instrument without first reading a research document.
+The README does not attempt to document the full mathematics; it lives in [MATHEMATICS.md](MATHEMATICS.md), so musicians can learn the instrument without first reading a research document.
 
 ---
 
@@ -541,18 +557,12 @@ The short version:
 
 The deeper mathematical, scripting, rendering, networking, and engine documentation is preserved in `docs/TECHNICAL_REFERENCE_20260909.md` rather than sitting between a new user and the Play button.
 
-## Rust first-class support (v35.22y)
+## Rust support
 
 Groovebox ships Rust source for its optional native accelerator and the BUILD_ISO bounded-memory newc streamer. The release archive does not bundle the Rust compiler: the normal Linux/macOS/Windows dependency and launch scripts provision the stable rustup/Cargo toolchain and platform linker when needed. `GROOVEBOX_NATIVE_BACKEND=rust` selects the Rust C-ABI accelerator, `cpp` selects C++, and `auto` keeps the established native/fallback behavior. BUILD_ISO prebuilds the Rust accelerator and embeds it in `/opt/groovebox/native/`.
 
 
-## R28.4.35 — README-HELP rollout
-
-The in-app **README / Help** window now documents the composition contract: normalized 50/50 seed-versus-authored influence; deterministic composition without hidden probability; recursive, resolution-aware fractal structure; a shared canonical timeline for audio, video, and interactive worlds; idempotent imports and provenance; real-time-safe worker behavior; and release-validation boundaries. It also links Tabletime as a companion service and explicitly preserves the Moksha/Karma, scoping, time-delay, and one-credit/one-impression requirements.
-
-See `wasmer-site/` for the refreshed Wasmer-facing product page and `RELEASE-R28.4.35-README-HELP-TABLETIME-20261023.txt` for the rollout summary.
-
-## HF15 — Cross-platform support and deployment guide (2026-10-27)
+## Cross-platform support and deployment
 
 ### Supported launch paths
 
@@ -571,7 +581,7 @@ Use the launcher shipped with this source tree; do not run a Linux ELF bootstrap
 ### Audio and video startup
 
 - Groovebox's real-time instrument playback uses the `sounddevice` / PortAudio path; media-player features use Qt Multimedia and the platform's media plugins/codecs. These are distinct runtime paths.
-- At startup, device discovery can lag behind desktop login, especially with Fedora + PipeWire/WirePlumber. The HF14 bootstrap schedules a bounded, non-blocking probe and logs findings to `~/.local/state/groovebox/media-bootstrap.log` on Unix-like systems (Windows log paths depend on the user's environment and launcher).
+- At startup, device discovery can lag behind desktop login, especially with Fedora + PipeWire/WirePlumber. The media bootstrap schedules a bounded, non-blocking probe and logs findings to `~/.local/state/groovebox/media-bootstrap.log` on Unix-like systems (Windows log paths depend on the user's environment and launcher).
 - A detected device is not proof that it opened successfully or produced sound. Test playback at a safe volume and select an explicit endpoint if the OS default is not the intended device. Current routing should not be described as synchronized playback to every output unless a true fan-out implementation is present.
 - Video playback requires `PyQt6.QtMultimedia`, a working Qt multimedia backend and supported codecs. `PyQt6.QtWebEngineWidgets` is optional and is not the video-player backend.
 - For a diagnostic report, run `python scripts/diagnose_platform.py`; to save a report, run `python scripts/diagnose_platform.py --json groovebox-platform-report.json`. The script is read-only and does not install packages or change audio routing.
@@ -591,17 +601,16 @@ Use this checklist for Dell Latitude, Acer Nitro, and other laptops; avoid hard-
 
 Before publishing an ISO, run the project's documented verifier(s) from `BUILD_ISO/`, confirm the root source and `app-overlay-v35.22zz/` copies of any overlay-managed runtime files match, then check the generated ISO's checksum. Test the ISO against the actual target boot mode (UEFI/Legacy as supported), graphics mode, network, storage, and media devices. Do not copy host-specific device names or runtime logs into the release.
 
-The current sOS builder is explicitly **x86_64**: it verifies the Linux 64-bit boot-protocol header, the PE32+ `EFI/BOOT/BOOTX64.EFI` inside Limine's FAT image, the UEFI El Torito entry, and the hybrid MBR type-0xEF partition. Secure Boot must be disabled unless the EFI loader is separately signed and enrolled. See `BUILD_ISO/README.txt` and the 2026-10-30 UEFI/launcher hardening release note for the exact checks and remaining hardware-validation gates.
+The current sOS builder is explicitly **x86_64**: it verifies the Linux 64-bit boot-protocol header, the PE32+ `EFI/BOOT/BOOTX64.EFI` inside Limine's FAT image, the UEFI El Torito entry, and the hybrid MBR type-0xEF partition. Secure Boot must be disabled unless the EFI loader is separately signed and enrolled. See `BUILD_ISO/README.txt` for the exact checks and remaining hardware-validation gates.
 
 ### Reporting a cross-platform defect
 
 Attach the diagnostic JSON plus the latest session log. Include OS/version, CPU architecture, exact launcher (`run_hybrid.sh`, Windows BAT, macOS command, or ISO), whether the main window appeared, whether the player window appeared, selected output, and whether export-to-WAV works when live playback does not. Remove personal paths or device names before sharing if desired.
 
 
+## Media diagnostics and install checks
 
-## HF16 — Media diagnostics and cross-platform install checks (2026-10-27)
-
-HF16 strengthens diagnostics for systems where the main Groovebox window launches but audio is silent or the video/player window does not appear. It does not claim that every operating system or laptop model has been physically certified.
+The diagnostics below are for systems where the main Groovebox window launches but audio is silent or the video/player window does not appear. It does not claim that every operating system or laptop model has been physically certified.
 
 ### Diagnose before changing settings
 
@@ -615,17 +624,17 @@ The report checks core imports, PortAudio device enumeration, Qt Multimedia audi
 
 ### Media readiness is separate from core startup
 
-A successful main-window launch does not prove that the video backend initialized or that an audio stream opened. Windows installer now explicitly checks Qt Multimedia separately from core dependencies and warns if the player dependency is unavailable. On Fedora, use the distro-matched PyQt6/Qt packages; do not mix RPM Qt libraries with pip Qt wheels. On macOS and other Linux distributions, confirm that Qt Multimedia plugins and codecs are installed for the same Python environment that launches Groovebox.
+A successful main-window launch does not prove that the video backend initialized or that an audio stream opened. The Windows installer checks Qt Multimedia separately from core dependencies and warns if the player dependency is unavailable. On Fedora, use the distro-matched PyQt6/Qt packages; do not mix RPM Qt libraries with pip Qt wheels. On macOS and other Linux distributions, confirm that Qt Multimedia plugins and codecs are installed for the same Python environment that launches Groovebox.
 
 ### Default audio and output selection
 
-Groovebox should begin with the operating-system-selected default output where available. Device enumeration is not proof of successful playback. A single selected output and synchronized multi-output fan-out are different capabilities: this release does not claim simultaneous playback to every physical endpoint unless the active audio backend actually opens and feeds each endpoint. Use the operating-system default first, then select a named output when necessary. Keep volume low for the first test.
+Groovebox should begin with the operating-system-selected default output where available. Device enumeration is not proof of successful playback. A single selected output and synchronized multi-output fan-out are different capabilities: Groovebox does not claim simultaneous playback to every physical endpoint unless the active audio backend actually opens and feeds each endpoint. Use the operating-system default first, then select a named output when necessary. Keep volume low for the first test.
 
 ### Release gate
 
-Before calling a release complete, run the targeted Python contract tests, the full documented `BUILD_ISO/` verifier chain, archive integrity/checksum checks, and a booted ISO smoke test. Then test the Windows launcher on Windows, macOS launcher on macOS, and the Fedora/Linux launcher on target hardware. A source-level check cannot substitute for a physical sound/video test.
+Before calling a build complete, run the targeted Python contract tests, the full documented `BUILD_ISO/` verifier chain, archive integrity/checksum checks, and a booted ISO smoke test. Then test the Windows launcher on Windows, macOS launcher on macOS, and the Fedora/Linux launcher on target hardware. A source-level check cannot substitute for a physical sound/video test.
 
-## HF17 — Fedora audio devices not appearing
+## Fedora: audio devices not appearing
 
 If `run_hybrid.sh` opens Groovebox but audio/video device lists are empty, rerun `./run_hybrid.sh` after installing updates so the Linux installer can provision ALSA, PortAudio, PipeWire/WirePlumber, Qt Multimedia, and GStreamer components. Then run:
 

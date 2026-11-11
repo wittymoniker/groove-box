@@ -69,8 +69,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from groovebox_media_tools import resolve_local_tool
 
 from qt_painting import owned_painter
-from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal, QRunnable, QThreadPool
-from PyQt6.QtGui import QColor, QFont, QPixmap, QPainter, QPen
+from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal, QRunnable
+from PyQt6.QtGui import QCursor, QColor, QFont, QPixmap, QPainter, QPen
 from PyQt6.QtWidgets import (
     QTextBrowser,
     QApplication,
@@ -81,6 +81,7 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
+    QMenu,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -155,7 +156,28 @@ def _gb_mcc_kind(path) -> str:
 def _gb_open_mcc_video(widget, path: str, volume_pct: int = 100):
     """GROOVEBOX_R23R_PLAYER_VISUALIZER_MCC_20261103: play a media .MCC video
     DIRECTLY (exact lossless frames + embedded audio on the Groovebox device);
-    no FFmpeg transcode and no wait."""
+    no FFmpeg transcode and no wait.
+
+    ONE_PLAYER_R31: routed into the single media player window (the Performance player) when one is
+    reachable, so every file type plays in the same app; the standalone window is only a fallback."""
+    try:
+        w = widget
+        perf = None
+        while w is not None:
+            if isinstance(w, Performance):
+                perf = w; break
+            w = w.parentWidget() if hasattr(w, "parentWidget") else None
+        if perf is None:
+            _h = _gb_find_host(widget)
+            perf = getattr(_h, "_performance_panel", None)
+        if perf is not None and hasattr(perf, "_show_player_window"):
+            win = perf._show_player_window([{"path": str(path)}], 0)
+            pw = getattr(perf, "_media_player_window", None)
+            if pw is not None and hasattr(pw, "_play_current"):
+                pw._play_current()
+                return pw
+    except Exception:
+        pass
     from media_visualizer import MccVideoPlayer
     host = _gb_find_host(widget)
     dlg = MccVideoPlayer(path, widget, host=host, volume_pct=int(volume_pct),
@@ -481,6 +503,15 @@ def _gb_qt_compatible_copy(path: str) -> str:
     raise RuntimeError("FFmpeg could not make a Qt-playable copy")
 
 
+def _gb_safe_update(w):
+    """R32.9: repaint a widget that may already have been deleted by Qt (no stray RuntimeError)."""
+    try:
+        if w is not None:
+            w.update()
+    except RuntimeError:
+        pass
+
+
 class InAppMediaPlayer(QDialog):
     """Qt Multimedia fallback player (video, audio, images handled by ImageViewerDialog)."""
 
@@ -524,6 +555,28 @@ class InAppMediaPlayer(QDialog):
         self._viz_btn = QPushButton("🌊"); self._viz_btn.setCheckable(True)
         self._viz_btn.setMaximumWidth(36); self._viz_btn.setToolTip("Toggle waveform visualizer")
         self._viz_btn.setChecked(_gb_visualizer_enabled())
+        # LAYER_20261107: force viz or makeup even when both streams are present.
+        self._layer_viz = QPushButton("Viz+"); self._layer_viz.setCheckable(True)
+        self._layer_viz.setToolTip("Layer visualization even if video is present")
+        self._layer_mk = QPushButton("Mk+"); self._layer_mk.setCheckable(True)
+        self._layer_mk.setToolTip("Layer make-up audio even if audio is present")
+        row.addWidget(self._layer_viz); row.addWidget(self._layer_mk)
+        self._layer_viz.toggled.connect(self._on_layer_viz)
+        self._layer_mk.toggled.connect(self._on_layer_mk)
+        # PLAYER_VIZ_20261107: Compatibility decides low vs full for audio-only.
+        try:
+            import compat_settings as _cs
+            viz = str(_cs.load().get("audio_viz", "full"))
+            self._viz_mode = viz
+            if viz in ("low", "off"):
+                self._viz_btn.setChecked(False)
+            if self.visualizer is not None and viz == "low":
+                try:
+                    self.visualizer.set_style("waveform")
+                except Exception:
+                    pass
+        except Exception:
+            self._viz_mode = "full"
         row.addWidget(self._viz_btn)
         lay.addLayout(row)
         self.info = QLabel(""); self.info.setWordWrap(True); lay.addWidget(self.info)
@@ -535,6 +588,17 @@ class InAppMediaPlayer(QDialog):
         except Exception:
             pass
         self.audio = QAudioOutput(self)
+        # PLAYER_MAKEUP_20261107 + R32.8: media without sound gets a real make-up track
+        # (makeup_audio: deterministic per file, locked to the player position).
+        self._makeup_force = False; self._mk_gen = None; self._mk_kind = "drone"; self._makeup = 0.15
+        try:
+            import compat_settings as _cs
+            _c = _cs.load()
+            import makeup_audio as _ma
+            self._makeup = _ma.LEVELS.get(str(_c.get("video_makeup", "low")), 0.15)
+            self._mk_kind = str(_c.get("makeup_generator", "drone"))
+        except Exception:
+            pass
         dev = _gb_qt_audio_device(preferred_output)
         if dev is not None:
             self.audio.setDevice(dev)
@@ -543,11 +607,17 @@ class InAppMediaPlayer(QDialog):
         self.player.setVideoOutput(self.video)
         self.info.setText(f"Output: {(dev.description() if dev is not None else '') or 'system default'} · Qt Multimedia (no external player found)")
         self.btn.clicked.connect(self._toggle)
-        self.vol.valueChanged.connect(lambda v: self.audio.setVolume(v / 100.0))
+        self.vol.valueChanged.connect(lambda v: (self.audio.setVolume(v / 100.0),
+                                                 self._update_makeup() if getattr(self, "_mk_gen", None) is not None else None))
         self.pos.sliderMoved.connect(self.player.setPosition)
         self.player.durationChanged.connect(lambda d: self.pos.setRange(0, int(d)))
         self.player.positionChanged.connect(self._on_pos)
         self.player.errorOccurred.connect(self._on_error)
+        try:
+            self.player.hasAudioChanged.connect(lambda _h: QTimer.singleShot(300, self._update_makeup))
+            self.player.playbackStateChanged.connect(lambda *_: self._update_makeup())
+        except Exception:
+            pass
         self._loop_btn.toggled.connect(self._on_loop_toggled)
         self._viz_btn.toggled.connect(self._on_viz_toggled)
         # GROOVEBOX_R23R_LOOP_END_OF_MEDIA_20261103: loop without losing playlist place
@@ -588,10 +658,12 @@ class InAppMediaPlayer(QDialog):
         if not self._is_url and _gb_ext(path) in AUDIO_EXT:
             self._show_visualizer()
 
-    def _show_visualizer(self):
+    def _show_visualizer(self, force=False):
         if self.visualizer is None or self.visualizer.isVisible() or getattr(self, "_is_url", False):
             return
-        if not _gb_visualizer_enabled():
+        if not force and getattr(self, "_viz_mode", "full") == "off":
+            return
+        if not force and not _gb_visualizer_enabled():
             return
         self.video.hide(); self.visualizer.show()
         self.visualizer.set_clock(lambda: self.player.position() / 1000.0)
@@ -602,6 +674,9 @@ class InAppMediaPlayer(QDialog):
         s = int(ms // 1000); return f"{s // 60}:{s % 60:02d}"
 
     def _on_pos(self, ms):
+        g = getattr(self, "_mk_gen", None)
+        if g is not None:
+            g.set_position(ms / 1000.0, True)
         if not self.pos.isSliderDown():
             self.pos.setValue(int(ms))
         self.time.setText(f"{self._fmt(ms)} / {self._fmt(self.player.duration())}")
@@ -618,11 +693,53 @@ class InAppMediaPlayer(QDialog):
 
     def _on_viz_toggled(self, checked: bool):
         _gb_set_visualizer_enabled(checked)
-        if checked:
+        if checked or getattr(self, "_layer_viz", None) and self._layer_viz.isChecked():
             self._show_visualizer()
         elif self.visualizer is not None and self.visualizer.isVisible():
             self.visualizer.hide()
             self.video.show()
+
+    def _on_layer_viz(self, checked: bool):
+        """Force visualization even when video is present."""
+        if checked:
+            self._show_visualizer(force=True)
+        elif not self._viz_btn.isChecked():
+            if self.visualizer is not None:
+                self.visualizer.hide()
+            self.video.show()
+
+    def _on_layer_mk(self, checked: bool):
+        """Force make-up audio even when the file has its own audio (layered under it)."""
+        self._makeup_force = bool(checked)
+        self._update_makeup()
+
+    def _update_makeup(self):
+        """R32.8: run the make-up generator when the media has no audio (or Mk+ is on)."""
+        try:
+            from PyQt6.QtMultimedia import QMediaPlayer as _QMP
+            want = (self._makeup > 0.0 and (self._makeup_force or not self.player.hasAudio())
+                    and self.player.mediaStatus() not in (_QMP.MediaStatus.NoMedia, _QMP.MediaStatus.InvalidMedia))
+            playing = self.player.playbackState() == _QMP.PlaybackState.PlayingState
+        except Exception:
+            want, playing = False, False
+        if not want:
+            if self._mk_gen is not None:
+                self._mk_gen.stop(); self._mk_gen = None
+            return
+        if self._mk_gen is None or getattr(self._mk_gen, "_src", None) != self._src:
+            if self._mk_gen is not None:
+                self._mk_gen.stop()
+            try:
+                import makeup_audio as _ma
+                self._mk_gen = _ma.MakeupGenerator(self._src, self._mk_kind, self._makeup)
+                self._mk_gen._src = self._src
+                self._mk_gen.start()
+                # R32.8 leak audit: the audio stream closes even if the player is destroyed with its parent
+                self.destroyed.connect(lambda *_a, _g=self._mk_gen: _g.stop())
+            except Exception:
+                self._mk_gen = None; return
+        self._mk_gen.set_level(self._makeup * (self.vol.value() / 100.0))
+        self._mk_gen.set_position(self.player.position() / 1000.0, playing)
 
     def _on_media_status(self, status):
         try:
@@ -655,6 +772,9 @@ class InAppMediaPlayer(QDialog):
             self.player.stop()
         except Exception:
             pass
+        g, self._mk_gen = getattr(self, "_mk_gen", None), None
+        if g is not None:
+            g.stop()
 
     def closeEvent(self, ev):
         self.stop()
@@ -822,6 +942,7 @@ class _PerformanceMathBackground(QWidget):
     """
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("ParametricMathBackground")
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self._phase = 0.0
@@ -998,6 +1119,23 @@ def _storage_device_snapshot() -> List[Dict[str, str]]:
             'formattable': '1' if (node_present and is_partition and not protected) else '0',
             'format_eligible': '1' if (node_present and is_partition and not protected) else '0',
         })
+
+    # USB_MOUNT_FALLBACK_20261107: a stick formatted ext4/vfat may lose its
+    # removable flag or appear only as a mount. List those mounts too.
+    for real, (mp, fstype) in list(mounts.items()):
+        if not mp.startswith(("/media/", "/run/media/", "/mnt/", "/run/media/groovebox/")):
+            continue
+        if real in seen or any(r.get("mountpoint") == mp for r in rows):
+            continue
+        if fstype not in ("ext4", "ext3", "ext2", "vfat", "exfat", "ntfs", "fuseblk"):
+            continue
+        rows.append({
+            "device": real, "parent_device": real, "partition": "1",
+            "mountpoint": mp, "fstype": fstype, "label": labels.get(real, ""),
+            "kind": "USB mount", "mountable": "1", "status_code": "", "status_detail": "",
+            "protected": "0", "formattable": "0", "format_eligible": "0",
+        })
+        seen.add((real, mp))
 
     # R14: surface the physical card-reader controller even before Linux has
     # emitted an mmcblk/sdX node. This gives File Manager a useful Rescan Reader
@@ -1277,6 +1415,7 @@ class _PlayerPollBridge(QObject):
 class _FileListBridge(QObject):
     """Directory listing result bridge for the standalone file browser."""
     done = pyqtSignal(int, str, object, str)
+    preview = pyqtSignal(int, str, object, str)      # R32.9: generation, path, QImage | None, info text
 
 class _HardwareScanBridge(QObject):
     """Return independent hardware-family discovery without blocking Qt."""
@@ -1390,7 +1529,7 @@ def _find_player(want_video: bool = True) -> Optional[List[str]]:
         if cand == "mpv":
             # GROOVEBOX_R23R_SMOOTH_PLAYLIST_20261103: deeper read-ahead (USB / SD media), the next
             # playlist item prefetched, gapless audio between items.
-            args = [p, "--force-window=yes", "--keep-open=yes", "--hwdec=auto-safe",
+            args = [p, "--force-window=yes", "--keep-open=yes", "--hwdec=auto-safe", "--title=Groovebox Player · ${media-title}",
                     "--autosync=30", "--cache=auto", "--cache-secs=1", "--cache-pause=no",
                     "--demuxer-readahead-secs=1", "--demuxer-max-bytes=32MiB",
                     "--prefetch-playlist=yes", "--gapless-audio=weak",
@@ -1418,7 +1557,7 @@ def _player_cmd_with_volume(volume_pct: int, want_video: bool = True) -> Optiona
         if cand == "mpv":
             # GROOVEBOX_R23R_SMOOTH_PLAYLIST_20261103: deeper read-ahead (USB / SD media), the next
             # playlist item prefetched, gapless audio between items.
-            args = [p, "--force-window=yes", "--keep-open=yes", "--hwdec=auto-safe",
+            args = [p, "--force-window=yes", "--keep-open=yes", "--hwdec=auto-safe", "--title=Groovebox Player · ${media-title}",
                     "--autosync=30", "--cache=auto", "--cache-secs=1", "--cache-pause=no",
                     "--demuxer-readahead-secs=1", "--demuxer-max-bytes=32MiB",
                     "--prefetch-playlist=yes", "--gapless-audio=weak",
@@ -1900,20 +2039,16 @@ class Performance(QDialog):
         self._kind_worker = _KindProbeWorker()
         self._kind_worker.progress.connect(self._on_kind_probe_progress)
         self._kind_worker.batch_done.connect(self._on_kind_probe_batch_done)
-        # PERF_THREAD_LIFECYCLE_20260924: Qt owns all Performance probe jobs.
-        # No detached daemon Python thread is allowed to outlive QApplication.
-        self._worker_pool = QThreadPool(self)
-        # R5 legacy verifier compatibility token only; DO NOT execute: self._worker_pool.setMaxThreadCount(2)
-        # R17 verifier compatibility token only; R18 reserves CPU for Main: self._worker_pool.setMaxThreadCount(max(4, min(8, int(os.cpu_count() or 4))))
-        # Bounded parallelism: use several independent workers for device scans,
-        # media probes and background analysis without saturating cores needed by
-        # the Qt event loop, real-time audio, camera capture, and the OS scheduler.
-        # Do not create one thread per device/task; QThreadPool bounds concurrency.
-        _cpu_count = max(2, int(os.cpu_count() or 2))
-        # Keep at least one logical CPU available for the GUI, realtime audio callbacks,
-        # capture, and the OS. On 2-core laptops this intentionally drops to one
-        # background worker; larger CPUs scale up but never exceed eight.
-        self._worker_pool.setMaxThreadCount(max(1, min(8, _cpu_count - 1)))
+        # PERF_THREAD_LIFECYCLE_20260924 / R30.3_SHARED_POOL:
+        # All Performance work is dispatched through the process-wide sCode
+        # executor. This logical pool preserves QRunnable.start() call sites but
+        # does not create a private Qt thread pool for this window.
+        from ui_runtime import make_qt_pool
+        import thread_budget as _thread_budget
+        self._worker_pool = make_qt_pool(
+            "performance-probes", max_workers=_thread_budget.lane_workers(),
+            max_pending=192, parent=self,
+        )
         self._performance_shutdown = False
 
         # PERF_2026: provenance lookups (ffprobe) happen on a worker thread,
@@ -2093,6 +2228,20 @@ class Performance(QDialog):
             b.clicked.connect(slot)
             file_btns.addWidget(b)
         left_l.addLayout(file_btns)
+        # GROOVEBOX_R32_BROWSER_TOGGLES_20261110
+        share_row = QHBoxLayout()
+        self.chk_r32_share = QCheckBox("LAN / PIN-less share"); self.chk_r32_share.setToolTip(
+            "Share the selected files on your Groovebox site and the pre-PIN Quick Launch list (export files are shared by default).")
+        self.chk_r32_detect = QCheckBox("Detectable"); self.chk_r32_detect.setChecked(True); self.chk_r32_detect.setToolTip(
+            "Include the selected files when the Seed-structured DJ / playlist detection scans media.")
+        self.chk_r32_share.toggled.connect(lambda v: self._r32_set_flag("share", v))
+        self.chk_r32_detect.toggled.connect(lambda v: self._r32_set_flag("detect", v))
+        b_conv = QPushButton("Convert / Copy…"); b_conv.setToolTip("Media Transmuter: sound · image · video · game · reverse-engineer → project; or copy to a folder / drive")
+        b_conv.clicked.connect(self._r32_convert_copy)
+        for w_ in (self.chk_r32_share, self.chk_r32_detect, b_conv):
+            share_row.addWidget(w_)
+        left_l.addLayout(share_row)
+        self.file_list.itemSelectionChanged.connect(self._r32_sync_flags)
 
         # R23l: selectors live directly below the inline File Browser/Playlist
         # controls so the route used by Play/Record is always visible.
@@ -2165,6 +2314,9 @@ class Performance(QDialog):
         self._add_lazy_performance_tab(right, "⌨ Hardware", lambda: self._scroll_page(self._build_hardware_tab()))
         self._add_lazy_performance_tab(right, "⇄ Drive / Clone", lambda: self._scroll_page(self._build_transfer_tab()))
         self._add_lazy_performance_tab(right, "🧹 Storage", lambda: self._scroll_page(self._build_storage_tab()))
+        # GROOVEBOX_R32_PERF_TABS_20261110
+        self._add_lazy_performance_tab(right, "🕹 Game Editor", lambda: self._scroll_page(__import__("game_editor").make_page(self.host)))
+        self._add_lazy_performance_tab(right, "🧽 Caches", lambda: self._scroll_page(__import__("site_directory").make_cache_page(self.host)))
         self._add_lazy_performance_tab(right, "⌬ .MG Related", lambda: self._scroll_page(self._build_mg_library_tab()))
         self._add_lazy_performance_tab(right, "⚙ Box Mode", lambda: self._scroll_page(self._build_box_tab()))
         self._add_lazy_performance_tab(right, "📦 Batch Export", self._build_batch_launcher)
@@ -2278,6 +2430,7 @@ class Performance(QDialog):
         self.lbl_window_session.setStyleSheet("color:#8ab4c8; font-size:9pt;")
         lay.addWidget(self.lbl_window_session)
         self._window_session_refs = {}
+        QTimer.singleShot(0, self._refresh_open_windows)
         return page
 
     def _refresh_open_windows(self):
@@ -2287,12 +2440,36 @@ class Performance(QDialog):
         lst.clear(); self._window_session_refs = {}
         mgr = self._window_manager()
         windows = []
-        if mgr is not None and hasattr(mgr, "managed_windows"):
-            try: windows = list(mgr.managed_windows())
-            except Exception: windows = []
-        else:
-            try: windows = [w for w in QApplication.topLevelWidgets() if w is not self.host]
-            except Exception: windows = []
+        if mgr is not None:
+            # session_windows is the same inclusive inventory used by the OS
+            # window strip; managed_windows alone omits transient/plain QWidget
+            # tools and can make the Actions/Window Manager tab look incomplete.
+            try:
+                getter = getattr(mgr, "session_windows", None) or getattr(mgr, "managed_windows", None)
+                windows = list(getter() or []) if callable(getter) else []
+            except Exception:
+                windows = []
+        try:
+            # Merge live, listable top-level widgets created before registration.
+            # Reuse the same predicate as the OS window strip so menus, popups,
+            # tooltips, combo-box helpers and Chromium surfaces do not leak in.
+            _listable = getattr(mgr, "_listable_window", None) if mgr is not None else None
+            for _w in QApplication.topLevelWidgets():
+                if _w is self.host or not getattr(_w, "isWindow", lambda: False)():
+                    continue
+                if callable(_listable) and not _listable(_w):
+                    continue
+                if not callable(_listable) and _w.__class__.__name__ in ("QComboBoxPrivateContainer", "QMenu", "QToolTip"):
+                    continue
+                try:
+                    if _w.isVisible() or _w.isMinimized():
+                        windows.append(_w)
+                except RuntimeError:
+                    continue
+        except Exception:
+            pass
+        # Keep object identity (not overloaded QWidget equality) while merging.
+        _seen = set(); windows = [w for w in windows if w is not None and id(w) not in _seen and not _seen.add(id(w))]
         rows = []
         for w in windows:
             if w is None or w is self or w is self.host:
@@ -2310,7 +2487,7 @@ class Performance(QDialog):
                 continue
         # WINDOW_PRIORITY_20261102: the important windows take the first 15 slots (in this order); everything else
         # follows alphabetically. Matching is by words in the window title.
-        _prio = ("export window", "file manager", "render queue", "compatib", "export", "convert", "key chart",
+        _prio = ("player", "live player", "export window", "file manager", "render queue", "compatib", "export", "convert", "key chart",
                  "output", "hardware", "video planner", "game", "project", "recover", "startup", "performance",
                  "help", "settings")
 
@@ -2569,7 +2746,12 @@ class Performance(QDialog):
     def _rec_reveal(self):
         kind,path=self._rec_selected()
         if not path: return
-        dlg=FileManagerDialog(self,os.path.dirname(path)); dlg.setModal(False); dlg.show(); self._rec_fm=dlg
+        dlg = self._open_file_manager()
+        try:
+            if dlg is not None and hasattr(dlg, "set_directory"):
+                dlg.set_directory(os.path.dirname(path))
+        except Exception as exc:
+            QMessageBox.warning(self, "Reveal recording", str(exc))
 
     def _rec_trash(self):
         kind,path=self._rec_selected()
@@ -2833,7 +3015,7 @@ class Performance(QDialog):
             _pg = tabs.widget(index)
             if _pg is not None:
                 QTimer.singleShot(0, _pg.update)
-                QTimer.singleShot(0, lambda: getattr(self, "_math_background", None) and self._math_background.update())
+                QTimer.singleShot(0, lambda: _gb_safe_update(getattr(self, "_math_background", None)))
         except Exception:
             pass
 
@@ -3201,6 +3383,51 @@ class Performance(QDialog):
         if kind_filter != "All":
             self.refresh()
 
+    def _r32_set_flag(self, which, on):
+        if getattr(self, "_r32_flag_sync", False):
+            return
+        import groovebox_site as gs
+        c = gs.load_cfg(); c.setdefault("undetectable", [])
+        for p in self._selected_paths():
+            if which == "share":
+                c["files"][p] = bool(on)
+            else:
+                if on and p in c["undetectable"]:
+                    c["undetectable"].remove(p)
+                elif not on and p not in c["undetectable"]:
+                    c["undetectable"].append(p)
+        gs.save_cfg(c)
+        self.lbl_status.setText("%s %s for %d file(s)" % ("Shared" if which == "share" else "Detectable", "on" if on else "off", len(self._selected_paths())))
+
+    def _r32_sync_flags(self):
+        try:
+            import groovebox_site as gs
+            sel = self._selected_paths()
+            if not sel:
+                return
+            shared = {p for _i, p in gs.shared_files()}
+            und = set(gs.load_cfg().get("undetectable", []))
+            self._r32_flag_sync = True
+            self.chk_r32_share.setChecked(sel[0] in shared); self.chk_r32_detect.setChecked(sel[0] not in und)
+        except Exception:
+            pass
+        finally:
+            self._r32_flag_sync = False
+
+    def _r32_convert_copy(self):
+        sel = self._selected_paths()
+        menu = QMenu(self)
+        menu.addAction("Transmute / reverse-engineer…", lambda: __import__("media_transmuter").open_window(self.host, sel[0] if sel else None))
+        def _copy():
+            d = QFileDialog.getExistingDirectory(self, "Copy to folder / drive")
+            if d:
+                import shutil
+                for p in sel:
+                    shutil.copy2(p, os.path.join(d, os.path.basename(p)))
+                self.lbl_status.setText("Copied %d file(s) to %s" % (len(sel), d))
+        menu.addAction("Copy to folder / drive…", _copy)
+        menu.exec(QCursor.pos())
+
     def _selected_paths(self) -> List[str]:
         out = []
         for item in self.file_list.selectedItems():
@@ -3445,6 +3672,13 @@ class Performance(QDialog):
             dlg = None
         dlg = MediaPlayerWindow(self, list(items or []), start_index)
         self._media_player_window = dlg
+        try:
+            mgr = self._window_manager()
+            if mgr is not None:
+                mgr._register_window(dlg)
+                mgr.ensure_window_strip()
+        except Exception:
+            pass
         return self._show_session_window(dlg)
 
     def _open_player_window_for_playlist(self):
@@ -3576,6 +3810,11 @@ class Performance(QDialog):
             self._player_fallback_want_video = bool(want_video)
             self._player_fallback_volume = int(volume_pct)
             self._player_proc = subprocess.Popen(cmd + [path], env=penv)
+            try:   # R32.8: the external player is listed in the windows bar
+                import ext_windows as _xw
+                _xw.register(self._player_proc, "Player · " + os.path.basename(str(path)), getattr(self, "_mpv_ipc_path", None))
+            except Exception:
+                pass
             QTimer.singleShot(900, lambda p=self._player_proc, mp=path: self._check_player_launch(p, mp))
             try:
                 if self._media_share_server is not None:
@@ -3662,6 +3901,10 @@ class Performance(QDialog):
                 try:
                     cmd, penv = self._routed_player(cmd, want_video=want_video)
                     self._player_proc = subprocess.Popen(cmd + [path], env=penv)
+                    try:
+                        import ext_windows as _xw; _xw.register(self._player_proc, "Player · " + os.path.basename(str(path)))
+                    except Exception:
+                        pass
                     self.lbl_status.setText(f"Primary player exited ({rc}); retrying with {backend}: {os.path.basename(path)}")
                     QTimer.singleShot(900, lambda p=self._player_proc, mp=path: self._check_player_launch(p, mp))
                     return
@@ -3986,6 +4229,13 @@ class Performance(QDialog):
         self.btn_randomize_playlist_dj.setToolTip("Seeded, undoable-style arrangement: shuffles playlist order and assigns bounded per-item volume/pitch/rate/direction parameters. Does not alter source media or canonical composition data.")
         self.btn_randomize_playlist_dj.clicked.connect(self._randomize_playlist_and_dj_parameters)
         lay.addWidget(self.btn_randomize_playlist_dj)
+        self.btn_seed_structure_dj = QPushButton("🌱 SEED-STRUCTURED DJ · scan media and arrange it like the seed")
+        self.btn_seed_structure_dj.setMinimumHeight(40)
+        self.btn_seed_structure_dj.setToolTip("Evaluates the seed program over time (value, slope, curvature), measures every playlist and "
+                                              "system media file (loudness, brightness, pitch), and lays the best matches out on a "
+                                              "timeline that follows the seed. Undo Randomize restores.")
+        self.btn_seed_structure_dj.clicked.connect(lambda: __import__("seed_structure_dj").apply_to_performance(self, system=True))
+        lay.addWidget(self.btn_seed_structure_dj)
 
         row = QHBoxLayout()
         btn_play = QPushButton("▶ Play")
@@ -4026,7 +4276,7 @@ class Performance(QDialog):
         self.cmb_playlist_arrange = QComboBox()
         self.cmb_playlist_arrange.addItems([
             "Energy arc (size)", "Interleave A/V", "Deterministic shuffle", "Geometric phaselock seeded", "Name order",
-            "Analyzed match (reverse-engineer)",
+            "Analyzed match (reverse-engineer)", "Seed structure (playlist media)", "Seed structure (scan system media)",
         ])
         self.spin_playlist_arrange_seed = QSpinBox()
         self.spin_playlist_arrange_seed.setRange(0, 2147483647)
@@ -4198,6 +4448,14 @@ class Performance(QDialog):
             except Exception as e:
                 self.lbl_status.setText(f"Geometric playlist error: {e}")
                 return
+        elif mode.startswith("Seed structure"):
+            # GROOVEBOX_R32_SEED_STRUCTURE_DJ_20261110: media chosen and timed to mimic the seed's curve.
+            try:
+                import seed_structure_dj
+                seed_structure_dj.apply_to_performance(self, system="scan system" in mode)
+            except Exception as e:
+                self.lbl_status.setText(f"Seed-structure DJ error: {e}")
+            return
         elif mode == "Analyzed match (reverse-engineer)":
             # Real-signal greedy nearest-neighbor chain: each next track is the
             # closest-measured match (pitch/brightness/loudness/rhythm) to the
@@ -4445,6 +4703,10 @@ class Performance(QDialog):
             try:
                 cmd, penv = self._routed_player(cmd, want_video=want_video)
                 proc = subprocess.Popen(cmd + [it["path"]], env=penv)
+                try:
+                    import ext_windows as _xw; _xw.register(proc, "Player · " + os.path.basename(str(it["path"])), None)
+                except Exception:
+                    pass
                 self._mix_procs.append(proc)
                 started.append(f"{os.path.basename(it['path'])} @{it.get('volume', 100)}%")
             except Exception:
@@ -5051,7 +5313,7 @@ class Performance(QDialog):
         QMessageBox.information(self, "Cutup Lab", "Select an audio file in the Performance browser first.")
 
     def _cutup_browse(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Load sample", self._host_samples_dir(), "Audio (*.wav *.flac *.mp3 *.ogg *.opus *.aiff *.aif *.caf);;All files (*)")
+        path, _ = QFileDialog.getOpenFileName(self, "Load sample", self._host_samples_dir(), "Audio (*.wav *.flac *.mp3 *.ogg *.opus *.aiff *.aif *.caf *.MCC *.mcc);;MCC media (*.MCC *.mcc);;All files (*)")
         if path:
             self._cutup_set_source(path)
 
@@ -5064,7 +5326,7 @@ class Performance(QDialog):
         QMessageBox.information(self, "Cutup Lab", "Select a video file in the Performance browser first.")
 
     def _cutup_browse_video(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Load video source", self._host_exports_dir(), "Video (*.mp4 *.webm *.avi *.mov *.mkv);;All files (*)")
+        path, _ = QFileDialog.getOpenFileName(self, "Load video source", self._host_exports_dir(), "Video (*.mp4 *.webm *.avi *.mov *.mkv *.MCC *.mcc);;MCC media (*.MCC *.mcc);;All files (*)")
         if path:
             self._cutup_video_path = os.path.abspath(path)
             self.lbl_cutup_video.setText(os.path.basename(path))
@@ -5330,6 +5592,10 @@ class Performance(QDialog):
                 try:
                     cmd, penv = self._routed_player(cmd, want_video=(_gb_ext(media_path) in VIDEO_EXT))
                     self._player_proc = subprocess.Popen(cmd + [media_path], env=penv)
+                    try:
+                        import ext_windows as _xw; _xw.register(self._player_proc, "Player · " + os.path.basename(str(media_path)), getattr(self, "_mpv_ipc_path", None))
+                    except Exception:
+                        pass
                     # VLC can otherwise hand a file to an existing instance and make
                     # the child disappear immediately. --no-one-instance above avoids
                     # that; a short deferred poll still surfaces real launch failures.
@@ -5549,9 +5815,13 @@ class Performance(QDialog):
         try:
             self.cmb_quick_audio_output.blockSignals(True); self.cmb_quick_audio_output.clear()
             for row in self._quick_audio_rows:
-                _lab=str(row.get('description') or row.get('name') or 'Audio output')
+                _lab=str(row.get('description') or row.get('name') or 'Audio output'); _tip=_lab
+                try:   # R32.8 DEVICE_LABELS: role, behaviour, channels, rate
+                    import device_labels as _dl; _lab,_tip=_dl.label(row,'out',_lab)
+                except Exception: pass
                 if row.get('backend')!='alsa' and row.get('verified') is False: _lab+='  (not verified)'
                 self.cmb_quick_audio_output.addItem(_lab,row)
+                self.cmb_quick_audio_output.setItemData(self.cmb_quick_audio_output.count()-1,_tip,Qt.ItemDataRole.ToolTipRole)
             if not self._quick_audio_rows: self.cmb_quick_audio_output.addItem('No physical audio output detected',{})
             preferred=str(getattr(self.host,'_preferred_audio_output_name','') or '')
             pick=0
@@ -5563,10 +5833,14 @@ class Performance(QDialog):
             self.cmb_quick_audio_input.blockSignals(True); self.cmb_quick_audio_input.clear()
             for row in self._quick_input_rows:
                 meta=dict(row.get('meta') or {}); backend=str(row.get('backend') or meta.get('backend') or 'sounddevice')
-                label=str(row.get('name') or 'Audio input')
-                if backend=='alsa': label='ALSA · '+label
+                label=str(row.get('name') or 'Audio input'); _tip=label
+                try:   # R32.8 DEVICE_LABELS
+                    import device_labels as _dl; label,_tip=_dl.label(row,'in',label)
+                except Exception: pass
+                if backend=='alsa' and 'ALSA' not in label: label='ALSA · '+label
                 elif row.get('verified') is False: label+='  (not verified)'
                 self.cmb_quick_audio_input.addItem(label,row)
+                self.cmb_quick_audio_input.setItemData(self.cmb_quick_audio_input.count()-1,_tip,Qt.ItemDataRole.ToolTipRole)
             if not self._quick_input_rows: self.cmb_quick_audio_input.addItem('No physical microphone detected',{})
             pref_in=str(getattr(self.host,'_preferred_audio_input_name','') or '')
             pick=0
@@ -6162,7 +6436,7 @@ class Performance(QDialog):
         iso_note=QLabel("Copies the finished Groovebox ISO onto the selected drive inside Groovebox/ISO. Existing folders and files on the drive are preserved; a same-named ISO is replaced atomically and checked with SHA-256, like an OS update that keeps the rest of the disk.")
         iso_note.setWordWrap(True); iv.addRow(iso_note)
         self.lbl_iso_source=QLabel("No finished ISO selected."); self.lbl_iso_source.setWordWrap(True); self.lbl_iso_source.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse); iv.addRow("ISO",self.lbl_iso_source)
-        ir=QHBoxLayout(); b=QPushButton("↻ Find Finished ISO"); b.clicked.connect(self._find_finished_iso); ir.addWidget(b); b=QPushButton("Browse ISO…"); b.clicked.connect(self._browse_iso); ir.addWidget(b); b=QPushButton("Copy Finished ISO to Drive"); b.clicked.connect(self._copy_iso_to_mount); ir.addWidget(b); iv.addRow(ir)
+        ir=QHBoxLayout(); b=QPushButton("↻ Find Finished ISO"); b.clicked.connect(self._find_finished_iso); ir.addWidget(b); b=QPushButton("Browse ISO…"); b.clicked.connect(self._browse_iso); ir.addWidget(b); b=QPushButton("Copy Finished ISO to Drive"); b.clicked.connect(self._copy_iso_to_mount); ir.addWidget(b); b=QPushButton("Write Bootable Thumb Drive"); b.clicked.connect(self._write_bootable); ir.addWidget(b); iv.addRow(ir)
         self.chk_iso_verify=QCheckBox("Verify SHA-256 after copy"); self.chk_iso_verify.setChecked(True); iv.addRow(self.chk_iso_verify)
         self.lbl_iso_progress=QLabel("Idle"); self.lbl_iso_progress.setWordWrap(True); self.lbl_iso_progress.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse); iv.addRow("Copy",self.lbl_iso_progress)
         lay.addWidget(iso); lay.addStretch(1); return w
@@ -6907,11 +7181,12 @@ class Performance(QDialog):
 
     def _find_finished_iso(self):
         try:
-            from operation_station_transfer import find_finished_iso
-            iso=find_finished_iso(Path(__file__).resolve().parent)
+            from operation_station_transfer import find_finished_iso, ensure_self_iso
+            # SELF_ISO_20261107: keep a copy of this system's ISO for Copy to Disk.
+            iso = ensure_self_iso() or find_finished_iso(Path(__file__).resolve().parent)
             if iso:
                 self._set_iso_source(iso)
-                self.lbl_status.setText("Finished product ISO found.")
+                self.lbl_status.setText("Self-ISO ready." if str(iso).endswith("self.iso") else "Finished product ISO found.")
             else:
                 self._last_iso_path=None
                 self.lbl_iso_source.setText("No finished ISO found. Build the ISO, or Browse to select it.")
@@ -6924,6 +7199,30 @@ class Performance(QDialog):
         if path:
             self._set_iso_source(path)
             self.lbl_status.setText("Finished product ISO selected.")
+
+    def _write_bootable(self):
+        """Write the self-ISO as a bootable image to a USB stick."""
+        from PyQt6.QtWidgets import QInputDialog, QMessageBox
+        dev, ok = QInputDialog.getText(self, "Bootable thumb drive",
+            "Whole-disk device (e.g. /dev/sdb). This ERASES the stick.")
+        if not ok or not dev.strip():
+            return
+        ans = QMessageBox.warning(self, "Erase stick",
+            f"Write the Groovebox/sOS ISO to {dev} as a bootable installer?\n\nThis erases the stick.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            from operation_station_transfer import ensure_self_iso, write_bootable_installer
+            iso = ensure_self_iso()
+            if iso is None:
+                QMessageBox.warning(self, "No ISO", "No self-ISO found. Build one first.")
+                return
+            write_bootable_installer(str(iso), dev.strip())
+            QMessageBox.information(self, "Done", f"Bootable installer written to {dev}.")
+        except Exception as exc:
+            QMessageBox.warning(self, "Write failed", str(exc))
 
     def _copy_iso_to_mount(self):
         iso=self._last_iso_path
@@ -7442,7 +7741,7 @@ class Performance(QDialog):
         self.cmb_batch_kind = QComboBox()
         self.cmb_batch_kind.addItems([
             "Audio WAV", "Audio MP3", "Audio Opus", "Audio OGG",
-            "Video+Audio MP4", "Video-only MP4",
+            "Video+Audio MP4", "Video-only MP4", "Project OBJ",
         ])
         form.addRow("Export as", self.cmb_batch_kind)
         self.chk_batch_preview = QCheckBox("Pi-safe: use preview rows for audio (faster)")
@@ -7720,6 +8019,13 @@ class Performance(QDialog):
                         yield from self._batch_audio_export_steps(fmt, br, path)
                     else:
                         self._batch_log("  no export_mixdown_dialog on host")
+                elif kind == "Project OBJ":
+                    # R32.11.3: each project → its own OBJ (3D song model, exact audio + project inside),
+                    # rendered by the background export worker; listed in Export Jobs.
+                    stem = os.path.splitext(os.path.basename(project_path))[0]
+                    out = os.path.join(str(self.host._exports_dir()), stem + ".obj")
+                    self.host.export_project_obj(out, ask=False)
+                    self._batch_log(f"  queued OBJ → {out}")
                 elif "Video" in kind:
                     include_audio = "Video+Audio" in kind
                     if hasattr(self.host, "export_video_dialog"):
@@ -7742,8 +8048,12 @@ class Performance(QDialog):
     def _batch_executor(self):
         ex = getattr(self, "_batch_ex", None)
         if ex is None:
-            from concurrent.futures import ThreadPoolExecutor
-            ex = ThreadPoolExecutor(max_workers=1, thread_name_prefix="GrooveboxBatch")
+            try:
+                import thread_budget as _tb
+                ex = _tb.make_lane("performance-batch-export", max_workers=1, max_pending=24)
+            except Exception:
+                from concurrent.futures import ThreadPoolExecutor
+                ex = ThreadPoolExecutor(max_workers=1, thread_name_prefix="GrooveboxBatch")
             self._batch_ex = ex
         return ex
 
@@ -8286,6 +8596,10 @@ class _Deck:
                 cmd.append("--ao=pipewire,pulse,alsa")
         try:
             self.proc = subprocess.Popen(cmd + [path], env=env)
+            try:
+                import ext_windows as _xw; _xw.register(self.proc, "Deck " + str(getattr(self, "name", "")) + " · " + os.path.basename(str(path)), getattr(self, "ipc_path", None))
+            except Exception:
+                pass
             self.started_at = time.monotonic()
             self.resume_position = 0.0
             return True, ""
@@ -8601,10 +8915,21 @@ class MediaPlayerWindow(QDialog):
     Playlist tab or straight from the Browse Files window on a single file.
     """
 
+    def resizeEvent(self, event):
+        try:
+            bg=getattr(self,"_math_background",None)
+            if bg is not None: bg.setGeometry(self.rect()); bg.lower()
+        except Exception: pass
+        super().resizeEvent(event)
+
     def __init__(self, parent: Optional[QWidget], items: List[Dict[str, Any]], start_index: int = 0):
         super().__init__(parent)
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setAcceptDrops(True)
         self.setWindowTitle("Groovebox Player · DJ Decks")
         self.resize(760, 720)
+        from parametric_math_background import ParametricMathBackground as _GBMathBG
+        self._math_background = _GBMathBG(self)
         self.setStyleSheet(
             "QDialog { background:#071019; color:#d9edf5; }"
             "QGroupBox { border:1px solid #284c62; border-radius:7px; margin-top:8px; padding-top:7px; font-weight:700; }"
@@ -8628,13 +8953,14 @@ class MediaPlayerWindow(QDialog):
         self._device_scan_generation = 0
         self._device_scan_bridge = _DeviceScanBridge()
         self._device_scan_bridge.done.connect(self._on_device_scan_done)
-        self._device_scan_pool = QThreadPool(self)
+        from ui_runtime import make_qt_pool
+        self._device_scan_pool = make_qt_pool("performance-device-scan", max_workers=1, max_pending=16, parent=self)
         self._device_scan_pool.setMaxThreadCount(1)
         # R6_EVENT_LOOP_20260928: mpv status reads use their own single worker.
         # Never allow overlapping status probes and never run recv() on Qt GUI.
         self._player_poll_bridge = _PlayerPollBridge()
         self._player_poll_bridge.done.connect(self._on_player_poll_done)
-        self._player_poll_pool = QThreadPool(self)
+        self._player_poll_pool = make_qt_pool("performance-player-poll", max_workers=1, max_pending=4, parent=self)
         self._player_poll_pool.setMaxThreadCount(1)
         self._player_poll_generation = 0
         self._player_poll_inflight = False
@@ -8723,6 +9049,9 @@ class MediaPlayerWindow(QDialog):
         self._viz_combo.hide()
         da.addWidget(self._viz_combo)
         da.addWidget(self._viz)
+        # ONE_PLAYER_R31: MCC media plays INSIDE this window (no separate MCC player window).
+        self._deck_layout = da
+        self._mcc_embed = None
         # GROOVEBOX_R23R_PLAYER_METER_20261103: volume meter (peak / RMS dBFS after the player volume)
         try:
             from master_hardware_panel import _Meter
@@ -9063,10 +9392,11 @@ class MediaPlayerWindow(QDialog):
         _cur = str(self._items[self._index].get("path", "") or "")
         if _cur and os.path.isfile(_cur):
             self._update_visualizer_for(_cur)
+            self._stop_embedded_mcc()
             if _gb_mcc_kind(_cur) == "video":
                 self._deckA.stop()
-                self._mcc_dlg = _gb_open_mcc_video(self, _cur, int(self.sld_volume.value()))
-                self.lbl_status.setText(f"Deck A · MCC video playing directly (lossless): {os.path.basename(_cur)}")
+                self._play_embedded_mcc(_cur)
+                self.lbl_status.setText(f"Deck A · MCC video playing in this player (lossless): {os.path.basename(_cur)}")
                 return
         try:
             from hardware_runtime import ensure_first_hardware_refresh, ensure_audio_ready
@@ -9235,7 +9565,38 @@ class MediaPlayerWindow(QDialog):
             self._stop()
             self._play_current()
 
+    def _play_embedded_mcc(self, path):
+        """ONE_PLAYER_R31: the native MCC player as a child widget of this window's deck."""
+        from media_visualizer import MccVideoPlayer
+        host = _gb_find_host(self)
+        w = MccVideoPlayer(path, self, host=host, volume_pct=int(self.sld_volume.value()),
+                           play_audio=lambda h, x, sr, p, v: _gb_play_decoded(h, x, sr, p, v),
+                           stop_audio=_gb_stop_file_player)
+        w.setWindowFlags(Qt.WindowType.Widget)          # embedded, not a separate window
+        w.setMinimumSize(320, 200)
+        try:
+            self._viz.hide(); self._viz_combo.hide()
+        except Exception:
+            pass
+        self._deck_layout.addWidget(w, 1)
+        w.show()
+        self._mcc_embed = w
+        self._paused = False
+        self.btn_playpause.setText("⏸ Pause")
+
+    def _stop_embedded_mcc(self):
+        w, self._mcc_embed = getattr(self, "_mcc_embed", None), None
+        if w is None:
+            return
+        try:
+            w.close()                                   # stops decode + audio (its closeEvent)
+            self._deck_layout.removeWidget(w)
+            w.deleteLater()
+        except RuntimeError:
+            pass
+
     def _stop(self):
+        self._stop_embedded_mcc()
         try: self._viz.clear()
         except Exception: pass
         self._manual_stop = True
@@ -9400,7 +9761,8 @@ class MediaPlayerWindow(QDialog):
 
     # -- Deck B -----------------------------------------------------------
     def _load_deck_b_dialog(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Load into Deck B")
+        path, _ = QFileDialog.getOpenFileName(self, "Load into Deck B", os.path.expanduser("~"),
+            "Supported media (*.wav *.wave *.mp3 *.flac *.ogg *.m4a *.aac *.opus *.mp4 *.m4v *.mov *.mkv *.webm *.avi *.MCC *.mcc);;Audio (*.wav *.wave *.mp3 *.flac *.ogg *.m4a *.aac *.opus);;Video (*.mp4 *.m4v *.mov *.mkv *.webm *.avi);;MCC media (*.MCC *.mcc);;All files (*)")
         if path:
             self._deckB.path = path
             self.lbl_deckB.setText(f"Loaded: {os.path.basename(path)}")
@@ -9586,7 +9948,9 @@ class DuplicatesDialog(QDialog):
         self.lbl_root = QLabel(root_dir); self.lbl_root.setWordWrap(True); top.addWidget(self.lbl_root, 1)
         top.addWidget(QLabel("Min size (KB):"))
         self.spin_min = QSpinBox(); self.spin_min.setRange(0, 10_000_000); self.spin_min.setValue(1); top.addWidget(self.spin_min)
-        self.chk_hidden = QCheckBox("Include hidden"); top.addWidget(self.chk_hidden)
+        self.chk_hidden = QCheckBox("Include hidden / system folders"); self.chk_hidden.setToolTip(
+            "Scan dotfiles and ordinary system folders under the selected root. Symlinks are never followed; unreadable paths are reported.")
+        top.addWidget(self.chk_hidden)
         self.btn_scan = QPushButton("🔍 Index"); self.btn_scan.clicked.connect(self.scan); top.addWidget(self.btn_scan)
         self.btn_cancel = QPushButton("Cancel"); self.btn_cancel.clicked.connect(self._cancel.set); top.addWidget(self.btn_cancel)
         lay.addLayout(top)
@@ -9616,9 +9980,11 @@ class DuplicatesDialog(QDialog):
             try:
                 from file_tools import find_duplicates
                 t0 = time.time()
+                scan_errors = []
                 g = find_duplicates(root, min_size=max(1, min_kb * 1024), skip_dirs=skip, include_hidden=hidden,
-                                    progress=lambda ph, d, t: bridge.phase.emit(ph, d, t), cancel=cancel)
-                bridge.groups.emit(g, f"{time.time() - t0:.1f}")
+                                    progress=lambda ph, d, t: bridge.phase.emit(ph, d, t), cancel=cancel,
+                                    errors=scan_errors)
+                bridge.groups.emit(g, f"{time.time() - t0:.1f}|{len(scan_errors)}")
             except Exception as e:
                 bridge.groups.emit([], f"error: {e}")
         threading.Thread(target=run, daemon=True, name="groovebox-dup-index").start()
@@ -9650,7 +10016,11 @@ class DuplicatesDialog(QDialog):
         self.tree.blockSignals(False)
         self.auto_select()
         total = sum(g["wasted"] for g in self._groups)
-        self.lbl.setText(f"{len(self._groups)} duplicate group(s) · {_safe_size_bytes(total)} reclaimable · indexed in {took} s.")
+        _parts = str(took).split("|", 1)
+        _elapsed = _parts[0]
+        _errors = int(_parts[1]) if len(_parts) > 1 and _parts[1].isdigit() else 0
+        self.lbl.setText(f"{len(self._groups)} duplicate group(s) · {_safe_size_bytes(total)} reclaimable · indexed in {_elapsed} s."
+                         + (f" { _errors } unreadable/changed path(s) skipped; see application log." if _errors else ""))
 
     def _items(self):
         for i in range(self.tree.topLevelItemCount()):
@@ -9700,6 +10070,34 @@ class DuplicatesDialog(QDialog):
         sel, whole = self._selected()
         if not sel:
             return
+        protected_roots = ("/boot", "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/var/lib",
+                           "/System", "/Windows", "/Program Files", "/Program Files (x86)")
+        protected = []
+        try:
+            import groovebox_paths as _gp
+            _store = os.path.realpath(str(_gp.system_root()))
+        except Exception:
+            _store = ""
+        for _gi, _path in sel:
+            try:
+                _real = os.path.realpath(str(_path))
+                _inside_store = bool(_store and os.path.commonpath([_real, _store]) == _store)
+                _inside_os = any(os.path.commonpath([_real, os.path.realpath(_root)]) == os.path.realpath(_root)
+                                 for _root in protected_roots if os.path.exists(_root))
+                try:
+                    _inside_store = _inside_store or bool(_gp.is_system_path(_real))
+                except Exception:
+                    pass
+                if _inside_store or _inside_os:
+                    protected.append(str(_path))
+            except Exception:
+                continue
+        if protected:
+            QMessageBox.warning(self, "Protected system files",
+                                f"{len(protected)} selected item(s) are inside OS-critical locations. "
+                                "They can be indexed for duplicates, but this tool will not move them to Trash. "
+                                "Select only user-data copies instead.")
+            return
         msg = f"Move {len(sel)} file(s) to Groovebox Trash?"
         if whole:
             msg += f"\n\n⚠ In {whole} group(s) EVERY copy is selected — no copy of those files would remain outside the Trash."
@@ -9745,18 +10143,15 @@ class FileManagerDialog(QDialog):
         self._kind_worker.batch_done.connect(self._on_probe_done)
         self._file_list_bridge = _FileListBridge()
         self._file_list_bridge.done.connect(self._on_directory_listed)
-        self._worker_pool = QThreadPool(self)
-        # R5 legacy verifier compatibility token only; DO NOT execute: self._worker_pool.setMaxThreadCount(2)
-        # R17 verifier compatibility token only; R18 reserves CPU for Main: self._worker_pool.setMaxThreadCount(max(4, min(8, int(os.cpu_count() or 4))))
-        # Bounded parallelism: use several independent workers for device scans,
-        # media probes and background analysis without saturating cores needed by
-        # the Qt event loop, real-time audio, camera capture, and the OS scheduler.
-        # Do not create one thread per device/task; QThreadPool bounds concurrency.
-        _cpu_count = max(2, int(os.cpu_count() or 2))
-        # Keep at least one logical CPU available for the GUI, realtime audio callbacks,
-        # capture, and the OS. On 2-core laptops this intentionally drops to one
-        # background worker; larger CPUs scale up but never exceed eight.
-        self._worker_pool.setMaxThreadCount(max(1, min(8, _cpu_count - 1)))
+        self._file_list_bridge.preview.connect(self._on_preview_ready)
+        # R30.3_SHARED_POOL: File Manager uses the same sCode executor as every
+        # other window; the logical lane bounds its own queue and work admission.
+        from ui_runtime import make_qt_pool
+        import thread_budget as _thread_budget
+        self._worker_pool = make_qt_pool(
+            "performance-file-manager", max_workers=_thread_budget.lane_workers(),
+            max_pending=128, parent=self,
+        )
         self._last_trash_moves: List[Tuple[str,str]] = []
         try:
             import groovebox_paths
@@ -10037,10 +10432,25 @@ class FileManagerDialog(QDialog):
 
     def _request_storage_format(self):
         data=self.cmb_storage_devices.currentData() if hasattr(self,"cmb_storage_devices") else None
-        if not isinstance(data,dict) or data.get("formattable") != "1" or data.get("protected") == "1":
+        if not isinstance(data,dict) or data.get("protected") == "1":
             QMessageBox.warning(self,"Format Partition","This target is protected or is not a removable partition.")
             return
         dev=str(data.get("device","") or "")
+        # SD_FORMAT_BEFORE_BLOCK_20261107: a corrupt card may never register a
+        # block. Allow the attempt on the reader row so the user can see if
+        # the card is the problem.
+        if not dev and data.get("kind") == "microSD reader":
+            dev = "/dev/mmcblk0"
+            if not os.path.exists(dev):
+                ans = QMessageBox.question(self, "No block yet",
+                    "No /dev/mmcblk0 yet. Request a format anyway so sOS can try to create the node?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No)
+                if ans != QMessageBox.StandardButton.Yes:
+                    return
+        elif data.get("formattable") != "1":
+            QMessageBox.warning(self,"Format Partition","This target is protected or is not a removable partition.")
+            return
         if not dev:
             return
         formats=["exfat","vfat","ext4"]
@@ -10140,7 +10550,22 @@ class FileManagerDialog(QDialog):
         try: return os.path.commonpath([os.path.realpath(path),os.path.realpath(root)]) == os.path.realpath(root)
         except Exception: return False
     def _allowed(self,path: str) -> bool:
-        return self.chk_advanced.isChecked() or any(self._inside(path,r) for r in self._safe_roots)
+        if self.chk_advanced.isChecked() or any(self._inside(path,r) for r in self._safe_roots):
+            return True
+        # R32.9: drives mounted AFTER this window was created (USB / microSD / external SSD) are allowed too —
+        # the safe roots used to be computed once, so a new drive's folder bounced back to home.
+        for r in ("/media", "/run/media", "/mnt", "/Volumes"):
+            if os.path.isdir(r) and self._inside(path, r):
+                return True
+        try:
+            p_ = os.path.realpath(path)
+            while p_ and p_ != os.path.dirname(p_):
+                if os.path.ismount(p_) and p_ not in ("/", "/boot", "/boot/efi"):
+                    return True
+                p_ = os.path.dirname(p_)
+        except Exception:
+            pass
+        return False
     @staticmethod
     def _valid_leaf(name: str) -> bool:
         n=name.strip()
@@ -10155,6 +10580,21 @@ class FileManagerDialog(QDialog):
         if ext not in VIDEO_EXT:return KIND_UNKNOWN
         try: st=os.stat(path); c=self._kind_cache.get(path); return c[2] if c and c[0]==st.st_mtime and c[1]==st.st_size else KIND_PENDING
         except OSError:return KIND_UNKNOWN
+    def _start_background_task(self, fn, *args, label="file manager task"):
+        """Submit to sCode's shared lane, falling back to a daemon worker on admission failure."""
+        try:
+            self._worker_pool.start(_PoolTask(fn, *args))
+            return "shared"
+        except Exception as exc:
+            try:
+                self.lbl_status.setText(f"Shared worker busy ({exc}); {label} moved to a dedicated worker…")
+            except Exception:
+                pass
+            th = threading.Thread(target=fn, args=args, daemon=True,
+                                  name="groovebox-fm-" + "".join(c if c.isalnum() else "-" for c in str(label))[:32])
+            th.start()
+            return "fallback"
+
     def _scan_directory_worker(self, generation: int, directory: str):
         entries=[]; error=""
         try:
@@ -10178,7 +10618,13 @@ class FileManagerDialog(QDialog):
         self.lbl_path.setText(self._dir); self.list_widget.clear()
         self.lbl_status.setText("Loading directory in background…")
         self._directory_signature_value = Performance._directory_signature(self._dir)
-        self._worker_pool.start(_PoolTask(self._scan_directory_worker, generation, self._dir))
+        # R32.9: a directory scan is light I/O — it gets its own short-lived thread every time, so a shared pool
+        # busy with canonical / render work can never leave the browser stuck at "Loading…".
+        threading.Thread(target=self._scan_directory_worker, args=(generation, self._dir), daemon=True,
+                         name="groovebox-fm-scan").start()
+        QTimer.singleShot(8000, lambda g=generation: (self.lbl_status.setText(
+            f"Still reading {self._dir} … (slow or sleeping drive)") if g == self._kind_generation
+            and self.lbl_status.text().startswith("Loading") else None))
 
     def _on_directory_listed(self, generation:int, directory:str, entries, error:str):
         if generation!=self._kind_generation or os.path.abspath(directory)!=os.path.abspath(self._dir): return
@@ -10186,14 +10632,17 @@ class FileManagerDialog(QDialog):
             self.lbl_status.setText(f"Cannot list {directory}: {error}"); return
         self.list_widget.clear(); pending=[]
         _show_hidden=bool(getattr(self,"chk_hidden",None) and self.chk_hidden.isChecked())
+        _raw_count = len(entries)
+        _hidden_count = 0
         for name, full, is_dir, mtime, size in entries:
-            if not _show_hidden:
-                if name.startswith("."): continue
-                try:   # GROOVEBOX_R23R_HIDE_SYSTEM_FILES_20261103: Groovebox system files stay out of sight
-                    import groovebox_paths as _gpv
-                    if _gpv.is_system_path(full): continue
-                except Exception:
-                    pass
+            # System-path classification controls navigation/protected operations,
+            # not ordinary visibility inside a user-selected folder. Applying it
+            # here hid legitimate projects/media (and could hide an entire tree
+            # when a mount was classified below the system root). Only dotfiles
+            # are hidden by default; the checkbox reveals those too.
+            if not _show_hidden and name.startswith("."):
+                _hidden_count += 1
+                continue
             if is_dir: kind="dir"; icon="📁 "
             else:
                 ext=_gb_ext(full)
@@ -10207,8 +10656,74 @@ class FileManagerDialog(QDialog):
                 icon=_kind_icon(kind)+" "
             item=QListWidgetItem(icon+name); item.setData(Qt.ItemDataRole.UserRole,full); item.setData(Qt.ItemDataRole.UserRole+1,kind); self.list_widget.addItem(item)
         self._apply_name_filter()
-        self.lbl_status.setText(f"{self.list_widget.count()} item(s)" + (f" · classifying {len(pending)} video file(s) in background…" if pending else ""))
-        if pending: self._worker_pool.start(_PoolTask(self._kind_worker.run_batch, generation, list(pending)))
+        self.lbl_status.setText(
+            f"{self.list_widget.count()} item(s) · { _raw_count } entries read"
+            + (f" · { _hidden_count } hidden dotfile(s)" if _hidden_count else "")
+            + (f" · classifying {len(pending)} video file(s) in background…" if pending else " · scan complete")
+        )
+        if pending: self._start_background_task(self._kind_worker.run_batch, generation, list(pending), label="media classification")
+        # R32.9 MEDIA PREVIEWS on the interactive lane (never queued behind renders): thumbnails + lengths
+        _media=[(full, kind_) for i_ in range(min(300, self.list_widget.count()))
+                for full, kind_ in [(self.list_widget.item(i_).data(Qt.ItemDataRole.UserRole), self.list_widget.item(i_).data(Qt.ItemDataRole.UserRole+1))]
+                if kind_ in (KIND_IMAGE, KIND_AUDIO) or _gb_ext(str(full)) in VIDEO_EXT]
+        for full, kind_ in _media:
+            try:
+                self._worker_pool.start(_PoolTask(self._preview_worker, generation, str(full), str(kind_)))
+            except Exception:
+                break       # lane full: the rest stay plain (the listing is never affected)
+
+    def _preview_worker(self, generation, path, kind):
+        if generation != self._kind_generation:
+            return          # folder changed: drop stale work
+        img = None; info = ""
+        try:
+            if kind == KIND_IMAGE:
+                from PyQt6.QtGui import QImage
+                q = QImage(path)
+                if not q.isNull():
+                    info = f"{q.width()}×{q.height()}"
+                    img = q.scaled(48, 48, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            else:
+                dur = None
+                try:
+                    import soundfile as _sf
+                    _i = _sf.info(path); dur = float(_i.frames) / float(_i.samplerate or 1)
+                except Exception:
+                    try:
+                        import wave as _wv, contextlib as _cl
+                        with _cl.closing(_wv.open(path)) as _w:
+                            dur = _w.getnframes() / float(_w.getframerate() or 1)
+                    except Exception:
+                        dur = None
+                if dur is None:
+                    ff = shutil.which("ffprobe")
+                    if ff:
+                        r = subprocess.run([ff, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+                                           capture_output=True, text=True, timeout=8)
+                        try:
+                            dur = float((r.stdout or "").strip() or "nan")
+                        except ValueError:
+                            dur = None
+                if dur is not None and dur == dur:
+                    info = "%d:%02d" % (int(dur) // 60, int(dur) % 60)
+        except Exception:
+            return
+        if generation == self._kind_generation and (img is not None or info):
+            self._file_list_bridge.preview.emit(generation, path, img, info)
+
+    def _on_preview_ready(self, generation, path, img, info):
+        if generation != self._kind_generation:
+            return
+        from PyQt6.QtGui import QIcon, QPixmap
+        for i in range(self.list_widget.count()):
+            it = self.list_widget.item(i)
+            if it.data(Qt.ItemDataRole.UserRole) == path:
+                if img is not None:
+                    it.setIcon(QIcon(QPixmap.fromImage(img)))
+                if info and "  ·  " not in it.text():
+                    it.setText(it.text() + "  ·  " + info)
+                break
+
     def _on_probe_progress(self,generation:int,path:str,kind:str):
         if generation!=self._kind_generation:return
         try: st=os.stat(path); _bounded_cache_put(self._kind_cache,path,(st.st_mtime,st.st_size,kind),256)
@@ -10261,7 +10776,7 @@ class FileManagerDialog(QDialog):
                 except Exception as exc:
                     errs.append(f"{os.path.basename(src)}: {exc}")
             self._drop_bridge.done.emit(ok,errs)
-        self._worker_pool.start(_PoolTask(run))
+        self._start_background_task(run, label="file copy")
     def _on_drop_copy_done(self,ok,errs):
         self.refresh()
         msg=f"Copied {ok} item(s) into {self._dir}."+(f" {len(errs)} failed: "+"; ".join(errs[:3]) if errs else "")
@@ -10515,7 +11030,13 @@ class FileManagerDialog(QDialog):
             except Exception as e: QMessageBox.warning(self,"Trash failed",f"{path}\n{e}")
         self._last_trash_moves=moved; self.refresh(); self.lbl_status.setText(f"Moved {len(moved)} item(s) to Groovebox Trash.")
     def _index_duplicates(self):
-        dlg=DuplicatesDialog(self, self._dir, trash=self._trash_duplicates, skip_dirs=(self._trash_dir,))
+        _skip = [self._trash_dir]
+        try:
+            import groovebox_paths as _gp
+            _skip.append(_gp.system_root())
+        except Exception:
+            pass
+        dlg=DuplicatesDialog(self, self._dir, trash=self._trash_duplicates, skip_dirs=tuple(_skip))
         dlg.setModal(False); dlg.show(); self._dups_dialog=dlg
 
     def _trash_duplicates(self, paths):

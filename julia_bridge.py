@@ -64,14 +64,45 @@ def _init_julia() -> bool:
             _jl_error = f"Julia package load failed: {exc}"
             return False
 
-try:
-    _init_julia()
-except Exception:
-    pass
+# Julia is deliberately not initialized at module import. Package activation
+# and Pkg.instantiate can take seconds or require network access; doing that on
+# the Qt/real-time caller thread would stall startup or audio. The launcher
+# schedules warmup on the shared background pool after first paint.
+_JULIA_WARMUP_FUTURE = None
+_JULIA_WARMUP_LOCK = threading.Lock()
+
+
+def schedule_julia_warmup():
+    """Initialize the optional Julia backend asynchronously, once per process."""
+    global _JULIA_WARMUP_FUTURE
+    if not _JULIA_WANTED or _jl_ready:
+        return None
+    with _JULIA_WARMUP_LOCK:
+        if _JULIA_WARMUP_FUTURE is not None:
+            return _JULIA_WARMUP_FUTURE
+        try:
+            import thread_budget
+            lane = thread_budget.make_lane("julia-runtime-warmup", max_workers=1,
+                                           max_pending=1, kind="bulk")
+            _JULIA_WARMUP_FUTURE = lane.submit(_init_julia)
+            def _refresh_backend_cache(_future):
+                try:
+                    import process_policy
+                    with process_policy.Backends._lock:
+                        process_policy.Backends._avail.pop("julia", None)
+                except Exception:
+                    pass
+            _JULIA_WARMUP_FUTURE.add_done_callback(_refresh_backend_cache)
+        except Exception as exc:
+            global _jl_error
+            _jl_error = f"Julia background warmup could not be scheduled: {exc}"
+            return None
+        return _JULIA_WARMUP_FUTURE
 
 
 def _call(name: str, *args):
-    if not _jl_ready and not _init_julia():
+    # Never initialize Julia synchronously from an audio, GUI, or worker caller.
+    if not _jl_ready:
         return None
     try:
         return getattr(_jl_mod, name)(*args)
@@ -118,8 +149,12 @@ class JuliaMeumOscillator:
     """Persistent Julia oscillator mirroring MeumModulatedOscillator."""
 
     def __init__(self, sample_rate: float = 44100.0, frequency: float = 440.0):
-        if not _jl_ready and not _init_julia():
-            raise RuntimeError(f"Julia not available: {_jl_error}")
+        # Julia package activation/instantiation is a background startup task.
+        # Never let an arbitrary UI/audio/worker caller initialize it inline.
+        if not _jl_ready:
+            raise RuntimeError(
+                f"Julia backend is not warmed up; schedule_julia_warmup() first ({_jl_error or 'pending'})"
+            )
         self._o = _jl_mod.MeumOscillator(float(sample_rate), float(frequency))
         self._last_params: Optional[tuple] = None
 
@@ -191,7 +226,7 @@ _osc_cache_lock = threading.RLock()
 
 def render_meum_oscillator(py_osc: Any, num_samples: int, amplitude: float = 1.0,
                            frequency: Optional[float] = None) -> Optional[np.ndarray]:
-    if not _jl_ready and not _init_julia():
+    if not _jl_ready:
         return None
     try:
         with _osc_cache_lock:
