@@ -1,0 +1,10 @@
+R28.4.39 validation summary — 2026-10-24
+
+PASS: python -m py_compile groovebox.py and active BUILD_ISO overlay groovebox.py.
+PASS: focused regression suite (17 passed): linear EQ distribution, variable-pole EQ, performance/thread lifecycle, deterministic instrument translation, scope contract, release contract.
+PASS: Bash syntax check for builder shell scripts.
+PASS: Python byte-compilation for builder/verifier scripts.
+PASS: convolution defaults: 2 instruments -> 128 poles; 3 -> 127; 128 -> 2.
+PASS: default poles evenly spaced in linear Hz from 10 Hz to 24,000 Hz for all tested topology sizes.
+BLOCKED: full ISO build. No BUILD_ISO/dist/runtime-cache, no BUILD_ISO/runtime-base kernel foundation, and no Docker/Podman executable in this environment. No .iso artifact produced.
+NOT TESTED: boot on target hardware, live Wasmer publication, audio/HDMI/microSD/SSD acceptance.

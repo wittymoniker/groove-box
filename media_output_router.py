@@ -727,11 +727,22 @@ def _ensure_all_pulse_outputs_sink_uncached() -> str:
         if len(names)==1:
             return names[0]
         module=shutil.which("pactl")
-        cp=subprocess.run([module,"load-module","module-combine-sink",f"sink_name={combined}","sink_properties=device.description=Groovebox_All_Detected_Outputs","slaves="+",".join(names)],capture_output=True,text=True,timeout=4,check=False)
+        def _load(slaves):
+            return subprocess.run([module,"load-module","module-combine-sink",
+                                   f"sink_name={combined}",
+                                   "sink_properties=device.description=Groovebox_All_Detected_Outputs",
+                                   "slaves="+",".join(slaves)],
+                                  capture_output=True,text=True,timeout=4,check=False)
+        cp=_load(names)
         if cp.returncode==0 and (cp.stdout or "").strip().isdigit():
             return combined
-        # A stale combine sink may exist but be absent from the initial list due
-        # to a short server transition. Never change the machine default here.
+        # DEVICE_POLICY_20261107: a dead HDMI/DP slave can make the whole combine fail.
+        # Retry without digital outputs so speakers still work, then re-add HDMI later.
+        analog=[n for n in names if not any(t in n.casefold() for t in ("hdmi","displayport","dp-"))]
+        if analog and analog != names:
+            cp=_load(analog)
+            if cp.returncode==0 and (cp.stdout or "").strip().isdigit():
+                return combined
         return names[0] if names else ""
     except Exception:
         return ""
@@ -1047,3 +1058,19 @@ def cast_with_catt(url: str, device: Optional[str] = None) -> Tuple[bool, str]:
         return True, f"cast started (pid {p.pid})"
     except Exception as e:
         return False, str(e)
+
+def all_outputs_status() -> str:
+    """Human summary of the current all-devices route."""
+    try:
+        name = all_outputs_sink_cached()
+        if not name:
+            return "All-devices: no combine sink"
+        raw = _run_text(["pactl", "list", "short", "sinks"], timeout=1.5)
+        slaves = []
+        for line in raw.splitlines():
+            parts = line.split("\t") if "\t" in line else line.split()
+            if len(parts) >= 2 and parts[1] not in ("groovebox_all_outputs",) and "auto_null" not in parts[1]:
+                slaves.append(parts[1])
+        return f"All-devices: {name} · {len(slaves)} sink(s)"
+    except Exception:
+        return "All-devices: status unavailable"

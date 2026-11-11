@@ -1,0 +1,8 @@
+R28.4.27 — 2026-10-23
+
+- Main panel's system output slider is now explicitly labeled “System Volume:” while preserving the existing hardware helper, debounced writes, and shared system-volume state.
+- Hardened microphone recording finalization: stop the capture producer, drain the PCM writer before closing the WAV header, and defer finalization if the writer is still alive. This targets one-second/truncated WAVs and repeat-recording races.
+- Increased uniqueness of recording take names to avoid fast consecutive takes colliding.
+- Preserved the existing Trigger All audio generation and synth Master Volume path.
+
+Validation is static/unit-level only; physical microphone, speakers, video muxing, multi-device fan-out, and ISO boot still require hardware acceptance tests.

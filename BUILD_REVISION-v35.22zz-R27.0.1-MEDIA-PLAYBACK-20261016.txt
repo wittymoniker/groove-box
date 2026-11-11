@@ -1,0 +1,12 @@
+Mathematician's Groovebox / sOS
+Version: v35.22zz-R27.0.1
+Release label: MEDIA-PLAYBACK
+Date: 2026-10-16
+Lineage: R27.0.0 reconstruction based on recovered R23r source archive
+
+- Expanded player media format classification and import filters.
+- Player discovery checks project-local tool resolver, PATH, and app-local tools.
+- Fallback backend order is mpv, VLC, then FFplay.
+- Added representative real FFmpeg codec decode smoke tests.
+- Preserves R27.0.0 export/install repairs and existing R23r source lineage.
+- Does not claim GUI/hardware playback or ISO boot verification.

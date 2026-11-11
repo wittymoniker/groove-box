@@ -1,0 +1,2 @@
+Groovebox BUILD_ISO v35.22w — pooled Rust/Python streaming verifier + parallel fan-out + WebEngine lifecycle fix — 2026-09-22
+See BUILD_ISO/RELEASE-v35.22w.txt.

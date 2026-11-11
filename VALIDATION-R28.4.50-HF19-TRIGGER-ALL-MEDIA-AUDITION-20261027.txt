@@ -1,0 +1,15 @@
+HF19 focused validation
+
+1. python -m py_compile groovebox.py audio_os_backend.py BUILD_ISO/app-overlay-v35.22zz/groovebox.py BUILD_ISO/app-overlay-v35.22zz/audio_os_backend.py
+   Result: PASS
+
+2. python -m pytest -q test_r28_4_51_hotfix_contract.py test_performance_thread_lifecycle_contract.py
+   Result: 11 passed
+
+3. python -m pytest -q test_hf19_trigger_all_media_contract.py
+   Result: run as part of packaging validation
+
+4. root/ISO-overlay trigger_all_instruments_hit method equality
+   Result: PASS
+
+Not tested: physical playback through speakers/headphones, loading actual user WAV/MP4 files in a GUI session, complete ISO build/boot, Copy to Disk/reburn path, subjective mix quality, or performance under long-running concurrent renders.

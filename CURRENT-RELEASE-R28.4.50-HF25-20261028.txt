@@ -1,0 +1,9 @@
+Current source release: R28.4.50 HF25 — Predictive Geometric Modulation
+Release ID: R28.4.50-HF25-PREDICTIVE-GEOMETRIC-MODULATION-20261028
+Date: 2026-10-28
+
+HF25 consolidates chord-slot navigation and all per-note chord feature sliders, canonical/project persistence, global base-frequency identity-ratio tracking, single-note geometric carriers, symmetric geometric-engine coupling, 0–50% bidirectional geometric↔ensemble modulation, beat/onset-aware lane scheduling, vectorized cellular-carrier generation, canonical per-engine worker lanes with deterministic commits, wheel-safe controls, and extended ISO dependency-download timeouts/retries.
+
+See RELEASE-R28.4.50-HF25-PREDICTIVE-GEOMETRIC-MODULATION-20261028.txt for implementation details and VALIDATION-R28.4.50-HF25-20261028.txt for exact checks and limitations.
+
+This is a source/build package, not a hardware-certified ISO image. A live Qt/audio test, actual ISO build/boot, physical output playback, and live-host deployment remain unverified.

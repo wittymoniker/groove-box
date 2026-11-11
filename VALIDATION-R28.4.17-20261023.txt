@@ -1,0 +1,26 @@
+R28.4.17 validation (20261023)
+
+PASS: BUILD_ISO/verify_v35_22zz_r23b.py — all 16 checks passed.
+PASS: root performance.py and BUILD_ISO/app-overlay-v35.22zz/performance.py byte-identical (SHA-256 20bf35b3f1e82d87ead6c09281038f0bc22cc225f7ab6a31805170022c1794f3).
+PASS: source and BUILD_ISO ZIP archives passed ZIP CRC integrity checks.
+PASS: Wasmer ZIP archive passed ZIP CRC integrity check and remains below 160,000,000 bytes.
+NOT TESTED: physical speaker/microphone hardware, full ISO build/boot, and live deployment.
+
+Verifier output:
+PASS: R23 runtime marker
+PASS: root/overlay playback sync
+PASS: no eager null output
+PASS: no accidental stale-token comment
+PASS: 48k stereo boundary
+PASS: real hardware first
+PASS: two-stage stalled-clock recovery
+PASS: R23-aware BUILD_ISO/verify_v35_22.py
+PASS: R23-aware BUILD_ISO/verify_v35_22zz.py
+PASS: R23-aware BUILD_ISO/verify_v35_22zz_r14.py
+PASS: R23-aware BUILD_ISO/verify_v35_22zz_r17.py
+PASS: R23-aware BUILD_ISO/verify_v35_22zz_r22.py
+PASS: R23-aware BUILD_ISO/verify_v35_22zz_r19.py
+PASS: R23-aware test_performance_event_loop_r6.py
+PASS: R23-aware test_r14_audio_video_performance_microsd.py
+PASS: R23-aware test_r22_isolated_device_probe_streaming.py
+PASS: v35.22zz-R23b stale null-audio verifier sweep + real-audio-first recovery contracts

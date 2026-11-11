@@ -127,7 +127,15 @@ class SwapStore:
             free = shutil.disk_usage(self.root).free
         except Exception:
             free = total
-        self.capacity = int(min(total or (4 << 30), 0.9 * free))
+        # SWAP_LIMIT_20261107: Compatibility sets the multiple of RAM (0.25–4, default 1).
+        mult = 1.0
+        try:
+            import compat_settings as _cs
+            mult = float(_cs.load().get("swap_limit", 1.0) or 1.0)
+            mult = max(0.25, min(4.0, mult))
+        except Exception:
+            mult = 1.0
+        self.capacity = int(min((total or (4 << 30)) * mult, 0.9 * free))
 
     def _clean_stale(self):
         """Files from a previous session are not ours any more."""

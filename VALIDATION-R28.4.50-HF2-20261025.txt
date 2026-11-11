@@ -1,0 +1,31 @@
+Groovebox R28.4.50 HF2 validation report — 2026-10-25
+
+Base asset: Groovebox-R28.4.50-GAME-MEDIA-OUTPUT-BRIDGE-20261024(2).zip
+Base SHA-256: f1e1d316e538646feae4b579c83e4cbf9ecf4d04da63d008b53ad6f83fa0d69f
+Base ZIP check: PASS (all entries test clean)
+
+VERIFIER FAILURES REPORTED BY THE USER
+PASS: R23h verifier now expects the agreed 72% first-launch helper default, not stale 100%.
+PASS: PipeWire post-start test now matches the implemented BOOT_VOLUME=72 and helper init fallback.
+PASS: Playback-mixer test now matches the current qrun([... "sset", name, "unmute" ...]) source form and checks saved 0–100 volume plus capture/microphone/input exclusions.
+PASS: Adjacent R23j saved-volume checker updated to the same actual mixer command syntax.
+
+FOCUSED SOURCE VERIFIERS
+PASS: BUILD_ISO/verify_v35_22zz_r23f.py — source contract checks including analog output preparation and playback-only mixer-control selection.
+PASS: BUILD_ISO/verify_v35_22zz_r23g.py — bounded removable-media discovery/reader contracts.
+PASS: BUILD_ISO/verify_v35_22zz_r23h.py — all source-contract predicates and shell syntax checks.
+PASS: BUILD_ISO/verify_v35_22zz_r23i.py — Dell/Realtek audio and reader contracts.
+PASS: BUILD_ISO/verify_v35_22zz_r23j.py — all source-contract predicates, Python compile checks and shell syntax checks.
+PASS: BUILD_ISO/verify_v35_22zz_r23k.py — bounded browser/removable-media source contracts.
+PASS: BUILD_ISO/verify_v35_22zz_r23r.py — audio-endpoint/SOF/RTSX source contracts.
+PASS: BUILD_ISO/verify_crc32c_install_v35_22zq.py — 10/10 installer source checks.
+PASS: Focused pytest batch — 71 tests passed (67 existing regression tests plus four new HF2 volume-verifier contract tests).
+PASS: Canonical Euclidean integration checker — 24/24 checks passed.
+
+FULL REPOSITORY TEST COLLECTION
+NOT CLAIMED PASS. Historical embedded release snapshots, duplicate test names under root and BUILD_ISO, and a PyQt6 GUI dependency unavailable in this container prevent claiming a clean full test collection. The focused verifiers above were run individually against the extracted source tree.
+
+SCOPE LIMITS
+- This is a patched source archive based on the uploaded R28.4.50 archive, not an ISO or compiled desktop binary.
+- The three reported failures were stale source-verifier predicates; this result demonstrates they now match the current source contracts, not that physical audio has been verified.
+- No fresh ISO build/boot, install-to-SSD, physical speaker audibility, or microphone-device test is claimed.

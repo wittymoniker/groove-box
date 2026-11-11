@@ -1,0 +1,16 @@
+R28.4.14 validation — 2026-10-23
+
+PASS
+- `python -m py_compile groovebox.py mathematical_composition_lab.py`
+- 36 focused pytest tests passed:
+  `test_mathematical_composition_lab.py`, `test_composition_parity.py`, `test_r27_transactional_export_game_install.py`, `test_r28_4_13_regressions.py`, `test_r28_4_12_acceptance_contract.py`, `test_r23_playback_output_recovery.py`, `test_r27_hdmi_audio.py`, `test_r23j_universal_audio_mic.py`, `test_v35_22zv_live_mic_meter.py`, and `test_v35_22zw_camera_mic_low_latency.py`.
+- Main source and v35.22zz ISO overlay copies match for `groovebox.py` and `mathematical_composition_lab.py`.
+
+NOT VERIFIED ON PHYSICAL HARDWARE
+- Audible speaker/headphone output and hardware mixer level reconciliation.
+- Live microphone signal and resulting saved audio waveform during camera recording.
+- Main/Performance UI latency during real camera + mic capture.
+- Full ISO build/boot, HDMI hotplug/audio, physical microSD/USB insertion/removal.
+- Live Wasmer deployment.
+
+This is source-contract and targeted regression validation, not hardware certification. The full repository pytest suite was not run.

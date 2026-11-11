@@ -1,0 +1,26 @@
+Groovebox / sOS v35.22zz-R28.4.7 — Startup Randomize Crash Fix
+Date: 2026-10-17
+
+Reported failure:
+AttributeError: 'MathematiciansGrooveboxApp' object has no attribute 'randomize_song'
+from launch_startup_mode_selector() when the user chose “Randomize New Project”.
+
+Root cause:
+The selector called player.randomize_song(), but randomize_song() belongs to the older GrooveboxEngine/widget path. The main application exposes _randomize_everything_scoped() for full composition randomization and apply_seeded_harmonic_randomization() as a compatible fallback.
+
+Correction:
+- Dispatch “Randomize New Project” to the actual main-window full-composition randomizer.
+- Fall back to the main-window seeded harmonic randomizer only if the full randomizer is absent.
+- Guard deferred project-file open, Load Project, Randomize New Project, and autosave startup callbacks (including explicit skip mode) so exceptions are logged and shown to the user rather than escaping as unhandled main-thread callback failures.
+- Synchronize the active v35.22zz ISO overlay with the corrected source.
+- Add verify_startup_randomize_dispatch_r28_4_7.py.
+
+Validation completed:
+- Python compilation of groovebox.py and the new verifier.
+- verify_startup_randomize_dispatch_r28_4_7.py: PASS.
+- verify_startup_mode_selector_r28_4_3.py: PASS, including root/active-overlay identity.
+- Relevant R28.4.6 microSD settle and regression contracts will be rerun before package publication.
+
+Not claimed:
+- Qt GUI/runtime startup or clicking “Randomize New Project” was not exercised because PyQt6 is unavailable in this environment.
+- No full ISO build, ISO boot, physical Dell microSD reader test, or Wasmer deployment was performed.

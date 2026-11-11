@@ -30,16 +30,17 @@ def test_override_wins():
     assert _with_env(GROOVEBOX_THREADS="3") == 3
 
 
-def test_maths_uses_every_usable_thread_plus_one_spare(monkeypatch):
+def test_maths_never_exceeds_the_usable_cpu_budget(monkeypatch):
     monkeypatch.delenv("GROOVEBOX_THREADS", raising=False)
-    for cores, want in ((1, 1), (2, 3), (4, 5), (8, 9), (64, 16)):
+    for cores, want in ((1, 1), (2, 2), (4, 4), (8, 6), (64, 6)):   # R30: math width capped at 6
         monkeypatch.setattr(tb, "usable_cores", lambda c=cores: c)
         assert tb.compute_threads() == want, (cores, want)
 
 
-def test_shared_lane_budget_is_four_slots_per_core_capped_at_32(monkeypatch):
-    monkeypatch.delenv("GROOVEBOX_THREADS", raising=False)
-    for cores, want in ((1, 8), (2, 8), (4, 16), (8, 32), (64, 32)):
+def test_shared_lane_leaves_one_cpu_for_ui_and_audio(monkeypatch):
+    monkeypatch.delenv("GROOVEBOX_WORKERS", raising=False)
+    monkeypatch.setattr(tb, "_memory_headroom_cap", lambda n: n)   # RAM headroom is machine-specific
+    for cores, want in ((1, 1), (2, 1), (4, 2), (8, tb._MAX_SHARED_WORKERS), (64, tb._MAX_SHARED_WORKERS)):   # R30: one CPU for UI/audio, one for the OS
         monkeypatch.setattr(tb, "usable_cores", lambda c=cores: c)
         assert tb.lane_workers() == want, (cores, want)
 

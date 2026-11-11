@@ -1,0 +1,18 @@
+Validation for R28.4.50-HF25-PREDICTIVE-GEOMETRIC-MODULATION-20261028
+Date: 2026-10-28
+
+PASS: 48 focused unit/contract tests across chord slot UI contracts, all per-note feature lanes, rendered pitch/timbre/velocity/attack/release behavior, shared base-frequency context, geometric bidirectional modulation, wheel-safe controls, note budget, helper determinism, and ISO timeout contracts.
+PASS: py_compile for groovebox.py, performance.py, audio_os_backend.py, media_output_router.py, shared_synth_context.py, spatial_synth_engines.py, and active ISO download helpers.
+PASS: BUILD_ISO/verify_v35_22zz_r9.py (all 13 reported checks).
+PASS: groovebox.py matches BUILD_ISO/app-overlay-v35.22zz/groovebox.py byte-for-byte.
+PASS: performance.py matches BUILD_ISO/app-overlay-v35.22zz/performance.py byte-for-byte.
+PASS: shared_synth_context.py matches BUILD_ISO/app-overlay-v35.22zz/shared_synth_context.py byte-for-byte.
+PASS: spatial_synth_engines.py matches BUILD_ISO/app-overlay-v35.22zz/spatial_synth_engines.py byte-for-byte.
+PASS: worst-supported cellular carrier settings generated deterministic finite audio in a local helper timing check.
+
+LIMITATIONS:
+- PyQt6 runtime unavailable: no actual GUI/event-loop acceptance test.
+- Physical audio outputs and actual WAV/MP4 playback not probed.
+- Full ISO build/boot not performed.
+- A full `pytest -q` attempt stops during collection with 14 errors: archival release tests reference missing `groovebox.py`/`fractal_spatial_engine` files, duplicate test module basenames exist in BUILD_ISO and its app-overlay, and `test_component_usage.py` cannot import the absent PyQt6 runtime. The focused 48-test run passes; no claim is made that the entire legacy tree is green.
+- Wasmer package prepared but not deployed to the live host.

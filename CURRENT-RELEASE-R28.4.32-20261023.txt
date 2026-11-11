@@ -1,0 +1,2 @@
+Groovebox R28.4.32 — Audio Finalization Integrity
+Includes prior R28.4.29 bounded Performance background-thread lifecycle, R28.4.30 recording queue integrity, and R28.4.31 resizable Voxel scene UI. Adds atomic staged WAV finalization and structural/duration validation. Hardware capture/playback and ISO boot/install require target-device validation.

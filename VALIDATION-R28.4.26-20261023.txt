@@ -1,0 +1,11 @@
+R28.4.26 validation summary — 2026-10-23
+
+PASS: stale final-initramfs Hardware Volume assertion removed.
+PASS: current Main hardware-volume widget is required.
+PASS: duplicate Performance hardware-volume widget is forbidden.
+PASS: Performance synth Master Volume is required.
+PASS: R23l verifier and R23h/R23k checks.
+PASS: Python syntax compilation for affected runtime files.
+PASS: archive integrity for source and BUILD_ISO packages.
+
+This is static/source validation. No full ISO build, ISO boot, live Wasmer deployment, or physical audio test is claimed.
