@@ -65,16 +65,11 @@ class QuickRack(QFrame):
                      "QPushButton:hover{background:rgba(46,204,113,70);border:1px solid #2ecc71;}"     # R32.8 hover glow
                      "QPushButton:pressed{background:rgba(108,75,179,150);}")
         self.setStyleSheet(self._css % (GREEN, PURPLE))
-        from PyQt6.QtWidgets import QScrollArea, QSizePolicy
-        outer = QHBoxLayout(self); outer.setContentsMargins(0, 0, 0, 0)
-        host = QWidget(); lay = QHBoxLayout(host); lay.setContentsMargins(6, 3, 6, 3); lay.setSpacing(6)
-        area = QScrollArea(); area.setWidgetResizable(False); area.setWidget(host)
-        area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        area.setFrameShape(QScrollArea.Shape.NoFrame)
-        area.setFixedHeight(46)
-        host.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        outer.addWidget(area)
+        lay = QHBoxLayout(self); lay.setContentsMargins(6, 3, 6, 3); lay.setSpacing(6)
+        self._lay = lay
+        self.setMinimumHeight(40)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._dock_menu)
         # 1 canonical mode
         try:
             import canonical_mode
@@ -120,7 +115,15 @@ class QuickRack(QFrame):
                              ("⏱ Tap", "Tap tempo: tap 2+ times in rhythm; the BPM follows the average of the last taps", self.tap),
                              ("⏹ Panic", "Stop everything that sounds: transport, external players, make-up audio", self.panic),
                              ("⊞ Arrange", "Tile / cascade / snap / cycle every Groovebox window", self.arrange),
-                             ("🔊 Both", "HDMI and speakers together: status and re-install the combined device", self.both)):
+                             ("🔊 Both", "HDMI and speakers together: status and re-install the combined device", self.both),
+                             ("📝 Notes", "Session scratch pad, saved with the project", lambda: __import__("session_notes").open_window(self.app)),
+                             ("📊 Meter", "Live CPU and memory", lambda: __import__("perf_meter").open_window(self.app)),
+                             ("⌨ Keys", "The shortcuts that matter", lambda: __import__("shortcut_card").open_window(self.app)),
+                             ("🔖 Marks", "Save and recall a composition snapshot", lambda: __import__("state_bookmark").open_window(self.app)),
+                             ("📦 Jobs", "Plain view of every export job", lambda: __import__("export_dashboard").open_window(self.app)),
+                             ("🎨 Theme", "Flip the color scheme", lambda: __import__("theme_switch").open_window(self.app)),
+                             ("💾 Backup", "Copy the project folder to a dated backup", lambda: __import__("backup_tool").open_window(self.app)),
+                             ("🔗 Paths", "What the tools have written, with the seed fingerprint", lambda: __import__("pathway_view").open_window(self.app))):
             b = QPushButton(cap); b.setToolTip(tip); b.clicked.connect(fn); lay.addWidget(b)
         lay.addStretch(1)
         self.lbl = QLabel("…"); self.lbl.setStyleSheet("color:#b8f7e6;font-size:8pt;")
@@ -307,6 +310,44 @@ class QuickRack(QFrame):
         except Exception as exc:
             self.lbl.setText("both outputs n/a: %s" % exc)
 
+
+    def _dock_menu(self, pos):
+        menu = QMenu(self)
+        menu.addAction("Horizontal", lambda: self.set_vertical(False))
+        menu.addAction("Vertical", lambda: self.set_vertical(True))
+        menu.exec(self.mapToGlobal(pos))
+
+    def contextMenuEvent(self, event):
+        self._dock_menu(event.pos())
+        event.accept()
+
+    def set_vertical(self, vertical):
+        """Stack the buttons in a column when the bar is docked on a side."""
+        from PyQt6.QtWidgets import QHBoxLayout, QVBoxLayout
+        lay = getattr(self, "_lay", self.layout())
+        if lay is None:
+            return
+        widgets = []
+        while lay.count():
+            item = lay.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                widgets.append(w)
+        # Drop the old layout by reparenting widgets, then apply a new one.
+        QWidget().setLayout(lay)
+        self._lay = QVBoxLayout(self) if vertical else QHBoxLayout(self)
+        self._lay.setContentsMargins(6, 3, 6, 3)
+        self._lay.setSpacing(6)
+        for w in widgets:
+            self._lay.addWidget(w)
+        if vertical:
+            self.setMinimumWidth(180)
+            self.setMinimumHeight(0)
+            self.setMaximumHeight(16777215)
+        else:
+            self.setMinimumWidth(0)
+            self.setMinimumHeight(40)
+        self.updateGeometry()
 
 def install(app, layout, index=0):
     """Insert the rack into a layout (top of the main window)."""

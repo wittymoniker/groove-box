@@ -184,6 +184,20 @@ def install_workstation_tools(host, layout):
     action("Multidimensional", multidim, "Open the existing multidimensional synth editor")
     action("Canonical data", host._open_canonical_data, "Inspect canonical source data and ownership")
     action("Performance", host._open_performance_tab, "Open the existing performance controls")
+    action("3D Studio", lambda: __import__("obj_scene").open_window(host),
+           "Wrap media on an OBJ, tint it, and place it in a scene")
+    action("Export Jobs", lambda: host._open_export_jobs() if hasattr(host, "_open_export_jobs") else None,
+           "The export queue: progress, retry, remove")
+    action("File Studio", lambda: __import__("file_studio").open_window(host),
+           "Browse, copy and manage project media")
+    action("Takes", lambda: __import__("take_finisher").open_window(host),
+           "Finish a take: trim, stamp the seed, keep the good one")
+    action("Seed", lambda: __import__("seed_inspector").open_window(host),
+           "Current seed fingerprint and the last export that carries it")
+    action("Snapshot", lambda: __import__("session_snapshot").open_window(host),
+           "Save which windows are open and where they sit")
+    action("Last export", lambda: __import__("last_export").open_window(host),
+           "Open the folder of the newest finished export and copy its path")
     from PyQt6.QtWidgets import QScrollArea, QSizePolicy
     area = QScrollArea()
     area.setWidgetResizable(False)

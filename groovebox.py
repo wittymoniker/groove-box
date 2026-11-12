@@ -14504,9 +14504,9 @@ class ParametricMathBackground(QWidget):
     or minimized host window stops ticking entirely instead of painting
     off-screen.
     """
-    MAX_INSTANCES = 24  # global per-family hard ceiling across all live instances
-    WAVE_COUNT = 24
-    SHAPE_COUNT = 24
+    MAX_INSTANCES = 16  # reduced for every-window contract; still covers the field
+    WAVE_COUNT = 16
+    SHAPE_COUNT = 16
     _instances = weakref.WeakSet()
 
     def __init__(self, app, host=None):
@@ -14605,7 +14605,10 @@ class ParametricMathBackground(QWidget):
         for key, attr, scale in (("EQR", "slider_eqr", 100.0),
                                  ("Fractal", "slider_fractalizer", 100.0),
                                  ("PKP", "slider_pkp_envelope", 1000.0),
-                                 ("Boost", "slider_pkp_boost", 3.0)):
+                                 ("Boost", "slider_pkp_boost", 3.0),
+                                 ("XMOD", "slider_xmod", 100.0),
+                                 ("Master", "slider_master_volume", 100.0),
+                                 ("BPM", "spin_bpm", 200.0)):
             obj = getattr(self.app, attr, None)
             if obj is not None and hasattr(obj, "value"):
                 try:
@@ -21453,6 +21456,14 @@ class _MainWindowRelaunchFilter(QObject):
                 return False
             if bool(obj.property("grooveboxStartupSelector")):
                 return False
+            if bool(obj.property("grooveboxNoReturnButton")):
+                return False
+            try:
+                title = (obj.windowTitle() or "").casefold()
+                if any(k in title for k in ("modular patch bay", "patch bay", "patch modular")):
+                    return False
+            except Exception:
+                pass
             # R14: Chromium/QtWebEngine can create transient native helper windows.
             # Never session-manage or relaunch/focus those as Groovebox tool windows.
             cname=(obj.metaObject().className() if hasattr(obj,'metaObject') else obj.__class__.__name__) or ''
@@ -21500,10 +21511,10 @@ class _MainWindowRelaunchFilter(QObject):
                     from PyQt6.QtWidgets import QToolBar as _QToolBar
                     tb = _QToolBar("Groovebox Windows", main)
                     tb.setObjectName("grooveboxWindowBar"); tb.setMovable(False); tb.setFloatable(False)
-                    tb.setFixedHeight(42)
-                    tb.setMinimumHeight(42)
-                    tb.setMaximumHeight(42)
-                    strip.setFixedHeight(40)
+                    tb.setFixedHeight(28)
+                    tb.setMinimumHeight(26)
+                    tb.setMaximumHeight(30)
+                    strip.setFixedHeight(26)
                     tb.addWidget(strip)
                     main.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb)
                     self._window_bar_toolbar = tb
@@ -21563,6 +21574,24 @@ class _MainWindowRelaunchFilter(QObject):
             return True
         except Exception:
             return False
+
+    def _bounce_others_above_main(self):
+        """Keep the main window under every other Groovebox window."""
+        if getattr(self, "_bouncing", False):
+            return
+        self._bouncing = True
+        try:
+            main = self._main_ref()
+            for w in list(self.session_windows()):
+                if w is None or w is main:
+                    continue
+                try:
+                    if w.isVisible() and not w.isMinimized():
+                        w.raise_()
+                except Exception:
+                    pass
+        finally:
+            self._bouncing = False
 
     def session_windows(self):
         out=[]
@@ -22031,6 +22060,8 @@ class _MainWindowRelaunchFilter(QObject):
                     return True
                 if et in (QEvent.Type.Show, QEvent.Type.Hide, QEvent.Type.WindowStateChange, QEvent.Type.WindowActivate):
                     self._notify_strip()
+                if et == QEvent.Type.WindowActivate and not getattr(self, "_bouncing", False):
+                    QTimer.singleShot(0, self._bounce_others_above_main)
                 return False
 
             if main is not None and self._eligible_window(obj):
@@ -23397,6 +23428,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             from ui_runtime import install_ui_runtime
             install_ui_runtime(QApplication.instance())
+            import ui_smooth
+            ui_smooth.install(QApplication.instance())
         except Exception:
             pass
         # R31: every window (Performance, Clip Studio, Live Player, dialogs) gets the math background.
@@ -23562,11 +23595,37 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
         try:
+            try:
+                import pool_matrix as _pm
+                _pm.install(self)
+            except Exception:
+                pass
             import quick_rack as _qr
             from PyQt6.QtWidgets import QToolBar as _QTB
-            _tb = _QTB("Quick Rack", self); _tb.setObjectName("R32QuickRackBar"); _tb.setMovable(True)
+            _tb = _QTB("Quick Rack", self); _tb.setObjectName("R32QuickRackBar"); _tb.setMovable(False)
+            _tb.setFloatable(False)
+            _tb.setAllowedAreas(Qt.ToolBarArea.TopToolBarArea | Qt.ToolBarArea.BottomToolBarArea | Qt.ToolBarArea.LeftToolBarArea | Qt.ToolBarArea.RightToolBarArea)
             _tb.addWidget(_qr.QuickRack(self, _tb))
             self.addToolBar(Qt.ToolBarArea.TopToolBarArea, _tb)
+            from PyQt6.QtWidgets import QFrame as _QF
+            _rack = next((c for c in _tb.findChildren(_QF) if c.objectName() == "R32QuickRack"), None)
+            if _rack is not None and hasattr(_rack, "set_vertical"):
+                _tb.orientationChanged.connect(lambda o, r=_rack: r.set_vertical(o == Qt.Orientation.Vertical))
+            def _rack_side_menu(pos, tb=_tb, rack=_rack):
+                from PyQt6.QtWidgets import QMenu as _QM
+                m = _QM(tb)
+                def _move(area, name, t=tb):
+                    self.addToolBar(area, t)
+                    try:
+                        import compat_settings as _cs
+                        s = _cs.load(); s["quick_rack_side"] = name.lower(); _cs.save(s)
+                    except Exception:
+                        pass
+                for name, area in (("Top", Qt.ToolBarArea.TopToolBarArea), ("Left", Qt.ToolBarArea.LeftToolBarArea), ("Right", Qt.ToolBarArea.RightToolBarArea), ("Bottom", Qt.ToolBarArea.BottomToolBarArea)):
+                    m.addAction(name, lambda a=area, n=name: _move(a, n))
+                m.exec(tb.mapToGlobal(pos))
+            _tb.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            _tb.customContextMenuRequested.connect(_rack_side_menu)
             self._r32_quick_rack_bar = _tb
             try:
                 import r32_deck as _deck
@@ -27978,6 +28037,24 @@ class MathematiciansGrooveboxApp(QMainWindow):
         _tools_menu.addAction("📸 Snapshot window", lambda: self._grab_window_snapshot())
         self.btn_tools.setMenu(_tools_menu)
         self.transport_layout.addWidget(self.btn_tools)
+        self.btn_seed_id = QPushButton("🧬 Seed")
+        self.btn_seed_id.setToolTip("Show and copy the current seed fingerprint")
+        def _show_seed():
+            from PyQt6.QtWidgets import QMessageBox
+            fp = str(getattr(self, "seed_fingerprint", "") or getattr(self, "global_seed", "") or "none")
+            QMessageBox.information(self, "Seed", fp)
+        self.btn_seed_id.clicked.connect(_show_seed)
+        self.transport_layout.addWidget(self.btn_seed_id)
+        self.btn_mute_all = QPushButton("🔇 Mute")
+        self.btn_mute_all.setCheckable(True)
+        self.btn_mute_all.setToolTip("Mute every instrument")
+        def _mute(on):
+            for name in ("instruments", "voices", "tracks"):
+                for item in getattr(self, name, []) or []:
+                    if hasattr(item, "set_mute"):
+                        item.set_mute(on)
+        self.btn_mute_all.toggled.connect(_mute)
+        self.transport_layout.addWidget(self.btn_mute_all)
         self.btn_finish = QPushButton("✓ Finish")
         self.btn_finish.setToolTip("Write mix and voxels to exports")
         self.btn_finish.clicked.connect(self._finish_this)
@@ -28181,6 +28258,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_compat.setToolTip("Smooth mode, thread count, audio buffers, output routing and startup behaviour. Saved between sessions.")
         self.btn_compat.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_compat.clicked.connect(self._show_compat_dialog)
+        self.btn_party = QPushButton("🎉 Party")
+        self.btn_party.setCheckable(True)
+        self.btn_party.setToolTip("Party Mode: distort, color-shift and layer recent project material onto windows. Intensity from System Settings.")
+        self.btn_party.setStyleSheet("QPushButton { background:#3a1a4a; color:#f0c0ff; border:1px solid #a060c0; border-radius:6px; padding:4px 8px; font-weight:700; } QPushButton:checked { background:#6a2a8a; color:#fff; }")
+        self.btn_party.toggled.connect(self._on_party_toggled)
+        self.transport_layout_row2.addWidget(self.btn_party)
+
         self.transport_layout_row2.addWidget(self.btn_compat)
         self.transport_layout_row2.addWidget(self.btn_load_mg)
         self.transport_layout_row2.addWidget(self.btn_clear_memory)
@@ -44601,7 +44685,112 @@ class MathematiciansGrooveboxApp(QMainWindow):
         win.show(); win.raise_()
         return win
 
+    
+    
+    
+    def _on_party_toggled(self, on):
+        try:
+            import compat_settings as cs
+            s = cs.load()
+            s["party_mode"] = bool(on)
+            cs.save(s)
+        except Exception:
+            pass
+        self._apply_party_mode()
+
+    def _subtle_ui_sound(self, kind="click"):
+        """Guaranteed subtle UI sound on button interaction (non-blocking)."""
+        try:
+            # Very short noise or tone burst; keep it cheap
+            import numpy as np
+            sr = 22050
+            n = int(0.04 * sr)
+            t = np.linspace(0, 0.04, n, endpoint=False)
+            if kind == "click":
+                sig = (np.sin(2 * np.pi * 880 * t) * np.exp(-t * 40)).astype(np.float32) * 0.15
+            else:
+                sig = (np.random.randn(n).astype(np.float32) * 0.05 * np.exp(-t * 30))
+            # Prefer existing audio path if available; otherwise skip silently
+            if hasattr(self, "_play_ui_buffer"):
+                self._play_ui_buffer(sig, sr)
+        except Exception:
+            pass
+
+    def _apply_party_mode(self, window=None):
+        """When party_mode is on, distort / color-shift / layer recent project
+        visuals onto the given window (or all managed windows). Intensity from
+        the System Settings slider.
+        """
+        try:
+            import compat_settings as cs
+            s = cs.load()
+            if not s.get("party_mode", False):
+                return
+            intensity = max(0, min(100, int(s.get("party_intensity", 50)))) / 100.0
+        except Exception:
+            return
+        targets = [window] if window is not None else []
+        if not targets:
+            try:
+                mgr = getattr(self, "_window_manager", None) or getattr(self, "_main_relaunch_filter", None)
+                if mgr is not None and hasattr(mgr, "managed_windows"):
+                    targets = list(mgr.managed_windows())
+            except Exception:
+                targets = [self]
+        for w in targets:
+            try:
+                if w is None or not w.isVisible():
+                    continue
+                # Store intensity so paint/event handlers can read it
+                w.setProperty("partyIntensity", intensity)
+                # Trigger a light repaint; actual distortion lives in paintEvent
+                # overrides or an overlay filter installed elsewhere.
+                w.update()
+            except Exception:
+                pass
+
+    def _play_export_when_done(self, path, kind="audio"):
+        """If the setting is on, load the finished export into the main window
+        scenograph / system audio / oscilloscopes and spectrum meters.
+        """
+        try:
+            import compat_settings as cs
+            if not cs.load().get("play_export_when_done", True):
+                return
+        except Exception:
+            return
+        if not path or not os.path.isfile(path):
+            return
+        try:
+            # Prefer existing media load paths so the main window meters and
+            # scenograph light up the same way a normal Play does.
+            if kind == "video" or str(path).lower().endswith((".mp4", ".webm", ".mkv", ".mov")):
+                if hasattr(self, "_load_media_for_preview"):
+                    self._load_media_for_preview(path)
+                elif hasattr(self, "load_video_for_scenograph"):
+                    self.load_video_for_scenograph(path)
+            else:
+                if hasattr(self, "_load_audio_for_preview"):
+                    self._load_audio_for_preview(path)
+                elif hasattr(self, "load_wav_for_meters"):
+                    self.load_wav_for_meters(path)
+            # Start transport so oscilloscopes / spectrum meters move
+            if hasattr(self, "btn_play_audio") and not getattr(self, "is_playing", False):
+                try:
+                    self.btn_play_audio.click()
+                except Exception:
+                    pass
+        except Exception as exc:
+            print(f"[PlayExportWhenDone] {exc}")
+
     def _on_scheduled_export_finished(self, job):
+        try:
+            path = getattr(job, "output_path", None) or getattr(job, "path", None)
+            kind = "video" if path and str(path).lower().endswith((".mp4", ".webm", ".mkv")) else "audio"
+            if path:
+                self._play_export_when_done(path, kind)
+        except Exception:
+            pass
         try:
             path = str(job.result.get("file_path") or "")
             for part in job.result.get("part_paths") or []:
@@ -45343,6 +45532,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         dlg.exec()
 
     def _keyboard_note_hit(self, note_idx, global_mode=False):
+        import time as _t
+        self._last_note_hit_time = _t.monotonic()
         if global_mode:
             self.trigger_all_instruments_hit()
             return
@@ -60222,6 +60413,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
             except Exception: pass
 
     def _on_audio_export_finished(self, token, result):
+        try:
+            path = (result or {}).get("path") or (result or {}).get("output")
+            if path:
+                self._play_export_when_done(path, "audio")
+        except Exception:
+            pass
         if int(token) != int(getattr(self, "_audio_export_active_token", -1)):
             return
         self._audio_export_active = False
@@ -64833,6 +65030,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             elif attr_name == 'patch_bay_dialog':
                 window.resize(1000, 780)
                 window.setMinimumSize(640, 480)
+                window.setProperty("grooveboxNoGeometryReset", True)
+                window.setProperty("grooveboxNoReturnButton", True)
             elif attr_name == 'synth_editor_window':
                 window.resize(820, 640)
                 window.setMinimumSize(520, 420)
@@ -66727,6 +66926,22 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
         player._install_memory_manager()
         import project_tabs as _gb_tabs
         _gb_tabs.tabs().attach(player)
+        _rack_bar = getattr(player, "_r32_quick_rack_bar", None)
+        _proj = player.findChild(type(_rack_bar), "projectTabsToolbar") if _rack_bar is not None else None
+        if _rack_bar is not None and _proj is not None:
+            player.removeToolBar(_rack_bar)
+            player.insertToolBarBreak(_proj)
+            player.addToolBar(Qt.ToolBarArea.TopToolBarArea, _rack_bar)
+        try:
+            import compat_settings as _cs_bar
+            _sides = {"top": Qt.ToolBarArea.TopToolBarArea, "left": Qt.ToolBarArea.LeftToolBarArea, "right": Qt.ToolBarArea.RightToolBarArea, "bottom": Qt.ToolBarArea.BottomToolBarArea}
+            _s = _cs_bar.load()
+            if _proj is not None and _s.get("projects_bar_side") in _sides:
+                player.addToolBar(_sides[_s["projects_bar_side"]], _proj)
+            if _rack_bar is not None and _s.get("quick_rack_side") in _sides:
+                player.addToolBar(_sides[_s["quick_rack_side"]], _rack_bar)
+        except Exception:
+            pass
     except Exception as _mm_exc:
         print(f"[Memory / tabs] not installed: {_mm_exc}")
     if selected == "entertainer":
@@ -66784,8 +66999,11 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
             player._open_performance()
         except Exception as exc:
             print(f"[Studio Session] performance: {exc}")
-        # restore last autosave project
         def _ss_restore():
+            try:
+                player.showNormal(); player.show(); player.raise_(); player.activateWindow()
+            except Exception:
+                pass
             try:
                 player.load_autosave_if_available()
             except Exception:
@@ -66793,7 +67011,11 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
                     player._install_project_autosave()
                 except Exception:
                     pass
-        QTimer.singleShot(400, lambda: _run_startup_action_safely("Studio Session restore", _ss_restore))
+            try:
+                player.showNormal(); player.show(); player.raise_()
+            except Exception:
+                pass
+        QTimer.singleShot(800, lambda: _run_startup_action_safely("Studio Session restore", _ss_restore))
     if selected == "blueprint":
         def _open_blueprint():
             import project_blueprint as _pb
@@ -66837,8 +67059,18 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
                     raise AttributeError(
                         "No supported composition randomizer is available on the main window")
                 fallback()
-        QTimer.singleShot(0, lambda: _run_startup_action_safely(
-            "Randomize New Project", _randomize_new_project))
+        def _randomize_then_show():
+            try:
+                player.showNormal(); player.show(); player.raise_(); player.activateWindow()
+            except Exception:
+                pass
+            _randomize_new_project()
+            try:
+                player.showNormal(); player.show(); player.raise_()
+            except Exception:
+                pass
+        QTimer.singleShot(800, lambda: _run_startup_action_safely(
+            "Randomize New Project", _randomize_then_show))
     if _start_name and selected in ("main", "performance", "both", "video", "new", "randomize"):
         def _apply_start_project():
             import groovebox_paths as gp

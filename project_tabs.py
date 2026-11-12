@@ -50,6 +50,8 @@ class ProjectTabs:
         tb = QToolBar("Projects", win)
         tb.setObjectName("projectTabsToolbar")
         tb.setMovable(False)
+        tb.setFloatable(False)
+        tb.setAllowedAreas(Qt.ToolBarArea.TopToolBarArea | Qt.ToolBarArea.BottomToolBarArea | Qt.ToolBarArea.LeftToolBarArea | Qt.ToolBarArea.RightToolBarArea)
         bar = QTabBar(tb)
         bar.setExpanding(False); bar.setMovable(False); bar.setDocumentMode(True)
         bar.currentChanged.connect(lambda i, b=bar: self._bar_switch(b, i))
@@ -63,6 +65,21 @@ class ProjectTabs:
         tb.addWidget(QLabel(" 🗂 "))
         tb.addWidget(bar); tb.addWidget(b_new); tb.addWidget(b_open); tb.addWidget(b_close); tb.addWidget(lbl)
         win.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb)
+        def _proj_side_menu(pos, t=tb, w=win):
+            from PyQt6.QtWidgets import QMenu as _QM
+            m = _QM(t)
+            def _move(area, name, tb=t, ww=w):
+                ww.addToolBar(area, tb)
+                try:
+                    import compat_settings as _cs
+                    s = _cs.load(); s["projects_bar_side"] = name.lower(); _cs.save(s)
+                except Exception:
+                    pass
+            for name, area in (("Top", Qt.ToolBarArea.TopToolBarArea), ("Left", Qt.ToolBarArea.LeftToolBarArea), ("Right", Qt.ToolBarArea.RightToolBarArea), ("Bottom", Qt.ToolBarArea.BottomToolBarArea)):
+                m.addAction(name, lambda a=area, n=name: _move(a, n))
+            m.exec(t.mapToGlobal(pos))
+        tb.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        tb.customContextMenuRequested.connect(_proj_side_menu)
         self._bars[id(win)] = (bar, lbl, tb)
         t = QTimer(win); t.setInterval(3000); t.timeout.connect(self.refresh_status); t.start()
         win._project_tabs_timer = t

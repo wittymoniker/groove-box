@@ -41,6 +41,61 @@ def protected_for(mode):
     return True
 
 
+def _seed_unit(app, salt):
+    try:
+        import groovebox as gb
+        sig = int(getattr(app, "_seed_program_signature", lambda: 0)() or gb._safe_int_seed(app.get_numeric_seed()))
+        import numpy as np
+        return float(np.random.default_rng(gb.seed_child(sig, salt, 0)).random())
+    except Exception:
+        return 0.5
+
+
+def _apply_fx_and_composition(app, mode, share):
+    fx_mode = {"protected": "mix", "global50": "mix", "direct": "canonical"}.get(mode, "mix")
+    st = getattr(app, "r32_fx_state", None)
+    if isinstance(st, dict):
+        g = st.setdefault("global", {})
+        g["mode"] = fx_mode
+        u = _seed_unit(app, "fx_global")
+        g["pkp"] = round(0.4 * u, 3)
+        g["fractal"] = round(0.35 * ((u * 7) % 1), 3)
+        g["eqr"] = round(0.3 * ((u * 13) % 1), 3)
+        for name, store in (st.get("local") or {}).items():
+            if isinstance(store, dict):
+                store["mode"] = fx_mode
+    for attr, val in (("slider_eqr", 0.3 * _seed_unit(app, "eqr")),
+                      ("slider_fractalizer", 0.35 * _seed_unit(app, "fractal")),
+                      ("spin_global_convolve", 20.0 + 60.0 * _seed_unit(app, "convolve")),
+                      ("spin_base_frequency", 220.0 + 440.0 * _seed_unit(app, "base")),
+                      ("dial_project_sharp", int(30 + 40 * _seed_unit(app, "sharp")))):
+        w = getattr(app, attr, None)
+        if w is not None and hasattr(w, "setValue"):
+            try:
+                w.blockSignals(True)
+                w.setValue(val)
+                w.blockSignals(False)
+            except Exception:
+                pass
+    pkp = getattr(app, "slider_pkp_envelope", None)
+    if pkp is not None and hasattr(pkp, "setValue"):
+        try:
+            pkp.blockSignals(True)
+            pkp.setValue(int(400 * _seed_unit(app, "pkp")))
+            pkp.blockSignals(False)
+        except Exception:
+            pass
+    for attr, salt in (("dial_track_energy", "energy"), ("dial_track_harmonic", "harmonic")):
+        d = getattr(app, attr, None)
+        if d is not None and hasattr(d, "setValue"):
+            try:
+                d.blockSignals(True)
+                d.setValue(int(50 + 30 * (_seed_unit(app, salt) - 0.5)))
+                d.blockSignals(False)
+            except Exception:
+                pass
+
+
 def apply(app, mode=DEFAULT, *, refresh=True):
     mode = mode if mode in {m[0] for m in MODES} else DEFAULT
     share = share_for(mode)
@@ -69,6 +124,42 @@ def apply(app, mode=DEFAULT, *, refresh=True):
             chk.blockSignals(False)
         except Exception:
             pass
+    # FX and composition controls. Canonical mode sets the FX mode and writes
+    # seed-derived numbers into the global FX and the composition spins.
+    _apply_fx_and_composition(app, mode, share)
+    # Push computed canonical numbers into the geometrics (ball, cellular, wavetable).
+    # A manual lock on a lane keeps that lane's numbers.
+    if not bool(getattr(app, "ball_manual_activity_locked", False)):
+        fac = None
+        fn = getattr(app, "_geometric_convolution_defaults", None)
+        if callable(fn):
+            try:
+                fac = fn()
+            except Exception:
+                fac = None
+        if isinstance(fac, dict):
+            for lane, store_name in (("ball", "ball_synth_params"), ("cellular", "cellular_synth_params")):
+                locked = bool(getattr(app, "ball_manual_activity_locked", False)) if lane == "ball" else bool(getattr(app, "ca_single_cell_activity_locked", False))
+                if locked:
+                    continue
+                store = getattr(app, store_name, None)
+                lane_vals = fac.get(lane)
+                if isinstance(store, dict) and isinstance(lane_vals, dict):
+                    for k, v in lane_vals.items():
+                        if k in ("x", "y", "manual_cells"):
+                            continue
+                        store[k] = v
+                    store["canonical_share"] = share
+                    prefix = "spin_ball_" if lane == "ball" else "spin_ca_"
+                    for k, v in lane_vals.items():
+                        sp = getattr(app, prefix + k, None)
+                        if sp is not None and hasattr(sp, "setValue"):
+                            try:
+                                sp.blockSignals(True)
+                                sp.setValue(v)
+                                sp.blockSignals(False)
+                            except Exception:
+                                pass
     # sliders that mirror the shares
     for sattr, lattr, key in (("slider_multidim_canon", "lbl_multidim_canon", "multidim_canon"),
                               ("slider_multidim_mix", "lbl_multidim_mix", "multidim")):

@@ -250,7 +250,7 @@ def open_window(app=None, parent=None):
         import compat_settings as _cs
         kind = cb_hw.currentText()
         kind, prof = _cs.apply_hardware_class(None if kind == "auto" else kind)
-        out.setPlainText("Applied %s profile\n%s" % (kind, prof))
+        out.setPlainText("Applied %s profile\n%s" % (kind, "\n".join("%s=%s" % kv for kv in prof.items()) if isinstance(prof, dict) else prof))
     b_hw = QPushButton("Apply hardware profile")
     b_hw.clicked.connect(_apply_hw)
     form.addRow("Hardware class", cb_hw)
@@ -276,7 +276,11 @@ def open_window(app=None, parent=None):
     form.addRow("Composition style", cb_comp)
     form.addRow("Output style", cb_out)
     form.addRow("", b_style)
-    for cap, w in (("UI scale %", sp_ui), ("Window scale %", sp_win), ("Smooth mode", cb_smooth), ("Threads", sp_thr),
+    cb_quality = QComboBox(); cb_quality.addItems(["balanced", "max", "compatibility"]); cb_quality.setCurrentText(str(st.get("thread_quality", "balanced")))
+    cb_quality.setToolTip("max: all threads, low latency. compatibility: fewer threads, high latency, smooth on. balanced: automatic.")
+    cb_profile = QComboBox(); cb_profile.addItems(["auto", "latitude", "tablet", "desktop", "studio"]); cb_profile.setCurrentText(str(st.get("compat_profile", "auto")))
+    cb_profile.setToolTip("Hardware compatibility profile. Latitude is tuned for the Dell 3510.")
+    for cap, w in (("Thread quality", cb_quality), ("Compatibility profile", cb_profile), ("UI scale %", sp_ui), ("Window scale %", sp_win), ("Smooth mode", cb_smooth), ("Threads", sp_thr),
                    ("Audio rate", cb_rate), ("Scene size", cb_size), ("Audio latency", cb_lat), ("Worker mode", cb_worker),
                    ("Swap limit × RAM", sp_swap)):
         form.addRow(cap, w)
@@ -287,6 +291,7 @@ def open_window(app=None, parent=None):
     def do_save():
         st2 = cs.load()
         st2.update({"ui_scale": sp_ui.value(), "window_scale": sp_win.value(), "smooth_mode": cb_smooth.currentText(),
+                    "thread_quality": cb_quality.currentText(), "compat_profile": cb_profile.currentText(),
                     "threads": sp_thr.value(), "audio_rate": cb_rate.currentText(), "scene_size": cb_size.currentText(),
                     "audio_latency": cb_lat.currentText(), "worker_mode": cb_worker.currentText(), "swap_limit": sp_swap.value(),
                     "play_all_outputs": chk_all.isChecked(), "startup_chime": chk_chime.isChecked(),
@@ -297,7 +302,7 @@ def open_window(app=None, parent=None):
             cs.apply_env(st2)
         except Exception:
             pass
-        out.setPlainText("Saved. Scale changes apply at the next launch.\n\n" + cs.describe(st2))
+        out.setPlainText("Saved. Scale changes apply at the next launch.\n\n" + "\n".join(cs.describe(st2)))
 
     # GROOVEBOX_LID_DISPLAY_20261111
     try:
@@ -339,7 +344,7 @@ def open_window(app=None, parent=None):
         row2.addWidget(b)
     lay.addLayout(row2)
     out = QTextEdit(); out.setReadOnly(True); out.setStyleSheet("font-family:Consolas,monospace;font-size:9pt;")
-    out.setPlainText(cs.describe(st))
+    out.setPlainText("\n".join(cs.describe(st)))
     lay.addWidget(out, 1)
     def _checklist():
         lines = ["On-device checklist"]

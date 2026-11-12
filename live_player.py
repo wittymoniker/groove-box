@@ -3718,14 +3718,10 @@ class LivePlayerWindow(QDialog):
         self.engine = eng
         for v in self._views():
             v.set_plan(plan, eng)
-        # R32.10.3: the light engine plays only user-entered notes. With none (a fresh project, or one whose
-        # music is all canonical/seeded), it would be silent while Play / Export render music — so play the
-        # full mixdown instead, the same buffer Export uses.
-        _auto_full = (self.chk_comp.isChecked() and not self.chk_full.isChecked()
-                      and not any(plan.get("rows") or []) and len(getattr(h, "master_playlist_data", []) or []) > 0)
-        if (self.chk_full.isChecked() or _auto_full) and self.chk_comp.isChecked():
+        # Prefer light engine unless the Full process routine checkbox is explicitly on.
+        # Auto-full was forcing the heavy path too often; light starts immediately.
+        if self.chk_full.isChecked() and self.chk_comp.isChecked():
             self._start_full(plan, eng, start, gen)
-            self._auto_full_note_keep = bool(_auto_full)
         else:
             self._start_light(plan, eng, start)
         if self.chk_rig.isChecked():

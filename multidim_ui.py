@@ -1,3 +1,4 @@
+# GROOVEBOX_R29C_MASTER_MD_FRAME_SCALE_20261104
 """GROOVEBOX_R23R_MULTIDIM_UI_20261103 — 🌀 Multidimensional synth window.
 
 Deformable geodesic sphere mesh driven by CA state + wavetable amplitudes.
@@ -13,16 +14,16 @@ from collections import deque
 
 import numpy as np
 from qt_painting import owned_painter
-from PyQt6.QtCore import Qt, QTimer, QPoint, QPointF, QRectF, QRect, QLineF, QSize
+from PyQt6.QtCore import Qt, QTimer, QPoint, QPointF, QRectF, QRect, QLineF, QSize, pyqtSignal
 from PyQt6.QtGui import (QColor, QPainter, QPen, QBrush, QPolygon, QPolygonF, QRadialGradient,
-                          QLinearGradient, QFont, QPainterPath, QRegion)
+                          QLinearGradient, QFont, QPainterPath, QRegion, QImage)
 from PyQt6.QtWidgets import (
     QPlainTextEdit,QApplication, QDialog, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
                               QComboBox, QLineEdit, QSpinBox, QSlider, QLabel, QPushButton,
                               QScrollArea, QSplitter, QGroupBox, QTabWidget, QCheckBox,
                               QDoubleSpinBox, QFrame, QSizePolicy, QLayout, QLayoutItem,
                               QWidgetItem, QSpacerItem, QDial, QGridLayout, QTableWidget,
-                              QTableWidgetItem, QHeaderView, QProgressBar)
+                              QTableWidgetItem, QHeaderView, QProgressBar, QListWidget, QListWidgetItem)
 from PyQt6.QtGui import QStandardItemModel, QStandardItem
 
 try:
@@ -240,7 +241,7 @@ except Exception:
     _M_SQ  = 1.4342003397  # M²
 
 _MEUM_ANGLE = math.tau * _M_INV          # ≈ 5.248 rad ≈ 300.5°
-_SPHERE_N   = 220                        # total lattice points
+_SPHERE_N   = 330                        # total lattice points (R31: 1.5x detail)
 _SPHERE_K1  = int(round(_M))            # 1  — nearest spiral family
 _SPHERE_K2  = int(round(_M_SQ))         # 1  — second spiral family (use M²≈1.43→2)
 # recompute as the two Meum-convergent skip distances
@@ -310,6 +311,8 @@ _SPHERE_EDGES = _sphere_edges()
 
 
 class MD3DView(QWidget):
+    _frame_ready = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
@@ -345,6 +348,12 @@ class MD3DView(QWidget):
         for part in str(p.get("resonators", "harmonic")).split("+"):
             ratios = ratios + tuple(r for r in md.RESONATOR_RULES.get(part.strip(), ()) if r not in ratios)
         self.res = ratios
+        self._params_rev = getattr(self, "_params_rev", 0) + 1      # multidim synth update → new frame now
+        try:
+            if self.isVisible():
+                self._request_frame()
+        except Exception:
+            pass
         self.update()
 
     def pulse(self, amount=0.15):
@@ -411,6 +420,235 @@ class MD3DView(QWidget):
         self.update()
         e.ignore()  # do NOT consume — parent scroll areas still work
 
+    # ---- R31 MD_SCENE_HOST_LAYERS: the main window's Panel, Vector and Fractal/EQR/PKP state ----
+    def attach_host(self, host):
+        """Called by the main-window panel. Reads only cheap scalar state while painting; the panel
+        voice cycle is rendered on a worker every 1.5 s, never in paintEvent."""
+        self.host = host
+        self._panel_wave = None
+        self._panel_busy = False
+        from PyQt6.QtCore import QTimer as _QT
+        self._panel_timer = _QT(self); self._panel_timer.setInterval(1500)
+        self._panel_timer.timeout.connect(self._refresh_panel_wave)
+        self._panel_timer.start()
+        _QT.singleShot(300, self._refresh_panel_wave)
+
+    def _refresh_panel_wave(self):
+        host = getattr(self, "host", None)
+        if host is None or self._panel_busy or not self.isVisible():
+            return
+        try:
+            name = host._current_instrument_name()
+            base = float(host.spin_base_frequency.value()) if hasattr(host, "spin_base_frequency") else 432.0
+        except Exception:
+            return
+        self._panel_busy = True
+        import threading as _th
+
+        def work():
+            try:
+                sr = 48000.0
+                n = int(max(64, min(4096, sr / max(20.0, base))))         # one cycle of the voice
+                t = np.arange(n, dtype=np.float64) / sr
+                v = np.asarray(host._audition_voice(name, base, t, sr), dtype=np.float64).reshape(-1)
+                m = float(np.max(np.abs(v))) if v.size else 0.0
+                self._panel_wave = (v / m) if m > 0 else v
+            except Exception:
+                pass
+            finally:
+                self._panel_busy = False
+        _th.Thread(target=work, name="md-scene-panel-wave", daemon=True).start()
+
+    def _host_state(self):
+        host = getattr(self, "host", None)
+        st = {"vec": None, "drive": 0.5, "frac": 0.0, "eqr": 0.0, "pkp": 0.0}
+        if host is None:
+            return st
+        try:
+            v = np.asarray(host._master_vector_effective(), dtype=np.float64).reshape(-1)[:3]
+            st["vec"] = v
+            st["drive"] = float((getattr(host, "master_vector_state", {}) or {}).get("drive", 0.5))
+        except Exception:
+            pass
+        for key, attr, lo, hi in (("frac", "slider_fractalizer", 0.0, 100.0), ("eqr", "slider_eqr", 0.0, 100.0),
+                                  ("pkp", "slider_pkp_envelope", 1.0, 1000.0)):
+            w = getattr(host, attr, None)
+            try:
+                st[key] = max(0.0, min(1.0, (float(w.value()) - lo) / (hi - lo)))
+            except Exception:
+                pass
+        return st
+
+    # ---- floating tags with leader lines and sparklines ----
+    def _hist_push(self, key, value, n=90):
+        hist = self.__dict__.setdefault("_hist", {})
+        d = hist.get(key)
+        if d is None:
+            d = hist[key] = deque(maxlen=n)
+        last_t = self.__dict__.setdefault("_hist_t", {})
+        if last_t.get(key) != round(self.t, 3):          # one sample per animation step
+            last_t[key] = round(self.t, 3)
+            try:
+                d.append(float(value))
+            except Exception:
+                pass
+
+    def _tag(self, anchor, title, text, color, series=None, fixed=False):
+        try:
+            ax, ay = float(anchor[0]), float(anchor[1])
+        except Exception:
+            return
+        self.__dict__.setdefault("_tags", []).append((ax, ay, str(title), str(text), QColor(color),
+                                                      None if series is None else np.asarray(list(series), dtype=float), fixed))
+
+    def _draw_tags(self, qp, w, h):
+        tags = getattr(self, "_tags", None) or []
+        if not tags:
+            return
+        fm_title = QFont("Sans", 9, QFont.Weight.Black)
+        fm_text = QFont("Sans", 9)
+        placed = []
+        for i, (ax, ay, title, text, col, series, fixed) in enumerate(tags):
+            bw = max(150, 7 * max(len(title), len(text)) + 16)
+            bh = 34 + (24 if series is not None and series.size > 1 else 0)
+            if fixed:
+                bx, by = ax, ay
+            else:
+                # float beside the anchor, drifting gently; push down/up to avoid earlier tags
+                drift = 6.0 * math.sin(self.t * 0.9 + i * 1.3)
+                side0 = 1 if ax < w * 0.5 else -1
+                y0 = ay - bh - 18 + 4.0 * math.cos(self.t * 0.7 + i)
+
+                def _clear(x, y):
+                    return not any(abs(y - py) < bh + 4 and x < px + pw + 4 and px < x + bw + 4 for px, py, pw in placed)
+                best = None
+                for side in (side0, -side0):
+                    for k in (0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5):
+                        x = ax + side * (36 + drift) - (bw if side < 0 else 0)
+                        y = y0 + k * (bh + 6)
+                        x = max(4.0, min(w - bw - 4.0, x)); y = max(24.0, min(h - bh - 24.0, y))
+                        if _clear(x, y):
+                            best = (x, y, side); break
+                    if best:
+                        break
+                if best is None:
+                    continue                      # no free spot: skip this tag this frame rather than overlap
+                bx, by, side = best
+                # leader line from the 3-D anchor to the tag
+                qp.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 150), 1.0))
+                qp.drawLine(QPointF(ax, ay), QPointF(bx + (0 if side > 0 else bw), by + bh / 2))
+                qp.setBrush(col); qp.setPen(Qt.PenStyle.NoPen); qp.drawEllipse(QPointF(ax, ay), 3.0, 3.0)
+            placed.append((bx, by, bw))
+            qp.setBrush(QColor(6, 14, 24, 205)); qp.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 190), 1.2))
+            qp.drawRoundedRect(QRectF(bx, by, bw, bh), 6, 6)
+            qp.setPen(col); qp.setFont(fm_title); qp.drawText(QPointF(bx + 8, by + 14), title)
+            qp.setPen(QColor(225, 240, 250)); qp.setFont(fm_text); qp.drawText(QPointF(bx + 8, by + 28), text)
+            if series is not None and series.size > 1:
+                lo, hi = float(np.min(series)), float(np.max(series))
+                rng = (hi - lo) or 1.0
+                px0, py0, pw, ph = bx + 8, by + 34, bw - 16, 18
+                qp.setPen(QPen(QColor(col.red(), col.green(), col.blue(), 70), 1)); qp.drawLine(QPointF(px0, py0 + ph), QPointF(px0 + pw, py0 + ph))
+                path = QPainterPath()
+                for k, v in enumerate(series):
+                    x = px0 + pw * k / max(1, series.size - 1)
+                    y = py0 + ph - ph * (float(v) - lo) / rng
+                    (path.moveTo if k == 0 else path.lineTo)(QPointF(x, y))
+                qp.setBrush(Qt.BrushStyle.NoBrush); qp.setPen(QPen(col, 1.4)); qp.drawPath(path)
+        qp.setBrush(Qt.BrushStyle.NoBrush)
+
+    def _poly3(self, qp, pts, pen, closed=True):
+        S, _z, ok = self._proj(pts)
+        qp.setPen(pen)
+        n = len(S)
+        for i in range(n - (0 if closed else 1)):
+            j = (i + 1) % n
+            if ok[i] and ok[j]:
+                qp.drawLine(QPointF(*S[i]), QPointF(*S[j]))
+
+    def _paint_host_layers(self, qp, w, h):
+        if getattr(self, "host", None) is None:
+            return
+        st = getattr(self, "_host_snap", None) or self._host_state()
+        t = self.t
+        ang = np.linspace(0.0, math.tau, 181)
+        # --- VECTOR: XYZ tripod + drive-scaled master vector with plane shadows
+        L = 1.55
+        for axis, col, lab in ((0, QColor(255, 90, 90, 150), "X"), (1, QColor(110, 255, 140, 150), "Y"), (2, QColor(90, 160, 255, 150), "Z")):
+            a = np.zeros(3); a[axis] = L
+            Sa, _z, oka = self._proj([[0, 0, 0], a])
+            if oka.all():
+                qp.setPen(QPen(col, 1.2, Qt.PenStyle.DashLine)); qp.drawLine(QPointF(*Sa[0]), QPointF(*Sa[1]))
+                qp.setPen(col); qp.setFont(QFont("Sans", 8, QFont.Weight.Bold)); qp.drawText(QPointF(Sa[1][0] + 3, Sa[1][1] - 3), lab)
+        v = st["vec"]
+        if v is not None and float(np.linalg.norm(v)) > 1e-9:
+            vv = v / float(np.linalg.norm(v)) * (0.6 + 0.9 * max(0.0, min(1.0, st["drive"])))
+            Sv, _z, okv = self._proj([[0, 0, 0], vv, [vv[0], 0, vv[2]], [vv[0], vv[1], 0]])
+            if okv[:2].all():
+                qp.setPen(QPen(QColor(125, 211, 252, 90), 1.0, Qt.PenStyle.DotLine))
+                for k in (2, 3):
+                    if okv[k]:
+                        qp.drawLine(QPointF(*Sv[1]), QPointF(*Sv[k]))
+                qp.setPen(QPen(QColor("#7dd3fc"), 4.0, cap=Qt.PenCapStyle.RoundCap))
+                qp.drawLine(QPointF(*Sv[0]), QPointF(*Sv[1]))
+                qp.setPen(Qt.PenStyle.NoPen); qp.setBrush(QColor("#e0f6ff")); qp.drawEllipse(QPointF(*Sv[1]), 6.5, 6.5)
+                qp.setBrush(Qt.BrushStyle.NoBrush)
+                self._hist_push("vx", v[0]); self._hist_push("vy", v[1]); self._hist_push("vz", v[2])
+                self._tag(Sv[1], "VECTOR", "x %.2f  y %.2f  z %.2f · drive %.2f" % (v[0], v[1], v[2], st["drive"]),
+                          QColor("#7dd3fc"), self._hist.get("vx"))
+        # --- PANEL: equatorial ring shaped by one cycle of the selected instrument's panel voice
+        wave = getattr(self, "_panel_wave", None)
+        if wave is not None and len(wave) > 8:
+            idx = (np.linspace(0, len(wave) - 1, len(ang)).astype(int) + int(t * 40)) % len(wave)
+            r = 1.48 + 0.22 * np.asarray(wave)[idx]
+            pts = np.stack([r * np.cos(ang), 0.06 * np.asarray(wave)[idx], r * np.sin(ang)], axis=1)
+            self._poly3(qp, pts, QPen(QColor(255, 150, 70, 235), 2.6))
+            S0, _z, ok0 = self._proj(pts[:1])
+            if ok0[0]:
+                rms = float(np.sqrt(np.mean(np.square(wave)))) if len(wave) else 0.0
+                _nm = getattr(self, "_host_snap_name", "")
+                self._tag(S0[0], "PANEL · " + str(_nm)[:22], "1 cycle · %d samples · rms %.2f" % (len(wave), rms),
+                          QColor("#ffb070"), np.asarray(wave)[:: max(1, len(wave) // 64)])
+        # --- FRACTAL / EQR / PKP: three orbits, each shaped and lit by its control
+        fr, eq, pk = st["frac"], st["eqr"], st["pkp"]
+        # Fractal: self-similar wobble (octaves 2^k), depth = Fractalizer
+        wob = sum((0.5 ** k) * np.sin((2 ** k) * 3 * ang + t * (k + 1)) for k in range(5))
+        r = 1.70 + 0.09 * fr * wob
+        pts = np.stack([r * np.cos(ang), 0.35 * np.sin(ang + t * 0.3), r * np.sin(ang)], axis=1)
+        self._poly3(qp, pts, QPen(QColor.fromHsv(285, 170, 255, int(70 + 170 * fr)), 1.2 + 2.4 * fr))
+        # EQR: tilt and ellipticity follow the Equation of Reality amount
+        tilt = 0.25 + 1.1 * eq
+        pts = np.stack([1.86 * np.cos(ang), 1.86 * np.sin(ang) * math.sin(tilt), 1.86 * np.sin(ang) * math.cos(tilt) * (1.0 - 0.35 * eq)], axis=1)
+        self._poly3(qp, pts, QPen(QColor.fromHsv(170, 170, 255, int(70 + 170 * eq)), 1.2 + 2.4 * eq))
+        # PKP: dotted orbit whose beads pulse at the PKP envelope rate
+        beads = 24
+        phase = t * (0.5 + 4.0 * pk)
+        bang = np.linspace(0.0, math.tau, beads, endpoint=False) + phase * 0.25
+        bp = np.stack([2.0 * np.cos(bang), -0.3 + 0.12 * np.sin(3 * bang), 2.0 * np.sin(bang)], axis=1)
+        Sb, Zb, okb = self._proj(bp)
+        for i in range(beads):
+            if okb[i]:
+                pulse = 0.5 + 0.5 * math.sin(phase * 3.0 + i * 0.8)
+                rad = (2.0 + 5.0 * pk * pulse) * 4.2 / max(1.0, float(Zb[i]))
+                qp.setPen(Qt.PenStyle.NoPen); qp.setBrush(QColor.fromHsv(20, 200, 255, int(90 + 150 * pulse)))
+                qp.drawEllipse(QPointF(*Sb[i]), rad, rad)
+        qp.setBrush(Qt.BrushStyle.NoBrush)
+        for key, val in (("frac", fr), ("eqr", eq), ("pkp", pk)):
+            self._hist_push(key, val)
+        anchors = self._proj([[1.70, 0.0, 0.0], [-1.86 * 0.7, 1.86 * 0.7 * math.sin(tilt), 0.0], [bp[0][0], bp[0][1], bp[0][2]]])
+        Sa, _za, oka = anchors
+        for i, (title, txt, col, key) in enumerate((
+                ("FRACTAL", "depth %.0f%% · 5 octaves" % (fr * 100), QColor.fromHsv(285, 150, 255), "frac"),
+                ("EQR", "%.0f%% · tilt %.0f°" % (eq * 100, math.degrees(tilt)), QColor.fromHsv(170, 150, 255), "eqr"),
+                ("PKP", "%.0f%% · %.2f pulses/s" % (pk * 100, (0.5 + 4.0 * pk) * 3.0 / math.tau), QColor.fromHsv(20, 170, 255), "pkp"))):
+            if oka[i]:
+                self._tag(Sa[i], title, txt, col, self._hist.get(key))
+        # legend
+        qp.setFont(QFont("Sans", 11, QFont.Weight.Bold))
+        y0 = 36
+        for txt, col in (("FRACTAL %.0f%%" % (fr * 100), QColor.fromHsv(285, 150, 255)), ("EQR %.0f%%" % (eq * 100), QColor.fromHsv(170, 150, 255)),
+                         ("PKP %.0f%%" % (pk * 100), QColor.fromHsv(20, 170, 255))):
+            qp.setPen(col); qp.drawText(10, y0, txt); y0 += 18
+
     def _proj(self, P):
         P = np.asarray(P, dtype=np.float64).reshape(-1, 3)
         cy, sy = math.cos(self.yaw), math.sin(self.yaw)
@@ -421,168 +659,277 @@ class MD3DView(QWidget):
         z =  sp * P[:, 1] + cp * z + self.dist
         # Fill the usable stage, not a small island inside it. The ring may
         # lightly intersect the animation, but it must not shrink the sphere.
-        f = min(self.width(), self.height()) * 1.65
+        W, H = getattr(self, "_proj_wh", None) or (self.width(), self.height())
+        f = min(W, H) * 0.95  # scale * 1.65
         ok = z > 0.05
         zs = np.where(ok, z, 1.0)
-        sx = self.width()  / 2 + f * x / zs
-        sy_ = self.height() / 2 - f * y / zs
+        sx = W / 2 + f * x / zs
+        sy_ = H / 2 - f * y / zs
         return np.stack([sx, sy_], axis=1), z, ok
 
     def paintEvent(self, _e):
+        """MD_RENDER_THREAD_R31: blit the newest frame drawn by the scene's render thread.
+        The GUI thread only copies an image; drawing never runs here (or on the audio thread)."""
         with owned_painter(self) as qp:
             if qp is None:
                 return
             try:
-                qp.setRenderHint(QPainter.RenderHint.Antialiasing)
-                w, h = self.width(), self.height()
-                # near-transparent dark bg with subtle radial glow
-                g = QRadialGradient(QPointF(w / 2, h / 2), max(w, h) * 0.72)
-                g.setColorAt(0.0, QColor(18, 28, 42, 220))
-                g.setColorAt(1.0, QColor(6, 10, 18, 240))
-                qp.fillRect(self.rect(), QBrush(g))
-                p = self.params
-                # OPTICAL PHYSICS SYMPTOMATICS — the field's stochastic / lock / fractal state
-                # is rendered as coherence, chromatic dispersion, caustics, diffraction and
-                # polarization, so the engine's condition is visible, not just audible.
-                stoch = max(0.0, min(1.0, float(p.get("stochastic", 0.0) or 0.0)))
-                frac = max(0.0, min(1.0, float(p.get("fractal_depth", 0.0) or 0.0)))
-                lock_ms = max(0.0, min(2000.0, float(p.get("lock_ms", 0.0) or 0.0)))
-                field_rate = max(0.0, min(1.0, float(p.get("field_rate", 0.5) or 0.0)))
-                coherence = max(0.0, min(1.0, 0.92 - 0.55 * stoch + 0.30 * (lock_ms / 2000.0)))
-                dispersion = max(0.0, min(1.0, 0.12 + 0.85 * stoch + 0.35 * frac))
-                caustic = max(0.0, min(1.0, 0.20 + 0.55 * frac + 0.25 * stoch))
-                polarization = max(0.0, min(1.0, 0.18 + 0.72 * field_rate))
-                phase = self.t * (0.45 + 2.6 * field_rate)
-                cxp, cyp = w / 2.0, h / 2.0
-                base_r = min(w, h)
-                for shell in range(4):
-                    path = QPainterPath()
-                    for i in range(121):
-                        a = math.tau * i / 120.0
-                        wob = 1.0 + 0.035 * math.sin(7.0 * a + phase + shell * 0.9)
-                        rr = base_r * (0.18 + 0.075 * shell + 0.025 * math.sin(phase * 0.7 + shell))
-                        x = cxp + rr * wob * math.cos(a) * (1.0 + 0.18 * dispersion)
-                        y = cyp + rr * wob * math.sin(a) * (0.72 + 0.10 * coherence)
-                        if i == 0:
-                            path.moveTo(x, y)
-                        else:
-                            path.lineTo(x, y)
-                    hue = int((185 + shell * 26 + 40 * dispersion) % 360)
-                    col = QColor.fromHsv(hue, 150, 255, int(18 + 50 * caustic * (1.0 - shell / 5.0)))
-                    qp.setBrush(Qt.BrushStyle.NoBrush)
-                    qp.setPen(QPen(col, 1.0 + 0.8 * dispersion))
-                    qp.drawPath(path)
-                fan = int(10 + 10 * dispersion)
-                for k in range(fan):
-                    a = math.tau * k / max(1, fan) + phase * 0.08
-                    r0 = base_r * (0.08 + 0.02 * math.sin(phase + k))
-                    r1 = base_r * (0.30 + 0.16 * polarization) * (0.7 + 0.3 * math.sin(phase * 0.6 + k * 1.7))
-                    qp.setPen(QPen(QColor.fromHsv(int((190 + 90 * k / max(1, fan)) % 360), 180, 255,
-                                                  int(12 + 34 * caustic)), 0.8))
-                    qp.drawLine(QPointF(cxp + r0 * math.cos(a), cyp + r0 * math.sin(a)),
-                                QPointF(cxp + r1 * math.cos(a), cyp + r1 * math.sin(a)))
-                gen = int(self.t * 1000.0 / max(2.0, float(p.get("block_ms", 12.0)))) % max(1, len(self.ca))
-                ca_row = self.ca[gen % len(self.ca)] if len(self.ca) else np.zeros(md.H, np.uint8)
-                ball_h = float(self.ball[int(self.t / 0.02) % len(self.ball)])
-                vx, vy, vz = (list(p.get("vector") or [0.5, 0.5, 0.5]) + [0.5] * 3)[:3]
-                rot = float(p.get("rot_hz", 0.1)) * math.tau * self.t
-                vec = np.array([vx * math.cos(rot) - vy * math.sin(rot),
-                                vz * math.cos(0.5 * rot),
-                                vx * math.sin(rot) + vy * math.cos(rot)])
-                # --- MEUM PHYLLOTAXIS SPHERE MESH
-                sphere_pts = _sphere_displaced(self.amps_n, ca_row, ball_h, vec, self.t)
-                S, Z, ok = self._proj(sphere_pts)
-                n_body = _SPHERE_N
-                # chromatic ghost edges: refractive dispersion splits the mesh spectrally
-                if dispersion > 0.05:
-                    split = 0.7 + 2.6 * dispersion
-                    for gi, (i, j) in enumerate(_SPHERE_EDGES):
-                        if gi % 3:
-                            continue
-                        if i >= len(S) or j >= len(S) or not (ok[i] and ok[j]):
-                            continue
-                        dxe, dye = S[j][0] - S[i][0], S[j][1] - S[i][1]
-                        inv = 1.0 / max(1e-6, math.hypot(dxe, dye))
-                        nx, ny = -dye * inv, dxe * inv
-                        for off, col in ((-split, QColor(255, 50, 70, int(25 + 65 * dispersion))),
-                                         (split, QColor(40, 90, 255, int(25 + 65 * dispersion)))):
-                            qp.setPen(QPen(col, 0.7))
-                            qp.drawLine(QPointF(S[i][0] + nx * off, S[i][1] + ny * off),
-                                        QPointF(S[j][0] + nx * off, S[j][1] + ny * off))
-                # draw edges — Meum spiral path + cross-links
-                for i, j in _SPHERE_EDGES:
-                    if i >= len(S) or j >= len(S):
-                        continue
-                    if not (ok[i] and ok[j]):
-                        continue
-                    depth = (Z[i] + Z[j]) * 0.5
-                    brightness = int(max(30, min(200, 180 / depth)))
-                    # hue: position along Meum spiral (index / N mapped to 200..320)
-                    hue = int((200 + 120 * i / max(1, n_body)) % 360)
-                    col = QColor.fromHsv(hue, 90, brightness, 140)
-                    qp.setPen(QPen(col, 0.8))
-                    qp.drawLine(QPointF(*S[i]), QPointF(*S[j]))
-                # draw CA-active vertex dots
-                for idx in range(min(n_body, len(S))):
-                    if ca_row[idx % len(ca_row)] and ok[idx]:
-                        hue = int((200 + 120 * idx / max(1, n_body)) % 360)
-                        col = QColor.fromHsv(hue, 200, 255, 220)
-                        qp.setPen(Qt.PenStyle.NoPen); qp.setBrush(col)
-                        r = max(1.5, 5.0 / float(Z[idx]))
-                        qp.drawEllipse(QPointF(*S[idx]), r, r)
-                        if caustic > 0.05:
-                            spike = r * (2.0 + 3.0 * caustic)
-                            qp.setPen(QPen(QColor(185, 240, 255, int(35 + 90 * caustic)), 0.6))
-                            qp.drawLine(QPointF(S[idx][0] - spike, S[idx][1]), QPointF(S[idx][0] + spike, S[idx][1]))
-                            qp.drawLine(QPointF(S[idx][0], S[idx][1] - spike), QPointF(S[idx][0], S[idx][1] + spike))
-                # fixed resonators: rings
-                if self.res:
-                    rmax = max(self.res)
-                    for r in self.res:
-                        yy = -1.0 + 2.0 * (math.log(r) / math.log(rmax) if rmax > 1 else 0.5)
-                        ang = np.linspace(0, math.tau, 48)
-                        ring = np.stack([1.3 * np.cos(ang), np.full_like(ang, yy), 1.3 * np.sin(ang)], axis=1)
-                        Sr, _z, okr = self._proj(ring)
-                        qp.setPen(QPen(QColor(255, 209, 102, 130), 1.4))
-                        for i in range(len(ang) - 1):
-                            if okr[i] and okr[i + 1]:
-                                qp.drawLine(QPointF(*Sr[i]), QPointF(*Sr[i + 1]))
-                # bouncing ball
-                Sb, Zb, okb = self._proj([[0.0, -1.3 + 1.6 * ball_h, 0.0], [0.0, -1.3, 0.0]])
-                if okb.all():
-                    rad = max(5.0, 52.0 / float(Zb[0]))
-                    qp.setPen(QPen(QColor(0, 0, 0, 80), 1)); qp.setBrush(QColor(0, 0, 0, 60))
-                    qp.drawEllipse(QPointF(*Sb[1]), rad * 0.85, rad * 0.28)
-                    gg = QRadialGradient(QPointF(Sb[0][0] - rad / 3, Sb[0][1] - rad / 3), rad * 1.4)
-                    gg.setColorAt(0.0, QColor("#ffffff")); gg.setColorAt(1.0, QColor("#ff6b9a"))
-                    qp.setPen(Qt.PenStyle.NoPen); qp.setBrush(QBrush(gg))
-                    qp.drawEllipse(QPointF(*Sb[0]), rad, rad)
-                    if coherence > 0.05:
-                        qp.setBrush(Qt.BrushStyle.NoBrush)
-                        for ring_i in range(3):
-                            qp.setPen(QPen(QColor.fromHsv((200 + ring_i * 55) % 360, 180, 255,
-                                                          int(55 + 95 * coherence)), 1.1))
-                            rr = rad * (1.16 + 0.12 * ring_i)
-                            qp.drawEllipse(QPointF(*Sb[0]), rr, rr)
-                # vector arrow
-                nv = float(np.linalg.norm(vec))
-                if nv > 0:
-                    v = vec / nv * 1.1
-                    Sv, _z, okv = self._proj([[0, 0, 0], v])
-                    if okv.all():
-                        qp.setPen(QPen(QColor("#7dd3fc"), 2.5, cap=Qt.PenCapStyle.RoundCap))
-                        qp.drawLine(QPointF(*Sv[0]), QPointF(*Sv[1]))
-                        qp.setBrush(QColor("#7dd3fc")); qp.setPen(Qt.PenStyle.NoPen)
-                        qp.drawEllipse(QPointF(*Sv[1]), 4, 4)
-                qp.setPen(QColor(190, 235, 255, 210))
-                qp.setFont(QFont("Sans", 7, QFont.Weight.Bold))
-                qp.drawText(8, 14, f"OPTICS · coh {coherence:.2f} · disp {dispersion:.2f} · caustic {caustic:.2f} · pol {polarization:.2f} · lock {lock_ms:.0f}ms")
-                qp.setPen(QColor(180, 210, 230, 160))
-                qp.setFont(QFont("Sans", 8))
-                qp.drawText(8, h - 8, "drag = orbit · scroll = yaw (passive) · M≈1.1976")
+                frame = getattr(self, "_frame", None)
+                if frame is not None and not frame.isNull():
+                    qp.drawImage(QRectF(0, 0, self.width(), self.height()), frame, QRectF(frame.rect()))
+                else:
+                    qp.fillRect(self.rect(), QColor(8, 14, 24))
             finally:
                 if qp.isActive():
                     qp.end()
+        if getattr(self, "_just_framed", False):
+            self._just_framed = False        # this repaint shows a finished frame: no new request
+            return
+        self._request_frame()
+
+    def _on_frame(self):
+        self._just_framed = True
+        self.update()
+
+    def _request_frame(self):
+        """GUI thread: snapshot cheap host state, then wake the render thread (never waits)."""
+        import threading as _th
+        if getattr(self, "_rt", None) is None:
+            self._rt_evt = _th.Event()
+            self._rt_stop = False
+            self._rt_busy = False
+            self._frame_ready.connect(self._on_frame)
+            self._rt = _th.Thread(target=self._render_loop, name="md-scene-render", daemon=True)
+            self._rt.start()
+        try:
+            self._host_snap = self._host_state() if getattr(self, "host", None) is not None else None
+            try:
+                self._host_snap_name = self.host._current_instrument_name()
+            except Exception:
+                self._host_snap_name = ""
+        except Exception:
+            self._host_snap = None
+        self._rt_size = (max(1, self.width()), max(1, self.height()))
+        self._rt_evt.set()
+
+    def _render_loop(self):
+        import time as _tm
+        try:
+            import os as _os
+            _os.nice(5)          # below the UI and audio threads
+        except Exception:
+            pass
+        while not getattr(self, "_rt_stop", False):
+            self._rt_evt.wait(0.5)
+            if not self._rt_evt.is_set():
+                continue
+            self._rt_evt.clear()
+            w, h = getattr(self, "_rt_size", (0, 0))
+            if w < 2 or h < 2:
+                continue
+            # Draw at most 1600 px wide/tall; the GUI blit scales it up (labels stay readable, ~4x cheaper).
+            k = min(1.0, 1600.0 / float(max(w, h)))
+            w, h = max(2, int(w * k)), max(2, int(h * k))
+            t0 = _tm.monotonic()
+            img = QImage(int(w), int(h), QImage.Format.Format_ARGB32_Premultiplied)
+            img.fill(QColor(8, 14, 24))
+            qp = QPainter(img)
+            try:
+                self._render_scene(qp, int(w), int(h))
+            except Exception:
+                pass
+            finally:
+                qp.end()
+            self._frame = img
+            try:
+                self._frame_ready.emit()
+            except RuntimeError:
+                return               # widget deleted
+            # cap at ~30 fps so a fast machine does not burn a core on decoration
+            spare = (1.0 / 30.0) - (_tm.monotonic() - t0)
+            if spare > 0:
+                _tm.sleep(spare)
+
+    def _render_scene(self, qp, w, h):
+        self._proj_wh = (w, h)
+        qp.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # near-transparent dark bg with subtle radial glow
+        g = QRadialGradient(QPointF(w / 2, h / 2), max(w, h) * 0.72)
+        g.setColorAt(0.0, QColor(18, 28, 42, 220))
+        g.setColorAt(1.0, QColor(6, 10, 18, 240))
+        qp.fillRect(self.rect(), QBrush(g))
+        p = self.params
+        # OPTICAL PHYSICS SYMPTOMATICS — the field's stochastic / lock / fractal state
+        # is rendered as coherence, chromatic dispersion, caustics, diffraction and
+        # polarization, so the engine's condition is visible, not just audible.
+        stoch = max(0.0, min(1.0, float(p.get("stochastic", 0.0) or 0.0)))
+        frac = max(0.0, min(1.0, float(p.get("fractal_depth", 0.0) or 0.0)))
+        lock_ms = max(0.0, min(2000.0, float(p.get("lock_ms", 0.0) or 0.0)))
+        field_rate = max(0.0, min(1.0, float(p.get("field_rate", 0.5) or 0.0)))
+        coherence = max(0.0, min(1.0, 0.92 - 0.55 * stoch + 0.30 * (lock_ms / 2000.0)))
+        dispersion = max(0.0, min(1.0, 0.12 + 0.85 * stoch + 0.35 * frac))
+        caustic = max(0.0, min(1.0, 0.20 + 0.55 * frac + 0.25 * stoch))
+        polarization = max(0.0, min(1.0, 0.18 + 0.72 * field_rate))
+        phase = self.t * (0.45 + 2.6 * field_rate)
+        cxp, cyp = w / 2.0, h / 2.0
+        base_r = min(w, h)
+        for shell in range(4):
+            path = QPainterPath()
+            for i in range(121):
+                a = math.tau * i / 120.0
+                wob = 1.0 + 0.035 * math.sin(7.0 * a + phase + shell * 0.9)
+                rr = base_r * (0.18 + 0.075 * shell + 0.025 * math.sin(phase * 0.7 + shell))
+                x = cxp + rr * wob * math.cos(a) * (1.0 + 0.18 * dispersion)
+                y = cyp + rr * wob * math.sin(a) * (0.72 + 0.10 * coherence)
+                if i == 0:
+                    path.moveTo(x, y)
+                else:
+                    path.lineTo(x, y)
+            hue = int((185 + shell * 26 + 40 * dispersion) % 360)
+            col = QColor.fromHsv(hue, 150, 255, int(18 + 50 * caustic * (1.0 - shell / 5.0)))
+            qp.setBrush(Qt.BrushStyle.NoBrush)
+            qp.setPen(QPen(col, 1.0 + 0.8 * dispersion))
+            qp.drawPath(path)
+        fan = int(10 + 10 * dispersion)
+        for k in range(fan):
+            a = math.tau * k / max(1, fan) + phase * 0.08
+            r0 = base_r * (0.08 + 0.02 * math.sin(phase + k))
+            r1 = base_r * (0.30 + 0.16 * polarization) * (0.7 + 0.3 * math.sin(phase * 0.6 + k * 1.7))
+            qp.setPen(QPen(QColor.fromHsv(int((190 + 90 * k / max(1, fan)) % 360), 180, 255,
+                                          int(12 + 34 * caustic)), 0.8))
+            qp.drawLine(QPointF(cxp + r0 * math.cos(a), cyp + r0 * math.sin(a)),
+                        QPointF(cxp + r1 * math.cos(a), cyp + r1 * math.sin(a)))
+        gen = int(self.t * 1000.0 / max(2.0, float(p.get("block_ms", 12.0)))) % max(1, len(self.ca))
+        ca_row = self.ca[gen % len(self.ca)] if len(self.ca) else np.zeros(md.H, np.uint8)
+        ball_h = float(self.ball[int(self.t / 0.02) % len(self.ball)])
+        vx, vy, vz = (list(p.get("vector") or [0.5, 0.5, 0.5]) + [0.5] * 3)[:3]
+        rot = float(p.get("rot_hz", 0.1)) * math.tau * self.t
+        vec = np.array([vx * math.cos(rot) - vy * math.sin(rot),
+                        vz * math.cos(0.5 * rot),
+                        vx * math.sin(rot) + vy * math.cos(rot)])
+        # --- MEUM PHYLLOTAXIS SPHERE MESH
+        sphere_pts = _sphere_displaced(self.amps_n, ca_row, ball_h, vec, self.t)
+        S, Z, ok = self._proj(sphere_pts)
+        n_body = _SPHERE_N
+        # chromatic ghost edges: refractive dispersion splits the mesh spectrally
+        if dispersion > 0.05:
+            split = 0.7 + 2.6 * dispersion
+            red, blue = [], []
+            for gi, (i, j) in enumerate(_SPHERE_EDGES):
+                if gi % 3:
+                    continue
+                if i >= len(S) or j >= len(S) or not (ok[i] and ok[j]):
+                    continue
+                dxe, dye = S[j][0] - S[i][0], S[j][1] - S[i][1]
+                inv = 1.0 / max(1e-6, math.hypot(dxe, dye))
+                nx, ny = -dye * inv, dxe * inv
+                red.append(QLineF(S[i][0] - nx * split, S[i][1] - ny * split, S[j][0] - nx * split, S[j][1] - ny * split))
+                blue.append(QLineF(S[i][0] + nx * split, S[i][1] + ny * split, S[j][0] + nx * split, S[j][1] + ny * split))
+            qp.setPen(QPen(QColor(255, 50, 70, int(25 + 65 * dispersion)), 0.7)); qp.drawLines(red)
+            qp.setPen(QPen(QColor(40, 90, 255, int(25 + 65 * dispersion)), 0.7)); qp.drawLines(blue)
+        # draw edges — Meum spiral path + cross-links
+        # R31: batched by (hue, brightness) bucket — 48 drawLines calls instead of one call per edge.
+        buckets = {}
+        nS = len(S)
+        for i, j in _SPHERE_EDGES:
+            if i >= nS or j >= nS or not (ok[i] and ok[j]):
+                continue
+            depth = (Z[i] + Z[j]) * 0.5
+            bb = min(3, max(0, int((min(255, 270 / depth) - 45) / 53)))          # 4 brightness bands
+            hb = min(11, int(12 * i / max(1, n_body)))                           # 12 hue bands along the spiral
+            buckets.setdefault((hb, bb), []).append(QLineF(S[i][0], S[i][1], S[j][0], S[j][1]))
+        qp.setRenderHint(QPainter.RenderHint.Antialiasing, False)     # dense mesh: aliased lines are ~6x cheaper
+        for (hb, bb), lines in buckets.items():
+            hue = int((200 + 120 * (hb + 0.5) / 12.0) % 360)
+            qp.setPen(QPen(QColor.fromHsv(hue, 110, 45 + 53 * bb + 26, 210), 1.0))     # R31: 1.5x brighter
+            qp.drawLines(lines)
+        qp.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        # draw CA-active vertex dots
+        for idx in range(min(n_body, len(S))):
+            if ca_row[idx % len(ca_row)] and ok[idx]:
+                hue = int((200 + 120 * idx / max(1, n_body)) % 360)
+                col = QColor.fromHsv(hue, 200, 255, 220)
+                qp.setPen(Qt.PenStyle.NoPen); qp.setBrush(col)
+                r = max(2.2, 7.5 / float(Z[idx]))
+                qp.drawEllipse(QPointF(*S[idx]), r, r)
+                if caustic > 0.05:
+                    spike = r * (2.0 + 3.0 * caustic)
+                    qp.setPen(QPen(QColor(185, 240, 255, int(35 + 90 * caustic)), 0.6))
+                    qp.drawLine(QPointF(S[idx][0] - spike, S[idx][1]), QPointF(S[idx][0] + spike, S[idx][1]))
+                    qp.drawLine(QPointF(S[idx][0], S[idx][1] - spike), QPointF(S[idx][0], S[idx][1] + spike))
+        # fixed resonators: rings
+        if self.res:
+            rmax = max(self.res)
+            for r in self.res:
+                yy = -1.0 + 2.0 * (math.log(r) / math.log(rmax) if rmax > 1 else 0.5)
+                ang = np.linspace(0, math.tau, 48)
+                ring = np.stack([1.3 * np.cos(ang), np.full_like(ang, yy), 1.3 * np.sin(ang)], axis=1)
+                Sr, _z, okr = self._proj(ring)
+                qp.setPen(QPen(QColor(255, 209, 102, 195), 2.1))
+                for i in range(len(ang) - 1):
+                    if okr[i] and okr[i + 1]:
+                        qp.drawLine(QPointF(*Sr[i]), QPointF(*Sr[i + 1]))
+        # bouncing ball
+        Sb, Zb, okb = self._proj([[0.0, -1.3 + 1.6 * ball_h, 0.0], [0.0, -1.3, 0.0]])
+        if okb.all():
+            rad = max(5.0, 52.0 / float(Zb[0]))
+            qp.setPen(QPen(QColor(0, 0, 0, 80), 1)); qp.setBrush(QColor(0, 0, 0, 60))
+            qp.drawEllipse(QPointF(*Sb[1]), rad * 0.85, rad * 0.28)
+            gg = QRadialGradient(QPointF(Sb[0][0] - rad / 3, Sb[0][1] - rad / 3), rad * 1.4)
+            gg.setColorAt(0.0, QColor("#ffffff")); gg.setColorAt(1.0, QColor("#ff6b9a"))
+            qp.setPen(Qt.PenStyle.NoPen); qp.setBrush(QBrush(gg))
+            qp.drawEllipse(QPointF(*Sb[0]), rad, rad)
+            if coherence > 0.05:
+                qp.setBrush(Qt.BrushStyle.NoBrush)
+                for ring_i in range(3):
+                    qp.setPen(QPen(QColor.fromHsv((200 + ring_i * 55) % 360, 180, 255,
+                                                  int(55 + 95 * coherence)), 1.1))
+                    rr = rad * (1.16 + 0.12 * ring_i)
+                    qp.drawEllipse(QPointF(*Sb[0]), rr, rr)
+        # vector arrow
+        nv = float(np.linalg.norm(vec))
+        if nv > 0:
+            v = vec / nv * 1.1
+            Sv, _z, okv = self._proj([[0, 0, 0], v])
+            if okv.all():
+                qp.setPen(QPen(QColor("#7dd3fc"), 2.5, cap=Qt.PenCapStyle.RoundCap))
+                qp.drawLine(QPointF(*Sv[0]), QPointF(*Sv[1]))
+                qp.setBrush(QColor("#7dd3fc")); qp.setPen(Qt.PenStyle.NoPen)
+                qp.drawEllipse(QPointF(*Sv[1]), 4, 4)
+        # R31 MD_SCENE_TAGS: entity tags (ball, CA, resonators, strongest harmonics, optics)
+        tags = self._tags = []
+        try:
+            self._hist_push("ball", ball_h); self._hist_push("coh", coherence); self._hist_push("disp", dispersion)
+            if okb.all():
+                self._tag(Sb[0], "BALL", "height %.2f · g %.1f · e %.2f" % (ball_h, float(p.get("gravity", 9.8)),
+                          float(p.get("restitution", 0.8))), QColor("#ff8fb3"), self._hist.get("ball"))
+            live = int(np.count_nonzero(ca_row)) if len(ca_row) else 0
+            top = int(np.argmax(np.abs(self.amps_n))) if np.size(self.amps_n) else 0
+            if len(S) and ok[min(top, len(S) - 1)]:
+                self._tag(S[min(top, len(S) - 1)], "SPECTRUM",
+                          "peak k=%d · %.2f · rule %s" % (top + 1, float(self.amps_n[top]) if np.size(self.amps_n) else 0.0,
+                                                          p.get("ca_rule", 90)), QColor("#c7a6ff"),
+                          np.abs(self.amps_n[:48]) if np.size(self.amps_n) else None)
+            probe = (gen * 7) % max(1, min(n_body, len(S)))
+            if len(S) and ok[probe]:
+                self._tag(S[probe], "CELLULAR", "gen %d · %d/%d alive" % (gen, live, len(ca_row)), QColor("#7fffd4"),
+                          ca_row[:64].astype(float) if len(ca_row) else None)
+            if self.res:
+                Sr0, _zr, okr0 = self._proj([[1.3, -1.0 + 2.0 * (math.log(max(self.res)) / math.log(max(self.res)) if max(self.res) > 1 else 0.5), 0.0]])
+                if okr0[0]:
+                    self._tag(Sr0[0], "RESONATORS", " ".join("%.3g" % r for r in self.res[:6]), QColor("#ffd166"))
+            self._tag((w - 230, 60), "OPTICS", "coh %.2f · disp %.2f" % (coherence, dispersion), QColor("#bfefff"),
+                      self._hist.get("coh"), fixed=True)
+        except Exception:
+            pass
+        self._paint_host_layers(qp, w, h)       # R31: Panel / Vector / Fractal·EQR·PKP
+        self._draw_tags(qp, w, h)
+        qp.setPen(QColor(190, 235, 255, 210))
+        qp.setFont(QFont("Sans", 7, QFont.Weight.Bold))
+        qp.drawText(8, 14, f"OPTICS · coh {coherence:.2f} · disp {dispersion:.2f} · caustic {caustic:.2f} · pol {polarization:.2f} · lock {lock_ms:.0f}ms")
+        qp.setPen(QColor(180, 210, 230, 160))
+        qp.setFont(QFont("Sans", 8))
+        qp.drawText(8, h - 8, "drag = orbit · scroll = yaw (passive) · M≈1.1976")
 
 
 # ---------------------------------------------------------------------------
@@ -1553,6 +1900,43 @@ class MultidimWindow(QDialog):
             "border-radius:6px;padding:8px;font-size:8pt;"
         )
         canonical_form.addWidget(self.lbl_canonical_map)
+
+        self.xmod_group = QGroupBox("Canonical-moderated global XMOD · every multidimensional dimension")
+        self.xmod_group.setToolTip(
+            "Canonical engines supply deterministic source → target routes. Add user routes to steer them; "
+            "matching routes blend at the canonical ownership share. DSP snapshots these values before rendering."
+        )
+        xmod_lay = QVBoxLayout(self.xmod_group)
+        self.chk_xmod_canonical = QCheckBox("Enable canonical XMOD bindings")
+        self.chk_xmod_canonical.setChecked(True)
+        self.chk_xmod_canonical.setToolTip("Turn canonical routes on/off without removing your user-defined routes.")
+        self.chk_xmod_canonical.toggled.connect(self._xmod_canonical_toggled)
+        xmod_lay.addWidget(self.chk_xmod_canonical)
+        xrow = QHBoxLayout()
+        self.cmb_xmod_source = QComboBox(); self.cmb_xmod_source.addItems(list(md.XMOD_SOURCES))
+        self.cmb_xmod_target = QComboBox(); self.cmb_xmod_target.addItems(list(md.XMOD_TARGETS))
+        self.spin_xmod_amount = QDoubleSpinBox(); self.spin_xmod_amount.setRange(-1.0, 1.0)
+        self.spin_xmod_amount.setSingleStep(0.025); self.spin_xmod_amount.setDecimals(3); self.spin_xmod_amount.setValue(0.15)
+        self.spin_xmod_amount.setToolTip("Signed route depth (−1…+1). Small values are recommended.")
+        self.btn_xmod_add = QPushButton("＋ Add route"); self.btn_xmod_add.clicked.connect(self._xmod_add)
+        xrow.addWidget(QLabel("Source")); xrow.addWidget(self.cmb_xmod_source, 2)
+        xrow.addWidget(QLabel("Target")); xrow.addWidget(self.cmb_xmod_target, 2)
+        xrow.addWidget(QLabel("Depth")); xrow.addWidget(self.spin_xmod_amount)
+        xrow.addWidget(self.btn_xmod_add)
+        xmod_lay.addLayout(xrow)
+        self.list_xmod_bindings = QListWidget()
+        self.list_xmod_bindings.setMaximumHeight(136)
+        self.list_xmod_bindings.setToolTip("Shows active canonical and user routes. Select a user route and remove it below.")
+        xmod_lay.addWidget(self.list_xmod_bindings)
+        xmod_buttons = QHBoxLayout()
+        self.btn_xmod_remove = QPushButton("Remove selected user route")
+        self.btn_xmod_remove.clicked.connect(self._xmod_remove)
+        self.lbl_xmod_status = QLabel("Canonical routes are deterministic and seed/engine moderated.")
+        self.lbl_xmod_status.setWordWrap(True)
+        xmod_buttons.addWidget(self.btn_xmod_remove)
+        xmod_buttons.addWidget(self.lbl_xmod_status, 1)
+        xmod_lay.addLayout(xmod_buttons)
+        canonical_form.addWidget(self.xmod_group)
         canonical_form.addStretch(1)
         self.engine_tabs.addTab(canonical_page, "CANONICALS / GOAVA")
 
@@ -1669,6 +2053,7 @@ class MultidimWindow(QDialog):
             goava_mode = str(u.get("goava_mode", p.get("goava_mode", "seeded"))).lower()
             self.cmb_goava_mode.setCurrentIndex(max(0, self.cmb_goava_mode.findData(
                 "io" if goava_mode in ("io", "input", "signal") else "seeded")))
+            self._load_xmod_bindings(u, p)
             self._refresh(p, seed_int, slot)
         finally:
             self._loading = False
@@ -1684,6 +2069,13 @@ class MultidimWindow(QDialog):
             txt = {"canonical": "🔵 canonical", "user": "🟢 yours"}.get(mode, mode)
         engines = ", ".join(p.get("_engines") or []) if isinstance(p, dict) else ""
         self.lbl_owner.setText(txt + (f" · {engines}" if engines else ""))
+        routes = p.get("xmod_bindings") or []
+        active_count = sum(1 for r in routes if abs(float(r.get("amount", 0.0))) > 1e-8)
+        if hasattr(self, "lbl_xmod_status"):
+            self.lbl_xmod_status.setText(
+                f"{active_count} active route(s) · canonical {'ON' if p.get('xmod_canonical_enabled', True) else 'OFF'} · "
+                f"global modulation is snapshotted into the DSP render packet"
+            )
         if hasattr(self, "lbl_canonical_map"):
             active = set(str(e).lower() for e in (p.get("_engines") or []))
             rows = (
@@ -1696,6 +2088,69 @@ class MultidimWindow(QDialog):
             self.lbl_canonical_map.setText("\n".join(
                 f"{name}: {'ACTIVE' if on else 'idle'} — {meaning}" for name, meaning, on in rows
             ))
+
+    def _load_xmod_bindings(self, user, params):
+        if not hasattr(self, "list_xmod_bindings"):
+            return
+        enabled = bool(user.get("xmod_canonical_enabled", True))
+        self.chk_xmod_canonical.blockSignals(True)
+        self.chk_xmod_canonical.setChecked(enabled)
+        self.chk_xmod_canonical.blockSignals(False)
+        self.list_xmod_bindings.clear()
+        for route in params.get("xmod_bindings") or ():
+            source = str(route.get("source", "")); target = str(route.get("target", ""))
+            amount = float(route.get("amount", 0.0))
+            owner = str(route.get("owner", "canonical"))
+            label = "USER" if owner == "user" else ("CANON + USER" if owner == "canonical+user" else "CANON")
+            item = QListWidgetItem(f"[{label}]  {source}  →  {target}    {amount:+.3f}")
+            item.setData(Qt.ItemDataRole.UserRole, {"source": source, "target": target, "amount": amount, "owner": owner})
+            self.list_xmod_bindings.addItem(item)
+        if not self.list_xmod_bindings.count():
+            self.list_xmod_bindings.addItem("No active routes — enable a canonical engine or add a user route.")
+
+    def _xmod_canonical_toggled(self, enabled):
+        if self._loading:
+            return
+        self._user(create=True)["xmod_canonical_enabled"] = bool(enabled)
+        self._changed()
+
+    def _xmod_add(self):
+        if self._loading:
+            return
+        source = self.cmb_xmod_source.currentText()
+        target = self.cmb_xmod_target.currentText()
+        amount = float(self.spin_xmod_amount.value())
+        routes = list(self._user(create=True).get("xmod_bindings") or ())
+        route = {"source": source, "target": target, "amount": amount, "owner": "user"}
+        for index, old in enumerate(routes):
+            if old.get("source") == source and old.get("target") == target:
+                routes[index] = route
+                break
+        else:
+            if len(routes) >= 32:
+                self.lbl_xmod_status.setText("Maximum of 32 user routes reached.")
+                return
+            routes.append(route)
+        self._user(create=True)["xmod_bindings"] = routes
+        self._changed()
+
+    def _xmod_remove(self):
+        if self._loading:
+            return
+        item = self.list_xmod_bindings.currentItem()
+        if item is None:
+            return
+        route = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(route, dict) or route.get("owner") == "canonical":
+            self.lbl_xmod_status.setText("Canonical-only routes are controlled by their engine or the master toggle.")
+            return
+        user = self._user(create=True)
+        key = (route.get("source"), route.get("target"))
+        user["xmod_bindings"] = [r for r in (user.get("xmod_bindings") or ())
+                                 if (r.get("source"), r.get("target")) != key]
+        if not user["xmod_bindings"]:
+            user.pop("xmod_bindings", None)
+        self._changed()
 
     def _changed(self):
         _mirror_multidim_user(self.host, self._name())
@@ -1987,6 +2442,11 @@ class MainMDPanel(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self.view = MD3DView(self)
+        try:
+            if getattr(self, "host", None) is not None:
+                self.view.attach_host(self.host)       # R31: Panel / Vector / Fractal·EQR·PKP layers
+        except Exception:
+            pass
         self.view.show()
 
         # All master-dimensional parameters live on this panel (not the side rails).
@@ -2142,7 +2602,13 @@ class MainMDPanel(QWidget):
             _b.setToolTip(f"Open Multidim window focused on the {_tab} editor")
             _b.clicked.connect(lambda _=False, t=_tab: self._open_multidim_editor(t))
         self._hover = False; self._ghost_phase = 0.0
-        self._timer = QTimer(self); self._timer.timeout.connect(self._tick); self._timer.start(40)
+        # Keep paint/animation cadence separate from host/model synchronization.
+        # The old 40 ms callback also traversed the instrument model and clone
+        # rack, making UI latency scale with project complexity.
+        self._timer = QTimer(self); self._timer.setTimerType(Qt.TimerType.CoarseTimer)
+        self._timer.timeout.connect(self._tick); self._timer.start(60)
+        self._sync_timer = QTimer(self); self._sync_timer.setInterval(120)
+        self._sync_timer.timeout.connect(self._sync_host_state); self._sync_timer.start()
         self._master_panel = None
         self.live_dj_panel = None
         self.setMinimumSize(self.sizeHint())
@@ -2209,16 +2675,17 @@ class MainMDPanel(QWidget):
         if not hasattr(self, "_timer"):
             return
         if bool(enabled) and self.isVisible():
-            if not self._timer.isActive(): self._timer.start(200)
+            if not self._timer.isActive(): self._timer.start(40)
+            if not self._sync_timer.isActive(): self._sync_timer.start(120)
         else:
             self._timer.stop()
+            self._sync_timer.stop()
 
-    def _tick(self):
+    def _sync_host_state(self):
+        """Pull mutable host state at a bounded cadence, never in the paint tick."""
         if not _alive(self):
-            self._timer.stop(); return
-        if not _alive(self.view):
+            self._sync_timer.stop()
             return
-        self.view.tick(0.04)
         try:
             name = self.host.instrument_selector_dropdown.currentText()
             slot = self.host._instance_slot(name)
@@ -2227,8 +2694,50 @@ class MainMDPanel(QWidget):
             self._sync_control_values(params, user_params)
             self.clone_rack.sync_from_host(name)
             self.view.set_params(params, seed, slot)
+        except (RuntimeError, AttributeError):
+            # Widgets may be closing while their host is tearing down.
+            return
         except Exception:
-            pass
+            return
+
+    def _ui_time(self):
+        """Animation time from the play cursor and BPM. No render work."""
+        host = getattr(self, "host", None)
+        if host is None:
+            return None
+        try:
+            cursor = float(getattr(host, "play_cursor", 0) or 0)
+            sr = float(getattr(host, "play_sample_rate", 48000) or 48000)
+            bpm = float(host.spin_bpm.value()) if hasattr(host, "spin_bpm") else 120.0
+            return cursor / sr * bpm / 60.0
+        except Exception:
+            return None
+
+    def _note_pulse(self):
+        """A 0..1 pulse from the most recent note hit, decaying."""
+        host = getattr(self, "host", None)
+        hit = getattr(host, "_last_note_hit_time", None) if host is not None else None
+        if hit is None:
+            return 0.0
+        import time as _t
+        age = _t.monotonic() - float(hit)
+        return max(0.0, 1.0 - age / 0.25)
+
+    def _tick(self):
+        if not _alive(self):
+            self._timer.stop()
+            self._sync_timer.stop()
+            return
+        if not _alive(self.view):
+            return
+        beat = self._ui_time()
+        if beat is not None:
+            self.view.t = beat
+        else:
+            self.view.tick(0.04)
+        pulse = self._note_pulse()
+        if pulse > 0.0:
+            self.view._inertia = (self.view._inertia[0] + pulse * 0.02, self.view._inertia[1])
         if self._hover and _alive(self.overlay):
             self._ghost_phase = (self._ghost_phase + 0.08) % (2 * math.pi)
             self.update()
@@ -2497,8 +3006,15 @@ class ArcSequencerView(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         # Native wide workspace, independent of the screen. Outer panes scroll
         # instead of reducing the central sphere to a thin column.
-        self._md_intended_width = 2800
-        self._md_intended_height = 1720
+        # GROOVEBOX_R29C_MASTER_MD_FRAME_SCALE_20261104
+        try:
+            _screen = QApplication.primaryScreen()
+            _screen_w = int(_screen.availableGeometry().width()) if _screen is not None else 1440
+            _screen_h = int(_screen.availableGeometry().height()) if _screen is not None else 900
+        except Exception:
+            _screen_w, _screen_h = 1440, 900
+        self._md_intended_width = min(2800, max(880, int(round(_screen_w * 2.1975))))
+        self._md_intended_height = min(4200, max(620, int(round(_screen_w * 3.0))))
         self.setMinimumSize(self._md_intended_width, self._md_intended_height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
@@ -2571,6 +3087,10 @@ class ArcSequencerView(QWidget):
 
     def _prepare_side_widget(self, widget):
         try:
+            widget.setMaximumWidth(540)
+        except Exception:
+            pass
+        try:
             widget.setMinimumWidth(520)
             widget.setMaximumWidth(2800)
             lay = widget.layout()
@@ -2615,7 +3135,7 @@ class ArcSequencerView(QWidget):
         content = QWidget(panel)
         content.setStyleSheet("background: transparent;")
         content.setMinimumWidth(0)
-        content.setMaximumWidth(805)
+        content.setMaximumWidth(540)
         content.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         lay = QVBoxLayout(content)
         lay.setContentsMargins(1, 1, 1, 1)
@@ -2705,9 +3225,9 @@ class ArcSequencerView(QWidget):
         return (self.width() - self._content_width()) / 2.0
 
     def _side_width(self):
-        # Symmetric native editor rails; surplus width belongs to the animation.
-        width = max(1.0, self._content_width())
-        return max(520, min(560, int(width * 0.20)))
+        # R29c: side parameter rails widen to 560px
+        return min(max(280, int(self._content_width() * 0.17)), 560)
+
 
     def _center_rect(self):
         """Region between the side panels; the sphere lives here and the ring frames it."""

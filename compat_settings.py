@@ -58,6 +58,10 @@ DEFAULTS = {
     "pin_digits": 4,                # PIN length, 4-8
     "ask_session_name": False,      # SESSION_NAME_R31: ask for a session name at every startup
     "startup_chime": True,          # STARTUP_CHIME_R31: 5 s chime of every note at a random Global Convolve %
+    "quick_rack_side": "top",       # BAR_SIDE_20261112: top | left | right | bottom
+    "projects_bar_side": "top",
+    "thread_quality": "balanced",   # balanced | max | compatibility
+    "compat_profile": "auto",       # auto | latitude | tablet | desktop | studio
 }
 
 # Environment variables this module may set. Used to tell "set by us" from "set by the user".
@@ -94,7 +98,13 @@ def _clean(raw):
     out["audio_latency"] = lat if lat in ("auto", "low", "high") else "auto"
     worker_mode = str(raw.get("worker_mode", out["worker_mode"])).strip().lower()
     out["worker_mode"] = worker_mode if worker_mode in ("adaptive", "balanced", "video", "memory") else "adaptive"
-    for key, lo, hi in (("threads", 0, 64), ("audio_blocksize", 0, 16384), ("ui_scale", 50, 300), ("window_scale", 50, 100)):
+    for key, allowed in (("quick_rack_side", ("top", "left", "right", "bottom")),
+                         ("projects_bar_side", ("top", "left", "right", "bottom")),
+                         ("thread_quality", ("balanced", "max", "compatibility")),
+                         ("compat_profile", ("auto", "latitude", "tablet", "desktop", "studio"))):
+        val = str(raw.get(key, out[key])).strip().lower()
+        out[key] = val if val in allowed else out[key]
+    for key, lo, hi in (("threads", 0, 64), ("audio_blocksize", 0, 16384), ("ui_scale", 50, 300), ("window_scale", 50, 100), ("party_intensity", 0, 100)):
         try:
             v = raw.get(key, out[key])
             if key == "ui_scale" and (str(v).strip().lower() == "auto" or int(float(v)) == 0):
@@ -139,7 +149,7 @@ def _clean(raw):
     # R31: smart_process was missing here, so turning it off never persisted.
     for key in ("autosave", "auto_copy_to_drive", "play_all_outputs", "audio_via_video_player", "native_voice",
                 "appliance_tuning", "export_in_worker", "smart_process", "pin_enabled", "pin_lock_on_start",
-                "ask_session_name", "startup_chime"):
+                "ask_session_name", "startup_chime", "noisy_exports", "play_export_when_done", "party_mode"):
         if key in raw:
             out[key] = bool(raw[key])
     try:
@@ -290,6 +300,13 @@ def effective_ui_scale(settings):
 def env_for(settings, cores=None):
     """{variable: value or None}; None means 'leave unset'."""
     s = _clean(settings)
+    quality = s.get("thread_quality", "balanced")
+    if quality == "max":
+        s = dict(s); s["smooth_mode"] = "off"; s["audio_latency"] = "low"
+    elif quality == "compatibility":
+        s = dict(s); s["smooth_mode"] = "on"; s["audio_latency"] = "high"
+        if s["threads"] == 0:
+            s["threads"] = max(2, (cores or usable_cores()) // 2)
     return {
         "GROOVEBOX_SMOOTH": "1" if smooth_effective(s, cores) else "0",
         "GROOVEBOX_THREADS": str(s["threads"]) if s["threads"] > 0 else None,
