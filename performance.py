@@ -6436,7 +6436,7 @@ class Performance(QDialog):
         iso_note=QLabel("Copies the finished Groovebox ISO onto the selected drive inside Groovebox/ISO. Existing folders and files on the drive are preserved; a same-named ISO is replaced atomically and checked with SHA-256, like an OS update that keeps the rest of the disk.")
         iso_note.setWordWrap(True); iv.addRow(iso_note)
         self.lbl_iso_source=QLabel("No finished ISO selected."); self.lbl_iso_source.setWordWrap(True); self.lbl_iso_source.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse); iv.addRow("ISO",self.lbl_iso_source)
-        ir=QHBoxLayout(); b=QPushButton("↻ Find Finished ISO"); b.clicked.connect(self._find_finished_iso); ir.addWidget(b); b=QPushButton("Browse ISO…"); b.clicked.connect(self._browse_iso); ir.addWidget(b); b=QPushButton("Copy Finished ISO to Drive"); b.clicked.connect(self._copy_iso_to_mount); ir.addWidget(b); b=QPushButton("Write Bootable Thumb Drive"); b.clicked.connect(self._write_bootable); ir.addWidget(b); iv.addRow(ir)
+        ir=QHBoxLayout(); b=QPushButton("↻ Find Finished ISO"); b.clicked.connect(self._find_finished_iso); ir.addWidget(b); b=QPushButton("Browse ISO…"); b.clicked.connect(self._browse_iso); ir.addWidget(b); b=QPushButton("Copy Finished ISO to Drive"); b.clicked.connect(self._copy_iso_to_mount); ir.addWidget(b); b=QPushButton("Write Bootable Thumb Drive"); b.setToolTip("Removable USB/SD only. The OS disk and every partition of it are refused."); b.clicked.connect(self._write_bootable); ir.addWidget(b); b=QPushButton("Reclaim USB space"); b.clicked.connect(self._reclaim_usb); ir.addWidget(b); b=QPushButton("Verify ISO builder"); b.clicked.connect(self._verify_iso_builder); ir.addWidget(b); b=QPushButton("Build ISO"); b.clicked.connect(self._build_iso); ir.addWidget(b); iv.addRow(ir)
         self.chk_iso_verify=QCheckBox("Verify SHA-256 after copy"); self.chk_iso_verify.setChecked(True); iv.addRow(self.chk_iso_verify)
         self.lbl_iso_progress=QLabel("Idle"); self.lbl_iso_progress.setWordWrap(True); self.lbl_iso_progress.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse); iv.addRow("Copy",self.lbl_iso_progress)
         lay.addWidget(iso); lay.addStretch(1); return w
@@ -7223,6 +7223,51 @@ class Performance(QDialog):
             QMessageBox.information(self, "Done", f"Bootable installer written to {dev}.")
         except Exception as exc:
             QMessageBox.warning(self, "Write failed", str(exc))
+
+    def _reclaim_usb(self):
+        from PyQt6.QtWidgets import QInputDialog, QMessageBox
+        dev, ok = QInputDialog.getText(self, "Reclaim USB space",
+            "Whole-disk device of a bootable stick (e.g. /dev/sdb).\n"
+            "Adds a FAT32 data partition in the free space after the ISO. Erases nothing already written.")
+        if not ok or not dev.strip():
+            return
+        if QMessageBox.question(self, "Reclaim USB space",
+            f"Create a data partition on {dev.strip()}?\nThe existing bootable image is kept.") != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            from operation_station_transfer import reclaim_usb_space
+            r = reclaim_usb_space(dev.strip())
+            QMessageBox.information(self, "Reclaim USB space", r.get("message") or "Done")
+        except Exception as exc:
+            QMessageBox.warning(self, "Reclaim failed", str(exc))
+
+    def _verify_iso_builder(self):
+        from PyQt6.QtWidgets import QMessageBox
+        try:
+            from operation_station_transfer import verify_iso_builder
+            r = verify_iso_builder()
+            QMessageBox.information(self, "ISO builder",
+                ("OK\n" if r.get("ok") else "Problems\n") + "\n".join(r.get("notes") or []))
+        except Exception as exc:
+            QMessageBox.warning(self, "ISO builder", str(exc))
+
+    def _build_iso(self):
+        from PyQt6.QtWidgets import QMessageBox
+        if QMessageBox.question(self, "Build ISO",
+            "Build a Groovebox ISO from this installation?\nThis can take a long time and needs the BUILD_ISO tree.") != QMessageBox.StandardButton.Yes:
+            return
+        self.lbl_status.setText("ISO build started…")
+        def work():
+            try:
+                from operation_station_transfer import build_self_iso
+                r = build_self_iso()
+                self._iso_copy_bridge.done.emit(r, "" if r.get("ok") else r.get("message", "failed"))
+            except Exception as e:
+                self._iso_copy_bridge.done.emit(None, str(e))
+        try:
+            self._worker_pool.start(_PoolTask(work))
+        except Exception as exc:
+            QMessageBox.warning(self, "Build ISO", str(exc))
 
     def _copy_iso_to_mount(self):
         iso=self._last_iso_path

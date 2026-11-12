@@ -519,3 +519,13 @@ def mount_drive(device):
         return False, str(exc)
     msg = (r.stdout or r.stderr or "").strip()
     return r.returncode == 0, msg
+
+
+def refuse_system_path(path: str) -> bool:
+    """True if the path is on the OS disk system tree and must not be used."""
+    try:
+        from drive_guard import assert_safe_path
+        assert_safe_path(path)
+        return False
+    except Exception:
+        return True

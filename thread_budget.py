@@ -112,8 +112,17 @@ def compute_threads():
         forced = 0
     cores = usable_cores()
     if forced > 0:
-        return max(1, min(8, cores, forced))
-    return max(1, min(6, cores))
+        return max(1, min(cores, forced))
+    # 4c/8t Latitude: use the logical threads (8), not the physical count (4).
+    # Tablets and small laptops keep one core for the UI and audio callback.
+    try:
+        import compat_settings as cs
+        kind = cs.hardware_class()
+    except Exception:
+        kind = "laptop"
+    cap = 4 if kind == "tablet" else 8
+    spare = 1 if kind in ("tablet", "laptop") and cores > 2 else 0
+    return max(1, min(cap, cores - spare))
 
 
 _STREAMABLE = True

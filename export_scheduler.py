@@ -83,6 +83,7 @@ class ExportScheduler(QObject):
         self.jobs: list[ExportJob] = []
         self.workers: list = []
         self.parallel = default_parallel()
+        self.auto_retry = True
         # EXPORT_WATCHDOG_20261111: keep the queue moving and fail stuck jobs.
         from PyQt6.QtCore import QTimer
         self._watchdog = QTimer(self)
@@ -195,9 +196,18 @@ class ExportScheduler(QObject):
             except Exception as exc:
                 job.state, job.message = FAILED, "could not freeze project: %s" % exc
         job._doc = None
+        # Refuse to queue onto a nearly full volume.
+        try:
+            free = shutil.disk_usage(os.path.dirname(os.path.abspath(job.out_file)) or ".").free
+            if free < 256 * 1024 * 1024:
+                job.state, job.message = FAILED, "not enough free space on the destination (under 256 MB)"
+                job.unlisted = True
+        except Exception:
+            pass
         self.jobs.append(job)
         self.changed.emit(job.id)
-        self._pump()
+        if job.state != FAILED:
+            self._pump()
         return job
 
     def _group(self, job_id):
@@ -232,6 +242,44 @@ class ExportScheduler(QObject):
     def clear_finished(self):
         self.jobs = [j for j in self.jobs if j.state in (QUEUED, RUNNING)]
         self.changed.emit(0)
+
+    def remove_job(self, job_id):
+        """Unlist a job: stop re-queue, kill its worker, drop it from the list."""
+        group = self._group(job_id)
+        kept = []
+        for j in self.jobs:
+            if j.id not in group:
+                kept.append(j)
+                continue
+            j.unlisted = True
+            j.state = CANCELLED
+            j.message = "removed"
+            w = self._worker_of(j)
+            if w is not None:
+                w.job = None
+                self._kill_worker(w)
+            j.finished = time.time()
+            self._cleanup(j)
+            try:
+                import r32_finish as _rf
+                _rf.forget_job(j)
+            except Exception:
+                pass
+        self.jobs = kept
+        self.changed.emit(0)
+        self._pump()
+
+    def retry_now(self, job_id):
+        for j in self.jobs:
+            if j.id == job_id and j.state not in (RUNNING,):
+                j.unlisted = False
+                j.state = QUEUED
+                j.finished = None
+                j.started = None
+                j.result.pop("fail", None)
+                j.message = "retry requested"
+                self.changed.emit(j.id)
+        self._pump()
 
     def active_count(self):
         return sum(1 for j in self.jobs if j.state == RUNNING)
@@ -378,7 +426,7 @@ class ExportScheduler(QObject):
                     j._last_progress_at = now
                     continue
                 # Audio should move within a few minutes; video parts can be slower.
-                limit = 600.0 if j.kind in ("video_file", "video_mux") else 300.0
+                limit = 180.0 if j.kind in ("video_file", "video_mux") else 90.0
                 if now - last > limit:
                     retries = int(getattr(j, "_stall_retries", 0) or 0)
                     if retries < 1:
@@ -545,8 +593,16 @@ class ExportScheduler(QObject):
             job, w.job = w.job, None
             self._kill_worker(w)
             if job is not None:
-                job.result["fail"] = "worker failed to start"
-                self._finish(job, ok=False)
+                retries = int(getattr(job, "_start_retries", 0) or 0)
+                if retries < 1:
+                    job._start_retries = retries + 1
+                    job.state = QUEUED
+                    job.started = None
+                    job.message = "worker failed to start · retrying"
+                    self.changed.emit(job.id)
+                else:
+                    job.result["fail"] = "worker failed to start"
+                    self._finish(job, ok=False)
             self._pump()
 
     def _worker_exited(self, w):
@@ -590,7 +646,7 @@ class ExportScheduler(QObject):
             _rf.forget_job(job)
         except Exception:
             pass
-        if job.state != CANCELLED:
+        if job.state != CANCELLED and not getattr(job, "unlisted", False):
             ok = ok and not job.result.get("fail")
             meta = os.path.join(job.tmp, "result.json") if job.tmp else ""
             if ok and meta and os.path.isfile(meta):
@@ -605,11 +661,50 @@ class ExportScheduler(QObject):
                 if not out or not os.path.isfile(out) or os.path.getsize(out) <= 0:
                     ok = False
                     job.result["fail"] = "export reported success but the output file is missing or empty"
-            job.state = DONE if ok else FAILED
-            job.progress = 100 if ok else job.progress
-            job.message = ("saved %s in %.1f s" % (os.path.basename(job.result.get("file_path") or job.out_file), job.elapsed())) if ok \
-                else (job.result.get("fail") or "worker reported an error")
+            if ok:
+                job.state = DONE
+                job.progress = 100
+                job.message = "saved %s in %.1f s" % (os.path.basename(job.result.get("file_path") or job.out_file), job.elapsed())
+            else:
+                # EXPORT_REQUEUE_20261111: a failed job stays listed and is re-queued
+                # until the user removes/unlists it. Pause stops the loop.
+                reason = job.result.get("fail") or "worker reported an error"
+                if not getattr(self, "auto_retry", True):
+                    job.state = FAILED
+                    job.message = "failed (%s) · auto-retry paused" % reason[:80]
+                    self._cleanup(job)
+                    self.changed.emit(job.id)
+                    self.job_finished.emit(job)
+                    return
+                retries = int(getattr(job, "_fail_retries", 0) or 0) + 1
+                job._fail_retries = retries
+                job.state = QUEUED
+                job.finished = None
+                job.started = None
+                job.progress = min(job.progress, 95)
+                job.message = "failed (%s) · re-queued #%d" % (reason[:80], retries)
+                job.result.pop("fail", None)
+                try:
+                    import r32_finish as _rf
+                    _rf.persist_job(job)
+                except Exception:
+                    pass
+            if ok:
+                try:
+                    import seed_media_bridge as _smb
+                    pkt = _smb.identity_packet(getattr(self, "app", None))
+                    out = str(job.result.get("file_path") or job.out_file or "")
+                    side = _smb.stamp_export(out, pkt)
+                    if side:
+                        job.result["seed_stamp"] = side
+                        job.message += " · seed %s" % pkt.get("fingerprint", "")
+                except Exception:
+                    pass
         self._cleanup(job)
+        finished = [j for j in self.jobs if j.state in (DONE, FAILED, CANCELLED)]
+        if len(finished) > 64:
+            drop = {id(j) for j in finished[:-64]}
+            self.jobs = [j for j in self.jobs if id(j) not in drop or j.state in (QUEUED, RUNNING)]
         self.changed.emit(job.id)
         try:
             if ok and job.started:
@@ -662,18 +757,33 @@ class ExportJobsWindow(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.analysis = QLabel("")
+        self.analysis.setWordWrap(True)
+        self.analysis.setStyleSheet("color:#9ab;")
+        lay.addWidget(self.analysis)
         lay.addWidget(self.table, 1)
         row = QHBoxLayout()
         row.addWidget(QLabel("Run at once:"))
         self.spin = QSpinBox(); self.spin.setRange(1, 6); self.spin.setValue(scheduler.parallel)
         self.spin.valueChanged.connect(scheduler.set_parallel); row.addWidget(self.spin)
+        from PyQt6.QtWidgets import QCheckBox
+        self.chk_retry = QCheckBox("Auto-retry failures")
+        self.chk_retry.setChecked(True)
+        self.chk_retry.setToolTip("When off, a failed job stays failed until you Retry now or Remove it.")
+        self.chk_retry.toggled.connect(lambda on: setattr(scheduler, "auto_retry", bool(on)))
+        row.addWidget(self.chk_retry)
         row.addStretch(1)
         b_cancel = QPushButton("Cancel selected"); b_cancel.clicked.connect(self._cancel)
+        b_remove = QPushButton("Remove selected"); b_remove.clicked.connect(self._remove)
+        b_remove.setToolTip("Unlist the job. It will not re-queue.")
+        b_retry = QPushButton("Retry now"); b_retry.clicked.connect(self._retry)
         b_clear = QPushButton("Clear finished"); b_clear.clicked.connect(scheduler.clear_finished)
         b_open = QPushButton("Open folder"); b_open.clicked.connect(self._open_folder)
+        b_file = QPushButton("Open file"); b_file.clicked.connect(self._open_file)
         b_parts = QPushButton("Leftover parts…"); b_parts.clicked.connect(self._leftover_parts)
         b_parts.setToolTip("Find unfinished .partNN segments no job is using; delete them or keep them to resume.")
-        for b in (b_cancel, b_clear, b_open, b_parts):
+        b_analyze = QPushButton("Analyze"); b_analyze.clicked.connect(self._analyze)
+        for b in (b_cancel, b_remove, b_retry, b_clear, b_open, b_file, b_parts, b_analyze):
             row.addWidget(b)
         lay.addLayout(row)
         from PyQt6.QtCore import QTimer as _QT
@@ -689,6 +799,10 @@ class ExportJobsWindow(QWidget):
         if not self.isVisible():
             return                      # R32.8: no table work while the window is hidden
         jobs = self.s.jobs
+        try:
+            self.analysis.setText(self._summary(jobs))
+        except Exception:
+            pass
         self.table.setRowCount(len(jobs))
         for r, j in enumerate(jobs):
             el = j.elapsed()
@@ -708,6 +822,62 @@ class ExportJobsWindow(QWidget):
                 if it is None:
                     it = QTableWidgetItem(); self.table.setItem(r, c, it)
                 it.setText(v)
+
+    def _summary(self, jobs):
+        n = len(jobs)
+        by = {}
+        retries = 0
+        elapsed = 0.0
+        for j in jobs:
+            by[j.state] = by.get(j.state, 0) + 1
+            retries += int(getattr(j, "_fail_retries", 0) or 0)
+            elapsed += j.elapsed()
+        parts = ["%d jobs" % n]
+        for k in (QUEUED, RUNNING, DONE, FAILED, CANCELLED):
+            if by.get(k):
+                parts.append("%d %s" % (by[k], k))
+        parts.append("%d fail-retries" % retries)
+        parts.append("%.0f s elapsed" % elapsed)
+        return " · ".join(parts)
+
+    def _remove(self):
+        j = self._selected_job()
+        if j is not None:
+            self.s.remove_job(j.id)
+
+    def _retry(self):
+        j = self._selected_job()
+        if j is not None:
+            self.s.retry_now(j.id)
+
+    def _open_file(self):
+        j = self._selected_job()
+        path = (j.result.get("file_path") or j.out_file) if j else ""
+        if path and os.path.isfile(path):
+            from PyQt6.QtGui import QDesktopServices
+            from PyQt6.QtCore import QUrl
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def _analyze(self):
+        from PyQt6.QtWidgets import QMessageBox
+        jobs = self.s.jobs
+        lines = [self._summary(jobs), ""]
+        for j in jobs:
+            side = j.result.get("seed_stamp") or ""
+            lines.append("#%s %s [%s] %s%s" % (
+                j.id, j.label, j.state, j.message or "",
+                (" · stamp %s" % os.path.basename(side)) if side else ""))
+        fails = {}
+        for j in jobs:
+            r = int(getattr(j, "_fail_retries", 0) or 0)
+            if r:
+                fails[j.label] = fails.get(j.label, 0) + r
+        if fails:
+            lines.append("")
+            lines.append("Retry counts:")
+            for name, n in sorted(fails.items(), key=lambda kv: -kv[1]):
+                lines.append("  %s · %d" % (name, n))
+        QMessageBox.information(self, "Export analysis", "\n".join(lines) or "No jobs.")
 
     def _leftover_parts(self):
         """R31: orphaned video/audio .partNN segments in the export folders (not used by a running job)."""

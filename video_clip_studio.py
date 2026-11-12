@@ -55,7 +55,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from qt_painting import owned_painter
-from PyQt6.QtCore import Qt, QTimer, QPointF, QUrl, pyqtSignal, QProcess, QObject, QRunnable, QThreadPool
+from PyQt6.QtCore import Qt, QTimer, QPointF, QUrl, pyqtSignal, QProcess, QObject, QRunnable
 from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QTransform, QBrush
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QLabel,
@@ -1097,6 +1097,31 @@ class _SharedV4L2Capture(QObject):
 
 
 
+def _synth_drawn_sound(inp, path, duration, sr=48000):
+    """Pure NumPy drawn sound (same maths as before); safe on a worker thread."""
+    detail, use_color, use_draw = inp['detail'], inp['use_color'], inp['use_draw']
+    if not (use_color or use_draw):
+        return False
+    n=max(1,int(round(duration*sr))); u=np.linspace(0,1,n,endpoint=False)
+    pitch_curve=np.interp(u,np.linspace(0,1,128),np.asarray(inp['pitch'],dtype=np.float64))
+    gain_curve=np.interp(u,np.linspace(0,1,128),np.asarray(inp['gain'],dtype=np.float64))
+    y=np.zeros(n,dtype=np.float64)
+    if use_draw:
+        freq=220.0*np.power(2.0,2.0*(pitch_curve-.5)); phase=2*np.pi*np.cumsum(freq)/sr; y += np.sin(phase)*(0.24*gain_curve)
+    if use_color:
+        regs=inp['regs']
+        if regs:
+            color_gain=0.16/max(1,math.sqrt(len(regs)))
+            for j,(h,s_,v) in enumerate(regs):
+                base=110.0*pow(2.0,4.0*h); freq=base*np.power(2.0,1.0*(pitch_curve-.5)); phase=2*np.pi*np.cumsum(freq)/sr + j*0.37
+                amp=color_gain*(0.15+0.85*s_)*(0.2+0.8*v)*(0.35+0.65*gain_curve)
+                y += np.sin(phase)*amp
+                if detail=='Detailed': y += np.sin(phase*2.0+0.13*j)*(amp*0.23)
+    pcm=np.rint(np.clip(y,-1.0,1.0)*32767.0).astype(np.int16)
+    with wave.open(path,'wb') as w:w.setnchannels(1);w.setsampwidth(2);w.setframerate(sr);w.writeframes(pcm.tobytes())
+    return True
+
+
 class VideoClipStudio(QWidget):
     """Project-aware Record / Import / Draw Video Clip workspace."""
 
@@ -1151,10 +1176,13 @@ class VideoClipStudio(QWidget):
         # R9: live video decode and live-audio level analysis are isolated from
         # the Qt widget thread. Capture backends keep their native threads/processes;
         # these pools only perform Python/NumPy decode/analysis work.
-        self._video_decode_pool=QThreadPool(self); self._video_decode_pool.setMaxThreadCount(1)
+        from ui_runtime import make_qt_pool
+        self._video_decode_pool=make_qt_pool("clip-video-decode", max_workers=1, max_pending=6, parent=self)
+        self._video_decode_pool.setMaxThreadCount(1)
         self._video_decode_signals=_DecodeSignals(self); self._video_decode_signals.done.connect(self._on_preview_decode_ready)
         self._preview_decode_inflight=False; self._preview_decode_pending=None
-        self._audio_level_pool=QThreadPool(self); self._audio_level_pool.setMaxThreadCount(1)
+        self._audio_level_pool=make_qt_pool("clip-audio-level", max_workers=1, max_pending=6, parent=self)
+        self._audio_level_pool.setMaxThreadCount(1)
         self._audio_level_signals=_AudioLevelSignals(self); self._audio_level_signals.done.connect(self._on_audio_level_ready)
         self._audio_level_inflight=False; self._audio_level_pending=None
         self._devices_activated = False
@@ -4698,10 +4726,13 @@ class VideoClipStudio(QWidget):
             auto_name=_safe_stem(name or 'selected_operator')+'_all_layers_bound.mp4'
             auto_path=os.path.join(self._video_exports_dir(), auto_name)
             self.lbl_render.setText('Materializing editable layers for selected operator…')
-            video=str(self.render_video(output_path=auto_path, quiet=True) or '')
-            if not video or not os.path.isfile(video):
-                QMessageBox.warning(self,'Bind All Layers','Could not materialize the current recording/drawing layers for the selected operator. See the render status for details.')
-                return
+            def _after(v):
+                if v and os.path.isfile(v):
+                    self._bind_all_layers_to_instrument()          # continue now that the render exists
+                else:
+                    QMessageBox.warning(self,'Bind All Layers','Could not materialize the current recording/drawing layers for the selected operator. See the render status for details.')
+            self.render_video(output_path=auto_path, quiet=True, on_done=_after)   # CLIP_RENDER_ASYNC_R31
+            return
         arr=np.zeros(1,dtype=np.float32); sr=44100; has_audio=False
         if mode in ('Audio','Both'):
             try:
@@ -4732,10 +4763,13 @@ class VideoClipStudio(QWidget):
         if not video or not os.path.isfile(video):
             auto_path=os.path.join(self._video_exports_dir(), 'carrier_all_layers_bound.mp4')
             self.lbl_render.setText('Materializing editable layers for carrier…')
-            video=str(self.render_video(output_path=auto_path, quiet=True) or '')
-            if not video or not os.path.isfile(video):
-                QMessageBox.warning(self,'Bind All Layers to Carrier','Could not materialize the current recording/drawing layers for the carrier. See the render status for details.')
-                return
+            def _after(v):
+                if v and os.path.isfile(v):
+                    self._bind_all_layers_to_carrier()
+                else:
+                    QMessageBox.warning(self,'Bind All Layers to Carrier','Could not materialize the current recording/drawing layers for the carrier. See the render status for details.')
+            self.render_video(output_path=auto_path, quiet=True, on_done=_after)   # CLIP_RENDER_ASYNC_R31
+            return
         old_audio=(getattr(h,'imported_waveform',None),getattr(h,'imported_sample_rate',44100),str(getattr(h,'imported_wav_path','') or ''))
         old_video=(str(getattr(h,'imported_video_path','') or ''),getattr(h,'imported_video_meta',{}) or {})
         if mode=='Both':
@@ -4792,31 +4826,18 @@ class VideoClipStudio(QWidget):
         except Exception:pass
         return out
 
-    def _generate_sound(self,path:str,duration:float,sr=48000)->bool:
+    def _sound_inputs(self):
+        """GUI thread: every widget/canvas read the drawn sound needs (CLIP_RENDER_ASYNC_R31)."""
         detail=self.cmb_color_detail.currentText()
         use_color=self.chk_color_sound.isChecked() and detail!='Off'
         use_draw=self.chk_draw_sound.isChecked()
-        if not (use_color or use_draw):return False
-        n=max(1,int(round(duration*sr))); t=np.arange(n,dtype=np.float64)/float(sr); u=np.linspace(0,1,n,endpoint=False)
-        pitch_curve=np.interp(u,np.linspace(0,1,128),np.asarray(self._curves.get('Drawn Sound Pitch',[.5]*128),dtype=np.float64))
-        gain_curve=np.interp(u,np.linspace(0,1,128),np.asarray(self._curves.get('Drawn Sound Gain',[.5]*128),dtype=np.float64))
-        y=np.zeros(n,dtype=np.float64)
-        if use_draw:
-            freq=220.0*np.power(2.0,2.0*(pitch_curve-.5)); phase=2*np.pi*np.cumsum(freq)/sr; y += np.sin(phase)*(0.24*gain_curve)
-        if use_color:
-            regs=self._paint_color_regions(detail)
-            if regs:
-                color_gain=0.16/max(1,math.sqrt(len(regs)))
-                for j,(h,s,v) in enumerate(regs):
-                    base=110.0*pow(2.0,4.0*h); freq=base*np.power(2.0,1.0*(pitch_curve-.5)); phase=2*np.pi*np.cumsum(freq)/sr + j*0.37
-                    amp=color_gain*(0.15+0.85*s)*(0.2+0.8*v)*(0.35+0.65*gain_curve)
-                    y += np.sin(phase)*amp
-                    if detail=='Detailed': y += np.sin(phase*2.0+0.13*j)*(amp*0.23)
-        # No normalization/limiting. Keep synthesis coefficients conservative; final master behavior is external.
-        # Coefficients above are bounded below full scale, so integer conversion needs no extra limiter/clip.
-        pcm=np.rint(np.clip(y,-1.0,1.0)*32767.0).astype(np.int16)
-        with wave.open(path,'wb') as w:w.setnchannels(1);w.setsampwidth(2);w.setframerate(sr);w.writeframes(pcm.tobytes())
-        return True
+        return {'detail':detail,'use_color':use_color,'use_draw':use_draw,
+                'pitch':list(self._curves.get('Drawn Sound Pitch',[.5]*128)),
+                'gain':list(self._curves.get('Drawn Sound Gain',[.5]*128)),
+                'regs':(self._paint_color_regions(detail) if use_color else [])}
+
+    def _generate_sound(self,path:str,duration:float,sr=48000)->bool:
+        return _synth_drawn_sound(self._sound_inputs(),path,duration,sr)
 
     def _render_frame(self,w:int,h:int,t01:float,sound_amp:float,transparent:bool)->QImage:
         frame=QImage(w,h,QImage.Format.Format_ARGB32_Premultiplied)
@@ -4866,9 +4887,21 @@ class VideoClipStudio(QWidget):
                 q.fillRect(frame.rect(),c)
             q.end(); return frame
 
-    def render_video(self, output_path=None, quiet=False):
+    def render_video(self, output_path=None, quiet=False, on_done=None):
+        """CLIP_RENDER_ASYNC_R31: snapshot + sound on the GUI thread; frames, FFmpeg encode and
+        verification on a worker thread. No processEvents pumping, no sleeps on the GUI thread.
+        on_done(path_or_None) is called on the GUI thread when the render finishes."""
+        def _finish(result):
+            if callable(on_done):
+                try: on_done(result)
+                except Exception as _cb_exc: self.lbl_render.setText('Render follow-up failed: '+str(_cb_exc))
+            return result
+        if getattr(self, '_render_busy', False):
+            self.lbl_render.setText('A render is already running — it will finish first.')
+            return _finish(None)
         ff=_ffmpeg()
-        if not ff: QMessageBox.warning(self,'Render video','FFmpeg is not available in the local Groovebox bin/PATH.'); return
+        if not ff:
+            QMessageBox.warning(self,'Render video','FFmpeg is not available in the local Groovebox bin/PATH.'); return _finish(None)
         self._capture_curve(); self._persist_layer(True)
         duration=float(self.spin_duration.value()); fps=int(self.spin_fps.value()); w=int(self.spin_width.value()); h=int(self.spin_height.value())
 
@@ -4887,7 +4920,7 @@ class VideoClipStudio(QWidget):
             os.makedirs(os.path.dirname(out), exist_ok=True)
         else:
             out,_=QFileDialog.getSaveFileName(self,'Render / Mix Video Clip',default,'MP4 video (*.mp4);;WebM video (*.webm)')
-            if not out:return None
+            if not out:return _finish(None)
         if not os.path.splitext(out)[1]:out += '.mp4'
         _cleanup_stale_render_parts(os.path.dirname(out) or self._video_exports_dir())
         tmp=Path(self._layers_dir())/'_video_clip_render_tmp'; shutil.rmtree(tmp,ignore_errors=True); tmp.mkdir(parents=True,exist_ok=True)
@@ -4928,131 +4961,123 @@ class VideoClipStudio(QWidget):
                 frame_layers=[(dict(rec),canvas.image.copy()) for rec,canvas in zip(self.draw_layers,self.draw_canvases)]
             else:
                 frame_layers=[({'start':0,'end':math.inf,'fade':0},self.canvas.image.copy())]
-            self.lbl_render.setText(f'Buffering {n} frame(s) on a background worker…'); self.repaint()
-            # Bounded latest-progress queue + independent worker: frame generation
-            # no longer occupies the Qt thread. PNGs are a disk-backed render buffer,
-            # so high-resolution exports do not retain every frame in RAM.
-            frame_events=queue.Queue(maxsize=4); frame_result={'error':None,'done':False}
-            def _frame_worker():
+            sound=str(tmp/'drawn_sound.wav'); _sound_in=self._sound_inputs()   # widget reads only: GUI thread
+            has_generated=bool(_sound_in['use_color'] or _sound_in['use_draw'])
+            self.lbl_render.setText(f'Rendering {n} frame(s) + encode on a background worker…')
+            def _progress(text):
+                self._worker_finished.emit(lambda _r,_e,t=text: self.lbl_render.setText(t), None, None)
+            def _work():
+                env=self._extract_audio_envelope(envelope_source,duration,fps) if sound_color else np.zeros(n)
+                for i in range(n):
+                    amp=float(env[min(i,len(env)-1)]) if len(env) else 0.0
+                    fr=_render_frame_snapshot(w,h,i/max(1,n-1),amp,transparent,duration,curves_snapshot,frame_layers,sound_color)
+                    if not fr.save(str(tmp/f'frame_{i:06d}.png'),'PNG'):
+                        raise RuntimeError(f'Could not write render-buffer frame {i+1}/{n}')
+                    if i % max(1,fps)==0 or i+1==n:
+                        _progress(f'Background frame buffer: {i+1}/{n} · {100.0*(i+1)/n:.0f}%')
+                if has_generated:
+                    _synth_drawn_sound(_sound_in, sound, duration)          # synthesis + WAV write: worker thread
+                _progress('Encoding with FFmpeg…')
+                seq=str(tmp/'frame_%06d.png'); codec='libvpx-vp9' if ext=='.webm' else 'libx264'
+                cmd=[ff,'-y']
+                for src in video_layers:
+                    cmd += ['-i',src]
+                paint_idx=len(video_layers)
+                cmd += ['-framerate',str(fps),'-i',seq]
+                sound_idx=paint_idx+1
+                if has_generated: cmd += ['-i',sound]
+
+                filters=[]
+                if video_layers:
+                    # Fit each recording to the target frame and hold its last frame to
+                    # the requested project duration. Blend incrementally with weights
+                    # chosen so N layers contribute equally rather than hiding each other.
+                    for j in range(len(video_layers)):
+                        filters.append(
+                            f'[{j}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,'
+                            f'pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,'
+                            f'tpad=stop_mode=clone:stop_duration={duration:.6f},trim=duration={duration:.6f},setpts=PTS-STARTPTS[rv{j}]')
+                    comp='rv0'
+                    for j in range(1,len(video_layers)):
+                        k=j+1; outtag=f'rmix{j}'
+                        filters.append(f'[{comp}][rv{j}]blend=all_expr=\'A*{k-1}/{k}+B/{k}\':shortest=1[{outtag}]')
+                        comp=outtag
+                    filters.append(f'[{comp}][{paint_idx}:v]overlay=0:0:shortest=1[v]')
+                else:
+                    filters.append(f'[{paint_idx}:v]format=rgba[v]')
+
+                audio_refs=[]
+                for j,src in enumerate(video_layers):
+                    if _probe_has_audio(src):
+                        filters.append(f'[{j}:a]apad=whole_dur={duration:.6f},atrim=duration={duration:.6f},asetpts=PTS-STARTPTS[ra{j}]')
+                        audio_refs.append(f'[ra{j}]')
+                if has_generated:
+                    filters.append(f'[{sound_idx}:a]apad=whole_dur={duration:.6f},atrim=duration={duration:.6f},asetpts=PTS-STARTPTS[rgen]')
+                    audio_refs.append('[rgen]')
+                audio_map=None
+                if len(audio_refs)>1:
+                    filters.append(''.join(audio_refs)+f'amix=inputs={len(audio_refs)}:normalize=0:dropout_transition=0[a]')
+                    audio_map='[a]'
+                elif len(audio_refs)==1:
+                    audio_map=audio_refs[0]
+
+                cmd += ['-filter_complex',';'.join(filters),'-map','[v]']
+                if audio_map: cmd += ['-map',audio_map]
+                cmd += ['-t',f'{duration:.6f}','-r',str(fps),'-c:v',codec]
+                if codec=='libx264':cmd += ['-pix_fmt','yuv420p','-crf','18','-preset','veryfast']
+                else:cmd += ['-pix_fmt','yuv420p','-b:v','0','-crf','30']
+                if audio_map: cmd += ['-c:a',_audio_encoder_for(ff, ext),'-b:a','192k']
+                cmd += ['-movflags','+faststart'] if ext in ('.mp4','.m4v','.mov') else []
+                cmd += [publish]
+                # Worker thread: wait for FFmpeg here, never on the Qt thread.
+                proc=subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
                 try:
-                    env=self._extract_audio_envelope(envelope_source,duration,fps) if sound_color else np.zeros(n)
-                    for i in range(n):
-                        amp=float(env[min(i,len(env)-1)]) if len(env) else 0.0
-                        fr=_render_frame_snapshot(w,h,i/max(1,n-1),amp,transparent,duration,curves_snapshot,frame_layers,sound_color)
-                        if not fr.save(str(tmp/f'frame_{i:06d}.png'),'PNG'):
-                            raise RuntimeError(f'Could not write render-buffer frame {i+1}/{n}')
-                        if i % max(1,fps//2)==0 or i+1==n:
-                            try: frame_events.put_nowait((i+1,n))
-                            except queue.Full:
-                                try: frame_events.get_nowait()
-                                except queue.Empty: pass
-                                try: frame_events.put_nowait((i+1,n))
-                                except queue.Full: pass
-                except Exception as exc:
-                    frame_result['error']=str(exc)
-                finally:
-                    frame_result['done']=True
-            frame_thread=threading.Thread(target=_frame_worker,name='GrooveboxVideoFrameBuffer',daemon=True)
-            frame_thread.start()
-            while frame_thread.is_alive():
-                try:
-                    while True:
-                        done,total=frame_events.get_nowait()
-                        self.lbl_render.setText(f'Background frame buffer: {done}/{total} · {100.0*done/total:.0f}%')
-                except queue.Empty:
-                    pass
-                QApplication.processEvents(); time.sleep(0.015)
-            frame_thread.join(timeout=0.2)
-            try:
-                while True:
-                    done,total=frame_events.get_nowait()
-                    self.lbl_render.setText(f'Background frame buffer: {done}/{total} · {100.0*done/total:.0f}%')
-            except queue.Empty:
-                pass
-            if frame_result['error']:
-                raise RuntimeError('Background frame buffer failed: '+frame_result['error'])
-            sound=str(tmp/'drawn_sound.wav'); has_generated=self._generate_sound(sound,duration)
-            seq=str(tmp/'frame_%06d.png'); codec='libvpx-vp9' if ext=='.webm' else 'libx264'
-            cmd=[ff,'-y']
-            for src in video_layers:
-                cmd += ['-i',src]
-            paint_idx=len(video_layers)
-            cmd += ['-framerate',str(fps),'-i',seq]
-            sound_idx=paint_idx+1
-            if has_generated: cmd += ['-i',sound]
-
-            filters=[]
-            if video_layers:
-                # Fit each recording to the target frame and hold its last frame to
-                # the requested project duration. Blend incrementally with weights
-                # chosen so N layers contribute equally rather than hiding each other.
-                for j in range(len(video_layers)):
-                    filters.append(
-                        f'[{j}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,'
-                        f'pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,'
-                        f'tpad=stop_mode=clone:stop_duration={duration:.6f},trim=duration={duration:.6f},setpts=PTS-STARTPTS[rv{j}]')
-                comp='rv0'
-                for j in range(1,len(video_layers)):
-                    k=j+1; outtag=f'rmix{j}'
-                    filters.append(f'[{comp}][rv{j}]blend=all_expr=\'A*{k-1}/{k}+B/{k}\':shortest=1[{outtag}]')
-                    comp=outtag
-                filters.append(f'[{comp}][{paint_idx}:v]overlay=0:0:shortest=1[v]')
-            else:
-                filters.append(f'[{paint_idx}:v]format=rgba[v]')
-
-            audio_refs=[]
-            for j,src in enumerate(video_layers):
-                if _probe_has_audio(src):
-                    filters.append(f'[{j}:a]apad=whole_dur={duration:.6f},atrim=duration={duration:.6f},asetpts=PTS-STARTPTS[ra{j}]')
-                    audio_refs.append(f'[ra{j}]')
-            if has_generated:
-                filters.append(f'[{sound_idx}:a]apad=whole_dur={duration:.6f},atrim=duration={duration:.6f},asetpts=PTS-STARTPTS[rgen]')
-                audio_refs.append('[rgen]')
-            audio_map=None
-            if len(audio_refs)>1:
-                filters.append(''.join(audio_refs)+f'amix=inputs={len(audio_refs)}:normalize=0:dropout_transition=0[a]')
-                audio_map='[a]'
-            elif len(audio_refs)==1:
-                audio_map=audio_refs[0]
-
-            cmd += ['-filter_complex',';'.join(filters),'-map','[v]']
-            if audio_map: cmd += ['-map',audio_map]
-            cmd += ['-t',f'{duration:.6f}','-r',str(fps),'-c:v',codec]
-            if codec=='libx264':cmd += ['-pix_fmt','yuv420p','-crf','18','-preset','veryfast']
-            else:cmd += ['-pix_fmt','yuv420p','-b:v','0','-crf','30']
-            if audio_map: cmd += ['-c:a',_audio_encoder_for(ff, ext),'-b:a','192k']
-            cmd += ['-movflags','+faststart'] if ext in ('.mp4','.m4v','.mov') else []
-            cmd += [publish]
-            # Poll FFmpeg rather than blocking the Qt thread for the full encode.
-            # The UI remains interactive while FFmpeg owns the actual encode work.
-            proc=subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
-            deadline=time.monotonic()+max(60,int(duration*8)+30)
-            while proc.poll() is None:
-                QApplication.processEvents()
-                if time.monotonic() > deadline:
+                    stdout,stderr=proc.communicate(timeout=max(60,int(duration*8)+30))
+                except subprocess.TimeoutExpired:
                     proc.kill(); proc.communicate(); raise TimeoutError('FFmpeg render timed out; partial output will be cleaned up.')
-                time.sleep(0.04)
-            stdout,stderr=proc.communicate()
-            if proc.returncode!=0: raise RuntimeError((stderr or stdout or 'FFmpeg failed')[-5000:])
-            if not os.path.isfile(publish) or os.path.getsize(publish)<1024:
-                raise RuntimeError('FFmpeg returned success but produced no usable output file.')
-            if _probe_duration(publish)<=0:
-                raise RuntimeError('Rendered file failed duration verification; original destination was preserved.')
-            if audio_refs and not _probe_has_audio(publish):
-                raise RuntimeError(f'Rendered {ext} file is missing the expected audio stream; original destination was preserved.')
-            os.replace(publish,out)
-            try:
-                import groovebox_paths; groovebox_paths.index_file(out,'video_export',self._project_path())
-            except Exception:pass
-            self.last_rendered_video=str(out)
-            self.last_render_path=str(out)
-            self._last_render_path=str(out)
-            self._save_host_state()
-            self.lbl_render.setText(f'Rendered {len(video_layers)} recording layer(s): '+out)
-            try:
-                if hasattr(self.parent(),'refresh'):self.parent().refresh()
-            except Exception:pass
-            return str(out)
+                if proc.returncode!=0: raise RuntimeError((stderr or stdout or 'FFmpeg failed')[-5000:])
+                if not os.path.isfile(publish) or os.path.getsize(publish)<1024:
+                    raise RuntimeError('FFmpeg returned success but produced no usable output file.')
+                if _probe_duration(publish)<=0:
+                    raise RuntimeError('Rendered file failed duration verification; original destination was preserved.')
+                if audio_refs and not _probe_has_audio(publish):
+                    raise RuntimeError(f'Rendered {ext} file is missing the expected audio stream; original destination was preserved.')
+                return True
+            def _done(_ok, error):
+                self._render_busy=False
+                try:
+                    if error is not None:
+                        for stale in (publish, out + '.part' + ext):
+                            try:
+                                if os.path.isfile(stale): os.remove(stale)
+                            except OSError: pass
+                        if not quiet: QMessageBox.warning(self,'Render video',str(error))
+                        self.lbl_render.setText('Render failed: '+str(error))
+                        _finish(None); return
+                    os.replace(publish,out)
+                    try:
+                        import groovebox_paths; groovebox_paths.index_file(out,'video_export',self._project_path())
+                    except Exception:pass
+                    self.last_rendered_video=str(out)
+                    self.last_render_path=str(out)
+                    self._last_render_path=str(out)
+                    self._save_host_state()
+                    self.lbl_render.setText(f'Rendered {len(video_layers)} recording layer(s): '+out)
+                    try:
+                        if hasattr(self.parent(),'refresh'):self.parent().refresh()
+                    except Exception:pass
+                    _finish(str(out))
+                finally:
+                    shutil.rmtree(tmp,ignore_errors=True)
+            def _runner():
+                try:
+                    res=_work(); err=None
+                except Exception as exc:
+                    res, err = None, exc
+                self._worker_finished.emit(_done, res, err)
+            self._render_busy=True
+            threading.Thread(target=_runner,name='GrooveboxClipRender',daemon=True).start()
+            return None
         except Exception as e:
             for stale in (publish, out + '.part' + ext):
                 try:
@@ -5060,9 +5085,8 @@ class VideoClipStudio(QWidget):
                 except OSError: pass
             if not quiet: QMessageBox.warning(self,'Render video',str(e))
             self.lbl_render.setText('Render failed: '+str(e))
-            return None
-        finally: shutil.rmtree(tmp,ignore_errors=True)
-
+            shutil.rmtree(tmp,ignore_errors=True)
+            return _finish(None)
 
 
 # GROOVEBOX_R23R_NONMODAL_DIALOGS_20261103: no dialog may block other windows.

@@ -345,7 +345,8 @@ def describe(settings=None):
         lines.append(f"  (stream tuning unavailable: {exc})")
     try:
         import thread_budget
-        lines.append(f"Threads: maths {thread_budget.compute_threads()}, helper pools {thread_budget.lane_workers()}")
+        lines.append(f"Threads: maths {thread_budget.compute_threads()} (logical, up to 8), helper pools {thread_budget.lane_workers()}")
+        lines.append("Dell Latitude 4c/8t: 8 maths threads recommended; 4 is the physical core count only.")
     except Exception:
         pass
     if _library_tuning is not None:
@@ -367,3 +368,43 @@ def describe(settings=None):
     if held:
         lines.append("Set in the environment (overrides the saved value): " + ", ".join(held))
     return lines
+
+
+def hardware_class():
+    """Best-effort class: tablet, laptop, or desktop."""
+    cores = usable_cores()
+    try:
+        import power_profile as pp
+        info = pp.summary_line() or ""
+    except Exception:
+        info = ""
+    # A battery present usually means laptop or tablet.
+    bat = os.path.isdir("/sys/class/power_supply") and any(
+        "BAT" in n for n in os.listdir("/sys/class/power_supply")) if os.path.isdir("/sys/class/power_supply") else False
+    if cores <= 4 and bat:
+        return "tablet"
+    if bat or cores <= 8:
+        return "laptop"
+    return "desktop"
+
+
+HARDWARE_PROFILES = {
+    "tablet": {"smooth_mode": "on", "threads": 2, "scene_size": "720p", "audio_latency": "high",
+               "audio_blocksize": 1024, "worker_mode": "memory", "ui_scale": 125, "play_all_outputs": False},
+    "laptop": {"smooth_mode": "auto", "threads": 0, "scene_size": "720p", "audio_latency": "auto",
+               "audio_blocksize": 0, "worker_mode": "adaptive", "ui_scale": 100, "play_all_outputs": True},
+    "desktop": {"smooth_mode": "off", "threads": 0, "scene_size": "1080p", "audio_latency": "low",
+                "audio_blocksize": 512, "worker_mode": "balanced", "ui_scale": 100, "play_all_outputs": True},
+}
+
+
+def apply_hardware_class(kind=None):
+    """Apply a hardware profile. kind None uses the detected class."""
+    kind = kind or hardware_class()
+    prof = dict(HARDWARE_PROFILES.get(kind) or HARDWARE_PROFILES["laptop"])
+    cur = load()
+    cur.update(prof)
+    cur["hardware_class"] = kind
+    save(cur)
+    apply_env(cur)
+    return kind, prof

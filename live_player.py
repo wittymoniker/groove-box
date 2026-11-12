@@ -1594,6 +1594,8 @@ class LiveRecorder:
         self.stop_evt.set()
         for t in self._threads:
             t.join(timeout=60)
+        self._threads = []
+        self._video_writer_thread = None
         enc = self._venc
         out = []
         try:
@@ -2422,7 +2424,18 @@ def _scode_pool_visual_tick(host, visual, eng, force_1080=True):
     """Drive the live visual from the same canonical/sCode graph as audio (shared phase).
 
     Video yields under load: newest frame wins; intermediate frames may be skipped.
+    SCODE_HYBRID_20261111: visual reads the control-rate vector; it does not re-evaluate.
     """
+    try:
+        import scode_hybrid as _hy
+        seed = getattr(host, "project_seed", None) or getattr(host, "seed", 1)
+        block = int(getattr(eng, "play_pos", 0.0) or 0)
+        vec, _buf = _hy.pool_block(seed, "visual", block // 1024, float(getattr(eng, "play_pos", 0.0) or 0.0), 64)
+        if visual is not None and hasattr(visual, "tw") and isinstance(visual.tw, dict):
+            visual.tw["scode_vector"] = vec
+            visual.tw["scode_pooled"] = True
+    except Exception:
+        pass
     try:
         opt = getattr(host, "_scode_optimizer", None)
         if opt is not None and hasattr(opt, "tick_visual_against_audio"):

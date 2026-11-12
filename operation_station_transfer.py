@@ -150,6 +150,57 @@ def _iso_candidates(roots) -> List[Path]:
     return out
 
 
+SELF_ISO_PATH = Path("/opt/groovebox/self.iso")
+
+def ensure_self_iso(source: Optional[str] = None, *, force: bool = False) -> Optional[Path]:
+    """Keep a copy of this system's ISO at a known path for Copy to Disk.
+
+    Refuses if free space is under the image size plus 512 MiB. Rebuilds when
+    the source is newer than the self-ISO (stale). Returns the self-ISO path,
+    or None. Writes a .sha256 next to it.
+    """
+    import shutil, hashlib
+    try:
+        SELF_ISO_PATH.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    src = None
+    if source and os.path.isfile(source):
+        src = Path(source)
+    else:
+        found = find_finished_iso()
+        if found and found != SELF_ISO_PATH:
+            src = found
+    if src is None:
+        return SELF_ISO_PATH if SELF_ISO_PATH.is_file() else None
+    if src.resolve() == SELF_ISO_PATH.resolve():
+        return SELF_ISO_PATH
+    # Stale: skip copy if self-ISO is newer, unless forced.
+    try:
+        if (not force) and SELF_ISO_PATH.is_file() and SELF_ISO_PATH.stat().st_mtime >= src.stat().st_mtime:
+            return SELF_ISO_PATH
+    except Exception:
+        pass
+    # Space: need image size + 512 MiB free on the target volume.
+    try:
+        need = src.stat().st_size + 512 * 1024 * 1024
+        free = shutil.disk_usage(str(SELF_ISO_PATH.parent)).free
+        if free < need:
+            return None
+    except Exception:
+        pass
+    try:
+        shutil.copy2(src, SELF_ISO_PATH)
+        h = hashlib.sha256()
+        with open(SELF_ISO_PATH, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        (SELF_ISO_PATH.with_suffix(".iso.sha256")).write_text(h.hexdigest() + "\n")
+        return SELF_ISO_PATH
+    except Exception:
+        return src
+
+
 def find_finished_iso(*extra_roots, prefer_name: Optional[str]=None) -> Optional[Path]:
     """Locate the newest finished Groovebox ISO without prompting the user.
 
@@ -167,6 +218,7 @@ def find_finished_iso(*extra_roots, prefer_name: Optional[str]=None) -> Optional
     for parent in list(here.parents)[:4]:
         roots.extend([parent/'BUILD_ISO'/'dist', parent/'dist'])
     roots.extend([
+        SELF_ISO_PATH,
         Path('/opt/groovebox/BUILD_ISO/dist'), Path('/opt/groovebox/dist'),
         Path.home()/'Downloads', Path.cwd(),
     ])
@@ -259,3 +311,201 @@ class CloneShareServer:
     def stop(self):
         if self.httpd:
             self.httpd.shutdown(); self.httpd.server_close(); self.httpd=None
+
+
+def write_bootable_installer(iso: str, device: str, *, progress=None) -> dict:
+    """Write the ISO as a bootable image to a whole-disk USB device.
+
+    BOOTABLE_20261107: this is the raw write path. It erases the device.
+    Refuses the system disk and any mounted partition of the target.
+    """
+    import subprocess, shutil
+    src = Path(iso).expanduser().resolve()
+    if not src.is_file() or src.suffix.lower() != ".iso":
+        raise ValueError(f"Not an ISO: {src}")
+    table = iso_partition_table(str(src))
+    if not table.get("ok"):
+        raise ValueError("This ISO has no hybrid partition table (%s). Rebuild it; the builder must run --patch-hybrid-mbr." % table.get("message"))
+    from drive_guard import assert_safe_target
+    dev = assert_safe_target(device)
+    # Refuse if any partition of the device is mounted.
+    try:
+        mounts = subprocess.check_output(["findmnt", "-n", "-o", "SOURCE"], text=True)
+        if any(line.startswith(dev) for line in mounts.splitlines()):
+            raise PermissionError(f"{dev} has a mounted partition. Unmount it first.")
+    except FileNotFoundError:
+        pass
+    dd = shutil.which("dd")
+    if not dd:
+        raise RuntimeError("dd not found")
+    total = src.stat().st_size
+    if progress:
+        progress(0, total, "writing")
+    # bs=4M, conv=fsync so the stick is complete before we return.
+    cmd = [dd, f"if={src}", f"of={dev}", "bs=4M", "conv=fsync", "status=progress"]
+    proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, text=True)
+    proc.wait()
+    if proc.returncode != 0:
+        raise RuntimeError(f"dd failed: {proc.returncode}")
+    if progress:
+        progress(total, total, "done")
+    return {"device": dev, "iso": str(src), "bytes": total}
+
+
+def reclaim_usb_space(device: str, *, label: str = "GROOVEBOX") -> dict:
+    """Create a FAT32 data partition in the free space after a bootable ISO write.
+
+    Uses parted if present, otherwise sfdisk. Refuses the system disk.
+    Returns {"device", "partition", "message"}.
+    """
+    import subprocess, shutil
+    from drive_guard import assert_safe_target
+    dev = assert_safe_target(device)
+    # Unmount any partitions of this device first.
+    try:
+        mounts = subprocess.check_output(["findmnt", "-n", "-o", "SOURCE,TARGET"], text=True)
+        for line in mounts.splitlines():
+            src, _, tgt = line.partition(" ")
+            if src.startswith(dev):
+                subprocess.run(["udisksctl", "unmount", "-b", src], capture_output=True, timeout=15)
+    except Exception:
+        pass
+    parted = shutil.which("parted")
+    mkfs = shutil.which("mkfs.vfat") or shutil.which("mkfs.fat")
+    if parted:
+        # Print free space, then make a primary FAT32 in the largest free region.
+        subprocess.run([parted, "-s", dev, "print"], check=False, capture_output=True, timeout=20)
+        # mkpart primary fat32 <start> 100%  — parted accepts 100% as the end.
+        r = subprocess.run([parted, "-s", dev, "mkpart", "primary", "fat32", "0%", "100%"],
+                           capture_output=True, text=True, timeout=30)
+        # If the disk already has the ISO partition, the second mkpart uses the free tail.
+        # Retry with an explicit free-space start if the first was rejected.
+        if r.returncode != 0:
+            r = subprocess.run([parted, "-s", dev, "mkpart", "primary", "fat32", "-1", "100%"],
+                               capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            raise RuntimeError("parted could not add a data partition: " + (r.stderr or r.stdout or "").strip()[-200:])
+    else:
+        sfdisk = shutil.which("sfdisk")
+        if not sfdisk:
+            raise RuntimeError("Neither parted nor sfdisk is installed. Install parted to reclaim USB space.")
+        # Append a partition that fills the rest of the disk.
+        script = "write\n"
+        r = subprocess.run([sfdisk, "--append", dev], input="size=+\n", text=True,
+                           capture_output=True, timeout=30)
+        if r.returncode != 0:
+            raise RuntimeError("sfdisk failed: " + (r.stderr or "").strip()[-200:])
+    # Find the newest partition and format it.
+    part = None
+    try:
+        out = subprocess.check_output(["lsblk", "-n", "-o", "NAME,TYPE", dev], text=True, timeout=10)
+        parts = [ln.split()[0] for ln in out.splitlines() if len(ln.split()) == 2 and ln.split()[1] == "part"]
+        if parts:
+            part = "/dev/" + parts[-1]
+    except Exception:
+        pass
+    if part and mkfs:
+        subprocess.run([mkfs, "-F", "32", "-n", label[:11], part], check=False, capture_output=True, timeout=60)
+    return {"device": dev, "partition": part or "", "message": "Data partition created" + (f" at {part}" if part else "")}
+
+
+def verify_iso_builder(root: Optional[str] = None) -> dict:
+    """Check that the in-tree ISO builder and active overlay are present and consistent.
+
+    Does not run the full build. Returns {"ok", "notes": [...], "script", "overlay"}.
+    """
+    from pathlib import Path as _P
+    here = _P(root) if root else _P(__file__).resolve().parent
+    notes = []
+    script = here / "BUILD_ISO" / "RUN_ME_ZERO_STATE.sh"
+    overlay = here / "BUILD_ISO" / "app-overlay-v35.22zz"
+    ok = True
+    if not script.is_file():
+        ok = False
+        notes.append("missing " + str(script))
+    else:
+        notes.append("builder script present")
+    if not overlay.is_dir():
+        ok = False
+        notes.append("missing active overlay")
+    else:
+        must = ["groovebox.py", "live_player.py", "export_scheduler.py", "export_worker.py"]
+        missing = [m for m in must if not (overlay / m).is_file()]
+        if missing:
+            ok = False
+            notes.append("overlay missing: " + ", ".join(missing))
+        else:
+            notes.append("active overlay has core modules")
+    iso = find_finished_iso(here)
+    notes.append("finished ISO: " + (str(iso) if iso else "none found (build first)"))
+    if iso:
+        table = iso_partition_table(str(iso))
+        notes.append("partition table: " + table.get("message", ""))
+    return {"ok": ok, "notes": notes, "script": str(script), "overlay": str(overlay)}
+
+
+def build_self_iso(root: Optional[str] = None, *, progress=None) -> dict:
+    """Run the in-tree ISO builder from an installed app or a source checkout.
+
+    Looks for BUILD_ISO/RUN_ME_ZERO_STATE.sh next to this module, under
+    /opt/groovebox, and beside a frozen executable. Returns {"ok", "message", "iso"}.
+    """
+    import subprocess
+    from pathlib import Path as _P
+    candidates = []
+    here = _P(__file__).resolve().parent
+    candidates.append(here)
+    candidates.append(_P("/opt/groovebox/app"))
+    candidates.append(_P("/opt/groovebox"))
+    if root:
+        candidates.insert(0, _P(root))
+    script = None
+    for c in candidates:
+        s = c / "BUILD_ISO" / "RUN_ME_ZERO_STATE.sh"
+        if s.is_file():
+            script = s
+            break
+    if script is None:
+        return {"ok": False, "message": "ISO builder script not found. Install the BUILD_ISO tree or run from a source checkout.", "iso": ""}
+    if progress:
+        progress(0, 1, "starting builder")
+    try:
+        env = os.environ.copy()
+        env["GROOVEBOX_SECURE_BOOT"] = "0"
+        r = subprocess.run(["bash", str(script)], cwd=str(script.parent.parent),
+                           capture_output=True, text=True, timeout=3600, env=env)
+    except Exception as exc:
+        return {"ok": False, "message": f"builder failed to start: {exc}", "iso": ""}
+    if r.returncode != 0:
+        tail = (r.stderr or r.stdout or "").strip()[-400:]
+        return {"ok": False, "message": f"builder exited {r.returncode}: {tail}", "iso": ""}
+    iso = find_finished_iso(script.parent.parent)
+    return {"ok": True, "message": "ISO build finished", "iso": str(iso) if iso else ""}
+
+
+def iso_partition_table(iso: str) -> dict:
+    """Read the hybrid MBR of an ISO. A bootable Groovebox ISO must have a
+    0x55AA signature and a type-0xEF EFI partition."""
+    import struct
+    pth = Path(iso)
+    if not pth.is_file() or pth.stat().st_size < 512:
+        return {"ok": False, "entries": [], "message": "not an ISO or too small"}
+    with open(pth, "rb") as f:
+        f.seek(446)
+        raw = f.read(66)
+    if raw[64:66] != b"\x55\xaa":
+        return {"ok": False, "entries": [], "message": "no MBR signature — this ISO has no partition table"}
+    entries = []
+    for i in range(4):
+        ent = raw[i * 16:(i + 1) * 16]
+        if ent == b"\x00" * 16:
+            continue
+        typ = ent[4]
+        start, count = struct.unpack_from("<II", ent, 8)
+        entries.append({"type": typ, "start": start, "count": count})
+    has_efi = any(e["type"] == 0xEF for e in entries)
+    return {
+        "ok": bool(entries) and has_efi,
+        "entries": entries,
+        "message": "hybrid MBR with EFI partition" if has_efi else "partition table present but no type-0xEF EFI partition",
+    }

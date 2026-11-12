@@ -15290,6 +15290,9 @@ LIVE PLAYER
   dropped audio block is written as the same length of silence and a dropped
   frame repeats the previous frame, in place; at the end the shorter stream is
   padded so neither the picture nor the sound is cut off.
+  3D Studio (Quick Rack): wrap an image or video onto an OBJ, tint the mesh,
+  build a scene of models + video + audio, mesh that scene into a game, and
+  export a 3D video. Song as 3D opens a project OBJ if one has been exported.
   Finish take (on by default): after the WAV is written, trim silence, remove DC,
   peak-normalize, apply a short fade, and report before/after RMS. The finished
   file is saved next to the take as *-finished.wav.
@@ -15298,9 +15301,10 @@ LIVE PLAYER
 
 Laptop lid & display power
   Closing the lid blanks the built-in display (saves power). Opening the lid
-  turns it back on. Ctrl+Caps Lock toggles the same blank/unblank at any time
-  (works even if the ACPI lid switch is not visible). The button next to Help
-  shows the current state and the same shortcut.
+  turns it back on. Ctrl+Caps Lock toggles the same blank/unblank at any time,
+  in every window and text field (works even if the ACPI lid switch is not visible).
+  Tab picks another instrument; Shift+Tab walks back. Both work in every window
+  and text field, except while a list popup is open.
 
 MULTITRACK CLIP STUDIO
   🎞 Timeline tab: the strip above the table draws every clip on its track; click
@@ -21026,14 +21030,16 @@ class _GrooveboxWindowStrip(QWidget):
         self.new_btn.setMenu(_new_menu)
         # WINDOW_BAR_R31: export progress dropdown, quick actions, UI-stall report.
         try:
-            from window_bar_tools import ExportsButton, ActionsButton, StallLabel
+            from window_bar_tools import ExportsButton, ActionsButton, StallLabel, ExportProgressBar
             _mref = lambda: (self._manager()._main_ref() if self._manager() else None)
             _main0 = _mref()
             self.stall_lbl = StallLabel(getattr(_main0, "_ui_watchdog", None), self)
             self.exports_btn = ExportsButton(_mref, self)
+            self.export_bar = ExportProgressBar(_mref, self)
             self.actions_btn = ActionsButton(_mref, self)
             row.addWidget(self.stall_lbl, 0)
             row.addWidget(self.exports_btn, 0)
+            row.addWidget(self.export_bar, 0)
             row.addWidget(self.actions_btn, 0)
         except Exception as _wb_exc:
             print(f"[UI] window bar tools unavailable: {_wb_exc}")
@@ -21494,6 +21500,10 @@ class _MainWindowRelaunchFilter(QObject):
                     from PyQt6.QtWidgets import QToolBar as _QToolBar
                     tb = _QToolBar("Groovebox Windows", main)
                     tb.setObjectName("grooveboxWindowBar"); tb.setMovable(False); tb.setFloatable(False)
+                    tb.setFixedHeight(42)
+                    tb.setMinimumHeight(42)
+                    tb.setMaximumHeight(42)
+                    strip.setFixedHeight(40)
                     tb.addWidget(strip)
                     main.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb)
                     self._window_bar_toolbar = tb
@@ -23287,6 +23297,98 @@ class _GbGlowButton(QObject):
             f"QPushButton:pressed {{ background:{bd.name()}; color:#0b0f14; }}")
 
 
+
+def _hscroll_row(layout):
+    """Horizontal scroll for a top button/nav row only. The main pane is not wrapped."""
+    from PyQt6.QtWidgets import QScrollArea, QWidget, QSizePolicy
+    from PyQt6.QtCore import Qt
+    host = QWidget()
+    host.setLayout(layout)
+    host.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+    area = QScrollArea()
+    area.setWidgetResizable(False)
+    area.setWidget(host)
+    area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    area.setFrameShape(QScrollArea.Shape.NoFrame)
+    area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    hint = host.sizeHint()
+    area.setFixedHeight(max(52, hint.height() + 18))
+    if hint.width() > 0:
+        host.setMinimumWidth(hint.width())
+    return area
+
+class _GlobalKeyFilter(QObject):
+    """Ctrl+Caps Lock always blanks the display. Tab / Shift+Tab change instrument
+    in every window and text field, except while a combo/list popup is open."""
+    def __init__(self, host):
+        super().__init__(host)
+        self.host = host
+
+    def _popup_open(self):
+        try:
+            from PyQt6.QtWidgets import QApplication, QComboBox, QListView, QListWidget
+            popup = QApplication.activePopupWidget()
+            if popup is not None:
+                return True
+            w = QApplication.focusWidget()
+            if isinstance(w, (QListView, QListWidget)) and w.isVisible():
+                # An opened list (combo popup or focused list) owns Tab.
+                if isinstance(w.parent(), QComboBox) or w.window() is not w:
+                    return True
+            if isinstance(w, QComboBox) and w.view() is not None and w.view().isVisible():
+                return True
+        except Exception:
+            pass
+        return False
+
+    def eventFilter(self, obj, event):
+        try:
+            from PyQt6.QtCore import QEvent, Qt
+            if event.type() not in (QEvent.Type.KeyPress, QEvent.Type.ShortcutOverride):
+                return False
+            key = event.key()
+            mods = event.modifiers()
+            # Ctrl+Caps Lock always, including inside text fields.
+            if key == Qt.Key.Key_CapsLock and (mods & Qt.KeyboardModifier.ControlModifier):
+                if event.type() == QEvent.Type.KeyPress:
+                    try:
+                        import lid_display as _lid
+                        _lid.toggle_display()
+                    except Exception:
+                        pass
+                return True
+            if key == Qt.Key.Key_Tab and event.type() == QEvent.Type.KeyPress:
+                if self._popup_open():
+                    return False
+                host = self.host
+                if host is None:
+                    return False
+                names = list(getattr(host, "instrument_display_names", None) or getattr(host, "instrument_names_48", []) or [])
+                if not names:
+                    return False
+                cur = host.instrument_selector_dropdown.currentText() if hasattr(host, "instrument_selector_dropdown") else ""
+                hist = getattr(host, "_instrument_history", None)
+                if not isinstance(hist, list):
+                    hist = host._instrument_history = []
+                if mods & Qt.KeyboardModifier.ShiftModifier:
+                    if hist and hasattr(host, "instrument_selector_dropdown"):
+                        host.instrument_selector_dropdown.setCurrentText(hist.pop())
+                    return True
+                others = [n for n in names if n != cur]
+                if others and hasattr(host, "instrument_selector_dropdown"):
+                    import random
+                    pick = random.choice(others)
+                    hist.append(cur)
+                    if len(hist) > 32:
+                        hist.pop(0)
+                    host.instrument_selector_dropdown.setCurrentText(pick)
+                return True
+        except Exception:
+            pass
+        return False
+
+
 class MathematiciansGrooveboxApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -23324,6 +23426,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             import lid_display as _lid
             _lid.install(QApplication.instance())
+        except Exception:
+            pass
+        # GROOVEBOX_GLOBAL_KEYS_20261111: Ctrl+Caps always; Tab/Shift+Tab switch instruments
+        # in every window and text field, except while a list popup is open.
+        try:
+            app = QApplication.instance()
+            if app is not None and getattr(app, "_gb_global_keys", None) is None:
+                app._gb_global_keys = _GlobalKeyFilter(self)
+                app.installEventFilter(app._gb_global_keys)
         except Exception:
             pass
         # LIVE_POOL_20261107: the follower finds the main window here.
@@ -23405,6 +23516,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             import canonical_mode as _cm
             _cm.ensure_default(self)
+            try:
+                _cm.refresh_controls(self)
+            except Exception:
+                pass
         except Exception as _cm_exc:
             print(f"[Canonical] mode unavailable: {_cm_exc}")
         try:
@@ -23463,6 +23578,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             import r32_finish as _rf
             _rf.start(self)             # R32.8: export resume · live autosave
+            try:
+                import seed_media_bridge as _smb
+                self._seed_media_packet = _smb.identity_packet(self)
+            except Exception:
+                self._seed_media_packet = None
         except Exception as _rf_exc:
             print(f"[Finish] unavailable: {_rf_exc}")
         try:
@@ -24503,6 +24623,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        try:
+            import window_manager as _wm
+            _wm.clamp_on_screen(self)
+        except Exception:
+            pass
         self._sync_parametric_background_geometry()
         ov = getattr(self, "_pin_lock_overlay", None)
         if ov is not None:
@@ -28522,6 +28647,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # squeezed into the top global transport plane.
         self.global_controls_side.addLayout(self.top_layout)
         self.global_controls_side.addLayout(self.top_layout_row2)
+        try:
+            import canonical_mode as _cm
+            self.combo_canonical_mode = _cm.make_combo(self)
+            self.combo_canonical_mode.setMinimumHeight(32)
+            self.lbl_seed_fp = QLabel("seed —")
+            self.lbl_seed_fp.setStyleSheet("color:#9fd4ff; font-weight:700;")
+            self.lbl_seed_fp.setToolTip("Fingerprint of the current seed. Audio, video and game exports carry this.")
+            _seed_row = QHBoxLayout()
+            _seed_row.addWidget(QLabel("Canonical"))
+            _seed_row.addWidget(self.combo_canonical_mode)
+            _seed_row.addWidget(self.lbl_seed_fp)
+            _seed_row.addStretch(1)
+            self.global_composition_group.layout().insertLayout(0, _seed_row)
+        except Exception:
+            pass
         # UI_LAYOUT_2026: GLOBAL · COMPOSITION CANONICALS now sits immediately
         # below the row containing the PLAYLIST button (top_layout_row2),
         # rather than further down beside the visual monitors.
@@ -28652,23 +28792,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
         self.btn_help.clicked.connect(self.open_help_readme)
-        # GROOVEBOX_LID_DISPLAY_20261111: manual toggle + status for the lid blanker.
-        try:
-            import lid_display as _lid
-            self.btn_lid = QPushButton(_lid.BUTTON_LABEL)
-            self.btn_lid.setToolTip(_lid.BUTTON_TOOLTIP)
-            self.btn_lid.setMinimumHeight(32)
-            def _lid_toggle():
-                blanked = _lid.toggle_display()
-                self.btn_lid.setText("💻 Display off" if blanked else _lid.BUTTON_LABEL)
-            self.btn_lid.clicked.connect(_lid_toggle)
-            # Place it next to Help if the layout is available.
-            try:
-                self.top_layout_row2.addWidget(self.btn_lid)
-            except Exception:
-                pass
-        except Exception:
-            self.btn_lid = None
+        # Display blank is Ctrl+Caps Lock (always). No main-window button.
 
         # Global playlist capacity belongs with global variables, not the pattern editor.
         # UI_LAYOUT_2026: WAV/video carrier import controls were moved out of this
@@ -34242,6 +34366,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._startup_after_unlock()
 
     def _startup_after_unlock(self):
+        try:
+            import window_manager as _wm
+            _wm.clamp_on_screen(self)
+        except Exception:
+            pass
         ov = getattr(self, "_pin_lock_overlay", None)
         if ov is not None and ov.is_locked():
             QTimer.singleShot(300, self._startup_after_unlock)   # poll; never block the UI thread
@@ -34378,6 +34507,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             w["smooth_mode"].setToolTip("on: live keys use 1024-frame high-latency blocks. auto: on for machines with 4 or fewer threads.")
             form.addRow("Smooth mode", w["smooth_mode"])
             w["threads"] = QSpinBox(); w["threads"].setRange(0, 64); w["threads"].setSpecialValueText("auto")
+            w["threads"].setToolTip("Auto uses logical threads (8 on a 4c/8t Latitude). 4 is the physical core count, not the limit.")
             form.addRow("Math threads (restart)", w["threads"])
             w["audio_blocksize"] = QSpinBox(); w["audio_blocksize"].setRange(0, 16384); w["audio_blocksize"].setSingleStep(128)
             w["audio_blocksize"].setSpecialValueText("auto")
@@ -52868,6 +52998,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 QTimer.singleShot(250, _retry)
             return
         self._last_live_source_change = time.monotonic()
+        try:
+            import seed_media_bridge as _smb
+            self._seed_media_packet = _smb.identity_packet(self)
+        except Exception:
+            pass
         # CHANGE_POINT_20261107: remember where the edit landed so the next
         # buffer can rebuild from here instead of the whole mix.
         try:
@@ -52909,6 +53044,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self._geo_buffer_store()
             except Exception as _gs_exc:
                 print(f"[Geometry] instance store skipped: {_gs_exc}")
+        try:
+            import canonical_mode as _cm
+            _cm.refresh_controls(self)
+        except Exception:
+            pass
+        try:
+            import seed_media_bridge as _smb
+            pkt = _smb.identity_packet(self)
+            lab = getattr(self, "lbl_seed_fp", None)
+            if lab is not None:
+                lab.setText("seed " + str(pkt.get("fingerprint", ""))[:12])
+        except Exception:
+            pass
         try:
             self._schedule_canonical_label_refresh()
         except Exception:
@@ -66346,8 +66494,12 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
         def _open_sys():
             try:
                 import sos_system_settings as _sss
-                _sss.open_window(None, dlg)
+                w = _sss.open_window(None, None)
+                if w is not None:
+                    w.show(); w.raise_(); w.activateWindow()
             except Exception as _e:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(dlg, "System settings", str(_e))
                 print(f"[System settings] {_e}")
         _sys_btn.clicked.connect(_open_sys)
         _bg_row.addWidget(_bg_btn); _bg_row.addWidget(_sys_btn)

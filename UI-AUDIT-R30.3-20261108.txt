@@ -1,0 +1,56 @@
+Groovebox UI/runtime path audit
+Python files scanned: 198
+Qt binding source lines: 329 {'PyQt6': 329}
+PASS  Python minimum
+PASS  Qt binding is PyQt6-only
+PASS  main launcher installs dispatcher
+PASS  direct launcher installs dispatcher
+PASS  direct launcher enforces CPython contract
+PASS  Live Player uses shared UI tasks
+PASS  Clip Timeline uses shared UI tasks
+PASS  main composition lanes use sCode shared lanes
+PASS  Performance worker pools use shared sCode lanes
+PASS  core windows avoid private QThreadPool instances
+
+UI-path hotspot counts (candidate waits require call-context review):
+  groovebox.py: future_result_calls=17, thread_join_candidates=0, process_events_calls=11, local_qthread_pools=0, local_threadpool_executors=10, single_shot_calls=73
+      Future.result? line 53901
+      QApplication.processEvents? line 57217
+      QApplication.processEvents? line 57238
+      QApplication.processEvents? line 61112
+      QApplication.processEvents? line 61169
+      Future.result? line 47898
+      Future.result? line 47899
+      QApplication.processEvents? line 58546
+      Future.result? line 59450
+      Future.result? line 59463
+      Future.result? line 4172
+      Future.result? line 4172
+  performance.py: future_result_calls=1, thread_join_candidates=2, process_events_calls=0, local_qthread_pools=0, local_threadpool_executors=1, single_shot_calls=39
+      join? line 5782 (th)
+      join? line 5505 (th)
+      Future.result? line 7615
+  multidim_ui.py: future_result_calls=0, thread_join_candidates=0, process_events_calls=0, local_qthread_pools=0, local_threadpool_executors=0, single_shot_calls=0
+  live_player.py: future_result_calls=2, thread_join_candidates=6, process_events_calls=0, local_qthread_pools=0, local_threadpool_executors=0, single_shot_calls=4
+      join? line 440 (self.thread)
+      join? line 733 (self.thread)
+      join? line 963 (self.thread)
+      join? line 1299 (setup)
+      join? line 1313 (t)
+      join? line 2913 (self._worker)
+      Future.result? line 2624
+      Future.result? line 2844
+  video_clip_studio.py: future_result_calls=0, thread_join_candidates=5, process_events_calls=2, local_qthread_pools=0, local_threadpool_executors=0, single_shot_calls=37
+      join? line 2322 (t)
+      join? line 2639 (t)
+      join? line 3636 (pump)
+      join? line 4968 (frame_thread)
+      join? line 3495 (at)
+      QApplication.processEvents? line 4967
+      QApplication.processEvents? line 5034
+  clip_timeline_studio.py: future_result_calls=0, thread_join_candidates=0, process_events_calls=0, local_qthread_pools=0, local_threadpool_executors=0, single_shot_calls=0
+  export_window.py: future_result_calls=0, thread_join_candidates=0, process_events_calls=0, local_qthread_pools=0, local_threadpool_executors=0, single_shot_calls=0
+  screen_recorder.py: future_result_calls=0, thread_join_candidates=0, process_events_calls=0, local_qthread_pools=0, local_threadpool_executors=0, single_shot_calls=0
+  screen_recording.py: future_result_calls=0, thread_join_candidates=0, process_events_calls=0, local_qthread_pools=0, local_threadpool_executors=0, single_shot_calls=0
+
+Known follow-up: legacy synchronous _run_off_gui export callers still wait on Future.result(); keep these explicitly tracked until each caller is converted to a staged callback-driven workflow.

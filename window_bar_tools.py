@@ -223,3 +223,57 @@ class StallLabel(QLabel):
         self.setText(f"⚠ UI was busy {dur:.1f} s · {where[:48]}")
         self.setToolTip(f"The window could not repaint for {dur:.1f} s while running {where}.")
         self._clear.start()
+
+
+class ExportProgressBar(QLabel):
+    """A thin live readout of the export queue, for the window strip."""
+    def __init__(self, main_ref, parent=None):
+        super().__init__(parent)
+        self._main_ref = main_ref
+        self._sch = None
+        self.setMinimumWidth(180)
+        self.setText("exports idle")
+        self.setStyleSheet("color:#9fb0c4;")
+        self._poll = QTimer(self)
+        self._poll.setInterval(1000)
+        self._poll.timeout.connect(self._tick)
+        self._poll.start()
+
+    def _main(self):
+        try:
+            return self._main_ref()
+        except Exception:
+            return None
+
+    def _tick(self):
+        main = self._main()
+        sch = getattr(main, "_export_scheduler_obj", None) if main is not None else None
+        if sch is None:
+            return
+        if sch is not self._sch:
+            self._sch = sch
+            try:
+                sch.changed.connect(lambda *_: self._paint())
+            except Exception:
+                pass
+        self._paint()
+
+    def _paint(self):
+        sch = self._sch
+        if sch is None:
+            return
+        running = [j for j in sch.jobs if j.state == "running"]
+        queued = [j for j in sch.jobs if j.state == "queued"]
+        if running:
+            j = max(running, key=lambda x: x.progress)
+            pct = int(j.progress)
+            bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
+            self.setText("%s %d%%  %s%s" % (bar, pct, j.label[:24], ("  +%d" % len(queued)) if queued else ""))
+            self.setStyleSheet("color:#7fffd4; font-weight:700;")
+        elif queued:
+            self.setText("%d queued" % len(queued))
+            self.setStyleSheet("color:#f2d17a;")
+        else:
+            done = sum(1 for j in sch.jobs if j.state == "done")
+            self.setText("exports idle" if not done else "%d done" % done)
+            self.setStyleSheet("color:#9fb0c4;")

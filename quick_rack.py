@@ -65,7 +65,16 @@ class QuickRack(QFrame):
                      "QPushButton:hover{background:rgba(46,204,113,70);border:1px solid #2ecc71;}"     # R32.8 hover glow
                      "QPushButton:pressed{background:rgba(108,75,179,150);}")
         self.setStyleSheet(self._css % (GREEN, PURPLE))
-        lay = QHBoxLayout(self); lay.setContentsMargins(6, 3, 6, 3); lay.setSpacing(6)
+        from PyQt6.QtWidgets import QScrollArea, QSizePolicy
+        outer = QHBoxLayout(self); outer.setContentsMargins(0, 0, 0, 0)
+        host = QWidget(); lay = QHBoxLayout(host); lay.setContentsMargins(6, 3, 6, 3); lay.setSpacing(6)
+        area = QScrollArea(); area.setWidgetResizable(False); area.setWidget(host)
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        area.setFrameShape(QScrollArea.Shape.NoFrame)
+        area.setFixedHeight(46)
+        host.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        outer.addWidget(area)
         # 1 canonical mode
         try:
             import canonical_mode
@@ -91,11 +100,14 @@ class QuickRack(QFrame):
                              ("🔌 Hardware", "MIDI (USB, learn, clock) · audio devices · input devices & tester · printers · USB / drives / cameras", lambda: __import__("hardware_tools").open_window(self.app)),
                              ("🗺 Context", "Context Map of every local / global context + ownership matrix", lambda: __import__("context_visualizer").open_window(self.app)),
                              ("🧊 OBJ", "Project ⇄ OBJ: export the song as a 3D model with the exact audio and project inside; import any OBJ as sound; show an OBJ in the video", lambda: __import__("project_obj").open_window(self.app)),
+                             ("🧊 3D Studio", "Wrap media onto OBJs, tint, build scenes of models + video + audio, mesh into a game, make 3D video", lambda: __import__("studio_3d").open_window(self.app)),
                              ("🎯 Canonical", "Canonical values: what the engines change at render time (shown value vs the value the render uses)", lambda: __import__("canonical_view").open_window(self.app)),
                              ("🗂 Playlist", "Graphical playlist: lanes, overlap, coverage, blend partners, all columns", lambda: __import__("playlist_view").open_window(self.app)),
                              ("📈 Automate", "Automation lanes for every module parameter (canonical = the seed program)", lambda: __import__("automation_bus").open_window(self.app)),
                              ("🎚 Mixer", "Instrument Mixer: per-instrument gain · mute · solo · canonical balance", lambda: __import__("instrument_mixer").open_window(self.app)),
                              ("🔁 Transmute", "Sound · image · video · game ⇄ each other · reverse-engineer → project", lambda: __import__("media_transmuter").open_window(self.app)),
+                             ("🎚 Layer sweep", "Layer an export with another or a random one; use one file as the remix recipe of another", lambda: __import__("media_layers").open_window(self.app)),
+                             ("🌲 Process tree", "Who runs where: audio, UI, record, export, sCode", lambda: __import__("process_tree").open_window(self.app)),
                              ("🌊 Wave", "Wave syncer · folder · resampler", lambda: __import__("canonical_wavetools").open_window(self.app)),
                              ("🖌 Image", "Image editor: layers · draw · opacity · gradients", lambda: __import__("image_editor").open_window(self.app)),
                              ("🧬 Compose", "Seed Morph · Song Form · Tuning Lattice · Diversity Meter · Playback styles", lambda: __import__("composition_tools").open_window(self.app)),

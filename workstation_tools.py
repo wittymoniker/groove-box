@@ -184,6 +184,15 @@ def install_workstation_tools(host, layout):
     action("Multidimensional", multidim, "Open the existing multidimensional synth editor")
     action("Canonical data", host._open_canonical_data, "Inspect canonical source data and ownership")
     action("Performance", host._open_performance_tab, "Open the existing performance controls")
-    layout.insertWidget(0, toolbar)
+    from PyQt6.QtWidgets import QScrollArea, QSizePolicy
+    area = QScrollArea()
+    area.setWidgetResizable(False)
+    area.setWidget(toolbar)
+    area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    area.setFrameShape(QScrollArea.Shape.NoFrame)
+    area.setFixedHeight(48)
+    toolbar.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+    layout.insertWidget(0, area)
     host.workstation_toolbar = toolbar
     return toolbar

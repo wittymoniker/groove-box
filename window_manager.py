@@ -201,7 +201,9 @@ def clamp_on_screen(w):
         width = min(w.width(), a.width())
         height = min(w.height(), a.height())
         x, y = w.x(), w.y()
-        if not on_any or y < a.top() or x + 80 > a.right() or x + width < a.left() + 80 or y > a.bottom() - 40:
+        # Always keep the title bar (top 36 px, first 220 px) inside the screen.
+        title_off = (y < a.top() or y > a.bottom() - 36 or x < a.left() or x + min(220, width) > a.right())
+        if not on_any or title_off or x + width > a.right() + 8 or y + height > a.bottom() + 8:
             x = max(a.left(), min(x, a.right() - width))
             y = max(a.top(), min(y, a.bottom() - height))
             if (width, height) != (w.width(), w.height()):

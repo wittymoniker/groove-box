@@ -38,7 +38,10 @@ PRESETS = {
     "Default": {},
     "Small screen (125 %)": {"ui_scale": 125, "window_scale": 100},
     "Large screen (90 % window)": {"ui_scale": 100, "window_scale": 90},
-    "Low-power laptop": {"smooth_mode": "on", "threads": 4, "scene_size": "720p", "audio_latency": "high"},
+    "Tablet": {"smooth_mode": "on", "threads": 2, "scene_size": "720p", "audio_latency": "high", "ui_scale": 125},
+    "Laptop": {"smooth_mode": "auto", "threads": 0, "scene_size": "720p", "audio_latency": "auto"},
+    "Desktop": {"smooth_mode": "off", "threads": 0, "scene_size": "1080p", "audio_latency": "low"},
+    "Low-power laptop": {"smooth_mode": "on", "threads": 8, "scene_size": "720p", "audio_latency": "high"},
     "Studio (all threads, 1080p)": {"smooth_mode": "off", "threads": 0, "scene_size": "1080p", "audio_latency": "low"},
     "Quiet start (no chime, single output)": {"startup_chime": 0, "play_all_outputs": 0},
     "Update code from USB": {"update": 1},
@@ -210,8 +213,10 @@ def open_window(app=None, parent=None):
     except RuntimeError:
         win = None
     if win is not None:
-        win.show(); win.raise_(); return win
-    win = QWidget(parent or app, Qt.WindowType.Window); win.setWindowTitle("🖥 System Settings · sOS / desktop")
+        win.show(); win.raise_(); win.activateWindow(); return win
+    # Parentless top-level window so a modal startup dialog cannot swallow it.
+    win = QWidget(None, Qt.WindowType.Window); win.setWindowTitle("🖥 System Settings · sOS / desktop")
+    win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
     win.resize(720, 760)
     outer = QVBoxLayout(win); scroll = QScrollArea(); scroll.setWidgetResizable(True); body = QWidget(); scroll.setWidget(body)
     outer.addWidget(scroll); lay = QVBoxLayout(body)
@@ -225,12 +230,12 @@ def open_window(app=None, parent=None):
     form.addRow("Background", lbl_bg); form.addRow("", row)
     sp_ui = QSpinBox(); sp_ui.setRange(0, 300); sp_ui.setSpecialValueText("auto"); sp_ui.setValue(int(st.get("ui_scale", 100)))
     sp_win = QSpinBox(); sp_win.setRange(50, 100); sp_win.setValue(int(st.get("window_scale", 100)))
-    cb_smooth = QComboBox(); cb_smooth.addItems(["auto", "on", "off"]); cb_smooth.setCurrentText(st.get("smooth_mode", "auto"))
+    cb_smooth = QComboBox(); cb_smooth.addItems(["auto", "on", "off"]); cb_smooth.setCurrentText(str(st.get("smooth_mode", "auto") or "auto"))
     sp_thr = QSpinBox(); sp_thr.setRange(0, 64); sp_thr.setSpecialValueText("auto"); sp_thr.setValue(int(st.get("threads", 0)))
     cb_rate = QComboBox(); cb_rate.addItems(["auto", "44100", "48000"]); cb_rate.setCurrentText(str(st.get("audio_rate", "auto")))
-    cb_size = QComboBox(); cb_size.addItems(["auto", "720p", "1080p", "native"]); cb_size.setCurrentText(st.get("scene_size", "auto"))
-    cb_lat = QComboBox(); cb_lat.addItems(["auto", "low", "high"]); cb_lat.setCurrentText(st.get("audio_latency", "auto"))
-    cb_worker = QComboBox(); cb_worker.addItems(["adaptive", "balanced", "video", "memory"]); cb_worker.setCurrentText(st.get("worker_mode", "adaptive"))
+    cb_size = QComboBox(); cb_size.addItems(["auto", "720p", "1080p", "native"]); cb_size.setCurrentText(str(st.get("scene_size", "auto") or "auto"))
+    cb_lat = QComboBox(); cb_lat.addItems(["auto", "low", "high"]); cb_lat.setCurrentText(str(st.get("audio_latency", "auto") or "auto"))
+    cb_worker = QComboBox(); cb_worker.addItems(["adaptive", "balanced", "video", "memory"]); cb_worker.setCurrentText(str(st.get("worker_mode", "adaptive") or "adaptive"))
     sp_swap = QDoubleSpinBox(); sp_swap.setRange(0.25, 4.0); sp_swap.setSingleStep(0.25); sp_swap.setValue(float(st.get("swap_limit", 1.0)))
     chk_all = QCheckBox("Play on every output (HDMI + speakers)"); chk_all.setChecked(bool(st.get("play_all_outputs", True)))
     chk_chime = QCheckBox("Startup chime"); chk_chime.setChecked(bool(st.get("startup_chime", True)))
@@ -238,6 +243,39 @@ def open_window(app=None, parent=None):
     chk_smart = QCheckBox("Smart process (migratory threads)"); chk_smart.setChecked(bool(st.get("smart_process", True)))
     chk_export = QCheckBox("Export in worker process"); chk_export.setChecked(bool(st.get("export_in_worker", True)))
     chk_autosave = QCheckBox("Autosave"); chk_autosave.setChecked(bool(st.get("autosave", True)))
+    cb_hw = QComboBox(); cb_hw.addItems(["auto", "tablet", "laptop", "desktop"])
+    cb_hw.setCurrentText(str(st.get("hardware_class", "auto")))
+    cb_hw.setToolTip("auto detects tablet / laptop / desktop and applies a safe profile.")
+    def _apply_hw():
+        import compat_settings as _cs
+        kind = cb_hw.currentText()
+        kind, prof = _cs.apply_hardware_class(None if kind == "auto" else kind)
+        out.setPlainText("Applied %s profile\n%s" % (kind, prof))
+    b_hw = QPushButton("Apply hardware profile")
+    b_hw.clicked.connect(_apply_hw)
+    form.addRow("Hardware class", cb_hw)
+    form.addRow("", b_hw)
+    cb_comp = QComboBox(); cb_comp.addItems(["protected", "global50", "direct"])
+    cb_comp.setToolTip("How the composition engine shares control with you. Protected keeps your edits.")
+    cb_out = QComboBox(); cb_out.addItems(["all devices", "selected only", "player for files"])
+    cb_out.setToolTip("Output route. All devices is safest across HDMI and speakers.")
+    def _apply_style():
+        if app is not None:
+            try:
+                import canonical_mode as cm
+                cm.apply(app, cb_comp.currentText())
+            except Exception:
+                pass
+        cur = cs.load()
+        cur["play_all_outputs"] = cb_out.currentText() != "selected only"
+        cur["audio_via_video_player"] = cb_out.currentText() == "player for files" or cur.get("audio_via_video_player", True)
+        cs.save(cur); cs.apply_env(cur)
+        out.setPlainText("Composition %s · output %s" % (cb_comp.currentText(), cb_out.currentText()))
+    b_style = QPushButton("Apply composition / output style")
+    b_style.clicked.connect(_apply_style)
+    form.addRow("Composition style", cb_comp)
+    form.addRow("Output style", cb_out)
+    form.addRow("", b_style)
     for cap, w in (("UI scale %", sp_ui), ("Window scale %", sp_win), ("Smooth mode", cb_smooth), ("Threads", sp_thr),
                    ("Audio rate", cb_rate), ("Scene size", cb_size), ("Audio latency", cb_lat), ("Worker mode", cb_worker),
                    ("Swap limit × RAM", sp_swap)):
@@ -303,9 +341,49 @@ def open_window(app=None, parent=None):
     out = QTextEdit(); out.setReadOnly(True); out.setStyleSheet("font-family:Consolas,monospace;font-size:9pt;")
     out.setPlainText(cs.describe(st))
     lay.addWidget(out, 1)
+    def _checklist():
+        lines = ["On-device checklist"]
+        try:
+            from drive_guard import system_disks, assert_safe_target
+            lines.append("OS disks locked: " + ", ".join(sorted(system_disks)) or "(none detected)")
+            try:
+                assert_safe_target("/dev/nvme0n1")
+                lines.append("WARN: nvme0n1 was not refused")
+            except Exception as exc:
+                lines.append("nvme0n1 refused: " + str(exc)[:80])
+        except Exception as exc:
+            lines.append("drive guard: " + str(exc))
+        try:
+            import seed_media_bridge as smb
+            pkt = smb.identity_packet(app or {"seed": 1, "seed_script": "return 1"})
+            lines.append("seed packet: " + str(pkt.get("fingerprint")))
+        except Exception as exc:
+            lines.append("seed packet: " + str(exc))
+        try:
+            import r32_finish as rf
+            d = rf._store("export_queue")
+            probe = os.path.join(d, "_checklist.json")
+            with open(probe, "w", encoding="utf-8") as f:
+                f.write('{"ok": true}')
+            os.remove(probe)
+            lines.append("export resume folder writable: " + d)
+        except Exception as exc:
+            lines.append("export resume: " + str(exc))
+        try:
+            from operation_station_transfer import verify_iso_builder
+            r = verify_iso_builder()
+            lines.append("ISO builder: " + ("OK" if r.get("ok") else "missing") + " · " + "; ".join(r.get("notes") or []))
+        except Exception as exc:
+            lines.append("ISO builder: " + str(exc))
+        lines.append("Auto-retry is on by default; pause it in Export Jobs if a path keeps failing.")
+        out.setPlainText("\n".join(lines))
+    b_check = QPushButton("Run checklist")
+    b_check.setToolTip("Confirm the OS disk is locked, the seed packet builds, and export resume can write.")
+    b_check.clicked.connect(_checklist)
+    row2.addWidget(b_check)
     if app is not None:
         app._sos_settings_window = win
-    win.show(); win.raise_(); return win
+    win.show(); win.raise_(); win.activateWindow(); return win
 
 
 def _both_now():

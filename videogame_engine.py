@@ -1176,6 +1176,13 @@ def classify_from_composition(
     if seed_script:
         fp_src += "|ss=" + hashlib.sha256(str(seed_script).encode("utf-8", "replace")).hexdigest()[:16]
     fingerprint = hashlib.sha256(fp_src.encode("utf-8")).hexdigest()[:16]
+    # SEED_MEDIA_20261111: same fingerprint family as audio/video exports.
+    try:
+        import seed_media_bridge as _smb
+        _pkt = _smb.identity_packet({"seed": seed, "seed_script": seed_script or ""})
+        fingerprint = (_pkt.get("fingerprint") or fingerprint)[:16]
+    except Exception:
+        pass
 
     # Always open world. Other genres stay in the lattice for hooks, but the
     # played mode is never a locked sigil/puzzle/arena objective.

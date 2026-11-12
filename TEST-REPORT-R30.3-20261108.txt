@@ -1,0 +1,44 @@
+R30.3 TEST REPORT
+=================
+
+Focused command:
+pytest -q test_ui_runtime_contract_20261108.py test_live_recording_timeline.py test_scode_stage0_pool_catalog_contract.py test_threading_stability_patch_20261108.py
+Result: 23 passed in 0.43s (latest complete focused run).
+
+Source compile:
+- Python runtime module inventory: 144 modules
+- py_compile results: 144 passed, 0 failed
+
+Static UI/runtime audit:
+python scripts/audit_ui_paths.py --strict
+- Python minimum: PASS
+- PyQt6-only binding: PASS
+- Main launcher dispatcher bootstrap: PASS
+- Direct launcher dispatcher bootstrap: PASS
+- Direct launcher CPython gate: PASS
+- Live Player shared UI tasks: PASS
+- Clip Timeline shared UI tasks: PASS
+- Main composition shared sCode lanes: PASS
+- Performance pools shared sCode lanes: PASS
+- Core windows avoid private QThreadPool instances: PASS
+- Total: 10/10
+
+ISO overlay sync:
+python scripts/sync_runtime_payload.py --manifest BUILD_ISO/runtime_payload_manifest.json
+python scripts/sync_runtime_payload.py --check
+Result: 144 runtime module sources synchronized; second check byte-for-byte PASS.
+
+Build preflight syntax:
+bash -n BUILD_ISO/RUN_ME_v35_22.sh
+Result: PASS.
+
+Environment limitation:
+Importing PyQt6 fails with ModuleNotFoundError in this test environment. No live Qt window or physical-device validation is claimed.
+
+Known risk sites reported by the audit:
+- groovebox.py::_run_off_gui: Future.result() still blocks callers in legacy export paths.
+- video_clip_studio.py: two QApplication.processEvents() calls remain in the mixed-video render path, alongside bounded frame-thread joins.
+- Bounded recorder/device shutdown joins remain in selected lifecycle paths.
+
+Conclusion:
+The Python interpreter contract, worker-pool consolidation, UI publication contract, and active ISO source consistency passed the defined static/focused tests. Full no-freeze behavior remains unverified until the legacy export wait paths are refactored and the Qt application is exercised on the target Dell.

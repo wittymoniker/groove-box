@@ -343,4 +343,19 @@ def start(app):
                 app._r32_resumed_exports = n
             except Exception:
                 pass
-    QTimer.singleShot(6000, _resume)
+    # No launch mode required: queue unfinished exports as soon as the app is up.
+    QTimer.singleShot(800, _resume)
+    # Keep job state on disk while they run so a reboot always has something to resume.
+    def _persist_running():
+        try:
+            sch = app._export_scheduler()
+            for j in list(getattr(sch, "jobs", []) or []):
+                if getattr(j, "state", "") in ("queued", "running"):
+                    persist_job(j)
+        except Exception:
+            pass
+    t = QTimer(app)
+    t.setInterval(15000)
+    t.timeout.connect(_persist_running)
+    t.start()
+    app._r32_export_persist_timer = t
