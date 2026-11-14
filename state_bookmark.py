@@ -11,13 +11,18 @@ def _load(app):
     p = _path(app)
     if os.path.isfile(p):
         try:
-            return json.load(open(p))
+            with open(p, encoding="utf-8") as fh:      # UTF8_IO_R6: names may hold any text
+                return json.load(fh)
         except Exception:
             pass
     return []
 
 def _save(app, items):
-    json.dump(items, open(_path(app), "w"), indent=1)
+    """Atomic UTF-8 write (a crash mid-save used to leave a truncated bookmarks.json and an open handle)."""
+    p = _path(app); tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(items, fh, indent=1, ensure_ascii=False)
+    os.replace(tmp, p)
 
 def open_window(app, parent=None):
     w = QWidget(parent)
@@ -62,3 +67,8 @@ def open_window(app, parent=None):
     lay.addLayout(row)
     w.show(); w.raise_()
     return w
+
+
+# WINDOW_KEEPER_20261112: parentless windows used to be garbage-collected the moment they opened.
+import window_keeper as _window_keeper  # noqa: E402
+open_window = _window_keeper.kept(open_window)

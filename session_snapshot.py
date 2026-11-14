@@ -34,3 +34,8 @@ def open_window(app, parent=None):
     b.clicked.connect(lambda: lab.setText("saved %d windows" % save(app)))
     lay.addWidget(b)
     win.show(); win.raise_(); return win
+
+
+# WINDOW_KEEPER_20261112: parentless windows used to be garbage-collected the moment they opened.
+import window_keeper as _window_keeper  # noqa: E402
+open_window = _window_keeper.kept(open_window)

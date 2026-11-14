@@ -1,0 +1,27 @@
+Groovebox R28.4.3 — Shared Startup Selector / Linux ISO Launch Fix
+Date: 2026-10-17
+
+Root cause found
+- The R28.4 startup selector lived only in groovebox.py's `if __name__ == "__main__"` block.
+- The sOS/ISO appliance launcher starts /opt/groovebox/run_groovebox.py instead, and that entry point constructed and showed the main window directly. Therefore the ISO launch path bypassed the selector even though the selector code was packaged.
+
+Changes
+- Moved startup selector behavior into shared module-level `launch_startup_mode_selector()` in groovebox.py.
+- Direct `python groovebox.py` and `run_groovebox.py` now use the same selector.
+- Selector is a parentless, application-modal top-level QDialog with an initial always-on-top hint and a delayed activation retry. It requests centering within available display geometry on desktop environments that permit client-side placement. Wayland compositors control top-level placement and may ignore client-side move requests.
+- Main workspace is not shown before the selector on the normal launch path.
+- Project-file launch and explicit `--skip-startup-launcher` continue to bypass the selector.
+- Closing/dismissing the selector safely falls back to Main Groovebox; no project reset occurs unless New Blank Project is explicitly chosen.
+- The final initramfs stamp now installs the current run_groovebox.py and checks that the selector invocation is present in the actual runtime launcher.
+- RUN_ME_ZERO_STATE.sh invokes a new static contract verifier for the direct and ISO launch paths.
+
+Validation completed
+- Python syntax compilation passed for root groovebox.py, run_groovebox.py, active ISO overlay groovebox.py, and the new verifier.
+- Shell syntax checks passed for RUN_ME_ZERO_STATE.sh and stamp_final_initramfs_v35_22zz.sh.
+- New R28.4.3 startup verifier passed.
+- Existing R28.4.2 export verifier, R23b playback-sync verifier, R12 and R12a verifiers passed.
+- Root and active v35.22zz overlay groovebox.py are byte-for-byte identical.
+
+Limitations
+- PyQt6 is unavailable in this build environment, so the dialog has not been instantiated in a live GUI here.
+- No ISO was built or booted in this environment. The final-stamp checks are wired, but appearance on a physical Linux/Wayland/X11 system remains to be confirmed after the user runs the builder and boots the resulting ISO.

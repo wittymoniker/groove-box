@@ -15,11 +15,22 @@ import time
 
 import numpy as np
 from PyQt6.QtCore import QObject, pyqtSignal, Qt
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QPlainTextEdit, QPushButton, QLabel,
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QTabWidget, QPlainTextEdit, QPushButton, QLabel, QGridLayout,
                              QDoubleSpinBox, QSpinBox, QComboBox, QFileDialog, QFormLayout)
 
 import spectral_canonical as sc
 import video_canonical as vc
+
+_WINDOW = None   # strong ref when opened without a host (otherwise the window is garbage-collected at once)
+
+
+def _button_grid(items, cols=4):
+    g = QGridLayout(); g.setHorizontalSpacing(6); g.setVerticalSpacing(6)
+    for i, (text, fn) in enumerate(items):
+        b = QPushButton(text); b.clicked.connect(fn); g.addWidget(b, i // cols, i % cols)
+    for c in range(cols):
+        g.setColumnStretch(c, 1)
+    return g
 
 
 class _Bridge(QObject):
@@ -55,6 +66,7 @@ class SeedCanonicalWindow(QWidget):
         tabs = QTabWidget(); lay.addWidget(tabs, 1)
         tabs.addTab(self._audio_tab(), "🔊 Spectral (audio)")
         tabs.addTab(self._video_tab(), "🎞 Pixel (video)")
+        tabs.addTab(self._algebra_tab(), "🧩 Seed algebra")
         self.lbl = QLabel(""); self.lbl.setWordWrap(True); lay.addWidget(self.lbl)
 
     def _status(self, t):
@@ -71,13 +83,11 @@ class SeedCanonicalWindow(QWidget):
         self.a_ch = QSpinBox(); self.a_ch.setRange(1, 8); self.a_ch.setValue(2)
         f.addRow("Length (generative)", self.a_secs); f.addRow("Sample rate", self.a_sr); f.addRow("Channels", self.a_ch)
         v.addLayout(f)
-        row = QHBoxLayout()
-        for text, fn in (("Analyse audio file → seed…", self._a_analyse), ("Load seed file…", lambda: self._load_seed(self.a_seed)),
-                         ("Save seed…", lambda: self._save_seed(self.a_seed)), ("▶ Generate", self._a_generate),
-                         ("✓ Verify round trip", self._a_verify), ("Export float WAV…", self._a_export),
-                         ("Use as carrier", self._a_carrier)):
-            b = QPushButton(text); b.clicked.connect(fn); row.addWidget(b)
-        v.addLayout(row); v.addStretch(1)
+        v.addLayout(_button_grid((("Analyse audio file → seed…", self._a_analyse), ("Load seed file…", lambda: self._load_seed(self.a_seed)),
+                                  ("Save seed…", lambda: self._save_seed(self.a_seed)), ("▶ Generate", self._a_generate),
+                                  ("✓ Verify round trip", self._a_verify), ("Export float WAV…", self._a_export),
+                                  ("Use as carrier", self._a_carrier))))
+        v.addStretch(1)
         return w
 
     def _seed_text(self, edit):
@@ -104,16 +114,17 @@ class SeedCanonicalWindow(QWidget):
         host = self.host
 
         def work():
-            if p.lower().endswith(".wav"):
-                from scipy.io import wavfile
-                sr, x = wavfile.read(p)
-                x = np.asarray(x)
-                if x.dtype.kind in "iu":
-                    x = x.astype(np.float64) / float(np.iinfo(x.dtype).max)
-                x = x.T if x.ndim == 2 else x
-            else:
-                x, sr = host._decode_media_audio(p)
-            return sc.analyse(np.asarray(x, dtype=np.float64), int(sr)), np.asarray(x, dtype=np.float32), int(sr)
+            x = None
+            if host is not None and not p.lower().endswith((".wav", ".wave")):
+                try:
+                    x, sr = host._decode_media_audio(p)
+                    x, sr = sc.coerce_signal(x, int(sr))      # (ch, n) float, any dtype / layout
+                except Exception:
+                    x = None
+            if x is None:                                       # wav (any int/float dtype, uint8 centred) or FFmpeg
+                import seed_tools
+                x, sr, _ = seed_tools.load_signal(p)
+            return sc.analyse(x, int(sr)), np.asarray(x, dtype=np.float32), int(sr)
 
         def done(r, e):
             if e:
@@ -178,6 +189,131 @@ class SeedCanonicalWindow(QWidget):
         except Exception as exc:
             self._status(f"Carrier load failed: {exc}")
 
+    # ------------------------------------------------------------- seed algebra
+    def _algebra_tab(self):
+        w = QWidget(); v = QVBoxLayout(w)
+        info = QLabel("Every file is a seed and every seed is a file. Exact seeds (MGLB1:) rebuild any file bit-for-bit; "
+                      "the common seed is the timbre all chosen files share (fuzzy AND of their spectra); a difference "
+                      "seed (MGLD1:) holds exactly what changed from A to B and where.")
+        info.setWordWrap(True); v.addWidget(info)
+        self.g_seed = QPlainTextEdit(); self.g_seed.setPlaceholderText("Result seed appears here (any seed can be pasted too)")
+        self.g_seed.setMaximumHeight(140); v.addWidget(self.g_seed)
+        v.addLayout(_button_grid((("File → exact seed…", self._g_file_seed), ("File → signal seed…", lambda: self._g_file_seed("signal")),
+                                  ("Exact seed → file…", self._g_seed_file), ("Common seed of files…", self._g_common),
+                                  ("Difference seed A → B…", self._g_diff), ("Apply difference to A…", self._g_apply),
+                                  ("Send to audio tab", self._g_to_audio), ("Save seed…", lambda: self._save_seed(self.g_seed)),
+                                  ("🎬 Seed → 1080p video + sound…", self._g_render_av)), cols=4))
+        self.g_info = QPlainTextEdit(); self.g_info.setReadOnly(True); self.g_info.setMaximumHeight(110)
+        v.addWidget(self.g_info); v.addStretch(1)
+        return w
+
+    def _g_done(self, label):
+        def done(r, e):
+            if e:
+                self._status(f"{label} failed: {e}"); return
+            seed, info = r
+            if seed is not None:
+                self.g_seed.setPlainText(seed)
+            self.g_info.setPlainText(info); self._status(f"{label}: done.")
+        return done
+
+    def _g_file_seed(self, mode="exact"):
+        p, _ = QFileDialog.getOpenFileName(self, "Any file", "", "All files (*)")
+        if not p:
+            return
+        import seed_tools
+
+        def work():
+            s = seed_tools.file_to_seed(p, mode=mode)
+            return s, f"{os.path.basename(p)}: {os.path.getsize(p):,} bytes → {seed_tools.seed_kind(s)} seed of {len(s):,} characters"
+        _run(self, "File → seed", work, self._g_done("File → seed"))
+
+    def _g_seed_file(self):
+        seed = self._seed_text(self.g_seed)
+        d = QFileDialog.getExistingDirectory(self, "Rebuild the file into…") if seed else ""
+        if not d:
+            self._status("Paste an MGLB1: seed and choose a folder."); return
+        import seed_tools
+        _run(self, "Seed → file", lambda: (None, "Rebuilt (SHA-256 verified): " + seed_tools.seed_to_file(seed, d)),
+             self._g_done("Seed → file"))
+
+    def _g_common(self):
+        ps, _ = QFileDialog.getOpenFileNames(self, "Files to intersect (2 or more)", "", "All files (*)")
+        if not ps:
+            return
+        import seed_tools
+        secs = float(self.a_secs.value())
+
+        def work():
+            c = seed_tools.find_common(ps, seconds=min(secs, 600.0))
+            return c["seed"], (f"{c['inputs']} files · shared spectral energy {c['shared_energy'] * 100:.1f} % · "
+                               f"strongest common partial {c['peak_hz']:.0f} Hz · {min(secs, 600.0):.1f} s literal seed")
+        _run(self, "Common seed", work, self._g_done("Common seed"))
+
+    def _g_diff(self):
+        a, _ = QFileDialog.getOpenFileName(self, "File A (before)", "", "All files (*)")
+        b, _ = QFileDialog.getOpenFileName(self, "File B (after)", os.path.dirname(a), "All files (*)") if a else ("", "")
+        if not (a and b):
+            return
+        import seed_tools
+        _run(self, "Difference seed", lambda: (lambda r: (r[0], f"A → B differs at {r[1]}"))(seed_tools.diff_to_seed(a, b)),
+             self._g_done("Difference seed"))
+
+    def _g_apply(self):
+        seed = self._seed_text(self.g_seed)
+        a, _ = QFileDialog.getOpenFileName(self, "File A to apply the difference to", "", "All files (*)") if seed else ("", "")
+        if not a:
+            self._status("Paste an MGLD1: seed and choose A."); return
+        import seed_tools
+
+        def work():
+            r = seed_tools.apply_diff(a, seed)
+            root, ext = os.path.splitext(a)
+            if isinstance(r, bytes):
+                out = root + ".patched" + ext
+                with open(out, "wb") as f:
+                    f.write(r)
+            else:
+                from scipy.io import wavfile
+                x, sr = r; out = root + ".patched.wav"
+                wavfile.write(out, int(sr), np.ascontiguousarray(x.T.astype(np.float32)))
+                self._audio = (x.astype(np.float32), sr)
+            return None, "Wrote " + out
+        _run(self, "Apply difference", work, self._g_done("Apply difference"))
+
+    def _g_render_av(self):
+        """SEED_AV_RENDER_R6: the seed (or any text) → 1080p30 MP4 with sound, with the context field reading the music."""
+        seed = self._seed_text(self.g_seed) or self._seed_text(self.a_seed)
+        if not seed:
+            self._status("Paste or generate a seed first."); return
+        import seed_tools
+        if seed_tools.seed_kind(seed) in ("difference", "literal-bytes", "literal-audio", "literal-video"):
+            self._status("Use a generative seed (or any text) for a rendered video."); return
+        p, _ = QFileDialog.getSaveFileName(self, "Save video", "seed-video.mp4", "MP4 video (*.mp4)")
+        if not p:
+            return
+        secs = max(2.0, min(120.0, float(self.a_secs.value())))
+
+        def work():
+            r = seed_tools.render_av(seed, p, seconds=secs, size=(1920, 1080), fps=30)
+            return None, f"Wrote {r['path']} · {r['frames']} frames · 1920×1080 · {r['seconds']:.1f} s · seed {r['seed_sha256']}"
+        _run(self, "Rendering 1080p video", work, self._g_done("Render video"))
+
+    def _g_to_audio(self):
+        seed = self._seed_text(self.g_seed)
+        if not seed:
+            return
+        import seed_tools
+        kind = seed_tools.seed_kind(seed)
+        if kind == "difference":
+            self._status("A difference seed needs its A — use “Apply difference to A…”."); return
+        if kind == "literal-bytes":                     # the file's bytes, read as a signal → exact spectral seed
+            _run(self, "Converting", lambda: sc.analyse(*seed_tools.load_signal(seed)[:2]),
+                 lambda r, e: (self.a_seed.setPlainText(r), self._status("Byte seed converted to a spectral seed — press ▶ Generate."))
+                 if e is None else self._status(f"Convert failed: {e}"))
+            return
+        self.a_seed.setPlainText(seed); self._status("Seed copied to the Spectral tab — press ▶ Generate there.")
+
     # ------------------------------------------------------------- video
     def _video_tab(self):
         w = QWidget(); v = QVBoxLayout(w)
@@ -193,12 +329,10 @@ class SeedCanonicalWindow(QWidget):
                         ("Detail (coefficients per side)", self.v_detail)):
             f.addRow(lab, wd)
         v.addLayout(f)
-        row = QHBoxLayout()
-        for text, fn in (("Analyse video file → seed…", self._v_analyse), ("Load seed file…", lambda: self._load_seed(self.v_seed)),
-                         ("Save seed…", lambda: self._save_seed(self.v_seed)), ("▶ Generate", self._v_generate),
-                         ("✓ Verify round trip", self._v_verify), ("Export video…", self._v_export)):
-            b = QPushButton(text); b.clicked.connect(fn); row.addWidget(b)
-        v.addLayout(row); v.addStretch(1)
+        v.addLayout(_button_grid((("Analyse video file → seed…", self._v_analyse), ("Load seed file…", lambda: self._load_seed(self.v_seed)),
+                                  ("Save seed…", lambda: self._save_seed(self.v_seed)), ("▶ Generate", self._v_generate),
+                                  ("✓ Verify round trip", self._v_verify), ("Export video…", self._v_export)), cols=3))
+        v.addStretch(1)
         return w
 
     def _ffmpeg(self):
@@ -265,7 +399,8 @@ class SeedCanonicalWindow(QWidget):
             self._status("Video export needs the Groovebox FFmpeg."); return
         fr, fps = self._video
         n, h, w, _ = fr.shape
-        codec = ["-c:v", "ffv1"] if p.lower().endswith(".mkv") else ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "16"]
+        codec = ["-c:v", "ffv1"] if p.lower().endswith(".mkv") else \
+            ["-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "16"]   # yuv420p needs even sizes
 
         def work():
             r = subprocess.run([ff, "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}",
@@ -278,7 +413,8 @@ class SeedCanonicalWindow(QWidget):
 
 
 def open_window(host=None):
-    w = getattr(host, "_seed_canonical_window", None) if host is not None else None
+    global _WINDOW
+    w = getattr(host, "_seed_canonical_window", None) if host is not None else _WINDOW
     try:
         if w is not None:
             w.isVisible()
@@ -288,5 +424,7 @@ def open_window(host=None):
         w = SeedCanonicalWindow(host)
         if host is not None:
             host._seed_canonical_window = w
+        else:
+            _WINDOW = w
     w.show(); w.raise_()
     return w

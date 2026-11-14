@@ -52,10 +52,58 @@ def _find_stage0(root: Path) -> Path:
     return found if found is not None else root / 'bootstrap' / 'UNAVAILABLE'
 
 
+_SNI_DUMPS_KW = dict(sort_keys=True, separators=(",", ":"), default=str)
+_SNI_STREAM_LEN = 64          # STREAM_IDENTITY_R7: containers this long are walked, not serialised whole
+_SNI_STREAM_DICT = 1024     # per-row/per-synth dicts (a few hundred keys) stay one C-encoder call
+_SNI_FLUSH = 1 << 20
+
+
+def _sni_stream(h, value, depth, buf):
+    """Feed exactly the bytes json.dumps(value, **_SNI_DUMPS_KW) would produce, in pieces.
+    Large lists/str-keyed dicts are walked; everything else is encoded by the C encoder.
+    A 40k-row x 400-synth playlist used to build a ~500 MB string per identity pass (OOM)."""
+    dumps = json.dumps
+    if depth < 2 and isinstance(value, (list, tuple)) and (depth == 0 or len(value) >= _SNI_STREAM_LEN):
+        buf.append("[")
+        first = True
+        for item in value:
+            if not first:
+                buf.append(",")
+            first = False
+            _sni_stream(h, item, depth + 1, buf)
+        buf.append("]")
+    elif (depth < 2 and isinstance(value, dict) and (depth == 0 or len(value) >= _SNI_STREAM_DICT)
+          and all(type(k) is str for k in value)):
+        buf.append("{")
+        first = True
+        for k in sorted(value):
+            if not first:
+                buf.append(",")
+            first = False
+            buf.append(dumps(k))
+            buf.append(":")
+            _sni_stream(h, value[k], depth + 1, buf)
+        buf.append("}")
+    else:
+        buf.append(dumps(value, **_SNI_DUMPS_KW))
+    if len(buf) > 256 or (buf and len(buf[-1]) > _SNI_FLUSH):
+        h.update("".join(buf).encode("utf-8", "replace"))
+        buf.clear()
+
+
 def stable_numeric_identity(value: Any) -> int:
-    blob = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8", "replace")
+    h = hashlib.sha256()
+    try:
+        buf: list = []
+        _sni_stream(h, value, 0, buf)
+        if buf:
+            h.update("".join(buf).encode("utf-8", "replace"))
+    except RecursionError:
+        raise ValueError("Circular reference detected")
+    except (TypeError, ValueError):
+        h = hashlib.sha256(json.dumps(value, **_SNI_DUMPS_KW).encode("utf-8", "replace"))
     # 52 bits remain exactly representable in the stage-0 numeric runtime.
-    return int.from_bytes(hashlib.sha256(blob).digest()[:7], "big") & ((1 << 52) - 1)
+    return int.from_bytes(h.digest()[:7], "big") & ((1 << 52) - 1)
 
 
 class SCodeOptimizerBridge:
@@ -340,7 +388,36 @@ class SCodeOptimizerBridge:
             pass
         return default
 
+    # IDENTITY_SCOPE_R7: one canonical pass asked for the same deep host identity twice in a row
+    # (request_host_plan, then claim_host_work) over unchanged data - two full walks of the playlist
+    # and sequencer stores (~4 s each at 13k rows x 367 synths).  Inside host_identity_scope() the
+    # deep categories are computed once and reused; outside a scope nothing is cached, so no edit
+    # can ever be hidden behind a stale identity.
+    def host_identity_scope(self, host):
+        bridge = self
+
+        class _Scope:
+            def __enter__(self_):
+                tls = bridge.__dict__.setdefault("_identity_tls", threading.local())
+                self_.prev = getattr(tls, "memo", None)
+                tls.memo = [host, None]
+                return bridge
+
+            def __exit__(self_, *exc):
+                bridge._identity_tls.memo = self_.prev
+                return False
+        return _Scope()
+
     def _host_categories(self, host, *, deep: bool = True) -> Dict[str, Any]:
+        tls = self.__dict__.get("_identity_tls")
+        memo = getattr(tls, "memo", None) if tls is not None else None
+        if deep and memo is not None and memo[0] is host:
+            if memo[1] is None:
+                memo[1] = self._host_categories_uncached(host, deep=True)
+            return memo[1]
+        return self._host_categories_uncached(host, deep=deep)
+
+    def _host_categories_uncached(self, host, *, deep: bool = True) -> Dict[str, Any]:
         def attr(name, default=None):
             try:
                 return getattr(host, name, default)
@@ -578,6 +655,7 @@ class SCodeOptimizerBridge:
                 self._result_cache.pop(str(kind), None)
 
     def memoized_result(self, kind: str, payload: Any, producer: Callable[[], Any], *, max_entries: int = 32,
+                        language: str = "python",
                         max_bytes: int = 0):
         """sCode-routed memoization for deterministic non-realtime results (SCODE_POOL_V2_20261102).
 
@@ -585,7 +663,9 @@ class SCodeOptimizerBridge:
         value instead of repeating the work. ``max_bytes`` (0 = off) bounds the bucket by the array bytes it holds.
         Cached values are returned as stored, so producers must return immutable / read-only results.
         """
-        key = self.work_key(kind, payload)
+        # SCODE_LANG_20261107: language is part of the identity so Rust/Julia/C++
+        # results never collide with a Python result for the same payload.
+        key = self.work_key(kind, (str(language or "python"), payload))
         kind = str(kind)
         with self._cache_lock:
             bucket = self._result_cache.setdefault(kind, OrderedDict())
@@ -679,7 +759,10 @@ class SCodeOptimizerBridge:
                 self._stats["pool_hits"] += 1
                 self._pool.move_to_end(key)
         if fill is None:
-            out = arr[:n].copy()
+            # POOL_SPEED_R7: the template is never written (callers get private copies), so its contents are
+            # uninitialised by contract; copying it was a full memcpy of junk on every borrow. Same contract,
+            # no copy. Hit/miss accounting and the LRU slab above are unchanged.
+            out = np.empty(n, dtype=dt)
         else:
             # Filled scratch buffers never use the template's contents.
             # Keep private ownership, but avoid copying junk just to overwrite it.
@@ -1406,6 +1489,129 @@ class SCodeOptimizerBridge:
 
         worker_future.add_done_callback(done)
         return public_future
+
+    def submit_successive(self, kind: str, payload: Any, stages, *,
+                          policy="generation", format_id=None, frame=None,
+                          max_stages=8, priority=0.0, callback=None, qt_callback=False):
+        """Run bounded successive refinement on the existing sCode worker lane.
+
+        Every stage is independently submitted after the previous public future
+        completes. No thread waits for another thread, no nested pool is created,
+        and no result is published after its generation/frame has become stale.
+        """
+        from concurrent.futures import CancelledError
+        chain = list(stages or ())
+        try:
+            limit = max(0, min(8, int(max_stages)))
+        except (TypeError, ValueError):
+            raise ValueError("max_stages must be an integer from 0 to 8")
+        if len(chain) > limit:
+            raise ValueError(f"successive refinement is limited to {limit} stages")
+        if not chain:
+            # Even an identity refinement travels through the completion
+            # publisher, so callback thread-affinity is consistent.
+            return self.submit_pooled(
+                str(kind) + "::successive::identity",
+                {"payload_identity": stable_numeric_identity(payload)},
+                lambda: payload, policy=policy, format_id=format_id,
+                frame=frame, priority=priority, max_entries=1,
+                callback=callback, qt_callback=qt_callback,
+            )
+        pid = self.completion_policy_id(policy)
+        token_generation = int(self._last_plan.get(
+            str(kind) + "_generation", self._last_plan.get("generation", 0)))
+        token_frame = self._frame if frame is None else int(frame)
+        result = Future()
+        state = {"index": 0}
+        lock = threading.Lock()
+
+        def still_current():
+            if pid not in (self.POLICY_PURE, self.POLICY_SIDE_EFFECT):
+                current_generation = int(self._last_plan.get(
+                    str(kind) + "_generation", self._last_plan.get("generation", 0)))
+                if current_generation != token_generation:
+                    return False
+            if pid in (self.POLICY_FRAME, self.POLICY_STREAM):
+                return int(self._frame) <= token_frame
+            return True
+
+        def finish(value=None, error=None):
+            if result.done():
+                return
+            if error is not None:
+                result.set_exception(error)
+            else:
+                result.set_result(value)
+
+        def advance(previous):
+            if result.cancelled() or result.done():
+                return
+            if not still_current():
+                finish(error=CancelledError("sCode refinement superseded by a newer generation/frame"))
+                return
+            with lock:
+                idx = state["index"]
+                if idx >= len(chain):
+                    finish(value=previous)
+                    return
+                state["index"] = idx + 1
+            stage = chain[idx]
+            if isinstance(stage, (tuple, list)) and len(stage) == 2:
+                stage_name, fn = str(stage[0]), stage[1]
+            else:
+                stage_name, fn = f"stage{idx + 1}", stage
+            if not callable(fn):
+                finish(error=TypeError(f"refinement stage {stage_name} is not callable"))
+                return
+            # Keep the original kind so submit_pooled captures the same
+            # per-kind generation contract for every refinement stage.
+            stage_payload = {
+                "identity": stable_numeric_identity(payload), "stage": idx,
+                "generation": token_generation, "frame": token_frame,
+            }
+            try:
+                stage_future = self.submit_pooled(
+                    kind, stage_payload,
+                    lambda fn=fn, value=previous: fn(value),
+                    policy=policy, format_id=format_id, frame=frame,
+                    priority=priority, max_entries=1, force=False,
+                )
+            except BaseException as exc:
+                finish(error=exc)
+                return
+
+            def stage_done(done_future):
+                if result.cancelled() or result.done():
+                    return
+                try:
+                    value = done_future.result()
+                except BaseException as exc:
+                    finish(error=exc)
+                    return
+                if idx + 1 >= len(chain):
+                    if not still_current():
+                        finish(error=CancelledError("sCode refinement result became stale"))
+                    else:
+                        finish(value=value)
+                else:
+                    advance(value)
+
+            stage_future.add_done_callback(stage_done)
+
+        if callback is not None:
+            def deliver(done_future):
+                if done_future.cancelled():
+                    err = CancelledError("sCode refinement cancelled")
+                    self._dispatch_completion_callback(callback, None, err, qt_callback)
+                    return
+                try:
+                    value = done_future.result()
+                    self._dispatch_completion_callback(callback, value, None, qt_callback)
+                except BaseException as exc:
+                    self._dispatch_completion_callback(callback, None, exc, qt_callback)
+            result.add_done_callback(deliver)
+        advance(payload)
+        return result
 
     def latest_stream_result(self, kind: str, default=None):
         """Lock-free latest-ready stream read suitable for realtime callbacks."""

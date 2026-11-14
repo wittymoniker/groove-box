@@ -1,3 +1,6 @@
+# Runtime contract: CPython >= 3.10. All desktop/sOS launchers validate this
+# baseline before importing the Qt application tree. PyQt6/Qt6 ABI is selected
+# by the platform installer (Fedora uses the matching distro Qt packages).
 numpy
 scipy
 cffi

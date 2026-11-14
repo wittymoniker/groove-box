@@ -24,8 +24,14 @@ import shutil
 import subprocess
 import sys
 
+def _int_or_auto(v):
+    """BOOT_AUTO_R6: sos.ui_scale=auto / sos.threads=auto mean 0 (= resolve automatically); int('auto') used to
+    raise and the boot-menu choice was silently dropped."""
+    return 0 if str(v).strip().lower() in ("auto", "") else int(v)
+
+
 BOOT_KEYS = {
-    "ui_scale": int, "window_scale": int, "smooth_mode": str, "threads": int, "audio_rate": str, "scene_size": str,
+    "ui_scale": _int_or_auto, "window_scale": _int_or_auto, "smooth_mode": str, "threads": _int_or_auto, "audio_rate": str, "scene_size": str,
     "play_all_outputs": lambda v: str(v).lower() in ("1", "true", "on", "yes"),
     "startup_chime": lambda v: str(v).lower() in ("1", "true", "on", "yes"),
     "worker_mode": str, "audio_latency": str,
@@ -201,12 +207,28 @@ def run_update_now():
     return head + "sos-preboot-update is not installed on this system (desktop build)."
 
 
+_WINDOW = None   # SYSTEM_SETTINGS_LAUNCHER_20261112: strong ref -- a parentless window opened from the startup
+                 # chooser (app=None) was garbage-collected the moment the button handler returned.
+
+
 def open_window(app=None, parent=None):
+    """Open (or raise) the one System Settings window. Safe from the startup chooser, the main window,
+    the Quick Rack, Ctrl+, and the command palette."""
+    try:
+        return _open_window(app, parent)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        raise
+
+
+def _open_window(app=None, parent=None):
+    global _WINDOW
     from PyQt6.QtCore import Qt
     from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QFormLayout, QPushButton, QLabel, QComboBox, QSpinBox,
                                  QCheckBox, QTextEdit, QScrollArea, QDoubleSpinBox, QHBoxLayout)
     import compat_settings as cs
-    win = getattr(app, "_sos_settings_window", None) if app is not None else None
+    win = (getattr(app, "_sos_settings_window", None) if app is not None else None) or _WINDOW
     try:
         if win is not None:
             win.isVisible()
@@ -219,6 +241,7 @@ def open_window(app=None, parent=None):
     win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
     win.resize(720, 760)
     outer = QVBoxLayout(win); scroll = QScrollArea(); scroll.setWidgetResizable(True); body = QWidget(); scroll.setWidget(body)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     outer.addWidget(scroll); lay = QVBoxLayout(body)
     st = cs.load(); sysd = load()
     form = QFormLayout()
@@ -258,6 +281,7 @@ def open_window(app=None, parent=None):
     cb_comp = QComboBox(); cb_comp.addItems(["protected", "global50", "direct"])
     cb_comp.setToolTip("How the composition engine shares control with you. Protected keeps your edits.")
     cb_out = QComboBox(); cb_out.addItems(["all devices", "selected only", "player for files"])
+    cb_out.setCurrentText("selected only" if not st.get("play_all_outputs", True) else "all devices")
     cb_out.setToolTip("Output route. All devices is safest across HDMI and speakers.")
     def _apply_style():
         if app is not None:
@@ -266,10 +290,9 @@ def open_window(app=None, parent=None):
                 cm.apply(app, cb_comp.currentText())
             except Exception:
                 pass
-        cur = cs.load()
-        cur["play_all_outputs"] = cb_out.currentText() != "selected only"
-        cur["audio_via_video_player"] = cb_out.currentText() == "player for files" or cur.get("audio_via_video_player", True)
-        cs.save(cur); cs.apply_env(cur)
+        cur = cs.update(play_all_outputs=cb_out.currentText() != "selected only",
+                        audio_via_video_player=cb_out.currentText() == "player for files") or cs.load()
+        cs.apply_env(cur)
         out.setPlainText("Composition %s · output %s" % (cb_comp.currentText(), cb_out.currentText()))
     b_style = QPushButton("Apply composition / output style")
     b_style.clicked.connect(_apply_style)
@@ -286,10 +309,78 @@ def open_window(app=None, parent=None):
         form.addRow(cap, w)
     for w in (chk_all, chk_chime, chk_native, chk_smart, chk_export, chk_autosave):
         form.addRow("", w)
+    # PARTY_MODE_SETTINGS_20261112: the toggle + intensity the docs promised (party_mode / party_intensity).
+    from PyQt6.QtWidgets import QSlider
+    chk_party = QCheckBox("Party Mode (contextual visuals + UI sounds that show what you are composing)")
+    chk_party.setChecked(bool(st.get("party_mode", True)))
+    chk_party_snd = QCheckBox("Party sounds (UI sounds tuned to the project: stochastic energy + resampling)")
+    chk_party_snd.setChecked(bool(st.get("party_sounds", True)))
+    # PARTY_DEFAULT_R6: 0.001 % resolution (any level is exact); PARTY_DEFAULT_R7: default 50 %.
+    sl_party = QSlider(Qt.Orientation.Horizontal); sl_party.setRange(0, 100000); sl_party.setSingleStep(10); sl_party.setPageStep(1000)
+    sl_party.setValue(int(round(float(st.get("party_intensity", 50.0)) * 1000)))
+    sl_party.setToolTip("Party Mode level, 0-100 % in 0.001 % steps (default 50 %)")
+    lbl_party = QLabel("%.3f %%" % (sl_party.value() / 1000.0))
+    party_row = QHBoxLayout(); party_row.addWidget(sl_party, 1); party_row.addWidget(lbl_party)
+
+    def _party_live(*_a):
+        lbl_party.setText("%.3f %%" % (sl_party.value() / 1000.0))
+        cs.update(party_mode=chk_party.isChecked(), party_intensity=sl_party.value() / 1000.0,
+                  party_sounds=chk_party_snd.isChecked())
+        try:
+            import party_overlay
+            party_overlay.refresh()
+        except Exception:
+            pass
+        try:
+            btn = getattr(app, "btn_party", None) if app is not None else None
+            if btn is not None and btn.isChecked() != chk_party.isChecked():
+                btn.blockSignals(True); btn.setChecked(chk_party.isChecked()); btn.blockSignals(False)
+        except Exception:
+            pass
+    chk_party.toggled.connect(_party_live); sl_party.valueChanged.connect(_party_live); chk_party_snd.toggled.connect(_party_live)
+    form.addRow("", chk_party); form.addRow("Party level", party_row); form.addRow("", chk_party_snd)
+    chk_emoji = QCheckBox("Emoji labels (buttons, tabs, titles; applies to windows opened after saving)")   # EMOJI_UI_R7
+    chk_emoji.setChecked(bool(st.get("emoji_labels", True)))
+    form.addRow("", chk_emoji)
+    # UI_PANES_R6: window pane formats (sizes, order, stacked / side by side, docks) for every window.
+    try:
+        import ui_panels_ui as _upu
+        form.addRow("Window panes", _upu.compact_row(app, body))
+    except Exception as _pe:
+        form.addRow("Window panes", QLabel(f"unavailable: {_pe}"))
+    # SCRIPT_STUDIO_R7: the OS text editor for seed-language compositions
+    _b_ss = QPushButton("✍ Open Script Studio")
+    _b_ss.setToolTip("Write seed compositions with a workspace variables reference, evaluate / sweep them, "
+                     "and send them to the project seed.")
+    _b_ss.clicked.connect(lambda: __import__("script_studio").open_window(app))
+    form.addRow("Script Studio", _b_ss)
     lay.addLayout(form)
+    # LANE_READOUT_R6: what the thread pools are doing right now (busiest lanes, caller-runs count, waits).
+    lbl_lanes = QLabel(""); lbl_lanes.setWordWrap(True); lbl_lanes.setStyleSheet("color:#9fb4c8; font-family:Consolas;")
+    lay.addWidget(lbl_lanes)
+
+    def _lanes_tick():
+        if not win.isVisible():
+            return
+        try:
+            import thread_budget as _tb
+            rep = _tb.lane_report(5)
+            b = rep["budget"]
+            rows = [f"workers {b['total_workers']} (bulk {b['bulk_workers']} · interactive {b['interactive_workers']}) · "
+                    f"running {rep['running'].get('bulk', 0)}/{rep['running'].get('interactive', 0)} · lanes {rep['lane_count']}"]
+            for r in rep["lanes"]:
+                rows.append(f"{r['name'][:22]:<22} act {r['active']} q {r['queued']} done {r.get('completed', 0)} "
+                            f"inline {r.get('inline', 0)} wait {r.get('wait_s', 0.0):.2f}s run {r.get('run_s', 0.0):.2f}s")
+            lbl_lanes.setText("\n".join(rows))
+        except Exception as exc:
+            lbl_lanes.setText(f"thread lanes: {exc}")
+    from PyQt6.QtCore import QTimer as _QT
+    _lt = _QT(win); _lt.setInterval(2000); _lt.timeout.connect(_lanes_tick); _lt.start(); _lanes_tick()
 
     def do_save():
-        st2 = cs.load()
+        st2 = cs.load_saved()
+        st2.update({"party_mode": chk_party.isChecked(), "party_intensity": sl_party.value() / 1000.0,
+                    "party_sounds": chk_party_snd.isChecked(), "emoji_labels": chk_emoji.isChecked()})
         st2.update({"ui_scale": sp_ui.value(), "window_scale": sp_win.value(), "smooth_mode": cb_smooth.currentText(),
                     "thread_quality": cb_quality.currentText(), "compat_profile": cb_profile.currentText(),
                     "threads": sp_thr.value(), "audio_rate": cb_rate.currentText(), "scene_size": cb_size.currentText(),
@@ -297,18 +388,21 @@ def open_window(app=None, parent=None):
                     "play_all_outputs": chk_all.isChecked(), "startup_chime": chk_chime.isChecked(),
                     "native_voice": chk_native.isChecked(), "smart_process": chk_smart.isChecked(),
                     "export_in_worker": chk_export.isChecked(), "autosave": chk_autosave.isChecked()})
-        cs.save(st2)
+        ok = cs.save(st2)
         try:
             cs.apply_env(st2)
         except Exception:
             pass
+        if not ok:
+            out.setPlainText("Could NOT write the settings file:\n" + cs.settings_path())
+            return
         out.setPlainText("Saved. Scale changes apply at the next launch.\n\n" + "\n".join(cs.describe(st2)))
 
     # GROOVEBOX_LID_DISPLAY_20261111
     try:
         import lid_display as _lid
         lbl_lid = QLabel(_lid.HELP_SNIPPET.replace("\n", " "))
-        lbl_lid.setWordWrap(True)
+        lbl_lid.setWordWrap(True); lbl_lid.setMinimumWidth(120)
         b_lid = QPushButton("Toggle display (Ctrl+Caps Lock)")
         b_lid.clicked.connect(lambda: b_lid.setText("Display off" if _lid.toggle_display() else "Toggle display (Ctrl+Caps Lock)"))
         form.addRow("Lid / display power", lbl_lid)
@@ -316,7 +410,7 @@ def open_window(app=None, parent=None):
     except Exception:
         pass
 
-    b_save = QPushButton("💾 Save & apply"); b_save.clicked.connect(do_save)
+    b_save = QPushButton("💾 Save && apply"); b_save.clicked.connect(do_save)
     b_both = QPushButton("🔊 Install Both-outputs device now")
     b_both.clicked.connect(lambda: out.setPlainText(_both_now()))
     b_upd = QPushButton("⬆ Update code from USB now"); b_upd.clicked.connect(lambda: out.setPlainText(run_update_now()))
@@ -339,18 +433,20 @@ def open_window(app=None, parent=None):
                     msg += "\n" + (r2.stdout or r2.stderr).strip()
         out.setPlainText(msg)
     b_sys.clicked.connect(_sysstore)
-    row2 = QHBoxLayout()
-    for b in (b_save, b_both, b_upd, b_boot, b_sys):
-        row2.addWidget(b)
+    from PyQt6.QtWidgets import QGridLayout
+    row2 = QGridLayout()          # 3 columns: six buttons in one row forced horizontal scrolling
+    _row2_items = [b_save, b_both, b_upd, b_boot, b_sys]
+    for i, b in enumerate(_row2_items):
+        row2.addWidget(b, i // 3, i % 3)
     lay.addLayout(row2)
-    out = QTextEdit(); out.setReadOnly(True); out.setStyleSheet("font-family:Consolas,monospace;font-size:9pt;")
+    out = QTextEdit(); out.setReadOnly(True); out.setStyleSheet("font-family:Consolas;font-size:9pt;")
     out.setPlainText("\n".join(cs.describe(st)))
     lay.addWidget(out, 1)
     def _checklist():
         lines = ["On-device checklist"]
         try:
             from drive_guard import system_disks, assert_safe_target
-            lines.append("OS disks locked: " + ", ".join(sorted(system_disks)) or "(none detected)")
+            lines.append("OS disks locked: " + (", ".join(sorted(system_disks())) or "(none detected)"))
             try:
                 assert_safe_target("/dev/nvme0n1")
                 lines.append("WARN: nvme0n1 was not refused")
@@ -385,9 +481,10 @@ def open_window(app=None, parent=None):
     b_check = QPushButton("Run checklist")
     b_check.setToolTip("Confirm the OS disk is locked, the seed packet builds, and export resume can write.")
     b_check.clicked.connect(_checklist)
-    row2.addWidget(b_check)
+    row2.addWidget(b_check, len(_row2_items) // 3, len(_row2_items) % 3)
     if app is not None:
         app._sos_settings_window = win
+    _WINDOW = win
     win.show(); win.raise_(); win.activateWindow(); return win
 
 

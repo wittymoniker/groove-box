@@ -296,7 +296,7 @@ def convert(app, src, target, base):
         fr = y[:n * hop].reshape(n, hop); spec = np.abs(np.fft.rfft(fr * np.hanning(hop), axis=1))
         fq = np.fft.rfftfreq(hop, 1 / srr); cen = (spec * fq).sum(1) / (spec.sum(1) + 1e-12)
         rms = np.sqrt((fr ** 2).mean(1)); on = np.r_[0, np.maximum(0, np.diff(rms))]
-        with open(base + ".features.csv", "w", newline="") as f:
+        with open(base + ".features.csv", "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f); w.writerow(["time_s", "rms", "peak", "centroid_hz", "onset"])
             for i in range(n):
                 w.writerow(["%.4f" % (i * hop / srr), "%.6f" % rms[i], "%.6f" % np.abs(fr[i]).max(), "%.1f" % cen[i], "%.6f" % on[i]])

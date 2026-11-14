@@ -210,7 +210,13 @@ def trim(hard=False):
             except Exception:
                 pass
     try:
-        gc.collect(2)
+        # Prefer a light collect on the hot path; gen-2 can freeze the UI for seconds under pressure.
+        gc.collect(0 if not hard else 1)
+    except Exception:
+        pass
+    try:
+        import quiet_log
+        quiet_log.trim_hist(128)
     except Exception:
         pass
     try:
@@ -235,26 +241,26 @@ def _loop(interval):
                 r = max(r, hard + 1)
             h = _STATE["hist"]
             h.append((time.time(), r))
-            if len(h) > 360:
-                del h[: len(h) - 360]
+            if len(h) > 180:
+                del h[: len(h) - 180]
             try:
                 import process_policy
                 process_policy.reap()
             except Exception:
                 pass
             now = time.monotonic()
-            if r > hard and now - last_trim > 5.0:
+            if r > hard and now - last_trim > 3.0:
                 trim(hard=True)
                 last_trim = now
-            elif r > soft and now - last_trim > 20.0:
+            elif r > soft and now - last_trim > 5.0:
                 trim(hard=False)
                 last_trim = now
         except Exception:
             pass
 
 
-def start(interval=10.0):
-    """Start the governor thread (idempotent)."""
+def start(interval=2.0):
+    """Start the governor thread (idempotent). Default 2s so RAM spikes are caught before the UI freezes."""
     if _STATE["thread"] is not None and _STATE["thread"].is_alive():
         return _STATE["thread"]
     _STATE["stop"] = False
@@ -346,3 +352,32 @@ def housekeeping(max_temp_days=3, max_log_mb=10, part_days=14):
 
 def start_housekeeping():
     threading.Thread(target=housekeeping, daemon=True, name="groovebox-housekeeping").start()
+
+
+def register_default_cache_caps(app=None):
+    """Bound hot caches so spikes cannot grow without a governor tick."""
+    def _cap_mixdown():
+        try:
+            host = app
+            if host is None:
+                import sys
+                gb = sys.modules.get("groovebox")
+                lives = list(getattr(gb, "_LIVE_APPS", []) or []) if gb else []
+                host = lives[0] if lives else None
+            if host is None:
+                return
+            cache = getattr(host, "_shared_mixdown_cache", None)
+            if isinstance(cache, dict) and len(cache) > 2:
+                # keep the two newest by timestamp if values are (buf, sr, t)
+                items = list(cache.items())
+                def _t(it):
+                    v = it[1]
+                    try:
+                        return float(v[2]) if isinstance(v, (tuple, list)) and len(v) > 2 else 0.0
+                    except Exception:
+                        return 0.0
+                items.sort(key=_t, reverse=True)
+                host._shared_mixdown_cache = dict(items[:2])
+        except Exception:
+            pass
+    register_trimmer(_cap_mixdown)

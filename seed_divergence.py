@@ -10,7 +10,7 @@ Deterministic decorrelation fixes this without touching determinism:
 mixes the evaluated seed value with a hash of (value, index, salt) and spreads the result
 over the value's own magnitude range, so instrument 3's wavetable and instrument 3's ball
 get different but reproducible numbers from the same seed program, and a change of seed
-moves every domain by a different amount.  ``amount`` (0..1, default 0.6) is the
+moves every domain by a different amount.  ``amount`` (0..1, default 0.5) is the
 "Divergence" control on the quick rack; 0 restores the old behaviour exactly.
 """
 from __future__ import annotations
@@ -19,7 +19,7 @@ import hashlib
 import math
 import struct
 
-DEFAULT_AMOUNT = 0.6
+DEFAULT_AMOUNT = 0.5     # DIVERGENCE_DEFAULT_R7: the midpoint (was 0.6)
 DOMAINS = ("audio", "synth", "vector", "wavetable", "ball", "cellular", "multidim", "video", "game", "sequence")
 
 
@@ -74,6 +74,19 @@ def amount_from(app):
         return DEFAULT_AMOUNT if app._get_active_engine_set() else 0.0
     except Exception:
         return 0.0
+
+
+def display_value(app):
+    """The value a Divergence spin shows: your value if you set one (0 included), otherwise DEFAULT_AMOUNT."""
+    v = getattr(app, "seed_divergence", None)
+    if v is not None and getattr(app, "_r32_divergence_user", False):
+        try:
+            f = float(v)
+            if f == f:
+                return max(0.0, min(1.0, f))
+        except Exception:
+            pass
+    return DEFAULT_AMOUNT
 
 
 def apply_to_app(app, value, index, salt="audio"):
