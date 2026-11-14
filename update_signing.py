@@ -152,10 +152,10 @@ def keygen(keydir=None):
     if not os.path.exists(kp):
         sk = os.urandom(32)
         fd = os.open(kp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(sk.hex() + "\n")
     sk = _read_hex(kp)
-    with open(pp, "w") as f:
+    with open(pp, "w", encoding="utf-8") as f:
         f.write(public_key(sk).hex() + "\n")
     return kp, pp
 
@@ -165,7 +165,7 @@ def sign_package(pkg, key=None):
     sk = _read_hex(key)
     sig = sign(sk, _digest(pkg))
     out = pkg + ".sig"
-    with open(out, "w") as f:
+    with open(out, "w", encoding="utf-8") as f:
         f.write(sig.hex() + "\n")
     return out
 

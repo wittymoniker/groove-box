@@ -32,6 +32,17 @@ def test_queue_runs_jobs_in_order_and_survives_a_failure(app, monkeypatch):
     monkeypatch.setattr(rq.QMessageBox, "information", staticmethod(lambda *a, **k: shown.append(a)))
     d = rq.RenderQueueDialog(app)
     d.run()
+    _drain_queue(app)
     assert [r[1] for r in ran] == ["wav", "flac"]
     assert ran[0][2] == "/tmp/a.wav" and app._export_preset is None
     assert [j['key'] for j in app._render_queue_jobs] == ['mcc'] and not app._render_queue_running   # RENDER_QUEUE_RESUME_20261102: the failed job stays queued for a retry
+
+
+def _drain_queue(app, timeout=10.0):
+    """R30+: the render queue dispatches one job per event-loop turn; let it finish."""
+    import time as _t
+    from PyQt6.QtWidgets import QApplication
+    end = _t.monotonic() + timeout
+    QApplication.processEvents()
+    while getattr(app, "_render_queue_running", False) and _t.monotonic() < end:
+        QApplication.processEvents()

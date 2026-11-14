@@ -1,7 +1,7 @@
 """THEME_SWITCH_20261112: flip the color scheme without opening settings."""
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel
 
-SCHEMES = ["normal", "high contrast", "grayscale", "warm night", "inverted"]
+SCHEMES = ["normal", "high contrast", "protan-safe", "deutan-safe", "tritan-safe", "grayscale", "warm night", "inverted"]
 
 def open_window(app, parent=None):
     w = QWidget(parent)
@@ -32,3 +32,8 @@ def open_window(app, parent=None):
     lay.addStretch(1)
     w.show(); w.raise_()
     return w
+
+
+# WINDOW_KEEPER_20261112: parentless windows used to be garbage-collected the moment they opened.
+import window_keeper as _window_keeper  # noqa: E402
+open_window = _window_keeper.kept(open_window)

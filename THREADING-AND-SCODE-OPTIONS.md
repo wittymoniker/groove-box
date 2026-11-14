@@ -45,3 +45,51 @@ The existing result cache is a better fit for exact repeated pure calculations t
 - **Scaling:** Compare a short edit workload and a sustained render workload on the intended laptop. Tune worker/BLAS counts from observed latency and throughput, not the largest available number.
 
 No claim is made that these proposed architecture changes have already been implemented or benchmarked. They are the next steps I would prioritize after this safe-source merge.
+
+## R7: help-while-waiting lanes (POOL_HELP_R7)
+
+Every `SharedWorkLane` future is a `_LaneFuture`. When a managed worker calls `.result()` or
+`.exception()` on a job that has not started, the waiting worker runs the job itself if that keeps lane
+semantics:
+
+- (a) the job already holds a lane slot and is only waiting in the shared executor FIFO, or
+- (b) the job is next in the lane and the caller is running a job of that same lane (its slot is blocked anyway).
+
+A per-job claim lock guarantees exactly one runner. If a waiter ran the job, the executor's copy becomes a
+no-op. Lane order and `max_workers` limits are unchanged, so a worker never sits blocked on queued work and
+nested submit-and-wait cannot deadlock. The GUI thread never helps; it is never handed heavy work.
+Inline-run stats are now updated under the lane lock (that was a race).
+
+## R7: pooled scratch without the junk copy (POOL_SPEED_R7)
+
+`borrow_vector(fill=None)` returns `np.empty(n)` instead of copying an uninitialised template slab.
+The contract is the same (uninitialised contents), and there is one less full memcpy per multidim voice render.
+
+## R7: live inputs never re-route outputs (LIVE_INPUTS_R7)
+
+The Live Play mic opens with `reroute=False`: no `set-default-sink` and no combined-sink rebuild while
+playback runs. Live Play also has an output watchdog: if the speaker callback stalls for 1.5 s, the output
+is reopened at the same rate (at most 5 times per session), and the queue, keys, mic, media and the take carry on.
+
+## R7r/R7s — memory-shaped simplifications (2026-11-12)
+
+* **STREAM_IDENTITY_R7** `stable_numeric_identity` feeds SHA-256 the exact bytes `json.dumps` would make,
+  walking big top-level lists/dicts instead of building one string. Same 52-bit identity, no 500 MB strings.
+* **IDENTITY_SCOPE_R7** `bridge.host_identity_scope(host)` — inside it the deep host categories are computed
+  once. The canonical pass (plan + claim) now walks the project once instead of twice. Nothing is cached
+  outside a scope.
+* **HISTORY_POOL_R7** (`history_pool.py`) undo/redo/randomizer snapshots store large lists/dicts per element
+  as pickled, content-addressed blobs in one weak pool: unchanged rows are shared by every snapshot, freed
+  automatically with the last snapshot, and restored as fresh objects. Restore now walks the same key list
+  the snapshot captured (it previously skipped ~25 captured stores).
+* **UNDO_BUDGET_R7** history keeps 64 steps unless the shared pool exceeds 1/4 of RAM (min 2 steps).
+* **STRUCTURE_FIT_R7** growing playlist rows x synths is clamped to free memory (2x headroom) with one notice;
+  load and undo never clamp.
+* **WORKER_RULE_R7** `thread_budget.memory_worker_cap(preferred, heavy=)` is the single RAM rule for lanes,
+  math threads and `memory_guard.adaptive_workers` render/export pools.
+
+## R7u — forecast, sizer and the virtual horizon
+
+- `forecast()` keeps a running mean and variance of run time for each job signature (`predicted_cost`).
+- The bulk class width grows to `base / cpu_share` (at most 2 × base). The width of an unordered lane follows Little's law: `workers = ceil(arrival rate × expected cost)`, checked by `math_invariants.littles_law`.
+- `resolve_horizon(key, q)` is `μ + kσ` with `k = √(q/(1−q))`. By Cantelli's inequality the job finishes within that time with probability ≥ q, whatever the run-time distribution. `virtual_blocks(key, block_s, q) = ceil(horizon / block)` is how long a synth should keep modulating a closed-form virtual state (`multidim_synth.virtual_voice`, exact because the voice is degree-1 homogeneous) instead of waiting.

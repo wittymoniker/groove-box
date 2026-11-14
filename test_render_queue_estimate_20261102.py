@@ -29,4 +29,7 @@ def test_estimate_history_and_idle(tmp_path, monkeypatch):
     app.is_playing = True; dlg._idle_tick(); assert not app.ran   # playing blocks it
     app.is_playing = False
     monkeypatch.setattr(rq.QMessageBox, "information", staticmethod(lambda *a, **k: None))
-    dlg._idle_tick(); assert len(app.ran) == 1 and not dlg.jobs
+    dlg._idle_tick()
+    from PyQt6.QtWidgets import QApplication
+    for _ in range(50): QApplication.processEvents()          # R30+: queue runs on event-loop turns
+    assert len(app.ran) == 1 and not dlg.jobs

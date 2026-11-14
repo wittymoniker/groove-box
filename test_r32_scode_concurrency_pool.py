@@ -62,6 +62,8 @@ def test_shared_work_lane_executes_and_honors_lane_width():
     futures = [lane.submit(lambda n=n: n * n) for n in range(6)]
     assert [f.result(timeout=5) for f in futures] == [0, 1, 4, 9, 16, 25]
     stats = lane.stats()
-    assert stats["max_workers"] == 2
+    # The effective CPU/cgroup budget may be narrower than this requested
+    # lane width; the lane must clamp rather than oversubscribe.
+    assert 1 <= stats["max_workers"] <= 2
     lane.shutdown(wait=True, cancel_futures=True)
     assert lane.stats()["closed"] is True

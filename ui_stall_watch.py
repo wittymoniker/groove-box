@@ -112,7 +112,7 @@ def open_window(app):
     from PyQt6.QtWidgets import QWidget, QVBoxLayout, QTextEdit, QPushButton, QLabel
     w = QWidget(app, Qt.WindowType.Window); w.setWindowTitle("🐢 UI stalls · what froze the windows"); w.resize(720, 420)
     lay = QVBoxLayout(w); lay.addWidget(QLabel("Functions that blocked the shared window thread this session (longest total first)."))
-    ed = QTextEdit(); ed.setReadOnly(True); ed.setStyleSheet("font-family:Consolas,monospace;font-size:9pt;"); lay.addWidget(ed)
+    ed = QTextEdit(); ed.setReadOnly(True); ed.setStyleSheet("font-family:Consolas;font-size:9pt;"); lay.addWidget(ed)
 
     def fill():
         rows = report(40)

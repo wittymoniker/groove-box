@@ -40,6 +40,9 @@ def test_help_explains_signal_architecture_and_scroll_controls():
 def test_scode_uses_shared_bounded_lanes_and_private_copies():
     assert '_thread_budget.make_lane("scode-opt"' in SCODE
     assert '_thread_budget.make_lane("scode-work"' in SCODE
-    assert 'return out' in SCODE and 'out = arr[:n].copy()' in SCODE
-    assert 'out = arr.copy()' in SCODE
+    # POOL_SPEED_R7: fill=None returns a fresh private np.empty (same contract, no junk copy)
+    assert 'return out' in SCODE and ('out = arr[:n].copy()' in SCODE or 'out = np.empty(n, dtype=dt)' in SCODE)
+    # Current pool contract allocates a fresh private result without copying
+    # uninitialized template bytes; the pooled template is never exposed.
+    assert 'out = np.empty(n, dtype=dt)' in SCODE
     assert 'budget_bytes' in SCODE and 'pool_evictions' in SCODE

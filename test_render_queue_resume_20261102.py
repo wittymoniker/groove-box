@@ -23,6 +23,17 @@ def test_queue_persists_resumes_and_keeps_failed(monkeypatch):
     q.jobs.extend([{"key": "wav", "path": "a.wav"}, {"key": "bad"}, {"key": "flac"}]); q._refresh()
     assert json.load(open(os.path.join(d, ".render_queue.json")))[0]["key"] == "wav"
     q.run()
+    _drain_queue(app)
     assert app.ran == ["wav", "flac"] and [j["key"] for j in q.jobs] == ["bad"]
     app2 = _App(d); q2 = rq.RenderQueueDialog(app2)
     assert [j["key"] for j in q2.jobs] == ["bad"]
+
+
+def _drain_queue(app, timeout=10.0):
+    """R30+: the render queue dispatches one job per event-loop turn; let it finish."""
+    import time as _t
+    from PyQt6.QtWidgets import QApplication
+    end = _t.monotonic() + timeout
+    QApplication.processEvents()
+    while getattr(app, "_render_queue_running", False) and _t.monotonic() < end:
+        QApplication.processEvents()

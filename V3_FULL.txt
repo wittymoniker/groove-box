@@ -1,0 +1,18 @@
+# Groovebox V3 Full
+
+Includes:
+- Your R28.4.50 tree (Oct 28 groovebox.py base + later edits)
+- Video Planner UI (🎬 Video Planner) writing VideoAssemblyRules
+- Export dialog reads planner FPS when set
+- Fractal package: lattice, video integrity, audio streaming/integrity, concurrency pools
+- Runtime hook (groovebox_v3_runtime.py) loaded by run_groovebox.py
+- Separate UI / project / encode pools; UI offload helper
+- Existing navbar (_GrooveboxWindowStrip) pinned flush-top; labwc always-on-top rule installed by ISO stamp
+- BUILD_ALL_V3.sh for syntax, app executable, and ISO
+
+Build:
+```bash
+sudo ./BUILD_ALL_V3.sh
+```
+App only: SKIP_ISO=1 ./BUILD_ALL_V3.sh
+ISO only: sudo ./BUILD_ISO/RUN_ME_ZERO_STATE.sh

@@ -36,7 +36,9 @@ def test_video_export_releases_full_song_buffers_before_final_mux():
     assert "_gc_export.collect(1)" in audio_stage
     # The read-only mmap master is intentionally retained while missing video
     # parts render, then released before concat/mux/probe to keep peak RSS bounded.
-    release = src.index("del master", src.index("# Frames and soundtrack are now materialized on disk"))
+    _anchor = src.index("# Frames and soundtrack are now materialized on disk")
+    _cands = [src.find(t, _anchor) for t in ("del master", "master = None")]
+    release = min(c for c in _cands if c >= 0)     # either form releases the master before concat
     concat = src.index("# Build concat list", release)
     assert release < concat
     assert "master_rms" in src[release:]
