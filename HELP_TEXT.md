@@ -2005,3 +2005,120 @@ that uses it.
     ⚡ Quick Jam       — opens with a randomized seed, Randomize All pre-fired,
                          and the sequencer looped on the first four bars.
 ```
+
+## R7u notes — looper, music analogies, release stamp, mathematics
+
+```text
+R7u NOTES — LOOPER, MUSIC ANALOGIES, RELEASE STAMP, MATHEMATICS
+  Enter looper: hold Enter to record a loop of the notes you play; release to
+  commit it. Press and release Enter without playing any note to clear the
+  looper segmentator ("Loop cleared"). Auto-repeat is ignored.
+  Music analogies: video and games read the same seven channels of the track
+  (energy, pulse, phase, altitude, order, weight, sparkle). The seed sets each
+  channel's gain (0.5–1), which element the key's fifth maps to, and the hue
+  origin (hue = origin + 30° × position on the circle of fifths), so one song
+  looks different under different seeds and the same seed always looks the
+  same. In a game, /music shows the table; Game settings ▸ "Music drives world"
+  (0–1, default 0.8) sets how much the track drives energy, pulses and phase.
+  Version: release_info.py is the single version source. scripts/stamp_release.py
+  writes RELEASE-STAMP.json, CURRENT-RELEASE.txt and BUILD_ISO/RELEASE-STAMP.env
+  and runs before every archive and ISO sync; "+local" in About means the code
+  differs from the stamp.
+  Mathematics (math_invariants.py, checked at startup; python3 math_invariants.py):
+    Meum M = 1.19758…, golden ratio, Parseval, energy partition, circle of fifths,
+    EWMA, Little's law (lane width = arrival rate × cost), Party opacity = i²,
+    convex morph (weighted means stay inside the sources), loop quantize.
+    M is the spatial propagation constant of the voice: the master synth always
+    sits at exactly M × the panel+geometric peak P (a constant linear relation),
+    so the largest excursion is known in closed form:
+        |voice| ≤ P · (1 + mix · (M − 1))      (max sway, guarded in triad)
+    lead-input gain stays in [0, 1 + M], and the Meum flux index {k/M} averages
+    to the set depth (Weyl equidistribution; slow but certain).
+    The voice is linear in scale: triad(c·main, c·geo) = c·triad(main, geo) for
+    c > 0, so the master's level is known before it renders (master_peak) and a
+    cached unit shape gives the exact closed form while the render resolves
+    (virtual_voice). How long to keep modulating that virtual state is
+    probabilistic: thread_budget.resolve_horizon uses Cantelli's inequality
+    P(T ≥ μ + kσ) ≤ 1/(1 + k²) on each job's measured run times (finishes
+    within the horizon with probability ≥ q for any distribution), and
+    virtual_blocks = ceil(horizon / block).
+  Video CPU: the projection scale 2·tan(fov/2) is now computed once per field
+  of view instead of once per vertex (identical pixels).
+```
+
+R32 SYNTHESIZER ARCHITECTURE
+  A voice is one complete operator voice: its oscillator/source, envelope,
+  modulation inputs, filter/shape stages and output gain are evaluated as one
+  instrument state. Sequence rows select and parameterize voices; they do not
+  silently replace the user's saved synth patch.
+
+SEQUENCE-LEVEL SYNTH STATE
+  Per-step pitch, gate, velocity and supported automation are sequence-level
+  state. Instrument defaults remain the fallback when a step does not override
+  a value. Editing a step should not rewrite unrelated steps or the base patch.
+
+MODULATION AND ROUTING ORDER
+  Modulation sources are resolved before the destination parameter is applied.
+  The signal then follows the selected instrument path into the shared mix bus
+  and master processing. A visible routing label is not evidence of an audio
+  connection unless the corresponding route is enabled and consumed.
+
+AUDIO, VISUAL AND GAME ARE THREE VIEWS
+  Audio playback, visual rendering and generated games share project context,
+  but each has its own renderer and supported event handlers. A parameter affects
+  another view only when an implemented bridge consumes that parameter. Saving
+  project state preserves editable intent; it does not promise every view is a
+  bit-identical simulation of the others.
+
+SCROLL CONTROLS
+  Plain wheel scrolls the nearest vertical panel. Shift + wheel prefers the
+  horizontal range; if that panel has no horizontal range it falls back to the
+  nearest vertical scroll range. Ctrl + wheel remains reserved for controls that
+  explicitly implement a Ctrl-wheel edit gesture.
+
+GROOVEBOX_SCODE_RAM_BUDGET
+  The sCode workspace pool is bounded by its configured RAM budget and entry
+  limit. Borrowed arrays are private to each caller; the pool does not expose a
+  mutable shared buffer. When the budget is reached, least-recently-used slabs
+  are evicted before new retained storage is admitted. Audio/UI headroom takes
+  priority over background optimization work.
+
+R64 IMPORT FABRIC — CORE, USER APPS AND DEVELOPER APPS
+----------------------------------------------------
+Groovebox maintains one versioned import map for the installed core and the
+configured user/developer application roots. The map is metadata-only: it
+records module paths and import relationships without importing every module.
+It is cached per Python ABI and invalidated when mapped Python sources change.
+
+Startup initializes the map after the thread-budget environment is applied and
+before the main UI/application tree is imported. This gives sCode and the app
+launcher a common module inventory without eagerly loading GUI, hardware, media,
+network, or optional math integrations. Optional integrations load only when
+the feature requests them. Missing optional packages therefore remain feature
+errors, not global startup failures.
+
+User apps may be registered through GROOVEBOX_USER_APP_PATHS and developer app
+roots through GROOVEBOX_DEV_APP_PATHS (path-separated directories). The developer
+overlay exposes dev_overlay.import_map() to include the active overlay src tree
+and the user app directory. import_fabric.application_scope() temporarily adds
+only the selected app's import roots and restores sys.path on exit. App isolation
+still requires the existing worker/process permission boundary: a shared import
+map is not a sandbox and does not make mutable Python module state safe to share.
+
+The map is a discovery/initialization optimization, not a proof that every
+third-party dependency is installed or compatible. Frozen builds must still
+include their declared runtime dependencies; native extensions remain bound to
+the selected interpreter/ABI.
+
+R64 IMPORT OPTIMIZATION — APPLICATION MODULE MAP
+  Groovebox builds a cached map of installed core modules and configured user
+  and developer application roots before loading the main UI. It maps imports
+  without importing every module, and refreshes the cache when Python sources
+  change. Optional integrations load only when the related feature is used.
+  Configure extra app roots with GROOVEBOX_USER_APP_PATHS and
+  GROOVEBOX_DEV_APP_PATHS (path-separated directories). Developer tools can
+  inspect the same map through dev_overlay.import_map(). User scripts are run
+  through the child-process dispatch with their own scoped import path.
+  A module map is not a security sandbox: keep untrusted apps in the isolated
+  worker/process and permission model. Native modules must match the active
+  Python ABI. Cold/warm startup performance still requires R64 benchmarking.

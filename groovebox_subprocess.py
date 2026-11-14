@@ -27,7 +27,7 @@ from pathlib import Path
 HELPER_FLAG = "--groovebox-helper"
 SCRIPT_FLAG = "--groovebox-run-script"
 # Only these bundled modules may be run through the helper dispatch.
-HELPER_MODULES = frozenset({"device_probe_helper", "export_worker"})   # GROOVEBOX_R23R_EXPORT_MERGE_20261103
+HELPER_MODULES = frozenset({"device_probe_helper", "export_worker", "rig_worker"})   # GROOVEBOX_R23R_EXPORT_MERGE_20261103
 
 _HERE = Path(__file__).resolve().parent
 
@@ -76,6 +76,11 @@ def dispatch(argv: list[str] | None = None) -> None:
         sys.stderr.write(f"Groovebox: script not found: {script}\n")
         raise SystemExit(66)
     sys.argv = [str(script), *argv[3:]]
-    sys.path.insert(0, str(script.parent))
-    runpy.run_path(str(script), run_name="__main__")
+    try:
+        import import_fabric
+        with import_fabric.application_scope("user-script", [script.parent]):
+            runpy.run_path(str(script), run_name="__main__")
+    except ImportError:
+        sys.path.insert(0, str(script.parent))
+        runpy.run_path(str(script), run_name="__main__")
     raise SystemExit(0)

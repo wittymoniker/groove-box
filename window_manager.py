@@ -462,6 +462,13 @@ class WindowManager(QObject):
             if not isinstance(obj, QWidget) or not obj.isWindow():
                 return False
             if et == QEvent.Type.Show:
+                try:                                  # WINDOW_SCROLL_R7: every window scrolls, sized to its screen
+                    import window_scroll as _wsc
+                    _wsc.style_system_popup(obj)
+                    if _wsc.wrap(obj) or obj.property(_wsc._MARK):
+                        _wsc.clamp_to_screen(obj)
+                except Exception:
+                    pass
                 # R32.1: *every* top-level tool window qualifies, not only QDialog /
                 # QMainWindow.  Plain QWidget windows (Export Jobs, Render Queue, Post-Process,
                 # Batch Export ...) used to stay transient satellites of Main and were
@@ -588,6 +595,11 @@ def install(app, windows_fn, owner=None):
     if _MANAGER is None:
         _MANAGER = WindowManager(windows_fn, app)
         app.installEventFilter(_MANAGER)
+        try:                                          # WINDOW_SCROLL_R7: the manager's filter takes over
+            import window_scroll as _wsc
+            _wsc.uninstall(app)
+        except Exception:
+            pass
     if owner is not None:
         _MANAGER.install_shortcuts(owner)
     return _MANAGER

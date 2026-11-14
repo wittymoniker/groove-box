@@ -45,6 +45,14 @@ try:
 except Exception:
     pass
 
+# IMPORT_FABRIC_R64: establish a cached, app-scoped import map before the
+# application tree is imported. This never preloads optional integrations.
+try:
+    import import_fabric as _import_fabric
+    _import_fabric.configure(Path(__file__).resolve().parent, map_now=True)
+except Exception:
+    _import_fabric = None
+
 # GROOVEBOX_APPLIANCE_TUNING_20261102: on the standalone OS the app owns the machine -
 # performance CPU governor and raised priority, before any worker thread is started.
 try:
@@ -409,6 +417,15 @@ if __name__ == "__main__":
         except Exception:
             pass
         app = QApplication(sys.argv)
+        try:   # EMOJI_FONTS_R7: colour emoji on every button, every OS
+            import emoji_fonts as _emoji_fonts
+            _emoji_fonts.install(app)
+            import window_scroll as _window_scroll   # WINDOW_SCROLL_R7
+            _window_scroll.install(app)
+            import emoji_ui as _emoji_ui   # EMOJI_UI_R7
+            _emoji_ui.install(app)
+        except Exception as _emoji_exc:
+            print(f"[Emoji] {_emoji_exc}", file=sys.stderr)
         # One queued UI publication path is shared by every application window.
         from ui_runtime import install_ui_runtime as _install_ui_runtime
         _install_ui_runtime(app)
@@ -463,21 +480,43 @@ if __name__ == "__main__":
             # the composition workspace. If a panel/plugin/desktop integration
             # breaks selector construction, always reveal the already-built
             # main window and continue into the Qt event loop.
-            print(f"[Startup] selector failed; falling back to Main Groovebox: {_selector_exc}", file=sys.stderr)
+            print(f"[Startup] selector failed; showing the project gate: {_selector_exc}", file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
-            _startup_choice = "main-fallback"
+            # STARTUP_GATE_R7: never reveal the workspace without a project choice.
             try:
-                player.showNormal()
-                player.show()
-                player.raise_()
-                player.activateWindow()
-            except Exception as _show_exc:
-                print(f"[Startup] main-window reveal fallback failed: {_show_exc}", file=sys.stderr)
-            try:
-                player._install_project_autosave()
-            except Exception as _autosave_exc:
-                print(f"[Startup] autosave fallback unavailable: {_autosave_exc}", file=sys.stderr)
+                from groovebox import startup_fallback_enter as _sfe
+                _startup_choice = _sfe(player)
+            except Exception as _gate_exc:
+                print(f"[Startup] project gate failed too; exiting: {_gate_exc}", file=sys.stderr)
+                sys.stdout.flush(); sys.stderr.flush()
+                os._exit(70)
         print(f"[Startup] selector complete ({_startup_choice}); entering event loop")
+        try:
+            import command_console as _cc
+            _cc.install_shortcut(player, player)
+            print("[Startup] command console: Ctrl+Shift+`")
+        except Exception as _cc_exc:
+            print(f"[Startup] command console not installed: {_cc_exc}")
+        try:
+            import resource_governor as _rg
+            _rg.start(2.0)
+            _rg.register_default_cache_caps(player)
+        except Exception as _rg_exc:
+            print(f"[Startup] resource governor: {_rg_exc}")
+
+        # MATH_INVARIANTS_R7: verify the model equations once per launch, off the GUI thread (< 0.1 s).
+        try:
+            import threading as _th
+
+            def _mi_check():
+                try:
+                    import math_invariants as _mi, release_info as _ri
+                    print("[Startup] %s · %s" % (_ri.describe(short=True), _mi.summary()))
+                except Exception as _mi_exc:
+                    print(f"[Startup] math invariant check skipped: {_mi_exc}")
+            _th.Thread(target=_mi_check, name="math-invariants", daemon=True).start()
+        except Exception:
+            pass
         # Optional Julia packages may need Pkg activation/instantiation. Warm
         # them after the main UI has had time to paint; Python/Rust/C++ paths
         # remain available immediately and no audio callback performs init.

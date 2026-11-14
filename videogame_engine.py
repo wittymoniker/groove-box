@@ -4734,6 +4734,12 @@ class Game:
             entropy = float(getattr(self.music, "_entropy", 0.5) or 0.5)
         except Exception:
             pass
+        an = getattr(self, "music_analog", None)          # MUSIC_ANALOGY_R7: the heard music opens the gates
+        if an:
+            m = self._music_sync_amount()
+            energy = (1.0 - m) * energy + m * float(an.get("energy", energy))
+            phase = (1.0 - m) * phase + m * math.tau * float(an.get("phase", 0.0))
+            entropy = (1.0 - m) * entropy + m * (1.0 - float(an.get("order", 1.0 - entropy)))
         return dict(
             region_name=reg_name,
             region_tier=int(reg_tier or 0),
@@ -5039,6 +5045,16 @@ class Game:
         parts = line.split(None, 1)
         head = parts[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
+        if head == "/music":
+            an = dict(getattr(self, "music_analog", None) or {})
+            try:
+                import audio_features as _af
+                for line in _af.describe_analogy(self.id.get("seed", 0)):
+                    self.push_status("  " + line)
+            except Exception:
+                pass
+            self.push_status("[MUSIC] now: " + "  ".join("%s=%.2f" % (k, float(v)) for k, v in an.items() if k != "hue"))
+            return True
         if head in ("/arcade", "/mini"):
             self.push_status("arcade cabinet: /snake  /mario  /race  /slots  /poker")
             return True
@@ -5152,6 +5168,65 @@ class Game:
                             "roll_deg": float(roll), "distance": max(0.55, min(1.45, dist)),
                             "fov_deg": max(36.0, min(62.0, fov))}
 
+    # -- MUSIC_ANALOGY_R7 ------------------------------------------------------------------
+    # The game reads the composition it ships with through audio_features (the same measured
+    # features and the same seeded analogy the video uses): loudness -> energy, attacks -> pulse,
+    # beat clock -> gate phase, brightness -> altitude, pitched/noisy -> order/entropy, bass ->
+    # weight, treble -> sparkle, pitch class -> one of 12 seeded elements. Without a composition
+    # track it measures its own MusicBed (running level + attack), so the analogy always holds.
+    def set_music_track(self, track, clock=None):
+        self._music_track = track
+        self._music_clock = clock
+        try:
+            import audio_features as _af
+            self.push_status("[MUSIC] the composition drives this world - the seed's analogy:")
+            for line in _af.describe_analogy(self.id.get("seed", 0)):
+                self.push_status("  " + line)
+        except Exception:
+            pass
+
+    def _music_sync_amount(self):
+        try:
+            import game_playability as _gpl
+            return max(0.0, min(1.0, float(_gpl.SETTINGS.get("music_sync", 0.8))))
+        except Exception:
+            return 0.8
+
+    def _music_drive(self, sample, dt=1 / 30):
+        a = abs(float(sample or 0.0))
+        m = self._music_sync_amount()
+        # running level / attack of whatever is audible (MusicBed fallback; also blends with the track)
+        lvl = float(getattr(self, "_mus_level", 0.0) or 0.0)
+        lvl += (a - lvl) * min(1.0, dt * 8.0)
+        self._mus_level = lvl
+        f = None
+        track = getattr(self, "_music_track", None)
+        if track is not None:
+            try:
+                clk = getattr(self, "_music_clock", None)
+                t = float(clk()) if callable(clk) else float(getattr(self, "t", 0.0) or 0.0)
+                f = track.at(t)
+            except Exception:
+                f = None
+        if f is None:
+            prev = float(getattr(self, "_mus_prev", 0.0) or 0.0)
+            self._mus_prev = lvl
+            f = {"rms": lvl, "onset": max(0.0, min(1.0, (lvl - prev) * 12.0)), "beat_phase": (float(getattr(self, "t", 0.0)) * (float(BPM or 120.0) / 60.0)) % 1.0}
+        try:
+            import audio_features as _af
+            prof = getattr(self, "_analogy_profile", None)
+            if prof is None:
+                prof = self._analogy_profile = _af.analogy_profile(self.id.get("seed", 0))
+            an = _af.analogy(f, profile=prof)
+        except Exception:
+            an = {"energy": min(1.0, 4.0 * lvl), "pulse": 0.0, "phase": 0.0}
+        last_phase = float(getattr(self, "_mus_last_phase", 0.0) or 0.0)
+        self._mus_last_phase = float(an.get("phase", 0.0))
+        if self._mus_last_phase < last_phase - 0.5 or an.get("pulse", 0.0) > 0.45:      # a beat / attack
+            self._live_pulse = min(1.0, max(float(getattr(self, "_live_pulse", 0.0) or 0.0), m * float(an.get("pulse", 0.0)) + 0.25 * m))
+        self.music_analog = an
+        return (1.0 - m) * a + m * float(an.get("energy", 0.0))
+
     def tick(self, dt=1/30):
         # GAME_BUDGET_20261107: cap a single tick so a heavy frame cannot
         # freeze the host. The world still advances; it just yields.
@@ -5159,10 +5234,11 @@ class Game:
         # GAME_SYNC_20261107: decay the live pulse from keys/pattern.
         self._live_pulse = float(getattr(self, "_live_pulse", 0.0) or 0.0) * 0.85
         sample = self.music.step(dt)
+        _ar = self._music_drive(sample, dt)      # MUSIC_ANALOGY_R7: what the music is doing, as world energy
 
-        layers = self.scene.tick(dt, audio_rms=abs(sample))
+        layers = self.scene.tick(dt, audio_rms=_ar)
         try:
-            self.fn.tick(self.t, audio_rms=abs(sample))
+            self.fn.tick(self.t, audio_rms=_ar)
         except Exception:
             pass
         self._drain_net()
@@ -5170,7 +5246,7 @@ class Game:
         # music and scenograph keep breathing so the field stays audible/visible.
         if getattr(self, "menu_open", False):
             try:
-                self._refresh_activities(audio_rms=abs(sample))
+                self._refresh_activities(audio_rms=_ar)
             except Exception:
                 pass
             return sample
@@ -5193,7 +5269,7 @@ class Game:
                 self._r32_moved_this_tick = True
             except Exception:
                 self._r32_moved_this_tick = False
-        self._update_cinematic_camera(dt, abs(sample))
+        self._update_cinematic_camera(dt, _ar)
         self._fire_invites()
         self._tick_arcade(dt)
         # GAME_BUDGET_20261107: if this tick already used its budget, skip
@@ -5263,7 +5339,7 @@ class Game:
                         pass
             # Re-evaluate protected activities every tick: area + state + music.
             try:
-                self._refresh_activities(audio_rms=abs(sample))
+                self._refresh_activities(audio_rms=_ar)
             except Exception:
                 pass
             if self._teleport_cd > 0:
@@ -5279,8 +5355,8 @@ class Game:
                 "nexus": 1.20,     # rewards combo chains + portals
                 "pilgrimage": 0.95,# slower accrual, larger level jumps via waypoints
             }.get(_obj, 1.0)
-            if abs(sample) > 0.55:
-                self.score += MEUM * abs(sample) * self.difficulty_mult * (0.7 if _obj == "harvest" else 1.0)
+            if _ar > 0.55:
+                self.score += MEUM * _ar * self.difficulty_mult * (0.7 if _obj == "harvest" else 1.0)
             # Sigils — only when the world actually has them (nexus / explicit hook)
             if getattr(self.sigils, "count", 0) > 0:
                 for _k, r in self.sigils.collect(self.angle):
@@ -7416,6 +7492,29 @@ if HAS_UI:
             p.setSource(QUrl.fromLocalFile(path)); p.mediaStatusChanged.connect(lambda st, pp=p: self._loop_status(st, pp)); p.play()
             self.audio_players.append(ao); self.players.append(p)
 
+        def _bind_music_track(self, wav):
+            """MUSIC_ANALOGY_R7: measure the composition once (worker thread) and hand the game its feature
+            track plus the music clock (the player's position), so the world follows what is heard."""
+            player = self.players[-1] if self.players else None
+            game = self.game
+
+            def clock(p=player):
+                try:
+                    return max(0.0, float(p.position()) / 1000.0)
+                except Exception:
+                    return float(getattr(game, "t", 0.0) or 0.0)
+
+            def work():
+                try:
+                    import audio_features as _af
+                    tr = _af.load_track(wav, fps=30.0)
+                    if tr is not None and hasattr(game, "set_music_track"):
+                        game.set_music_track(tr, clock)
+                except Exception as exc:
+                    print(f"[game] music features unavailable: {exc}")
+            import threading
+            threading.Thread(target=work, name="game-music-features", daemon=True).start()
+
         def _loop_status(self, st, player):
             try:
                 if st == QMediaPlayer.MediaStatus.EndOfMedia:
@@ -7473,6 +7572,7 @@ if HAS_UI:
                         import mcc_media as _mm
                         _mm.audio_to_wav(comp, wav)
                     self._audio(wav, 1.0)
+                    self._bind_music_track(wav)
             except Exception as _mcc_exc:
                 print(f"[game] composition audio unavailable: {_mcc_exc}")
             car = dict(self.meta.get("carrier") or {})
@@ -7671,7 +7771,7 @@ if HAS_UI:
             p.fillRect(self.rect(), QColor(g.id.get("ui_palette", {}).get("bg", "#0b1020")))
             light, dark = QColor("#efe6d5"), QColor("#9b6b43")
             sel = QColor("#ffe066")
-            piece_font = QFont("DejaVu Sans", max(10, int(cell * 0.55)))
+            piece_font = QFont("Arial", max(10, int(cell * 0.55)))
             last = g.chess.moves[-1] if g.chess.moves else None
             for r in range(8):
                 for c in range(8):
@@ -7694,7 +7794,7 @@ if HAS_UI:
                         p.setFont(piece_font)
                         p.drawText(rect, Qt.AlignmentFlag.AlignCenter, g.chess.glyph(pc))
             p.setPen(QColor("#e8f0ff"))
-            p.setFont(QFont("Sans", 11))
+            p.setFont(QFont("Arial", 11))
             if g.chess.result:
                 status = f"GAME OVER {g.chess.result}  —  /chess to close"
             else:
@@ -7994,7 +8094,7 @@ if HAS_UI:
                                         ang = -math.pi / 2 + (b - (_n - 1) / 2.0) * 0.5
                                         p.drawLine(QPointF(fx + x0, fy + y0), QPointF(fx + x0 + _sz * math.cos(ang), fy + y0 + _sz * math.sin(ang)))
                             if _hot:
-                                p.setPen(QPen(QColor(tx), 1)); p.setFont(QFont("Sans", 8))
+                                p.setPen(QPen(QColor(tx), 1)); p.setFont(QFont("Arial", 8))
                                 p.drawText(int(fx + 16), int(fy - 14), f"{_f['sym']}{_f['id']} · E detach · X attach · Z transmute · carrying {len(_fg.held)}")
                 except Exception:
                     pass
@@ -8116,7 +8216,7 @@ if HAS_UI:
 
                 # Top bar — controls + position
                 p.setPen(QPen(QColor(tx), 1))
-                p.setFont(QFont("Sans", 9))
+                p.setFont(QFont("Arial", 9))
                 top1 = (f"WASD move · mouse aim · click activate · ESC menu · F1 help  |  "
                         f"θ={pos.get('angle_deg', 0)}°  zoom={pos.get('zoom', 1)}  "
                         f"pitch={pos.get('pitch', 0)}  @ {pos.get('region', '?')}")
@@ -8159,7 +8259,7 @@ if HAS_UI:
                     "activities", "xcorr", "quest", "mini", "chess", "loom", "software"
                 ) or (e.get("id") in ("slots", "snake", "mario", "race", "poker"))]
                 if relevant:
-                    p.setFont(QFont("Sans", 8))
+                    p.setFont(QFont("Arial", 8))
                     ry = 48
                     for e in relevant[:10]:
                         line = f"{e['label']}: {e['value']}"
@@ -8174,7 +8274,7 @@ if HAS_UI:
                 # In-frame chat: recent lines + the compose line (Enter).
                 try:
                     _recent = list(getattr(g, "chat_log", []) or [])[-5:]
-                    p.setFont(QFont("Sans", 9))
+                    p.setFont(QFont("Arial", 9))
                     _cy = h - 34 - 16 * len(_recent) - (20 if getattr(g, "chat_compose", None) is not None else 0)
                     for _ent in _recent:
                         _c = QColor(tx); _c.setAlpha(190); p.setPen(QPen(_c, 1))
@@ -8185,25 +8285,25 @@ if HAS_UI:
                 except Exception:
                     pass
                 # In-frame hint (all other UI lives in the F2 main menu).
-                p.setFont(QFont("Sans", 8)); p.setPen(QPen(QColor(tx), 1))
+                p.setFont(QFont("Arial", 8)); p.setPen(QPen(QColor(tx), 1))
                 p.drawText(10, h - 10, "F2 · Main menu   ·   " + ("Esc / right-click · release mouse" if self._locked else "Click · lock mouse (look)"))
                 # Start questionnaire (in-frame).
                 _q = getattr(g, "questionnaire", None)
                 if _q:
                     ov = QColor(bg); ov.setAlpha(225); p.fillRect(self.rect(), ov)
                     _field = _q["fields"][_q["step"]]
-                    p.setPen(QPen(QColor(ac), 2)); p.setFont(QFont("Sans", 15, QFont.Weight.Bold))
+                    p.setPen(QPen(QColor(ac), 2)); p.setFont(QFont("Arial", 15, QFont.Weight.Bold))
                     p.drawText(QRect(0, int(h * 0.30), w, 30), Qt.AlignmentFlag.AlignCenter, str(g.id.get("title", ""))[:60])
-                    p.setFont(QFont("Sans", 12)); p.setPen(QPen(QColor(tx), 1))
+                    p.setFont(QFont("Arial", 12)); p.setPen(QPen(QColor(tx), 1))
                     p.drawText(QRect(0, int(h * 0.42), w, 26), Qt.AlignmentFlag.AlignCenter, _field["prompt"])
-                    p.setFont(QFont("Sans", 20, QFont.Weight.Bold)); p.setPen(QPen(QColor(ac), 1))
+                    p.setFont(QFont("Arial", 20, QFont.Weight.Bold)); p.setPen(QPen(QColor(ac), 1))
                     p.drawText(QRect(0, int(h * 0.50), w, 36), Qt.AlignmentFlag.AlignCenter, (_q["buf"] or _field["default"]) + "▌")
-                    p.setFont(QFont("Sans", 9)); p.setPen(QPen(QColor(tx), 1))
+                    p.setFont(QFont("Arial", 9)); p.setPen(QPen(QColor(tx), 1))
                     p.drawText(QRect(0, int(h * 0.62), w, 22), Qt.AlignmentFlag.AlignCenter, _field["hint"] + "   ·   Enter = confirm · Esc = use default")
                     # Open-world controls (live table; remaps show immediately after confirming).
                     try:
                         _lines = g.control_lines()
-                        p.setFont(QFont("Monospace", 8)); p.setPen(QPen(QColor(ac), 1))
+                        p.setFont(QFont("Consolas", 8)); p.setPen(QPen(QColor(ac), 1))
                         _x = max(10, w - 300); _y = 24
                         p.drawText(_x, _y, "CONTROLS"); _y += 14
                         p.setPen(QPen(QColor(tx), 1))
@@ -8219,9 +8319,9 @@ if HAS_UI:
                     overlay.setAlpha(210)
                     p.fillRect(self.rect(), overlay)
                     p.setPen(QPen(QColor(ac), 2))
-                    p.setFont(QFont("Sans", 12, QFont.Weight.Bold))
+                    p.setFont(QFont("Arial", 12, QFont.Weight.Bold))
                     p.drawText(24, 36, "STATUS MENU  (ESC to close)")
-                    p.setFont(QFont("Sans", 9))
+                    p.setFont(QFont("Arial", 9))
                     p.setPen(QPen(QColor(tx), 1))
                     p.drawText(28, 54, self.fps_text())     # GAME_FPS_MENU_20261102: shown only here
                     y = 74
@@ -11038,6 +11138,11 @@ def stage_game_mcc_media(out_dir: str, composition_audio=None) -> Optional[str]:
         return None
     try:
         shutil.copy2(_mm.__file__, os.path.join(out_dir, "mcc_media.py"))
+    except Exception:
+        pass
+    try:                       # MUSIC_ANALOGY_R7: the game measures its music with the same features as video
+        import audio_features as _afm
+        shutil.copy2(_afm.__file__, os.path.join(out_dir, "audio_features.py"))
     except Exception:
         pass
     if composition_audio is None:

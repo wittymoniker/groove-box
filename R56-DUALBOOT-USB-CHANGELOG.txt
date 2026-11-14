@@ -1,0 +1,19 @@
+MATGROOVEBOX R56 DUALBOOT USB FOLLOW-THROUGH
+
+Added:
+- BUILD_ISO/build_dualboot_release.sh
+- BUILD_ISO/create_dualboot_usb.sh
+- BUILD_ISO/README-R56-DUALBOOT-SIX-PARTITION-USB.md
+- Updated R56 implementation status and 126-expansion catalog.
+
+Static checks:
+- Full `python3 scripts/check_iso_build.py`: PASS, including 380-file runtime sync, current release markers, Python syntax (687 files), shell syntax (123 files), and 13 source/boot contract commands.
+- bash -n on both new shell scripts: PASS
+- dual-mode menu and six-partition layout marker checks: PASS
+- tests/test_r56_expansion.py: 8/8 PASS
+
+Not completed in this environment:
+- Full kernel/initramfs build and ISO generation. The recovered archive has no BUILD_ISO/dist runtime-cache initramfs and no built ISO artifacts.
+- USB writer execution, physical USB write, QEMU/OVMF, firmware Secure Boot enrollment, or physical installation.
+
+No boot-ready or physical-test claim is made.

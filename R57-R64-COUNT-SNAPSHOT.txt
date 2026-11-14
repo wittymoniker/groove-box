@@ -1,0 +1,6 @@
+R56 register: 126 tracked items = 46 implemented-with-evidence [x] + 29 partial [~] + 51 not-started [ ].
+R57-R64 roadmap: 64 planned items = 8 revisions x 8 items.
+R57-R64 current roadmap status: 21 source foundations [~] + 43 not-yet-implemented [ ].
+Combined register-line count if treated as disjoint: 190. This is NOT a unique-feature total because the historic 472-item register may overlap; reconcile before publishing a grand total.
+The 64-item R57-R64 scope is fixed for planning, but not a promise that no defects or acceptance tasks will be added. Any scope change must be numbered, justified, and deduplicated.
+Testing was intentionally deferred until R64 finalization per user instruction.

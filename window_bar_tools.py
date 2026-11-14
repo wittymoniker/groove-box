@@ -2,7 +2,7 @@
 
 ExportsButton   "⬇ Exports" dropdown: live progress of every running / queued export job, recent finished
                 exports with "Open folder", the Export Jobs window, the exports folder, leftover parts.
-ActionsButton   "⚡ Actions": lock (PIN), Live Player, Export Jobs, Render Queue, Save.
+ActionsButton   "⚡ Actions": grouped launchers — windows, make, export & files, system (WINDOW_BAR_LAUNCHERS_R6).
 UiWatchdog      a background thread watches a 100 ms UI heartbeat. While the UI thread is stalled nothing
                 in Qt can repaint (every window shares that thread), so the watchdog records where the UI
                 thread was stuck and the bar reports it the moment painting resumes.
@@ -108,6 +108,22 @@ class ExportsButton(QToolButton):
             m.addAction("🧹 Leftover parts…", _parts)
 
 
+ACTION_SECTIONS = (
+    ("Windows", (("🎛 Performance", "_open_performance"), ("🎬 Live Player", "_open_live_player_bar"),
+                 ("📁 File Manager", "_open_file_manager_from_actions"), ("▤ Window Manager", "_open_window_manager_from_actions"),
+                 ("🧩 Window panes…", "_show_ui_panes"))),
+    ("Make", (("✍ Script Studio", "_open_script_studio"), ("🧬 Spectral & Pixel Seeds…", "open_seed_canonical_window"), ("🧪 Dev Overlay / scratchpad", "_open_dev_overlay_from_actions"),
+              ("⌨ Key Chart", "_show_key_chart_dialog"), ("🎚 Canonical Sidechain…", "_open_canonical_sidechain_dialog"),
+              ("📺 HDMI preview", "_open_hdmi_preview"))),
+    ("Export & files", (("📋 Export Jobs", "show_export_jobs"), ("🗂 Render Queue", "render_queue_dialog"),
+                        ("💾 Save project…", "save_project_dialog"), ("💽 Copy to USB / SD…", "_show_drive_copy_dialog"),
+                        ("🗃 Artifacts in RAM…", "_open_artifacts_browser"))),
+    ("System", (("🖥 System Settings…", "_show_system_settings"), ("⚙ Compatibility…", "_show_compat_dialog"),
+                ("🩺 System / Performance Health…", "_open_system_health_panel"), ("🔒 Lock now (PIN)", "lock_with_pin"),
+                ("❓ Readme / Help", "open_help_readme"))),
+)
+
+
 class ActionsButton(QToolButton):
     def __init__(self, main_ref, parent=None):
         super().__init__(parent)
@@ -115,13 +131,12 @@ class ActionsButton(QToolButton):
         self.setText("⚡ Actions")
         self.setToolTip("Quick actions")
         self.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        # WINDOW_BAR_LAUNCHERS_R6: the important windows, grouped, one click from any window.
         m = QMenu(self)
-        for label, method in (("🔒 Lock now (PIN)", "lock_with_pin"), ("🎬 Live Player", "_open_live_player_bar"),
-                              ("📁 File Manager", "_open_file_manager_from_actions"),
-                              ("▤ Window Manager", "_open_window_manager_from_actions"),
-                              ("📋 Export Jobs", "show_export_jobs"), ("🗂 Render Queue", "render_queue_dialog"),
-                              ("💾 Save project…", "save_project_dialog"), ("🧬 Spectral & Pixel Seeds…", "open_seed_canonical_window")):
-            m.addAction(label, lambda mm=method: self._call(mm))
+        for section, items in ACTION_SECTIONS:
+            m.addSection(section)
+            for label, method in items:
+                m.addAction(label, lambda mm=method: self._call(mm))
         self.setMenu(m)
 
     def _call(self, method):
@@ -135,22 +150,36 @@ class ActionsButton(QToolButton):
             except Exception:
                 pass
             return
+        if method == "_open_script_studio":                  # SCRIPT_STUDIO_R7
+            try:
+                import script_studio
+                script_studio.open_window(main)
+            except Exception as exc:
+                print(f"[Actions] Script Studio: {exc}")
+            return
+        if method == "_open_dev_overlay_from_actions":
+            try:
+                main._open_performance_tab("🧪 Dev Overlay")
+            except Exception as exc:
+                print(f"[Actions] dev overlay: {exc}")
+            return
         if method in ("_open_file_manager_from_actions", "_open_window_manager_from_actions"):
             try:
-                label = "_open_file_manager" if method == "_open_file_manager_from_actions" else "▤ Open Windows"
                 if method == "_open_file_manager_from_actions":
-                    main._perf_call(label)
+                    main._perf_window_call("_open_file_manager")     # its own window; Performance stays hidden
                 else:
-                    main._open_performance_tab(label)
+                    main._open_performance_tab("▤ Open Windows")
             except Exception as exc:
                 print(f"[Actions] {method}: {exc}")
             return
         fn = getattr(main, method, None)
-        if callable(fn):
-            try:
-                fn()
-            except TypeError:
-                pass
+        if not callable(fn):
+            print(f"[Actions] {method} is not available in this build")
+            return
+        try:
+            fn()
+        except Exception as exc:                      # never let a launcher take the window bar down
+            print(f"[Actions] {method}: {exc}")
 
 
 class UiWatchdog:

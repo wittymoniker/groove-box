@@ -1,0 +1,26 @@
+R56 DUALBOOT / SIX-PARTITION SOURCE KIT VALIDATION
+Date: 2026-11-14
+
+PASS: bash -n BUILD_ISO/build_dualboot_release.sh
+PASS: bash -n BUILD_ISO/create_dualboot_usb.sh
+PASS: static Limine dual-mode menu contract (secureboot=on and secureboot=off)
+PASS: static six-partition layout contract (1 shared ESP + 2 ISO archive + 3 independent data partitions)
+PASS: exact EFI-loader extraction/compare logic present in USB writer
+PASS: removable whole-disk, root-disk and mounted-target refusal guards present
+PASS: two explicit destructive confirmations present
+PASS: `python3 -m unittest discover -s tests -p 'test_r56_expansion.py' -q` (8 tests)
+PASS: `python3 scripts/check_iso_build.py`
+  - 380 runtime module/package files byte-identical between source and active ISO overlay
+  - release markers current
+  - Python syntax: 687 files
+  - shell syntax: 123 files
+  - Dell Latitude 3510 and Acer Nitro 5 staging contracts
+  - Secure Boot, hardware profile, EFI, installer, VFAT copyover, I/O safety and R56 verifiers
+  - 13 release source/boot contract commands
+
+NOT RUN / NOT CLAIMED:
+- Full R56 ISO build: recovered archive did not contain BUILD_ISO/dist runtime-cache initramfs or built ISO outputs.
+- USB writer: not executed; no physical disk was modified.
+- QEMU/OVMF boot, physical UEFI boot, Secure Boot key enrollment, SSD install, or physical hardware tests.
+
+The source preflight is not a boot test. Run BUILD_ISO/build_dualboot_release.sh on the complete build host to generate the paired ISOs and named dual-mode ISO. Then use BUILD_ISO/create_dualboot_usb.sh with explicit removable USB target confirmation.

@@ -1,19 +1,244 @@
-Mathematician's Groovebox: Safe V3 feature merge
-Date: 2026-11-05
+MATGROOVEBOX R7v — MATGROOVEBOX KRAKEN, BOUNDED TASK SUPERVISION, GUI THREAD SAFETY
+Date: 2026-11-13
+Series: v35.22zz
+Fingerprint: 03df1e40ed3ac7c30d715106c482d1925b3fe0eef2caa3d2f34bcffe761e452f
+# STAMP_RELEASE_R7 end
 
-GUI base: the working MATH_GROOVEBOX-v3 archive, not either alternate GUI.
-Feature references: R41.2i Claude full merge and V3 rev-m/rev-p.
+MATGROOVEBOX R31 — EXPORT QUEUE, PIN LOCK, LIVE TOOLS, CLIP STUDIO PERFORMANCE
+Date: 2026-11-08
+Base: R30.3
 
-Includes layout/scroll fixes, native responsive panel grids, Workspace navigation,
-Live Jam and Random Object entry points, jam audio/video hooks, asynchronous
-coalesced sCode planning, private-buffer fill optimization, corrected shared-lane
-cancellation, pooled-viewer lifetime guards, and a shared ISO/BUILD_KIT runtime
-module inventory.
+R31.7 — AUTOMATION MORPH SPAN 0–100%
+- Automation points previously coupled their morph result 50% with the composition step and 50% with the
+  instrument's panel patch, so Morph 100% only reached halfway to state B. New project setting MORPH SPAN %
+  (50–100, automation bar): 100% = full A→B reach (new default). Saved per project, part of the render key, used
+  by exports. Projects saved before R31.7 load at 50% (unchanged sound); raise it to get the full span.
 
-Read RELEASE-NOTES-SAFE-V3-MERGE.md before building.
-ISO source/boot-contract preflight passed at a tested checkpoint. The full ISO
-attempt could not finish in this sandbox because of container networking/service
-restrictions. No boot/install/hardware test is claimed.
-BUILD_KIT produced a Linux executable at a tested checkpoint. That generated
-binary is not included in this source archive; rebuild to include the final edits.
-Further final test passes were skipped at the user's request.
+R31.6 — UNIVERSAL SEEDS, SHARED CANONICAL DECISIONS, NO HARD OUTPUT LIMITS
+- spectral_canonical.py: seed ↔ audio canonical. Literal seeds "MGLS1:" hold the exact STFT (perfect-reconstruction
+  sqrt-Hann, 50% overlap): Analyse any audio file → seed → identical audio (max error ~6e-8, float32 rounding).
+  Generative seeds of ANY length (SHAKE-256 stream; no 64-bit collapse): every byte decides spectra, partials,
+  phase, noise and dynamics. Mono, stereo or N channels.
+- video_canonical.py: seed ↔ video canonical. Literal seeds "MGLV1:" hold every frame's 2-D DCT: exact uint8 frames
+  back. Generative seeds of any length decide palette, low-frequency structure, motion and texture.
+- Export ▸ "🧬 Spectral & Pixel Seeds…" (also ⚡ Actions): Analyse a file → seed, Load/Save .gbseed, Generate,
+  Verify round trip, export 32-bit float WAV / FFV1 MKV / MP4, "Use as carrier".
+- canonical_decision.py: one shared decision layer. Canonical active → time-invariant canonical value × activation
+  level (module default disregarded); otherwise default × Morph Bridge mix, with an optional time-variant fallback.
+  The multidim stochastic responses now go through it (same values as R31.5). app.canonical_decide(...) and
+  app.canonical_decision_context() expose it to every module, thread and worker process.
+- Audio export: "32-bit float" bit depth (IEEE float WAV, no quantization) and "Bypass master hardclip" (master volume
+  only; with float the overshoots are kept). Render rates up to 192 kHz were already available. Multichannel masters
+  are written as-is; true stereo/N-channel generation is available through the spectral canonical.
+- Structural caps raised: playlist rows, sequence/pattern lengths, automation points and preview rows 1024 → 65 536;
+  synth count / sequence ids 128 → 512 (GROOVEBOX_MAX_STEPS / GROOVEBOX_MAX_VOICES override). Memory is the limit.
+
+EXPORTS (main UI keeps running)
+- New export_scheduler.py. Every audio export button press freezes the project document and the options at that
+  moment and queues a job. Jobs render, DJ-bake, master and encode in separate worker processes (export_worker.py
+  kind "audio_file"); the window never waits. Press export again on another project state to queue more.
+- Export ▸ "Export Jobs" window: progress, state, cancel, clear, open folder, "run at once" (1-6, default from cores/RAM).
+  Worker processes run at lower CPU priority with a per-job share of the math threads.
+- FIX: _render_mixdown_in_worker deleted its job folder before the worker read it and returned an empty buffer.
+- FIX: audio export applied Master Volume x drive + hardclip twice (once in-window, again in the writer) and the DJ bake
+  twice. Exports now apply each exactly once, matching playback.
+
+COMPATIBILITY SETTINGS
+- Optional PIN lock, 4-8 digits (salted PBKDF2; the PIN is never stored). Lock at startup, lock when idle N minutes,
+  Lock now. Audio/exports keep running while locked; wrong-PIN back-off uses timers, never sleeps.
+- Lock screen "Forgot PIN — reset Groovebox": a 1 h 15 min countdown of continuous uptime. Sleep, suspend or closing
+  Groovebox restarts it; entering the PIN cancels it. At zero it erases only the Groovebox data folder and its settings
+  file (projects, recordings, exports, samples, settings, PIN). Operating-system files are not touched.
+- Optional session-name prompt at every startup (window title + automatic export file names).
+- Startup chime: every key-chart note over 5 s at a random Global Convolve % (restored afterwards; toggle in settings).
+- FIX: "Smart Process Mode" off was never saved (missing from the settings loader).
+
+MAIN WINDOW
+- PERFORM bar "LIVE ▸" tools: sequence stepper (⏮ ⏭, auto-play), 🔁 loop This Sequence, 🎼 cue chain of sequence
+  entries, 👆 tap tempo, ⏺ live take (key-chart notes write steps at the running clock, undoable), 📸 state slots A/B/C
+  (store, recall, queue export of a stored state).
+- Canonical Morph Bridge: "Multidim Max Net Modulation" 0-1 ceiling on summed cross-mod per multidim target.
+  New projects default to 0.5; projects saved before R31 load at 1.0 (their previous fixed ceiling).
+- ParametricMathBackground on every window and dialog (app-wide filter; Performance's static lattice replaced).
+- In-app Help: new "R31 FEATURES" chapter (top of Help) explains every R31 feature, control, shortcut and limit.
+
+MASTER MULTIDIM SYNTH 3D SCENE
+- 1.5x presence: 1.5x lattice points (detail), brighter and heavier mesh edges, larger CA dots, stronger resonators.
+- New layers from the main window: VECTOR (XYZ tripod + drive-scaled master vector with plane shadows),
+  PANEL (equatorial ring shaped by one cycle of the selected instrument's panel voice, rendered off the UI
+  thread every 1.5 s), FRACTAL / EQR / PKP orbits (fractal wobble depth, EQR tilt, PKP pulsing beads) + legend.
+- Floating tags with leader lines and live sparklines: VECTOR, PANEL, FRACTAL, EQR, PKP, BALL, SPECTRUM, CELLULAR,
+  RESONATORS, OPTICS; placed to avoid overlapping.
+- RENDER THREAD: the scene is drawn on its own low-priority thread into an image (max 1600 px, ~54 ms/frame,
+  capped at 30 fps); the window only blits it. A full-size frame used to cost ~0.8 s on the UI thread. Multidim
+  synth parameter changes request a new frame immediately. (Not on the audio thread: drawing there risks dropouts.)
+
+EXPORT CONTINUITY
+- Multidim Max Net Modulation is saved in the project, sent to worker exports, part of the render-cache key (a
+  change can never reuse a stale render) and on the visual / game command surface. Session name prefixes
+  automatic export names and Live Player take names.
+
+MEDIA-PLAYER VISUALIZER
+- 16 styles (bars / mirror / line / dots, palettes, band counts, decay); right-click to choose; remembered.
+- Overview waveform cached as a picture (was redrawn one line per pixel column every frame); spectrum band bins
+  computed once per sample rate instead of 64 boolean masks per frame.
+
+MAIN WINDOW (more)
+- Vector / Wavetable / Ball / Cellular geometric synth panels are 1.3× taller beside the multidim panel.
+- ParametricMathBackground follows window size even when a resize event is missed (Live Player fix).
+
+CLIP STUDIO (Multitrack)
+- Timeline tab: painted track strip (click to select), inspector with sliders/spinboxes (start/in/out, layer, gain,
+  pan, width, opacity, blend, mute), nudge, layer up/down, snap after previous clip, Delete key.
+- New Performance tab: clip-launcher pads (keys 1-0, Q-L), in-window preview, choke, record pad hits into timeline
+  rows with optional quantize.
+
+MORE EXPORTS IN WORKER PROCESSES
+- Video exports (all containers, video+audio and video-only) queue as jobs and render/encode/mux/stitch/verify in
+  a worker process on the project frozen at the press. Stems: one worker job per stem. Bake & Compare: A and B renders
+  run in a worker on a frozen copy (the window is never mutated mid-compare); the report opens when done.
+- Remaining _run_off_gui waits now execute only inside worker processes or worker threads.
+- WARM WORKERS (sCode process pool): export workers stay alive and serve job after job (export_worker.py
+  --serve), so only the first job pays interpreter + engine start-up. Each worker serves up to 8 jobs then is
+  replaced (bounds memory), an idle worker exits after 2 minutes, a cancelled job kills only its own worker, and
+  per-job state (stem filter, raw flag, preset) is reset between jobs; stem / Bake & Compare caches are cleared.
+- Clip Studio Render / Mix: frames, FFmpeg encode and verification on a worker thread with completion callback
+  (no processEvents pumping, no GUI sleeps). Bind All Layers continues after the render finishes.
+- Determinism: last built-in hash() calls replaced (process-stable), so worker exports match the window.
+
+R31.5 — MULTIDIM STOCHASTIC RESPONSES
+- Canonical path (any canonical active, level > 0): stochastic probability = the canonical decision module's
+  seed/slot value × the activation level; each block's decision is a pure hash of (seed, slot, ABSOLUTE timeline
+  block), so responses are time-invariant (identical however the render is chunked). The default is disregarded.
+- Fallback (no canonical probability / activation): internal default probability 0.19758 × the new Morph Bridge
+  slider "Multidim Stochastic Default" (0–1, label shows the resulting p); the probability drifts along the
+  timeline (time-variant), still deterministic so play and export match. Saved with the project; in the render key.
+- The existing smooth stochastic / fractal / lock field now indexes absolute timeline blocks instead of restarting
+  at every row (changes exported sound slightly for projects using Randomizer / Seeded — intentionally).
+- Verified: chunked == whole decisions; p scales with level (1.0 → 0.60, 0.5 → 0.30, 0.1 → 0.06); fallback p =
+  0.19758 × mix; observed fire rate matches p (0.363 at p = 0.36); voice renders respond as specified.
+
+R31.4
+- SHARED MASTER: a split video export renders the song's audio ONCE ("audio master" job); every part and the
+  final stitch job load it (np.load, memory-mapped) instead of each re-rendering the whole song — on real
+  48-voice projects that was ~20 minutes of duplicated work per worker before any frame was drawn.
+- WINDOW BAR: "⬇ Exports" dropdown with live progress of every job ("2 running · 45%"), finished exports with
+  Open folder / Open file, the Export Jobs window, the audio / video / all exports folders, leftover parts.
+  "⚡ Actions": Lock now, Live Player, Export Jobs, Render Queue, Save project.
+- UI WATCHDOG: a background thread watches a 100 ms UI heartbeat; when the UI thread stalls (> 0.8 s) it
+  records where, and the bar shows "⚠ UI was busy N s · in <function>" when painting resumes (also logged).
+  While the UI thread is blocked no window can repaint — the report is how a freeze becomes diagnosable.
+- Canonicals + seeds (checked): toggles and canonical material stay active through seed changes; a new seed
+  rebuilds the composition in the background, sometimes 3–8 s after the edit (debounced).
+
+LIVE PLAYER RIG (R31.3)
+- FIX: rig resolutions above 1080p shrank toward ~300 px and were stretched (adaptive floor 0.08); the render
+  scale now never drops below half the chosen size (1080p and below always render at full size).
+- FIX: recorded takes with the video rig now place each rig frame at the moment it depicts (stamped with the
+  engine's audio sample clock), holding the previous frame in between, instead of whatever the view showed when
+  the recorder ticked — the file's picture lines up with its sound, across loops and mid-song starts.
+
+RENDER SPEED (R31.3) — all verified identical against the previous build
+- Native rect blend for VideoSynthEngine._dot; canvas pointer cached per frame; exact JSON keys for EQ caches.
+  Video frame: 1444 → 574 ms (2.5× faster), bit-identical.
+- Native element-wise book series (series_cyclic_isn over arrays) in Rust / C++; releases the GIL, so the
+  Fractallizer's ten partials run truly in parallel on the shared pool.
+- The canonical composition document is no longer a full project snapshot rebuilt during rendering.
+- Measured on a project loaded from disk (48 voices, per-sequence panels): one row 58 → 41 s, sample-identical.
+  Note: a full 48-voice project still renders ~10× slower than real time in one process.
+
+ENGINE SPEED (R31.2) — all bit-identical by construction
+- Camera transform: the six series sin/cos of the (per-frame constant) camera angles are cached per angle triple;
+  it ran ~7,000× per frame and was the main source of ~43,000 series evaluations per frame.
+- series_book_isx / isy: scalar fast path (same float operations, no NumPy wrap/unwrap per call).
+- _series_cyclic_isn_scalar: native kernel in the Rust and C++ accelerators (Python float % semantics, same term
+  order, no FMA); Python loop kept as fallback (GROOVEBOX_NATIVE_SERIES=0 forces it).
+- _map_xy: scalar clamp without np.clip per call (same values; NaN passes through as before).
+- EQ response curves memoised on their exact inputs (EQ is constant across a render's frames).
+- MEASURED: video frame 1444 → 655 ms (2.2× faster), 8 frames bit-identical to the previous build;
+  audio render 1.4× → 1.6× real time, sample-identical.
+- FIX: helper processes (export / rig workers) now exit when the Groovebox that started them is gone
+  (parent_watch.py: Linux PDEATHSIG + parent probe). A crash or force-quit used to leave orphan renders
+  running at full CPU for hours — a likely contributor to overnight low-memory warnings.
+- Export Jobs ▸ "Leftover parts…": finds orphaned .partNN segments no job is using; delete or keep for resume.
+
+FIXES FROM OVERNIGHT USE (R31.1)
+- Export Jobs: video / stem / Bake & Compare jobs now report progress (they showed "project loaded" forever),
+  with an ETA. Default parallel workers = cores − 1 (RAM permitting, max 6); it was effectively 1 on 4 cores.
+  Cancelling any job of a split video export cancels the whole group; finished parts are kept for resume.
+- ONE low-memory notice: repeated warnings update a single reusable window (text, time, count) instead of opening
+  a new popup each time; it never steals focus.
+- Startup chime waits for hardware discovery to finish (+1.5 s settle, skipped after 30 s) — opening the audio
+  device during enumeration broke audio in some EXE / ISO builds.
+- Background lag: the R31 budget change let the main window paint 24 shapes again (reverted to the R30 rule);
+  secondary windows use a lite background (1/6 rate, ≤4 shapes, no equation cells, paused when inactive); small
+  prompts (message boxes, input / progress dialogs, < 360×240) get no animated background.
+- ONE MEDIA PLAYER: MCC video plays inside the media player window's deck (same transport / playlist); every
+  other MCC open (Performance file list, play-together, in-app fallback) routes into that one player window.
+
+FASTER EXPORTS + 4K (R31 performance pass)
+- PARALLEL VIDEO PARTS: a video export with 2+ parts is split across the warm workers: each worker renders a set
+  of .partNN segments (video only, always resuming so siblings never delete each other's parts), then a final job
+  writes the audio and stitches. Same semantics as the existing resume (a part starts with a fresh engine), so
+  wall time ≈ total / workers. "Start fresh" clears old parts once, before splitting. Export Jobs shows each part set.
+- NATIVE LINE RASTERISER: VideoSynthEngine._line runs in the Rust accelerator (C++ fallback), an exact twin of the
+  NumPy path; frames are bit-identical (verified on 6 frames). ~24% less time per frame on its own.
+  Build flags gain -ffp-contract=off so native float32 blends can never round differently.
+- 4K PROCESS RIG: FULL CPU ▸ "4K stream" now renders live video in separate rig_worker processes (one interpreter
+  / GIL each, cores − 2), frame-parallel with the newest frame winning, render size adaptive, output 3840×2160.
+  rig_worker is a registered helper module, so it also runs from the frozen EXE. Workers keep stdout for frames
+  only (app prints go to stderr). Measured: the engine is geometry-bound (~1.2 s/frame at any size), so this
+  4-core machine delivers ~2 fps from 3 processes; real-time 4K needs the engine's per-frame Python geometry
+  vectorised (next step).
+- Audio exports: already faster than real time on a quiet machine after the resonator fix; a single track is
+  not split across processes because the per-voice phase carry runs row to row (see notes).
+
+PERFORMANCE / BUG FIXES (R31 sweep)
+- FIX (big): multidim_synth never imported importlib, so its resonator bank always fell back to a pure-Python
+  per-sample loop (~300 ms per 3 s note instead of ~5 ms). Key-chart notes 62 → 23.5 ms; exports with multidim
+  voices speed up the same way. Output is the same filter (float rounding only).
+- FIX: worker → UI callbacks (post_to_ui) were silently dropped when the main window was built without a
+  launcher (export worker, tests, embedding). The window now installs the dispatcher itself. Visible symptom:
+  "Save to:" drive lists stayed empty in those cases.
+- Video export after an audio export of the same state reuses the warm worker's cached render (worker affinity by
+  project hash; the cached buffer is copied before processing so it is never altered).
+- Clip Studio drawn sound: synthesis + WAV write moved to the render thread (widget reads stay on the GUI thread).
+- Video export: "Resume unfinished .part segments" option (default on) also honoured by worker exports.
+- Math background: only visible windows share the shape budget, with a floor, so secondary windows get a real field.
+- Startup chime is skipped in headless / offscreen runs (workers, tests, CI).
+- Export workers no longer start LAN "Nearby Groovebox" discovery (it probed ~100 hosts per worker).
+- Silent-export warning restored in the worker path (peak exactly 0 → explicit warning in Export Jobs / status).
+- Live take: a dropped video frame is now held right after the frame it follows (was one frame early).
+
+LIVE PLAYER
+- 4K: rig size "3840×2160 · 4K UHD (adaptive)" and FULL CPU LIVE PLAY mode "4K stream (adaptive, all cores)".
+  The video rig runs frame-parallel workers (one engine each, cores − 2, newest frame wins) and renders at an
+  adaptive internal resolution that holds ~30 fps, output at 3840×2160. The rig label shows fps, target size,
+  current render size and worker count. Native-4K-per-frame depends on the CPU; the scale rises as it allows.
+  Measured here: the video engine needs ~1.4 s per 480×270 frame (Python line/shape rasterising, ~7,500 line
+  draws per frame), so this machine reaches ~2-3 fps; true 4K at 30 fps needs the engine's drawing batched or
+  moved to QPainter/GPU (see notes).
+- Broadcast source: "Live view" or "Export look" — the latter is the scenograph drawn by the same engine as video
+  exports (render_frame(..., export=True)), fed by the player's live output, rendered on its own thread.
+- A/V SYNC FIX: a take's audio and video can no longer drift apart or be cut off. Dropped audio blocks are written
+  as same-length silence in place; dropped video frames are written as repeats of the previous frame in place; before
+  muxing, the shorter stream is padded (held last frame / trailing silence) so -shortest never trims the audio.
+  Verified: forced audio + video drops and a missing final second still give 3.000 s video and 3.000 s audio.
+- 📡 Broadcast to HDMI: one click puts a clean full-screen live view (no cursor / chrome) on the HDMI or external
+  display; waits for the cable and re-attaches on hot-plug; unplugging never moves it onto the control screen.
+- ⛶ Fullscreen (F11, Esc leaves); visual-only mode (F10 or double-click the view) hides all control rows.
+- Dark deck styling like Performance / Live Jam: title bar, each control row in an accented panel.
+- 57 visual presets (8 motion styles × 6 palettes + originals + broadcast looks), next ▶ (Ctrl+→/←), 🎲 random,
+  save your own (live-visual-presets.json).
+- Stop / Close no longer freeze: rig, audio engine, worker and camera close on a background thread; a new start waits
+  (timer, not a block) until the previous engine released the audio device.
+- REC badge shows elapsed time, frames written and skipped frames.
+
+BUILD
+- 4 new runtime modules in the shared inventory; ISO overlay synced (148 modules byte-for-byte); runtime payload manifest
+  regenerated (BUILD_ISO/runtime-payload-manifest-R31-20261108.json); bytecode caches cleared.
+
+TESTS (R31 run, offscreen Qt)
+- 157 of 195 test files pass (R30.3 baseline: 157 of 194). Regressions found by the run were fixed.
+- Remaining failures are mostly source-text contracts that look for code moved out of the window (export dialog →
+  worker) or old wording; behaviour was checked for render rate, bit depth and zero master volume.

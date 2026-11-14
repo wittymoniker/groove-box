@@ -1,6 +1,4 @@
 # Mathematician's Groovebox
-<img width="1536" height="1024" alt="groovebox_ui_concept" src="https://github.com/user-attachments/assets/95f5f65e-a10d-484d-bc49-3d9f8e23fae2" />
-
 
 
 A deterministic generative music, visual, and game engine driven by mathematical seeds.
@@ -603,7 +601,7 @@ Use this checklist for Dell Latitude, Acer Nitro, and other laptops; avoid hard-
 
 Before publishing an ISO, run the project's documented verifier(s) from `BUILD_ISO/`, confirm the root source and `app-overlay-v35.22zz/` copies of any overlay-managed runtime files match, then check the generated ISO's checksum. Test the ISO against the actual target boot mode (UEFI/Legacy as supported), graphics mode, network, storage, and media devices. Do not copy host-specific device names or runtime logs into the release.
 
-The current sOS builder is explicitly **x86_64**: it verifies the Linux 64-bit boot-protocol header, the PE32+ `EFI/BOOT/BOOTX64.EFI` inside Limine's FAT image, the UEFI El Torito entry, and the hybrid MBR type-0xEF partition. Secure Boot must be disabled unless the EFI loader is separately signed and enrolled. See `BUILD_ISO/README.txt` for the exact checks and remaining hardware-validation gates.
+The current sOS builder is explicitly **x86_64**: it verifies the Linux 64-bit boot-protocol header, the PE32+ `EFI/BOOT/BOOTX64.EFI` inside Limine's FAT image, the UEFI El Torito entry, and the hybrid MBR type-0xEF partition. The default ISO is unsigned and requires Secure Boot off. The optional Secure Boot build directly signs Limine and embeds config/kernel/initramfs integrity hashes; it requires enrolling the project's public certificate in firmware Setup Mode/custom key management (no shim/GRUB chain). Firmware that blocks custom key enrollment needs Secure Boot disabled or a separately trusted signing path. See `BUILD_ISO/README.txt` for build checks and hardware-validation gates.
 
 ### Reporting a cross-platform defect
 
@@ -646,7 +644,73 @@ python3 scripts/diagnose_platform.py --json groovebox-platform-report.json
 
 Check the `audio.enumeration_error`, `audio.host_apis`, `commands.pipewire_service`, `commands.wireplumber_service`, and `commands.pulse_server` fields. The runtime log is `~/.local/state/groovebox/media-bootstrap.log`. A device name in a diagnostic report means the OS/backend enumerated it, not that a stream has successfully opened. If both Qt and PortAudio report zero devices, confirm the laptop's kernel audio driver and user-session audio service before changing Groovebox's selected output.
 
+## R7u notes — looper, music analogies, release stamp, mathematics
 
+```text
+R7u NOTES — LOOPER, MUSIC ANALOGIES, RELEASE STAMP, MATHEMATICS
+  Enter looper: hold Enter to record a loop of the notes you play; release to
+  commit it. Press and release Enter without playing any note to clear the
+  looper segmentator ("Loop cleared"). Auto-repeat is ignored.
+  Music analogies: video and games read the same seven channels of the track
+  (energy, pulse, phase, altitude, order, weight, sparkle). The seed sets each
+  channel's gain (0.5–1), which element the key's fifth maps to, and the hue
+  origin (hue = origin + 30° × position on the circle of fifths), so one song
+  looks different under different seeds and the same seed always looks the
+  same. In a game, /music shows the table; Game settings ▸ "Music drives world"
+  (0–1, default 0.8) sets how much the track drives energy, pulses and phase.
+  Version: release_info.py is the single version source. scripts/stamp_release.py
+  writes RELEASE-STAMP.json, CURRENT-RELEASE.txt and BUILD_ISO/RELEASE-STAMP.env
+  and runs before every archive and ISO sync; "+local" in About means the code
+  differs from the stamp.
+  Mathematics (math_invariants.py, checked at startup; python3 math_invariants.py):
+    Meum M = 1.19758…, golden ratio, Parseval, energy partition, circle of fifths,
+    EWMA, Little's law (lane width = arrival rate × cost), Party opacity = i²,
+    convex morph (weighted means stay inside the sources), loop quantize.
+    M is the spatial propagation constant of the voice: the master synth always
+    sits at exactly M × the panel+geometric peak P (a constant linear relation),
+    so the largest excursion is known in closed form:
+        |voice| ≤ P · (1 + mix · (M − 1))      (max sway, guarded in triad)
+    lead-input gain stays in [0, 1 + M], and the Meum flux index {k/M} averages
+    to the set depth (Weyl equidistribution; slow but certain).
+    The voice is linear in scale: triad(c·main, c·geo) = c·triad(main, geo) for
+    c > 0, so the master's level is known before it renders (master_peak) and a
+    cached unit shape gives the exact closed form while the render resolves
+    (virtual_voice). How long to keep modulating that virtual state is
+    probabilistic: thread_budget.resolve_horizon uses Cantelli's inequality
+    P(T ≥ μ + kσ) ≤ 1/(1 + k²) on each job's measured run times (finishes
+    within the horizon with probability ≥ q for any distribution), and
+    virtual_blocks = ceil(horizon / block).
+  Video CPU: the projection scale 2·tan(fov/2) is now computed once per field
+  of view instead of once per vertex (identical pixels).
+```
 
-<img width="256" height="256" alt="logo" src="https://github.com/user-attachments/assets/072399b1-a612-4247-90f4-55b927beb14a" />
+### R55.1 runtime toolkit
 
+R55.1 adds optional, side-effect-free runtime primitives in `groovebox_runtime`: injected MIDI/Bluetooth/CAT adapter contracts, transmit-gated amateur-radio PTT, circuit breaking, bounded health events, deterministic collaboration operation merging, and advisory device profiles. See `docs/R55.1-RUNTIME-TOOLKIT.md`. These are integration foundations; they do not claim complete UI workflows or automatic hardware support.
+
+R64 IMPORT FABRIC — CORE, USER APPS AND DEVELOPER APPS
+----------------------------------------------------
+Groovebox maintains one versioned import map for the installed core and the
+configured user/developer application roots. The map is metadata-only: it
+records module paths and import relationships without importing every module.
+It is cached per Python ABI and invalidated when mapped Python sources change.
+
+Startup initializes the map after the thread-budget environment is applied and
+before the main UI/application tree is imported. This gives sCode and the app
+launcher a common module inventory without eagerly loading GUI, hardware, media,
+network, or optional math integrations. Optional integrations load only when
+the feature requests them. Missing optional packages therefore remain feature
+errors, not global startup failures.
+
+User apps may be registered through GROOVEBOX_USER_APP_PATHS and developer app
+roots through GROOVEBOX_DEV_APP_PATHS (path-separated directories). The developer
+overlay exposes dev_overlay.import_map() to include the active overlay src tree
+and the user app directory. import_fabric.application_scope() temporarily adds
+only the selected app's import roots and restores sys.path on exit. App isolation
+still requires the existing worker/process permission boundary: a shared import
+map is not a sandbox and does not make mutable Python module state safe to share.
+
+The map is a discovery/initialization optimization, not a proof that every
+third-party dependency is installed or compatible. Frozen builds must still
+include their declared runtime dependencies; native extensions remain bound to
+the selected interpreter/ABI.
