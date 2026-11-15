@@ -1,6 +1,12 @@
-R56 register: 126 tracked items = 46 implemented-with-evidence [x] + 29 partial [~] + 51 not-started [ ].
-R57-R64 roadmap: 64 planned items = 8 revisions x 8 items.
-R57-R64 current roadmap status: 21 source foundations [~] + 43 not-yet-implemented [ ].
-Combined register-line count if treated as disjoint: 190. This is NOT a unique-feature total because the historic 472-item register may overlap; reconcile before publishing a grand total.
-The 64-item R57-R64 scope is fixed for planning, but not a promise that no defects or acceptance tasks will be added. Any scope change must be numbered, justified, and deduplicated.
-Testing was intentionally deferred until R64 finalization per user instruction.
+MATGROOVEBOX R191 register snapshot — 2026-11-15
+
+R56 expansion catalog: 126 tracked entries = 46 implemented with recorded evidence [x] + 48 source foundations / partial [~] + 32 planned [ ].
+R57–R64 roadmap: 65 tracked entries = 33 source foundations / partial [~] + 32 planned [ ]. The 65 includes the separately added 3D-video item 65; R57–R63 have eight items each and R64 has nine.
+
+Combined tracked scope: 191 register entries = 46 implemented with evidence [x] + 81 partial/source foundations [~] + 64 planned [ ].
+
+This is a sum of two separately maintained registers, not a claim that there are 191 distinct underlying capabilities. Some items overlap across R56 and R57–R64. Every original row and number is retained. The historical CHANGE-REGISTER-472 is a separate overlapping register and is not included in this 191-entry count.
+
+2026-11-15 source pass moved 27 planned entries to [~] after adding backend service foundations and extending existing transfer/migration/hotplug paths. No item was promoted to [x]; no tests or release acceptance were run for this pass. GUI integration, OS/device/firmware behavior, security review, packaging, VM, ISO, install, rollback and hardware gates remain open where called out in the item notes and R64 matrix.
+
+Scope reconciliation: older status documents stated 64 items / 21 partial / 43 planned. The current roadmap text and R64 capability matrix already include 65 items / 25 partial / 40 planned before this pass. This snapshot supersedes the older count.

@@ -6,4 +6,4 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
   echo 'FAIL: BUILD_ISO/RUN_ME_ZERO_STATE.sh is missing or not executable.' >&2
   exit 4
 }
-exec "$ROOT/BUILD_ISO/RUN_ME_ZERO_STATE.sh" "$ROOT"
+exec bash "$ROOT/BUILD_ISO/RUN_ME_ZERO_STATE.sh"

@@ -1,0 +1,49 @@
+{
+  "mode": "read-only-source-preflight",
+  "not_performed": [
+    "pytest",
+    "PyQt GUI",
+    "audio/MIDI hardware",
+    "paired ISO build",
+    "QEMU/OVMF boot",
+    "Secure Boot firmware",
+    "installer/migration/rollback",
+    "physical hardware acceptance"
+  ],
+  "project": "MATGROOVEBOX",
+  "release_certified": false,
+  "results": [
+    {
+      "failures": [],
+      "files": 1219,
+      "gate": "python-source-parse",
+      "status": "pass"
+    },
+    {
+      "bash_available": true,
+      "failures": [],
+      "files": 164,
+      "gate": "shell-syntax",
+      "status": "pass"
+    },
+    {
+      "gate": "runtime-overlay-parity",
+      "output": "PASS: ISO/BUILD_KIT share 423 runtime module/package sources (byte-for-byte)\n",
+      "status": "pass"
+    },
+    {
+      "gate": "release-toolchain-inventory",
+      "status": "warn",
+      "tools": {
+        "limine": null,
+        "mformat": null,
+        "mksquashfs": null,
+        "qemu-system-x86_64": null,
+        "sbsign": null,
+        "sbverify": null,
+        "xorriso": null
+      }
+    }
+  ],
+  "schema": 1
+}

@@ -53,13 +53,24 @@ import numpy as np
 try:
     from PyQt6.QtCore import Qt, QTimer, QPointF, QRectF, QEvent, pyqtSignal
     from PyQt6.QtGui import QColor, QPainter, QPen, QBrush, QRadialGradient, QPainterPath, QFont, QImage
-    from PyQt6.QtWidgets import (QDialog, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QCheckBox,
-                                 QLabel, QSpinBox, QSlider, QSizePolicy, QToolButton, QMenu, QApplication, QComboBox)
+    from PyQt6.QtWidgets import (QDialog, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, QCheckBox,
+                                 QLabel, QSpinBox, QSlider, QSizePolicy, QToolButton, QMenu, QApplication, QComboBox, QScrollArea, QFrame)
 except Exception:  # pragma: no cover - headless import of the planner only
     QDialog = QWidget = object
+    # Class-level signal declarations must remain importable without Qt.
+    pyqtSignal = lambda *args, **kwargs: None
 
 LIGHT_SR = 44100
 LIGHT_GAIN = 0.28          # the keyboard / Trigger Note voice gain (NO_FADE_NO_LIMIT_20261102)
+
+
+def _num(v, default):
+    """ZERO_SAFE_R7: a number, keeping 0 (``x or default`` turned a deliberate 0 into the default)."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return float(default)
+    return f if f == f and f not in (float("inf"), float("-inf")) else float(default)
 
 
 def pitch_bend_ratio(semitones):
@@ -109,7 +120,7 @@ def _row_names(host, entry):
     if isinstance(refs, str):
         refs = [x.strip() for x in refs.split(",") if x.strip()]
     for r in refs or []:
-        nm = str(r).split(":", 1)[0].strip()
+        nm = str(r).split("#S", 1)[0].split(":", 1)[0].strip()
         if nm:
             names.append(nm)
     if isinstance(entry, dict) and entry.get("operator"):
@@ -119,18 +130,31 @@ def _row_names(host, entry):
 
 
 def _row_mem(host, op, refs, row_idx):
-    banks = getattr(host, "instrument_sequence_banks", {}) or {}
-    for r in refs:
-        if ":" not in r:
+    # LIVE_SOUND_R7: the exact bank rule of the export renderer.  Refs come as
+    # "Op#S2" or "Op:2"; the first bank whose owner is canonical/section wins.
+    # (Before: only "Op:N" parsed and the FIRST match returned even when it was
+    # an empty, unowned bank -> every voice skipped -> Live Play silent.)
+    banks = getattr(host, "_render_sequence_banks_snapshot", None) or getattr(host, "instrument_sequence_banks", {}) or {}
+    try:
+        wm = str(host._row_write_mode(int(row_idx)))
+    except Exception:
+        wm = "both"
+    for r in (refs if wm not in ("automation", "identity") else []):
+        rt = str(r).strip()
+        if "#S" in rt:
+            a, sid = rt.rsplit("#S", 1)
+        elif ":" in rt:
+            a, sid = rt.rsplit(":", 1)
+        else:
             continue
-        a, sid = r.rsplit(":", 1)
         if a.strip() != op:
             continue
         try:
-            m = (banks.get(op) or {}).get(int(sid))
+            bank = banks.get(op) or {}
+            m = bank.get(int(sid)) if isinstance(bank, dict) else None
         except Exception:
             m = None
-        if isinstance(m, dict):
+        if isinstance(m, dict) and str(m.get("canonical_owner", "")).startswith(("canonical:", "heuristic:section")):
             return m
     mem = (getattr(host, "instrument_sequencer_memory", {}) or {}).get(op) or {}
     has_user = bool(mem.get("user_owned")) or any(bool(x) for x in (mem.get("steps") or []))
@@ -204,7 +228,7 @@ def build_plan(host):
     rows_out, used = [], []
     for ri, entry in enumerate(playlist):
         names, refs = _row_names(host, entry if isinstance(entry, dict) else {})
-        vel = float((entry or {}).get("velocity", 1.0) or 1.0) if isinstance(entry, dict) else 1.0
+        vel = _num((entry or {}).get("velocity"), 1.0) if isinstance(entry, dict) else 1.0   # ZERO_SAFE_R7: 0 = silent, like export
         offs_op = (entry or {}).get("operator_time_offsets") if isinstance(entry, dict) else None
         offs_op = offs_op if isinstance(offs_op, dict) else {}
         evs = []
@@ -251,36 +275,110 @@ def build_plan(host):
 # ---------------------------------------------------------------------------
 # Synthesis (worker thread)
 # ---------------------------------------------------------------------------
-def synth_row(host, events, row_dur, sr=LIGHT_SR, cache=None):
-    """One row of raw instrument voices (the keyboard voice), summed. No FX, no limiter."""
+def _len_bucket(m):
+    """LIVE_SOUND_R7: voice lengths rounded up to a 1/8-octave grid (>= 1024 frames), so
+    one render serves every note of the same voice whose length falls in the bucket."""
+    m = max(1, int(m))
+    if m <= 1024:
+        return 1024
+    return int(math.ceil(2.0 ** (math.ceil(math.log2(m) * 8.0) / 8.0)))
+
+
+def _fast_voice(hz, m, sr):
+    """Real-time stand-in while the true voice renders: 3 partials, 4 ms attack, exp decay."""
+    t = np.arange(m, dtype=np.float64) / float(sr)
+    f = float(hz) if math.isfinite(float(hz)) and hz > 0 else 220.0
+    f = min(f, 0.45 * sr)
+    v = np.sin(2 * np.pi * f * t)
+    if 2 * f < 0.45 * sr:
+        v += 0.5 * np.sin(2 * np.pi * 2 * f * t)
+    if 3 * f < 0.45 * sr:
+        v += 0.25 * np.sin(2 * np.pi * 3 * f * t)
+    dur = max(1e-3, m / float(sr))
+    env = np.minimum(1.0, t / 0.004) * np.exp(-3.0 * t / dur)
+    return 0.45 * v * env
+
+
+def _true_voice(host, name, hz, mb, sr):
+    t = np.arange(mb, dtype=np.float64) / sr
+    v = np.asarray(host._audition_voice(name, hz, t, sr), dtype=np.float64)
+    rec = (getattr(host, "instrument_media_samples", {}) or {}).get(name)
+    if isinstance(rec, dict) and rec.get("waveform") is not None:
+        try:
+            raw = host._sample_native_layer(np.asarray(rec["waveform"], dtype=np.float32),
+                                            int(rec.get("sample_rate", sr) or sr), t)
+            v = 0.5 * v + 0.5 * np.asarray(raw, dtype=np.float64)
+        except Exception:
+            pass
+    v = np.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
+    if v.size < mb:
+        v = np.pad(v, (0, mb - v.size))
+    return v
+
+
+def _cache_put(cache, key, v, cap=2048):
+    if cache is None:
+        return
+    if len(cache) >= cap:                       # drop the oldest quarter (dicts keep insertion order)
+        for k in list(cache)[: cap // 4]:
+            cache.pop(k, None)
+    cache[key] = v
+
+
+def refine_pending(host, cache, pending, sr=LIGHT_SR, max_items=1):
+    """Render stand-in voices for real (idle time in the synth thread). Returns how many."""
+    done = 0
+    while pending and done < max_items:
+        name, hz, mb = pending.pop(0)
+        key = (name, round(hz, 4), int(mb))
+        if cache is not None and key in cache:
+            continue
+        try:
+            _cache_put(cache, key, _true_voice(host, name, hz, mb, sr))
+        except Exception:
+            pass
+        done += 1
+    return done
+
+
+def synth_row(host, events, row_dur, sr=LIGHT_SR, cache=None, budget_s=None, pending=None):
+    """One row of raw instrument voices (the keyboard voice), summed. No FX, no limiter.
+
+    LIVE_SOUND_R7: with ``budget_s``, voices not yet cached once the budget is spent use a
+    fast stand-in (queued in ``pending`` for a true render in idle time), so the row is always
+    ready in time -- live play never falls silent waiting for the synth.  Every true voice is
+    the exact keyboard voice at the note's own length (cached across rows and loops)."""
     n = max(1, int(round(row_dur * sr)))
     out = np.zeros(n, dtype=np.float64)
-    gb = None
+    t_start = time.perf_counter()
+    queued = set()
     for (t0, dur, name, hz, amp) in events:
         i0 = int(t0 * sr)
         m = min(n - i0, max(1, int(dur * sr)))
         if m <= 0 or amp <= 0.0:
             continue
-        key = (name, round(hz, 4), m)
+        key = (name, round(hz, 4), m)               # exact length: the true keyboard voice
         v = cache.get(key) if cache is not None else None
         if v is None:
-            t = np.arange(m, dtype=np.float64) / sr
-            v = np.asarray(host._audition_voice(name, hz, t, sr), dtype=np.float64)
-            rec = (getattr(host, "instrument_media_samples", {}) or {}).get(name)
-            if isinstance(rec, dict) and rec.get("waveform") is not None:
-                try:
-                    raw = host._sample_native_layer(np.asarray(rec["waveform"], dtype=np.float32),
-                                                    int(rec.get("sample_rate", sr) or sr), t)
-                    v = 0.5 * v + 0.5 * np.asarray(raw, dtype=np.float64)
-                except Exception:
-                    pass
-            v = np.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
-            if cache is not None:
-                if len(cache) > 512:
-                    cache.clear()
-                cache[key] = v
+            if budget_s is not None and (time.perf_counter() - t_start) > budget_s:
+                v = _fast_voice(hz, m, sr)          # stand-in now, true voice queued
+                if pending is not None and key not in queued:
+                    queued.add(key); pending.append((name, hz, m))
+            else:
+                v = _true_voice(host, name, hz, m, sr)
+                _cache_put(cache, key, v)
         out[i0:i0 + m] += v[:m] * amp
     return (LIGHT_GAIN * out).astype(np.float32)
+
+
+def soft_clip(x, knee=0.9):
+    """Transparent below ``knee``; smooth tanh shoulder above (never exceeds 1.0)."""
+    a = np.abs(x)
+    if not a.size or float(a.max()) <= knee:
+        return x
+    room = 1.0 - knee
+    y = np.where(a > knee, np.sign(x) * (knee + room * np.tanh((a - knee) / room)), x)
+    return y.astype(np.float32, copy=False)
 
 
 
@@ -301,13 +399,22 @@ class MicFeed:
         self.stream = None
         self.rate = self.sr
         self.error = ""
+        self.dropped = 0           # LIVE_INPUTS_R7: samples dropped to keep the mic live
+        self.frames_in = 0         # samples received (so a silent / dead input is visible)
+
+    MAX_LAG = 0.12                 # seconds of mic backlog allowed (≈ one audio block at most rates)
 
     def start(self):
         import audio_os_backend as aob
         pref = str(getattr(self.host, "preferred_audio_input_name", "") or "")
         try:
-            st, rate, _idx = aob.open_input_stream_adaptive(samplerate=self.sr, channels=1, dtype="float32",
-                                                            callback=self._cb, preferred_name=pref or None)
+            try:   # LIVE_INPUTS_R7: never re-route the outputs while the live stream plays
+                st, rate, _idx = aob.open_input_stream_adaptive(samplerate=self.sr, channels=1, dtype="float32",
+                                                                callback=self._cb, preferred_name=pref or None,
+                                                                reroute=False)
+            except TypeError:
+                st, rate, _idx = aob.open_input_stream_adaptive(samplerate=self.sr, channels=1, dtype="float32",
+                                                                callback=self._cb, preferred_name=pref or None)
             self.rate = int(rate)
             st.start()
             self.stream = st
@@ -323,10 +430,20 @@ class MicFeed:
                 m = max(1, int(round(x.size * self.sr / float(self.rate))))
                 x = np.interp(np.linspace(0.0, x.size - 1, m), np.arange(x.size), x).astype(np.float32)
             self.level = max(float(np.max(np.abs(x))) if x.size else 0.0, self.level * 0.9)
+            self.frames_in += int(x.size)
             with self.lock:
                 self.buf.append(x); self.n += x.size
-                while self.n > 2 * self.sr and self.buf:
-                    self.n -= self.buf[0].size; del self.buf[0]
+                # LIVE_INPUTS_R7: live, not late. Two device clocks drift; a 2 s backlog meant the mic could
+                # land up to 2 s behind the music in takes. Past MAX_LAG the oldest samples are dropped.
+                cap = max(x.size, int(self.MAX_LAG * self.sr))
+                while self.n > cap and self.buf:
+                    b0 = self.buf[0]
+                    cut = min(b0.size, self.n - cap)
+                    if cut >= b0.size:
+                        self.n -= b0.size; del self.buf[0]
+                    else:
+                        self.buf[0] = b0[cut:]; self.n -= cut
+                        self.dropped += cut
         except Exception:
             pass
 
@@ -549,6 +666,11 @@ def file_has_video(host, path):
         return False
 
 
+# CANON_MORPH_R7 / PREDICTIVE_PATHWAY_R7 defaults; window values are in beats
+MORPH_DEFAULTS = {"enabled": False, "amount": 50, "keys": False, "samples": False, "place": 0}
+PLACE_WINDOWS = (("off", 0.0), ("¼ beat", 0.25), ("½ beat", 0.5), ("1 beat", 1.0), ("1 bar", 4.0))
+
+
 class MediaTrack:
     """Decoded audio of a loaded file, played from the live callback (loop optional)."""
 
@@ -559,12 +681,16 @@ class MediaTrack:
         self.loop = True
         self.gain = 1.0
         self.done = False
+        self.delay = 0             # PREDICTIVE_PATHWAY_R7: samples of silence before the start lands on an onset
 
     def read(self, n):
         out = np.zeros(int(n), dtype=np.float32)
         if self.pcm.size == 0 or self.done:
             return out
         w = 0
+        dl = int(getattr(self, "delay", 0) or 0)
+        if dl > 0:
+            w = min(int(n), dl); self.delay = dl - w
         while w < n:
             take = min(n - w, self.pcm.size - self.pos)
             out[w:w + take] = self.pcm[self.pos:self.pos + take]
@@ -663,7 +789,7 @@ class LiveEngine:
     def __init__(self, host):
         self.host = host
         self.sr = LIGHT_SR
-        self.q = queue.Queue(maxsize=3)
+        self.q = queue.Queue(maxsize=2)   # LIVE_FOLLOW_R7: rows are budgeted, so 2 is enough and edits land sooner
         self.cur = None            # (row_idx, buffer)
         self.pos = 0
         self.played = 0            # samples since start
@@ -684,6 +810,14 @@ class LiveEngine:
         self.media = None          # MediaTrack
         self.comp_gain = 1.0       # mixer: composition / keys (media gain lives on the track)
         self.keys_gain = 1.0
+        # CANON_MORPH_R7: composition-only tap (the morph target never hears keys/media/mic)
+        self.comp_scope = np.zeros(2048, dtype=np.float32)
+        self.morph = None          # canonical_morph.EnvelopeMorph while enabled
+        self.morph_keys = True
+        self.morph_media = True
+        self.place_window_s = 0.0  # PREDICTIVE_PATHWAY_R7: 0 = off
+        self.plan_fn = None        # callable -> current plan (rows of (t0, dur, name, hz, amp))
+        self.placed = 0
 
     # audio thread
     def callback(self, outdata, frames, time_info, status):
@@ -716,17 +850,34 @@ class LiveEngine:
                 w += take
             if self.comp_gain != 1.0:
                 mix *= np.float32(self.comp_gain)
+            try:
+                n_ = min(frames, self.comp_scope.size)
+                self.comp_scope = np.roll(self.comp_scope, -n_); self.comp_scope[-n_:] = mix[-n_:]
+            except Exception:
+                pass
             med = self.media
             if med is not None:
-                mix += med.read(frames)
+                ms = med.read(frames)
+                mo = self.morph
+                if mo is not None and self.morph_media:
+                    try:
+                        ms = mo.process(ms)
+                    except Exception:
+                        pass
+                mix += ms
             with self.lock:
                 keys, self.keys = self.keys, []
             alive = []
             kg = np.float32(self.keys_gain)
             for kb, kp in keys:
-                take = min(frames, len(kb) - kp)
+                off = 0
+                if kp < 0:                       # PREDICTIVE_PATHWAY_R7: waiting for its onset
+                    off = min(frames, -kp); kp += off
+                    if kp < 0:
+                        alive.append([kb, kp]); continue
+                take = min(frames - off, len(kb) - kp)
                 if take > 0:
-                    mix[:take] += kb[kp:kp + take] * kg
+                    mix[off:off + take] += kb[kp:kp + take] * kg
                     kp += take
                 if kp < len(kb):
                     alive.append([kb, kp])
@@ -747,13 +898,25 @@ class LiveEngine:
                 take_mix = mix + m
                 if self.mic_monitor:
                     mix = take_mix
+            # LIVE_SOUND_R7: the speakers come first -- monitoring is written before the
+            # record tap and scope, and a tap failure can never mute what you hear.
+            mix = soft_clip(np.nan_to_num(mix, nan=0.0, posinf=0.0, neginf=0.0))
+            outdata[:] = mix.reshape(-1, 1) if outdata.shape[1] == 1 else np.repeat(mix.reshape(-1, 1), outdata.shape[1], axis=1)
             rec = self.rec
             if rec is not None:
-                rec(take_mix.copy())
-            n = min(len(take_mix), len(self.scope))
-            self.scope = np.roll(self.scope, -n)
-            self.scope[-n:] = take_mix[-n:]
-            outdata[:] = mix.reshape(-1, 1) if outdata.shape[1] == 1 else np.repeat(mix.reshape(-1, 1), outdata.shape[1], axis=1)
+                try:
+                    # LIVE_INPUTS_R7: the take gets the same soft clip as the speakers (exactly what you hear;
+                    # with the mic unmonitored the take is the monitored mix + mic through that same clip).
+                    tk = mix if take_mix is mix else soft_clip(np.nan_to_num(take_mix, nan=0.0, posinf=0.0, neginf=0.0))
+                    rec(np.asarray(tk, dtype=np.float32).copy())
+                except Exception:
+                    self.rec_errors = int(getattr(self, "rec_errors", 0)) + 1
+            try:
+                n = min(len(take_mix), len(self.scope))
+                self.scope = np.roll(self.scope, -n)
+                self.scope[-n:] = take_mix[-n:]
+            except Exception:
+                pass
         except Exception:
             outdata.fill(0.0)
         finally:
@@ -764,11 +927,35 @@ class LiveEngine:
         if int(sr) != int(self.sr) and arr.size > 1:
             m = max(1, int(round(arr.size * self.sr / float(sr))))
             arr = np.interp(np.linspace(0.0, arr.size - 1, m), np.arange(arr.size), arr).astype(np.float32)
+        mo = self.morph
+        if mo is not None and self.morph_keys:
+            try:
+                arr = mo.offline(arr)            # CANON_MORPH_R7: once per note, no latency
+            except Exception:
+                pass
+        start = -self.trigger_delay_samples()
         with self.lock:
             if len(self.keys) > 64:
                 del self.keys[0]
-            self.keys.append([arr, 0])
+            self.keys.append([arr, start])
         return arr
+
+    def trigger_delay_samples(self):
+        """PREDICTIVE_PATHWAY_R7: samples until the next predicted onset (0 when off / none in window)."""
+        if self.place_window_s <= 0 or self.plan_fn is None:
+            return 0
+        try:
+            import canonical_morph as _cm
+            plan = self.plan_fn() or {}
+            bpm = float(plan.get("bpm", 120.0) or 120.0)
+            d = _cm.next_onset_delay(plan, max(0, self.row_idx), self.position_seconds(), self.place_window_s,
+                                     beat_s=60.0 / bpm if bpm > 0 else 0.5)
+        except Exception:
+            return 0
+        n = int(round(d * self.sr))
+        if n > 0:
+            self.placed += 1
+        return n
 
     def release_key(self, arr, release_s=0.2):
         """R32.9: held-key release inside the Live Player stream."""
@@ -792,6 +979,19 @@ class LiveEngine:
                                              callback=self.callback, blocksize=blk, latency=lat,
                                              preferred_name=pref)
         self.stream.start()
+
+    def reopen(self):
+        """LIVE_INPUTS_R7 watchdog: the output stream stopped calling back (device re-route, server restart):
+        open a fresh one at the same rate. Queue, keys, mic, media and the take are untouched."""
+        st, self.stream = self.stream, None
+        if st is not None:
+            for fn in ("abort", "close"):
+                try:
+                    getattr(st, fn)()
+                except Exception:
+                    pass
+        self.reopens = int(getattr(self, "reopens", 0)) + 1
+        self.open(self.sr)
 
     def close(self):
         self.stop_evt.set()
@@ -964,7 +1164,7 @@ class VideoRig:
                     time.sleep(0.002); continue
             rw, rh = self.effective_size()
             try:
-                eng.set_waveform(np.array(le.scope, copy=True), playhead=(min(1.0, pos / total) if total > 0 else 0.0))
+                eng.set_waveform(np.array(le.scope, copy=True), playhead=(min(1.0, pos / total) if total > 0 else 0.0), sr=getattr(le, "sr", None))
                 fr = eng.render_frame(rw, rh, export=True, frame_index=fi)
                 fr = np.nan_to_num(np.asarray(fr), nan=0, posinf=255, neginf=0).astype(np.uint8, copy=False)
                 try:
@@ -1715,12 +1915,16 @@ class LiveRecorder:
 # ---------------------------------------------------------------------------
 # Visual
 # ---------------------------------------------------------------------------
-LAYERS = (("rig", "Video rig picture", True), ("orbit", "Instrument orbit (rosette)", True),
-          ("ring", "Waveform ring", True), ("labels", "Instrument names", True),
-          ("strip", "Playlist strip", True), ("media", "Loaded media video", True),
-          ("multidim", "🌀 Multidimensional world", True),
-          ("camera", "Camera (picture-in-picture)", True),
+LAYERS = (("rig", "Main video rig / scenograph", True),
+          ("orbit", "Instrument orbit (rosette)", False),
+          ("ring", "Waveform ring", False), ("labels", "Instrument names", False),
+          ("strip", "Playlist strip", False), ("media", "Loaded media video", False),
+          ("multidim", "🌀 Multidimensional world", False),
+          ("camera", "Camera (picture-in-picture)", False),
           ("camera_full", "Camera full scene (blends with the rig — Tweaks ▸ camera blend, default 50 %)", False))
+LAYER_SHORT = {"rig": "Video rig", "orbit": "Orbit", "ring": "Wave ring", "labels": "Names", "strip": "Playlist strip",
+               "media": "Media video", "multidim": "🌀 Multidim world", "camera": "Camera PiP",
+               "camera_full": "Camera full scene"}
 
 
 def _qimage_rgb(arr):
@@ -2175,7 +2379,7 @@ class LiveVisual(QWidget):
                 qp.drawEllipse(QPointF(x, y), rad, rad)
                 if L.get("labels", True) and len(names) <= 24:
                     qp.setPen(QColor(230, 235, 245, 170 + int(min(85, 60 * gl))))
-                    qp.setFont(QFont("Sans", int(tw["label_size"])))
+                    qp.setFont(QFont("Arial", int(tw["label_size"])))
                     qp.drawText(QRectF(x - 70, y + rad + 1, 140, tw["label_size"] + 6),
                                 Qt.AlignmentFlag.AlignHCenter, nm[:18])
 
@@ -2499,7 +2703,7 @@ class ScenographBroadcast(QWidget):
                 eng = self.player.engine
                 wave_ = np.array(eng.scope, dtype=np.float32) if eng is not None else np.zeros(1024, np.float32)
                 if self.eng is not None:
-                    self.eng.set_waveform(wave_, playhead=0.5)
+                    self.eng.set_waveform(wave_, playhead=0.5, sr=getattr(eng, "sr", None))
                     self.eng.t = (time.monotonic() - self._t0) * self._norm
                     rgb = np.ascontiguousarray(np.asarray(self.eng.render_frame(w, h, export=True, frame_index=fi), dtype=np.uint8)[:, :, :3])
                     img = QImage(rgb.data, rgb.shape[1], rgb.shape[0], 3 * rgb.shape[1], QImage.Format.Format_RGB888).copy()
@@ -2544,7 +2748,7 @@ class LivePlayerWindow(QDialog):
         self.host = host
         self.setWindowTitle("🎬 Live Player — watch the composition happen")
         self.setModal(False)
-        self.resize(820, 680)
+        self.resize(1180, 820)
         self.engine = None
         self.rig = None
         self.camera = None
@@ -2639,26 +2843,42 @@ class LivePlayerWindow(QDialog):
             self.host.live_rig_scale = (0.0, 1.0, 0.75, 0.5, 0.25)[max(0, min(4, int(i)))]
             self._rig_toggled(self.chk_rig.isChecked())
         self.cmb_rig_scale.currentIndexChanged.connect(_scale_changed)
-        self.btn_layers = QToolButton(); self.btn_layers.setText("🧅 Layers ▾")
-        self.btn_layers.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.btn_layers.setToolTip("Switch each layer of the live view (and of video takes) on / off")
-        lm = QMenu(self.btn_layers)
+        # LAYER_CHECKBOXES_R7: every layer is its own visible checkbox (was a "Layers ▾" dropdown menu).
         self._layer_actions = {}
-        for key, title, default in LAYERS:
-            act = lm.addAction(title); act.setCheckable(True); act.setChecked(default)
-            act.toggled.connect(lambda on, k=key: self._set_layer(k, on))
-            self._layer_actions[key] = act
-        self.btn_layers.setMenu(lm)
-        self.btn_tweak = QToolButton(); self.btn_tweak.setText("🎛 Tweak visuals ▾")
-        self.btn_tweak.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.btn_tweak.setToolTip("Every look parameter of the add-on visualizer (saved). Applies to pop-outs and video takes.")
-        self.btn_tweak.setMenu(self._build_tweak_menu())
-        for wdg in (self.chk_full, self.chk_rig, self.cmb_rig_size, self.cmb_rig_scale, self.btn_layers, self.btn_tweak):
+        layer_row = QGridLayout(); layer_row.setHorizontalSpacing(10); layer_row.setVerticalSpacing(2)
+        _lab = QLabel("🧅 Layers"); _lab.setToolTip("Switch each layer of the live view (and of video takes) on / off")
+        layer_row.addWidget(_lab, 0, 0)
+        self.btn_randomize_layers = QPushButton("🎲 Randomize")
+        self.btn_randomize_layers.setToolTip("Explicitly choose a sparse set of extra visual layers. Camera and microphone capture remain off; the main video rig stays on.")
+        self.btn_reset_layers = QPushButton("↺ Main rig only")
+        self.btn_reset_layers.setToolTip("Turn off every optional visual layer and keep only the main video rig / scenograph.")
+        self.btn_randomize_layers.clicked.connect(self._randomize_layers)
+        self.btn_reset_layers.clicked.connect(self._reset_layers)
+        layer_row.addWidget(self.btn_randomize_layers, 0, 1)
+        layer_row.addWidget(self.btn_reset_layers, 0, 2)
+        _visual_keys = [(key, title, default) for key, title, default in LAYERS
+                        if key not in ("camera", "camera_full")]
+        for i, (key, title, default) in enumerate(_visual_keys):
+            cb = QCheckBox(LAYER_SHORT.get(key, title)); cb.setToolTip(title); cb.setChecked(default)
+            cb.setObjectName("liveLayer_" + key)
+            cb.toggled.connect(lambda on, k=key: self._set_layer(k, on))
+            self._layer_actions[key] = cb
+            layer_row.addWidget(cb, 1 + i // 5, i % 5)
+        layer_row.setColumnStretch(6, 1)
+        # VISUAL_PRESETS_PANEL_R7: presets + every look slider live in their own panel (was a "Tweak visuals ▾"
+        # dropdown); the button only shows / hides it.
+        self.btn_tweak = QToolButton(); self.btn_tweak.setText("🎛 Visual presets")
+        self.btn_tweak.setCheckable(True); self.btn_tweak.setChecked(True)
+        self.btn_tweak.setToolTip("Show / hide the visual presets panel (every look parameter of the add-on visualizer, "
+                                  "saved; applies to pop-outs and video takes).")
+        self.tweak_panel = self._build_tweak_panel()
+        self.btn_tweak.toggled.connect(self.tweak_panel.setVisible)
+        for wdg in (self.chk_full, self.chk_rig, self.cmb_rig_size, self.cmb_rig_scale, self.btn_tweak):
             opts.addWidget(wdg)
         opts.addStretch(1)
         lay.addLayout(opts)
 
-        # Row 3: live inputs
+        # Row 3: live inputs and camera activity switches sit above visual layers.
         ins = QHBoxLayout()
         self.chk_mic = QCheckBox("🎙 Mic into the mix")
         self.chk_mic.setToolTip("Your microphone joins the live mix and every take (recorded even when not monitored).")
@@ -2671,13 +2891,64 @@ class LivePlayerWindow(QDialog):
         self.chk_mic_mon.toggled.connect(lambda on: setattr(self.engine, "mic_monitor", bool(on)) if self.engine else None)
         self.lbl_mic = QLabel("")
         self.lbl_mic.setFixedWidth(70)
-        self.chk_cam = QCheckBox("🎥 Camera layer")
-        self.chk_cam.setToolTip("Layer your camera onto the live view and video takes (corner or full screen in Layers ▾).")
+        self.chk_cam = QCheckBox("🎥 Camera capture")
+        self.chk_cam.setToolTip("Explicitly start/stop camera capture. Capture defaults off for privacy.")
         self.chk_cam.toggled.connect(self._cam_toggled)
-        for wdg in (self.chk_mic, self.sld_mic, self.chk_mic_mon, self.lbl_mic, self.chk_cam):
+        self.chk_camera_layer = QCheckBox("Camera PiP")
+        self.chk_camera_layer.setToolTip("Show the camera as a picture-in-picture layer when camera capture is enabled.")
+        self.chk_camera_layer.setChecked(False)
+        self.chk_camera_layer.toggled.connect(lambda on: self._set_layer("camera", on))
+        self.chk_camera_full_layer = QCheckBox("Camera full scene")
+        self.chk_camera_full_layer.setToolTip("Blend the camera across the full scenograph when capture is enabled.")
+        self.chk_camera_full_layer.setChecked(False)
+        self.chk_camera_full_layer.toggled.connect(lambda on: self._set_layer("camera_full", on))
+        self._layer_actions["camera"] = self.chk_camera_layer
+        self._layer_actions["camera_full"] = self.chk_camera_full_layer
+        for wdg in (self.chk_mic, self.sld_mic, self.chk_mic_mon, self.lbl_mic,
+                    self.chk_cam, self.chk_camera_layer, self.chk_camera_full_layer):
             ins.addWidget(wdg)
         ins.addStretch(1)
         lay.addLayout(ins)
+
+        # CANON_MORPH_R7 + PREDICTIVE_PATHWAY_R7: keys and samples take the composition's timbre and its time
+        st = dict(MORPH_DEFAULTS); st.update(getattr(host, "live_morph_state", None) or {})
+        mor = QHBoxLayout()
+        self.chk_morph = QCheckBox("🧬 Canonical morph"); self.chk_morph.setChecked(bool(st["enabled"]))
+        self.chk_morph.setToolTip("Keys and samples take on the spectral envelope (timbre) of the composition that is "
+                                  "sounding. Loudness is kept; amount 0 is an exact pass-through.")
+        self.sld_morph = QSlider(Qt.Orientation.Horizontal); self.sld_morph.setRange(0, 100)
+        self.sld_morph.setValue(int(st["amount"])); self.sld_morph.setFixedWidth(110)
+        self.sld_morph.setToolTip("Morph amount: 0 = own timbre, 100 = the composition's envelope")
+        self.lbl_morph = QLabel(f"{int(st['amount'])} %"); self.lbl_morph.setFixedWidth(44)
+        self.chk_morph_keys = QCheckBox("keys"); self.chk_morph_keys.setChecked(bool(st["keys"]))
+        self.chk_morph_keys.setToolTip("Morph keyboard / pad notes (once per note, no added latency)")
+        self.chk_morph_media = QCheckBox("samples"); self.chk_morph_media.setChecked(bool(st["samples"]))
+        self.chk_morph_media.setToolTip("Morph the loaded media / sample stream (about 11 ms of latency)")
+        self.cmb_place = QComboBox()
+        for label, _v in PLACE_WINDOWS:
+            self.cmb_place.addItem(label)
+        self.cmb_place.setCurrentIndex(max(0, min(len(PLACE_WINDOWS) - 1, int(st["place"]))))
+        self.cmb_place.setToolTip("Place triggers on the predictive time-invariant process pathway: a key or sample "
+                                  "start waits for the composition's next predicted onset when it is within this "
+                                  "window, otherwise it plays at once.")
+        self.lbl_place = QLabel("")
+        self.btn_randomize_morph = QPushButton("🎲 Randomize canonical")
+        self.btn_randomize_morph.setToolTip("Explicitly randomize canonical morph amount, key/sample participation and trigger placement. Nothing is randomized at startup.")
+        self.btn_randomize_morph.clicked.connect(self._randomize_morph)
+        self.btn_reset_morph = QPushButton("↺ Reset canonical")
+        self.btn_reset_morph.setToolTip("Disable canonical morph and key/sample participation; restore the quiet default settings.")
+        self.btn_reset_morph.clicked.connect(self._reset_morph)
+        for wdg in (self.chk_morph, self.sld_morph, self.lbl_morph, self.chk_morph_keys, self.chk_morph_media):
+            mor.addWidget(wdg)
+        mor.addSpacing(12); mor.addWidget(QLabel("⏱ Place triggers:")); mor.addWidget(self.cmb_place)
+        mor.addWidget(self.lbl_place); mor.addWidget(self.btn_randomize_morph); mor.addWidget(self.btn_reset_morph)
+        mor.addStretch(1)
+        lay.addLayout(mor)
+        lay.addLayout(layer_row)
+        lay.addWidget(self.tweak_panel)
+        for sig in (self.chk_morph.toggled, self.chk_morph_keys.toggled, self.chk_morph_media.toggled,
+                    self.sld_morph.valueChanged, self.cmb_place.currentIndexChanged):
+            sig.connect(lambda *_a: self._apply_morph(self.engine))
 
         # Media deck + mixer (GROOVEBOX_R23R_LIVE_MEDIA_DECK_20261103)
         med = QHBoxLayout()
@@ -2835,6 +3106,77 @@ class LivePlayerWindow(QDialog):
         self.status.setWordWrap(True)
         lay.addWidget(self.status)
         self._format_like_performance(lay)
+
+        # LIVE-CENTER-R55.4: make the Live Player feel like an instrument, not a
+        # settings form. Keep transport + record + media one-click accessible,
+        # put the live canvas in the visual center, and tuck the dense controls
+        # into an optional scrollable drawer so the picture/playhead gets room.
+        try:
+            lay.removeWidget(self.visual)
+            lay.removeWidget(self.status)
+            advanced = QWidget(self)
+            advanced.setObjectName("livePlayerAdvancedControls")
+            advanced_lay = QVBoxLayout(advanced)
+            advanced_lay.setContentsMargins(2, 2, 2, 2)
+            advanced_lay.setSpacing(5)
+            while lay.count() > 2:  # title + primary transport remain above the canvas
+                item = lay.takeAt(2)
+                if item is None:
+                    break
+                widget = item.widget()
+                sublayout = item.layout()
+                if widget is not None:
+                    advanced_lay.addWidget(widget)
+                elif sublayout is not None:
+                    advanced_lay.addLayout(sublayout)
+            self._advanced_scroll = QScrollArea(self)
+            self._advanced_scroll.setObjectName("livePlayerAdvancedScroll")
+            self._advanced_scroll.setWidgetResizable(True)
+            self._advanced_scroll.setFrameShape(QFrame.Shape.NoFrame)
+            self._advanced_scroll.setWidget(advanced)
+            self._advanced_scroll.setVisible(False)
+
+            quick = QHBoxLayout()
+            quick.setContentsMargins(4, 2, 4, 2)
+            self.btn_quick_record = QToolButton(self)
+            self.btn_quick_record.setText("⏺  RECORD")
+            self.btn_quick_record.setCheckable(True)
+            self.btn_quick_record.setToolTip("Start or finish a live take immediately. Recording format and destination are in Controls.")
+            self.btn_quick_record.setMinimumHeight(38)
+            self.btn_quick_record.setStyleSheet(
+                "QToolButton{background:#682b36;color:#fff;border:1px solid #ff8292;"
+                "border-radius:8px;padding:6px 18px;font-weight:900;}"
+                "QToolButton:checked{background:#d83b50;color:white;border:2px solid #ffc0c8;}"
+            )
+            self.btn_quick_record.toggled.connect(self.chk_rec.setChecked)
+            self.chk_rec.toggled.connect(self.btn_quick_record.setChecked)
+            self.btn_controls = QToolButton(self)
+            self.btn_controls.setText("⚙  Controls & editing")
+            self.btn_controls.setCheckable(True)
+            self.btn_controls.setToolTip("Open advanced recording, layers, mic, camera, mix, effects and performance controls.")
+            self.btn_controls.setMinimumHeight(38)
+            self.btn_controls.toggled.connect(self._advanced_scroll.setVisible)
+            quick.addWidget(self.btn_quick_record)
+            # Reparent the existing media picker into the quick-action strip.
+            quick.addWidget(self.btn_media)
+            quick.addWidget(self.btn_controls)
+            quick.addStretch(1)
+
+            lay.insertLayout(2, quick)
+            lay.insertWidget(3, self.visual, 1)
+            lay.addWidget(self._advanced_scroll, 0)
+            lay.addWidget(self.status, 0)
+            self.visual.setMinimumHeight(300)
+            self.visual.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            self.setMinimumSize(760, 560)
+        except Exception as _center_exc:
+            # Preserve the original fully-functional layout if a platform Qt
+            # backend cannot reparent a control while constructing the drawer.
+            try:
+                print(f"[Live Player] centered layout fallback: {_center_exc}")
+            except Exception:
+                pass
+
         self.btn_play.clicked.connect(self.start)
         self.btn_stop.clicked.connect(self.stop)
         self.btn_play.setToolTip("Play the composition live (Space toggles play / stop)")
@@ -2849,9 +3191,10 @@ class LivePlayerWindow(QDialog):
         self._media_load_generation = 0
         self._record_finish_generation = 0
         self.timer = QTimer(self)
-        self.timer.setInterval(16)
+        self.timer.setInterval(33)  # 30 Hz UI/visual refresh; audio remains on its own callback
         self.timer.timeout.connect(self._tick)
-        self.timer.start()              # the view stays live (camera) even while stopped
+        self.timer.start()              # only the Live Player owns this automatic scenograph refresh
+        self._last_scode_visual_tick = 0.0
         # Ctrl+wheel is reserved here for live-key pitch bend, not UI zoom. Plain
         # wheel events continue to scroll normally through child scroll areas.
         for _widget in [self] + list(self.findChildren(QWidget)):
@@ -2905,6 +3248,84 @@ class LivePlayerWindow(QDialog):
         return False
 
     # -- layers / displays --------------------------------------------------
+    def _reset_layers(self):
+        for key, _title, _default in LAYERS:
+            cb = self._layer_actions.get(key)
+            if cb is not None:
+                cb.setChecked(key == "rig")
+        self.status.setText("Main video rig / scenograph only.")
+
+    def _randomize_morph(self):
+        import random
+        self.chk_morph_keys.setChecked(bool(random.getrandbits(1)))
+        self.chk_morph_media.setChecked(bool(random.getrandbits(1)))
+        self.sld_morph.setValue(random.randint(20, 80))
+        self.cmb_place.setCurrentIndex(random.randrange(len(PLACE_WINDOWS)))
+        self.chk_morph.setChecked(True)
+        self.status.setText("Canonical morph randomized on request; audio processing remains on its own callback.")
+
+    def _randomize_layers(self):
+        # Randomization is opt-in and sparse. It never enables camera capture,
+        # camera overlays, microphone capture, or changes the main rig switch.
+        import random
+        candidates = ("orbit", "ring", "labels", "strip", "media", "multidim")
+        count = random.randint(1, min(3, len(candidates)))
+        chosen = set(random.sample(candidates, count))
+        for key in candidates:
+            cb = self._layer_actions.get(key)
+            if cb is not None:
+                cb.setChecked(key in chosen)
+        for key in ("camera", "camera_full"):
+            cb = self._layer_actions.get(key)
+            if cb is not None:
+                cb.setChecked(False)
+        rig_cb = self._layer_actions.get("rig")
+        if rig_cb is not None:
+            rig_cb.setChecked(True)
+        self.status.setText("Randomized optional visual layers; camera and mic remain off.")
+
+    def _reset_morph(self):
+        self.chk_morph.setChecked(False)
+        self.chk_morph_keys.setChecked(False)
+        self.chk_morph_media.setChecked(False)
+        self.sld_morph.setValue(int(MORPH_DEFAULTS["amount"]))
+        self.cmb_place.setCurrentIndex(0)
+
+    def release_session_resources(self):
+        """Stop Live Player workers when the session manager closes this window."""
+        try:
+            self.timer.stop()
+        except Exception:
+            pass
+        self.stop()
+        cam, self.camera = self.camera, None
+        if cam is not None:
+            self._teardown_off_ui([cam.close])
+        for v in self._views():
+            v.camera = None
+        try:
+            if self.chk_cam.isChecked():
+                self.chk_cam.blockSignals(True)
+                self.chk_cam.setChecked(False)
+                self.chk_cam.blockSignals(False)
+        except Exception:
+            pass
+        bv, self._broadcast_view = getattr(self, "_broadcast_view", None), None
+        if bv is not None:
+            try:
+                bv.close()  # QWidget shutdown stays on the GUI thread
+                worker = getattr(bv, "_thread", None)
+                if worker is not None:
+                    self._teardown_off_ui([lambda worker=worker: worker.join(timeout=1.0)])
+            except Exception:
+                pass
+        self._close_popouts()
+
+    def resume_session_resources(self):
+        """Resume lightweight UI refresh after the retained window is restored."""
+        if not self.timer.isActive():
+            self.timer.start()
+
     def _set_layer(self, key, on):
         for v in self._views():
             v.layers[key] = bool(on)
@@ -2962,7 +3383,7 @@ class LivePlayerWindow(QDialog):
             " #livePlayer QSlider::handle:horizontal { background:#f2d17a; width:14px; margin:-5px 0; border-radius:7px; }"
             " QFrame#liveRow { background:rgba(10,28,44,225); border:1px solid #1f4459; border-radius:8px; }")
         title = QLabel("🎬 LIVE PLAYER  ·  live composition · keys · media · camera · broadcast")
-        title.setStyleSheet("color:#f2d17a; font-size:15pt; font-weight:900; letter-spacing:0.6px; padding:2px 4px;")
+        title.setStyleSheet("color:#f2d17a; font-size:15pt; font-weight:900; padding:2px 4px;")
         lay.insertWidget(0, title)
         rows = []
         for i in range(lay.count()):
@@ -3116,9 +3537,28 @@ class LivePlayerWindow(QDialog):
 
     # -- visual tweaks --------------------------------------------------------
     def _build_tweak_menu(self):
-        from PyQt6.QtWidgets import QWidgetAction, QScrollArea, QFormLayout
+        """Compatibility: the panel inside a menu (older callers)."""
+        from PyQt6.QtWidgets import QWidgetAction
         menu = QMenu(self)
-        box = QWidget(); outer = QVBoxLayout(box); outer.setContentsMargins(8, 6, 8, 6)
+        wa = QWidgetAction(menu); wa.setDefaultWidget(self._build_tweak_panel()); menu.addAction(wa)
+        return menu
+
+    def _build_tweak_panel(self):
+        from PyQt6.QtWidgets import QScrollArea, QFormLayout, QGroupBox
+        box = QGroupBox("🎛 Visual presets & look"); box.setObjectName("liveVisualPresets")
+        outer = QVBoxLayout(box); outer.setContentsMargins(8, 6, 8, 6)
+        self._tweak_live = True
+        self._tweak_pending = {}
+        live_row = QHBoxLayout()
+        self.chk_tweak_live = QCheckBox("Live update to UI")
+        self.chk_tweak_live.setChecked(True)
+        self.chk_tweak_live.setToolTip("On: every slider / preset change reaches the live view, pop-outs and takes at once.\n"
+                                       "Off: edit freely - nothing is rendered until you tick this again, which applies "
+                                       "all pending edits in one step.")
+        self.chk_tweak_live.toggled.connect(self._tweak_live_toggled)
+        self.lbl_tweak_pending = QLabel("")
+        live_row.addWidget(self.chk_tweak_live); live_row.addWidget(self.lbl_tweak_pending, 1)
+        outer.addLayout(live_row)
         top = QHBoxLayout()
         self.cmb_tweak_preset = QComboBox(); self.cmb_tweak_preset.addItems(list(TWEAK_PRESETS))
         b_apply = QPushButton("apply preset"); b_reset = QPushButton("reset all")
@@ -3133,7 +3573,7 @@ class LivePlayerWindow(QDialog):
         b_rand.clicked.connect(self._tweak_random)
         b_save.clicked.connect(self._tweak_save_as)
         self.cmb_tweak_preset.activated.connect(lambda _i: self._tweak_preset(self.cmb_tweak_preset.currentText()))
-        sc = QScrollArea(); sc.setWidgetResizable(True); sc.setMinimumSize(380, 420)
+        sc = QScrollArea(); sc.setWidgetResizable(True); sc.setMinimumSize(380, 160); sc.setMaximumHeight(300)
         inner = QWidget(); form = QFormLayout(inner)
         self._tweak_sliders = {}
         # The menu is built before LiveVisual exists; seed sliders from the same saved tweaks it loads.
@@ -3149,20 +3589,51 @@ class LivePlayerWindow(QDialog):
         sc.setWidget(inner); outer.addWidget(sc)
         b_apply.clicked.connect(lambda: self._tweak_preset(self.cmb_tweak_preset.currentText()))
         b_reset.clicked.connect(lambda: self._tweak_preset("Default"))
-        wa = QWidgetAction(menu); wa.setDefaultWidget(box); menu.addAction(wa)
-        return menu
+        return box
+
+    def _tweak_target(self):
+        v = getattr(self, "visual", None)
+        return v.tw if v is not None else None
+
+    def _tweak_live_toggled(self, on):
+        """Off -> edits collect in _tweak_pending; on -> they all reach the render state at once."""
+        self._tweak_live = bool(on)
+        if self._tweak_live and self._tweak_pending:
+            tw = self._tweak_target()
+            if tw is not None:
+                tw.update(self._tweak_pending)
+                n = len(self._tweak_pending)
+                self._tweak_pending = {}
+                self._tweak_save()
+                try:
+                    self.status.setText("Applied %d visual edit(s)" % n)
+                except Exception:
+                    pass
+        self._tweak_pending_label()
+
+    def _tweak_pending_label(self):
+        lab = getattr(self, "lbl_tweak_pending", None)
+        if lab is not None:
+            n = len(getattr(self, "_tweak_pending", {}) or {})
+            lab.setText(("%d pending edit(s) - tick to render" % n) if n and not self._tweak_live else "")
 
     def _tweak_set(self, key, v, lab=None):
-        self.visual.tw[key] = int(v)
         if lab is not None:
             lab.setText(str(int(v)))
+        tw = self._tweak_target()
+        if not getattr(self, "_tweak_live", True) or tw is None:
+            self._tweak_pending[key] = int(v)
+            self._tweak_pending_label()
+            return
+        tw[key] = int(v)
         if not getattr(self, "_tweak_save_pending", False):
             self._tweak_save_pending = True
             QTimer.singleShot(600, self._tweak_save)
 
     def _tweak_save(self):
         self._tweak_save_pending = False
-        save_tweaks(self.visual.tw)
+        if self._tweak_target() is not None:
+            save_tweaks(self.visual.tw)
 
     def _tweak_step(self, d):
         c = self.cmb_tweak_preset
@@ -3185,7 +3656,7 @@ class LivePlayerWindow(QDialog):
         if not (ok and name):
             return
         presets = _user_presets()
-        presets[name] = {k: int(v) for k, v in self.visual.tw.items()}
+        presets[name] = {k: int(v) for k, v in {**self.visual.tw, **(getattr(self, '_tweak_pending', {}) or {})}.items()}
         _save_user_presets(presets)
         if self.cmb_tweak_preset.findText(name) < 0:
             self.cmb_tweak_preset.addItem(name)
@@ -3197,6 +3668,8 @@ class LivePlayerWindow(QDialog):
             sl = self._tweak_sliders.get(k)
             if sl is not None:
                 sl.setValue(int(v))
+            elif not getattr(self, "_tweak_live", True) or self._tweak_target() is None:
+                self._tweak_pending[k] = int(v); self._tweak_pending_label()
             else:
                 self.visual.tw[k] = int(v)
 
@@ -3267,6 +3740,7 @@ class LivePlayerWindow(QDialog):
             except Exception:
                 pass
         tr.pos = 0; tr.played = 0; tr.done = False
+        tr.delay = eng.trigger_delay_samples() if eng.stream is not None else 0   # PREDICTIVE_PATHWAY_R7
         eng.media = tr
         self._stop_media_video()
         if getattr(self, "_media_has_video", False):
@@ -3435,6 +3909,7 @@ class LivePlayerWindow(QDialog):
             except Exception:
                 pass
             eng.fx = fx
+            self._apply_morph(eng)                # CANON_MORPH_R7 / PREDICTIVE_PATHWAY_R7
             self._attach_media(eng)
         self._sync_mic()
         if self.chk_rec.isChecked() and self.recorder is None:
@@ -3474,7 +3949,15 @@ class LivePlayerWindow(QDialog):
         if rec is None or not rec.want_video or self.visual is None:
             return
         rig = self.rig
-        if rig is not None and getattr(rig, "frame_fi", -1) >= 0 and getattr(self.visual, "layers", {}).get("rig", True):
+        # LIVE_INPUTS_R7: the rig-only shortcut wrote ONLY rig frames, so the camera (and media video) never
+        # reached video takes while the rig ran. With any live input layer showing, every frame is the full
+        # composed view (rig + camera + media + overlays), the same picture the live view paints.
+        _L = getattr(self.visual, "layers", {}) or {}
+        live_layers = ((self.camera is not None and (_L.get("camera", True) or _L.get("camera_full")))
+                       or getattr(self, "media_video", None) is not None
+                       or getattr(self.visual, "media_video", None) is not None)
+        if (not live_layers and rig is not None and getattr(rig, "frame_fi", -1) >= 0
+                and _L.get("rig", True)):
             # RIG_TIMED_RECORD_R31: record rig frames at their own content time (exact A/V alignment).
             fi = int(rig.frame_fi)
             if fi != getattr(self, "_rec_rig_fi", -1):
@@ -3510,6 +3993,16 @@ class LivePlayerWindow(QDialog):
                 rec.error = f"view capture: {exc}"
         if self.recorder is not rec or rec.pushed >= due:
             return
+        # LIVE_SOUND_R7: audio first.  When the light engine's row queue is dry the
+        # synth thread is behind -- skip this video frame instead of competing for CPU.
+        eng = self.engine
+        try:
+            if (eng is not None and getattr(self, "_worker", None) is not None and self._worker.is_alive()
+                    and not getattr(eng, "finished", False) and eng.q.qsize() == 0):
+                rec.frames_dropped += 1
+                return
+        except Exception:
+            pass
         try:
             snapshot = self.visual.record_snapshot()  # all QWidget reads/copies on GUI thread
             self._record_frame_owner = rec
@@ -3727,21 +4220,161 @@ class LivePlayerWindow(QDialog):
         if self.chk_rig.isChecked():
             self._start_rig(plan, eng)
 
+    def _follow_full(self):
+        """LIVE_FOLLOW_R7 (full process): same settle rule as the light engine; one re-render in flight."""
+        ff = getattr(self, "_full_follow", None)
+        eng = self.engine
+        if not ff or eng is None or ff.get("eng") is not eng or getattr(eng, "finished", False):
+            return
+        h = self.host
+        fut = ff.get("fut")
+        if fut is not None:
+            if not fut.done():
+                return
+            ff["fut"] = None
+            try:
+                buf, sr = fut.result()
+            except Exception as exc:
+                self.status.setText(f"Full process routine: re-render after your edit failed ({exc})")
+                return
+            hold = ff["holder"]
+            if hold.get("sr") and int(sr) != int(hold["sr"]):
+                return                                       # the stream is open at the old rate: keep it
+            chunks = ff["chunks"](buf, sr, ff["n_rows"])
+            if chunks:
+                hold["chunks"] = chunks; hold["full"] = True
+                try:
+                    plan = build_plan(h)
+                    for v in self._views():
+                        v.set_plan(plan, eng)                # the views show what now sounds
+                except Exception:
+                    pass
+                self.status.setText(f"▶ Full process routine · {sr} Hz · followed your edit")
+            return
+        now = time.monotonic()
+        if now - ff.get("t_check", 0.0) < 0.5:
+            return
+        ff["t_check"] = now
+        src = getattr(h, "_last_live_source_change", None)
+        if src == ff.get("src") or src is None or (now - float(src)) < 0.6:
+            return
+        job = getattr(h, "_canonical_commit", None)
+        if job is not None and getattr(job, "running", False):
+            return
+        ff["src"] = src
+        try:
+            h._snapshot_render_inputs()
+            ff["fut"] = h._live_audio_fx_lane.submit(ff["render"](None))
+            self.status.setText("Full process routine: re-rendering your edit (the current render keeps playing)…")
+        except Exception as exc:
+            self.status.setText(f"Full process routine: could not re-render ({exc})")
+
+    def _follow_composition(self):
+        """LIVE_FOLLOW_R7: rebuild the light plan when the composition changed (GUI thread, 2 Hz,
+        after the edit burst settles and no canonical commit is running)."""
+        try:
+            self._follow_full()
+        except Exception:
+            pass
+        holder = getattr(self, "_plan_holder", None)
+        eng = self.engine
+        if not holder or eng is None or holder.get("eng") is not eng or getattr(eng, "finished", False):
+            return
+        now = time.monotonic()
+        if now - holder.get("t_check", 0.0) < 0.5:
+            return
+        holder["t_check"] = now
+        h = self.host
+        src = getattr(h, "_last_live_source_change", None)
+        if src == holder.get("src") or src is None or (now - float(src)) < 0.6:
+            return
+        job = getattr(h, "_canonical_commit", None)
+        if job is not None and getattr(job, "running", False):
+            return
+        try:
+            plan = build_plan(h)
+        except Exception:
+            return
+        holder["src"] = src
+        if not self.chk_comp.isChecked():
+            plan = dict(plan); plan["rows"] = [[] for _ in (plan["rows"] or [[]])]; plan["names"] = []
+        if not plan["rows"]:
+            plan = dict(plan); plan["rows"] = [[]]
+        holder["plan"] = plan
+        holder["gen"] = int(holder.get("gen", 0)) + 1
+        # Pre-rendered rows are the old plan. Keep the very next one (no gap while the new
+        # plan's row renders inside its budget) and drop the rest.
+        items = []
+        while True:
+            try:
+                items.append(eng.q.get_nowait())
+            except Exception:
+                break
+        keep = items[:1]
+        if any(it is None for it in items[1:]):
+            keep.append(None)                         # end-of-song marker survives
+        for it in keep:
+            try:
+                eng.q.put_nowait(it)
+            except Exception:
+                pass
+        base = keep[0][0] if (keep and keep[0] is not None) else int(getattr(eng, "row_idx", 0))
+        holder["next_ri"] = (int(base) + 1) % len(plan["rows"])
+        try:
+            self.spin_start.setMaximum(len(plan["rows"]))
+        except Exception:
+            pass
+        for v in self._views():
+            try:
+                v.set_plan(plan, eng)
+            except Exception:
+                pass
+        try:
+            self.status.setText(f"▶ Light engine · {len(plan['names'])} instruments · {len(plan['rows'])} rows · "
+                                f"{plan['bpm']:.0f} BPM · followed your edit")
+        except Exception:
+            pass
+
     def _start_light(self, plan, eng, start):
         loop = self.chk_loop.isChecked()
         h = self.host
+        # LIVE_FOLLOW_R7: the synth thread reads the CURRENT plan each row; edits made while
+        # playing (or a seed fill that lands after Start) swap in at the next row.
+        holder = self._plan_holder = {"plan": plan, "src": getattr(h, "_last_live_source_change", None),
+                                      "eng": eng, "t_check": 0.0}
 
         def work():
             cache = {}
+            pending = []
             ri = start
+            first = True
             try:
                 while not eng.stop_evt.is_set():
-                    buf = synth_row(h, plan["rows"][ri], plan["row_dur"], LIGHT_SR, cache)
+                    plan = holder["plan"]
+                    nri = holder.pop("next_ri", None)
+                    if nri is not None:
+                        ri = int(nri)
+                    if not plan["rows"]:
+                        time.sleep(0.05); continue
+                    ri %= len(plan["rows"])
+                    # LIVE_SOUND_R7: a row must be ready before the one playing ends --
+                    # 0.6 x row time (first row: <= 0.75 s so play starts at once).
+                    rd = float(plan["row_dur"])
+                    budget = min(0.75, 0.6 * rd) if first else 0.6 * rd
+                    first = False
+                    gen = holder.get("gen", 0)
+                    buf = synth_row(h, plan["rows"][ri], rd, LIGHT_SR, cache, budget_s=budget, pending=pending)
+                    stale = False
                     while not eng.stop_evt.is_set():
+                        if holder.get("gen", 0) != gen:      # plan swapped meanwhile: this row is old
+                            stale = True; break
                         try:
-                            eng.q.put((ri, buf), timeout=0.1); break
+                            eng.q.put((ri, buf), timeout=0.02 if pending else 0.1); break
                         except queue.Full:
+                            refine_pending(h, cache, pending, LIGHT_SR, 1)   # idle: true voices
                             continue
+                    if stale:
+                        continue                             # next_ri (set by the swap) picks up
                     ri += 1
                     if ri >= len(plan["rows"]):
                         if not loop:
@@ -3870,6 +4503,12 @@ class LivePlayerWindow(QDialog):
             except Exception as exc:
                 self.status.setText(f"Audio output unavailable: {exc}")
 
+        # LIVE_FOLLOW_R7 (full process): _follow_full re-renders the full mixdown after an edit settles and
+        # swaps holder["chunks"]; feed() reads holder["chunks"] every row, so the new render takes over at the
+        # next row boundary with no gap (the old render keeps playing until then).
+        self._full_follow = {"eng": eng, "holder": holder, "render": _render, "chunks": _chunks, "n_rows": n_rows,
+                             "src": getattr(h, "_last_live_source_change", None), "fut": None, "t_check": 0.0}
+
         def upgrade():
             if gen != self._gen or self.engine is not eng:
                 return
@@ -3917,6 +4556,10 @@ class LivePlayerWindow(QDialog):
     def _tick_scode_pool_visual(self):
         if not getattr(self, "_scode_pool_visual", False):
             return
+        now = time.monotonic()
+        if now - float(getattr(self, "_last_scode_visual_tick", 0.0)) < 0.1:
+            return
+        self._last_scode_visual_tick = now
         # While a take is recording, keep the sCode visual tick light so the
         # record-frame and audio-writer threads are not starved on Latitude-class CPUs.
         recording = getattr(self, "recorder", None) is not None
@@ -3969,6 +4612,90 @@ class LivePlayerWindow(QDialog):
         t = getattr(self, "_teardown_thread", None)
         return t is not None and t.is_alive()
 
+    # -- CANON_MORPH_R7 / PREDICTIVE_PATHWAY_R7 -----------------------------------
+    def _morph_state(self):
+        return {"enabled": self.chk_morph.isChecked(), "amount": int(self.sld_morph.value()),
+                "keys": self.chk_morph_keys.isChecked(), "samples": self.chk_morph_media.isChecked(),
+                "place": int(self.cmb_place.currentIndex())}
+
+    def _apply_morph(self, eng):
+        st = self._morph_state()
+        try:
+            self.host.live_morph_state = dict(st)        # saved with the project
+        except Exception:
+            pass
+        self.lbl_morph.setText(f"{st['amount']} %")
+        # Keys/samples are independent routing switches; only the amount slider
+        # depends on the master morph enable. Their checked state can be prepared
+        # before enabling the master, and remains visibly editable while bypassed.
+        self.sld_morph.setEnabled(bool(st["enabled"]))
+        self.chk_morph_keys.setEnabled(True)
+        self.chk_morph_media.setEnabled(True)
+        if eng is None:
+            return
+        if st["enabled"]:
+            import canonical_morph as _cm
+            mo = eng.morph if isinstance(eng.morph, _cm.EnvelopeMorph) else _cm.EnvelopeMorph()
+            mo.amount = st["amount"] / 100.0
+            if eng.morph is None:
+                mo.set_target(eng.comp_scope, smooth=0)
+            eng.morph = mo
+        else:
+            eng.morph = None
+        eng.morph_keys, eng.morph_media = st["keys"], st["samples"]
+        eng.plan_fn = lambda: (self.visual.plan if self.visual is not None else None)
+        eng.place_window_s = self._place_window_s(st["place"])
+
+    def _place_window_s(self, idx):
+        kind = PLACE_WINDOWS[max(0, min(len(PLACE_WINDOWS) - 1, int(idx)))][1]
+        if kind <= 0:
+            return 0.0
+        try:
+            bpm = float(self.visual.plan.get("bpm", 120.0)) if (self.visual is not None and self.visual.plan) else 120.0
+        except Exception:
+            bpm = 120.0
+        beat = 60.0 / bpm if bpm > 0 else 0.5
+        return beat * kind
+
+    def _output_watchdog(self):
+        """LIVE_INPUTS_R7: if the speakers' callback stalls for 1.5 s while playing, reopen the output."""
+        eng = self.engine
+        if eng is None or eng.stream is None or eng.finished or eng.stop_evt.is_set():
+            self._wd = None
+            return
+        now = time.monotonic()
+        wd = getattr(self, "_wd", None)
+        if wd is None or wd[0] is not eng or eng.played != wd[1]:
+            self._wd = (eng, eng.played, now)
+            return
+        if now - wd[2] < 1.5 or int(getattr(eng, "reopens", 0)) >= 5:
+            return
+        try:
+            eng.reopen()
+            self.status.setText("🔊 The audio output stalled (device re-route) — reopened it; playing on.")
+        except Exception as exc:
+            self.status.setText(f"Audio output stalled and could not reopen: {exc}")
+        self._wd = (eng, eng.played, now)
+
+    def _morph_tick(self):
+        eng = self.engine
+        if eng is None:
+            return
+        now = time.monotonic()
+        if now - getattr(self, "_morph_last", 0.0) >= 0.25:      # 4 Hz target refresh; audio callback owns block processing
+            self._morph_last = now
+            mo = eng.morph
+            if mo is not None:
+                try:
+                    mo.set_target(eng.comp_scope)
+                except Exception:
+                    pass
+            if eng.place_window_s > 0:
+                eng.place_window_s = self._place_window_s(self.cmb_place.currentIndex())   # tempo follows edits
+                self.lbl_place.setText(f"{eng.placed} placed")
+            elif self.lbl_place.text():
+                self.lbl_place.setText("")
+
     def add_key(self, buf, sr):
         if self.is_active():
             arr = self.engine.add_key(buf, sr)
@@ -3988,6 +4715,9 @@ class LivePlayerWindow(QDialog):
         elif self.lbl_mic.text():
             self.lbl_mic.setText("")
         self._record_frames()
+        self._follow_composition()
+        self._morph_tick()
+        self._output_watchdog()
         try:
             self._tick_scode_pool_visual()
         except Exception:
@@ -4023,6 +4753,14 @@ class LivePlayerWindow(QDialog):
         super().keyPressEvent(ev)
 
     def closeEvent(self, ev):
+        # TWEAK_PENDING_KEEP_R7: edits made with "Live update to UI" off are kept (saved, not rendered).
+        try:
+            _pend = dict(getattr(self, "_tweak_pending", {}) or {})
+            _tw = self._tweak_target()
+            if _pend and _tw is not None:
+                save_tweaks({**_tw, **_pend})
+        except Exception:
+            pass
         self.stop()
         pool = getattr(self, "_record_local_pool", None)
         if pool is not None:
@@ -4052,5 +4790,13 @@ def open_live_player(host):
     if win is None:
         win = LivePlayerWindow(host)
         host._live_player_window = win
-    win.show(); win.raise_(); win.activateWindow()
+    try:
+        if not bool(getattr(win, "_has_been_shown_once", False)):
+            win.showMaximized()
+            win._has_been_shown_once = True
+        else:
+            win.show()
+    except Exception:
+        win.show()
+    win.raise_(); win.activateWindow()
     return win

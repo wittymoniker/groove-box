@@ -57,7 +57,17 @@ except Exception:
 # performance CPU governor and raised priority, before any worker thread is started.
 try:
     import appliance_tuning as _appliance_tuning
-    _appliance_tuning.apply()
+    _appliance_report = _appliance_tuning.apply()
+    if _appliance_report.get("applied"):
+        _clock = _appliance_report.get("clock", {})
+        print("[sOS clock] governor=%s epp=%s boost=%s intel_no_turbo=%s current_khz=%s..%s thermal_c=%s" % (
+            ",".join(_clock.get("governors", [])) or "unavailable",
+            ",".join(_clock.get("epp", [])) or "unavailable",
+            _clock.get("cpufreq_boost", "unavailable"),
+            _clock.get("intel_no_turbo", "unavailable"),
+            _clock.get("cpu_freq_current_khz_min", "unavailable"),
+            _clock.get("cpu_freq_current_khz_max", "unavailable"),
+            _clock.get("thermal_zone_c", [])))
 except Exception:
     pass
 
@@ -426,6 +436,12 @@ if __name__ == "__main__":
             _emoji_ui.install(app)
         except Exception as _emoji_exc:
             print(f"[Emoji] {_emoji_exc}", file=sys.stderr)
+        # Shared scrollbars/splitters for main, detached, and tool windows.
+        try:
+            import window_chrome as _window_chrome
+            _window_chrome.install(app)
+        except Exception as _chrome_exc:
+            print(f"[WindowChrome] shared styling unavailable: {_chrome_exc}", file=sys.stderr)
         # One queued UI publication path is shared by every application window.
         from ui_runtime import install_ui_runtime as _install_ui_runtime
         _install_ui_runtime(app)
@@ -517,9 +533,8 @@ if __name__ == "__main__":
             _th.Thread(target=_mi_check, name="math-invariants", daemon=True).start()
         except Exception:
             pass
-        # Optional Julia packages may need Pkg activation/instantiation. Warm
-        # them after the main UI has had time to paint; Python/Rust/C++ paths
-        # remain available immediately and no audio callback performs init.
+        # Warm the bundled optional Julia source after the main UI has painted.
+        # Startup never instantiates packages or performs network activity.
         try:
             from PyQt6.QtCore import QTimer as _QTimer
             def _warm_julia_after_first_paint():

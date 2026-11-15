@@ -5,6 +5,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
+# R64: every top-level BUILD invocation imports overlay-only sources and refreshes
+# the active ISO runtime payload before any compilation or packaging stage.
+if [[ "${GROOVEBOX_OVERLAY_SYNC_DONE:-0}" != 1 ]]; then
+  bash "$ROOT/BUILD_ISO/RUN_ME_ZERO_STATE.sh" --prepare-overlay
+  export GROOVEBOX_OVERLAY_SYNC_DONE=1
+fi
+
 echo "=== 1/3 syntax + fractal import ==="
 python3 -m py_compile groovebox.py run_groovebox.py launch_groovebox.py groovebox_v3_runtime.py
 PYTHONPATH="$ROOT/groovebox_fractal" python3 -c "import groovebox_fractal; print('fractal OK')"

@@ -16,6 +16,49 @@ import glob
 import os
 import sys
 
+
+def _read(path):
+    try:
+        return open(path, "r", encoding="ascii").read().strip()
+    except Exception:
+        return None
+
+
+def clock_snapshot(sys_root="/sys"):
+    """Read firmware-governed CPU clock/boost/thermal state; never changes limits."""
+    cpu_root = os.path.join(sys_root, "devices", "system", "cpu")
+    freqs = []
+    governors = set()
+    epps = set()
+    for name in sorted(os.listdir(cpu_root)) if os.path.isdir(cpu_root) else []:
+        if not name.startswith("cpu") or not name[3:].isdigit():
+            continue
+        base = os.path.join(cpu_root, name, "cpufreq")
+        cur = _read(os.path.join(base, "scaling_cur_freq"))
+        if cur and cur.isdigit():
+            freqs.append(int(cur))
+        gov = _read(os.path.join(base, "scaling_governor"))
+        epp = _read(os.path.join(base, "energy_performance_preference"))
+        if gov: governors.add(gov)
+        if epp: epps.add(epp)
+    boost = _read(os.path.join(cpu_root, "cpufreq", "boost"))
+    no_turbo = _read(os.path.join(cpu_root, "intel_pstate", "no_turbo"))
+    thermal = []
+    thermal_root = os.path.join(sys_root, "class", "thermal")
+    if os.path.isdir(thermal_root):
+        for name in os.listdir(thermal_root):
+            if name.startswith("thermal_zone"):
+                raw = _read(os.path.join(thermal_root, name, "temp"))
+                if raw and raw.lstrip("-").isdigit():
+                    value = int(raw)
+                    thermal.append(round(value / 1000.0 if abs(value) >= 1000 else float(value), 1))
+    return {"cpu_freq_current_khz_min": min(freqs) if freqs else None,
+            "cpu_freq_current_khz_max": max(freqs) if freqs else None,
+            "governors": sorted(governors), "epp": sorted(epps),
+            "cpufreq_boost": boost, "intel_no_turbo": no_turbo,
+            "thermal_zone_c": thermal,
+            "firmware_controls_clock_ceiling": True}
+
 NICE_TARGET = -5
 
 
@@ -32,7 +75,7 @@ def _is_appliance():
 
 def _write(path, value):
     try:
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(value)
         return True
     except Exception:
@@ -41,7 +84,7 @@ def _write(path, value):
 
 def apply(sys_root="/sys", force=False):
     """Returns a small report dict; never raises."""
-    report = {"applied": False, "governor": 0, "epp": 0, "nice": None}
+    report = {"applied": False, "governor": 0, "epp": 0, "nice": None, "clock": {}}
     try:
         if os.environ.get("GROOVEBOX_APPLIANCE_TUNING", "1").strip().lower() in ("0", "false", "no", "off"):
             return report
@@ -66,4 +109,8 @@ def apply(sys_root="/sys", force=False):
             pass
     except Exception:
         pass
+    try:
+        report["clock"] = clock_snapshot(sys_root)
+    except Exception:
+        report["clock"] = {}
     return report

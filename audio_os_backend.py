@@ -216,10 +216,10 @@ def invalidate_device_cache():
         _DEVICE_CACHE_ERROR = None
 
 
-def _first_audio_use(reason: str):
+def _first_audio_use(reason: str, reroute: bool = True):
     try:
         from hardware_runtime import ensure_audio_ready
-        ensure_audio_ready(reason)
+        ensure_audio_ready(reason, reroute=reroute)
     except Exception:
         pass
 
@@ -311,7 +311,7 @@ def negotiate_input_samplerate(samplerate=48000, *, channels=1, dtype='float32',
     raise RuntimeError('No usable physical input sample rate')
 
 def open_input_stream_adaptive(*, samplerate=48000, channels=1, dtype='float32', callback=None,
-                               blocksize=0, latency='low', preferred_name=None, device=None, **kwargs):
+                               blocksize=0, latency='low', preferred_name=None, device=None, reroute=True, **kwargs):
     """Open capture at a supported hardware rate and return (stream, rate, index).
 
     Fails fast if a recent open already failed, so the UI thread is not blocked
@@ -328,7 +328,7 @@ def open_input_stream_adaptive(*, samplerate=48000, channels=1, dtype='float32',
         last = last_good_input()
         if last and last[0]:
             preferred_name = last[0]
-    _first_audio_use('audio-record-adaptive')
+    _first_audio_use('audio-record-adaptive', reroute=reroute)   # LIVE_INPUTS_R7: live callers pass False
     try:
         rate,idx=negotiate_input_samplerate(samplerate,channels=channels,dtype=dtype,preferred_name=preferred_name,device=device)
         params=dict(samplerate=int(rate),channels=channels,dtype=dtype,callback=callback,
@@ -1120,6 +1120,26 @@ class SilentOutputStream:
         return True
 
 
+
+def _mono_compat_callback(callback, source_channels):
+    """Adapt an N-channel callback to mono PCM at the physical output boundary."""
+    source_channels = max(1, int(source_channels))
+    if source_channels == 1:
+        return callback
+    scratch = {"data": None, "shape": None}
+
+    def mono_callback(outdata, frames, time_info, status):
+        import numpy as _np
+        shape = (int(frames), source_channels)
+        if scratch["shape"] != shape:
+            scratch["data"] = _np.zeros(shape, dtype=_np.float32)
+            scratch["shape"] = shape
+        buf = scratch["data"]
+        buf.fill(0.0)
+        callback(buf, frames, time_info, status)
+        _np.mean(buf, axis=1, dtype=_np.float32, out=outdata[:, 0])
+    return mono_callback
+
 def open_output_stream(*, samplerate, channels=1, dtype='float32', callback=None,
                        blocksize=0, latency='low', preferred_name=None, silent_fallback=None, **kwargs):
     """Open a routed output stream; with no usable device, return a SilentOutputStream when enabled."""
@@ -1131,11 +1151,30 @@ def open_output_stream(*, samplerate, channels=1, dtype='float32', callback=None
         return _open_output_stream_strict(**args)
     try:
         return _open_output_stream_strict(**args)
-    except Exception as exc:
-        print(f"[Audio] no usable output device ({type(exc).__name__}); running silent until one appears",
-              file=sys.stderr, flush=True)
-        return SilentOutputStream(lambda: _open_output_stream_strict(**args), samplerate=samplerate,
-                                  channels=channels, dtype=dtype, callback=callback, blocksize=blocksize)
+    except Exception as stereo_exc:
+        # If a stereo/multichannel endpoint refuses the stream, retry mono PCM.
+        # The synth callback retains its requested layout; only the hardware edge
+        # folds channels down, preserving compatibility with mono-only devices.
+        if int(channels) > 1 and callback is not None:
+            mono_callback = _mono_compat_callback(callback, int(channels))
+            mono_args = dict(args, channels=1, callback=mono_callback)
+            try:
+                stream = _open_output_stream_strict(**mono_args)
+                print("[Audio] multichannel output unavailable; using mono PCM compatibility mode",
+                      file=sys.stderr, flush=True)
+                return stream
+            except Exception as mono_exc:
+                print(f"[Audio] stereo and mono output unavailable ({type(mono_exc).__name__}); running silent",
+                      file=sys.stderr, flush=True)
+        else:
+            print(f"[Audio] no usable output device ({type(stereo_exc).__name__}); running silent until one appears",
+                  file=sys.stderr, flush=True)
+        fallback_channels = 1 if int(channels) > 1 else int(channels)
+        fallback_callback = _mono_compat_callback(callback, int(channels)) if fallback_channels == 1 and int(channels) > 1 else callback
+        return SilentOutputStream(
+            lambda: _open_output_stream_strict(**dict(args, channels=fallback_channels, callback=fallback_callback)),
+            samplerate=samplerate, channels=fallback_channels, dtype=dtype,
+            callback=fallback_callback, blocksize=blocksize)
 
 
 def _open_output_stream_strict(*, samplerate, channels=1, dtype='float32', callback=None,

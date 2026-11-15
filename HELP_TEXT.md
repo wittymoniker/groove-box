@@ -111,6 +111,22 @@ VISUALS, CLIP STUDIO, GAMES AND LAN
   Compatible peers, local connectivity and firewall permissions still apply;
   automatic Internet reachability or confidentiality is not implied.
 
+UI / ENGINE WORKER OWNERSHIP
+  The shared CPU/memory budget keeps the GUI and audio callback on their owning
+  threads and reserves a separate canonical-engine worker when hardware headroom
+  permits. Linux worker priority is best-effort: engine workers default to nice +2,
+  interactive workers +4, and bulk workers +6. The main GUI thread and PortAudio
+  callback are not reprioritized. Adaptive bulk sizing cannot take the reserved
+  engine or interactive slots.
+
+  Hiding or closing a tool window cancels queued work and invalidates late results;
+  a running engine task is allowed to finish rather than being force-killed. Qt
+  widget updates are delivered through the GUI-thread queue. Generic process exit
+  cleanup does not sweep persistent app, game, media, render or engine children; the owning
+  subsystem is responsible for their normal stop/release path. This reduces the
+  chance that background cleanup tears down another live session, but it is not a
+  real-time performance or hardware-stability guarantee.
+
 POOLING, PREDICTION AND "MINIMAL" EXECUTION
   Implemented background paths use copied snapshots/private results and latest-only
   requests. Stale plans must not replace newer edits; Qt/document commits stay on

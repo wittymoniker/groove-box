@@ -103,7 +103,10 @@ def render_frame(mesh, w, h, t_sec, params=None, tex=None):
     dist = 2.6
     z = v[:, 2] + dist
     f = 0.5 * min(w, h) * 1.6
-    sx = w / 2.0 + f * v[:, 0] / z
+    # Stereo camera offset is expressed in the model's normalized world units.
+    # A distinct eye origin creates real perspective disparity across depth.
+    camera_x = float(prm.get("_camera_x", 0.0) or 0.0)
+    sx = w / 2.0 + f * (v[:, 0] - camera_x) / z
     sy = h / 2.0 - f * v[:, 1] / z
     out = np.zeros((h, w, 4), dtype=np.uint8)
     zbuf = np.full((h, w), np.inf)
@@ -169,12 +172,23 @@ def _init_worker(obj_path, params, static_tex):
 
 
 def _render_chunk(args):
-    """Render several frames in one task: [(fi, t, tex_or_None)] → [(fi, bytes)]."""
+    """Render several mono or true two-camera stereo frames in one task."""
     w, h, items = args
     out = []
+    base = dict(_W["params"])
+    layout = base.pop("_stereo_layout", "mono")
+    eye_separation = float(base.pop("_eye_separation", 0.0) or 0.0)
     for fi, t, tex in items:
-        fr = render_frame(_W["mesh"], w, h, t, _W["params"], tex if tex is not None else _W["tex"])
-        out.append((fi, fr.tobytes()))
+        texture = tex if tex is not None else _W["tex"]
+        if layout == "mono":
+            frame = render_frame(_W["mesh"], w, h, t, base, texture)
+        else:
+            left_params = dict(base); left_params["_camera_x"] = -eye_separation / 2.0
+            right_params = dict(base); right_params["_camera_x"] = eye_separation / 2.0
+            left = render_frame(_W["mesh"], w, h, t, left_params, texture)
+            right = render_frame(_W["mesh"], w, h, t, right_params, texture)
+            frame = np.concatenate((left, right), axis=1 if layout == "sbs" else 0)
+        out.append((fi, frame.tobytes()))
     return out
 
 
@@ -202,8 +216,25 @@ def _video_texture_frames(ffmpeg, path, fps, duration, size=256):
 
 
 def render_clip(obj_path, out_path, w, h, fps, duration, params=None, texture_mode="mtl", texture_path=None,
-                ffmpeg="ffmpeg", workers=None, chunk=8, progress=None):
-    """Write an alpha .mov (PNG codec) of the model; parallel chunked rendering."""
+                ffmpeg="ffmpeg", workers=None, chunk=8, progress=None,
+                stereo_layout="mono", eye_separation=0.065):
+    """Write an alpha .mov of a model; stereo frames use independently rendered eyes.
+
+    ``w``/``h`` are per-eye dimensions. ``stereo_layout`` is ``mono``, ``sbs``
+    (left-right), or ``tb`` (top-bottom). Stereo separation is intentionally small
+    and configurable; it is not automatically increased for larger frame sizes.
+    """
+    stereo_layout = str(stereo_layout).lower()
+    if stereo_layout not in {"mono", "sbs", "tb"}:
+        raise ValueError("stereo_layout must be mono, sbs, or tb")
+    eye_separation = float(eye_separation)
+    if not 0.0 <= eye_separation <= 0.2:
+        raise ValueError("eye_separation must be between 0 and 0.2 world units")
+    worker_params = dict(params or {})
+    worker_params["_stereo_layout"] = stereo_layout
+    worker_params["_eye_separation"] = eye_separation
+    enc_w = int(w) * (2 if stereo_layout == "sbs" else 1)
+    enc_h = int(h) * (2 if stereo_layout == "tb" else 1)
     mesh = load_obj(obj_path)
     static_tex = None
     if texture_mode == "mtl" and mesh.get("texture"):
@@ -214,7 +245,7 @@ def render_clip(obj_path, out_path, w, h, fps, duration, params=None, texture_mo
     if texture_mode in ("video", "scene") and texture_path:
         vid_iter = _video_texture_frames(ffmpeg, texture_path, fps, duration)
     n = max(1, int(round(duration * fps)))
-    enc = subprocess.Popen([ffmpeg, "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", f"{w}x{h}",
+    enc = subprocess.Popen([ffmpeg, "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", f"{enc_w}x{enc_h}",
                             "-r", str(fps), "-i", "pipe:0", "-c:v", "png", "-pix_fmt", "rgba", out_path],
                            stdin=subprocess.PIPE, stderr=subprocess.PIPE)
     workers = int(workers or max(1, min(8, (os.cpu_count() or 2) - 1)))
@@ -228,7 +259,7 @@ def render_clip(obj_path, out_path, w, h, fps, duration, params=None, texture_mo
     done = 0
     try:
         with ProcessPoolExecutor(max_workers=workers, initializer=_init_worker,
-                                 initargs=(obj_path, dict(params or {}), static_tex)) as ex:
+                                 initargs=(obj_path, worker_params, static_tex)) as ex:
             for res in ex.map(_render_chunk, jobs):        # ordered results, parallel work
                 for _fi, buf in res:
                     enc.stdin.write(buf)

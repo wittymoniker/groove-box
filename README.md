@@ -1,4 +1,6 @@
-# Mathematician's Groovebox
+# Strongly Superdimensional Synthesizer Simulation
+
+*Mathematician's Groovebox — a deterministic generative music, visual, and game engine.*
 
 
 A deterministic generative music, visual, and game engine driven by mathematical seeds.
@@ -34,6 +36,24 @@ difference means better music.
 5. Games keep one savestate each per Groovebox. Delete one or all from the Game Editor.
 6. To record onto a USB stick or SD card, pick it under **Save to:** (Export, Batch or Live Player) *before* recording. Press ↻ after plugging in; an unmounted stick shows as "⚠ … not mounted (click to mount)", and **📂 Choose a folder…** reaches any other location. Press ⏏ Flush before unplugging.
 7. Quick Rack ▸ 🧊 OBJ exports the whole song as a 3D model (with the exact audio and project inside) and imports any OBJ as sound. "Show an OBJ in the video" puts a model in the centre of every frame.
+
+## 3D video production and processing
+
+Quick Rack ▸ **3D Studio** can render a selected OBJ mesh with separate left- and right-eye camera views. Choose mono, side-by-side (SBS), or top-bottom (TB), per-eye resolution, frame rate, duration, and an optional soundtrack. The intermediate alpha render is encoded into a standard video container after rendering. This current path renders the selected OBJ; it does not yet composite every item in the scene list into a multi-object animated timeline.
+
+The **Process / convert** controls accept a rendered video and can convert SBS ↔ TB while keeping the two eye views separate, resize each eye independently (avoiding distortion when changing layout), change frame rate, trim a time range, and keep, replace, or mute audio. Stereo-to-mono selects the left eye. A mono source cannot become true stereoscopic depth merely by changing its layout; the tool refuses that conversion unless a caller explicitly requests duplicated 2D views. The processing path requires `ffmpeg` and `ffprobe`.
+
+## Extension sandbox boundary
+
+Python extensions are launched only through the Linux bubblewrap (`bwrap`) runtime. If bubblewrap is missing, execution fails closed; there is no silent unsandboxed fallback. The worker exposes no host home directory by default. Project and user-data access requires explicit permission plus an explicit directory supplied by the host; network access requires the `network-client` permission and a separate opt-in. GUI, audio/MIDI device, and general hardware permissions are rejected by this launcher until their dedicated brokers are wired. Resource ceilings are applied with `prlimit` (util-linux) for address space, CPU time, file descriptors, file size, process count, and core dumps, alongside the wall-clock timeout. This avoids Python `preexec_fn` work in the multithreaded GUI process. This is defense in depth, not a guarantee against kernel vulnerabilities.
+
+## Shared media memory fabric
+
+`groovebox_runtime.memory_fabric` provides immutable, reference-counted media blocks, generation-aware handles, read-only zero-copy borrows, per-scope budgets, and project/track/instrument/scene/frame-local indexes. It is a non-real-time ownership service: audio callbacks must use pre-acquired blocks and must never allocate, reclaim, or wait on this fabric.
+
+## UI and engine scheduling
+
+Background work uses a shared CPU/memory ceiling split between bulk, interactive, and a reserved canonical-engine lane when the machine has sufficient headroom. On Linux, worker threads receive best-effort relative niceness (engine `+2`, interactive `+4`, bulk `+6` by default); the main GUI thread and the PortAudio callback are not reprioritized. Adaptive bulk sizing cannot consume the reserved engine or interactive slots. Closing a tool window cancels queued jobs and invalidates stale UI results, but does not forcibly kill a running engine thread. Generic subprocess cleanup likewise leaves persistent app, game, media, render, and engine processes to their owning subsystem. These are scheduling/lifecycle safeguards, not a real-time guarantee; hardware, compositor, audio latency, and overload behavior still require measurement on the target machine.
 
 ## 1. Run it and get sound
 
@@ -714,3 +734,6 @@ The map is a discovery/initialization optimization, not a proof that every
 third-party dependency is installed or compatible. Frozen builds must still
 include their declared runtime dependencies; native extensions remain bound to
 the selected interpreter/ABI.
+
+
+R191 completion-services ledger and current gates: see `R191-CONSOLIDATED-EXECUTION-LEDGER-20261115.md` and `R191-COMPLETION-PASS-20261115.md`.

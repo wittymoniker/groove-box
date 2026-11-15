@@ -196,14 +196,24 @@ class _NoWheelSliderFilter(QObject):
             # _gb_wheel_edits. The wheel always scrolls the page; Ctrl+wheel edits.
             if not (isinstance(watched, self._VALUE_WIDGETS) or getattr(watched, "_gb_wheel_edits", False)):
                 return False
-            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            mods = event.modifiers()
+            if mods & Qt.KeyboardModifier.ControlModifier:
                 return False
+            shift_horizontal = bool(mods & Qt.KeyboardModifier.ShiftModifier)
             area = watched.parentWidget()
             while area is not None and not isinstance(area, QScrollArea):
                 area = area.parentWidget()
             if isinstance(area, QScrollArea):
                 delta = event.angleDelta()
-                if delta.y():
+                if shift_horizontal and delta.y():
+                    horizontal = area.horizontalScrollBar()
+                    if horizontal.maximum() > horizontal.minimum():
+                        horizontal.setValue(horizontal.value() - delta.y())
+                    else:
+                        # Shift+wheel fallback to the nearest vertical scroll range.
+                        vertical = area.verticalScrollBar()
+                        vertical.setValue(vertical.value() - delta.y())
+                elif delta.y():
                     bar = area.verticalScrollBar()
                     bar.setValue(bar.value() - delta.y())
                 elif delta.x():
@@ -266,6 +276,52 @@ def _r32_unpack_document(data):
     except Exception as exc:
         print(f"[MCC] compressed playlist could not be read: {exc}")
     return data
+
+
+# STEP_WINDOW_R7: lanes may hold up to STRUCT_MAX_STEPS (65 536) steps, but one widget per step froze the UI
+# (measured: the automation strip at ~40k steps never finished laying out).  Only a page of pads is real widgets;
+# the rest are a shared no-op stand-in, so index-based code keeps working and the data is never truncated.
+STEP_VIEW = 256
+
+
+def _offview_noop(*_a, **_k):
+    return None
+
+
+class _OffViewStep:
+    """Stand-in for a pad outside the visible page: every method is a harmless no-op, and it is falsy."""
+    __slots__ = ()
+
+    def __getattr__(self, _name):
+        return _offview_noop
+
+    def __bool__(self):
+        return False
+
+
+_OFF_VIEW_STEP = _OffViewStep()
+
+
+def _step_window(count, start=0, focus=None, view=STEP_VIEW):
+    """Page [lo, hi) of a lane of `count` steps.  Pages are aligned to `view`; `focus` (0-based) pulls the page."""
+    count = max(0, int(count)); view = max(1, int(view))
+    if count <= view:
+        return 0, count
+    lo = int(start or 0)
+    if focus is not None and not (lo <= int(focus) < lo + view):
+        lo = int(focus)
+    lo = max(0, min((lo // view) * view, ((count - 1) // view) * view))
+    return lo, min(count, lo + view)
+
+
+def _step_pager_button(text, tip, slot):
+    b = QPushButton(text)
+    b.setFixedHeight(58); b.setMinimumWidth(72)
+    b.setToolTip(tip)
+    b.setStyleSheet("QPushButton { background:#1c2433; color:#cfe3ff; border:1px solid #4a6b96; border-radius:4px; "
+                    "padding:2px 6px; font-weight:800; } QPushButton:hover { background:#2b3a55; }")
+    b.clicked.connect(lambda _c=False: slot())
+    return b
 
 
 def _gb_discard_widget(w):
@@ -7381,7 +7437,7 @@ def seed_script_is_viable(seed_text, n_instruments=8):
 # the existing button widths, and let QPushButton auto-size to its label so
 # it clips less easily even if a translation/rename makes text longer later.
 DAW_STYLE = """
-    QMainWindow, QWidget { background-color: #0b1020; color: #b8f7e6; font-family: 'Segoe UI', Arial, sans-serif; font-size: 9pt; }
+    QMainWindow, QWidget { background-color: #0b1020; color: #b8f7e6; font-family: Arial; font-size: 9pt; }
     QPushButton { background-color: #17233d; color: #7ce7ff; border: 1px solid #3d7ea6; border-radius: 5px; padding: 6px 9px; font-weight: bold; font-size: 9pt; min-height: 22px; }
     QLabel { font-size: 9pt; color: #b8f7e6; }
     QCheckBox, QRadioButton { font-size: 9pt; color: #ffd166; }
@@ -7732,6 +7788,15 @@ def _eq_pole_id(raw, index, freq):
     if val:
         return val[:80]
     return f"eqp-{index}-{int(round(float(freq)))}"
+
+
+def _num_or(v, default):
+    """ZERO_SAFE_R7: a number, keeping 0 (``x or default`` turned a deliberate 0 into the default)."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return float(default)
+    return f if f == f and f not in (float("inf"), float("-inf")) else float(default)
 
 
 def _fclip(x, lo, hi):
@@ -8388,7 +8453,7 @@ def build_live_parametrics_script(app, row_idx=0, op_name=None, entry=None):
         "seed": seed_v,
         "synth": blended,
         "pattern": pattern,
-        "velocity": float(entry.get("velocity", 1.0) or 1.0),
+        "velocity": _num_or(entry.get("velocity"), 1.0),
         "time_offset": float(entry.get("time_offset", 0.0) or 0.0),
     }
     # Compact scriptable form (JSON one-liner; seeds can embed/eval later)
@@ -8703,11 +8768,11 @@ def _draw_video_engine_state(painter, widget, x, y, w, h):
             col = QColor.fromHsv(int(190 + i * 18) % 360, 180, 200)
             painter.fillRect(int(bx), int(by), max(2, int(bw - 3)), bh, col)
             painter.setPen(QColor(160, 190, 230, 200))
-            painter.setFont(QFont("Segoe UI", 6))
+            painter.setFont(QFont("Arial", 6))
             painter.drawText(int(bx), int(y + h - 4), name)
             painter.setPen(Qt.PenStyle.NoPen)
         painter.setPen(QColor(140, 180, 230, 210))
-        painter.setFont(QFont("Segoe UI", 6, QFont.Weight.Bold))
+        painter.setFont(QFont("Arial", 6, QFont.Weight.Bold))
         painter.drawText(int(x + 4), int(y + 10), f"VIDEO ENGINE  mode {mode}  layers {n_can}")
         painter.restore()
     except Exception:
@@ -8917,9 +8982,9 @@ class VisualOscilloscope(QFrame):
             painter.fillRect(self.rect(), QBrush(vignette))
 
             painter.setPen(QColor("#7fb3ff"))
-            painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+            painter.setFont(QFont("Arial", 8, QFont.Weight.Bold))
             painter.drawText(8, 14, self._title)
-            painter.setFont(QFont("Segoe UI", 7))
+            painter.setFont(QFont("Arial", 7))
             painter.setPen(QColor(90, 160, 255, 200))
             painter.drawText(max(8, w - 108), 14, f"RMS {self._rms:.3f}  Pk {self._peak:.2f}")
 
@@ -9021,14 +9086,14 @@ class VisualOscilloscope(QFrame):
                 else:
                     if pts:
                         for j in range(len(pts)): painter.drawLine(pts[j],pts[(j+1)%len(pts)])
-                painter.setFont(QFont("Segoe UI",7,QFont.Weight.Bold))
+                painter.setFont(QFont("Arial",7,QFont.Weight.Bold))
                 painter.setPen(QColor(200,225,255,210))  # R23R_MONITOR_BLUE: blue-scheme label
                 painter.drawText(8, max(det_top+10, 30), kind.replace("_"," ").upper())
                 _sp = self._universal_self_procedure_state or {}
                 _co = self._universal_correspondence_state or {}
                 _pc = (_sp.get("visual_projection_cover") or {}).get("projection_count", 0)
                 _score = float(_co.get("correspondence_score", 0.0) or 0.0)
-                painter.setFont(QFont("Segoe UI",6))
+                painter.setFont(QFont("Arial",6))
                 painter.drawText(8, max(det_top+21, 41), f"SELF {int(_pc)}P · CORR {_score*100:.1f}% · FIELD {str((_sp or {}).get('field_id',''))[:8]}")
             elif self.mode == 4:
                 # LISSAJOUS / XY VECTOR SCOPE: a genuinely different geometry, not
@@ -9146,7 +9211,7 @@ class VisualOscilloscope(QFrame):
                 rad = 3.0 + 2.0 * series_sin(spark)
                 painter.drawEllipse(QPointF(sx, sy), rad, rad)
 
-            painter.setFont(QFont("Segoe UI", 7))
+            painter.setFont(QFont("Arial", 7))
             painter.setPen(QColor(160, 200, 220, 210))
             hud_parts = []
             if self.ensemble_voices:
@@ -9164,13 +9229,13 @@ class VisualOscilloscope(QFrame):
             epl = getattr(self, "engine_param_lines", None) or []
             if epl:
                 painter.setPen(QColor(180, 215, 255, 200))  # R23R_MONITOR_BLUE
-                painter.setFont(QFont("Segoe UI", 6))
+                painter.setFont(QFont("Arial", 6))
                 x0 = max(8, w - 118)
                 y0 = 22
                 for i, line in enumerate(epl[:12]):
                     painter.drawText(x0, y0 + i * 11, str(line)[:22])
                 # Mini bar meters for numeric-looking params
-                painter.setFont(QFont("Segoe UI", 6))
+                painter.setFont(QFont("Arial", 6))
                 for i, line in enumerate(epl[:8]):
                     if "=" not in line:
                         continue
@@ -9306,10 +9371,10 @@ class SpectrumAnalyzer(QFrame):
             bg.setColorAt(1.0, QColor(2, 3, 10))
             painter.fillRect(self.rect(), QBrush(bg))
             painter.setPen(QColor("#7fb3ff"))
-            painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+            painter.setFont(QFont("Arial", 8, QFont.Weight.Bold))
             painter.drawText(8, 14, self._title)
             if self.ensemble_voices:
-                painter.setFont(QFont("Segoe UI", 7))
+                painter.setFont(QFont("Arial", 7))
                 painter.setPen(QColor(140, 190, 255, 200))
                 painter.drawText(max(8, w - 70), 14, f"n={self.ensemble_voices}")
 
@@ -9342,7 +9407,7 @@ class SpectrumAnalyzer(QFrame):
                 else:
                     for j in range(len(pts)-1): painter.drawLine(pts[j],pts[j+1])
                     if len(pts)>2: painter.drawLine(pts[-1],pts[0])
-                painter.setFont(QFont("Segoe UI",7,QFont.Weight.Bold))
+                painter.setFont(QFont("Arial",7,QFont.Weight.Bold))
                 painter.drawText(8,h-5,kind.replace("_"," ").upper())
             elif self.mode == 4:
                 # SPECTROGRAM WATERFALL: history of magnitude frames scrolling
@@ -9934,7 +9999,7 @@ class VideoSynthEngine:
             i = int(hi)
         return i
 
-    def set_waveform(self, data, playhead=None):
+    def set_waveform(self, data, playhead=None, sr=None):
         if data is None:
             return
         arr = np.asarray(data, dtype=np.float32).ravel()
@@ -9944,10 +10009,25 @@ class VideoSynthEngine:
         # points.  Keep those points silent for analysis instead of allowing a
         # NaN/Inf to poison all later visual geometry.
         arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+        # AUDIO_FEATURES_R7: analysis reads the full-resolution window at its real sample rate;
+        # the 256-point drawing view is box-filtered first (plain interpolation aliased every
+        # partial above ~3 kHz into false low ripples).
+        self._wave_full = arr[-16384:]
+        if sr:
+            try:
+                self.audio_sr = float(sr)
+            except Exception:
+                pass
+        if arr.size > 512:
+            k = int(arr.size // 256)
+            cs = np.concatenate(([0.0], np.cumsum(arr, dtype=np.float64)))
+            arr_v = ((cs[k:] - cs[:-k]) / float(k)).astype(np.float32)
+        else:
+            arr_v = arr
         self.wave = np.interp(
-            np.linspace(0, arr.size - 1, 256),
-            np.arange(arr.size),
-            arr,
+            np.linspace(0, arr_v.size - 1, 256),
+            np.arange(arr_v.size),
+            arr_v,
         ).astype(np.float32)
         self.t += PAINT_PERIOD_S * MEUM_NORM
         if playhead is not None:
@@ -9962,7 +10042,8 @@ class VideoSynthEngine:
             r, g, b = [float(x) for x in mean_rgb[:3]]
             # RGB means are already in [0, 1]; map luminance directly across
             # the complete hue circle instead of compressing it into 60 degrees.
-            self._video_hue_shift = (0.2126 * r + 0.7152 * g + 0.0722 * b) * 360.0
+            self._carrier_hue_shift = (0.2126 * r + 0.7152 * g + 0.0722 * b) * 360.0
+            self._video_hue_shift = self._carrier_hue_shift + float(getattr(self, "_musical_hue_shift", 0.0) or 0.0)
         self._video_energy = float(energy)
 
     def frame_stats(self, frame=None):
@@ -9995,38 +10076,60 @@ class VideoSynthEngine:
         if w.size == 0:
             w = np.zeros(256, dtype=np.float32)
         self.wave = w
-        self._rms = self._finite_float(np.sqrt(np.mean(w ** 2)), 0.0, 0.0)
-        self._peak = self._finite_float(np.max(np.abs(w)), 0.0, 0.0)
-        # Harmonic/octave-ish bands: use the spectral domain rather than
-        # eight arbitrary waveform slices.  This makes visual population follow
-        # actual doubling boundaries (and keeps the response stable as FFT
-        # content changes).
-        spec = np.abs(np.fft.rfft(w * _hann_window(len(w))))
-        freqs = np.fft.rfftfreq(len(w), d=1.0 / 256.0)
-        edges = np.geomspace(1.0, max(2.0, float(freqs[-1])), 9)
-        bands = []
-        for b in range(8):
-            mask = (freqs >= edges[b]) & (freqs < edges[b + 1])
-            bands.append(float(np.sqrt(np.mean(spec[mask] ** 2))) if np.any(mask) else 0.0)
-        self._band = np.nan_to_num(np.asarray(bands, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
-        # Preserve the actual spectral distribution.  Peak-normalizing each
-        # frame forced its loudest band to 1.0 and distorted every other band.
-        # Energy-share normalization keeps all eight bands proportional to the
-        # measured spectrum and does not invent a per-frame reference level.
-        band_total = float(np.sum(self._band))
-        if band_total != 0.0:
-            self._band /= band_total
+        full = getattr(self, "_wave_full", None)
+        if full is None or getattr(full, "size", 0) < 16:
+            full = w
+        # AUDIO_FEATURES_R7: one measured feature set (audio_features.frame_features) shared with
+        # games: real-Hz octave bands, log-Hz spectral centroid, onset, chroma/pitch class, tonality.
+        try:
+            import audio_features as _af
+            f = _af.frame_features(full, float(getattr(self, "audio_sr", 0.0) or 44100.0))
+        except Exception:
+            f = None
+        if f is None:
+            self._rms = self._finite_float(np.sqrt(np.mean(w ** 2)), 0.0, 0.0)
+            self._peak = self._finite_float(np.max(np.abs(w)), 0.0, 0.0)
+            self._band = np.full(8, 0.125, dtype=np.float32)
+            self._centroid = 0.5
+            self._onset, self._tonal, self._pitch_class = 0.0, 0.0, -1
+            self._chroma = np.full(12, 1.0 / 12.0, dtype=np.float32)
+        else:
+            self._rms = self._finite_float(f["rms"], 0.0, 0.0)
+            self._peak = self._finite_float(f["peak"], 0.0, 0.0)
+            self._band = np.nan_to_num(np.asarray(f["bands"], dtype=np.float32), nan=0.125)
+            self._centroid = self._finite_float(f["centroid"], 0.5, 0.0, 1.0)
+            self._onset = self._finite_float(f["onset"], 0.0, 0.0, 1.0)
+            self._tonal = self._finite_float(f["tonal"], 0.0, 0.0, 1.0)
+            self._pitch_class = int(f["pitch_class"])
+            self._chroma = np.asarray(f["chroma"], dtype=np.float32)
         self._harmonic_activity = self._finite_float(1.0 - float(np.max(self._band)), 0.5, 0.0, 1.0)
         # A silent/near-silent low band previously produced +Inf here.  Several
         # subscenes later multiplied the ratio and converted it to int.
         _oct = float(self._band[1] / self._band[0]) if self._band[0] != 0.0 else 1.0
         self._octave_boundary = self._finite_float(_oct, 1.0, 0.0, 4.0)
-        idx = np.arange(w.size, dtype=np.float32)
-        mag = np.abs(w)
-        self._centroid = self._finite_float(
-            (np.sum(idx * mag) / (np.sum(mag) * float(max(w.size - 1, 1)))) if np.sum(mag) != 0.0 else 0.5,
-            0.5, 0.0, 1.0
-        )
+        # Musical colour: the dominant pitch class sets a hue (circle of fifths, so related keys
+        # sit next to each other), weighted by how tonal the moment is; onsets give a short kick.
+        # MUSIC_ANALOGY_R7: the same seeded analogy the games use (audio_features.analogy): the seed sets the
+        # hue origin and which of its 12 elements each pitch class names; the pairing itself never changes.
+        an = None
+        if f is not None:
+            try:
+                _seed = (getattr(self, "_canonical_ctx", None) or {}).get("seed", 0.0)
+                prof = getattr(self, "_analogy_profile", None)
+                if prof is None or getattr(self, "_analogy_seed", None) != _seed:
+                    prof = self._analogy_profile = _af.analogy_profile(_seed); self._analogy_seed = _seed
+                an = _af.analogy(f, profile=prof)
+            except Exception:
+                an = None
+        self._analog = an
+        if an is not None and self._pitch_class >= 0:
+            self._pitch_hue = float(an["hue"])
+        elif self._pitch_class >= 0:
+            self._pitch_hue = float(((self._pitch_class * 7) % 12) * 30.0)
+        else:
+            self._pitch_hue = float(getattr(self, "_pitch_hue", 0.0) or 0.0)
+        self._musical_hue_shift = float(self._tonal * (((self._pitch_hue + 180.0) % 360.0) - 180.0) * 0.35)
+        self._video_hue_shift = float(getattr(self, "_carrier_hue_shift", 0.0) or 0.0) + self._musical_hue_shift
 
     def energy(self):
         return self._rms
@@ -10513,8 +10616,15 @@ class VideoSynthEngine:
         y = self._finite_float(y, 0.0)
         z = self._finite_float(z, 1.0)
         if fov is None:
+            # MEUM_CPU_R7: the projection scale 2·tan(fov/2) is constant within a frame; it was evaluated as a
+            # trig series for every vertex (~80k series per second of video). Same value, computed once per fov.
             _fov_deg = self._finite_float(getattr(self, "_cam_fov_deg", 48.0), 48.0, 1.0, 179.0)
-            fov = series_tan(math.radians(_fov_deg) * 0.5) * 2.0
+            _fc = getattr(self, "_proj_fov_cache", None)
+            if _fc is not None and _fc[0] == _fov_deg:
+                fov = _fc[1]
+            else:
+                fov = series_tan(math.radians(_fov_deg) * 0.5) * 2.0
+                self._proj_fov_cache = (_fov_deg, fov)
         fov = self._finite_float(fov, 1.0)
         if fov == 0.0:
             fov = 1.0
@@ -12597,7 +12707,7 @@ class VideoSynthEngine:
                     _span = max(1, int(_sr / 24))
                     _a = max(0, _c - _span // 2); _b = min(len(_m), _a + _span)
                     if _b > _a:
-                        self.set_waveform(_m[_a:_b], playhead=(_c / max(1, len(_m) - 1)))
+                        self.set_waveform(_m[_a:_b], playhead=(_c / max(1, len(_m) - 1)), sr=_sr)
             except Exception:
                 pass
             self.t = float(_pt) * float(MEUM_NORM)
@@ -12835,7 +12945,7 @@ class VideoSynthEngine:
                     hue = (200.0 + c * 120.0 + float(getattr(self, "_video_hue_shift", 0.0))) % 360.0
                     col = self._hsv(hue, 0.35 + 0.25 * e, 0.55 + 0.30 * e)
                     for k in range(4):
-                        rr = scale * (0.06 + 0.05 * k) * (0.85 + 0.25 * e)
+                        rr = scale * (0.06 + 0.05 * k) * (0.85 + 0.25 * e + 0.30 * float(getattr(self, "_onset", 0.0) or 0.0))
                         a = self.t * 0.04 + k * 0.7
                         x = cx + vg_cos(a) * rr * 0.12
                         y = cy + vg_sin(a * MEUM_INV) * rr * 0.06
@@ -13139,6 +13249,13 @@ class VideoSynthViewer(QFrame):
             except Exception:
                 pass
         self._frame = np.zeros((180, 180, 3), dtype=np.uint8)
+        # Latest-only handoff lets future stream encoders consume the exact live
+        # scenograph frames without building latency or blocking the GUI thread.
+        try:
+            from scenograph_stream import LatestFrameTap
+            self._frame_tap = LatestFrameTap()
+        except Exception:
+            self._frame_tap = None
         self.show_scope_overlay = False
         self.scope_wave = np.zeros(100, dtype=np.float32)
         # Manual scenograph camera: +/-180° yaw and pitch from the origin view.
@@ -13157,16 +13274,48 @@ class VideoSynthViewer(QFrame):
         self._render_pending = None
         self._render_generation = 0
         self._render_shutdown = False
+        # Resize storms are coalesced before touching the render worker. The
+        # existing generation guard then guarantees only the newest geometry
+        # can be presented; the GUI paint path never waits for a render.
+        self._resize_render_timer = QTimer(self)
+        self._resize_render_timer.setSingleShot(True)
+        self._resize_render_timer.setInterval(65)
+        self._resize_render_timer.timeout.connect(self._render_current_viewport)
+        self._last_viewport_size = (0, 0)
         self._render_lifetime = {"dead": False}
         _render_lifetime = self._render_lifetime
         self.destroyed.connect(lambda *_args, state=_render_lifetime: state.__setitem__("dead", True))
         # PERF: audio callbacks can arrive far faster than a useful visual preview.
         # Throttle only audio-driven preview requests; manual camera/mode/resize
         # requests remain immediate and canonical/audio state is untouched.
-        self._preview_min_interval = 1.0 / 24.0  # LIVE_STREAM_20261107: 24 fps preview
+        self._preview_min_interval = 1.0 / 30.0
+        self._preview_quality_name = "Fine"
+        self._preview_render_scale = 1.0
+        self._preview_target_fps = 30
         self._last_audio_preview_request = 0.0
         self._scode_visual_seq = 0
         self.setMouseTracking(True)
+
+    def set_quality_profile(self, name="Fine"):
+        """Set live-preview fidelity/cadence only; deterministic exports are untouched."""
+        try:
+            from scenograph_quality import profile
+            app = getattr(self.engine, "app", None)
+            power = getattr(app, "_power_profile", {}) if app is not None else {}
+            spec = profile(
+                name,
+                auto_fps=int(power.get("visual_fps", 24) or 24),
+                auto_scale=float(power.get("preview_scale", power.get("export_scale", 0.9)) or 0.9),
+            )
+            self._preview_quality_name = spec["name"]
+            self._preview_render_scale = spec["scale"]
+            self._preview_target_fps = spec["fps"]
+            self._preview_min_interval = 1.0 / max(8, spec["fps"])
+            self._last_audio_preview_request = 0.0
+            self._request_async_frame(max(self.width(), 180), max(self.height(), 180), False)
+            return dict(spec)
+        except Exception:
+            return {"name": "Fine", "scale": 1.0, "fps": 30, "stride": 1}
 
     def _request_async_frame(self, width=None, height=None, export=None):
         """Schedule a latest-only frame render; never block the Qt paint path."""
@@ -13175,6 +13324,19 @@ class VideoSynthViewer(QFrame):
         ww = max(int(width if width is not None else self.width()), 180)
         hh = max(int(height if height is not None else self.height()), 180)
         ex = self.engine.export_mode if export is None else bool(export)
+        # Shared global precedence: visual work is admitted as latest-wins,
+        # never allowed to wait on or create work ahead of audio/GUI lanes.
+        if not ex:
+            try:
+                import global_intelligence as _gi
+                _gi.huff("visual_preview", pending=1 if self._render_inflight else 0)
+            except Exception:
+                pass
+        # Preview quality is a presentation budget. Keep export renders canonical.
+        if not ex:
+            scale = max(0.55, min(1.0, float(getattr(self, "_preview_render_scale", 1.0))))
+            ww = max(180, int(round((ww * scale) / 2.0)) * 2)
+            hh = max(180, int(round((hh * scale) / 2.0)) * 2)
         self._render_generation += 1
         request = (ww, hh, ex, self._render_generation)
         if self._render_inflight:
@@ -13218,6 +13380,11 @@ class VideoSynthViewer(QFrame):
         if frame is not None and int(generation) == int(self._render_generation):
             self._frame = frame
             try:
+                if getattr(self, "_frame_tap", None) is not None:
+                    self._frame_tap.publish(frame)
+            except Exception:
+                pass
+            try:
                 self.engine.ingest_video_frame_stats(*self.engine.frame_stats(frame))
             except Exception:
                 pass
@@ -13256,6 +13423,8 @@ class VideoSynthViewer(QFrame):
             return
         self._render_shutdown = True
         try:
+            if getattr(self, "_resize_render_timer", None) is not None:
+                self._resize_render_timer.stop()
             self._render_pending = None
             self._render_generation += 1
             if hasattr(self, "_render_signals") and self._render_signals is not None:
@@ -13277,7 +13446,7 @@ class VideoSynthViewer(QFrame):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             data = {"geometry": [self.x(), self.y(), self.width(), self.height()],
                     "project": getattr(self, "_current_project_path", None)}
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f)
         except Exception:
             pass
@@ -13288,7 +13457,7 @@ class VideoSynthViewer(QFrame):
             path = os.path.join(groovebox_paths.metadata_dir(getattr(self, "_current_project_path", None)), "session_layout.json")
             if not os.path.isfile(path):
                 return
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 data = json.load(f)
             g = data.get("geometry")
             if isinstance(g, list) and len(g) == 4:
@@ -13402,6 +13571,15 @@ class VideoSynthViewer(QFrame):
             return
         super().mouseDoubleClickEvent(event)
 
+    def latest_stream_frame(self, max_age_s=None):
+        """Return newest (sequence, monotonic_time, RGB frame), optionally freshness-gated."""
+        tap = getattr(self, "_frame_tap", None)
+        return tap.latest(max_age_s=max_age_s) if tap is not None else None
+
+    def stream_frame_stats(self):
+        tap = getattr(self, "_frame_tap", None)
+        return tap.stats() if tap is not None else {"has_frame": False, "sequence": 0}
+
     def update_from_audio(self, wave_data, playhead=None):
         # SCODE_FULL_ACCEL_V4: throttle BEFORE waveform resampling/_analyze().
         # The previous implementation rendered at 15 fps but still analyzed every
@@ -13431,12 +13609,24 @@ class VideoSynthViewer(QFrame):
         hh = max(self.height(), 180)
         self._request_async_frame(ww, hh, False)
 
+    def _render_current_viewport(self):
+        if getattr(self, "_render_shutdown", False):
+            return
+        ww, hh = max(self.width(), 180), max(self.height(), 180)
+        size = (ww, hh)
+        if size == getattr(self, "_last_viewport_size", None):
+            return
+        self._last_viewport_size = size
+        self._request_async_frame(ww, hh, self.engine.export_mode)
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        ww = max(self.width(), 8)
-        hh = max(self.height(), 8)
-        if self._frame is None or self._frame.shape[1] != ww or self._frame.shape[0] != hh:
-            self._request_async_frame(ww, hh, self.engine.export_mode)
+        # A 65 ms quiet window collapses continuous splitter/window dragging
+        # into one final render request instead of repeatedly reallocating.
+        try:
+            self._resize_render_timer.start()
+        except RuntimeError:
+            pass
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -13449,18 +13639,26 @@ class VideoSynthViewer(QFrame):
                 qimg = QImage(self._frame.data, fw, fh, fw * 3, QImage.Format.Format_RGB888)
                 painter.drawImage(self.rect(), qimg)  # PERF: immediate draw; avoid full-frame copy
             painter.setPen(QColor("#c8a2ff"))
-            painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+            painter.setFont(QFont("Arial", 8, QFont.Weight.Bold))
             painter.drawText(8, 14, "MEUM SCENOGRAPH")
+            quality_name = str(getattr(self, "_preview_quality_name", "Fine")).upper()
+            quality_fps = int(getattr(self, "_preview_target_fps", 30) or 30)
+            quality_label = f"{quality_name} · {quality_fps} FPS"
+            qfm = painter.fontMetrics(); qtw = qfm.horizontalAdvance(quality_label) + 14
+            qbox = QRect(max(4, self.width() - qtw - 8), 5, qtw, 20)
+            painter.setPen(Qt.PenStyle.NoPen); painter.setBrush(QColor(10, 32, 42, 210))
+            painter.drawRoundedRect(qbox, 5, 5)
+            painter.setPen(QColor("#9fffe4")); painter.drawText(qbox, Qt.AlignmentFlag.AlignCenter, quality_label)
             if not self._transport_playing():
                 try:
                     total, step, n, rows = self._preview_geometry()
                     for rect, glyph in zip(self._arrow_rects(), ("◀", "▶")):
                         painter.setPen(Qt.PenStyle.NoPen); painter.setBrush(QColor(20, 40, 90, 170))
                         painter.drawRoundedRect(rect, 6, 6)
-                        painter.setPen(QColor("#9cc7ff")); painter.setFont(QFont("Segoe UI", max(10, rect.width() // 2), QFont.Weight.Bold))
+                        painter.setPen(QColor("#9cc7ff")); painter.setFont(QFont("Arial", max(10, rect.width() // 2), QFont.Weight.Bold))
                         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, glyph)
                     k = int(getattr(self, "_preview_step", -1))
-                    painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+                    painter.setFont(QFont("Arial", 8, QFont.Weight.Bold))
                     if k >= 0 and getattr(self.engine, "preview_time", None) is not None:
                         tt = float(self.engine.preview_time)
                         _pos = float(getattr(self, "_preview_pos", k + 1.5))
@@ -13489,7 +13687,7 @@ class VideoSynthViewer(QFrame):
                     flags.append(label)
             seed_list = snap.get("seed_list") or []
             hud_y = 28
-            painter.setFont(QFont("Segoe UI", 7))
+            painter.setFont(QFont("Arial", 7))
             if flags:
                 painter.setPen(QColor(200, 170, 255, 220))
                 painter.drawText(8, hud_y, " · ".join(flags))
@@ -14079,7 +14277,7 @@ class DomainPartitionEquationEngine:
                 else:
                     continue
 
-            _dw = float(dom.get("weight", 1.0) or 1.0)
+            _dw = _num_or(dom.get("weight"), 1.0)
             _did = str(dom.get("name", "") or dom.get("source", ""))
             if _did not in _dom_ids:
                 _dom_ids[_did] = build_graph_context(domain_id=_did)["domain_id"]
@@ -14396,9 +14594,51 @@ def _ensure_single_math_background(app, host):
     return bg
 
 
+def _math_background_enabled():
+    """MAT_BG_OPTIN_R64: global decorative underlay switch; default OFF."""
+    if os.environ.get("GROOVEBOX_NO_WINDOW_BG", "").strip() == "1":
+        return False
+    override = os.environ.get("GROOVEBOX_WINDOW_BG")
+    if override is not None:
+        return override.strip().lower() in ("1", "true", "yes", "on")
+    try:
+        import compat_settings as _cs_bg
+        return bool(_cs_bg.load().get("math_background_enabled", False))
+    except Exception:
+        return False
+
+
+def set_window_backgrounds_enabled(enabled, app=None):
+    """Apply the persisted underlay setting to existing and future windows."""
+    enabled = bool(enabled)
+    app = app or QApplication.instance()
+    if app is None:
+        return False
+    if not enabled:
+        for _win in list(app.topLevelWidgets()):
+            try:
+                _bg = getattr(_win, "_math_decor", None)
+                if _bg is not None:
+                    try: _bg._timer.stop()
+                    except Exception: pass
+                    _bg.hide(); _bg.setParent(None); _bg.deleteLater()
+                _win._math_decor = None
+                _win._math_bg_attached = False
+            except Exception:
+                pass
+        return True
+    for _win in list(app.topLevelWidgets()):
+        try:
+            if isinstance(_win, QWidget) and _win.width() >= 360 and _win.height() >= 240:
+                attach_math_background(_win, app)
+        except Exception:
+            pass
+    return True
+
+
 def attach_math_background(win, app=None):
     """R31: give any top-level window the shared ParametricMathBackground (one per window)."""
-    if win is None or os.environ.get("GROOVEBOX_NO_WINDOW_BG", "") == "1":
+    if win is None or not _math_background_enabled():
         return None
     if app is None:
         app = _MATH_BG_FILTER[0].app if _MATH_BG_FILTER[0] is not None else None
@@ -14441,6 +14681,8 @@ class _WindowBackgroundFilter(QObject):
             if flags & Qt.WindowType.Popup == Qt.WindowType.Popup or flags & Qt.WindowType.ToolTip == Qt.WindowType.ToolTip:
                 return False
             if t == QEvent.Type.Show and not getattr(obj, "_math_bg_attached", False):
+                if not _math_background_enabled():
+                    return False
                 if obj.width() < 360 or obj.height() < 240:
                     return False                 # small prompts: no animated background (R31 lag fix)
                 attach_math_background(obj, self.app)
@@ -15146,8 +15388,9 @@ class ReadmeGuideDialog(QDialog):
     """Full Help / Readme: philosophy, workflow, scripting syntax, disclaimer."""
 
     HELP_TEXT = r"""
-MATHEMATICIAN'S GROOVEBOX — README / HELP
-=========================================
+STRONGLY SUPERDIMENSIONAL SYNTHESIZER SIMULATION
+Mathematician's Groovebox — README / HELP
+==========================================
 --------------------------------------------
 WHAT GROOVEBOX IS (THE SHORT VERSION)
 -------------------------------------
@@ -15285,22 +15528,66 @@ LIVE PLAYER
   ⛶ Fullscreen (F11; Esc leaves). F10 or double-click on the view hides every
   control row (visual-only); repeat to bring them back. Letters play notes, so
   these shortcuts use function keys.
-  🎛 Tweak visuals: 57 presets (8 motion styles × 6 palettes, the originals and
-  broadcast looks). Choosing one applies it; next ▶ or Ctrl+→ / Ctrl+← step
-  through, 🎲 picks one, "save as…" stores your own.
+  🎛 Visual presets panel (button shows / hides it): 57 presets (8 motion
+  styles × 6 palettes, the originals and broadcast looks). Choosing one applies
+  it; next ▶ or Ctrl+→ / Ctrl+← step through, 🎲 picks one, "save as…" stores
+  your own. Untick "Live update to UI" to edit sliders and presets without
+  re-rendering; tick it again to apply every pending edit at once.
+  🧅 Layers: each layer of the live view has its own checkbox.
   Recording: the REC badge shows elapsed time, frames written and frames held.
   Audio and video of a take stay in sync: if the disk is briefly too slow, a
   dropped audio block is written as the same length of silence and a dropped
   frame repeats the previous frame, in place; at the end the shorter stream is
   padded so neither the picture nor the sound is cut off.
   3D Studio (Quick Rack): wrap an image or video onto an OBJ, tint the mesh,
-  build a scene of models + video + audio, mesh that scene into a game, and
-  export a 3D video. Song as 3D opens a project OBJ if one has been exported.
+  render mono or true dual-camera stereo (side-by-side / top-bottom), and process
+  rendered 3D clips for layout, frame rate, resolution, time trim and soundtrack.
+  Existing SBS and top-bottom clips can be converted by resizing the two eye views
+  independently; stereo-to-mono selects the left eye. Mono-to-stereo duplication
+  is not depth reconstruction. The current renderer animates the selected OBJ;
+  multi-object scene-timeline compositing remains future work. Song as 3D opens a
+  project OBJ if one has been exported.
   Finish take (on by default): after the WAV is written, trim silence, remove DC,
   peak-normalize, apply a short fade, and report before/after RMS. The finished
   file is saved next to the take as *-finished.wav.
   Stop and Close release the audio device and camera in the background (no
   freeze); a new Play waits until the previous stream is released.
+
+R7u NOTES — LOOPER, MUSIC ANALOGIES, RELEASE STAMP, MATHEMATICS
+  Enter looper: hold Enter to record a loop of the notes you play; release to
+  commit it. Press and release Enter without playing any note to clear the
+  looper segmentator ("Loop cleared"). Auto-repeat is ignored.
+  Music analogies: video and games read the same seven channels of the track
+  (energy, pulse, phase, altitude, order, weight, sparkle). The seed sets each
+  channel's gain (0.5–1), which element the key's fifth maps to, and the hue
+  origin (hue = origin + 30° × position on the circle of fifths), so one song
+  looks different under different seeds and the same seed always looks the
+  same. In a game, /music shows the table; Game settings ▸ "Music drives world"
+  (0–1, default 0.8) sets how much the track drives energy, pulses and phase.
+  Version: release_info.py is the single version source. scripts/stamp_release.py
+  writes RELEASE-STAMP.json, CURRENT-RELEASE.txt and BUILD_ISO/RELEASE-STAMP.env
+  and runs before every archive and ISO sync; "+local" in About means the code
+  differs from the stamp.
+  Mathematics (math_invariants.py, checked at startup; python3 math_invariants.py):
+    Meum M = 1.19758…, golden ratio, Parseval, energy partition, circle of fifths,
+    EWMA, Little's law (lane width = arrival rate × cost), Party opacity = i²,
+    convex morph (weighted means stay inside the sources), loop quantize.
+    M is the spatial propagation constant of the voice: the master synth always
+    sits at exactly M × the panel+geometric peak P (a constant linear relation),
+    so the largest excursion is known in closed form:
+        |voice| ≤ P · (1 + mix · (M − 1))      (max sway, guarded in triad)
+    lead-input gain stays in [0, 1 + M], and the Meum flux index {k/M} averages
+    to the set depth (Weyl equidistribution; slow but certain).
+    The voice is linear in scale: triad(c·main, c·geo) = c·triad(main, geo) for
+    c > 0, so the master's level is known before it renders (master_peak) and a
+    cached unit shape gives the exact closed form while the render resolves
+    (virtual_voice). How long to keep modulating that virtual state is
+    probabilistic: thread_budget.resolve_horizon uses Cantelli's inequality
+    P(T ≥ μ + kσ) ≤ 1/(1 + k²) on each job's measured run times (finishes
+    within the horizon with probability ≥ q for any distribution), and
+    virtual_blocks = ceil(horizon / block).
+  Video CPU: the projection scale 2·tan(fov/2) is now computed once per field
+  of view instead of once per vertex (identical pixels).
 
 Laptop lid & display power
   Closing the lid blanks the built-in display (saves power). Opening the lid
@@ -15352,7 +15639,7 @@ MULTIDIM STOCHASTIC RESPONSES
   that canonical's probability scaled by its activation level, decided per moment
   of the timeline from the seed (time-invariant: the same moment always responds
   the same way). With no canonical active it falls back to an internal default
-  probability of 0.19758, mixed by Morph Bridge ▸ "Multidim Stochastic Default",
+  probability of 1 (no cap), mixed by Morph Bridge ▸ "Multidim Stochastic Default",
   and the pattern evolves with time. The mix is ignored while a canonical is on.
 
 WINDOW BAR
@@ -16886,8 +17173,9 @@ the canonical authority layer.
 31. OFFICIAL PROJECT TERMINOLOGY
 --------------------------------------------------------------------------------
 Official software names:
-    Groovebox
-    Mathematicians Groovebox
+    Strongly Superdimensional Synthesizer Simulation
+    Mathematician's Groovebox
+    Groovebox (short application name)
 
 Primary mathematical framework:
     Meum Calculus
@@ -17351,6 +17639,11 @@ that uses it.
         layout = QVBoxLayout(self)
         text = QTextEdit(self)
         text.setReadOnly(True)
+        try:                                   # TYPOGRAPHY_R7: the README reads in the console face
+            import typography as _ty
+            _ty.apply_console(text)
+        except Exception:
+            pass
         text.setPlainText(self.HELP_TEXT)
         search_row = QHBoxLayout()
         search = QLineEdit(self)
@@ -17899,6 +18192,34 @@ class ActiveEngineClock:
 # -------------------------------------------------------------------------
 # CORE GROOVEBOX & HARDWARE ENGINE
 # -------------------------------------------------------------------------
+# CTX_DENSITY_R7: exact memo tables for _contextual_feature_vector (keyed by the full content string).
+_CTX_SCORE_MEMO = {}
+_CTX_SCRIPT_MEMO = {}
+
+
+def _ctx_blob_score(blob):
+    v = _CTX_SCORE_MEMO.get(blob)
+    if v is None:
+        import hashlib
+        v = (int(hashlib.sha256(blob.encode('utf-8', 'replace')).hexdigest()[:12], 16) % 10000) / 10000.0
+        if len(_CTX_SCORE_MEMO) > 4096:
+            _CTX_SCORE_MEMO.clear()
+        _CTX_SCORE_MEMO[blob] = v
+    return v
+
+
+def _ctx_script_score(script):
+    v = _CTX_SCRIPT_MEMO.get(script)
+    if v is None:
+        digits = sum(ch.isdigit() for ch in script)
+        ops = sum(script.count(op) for op in ('sin', 'cos', 'tan', 'exp', 'log', 'sqrt', 'evaluate', 'return'))
+        v = float(np.clip(len(script) / 1400.0 + digits / 180.0 + ops / 40.0, 0.0, 1.0))
+        if len(_CTX_SCRIPT_MEMO) > 1024:
+            _CTX_SCRIPT_MEMO.clear()
+        _CTX_SCRIPT_MEMO[script] = v
+    return v
+
+
 def _compat_scroll_central(content: QWidget, min_width: int = 420, min_height: int = 280) -> QScrollArea:
     """Global window compatibility wrapper: preserve access to controls instead of clipping them."""
     area = QScrollArea()
@@ -18295,7 +18616,7 @@ class GrooveboxEngine:
             pass
 
     def deserialize_project(self, filepath):
-        with open(filepath, 'r') as f:
+        with open(filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
         self.global_bpm = data.get("global_bpm", 112.0)
         # Restore composition pathways when present (OT toggle, fractal policy)
@@ -21019,10 +21340,15 @@ class _GrooveboxWindowStrip(QWidget):
         self.quit_btn.setText("Quit Groovebox")
         self.quit_btn.setToolTip("Click to quit. Hold for 6 seconds to power off sOS immediately.")
         self.quit_btn.clicked.connect(self._quit_requested)
+        # SETTINGS_COMPAT_R6: "Settings/Compat" opens System Settings, Compatibility, System Health or Window panes.
         self.compat_btn = QToolButton(self)
-        self.compat_btn.setText("🧩 Compatibility")
-        self.compat_btn.setToolTip("UI scale, rendering, dialogs, audio latency, video export — fit Groovebox to this machine.")
-        self.compat_btn.clicked.connect(lambda: (self._manager()._main_ref()._show_compat_dialog() if (self._manager() and self._manager()._main_ref()) else None))
+        self.compat_btn.setText("⚙ Settings/Compat")
+        self.compat_btn.setToolTip("System Settings · Compatibility (UI scale, rendering, audio latency, video export) · "
+                                   "System / Performance Health · Window panes")
+        self.compat_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._compat_menu = QMenu(self.compat_btn)
+        self._compat_menu.aboutToShow.connect(self._fill_compat_menu)
+        self.compat_btn.setMenu(self._compat_menu)
         self.new_btn = QToolButton(self)
         self.new_btn.setText("＋ New window")
         self.new_btn.setToolTip("Open another Performance, Player or Live Player as its own tab — e.g. several players side by side to scan media.")
@@ -21071,6 +21397,16 @@ class _GrooveboxWindowStrip(QWidget):
         self._pin_timer.timeout.connect(self._place_on_screen)
         self._pin_timer.start()
         QTimer.singleShot(0, self._place_on_screen)
+
+    def _fill_compat_menu(self):
+        m = self._compat_menu
+        m.clear()
+        mgr = self._manager()
+        main = mgr._main_ref() if mgr is not None else None
+        if main is None:
+            m.addAction("(main window not ready)").setEnabled(False)
+            return
+        main._settings_compat_menu(menu=m)
 
     def _fill_arrange_menu(self):
         try:
@@ -21368,10 +21704,7 @@ class _GrooveboxWindowStrip(QWidget):
             launch_startup_mode_selector(self, app, skip=False, force_chooser=True)
         except Exception as exc:
             print(f"[Quit] startup relaunch failed: {exc}")
-            try:
-                self.show()
-            except Exception:
-                pass
+            startup_fallback_enter(self)
 
     def closeEvent(self, event):
         try:
@@ -21489,6 +21822,66 @@ class _MainWindowRelaunchFilter(QObject):
         # No destroyed() hook: managed_windows() prunes dead wrappers lazily, and a Python slot
         # firing inside ~QWidget after sip released the wrapper segfaults the interpreter.
         self._managed_windows[key] = window
+
+    # WINDOW_CLOSE_RECORD_R7: every close is recorded (title, time, threads released) and the window's
+    # background work stops: its sCode task scope drops stale results, cancels queued jobs and shuts its
+    # lane threads down; a window may also define release_session_resources() for its own timers /
+    # workers. The window object stays registered, so reopening it from the bar is instant and lanes
+    # come back lazily on the next submit.
+    def _record_window_closed(self, window):
+        """Suspend a session window once per close transition, without blocking the GUI."""
+        if window is None:
+            return 0
+        try:
+            if bool(window.property("grooveboxResourcesSuspended")):
+                return 0
+            window.setProperty("grooveboxResourcesSuspended", True)
+        except Exception:
+            pass
+        released = 0
+        try:
+            scope = getattr(window, "_scode_task_scope", None)
+            if scope is not None and hasattr(scope, "release"):
+                released = int(scope.release() or 0)
+        except Exception:
+            pass
+        try:
+            hook = getattr(window, "release_session_resources", None)
+            if callable(hook):
+                hook()
+        except Exception as exc:
+            print(f"[Windows] release hook failed for {type(window).__name__}: {exc}")
+        try:
+            import collections as _col, time as _t
+            log = self.__dict__.get("_closed_log")
+            if log is None:
+                log = self._closed_log = _col.deque(maxlen=256)
+            log.append({"title": str(window.windowTitle() or type(window).__name__),
+                        "class": type(window).__name__, "time": _t.time(), "lanes_released": released})
+        except Exception:
+            pass
+        return released
+
+    def _record_window_opened(self, window):
+        """Resume a retained window only after it is shown again."""
+        if window is None:
+            return
+        try:
+            was_suspended = bool(window.property("grooveboxResourcesSuspended"))
+            window.setProperty("grooveboxResourcesSuspended", False)
+        except Exception:
+            was_suspended = False
+        if not was_suspended:
+            return
+        try:
+            hook = getattr(window, "resume_session_resources", None)
+            if callable(hook):
+                hook()
+        except Exception as exc:
+            print(f"[Windows] resume hook failed for {type(window).__name__}: {exc}")
+
+    def closed_windows(self):
+        return list(self.__dict__.get("_closed_log") or ())
 
     def ensure_window_strip(self):
         if self._shutdown:
@@ -21777,10 +22170,7 @@ class _MainWindowRelaunchFilter(QObject):
                     _gb_log_error("quit · back to startup chooser", exc)
                 except Exception:
                     pass
-                try:
-                    main.show(); self.ensure_window_strip()
-                except Exception:
-                    pass
+                startup_fallback_enter(main)
         QTimer.singleShot(0, _launch)
 
     def managed_windows(self):
@@ -21810,6 +22200,7 @@ class _MainWindowRelaunchFilter(QObject):
             self._register_window(window)
         except Exception:
             pass
+        self._record_window_opened(window)
         try:
             window.setWindowState(Qt.WindowState.WindowNoState)
         except Exception:
@@ -21874,6 +22265,9 @@ class _MainWindowRelaunchFilter(QObject):
         """
         if window is None:
             return False
+        # Release window-owned workers/resources before stopping GUI timers.
+        # This also covers programmatic Close/Hide actions that bypass closeEvent.
+        self._record_window_closed(window)
         try: window.hide()
         except Exception: pass
         try:
@@ -22056,7 +22450,12 @@ class _MainWindowRelaunchFilter(QObject):
             # strip alive. Only explicit Quit Groovebox performs teardown.
             if main is not None and obj is main:
                 if et == QEvent.Type.Close and not self._shutdown:
-                    event.ignore(); main.hide(); self.ensure_window_strip(); self._notify_strip()
+                    # MAIN_CLOSE_QUITS_R7: closing Main is the Quit action (desktop: Quit / back to the
+                    # startup chooser / Cancel; ISO: Power off / back to the startup screen / Cancel).
+                    # Main is never just hidden, so there is no Main-less session to fall into.
+                    event.ignore()
+                    self._record_window_closed(main)
+                    QTimer.singleShot(0, self.request_application_exit)
                     return True
                 if et in (QEvent.Type.Show, QEvent.Type.Hide, QEvent.Type.WindowStateChange, QEvent.Type.WindowActivate):
                     self._notify_strip()
@@ -22067,10 +22466,14 @@ class _MainWindowRelaunchFilter(QObject):
             if main is not None and self._eligible_window(obj):
                 if et in (QEvent.Type.Show,QEvent.Type.Resize,QEvent.Type.WindowActivate,QEvent.Type.Close,QEvent.Type.Hide,QEvent.Type.WindowStateChange):
                     self._register_window(obj)
+                if et == QEvent.Type.Show:
+                    self._record_window_opened(obj)
                 if et == QEvent.Type.Close and not self._shutdown:
                     # Uniform session semantics for every Groovebox-owned tool:
                     # X means hide/preserve, never destroy the live session.
-                    event.ignore(); obj.hide(); self.ensure_window_strip(); self._notify_strip()
+                    event.ignore(); obj.hide()
+                    self._record_window_closed(obj)
+                    self.ensure_window_strip(); self._notify_strip()
                     return True
                 if et in (QEvent.Type.Show,QEvent.Type.Resize,QEvent.Type.WindowActivate):
                     self._position_button(obj)
@@ -22808,7 +23211,7 @@ class _KeyChartFilter(QObject):
             et = event.type()
             if et == QEvent.Type.KeyPress:
                 if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-                    # R32.9: Return/Enter arms / clears the key loop from any Groovebox window
+                    # ENTER_HOLD_LOOP_R7: Enter press starts a fresh take, release closes it (any Groovebox window)
                     # (it used to reach only the focused control, so the loop never started).
                     return bool(self._owner._keychart_handle_enter(obj, event))
                 return bool(self._owner._keychart_handle_key(obj, event))
@@ -23634,6 +24037,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 print(f"[Deck] unavailable: {_deck_exc}")
         except Exception as _qr_exc:
             print(f"[QuickRack] unavailable: {_qr_exc}")
+        # R56_CLOUD_COMMAND_CENTER_GOAVA_AUTOPILOT: compact local-first cloud
+        # command strip and central GOAVA Autopilot launcher. The toolbar is
+        # intentionally independent of the Quick Rack and never auto-connects
+        # to a cloud account or hardware device.
+        try:
+            from groovebox_runtime.command_center import install_command_center
+            install_command_center(self)
+        except Exception as _r56_exc:
+            print(f"[R56 Command Center] unavailable: {_r56_exc}")
         try:
             import r32_finish as _rf
             _rf.start(self)             # R32.8: export resume · live autosave
@@ -23691,8 +24103,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.setCentralWidget(central_widget)
         central_widget = self.centralWidget()
         try:
-            central_widget.setAutoFillBackground(False)
-            central_widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            # Keep the main surface opaque; transparent top-level central widgets
+            # can expose compositor artifacts on some Wayland/NVIDIA combinations.
+            central_widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+            central_widget.setAutoFillBackground(True)
         except Exception:
             pass
 
@@ -24334,10 +24748,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             side = max(120, min(avail_h - extra_h, frame_w - 12 - 2))
             # 3) apply: fixed square (cannot be stretched into a rectangle);
             #    the frame keeps a matching minimum so the row never overlaps.
-            viewer.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-            viewer.setFixedSize(side, side)
+            viewer.setMinimumSize(120, 120)
+            viewer.setMaximumSize(16777215, 16777215)
+            viewer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             if frame is not None and frame.objectName() == "scenographFrame":
-                frame.setMinimumWidth(side + 14)
+                frame.setMinimumWidth(140)
                 frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             side_w = max(110, (avail_w - 16 - (side + 14)) // 2)
             for w in meters:
@@ -24345,9 +24760,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 w.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             try:
                 fr = getattr(viewer, "_frame", None)
-                if fr is not None and (fr.width() != side or fr.height() != side):
+                vw, vh = max(180, viewer.width()), max(180, viewer.height())
+                if fr is not None and (fr.shape[1] != vw or fr.shape[0] != vh):
                     if getattr(viewer, "engine", None):
-                        viewer._request_async_frame(side, side, export=False)
+                        viewer._resize_render_timer.start()
                 viewer.update()
             except Exception:
                 pass
@@ -24444,7 +24860,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         live_player_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         live_player_btn.setStyleSheet(
             "QPushButton#livePlayerLaunchButton { font-size:16px; font-weight:900; "
-            "letter-spacing:0.4px; text-align:left; padding:10px 18px; "
+            " text-align:left; padding:10px 18px; "
             "color:#e9fff9; background:qlineargradient(x1:0,y1:0,x2:1,y2:0, "
             "stop:0 #123d50, stop:0.55 #164d58, stop:1 #253b65); "
             "border:2px solid #55d6c2; border-radius:10px; } "
@@ -24787,7 +25203,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     v = float(vel_txt.replace("%", "").strip())
                     row_dict["velocity"] = v / 100.0 if v > 1.0 else v
                 except Exception:
-                    row_dict["velocity"] = float(prior.get("velocity", 1.0) or 1.0)
+                    row_dict["velocity"] = _num_or(prior.get("velocity"), 1.0)
 
                 # Preserve non-visible engine/user metadata and ownership state.
                 visible = set(row_dict)
@@ -24948,14 +25364,39 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # depend on engagement history across instances/order.
         gb = [] if _freeze_ctx else (getattr(globals().get('GLOBAL_BUS', None), 'global_cables', []) or [])
         playlist = getattr(self, '_render_playlist_snapshot', None) or getattr(self, 'master_playlist_data', []) or []
-        if _freeze_ctx:
-            active = [r for r in playlist if isinstance(r, dict)
-                      and (r.get("user_owned") or r.get("user_instances")
-                           or "@u:" in str(r.get("operators_csv", ""))
-                           or "@u:" in str(r.get("operators", "")))
-                      and any(v not in (None, '', [], {}) for v in r.values())]
+        def _row_active(r):
+            if not isinstance(r, dict):
+                return False
+            if _freeze_ctx and not (r.get("user_owned") or r.get("user_instances")
+                                    or "@u:" in str(r.get("operators_csv", ""))
+                                    or "@u:" in str(r.get("operators", ""))):
+                return False
+            return any(v not in (None, '', [], {}) for v in r.values())
+        # CTX_DENSITY_R7: density used to rescan the whole playlist on every call (O(rows²) per pass — a
+        # 32 768-row arrangement froze the UI for minutes).  Short playlists keep the exact full scan.  Long
+        # ones keep one flag per row for the current event-loop turn and re-check the row queried last time
+        # and this row (the only rows a painting loop has touched), so the count follows the pass row by row.
+        if len(playlist) <= 512:
+            n_active = sum(1 for r in playlist if _row_active(r))
         else:
-            active = [r for r in playlist if isinstance(r, dict) and any(v not in (None, '', [], {}) for v in r.values())]
+            dc = getattr(self, "_ctx_density_cache", None)
+            key = (id(playlist), len(playlist), _freeze_ctx)
+            if not dc or dc.get("key") != key:
+                flags = [_row_active(r) for r in playlist]
+                dc = self._ctx_density_cache = {"key": key, "flags": flags, "n": sum(flags), "last": None}
+                try:
+                    QTimer.singleShot(0, lambda: setattr(self, "_ctx_density_cache", None))
+                except Exception:
+                    pass
+            flags = dc["flags"]
+            for rr in (dc.get("last"), row):
+                if isinstance(rr, int) and 0 <= rr < len(playlist):
+                    f_now = _row_active(playlist[rr])
+                    if f_now != flags[rr]:
+                        dc["n"] += 1 if f_now else -1
+                        flags[rr] = f_now
+            dc["last"] = int(row) if isinstance(row, int) else None
+            n_active = dc["n"]
 
         # POWER_V3_CONTEXT_FIELD: synth/wavetable state participates without
         # becoming a preset. Snapshot only scalar/numeric state for stability.
@@ -24990,8 +25431,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # the very ctx we are freezing); it must not feed the frozen identity.
             generated_numeric = []
         generated_blob = repr(sorted(generated_numeric))
-        generated_score = (int(hashlib.sha256(generated_blob.encode('utf-8','replace')).hexdigest()[:12], 16) % 10000) / 10000.0
-        synth_score = (int(hashlib.sha256(synth_blob.encode('utf-8','replace')).hexdigest()[:12], 16) % 10000) / 10000.0
+        generated_score = _ctx_blob_score(generated_blob)      # CTX_DENSITY_R7: exact, content-keyed memo
+        synth_score = _ctx_blob_score(synth_blob)
 
         # Imported WAV/video is a shared carrier. Its coarse energy is context,
         # not a command to invent a musical program at boot.
@@ -25016,12 +25457,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             except Exception:
                 pass
         effect_blob = repr(effect_vals)
-        effect_score = (int(hashlib.sha256(effect_blob.encode('utf-8','replace')).hexdigest()[:12], 16) % 10000) / 10000.0
+        effect_score = _ctx_blob_score(effect_blob)
 
         # Script complexity: length + mathematical/operator density.
-        digits = sum(ch.isdigit() for ch in script)
-        ops = sum(script.count(op) for op in ('sin','cos','tan','exp','log','sqrt','evaluate','return'))
-        script_score = float(np.clip(len(script)/1400.0 + digits/180.0 + ops/40.0, 0.0, 1.0))
+        script_score = _ctx_script_score(script)
 
         # Patch topology: fan-in/fan-out and gain density become structural bias.
         patch_count = len(cables)
@@ -25037,12 +25476,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             domain = {}
         domain_blob = repr(domain)
-        domain_score = (int(hashlib.sha256(domain_blob.encode('utf-8','replace')).hexdigest()[:12], 16) % 10000) / 10000.0
+        domain_score = _ctx_blob_score(domain_blob)
 
         # Playlist feedback: density and the current row's velocity influence the
         # field. Empty boot therefore stays empty, but an invoked engine can grow
         # an arrangement in response to what has already been painted.
-        density = float(np.clip(len(active) / max(len(playlist), 1), 0.0, 1.0))
+        density = float(np.clip(n_active / max(len(playlist), 1), 0.0, 1.0))
         row_velocity = 0.5
         if 0 <= row < len(playlist) and isinstance(playlist[row], dict):
             try:
@@ -26759,14 +27198,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
             QMainWindow, QDialog {
                 background: rgba(17,26,44,75);
                 color: #7ce7ff;
-                font-family: 'Segoe UI', Arial, sans-serif;
+                font-family: Arial;
                 font-size: 10pt;
             }
 
             QWidget {
                 background: transparent;
                 color: #7ce7ff;
-                font-family: 'Segoe UI', Arial, sans-serif;
+                font-family: Arial;
             }
 
             QWidget#GrooveboxCentral {
@@ -27283,7 +27722,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 border: 1px solid #31577a;
                 border-bottom: 2px solid #6c4bb3;
                 padding: 6px;
-                font-family: Consolas, monospace;
+                font-family: Consolas;
             }
             QTextEdit:focus {
                 background: rgba(23,39,66,105);
@@ -27722,7 +28161,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.lbl_seed_script_error.setMinimumHeight(18)
         self.lbl_seed_script_error.setStyleSheet(
             "background-color:#121212; color:#ff5555; border:1px solid #31577a; "
-            "font-family:Consolas, monospace; font-size:9pt; font-weight:bold; padding:3px 6px;"
+            "font-family:Consolas; font-size:9pt; font-weight:bold; padding:3px 6px;"
         )
         self.lbl_seed_script_error.setToolTip(
             "Seed Script parser/name diagnostic. Unknown variables/presets and syntax errors are shown as errors; variable redefinitions are shown as warnings with the original assignment line and the variable being overwritten. Clears automatically when valid."
@@ -27755,14 +28194,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         _proc_title_row = QHBoxLayout()
         _proc_title = QLabel("GLOBAL PROCESSOR CONTROLS")
         _proc_title.setObjectName("panelTitle")
-        _proc_title.setStyleSheet("color:#eaf8ff; font-size:14pt; font-weight:900; letter-spacing:1.0px; padding:2px 2px;")
+        _proc_title.setStyleSheet("color:#eaf8ff; font-size:14pt; font-weight:900; padding:2px 2px;")
         _proc_title_row.addWidget(_proc_title)
         _proc_title_row.addStretch(1)
         self.lbl_math_groovebox_logo = QLabel("MATHEMATICIAN'S GROOVEBOX")
-        self.lbl_math_groovebox_logo.setStyleSheet("color:#ffd85a; font-family:'Georgia'; font-size:20pt; font-weight:900; letter-spacing:1.2px; padding:0 4px;")
+        self.lbl_math_groovebox_logo.setStyleSheet("color:#ffd85a; font-family:Georgia; font-size:20pt; font-weight:900; padding:0 4px;")
         self.lbl_math_groovebox_logo.setStyleSheet(
-            "color:#ffd85a; font-family:'Georgia'; font-size:21pt; font-weight:900; "
-            "letter-spacing:1.2px; padding:0 4px;"   # GROOVEBOX_R23R_SNUG_UI_20261103
+            "color:#ffd85a; font-family:Georgia; font-size:21pt; font-weight:900; "
+            " padding:0 4px;"   # GROOVEBOX_R23R_SNUG_UI_20261103
         )
          # ------------------------------------------------------------------
         # PROJECT NOTES → LIVE DJ → GLOBAL PLAY PATCHER
@@ -27921,12 +28360,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.goava_radio_scroll.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.goava_radio_scroll.setStyleSheet(
             "QScrollArea{background:#050b12;border:1px solid #9a7b2f;border-radius:8px;}"
-            "QScrollBar:horizontal{height:14px;background:#071019;border:1px solid #294050;}"
-            "QScrollBar::handle:horizontal{min-width:34px;background:#8aa4b3;border:1px solid #c7d7df;border-radius:5px;}"
-            "QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal{width:14px;background:#172735;border:1px solid #294050;}"
-            "QScrollBar:vertical{width:14px;background:#071019;border:1px solid #294050;}"
-            "QScrollBar::handle:vertical{min-height:34px;background:#8aa4b3;border:1px solid #c7d7df;border-radius:5px;}"
-            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:14px;background:#172735;border:1px solid #294050;}"
+            "QScrollBar:horizontal{height:11px;background:#09131e;border:1px solid #263c51;border-radius:5px;}"
+            "QScrollBar::handle:horizontal{min-width:34px;background:#267e83;border:1px solid #51c6c2;border-radius:4px;}"
+            "QScrollBar::handle:horizontal:hover{background:#35b9b0;border-color:#8af1dc;}"
+            "QScrollBar::handle:horizontal:pressed{background:#b18a3e;border-color:#f0d18a;}"
+            "QScrollBar:vertical{width:11px;background:#09131e;border:1px solid #263c51;border-radius:5px;}"
+            "QScrollBar::handle:vertical{min-height:34px;background:#267e83;border:1px solid #51c6c2;border-radius:4px;}"
+            "QScrollBar::handle:vertical:hover{background:#35b9b0;border-color:#8af1dc;}"
+            "QScrollBar::handle:vertical:pressed{background:#b18a3e;border-color:#f0d18a;}"
         )
         self.goava_radio_scroll.setWidget(self.lbl_goava_radio_brand)
         _radio_row.addWidget(self.goava_radio_scroll, 0)
@@ -28254,18 +28695,48 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_key_chart.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_key_chart.clicked.connect(self._show_key_chart_dialog)
         self.transport_layout_row2.addWidget(self.btn_key_chart)
-        self.btn_compat = QPushButton("⚙ Compatibility")
-        self.btn_compat.setToolTip("Smooth mode, thread count, audio buffers, output routing and startup behaviour. Saved between sessions.")
+        # SETTINGS_COMPAT_R6: one "Settings/Compat" button (menu: System Settings · Compatibility · System Health ·
+        # Window panes) instead of separate Compatibility / System Settings buttons in the transport row.
+        self.btn_compat = QPushButton("⚙ Settings/Compat")
+        self.btn_compat.setToolTip("System Settings (Ctrl+,), Compatibility (smooth mode, threads, audio buffers, outputs, "
+                                   "startup), System / Performance Health, and window pane layouts.")
         self.btn_compat.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.btn_compat.clicked.connect(self._show_compat_dialog)
+        self.btn_compat.setMenu(self._settings_compat_menu(self.btn_compat))
+        self.btn_panes = QPushButton("🧩 Panes")
+        self.btn_panes.setToolTip("Window pane layouts: sizes, order, side-by-side or stacked, shown/hidden, dock "
+                                  "placement — for every Groovebox window. Save your own formats; the active one applies at launch.")
+        self.btn_panes.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_panes.clicked.connect(self._show_ui_panes)
         self.btn_party = QPushButton("🎉 Party")
         self.btn_party.setCheckable(True)
-        self.btn_party.setToolTip("Party Mode: distort, color-shift and layer recent project material onto windows. Intensity from System Settings.")
+        self.btn_party.setToolTip("Party Mode: contextual visuals and UI sounds that show what you are composing — curvature = how "
+                                  "consequential a change is, hue = pitch class, tints = spectrum, light/dark mesh = the flow. "
+                                  "ON by default at 50 %; level and sounds in System Settings.")
         self.btn_party.setStyleSheet("QPushButton { background:#3a1a4a; color:#f0c0ff; border:1px solid #a060c0; border-radius:6px; padding:4px 8px; font-weight:700; } QPushButton:checked { background:#6a2a8a; color:#fff; }")
+        try:
+            import compat_settings as _cs_party
+            _pst = _cs_party.load()
+            self.btn_party.setChecked(bool(_pst.get("party_mode", True)))
+            self.btn_party.setToolTip(self.btn_party.toolTip() + f"  (now: {float(_pst.get('party_intensity', 50.0)):.3f} %)")
+        except Exception:
+            pass
         self.btn_party.toggled.connect(self._on_party_toggled)
-        self.transport_layout_row2.addWidget(self.btn_party)
-
+        # SYSTEM_SETTINGS_LAUNCHER_20261112: System Settings is reachable from the main window (and Ctrl+,).
+        self.btn_system_settings = QPushButton("🖥 System Settings")
+        self.btn_system_settings.setToolTip("Display, audio, threads/workers, Party Mode, background, updates, hardware profile.  (Ctrl+,)")
+        self.btn_system_settings.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_system_settings.clicked.connect(self._show_system_settings)
+        try:
+            from PyQt6.QtGui import QShortcut, QKeySequence
+            self._sc_system_settings = QShortcut(QKeySequence("Ctrl+,"), self)
+            self._sc_system_settings.setContext(Qt.ShortcutContext.ApplicationShortcut)
+            self._sc_system_settings.activated.connect(self._show_system_settings)
+        except Exception:
+            pass
         self.transport_layout_row2.addWidget(self.btn_compat)
+        self.transport_layout_row2.addWidget(self.btn_panes)
+        self.btn_system_settings.hide()           # reachable from Settings/Compat and Ctrl+, (kept for scripts)
+        self.transport_layout_row2.addWidget(self.btn_party)
         self.transport_layout_row2.addWidget(self.btn_load_mg)
         self.transport_layout_row2.addWidget(self.btn_clear_memory)
         # R23h: the one system/hardware volume control (shared with the Dell media
@@ -28459,7 +28930,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.labelsynths.setStyleSheet("""
             background-color: #17233d;
             color: #ffd166;
-            font-family: 'Segoe UI', Arial, sans-serif;
+            font-family: Arial;
             font-size: 13pt;
             font-weight: 900;
             border: 2px solid #d4af37;
@@ -28742,6 +29213,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
             _seed_row.addWidget(QLabel("Canonical"))
             _seed_row.addWidget(self.combo_canonical_mode)
             _seed_row.addWidget(self.lbl_seed_fp)
+            # CANON_VECTOR_R7: what the canonical vector owns / you own, and a way to hand controls back.
+            self.lbl_canon_vec = QLabel("")
+            self.lbl_canon_vec.setStyleSheet("color:#9fb4c8;")
+            _seed_row.addWidget(self.lbl_canon_vec)
+            self.btn_canon_release = QPushButton("↺ Give back")
+            self.btn_canon_release.setToolTip("Hand every control you changed back to the canonicals. "
+                                              "They glide to the seed values in small steps.")
+            def _canon_release():
+                try:
+                    import canonical_vector as _cv
+                    _cv.release(self)
+                    _cm.refresh_controls(self)
+                except Exception as _rel_exc:
+                    print(f"[Canonical] give back skipped: {_rel_exc}")
+            self.btn_canon_release.clicked.connect(_canon_release)
+            _seed_row.addWidget(self.btn_canon_release)
             _seed_row.addStretch(1)
             self.global_composition_group.layout().insertLayout(0, _seed_row)
         except Exception:
@@ -29152,7 +29639,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         seq_header_layout = QHBoxLayout()
         seq_header_label = QLabel("SEQUENCER")
-        seq_header_label.setStyleSheet("color:#52d273; font-weight:900; letter-spacing:0.6px;")
+        seq_header_label.setStyleSheet("color:#52d273; font-weight:900;")
         seq_header_layout.addWidget(seq_header_label)
         seq_header_layout.addSpacing(18)
         seq_interaction_help = QLabel("1st click = SELECT / TELEPORT · 2nd click = ON/OFF")
@@ -29619,14 +30106,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
         _b05.clicked.connect(lambda: self.slider_md_net_mod.setValue(50))
         bridge_r4.addWidget(_lbl_md); bridge_r4.addWidget(self.slider_md_net_mod, 1); bridge_r4.addWidget(self.lbl_md_net_mod); bridge_r4.addWidget(_b05)
         cb.addLayout(bridge_r4)
-        # MD_STOCH_R31: mix of the multidim synth's internal default stochastic probability (0.19758).
+        # MD_STOCH_R31 / MD_STOCH_R7: mix of the multidim synth's internal default stochastic probability (1.0), no cap.
         bridge_r5 = QHBoxLayout(); bridge_r5.setSpacing(8)
         _lbl_st = QLabel("Multidim Stochastic Default")
         _lbl_st.setStyleSheet("font-size:12pt; font-weight:900; color:#f1e5b8;")
         self.md_stoch_default_mix = float(getattr(self, "md_stoch_default_mix", 1.0))
-        self.slider_md_stoch = QSlider(Qt.Orientation.Horizontal); self.slider_md_stoch.setRange(0, 100)
-        self.slider_md_stoch.setValue(int(round(self.md_stoch_default_mix * 100)))
-        _st_tip = ("Mix of the multidimensional synth's internal default stochastic probability (0.19758). Used only "
+        self.slider_md_stoch = QSlider(Qt.Orientation.Horizontal); self.slider_md_stoch.setRange(0, 1000)
+        self.slider_md_stoch.setValue(int(round(min(10.0, self.md_stoch_default_mix) * 100)))
+        # MD_STOCH_R7: the slider covers 0–10×; the box beside it has no cap.
+        self.spin_md_stoch = QDoubleSpinBox(); self.spin_md_stoch.setRange(0.0, 1.0e9); self.spin_md_stoch.setDecimals(3)
+        self.spin_md_stoch.setSingleStep(0.05); self.spin_md_stoch.setValue(self.md_stoch_default_mix)
+        self.spin_md_stoch.setFixedWidth(96)
+        _st_tip = ("Mix of the multidimensional synth's internal default stochastic probability (1.0; no cap). Used only "
                    "when no canonical is active: then the response is time-variant. While a canonical is active its "
                    "own probability × activation level is used instead (time-invariant) and this mix is disregarded.")
         self.slider_md_stoch.setToolTip(_st_tip); _lbl_st.setToolTip(_st_tip)
@@ -29637,15 +30128,30 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 active = bool(self._md_engines())
             except Exception:
                 active = False
-            self.lbl_md_stoch.setText(f"p = {0.19758 * v:.5f}" + ("  (canonical active: disregarded)" if active else ""))
+            self.lbl_md_stoch.setText(f"p = {1.0 * v:.5g}" + ("  (canonical active: disregarded)" if active else ""))
         self._md_stoch_label_refresh = _md_stoch_label_refresh
-        def _md_stoch_changed(v):
-            self.md_stoch_default_mix = float(v) / 100.0
+        def _md_stoch_set(mix, src=None):
+            self.md_stoch_default_mix = max(0.0, float(mix))
+            if src is not self.slider_md_stoch:
+                self.slider_md_stoch.blockSignals(True)
+                self.slider_md_stoch.setValue(int(round(min(10.0, self.md_stoch_default_mix) * 100)))
+                self.slider_md_stoch.blockSignals(False)
+            if src is not self.spin_md_stoch:
+                self.spin_md_stoch.blockSignals(True); self.spin_md_stoch.setValue(self.md_stoch_default_mix)
+                self.spin_md_stoch.blockSignals(False)
             _md_stoch_label_refresh()
             try: self._on_live_source_changed()
             except Exception: pass
+        def _md_stoch_changed(v):
+            _md_stoch_set(float(v) / 100.0, self.slider_md_stoch)
+        self._md_stoch_set = _md_stoch_set
         self.slider_md_stoch.valueChanged.connect(_md_stoch_changed)
-        bridge_r5.addWidget(_lbl_st); bridge_r5.addWidget(self.slider_md_stoch, 1); bridge_r5.addWidget(self.lbl_md_stoch)
+        self.spin_md_stoch.valueChanged.connect(lambda v: _md_stoch_set(v, self.spin_md_stoch))
+        self.spin_md_stoch.setToolTip(_st_tip)
+        _b1 = QPushButton("1"); _b1.setFixedWidth(32); _b1.setToolTip("Reset to the default 1")
+        _b1.clicked.connect(lambda: _md_stoch_set(1.0))
+        bridge_r5.addWidget(_lbl_st); bridge_r5.addWidget(self.slider_md_stoch, 1); bridge_r5.addWidget(self.spin_md_stoch)
+        bridge_r5.addWidget(_b1); bridge_r5.addWidget(self.lbl_md_stoch)
         cb.addLayout(bridge_r5)
         QTimer.singleShot(0, _md_stoch_label_refresh)
 
@@ -30336,11 +30842,29 @@ class MathematiciansGrooveboxApp(QMainWindow):
         seq_controls.addWidget(self.btn_remove_sequence)
         self._live_step_record = False
         self._live_step_cursor = {}
-        self.btn_live_step_record = QPushButton("STEP RECORD OFF")
+        self.btn_live_step_record = QPushButton("⏺ STEP REC OFF")
         self.btn_live_step_record.setCheckable(True)
-        self.btn_live_step_record.setToolTip("Record played keyboard notes into the selected operator's step sequence, preserving touched-step ownership.")
+        self.btn_live_step_record.setToolTip("Record played keyboard notes into the selected operator's step sequence, preserving touched-step ownership. "
+                                             "While armed, arrows / Ctrl / wheel / STEP AUTO pad / F1–F12 / Numpad also record automation at the step (Bind…).")
         self.btn_live_step_record.toggled.connect(self._toggle_live_step_record)
         seq_controls.addWidget(self.btn_live_step_record)
+        # STEP_AUTOMATION_R7: the status label the toggle writes (was never created, so arming
+        # raised AttributeError and the button un-checked itself), the STEP AUTO pad and bindings.
+        self.lbl_live_step_record = QLabel("RECORD OFF")
+        self.lbl_live_step_record.setStyleSheet("color:#9aa6b4;font-size:8pt;font-weight:900;")
+        self.lbl_live_step_record.setMinimumWidth(120)
+        seq_controls.addWidget(self.lbl_live_step_record)
+        try:
+            import step_automation as _sa
+            self.step_auto_pad = _sa.make_pad(self)
+            seq_controls.addWidget(self.step_auto_pad)
+            self.btn_step_auto_bind = QPushButton("Bind…")
+            self.btn_step_auto_bind.setToolTip("Step Record automation bindings: arrows, Ctrl, wheel, mouse pad, F1–F12, "
+                                               "Numpad (0–9 = program memory lanes; Ctrl+Numpad stores)")
+            self.btn_step_auto_bind.clicked.connect(lambda: _sa.open_bind_dialog(self, self))
+            seq_controls.addWidget(self.btn_step_auto_bind)
+        except Exception as _sa_exc:
+            print(f"[Step Record] automation pad unavailable: {_sa_exc}")
         seq_controls.addWidget(QLabel("Sequence length:"))
         seq_controls.addWidget(self.spin_seq_length)
         seq_controls.addWidget(QLabel("Playlist mode:"))
@@ -31557,7 +32081,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Canonical fingerprint — order-independent identity of the live project.
         self.lbl_canonical_fp = QLabel("ID:")
         self.lbl_canonical_fp.setStyleSheet(
-            "color:#f5d97d; font-weight:700; font-size:9pt; font-family: Consolas, monospace;"
+            "color:#f5d97d; font-weight:700; font-size:9pt; font-family: Consolas;"
         )
         self.lbl_canonical_fp.setToolTip(
             "Canonical composition fingerprint (order-independent). "
@@ -31595,11 +32119,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "QSpinBox { background-color:#121820; color:#b8f7e6; border:1px solid #3a5a6a; "
             "border-radius:4px; padding:2px 4px; font-weight:700; }"
         )
-        self.chk_ui_lite = QCheckBox("UI lite")
-        self.chk_ui_lite.setChecked(True)
+        # UI Lite is retained as an optional emergency performance saver, not the
+        # default visual experience. Fine scenograph refresh is now the normal path.
+        self.chk_ui_lite = QCheckBox("Performance saver")
+        self.chk_ui_lite.setChecked(False)
         self.chk_ui_lite.setToolTip(
-            "PERF: during live play, update scope + spectrum every tick but throttle "
-            "the heavy scenograph / video viewer to every 3rd tick (or skip when audio-only)."
+            "Optional low-power mode: keep waveform updates responsive and throttle "
+            "spectrum/scenograph/HUD work. Leave off for the clearest, most frequent live picture."
         )
         self.chk_ui_lite.setStyleSheet("color:#8ab4c8; font-size:9pt; font-weight:700;")
         self._scope_tick_counter = 0
@@ -31664,25 +32190,46 @@ class MathematiciansGrooveboxApp(QMainWindow):
             col = QVBoxLayout()
             col.setContentsMargins(0, 0, 0, 0)
             col.setSpacing(2)
-            #lbl = QLabel(label)
-            #lbl.setStyleSheet("color: #8ab4c8; font-size: 8pt; font-weight: 800;")
-            #col.addWidget(lbl)
+            if widget is not self.video_synth_viewer:
+                lbl = QLabel(label)
+                lbl.setStyleSheet("color:#8ab4c8; font-size:9pt; font-weight:800; padding:3px 5px;")
+                col.addWidget(lbl)
             # UI_LAYOUT_2026: the WAV/video carrier import controls float
             # directly above the left-hand oscilloscope pane specifically.
             if is_square:
-                widget.setMinimumSize(720, 720)
+                # The scenograph is square by default, but is no longer hard-
+                # fixed: splitters and stream-window layouts may resize it freely.
+                widget.setMinimumSize(180, 180)
                 widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             else:
                 widget.setMinimumSize(360, 720)
                 widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             widget.setMaximumSize(16777215, 16777215)
-            col.addWidget(
-                widget, stretch=1,
-                alignment=Qt.AlignmentFlag.AlignCenter if is_square else Qt.AlignmentFlag(0),   # centred square; side meters fill (BOTTOM_PANE_FILL_20261102)
-            )
+            col.addWidget(widget, stretch=1)  # fully resizable viewport; paint scales the latest frame
             if widget is self.video_synth_viewer:
-                # GROOVEBOX_R23R_SCENE_PREVIEW_20261031: decimal step + refresh.
+                # The centre visual is explicitly named and quality-selectable;
+                # the old UI Lite switch remains available as an opt-in fallback.
+                _scene_title = QLabel("◈ LIVE SCENOGRAPH  ·  REAL-TIME VISUAL ENGINE")
+                _scene_title.setStyleSheet(
+                    "color:#d8f7ff; background:#10232b; border:1px solid #2d7180; "
+                    "border-radius:5px; padding:5px 9px; font-size:10pt; font-weight:900;"
+                )
+                _scene_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                col.addWidget(_scene_title)
                 _pv = QHBoxLayout(); _pv.setSpacing(6)
+                _pv.addWidget(QLabel("Picture quality"))
+                self.combo_scenograph_quality = QComboBox()
+                self.combo_scenograph_quality.addItems(["Fine", "Balanced", "Draft", "Auto"])
+                self.combo_scenograph_quality.setCurrentText("Fine")
+                self.combo_scenograph_quality.setToolTip(
+                    "Fine = full-resolution preview at up to 30 fps; Balanced = lighter 24 fps; "
+                    "Draft = reduced render scale; Auto = follow the machine's adaptive profile. "
+                    "Exports remain full-quality and are not affected."
+                )
+                self.combo_scenograph_quality.currentTextChanged.connect(
+                    self.video_synth_viewer.set_quality_profile
+                )
+                _pv.addWidget(self.combo_scenograph_quality)
                 _pv.addWidget(QLabel("Preview step"))
                 self.spin_scene_preview_step = QDoubleSpinBox()
                 self.spin_scene_preview_step.setDecimals(2); self.spin_scene_preview_step.setSingleStep(0.5)
@@ -31728,7 +32275,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 col.setContentsMargins(6, 6, 6, 6)
                 self._scenograph_frame = _scen
                 _scen.setLayout(col)
-                visual_pair.addWidget(_scen, stretch=2)
+                visual_pair.addWidget(_scen, stretch=3)
             else:
                 visual_pair.addLayout(col, stretch=1)
         visual_container = QWidget()
@@ -31847,6 +32394,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         install_workstation_tools(self, master_container)
 
         render_splitter = QSplitter(Qt.Orientation.Vertical)
+        render_splitter.setObjectName("grooveboxRenderSplitter")   # UI_PANES_R6: stable key for pane formats
         render_splitter.setChildrenCollapsible(False)
         render_splitter.setHandleWidth(8)
         render_splitter.addWidget(top_scroll)
@@ -32641,7 +33189,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return
         mem_view = self._sequence_display_mem(curr_inst, mem)   # CANONICAL_SEQ_DISPLAY_20261102
         _canon = bool(mem_view.get("_canonical_display"))
-        for s_idx, btn in enumerate(self.seq_step_buttons):
+        for s_idx, btn in self._live_step_buttons():
             if s_idx < len(mem_view["steps"]):
                 amp = mem_view["amplitudes"][s_idx]
                 pitch = mem_view["pitches"][s_idx] if s_idx < len(mem_view.get("pitches", [])) else 1.0
@@ -32692,10 +33240,39 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
 
+    def _update_playhead_step(self):
+        """PLAYHEAD_STEP_R7: ``_playhead_step`` = the sounding step of the selected pattern while playing, else -1.
+
+        One law (shared with step_automation): beats played over beats-per-step (row beats / pattern length),
+        wrapped to the pattern length. Only the two pads whose state changed are restyled (cheap at 20 Hz)."""
+        step = -1
+        try:
+            if getattr(self, "is_playing", False) and not getattr(self, "is_paused", False):
+                import step_automation as _sa
+                step = int(_sa.current_step(self))
+        except Exception:
+            step = -1
+        old = int(getattr(self, "_playhead_step", -1) if getattr(self, "_playhead_step", None) is not None else -1)
+        self._playhead_step = step
+        if step == old:
+            return step
+        try:
+            pads = getattr(self, "seq_step_buttons", []) or []
+            cur = self.instrument_selector_dropdown.currentText()
+            mem = self.instrument_sequencer_memory.get(cur, {"steps": []})
+            for i in (old, step):
+                if 0 <= i < len(pads) and pads[i] is not _OFF_VIEW_STEP:
+                    on = mem["steps"][i] if i < len(mem.get("steps", [])) else False
+                    self._style_pad_button(pads[i], i, on)
+        except Exception:
+            pass
+        return step
+
     def _style_pad_button(self, btn, s_idx, is_active_step, canonical=False):
         """Style a STEP: playhead (orange) > programmed on (cyan) > off (dark). Canonical-owned steps are teal."""
-        is_playhead = False
-        if canonical:
+        is_playhead = (s_idx == getattr(self, "_playhead_step", -1) and s_idx >= 0
+                       and bool(getattr(self, "is_playing", False)))        # PLAYHEAD_STEP_R7: was always False
+        if canonical and not is_playhead:
             btn.setStyleSheet(
                 ("background-color: #2a9d8f; color: #04201d; border: 2px dashed #8ff2dd; font-weight: bold;") if is_active_step else
                 ("background-color: #0b2b2e; color: #7fd1c4; border: 2px dashed #2a6f68; font-weight: bold;"))
@@ -32951,11 +33528,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _keychart_handle_enter(self, obj, event):
         if event.isAutoRepeat() or not self._keychart_gate(obj, event):
             return False
-        self._toggle_enter_loop()
+        self._enter_loop_press()
         return True
 
     def _keychart_handle_release(self, obj, event):
         k = int(event.key())
+        if k in (int(Qt.Key.Key_Return), int(Qt.Key.Key_Enter)):
+            # ENTER_HOLD_LOOP_R7: releasing Enter closes the take, even if focus moved while held.
+            self._enter_loop_release()
+            return
         if not (48 <= k <= 57 or 65 <= k <= 90) or not self._keychart_gate(obj, event):
             return
         ch = chr(k)
@@ -33557,12 +34138,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     "change_point": int(getattr(self, "_buffer_change_point", 0) or 0),
                 }
                 path = os.path.join(out_dir, ".finish_resume.json")
-                with open(path, "w") as f:
+                with open(path, "w", encoding="utf-8") as f:
                     json.dump(resume, f)
                 # Also keep a copy next to the project so a reboot can find it.
                 proj = getattr(self, "current_project_path", None)
                 if proj:
-                    with open(os.path.splitext(proj)[0] + ".resume.json", "w") as f:
+                    with open(os.path.splitext(proj)[0] + ".resume.json", "w", encoding="utf-8") as f:
                         json.dump(resume, f)
             except Exception:
                 pass
@@ -33929,8 +34510,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def keyPressEvent(self, event):
         # TAB_INSTRUMENT_20261107: Tab picks a random other active instrument.
-        # Shift-Tab walks back through the history. Enter starts a note loop;
-        # Enter with no keys clears it.
+        # Shift-Tab walks back through the history. Hold Enter to record a loop;
+        # a tap of Enter with no keys clears it.
         key = event.key()
         if key == Qt.Key.Key_Tab:
             names = list(getattr(self, "instrument_display_names", None) or getattr(self, "instrument_names_48", []) or [])
@@ -33957,9 +34538,73 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     self.instrument_selector_dropdown.setCurrentText(pick)
             return
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            self._toggle_enter_loop()
+            if not event.isAutoRepeat():
+                self._enter_loop_press()
             return
         super().keyPressEvent(event)
+
+    def _enter_loop_press(self):
+        """ENTER_HOLD_LOOP_R7: Enter is a hold-to-record looper.
+
+        press   - forgets the previous take (notes + control moves) and starts recording
+        hold    - every note key / control move made while Enter is down is recorded
+        release - the take closes; its length is how long Enter was held. With notes it loops and is
+                  committed to the sequencer + automation (as before); with no notes the looper is
+                  simply left empty - so a bare tap of Enter clears the loop segment.
+        """
+        loop = getattr(self, "_enter_loop", None)
+        if not isinstance(loop, dict):
+            loop = self._enter_loop = {"state": "idle", "notes": [], "started": 0.0}
+        had = bool(loop.get("notes")) or loop.get("state") in ("rec", "play")
+        t = getattr(self, "_loop_timer", None)
+        if t is not None:
+            t.stop()
+        now = time.monotonic()
+        loop.clear()
+        loop.update(state="rec", notes=[], started=now, active=True, ctl=[], ctl_last={}, ctl_touch={},
+                    held=True, cleared_previous=had)
+        self._loop_ctl_baseline(loop)
+        self._ensure_loop_playback()                   # the tick also captures control moves while recording
+        # ENTER_HOLD_GUARD_R7: a release that happens while another app has focus never reaches us, so the take
+        # would stay recording forever. Losing application focus while Enter is held counts as the release.
+        if not getattr(self, "_enter_loop_focus_guard", False):
+            try:
+                _qa = QApplication.instance()
+                if _qa is not None:
+                    _qa.applicationStateChanged.connect(
+                        lambda st, _s=self: (_s._enter_loop_release()
+                                             if st != Qt.ApplicationState.ApplicationActive else None))
+                    self._enter_loop_focus_guard = True
+            except Exception:
+                pass
+        if hasattr(self, "scope_status_label"):
+            self.scope_status_label.setText("⏺ Recording while Enter is held · play keys, move controls · release to loop"
+                                            + (" (previous loop cleared)" if had else ""))
+
+    def _enter_loop_release(self):
+        loop = getattr(self, "_enter_loop", None)
+        if not isinstance(loop, dict) or loop.get("state") != "rec" or not loop.get("held"):
+            return
+        loop["held"] = False
+        now = time.monotonic()
+        rel_t = now - float(loop.get("started", now))
+        for n in loop.get("notes", []):                 # keys still down when Enter lifts end with the take
+            if "dur" not in n:
+                n["dur"] = max(0.05, rel_t - float(n.get("t", 0.0)))
+        if loop["notes"]:
+            loop.update(state="play", span=max(0.25, rel_t), play_start=now, last_pos=-1.0, active=False)
+            self._ensure_loop_playback()
+            _n = self._loop_commit_to_sequencer(loop)
+            msg = "🔁 Looping %d note(s) every %.2f s · %d step(s)/lane(s) added · hold Enter to record a new take, tap to clear" % (
+                len(loop["notes"]), loop["span"], _n)
+        else:
+            loop.update(state="idle", notes=[], ctl=[], active=False)
+            t = getattr(self, "_loop_timer", None)
+            if t is not None:
+                t.stop()
+            msg = "Loop cleared"
+        if hasattr(self, "scope_status_label"):
+            self.scope_status_label.setText(msg)
 
     def _toggle_enter_loop(self):
         """R32.9 KEY LOOP: Return ① records the keys you play, ② closes the loop (its length = the time
@@ -34088,6 +34733,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             for n in loop.get("notes", []):
                 exact = float(n["t"]) / step_s
                 s = int(round(exact)) % L
+                try:   # MATH_INVARIANTS_R7: s = round(t/Δ) mod L, |offset| ≤ ½
+                    import math_invariants as _mi
+                    _mi.guard("loop_quantize", 0 <= s < L and abs(exact - round(exact)) <= 0.5, "t=%r Δ=%r" % (n["t"], step_s))
+                except Exception:
+                    pass
                 if not mem["steps"][s]:
                     mem["steps"][s] = True; added += 1
                 mem["gates"][s] = True
@@ -34459,11 +35109,43 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if ov is not None and ov.is_locked():
             QTimer.singleShot(300, self._startup_after_unlock)   # poll; never block the UI thread
             return
+        try:   # MAIN_PIN_R7: the main window is the screen-sized floor; every other window stays above it
+            import main_window_pin as _pin
+            _pin.pin(self)
+        except Exception as _pe:
+            print(f"[Window] pin skipped: {_pe}")
+        try:   # MEMORY_NOTICE_STARTUP_R7: notices held during startup may show now
+            import memory_guard as _mg
+            _mg.mark_ready()
+        except Exception:
+            pass
         try:
             import compat_settings as _cs
             st = _cs.load()
         except Exception:
             st = {}
+        # PARTY_STARTUP_R6: Party Mode defaults ON (50 %, PARTY_DEFAULT_R7); it used to start only when the 🎉 button was toggled.
+        # UI_PANES_R6: the active pane format (Default = untouched) for this window and windows opened later.
+        if not hasattr(self, "_panes_applied_once"):
+            self._panes_applied_once = True
+
+            def _apply_panes():
+                try:
+                    import ui_panels as _up
+                    _up.apply_active()
+                except Exception as _pe:
+                    print(f"[Panes] {_pe}")
+            QTimer.singleShot(600, _apply_panes)
+            # CANON_VECTOR_R7: first canonical vector pass once every control exists; it also installs the
+            # ownership hooks, so from here on any edit you make is yours (Protected keeps it).
+            try:
+                import canonical_mode as _cm
+                _cm.refresh_controls(self)
+            except Exception as _cv_exc:
+                print(f"[Canonical] vector start skipped: {_cv_exc}")
+        if st.get("party_mode", True) and not hasattr(self, "_party_started_once"):
+            self._party_started_once = True
+            QTimer.singleShot(800, self._apply_party_mode)
         if st.get("ask_session_name"):
             self._ask_session_name(then_chime=bool(st.get("startup_chime", True)))
         elif st.get("startup_chime", True):
@@ -34829,7 +35511,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         for col, val in enumerate((c, str(d + 1), f"{r:.4f}", f"{min(base * r, 20000.0):.2f}")):
                             table.setItem(d, col, QTableWidgetItem(val))
                 except Exception as exc:
-                    print(f"[KeyChart] chart refresh skipped: {exc}")
+                    try:
+                        import quiet_log
+                        quiet_log.refresh_fail("KeyChart", exc)
+                    except Exception:
+                        print(f"[KeyChart] chart refresh skipped: {exc}")
             spin.valueChanged.connect(refresh)
             self.instrument_selector_dropdown.currentIndexChanged.connect(refresh)
             self._keychart_dialog = dlg
@@ -34960,7 +35646,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if not np.all(np.isfinite(arr)):
             arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
         # No peak scaling here: audition notes are played at their rendered level.
+        # Add a very short raised-cosine edge taper to prevent discontinuity clicks
+        # when independently rendered keyboard/step buffers begin or end mid-block.
+        # Synthesis remains outside the real-time callback and the tapers are in-place.
         buf = np.ascontiguousarray(arr, dtype=np.float32)
+        try:
+            edge_in = min(int(round(int(sr) * 0.0010)), buf.size // 4)
+            edge_out = min(int(round(int(sr) * 0.0030)), buf.size // 4)
+            if edge_in > 1:
+                phase = np.linspace(0.0, np.pi, edge_in, endpoint=True, dtype=np.float32)
+                buf[:edge_in] *= (0.5 - 0.5 * np.cos(phase))
+            if edge_out > 1:
+                phase = np.linspace(np.pi, 0.0, edge_out, endpoint=True, dtype=np.float32)
+                buf[-edge_out:] *= (0.5 - 0.5 * np.cos(phase))
+        except Exception:
+            pass
         # GROOVEBOX_R23R_LIVE_PLAYER_20261103: while the Live Player streams, key hits join its stream.
         try:
             _lp = getattr(self, "_live_player_window", None)
@@ -35219,7 +35919,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return
         curr_inst = self.instrument_selector_dropdown.currentText() if hasattr(self, 'top_sequencer') else None
         mem = self.instrument_sequencer_memory.get(curr_inst, {"steps": []}) if curr_inst else {"steps": []}
-        for s_idx, btn in enumerate(self.seq_step_buttons):
+        for s_idx, btn in self._live_step_buttons():
             is_on = mem["steps"][s_idx] if s_idx < len(mem.get("steps", [])) else False
             self._style_pad_button(btn, s_idx, is_on)
         try:
@@ -35227,6 +35927,71 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.arc_seq_view.update_from_host()
         except Exception:
             pass
+
+    def _page_sequencer_steps(self, direction):
+        """STEP_WINDOW_R7: move the visible page of step pads; the pattern itself is unchanged."""
+        n = self._seq_pattern_length()
+        self._seq_view_start, _ = _step_window(n, int(getattr(self, "_seq_view_start", 0)) + int(direction) * STEP_VIEW)
+        self.rebuild_sequencer_steps(n)
+        try:
+            self.reload_active_instrument_sequencer_ui()
+        except Exception as exc:
+            try:
+                import quiet_log
+                quiet_log.refresh_fail("Sequencer.page", exc)
+            except Exception:
+                print(f"[Sequencer] page refresh skipped: {exc}")
+
+    def _live_step_buttons(self):
+        """(logical_index, pad) for on-page pads only — O(page), never O(pattern length)."""
+        buttons = getattr(self, "seq_step_buttons", None) or []
+        lo = int(getattr(self, "_seq_view_start", 0) or 0)
+        if getattr(self, "_seq_buttons_paged", False):
+            out = []
+            for i, b in enumerate(buttons):
+                if b is _OFF_VIEW_STEP or b is None:
+                    continue
+                out.append((lo + i, b))
+            return out
+        return [(i, b) for i, b in enumerate(buttons) if b is not _OFF_VIEW_STEP]
+
+    def _seq_pattern_length(self, count=None):
+        """True pattern length from memory (not the visible pad list)."""
+        try:
+            curr = self.instrument_selector_dropdown.currentText() if hasattr(self, "instrument_selector_dropdown") else None
+            mem = self._current_sequence_mem(curr) if hasattr(self, "_current_sequence_mem") and curr else None
+            if isinstance(mem, dict) and mem.get("pattern_length") is not None:
+                return max(1, min(STRUCT_MAX_STEPS, int(mem.get("pattern_length") or 1)))
+        except Exception:
+            pass
+        if count is not None:
+            try:
+                return max(1, min(STRUCT_MAX_STEPS, int(count)))
+            except Exception:
+                pass
+        return max(1, int(getattr(self, "_seq_pattern_len_cache", DEFAULT_SEQUENCE_LENGTH) or DEFAULT_SEQUENCE_LENGTH))
+
+    def _step_pad(self, s):
+        """On-page QPushButton for logical step s, or None if off-page / missing."""
+        try:
+            s = int(s)
+        except Exception:
+            return None
+        buttons = getattr(self, "seq_step_buttons", None) or []
+        if not buttons:
+            return None
+        lo = int(getattr(self, "_seq_view_start", 0) or 0)
+        # Paged layout (R32.9): list holds only the visible page.
+        if getattr(self, "_seq_buttons_paged", False):
+            idx = s - lo
+            if 0 <= idx < len(buttons):
+                b = buttons[idx]
+                return None if b is _OFF_VIEW_STEP else b
+            return None
+        if 0 <= s < len(buttons):
+            b = buttons[s]
+            return None if b is _OFF_VIEW_STEP else b
+        return None
 
     def rebuild_sequencer_steps(self, count):
         while self.steps_inner_layout.count():
@@ -35243,14 +36008,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
         curr_inst = self.instrument_selector_dropdown.currentText() if hasattr(self, 'top_sequencer') else self.instrument_names_48[0]
         mem = self._current_sequence_mem(curr_inst) if hasattr(self, '_current_sequence_mem') else self.instrument_sequencer_memory[curr_inst]
         count = int(mem.get('pattern_length', count))
+        count = max(1, min(STRUCT_MAX_STEPS, int(count)))
+        self._seq_pattern_len_cache = count
         self._ensure_seq_mem_length(mem, count)
         if "pitches" not in mem:
             mem["pitches"] = [1.0] * count
         elif len(mem["pitches"]) < count:
             mem["pitches"].extend([1.0] * (count - len(mem["pitches"])))
 
-        for s in range(count):
-            amp = mem["amplitudes"][s]
+        _lo, _hi = _step_window(count, getattr(self, "_seq_view_start", 0))
+        self._seq_view_start = _lo
+        self._seq_view_end = _hi
+        self._seq_buttons_paged = True  # R32.9: no O(N) off-view placeholders
+        if _lo > 0:
+            self.steps_inner_layout.addWidget(_step_pager_button(
+                f"◀ {max(1, _lo - STEP_VIEW + 1)}–{_lo}", f"Show steps {max(1, _lo - STEP_VIEW + 1)}–{_lo} of {count}",
+                lambda: self._page_sequencer_steps(-1)))
+        # Only build real widgets for the visible page — long patterns stay responsive.
+        for s in range(_lo, _hi):
+            amp = mem["amplitudes"][s] if s < len(mem.get("amplitudes", [])) else 1.0
             pitch = mem["pitches"][s] if s < len(mem["pitches"]) else 1.0
             offset = float(mem.get("offsets", [0.0] * count)[s]) if s < len(mem.get("offsets", [])) else 0.0
             step_btn = QPushButton(f"STEP {s+1}\nV:{amp:.2f} P:{pitch:.2f}×\nO:{offset:+.2f} step")
@@ -35259,8 +36035,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             step_btn.setMinimumSize(86, 58)
             step_btn.setFixedHeight(58)
             step_btn.setMaximumWidth(110)
-            self._style_pad_button(step_btn, s, mem["steps"][s])
-            step_btn.setProperty("step_active", bool(mem["steps"][s]))
+            self._style_pad_button(step_btn, s, mem["steps"][s] if s < len(mem.get("steps", [])) else False)
+            step_btn.setProperty("step_active", bool(mem["steps"][s]) if s < len(mem.get("steps", [])) else False)
             self._style_chord_subdivisions(step_btn, mem)
 
             def make_handler(s_idx):
@@ -35271,6 +36047,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             step_btn.clicked.connect(make_handler(s))
             self.steps_inner_layout.addWidget(step_btn)
             self.seq_step_buttons.append(step_btn)
+        if _hi < count:
+            self.steps_inner_layout.addWidget(_step_pager_button(
+                f"{_hi + 1}–{min(count, _hi + STEP_VIEW)} ▶ / {count}", f"Show steps {_hi + 1}–{min(count, _hi + STEP_VIEW)} of {count}",
+                lambda: self._page_sequencer_steps(+1)))
         try:
             if hasattr(self, "arc_seq_view"):
                 self.arc_seq_view.update_from_host()
@@ -35469,7 +36249,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             continue
                 bp.update()
         except Exception as exc:
-            print(f"[Geometry] canonical refresh skipped: {exc}")
+            try:
+                import quiet_log
+                quiet_log.refresh_fail("Geometry.canonical", exc)
+            except Exception:
+                print(f"[Geometry] canonical refresh skipped: {exc}")
 
     def _on_lock_characteristic_pressed(self, key):
         if not getattr(self, "_undo_in_flight", False):
@@ -35924,12 +36708,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if str(severity).lower() == 'warning':
                     label.setStyleSheet(
                         "background-color:#121212; color:#ffbf5a; border:1px solid #6d5725; "
-                        "font-family:Consolas, monospace; font-size:9pt; font-weight:bold; padding:3px 6px;"
+                        "font-family:Consolas; font-size:9pt; font-weight:bold; padding:3px 6px;"
                     )
                 else:
                     label.setStyleSheet(
                         "background-color:#121212; color:#ff5555; border:1px solid #31577a; "
-                        "font-family:Consolas, monospace; font-size:9pt; font-weight:bold; padding:3px 6px;"
+                        "font-family:Consolas; font-size:9pt; font-weight:bold; padding:3px 6px;"
                     )
                 label.setText(message)
                 label.show()
@@ -37906,7 +38690,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self.cellular_synth_preview.canonical_cells = {tuple(q) for q in (_eff["cellular"].get("manual_cells") or [])}
                 self.cellular_synth_preview.update()
         except Exception as _pexc:
-            print(f"[Geometry] preview refresh skipped: {_pexc}")
+            try:
+                import quiet_log
+                quiet_log.refresh_fail("Geometry.preview", _pexc)
+            except Exception:
+                print(f"[Geometry] preview refresh skipped: {_pexc}")
         def fmt(items):
             parts = []
             for k, v, tag in items:
@@ -40827,6 +41615,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.spin_auto_point_step.setValue(min(max(1, self.spin_auto_point_step.value()), n))
         self._refresh_sequencer_automation_row()
 
+    def _page_automation_steps(self, direction):
+        """STEP_WINDOW_R7: page the automation strip without moving the selection."""
+        n = int(self.spin_auto_point_length.value()) if hasattr(self, "spin_auto_point_length") else 16
+        self._auto_view_start, _ = _step_window(n, int(getattr(self, "_auto_view_start", 0)) + int(direction) * STEP_VIEW)
+        self._auto_view_follow = False
+        self._refresh_sequencer_automation_row()
+
     def _on_auto_sync_toggled(self, checked):
         """Optionally lock Automator length to the active Sequencer; OFF permits polymetric/syncopated lengths."""
         if hasattr(self, "spin_auto_point_length"):
@@ -41532,7 +42327,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     self._automator_materialize_guard = False
         by_step = {int(p.get("step", 1) or 1): p for p in scoped_points}
         selected = getattr(self, "_selected_automation_step", None)
-        for step in range(1, max(1, length) + 1):
+        _lo, _hi = _step_window(max(1, length), getattr(self, "_auto_view_start", 0),
+                                focus=(int(selected) - 1) if isinstance(selected, int) and getattr(self, "_auto_view_follow", True) else None)
+        self._auto_view_start = _lo; self._auto_view_follow = True
+        if _lo > 0:
+            layout.addWidget(_step_pager_button(f"◀ {max(1, _lo - STEP_VIEW + 1)}–{_lo}",
+                                                f"Show automation steps {max(1, _lo - STEP_VIEW + 1)}–{_lo} of {length}",
+                                                lambda: self._page_automation_steps(-1)), 1)
+        for step in range(_lo + 1, _hi + 1):                  # STEP_WINDOW_R7: one page of real buttons
             point = by_step.get(step)
             enabled = bool(point and point.get("enabled", True))
             inst = str((point or {}).get("to_instrument") or (point or {}).get("instrument") or "")
@@ -41570,11 +42372,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
             )
             btn.clicked.connect(lambda checked=False, s=step: self._toggle_sequencer_automation_step(s))
             layout.addWidget(btn, 1)
+        if _hi < length:
+            layout.addWidget(_step_pager_button(f"{_hi + 1}–{min(length, _hi + STEP_VIEW)} ▶ / {length}",
+                                                f"Show automation steps {_hi + 1}–{min(length, _hi + STEP_VIEW)} of {length}",
+                                                lambda: self._page_automation_steps(+1)), 1)
         # Keep a minimum content width so a long automation lane scrolls instead of squeezing cells.
         # Arc mode manages its own geometry, so never force a huge minimum there.
         try:
             if not hasattr(self.sequencer_automation_widget, "arc_host"):
-                self.sequencer_automation_widget.setMinimumWidth(max(0, int(length) * 96 + 8))
+                self.sequencer_automation_widget.setMinimumWidth(max(0, int(_hi - _lo + (_lo > 0) + (_hi < length)) * 96 + 8))
         except Exception:
             pass
         if selected is not None and 1 <= int(selected) <= max(1, length):
@@ -41633,6 +42439,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         curr_i = self.instrument_selector_dropdown.currentText()
         mem = self._current_sequence_mem(curr_i) if hasattr(self, "_current_sequence_mem") else self.instrument_sequencer_memory[curr_i]
         self._ensure_seq_mem_length(mem, max(s_idx + 1, len(mem.get("steps", []))))
+        _pads = getattr(self, "seq_step_buttons", []) or []
+        if 0 <= s_idx < len(_pads) and _pads[s_idx] is _OFF_VIEW_STEP:    # STEP_WINDOW_R7: teleport pages the view
+            _keep = self.selected_step_idx
+            self._seq_view_start, _ = _step_window(len(_pads), 0, focus=s_idx)
+            self.rebuild_sequencer_steps(len(_pads))
+            try: self.reload_active_instrument_sequencer_ui()
+            except Exception: pass
+            self.selected_step_idx = _keep
 
         # STEP SELECTION CONTRACT:
         #   first click on a different cell = SELECT ONLY; never touch gates.
@@ -41751,7 +42565,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             target = 0.25 + 0.75 * field
             if randomize:
                 target = 0.75 * target + 0.25 * float(rng.uniform(0.5, 1.5))
-            old = float(entry.get("velocity", 1.0) or 1.0)
+            old = _num_or(entry.get("velocity"), 1.0)
             # Treat explicit non-default velocities as user data and preserve them.
             user_locked = bool(entry.get("velocity_user_locked", False))
             if user_locked and self._canonical_protect_user():
@@ -41790,10 +42604,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try: self._refresh_canonical_fingerprint()
         except Exception: pass
         # Amp is velocity / step-trigger blend amount into painted together steps
-        if mem["steps"][s] and s < len(self.seq_step_buttons):
+        if mem["steps"][s] and self._step_pad(s) is not None:
             pitch = mem["pitches"][s] if s < len(mem.get("pitches", [])) else 1.0
             offset = float(mem.get("offsets", [0.0] * len(mem.get("steps", [])))[s]) if s < len(mem.get("offsets", [])) else 0.0
-            self.seq_step_buttons[s].setText(f"Pad {s+1}\nA:{val/100:.2f} P:{pitch:.2f}×\nO:{offset:+.2f} step")
+            _pad = self._step_pad(s)
+            if _pad is not None:
+                _pad.setText(f"Pad {s+1}\nA:{val/100:.2f} P:{pitch:.2f}×\nO:{offset:+.2f} step")
 
     def _on_step_pitch_slider(self, val):
         ratio = val / 100.0
@@ -43747,6 +44563,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         print(f"[Project] restored {_n} controls; {_sk} saved controls not in this layout")
             except Exception as exc:
                 print(f"[Project] UI controls not restored: {exc}")
+            self._after_project_seed_restored()
+
+    def _after_project_seed_restored(self):
+        """PROJECT_SEED_R7: the seed field is restored with signals blocked (so loading never starts a recompose
+        mid-restore).  Afterwards refresh what is *derived* from the seed without writing any control: the
+        script diagnostics and the seed→media identity packet.  Loaded values stay exactly as saved."""
+        try:
+            self._schedule_seed_script_validation()
+        except Exception:
+            pass
+        try:
+            import seed_media_bridge as _smb
+            self._seed_media_packet = _smb.identity_packet(self)
+        except Exception:
+            pass
+        self._fractal_seed_plan_cache = None
 
     def _apply_project_snapshot_core(self, data):
         """Restore a full project document, then load each instrument's geometric instance.
@@ -44189,10 +45021,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if hasattr(self,"global_algorithm_xmod_slider"): self.global_algorithm_xmod_slider.setValue(int(round(self.global_algorithm_xmod*100)))
             except Exception: pass
         try:
-            self.md_stoch_default_mix = float(min(1.0, max(0.0, float(data.get("md_stoch_default_mix", 1.0)))))
-            if hasattr(self, "slider_md_stoch"):
-                self.slider_md_stoch.blockSignals(True); self.slider_md_stoch.setValue(int(round(self.md_stoch_default_mix * 100)))
-                self.slider_md_stoch.blockSignals(False); self._md_stoch_label_refresh()
+            _mx = float(data.get("md_stoch_default_mix", 1.0))
+            self.md_stoch_default_mix = max(0.0, _mx) if math.isfinite(_mx) else 1.0     # MD_STOCH_R7: no cap
+            if hasattr(self, "_md_stoch_set"):
+                self._md_stoch_set(self.md_stoch_default_mix)
         except (TypeError, ValueError):
             self.md_stoch_default_mix = 1.0
         # AUTOMATION_SPAN_R31_7: projects saved before the control keep the legacy 50% coupling (same sound).
@@ -44691,12 +45523,40 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _on_party_toggled(self, on):
         try:
             import compat_settings as cs
-            s = cs.load()
-            s["party_mode"] = bool(on)
-            cs.save(s)
-        except Exception:
-            pass
+            cs.update(party_mode=bool(on))
+        except Exception as exc:
+            print(f"[Party] could not save: {exc}")
         self._apply_party_mode()
+
+    def _settings_compat_menu(self, parent=None, menu=None):
+        """SETTINGS_COMPAT_R6: the shared Settings/Compat menu (main window + window bar); fills ``menu`` if given."""
+        m = menu if menu is not None else QMenu(parent)
+        m.addAction("🖥 System Settings…   Ctrl+,", self._show_system_settings)
+        m.addAction("⚙ Compatibility…", lambda: self._show_compat_dialog())
+        m.addAction("🩺 System / Performance Health…", self._open_system_health_panel)
+        m.addSeparator()
+        m.addAction("🧩 Window panes…", self._show_ui_panes)
+        return m
+
+    def _show_ui_panes(self, *_args):
+        """UI_PANES_R6: pane formats for every Groovebox window."""
+        try:
+            import ui_panels_ui as _upu
+            return _upu.open_window(self)
+        except Exception as exc:
+            _log = _gb_log_error("Window panes", exc)
+            QMessageBox.warning(self, "Window panes", f"{exc}\n\nDetails: {_log}" if _log else str(exc))
+            return None
+
+    def _show_system_settings(self, *_args):
+        """SYSTEM_SETTINGS_LAUNCHER_20261112: one entry point (button, Ctrl+, , startup chooser)."""
+        try:
+            import sos_system_settings as _sss
+            return _sss.open_window(self, None)
+        except Exception as exc:
+            _log = _gb_log_error("System settings", exc)
+            QMessageBox.warning(self, "System settings", f"{exc}\n\nDetails: {_log}" if _log else str(exc))
+            return None
 
     def _subtle_ui_sound(self, kind="click"):
         """Guaranteed subtle UI sound on button interaction (non-blocking)."""
@@ -44717,37 +45577,23 @@ class MathematiciansGrooveboxApp(QMainWindow):
             pass
 
     def _apply_party_mode(self, window=None):
-        """When party_mode is on, distort / color-shift / layer recent project
-        visuals onto the given window (or all managed windows). Intensity from
-        the System Settings slider.
-        """
+        """PARTY_MODE_OVERLAY_20261112: start / retune / stop the Party Mode overlay (party_overlay.py).
+        Off costs nothing (no timer, no overlays). Also keeps the 🎉 button in sync with the setting."""
         try:
-            import compat_settings as cs
-            s = cs.load()
-            if not s.get("party_mode", False):
-                return
-            intensity = max(0, min(100, int(s.get("party_intensity", 50)))) / 100.0
-        except Exception:
-            return
-        targets = [window] if window is not None else []
-        if not targets:
+            import party_overlay
+            on = party_overlay.refresh(self)
+        except Exception as exc:
+            print(f"[Party] overlay unavailable: {exc}")
+            on = False
+        btn = getattr(self, "btn_party", None)
+        if btn is not None and btn.isChecked() != bool(on):
             try:
-                mgr = getattr(self, "_window_manager", None) or getattr(self, "_main_relaunch_filter", None)
-                if mgr is not None and hasattr(mgr, "managed_windows"):
-                    targets = list(mgr.managed_windows())
+                import compat_settings as cs
+                want = bool(cs.load().get("party_mode", True))
             except Exception:
-                targets = [self]
-        for w in targets:
-            try:
-                if w is None or not w.isVisible():
-                    continue
-                # Store intensity so paint/event handlers can read it
-                w.setProperty("partyIntensity", intensity)
-                # Trigger a light repaint; actual distortion lives in paintEvent
-                # overrides or an overlay filter installed elsewhere.
-                w.update()
-            except Exception:
-                pass
+                want = bool(on)
+            btn.blockSignals(True); btn.setChecked(want); btn.blockSignals(False)
+        return on
 
     def _play_export_when_done(self, path, kind="audio"):
         """If the setting is on, load the finished export into the main window
@@ -45036,7 +45882,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return None
 
         def _write_project(frozen):
-            return self._atomic_write_document(path, frozen)
+            final = self._atomic_write_document(path, frozen)
+            # R52: record the successful commit on this existing project-I/O
+            # worker lane. Journal failures must never invalidate a good MCC.
+            try:
+                from groovebox_runtime.project_lifecycle import record_project_event
+                record_project_event(final, frozen, action="save")
+            except Exception as exc:
+                print(f"[ProjectHistory] save event skipped: {exc}")
+            return final
 
         def _save_complete(final, error):
             if error is not None:
@@ -45098,7 +45952,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
             path = os.path.join(groovebox_paths.metadata_dir(getattr(self, "_current_project_path", None)), "autosave.MCC")
 
             def _write_autosave(frozen):
-                return self._atomic_write_document(path, frozen)
+                final = self._atomic_write_document(path, frozen)
+                # The three-minute recovery generation is already serialized
+                # on the project lane; append its small index event there too.
+                try:
+                    from groovebox_runtime.project_lifecycle import record_project_event
+                    record_project_event(final, frozen, action="autosave")
+                except Exception as exc:
+                    print(f"[ProjectHistory] autosave event skipped: {exc}")
+                return final
 
             self._submit_project_memory_work("project_autosave", data, _write_autosave, None)
         except Exception:
@@ -46013,7 +46875,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return b
 
         title = QLabel("PERFORM ▸")
-        title.setStyleSheet("color:#f0c8ff; font-weight:900; letter-spacing:0.6px;")
+        title.setStyleSheet("color:#f0c8ff; font-weight:900;")
         add(title)
 
         self.btn_perf_play_inst = QPushButton("▶ Sel. Instrument")
@@ -46079,7 +46941,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             from sequence_perform_row import SequencePerformRow
             live = QLabel("LIVE ▸")
-            live.setStyleSheet("color:#b9ffcf; font-weight:900; letter-spacing:0.6px;")
+            live.setStyleSheet("color:#b9ffcf; font-weight:900;")
             self.sequence_perform_row = SequencePerformRow(self)
             add(live, self.sequence_perform_row)
         except Exception as _exc:
@@ -47646,7 +48508,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             lay.addWidget(overview)
             view = QPlainTextEdit()
             view.setReadOnly(True)
-            view.setStyleSheet("font-family: Consolas, monospace; font-size: 11px;")
+            view.setStyleSheet("font-family: Consolas; font-size: 11px;")
             lay.addWidget(view)
             state = {"snap": {}}
 
@@ -48893,6 +49755,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             new_count = int(max(2, min(STRUCT_MAX_VOICES, new_count)))
         except Exception:
             return
+        new_count = self._fit_structure_memory("voices", new_count)      # STRUCTURE_FIT_R7
         old_names = list(getattr(self, "instrument_names_48", []) or [])
         if len(old_names) == new_count and old_names:
             return
@@ -49526,6 +50389,39 @@ class MathematiciansGrooveboxApp(QMainWindow):
         bpm = float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0
         step_dur = (60.0 / positive_bpm(bpm)) / 4.0
         selected_map = getattr(self, "instrument_selected_sequence", {}) or {}
+        # LATTICE_HOIST_R7: everything that depends only on the instrument (its canonical slots in stable
+        # order, the user's selected slot, each slot's length / offsets / LOCK pull) is computed ONCE per
+        # pass instead of once per playlist row.  Output is identical; a 32 768-row × 215-synth pass went
+        # from minutes (re-sorting every bank on every row) to a single sweep over the rows.
+        try:
+            _lock_pull = float(self._lock_characteristics()["timing_pull"]) * float(self._canonical_level("phase_lock"))
+        except Exception:
+            _lock_pull = None
+        plan = []
+        for name in names:
+            bank = (sequence_banks or {}).get(name, {})
+            canonical = []
+            for idx, mem in sorted(bank.items(), key=lambda kv: int(kv[0]) if str(kv[0]).isdigit() else 0):
+                if isinstance(mem, dict) and str(mem.get("canonical_owner", "")).startswith("canonical:"):
+                    owner = str(mem.get("canonical_owner")).split(":", 1)[1]
+                    if owner in canonical_sources:
+                        canonical.append((canonical_sources.index(owner), int(idx), owner))
+            canonical.sort()
+            user_sid = selected_map.get(name)
+            try:
+                user_sid = int(user_sid) if user_sid is not None else None
+            except Exception:
+                user_sid = None
+            slots = {}
+            for idx in ([int(user_sid)] if user_sid in bank else []) + [c[1] for c in canonical]:
+                if idx in slots:
+                    continue
+                mem = bank.get(idx) or {}
+                plen = max(1, int(mem.get("pattern_length", 1) or 1))
+                offs = mem.get("offsets") or [0.0]
+                is_lock = str(mem.get("canonical_owner", "")) in ("canonical:phase_lock", "canonical:phase-lock")
+                slots[idx] = (f"{name}:{idx}", plen, offs, is_lock)
+            plan.append((name, (int(user_sid) if user_sid in bank else None), [c[1] for c in canonical], slots))
         for r in range(max(0, int(rows))):
             e = self.master_playlist_data[r] if r < len(self.master_playlist_data) else None
             if not isinstance(e, dict):
@@ -49534,42 +50430,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
             phases = {}
             op_offsets = dict(e.get("operator_time_offsets") or {}) if isinstance(e.get("operator_time_offsets"), dict) else {}
             pattern_lengths = dict(e.get("pattern_lengths") or {}) if isinstance(e.get("pattern_lengths"), dict) else {}
-            for name in names:
-                bank = (sequence_banks or {}).get(name, {})
-                canonical = []
-                for idx, mem in sorted(bank.items(), key=lambda kv: int(kv[0]) if str(kv[0]).isdigit() else 0):
-                    if isinstance(mem, dict) and str(mem.get("canonical_owner", "")).startswith("canonical:"):
-                        owner = str(mem.get("canonical_owner")).split(":", 1)[1]
-                        if owner in canonical_sources:
-                            canonical.append((canonical_sources.index(owner), int(idx), owner))
-                canonical.sort()
-                user_sid = selected_map.get(name)
-                try:
-                    user_sid = int(user_sid) if user_sid is not None else None
-                except Exception:
-                    user_sid = None
-                slot_ids = []
-                if user_sid in bank:
-                    slot_ids.append(int(user_sid))
-                if canonical:
-                    pos = r % len(canonical)
-                    _, idx, owner = canonical[pos]
+            for name, user_idx, canon_ids, slots in plan:
+                slot_ids = [user_idx] if user_idx is not None else []
+                if canon_ids:
+                    idx = canon_ids[r % len(canon_ids)]
                     if idx not in slot_ids:
                         slot_ids.append(idx)
                 for idx in slot_ids:
-                    mem = bank.get(idx) or {}
-                    plen = max(1, int(mem.get("pattern_length", 1) or 1))
-                    refs.append(f"{name}:{idx}")
+                    ref, plen, offs, is_lock = slots[idx]
+                    refs.append(ref)
                     step_i = int(r % plen)
-                    phases[f"{name}:{idx}"] = step_i
-                    offs = mem.get("offsets") or [0.0]
+                    phases[ref] = step_i
                     raw_off = float(offs[step_i] if step_i < len(offs) else 0.0)
                     # LOCK Timing Pull contracts LOCK-owned offsets toward the shared row grid.
-                    try:
-                        if str(mem.get("canonical_owner", "")) in ("canonical:phase_lock", "canonical:phase-lock"):
-                            raw_off *= (1.0 - self._lock_characteristics()["timing_pull"] * self._canonical_level("phase_lock"))
-                    except Exception:
-                        pass
+                    if is_lock:
+                        try:
+                            raw_off *= (1.0 - (_lock_pull if _lock_pull is not None else
+                                               self._lock_characteristics()["timing_pull"] * self._canonical_level("phase_lock")))
+                        except Exception:
+                            pass
                     # Irrational Meum warp so unison can write non-grid time freely.
                     op_offsets[name] = float(raw_off * step_dur * MEUM)
                     pattern_lengths[name] = plen
@@ -49715,7 +50594,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     self._canonical_playlist_paint(rng=rng, mode=source, strength=0.55 * self._canonical_level(source))
                 candidates.append((source, _fast_copy(self.master_playlist_data[:rows])))
 
-            self._canonical_unity_consensus(baseline, candidates, rows)
+            _cons_tbl = getattr(self, "active_paint_table", None)          # CONSENSUS_TABLE_R7: one repaint, no
+            _cons_blk = _cons_upd = None                                    # per-cell itemChanged storms
+            try:
+                if _cons_tbl is not None:
+                    _cons_blk = _cons_tbl.blockSignals(True); _cons_upd = _cons_tbl.updatesEnabled(); _cons_tbl.setUpdatesEnabled(False)
+            except RuntimeError:
+                _cons_tbl = None
+            try:
+                self._canonical_unity_consensus(baseline, candidates, rows)
+            finally:
+                try:
+                    if _cons_tbl is not None:
+                        _cons_tbl.blockSignals(bool(_cons_blk)); _cons_tbl.setUpdatesEnabled(bool(_cons_upd) if _cons_upd is not None else True)
+                        _cons_tbl.viewport().update()
+                except RuntimeError:
+                    pass
             # Playlist consensus is now authoritative. Rebuild the sequencer bank from
             # the active canonical SET (not candidate execution order), restoring the
             # same deterministic sequence topology for the final rendered state.
@@ -49755,6 +50649,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # the six historically missing identity/tail columns from the already
             # finalized unison row. This is deliberately after consensus and after
             # all user-lock decisions, so it cannot change the composition.
+            # DISPLAY_PROJECTION_R7: the roster is the same for every row (hoisted), and ref → name
+            # de-duplication uses an ordered dict (was list membership: O(synths²) per row).  Identical output.
+            roster = [str(x).strip() for x in (getattr(self, "instrument_names_48", []) or []) if str(x).strip()]
             for _r, _e in enumerate(self.master_playlist_data[:rows]):
                 if not isinstance(_e, dict):
                     continue
@@ -49765,17 +50662,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if isinstance(ops, str):
                     ops = [x.strip() for x in ops.split(",") if x.strip()]
                 ops = list(dict.fromkeys([str(x).strip() for x in ops if str(x).strip()]))
-                ref_ops = []
-                for _ref in refs:
-                    _name = str(_ref).split("#S", 1)[0].strip()
-                    if _name and _name not in ref_ops:
-                        ref_ops.append(_name)
+                ref_ops = list(dict.fromkeys(_nm for _nm in (str(_ref).split("#S", 1)[0].strip() for _ref in refs) if _nm))
                 # DISPLAY-ONLY ensemble identity: sequence refs are authoritative when
                 # available, but a canonical row must still expose the complete surviving
                 # instrument roster even when a particular canonical sequence bank has only
                 # one materialized ref.  This never changes `operator`, sequencer memory, or
                 # synthesis voice selection.
-                roster = [str(x).strip() for x in (getattr(self, "instrument_names_48", []) or []) if str(x).strip()]
                 final_ops = list(dict.fromkeys(ref_ops + ops + roster))
                 if final_ops:
                     _e["operators"] = final_ops
@@ -49862,6 +50754,54 @@ class MathematiciansGrooveboxApp(QMainWindow):
                                         time.monotonic() - t0)
         self._on_live_source_changed()
 
+    # STRUCTURE_FIT_R7: a project holds ~1.2 KB per playlist-row x synth cell once the undo, render
+    # snapshot, canonical user stores and history copies are counted (measured: 0.42 MB/row at 367
+    # synths).  40k rows x 367 synths needed ~17 GB and the OOM killer took the whole app.  Growth is
+    # clamped to what fits in free memory (2x headroom: one undo/history copy plus transients); shrinking is always allowed.
+    STRUCTURE_CELL_BYTES = 1200
+
+    def _fit_structure_memory(self, which, value):
+        try:
+            value = int(value)
+            # Loaded projects and undo/redo restore exactly what was saved: never drop rows there.
+            if getattr(self, "_project_loading", False) or getattr(self, "_undo_in_flight", False):
+                return value
+            rows_now = max(1, len(getattr(self, "master_playlist_data", []) or []))
+            voices_now = max(1, len(getattr(self, "instrument_names_48", []) or []))
+            rows, voices = (value, voices_now) if which == "rows" else (rows_now, value)
+            need = rows * (voices + 1) * self.STRUCTURE_CELL_BYTES
+            have = rows_now * (voices_now + 1) * self.STRUCTURE_CELL_BYTES
+            if need <= have:
+                return value
+            import memory_guard as _mg
+            usable = int(_mg.snapshot(force=True).get("usable", 0) or 0)
+            if usable <= 0 or (need - have) * 2.0 <= usable:
+                return value
+            budget = have + usable / 2.0
+            if which == "rows":
+                fit = int(budget // ((voices + 1) * self.STRUCTURE_CELL_BYTES))
+                fit = max(1, min(value, max(fit, rows_now)))
+                spin, what = getattr(self, "spin_playlist_length", None), "playlist rows"
+            else:
+                fit = int(budget // (rows * self.STRUCTURE_CELL_BYTES)) - 1
+                fit = max(2, min(value, max(fit, voices_now)))
+                spin, what = getattr(self, "spin_synth_count", None), "synths"
+            if fit >= value:
+                return value
+            if spin is not None:
+                spin.blockSignals(True); spin.setValue(int(fit)); spin.blockSignals(False)
+            msg = (f"{value} {what} would need about {need / 2**30:.1f} GB with {rows if which == 'voices' else voices} "
+                   f"{'rows' if which == 'voices' else 'synths'}; {fit} fit in the memory that is free right now. "
+                   f"Lower the other dimension (or close other apps) to go further.")
+            print(f"[Memory] {msg}")
+            try:
+                _mg.show_memory_notice("🧠 Project size limited to free memory", msg, host=self)
+            except Exception:
+                pass
+            return int(fit)
+        except Exception:
+            return value
+
     def _resize_playlist_memory(self, rows):
         """Resize playlist capacity without discarding user rows; canonicals repaint the new span."""
         # PROJECT_UNDO_2026: snapshot BEFORE any resize so every row is kept and
@@ -49869,6 +50809,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if not getattr(self, "_undo_in_flight", False):
             self._push_undo(f"Playlist resize → {int(rows)}")
         rows = max(1, min(STRUCT_MAX_STEPS, int(rows)))
+        rows = self._fit_structure_memory("rows", rows)      # STRUCTURE_FIT_R7
         data = getattr(self, "_render_playlist_snapshot", None) or getattr(self, "master_playlist_data", []) or []
         auto = getattr(self, "playlist_automation", []) or []
         # getattr default only applies when the attribute is missing. If undo/restore
@@ -50376,7 +51317,45 @@ class MathematiciansGrooveboxApp(QMainWindow):
             multi.setdefault("depth", 0.35)
         except Exception:
             pass
+        # CANONICAL_PANEL_COVERAGE_R8: project authority onto top/side/main panel keys in state
+        try:
+            import canonical_panel_bridge as _cpb
+            st = _cpb.extend_synth_apply(st, generated if isinstance(generated, dict) else {}, strength)
+        except Exception:
+            pass
         return st
+
+
+    def _canonical_project_main_panels(self, write_ui=False):
+        """CANONICAL_PANEL_COVERAGE_R8: steer top/side/authority panels under canonical strength.
+        write_ui=True only on the GUI thread (never from audio)."""
+        try:
+            import canonical_panel_bridge as _cpb
+            strength = float(getattr(self, "canonical_signal_control", 0.5) or 0.5)
+            strength = max(0.5, min(1.0, strength))
+            try:
+                name = self.instrument_selector_dropdown.currentText() if hasattr(self, "instrument_selector_dropdown") else ""
+                idx = list(getattr(self, "instrument_names_48", []) or []).index(name) if name else 0
+                ctx = float(self._contextual_numerology(name, idx, idx)) if name else 0.5
+            except Exception:
+                ctx, idx = 0.5, 0
+            return _cpb.apply_to_host_panels(self, strength, ctx=ctx, instrument_index=idx,
+                                             scopes=("top", "side", "authority", "main"),
+                                             write_ui=bool(write_ui))
+        except Exception as exc:
+            try:
+                import quiet_log
+                quiet_log.refresh_fail("canonical_panels", exc)
+            except Exception:
+                pass
+            return {"written": 0, "skipped": 0, "error": str(exc)}
+
+    def _canonical_panel_coverage_report(self):
+        try:
+            import canonical_panel_bridge as _cpb
+            return _cpb.coverage_report(self)
+        except Exception as exc:
+            return {"error": str(exc)}
 
     def _canonical_range_proof_report(self):
         """Machine-checkable proof of canonical authority and resonance ranges."""
@@ -53319,10 +54298,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
             try: _opt.invalidate_work("canonical")
             except Exception: pass
         if _opt is not None and not bool(getattr(self, "_scode_force_canonical", False)):
-            _plan = _opt.request_host_plan(self)
-            if not _stale_claim and not bool(_plan.get("run_canonical", 1)):
-                return
-            if not _opt.claim_host_work(self, "canonical", force=_stale_claim):
+            _scope = _opt.host_identity_scope(self) if hasattr(_opt, "host_identity_scope") else None
+            if _scope is not None:
+                _scope.__enter__()
+            try:     # IDENTITY_SCOPE_R7: plan + claim share one deep identity walk
+                _plan = _opt.request_host_plan(self)
+                _run = _stale_claim or bool(_plan.get("run_canonical", 1))
+                _claimed = _run and _opt.claim_host_work(self, "canonical", force=_stale_claim)
+            finally:
+                if _scope is not None:
+                    _scope.__exit__(None, None, None)
+            if not _claimed:
                 return
 
         active_engines = self._get_active_engine_set()
@@ -55817,6 +56803,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self._live_canonical_offset_and_effects(frac)
             except Exception:
                 pass
+        # CANONICAL_PANEL_COVERAGE_R8: occasional GUI projection to top/side panels (never every tick)
+        if self._live_canonical_control_tick % 24 == 0 and str(getattr(self, "canonical_control_strategy", "Full Canonical")) != "Seeded Baseline":
+            try:
+                self._canonical_project_main_panels(write_ui=True)
+            except Exception:
+                pass
         chunk = self._last_scope_chunk
         overview = None
         playhead = 0.0
@@ -55825,6 +56817,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             step = max(1, len(buf) // 512)
             overview = buf[::step]
             playhead = float(self.play_cursor) / float(len(buf))
+            self._update_playhead_step()                        # PLAYHEAD_STEP_R7: the real transport step
             pct = int(100 * playhead)
             if hasattr(self, 'scope_status_label'):
                 self.scope_status_label.setText(
@@ -55833,9 +56826,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # UI monitors: the waveform stays responsive, while FFT/scenograph/HUD
         # use adaptive backpressure so graphics can never monopolize the UI thread.
         self._scope_tick_counter = int(getattr(self, "_scope_tick_counter", 0) or 0) + 1
-        _lite = bool(getattr(self, "chk_ui_lite", None) and self.chk_ui_lite.isChecked())
+        _saver = bool(getattr(self, "chk_ui_lite", None) and self.chk_ui_lite.isChecked())
         _stride = max(1, min(6, int(getattr(self, "_scope_heavy_stride", 1) or 1)))
-        if _lite:
+        if _saver:
             _stride = max(_stride, 3)
         _opt = getattr(self, "_scode_optimizer", None)
         if _opt is not None:
@@ -56738,7 +57731,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         t = QTextEdit(); t.setReadOnly(True)
         t.setPlainText("\n".join(lines) if lines else "No negative-sidechain keys in the playlist yet.\n"
                        "Set a step's Sidechain below 0 (or let the canonical contour place rare keys).")
-        t.setStyleSheet("font-family: monospace;")
+        t.setStyleSheet("font-family: Consolas;")
         lay.addWidget(t); dlg.resize(820, 420); dlg.show(); self._key_map_dialog = dlg
 
     # ------------------------------------------------------------------
@@ -58537,6 +59530,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.is_paused = False
         self._audio_only_mode = False
         self._stop_requested = True
+        try:
+            self._update_playhead_step()                        # PLAYHEAD_STEP_R7: stop clears the orange pad
+        except Exception:
+            pass
         self._transport_finished = False
         # Drop live modulation baselines so the next Play starts clean
         self._live_offset_baselines = {}
@@ -59867,7 +60864,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         ))
         txt = QTextEdit()
         txt.setReadOnly(True)
-        txt.setFont(QFont("Menlo", 10))
+        txt.setFont(QFont("Consolas", 10))
         body = detail + "\n\n" + ("— recovered program source —\n" + prog["head"] if prog else "")
         if not prog:
             body += "\n\n(no .py source embedded — manifest-only package)"
@@ -60991,7 +61988,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             viewer = getattr(self, "video_synth_viewer", None)
             if viewer is not None and hasattr(viewer, "_preview_min_interval"):
-                viewer._preview_min_interval = 1.0 / max(8, fps)
+                if getattr(viewer, "_preview_quality_name", "Auto") == "Auto":
+                    viewer.set_quality_profile("Auto")
         except Exception:
             pass
         return {"fps": fps, "export_scale": scale, "frame_ms": dt * 1000.0}
@@ -61013,7 +62011,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 fps = int(prof.get("visual_fps", 24) or 24)
                 viewer = getattr(self, "video_synth_viewer", None)
                 if viewer is not None and hasattr(viewer, "_preview_min_interval"):
-                    viewer._preview_min_interval = 1.0 / max(8, fps)
+                    if getattr(viewer, "_preview_quality_name", "Auto") == "Auto":
+                        viewer.set_quality_profile("Auto")
             except Exception:
                 pass
             hint = prof.get("label") or ""
@@ -62507,7 +63506,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             side = QPlainTextEdit()
             side.setReadOnly(True)
             side.setMaximumWidth(360)
-            side.setStyleSheet("font-family: Consolas, monospace; font-size: 11px;")
+            side.setStyleSheet("font-family: Consolas; font-size: 11px;")
             try:
                 side.setPlainText(json.dumps(self._canonical_sync_snapshot(), indent=2, default=str))
             except Exception as exc:
@@ -62553,6 +63552,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             except Exception: pass
         dlg=QDialog(self); dlg.setWindowTitle("System / Performance Health"); dlg.resize(760,560)
         root=QVBoxLayout(dlg); txt=QTextEdit(); txt.setReadOnly(True); root.addWidget(txt,1); self._health_text=txt
+        try:                                   # TYPOGRAPHY_R7: system information in the console face
+            import typography as _ty
+            _ty.apply_console(txt)
+        except Exception:
+            pass
         row=QHBoxLayout()
         for label,fn in (("Recover Audio",self._health_recover_audio),("Rescan SD / Storage",self._health_rescan_storage),("Rename File…",self._rename_file_dialog),("Export Diagnostics",self._health_export_diagnostics)):
             b=QPushButton(label); b.clicked.connect(fn); row.addWidget(b)
@@ -63199,7 +64203,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 span = max(1, int(sr / fps))
                 a = max(0, center - span // 2); b = min(len(master), a + span)
                 if b > a:
-                    eng.set_waveform(master[a:b], playhead=(center / max(1, len(master)-1)))
+                    eng.set_waveform(master[a:b], playhead=(center / max(1, len(master)-1)), sr=sr)
             except Exception:
                 pass
             eng.t = t_sec * float(MEUM_NORM)
@@ -63675,7 +64679,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     _ab.render_tick(self, (fi / float(max(1, fps))) * float(self.spin_bpm.value()) / 60.0)
                 except Exception:
                     pass
-                eng.set_waveform(master[a:b], playhead=fi / max(n_frames - 1, 1))
+                eng.set_waveform(master[a:b], playhead=fi / max(n_frames - 1, 1), sr=sr)
                 frame = np.asarray(eng.render_frame(w, h, export=True, frame_index=fi), dtype=np.uint8)
                 cf = self._read_bound_video_rgb(_car, w, h) if _car else None
                 if _carrier_src:
@@ -64188,7 +65192,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             _ab.render_tick(self, (fi / float(max(1, fps))) * float(self.spin_bpm.value()) / 60.0)
                         except Exception:
                             pass
-                        eng.set_waveform(master[a:b], playhead=ph)
+                        eng.set_waveform(master[a:b], playhead=ph, sr=sr)
                         try:
                             frame = eng.render_frame(w, h, export=True, frame_index=fi)
                         except Exception as _frame_exc:
@@ -64261,13 +65265,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             except Exception: pass
                 if proc.returncode != 0:
                     err = (stderr.decode(errors="replace") if isinstance(stderr, bytes) else (stderr or stdout or ""))[-2200:]
-                    raise RuntimeError(f"Part {pi+1}/{N_PARTS} encode failed:\\n{err}")
+                    raise RuntimeError(f"Part {pi+1}/{N_PARTS} encode failed:\n{err}")
                 os.replace(part_tmp, part_out)
 
             # Frames and soundtrack are now materialized on disk. Release the
             # potentially file-backed master before FFmpeg mux/probing.
             try:
-                del master
+                master = None                 # release the (possibly file-backed) master; closures no longer need it
                 import gc as _gc_export
                 _gc_export.collect(1)
             except Exception:
@@ -65464,8 +66468,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         the way the app itself maintains it.
         """
         import copy as _c
+        import history_pool as _hp      # HISTORY_POOL_R7: content-shared, pickled, auto-freed history blobs
         snap = {}
-        for key in (
+        _history_keys = (
             "master_playlist_data",
             "playlist_automation",
             "_playlist_overflow_rows",
@@ -65521,11 +66526,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "_last_videogame_path",
             "canonical_engine_levels", "phase_lock_characteristics", "_rand_instance_seed", "_rand_generation_counter",
             "imported_3d_model_path", "imported_3d_model_meta", "voxel_grid_size", "voxel_alias_pct", "voxel_paint_color", "voxel_paint_blend_pct", "voxel_cells",
-        ):
+        )
+        for key in _history_keys:
             try:
-                snap[key] = _c.deepcopy(getattr(self, key, None))
+                snap[key] = _hp.pack(getattr(self, key, None))
             except Exception:
                 snap[key] = None
+        # Restore walks exactly the keys captured here (it used to keep its own shorter list and
+        # silently skipped ~25 stores: automation patterns, vector/morph/mod state, ledgers ...).
+        snap["__history_keys__"] = _history_keys
         try:
             snap["seed_text"] = self._seed_text() if hasattr(self, "_seed_text") else ""
         except Exception:
@@ -65601,10 +66610,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _project_history_restore(self, snap):
         """Restore a captured snapshot; never re-enters undo itself."""
         import copy as _c
+        import history_pool as _hp
         # Restore every authoritative project key (identical list as the
         # snapshot).  The old "restore_like_sets" placeholder loop never had a
         # producer and silently dropped ALL data — undo/redo now actually works.
-        for key in (
+        _legacy_keys = (
             "master_playlist_data",
             "playlist_automation",
             "_playlist_overflow_rows",
@@ -65634,10 +66644,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "_selected_automation_step",
             "canonical_engine_levels", "phase_lock_characteristics", "_rand_instance_seed", "_rand_generation_counter",
             "imported_3d_model_path", "imported_3d_model_meta", "voxel_grid_size", "voxel_alias_pct", "voxel_paint_color", "voxel_paint_blend_pct", "voxel_cells",
-        ):
+        )
+        for key in (snap.get("__history_keys__") or _legacy_keys):
             if key in snap:
                 try:
-                    setattr(self, key, _c.deepcopy(snap[key]))
+                    setattr(self, key, _hp.unpack(snap[key]))
                 except Exception:
                     pass
         try: self._sync_canonical_widgets_from_state()
@@ -65830,9 +66841,29 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return
         self._redo_stack.clear()
         self._undo_stack.append((str(label), self._project_history_snapshot()))
-        if len(self._undo_stack) > self._undo_max:
+        keep = self._undo_keep_count()
+        while len(self._undo_stack) > keep:
             self._undo_stack.pop(0)
+        while len(self._redo_stack) > keep:
+            self._redo_stack.pop(0)
         self._sync_undo_buttons()
+
+    def _undo_keep_count(self):
+        """UNDO_BUDGET_R7: 64 steps normally; fewer only when the shared history pool itself is big.
+        Snapshots share unchanged rows/banks (history_pool), so the real cost is measured, not guessed:
+        history may hold at most 1/4 of RAM, and always keeps >= 2 steps."""
+        try:
+            import history_pool as _hp, memory_guard as _mg
+            total = int(_mg.snapshot().get("total", 0) or 0) or (8 << 30)
+            budget = max(256 << 20, total // 4)
+            held = _hp.pool_bytes()
+            n = len(self._undo_stack) + len(self._redo_stack)
+            if held <= budget or n <= 2:
+                return int(self._undo_max)
+            per = held / max(1, n)
+            return int(max(2, min(int(self._undo_max), budget // max(1.0, per))))
+        except Exception:
+            return int(getattr(self, "_undo_max", 64))
 
     def _do_undo(self):
         if not self._undo_stack:
@@ -66109,6 +67140,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
             length = max(1, int(base_mem.get("pattern_length", len(base_mem.get("steps", [])) or 16)))
             if getattr(self, "is_playing", False):
                 playhead = int(getattr(self, "_playhead_step", -1))
+                if playhead < 0:
+                    try:                                  # STEP_AUTOMATION_R7: real transport step
+                        import step_automation as _sa
+                        playhead = _sa.current_step(self)
+                    except Exception:
+                        playhead = -1
                 step = (playhead if playhead >= 0 else int(getattr(self, "_live_step_record_cursor", 0))) % length
                 # A second key on the same tick is placed in the next cell so
                 # rapid live input remains a sequential take, not lost overwrites.
@@ -66279,18 +67316,30 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self._live_step_record_cursor = start % length
                 self._live_step_record_last_step = None
                 self._live_step_record_events = 0
-                self.lbl_live_step_record.setText(f"ARMED · {name[:14]} · SEQ {sid}")
+                if hasattr(self, "lbl_live_step_record"):
+                    self.lbl_live_step_record.setText(f"ARMED · {name[:14]} · SEQ {sid}")
+                try:
+                    import step_automation as _sa
+                    _sa.install(self)
+                except Exception as _sa_exc:
+                    _gb_log_error("step automation install", _sa_exc)
             except Exception:
                 self._live_step_record_enabled = False
                 self.btn_live_step_record.blockSignals(True); self.btn_live_step_record.setChecked(False); self.btn_live_step_record.blockSignals(False)
                 return
             self.btn_live_step_record.setText("⏺ STEP REC ON")
-            self.lbl_live_step_record.setStyleSheet("color:#ff8ba8;font-size:8pt;font-weight:900;")
+            if hasattr(self, "lbl_live_step_record"):
+                self.lbl_live_step_record.setStyleSheet("color:#ff8ba8;font-size:8pt;font-weight:900;")
         else:
             self._live_step_record_target = None
             self.btn_live_step_record.setText("⏺ STEP REC OFF")
-            self.lbl_live_step_record.setText("RECORD OFF")
-            self.lbl_live_step_record.setStyleSheet("color:#9aa6b4;font-size:8pt;font-weight:900;")
+            if hasattr(self, "lbl_live_step_record"):
+                self.lbl_live_step_record.setText("RECORD OFF")
+                self.lbl_live_step_record.setStyleSheet("color:#9aa6b4;font-size:8pt;font-weight:900;")
+        try:
+            self.step_auto_pad.update()
+        except Exception:
+            pass
 
 
 
@@ -66472,6 +67521,167 @@ def _gb_startup_sweep(player, app):
         print(f"[Startup sweep] {exc}")
 
 
+# EXPORT_SINGLE_INSTANCE_R7: one interactive setup per export kind. A second click while that export's
+# Save/Options dialog is still open (nested event loops let it re-enter) raises the open one instead of
+# stacking a duplicate window and submitting the same export twice. Preset-driven calls (Render Queue,
+# All formats) carry ``_export_preset`` and are never blocked; deliberate exports after setup still queue.
+def _r7_single_setup(name, fn):
+    import functools as _ft
+
+    @_ft.wraps(fn)
+    def _guarded(self, *a, **kw):
+        if self.__dict__.get("_export_preset"):
+            return fn(self, *a, **kw)
+        busy = self.__dict__.setdefault("_r7_export_setup_busy", set())
+        if name in busy:
+            try:
+                for w in QApplication.topLevelWidgets():
+                    if isinstance(w, (QDialog, QFileDialog)) and w.isVisible() and w.isModal():
+                        w.raise_(); w.activateWindow()
+                if hasattr(self, "scope_status_label"):
+                    self.scope_status_label.setText("That export's setup is already open — finish or cancel it first.")
+            except Exception:
+                pass
+            return None
+        busy.add(name)
+        try:
+            return fn(self, *a, **kw)
+        finally:
+            busy.discard(name)
+    _guarded._r7_single_setup = True
+    return _guarded
+
+
+for _r7_name in ("export_all_formats_dialog", "export_video_dialog", "export_video_mcc_dialog",
+                 "export_image_frame_dialog", "convert_mcc_media_dialog", "export_mg_dialog",
+                 "export_3d_model_dialog", "export_meum_compressed_dialog"):
+    _r7_fn = getattr(MathematiciansGrooveboxApp, _r7_name, None)
+    if callable(_r7_fn) and not getattr(_r7_fn, "_r7_single_setup", False):
+        setattr(MathematiciansGrooveboxApp, _r7_name, _r7_single_setup(_r7_name, _r7_fn))
+
+
+# STARTUP_GATE_R7: the main workspace is reachable ONLY through a project choice made on the startup
+# screen (a mode button, Open project, New, Recover, a recent project, or an .MCC file argument).
+# Closing the startup screen quits Groovebox (ISO: confirm power-off or come back), Esc never dismisses
+# it, a broken startup screen falls back to a minimal Open / New / Quit gate instead of the workspace,
+# and on the ISO the skip flag is ignored entirely.
+def _startup_is_appliance():
+    return os.environ.get("GROOVEBOX_USER_SESSION") == "1" or os.environ.get("GROOVEBOX_APPLIANCE") == "1"
+
+
+def _startup_exit(player, code):
+    """Leave the process now: every worker thread / pool / subprocess handle dies with it."""
+    try:
+        _filt = getattr(player, "_main_window_relaunch_filter", None)
+        if _filt is not None:
+            _filt.prepare_for_application_exit()
+    except Exception:
+        pass
+    print(f"[Startup] quit from the startup screen (exit {code})", flush=True)
+    if os.environ.get("GROOVEBOX_STARTUP_NO_EXIT") == "1":     # tests
+        return
+    try:
+        sys.stdout.flush(); sys.stderr.flush()
+    except Exception:
+        pass
+    os._exit(int(code))
+
+
+def _startup_quit_choice(parent=None):
+    """'quit' | 'poweroff' | 'again'. Desktop quits at once; the ISO asks (power off is the only exit)."""
+    if not _startup_is_appliance():
+        return "quit"
+    try:
+        box = QMessageBox(parent)
+        box.setWindowTitle("Quit Groovebox")
+        box.setText("Power off this computer?")
+        b_off = box.addButton("Power off", QMessageBox.ButtonRole.AcceptRole)
+        b_back = box.addButton("Back to startup screen", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(b_back)
+        box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        box.exec()
+        return "poweroff" if box.clickedButton() is b_off else "again"
+    except Exception:
+        return "again"
+
+
+def _startup_fallback_gate(parent=None):
+    """Minimal project gate used when the full startup screen cannot be built. 'load' | 'new' | None."""
+    try:
+        box = QMessageBox(parent)
+        box.setWindowTitle("Mathematician's Groovebox · Startup Mode")
+        box.setProperty("grooveboxStartupSelector", True)
+        box.setText("Choose a project to start.")
+        b_open = box.addButton("Open project…", QMessageBox.ButtonRole.AcceptRole)
+        b_new = box.addButton("New blank project", QMessageBox.ButtonRole.ActionRole)
+        box.addButton("⏻ Quit", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(b_open)
+        box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        box.exec()
+        clicked = box.clickedButton()
+        return "load" if clicked is b_open else "new" if clicked is b_new else None
+    except Exception as exc:
+        print(f"[Startup] fallback gate failed: {exc}", file=sys.stderr)
+        return None
+
+
+def _startup_pick_project_file(player, parent=None):
+    try:
+        path, _ = QFileDialog.getOpenFileName(
+            parent, "Load Mathematician's Groovebox Composition", player._projects_dir(),
+            "Mathematician's Groovebox Composition (*.MCC);;Legacy Groovebox Project (*.mgpr *.mgpr.part);;All files (*)",
+        )
+        return path or None
+    except Exception:
+        return None
+
+
+def startup_fallback_enter(player):
+    """STARTUP_GATE_R7: used when the startup screen itself failed. Never reveals the workspace without
+    a project choice: Open (file picked first) / New / Quit."""
+    while True:
+        v = _startup_fallback_gate(None)
+        if v == "load":
+            path = _startup_pick_project_file(player, None)
+            if not path:
+                continue
+            _startup_show_main(player)
+            QTimer.singleShot(0, lambda p=str(path): player.open_project_path(p))
+            break
+        if v == "new":
+            try:
+                player._clear_project_memory()
+            except Exception as exc:
+                print(f"[Startup] blank project reset failed: {exc}")
+            player._current_project_path = None
+            _startup_show_main(player)
+            break
+        q = _startup_quit_choice(None)
+        if q == "again":
+            continue
+        _startup_exit(player, 99 if q == "poweroff" else 0)
+        return q
+    try:
+        player._install_project_autosave()
+    except Exception:
+        pass
+    try:
+        _filt = getattr(player, "_main_window_relaunch_filter", None)
+        if _filt is not None:
+            _filt.ensure_window_strip()
+    except Exception:
+        pass
+    return "fallback-gate"
+
+
+def _startup_show_main(player):
+    try:
+        import main_window_lock as _mwl_show
+        _mwl_show.show_main(player)
+    except Exception:
+        player.showNormal(); player.show()
+
+
 def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, force_chooser=False):
     # R41.2_STARTUP_ORDER_20261106: do NOT show the main window until the
     # launcher dialog has finished and applied any changes. The previous
@@ -66483,8 +67693,9 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
         pass
     """Show the first-run workspace chooser before revealing the main window.
 
-    Safe defaults: dismissing the dialog opens the main workspace; project-file
-    launches and the explicit skip flag bypass it; destructive/reset actions run
+    Safe defaults (STARTUP_GATE_R7): closing the dialog quits Groovebox — the main
+    workspace opens only for an explicit project choice; project-file launches and
+    the explicit automation skip flag (never on the ISO) bypass it; destructive/reset actions run
     only after their matching button is clicked. The dialog is an unparented,
     application-modal top-level window so it cannot be obscured by a hidden or
     maximized main window on Linux window managers.
@@ -66532,7 +67743,7 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
     except Exception:
         pass
     if project_path:
-        player.show()
+        _startup_show_main(player)
         QTimer.singleShot(0, lambda p=str(project_path): _run_startup_action_safely(
             "Open Project", lambda: player.open_project_path(p)))
         QTimer.singleShot(0, lambda: _run_startup_action_safely(
@@ -66546,11 +67757,11 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
             last = json.loads(last_path.read_text(encoding="utf-8"))
     except Exception:
         last = {}
-    choice = {"value": "main"}
+    choice = {"value": None}     # STARTUP_GATE_R7: nothing chosen = quit, never "main"
     # The startup screen is never skipped from the UI. --skip-startup-launcher is honoured only for
     # automated runs that also set GROOVEBOX_ALLOW_STARTUP_SKIP=1.
-    if skip and os.environ.get("GROOVEBOX_ALLOW_STARTUP_SKIP") == "1":
-        player.show()
+    if skip and os.environ.get("GROOVEBOX_ALLOW_STARTUP_SKIP") == "1" and not _startup_is_appliance():
+        _startup_show_main(player)
         QTimer.singleShot(0, lambda: _run_startup_action_safely(
             "Autosave startup", player._install_project_autosave))
         return "main"
@@ -66564,36 +67775,68 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
     dlg.setModal(True)
     dlg.setProperty("grooveboxStartupSelector", True)
     dlg.resize(640, 720)
-    dlg.setMinimumSize(560, 640)
+    dlg.setMinimumSize(480, 520)
     try:
         dlg.setStyleSheet(DAW_STYLE)
     except Exception:
         pass
+    try:  # UI_SCALE_STARTUP_FIT_R7: keep the chooser fully visible at 66–80% UI scale
+        import compat_settings as _cs_fit
+        _cs_fit.fit_dialog_to_screen(dlg, width_frac=0.62, height_frac=0.82, min_w=520, min_h=560)
+    except Exception as _fit_exc:
+        print(f"[Startup] dialog fit skipped: {_fit_exc}")
     # DISPLAY_SCALE_20261102: the whole chooser scrolls, so every button stays reachable and readable on a small
     # tablet / laptop screen; it is also sized to the screen instead of a fixed 640x720.
+    # LAUNCHER_LAYOUT_20261112: three resizable columns. The chooser (centre) always gets the most width and
+    # never scrolls sideways; projects + last saves share the left column; Quick Launch is a narrow right column.
+    # (Before: four equal-ish columns squeezed the chooser so its title and buttons were clipped.)
     _outer = QHBoxLayout(dlg); _outer.setContentsMargins(0, 0, 0, 0)
+    _cols = QSplitter(Qt.Orientation.Horizontal); _cols.setChildrenCollapsible(False)
+    _outer.addWidget(_cols)
     _scroll = QScrollArea(); _scroll.setWidgetResizable(True); _scroll.setFrameShape(QFrame.Shape.NoFrame)
+    _scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    _scroll.setMinimumWidth(480)
     _body = QWidget(); _scroll.setWidget(_body)
-    # GROOVEBOX_R32_STARTUP_PANELS_20261110: projects (left, wide) · modes (centre) · Quick Launch (right).
+    _sp = None
+    _left = QSplitter(Qt.Orientation.Vertical); _left.setChildrenCollapsible(False)
     try:
         import startup_panels as _sp
 
         def _open_project_from_list(path):
             choice["value"] = "load_path"; choice["path"] = path; dlg.accept()
 
-        _outer.addWidget(_sp.projects_panel(_open_project_from_list, _open_project_from_list), 3)
+        _left.addWidget(_sp.projects_panel(_open_project_from_list, _open_project_from_list))
         try:   # R32.8: the last 64 saves + exports waiting to resume
             import r32_finish as _rf
-            _outer.addWidget(_rf.startup_panel(_open_project_from_list), 2)
+            _left.addWidget(_rf.startup_panel(_open_project_from_list))
         except Exception as _rf_exc:
             print(f"[Startup] save history unavailable: {_rf_exc}")
     except Exception as _sp_exc:
+        _sp = None
         print(f"[Startup] project list unavailable: {_sp_exc}")
-    _outer.addWidget(_scroll, 3)
+    if _left.count():
+        _left.setMinimumWidth(max(300, _left.minimumSizeHint().width())); _left.setMaximumWidth(480)
+        _cols.addWidget(_left)
+    _cols.addWidget(_scroll)
+    _ql_panel = None
     try:
-        _outer.addWidget(_sp.quick_launch_panel(), 2)
+        if _sp is not None:
+            _ql_panel = _sp.quick_launch_panel()
+            _ql_panel.setMinimumWidth(220); _ql_panel.setMaximumWidth(320)
+            _cols.addWidget(_ql_panel)
     except Exception as _ql_exc:
         print(f"[Startup] quick launch unavailable: {_ql_exc}")
+    for _ci in range(_cols.count()):
+        _cols.setStretchFactor(_ci, 5 if _cols.widget(_ci) is _scroll else 1)
+
+    def _stop_quick_launch(*_a):
+        try:   # the Quick Launch preview must not keep playing behind the workspace
+            _pl = (_ql_panel._state or {}).get("player") if _ql_panel is not None else None
+            if _pl is not None:
+                _pl.stop()
+        except Exception:
+            pass
+    dlg.finished.connect(_stop_quick_launch)
     lay = QVBoxLayout(_body)
     try:
         _sg = (app.primaryScreen().availableGeometry())
@@ -66612,24 +67855,54 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
     )
     sub.setWordWrap(True)
     lay.addWidget(sub)
+    try:   # RELEASE_INFO_R7: the running code's own release + fingerprint ("+local" = edited since the stamp)
+        import release_info as _ri
+        _ver = QLabel(_ri.describe())
+        _ver.setObjectName("startupReleaseInfo"); _ver.setWordWrap(True)
+        _ver.setStyleSheet("color:#8aa;font-size:8pt;")
+        _ver.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        lay.addWidget(_ver)
+    except Exception:
+        pass
 
     def choose(value):
         choice["value"] = value
         dlg.accept()
 
+    _modes_grid = QGridLayout(); _modes_grid.setHorizontalSpacing(6); _modes_grid.setVerticalSpacing(6)
+    _modes_count = [0]
+
     def action_button(label, detail, value):
-        b = QPushButton(label + "\n" + detail)
+        b = QPushButton(label)
+        b.setToolTip(detail)
         b.setMinimumHeight(46)
+        b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        # Detail text as a second, word-wrapped line that can never clip the button.
+        _bl = QVBoxLayout(b); _bl.setContentsMargins(8, 4, 8, 4); _bl.setSpacing(0)
+        _t = QLabel(label); _t.setStyleSheet("font-weight:700;background:transparent;border:none;")
+        _d = QLabel(detail); _d.setWordWrap(True); _d.setStyleSheet("color:#9ab;font-size:8.5pt;background:transparent;border:none;")
+        for _lbl in (_t, _d):
+            _lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            _bl.addWidget(_lbl)
+        b.setText("")
+        # Room for the title + two wrapped detail lines (QPushButton ignores height-for-width of its layout).
+        # The global DAW_STYLE "min-height:22px" beats setMinimumHeight, so the height goes in the button's own QSS.
+        _mh = max(46, _t.fontMetrics().lineSpacing() + 2 * _d.fontMetrics().lineSpacing() + 12)
+        b.setMinimumHeight(_mh); b.setStyleSheet("QPushButton{min-height:%dpx;padding:0px;text-align:left;}" % (_mh - 2))
+        b.setAccessibleName(label)
         b.setDefault(value == str(last.get("mode") or "main"))
         b.clicked.connect(lambda _checked=False, v=value: choose(v))
-        lay.addWidget(b)
+        n = _modes_count[0]; _modes_count[0] += 1
+        _modes_grid.addWidget(b, n // 2, n % 2)
         return b
 
     # Display options come first: they decide how everything after this is shown.
     try:
         import compat_settings as _cs_disp
         _dcur = _cs_disp.load()
-        _disp_box = QFrame(); _disp_box.setStyleSheet("QFrame{border:2px solid #5ee0ff;border-radius:8px;}")
+        _disp_box = QFrame(); _disp_box.setObjectName("startupDisplayBox")
+        # Scoped by object name: a bare "QFrame{...}" also boxed every QLabel inside (QLabel is a QFrame).
+        _disp_box.setStyleSheet("QFrame#startupDisplayBox{border:2px solid #5ee0ff;border-radius:8px;}")
         _disp_lay = QFormLayout(_disp_box)
         _disp_title = QLabel("🖥 Display — pick what fits your screen")
         _disp_title.setStyleSheet("font-size:11pt;font-weight:800;color:#5ee0ff;border:none;")
@@ -66679,6 +67952,7 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
     action_button("⚡ Quick Jam", "Instant randomized composition with Performance window open", "quick_jam")
     # GROOVEBOX_R32_STARTUP_TOOLS_20261109
     action_button("📐 Project Blueprint", "A master project configuration from ten precise inputs (+ project macros)", "blueprint")
+    lay.addLayout(_modes_grid)
     try:
         _bg_row = QHBoxLayout()
         _bg_btn = QPushButton("🖼 Desktop background…"); _bg_btn.setToolTip("Pick a custom desktop background image (remembered)")
@@ -66689,12 +67963,15 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
             except Exception as _e:
                 print(f"[Background] {_e}")
         _bg_btn.clicked.connect(_pick_bg)
-        _sys_btn = QPushButton("🖥 System settings…")
+        _sys_btn = QPushButton("🖥 System Settings…")
+        _sys_btn.setToolTip("Display, audio, threads/workers, Party Mode, background, updates (Ctrl+, later in the workspace)")
         def _open_sys():
             try:
                 import sos_system_settings as _sss
-                w = _sss.open_window(None, None)
+                w = _sss.open_window(player, None)
                 if w is not None:
+                    # The chooser stays on top; keep settings above it while startup is active.
+                    w.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
                     w.show(); w.raise_(); w.activateWindow()
             except Exception as _e:
                 from PyQt6.QtWidgets import QMessageBox
@@ -66790,17 +68067,25 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
             QMessageBox.warning(dlg, "Readme / Help", str(exc))
     help_btn.clicked.connect(_open_readme)
     tools.addWidget(help_btn)
-    preflight_btn = QPushButton("Hardware preflight note")
-    def _preflight():
-        QMessageBox.information(
-            dlg, "ISO / sOS preflight",
-            "On the live appliance, before any disk erase, run:\n"
-            "./HARDWARE_PREFLIGHT_32GB.sh\n\n"
-            "ISO build from this tree:\n"
-            "sudo ./BUILD_ISO/RUN_ME_ZERO_STATE.sh"
-        )
-    preflight_btn.clicked.connect(_preflight)
-    tools.addWidget(preflight_btn)
+    tools.addStretch(1)
+    quit_btn = QPushButton("⏻ Quit")
+    quit_btn.setToolTip("Quit Groovebox (on the sOS ISO: power off). Closing this window does the same.")
+    quit_btn.clicked.connect(lambda: (choice.__setitem__("value", None), dlg.reject()))
+    tools.addWidget(quit_btn)
+
+    class _StartupEscGuard(QObject):
+        # STARTUP_GATE_R7: Esc / Back must never dismiss the startup screen into the workspace.
+        def eventFilter(self, obj, ev):
+            try:
+                if ev.type() == QEvent.Type.KeyPress and ev.key() in (Qt.Key.Key_Escape, Qt.Key.Key_Back):
+                    return True
+            except Exception:
+                pass
+            return False
+    dlg._r7_esc_guard = _StartupEscGuard(dlg)
+    dlg.installEventFilter(dlg._r7_esc_guard)
+    # The "Hardware preflight note" pop-up (a static text about shell scripts) was removed: the System
+    # Settings window shows the live hardware/disk state, and Drive / Clone builds and burns the ISO itself.
     lay.addLayout(tools)
     # Request placement within the usable display, avoiding taskbars/panels.
     # X11 WMs generally honor this; Wayland compositors control top-level
@@ -66839,8 +68124,28 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
     try:
         dlg.exec()
     except Exception as exc:
-        print(f"[Startup launcher] dialog failed; opening main workspace: {exc}")
-        choice["value"] = "main"
+        print(f"[Startup launcher] dialog failed; showing the minimal project gate: {exc}")
+        choice["value"] = _startup_fallback_gate(None)
+    # STARTUP_GATE_R7: "Open project…" picks the file while the workspace is still hidden;
+    # cancelling the file dialog returns to the startup screen instead of an empty workspace.
+    if choice["value"] == "load":
+        _picked = _startup_pick_project_file(player, None)
+        if _picked:
+            choice["value"] = "load_path"; choice["path"] = _picked
+        else:
+            _GROOVEBOX_STARTUP_ACTIVE = False
+            try: dlg.deleteLater()
+            except Exception: pass
+            return launch_startup_mode_selector(player, app, skip=False, force_chooser=force_chooser)
+    if not choice["value"]:
+        _q = _startup_quit_choice(None)
+        _GROOVEBOX_STARTUP_ACTIVE = False
+        try: dlg.deleteLater()
+        except Exception: pass
+        if _q == "again":
+            return launch_startup_mode_selector(player, app, skip=False, force_chooser=force_chooser)
+        _startup_exit(player, 99 if _q == "poweroff" else 0)
+        return _q
     _GROOVEBOX_STARTUP_ACTIVE = False
     try:
         if _strip is not None:
@@ -66894,8 +68199,7 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
         except Exception as exc:
             print(f"[Startup launcher] blank project reset failed: {exc}")
         player._current_project_path = None
-    player.showNormal()
-    player.show()
+    _startup_show_main(player)
     try:
         player._restore_session_layout()
     except Exception:
@@ -67001,7 +68305,7 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
             print(f"[Studio Session] performance: {exc}")
         def _ss_restore():
             try:
-                player.showNormal(); player.show(); player.raise_(); player.activateWindow()
+                _startup_show_main(player); player.raise_(); player.activateWindow()
             except Exception:
                 pass
             try:
@@ -67012,7 +68316,7 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
                 except Exception:
                     pass
             try:
-                player.showNormal(); player.show(); player.raise_()
+                _startup_show_main(player); player.raise_()
             except Exception:
                 pass
         QTimer.singleShot(800, lambda: _run_startup_action_safely("Studio Session restore", _ss_restore))
@@ -67061,12 +68365,12 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
                 fallback()
         def _randomize_then_show():
             try:
-                player.showNormal(); player.show(); player.raise_(); player.activateWindow()
+                _startup_show_main(player); player.raise_(); player.activateWindow()
             except Exception:
                 pass
             _randomize_new_project()
             try:
-                player.showNormal(); player.show(); player.raise_()
+                _startup_show_main(player); player.raise_()
             except Exception:
                 pass
         QTimer.singleShot(800, lambda: _run_startup_action_safely(
@@ -67119,6 +68423,15 @@ if __name__ == "__main__":
     except Exception:
         pass
     app = QApplication(sys.argv)
+    try:   # EMOJI_FONTS_R7
+        import emoji_fonts as _emoji_fonts
+        _emoji_fonts.install(app)
+        import window_scroll as _window_scroll   # WINDOW_SCROLL_R7
+        _window_scroll.install(app)
+        import emoji_ui as _emoji_ui   # EMOJI_UI_R7
+        _emoji_ui.install(app)
+    except Exception as _emoji_exc:
+        print(f"[Emoji] {_emoji_exc}")
     try:
         from ui_runtime import install_ui_runtime as _install_ui_runtime
         _install_ui_runtime(app)

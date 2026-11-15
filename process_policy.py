@@ -7,15 +7,16 @@ Spawn policy (``install()`` wraps ``subprocess.Popen`` process-wide, so every ex
 call site — players, encoders, export workers, device probes, games — gets it without
 being edited):
 
-  * kind inferred from argv: render | encode | media | helper | game | app | other
+  * kind inferred from argv: engine | render | encode | media | helper | game | app | other
   * environment: BLAS/OMP/MKL/NUMEXPR thread caps sized by kind from thread_budget,
     GROOVEBOX_PARENT_PID / GROOVEBOX_PROCESS_KIND for the child, PYTHONUNBUFFERED,
     PYTHONDONTWRITEBYTECODE for helpers (no __pycache__ litter in the overlay)
-  * priority: POSIX nice (render 5, encode 5, helper 10, media/game 0); Windows
+  * priority: POSIX nice (engine 1, render/encode 5, helper 10, media/game 0); Windows
     BELOW_NORMAL_PRIORITY_CLASS for batch kinds, CREATE_NO_WINDOW for helpers/encoders
-  * registry: every child is tracked; ``reap()`` collects finished ones (no zombies),
-    ``shutdown()`` terminates the rest at exit; ``watch_parent()`` is the child-side
-    guard that exits when the parent is gone (orphan prevention)
+  * registry: every child is tracked; ``reap()`` collects finished ones (no zombies).
+    Generic exit cleanup is limited to transient helper/encode jobs; persistent
+    app, game, media, render and engine children are left to their owning subsystem so a worker
+    cleanup cannot tear down a live UI/audio/engine session.
 
 Language backends (``Backends``): python (always), native (ctypes .so/.dll from native/),
 julia (julia_bridge), scode (sCode runtime).  ``forward(op, fn_python, *args)`` runs an
@@ -49,10 +50,13 @@ _INSTALLED = [False]
 _REGISTRY = weakref.WeakSet()
 _REG_LOCK = threading.Lock()
 
-NICE = {"render": 5, "encode": 5, "helper": 10, "media": 0, "game": 0, "app": 0, "other": 2}
+NICE = {"engine": 1, "render": 5, "encode": 5, "helper": 10, "media": 0,
+        "game": 0, "app": 0, "other": 2}
 _ENCODERS = ("ffmpeg", "ffprobe", "sox", "lame", "opusenc", "flac", "x264", "vpxenc")
 _MEDIA = ("mpv", "aplay", "arecord", "vlc", "cvlc", "paplay", "pw-play", "pw-cat", "speaker-test", "mplayer", "ffplay")
 _HELPERS = ("device_probe_helper", "rig_worker", "--request-scan", "--request-format", "--request-mount")
+_ENGINE = ("groovebox_engine", "canonical_engine", "tracker_engine", "audio_engine", "synth_engine",
+           "synthesis_engine", "groovebox-engine", "--groovebox-engine")
 _RENDER = ("export_worker", "--serve", "render_worker", "bake")
 
 
@@ -89,6 +93,9 @@ def classify(argv):
     base = os.path.basename(parts[0]).lower()
     if any(h in joined for h in _HELPERS):
         return "helper"
+    if (any(e in joined for e in _ENGINE) or "engine" in base or
+            "engine_worker" in joined or "engine-process" in joined):
+        return "engine"
     if any(r in joined for r in _RENDER):
         return "render"
     if any(base.startswith(e) for e in _ENCODERS):
@@ -103,6 +110,8 @@ def classify(argv):
 
 
 def thread_caps(kind):
+    if kind == "engine":
+        return max(1, min(2, compute_threads(), usable_cores()))
     if kind == "render":
         return compute_threads()
     if kind in ("encode",):
@@ -171,6 +180,7 @@ class _PolicyPopen(_ORIG_POPEN):
         super().__init__(args, *a, **kw)
         self.groovebox_kind = kind
         self.groovebox_started = time.monotonic()
+        self.groovebox_keepalive = kind in ("app", "game", "media", "engine", "render", "other")
         with _REG_LOCK:
             _REGISTRY.add(self)
 
@@ -191,6 +201,7 @@ def popen(argv, kind=None, **kw):
     p = _ORIG_POPEN(argv, **kw)
     p.groovebox_kind = kind
     p.groovebox_started = time.monotonic()
+    p.groovebox_keepalive = kind in ("app", "game", "media", "engine", "other")
     with _REG_LOCK:
         _REGISTRY.add(p)
     return p
@@ -220,8 +231,13 @@ def reap():
 
 
 def shutdown(timeout=1.5):
-    """Terminate every live child this process started (called at exit)."""
-    ps = children()
+    """Stop transient worker jobs without sweeping persistent application engines.
+
+    Media playback, games, application windows, render workers, and processes
+    classified as an engine are owned by their launching subsystem. Their lifecycle must be closed
+    explicitly by that subsystem, not by a generic worker-pool atexit handler.
+    """
+    ps = [p for p in children() if not getattr(p, "groovebox_keepalive", False)]
     for p in ps:
         try:
             p.terminate()

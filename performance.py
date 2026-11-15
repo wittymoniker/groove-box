@@ -71,7 +71,7 @@ from groovebox_media_tools import resolve_local_tool
 from qt_painting import owned_painter
 from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal, QRunnable
 from PyQt6.QtGui import QCursor, QColor, QFont, QPixmap, QPainter, QPen
-from PyQt6.QtWidgets import (
+from PyQt6.QtWidgets import (QGridLayout, QPlainTextEdit, QProgressBar,
     QTextBrowser,
     QApplication,
     QAbstractItemView,
@@ -1396,6 +1396,13 @@ class _NearbyBridge(QObject):
     progress = pyqtSignal(int, int, str)
 
 
+class _SystemOpBridge(QObject):
+    """GROOVEBOX_DRIVE_UPDATE_DISC_20261112: update-from-drive / ISO build / disc burn → GUI thread."""
+    log = pyqtSignal(str)
+    progress = pyqtSignal(str, int, int)
+    done = pyqtSignal(str, object, str)
+
+
 class _IsoCopyBridge(QObject):
     """Return finished-product ISO copy progress without blocking the GUI."""
     done = pyqtSignal(object, str)
@@ -2007,6 +2014,10 @@ class Performance(QDialog):
         self._last_clone_bundle = None
         self._last_iso_path = None
         self._iso_copy_bridge = _IsoCopyBridge()
+        self._sysop_bridge = _SystemOpBridge(); self._sysop_busy = None
+        self._sysop_bridge.log.connect(self._on_sysop_log)
+        self._sysop_bridge.progress.connect(self._on_sysop_progress)
+        self._sysop_bridge.done.connect(self._on_sysop_done)
         self._iso_copy_bridge.done.connect(self._on_iso_copy_done)
         self._iso_copy_bridge.progress.connect(self._on_iso_copy_progress)
         self._goava_radio_service = None
@@ -2316,6 +2327,8 @@ class Performance(QDialog):
         self._add_lazy_performance_tab(right, "🧹 Storage", lambda: self._scroll_page(self._build_storage_tab()))
         # GROOVEBOX_R32_PERF_TABS_20261110
         self._add_lazy_performance_tab(right, "🕹 Game Editor", lambda: self._scroll_page(__import__("game_editor").make_page(self.host)))
+        # DEV_OVERLAY_20261112: browse the source, write your own overlay, scratchpad (enabled per session only)
+        self._add_lazy_performance_tab(right, "🧪 Dev Overlay", lambda: __import__("dev_overlay_ui").make_page(self.host))
         self._add_lazy_performance_tab(right, "🧽 Caches", lambda: self._scroll_page(__import__("site_directory").make_cache_page(self.host)))
         self._add_lazy_performance_tab(right, "⌬ .MG Related", lambda: self._scroll_page(self._build_mg_library_tab()))
         self._add_lazy_performance_tab(right, "⚙ Box Mode", lambda: self._scroll_page(self._build_box_tab()))
@@ -2340,6 +2353,7 @@ class Performance(QDialog):
             "🌐 Web Browser": "A browser inside Performance.",
             "⌨ Hardware": "The devices this machine actually has.",
             "⇄ Drive / Clone": "Copy the project or the box to another drive.",
+            "🧪 Dev Overlay": "Browse the source, write your own Groovebox on top of the protected core, run scratch scripts.",
             "🧹 Storage": "What is using space, and what you can clear.",
             "⌬ .MG Related": "Related Groovebox files.",
             "⚙ Box Mode": "How this window behaves as a box.",
@@ -2430,8 +2444,23 @@ class Performance(QDialog):
         self.lbl_window_session.setStyleSheet("color:#8ab4c8; font-size:9pt;")
         lay.addWidget(self.lbl_window_session)
         self._window_session_refs = {}
+        self._open_windows_refresh_timer = QTimer(self)
+        self._open_windows_refresh_timer.setInterval(750)
+        self._open_windows_refresh_timer.timeout.connect(self._refresh_open_windows)
         QTimer.singleShot(0, self._refresh_open_windows)
         return page
+
+    def _set_open_windows_refresh_active(self, active):
+        """Poll the live window inventory only while its tab is selected."""
+        timer = getattr(self, "_open_windows_refresh_timer", None)
+        if timer is None:
+            return
+        if active:
+            if not timer.isActive():
+                timer.start()
+            QTimer.singleShot(0, self._refresh_open_windows)
+        else:
+            timer.stop()
 
     def _refresh_open_windows(self):
         lst = getattr(self, "window_session_list", None)
@@ -3010,6 +3039,7 @@ class Performance(QDialog):
             return
         tabs = self._performance_tabs
         label = tabs.tabText(index)
+        self._set_open_windows_refresh_active(label == "▤ Open Windows")
         # One full repaint of the newly shown page (no stale pixels from the previous tab).
         try:
             _pg = tabs.widget(index)
@@ -3095,6 +3125,17 @@ class Performance(QDialog):
                 self._on_performance_tab_changed(tabs.currentIndex())
         except Exception:
             pass
+
+    def release_session_resources(self):
+        """Called by the session window manager when this window is closed/hidden."""
+        self._set_open_windows_refresh_active(False)
+        try:
+            self._nearby_ui_timer.stop()
+        except Exception:
+            pass
+
+    def resume_session_resources(self):
+        self.resume_after_show()
 
     def resizeEvent(self, event):
         try:
@@ -6436,10 +6477,59 @@ class Performance(QDialog):
         iso_note=QLabel("Copies the finished Groovebox ISO onto the selected drive inside Groovebox/ISO. Existing folders and files on the drive are preserved; a same-named ISO is replaced atomically and checked with SHA-256, like an OS update that keeps the rest of the disk.")
         iso_note.setWordWrap(True); iv.addRow(iso_note)
         self.lbl_iso_source=QLabel("No finished ISO selected."); self.lbl_iso_source.setWordWrap(True); self.lbl_iso_source.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse); iv.addRow("ISO",self.lbl_iso_source)
-        ir=QHBoxLayout(); b=QPushButton("↻ Find Finished ISO"); b.clicked.connect(self._find_finished_iso); ir.addWidget(b); b=QPushButton("Browse ISO…"); b.clicked.connect(self._browse_iso); ir.addWidget(b); b=QPushButton("Copy Finished ISO to Drive"); b.clicked.connect(self._copy_iso_to_mount); ir.addWidget(b); b=QPushButton("Write Bootable Thumb Drive"); b.setToolTip("Removable USB/SD only. The OS disk and every partition of it are refused."); b.clicked.connect(self._write_bootable); ir.addWidget(b); b=QPushButton("Reclaim USB space"); b.clicked.connect(self._reclaim_usb); ir.addWidget(b); b=QPushButton("Verify ISO builder"); b.clicked.connect(self._verify_iso_builder); ir.addWidget(b); b=QPushButton("Build ISO"); b.clicked.connect(self._build_iso); ir.addWidget(b); iv.addRow(ir)
+        ir=QGridLayout(); ir.setSpacing(4)   # 4 per row: no clipped captions on narrow screens
+        for _i,(_t,_fn,_tip) in enumerate((("↻ Find Finished ISO",self._find_finished_iso,""),("Browse ISO…",self._browse_iso,""),
+                ("Copy Finished ISO to Drive",self._copy_iso_to_mount,"Copies into Groovebox/ISO on the selected drive; nothing else is touched."),
+                ("Write Bootable Thumb Drive",self._write_bootable,"Removable USB/SD only. The OS disk and every partition of it are refused."),
+                ("Reclaim USB space",self._reclaim_usb,""),("Verify ISO builder",self._verify_iso_builder,""))):
+            b=QPushButton(_t); b.clicked.connect(_fn); b.setToolTip(_tip); ir.addWidget(b,_i//3,_i%3)
+        iv.addRow(ir)
         self.chk_iso_verify=QCheckBox("Verify SHA-256 after copy"); self.chk_iso_verify.setChecked(True); iv.addRow(self.chk_iso_verify)
         self.lbl_iso_progress=QLabel("Idle"); self.lbl_iso_progress.setWordWrap(True); self.lbl_iso_progress.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse); iv.addRow("Copy",self.lbl_iso_progress)
-        lay.addWidget(iso); lay.addStretch(1); return w
+        lay.addWidget(iso)
+
+        # GROOVEBOX_DRIVE_UPDATE_DISC_20261112 ─ update from another Groovebox on a drive / disc
+        upd=QGroupBox("Update from another Groovebox (USB · SD · disc)"); uv=QVBoxLayout(upd)
+        un=QLabel("Plug in a drive (or insert a disc) holding another Groovebox version — a source folder, a MATH_GROOVEBOX/MATGROOVEBOX zip, "
+                  "or a clone bundle. The update is staged, compiled and import-tested in a separate process first; only then are the changed "
+                  "files replaced (a rollback copy is kept), and Groovebox rebuilds itself. Projects and settings are never touched.")
+        un.setWordWrap(True); uv.addWidget(un)
+        self.lst_updates=QListWidget(); self.lst_updates.setMinimumHeight(90); uv.addWidget(self.lst_updates)
+        ug=QGridLayout(); ug.setSpacing(4)
+        for _i,(_t,_fn) in enumerate((("↻ Scan drives",self._upd_scan),("Choose folder / file…",self._upd_browse),
+                                       ("⬆ Apply update + rebuild",self._upd_apply),("↺ Roll back last update",self._upd_rollback),
+                                       ("⟳ Restart Groovebox",self._upd_restart))):
+            b=QPushButton(_t); b.clicked.connect(_fn); ug.addWidget(b,_i//3,_i%3)
+        self.chk_upd_native=QCheckBox("Also rebuild native accelerators (slower; skipped when no compiler)"); self.chk_upd_native.setChecked(True)
+        uv.addLayout(ug); uv.addWidget(self.chk_upd_native)
+        lay.addWidget(upd)
+
+        # ISO of itself + burn to CD / DVD / BD
+        disc=QGroupBox("Make an ISO of this Groovebox · burn to CD / DVD / BD"); dv=QFormLayout(disc)
+        dn=QLabel("Bootable ISO: the full sOS appliance (x86_64, needs administrator rights and the build tools; can take a long time). "
+                  "Source / update disc: no rights needed — this Groovebox's code (plus the bootable ISO when it fits); another Groovebox "
+                  "updates from it with 'Update from another Groovebox'.")
+        dn.setWordWrap(True); dv.addRow(dn)
+        self.cmb_disc_media=QComboBox()
+        try:
+            import disc_burn as _db; self.cmb_disc_media.addItems(list(_db.MEDIA_BYTES)); self.cmb_disc_media.setCurrentText("DVD 4.7 GB")
+        except Exception: pass
+        dv.addRow("Disc size",self.cmb_disc_media)
+        drow=QHBoxLayout(); self.cmb_disc_drive=QComboBox(); self.cmb_disc_drive.setMinimumWidth(220); drow.addWidget(self.cmb_disc_drive,1)
+        b=QPushButton("↻ Drives"); b.clicked.connect(self._disc_refresh); drow.addWidget(b); dv.addRow("Burner",drow)
+        dg=QGridLayout(); dg.setSpacing(4)
+        for _i,(_t,_fn) in enumerate((("🛠 Build bootable ISO",self._build_iso),("📀 Build source / update ISO",self._disc_build_source),
+                                       ("🔥 Burn selected ISO to disc",self._disc_burn),("⚡ Build source ISO + burn",self._disc_build_and_burn))):
+            b=QPushButton(_t); b.clicked.connect(_fn); dg.addWidget(b,_i//2,_i%2)
+        dv.addRow(dg)
+        self.chk_disc_verify=QCheckBox("Read the disc back and compare SHA-256"); self.chk_disc_verify.setChecked(True); dv.addRow(self.chk_disc_verify)
+        lay.addWidget(disc)
+        self.lbl_sysop=QLabel("Idle"); self.lbl_sysop.setWordWrap(True); lay.addWidget(self.lbl_sysop)
+        self.bar_sysop=QProgressBar(); self.bar_sysop.setRange(0,100); self.bar_sysop.setValue(0); lay.addWidget(self.bar_sysop)
+        self.txt_sysop=QPlainTextEdit(); self.txt_sysop.setReadOnly(True); self.txt_sysop.setMaximumBlockCount(4000)
+        self.txt_sysop.setMinimumHeight(110); self.txt_sysop.setPlaceholderText("Update / ISO / burn log"); lay.addWidget(self.txt_sysop)
+        QTimer.singleShot(0, self._disc_refresh)
+        lay.addStretch(1); return w
 
     def _nearby_service(self):
         return getattr(self.host, "_nearby_share_service", None)
@@ -7251,23 +7341,186 @@ class Performance(QDialog):
         except Exception as exc:
             QMessageBox.warning(self, "ISO builder", str(exc))
 
-    def _build_iso(self):
-        from PyQt6.QtWidgets import QMessageBox
-        if QMessageBox.question(self, "Build ISO",
-            "Build a Groovebox ISO from this installation?\nThis can take a long time and needs the BUILD_ISO tree.") != QMessageBox.StandardButton.Yes:
-            return
-        self.lbl_status.setText("ISO build started…")
-        def work():
+    # ------------------------------------------------------------------ GROOVEBOX_DRIVE_UPDATE_DISC_20261112
+    def _sysop_start(self, kind, fn):
+        """Run one long system job (update / ISO / burn) on its own thread; one at a time."""
+        if self._sysop_busy:
+            QMessageBox.information(self, "Busy", f"Still running: {self._sysop_busy}. Wait for it to finish.")
+            return False
+        self._sysop_busy = kind
+        if hasattr(self, "lbl_sysop"):
+            self.lbl_sysop.setText(f"{kind}…"); self.bar_sysop.setValue(0)
+        br = self._sysop_bridge
+        def run():
             try:
-                from operation_station_transfer import build_self_iso
-                r = build_self_iso()
-                self._iso_copy_bridge.done.emit(r, "" if r.get("ok") else r.get("message", "failed"))
+                br.done.emit(kind, fn(br.log.emit, lambda ph, d, t: br.progress.emit(str(ph), int(d), int(t))), "")
             except Exception as e:
-                self._iso_copy_bridge.done.emit(None, str(e))
+                br.done.emit(kind, None, f"{type(e).__name__}: {e}")
+        import threading
+        threading.Thread(target=run, name=f"gb-sysop-{kind}", daemon=True).start()
+        return True
+
+    def _on_sysop_log(self, line):
+        if hasattr(self, "txt_sysop"):
+            self.txt_sysop.appendPlainText(str(line)[:500])
+
+    def _on_sysop_progress(self, phase, done, total):
+        if not hasattr(self, "lbl_sysop"):
+            return
+        pct = int(100 * done / total) if total else 0
+        self.bar_sysop.setValue(max(0, min(100, pct)))
+        self.lbl_sysop.setText(f"{self._sysop_busy or ''} · {phase} {pct}%")
+
+    def _on_sysop_done(self, kind, result, error):
+        self._sysop_busy = None
+        if hasattr(self, "bar_sysop"):
+            self.bar_sysop.setValue(100 if not error else 0)
+        r = result if isinstance(result, dict) else {}
+        if error or (r and r.get("ok") is False):
+            msg = error or r.get("message") or "; ".join(r.get("problems", [])[:5]) or "failed"
+            self.lbl_sysop.setText(f"{kind} failed: {msg}"); self._on_sysop_log(f"FAILED: {msg}")
+            QMessageBox.warning(self, kind, str(msg)[:1500]); return
+        if kind == "Update":
+            steps = ", ".join(f"{s_['step']} {'ok' if s_['ok'] else ('skipped' if s_['ok'] is None else 'failed')}"
+                              for s_ in r.get("rebuild", {}).get("steps", []))
+            self.lbl_sysop.setText(f"Updated {r.get('changed', 0)} files → {r.get('version', '')}. {steps}. Restart to run the new code.")
+            if QMessageBox.question(self, "Update installed", f"Installed {r.get('version', '')} ({r.get('changed', 0)} files changed).\n"
+                                    "Restart Groovebox now? (Save first if you have unsaved work.)") == QMessageBox.StandardButton.Yes:
+                self._upd_restart()
+        elif kind == "Roll back":
+            self.lbl_sysop.setText(f"Rolled back to {r.get('version', '')} ({r.get('restored', 0)} restored). Restart to run it.")
+        elif kind == "Scan":
+            self.lst_updates.clear()
+            for c in (result or []):
+                it = QListWidgetItem(f"{ {'tree': '📁', 'archive': '🗜', 'clone': '📦'}.get(c['kind'], '•') } {c['version']} · {c['path']} · "
+                                     + time.strftime('%Y-%m-%d %H:%M', time.localtime(c['mtime'])))
+                it.setData(Qt.ItemDataRole.UserRole, c); self.lst_updates.addItem(it)
+            if self.lst_updates.count():
+                self.lst_updates.setCurrentRow(0)
+            self.lbl_sysop.setText(f"{self.lst_updates.count()} Groovebox version(s) found on drives." if self.lst_updates.count()
+                                   else "No other Groovebox found. Plug in the drive, then Scan again — or Choose folder / file.")
+        elif kind in ("Bootable ISO", "Source ISO"):
+            if r.get("iso"):
+                self._set_iso_source(r["iso"])
+            self.lbl_sysop.setText(f"{r.get('message', 'done')}: {r.get('iso', '')}")
+            if getattr(self, "_disc_burn_after", False) and r.get("iso"):
+                self._disc_burn_after = False; self._disc_burn()
+        elif kind == "Burn":
+            self.lbl_sysop.setText("Disc burned" + (" and verified (SHA-256 match)." if r.get("verified") else (". " + r.get("message", ""))))
+
+    def _upd_scan(self):
+        import self_update as su
+        self._sysop_start("Scan", lambda log, prog: su.find_update_sources())
+
+    def _upd_browse(self):
+        path = QFileDialog.getExistingDirectory(self, "Folder holding another Groovebox version", "/media")
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(self, "Groovebox archive / clone bundle", "/media",
+                                                  "Groovebox (*.zip *.tar.gz *.tgz *.mgbclone.zip)")
+        if not path:
+            return
+        import self_update as su
+        found = su.find_update_sources([path], depth=2)
+        if not found:
+            QMessageBox.information(self, "Update", "No Groovebox (groovebox.py + run_groovebox.py + compat_settings.py) found there."); return
+        self._on_sysop_done("Scan", found, "")
+
+    def _upd_apply(self):
+        it = self.lst_updates.currentItem() if hasattr(self, "lst_updates") else None
+        if it is None:
+            self._upd_scan(); return
+        src = it.data(Qt.ItemDataRole.UserRole)
+        if QMessageBox.question(self, "Apply update", f"Update this Groovebox from\n{src['path']}\n({src['version']})?\n\n"
+                                "It is tested first; a rollback copy is kept.") != QMessageBox.StandardButton.Yes:
+            return
+        import self_update as su
+        native = self.chk_upd_native.isChecked()
+        def job(log, prog):
+            def p(ph, d, t):
+                prog(ph, d, t)
+                if d == 0 or (t and d >= t):
+                    log(f"[{ph}] {d}/{t}")
+            return su.update_from(src, p, native=native)
+        self._sysop_start("Update", job)
+
+    def _upd_rollback(self):
+        import self_update as su
+        rbs = su.rollbacks()
+        if not rbs:
+            QMessageBox.information(self, "Roll back", "No update has been installed from a drive yet."); return
+        if QMessageBox.question(self, "Roll back", f"Restore the code from before the last update?\n{os.path.basename(rbs[0])}") != QMessageBox.StandardButton.Yes:
+            return
+        self._sysop_start("Roll back", lambda log, prog: su.rollback(rbs[0]))
+
+    def _upd_restart(self):
         try:
-            self._worker_pool.start(_PoolTask(work))
+            host = getattr(self, "host", None)
+            for fn in ("_autosave_now", "autosave_now", "_save_autosave"):
+                f = getattr(host, fn, None)
+                if callable(f):
+                    try: f(); break
+                    except Exception: pass
+            import self_update as su, subprocess as _sp
+            _sp.Popen(su.restart_command(), cwd=os.path.dirname(os.path.abspath(__file__)), start_new_session=True)
+            from PyQt6.QtWidgets import QApplication
+            QTimer.singleShot(300, QApplication.instance().quit)
         except Exception as exc:
-            QMessageBox.warning(self, "Build ISO", str(exc))
+            QMessageBox.warning(self, "Restart", str(exc))
+
+    def _disc_refresh(self):
+        if not hasattr(self, "cmb_disc_drive"):
+            return
+        try:
+            import disc_burn as db
+            self.cmb_disc_drive.clear()
+            for d in db.optical_drives():
+                self.cmb_disc_drive.addItem(f"{d['device']} · {d['model']}", d["device"])
+            if not self.cmb_disc_drive.count():
+                self.cmb_disc_drive.addItem("(no CD/DVD/BD burner found)", "")
+            tool = db.burner_tool()
+            self._on_sysop_log(f"burner tool: {tool or 'none — install xorriso'} · ISO maker: {db.iso_tool() or 'none — install xorriso'}")
+        except Exception as exc:
+            self.lbl_status.setText(f"Disc drives: {exc}")
+
+    def _build_iso(self):
+        if QMessageBox.question(self, "Build bootable ISO",
+                                "Build the full bootable Groovebox/sOS ISO from this installation?\n"
+                                "Needs x86_64, administrator rights and the build tools; it can take a long time.") != QMessageBox.StandardButton.Yes:
+            return
+        import disc_burn as db
+        self._sysop_start("Bootable ISO", lambda log, prog: db.build_bootable_iso(log=log, progress=prog))
+
+    def _disc_build_source(self, burn_after=False):
+        import disc_burn as db
+        media = self.cmb_disc_media.currentText() or "DVD 4.7 GB"
+        self._disc_burn_after = bool(burn_after)
+        self._sysop_start("Source ISO", lambda log, prog: db.build_source_iso(media=media, log=log, progress=prog))
+
+    def _disc_build_and_burn(self):
+        if not self.cmb_disc_drive.currentData():
+            QMessageBox.information(self, "Burn", "No CD/DVD/BD burner found. Connect one, then press ↻ Drives."); return
+        self._disc_build_source(burn_after=True)
+
+    def _disc_burn(self):
+        dev = self.cmb_disc_drive.currentData() if hasattr(self, "cmb_disc_drive") else ""
+        iso = getattr(self, "_last_iso_path", None)
+        if not dev:
+            QMessageBox.information(self, "Burn", "No CD/DVD/BD burner found. Connect one, then press ↻ Drives."); return
+        if not iso or not os.path.isfile(iso):
+            QMessageBox.information(self, "Burn", "Build an ISO or use Find / Browse ISO first."); return
+        try:
+            import disc_burn as db
+            cap = db.MEDIA_BYTES.get(self.cmb_disc_media.currentText(), 0)
+            if cap and os.path.getsize(iso) > cap:
+                QMessageBox.warning(self, "Burn", f"{os.path.basename(iso)} is {os.path.getsize(iso)/1e9:.2f} GB — larger than "
+                                    f"{self.cmb_disc_media.currentText()}. Pick a bigger disc."); return
+        except Exception:
+            pass
+        if QMessageBox.question(self, "Burn disc", f"Burn {os.path.basename(iso)} to the disc in {dev}?\n"
+                                "A rewritable disc that is not blank will be overwritten.") != QMessageBox.StandardButton.Yes:
+            return
+        verify = self.chk_disc_verify.isChecked()
+        self._sysop_start("Burn", lambda log, prog: db.burn(iso, dev, verify=verify, log=log, progress=prog))
 
     def _copy_iso_to_mount(self):
         iso=self._last_iso_path

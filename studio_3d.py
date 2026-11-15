@@ -1,26 +1,49 @@
-"""studio_3d.py — 3D Studio.
+"""studio_3d.py — 3D Studio and stereoscopic video workflow.
 
-GROOVEBOX_3D_STUDIO_20261111
-Explore media in 3D: wrap an image or video onto an OBJ, tint the mesh,
-compose OBJs + video + audio into a scene, view a song as a 3D model,
-export a 3D video, and mesh the scene into a game.
+GROOVEBOX_3D_STUDIO_R64_STEREO_VIDEO_PIPELINE
+Load/texture/tint OBJ models, render mono or dual-camera stereo clips, and process
+rendered 3D video assets (layout, frame rate, resolution and soundtrack).
 """
 from __future__ import annotations
 
-import json
 import os
+from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QImage, QPixmap
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-                             QFileDialog, QDoubleSpinBox, QLineEdit, QListWidget,
-                             QListWidgetItem, QMessageBox, QComboBox)
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog,
+    QDoubleSpinBox, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
+    QComboBox,
+)
 
 
 def _rgba_to_pixmap(rgba):
     h, w = rgba.shape[:2]
     img = QImage(rgba.data, w, h, 4 * w, QImage.Format.Format_RGBA8888)
     return QPixmap.fromImage(img.copy())
+
+
+def _layout_code(combo: QComboBox) -> str:
+    return str(combo.currentData() or "mono")
+
+
+def _eye_size(combo: QComboBox) -> tuple[int, int]:
+    value = str(combo.currentData() or "640x360")
+    w, h = value.split("x", 1)
+    return int(w), int(h)
+
+
+def _submit_media_work(parent, status, label, work):
+    """Run heavy rendering/encoding off the GUI thread; never fall back synchronously."""
+    status.setText(label)
+    try:
+        from ui_runtime import submit_ui_task
+        submit_ui_task(work, lambda result: status.setText(str(result)))
+    except Exception as exc:
+        QMessageBox.warning(parent, "Background media worker unavailable",
+                            "The 3D media job was not run on the GUI thread.\n\n" + str(exc))
+        status.setText("Media job not started: background worker unavailable")
 
 
 def open_window(app):
@@ -30,18 +53,25 @@ def open_window(app):
             w.show(); w.raise_(); w.activateWindow(); return w
     except RuntimeError:
         w = None
+
     win = QWidget(app, Qt.WindowType.Window)
-    win.setWindowTitle("🧊 3D Studio · wrap · tint · scene · game")
-    win.resize(920, 680)
+    win.setWindowTitle("🧊 3D Studio · scene · stereo video · processing")
+    win.resize(1040, 820)
     root = QVBoxLayout(win)
-    info = QLabel("Load an OBJ, wrap an image or video onto it, tint it, and build a scene of models, video, and audio. "
-                  "Export a 3D video, or mesh the scene into a game.")
+    info = QLabel(
+        "Create 3D video from OBJ geometry with independently rendered left/right camera views, "
+        "or process an existing rendered 3D clip. Stereo layout changes preserve eye views; "
+        "mono-to-stereo duplication is explicitly marked as 2D duplication, not depth creation."
+    )
     info.setWordWrap(True); root.addWidget(info)
-    preview = QLabel("No model loaded"); preview.setMinimumHeight(280); preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    preview = QLabel("No model loaded")
+    preview.setMinimumHeight(250)
+    preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
     preview.setStyleSheet("background:#0d1118; color:#9ab; border:1px solid #345;")
     root.addWidget(preview, 1)
 
-    state = {"mesh": None, "obj": "", "tex": "", "tint": (200, 220, 255), "scene": []}
+    state = {"mesh": None, "obj": "", "tex": "", "tint": (200, 220, 255),
+             "scene": [], "audio": "", "process_input": "", "process_output": ""}
 
     row = QHBoxLayout()
     b_obj = QPushButton("Load OBJ")
@@ -66,20 +96,97 @@ def open_window(app):
     root.addLayout(tint_row)
 
     scene_row = QHBoxLayout()
-    scene_list = QListWidget(); scene_list.setMaximumHeight(120)
+    scene_list = QListWidget(); scene_list.setMaximumHeight(100)
     scene_row.addWidget(scene_list, 1)
     col = QVBoxLayout()
     kind = QComboBox(); kind.addItems(["obj", "video", "audio"])
-    path_edit = QLineEdit(); path_edit.setPlaceholderText("path, or pick")
+    path_edit = QLineEdit(); path_edit.setPlaceholderText("scene asset path")
     b_add = QPushButton("Add to scene")
-    b_pick = QPushButton("Pick file")
+    b_pick = QPushButton("Pick scene asset")
     b_mesh = QPushButton("Mesh into game")
-    b_video = QPushButton("Make 3D video")
-    for wdg in (kind, path_edit, b_pick, b_add, b_mesh, b_video):
-        col.addWidget(wdg)
+    for widget in (kind, path_edit, b_pick, b_add, b_mesh):
+        col.addWidget(widget)
     scene_row.addLayout(col)
     root.addLayout(scene_row)
-    status = QLabel(""); status.setWordWrap(True); root.addWidget(status)
+
+    render_row = QHBoxLayout()
+    render_row.addWidget(QLabel("Render layout"))
+    render_layout = QComboBox()
+    render_layout.addItem("Mono", "mono")
+    render_layout.addItem("Stereo · side-by-side", "sbs")
+    render_layout.addItem("Stereo · top-bottom", "tb")
+    render_row.addWidget(render_layout)
+    render_row.addWidget(QLabel("Per-eye size"))
+    render_size = QComboBox()
+    render_size.addItem("640 × 360", "640x360")
+    render_size.addItem("960 × 540", "960x540")
+    render_size.addItem("1280 × 720", "1280x720")
+    render_row.addWidget(render_size)
+    render_row.addWidget(QLabel("FPS"))
+    render_fps = QComboBox()
+    for value in (24, 30, 48, 60):
+        render_fps.addItem(str(value), value)
+    render_row.addWidget(render_fps)
+    render_row.addWidget(QLabel("Duration s"))
+    render_duration = QDoubleSpinBox(); render_duration.setRange(1.0, 600.0)
+    render_duration.setValue(4.0); render_duration.setSingleStep(1.0)
+    render_row.addWidget(render_duration)
+    root.addLayout(render_row)
+
+    audio_row = QHBoxLayout()
+    audio_path = QLineEdit(); audio_path.setReadOnly(True)
+    audio_path.setPlaceholderText("Optional soundtrack for the rendered 3D video")
+    b_audio = QPushButton("Choose soundtrack…")
+    b_clear_audio = QPushButton("Clear")
+    audio_row.addWidget(audio_path, 1); audio_row.addWidget(b_audio); audio_row.addWidget(b_clear_audio)
+    root.addLayout(audio_row)
+
+    process_row = QHBoxLayout()
+    process_input = QLineEdit(); process_input.setReadOnly(True)
+    process_input.setPlaceholderText("Existing rendered 3D video to process")
+    b_process_pick = QPushButton("Choose 3D video…")
+    b_process = QPushButton("Process / convert")
+    process_row.addWidget(process_input, 1); process_row.addWidget(b_process_pick); process_row.addWidget(b_process)
+    root.addLayout(process_row)
+
+    process_opts = QHBoxLayout()
+    process_opts.addWidget(QLabel("Input layout"))
+    process_source_layout = QComboBox()
+    for title, code in (("Mono", "mono"), ("Side-by-side", "sbs"), ("Top-bottom", "tb")):
+        process_source_layout.addItem(title, code)
+    process_opts.addWidget(process_source_layout)
+    process_opts.addWidget(QLabel("Output layout"))
+    process_output_layout = QComboBox()
+    for title, code in (("Mono", "mono"), ("Side-by-side", "sbs"), ("Top-bottom", "tb")):
+        process_output_layout.addItem(title, code)
+    process_opts.addWidget(process_output_layout)
+    process_opts.addWidget(QLabel("Size"))
+    process_size = QComboBox()
+    process_size.addItem("1280 × 720", "1280x720")
+    process_size.addItem("1920 × 1080", "1920x1080")
+    process_size.addItem("2560 × 1440", "2560x1440")
+    process_opts.addWidget(process_size)
+    process_opts.addWidget(QLabel("FPS"))
+    process_fps = QComboBox()
+    for value in (24, 30, 48, 60):
+        process_fps.addItem(str(value), value)
+    process_opts.addWidget(process_fps)
+    process_opts.addWidget(QLabel("Start s"))
+    process_start = QDoubleSpinBox(); process_start.setRange(0.0, 86400.0); process_start.setDecimals(2); process_start.setValue(0.0)
+    process_opts.addWidget(process_start)
+    process_opts.addWidget(QLabel("End s · 0 = full"))
+    process_end = QDoubleSpinBox(); process_end.setRange(0.0, 86400.0); process_end.setDecimals(2); process_end.setValue(0.0)
+    process_opts.addWidget(process_end)
+    process_opts.addWidget(QLabel("Audio"))
+    process_audio = QComboBox()
+    process_audio.addItem("Keep source", "keep")
+    process_audio.addItem("Mute", "mute")
+    process_audio.addItem("Replace with selected soundtrack", "replace")
+    process_opts.addWidget(process_audio)
+    root.addLayout(process_opts)
+
+    status = QLabel("")
+    status.setWordWrap(True); root.addWidget(status)
 
     def params():
         return {
@@ -97,7 +204,9 @@ def open_window(app):
         try:
             import obj_scene
             tex = None
-            if state["tex"] and os.path.isfile(state["tex"]):
+            if state["tex"] and Path(state["tex"]).suffix.lower() not in {
+                ".mp4", ".m4v", ".mov", ".mkv", ".webm", ".avi"
+            } and os.path.isfile(state["tex"]):
                 tex = obj_scene.load_image_rgb(state["tex"])
             rgba = obj_scene.render_frame(mesh, 480, 270, t, params=params(), tex=tex)
             preview.setPixmap(_rgba_to_pixmap(rgba))
@@ -112,12 +221,15 @@ def open_window(app):
         paint(0.0)
 
     def on_obj():
-        path, _ = QFileDialog.getOpenFileName(win, "OBJ", "", "OBJ (*.obj)")
+        path, _ = QFileDialog.getOpenFileName(win, "OBJ model", "", "OBJ (*.obj)")
         if path:
-            load_obj(path)
+            try: load_obj(path)
+            except Exception as exc: QMessageBox.warning(win, "OBJ load failed", str(exc))
 
     def on_tex():
-        path, _ = QFileDialog.getOpenFileName(win, "Wrap onto the model", "", "Media (*.png *.jpg *.jpeg *.mp4 *.webm *.mov)")
+        path, _ = QFileDialog.getOpenFileName(
+            win, "Wrap onto the model", "", "Media (*.png *.jpg *.jpeg *.mp4 *.mkv *.webm *.mov)"
+        )
         if path:
             state["tex"] = path
             status.setText("wrap: " + os.path.basename(path))
@@ -138,7 +250,9 @@ def open_window(app):
         paint(0.0)
 
     def on_pick():
-        path, _ = QFileDialog.getOpenFileName(win, "Scene media", "", "Media (*.obj *.mp4 *.webm *.wav *.flac *.mp3)")
+        path, _ = QFileDialog.getOpenFileName(
+            win, "Scene media", "", "Media (*.obj *.mp4 *.webm *.mov *.mkv *.wav *.flac *.mp3)"
+        )
         if path:
             path_edit.setText(path)
 
@@ -150,7 +264,8 @@ def open_window(app):
         state["scene"].append(item)
         scene_list.addItem(QListWidgetItem("%s · %s" % (item["kind"], os.path.basename(path))))
         if item["kind"] == "obj" and state["mesh"] is None and os.path.isfile(path):
-            load_obj(path)
+            try: load_obj(path)
+            except Exception as exc: status.setText("scene OBJ failed: " + str(exc))
 
     def on_mesh():
         if not state["scene"] and not state["obj"]:
@@ -166,6 +281,7 @@ def open_window(app):
         dest = os.path.join(str(app._exports_dir()), "studio3d-scene.json")
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         with open(dest, "w", encoding="utf-8") as f:
+            import json
             json.dump(scene, f, indent=2)
         status.setText("meshed into game scene: " + dest)
         try:
@@ -174,27 +290,112 @@ def open_window(app):
         except Exception:
             pass
 
+    def on_choose_audio():
+        path, _ = QFileDialog.getOpenFileName(
+            win, "Choose soundtrack", "", "Audio (*.wav *.flac *.mp3 *.m4a *.aac *.ogg *.opus)"
+        )
+        if path:
+            state["audio"] = path
+            audio_path.setText(path)
+
+    def on_clear_audio():
+        state["audio"] = ""
+        audio_path.clear()
+
     def on_video():
         if not state["obj"]:
             status.setText("Load an OBJ first.")
             return
-        dest = os.path.join(str(app._exports_dir()), "studio3d.mp4")
-        status.setText("rendering 3D video…")
+        exports = Path(str(app._exports_dir())).expanduser()
+        exports.mkdir(parents=True, exist_ok=True)
+        dest = exports / "studio3d.mp4"
+        raw = exports / ".studio3d-render-alpha.mov"
+        layout = _layout_code(render_layout)
+        eye_w, eye_h = _eye_size(render_size)
+        fps = int(render_fps.currentData())
+        duration = float(render_duration.value())
+        audio = state["audio"] or None
+        obj_path = state["obj"]
+        tex_path = state["tex"] or None
+        render_params = params()
+
         def work():
             import obj_scene
-            mode = "image" if state["tex"] else "none"
-            obj_scene.render_clip(state["obj"], dest, 640, 360, 24, 4.0,
-                                  params=params(), texture_mode=mode, texture_path=state["tex"] or None)
-            return dest
-        try:
-            from ui_runtime import submit_ui_task
-            submit_ui_task(work, lambda p: status.setText("3D video: " + str(p)))
-        except Exception:
+            from media3d_pipeline import process_video
+            suffix = Path(tex_path).suffix.lower() if tex_path else ""
+            tex_mode = "video" if suffix in {".mp4", ".m4v", ".mov", ".mkv", ".webm", ".avi"} else ("image" if tex_path else "none")
+            obj_scene.render_clip(obj_path, str(raw), eye_w, eye_h, fps, duration,
+                                  params=render_params, texture_mode=tex_mode,
+                                  texture_path=tex_path, stereo_layout=layout,
+                                  eye_separation=0.065)
+            full_w = eye_w * (2 if layout == "sbs" else 1)
+            full_h = eye_h * (2 if layout == "tb" else 1)
+            process_video(str(raw), str(dest), source_layout=layout, output_layout=layout,
+                          width=full_w, height=full_h, fps=fps,
+                          audio_path=audio, audio_policy="replace" if audio else "mute")
+            try: raw.unlink(missing_ok=True)
+            except OSError: pass
+            return "3D render complete: " + str(dest)
+
+        _submit_media_work(win, status, "Rendering independent stereo camera views and encoding…", work)
+
+    def on_process_pick():
+        path, _ = QFileDialog.getOpenFileName(
+            win, "Choose rendered 3D video", "", "Video (*.mp4 *.m4v *.mov *.mkv *.webm *.avi)"
+        )
+        if path:
+            state["process_input"] = path
+            process_input.setText(path)
             try:
-                work()
-                status.setText("3D video: " + dest)
+                from media3d_pipeline import probe_video
+                meta = probe_video(path)
+                status.setText("Video: %sx%s · %s fps · %s · audio=%s" % (
+                    meta["width"], meta["height"], meta["frame_rate"],
+                    meta["video_codec"], "yes" if meta["has_audio"] else "no"))
+                # Preserve a conventional mono default; stereo is selectable.
             except Exception as exc:
-                status.setText("3D video failed: " + str(exc))
+                status.setText("Probe unavailable: " + str(exc))
+
+    def on_process():
+        src = state["process_input"]
+        if not src:
+            status.setText("Choose a rendered video first.")
+            return
+        src_path = Path(src)
+        default_name = src_path.stem + ".processed.mp4"
+        dest, _ = QFileDialog.getSaveFileName(win, "Save processed 3D video",
+                                              str(Path(str(app._exports_dir())) / default_name),
+                                              "MP4 (*.mp4);;MOV (*.mov);;MKV (*.mkv)")
+        if not dest:
+            return
+        source_layout = _layout_code(process_source_layout)
+        target_layout = _layout_code(process_output_layout)
+        full_w, full_h = _eye_size(process_size)
+        if target_layout == "sbs": full_w *= 2
+        if target_layout == "tb": full_h *= 2
+        fps = int(process_fps.currentData())
+        audio_mode = str(process_audio.currentData())
+        trim_start = float(process_start.value())
+        trim_end_value = float(process_end.value())
+        trim_end = trim_end_value if trim_end_value > 0 else None
+        if trim_end is not None and trim_end <= trim_start:
+            status.setText("End time must be later than start time, or 0 for the full clip.")
+            return
+        audio = state["audio"] if audio_mode == "replace" else None
+        if audio_mode == "replace" and not audio:
+            status.setText("Choose a soundtrack first or use Keep source audio.")
+            return
+
+        def work():
+            from media3d_pipeline import process_video
+            result = process_video(src, dest, source_layout=source_layout,
+                                   output_layout=target_layout, width=full_w, height=full_h,
+                                   fps=fps, start_seconds=trim_start, end_seconds=trim_end,
+                                   audio_policy=audio_mode, audio_path=audio)
+            return "Processed 3D video: %s · %s → %s · %s fps" % (
+                dest, source_layout, target_layout, fps)
+
+        _submit_media_work(win, status, "Processing stereoscopic video…", work)
 
     b_obj.clicked.connect(on_obj)
     b_tex.clicked.connect(on_tex)
@@ -203,9 +404,17 @@ def open_window(app):
     b_pick.clicked.connect(on_pick)
     b_add.clicked.connect(on_add)
     b_mesh.clicked.connect(on_mesh)
-    b_video.clicked.connect(on_video)
+    b_audio.clicked.connect(on_choose_audio)
+    b_clear_audio.clicked.connect(on_clear_audio)
+    b_process_pick.clicked.connect(on_process_pick)
+    b_process.clicked.connect(on_process)
     for s in spins:
         s.valueChanged.connect(lambda *_: paint(0.0))
+
+    b_video = QPushButton("Render 3D video")
+    b_video.clicked.connect(on_video)
+    render_row.addWidget(b_video)
+
     app._studio_3d_window = win
     win.show(); win.raise_(); win.activateWindow()
     return win

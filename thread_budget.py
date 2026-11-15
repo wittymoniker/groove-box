@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import os
+import sys
 import threading
 import time
 from collections import deque
@@ -207,15 +208,20 @@ def lane_workers():
     return max(1, int(safe))
 
 
-def bulk_workers():
-    """Bulk worker allowance after reserving one worker for interactive work.
+def engine_workers():
+    """Reserve up to two bounded workers for canonical/tracker engine work."""
+    return min(2, max(0, lane_workers() - 2))
 
-    The reservation is carved out of the same process-wide ceiling; it is not
-    an additional pool allowance. On one-worker systems there is no separate
-    reservation and both classes share the sole worker.
+
+def bulk_workers():
+    """Bulk allowance after interactive and engine reservations.
+
+    All three classes are carved out of the same hardware/memory ceiling. The
+    GUI/audio callback remain on their owning threads; these reservations only
+    divide the optional worker budget. Small systems fall back to shared lanes.
     """
     total = lane_workers()
-    reserve = interactive_workers()
+    reserve = interactive_workers() + engine_workers()
     return max(1, total - reserve)
 
 
@@ -229,18 +235,61 @@ def is_managed_worker_thread():
         name = threading.current_thread().name
     except Exception:
         return False
-    return name.startswith(("groovebox-work", "groovebox-interactive"))
+    return name.startswith(("groovebox-work", "groovebox-interactive", "groovebox-engine"))
 
 
 def scheduler_budget():
     """Describe the aggregate executor budget without creating any threads."""
     total = lane_workers()
     interactive = interactive_workers()
+    engine = engine_workers()
     bulk = bulk_workers()
-    # The single-core fallback intentionally aliases both classes to one pool.
-    effective_total = total if interactive else bulk
-    return {"total_workers": effective_total, "bulk_workers": bulk,
-            "interactive_workers": interactive, "reserved_interactive": bool(interactive)}
+    return {"total_workers": min(total, bulk + interactive + engine),
+            "bulk_workers": bulk, "interactive_workers": interactive,
+            "engine_workers": engine, "reserved_interactive": bool(interactive),
+            "reserved_engine": bool(engine)}
+
+
+def _worker_nice(level):
+    """Lower shared-pool worker scheduling priority without touching the UI/audio thread.
+
+    Linux exposes per-thread niceness through PRIO_PROCESS + the native TID. On
+    other platforms, or when the host denies the adjustment, this safely no-ops.
+    A positive nice value only deprioritizes the worker; it never boosts a worker
+    above the main Groovebox process.
+    """
+    if not sys.platform.startswith("linux") or not hasattr(os, "setpriority"):
+        return
+    try:
+        tid = int(threading.get_native_id())
+        value = max(1, min(15, int(level)))
+        os.setpriority(os.PRIO_PROCESS, tid, value)
+    except Exception:
+        pass
+
+
+def _bulk_worker_initializer():
+    try:
+        level = int(os.environ.get("GROOVEBOX_WORKER_NICE_BULK", "6"))
+    except Exception:
+        level = 6
+    _worker_nice(level)
+
+
+def _interactive_worker_initializer():
+    try:
+        level = int(os.environ.get("GROOVEBOX_WORKER_NICE_INTERACTIVE", "4"))
+    except Exception:
+        level = 4
+    _worker_nice(level)
+
+
+def _engine_worker_initializer():
+    try:
+        level = int(os.environ.get("GROOVEBOX_WORKER_NICE_ENGINE", "2"))
+    except Exception:
+        level = 2
+    _worker_nice(level)
 
 
 def _shared_executor():
@@ -248,14 +297,18 @@ def _shared_executor():
     if _SHARED is None:
         with _SHARED_LOCK:
             if _SHARED is None:
-                _SHARED = ThreadPoolExecutor(max_workers=bulk_threads(), thread_name_prefix="groovebox-work")
+                _SHARED = ThreadPoolExecutor(max_workers=bulk_threads(),
+                    thread_name_prefix="groovebox-work", initializer=_bulk_worker_initializer)
     return _SHARED
 
 
-# R32.9 TWO WORK CLASSES: every lane used to feed ONE process-wide executor with ONE FIFO queue, so a short
-# interactive job (a folder listing, a preview, a media probe) waited behind every long bulk job (canonical
-# rebuilds, renders) once the shared threads were busy. Interactive lanes now run on their own small executor.
+# R32.9 WORK CLASS SEPARATION: every lane once fed ONE process-wide executor with ONE FIFO queue, so a
+# short interactive job could wait behind long renders. Interactive lanes now get their own small executor;
+# canonical/tracker engine lanes also receive a bounded reserved executor when CPU headroom permits.
 _INTERACTIVE = None
+_ENGINE = None
+ENGINE_NAME_HINTS = ("canonical-engine", "tracker-engine", "audio-engine", "synth-engine",
+                     "synthesis-engine", "engine-core", "sequencer-plan")
 INTERACTIVE_NAME_HINTS = ("file-manager", "file-browser", "browser", "preview", "thumbnail", "media-load", "probe",
                           "dialog", "ui-", "-ui", "picker", "listing")
 
@@ -274,18 +327,42 @@ def _interactive_executor():
     if _INTERACTIVE is None:
         with _SHARED_LOCK:
             if _INTERACTIVE is None:
-                _INTERACTIVE = ThreadPoolExecutor(max_workers=interactive_workers(), thread_name_prefix="groovebox-interactive")
+                _INTERACTIVE = ThreadPoolExecutor(max_workers=interactive_workers(),
+                    thread_name_prefix="groovebox-interactive", initializer=_interactive_worker_initializer)
     return _INTERACTIVE
 
 
+def _engine_executor():
+    global _ENGINE
+    if engine_workers() <= 0:
+        return _shared_executor()
+    if _ENGINE is None:
+        with _SHARED_LOCK:
+            if _ENGINE is None:
+                _ENGINE = ThreadPoolExecutor(max_workers=engine_workers(),
+                    thread_name_prefix="groovebox-engine", initializer=_engine_worker_initializer)
+    return _ENGINE
+
+
 def classify(name, kind=None):
-    if kind in ("interactive", "bulk"):
+    if kind in ("engine", "interactive", "bulk"):
         return kind
     n = str(name).lower()
+    if any(h in n for h in ENGINE_NAME_HINTS):
+        return "engine"
     return "interactive" if any(h in n for h in INTERACTIVE_NAME_HINTS) else "bulk"
 
 
-_RUNNING = {"bulk": 0, "interactive": 0}      # jobs currently executing per executor class
+def _executor_kind(kind):
+    """Map logical classes onto the pools actually reserved on this machine."""
+    if kind == "engine":
+        return "engine" if engine_workers() > 0 else "bulk"
+    if kind == "interactive":
+        return "interactive" if interactive_workers() > 0 else "bulk"
+    return "bulk"
+
+
+_RUNNING = {"bulk": 0, "interactive": 0, "engine": 0}      # jobs currently executing per executor class
 import weakref as _weakref
 _LANES = _weakref.WeakSet()                    # LANE_REGISTRY_R6: every live lane, for lane_report()
 
@@ -308,7 +385,7 @@ def lane_report(limit=8):
     return out
 _RUNNING_LOCK = threading.Lock()
 
-# POOL_FORECAST_R7: one predictive model for the whole pool. Dimensions: executor class (bulk / interactive)
+# POOL_FORECAST_R7: one predictive model for the whole pool. Dimensions: executor class (bulk / interactive / engine)
 # x lane family (lane name with window / instance ids removed) x task signature (callable qualname). Every
 # finished job updates an exponentially-weighted mean and variance of its run time (alpha = 0.2, i.e. ~the
 # last 10 runs). From those, forecast() predicts for each class the backlog seconds still to run (queued
@@ -387,7 +464,11 @@ def forecast():
     """{'classes': {kind: {workers, running, queued, backlog_s, drain_s}}, 'lanes': [{name, family, wait_s}]}"""
     now = time.monotonic()
     budget = scheduler_budget()
-    workers = {"bulk": max(1, bulk_threads()), "interactive": max(1, budget["interactive_workers"] or 1)}
+    workers = {"bulk": max(1, bulk_threads())}
+    if budget["interactive_workers"]:
+        workers["interactive"] = int(budget["interactive_workers"])
+    if budget.get("engine_workers", 0):
+        workers["engine"] = int(budget["engine_workers"])
     classes = {k: {"workers": workers[k], "running": 0, "queued": 0, "backlog_s": 0.0} for k in workers}
     lanes = []
     for lane in list(_LANES):
@@ -397,7 +478,7 @@ def forecast():
                 running = [(getattr(f, "_groovebox_cost_key", None), getattr(f, "_groovebox_started_at", None))
                            for f in lane._active_futures]
                 slots = lane.max_workers
-                kind = lane.kind if (lane.kind == "bulk" or budget["interactive_workers"]) else "bulk"
+                kind = _executor_kind(lane.kind)
         except Exception:
             continue
         q_s = sum(predicted_cost(k) for k in queued)
@@ -437,8 +518,12 @@ def _adapt_enabled():
 
 
 def bulk_threads():
-    """Current bulk executor width (>= bulk_workers())."""
-    return max(bulk_workers(), _BULK_WIDTH[0])
+    """Bulk width bounded by the aggregate CPU/memory reservation.
+
+    Predictive sizing may tune lanes inside this ceiling, but cannot expand the
+    process-wide worker count beyond the slots left for bulk work.
+    """
+    return max(1, min(bulk_workers(), max(bulk_workers(), _BULK_WIDTH[0])))
 
 
 def _class_width_target(fc=None):
@@ -468,7 +553,10 @@ def _lane_width_target(lane, now):
     req = int(getattr(lane, "_requested_workers", 1) or 1)
     if req < 2:
         return lane.max_workers
-    cap = max(1, min(bulk_threads() if lane.kind == "bulk" else (interactive_workers() or 1), memory_worker_cap(req * 2)))
+    pool_kind = _executor_kind(lane.kind)
+    pool_cap = (bulk_threads() if pool_kind == "bulk" else
+                (engine_workers() if pool_kind == "engine" else (interactive_workers() or 1)))
+    cap = max(1, min(pool_cap, memory_worker_cap(req * 2)))
     ia = getattr(lane, "_ia_mean", None)
     last = getattr(lane, "_last_submit", None)
     if not ia or last is None:
@@ -507,7 +595,8 @@ def retune(force=False):
         return None
     try:
         _LAST_RETUNE[0] = now
-        width = _class_width_target()
+        # Never let adaptive bulk sizing consume reserved UI or engine slots.
+        width = min(bulk_workers(), _class_width_target())
         if width > _BULK_WIDTH[0]:
             _BULK_WIDTH[0] = width
             ex = _SHARED
@@ -614,12 +703,15 @@ class _LaneFuture(Future):
 
 
 class SharedWorkLane:
-    """Ordered, bounded-concurrency lane backed by a process-wide executor of its class (bulk / interactive)."""
+    """Ordered, bounded-concurrency lane backed by its shared executor class."""
     def __init__(self, name="work", max_workers=1, max_pending=256, kind=None):
         self.name = str(name)
         self.kind = classify(name, kind)
-        self._executor = _interactive_executor if self.kind == "interactive" else _shared_executor
-        cap = (interactive_workers() or 1) if self.kind == "interactive" else bulk_workers()
+        self._pool_kind = _executor_kind(self.kind)
+        self._executor = (_engine_executor if self._pool_kind == "engine" else
+                          (_interactive_executor if self._pool_kind == "interactive" else _shared_executor))
+        cap = (engine_workers() if self._pool_kind == "engine" else
+               ((interactive_workers() or 1) if self._pool_kind == "interactive" else bulk_workers()))
         self._requested_workers = max(1, int(max_workers))   # POOL_SIZER_R7: >= 2 means unordered, resizable
         self.max_workers = max(1, min(cap, int(max_workers)))
         self.max_pending = max(1, int(max_pending))
@@ -642,11 +734,13 @@ class SharedWorkLane:
         if not is_managed_worker_thread():
             return False
         name = threading.current_thread().name
-        mine = "interactive" if name.startswith("groovebox-interactive") else "bulk"
-        target = self.kind if (self.kind == "bulk" or interactive_workers() > 0) else "bulk"
+        mine = ("engine" if name.startswith("groovebox-engine") else
+                ("interactive" if name.startswith("groovebox-interactive") else "bulk"))
+        target = self._pool_kind
         if mine != target:
             return False
-        cap = interactive_workers() if target == "interactive" else bulk_threads()
+        cap = (engine_workers() if target == "engine" else
+               (interactive_workers() if target == "interactive" else bulk_threads()))
         return _RUNNING.get(target, 0) >= max(1, cap)
 
     def submit(self, fn, /, *args, **kwargs):
@@ -786,7 +880,8 @@ class SharedWorkLane:
         lanes = _TLS.__dict__.setdefault("lanes", [])
         lanes.append(getattr(public, "_lane", None))
         name = threading.current_thread().name
-        cls = "interactive" if name.startswith("groovebox-interactive") else "bulk"
+        cls = ("engine" if name.startswith("groovebox-engine") else
+               ("interactive" if name.startswith("groovebox-interactive") else "bulk"))
         with _RUNNING_LOCK:
             _RUNNING[cls] = _RUNNING.get(cls, 0) + 1
         public._groovebox_started_at = time.monotonic()
@@ -868,7 +963,8 @@ class SharedWorkLane:
 
     def _set_width(self, count):
         with self._lock:
-            cap = (interactive_workers() or 1) if self.kind == "interactive" else bulk_threads()
+            cap = (engine_workers() if self._pool_kind == "engine" else
+                   ((interactive_workers() or 1) if self._pool_kind == "interactive" else bulk_threads()))
             self.max_workers = max(1, min(cap, int(count)))
             self._pump_locked()
             return self.max_workers
@@ -909,12 +1005,13 @@ def apply():
 
 def shutdown_shared_executor(wait=False, cancel_futures=True):
     """Final process shutdown hook; call only after all lanes have been closed."""
-    global _SHARED, _INTERACTIVE
+    global _SHARED, _INTERACTIVE, _ENGINE
     with _SHARED_LOCK:
         ex, _SHARED = _SHARED, None
         ix, _INTERACTIVE = _INTERACTIVE, None
+        gx, _ENGINE = _ENGINE, None
     seen = set()
-    for e in (ex, ix):
+    for e in (ex, ix, gx):
         if e is not None and id(e) not in seen:
             seen.add(id(e))
             e.shutdown(wait=bool(wait), cancel_futures=bool(cancel_futures))

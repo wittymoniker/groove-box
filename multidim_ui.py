@@ -191,6 +191,36 @@ MD_FIELD_CONTROLS = (  # bottom stochastic / lock / fractal field controls
     ("field_rate",       "Field evolution",    0, 100, 0.01),
 )
 
+# RECORD_STRIP_R7: value span of every multidim slider (slider range × scale) — recorded lanes use the same span.
+_MD_SPANS = {k: (lo * sc, hi * sc) for (k, _l, lo, hi, sc) in tuple(NUM_CONTROLS) + tuple(MD_FIELD_CONTROLS)}
+
+
+def _md_record(host, name, key, value):
+    """A user move of a multidim control: written at the current step while STEP REC is armed."""
+    if key.startswith("patch/"):
+        span = (0.0, 1.0)
+    else:
+        span = _MD_SPANS.get(key)
+    if span is None or host is None:
+        return False
+    try:
+        import step_automation as _sa
+        return _sa.record_param(host, _sa.md_path(name, key), float(value), span[0], span[1])
+    except Exception:
+        return False
+
+
+def _add_record_tab(tabs, host, get_name, title="⏺ RECORD / PLAY"):
+    try:
+        import record_strip
+        strip = record_strip.make(host, get_name, tabs)
+        tabs.addTab(strip, title)
+        return strip
+    except Exception as exc:
+        print(f"[Multidim] record strip: {exc}")
+        return None
+
+
 MD_CLONE_TARGETS = (("panel", "PANEL"), ("geometric", "GEOMETRIC"), ("multidim", "MULTIDIM"))
 MD_CLONE_SOURCES = ("Off", "Panel", "Geometric", "Multidim")
 
@@ -505,8 +535,8 @@ class MD3DView(QWidget):
         tags = getattr(self, "_tags", None) or []
         if not tags:
             return
-        fm_title = QFont("Sans", 9, QFont.Weight.Black)
-        fm_text = QFont("Sans", 9)
+        fm_title = QFont("Arial", 9, QFont.Weight.Black)
+        fm_text = QFont("Arial", 9)
         placed = []
         for i, (ax, ay, title, text, col, series, fixed) in enumerate(tags):
             bw = max(150, 7 * max(len(title), len(text)) + 16)
@@ -578,7 +608,7 @@ class MD3DView(QWidget):
             Sa, _z, oka = self._proj([[0, 0, 0], a])
             if oka.all():
                 qp.setPen(QPen(col, 1.2, Qt.PenStyle.DashLine)); qp.drawLine(QPointF(*Sa[0]), QPointF(*Sa[1]))
-                qp.setPen(col); qp.setFont(QFont("Sans", 8, QFont.Weight.Bold)); qp.drawText(QPointF(Sa[1][0] + 3, Sa[1][1] - 3), lab)
+                qp.setPen(col); qp.setFont(QFont("Arial", 8, QFont.Weight.Bold)); qp.drawText(QPointF(Sa[1][0] + 3, Sa[1][1] - 3), lab)
         v = st["vec"]
         if v is not None and float(np.linalg.norm(v)) > 1e-9:
             vv = v / float(np.linalg.norm(v)) * (0.6 + 0.9 * max(0.0, min(1.0, st["drive"])))
@@ -643,7 +673,7 @@ class MD3DView(QWidget):
             if oka[i]:
                 self._tag(Sa[i], title, txt, col, self._hist.get(key))
         # legend
-        qp.setFont(QFont("Sans", 11, QFont.Weight.Bold))
+        qp.setFont(QFont("Arial", 11, QFont.Weight.Bold))
         y0 = 36
         for txt, col in (("FRACTAL %.0f%%" % (fr * 100), QColor.fromHsv(285, 150, 255)), ("EQR %.0f%%" % (eq * 100), QColor.fromHsv(170, 150, 255)),
                          ("PKP %.0f%%" % (pk * 100), QColor.fromHsv(20, 170, 255))):
@@ -745,8 +775,24 @@ class MD3DView(QWidget):
                 self._frame_ready.emit()
             except RuntimeError:
                 return               # widget deleted
-            # cap at ~30 fps so a fast machine does not burn a core on decoration
-            spare = (1.0 / 30.0) - (_tm.monotonic() - t0)
+            # Follow the active display refresh, while keeping a configurable ceiling.
+            # This is a render-worker target, not a promise of achieved FPS; GUI blits,
+            # GPU/CPU capacity and competing audio deadlines still determine throughput.
+            target_fps = 60.0
+            try:
+                import os as _os
+                configured_cap = float(_os.environ.get("GROOVEBOX_MD_MAX_FPS", "144"))
+                configured_cap = max(30.0, min(240.0, configured_cap))
+                screen = self.screen()
+                refresh = float(screen.refreshRate()) if screen is not None else 60.0
+                if not (refresh > 0.0 and refresh < 1000.0):
+                    refresh = 60.0
+                target_fps = min(configured_cap, max(30.0, refresh))
+                if _os.environ.get("GROOVEBOX_LOW_POWER", "").strip() == "1":
+                    target_fps = min(target_fps, 60.0)
+            except Exception:
+                target_fps = 60.0
+            spare = (1.0 / max(1.0, target_fps)) - (_tm.monotonic() - t0)
             if spare > 0:
                 _tm.sleep(spare)
 
@@ -925,10 +971,10 @@ class MD3DView(QWidget):
         self._paint_host_layers(qp, w, h)       # R31: Panel / Vector / Fractal·EQR·PKP
         self._draw_tags(qp, w, h)
         qp.setPen(QColor(190, 235, 255, 210))
-        qp.setFont(QFont("Sans", 7, QFont.Weight.Bold))
+        qp.setFont(QFont("Arial", 7, QFont.Weight.Bold))
         qp.drawText(8, 14, f"OPTICS · coh {coherence:.2f} · disp {dispersion:.2f} · caustic {caustic:.2f} · pol {polarization:.2f} · lock {lock_ms:.0f}ms")
         qp.setPen(QColor(180, 210, 230, 160))
-        qp.setFont(QFont("Sans", 8))
+        qp.setFont(QFont("Arial", 8))
         qp.drawText(8, h - 8, "drag = orbit · scroll = yaw (passive) · M≈1.1976")
 
 
@@ -1182,7 +1228,7 @@ class _GraphWidget(QWidget):
             W, H = self.width(), self.height()
             if self._title:
                 qp.setPen(QColor("#9ab8cc"))
-                qp.setFont(QFont("Sans", 8))
+                qp.setFont(QFont("Arial", 8))
                 qp.drawText(6, 14, self._title)
             bh = H - 22; by = 18
             if self._mode == "bar":
@@ -1244,7 +1290,7 @@ class _CAWidget(QWidget):
                     x = int(c * cw); y = int(4 + r * ch)
                     qp.fillRect(x, y, max(1, int(cw) - 1), max(1, int(ch) - 1),
                                  col_on if self._rows[r, c] else col_off)
-            qp.setPen(QColor("#9ab8cc")); qp.setFont(QFont("Sans", 8))
+            qp.setPen(QColor("#9ab8cc")); qp.setFont(QFont("Arial", 8))
             qp.drawText(4, H - 2, f"Rule {self._rule} · {cols} cells · {rows} generations")
             qp.end()
 
@@ -1952,7 +1998,7 @@ class MultidimWindow(QDialog):
             self.sld_tab_geometrics.valueChanged.connect(self._on_window_geometrics)
             geo_lay.addWidget(self.sld_tab_geometrics)
             self.lbl_geo_viz = QLabel("panel ████████░░░░ geometrics")
-            self.lbl_geo_viz.setStyleSheet("color:#9fd4ff;font-family:monospace;font-size:8pt;")
+            self.lbl_geo_viz.setStyleSheet("color:#9fd4ff;font-family:Consolas;font-size:8pt;")
             geo_lay.addWidget(self.lbl_geo_viz)
             self.geo_viz_bar = QProgressBar()
             self.geo_viz_bar.setRange(0, 1000)
@@ -1969,6 +2015,7 @@ class MultidimWindow(QDialog):
             self.engine_tabs.addTab(geo_page, "GEOMETRICS")
         except Exception as _gt:
             print(f"[Multidim] geometrics tab: {_gt}")
+        self.record_strip = _add_record_tab(self.engine_tabs, host, self._name)   # RECORD_STRIP_R7
 
         form.addRow(self.engine_tabs)
         panel.setMinimumHeight(form.sizeHint().height())
@@ -2168,12 +2215,15 @@ class MultidimWindow(QDialog):
             u.pop(key, None)
         else:
             u[key] = val
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                _md_record(self.host, self._name(), key, val)   # RECORD_STRIP_R7
         self._changed()
 
     def _set_patch(self, key, val):
         if self._loading:
             return
         self._user(create=True).setdefault("patch", {})[key] = float(val)
+        _md_record(self.host, self._name(), "patch/" + str(key), val)   # RECORD_STRIP_R7
         self._changed()
 
     def _set_vector(self):
@@ -2567,6 +2617,8 @@ class MainMDPanel(QWidget):
         self.bottom_tabs.addTab(field_page, "STOCHASTIC / LOCK / FRACTAL FIELD")
         self.clone_rack = MDCloneRack(self.host, self.bottom_tabs)
         self.bottom_tabs.addTab(self.clone_rack, "PANEL SYNTH CLONES")
+        self.record_strip = _add_record_tab(
+            self.bottom_tabs, self.host, lambda: self.host.instrument_selector_dropdown.currentText())   # RECORD_STRIP_R7
         dock_lay.addWidget(self.bottom_tabs, 1)
 
         self.overlay = QLabel("Synths Master Engine", self)
@@ -2651,6 +2703,7 @@ class MainMDPanel(QWidget):
             name = self.host.instrument_selector_dropdown.currentText()
             st = self.host.instrument_param_state.setdefault(name, {})
             st.setdefault("multidim", {})[key] = float(value) * scale
+            _md_record(self.host, name, key, float(value) * scale)   # RECORD_STRIP_R7
             _mirror_multidim_user(self.host, name)
             self.host._on_live_source_changed()
         except Exception:
@@ -2829,7 +2882,7 @@ class MainMDPanel(QWidget):
                     g = QLinearGradient(r.left(), r.top(), r.right(), r.bottom())
                     g.setColorAt(0.0, QColor(20, 100, 180, alpha)); g.setColorAt(1.0, QColor(0, 200, 160, alpha))
                     qp.fillRect(r, QBrush(g)); qp.setPen(QColor(200, 240, 255, alpha + 40))
-                    qp.setFont(QFont("Sans", 13, QFont.Weight.Bold)); qp.drawText(r, Qt.AlignmentFlag.AlignCenter, "Synths Master Engine")
+                    qp.setFont(QFont("Arial", 13, QFont.Weight.Bold)); qp.drawText(r, Qt.AlignmentFlag.AlignCenter, "Synths Master Engine")
             finally:
                 if qp.isActive(): qp.end()
 
@@ -2957,13 +3010,23 @@ class ArcStepLayout(QLayout):
             x = min(max(x, x_lo), x_hi)
             y = min(max(y, bh / 2.0 + 4.0), max(bh / 2.0 + 4.0, band.height() - bh / 2.0 - 4.0))
             try:
-                child.setMinimumSize(0, 0)
-                child.setMaximumSize(16777215, 16777215)
-                child.setGeometry(int(x - bw / 2), int(y - bh / 2), int(bw), int(bh))
+                # ARC_RELAYOUT_R7: only touch what differs.  Re-asserting min/max size and an identical
+                # geometry posted a fresh LayoutRequest each pass -> setGeometry -> _do_layout forever (freeze).
+                if child.minimumWidth() or child.minimumHeight():
+                    child.setMinimumSize(0, 0)
+                if child.maximumWidth() != 16777215 or child.maximumHeight() != 16777215:
+                    child.setMaximumSize(16777215, 16777215)
+                g = QRect(int(x - bw / 2), int(y - bh / 2), int(bw), int(bh))
+                if child.geometry() != g:
+                    child.setGeometry(g)
             except RuntimeError:
                 continue
         try:
-            band.setMask(host._band_mask(band))
+            key = (band.width(), band.height(), round(cx, 1), round(cy, 1), round(rx, 1), round(ry, 1),
+                   round(start, 2), round(end, 2), round(thickness, 1))
+            if getattr(band, "_mask_key", None) != key:
+                band._mask_key = key
+                band.setMask(host._band_mask(band))
         except Exception:
             pass
 
@@ -3148,7 +3211,7 @@ class ArcSequencerView(QWidget):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll.setStyleSheet("QScrollArea { background:transparent; border:0; } QScrollBar:vertical { width:10px; background:#101827; } QScrollBar::handle:vertical { background:#536b8a; min-height:28px; border-radius:4px; }")
+        scroll.setStyleSheet("QScrollArea{background:transparent;border:0;} QScrollBar:vertical{width:11px;background:#09131e;border:1px solid #263c51;border-radius:5px;} QScrollBar::handle:vertical{background:#267e83;border:1px solid #51c6c2;min-height:28px;border-radius:4px;} QScrollBar::handle:vertical:hover{background:#35b9b0;border-color:#8af1dc;} QScrollBar::handle:vertical:pressed{background:#b18a3e;border-color:#f0d18a;}")
         scroll.setWidget(content)
         content.setMinimumSize(max(1, content.sizeHint().width()), max(1, content.sizeHint().height()))
         outer.addWidget(scroll, 1)
@@ -3450,7 +3513,7 @@ class ArcSequencerView(QWidget):
                 self._draw_arc_band(qp, "top", _COL_ON_BG, _COL_ON_BD)
                 self._draw_arc_band(qp, "bottom", QColor(255, 140, 0, 30), QColor(255, 190, 70, 120))
 
-                qp.setFont(QFont("Sans", 9, QFont.Weight.Bold))
+                qp.setFont(QFont("Arial", 9, QFont.Weight.Bold))
                 qp.setPen(_COL_ON_BD)
                 qp.drawText(QRectF(cx - 120, cy - ry - 22, 240, 18),
                             Qt.AlignmentFlag.AlignCenter, "SEQUENCER ARC")

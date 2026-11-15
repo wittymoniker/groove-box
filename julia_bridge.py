@@ -50,12 +50,17 @@ def _init_julia() -> bool:
         try:
             from juliacall import Main as jl  # type: ignore
             root = os.path.dirname(os.path.abspath(__file__))
-            julia_proj = os.path.join(root, "julia")
-            jl.seval("using Pkg")
-            jl.seval(f'Pkg.activate(raw"{julia_proj}")')
-            jl.seval("Pkg.instantiate()")
-            jl.seval("using GrooveboxMeumOT")
-            _jl, _jl_mod = jl, jl.GrooveboxMeumOT
+            source = os.path.join(root, "julia", "GrooveboxHybrid.jl")
+            if not os.path.isfile(source):
+                raise FileNotFoundError(f"bundled Julia source missing: {source}")
+            # Load the source actually shipped in this archive. Do not activate
+            # Pkg, instantiate packages, or access the network during startup.
+            jl.seval(f'include(raw"{source}")')
+            jl.seval("using .GrooveboxHybrid")
+            module = jl.GrooveboxHybrid
+            if not hasattr(module, "book_isy") or not hasattr(module, "book_isx"):
+                raise RuntimeError("bundled GrooveboxHybrid source does not expose the required book trig API")
+            _jl, _jl_mod = jl, module
             _jl_ready, _jl_error = True, None
             return True
         except Exception as exc:
@@ -64,10 +69,9 @@ def _init_julia() -> bool:
             _jl_error = f"Julia package load failed: {exc}"
             return False
 
-# Julia is deliberately not initialized at module import. Package activation
-# and Pkg.instantiate can take seconds or require network access; doing that on
-# the Qt/real-time caller thread would stall startup or audio. The launcher
-# schedules warmup on the shared background pool after first paint.
+# Julia is deliberately not initialized at module import. The bundled source
+# is loaded asynchronously after first paint; no package installation or
+# network access is permitted during application startup.
 _JULIA_WARMUP_FUTURE = None
 _JULIA_WARMUP_LOCK = threading.Lock()
 
@@ -117,11 +121,15 @@ def jl_ot_prod(a: float, b: float) -> Optional[float]:
 
 def jl_eqr_isn(x: float) -> Optional[float]:
     r = _call("eqr_isn", float(x))
+    if r is None:
+        r = _call("book_isy", float(x))
     return None if r is None else float(r)
 
 
 def jl_eqr_ics(x: float) -> Optional[float]:
     r = _call("eqr_ics", float(x))
+    if r is None:
+        r = _call("book_isx", float(x))
     return None if r is None else float(r)
 
 
